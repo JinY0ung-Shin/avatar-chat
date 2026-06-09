@@ -55,26 +55,18 @@ export async function runClaudeAgent(
   registry: MarketplaceRegistry,
   config: AppConfig,
 ): Promise<AgentResponse> {
-  if (!config.anthropicApiKey) {
-    throw new Error("ANTHROPIC_API_KEY is not configured.");
-  }
-
+  // ANTHROPIC_API_KEY is optional: when it is absent the Claude Agent SDK falls
+  // back to the local Claude Code authentication (subscription login).
   const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as {
     query: (input: unknown) => AsyncIterable<unknown>;
   };
-  const pluginRoots = registry.plugins
-    .filter((plugin) => {
-      if (request.mode === "owner") {
-        return true;
-      }
-      return plugin.commands.some(
-        (command) =>
-          command.readOnly &&
-          command.projectScoped === true &&
-          (command.mode === "colleague" || command.mode === "both"),
-      );
-    })
-    .map((plugin) => ({ type: "local", path: plugin.rootPath }));
+  // Install every plugin found in the configured marketplace. Colleague-mode
+  // safety is enforced below via permissionMode/allowed/disallowed tools and the
+  // mutating-request block in runAgent, not by hiding plugins.
+  const pluginRoots = registry.plugins.map((plugin) => ({
+    type: "local",
+    path: plugin.rootPath,
+  }));
 
   const options =
     request.mode === "colleague"

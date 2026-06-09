@@ -36,7 +36,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ),
     marketplaceRef: env("MARKETPLACE_REF") || undefined,
     githubToken: env("GITHUB_TOKEN") || undefined,
-    agentRuntime: parseRuntime(env("AGENT_RUNTIME", "auto")),
+    agentRuntime: parseRuntime(env("AGENT_RUNTIME", "claude")),
     anthropicApiKey: env("ANTHROPIC_API_KEY") || undefined,
     colleagueAllowedTools: env("COLLEAGUE_ALLOWED_TOOLS", "Read,Glob,Grep")
       .split(",")

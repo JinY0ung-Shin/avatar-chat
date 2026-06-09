@@ -17,14 +17,15 @@ export async function runAgent(
     };
   }
 
-  const shouldUseClaude =
-    config.agentRuntime === "claude" ||
-    (config.agentRuntime === "auto" && Boolean(config.anthropicApiKey));
-
-  if (shouldUseClaude) {
+  // Always use the Claude Agent SDK unless the runtime is explicitly set to
+  // "local". The SDK works without ANTHROPIC_API_KEY by using the local Claude
+  // Code authentication, so an API key is no longer required.
+  if (config.agentRuntime !== "local") {
     try {
       return await runClaudeAgent(request, registry, config);
     } catch (error) {
+      // In "auto" we degrade gracefully to local runners; in "claude" we surface
+      // the failure so the SDK-only requirement stays explicit.
       if (config.agentRuntime === "claude") {
         throw error;
       }
