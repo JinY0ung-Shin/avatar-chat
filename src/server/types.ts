@@ -104,6 +104,8 @@ export interface AgentAvatar {
 export interface AgentRequest {
   message: string;
   avatar: AgentAvatar;
+  /** Per-avatar working directory the SDK runs in (filesystem isolation). */
+  cwd?: string;
 }
 
 export interface PluginRoot {

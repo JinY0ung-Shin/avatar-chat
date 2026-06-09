@@ -362,6 +362,11 @@ export function createApp(services = createServices()) {
             (warn) => pluginWarnings.push(warn),
           );
 
+    // Per-avatar workspace: the SDK runs in this directory so the avatar's file
+    // reads are scoped here, not to the server tree / other avatars' data.
+    const workspaceDir = path.join(config.dataDir, "workspaces", avatar.id);
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
     res.status(200);
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -394,7 +399,11 @@ export function createApp(services = createServices()) {
 
     try {
       const response = await runAgentStream(
-        { message, avatar: { id: avatar.id, displayName: avatar.displayName, persona: avatar.persona } },
+        {
+          message,
+          avatar: { id: avatar.id, displayName: avatar.displayName, persona: avatar.persona },
+          cwd: workspaceDir,
+        },
         pluginRoots,
         config,
         {

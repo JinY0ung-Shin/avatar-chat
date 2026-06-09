@@ -165,6 +165,14 @@ export async function runClaudeAgent(
   if (abortController) {
     options.abortController = abortController;
   }
+  // Confine the run to the avatar's own workspace + its plugin dirs. Reads
+  // outside these require a permission prompt, which dontAsk denies.
+  if (request.cwd) {
+    options.cwd = request.cwd;
+  }
+  if (pluginRoots.length > 0) {
+    options.additionalDirectories = pluginRoots.map((root) => root.path);
+  }
 
   if (events) {
     events.onStatus?.("응답 생성 중…");
