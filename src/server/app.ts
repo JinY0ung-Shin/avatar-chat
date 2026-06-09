@@ -15,6 +15,7 @@ import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "./plugins.js";
 import { Store } from "./store.js";
 import type { AgentResponse, AppConfig } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
+import { awaitResponse, closeRun, openRun, submitResponse, CANCELLED } from "./agent/runRegistry.js";
 
 export interface AppServices {
   config: AppConfig;
@@ -411,6 +412,8 @@ export function createApp(services = createServices()) {
     }
 
     const conversationId = safeString(req.body?.conversationId) || crypto.randomUUID();
+    const runId = crypto.randomUUID();
+    openRun(runId, req.user!.id);
     const regenerate = req.body?.regenerate === true;
     if (regenerate) {
       store.dropLastAssistant(req.user!.id, conversationId);
@@ -460,10 +463,12 @@ export function createApp(services = createServices()) {
         closed = true;
         abortController.abort();
       }
+      // Unpark any blocking permission/question waits so the SDK can unwind.
+      closeRun(runId);
       cleanup();
     });
 
-    sseSend(res, "open", { conversationId, avatarId: avatar.id });
+    sseSend(res, "open", { conversationId, avatarId: avatar.id, runId });
     for (const warn of pluginWarnings) {
       sseSend(res, "status", { label: `플러그인 경고: ${warn}` });
     }
@@ -491,8 +496,51 @@ export function createApp(services = createServices()) {
           onPlugin: (event) => {
             if (!closed) sseSend(res, "plugin", { status: event.status, name: event.name });
           },
-          onTool: (name) => {
-            if (!closed) sseSend(res, "tool", { name });
+          onToolStart: (event) => {
+            if (!closed) sseSend(res, "tool", event);
+          },
+          onToolEnd: (event) => {
+            if (!closed) sseSend(res, "tool_end", event);
+          },
+          onAgentStart: (event) => {
+            if (!closed) sseSend(res, "agent", event);
+          },
+          onAgentEnd: (event) => {
+            if (!closed) sseSend(res, "agent_end", event);
+          },
+          onBlocked: (event) => {
+            if (!closed) sseSend(res, "blocked", event);
+          },
+          // Interactive permission prompt (owner only — see claudeAgent).
+          onPermission: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            sseSend(res, "permission", { runId, requestId, ...requestData });
+            const answer = await awaitResponse(runId, requestId);
+            if (answer === CANCELLED || closed) {
+              return { behavior: "deny" };
+            }
+            return (answer as { behavior: "allow" }).behavior === "allow"
+              ? { behavior: "allow" }
+              : { behavior: "deny" };
+          },
+          // AskUserQuestion (and other request_user_dialog kinds).
+          onQuestion: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            sseSend(res, "question", {
+              runId,
+              requestId,
+              dialogKind: requestData.dialogKind,
+              payload: requestData.payload,
+            });
+            const answer = await awaitResponse(runId, requestId);
+            if (answer === CANCELLED || closed) {
+              return { behavior: "cancelled" };
+            }
+            const reply = answer as { cancelled?: boolean; result?: unknown };
+            if (reply?.cancelled) {
+              return { behavior: "cancelled" };
+            }
+            return { behavior: "completed", result: reply?.result };
           },
         },
         abortController,
@@ -535,11 +583,29 @@ export function createApp(services = createServices()) {
       });
       sseSend(res, "error", { error: detail });
     } finally {
+      closeRun(runId);
       cleanup();
       if (!res.writableEnded) {
         res.end();
       }
     }
+  });
+
+  // Answer an interactive prompt (permission / AskUserQuestion) raised mid-run.
+  // The run stream stays open on a separate request; this delivers the reply.
+  app.post("/api/chat/respond", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const runId = safeString(req.body?.runId);
+    const requestId = safeString(req.body?.requestId);
+    if (!runId || !requestId) {
+      apiError(res, 400, "runId와 requestId가 필요합니다.");
+      return;
+    }
+    const delivered = submitResponse(runId, requestId, req.user!.id, req.body?.value);
+    if (!delivered) {
+      apiError(res, 404, "처리할 수 없는 응답입니다(만료되었거나 권한 없음).");
+      return;
+    }
+    res.json({ ok: true });
   });
 
   // ---- Admin -----------------------------------------------------------

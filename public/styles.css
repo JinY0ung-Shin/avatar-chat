@@ -1036,6 +1036,347 @@ button:disabled {
 }
 
 /* ============================================================
+   Agent activity tree + interactive prompts
+   ============================================================ */
+
+/* Small buttons used inside prompt cards. */
+.btn {
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: var(--r-sm);
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text);
+}
+.btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.btn-sm {
+  padding: 6px 13px;
+  font-size: var(--t-xs);
+}
+.btn-ghost:hover:not(:disabled) {
+  background: var(--panel-strong);
+}
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+/* ---- Activity tree ---- */
+.agent-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: var(--s-3);
+}
+.agent-activity:empty {
+  display: none;
+}
+.agent-activity.collapsed {
+  opacity: 0.78;
+}
+
+.agent-node {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.agent-node.sub {
+  border-left: 2px solid var(--line);
+  padding-left: 10px;
+  margin-left: 4px;
+}
+.agent-children {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--t-xs);
+  color: var(--text-soft);
+}
+.agent-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--r-pill);
+  padding: 1px 7px;
+}
+.agent-label {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* A single tool call row. */
+.tool-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--t-xs);
+  color: var(--text-soft);
+  min-width: 0;
+}
+.tool-name {
+  font-weight: 600;
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  color: var(--text);
+  flex: none;
+}
+.tool-arg {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tool-row[data-status="done"] .tool-name {
+  color: var(--text-soft);
+}
+.tool-row[data-status="failed"] .tool-name,
+.tool-row.blocked .tool-name {
+  color: var(--warn);
+}
+
+/* Spinner shown while a tool/agent is running; replaced by a glyph when settled. */
+.tool-spinner,
+.agent-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex: none;
+}
+.tool-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--warn);
+  flex: none;
+}
+.tool-row[data-status="done"] .tool-spinner,
+.tool-row[data-status="failed"] .tool-spinner {
+  border: none;
+  animation: none;
+  position: relative;
+}
+.tool-row[data-status="done"] .tool-spinner::after {
+  content: "✓";
+  color: var(--ok);
+  font-size: 12px;
+  line-height: 11px;
+}
+.tool-row[data-status="failed"] .tool-spinner::after {
+  content: "✕";
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 11px;
+}
+.tool-row[data-status="blocked"] .tool-spinner {
+  border: none;
+  animation: none;
+}
+.tool-row[data-status="blocked"] .tool-spinner::after {
+  content: "⊘";
+  color: var(--warn);
+  font-size: 12px;
+  line-height: 11px;
+}
+.agent-node[data-status="done"] .agent-spinner,
+.agent-node[data-status="failed"] .agent-spinner {
+  border: none;
+  animation: none;
+}
+.agent-node[data-status="done"] .agent-spinner::after {
+  content: "✓";
+  color: var(--ok);
+  font-size: 12px;
+}
+.agent-node[data-status="failed"] .agent-spinner::after {
+  content: "✕";
+  color: var(--warn);
+  font-size: 11px;
+}
+
+/* ---- Interactive prompt cards ---- */
+.agent-prompts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: var(--s-3);
+}
+.agent-prompts:empty {
+  display: none;
+}
+
+.prompt-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: 12px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  box-shadow: var(--shadow-sm);
+}
+.prompt-card.permission {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+.prompt-card.question {
+  border-color: var(--info-line);
+  background: var(--info-soft);
+}
+.prompt-card[data-resolved] {
+  opacity: 0.82;
+}
+
+.prompt-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--t-xs);
+  font-weight: 700;
+  color: var(--text-soft);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.prompt-icon {
+  font-size: 14px;
+}
+.prompt-title {
+  font-size: var(--t-base);
+  font-weight: 600;
+  color: var(--text);
+}
+.prompt-tool {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--t-sm);
+  min-width: 0;
+}
+.prompt-tool code {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  background: var(--panel-strong);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+  flex: none;
+}
+.prompt-arg {
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-desc {
+  font-size: var(--t-sm);
+  color: var(--text-soft);
+}
+.prompt-input {
+  font-size: var(--t-xs);
+  background: var(--panel-strong);
+  border-radius: var(--r-sm);
+  padding: 8px 10px;
+  margin: 0;
+  max-height: 180px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.prompt-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.prompt-result {
+  margin-right: auto;
+  font-size: var(--t-xs);
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+/* ---- Question blocks ---- */
+.q-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.q-chip {
+  align-self: flex-start;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--info);
+  background: var(--bg-elevated);
+  border: 1px solid var(--info-line);
+  border-radius: var(--r-pill);
+  padding: 1px 8px;
+}
+.q-text {
+  font-size: var(--t-base);
+  font-weight: 600;
+  color: var(--text);
+}
+.q-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.q-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+  border-radius: var(--r-sm);
+  padding: 8px 11px;
+  cursor: pointer;
+}
+.q-option:hover {
+  border-color: var(--accent-ring);
+}
+.q-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.q-opt-label {
+  font-weight: 600;
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+.q-opt-desc {
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+/* ============================================================
    Markdown content
    ============================================================ */
 .md {

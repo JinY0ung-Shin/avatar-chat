@@ -333,6 +333,25 @@ describe("avatar-chat platform", () => {
     expect(messages.body.messages).toHaveLength(2); // not 3 or 4
   });
 
+  it("exposes a runId on the chat stream and guards the respond endpoint", async () => {
+    const app = testApp();
+    const { agent, user } = await newUser(app, "ivy");
+    await agent.patch("/api/me").send({ published: true }).expect(200);
+
+    const chat = await agent.post("/api/chat/stream").send({ avatarId: user.id, message: "hi" }).expect(200);
+    const open = parseSse(chat.text).find((f) => f.event === "open")!.data as { runId?: string };
+    expect(typeof open.runId).toBe("string");
+
+    // Auth required.
+    await request(app).post("/api/chat/respond").send({ runId: open.runId, requestId: "x" }).expect(401);
+    // Missing fields → 400.
+    await agent.post("/api/chat/respond").send({ runId: open.runId }).expect(400);
+    // Run already finished (local runtime resolves synchronously) → 404.
+    await agent.post("/api/chat/respond").send({ runId: open.runId, requestId: "nope", value: { behavior: "allow" } }).expect(404);
+    // Unknown run → 404.
+    await agent.post("/api/chat/respond").send({ runId: "ghost", requestId: "x", value: {} }).expect(404);
+  });
+
   // ---- Conversation ownership ------------------------------------------
 
   it("renames and deletes conversations, and isolates them between users", async () => {

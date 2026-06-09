@@ -752,7 +752,11 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
   const caret = el("span", { class: "stream-caret", "aria-hidden": "true" });
   const statusRow = el("div", { class: "stream-status" }, [el("span", { class: "spinner" }), el("span", { class: "label", text: "준비 중…" })]);
   const pluginChips = el("div", { class: "plugin-chips" });
-  bubble.append(mdNode, caret, statusRow, pluginChips);
+  // Interactive prompts (permission / AskUserQuestion) render above the activity
+  // tree; the activity tree shows which agent is calling which tool.
+  const promptsEl = el("div", { class: "agent-prompts" });
+  const activityEl = el("div", { class: "agent-activity" });
+  bubble.append(mdNode, caret, promptsEl, activityEl, statusRow, pluginChips);
   const wrap = el("div", { class: "message assistant" }, [
     el("div", { class: "msg-role" }, [el("span", { class: "role-dot" }), el("span", { text: state.currentAvatar?.displayName || "아바타" })]),
     bubble,
@@ -760,7 +764,14 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
   dom.transcriptInner.append(wrap);
   scrollToBottom(true);
 
-  const live = { wrap, bubble, mdNode, caret, statusRow, statusLabel: statusRow.querySelector(".label"), pluginChips, text: "", rafPending: false, done: false, aborted: false, isNewConversation };
+  const live = {
+    wrap, bubble, mdNode, caret, statusRow, statusLabel: statusRow.querySelector(".label"),
+    pluginChips, promptsEl, activityEl,
+    runId: null,
+    agents: new Map(), // agentId -> { node, toolsEl, childrenEl }
+    tools: new Map(), // toolUseId -> { row }
+    text: "", rafPending: false, done: false, aborted: false, isNewConversation,
+  };
   const flush = () => {
     live.rafPending = false;
     live.mdNode.innerHTML = renderMarkdown(live.text);
@@ -855,6 +866,7 @@ function handleSseEvent(event, data, live, scheduleFlush) {
   switch (event) {
     case "open":
       if (data?.conversationId) state.conversationId = data.conversationId;
+      if (data?.runId) live.runId = data.runId;
       setStatus(live, "준비 중…");
       break;
     case "status":
@@ -863,8 +875,26 @@ function handleSseEvent(event, data, live, scheduleFlush) {
     case "plugin":
       handlePluginEvent(live, data);
       break;
+    case "agent":
+      handleAgentStart(live, data);
+      break;
+    case "agent_end":
+      handleAgentEnd(live, data);
+      break;
     case "tool":
-      if (data?.name) setStatus(live, `도구 실행 중: ${data.name}`);
+      handleToolStart(live, data);
+      break;
+    case "tool_end":
+      handleToolEnd(live, data);
+      break;
+    case "blocked":
+      handleBlocked(live, data);
+      break;
+    case "permission":
+      renderPermissionCard(live, data);
+      break;
+    case "question":
+      renderQuestionCard(live, data);
       break;
     case "delta":
       if (typeof data?.text === "string") {
@@ -881,6 +911,247 @@ function handleSseEvent(event, data, live, scheduleFlush) {
     default:
       break;
   }
+}
+
+/* ---- Multi-agent activity tree ------------------------------------- */
+
+// Lazily create (or fetch) the DOM node for an agent. `main` is the root.
+function ensureAgentNode(live, agentId, info) {
+  if (live.agents.has(agentId)) {
+    const existing = live.agents.get(agentId);
+    if (info && info.pending) {
+      // Upgrade a placeholder created by an early tool event into a real node.
+      const head = existing.node.querySelector(".agent-head .agent-label");
+      if (head && info.label) head.textContent = info.label;
+      existing.node.dataset.status = info.status || existing.node.dataset.status || "running";
+      existing.pending = false;
+    }
+    return existing;
+  }
+  const isMain = agentId === "main";
+  const toolsEl = el("div", { class: "agent-tools" });
+  const childrenEl = el("div", { class: "agent-children" });
+  let node;
+  if (isMain) {
+    node = el("div", { class: "agent-node main", dataset: { agent: agentId, status: "running" } }, [toolsEl, childrenEl]);
+    live.activityEl.append(node);
+  } else {
+    const label = (info && info.label) || "서브 에이전트";
+    node = el("div", { class: "agent-node sub", dataset: { agent: agentId, status: (info && info.status) || "running" } }, [
+      el("div", { class: "agent-head" }, [
+        el("span", { class: "agent-spinner" }),
+        el("span", { class: "agent-badge", text: "에이전트" }),
+        el("span", { class: "agent-label", text: label }),
+      ]),
+      toolsEl,
+      childrenEl,
+    ]);
+    const parentId = (info && info.parentId) || "main";
+    const parent = ensureAgentNode(live, parentId);
+    parent.childrenEl.append(node);
+  }
+  const record = { node, toolsEl, childrenEl, pending: Boolean(info && info.pending) };
+  live.agents.set(agentId, record);
+  return record;
+}
+
+function handleAgentStart(live, data) {
+  if (!data?.agentId) return;
+  const label = [data.subagentType, data.description].filter(Boolean).join(" · ") || "서브 에이전트";
+  ensureAgentNode(live, data.agentId, { parentId: data.parentId, label, status: "running", pending: false });
+  setStatus(live, `에이전트 작업 중: ${label}`);
+}
+
+function handleAgentEnd(live, data) {
+  const rec = data?.agentId && live.agents.get(data.agentId);
+  if (!rec) return;
+  rec.node.dataset.status = data.ok === false ? "failed" : "done";
+}
+
+function handleToolStart(live, data) {
+  if (!data?.toolUseId || !data?.name) return;
+  const agent = ensureAgentNode(live, data.agentId || "main", { pending: true });
+  const row = el("div", { class: "tool-row", dataset: { tool: data.toolUseId, status: "running" } }, [
+    el("span", { class: "tool-spinner" }),
+    el("span", { class: "tool-name", text: data.name }),
+    data.inputSummary ? el("span", { class: "tool-arg", text: data.inputSummary }) : null,
+  ]);
+  agent.toolsEl.append(row);
+  live.tools.set(data.toolUseId, { row });
+  setStatus(live, `실행 중: ${data.name}${data.inputSummary ? ` · ${data.inputSummary}` : ""}`);
+  scrollToBottom();
+}
+
+function handleToolEnd(live, data) {
+  const rec = data?.toolUseId && live.tools.get(data.toolUseId);
+  if (!rec) return;
+  if (rec.row.dataset.status === "blocked") return; // keep the "blocked" label
+  rec.row.dataset.status = data.ok === false ? "failed" : "done";
+}
+
+function handleBlocked(live, data) {
+  if (!data?.toolName) return;
+  // If this tool already has a permission card the owner resolved, don't double-report.
+  if (data.toolUseId && live.promptsEl.querySelector(`[data-tooluse="${cssEscape(data.toolUseId)}"]`)) return;
+  const reasonText = data.reason ? `차단됨 · ${data.reason}` : "읽기 전용이라 차단됨";
+  // Prefer to convert the existing "running" row for this tool into a blocked row.
+  const existing = data.toolUseId && live.tools.get(data.toolUseId);
+  if (existing) {
+    existing.row.dataset.status = "blocked";
+    existing.row.classList.add("blocked");
+    let arg = existing.row.querySelector(".tool-arg");
+    if (!arg) { arg = el("span", { class: "tool-arg" }); existing.row.append(arg); }
+    arg.textContent = reasonText;
+    return;
+  }
+  const agent = ensureAgentNode(live, data.agentId || "main", { pending: true });
+  const row = el("div", { class: "tool-row blocked", dataset: { status: "blocked" } }, [
+    el("span", { class: "tool-dot" }),
+    el("span", { class: "tool-name", text: data.toolName }),
+    el("span", { class: "tool-arg", text: reasonText }),
+  ]);
+  agent.toolsEl.append(row);
+  scrollToBottom();
+}
+
+/* ---- Interactive prompts (permission / question) ------------------- */
+
+async function submitPromptResponse(live, requestId, value, card, resultLabel) {
+  card.dataset.resolved = "true";
+  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+  try {
+    await api("/api/chat/respond", { method: "POST", body: JSON.stringify({ runId: live.runId, requestId, value }) });
+  } catch (err) {
+    // Run may have ended already; reflect that but don't crash the stream.
+    resultLabel = `전송 실패: ${err.message || err}`;
+  }
+  const status = card.querySelector(".prompt-result");
+  if (status) status.textContent = resultLabel;
+}
+
+function renderPermissionCard(live, data) {
+  if (!data?.requestId) return;
+  const toolName = data.toolName || "도구";
+  const title = data.title || `이 아바타가 ${toolName} 도구를 사용하려고 합니다.`;
+  const argSummary = summarizeInputForCard(data.input);
+  const card = el("div", { class: "prompt-card permission", dataset: { request: data.requestId, tooluse: data.toolUseId || "" } }, [
+    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon", text: "🔐" }), el("span", { text: "권한 요청" })]),
+    el("div", { class: "prompt-title", text: title }),
+    el("div", { class: "prompt-tool" }, [el("code", { text: toolName }), argSummary ? el("span", { class: "prompt-arg", text: argSummary }) : null]),
+    data.description ? el("div", { class: "prompt-desc", text: data.description }) : null,
+    el("div", { class: "prompt-actions" }, [
+      el("span", { class: "prompt-result" }),
+      el("button", { class: "btn btn-ghost btn-sm", text: "거부", onclick: () => submitPromptResponse(live, data.requestId, { behavior: "deny" }, card, "✕ 거부됨") }),
+      el("button", { class: "btn btn-primary btn-sm", text: "승인", onclick: () => submitPromptResponse(live, data.requestId, { behavior: "allow" }, card, "✓ 승인됨") }),
+    ]),
+  ]);
+  live.promptsEl.append(card);
+  setStatus(live, "권한 승인을 기다리는 중…");
+  scrollToBottom();
+}
+
+function renderQuestionCard(live, data) {
+  if (!data?.requestId) return;
+  const payload = data.payload || {};
+  const questions = Array.isArray(payload.questions) ? payload.questions : null;
+  const card = el("div", { class: "prompt-card question", dataset: { request: data.requestId } }, [
+    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon", text: "💬" }), el("span", { text: "질문" })]),
+  ]);
+
+  if (!questions) {
+    // Unknown dialog kind: show raw payload + confirm/cancel.
+    card.append(el("pre", { class: "prompt-input", text: JSON.stringify(payload, null, 2) }));
+    card.append(el("div", { class: "prompt-actions" }, [
+      el("span", { class: "prompt-result" }),
+      el("button", { class: "btn btn-ghost btn-sm", text: "취소", onclick: () => submitPromptResponse(live, data.requestId, { cancelled: true }, card, "취소됨") }),
+      el("button", { class: "btn btn-primary btn-sm", text: "확인", onclick: () => submitPromptResponse(live, data.requestId, { result: {} }, card, "확인됨") }),
+    ]));
+    live.promptsEl.append(card);
+    setStatus(live, "질문에 답해 주세요…");
+    scrollToBottom();
+    return;
+  }
+
+  // selections[i] = array of chosen labels for question i.
+  const selections = questions.map(() => []);
+  const submitBtn = el("button", { class: "btn btn-primary btn-sm", text: "보내기", disabled: true });
+  const resultLabel = el("span", { class: "prompt-result" });
+
+  const refreshSubmit = () => {
+    submitBtn.disabled = selections.some((s) => s.length === 0);
+  };
+
+  questions.forEach((q, qi) => {
+    const multi = q.multiSelect === true;
+    const block = el("div", { class: "q-block" }, [
+      q.header ? el("span", { class: "q-chip", text: q.header }) : null,
+      el("div", { class: "q-text", text: q.question || "" }),
+    ]);
+    const opts = Array.isArray(q.options) ? q.options : [];
+    const optsEl = el("div", { class: "q-options" });
+    opts.forEach((opt) => {
+      const optBtn = el("button", { class: "q-option", type: "button" }, [
+        el("span", { class: "q-opt-label", text: opt.label || "" }),
+        opt.description ? el("span", { class: "q-opt-desc", text: opt.description }) : null,
+      ]);
+      optBtn.addEventListener("click", () => {
+        if (card.dataset.resolved) return;
+        if (multi) {
+          const idx = selections[qi].indexOf(opt.label);
+          if (idx >= 0) { selections[qi].splice(idx, 1); optBtn.classList.remove("selected"); }
+          else { selections[qi].push(opt.label); optBtn.classList.add("selected"); }
+        } else {
+          selections[qi] = [opt.label];
+          optsEl.querySelectorAll(".q-option").forEach((b) => b.classList.remove("selected"));
+          optBtn.classList.add("selected");
+        }
+        refreshSubmit();
+      });
+      optsEl.append(optBtn);
+    });
+    block.append(optsEl);
+    card.append(block);
+  });
+
+  submitBtn.addEventListener("click", () => {
+    // Shape the result like AskUserQuestionOutput: an answers map keyed by the
+    // question text (multi-select answers comma-joined), echoing the questions.
+    const answers = {};
+    questions.forEach((q, qi) => { answers[q.question || `q${qi}`] = selections[qi].join(", "); });
+    submitPromptResponse(live, data.requestId, { result: { questions, answers } }, card, "✓ 답변 전송됨");
+  });
+
+  card.append(el("div", { class: "prompt-actions" }, [resultLabel, submitBtn]));
+  live.promptsEl.append(card);
+  setStatus(live, "질문에 답해 주세요…");
+  scrollToBottom();
+}
+
+function summarizeInputForCard(input) {
+  if (!input || typeof input !== "object") return "";
+  const keys = ["command", "file_path", "path", "pattern", "url", "query"];
+  for (const k of keys) {
+    if (typeof input[k] === "string" && input[k]) return input[k];
+  }
+  const firstStr = Object.values(input).find((v) => typeof v === "string" && v);
+  return typeof firstStr === "string" ? firstStr : "";
+}
+
+// Disable any prompts still awaiting an answer (run ended).
+function disableOpenPrompts(live, note) {
+  live.promptsEl.querySelectorAll(".prompt-card:not([data-resolved])").forEach((card) => {
+    card.dataset.resolved = "true";
+    card.querySelectorAll("button").forEach((b) => (b.disabled = true));
+    const status = card.querySelector(".prompt-result");
+    if (status) status.textContent = note;
+  });
+}
+
+// Freeze the activity tree: stop spinners, keep the record visible in the final bubble.
+function freezeActivity(live) {
+  live.activityEl.querySelectorAll('.tool-row[data-status="running"]').forEach((r) => (r.dataset.status = "done"));
+  live.activityEl.querySelectorAll('.agent-node[data-status="running"]').forEach((n) => (n.dataset.status = "done"));
+  live.activityEl.classList.add("collapsed");
 }
 
 function setStatus(live, label) {
@@ -907,7 +1178,11 @@ function setComposerState(text) {
 function cleanupLive(live) {
   live.caret.remove();
   live.statusRow.remove();
+  if (live.promptsEl) disableOpenPrompts(live, "· 종료됨");
+  if (live.activityEl) freezeActivity(live);
   if (!live.pluginChips.children.length) live.pluginChips.remove();
+  if (live.activityEl && !live.activityEl.children.length) live.activityEl.remove();
+  if (live.promptsEl && !live.promptsEl.children.length) live.promptsEl.remove();
 }
 function finalizeDone(live, data) {
   if (live.done) return;
@@ -915,9 +1190,12 @@ function finalizeDone(live, data) {
   cleanupLive(live);
   const message = data?.message || { role: "assistant", content: data?.response?.text || data?.response?.summary || live.text, response: data?.response, createdAt: new Date().toISOString() };
   state.messages.push(message);
+  // Keep the prompt/activity record visible across the final re-render.
+  const extras = [live.promptsEl, live.activityEl].filter((n) => n && n.isConnected && n.children.length);
   live.bubble.replaceChildren();
   live.bubble.className = "bubble";
   renderAssistantInto(live.bubble, message);
+  for (const node of extras) live.bubble.append(node);
   live.wrap.append(buildMessageActions(message, false, true));
   scrollToBottom();
   refreshConversations();
