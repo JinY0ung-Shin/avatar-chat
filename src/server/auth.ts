@@ -1,20 +1,51 @@
+import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import type { User } from "./types.js";
-import type { JsonStore } from "./store.js";
+import type { Store } from "./store.js";
 
-const SESSION_COOKIE = "avatar_session";
+const SESSION_COOKIE = "ac_session";
 
 export interface AuthenticatedRequest extends Request {
   user?: User;
 }
+
+// ---- Password hashing (scrypt) -----------------------------------------
+
+/** Hash a password as `${saltHex}:${hashHex}` using scrypt with a random salt. */
+export function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16);
+  const hash = crypto.scryptSync(password, salt, 64);
+  return `${salt.toString("hex")}:${hash.toString("hex")}`;
+}
+
+/** Verify a password against a `${saltHex}:${hashHex}` digest in constant time. */
+export function verifyPassword(password: string, stored: string): boolean {
+  const [saltHex, hashHex] = stored.split(":");
+  if (!saltHex || !hashHex) {
+    return false;
+  }
+  const salt = Buffer.from(saltHex, "hex");
+  const expected = Buffer.from(hashHex, "hex");
+  const actual = crypto.scryptSync(password, salt, expected.length);
+  if (actual.length !== expected.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(actual, expected);
+}
+
+/** Hash a session token (sha256) for storage as token_hash. */
+export function hashToken(token: string): string {
+  return crypto.createHash("sha256").update(token).digest("hex");
+}
+
+// ---- Cookies ------------------------------------------------------------
 
 export function readCookie(req: Request, name: string): string | undefined {
   const header = req.headers.cookie;
   if (!header) {
     return undefined;
   }
-  const cookies = header.split(";").map((part) => part.trim());
-  for (const cookie of cookies) {
+  for (const cookie of header.split(";").map((part) => part.trim())) {
     const [cookieName, ...rest] = cookie.split("=");
     if (cookieName === name) {
       return decodeURIComponent(rest.join("="));
@@ -41,7 +72,9 @@ export function sessionTokenFromRequest(req: Request): string | undefined {
   return readCookie(req, SESSION_COOKIE);
 }
 
-export function requireAuth(store: JsonStore) {
+// ---- Middleware ---------------------------------------------------------
+
+export function requireAuth(store: Store) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const user = store.getUserBySessionToken(sessionTokenFromRequest(req));
     if (!user) {
@@ -53,9 +86,9 @@ export function requireAuth(store: JsonStore) {
   };
 }
 
-export function requireOwner(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
-  if (req.user?.role !== "owner") {
-    res.status(403).json({ error: "Owner access required" });
+export function requireAdmin(req: AuthenticatedRequest, res: Response, next: NextFunction): void {
+  if (!req.user?.roles.includes("admin")) {
+    res.status(403).json({ error: "Admin access required" });
     return;
   }
   next();

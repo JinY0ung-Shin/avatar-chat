@@ -1,22 +1,24 @@
 # Avatar Chat
 
-Internal browser chat app for a Claude Agent SDK backed workplace skill marketplace.
+A small platform where each user signs up, builds a public **avatar** (profile +
+their own GitHub plugins), browses other people's published avatars, and chats with
+any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
 
-## What It Does
+## What it does
 
-- Invite-only internal access.
-- Two modes:
-  - `colleague`: read-only, project-scoped operational questions.
-  - `owner`: owner-only work-command mode.
-- Loads a Claude plugin marketplace from a local path, GitHub `owner/repo`, or git URL.
-- Uses app-specific `avatar-chat.json` metadata to expose deterministic skill runners and to decide which skills are colleague-safe.
-- Uses `@anthropic-ai/claude-agent-sdk` when `ANTHROPIC_API_KEY` is configured.
-- Falls back to local skill runners when `AGENT_RUNTIME=local` or no API key is present.
-- Runs as a single Docker Compose service with a persistent data volume.
+- **Accounts**: self-service signup with username + password (no invite codes). The
+  first user to sign up becomes the **admin**. SQLite-backed users + roles (`admin`/`member`).
+- **Avatar profile**: display name, uploaded profile picture (with a generated
+  initials/gradient fallback), one-line bio, and an optional persona / system prompt.
+- **Per-user plugins**: each user adds their own GitHub plugin repos to their avatar.
+- **Discovery**: published avatars appear in the Explore directory; anyone can start a chat.
+- **Read-only chat**: chatting with an avatar loads that avatar's enabled plugins and runs
+  the Claude Agent SDK with `permissionMode=dontAsk`, `allowedTools=Read,Glob,Grep`, and
+  `Write`/`Edit` disallowed. Streaming, markdown rendering, conversations, and per-message
+  actions (copy, regenerate, edit-and-resend) are supported.
+- **Admin**: list users, grant/revoke the `admin` role, delete accounts.
 
-The app intentionally does not implement service health checks or VM inventory integrations directly. Those belong in marketplace skills/plugins.
-
-## Quick Start
+## Quick start
 
 ```bash
 cp .env.example .env
@@ -24,15 +26,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:48787`.
-
-For local development, the default owner setup code is:
-
-```text
-owner-local-setup
-```
-
-For deployment, set a strong `OWNER_SETUP_CODE` and `SESSION_SECRET` in `.env`.
+Open `http://localhost:48787`, click **회원가입**, and create the first account (it becomes admin).
 
 ## Docker Compose
 
@@ -41,73 +35,27 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The image includes Node.js, git, OpenSSH client, Python 3, ripgrep, `jq`, and `uv`.
+The image includes Node.js, git, Python 3, ripgrep, `jq`, and `uv`. SQLite data and
+uploaded avatar images persist under `APP_DATA_DIR`.
 
-## Marketplace Configuration
+## Configuration
 
-By default the app mounts and uses:
+| Env | Purpose |
+| --- | --- |
+| `SESSION_SECRET` | Session token hashing secret (required in production). |
+| `AGENT_RUNTIME` | `claude` (default, SDK read-only) or `local` (offline stub, no plugin execution). |
+| `ANTHROPIC_API_KEY` | Optional; absent → SDK uses local Claude Code auth. |
+| `PORT` / `APP_DATA_DIR` | Server port / data directory (SQLite DB + avatar images). |
+| `READONLY_TOOLS` | Tool allowlist for plugin execution (default `Read,Glob,Grep`). |
+| `GITHUB_TOKEN` | Optional, for cloning private plugin repos. |
 
-```text
-sample-marketplace/
-```
+## Security note
 
-To use a GitHub-hosted marketplace:
-
-```env
-MARKETPLACE_SOURCE=your-org/your-claude-marketplace
-MARKETPLACE_REF=main
-GITHUB_TOKEN=...
-```
-
-The marketplace should contain:
-
-```text
-.claude-plugin/marketplace.json
-plugins/<plugin-name>/.claude-plugin/plugin.json
-plugins/<plugin-name>/skills/<skill-name>/SKILL.md
-```
-
-For deterministic app execution and colleague-mode filtering, add `avatar-chat.json` to each plugin root:
-
-```json
-{
-  "commands": [
-    {
-      "name": "service-status",
-      "description": "서비스 상태를 표로 정리합니다.",
-      "mode": "colleague",
-      "readOnly": true,
-      "projectScoped": true,
-      "match": ["서비스", "status"],
-      "command": "node",
-      "args": ["scripts/service-status.js"]
-    }
-  ]
-}
-```
-
-Colleague mode only exposes commands where:
-
-- `readOnly` is `true`
-- `projectScoped` is `true`
-- `mode` is `colleague` or `both`
-
-Owner mode can see all commands.
-
-## Claude Agent SDK
-
-Official docs currently identify the TypeScript package as:
-
-```bash
-npm install @anthropic-ai/claude-agent-sdk
-```
-
-When `ANTHROPIC_API_KEY` is set and `AGENT_RUNTIME=auto` or `claude`, the app calls the SDK with local plugin roots:
-
-- Colleague mode: `permissionMode=dontAsk`, default allowed tools `Read,Glob,Grep`
-- Owner mode: `permissionMode` from `OWNER_PERMISSION_MODE`
-
-If `ANTHROPIC_API_KEY` is absent and `AGENT_RUNTIME=auto`, the app uses local skill runners so the deployment and UI remain testable.
+Avatar plugins are arbitrary GitHub repositories loaded by the Claude Agent SDK. Tool
+permissions are restricted to read-only (`Write`/`Edit` blocked), but loading a third-party
+plugin still executes its code on the server. For a public/production deployment, run plugin
+execution in a sandbox (container/VM per request, network egress limits). This build assumes
+a trusted-enough environment per the read-only tradeoff.
 
 ## Verification
 
@@ -117,12 +65,6 @@ npm test
 npm run build
 ```
 
-Smoke test locally:
-
-1. Login as owner with `owner-local-setup`.
-2. Create a colleague invite.
-3. Open another browser/session and login with the invite.
-4. Ask: `지금 서비스들 정상 작동하고 있는지 확인해줘`
-5. Confirm a service status table appears.
-6. Ask: `api 서버 재배포 해줘`
-7. Confirm colleague mode blocks the mutating request.
+Smoke test: sign up (first user = admin) → open **내 아바타**, set a name/picture/bio,
+add a plugin, toggle **공개** → from another account, open **탐색**, pick the avatar,
+and chat. Confirm the response streams and renders markdown.

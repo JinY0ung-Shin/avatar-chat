@@ -1,167 +1,112 @@
-export type UserRole = "owner" | "colleague";
-export type ChatMode = "owner" | "colleague";
-export type AgentRuntime = "auto" | "claude" | "local";
+export type AgentRuntime = "claude" | "local";
 
 export interface AppConfig {
   port: number;
   dataDir: string;
+  dbPath: string;
   sessionSecret: string;
-  ownerSetupCode: string;
-  defaultProjectScope: string;
-  marketplaceSource: string;
-  marketplaceRef?: string;
-  githubToken?: string;
   agentRuntime: AgentRuntime;
   anthropicApiKey?: string;
-  colleagueAllowedTools: string[];
-  ownerPermissionMode: string;
+  readOnlyTools: string[];
+  githubToken?: string;
 }
 
+/** Public user shape returned to clients. NEVER includes password_hash. */
 export interface User {
   id: string;
-  name: string;
-  role: UserRole;
-  projectScope: string;
-  createdAt: string;
-  lastSeenAt?: string;
+  username: string;
+  displayName: string;
+  bio: string;
+  persona: string;
+  hasImage: boolean;
+  published: boolean;
+  roles: string[];
+  pluginCount: number;
 }
 
-export interface Invite {
+export interface Plugin {
   id: string;
-  label: string;
-  codeHash: string;
-  codePreview: string;
-  role: UserRole;
-  projectScope: string;
-  maxUses: number;
-  uses: number;
-  createdBy: string;
+  repo: string;
+  ref: string | null;
+  label: string | null;
+  enabled: boolean;
   createdAt: string;
-  revokedAt?: string;
 }
 
-export interface Session {
+export interface AvatarSummary {
   id: string;
-  tokenHash: string;
-  userId: string;
-  createdAt: string;
-  expiresAt: string;
+  username: string;
+  displayName: string;
+  bio: string;
+  hasImage: boolean;
+  pluginCount: number;
+  published: boolean;
+  updatedAt: string | null;
+}
+
+export interface AvatarDetail extends AvatarSummary {
+  persona: string;
+  isOwn: boolean;
+  plugins: { repo: string; label: string | null }[];
+}
+
+export interface ConversationSummary {
+  id: string;
+  avatarUserId: string;
+  avatarDisplayName: string;
+  title: string;
+  updatedAt: string;
 }
 
 export interface StoredMessage {
   id: string;
   conversationId: string;
-  userId: string;
-  mode: ChatMode;
   role: "user" | "assistant" | "system";
   content: string;
-  response?: AgentResponse;
+  response: AgentResponse | null;
   createdAt: string;
 }
 
 export interface AuditEvent {
   id: string;
-  actorUserId: string;
-  actorName: string;
-  mode: ChatMode;
+  actorUserId: string | null;
+  actorName: string | null;
   action: string;
-  skillName?: string;
-  pluginName?: string;
-  runtime?: "local" | "claude" | "blocked";
-  status: "success" | "blocked" | "error";
+  status: string;
   detail: string;
   createdAt: string;
 }
 
-export interface Conversation {
-  id: string;        // == conversationId used on messages
-  userId: string;
-  mode: ChatMode;
-  title: string;
+export interface AdminUserSummary {
+  id: string;
+  username: string;
+  displayName: string;
+  roles: string[];
+  published: boolean;
   createdAt: string;
-  updatedAt: string;
-}
-
-export interface AppState {
-  users: User[];
-  invites: Invite[];
-  sessions: Session[];
-  messages: StoredMessage[];
-  audit: AuditEvent[];
-  conversations: Conversation[];
-}
-
-export interface MarketplaceCatalog {
-  name: string;
-  owner?: { name?: string };
-  plugins: MarketplacePluginEntry[];
-}
-
-export interface MarketplacePluginEntry {
-  name: string;
-  description?: string;
-  version?: string;
-  source: string | MarketplaceSourceObject;
-  category?: string;
-  tags?: string[];
-}
-
-export interface MarketplaceSourceObject {
-  source: "github" | "url" | "git-subdir" | "npm";
-  repo?: string;
-  url?: string;
-  path?: string;
-  ref?: string;
-  sha?: string;
-  package?: string;
-  version?: string;
-}
-
-export interface AvatarCommandManifest {
-  commands?: AvatarCommand[];
-}
-
-export interface AvatarCommand {
-  name: string;
-  description: string;
-  mode: ChatMode | "both";
-  readOnly: boolean;
-  projectScoped?: boolean;
-  match?: string[];
-  command: string;
-  args?: string[];
-  timeoutMs?: number;
-}
-
-export interface DiscoveredPlugin {
-  name: string;
-  description?: string;
-  version?: string;
-  rootPath: string;
-  source: MarketplacePluginEntry["source"];
-  commands: AvatarCommand[];
-  tags: string[];
-}
-
-export interface SkillTable {
-  columns: string[];
-  rows: Record<string, string | number | boolean | null>[];
+  lastSeenAt: string | null;
 }
 
 export interface AgentResponse {
-  kind: "text" | "table";
-  title?: string;
+  kind: "text";
+  runtime: "local" | "claude";
   summary: string;
-  text?: string;
-  table?: SkillTable;
-  runtime: "local" | "claude" | "blocked";
-  pluginName?: string;
-  skillName?: string;
+  text: string;
   raw?: unknown;
+}
+
+export interface AgentAvatar {
+  id: string;
+  displayName: string;
+  persona: string;
 }
 
 export interface AgentRequest {
   message: string;
-  mode: ChatMode;
-  user: User;
+  avatar: AgentAvatar;
+}
+
+export interface PluginRoot {
+  type: "local";
+  path: string;
 }

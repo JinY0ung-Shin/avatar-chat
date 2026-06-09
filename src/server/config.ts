@@ -6,43 +6,37 @@ function env(name: string, fallback = ""): string {
 }
 
 function parseRuntime(value: string): AgentRuntime {
-  if (value === "claude" || value === "local" || value === "auto") {
-    return value;
-  }
-  return "auto";
+  return value === "local" ? "local" : "claude";
 }
 
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const isProduction = process.env.NODE_ENV === "production";
-  const dataDir = env("APP_DATA_DIR", path.join(process.cwd(), "data"));
-  const ownerSetupCode = env(
-    "OWNER_SETUP_CODE",
-    isProduction ? "" : "owner-local-setup",
-  );
+  const dataDir = overrides.dataDir ?? env("APP_DATA_DIR", path.join(process.cwd(), "data"));
 
-  if (!ownerSetupCode && isProduction) {
-    throw new Error("OWNER_SETUP_CODE is required in production.");
+  const sessionSecret =
+    overrides.sessionSecret ?? env("SESSION_SECRET", isProduction ? "" : "dev-session-secret");
+  if (!sessionSecret && isProduction) {
+    throw new Error("SESSION_SECRET is required in production.");
   }
+
+  const readOnlyTools = env("READONLY_TOOLS", "Read,Glob,Grep")
+    .split(",")
+    .map((tool) => tool.trim())
+    .filter(Boolean);
 
   return {
     port: Number(env("PORT", "48787")),
     dataDir,
-    sessionSecret: env("SESSION_SECRET", isProduction ? "" : "dev-session-secret"),
-    ownerSetupCode,
-    defaultProjectScope: env("DEFAULT_PROJECT_SCOPE", "default-project"),
-    marketplaceSource: env(
-      "MARKETPLACE_SOURCE",
-      path.join(process.cwd(), "sample-marketplace"),
-    ),
-    marketplaceRef: env("MARKETPLACE_REF") || undefined,
-    githubToken: env("GITHUB_TOKEN") || undefined,
+    dbPath: path.join(dataDir, "avatar-chat.db"),
+    sessionSecret,
     agentRuntime: parseRuntime(env("AGENT_RUNTIME", "claude")),
     anthropicApiKey: env("ANTHROPIC_API_KEY") || undefined,
-    colleagueAllowedTools: env("COLLEAGUE_ALLOWED_TOOLS", "Read,Glob,Grep")
-      .split(",")
-      .map((tool) => tool.trim())
-      .filter(Boolean),
-    ownerPermissionMode: env("OWNER_PERMISSION_MODE", "default"),
+    readOnlyTools,
+    githubToken: env("GITHUB_TOKEN") || undefined,
     ...overrides,
+    // dbPath derives from dataDir; recompute if dataDir overridden but dbPath not.
+    ...(overrides.dataDir && !overrides.dbPath
+      ? { dbPath: path.join(overrides.dataDir, "avatar-chat.db") }
+      : {}),
   };
 }

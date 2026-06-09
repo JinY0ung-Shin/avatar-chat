@@ -1,5 +1,4 @@
-import type { AppConfig, AgentRequest, AgentResponse } from "../types.js";
-import type { MarketplaceRegistry } from "../marketplace.js";
+import type { AppConfig, AgentRequest, AgentResponse, PluginRoot } from "../types.js";
 import type { AgentEvents } from "./events.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -38,26 +37,25 @@ function asString(value: unknown): string {
 }
 
 /**
- * Parse a single SDK `stream_event` message and fire the matching streaming
- * callbacks. Returns the text delta (if any) so callers can also accumulate it
- * for the authoritative final text when no result/assistant text arrives.
+ * Parse a single SDK `stream_event` message and fire matching streaming
+ * callbacks. Returns the text delta (if any) so callers can accumulate it.
  */
 function handleStreamEvent(message: Record<string, unknown>, events: AgentEvents): string {
   const event = isRecord(message.event) ? message.event : undefined;
   if (!event) {
     return "";
   }
-
-  // Incremental assistant text: content_block_delta -> text_delta.
-  if (event.type === "content_block_delta" && isRecord(event.delta) && event.delta.type === "text_delta") {
+  if (
+    event.type === "content_block_delta" &&
+    isRecord(event.delta) &&
+    event.delta.type === "text_delta"
+  ) {
     const text = asString(event.delta.text);
     if (text) {
       events.onDelta?.(text);
     }
     return text;
   }
-
-  // Tool/skill invocation start: content_block_start -> tool_use.
   if (
     event.type === "content_block_start" &&
     isRecord(event.content_block) &&
@@ -69,19 +67,14 @@ function handleStreamEvent(message: Record<string, unknown>, events: AgentEvents
       events.onStatus?.(`도구 실행 중: ${name}`);
     }
   }
-
   return "";
 }
 
-/**
- * Parse a single SDK `system` message and fire status/plugin callbacks.
- */
 function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents): void {
   const subtype = asString(message.subtype);
   if (subtype === "init") {
     const model = asString(message.model);
     events.onStatus?.(model ? `Claude 준비 완료 (${model})` : "Claude 준비 완료");
-    // The init payload may enumerate loaded plugins under a few possible keys.
     const pluginList =
       (Array.isArray(message.plugins) && message.plugins) ||
       (Array.isArray(message.loadedPlugins) && message.loadedPlugins) ||
@@ -107,11 +100,7 @@ function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents
         ? status
         : "started";
     events.onPlugin?.({ status: normalized, name });
-    if (name) {
-      events.onStatus?.(`플러그인 불러오는 중… (${name})`);
-    } else {
-      events.onStatus?.("플러그인 불러오는 중…");
-    }
+    events.onStatus?.(name ? `플러그인 불러오는 중… (${name})` : "플러그인 불러오는 중…");
     return;
   }
   if (subtype === "status") {
@@ -127,73 +116,45 @@ function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents
 }
 
 function buildPrompt(request: AgentRequest): string {
-  const common = [
-    `사용자: ${request.user.name}`,
-    `프로젝트 범위: ${request.user.projectScope}`,
-    `모드: ${request.mode}`,
-    "marketplace plugin/skill을 사용해서 요청을 처리하고, 어떤 skill을 사용했는지 짧게 밝혀라.",
+  const lines = [
+    `당신은 "${request.avatar.displayName}" 아바타로서 사용자와 대화합니다.`,
   ];
-  if (request.mode === "colleague") {
-    common.push(
-      "동료 모드는 읽기 전용이다. 재시작, 재배포, 삭제, 생성, 권한 변경, 외부 전송 등 변경 작업은 수행하지 말고 거절하라.",
-      "다른 프로젝트 정보는 노출하지 말고, 가능하면 상태표 형태로 답하라.",
-    );
-  } else {
-    common.push("소유자 모드다. marketplace skill의 자체 정책과 지침을 따른다.");
+  if (request.avatar.persona && request.avatar.persona.trim()) {
+    lines.push(`페르소나/지침:\n${request.avatar.persona.trim()}`);
   }
-  return `${common.join("\n")}\n\n요청:\n${request.message}`;
+  lines.push(
+    "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep)만 사용하세요.",
+  );
+  return `${lines.join("\n\n")}\n\n사용자 메시지:\n${request.message}`;
 }
 
+/**
+ * Run the Claude Agent SDK READ-ONLY against the avatar's plugin roots.
+ * Streaming is opt-in via the events sink (includePartialMessages).
+ */
 export async function runClaudeAgent(
   request: AgentRequest,
-  registry: MarketplaceRegistry,
+  pluginRoots: PluginRoot[],
   config: AppConfig,
   events?: AgentEvents,
   abortController?: AbortController,
 ): Promise<AgentResponse> {
-  // ANTHROPIC_API_KEY is optional: when it is absent the Claude Agent SDK falls
-  // back to the local Claude Code authentication (subscription login).
   const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as {
     query: (input: unknown) => AsyncIterable<unknown>;
   };
-  // Install every plugin found in the configured marketplace. Colleague-mode
-  // safety is enforced below via permissionMode/allowed/disallowed tools and the
-  // mutating-request block in runAgent, not by hiding plugins.
-  const pluginRoots = registry.plugins.map((plugin) => ({
-    type: "local",
-    path: plugin.rootPath,
-  }));
 
-  // Streaming is opt-in: only request partial messages from the SDK when the
-  // caller passes an events sink. With no events this path is byte-for-byte
-  // equivalent to the original non-streaming behavior, so POST /api/chat is
-  // unchanged.
   const streaming = Boolean(events);
 
-  const baseOptions =
-    request.mode === "colleague"
-      ? {
-          plugins: pluginRoots,
-          permissionMode: "dontAsk",
-          allowedTools: config.colleagueAllowedTools,
-          disallowedTools: ["Write", "Edit"],
-          maxTurns: 4,
-        }
-      : {
-          plugins: pluginRoots,
-          permissionMode: config.ownerPermissionMode,
-          maxTurns: 8,
-        };
-
-  // Build options as a loose record so we can layer streaming + cancellation on
-  // top of the mode-specific base without fighting the union type.
-  const options: Record<string, unknown> = { ...baseOptions };
+  const options: Record<string, unknown> = {
+    plugins: pluginRoots,
+    permissionMode: "dontAsk",
+    allowedTools: config.readOnlyTools,
+    disallowedTools: ["Write", "Edit"],
+    maxTurns: 6,
+  };
   if (streaming) {
     options.includePartialMessages = true;
   }
-  // When provided, the abort controller lets the caller (SSE handler) cancel the
-  // SDK run on client Stop/disconnect so tools stop executing and tokens stop
-  // generating server-side.
   if (abortController) {
     options.abortController = abortController;
   }
@@ -206,25 +167,17 @@ export async function runClaudeAgent(
   const deltaChunks: string[] = [];
   let resultText = "";
 
-  for await (const message of sdk.query({
-    prompt: buildPrompt(request),
-    options,
-  })) {
+  for await (const message of sdk.query({ prompt: buildPrompt(request), options })) {
     if (events && isRecord(message)) {
       if (message.type === "stream_event") {
         const delta = handleStreamEvent(message, events);
         if (delta) {
           deltaChunks.push(delta);
         }
-        // stream_event carries the same text as the assistant message that
-        // follows; the assistant message is handled below only for the
-        // non-streaming text accumulation, and we skip pushing it as deltas to
-        // avoid duplicating the streamed output.
         continue;
       }
       if (message.type === "system") {
         handleSystemEvent(message, events);
-        // fall through so non-text system messages don't affect text capture
       }
       if (message.type === "tool_progress") {
         const toolName = asString(message.tool_name) || asString(message.toolName);
