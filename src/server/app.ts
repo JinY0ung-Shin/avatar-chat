@@ -49,6 +49,10 @@ export function createServices(configOverrides: Partial<AppConfig> = {}): AppSer
 export function createApp(services = createServices()) {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
+  app.use(
+    "/fonts/noto-sans-kr",
+    express.static(path.join(process.cwd(), "node_modules", "@fontsource-variable", "noto-sans-kr")),
+  );
   app.use(express.static(path.join(process.cwd(), "public")));
 
   app.get("/api/bootstrap", async (_req, res) => {

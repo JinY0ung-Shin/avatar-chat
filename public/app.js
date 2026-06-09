@@ -38,8 +38,9 @@ function renderLogin() {
   app.innerHTML = `
     <section class="login-view">
       <div class="login-panel">
+        <div class="login-mark">A</div>
         <h1>Avatar Chat</h1>
-        <p>초대 코드로 접속해서 사내 marketplace skill에게 업무 질문을 보냅니다.</p>
+        <p>사내 프로젝트 팀을 위한 초대 기반 업무 채팅입니다.</p>
         ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ""}
         <form class="form-stack" id="login-form">
           <label class="field">
@@ -48,11 +49,11 @@ function renderLogin() {
           </label>
           <label class="field">
             <span>초대 코드</span>
-            <input name="code" autocomplete="one-time-code" placeholder="owner-local-setup" required />
+            <input name="code" autocomplete="one-time-code" placeholder="초대 코드 입력" required />
           </label>
           <button class="primary" type="submit">접속</button>
         </form>
-        <p class="muted">로컬 개발 기본 owner 코드는 <code>owner-local-setup</code>입니다. 배포에서는 <code>OWNER_SETUP_CODE</code>를 바꾸세요.</p>
+        <div class="hint">초대 코드는 앱 소유자가 발급합니다. 초기 소유자 설정 코드는 배포 환경 변수에서 관리합니다.</div>
       </div>
     </section>
   `;
@@ -96,8 +97,11 @@ function renderSkills() {
   );
   return `
     <section class="section">
-      <h2>사용 가능한 Skills</h2>
-      <ul class="skill-list">${items.join("") || `<li class="muted">현재 모드에서 보이는 skill이 없습니다.</li>`}</ul>
+      <div class="section-header">
+        <h2>사용 가능한 Skills</h2>
+        <span class="tag">${items.length}</span>
+      </div>
+      <ul class="skill-list compact">${items.join("") || `<li class="muted">현재 모드에서 보이는 skill이 없습니다.</li>`}</ul>
     </section>
   `;
 }
@@ -190,6 +194,42 @@ function renderResponse(response) {
 }
 
 function renderMessages() {
+  if (!state.messages.length) {
+    const prompts =
+      state.mode === "owner"
+        ? [
+            ["업무 요약", "오늘 업무 지시를 요약해서 보고해줘"],
+            ["상태 확인", "지금 서비스들 정상 작동하고 있는지 확인해줘"],
+            ["VM 정리", "우리 과제에서 사용 중인 VM 정보 정리해줘"],
+            ["보고 초안", "최근 감사 로그 기준으로 진행 상황 정리해줘"],
+          ]
+        : [
+            ["서비스 상태", "지금 서비스들 정상 작동하고 있는지 확인해줘"],
+            ["VM 인벤토리", "우리 과제에서 사용 중인 VM 정보 정리해줘"],
+            ["읽기 전용 확인", "현재 확인 가능한 운영 상태만 표로 보여줘"],
+            ["최근 결과", "최근 조회된 상태를 요약해줘"],
+          ];
+    return `
+      <div class="empty-state">
+        <div>
+          <h3>${state.mode === "owner" ? "업무 지시를 시작하세요" : "운영 상태를 바로 확인하세요"}</h3>
+          <p>${state.mode === "owner" ? "소유자 모드는 marketplace skill 정책에 따라 작업을 실행하고 결과를 보고합니다." : "동료 모드는 초대된 프로젝트 범위 안에서 읽기 전용 skill만 실행합니다."}</p>
+        </div>
+        <div class="prompt-grid">
+          ${prompts
+            .map(
+              ([label, prompt]) => `
+                <button class="prompt-chip" type="button" data-prompt="${escapeHtml(prompt)}">
+                  <strong>${escapeHtml(label)}</strong>
+                  <span>${escapeHtml(prompt)}</span>
+                </button>
+              `,
+            )
+            .join("")}
+        </div>
+      </div>
+    `;
+  }
   const messages = state.messages.map((message) => {
     const blocked = message.response?.runtime === "blocked" ? " blocked" : "";
     return `
@@ -237,6 +277,10 @@ function renderWorkspace() {
           <div class="panel-title">
             <h2>${state.mode === "owner" ? "업무 지시 모드" : "동료 조회 모드"}</h2>
             <p class="muted">${state.mode === "owner" ? "소유자 지시를 marketplace skill로 처리합니다." : "읽기 전용 상태 확인과 과제 리소스 조회만 처리합니다."}</p>
+            <div class="status-line">
+              <span class="mode-badge">${escapeHtml(state.skills?.marketplace?.name || "marketplace")}</span>
+              <span class="mode-badge">${state.mode === "owner" ? "owner tools" : "read-only"}</span>
+            </div>
           </div>
           <div class="segmented" role="tablist">
             <button data-mode="colleague" class="${state.mode === "colleague" ? "active" : ""}">동료 조회</button>
@@ -300,6 +344,14 @@ function renderWorkspace() {
       renderWorkspace();
       document.querySelector("#messages").scrollTop = document.querySelector("#messages").scrollHeight;
     }
+  });
+
+  document.querySelectorAll("[data-prompt]").forEach((button) => {
+    button.addEventListener("click", () => {
+      const textarea = document.querySelector('textarea[name="message"]');
+      textarea.value = button.dataset.prompt;
+      textarea.focus();
+    });
   });
 
   const inviteForm = document.querySelector("#invite-form");

@@ -1,3 +1,5 @@
+@import url("/fonts/noto-sans-kr/index.css");
+
 :root {
   color-scheme: light;
   --bg: #f6f7f9;
@@ -25,8 +27,9 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family:
-    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+    "Noto Sans KR Variable", "Noto Sans KR", "Noto Sans CJK KR",
+    "Apple SD Gothic Neo", "Malgun Gothic", "Nanum Gothic", Inter, ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
 }
 
@@ -67,6 +70,18 @@ button:disabled {
   border-radius: 8px;
   box-shadow: var(--shadow);
   padding: 24px;
+}
+
+.login-mark {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: #e6f4f1;
+  color: var(--accent);
+  font-weight: 800;
+  margin-bottom: 14px;
 }
 
 .login-panel h1,
@@ -134,6 +149,16 @@ button:disabled {
   padding: 10px 12px;
 }
 
+.hint {
+  border: 1px solid #c7dde9;
+  background: #f2f8fb;
+  color: #315467;
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
@@ -146,7 +171,9 @@ button:disabled {
   padding: 18px;
   display: grid;
   align-content: start;
-  gap: 18px;
+  gap: 16px;
+  max-height: 100vh;
+  overflow: auto;
 }
 
 .brand {
@@ -184,6 +211,18 @@ button:disabled {
   font-size: 14px;
 }
 
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.section-header h2 {
+  margin: 0;
+}
+
 .skill-list,
 .audit-list,
 .message-list {
@@ -197,6 +236,10 @@ button:disabled {
   border-radius: 8px;
   padding: 10px;
   margin-bottom: 8px;
+}
+
+.skill-list.compact .skill-item {
+  padding: 9px 10px;
 }
 
 .skill-item strong {
@@ -240,6 +283,7 @@ button:disabled {
   min-width: 0;
   display: grid;
   grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
 }
 
 .topbar {
@@ -287,12 +331,58 @@ button:disabled {
 .messages {
   overflow: auto;
   padding: 18px;
+  display: grid;
+  align-content: start;
 }
 
 .message-list {
   display: grid;
   gap: 12px;
   max-width: 980px;
+}
+
+.empty-state {
+  max-width: 760px;
+  margin: 10vh auto 0;
+  display: grid;
+  gap: 14px;
+}
+
+.empty-state h3 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.empty-state p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.prompt-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.prompt-chip {
+  text-align: left;
+  border-radius: 8px;
+  padding: 12px;
+  background: var(--panel);
+  min-height: 72px;
+}
+
+.prompt-chip strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.prompt-chip span {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
 }
 
 .message {
@@ -383,6 +473,21 @@ tr:last-child td {
   resize: vertical;
 }
 
+.chat-input textarea:focus,
+.field input:focus,
+.field select:focus {
+  outline: 2px solid rgba(15, 118, 110, 0.18);
+  border-color: var(--accent);
+}
+
+.status-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
 .invite-result {
   margin-top: 10px;
   border: 1px dashed var(--accent);
@@ -410,5 +515,9 @@ tr:last-child td {
 
   .segmented {
     width: 100%;
+  }
+
+  .prompt-grid {
+    grid-template-columns: 1fr;
   }
 }
