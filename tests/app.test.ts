@@ -47,6 +47,17 @@ function parseSse(raw: string): { event: string; data: unknown }[] {
 }
 
 describe("avatar-chat platform", () => {
+  it("reports needsSetup until the first account exists", async () => {
+    const app = testApp();
+    const fresh = await request(app).get("/api/bootstrap").expect(200);
+    expect(fresh.body.needsSetup).toBe(true);
+
+    await signup(request.agent(app), "alice").expect(201);
+
+    const after = await request(app).get("/api/bootstrap").expect(200);
+    expect(after.body.needsSetup).toBe(false);
+  });
+
   it("makes the first signup an admin and subsequent users members only", async () => {
     const app = testApp();
     const first = request.agent(app);

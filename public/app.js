@@ -236,6 +236,7 @@ function renderAuth(mode = "login") {
   document.title = "Avatar Chat";
 
   const isLogin = mode === "login";
+  const isSetup = mode === "setup";
   const form = el("form", {
     class: "form-stack",
     onsubmit: async (event) => {
@@ -288,29 +289,36 @@ function renderAuth(mode = "login") {
       }),
     ]),
   );
-  fields.push(el("button", { class: "primary", type: "submit", text: isLogin ? "로그인" : "가입하기" }));
+  fields.push(el("button", { class: "primary", type: "submit", text: isLogin ? "로그인" : isSetup ? "관리자 계정 만들기" : "가입하기" }));
   form.append(...fields);
 
   app.replaceChildren(
     el("section", { class: "auth-view" }, [
       el("div", { class: "auth-panel" }, [
         el("div", { class: "login-mark", text: "A" }),
-        el("h1", { text: isLogin ? "다시 오신 걸 환영해요" : "Avatar Chat 시작하기" }),
-        el("p", { text: "나만의 아바타를 만들고, 다른 사람의 아바타와 대화하세요." }),
+        isSetup ? el("div", { class: "setup-badge", text: "첫 실행 · 관리자 설정" }) : null,
+        el("h1", { text: isSetup ? "관리자 계정 생성" : isLogin ? "다시 오신 걸 환영해요" : "Avatar Chat 시작하기" }),
+        el("p", {
+          text: isSetup
+            ? "서비스를 처음 시작합니다. 여기서 만드는 첫 계정이 관리자(admin)가 됩니다."
+            : "나만의 아바타를 만들고, 다른 사람의 아바타와 대화하세요.",
+        }),
         state.authError ? el("div", { class: "error", text: state.authError }) : null,
         form,
-        el("div", { class: "auth-switch" }, [
-          el("span", { text: isLogin ? "계정이 없으신가요? " : "이미 계정이 있으신가요? " }),
-          el("button", {
-            class: "linkish",
-            type: "button",
-            text: isLogin ? "회원가입" : "로그인",
-            onclick: () => {
-              state.authError = "";
-              renderAuth(isLogin ? "signup" : "login");
-            },
-          }),
-        ]),
+        isSetup
+          ? null
+          : el("div", { class: "auth-switch" }, [
+              el("span", { text: isLogin ? "계정이 없으신가요? " : "이미 계정이 있으신가요? " }),
+              el("button", {
+                class: "linkish",
+                type: "button",
+                text: isLogin ? "회원가입" : "로그인",
+                onclick: () => {
+                  state.authError = "";
+                  renderAuth(isLogin ? "signup" : "login");
+                },
+              }),
+            ]),
       ]),
     ]),
   );
@@ -1326,7 +1334,14 @@ async function boot() {
   }
   state.user = me?.user || null;
   if (!state.user) {
-    renderAuth("login");
+    // On a fresh install (no accounts yet) show the admin-setup screen.
+    let needsSetup = false;
+    try {
+      needsSetup = Boolean((await api("/api/bootstrap")).needsSetup);
+    } catch {
+      needsSetup = false;
+    }
+    renderAuth(needsSetup ? "setup" : "login");
     return;
   }
   await enterApp();

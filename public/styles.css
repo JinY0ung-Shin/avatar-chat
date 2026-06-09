@@ -2045,6 +2045,17 @@ tbody tr:hover td {
   font-size: var(--t-xs);
   margin-top: var(--s-1);
 }
+.setup-badge {
+  display: inline-block;
+  margin-bottom: var(--s-3);
+  padding: 4px 10px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border: 1px solid var(--accent-soft-strong);
+  font-size: var(--t-xs);
+  font-weight: 700;
+}
 
 /* Rail nav + me row */
 .rail-nav {

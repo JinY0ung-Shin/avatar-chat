@@ -215,6 +215,11 @@ export class Store {
     return row ? this.toUser(row) : null;
   }
 
+  /** True once at least one account exists. False only on a fresh install. */
+  hasAnyUser(): boolean {
+    return (this.db.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number }).c > 0;
+  }
+
   verifyLogin(username: string, password: string): User | null {
     const row = this.userRowByUsername(username.trim());
     if (!row) {
