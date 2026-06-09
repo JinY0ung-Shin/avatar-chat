@@ -15,6 +15,8 @@ import type {
   AvatarDetail,
   AvatarSummary,
   ConversationSummary,
+  KnowledgeEntry,
+  KnowledgeRequest,
   Plugin,
   StoredMessage,
   User,
@@ -37,6 +39,27 @@ interface UserRow {
   published: number;
   created_at: string;
   last_seen_at: string | null;
+}
+
+interface KnowledgeRequestRow {
+  id: string;
+  avatar_user_id: string;
+  asker_user_id: string | null;
+  asker_name: string | null;
+  question: string;
+  status: string;
+  answer: string | null;
+  created_at: string;
+  answered_at: string | null;
+}
+
+interface KnowledgeEntryRow {
+  id: string;
+  avatar_user_id: string;
+  topic: string | null;
+  content: string;
+  source_request_id: string | null;
+  created_at: string;
 }
 
 export class Store {
@@ -115,10 +138,31 @@ export class Store {
         detail TEXT,
         created_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS knowledge_requests (
+        id TEXT PRIMARY KEY,
+        avatar_user_id TEXT NOT NULL,
+        asker_user_id TEXT,
+        asker_name TEXT,
+        question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        answer TEXT,
+        created_at TEXT,
+        answered_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS knowledge_entries (
+        id TEXT PRIMARY KEY,
+        avatar_user_id TEXT NOT NULL,
+        topic TEXT,
+        content TEXT NOT NULL,
+        source_request_id TEXT,
+        created_at TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
       CREATE INDEX IF NOT EXISTS idx_avatar_plugins_user ON avatar_plugins(user_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_requests_avatar ON knowledge_requests(avatar_user_id, status);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_entries_avatar ON knowledge_entries(avatar_user_id);
     `);
   }
 
@@ -406,6 +450,184 @@ export class Store {
         Store["toPlugin"]
       >[0],
     );
+  }
+
+  // ---- Knowledge: requests (gaps) & entries (taught facts) -------------
+
+  private toKnowledgeRequest(row: KnowledgeRequestRow): KnowledgeRequest {
+    return {
+      id: row.id,
+      avatarUserId: row.avatar_user_id,
+      askerUserId: row.asker_user_id,
+      askerName: row.asker_name,
+      question: row.question,
+      status: row.status as KnowledgeRequest["status"],
+      answer: row.answer,
+      createdAt: row.created_at,
+      answeredAt: row.answered_at,
+    };
+  }
+
+  private toKnowledgeEntry(row: KnowledgeEntryRow): KnowledgeEntry {
+    return {
+      id: row.id,
+      avatarUserId: row.avatar_user_id,
+      topic: row.topic,
+      content: row.content,
+      sourceRequestId: row.source_request_id,
+      createdAt: row.created_at,
+    };
+  }
+
+  /**
+   * Queue a knowledge gap for the avatar's owner. If an identical question is
+   * already open we return that one instead of duplicating it.
+   */
+  addKnowledgeRequest(
+    avatarUserId: string,
+    input: { question: string; askerUserId?: string | null; askerName?: string | null },
+  ): KnowledgeRequest {
+    const question = input.question.trim();
+    const existing = this.db
+      .prepare(
+        "SELECT * FROM knowledge_requests WHERE avatar_user_id = ? AND status = 'open' AND question = ?",
+      )
+      .get(avatarUserId, question) as KnowledgeRequestRow | undefined;
+    if (existing) {
+      return this.toKnowledgeRequest(existing);
+    }
+    const id = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO knowledge_requests (id, avatar_user_id, asker_user_id, asker_name, question, status, created_at)
+         VALUES (?, ?, ?, ?, ?, 'open', ?)`,
+      )
+      .run(id, avatarUserId, input.askerUserId ?? null, input.askerName ?? null, question, now());
+    return this.toKnowledgeRequest(
+      this.db.prepare("SELECT * FROM knowledge_requests WHERE id = ?").get(id) as KnowledgeRequestRow,
+    );
+  }
+
+  listKnowledgeRequests(avatarUserId: string, status?: KnowledgeRequest["status"]): KnowledgeRequest[] {
+    const rows = (
+      status
+        ? this.db
+            .prepare(
+              "SELECT * FROM knowledge_requests WHERE avatar_user_id = ? AND status = ? ORDER BY created_at DESC",
+            )
+            .all(avatarUserId, status)
+        : this.db
+            .prepare("SELECT * FROM knowledge_requests WHERE avatar_user_id = ? ORDER BY created_at DESC")
+            .all(avatarUserId)
+    ) as KnowledgeRequestRow[];
+    return rows.map((r) => this.toKnowledgeRequest(r));
+  }
+
+  countOpenKnowledgeRequests(avatarUserId: string): number {
+    return (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS c FROM knowledge_requests WHERE avatar_user_id = ? AND status = 'open'",
+        )
+        .get(avatarUserId) as { c: number }
+    ).c;
+  }
+
+  /**
+   * Resolve a request with the owner's answer and turn it into a searchable
+   * knowledge entry, atomically. Returns null if the request isn't the avatar's.
+   */
+  answerKnowledgeRequest(avatarUserId: string, id: string, answer: string): KnowledgeRequest | null {
+    const tx = this.db.transaction((): KnowledgeRequest | null => {
+      const row = this.db
+        .prepare("SELECT * FROM knowledge_requests WHERE id = ? AND avatar_user_id = ?")
+        .get(id, avatarUserId) as KnowledgeRequestRow | undefined;
+      if (!row) {
+        return null;
+      }
+      const answeredAt = now();
+      this.db
+        .prepare(
+          "UPDATE knowledge_requests SET status = 'answered', answer = ?, answered_at = ? WHERE id = ?",
+        )
+        .run(answer.trim(), answeredAt, id);
+      this.addKnowledgeEntry(avatarUserId, {
+        topic: row.question,
+        content: answer.trim(),
+        sourceRequestId: id,
+      });
+      return this.toKnowledgeRequest(
+        this.db
+          .prepare("SELECT * FROM knowledge_requests WHERE id = ?")
+          .get(id) as KnowledgeRequestRow,
+      );
+    });
+    return tx();
+  }
+
+  dismissKnowledgeRequest(avatarUserId: string, id: string): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE knowledge_requests SET status = 'dismissed' WHERE id = ? AND avatar_user_id = ? AND status = 'open'",
+      )
+      .run(id, avatarUserId);
+    return result.changes > 0;
+  }
+
+  addKnowledgeEntry(
+    avatarUserId: string,
+    input: { topic?: string | null; content: string; sourceRequestId?: string | null },
+  ): KnowledgeEntry {
+    const id = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO knowledge_entries (id, avatar_user_id, topic, content, source_request_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, avatarUserId, input.topic?.trim() || null, input.content.trim(), input.sourceRequestId ?? null, now());
+    return this.toKnowledgeEntry(
+      this.db.prepare("SELECT * FROM knowledge_entries WHERE id = ?").get(id) as KnowledgeEntryRow,
+    );
+  }
+
+  listKnowledgeEntries(avatarUserId: string): KnowledgeEntry[] {
+    const rows = this.db
+      .prepare("SELECT * FROM knowledge_entries WHERE avatar_user_id = ? ORDER BY created_at DESC")
+      .all(avatarUserId) as KnowledgeEntryRow[];
+    return rows.map((r) => this.toKnowledgeEntry(r));
+  }
+
+  deleteKnowledgeEntry(avatarUserId: string, id: string): boolean {
+    const result = this.db
+      .prepare("DELETE FROM knowledge_entries WHERE id = ? AND avatar_user_id = ?")
+      .run(id, avatarUserId);
+    return result.changes > 0;
+  }
+
+  /**
+   * Find taught facts relevant to a query (case-insensitive substring over
+   * topic + content). An empty query returns the most recent entries.
+   */
+  searchKnowledge(avatarUserId: string, query: string, limit = 10): KnowledgeEntry[] {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      const rows = this.db
+        .prepare(
+          "SELECT * FROM knowledge_entries WHERE avatar_user_id = ? ORDER BY created_at DESC LIMIT ?",
+        )
+        .all(avatarUserId, limit) as KnowledgeEntryRow[];
+      return rows.map((r) => this.toKnowledgeEntry(r));
+    }
+    const like = `%${trimmed.replace(/[%_]/g, (c) => `\\${c}`)}%`;
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM knowledge_entries
+         WHERE avatar_user_id = ?
+           AND (content LIKE ? ESCAPE '\\' OR topic LIKE ? ESCAPE '\\')
+         ORDER BY created_at DESC LIMIT ?`,
+      )
+      .all(avatarUserId, like, like, limit) as KnowledgeEntryRow[];
+    return rows.map((r) => this.toKnowledgeEntry(r));
   }
 
   // ---- Avatars (discovery) ---------------------------------------------

@@ -2426,6 +2426,66 @@ tbody tr:hover td {
   align-self: stretch;
 }
 
+/* Knowledge / info-request panel */
+.knowledge-sub {
+  margin: var(--s-4) 0 var(--s-2);
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+.knowledge-rows {
+  display: grid;
+  gap: var(--s-2);
+}
+.knowledge-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s-3);
+  background: var(--bg-elevated);
+}
+.kr-q {
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+.kr-meta {
+  font-size: var(--t-xs);
+}
+.knowledge-answer {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: 9px 11px;
+  resize: vertical;
+  font: inherit;
+}
+.knowledge-answer:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.kr-actions {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+}
+.knowledge-row .ke-main {
+  flex: 1;
+  min-width: 0;
+}
+.knowledge-row.ke-content,
+.ke-content {
+  font-size: var(--t-sm);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* knowledge entries: title + content on the left, delete on the right */
+.knowledge-rows .knowledge-row:has(.ke-main) {
+  flex-direction: row;
+  align-items: flex-start;
+}
+
 /* Admin */
 .admin-list {
   max-width: 820px;

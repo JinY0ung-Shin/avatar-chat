@@ -9,6 +9,8 @@ export interface AppConfig {
   anthropicApiKey?: string;
   readOnlyTools: string[];
   githubToken?: string;
+  /** Repo-bundled plugin dir loaded for EVERY avatar (default skills). */
+  defaultPluginsDir: string;
 }
 
 /** Public user shape returned to clients. NEVER includes password_hash. */
@@ -106,6 +108,37 @@ export interface AgentRequest {
   avatar: AgentAvatar;
   /** Per-avatar working directory the SDK runs in (filesystem isolation). */
   cwd?: string;
+  /** The user currently chatting (may differ from the avatar's owner). */
+  viewerUserId?: string;
+  viewerName?: string;
+  /** True when the viewer IS the avatar's owner (viewer.id === avatar.id). */
+  viewerIsOwner?: boolean;
+}
+
+/**
+ * A gap in the avatar's knowledge: something a colleague asked that the avatar
+ * didn't know, queued for the owner to answer.
+ */
+export interface KnowledgeRequest {
+  id: string;
+  avatarUserId: string;
+  askerUserId: string | null;
+  askerName: string | null;
+  question: string;
+  status: "open" | "answered" | "dismissed";
+  answer: string | null;
+  createdAt: string;
+  answeredAt: string | null;
+}
+
+/** A fact the owner taught the avatar; searchable when answering colleagues. */
+export interface KnowledgeEntry {
+  id: string;
+  avatarUserId: string;
+  topic: string | null;
+  content: string;
+  sourceRequestId: string | null;
+  createdAt: string;
 }
 
 export interface PluginRoot {

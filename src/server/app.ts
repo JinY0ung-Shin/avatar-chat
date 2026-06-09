@@ -11,7 +11,7 @@ import {
   type AuthenticatedRequest,
 } from "./auth.js";
 import { loadConfig } from "./config.js";
-import { loadAvatarPluginRoots } from "./plugins.js";
+import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "./plugins.js";
 import { Store } from "./store.js";
 import type { AgentResponse, AppConfig } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
@@ -273,6 +273,72 @@ export function createApp(services = createServices()) {
     res.json({ ok: true });
   });
 
+  // ---- Knowledge (owner's gap inbox + taught facts) --------------------
+
+  app.get("/api/me/knowledge/requests", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const status = safeString(req.query.status);
+    const allowed = ["open", "answered", "dismissed"] as const;
+    const filter = (allowed as readonly string[]).includes(status)
+      ? (status as (typeof allowed)[number])
+      : undefined;
+    res.json({ requests: store.listKnowledgeRequests(req.user!.id, filter) });
+  });
+
+  app.post(
+    "/api/me/knowledge/requests/:id/answer",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const answer = safeString(req.body?.answer);
+      if (!answer) {
+        apiError(res, 400, "answer를 입력해 주세요.");
+        return;
+      }
+      const request = store.answerKnowledgeRequest(req.user!.id, req.params.id, answer);
+      if (!request) {
+        apiError(res, 404, "정보 요청을 찾을 수 없습니다.");
+        return;
+      }
+      res.json({ request });
+    },
+  );
+
+  app.delete(
+    "/api/me/knowledge/requests/:id",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const dismissed = store.dismissKnowledgeRequest(req.user!.id, req.params.id);
+      if (!dismissed) {
+        apiError(res, 404, "정보 요청을 찾을 수 없습니다.");
+        return;
+      }
+      res.json({ ok: true });
+    },
+  );
+
+  app.get("/api/me/knowledge/entries", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({ entries: store.listKnowledgeEntries(req.user!.id) });
+  });
+
+  app.post("/api/me/knowledge/entries", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const content = safeString(req.body?.content);
+    if (!content) {
+      apiError(res, 400, "content를 입력해 주세요.");
+      return;
+    }
+    const topic = safeString(req.body?.topic) || undefined;
+    const entry = store.addKnowledgeEntry(req.user!.id, { topic, content });
+    res.json({ entry });
+  });
+
+  app.delete("/api/me/knowledge/entries/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const removed = store.deleteKnowledgeEntry(req.user!.id, req.params.id);
+    if (!removed) {
+      apiError(res, 404, "지식을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ ok: true });
+  });
+
   // ---- Discovery -------------------------------------------------------
 
   app.get("/api/avatars", requireAuth(store), (req: AuthenticatedRequest, res) => {
@@ -350,17 +416,22 @@ export function createApp(services = createServices()) {
       store.dropLastAssistant(req.user!.id, conversationId);
     }
 
-    // Load the avatar's enabled plugin roots (read-only). Tolerate clone fails.
+    // Load plugin roots (read-only). The repo-bundled default plugin (knowledge
+    // backfill etc.) is loaded for every avatar, ahead of its own plugins.
+    // Tolerate clone/resolve fails.
     const pluginWarnings: string[] = [];
     const pluginRoots =
       config.agentRuntime === "local"
         ? []
-        : await loadAvatarPluginRoots(
-            avatar.id,
-            store.listEnabledPlugins(avatar.id),
-            config,
-            (warn) => pluginWarnings.push(warn),
-          );
+        : [
+            ...(await loadDefaultPluginRoots(config, (warn) => pluginWarnings.push(warn))),
+            ...(await loadAvatarPluginRoots(
+              avatar.id,
+              store.listEnabledPlugins(avatar.id),
+              config,
+              (warn) => pluginWarnings.push(warn),
+            )),
+          ];
 
     // Per-avatar workspace: the SDK runs in this directory so the avatar's file
     // reads are scoped here, not to the server tree / other avatars' data.
@@ -403,9 +474,13 @@ export function createApp(services = createServices()) {
           message,
           avatar: { id: avatar.id, displayName: avatar.displayName, persona: avatar.persona },
           cwd: workspaceDir,
+          viewerUserId: req.user!.id,
+          viewerName: req.user!.displayName,
+          viewerIsOwner: req.user!.id === avatar.id,
         },
         pluginRoots,
         config,
+        store,
         {
           onDelta: (text) => {
             if (!closed) sseSend(res, "delta", { text });

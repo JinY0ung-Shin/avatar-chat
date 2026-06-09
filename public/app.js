@@ -25,6 +25,8 @@ const state = {
   conversationId: newId(),
   messages: [],
   plugins: [],
+  knowledgeRequests: [],
+  knowledgeEntries: [],
   adminUsers: [],
   audit: [],
   streaming: false,
@@ -1018,7 +1020,7 @@ async function renderSettings() {
   dom.main.append(header, body);
 
   try {
-    await Promise.all([refreshMe(), loadPlugins()]);
+    await Promise.all([refreshMe(), loadPlugins(), loadKnowledge()]);
   } catch {
     /* ignore */
   }
@@ -1121,6 +1123,7 @@ async function renderSettings() {
     ]),
     el("section", { class: "settings-card" }, [el("h3", { text: "공개 설정" }), publishRow]),
     buildPluginsCard(),
+    buildKnowledgeCard(),
   );
 }
 
@@ -1222,6 +1225,135 @@ function renderPluginRows(list) {
   }
 }
 
+function buildKnowledgeCard() {
+  const card = el("section", { class: "settings-card" });
+  const openCount = state.knowledgeRequests.filter((r) => r.status === "open").length;
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: `지식 · 정보 요청${openCount ? ` (${openCount})` : ""}` }),
+        el("p", { class: "muted", text: "동료가 남긴 정보 요청에 답하면 아바타의 지식이 됩니다. 대화 중에도 보고·저장됩니다." }),
+      ]),
+    ]),
+  );
+
+  const reqList = el("div", { class: "knowledge-rows" });
+  const entryList = el("div", { class: "knowledge-rows" });
+  card.append(el("h4", { class: "knowledge-sub", text: "대기 중인 정보 요청" }), reqList);
+  card.append(el("h4", { class: "knowledge-sub", text: "저장된 지식" }), entryList);
+
+  const refresh = async () => {
+    try {
+      await loadKnowledge();
+    } catch (e) {
+      /* keep current state */
+    }
+    renderKnowledgeRequests(reqList);
+    renderKnowledgeEntries(entryList);
+  };
+  renderKnowledgeRequests(reqList, refresh);
+  renderKnowledgeEntries(entryList, refresh);
+  // wire refresh into the renderers via closure on next render
+  reqList._refresh = refresh;
+  entryList._refresh = refresh;
+
+  const form = el("form", {
+    class: "plugin-add",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api("/api/me/knowledge/entries", {
+          method: "POST",
+          body: JSON.stringify({ topic: fd.get("topic") || undefined, content: fd.get("content") }),
+        });
+        formEl.reset();
+        await refresh();
+      } catch (err) {
+        alert(`추가 실패: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("input", { name: "topic", placeholder: "주제 (선택)", class: "narrow" }),
+    el("input", { name: "content", placeholder: "아바타가 알아야 할 사실", required: "" }),
+    el("button", { class: "primary", type: "submit", text: "지식 추가" }),
+  ]);
+  card.append(form);
+  return card;
+}
+
+function renderKnowledgeRequests(list, refresh) {
+  refresh = refresh || list._refresh;
+  list.replaceChildren();
+  const open = state.knowledgeRequests.filter((r) => r.status === "open");
+  if (!open.length) {
+    list.append(el("div", { class: "empty-note", text: "대기 중인 정보 요청이 없습니다." }));
+    return;
+  }
+  for (const r of open) {
+    const answer = el("textarea", { class: "knowledge-answer", rows: "2", placeholder: "여기에 답을 적으면 지식으로 저장됩니다" });
+    const saveBtn = el("button", { class: "primary", type: "button", text: "답하고 저장", onclick: async () => {
+      const text = answer.value.trim();
+      if (!text) { answer.focus(); return; }
+      saveBtn.disabled = true;
+      try {
+        await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}/answer`, { method: "POST", body: JSON.stringify({ answer: text }) });
+        await refresh?.();
+      } catch (e) {
+        saveBtn.disabled = false;
+        alert(`저장 실패: ${e.message}`);
+      }
+    } });
+    const dismissBtn = el("button", { class: "ghost-sm", type: "button", text: "무시", onclick: async () => {
+      try {
+        await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
+        await refresh?.();
+      } catch (e) {
+        alert(`실패: ${e.message}`);
+      }
+    } });
+    list.append(el("div", { class: "knowledge-row" }, [
+      el("div", { class: "kr-q", text: r.question }),
+      r.askerName ? el("div", { class: "muted kr-meta", text: `질문자: ${r.askerName} · ${timeLabel(r.createdAt)}` }) : el("div", { class: "muted kr-meta", text: timeLabel(r.createdAt) }),
+      answer,
+      el("div", { class: "kr-actions" }, [saveBtn, dismissBtn]),
+    ]));
+  }
+}
+
+function renderKnowledgeEntries(list, refresh) {
+  refresh = refresh || list._refresh;
+  list.replaceChildren();
+  if (!state.knowledgeEntries.length) {
+    list.append(el("div", { class: "empty-note", text: "저장된 지식이 없습니다." }));
+    return;
+  }
+  for (const en of state.knowledgeEntries) {
+    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
+      if (!window.confirm("이 지식을 삭제할까요?")) return;
+      try {
+        await api(`/api/me/knowledge/entries/${encodeURIComponent(en.id)}`, { method: "DELETE" });
+        await refresh?.();
+      } catch (e) {
+        alert(`삭제 실패: ${e.message}`);
+      }
+    } });
+    del.append(icon("trash"));
+    list.append(el("div", { class: "knowledge-row" }, [
+      el("div", { class: "ke-main" }, [
+        en.topic ? el("strong", { text: en.topic }) : null,
+        el("div", { class: "ke-content", text: en.content }),
+      ]),
+      del,
+    ]));
+  }
+}
+
 /* ============================================================ Admin */
 async function renderAdmin() {
   const header = viewHeader("관리자", "사용자와 권한을 관리합니다");
@@ -1297,6 +1429,14 @@ async function loadAvatars() {
 async function loadPlugins() {
   const r = await api("/api/me/plugins");
   state.plugins = r.plugins || [];
+}
+async function loadKnowledge() {
+  const [reqs, entries] = await Promise.all([
+    api("/api/me/knowledge/requests"),
+    api("/api/me/knowledge/entries"),
+  ]);
+  state.knowledgeRequests = reqs.requests || [];
+  state.knowledgeEntries = entries.entries || [];
 }
 async function loadAdminUsers() {
   const r = await api("/api/admin/users");

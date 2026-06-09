@@ -68,6 +68,26 @@ export async function resolvePluginRoots(repoRoot: string, label: string, onWarn
 }
 
 /**
+ * Resolve the repo-bundled default plugin (`config.defaultPluginsDir`) into
+ * plugin roots loaded for EVERY avatar. No clone — it ships with the server.
+ * A missing/invalid dir is tolerated with a warning (chat still works).
+ */
+export async function loadDefaultPluginRoots(
+  config: AppConfig,
+  onWarn?: (message: string) => void,
+): Promise<PluginRoot[]> {
+  const dir = config.defaultPluginsDir;
+  if (!dir || !(await pathExists(dir))) {
+    return [];
+  }
+  const roots: PluginRoot[] = [];
+  for (const root of await resolvePluginRoots(dir, "default-skills", onWarn)) {
+    roots.push({ type: "local", path: root });
+  }
+  return roots;
+}
+
+/**
  * Clone each enabled plugin for an avatar into
  * `${dataDir}/plugins/${userId}/${sanitize(repo)}` and return local plugin
  * roots for the SDK. A repo may be a single plugin or a marketplace of many.

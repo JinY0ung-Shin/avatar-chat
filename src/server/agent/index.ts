@@ -1,4 +1,5 @@
 import type { AppConfig, AgentRequest, AgentResponse, PluginRoot } from "../types.js";
+import type { Store } from "../store.js";
 import { runClaudeAgent } from "./claudeAgent.js";
 import { runLocalAgent } from "./localRunner.js";
 import type { AgentEvents } from "./events.js";
@@ -27,6 +28,7 @@ export async function runAgentStream(
   request: AgentRequest,
   pluginRoots: PluginRoot[],
   config: AppConfig,
+  store: Store,
   events: AgentEvents,
   abortController?: AbortController,
 ): Promise<AgentResponse> {
@@ -36,5 +38,5 @@ export async function runAgentStream(
     streamLocalText(response.text, events);
     return response;
   }
-  return runClaudeAgent(request, pluginRoots, config, events, abortController);
+  return runClaudeAgent(request, pluginRoots, config, store, events, abortController);
 }

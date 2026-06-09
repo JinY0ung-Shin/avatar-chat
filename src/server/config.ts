@@ -33,6 +33,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     anthropicApiKey: env("ANTHROPIC_API_KEY") || undefined,
     readOnlyTools,
     githubToken: env("GITHUB_TOKEN") || undefined,
+    // Repo-bundled default skills, loaded for every avatar. cwd-based to match
+    // dataDir; cwd is the app root under both `tsx` (dev) and `node dist` (prod).
+    defaultPluginsDir: env("DEFAULT_PLUGINS_DIR", path.join(process.cwd(), "default-skills")),
     ...overrides,
     // dbPath derives from dataDir; recompute if dataDir overridden but dbPath not.
     ...(overrides.dataDir && !overrides.dbPath

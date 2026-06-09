@@ -4,7 +4,7 @@ import path from "node:path";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
-import { resolvePluginRoots } from "../src/server/plugins.js";
+import { loadDefaultPluginRoots, resolvePluginRoots } from "../src/server/plugins.js";
 
 let tempDir: string;
 
@@ -419,6 +419,76 @@ describe("avatar-chat platform", () => {
     const warns: string[] = [];
     expect(await resolvePluginRoots(bare, "bare", (m) => warns.push(m))).toEqual([]);
     expect(warns.length).toBe(1);
+  });
+
+  it("backfills knowledge: a colleague's gap becomes an answered entry", async () => {
+    const services = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "olga").expect(201);
+    const ownerId = ownerRes.body.user.id;
+
+    // The agent's request_info tool records gaps via the store; simulate one.
+    services.store.addKnowledgeRequest(ownerId, { question: "다음 출시일은 언제인가요?", askerName: "동료A" });
+
+    const open = await owner.get("/api/me/knowledge/requests?status=open").expect(200);
+    expect(open.body.requests).toHaveLength(1);
+    const reqId = open.body.requests[0].id;
+    expect(open.body.requests[0].askerName).toBe("동료A");
+
+    const answered = await owner
+      .post(`/api/me/knowledge/requests/${reqId}/answer`)
+      .send({ answer: "6월 20일에 출시합니다." })
+      .expect(200);
+    expect(answered.body.request.status).toBe("answered");
+
+    // The answer is now a searchable knowledge entry.
+    const entries = await owner.get("/api/me/knowledge/entries").expect(200);
+    expect(entries.body.entries).toHaveLength(1);
+    expect(entries.body.entries[0].content).toContain("6월 20일");
+    expect(services.store.searchKnowledge(ownerId, "출시").length).toBe(1);
+
+    // The request is no longer open.
+    const stillOpen = await owner.get("/api/me/knowledge/requests?status=open").expect(200);
+    expect(stillOpen.body.requests).toHaveLength(0);
+
+    // Manual entry add + delete.
+    const manual = await owner
+      .post("/api/me/knowledge/entries")
+      .send({ topic: "선호", content: "회의는 오전을 선호합니다." })
+      .expect(200);
+    await owner.delete(`/api/me/knowledge/entries/${manual.body.entry.id}`).expect(200);
+    const afterDelete = await owner.get("/api/me/knowledge/entries").expect(200);
+    expect(afterDelete.body.entries).toHaveLength(1);
+  });
+
+  it("isolates knowledge between avatars and 404s on cross-owner access", async () => {
+    const services = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+    const app = createApp(services);
+    const ann = request.agent(app);
+    const annRes = await signup(ann, "ann").expect(201);
+    const bob = request.agent(app);
+    await signup(bob, "bob").expect(201);
+
+    const req = services.store.addKnowledgeRequest(annRes.body.user.id, { question: "ann만의 질문" });
+
+    expect((await ann.get("/api/me/knowledge/requests").expect(200)).body.requests).toHaveLength(1);
+    expect((await bob.get("/api/me/knowledge/requests").expect(200)).body.requests).toHaveLength(0);
+
+    // Bob cannot answer or dismiss Ann's request.
+    await bob.post(`/api/me/knowledge/requests/${req.id}/answer`).send({ answer: "x" }).expect(404);
+    await bob.delete(`/api/me/knowledge/requests/${req.id}`).expect(404);
+    // Empty answer is rejected.
+    await ann.post(`/api/me/knowledge/requests/${req.id}/answer`).send({ answer: "" }).expect(400);
+    // Ann can dismiss her own.
+    await ann.delete(`/api/me/knowledge/requests/${req.id}`).expect(200);
+  });
+
+  it("loads the repo-bundled default plugin for every avatar", async () => {
+    const { config } = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+    const roots = await loadDefaultPluginRoots(config);
+    expect(roots).toHaveLength(1);
+    expect(roots[0].path).toContain("default-skills");
   });
 
   it("scopes the audit log: admin sees all, members see their own", async () => {

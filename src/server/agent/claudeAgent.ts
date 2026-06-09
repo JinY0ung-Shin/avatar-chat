@@ -1,4 +1,5 @@
 import type { AppConfig, AgentRequest, AgentResponse, PluginRoot } from "../types.js";
+import type { Store } from "../store.js";
 import type { AgentEvents } from "./events.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -115,15 +116,28 @@ function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents
   }
 }
 
-function buildPrompt(request: AgentRequest): string {
+function buildPrompt(request: AgentRequest, openRequestCount: number): string {
   const lines = [
     `당신은 "${request.avatar.displayName}" 아바타로서 사용자와 대화합니다.`,
   ];
   if (request.avatar.persona && request.avatar.persona.trim()) {
     lines.push(`페르소나/지침:\n${request.avatar.persona.trim()}`);
   }
+  // Who is on the other side decides the knowledge-backfill behavior (see the
+  // knowledge-backfill skill): the owner answers gaps, colleagues create them.
+  if (request.viewerIsOwner) {
+    const note =
+      openRequestCount > 0
+        ? `현재 대기 중인 정보 요청이 ${openRequestCount}건 있습니다. 대화를 시작할 때 pending_requests로 확인해 보고하세요.`
+        : "대기 중인 정보 요청은 없습니다.";
+    lines.push(`지금 대화 상대는 이 아바타의 **소유자**입니다. ${note}`);
+  } else {
+    lines.push(
+      `지금 대화 상대는 **동료**입니다. 소유자만 알 법한 정보를 모르면 추측하지 말고, knowledge-backfill 스킬에 따라 recall_knowledge로 찾고 없으면 request_info로 소유자에게 전달하세요.`,
+    );
+  }
   lines.push(
-    "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep)만 사용하세요.",
+    "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep)와 제공된 knowledge 도구만 사용하세요.",
   );
   return `${lines.join("\n\n")}\n\n사용자 메시지:\n${request.message}`;
 }
@@ -136,20 +150,40 @@ export async function runClaudeAgent(
   request: AgentRequest,
   pluginRoots: PluginRoot[],
   config: AppConfig,
+  store: Store,
   events?: AgentEvents,
   abortController?: AbortController,
 ): Promise<AgentResponse> {
   const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as {
     query: (input: unknown) => AsyncIterable<unknown>;
   };
+  const { buildKnowledgeServer, KNOWLEDGE_SERVER_NAME, KNOWLEDGE_TOOL_NAMES } = await import(
+    "./knowledgeTools.js"
+  );
 
   const streaming = Boolean(events);
+
+  // Knowledge-backfill tools, bound to this conversation's avatar + viewer.
+  const knowledgeServer = buildKnowledgeServer(store, {
+    avatarUserId: request.avatar.id,
+    viewerIsOwner: Boolean(request.viewerIsOwner),
+    askerUserId: request.viewerUserId ?? null,
+    askerName: request.viewerName ?? null,
+  });
+  const openRequestCount = request.viewerIsOwner
+    ? store.countOpenKnowledgeRequests(request.avatar.id)
+    : 0;
 
   const options: Record<string, unknown> = {
     plugins: pluginRoots,
     permissionMode: "dontAsk",
-    allowedTools: config.readOnlyTools,
+    // Read-only tools + the knowledge MCP tools. dontAsk denies anything not
+    // listed here, so the model can call only these.
+    allowedTools: [...config.readOnlyTools, ...KNOWLEDGE_TOOL_NAMES],
     disallowedTools: ["Write", "Edit"],
+    // Enable bundled + plugin skills (also auto-allows the `Skill` tool).
+    skills: "all",
+    mcpServers: { [KNOWLEDGE_SERVER_NAME]: knowledgeServer },
     maxTurns: 6,
     // Isolation mode: load NO filesystem settings. Without this the SDK defaults
     // to loading all sources (user `~/.claude`, project `.claude`, local), which
@@ -182,7 +216,7 @@ export async function runClaudeAgent(
   const deltaChunks: string[] = [];
   let resultText = "";
 
-  for await (const message of sdk.query({ prompt: buildPrompt(request), options })) {
+  for await (const message of sdk.query({ prompt: buildPrompt(request, openRequestCount), options })) {
     if (events && isRecord(message)) {
       if (message.type === "stream_event") {
         const delta = handleStreamEvent(message, events);
