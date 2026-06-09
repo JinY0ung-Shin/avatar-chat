@@ -151,6 +151,13 @@ export async function runClaudeAgent(
     allowedTools: config.readOnlyTools,
     disallowedTools: ["Write", "Edit"],
     maxTurns: 6,
+    // Isolation mode: load NO filesystem settings. Without this the SDK defaults
+    // to loading all sources (user `~/.claude`, project `.claude`, local), which
+    // would leak the operator's machine config — MCP servers, enabled plugins,
+    // env, and CLAUDE.md — into every avatar conversation. Each avatar must run
+    // only with our read-only policy + its own plugins (passed via `plugins`,
+    // which is independent of settingSources).
+    settingSources: [],
   };
   if (streaming) {
     options.includePartialMessages = true;
