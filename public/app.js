@@ -1154,15 +1154,19 @@ function buildPluginsCard() {
     class: "plugin-add",
     onsubmit: async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.currentTarget);
-      const btn = e.currentTarget.querySelector("button[type=submit]");
+      // Capture the form node now: event.currentTarget is nulled after the
+      // handler's first await, so referencing it later would throw and surface
+      // a false "추가 실패" even though the plugin was added.
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
       btn.disabled = true;
       try {
         await api("/api/me/plugins", { method: "POST", body: JSON.stringify({ repo: fd.get("repo"), ref: fd.get("ref") || undefined, label: fd.get("label") || undefined }) });
         await loadPlugins();
         renderPluginRows(list);
-        e.currentTarget.reset();
         state.user.pluginCount = state.plugins.length;
+        formEl.reset();
       } catch (err) {
         alert(`추가 실패: ${err.message}`);
       } finally {
