@@ -1,5 +1,13 @@
 const app = document.querySelector("#app");
 
+function newId() {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  const random = Math.random().toString(36).slice(2);
+  return `${Date.now().toString(36)}-${random}`;
+}
+
 const state = {
   user: null,
   bootstrap: null,
@@ -7,7 +15,7 @@ const state = {
   audit: [],
   messages: [],
   mode: "colleague",
-  conversationId: crypto.randomUUID(),
+  conversationId: newId(),
   loading: false,
   error: "",
 };
@@ -27,11 +35,11 @@ async function api(path, options = {}) {
 
 function escapeHtml(value) {
   return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
 }
 
 function renderLogin() {
