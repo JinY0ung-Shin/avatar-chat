@@ -28,6 +28,7 @@ const state = {
   marketplace: null,
   audit: [],
   invites: [],
+  conversations: [],
   messages: [],
   mode: "colleague",
   conversationId: newId(),
@@ -38,6 +39,7 @@ const state = {
 // Live references into the rendered shell (set by mountWorkspace).
 const dom = {};
 let abortController = null;
+let sessionExpired = false;
 
 /* ============================================================
    Networking
@@ -48,11 +50,27 @@ async function api(path, options = {}) {
     credentials: "same-origin",
     ...options,
   });
+  if (response.status === 401) {
+    handleSessionExpired();
+    throw new Error("세션이 만료되었습니다.");
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(body.error || `HTTP ${response.status}`);
   }
   return body;
+}
+
+// A mid-session 401 (revoked/expired session) bounces back to the login view.
+function handleSessionExpired() {
+  if (sessionExpired) return;
+  sessionExpired = true;
+  abortController?.abort();
+  state.user = null;
+  state.messages = [];
+  state.conversations = [];
+  state.error = "세션이 만료되었습니다. 다시 로그인해 주세요.";
+  renderLogin();
 }
 
 /* ============================================================
@@ -89,6 +107,15 @@ function icon(name) {
     stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
     refresh:
       '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    menu: '<path d="M3 12h18M3 6h18M3 18h18"/>',
+    edit:
+      '<path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5Z"/>',
+    trash:
+      '<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
+    copy:
+      '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
   };
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -105,6 +132,59 @@ function icon(name) {
 
 function renderMarkdown(text) {
   return DOMPurify.sanitize(marked.parse(text || ""));
+}
+
+// Add a one-click copy button to each code block inside a rendered markdown node.
+// The button lives on a non-scrolling wrapper so it stays pinned to the corner
+// even when the <pre> scrolls horizontally.
+function enhanceCodeBlocks(container) {
+  container.querySelectorAll("pre").forEach((pre) => {
+    if (pre.parentElement?.classList.contains("code-block")) return;
+    const wrapper = el("div", { class: "code-block" });
+    pre.replaceWith(wrapper);
+    wrapper.append(pre);
+    const btn = el("button", { class: "code-copy", type: "button", "aria-label": "코드 복사", title: "복사" });
+    btn.append(icon("copy"));
+    btn.addEventListener("click", (event) => {
+      event.stopPropagation();
+      copyText(pre.querySelector("code")?.innerText ?? pre.innerText, btn);
+    });
+    wrapper.append(btn);
+  });
+}
+
+async function copyText(text, btn) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.append(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+    }
+    flashCopied(btn);
+  } catch {
+    /* ignore copy failures */
+  }
+}
+
+function flashCopied(btn) {
+  if (!btn) return;
+  // Capture the real original content once (not the transient check icon), and
+  // clear any in-flight restore so rapid double-clicks can't strand the icon.
+  if (!btn._copyOriginal) btn._copyOriginal = [...btn.childNodes];
+  clearTimeout(btn._copyTimer);
+  btn.classList.add("copied");
+  btn.replaceChildren(icon("check"));
+  btn._copyTimer = setTimeout(() => {
+    btn.classList.remove("copied");
+    btn.replaceChildren(...btn._copyOriginal);
+  }, 1200);
 }
 
 function timeLabel(iso) {
@@ -125,14 +205,35 @@ const modeCopy = {
   owner: {
     title: "업무 지시 모드",
     sub: "소유자 지시를 marketplace skill로 처리하고 결과를 보고합니다.",
-    railSub: "작업 명령 실행",
   },
   colleague: {
     title: "동료 조회 모드",
     sub: "초대된 프로젝트 범위 안에서 읽기 전용 상태 확인만 처리합니다.",
-    railSub: "읽기 전용 조회",
   },
 };
+
+function updateDocTitle() {
+  const base = "Avatar Chat";
+  if (state.streaming) {
+    document.title = `● 응답 중 · ${base}`;
+    return;
+  }
+  const conv = state.conversations.find((c) => c.id === state.conversationId);
+  document.title = conv?.title ? `${conv.title} · ${base}` : base;
+}
+
+/* ============================================================
+   Boot skeleton (avoid blank flash on cold load)
+   ============================================================ */
+function renderBootSkeleton() {
+  app.replaceChildren(
+    el("div", { class: "boot" }, [
+      el("div", { class: "boot-mark", text: "A" }),
+      el("div", { class: "boot-spinner" }),
+      el("div", { class: "boot-label", text: "불러오는 중…" }),
+    ]),
+  );
+}
 
 /* ============================================================
    Login view (separate render path)
@@ -141,6 +242,7 @@ function renderLogin() {
   abortController?.abort();
   abortController = null;
   state.streaming = false;
+  document.title = "Avatar Chat";
   app.replaceChildren(
     el("section", { class: "login-view" }, [
       el("div", { class: "login-panel" }, [
@@ -156,11 +258,14 @@ function renderLogin() {
             onsubmit: async (event) => {
               event.preventDefault();
               const form = new FormData(event.currentTarget);
+              const submitBtn = event.currentTarget.querySelector("button[type=submit]");
+              if (submitBtn) submitBtn.disabled = true; // guard against double-submit
               try {
                 const result = await api("/api/session", {
                   method: "POST",
                   body: JSON.stringify({ name: form.get("name"), code: form.get("code") }),
                 });
+                sessionExpired = false;
                 state.user = result.user;
                 state.mode = state.user.role === "owner" ? "owner" : "colleague";
                 state.error = "";
@@ -205,28 +310,25 @@ function mountWorkspace() {
   const owner = state.user?.role === "owner";
   const initial = (state.user?.name || "?").trim().charAt(0).toUpperCase();
 
-  // --- Left rail ---
-  const modeButton = (mode) =>
-    el(
-      "button",
-      {
-        class: `rail-mode ${state.mode === mode ? "active" : ""}`,
-        type: "button",
-        disabled: mode === "owner" && !owner ? "" : null,
-        dataset: { mode },
-        "aria-pressed": state.mode === mode ? "true" : "false",
-        onclick: () => switchMode(mode),
-      },
-      [
-        el("span", { class: "dot" }),
-        el("span", {}, [
-          el("span", { text: mode === "owner" ? "업무 지시" : "동료 조회" }),
-          el("small", { text: modeCopy[mode].railSub }),
-        ]),
-      ],
-    );
+  // --- New chat ---
+  const newChatBtn = el("button", { class: "new-chat", type: "button", onclick: () => newChat() }, []);
+  newChatBtn.append(icon("plus"), el("span", { text: "새 채팅" }));
 
-  dom.railModes = el("div", { class: "rail-modes" }, [modeButton("colleague"), modeButton("owner")]);
+  // --- Conversation list ---
+  dom.convList = el("div", { class: "conv-list scroll-thin" });
+
+  // --- Mode segmented (footer) ---
+  const modeSeg = el("div", { class: "mode-seg", role: "group", "aria-label": "모드 전환" }, [
+    el("button", { type: "button", dataset: { mode: "colleague" }, text: "동료 조회", onclick: () => switchMode("colleague") }),
+    el("button", {
+      type: "button",
+      dataset: { mode: "owner" },
+      text: "업무 지시",
+      disabled: owner ? null : "",
+      onclick: () => switchMode("owner"),
+    }),
+  ]);
+  dom.modeSeg = modeSeg;
 
   const gearBtn = el("button", {
     class: "icon-button",
@@ -237,32 +339,35 @@ function mountWorkspace() {
   });
   gearBtn.append(icon("gear"));
 
-  const rail = el("aside", { class: "rail" }, [
-    el("div", { class: "rail-brand" }, [
-      el("div", { class: "mark", text: "A" }),
-      el("div", {}, [
-        el("div", { class: "name", text: "Avatar Chat" }),
-        el("div", { class: "sub", text: "marketplace workspace" }),
-      ]),
-    ]),
-    el("div", {}, [el("div", { class: "rail-section-label", text: "모드" }), dom.railModes]),
-    el("div", { class: "rail-spacer" }),
-    el("div", { class: "rail-footer" }, [
-      el("div", { class: "rail-user" }, [
-        el("div", { class: "avatar", text: initial }),
-        el("div", { class: "meta" }, [
-          el("b", { text: state.user.name }),
-          el("span", { text: owner ? "소유자" : "동료" }),
+  const rail = el("aside", { class: "rail", id: "rail" }, [
+    el("div", { class: "rail-head" }, [
+      el("div", { class: "rail-brand" }, [
+        el("div", { class: "mark", text: "A" }),
+        el("div", {}, [
+          el("div", { class: "name", text: "Avatar Chat" }),
+          el("div", { class: "sub", text: "marketplace workspace" }),
         ]),
       ]),
-      el("div", { class: "rail-actions" }, [
-        el("button", {
-          class: "rail-logout",
-          type: "button",
-          text: "나가기",
-          onclick: logout,
-        }),
-        gearBtn,
+      newChatBtn,
+    ]),
+    el("div", { class: "rail-history" }, [
+      el("div", { class: "rail-section-label", text: "대화" }),
+      dom.convList,
+    ]),
+    el("div", { class: "rail-footer" }, [
+      modeSeg,
+      el("div", { class: "rail-user-row" }, [
+        el("div", { class: "rail-user" }, [
+          el("div", { class: "avatar", text: initial }),
+          el("div", { class: "meta" }, [
+            el("b", { text: state.user.name }),
+            el("span", { text: owner ? "소유자" : "동료" }),
+          ]),
+        ]),
+        el("div", { class: "rail-actions" }, [
+          el("button", { class: "rail-logout", type: "button", text: "나가기", onclick: logout }),
+          gearBtn,
+        ]),
       ]),
     ]),
   ]);
@@ -277,25 +382,18 @@ function mountWorkspace() {
     onclick: () => openDrawer("market"),
   });
 
-  dom.mobileMode = el("div", { class: "mobile-mode", role: "group", "aria-label": "모드 전환" }, [
-    el("button", {
-      type: "button",
-      dataset: { mode: "colleague" },
-      text: "동료",
-      onclick: () => switchMode("colleague"),
-    }),
-    el("button", {
-      type: "button",
-      dataset: { mode: "owner" },
-      text: "업무",
-      disabled: owner ? null : "",
-      onclick: () => switchMode("owner"),
-    }),
-  ]);
+  const railToggle = el("button", {
+    class: "icon-button rail-toggle",
+    type: "button",
+    "aria-label": "대화 목록 열기",
+    title: "대화 목록",
+    onclick: () => openRail(),
+  });
+  railToggle.append(icon("menu"));
 
   const header = el("header", { class: "chat-header" }, [
-    el("div", { class: "title" }, [dom.headerTitle, dom.headerSub]),
-    el("div", { class: "header-badges" }, [dom.mobileMode, dom.marketBadge]),
+    el("div", { class: "header-left" }, [railToggle, el("div", { class: "title" }, [dom.headerTitle, dom.headerSub])]),
+    el("div", { class: "header-badges" }, [dom.marketBadge]),
   ]);
 
   // --- Transcript ---
@@ -304,12 +402,22 @@ function mountWorkspace() {
     class: "transcript scroll-thin",
     role: "log",
     "aria-live": "polite",
-    // Only announce newly added nodes, not every token mutation — combined with
-    // the aria-busy toggle during streaming this keeps screen readers from
-    // re-reading the half-built answer on every frame.
     "aria-relevant": "additions",
   });
   dom.transcript.append(dom.transcriptInner);
+  dom.transcript.addEventListener("scroll", updateScrollButton);
+
+  // Scroll-to-bottom affordance.
+  dom.scrollBtn = el("button", {
+    class: "scroll-bottom",
+    type: "button",
+    "aria-label": "맨 아래로",
+    title: "맨 아래로",
+    hidden: "",
+    onclick: () => scrollToBottom(true),
+  });
+  dom.scrollBtn.append(icon("send"));
+  dom.scrollBtn.classList.add("rotate-down");
 
   // --- Composer ---
   dom.textarea = el("textarea", {
@@ -358,19 +466,190 @@ function mountWorkspace() {
     el("div", { class: "composer-inner" }, [composerForm]),
   ]);
 
-  const chatCol = el("section", { class: "chat-col" }, [header, dom.transcript, composer]);
+  const chatBody = el("div", { class: "chat-body" }, [dom.transcript, dom.scrollBtn]);
+  const chatCol = el("section", { class: "chat-col" }, [header, chatBody, composer]);
 
-  // --- Drawer ---
+  // --- Drawer + mobile rail backdrop ---
   buildDrawer(owner);
+  dom.railBackdrop = el("div", { class: "rail-backdrop", onclick: () => closeRail() });
 
   app.replaceChildren(
     el("section", { class: "workspace" }, [rail, chatCol]),
+    dom.railBackdrop,
     dom.backdrop,
     dom.drawer,
   );
+  dom.rail = rail;
 
   wireComposer();
   syncHeader();
+}
+
+/* ============================================================
+   Mobile rail (off-canvas conversation sidebar)
+   ============================================================ */
+function openRail() {
+  dom.rail.classList.add("open");
+  dom.railBackdrop.classList.add("open");
+  document.addEventListener("keydown", onRailKeydown);
+}
+function closeRail() {
+  dom.rail?.classList.remove("open");
+  dom.railBackdrop?.classList.remove("open");
+  document.removeEventListener("keydown", onRailKeydown);
+}
+function onRailKeydown(event) {
+  if (event.key === "Escape") closeRail();
+}
+
+/* ============================================================
+   Conversations
+   ============================================================ */
+async function loadConversations() {
+  const result = await api(`/api/conversations?mode=${encodeURIComponent(state.mode)}`);
+  state.conversations = result.conversations || [];
+}
+
+async function refreshConversations() {
+  try {
+    await loadConversations();
+    renderConversations();
+    updateDocTitle();
+  } catch {
+    /* ignore */
+  }
+}
+
+function renderConversations() {
+  if (!dom.convList) return;
+  dom.convList.replaceChildren();
+  if (!state.conversations.length) {
+    dom.convList.append(el("div", { class: "conv-empty", text: "아직 대화가 없습니다.\n새 채팅으로 시작하세요." }));
+    return;
+  }
+  for (const conv of state.conversations) {
+    const active = conv.id === state.conversationId;
+    const item = el("div", { class: `conv-item ${active ? "active" : ""}`, dataset: { id: conv.id } });
+
+    const titleBtn = el(
+      "button",
+      { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv.id) },
+      [
+        el("span", { class: "conv-name", text: conv.title }),
+        el("span", { class: "conv-time", text: timeLabel(conv.updatedAt) }),
+      ],
+    );
+
+    const renameBtn = el("button", {
+      class: "conv-act",
+      type: "button",
+      "aria-label": "이름 변경",
+      title: "이름 변경",
+      onclick: (e) => {
+        e.stopPropagation();
+        startRename(item, conv);
+      },
+    });
+    renameBtn.append(icon("edit"));
+
+    const delBtn = el("button", {
+      class: "conv-act danger",
+      type: "button",
+      "aria-label": "삭제",
+      title: "삭제",
+      onclick: (e) => {
+        e.stopPropagation();
+        deleteConversation(conv);
+      },
+    });
+    delBtn.append(icon("trash"));
+
+    item.append(titleBtn, el("div", { class: "conv-acts" }, [renameBtn, delBtn]));
+    dom.convList.append(item);
+  }
+}
+
+function newChat() {
+  if (state.streaming) return;
+  state.conversationId = newId();
+  state.messages = [];
+  renderTranscript();
+  renderConversations();
+  updateDocTitle();
+  closeRail();
+  dom.textarea?.focus();
+}
+
+async function selectConversation(id) {
+  if (state.streaming) return;
+  closeRail();
+  if (id === state.conversationId && state.messages.length) return;
+  state.conversationId = id;
+  try {
+    const result = await api(`/api/messages?conversationId=${encodeURIComponent(id)}`);
+    state.messages = result.messages || [];
+  } catch {
+    state.messages = [];
+  }
+  renderConversations();
+  renderTranscript();
+  updateDocTitle();
+}
+
+function startRename(item, conv) {
+  const titleBtn = item.querySelector(".conv-open");
+  if (!titleBtn) return;
+  item.classList.add("editing"); // hides the action buttons so the input owns the row
+  const input = el("input", { class: "conv-rename", value: conv.title, "aria-label": "대화 이름" });
+  const onBlur = () => commit(true);
+  titleBtn.replaceWith(input);
+  input.focus();
+  input.select();
+  let settled = false;
+  const commit = async (save) => {
+    if (settled) return;
+    settled = true;
+    input.removeEventListener("blur", onBlur); // re-render detaches the input; don't re-fire
+    const next = input.value.trim(); // capture before any await
+    if (save && next && next !== conv.title) {
+      try {
+        const r = await api(`/api/conversations/${encodeURIComponent(conv.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ title: next }),
+        });
+        conv.title = r.conversation?.title || next;
+      } catch {
+        /* keep old title */
+      }
+    }
+    renderConversations();
+    updateDocTitle();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      commit(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      commit(false);
+    }
+  });
+  input.addEventListener("blur", onBlur);
+}
+
+async function deleteConversation(conv) {
+  if (!window.confirm(`"${conv.title}" 대화를 삭제할까요? 되돌릴 수 없습니다.`)) return;
+  try {
+    await api(`/api/conversations/${encodeURIComponent(conv.id)}`, { method: "DELETE" });
+  } catch {
+    /* ignore */
+  }
+  state.conversations = state.conversations.filter((c) => c.id !== conv.id);
+  if (conv.id === state.conversationId) {
+    newChat();
+  } else {
+    renderConversations();
+  }
 }
 
 /* ============================================================
@@ -390,12 +669,7 @@ function wireComposer() {
   });
 
   ta.addEventListener("keydown", (event) => {
-    if (
-      event.key === "Enter" &&
-      !event.shiftKey &&
-      !event.isComposing &&
-      event.keyCode !== 229
-    ) {
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       if (!state.streaming) submitMessage();
     }
@@ -433,14 +707,10 @@ function syncHeader() {
   dom.headerTitle.textContent = copy.title;
   dom.headerSub.textContent = copy.sub;
 
-  // mode buttons (rail + mobile)
-  dom.railModes.querySelectorAll("[data-mode]").forEach((btn) => {
+  dom.modeSeg.querySelectorAll("[data-mode]").forEach((btn) => {
     const active = btn.dataset.mode === state.mode;
     btn.classList.toggle("active", active);
     btn.setAttribute("aria-pressed", active ? "true" : "false");
-  });
-  dom.mobileMode.querySelectorAll("[data-mode]").forEach((btn) => {
-    btn.classList.toggle("active", btn.dataset.mode === state.mode);
   });
 
   syncMarketBadge();
@@ -456,9 +726,7 @@ function syncMarketBadge() {
 
   dom.marketBadge.replaceChildren(
     el("span", { class: `pulse ${statusClass}` }),
-    el("span", {
-      text: count != null ? `${name} · 플러그인 ${count}` : name,
-    }),
+    el("span", { text: count != null ? `${name} · 플러그인 ${count}` : name }),
   );
 }
 
@@ -502,9 +770,7 @@ function renderEmptyState() {
 
   return el("div", { class: "empty-state" }, [
     el("div", { class: "hero" }, [
-      el("h3", {
-        text: state.mode === "owner" ? "업무 지시를 시작하세요" : "운영 상태를 바로 확인하세요",
-      }),
+      el("h3", { text: state.mode === "owner" ? "업무 지시를 시작하세요" : "운영 상태를 바로 확인하세요" }),
       el("p", {
         text:
           state.mode === "owner"
@@ -520,21 +786,23 @@ function renderTranscript() {
   dom.transcriptInner.replaceChildren();
   if (!state.messages.length) {
     dom.transcriptInner.append(renderEmptyState());
+    updateScrollButton();
     return;
   }
-  for (const message of state.messages) {
-    dom.transcriptInner.append(buildMessageNode(message));
-  }
+  state.messages.forEach((message, index) => {
+    dom.transcriptInner.append(buildMessageNode(message, index === state.messages.length - 1));
+  });
   scrollToBottom(true);
 }
 
-function buildMessageNode(message) {
+function buildMessageNode(message, isLast) {
   const isUser = message.role === "user";
   const wrap = el("div", { class: `message ${message.role}` });
   wrap.append(
     el("div", { class: "msg-role" }, [
       el("span", { class: "role-dot" }),
       el("span", { text: isUser ? "나" : "어시스턴트" }),
+      message.createdAt ? el("time", { class: "msg-time", text: timeLabel(message.createdAt) }) : null,
     ]),
   );
 
@@ -545,7 +813,47 @@ function buildMessageNode(message) {
     renderAssistantInto(bubble, message);
   }
   wrap.append(bubble);
+  wrap.append(buildMessageActions(message, isUser, isLast));
   return wrap;
+}
+
+function buildMessageActions(message, isUser, isLast) {
+  const row = el("div", { class: "msg-actions" });
+
+  const copyBtn = el("button", { class: "msg-act", type: "button", "aria-label": "복사", title: "복사" });
+  copyBtn.append(icon("copy"));
+  copyBtn.addEventListener("click", () => copyText(message.content || message.response?.text || "", copyBtn));
+  row.append(copyBtn);
+
+  if (isUser) {
+    const editBtn = el("button", { class: "msg-act", type: "button", "aria-label": "편집", title: "편집 후 다시 보내기" });
+    editBtn.append(icon("edit"));
+    editBtn.addEventListener("click", () => {
+      dom.textarea.value = message.content;
+      dom.textarea.dispatchEvent(new Event("input"));
+      dom.textarea.focus();
+    });
+    row.append(editBtn);
+  } else if (isLast) {
+    const regenBtn = el("button", { class: "msg-act regen", type: "button", "aria-label": "다시 생성", title: "다시 생성" });
+    regenBtn.append(icon("refresh"));
+    regenBtn.addEventListener("click", () => regenerate());
+    row.append(regenBtn);
+  }
+
+  return row;
+}
+
+function regenerate() {
+  if (state.streaming) return;
+  const roles = state.messages.map((m) => m.role);
+  const lastUser = roles.lastIndexOf("user");
+  if (lastUser < 0) return;
+  const text = state.messages[lastUser].content;
+  // Drop the previous assistant reply (everything after the last user turn).
+  state.messages = state.messages.slice(0, lastUser + 1);
+  renderTranscript();
+  streamChat(text, { regenerate: true });
 }
 
 function renderAssistantInto(bubble, message) {
@@ -562,24 +870,29 @@ function renderAssistantInto(bubble, message) {
     if (meta.length) {
       const metaRow = el("div", { class: "response-meta" });
       for (const [kind, val] of meta) {
-        metaRow.append(
-          el("span", { class: `meta-badge ${kind === "runtime" ? `runtime-${val}` : ""}`, text: val }),
-        );
+        metaRow.append(el("span", { class: `meta-badge ${kind === "runtime" ? `runtime-${val}` : ""}`, text: val }));
       }
       bubble.append(metaRow);
     }
 
     if (response.kind === "table" && response.table) {
       bubble.append(buildTable(response));
-      if (response.text) bubble.append(el("div", { class: "md", html: renderMarkdown(response.text) }));
+      if (response.text) {
+        const md = el("div", { class: "md", html: renderMarkdown(response.text) });
+        enhanceCodeBlocks(md);
+        bubble.append(md);
+      }
       return;
     }
-    bubble.append(el("div", { class: "md", html: renderMarkdown(response.text || response.summary) }));
+    const md = el("div", { class: "md", html: renderMarkdown(response.text || response.summary) });
+    enhanceCodeBlocks(md);
+    bubble.append(md);
     return;
   }
 
-  // Plain content fallback
-  bubble.append(el("div", { class: "md", html: renderMarkdown(message.content) }));
+  const md = el("div", { class: "md", html: renderMarkdown(message.content) });
+  enhanceCodeBlocks(md);
+  bubble.append(md);
 }
 
 function buildTable(response) {
@@ -620,6 +933,13 @@ function scrollToBottom(force) {
   if (force || isNearBottom()) {
     dom.transcript.scrollTop = dom.transcript.scrollHeight;
   }
+  updateScrollButton();
+}
+function updateScrollButton() {
+  if (!dom.scrollBtn) return;
+  const t = dom.transcript;
+  const scrollable = t.scrollHeight - t.clientHeight > 40;
+  dom.scrollBtn.hidden = !(scrollable && !isNearBottom());
 }
 
 /* ============================================================
@@ -631,12 +951,16 @@ async function switchMode(mode) {
   if (mode === state.mode) return;
   state.mode = mode;
   syncHeader();
+  state.conversationId = newId();
+  state.messages = [];
   try {
-    await loadMessages();
+    await loadConversations();
   } catch {
-    /* keep current */
+    state.conversations = [];
   }
+  renderConversations();
   renderTranscript();
+  updateDocTitle();
 }
 
 async function logout() {
@@ -648,8 +972,11 @@ async function logout() {
   } catch {
     /* ignore */
   }
+  sessionExpired = false;
   state.user = null;
   state.messages = [];
+  state.conversations = [];
+  state.error = "";
   renderLogin();
 }
 
@@ -660,26 +987,29 @@ async function submitMessage() {
   const message = dom.textarea.value.trim();
   if (!message || state.streaming) return;
 
-  // Drop empty-state if present.
-  if (!state.messages.length) dom.transcriptInner.replaceChildren();
+  const isNewConversation = !state.messages.length;
+  if (isNewConversation) dom.transcriptInner.replaceChildren();
 
-  // Append user bubble immediately.
-  const userMsg = { role: "user", content: message };
+  // The previous reply is no longer the last turn — drop its regenerate button.
+  dom.transcriptInner.querySelectorAll(".msg-act.regen").forEach((b) => b.remove());
+
+  const userMsg = { role: "user", content: message, createdAt: new Date().toISOString() };
   state.messages.push(userMsg);
-  dom.transcriptInner.append(buildMessageNode(userMsg));
+  dom.transcriptInner.append(buildMessageNode(userMsg, false));
 
   dom.textarea.value = "";
   dom.textarea.style.height = "auto";
   scrollToBottom(true);
 
-  await streamChat(message);
+  await streamChat(message, { isNewConversation });
 }
 
-async function streamChat(message) {
+async function streamChat(message, { isNewConversation = false, regenerate = false } = {}) {
   state.streaming = true;
   updateSendState();
   setComposerState("응답 대기 중…");
   dom.transcript.setAttribute("aria-busy", "true");
+  updateDocTitle();
 
   // Live assistant bubble scaffold.
   const bubble = el("div", { class: "bubble" });
@@ -700,6 +1030,7 @@ async function streamChat(message) {
   scrollToBottom(true);
 
   const live = {
+    wrap,
     bubble,
     mdNode,
     caret,
@@ -710,6 +1041,7 @@ async function streamChat(message) {
     rafPending: false,
     done: false,
     aborted: false,
+    isNewConversation,
   };
 
   const flush = () => {
@@ -731,13 +1063,13 @@ async function streamChat(message) {
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
       signal: abortController.signal,
-      body: JSON.stringify({
-        mode: state.mode,
-        message,
-        conversationId: state.conversationId,
-      }),
+      body: JSON.stringify({ mode: state.mode, message, conversationId: state.conversationId, regenerate }),
     });
 
+    if (response.status === 401) {
+      handleSessionExpired();
+      return;
+    }
     if (!response.ok || !response.body) {
       const errBody = await response.json().catch(() => ({}));
       throw new Error(errBody.error || `HTTP ${response.status}`);
@@ -749,10 +1081,15 @@ async function streamChat(message) {
       finalizeStopped(live);
     } else {
       finalizeError(live, error.message || "스트리밍 오류가 발생했습니다.");
+      // Pure connection failure (nothing streamed): restore the prompt so the
+      // user can retry without retyping.
+      if (!live.text && dom.textarea && !dom.textarea.value) {
+        dom.textarea.value = message;
+        dom.textarea.dispatchEvent(new Event("input"));
+      }
     }
   } finally {
     if (!live.done) {
-      // Network ended without explicit done/error/abort.
       if (live.aborted) finalizeStopped(live);
       else if (!live.text) finalizeError(live, "연결이 종료되었습니다.");
       else finalizeStopped(live);
@@ -762,6 +1099,7 @@ async function streamChat(message) {
     updateSendState();
     setComposerState("");
     dom.transcript.setAttribute("aria-busy", "false");
+    updateDocTitle();
     dom.textarea.focus();
   }
 }
@@ -858,12 +1196,7 @@ function handlePluginEvent(live, data) {
     live.pluginChips.append(chip);
   }
   chip.dataset.status = status;
-  const labelMap = {
-    started: "설치 중",
-    installed: "설치됨",
-    completed: "로드됨",
-    failed: "실패",
-  };
+  const labelMap = { started: "설치 중", installed: "설치됨", completed: "로드됨", failed: "실패" };
   chip.querySelector(".pc-text").textContent = `${data.name} · ${labelMap[status] || status}`;
 }
 
@@ -890,15 +1223,20 @@ function finalizeDone(live, data) {
     role: "assistant",
     content: data?.response?.text || data?.response?.summary || live.text,
     response: data?.response,
+    createdAt: new Date().toISOString(),
   };
-  // Persist authoritative message.
   state.messages.push(message);
   // Replace bubble content with authoritative render (tables, meta, etc.).
   live.bubble.replaceChildren();
   live.bubble.className = "bubble";
   renderAssistantInto(live.bubble, message);
+  // Attach per-message actions (this is now the last message).
+  live.wrap.append(buildMessageActions(message, false, true));
   scrollToBottom();
   loadAudit().catch(() => {});
+  // Refresh the sidebar so a new conversation gets its title and an existing one
+  // moves to the top with an updated timestamp.
+  refreshConversations();
 }
 
 function finalizeError(live, msg) {
@@ -906,14 +1244,14 @@ function finalizeError(live, msg) {
   live.done = true;
   cleanupLive(live);
   live.bubble.classList.add("errored");
-  // Keep any partial text, then append the error note (single bubble + single message).
   if (live.text) {
     live.mdNode.innerHTML = renderMarkdown(live.text);
+    enhanceCodeBlocks(live.mdNode);
   } else {
     live.mdNode.remove();
   }
   live.bubble.append(
-    el("div", { class: "response-meta" }, [el("span", { class: "meta-badge runtime-blocked", text: "오류" })]),
+    el("div", { class: "response-meta" }, [el("span", { class: "meta-badge runtime-error", text: "오류" })]),
   );
   live.bubble.append(el("div", { class: "md", text: msg }));
   state.messages.push({
@@ -930,10 +1268,10 @@ function finalizeStopped(live) {
   live.aborted = true;
   cleanupLive(live);
   live.mdNode.innerHTML = renderMarkdown(live.text);
+  enhanceCodeBlocks(live.mdNode);
   live.bubble.append(
     el("div", { class: "stream-status" }, [el("span", { class: "label", text: "· 사용자가 중지함" })]),
   );
-  // Single message matching the single rendered bubble.
   state.messages.push({
     role: "assistant",
     content: live.text || "(중지됨)",
@@ -942,9 +1280,7 @@ function finalizeStopped(live) {
 }
 
 function stopStreaming() {
-  if (abortController) {
-    abortController.abort();
-  }
+  if (abortController) abortController.abort();
 }
 
 /* ============================================================
@@ -1012,13 +1348,13 @@ function buildDrawer(owner) {
   });
   closeBtn.append(icon("close"));
 
-  dom.drawer = el("aside", { class: "drawer", role: "dialog", "aria-modal": "true", "aria-label": "설정", hidden: "" }, [
-    el("div", { class: "drawer-header" }, [el("h2", { text: "설정" }), closeBtn]),
-    dom.drawerTabs,
-    panelsWrap,
-  ]);
+  dom.drawer = el(
+    "aside",
+    { class: "drawer", role: "dialog", "aria-modal": "true", "aria-label": "설정", hidden: "" },
+    [el("div", { class: "drawer-header" }, [el("h2", { text: "설정" }), closeBtn]), dom.drawerTabs, panelsWrap],
+  );
 
-  selectTab(owner ? "market" : "market", false);
+  selectTab("market", false);
 }
 
 function selectTab(id, render = true) {
@@ -1035,12 +1371,9 @@ function selectTab(id, render = true) {
 }
 
 function openDrawer(tab) {
-  // Remember what opened the drawer so focus can return there on close.
   dom.drawerOpener = document.activeElement;
   dom.drawer.hidden = false;
-  // Hide the background from AT and pointer while the modal drawer is open.
   document.querySelector(".workspace")?.setAttribute("aria-hidden", "true");
-  // allow transition
   requestAnimationFrame(() => {
     dom.backdrop.classList.add("open");
     dom.drawer.classList.add("open");
@@ -1059,7 +1392,6 @@ function closeDrawer() {
   dom.drawer.classList.remove("open");
   document.removeEventListener("keydown", onDrawerKeydown);
   document.querySelector(".workspace")?.removeAttribute("aria-hidden");
-  // Restore focus to the control that opened the drawer.
   const opener = dom.drawerOpener;
   if (opener && typeof opener.focus === "function") opener.focus();
   setTimeout(() => {
@@ -1068,9 +1400,11 @@ function closeDrawer() {
 }
 
 function drawerFocusables() {
-  return [...dom.drawer.querySelectorAll(
-    'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
-  )].filter((node) => node.offsetParent !== null || node === document.activeElement);
+  return [
+    ...dom.drawer.querySelectorAll(
+      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    ),
+  ].filter((node) => node.offsetParent !== null || node === document.activeElement);
 }
 
 function onDrawerKeydown(event) {
@@ -1079,7 +1413,6 @@ function onDrawerKeydown(event) {
     closeDrawer();
     return;
   }
-  // Focus trap: keep Tab cycling within the drawer.
   if (event.key === "Tab") {
     const focusables = drawerFocusables();
     if (!focusables.length) return;
@@ -1111,15 +1444,9 @@ function renderMarketPanel(panel) {
   const market = state.marketplace;
 
   const isOwner = state.user?.role === "owner";
-  // Owners get an actionable refresh control; colleagues see passive copy
-  // instead of a permanently-disabled (dead-looking) button.
   let headAction;
   if (isOwner) {
-    const refreshBtn = el("button", {
-      class: "refresh-btn",
-      type: "button",
-      title: "마켓플레이스 다시 동기화",
-    });
+    const refreshBtn = el("button", { class: "refresh-btn", type: "button", title: "마켓플레이스 다시 동기화" });
     refreshBtn.append(icon("refresh"), el("span", { text: "다시 동기화" }));
     refreshBtn.addEventListener("click", () => refreshMarketplace(refreshBtn, panel));
     headAction = refreshBtn;
@@ -1145,9 +1472,9 @@ function renderMarketPanel(panel) {
         syncMarketBadge();
       })
       .catch((err) => {
-        panel.querySelector(".empty-note")?.replaceWith(
-          el("div", { class: "warn-box", text: `상태를 불러오지 못했습니다: ${err.message}` }),
-        );
+        panel
+          .querySelector(".empty-note")
+          ?.replaceWith(el("div", { class: "warn-box", text: `상태를 불러오지 못했습니다: ${err.message}` }));
       });
     return;
   }
@@ -1197,7 +1524,6 @@ function buildPluginCard(plugin) {
     const src = typeof plugin.source === "string" ? plugin.source : plugin.source.source || "source";
     tags.append(el("span", { class: "tag", text: src }));
   }
-  // Read-only / owner visibility derived from skills registry.
   const access = pluginAccess(plugin.name);
   if (access) tags.append(el("span", { class: `tag ${access.cls}`, text: access.label }));
   for (const t of plugin.tags || []) tags.append(el("span", { class: "tag", text: t }));
@@ -1206,16 +1532,13 @@ function buildPluginCard(plugin) {
   return card;
 }
 
-// Determine if a plugin exposes any owner-only (write) commands, from /api/skills.
 function pluginAccess(name) {
   const skillsPlugin = (state.skills?.plugins || []).find((p) => p.name === name);
   if (!skillsPlugin) return null;
   const cmds = skillsPlugin.commands || [];
   if (!cmds.length) return null;
   const hasWrite = cmds.some((c) => c.readOnly === false);
-  return hasWrite
-    ? { cls: "write", label: "owner 작업 포함" }
-    : { cls: "read", label: "read-only" };
+  return hasWrite ? { cls: "write", label: "owner 작업 포함" } : { cls: "read", label: "read-only" };
 }
 
 async function refreshMarketplace(btn, panel) {
@@ -1247,9 +1570,7 @@ async function refreshMarketplace(btn, panel) {
 function renderSkillsPanel(panel) {
   panel.replaceChildren();
   const plugins = state.skills?.plugins || [];
-  const items = plugins.flatMap((plugin) =>
-    (plugin.commands || []).map((command) => ({ plugin: plugin.name, command })),
-  );
+  const items = plugins.flatMap((plugin) => (plugin.commands || []).map((command) => ({ plugin: plugin.name, command })));
 
   panel.append(
     el("div", { class: "panel-section-head" }, [
@@ -1283,22 +1604,36 @@ function renderSkillsPanel(panel) {
 }
 
 /* ---------- Invites panel ---------- */
+function inviteStatus(invite) {
+  if (invite.revokedAt) return { cls: "blocked", label: "취소됨" };
+  if (invite.uses >= invite.maxUses) return { cls: "warn", label: "소진됨" };
+  return { cls: "ok", label: "활성" };
+}
+
 function renderInvitesPanel(panel) {
   panel.replaceChildren();
   panel.append(
     el("div", { class: "panel-section-head" }, [
-      el("div", {}, [
-        el("h3", { text: "초대 생성" }),
-        el("p", { text: "팀원을 초대할 코드를 발급합니다." }),
-      ]),
+      el("div", {}, [el("h3", { text: "초대" }), el("p", { text: "팀원 초대 코드를 발급하고 관리합니다." })]),
     ]),
   );
 
+  // Existing invites list.
+  const listWrap = el("div", { class: "invite-list" });
+  panel.append(listWrap);
+  renderInviteList(listWrap);
+  loadInvites()
+    .then(() => renderInviteList(listWrap))
+    .catch(() => {
+      listWrap.replaceChildren(el("div", { class: "empty-note", text: "초대 목록을 불러오지 못했습니다." }));
+    });
+
+  // Create form.
   const result = el("div", {});
   const form = el(
     "form",
     {
-      class: "form-stack",
+      class: "form-stack invite-form",
       onsubmit: async (event) => {
         event.preventDefault();
         const fd = new FormData(event.currentTarget);
@@ -1314,7 +1649,17 @@ function renderInvitesPanel(panel) {
               maxUses: Number(fd.get("maxUses")),
             }),
           });
-          result.replaceChildren(el("div", { class: "invite-result", text: res.invite.code }));
+          const code = res.invite.code;
+          const copyBtn = el("button", { class: "ghost-sm", type: "button", text: "복사" });
+          copyBtn.addEventListener("click", () => copyText(code, copyBtn));
+          result.replaceChildren(
+            el("div", { class: "invite-created" }, [
+              el("div", { class: "invite-result", text: code }),
+              copyBtn,
+            ]),
+          );
+          await loadInvites().catch(() => {});
+          renderInviteList(listWrap);
           await loadAudit().catch(() => {});
         } catch (error) {
           result.replaceChildren(el("div", { class: "warn-box", text: error.message }));
@@ -1324,6 +1669,7 @@ function renderInvitesPanel(panel) {
       },
     },
     [
+      el("div", { class: "form-sub", text: "새 초대 만들기" }),
       el("label", { class: "field" }, [el("span", { text: "라벨" }), el("input", { name: "label", value: "팀원 초대" })]),
       el("label", { class: "field" }, [
         el("span", { text: "역할" }),
@@ -1346,19 +1692,61 @@ function renderInvitesPanel(panel) {
   panel.append(form, result);
 }
 
+function renderInviteList(listWrap) {
+  listWrap.replaceChildren();
+  const invites = state.invites || [];
+  if (!invites.length) {
+    listWrap.append(el("div", { class: "empty-note", text: "발급된 초대가 없습니다." }));
+    return;
+  }
+  for (const invite of invites) {
+    const status = inviteStatus(invite);
+    const canRevoke = !invite.revokedAt;
+    const item = el("div", { class: "invite-item" }, [
+      el("div", { class: "invite-item-main" }, [
+        el("strong", { text: invite.label || "초대" }),
+        el("div", { class: "invite-tags" }, [
+          el("span", { class: `tag ${invite.role === "owner" ? "write" : "read"}`, text: invite.role === "owner" ? "소유자" : "동료" }),
+          el("span", { class: "tag", text: invite.projectScope }),
+          el("span", { class: "tag", text: `${invite.uses}/${invite.maxUses}회` }),
+          el("span", { class: `tag ${status.cls === "ok" ? "accent" : status.cls === "warn" ? "write" : "read"}`, text: status.label }),
+          invite.codePreview ? el("span", { class: "tag mono", text: `…${invite.codePreview}` }) : null,
+        ]),
+      ]),
+    ]);
+    if (canRevoke) {
+      const revokeBtn = el("button", { class: "ghost-sm danger", type: "button", text: "취소" });
+      revokeBtn.addEventListener("click", () => revokeInvite(invite, listWrap, revokeBtn));
+      item.append(revokeBtn);
+    }
+    listWrap.append(item);
+  }
+}
+
+async function revokeInvite(invite, listWrap, btn) {
+  if (!window.confirm(`"${invite.label}" 초대를 취소할까요?`)) return;
+  btn.disabled = true;
+  try {
+    await api(`/api/invites/${encodeURIComponent(invite.id)}/revoke`, { method: "POST" });
+    await loadInvites().catch(() => {});
+    renderInviteList(listWrap);
+    await loadAudit().catch(() => {});
+  } catch (error) {
+    btn.disabled = false;
+    listWrap.append(el("div", { class: "warn-box", text: `취소 실패: ${error.message}` }));
+  }
+}
+
 /* ---------- Audit panel ---------- */
 function renderAuditPanel(panel) {
   panel.replaceChildren();
   panel.append(
     el("div", { class: "panel-section-head" }, [
-      el("div", {}, [
-        el("h3", { text: "감사 로그" }),
-        el("p", { text: "최근 활동 기록입니다." }),
-      ]),
+      el("div", {}, [el("h3", { text: "감사 로그" }), el("p", { text: "최근 활동 기록입니다." })]),
     ]),
   );
 
-  const events = state.audit.slice(0, 30);
+  const events = state.audit.slice(0, 40);
   if (!events.length) {
     panel.append(el("div", { class: "empty-note", text: "아직 로그가 없습니다." }));
     return;
@@ -1389,22 +1777,40 @@ async function loadAudit() {
     renderAuditPanel(dom.drawerPanels.audit);
   }
 }
-async function loadMessages() {
-  const result = await api(`/api/messages?mode=${encodeURIComponent(state.mode)}`);
-  state.messages = result.messages || [];
+async function loadInvites() {
+  const result = await api("/api/invites");
+  state.invites = result.invites || [];
 }
 async function loadMarketplace() {
   state.marketplace = await api("/api/marketplace/status");
 }
 
 async function hydrate() {
-  await Promise.all([
-    loadSkills().catch(() => {}),
-    loadAudit().catch(() => {}),
-    loadMessages().catch(() => {}),
-  ]);
+  await Promise.all([loadSkills().catch(() => {}), loadAudit().catch(() => {}), loadConversations().catch(() => {})]);
+  // If the session expired during the parallel loads, handleSessionExpired has
+  // already switched to the login view — don't clobber it by mounting.
+  if (!state.user || sessionExpired) return;
   mountWorkspace();
+  renderConversations();
+
+  // Resume the most recent conversation, else start fresh.
+  const recent = state.conversations[0];
+  if (recent) {
+    state.conversationId = recent.id;
+    try {
+      const result = await api(`/api/messages?conversationId=${encodeURIComponent(recent.id)}`);
+      state.messages = result.messages || [];
+    } catch {
+      state.messages = [];
+    }
+    renderConversations();
+  } else {
+    state.conversationId = newId();
+    state.messages = [];
+  }
   renderTranscript();
+  updateDocTitle();
+
   // Warm marketplace status in background for the header badge + drawer.
   loadMarketplace()
     .then(() => syncMarketBadge())
@@ -1412,6 +1818,7 @@ async function hydrate() {
 }
 
 async function boot() {
+  renderBootSkeleton();
   state.bootstrap = await api("/api/bootstrap").catch(() => null);
   const me = await api("/api/me");
   state.user = me.user;
@@ -1421,6 +1828,16 @@ async function boot() {
   }
   state.mode = state.user.role === "owner" ? "owner" : "colleague";
   await hydrate();
+}
+
+// Close the off-canvas rail (and its backdrop) when leaving the mobile breakpoint.
+if (window.matchMedia) {
+  const mq = window.matchMedia("(min-width: 861px)");
+  const onChange = () => {
+    if (mq.matches) closeRail();
+  };
+  if (mq.addEventListener) mq.addEventListener("change", onChange);
+  else if (mq.addListener) mq.addListener(onChange);
 }
 
 boot().catch((error) => {

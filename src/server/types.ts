@@ -73,12 +73,22 @@ export interface AuditEvent {
   createdAt: string;
 }
 
+export interface Conversation {
+  id: string;        // == conversationId used on messages
+  userId: string;
+  mode: ChatMode;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface AppState {
   users: User[];
   invites: Invite[];
   sessions: Session[];
   messages: StoredMessage[];
   audit: AuditEvent[];
+  conversations: Conversation[];
 }
 
 export interface MarketplaceCatalog {

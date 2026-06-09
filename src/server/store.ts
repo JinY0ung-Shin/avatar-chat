@@ -6,8 +6,10 @@ import type {
   AppState,
   AuditEvent,
   ChatMode,
+  Conversation,
   Invite,
   Session,
+  StoredMessage,
   User,
   UserRole,
 } from "./types.js";
@@ -36,7 +38,13 @@ function emptyState(): AppState {
     sessions: [],
     messages: [],
     audit: [],
+    conversations: [],
   };
+}
+
+export function sanitizeInvite(invite: Invite): Omit<Invite, "codeHash"> {
+  const { codeHash: _codeHash, ...rest } = invite;
+  return rest;
 }
 
 export class JsonStore {
@@ -207,6 +215,95 @@ export class JsonStore {
     return this.read()
       .messages.filter((message) => message.userId === userId && (!mode || message.mode === mode))
       .slice(-80);
+  }
+
+  touchConversation(userId: string, conversationId: string, mode: ChatMode, firstUserText: string): void {
+    this.update((state) => {
+      const existing = state.conversations.find((c) => c.id === conversationId && c.userId === userId);
+      const timestamp = now();
+      if (existing) {
+        existing.updatedAt = timestamp;
+      } else {
+        const rawTitle = firstUserText.trim().replace(/\s+/g, " ");
+        const title = rawTitle.length > 0 ? rawTitle.slice(0, 40) : "새 대화";
+        const conversation: Conversation = {
+          id: conversationId,
+          userId,
+          mode,
+          title,
+          createdAt: timestamp,
+          updatedAt: timestamp,
+        };
+        state.conversations.push(conversation);
+        // Cap to most recent 300 by updatedAt
+        state.conversations.sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
+        state.conversations = state.conversations.slice(0, 300);
+      }
+    });
+  }
+
+  listConversations(userId: string, mode?: ChatMode): Conversation[] {
+    return this.read()
+      .conversations.filter((c) => c.userId === userId && (!mode || c.mode === mode))
+      .sort((a, b) => (a.updatedAt > b.updatedAt ? -1 : 1));
+  }
+
+  listMessagesForConversation(userId: string, conversationId: string): StoredMessage[] {
+    return this.read()
+      .messages.filter((m) => m.userId === userId && m.conversationId === conversationId)
+      .slice(-200);
+  }
+
+  // Remove the trailing assistant reply of a conversation so a regenerate can
+  // replace it instead of appending a duplicate turn. Returns true if removed.
+  dropLastAssistant(userId: string, conversationId: string): boolean {
+    return this.update((state) => {
+      for (let i = state.messages.length - 1; i >= 0; i -= 1) {
+        const m = state.messages[i];
+        if (m.userId === userId && m.conversationId === conversationId) {
+          if (m.role === "assistant") {
+            state.messages.splice(i, 1);
+            return true;
+          }
+          return false;
+        }
+      }
+      return false;
+    });
+  }
+
+  renameConversation(userId: string, conversationId: string, title: string): Conversation | null {
+    return this.update((state) => {
+      const conversation = state.conversations.find((c) => c.id === conversationId && c.userId === userId);
+      if (!conversation) {
+        return null;
+      }
+      const trimmed = title.trim().slice(0, 80);
+      conversation.title = trimmed.length > 0 ? trimmed : "새 대화";
+      conversation.updatedAt = now();
+      return conversation;
+    });
+  }
+
+  deleteConversation(userId: string, conversationId: string): boolean {
+    return this.update((state) => {
+      const beforeConvs = state.conversations.length;
+      const beforeMsgs = state.messages.length;
+      state.conversations = state.conversations.filter((c) => !(c.id === conversationId && c.userId === userId));
+      state.messages = state.messages.filter((m) => !(m.conversationId === conversationId && m.userId === userId));
+      return state.conversations.length < beforeConvs || state.messages.length < beforeMsgs;
+    });
+  }
+
+  revokeInvite(id: string): Invite | null {
+    return this.update((state) => {
+      const invite = state.invites.find((inv) => inv.id === id);
+      if (!invite || invite.revokedAt) {
+        return null;
+      }
+      invite.revokedAt = now();
+      return invite;
+    });
   }
 
   private createSessionForState(state: AppState, userId: string): string {

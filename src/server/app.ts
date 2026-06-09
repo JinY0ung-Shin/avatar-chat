@@ -4,7 +4,7 @@ import path from "node:path";
 import { clearSessionCookie, requireAuth, requireOwner, sessionTokenFromRequest, setSessionCookie } from "./auth.js";
 import { loadConfig } from "./config.js";
 import { loadMarketplaceRegistry, type MarketplaceRegistry } from "./marketplace.js";
-import { createMessage, JsonStore } from "./store.js";
+import { createMessage, JsonStore, sanitizeInvite } from "./store.js";
 import type { AppConfig, ChatMode, DiscoveredPlugin, UserRole } from "./types.js";
 import { runAgent, runAgentStream } from "./agent/index.js";
 import type { AuthenticatedRequest } from "./auth.js";
@@ -285,7 +285,7 @@ export function createApp(services = createServices()) {
   );
 
   app.get("/api/invites", requireAuth(services.store), requireOwner, (_req, res) => {
-    res.json({ invites: services.store.listInvites() });
+    res.json({ invites: services.store.listInvites().map(sanitizeInvite) });
   });
 
   app.post("/api/invites", requireAuth(services.store), requireOwner, (req: AuthenticatedRequest, res) => {
@@ -309,7 +309,7 @@ export function createApp(services = createServices()) {
       status: "success",
       detail: `Created ${role} invite for ${projectScope}`,
     });
-    res.json({ invite });
+    res.json({ invite: { ...sanitizeInvite(invite), code: invite.code } });
   });
 
   app.get("/api/audit", requireAuth(services.store), (req: AuthenticatedRequest, res) => {
@@ -324,6 +324,11 @@ export function createApp(services = createServices()) {
   });
 
   app.get("/api/messages", requireAuth(services.store), (req: AuthenticatedRequest, res) => {
+    const conversationId = safeString(req.query.conversationId);
+    if (conversationId) {
+      res.json({ messages: services.store.listMessagesForConversation(req.user?.id ?? "", conversationId) });
+      return;
+    }
     const mode = validMode(req.query.mode) ? req.query.mode : undefined;
     res.json({ messages: services.store.listMessagesForUser(req.user?.id ?? "", mode) });
   });
@@ -369,6 +374,7 @@ export function createApp(services = createServices()) {
         response,
       });
       services.store.addMessages([userMessage, assistantMessage]);
+      services.store.touchConversation(req.user?.id ?? "", conversationId, requestedMode, message);
       services.store.addAudit({
         actorUserId: req.user?.id ?? "unknown",
         actorName: req.user?.name ?? "unknown",
@@ -414,6 +420,11 @@ export function createApp(services = createServices()) {
 
     const registry = await services.getRegistry();
     const conversationId = safeString(req.body?.conversationId) || crypto.randomUUID();
+    // Regenerate: replace the previous reply instead of appending a new turn.
+    const regenerate = req.body?.regenerate === true;
+    if (regenerate) {
+      services.store.dropLastAssistant(req.user?.id ?? "", conversationId);
+    }
     const userMessage = createMessage({
       conversationId,
       userId: req.user?.id ?? "",
@@ -501,8 +512,10 @@ export function createApp(services = createServices()) {
       });
       // Persist user + assistant + audit identically to /api/chat — including
       // the colleague mutating-block case, which is delivered as a single
-      // `done` (blocked AgentResponse) rather than a 4xx.
-      services.store.addMessages([userMessage, assistantMessage]);
+      // `done` (blocked AgentResponse) rather than a 4xx. On regenerate the user
+      // message already exists, so only the replacement reply is stored.
+      services.store.addMessages(regenerate ? [assistantMessage] : [userMessage, assistantMessage]);
+      services.store.touchConversation(req.user?.id ?? "", conversationId, requestedMode, message);
       services.store.addAudit({
         actorUserId: req.user?.id ?? "unknown",
         actorName: req.user?.name ?? "unknown",
@@ -523,7 +536,9 @@ export function createApp(services = createServices()) {
         return;
       }
       const detail = error instanceof Error ? error.message : String(error);
-      services.store.addMessages([userMessage]);
+      if (!regenerate) {
+        services.store.addMessages([userMessage]);
+      }
       services.store.addAudit({
         actorUserId: req.user?.id ?? "unknown",
         actorName: req.user?.name ?? "unknown",
@@ -541,6 +556,53 @@ export function createApp(services = createServices()) {
       }
     }
   });
+
+  app.get("/api/conversations", requireAuth(services.store), (req: AuthenticatedRequest, res) => {
+    const mode = validMode(req.query.mode) ? req.query.mode : undefined;
+    res.json({ conversations: services.store.listConversations(req.user?.id ?? "", mode) });
+  });
+
+  app.patch("/api/conversations/:id", requireAuth(services.store), (req: AuthenticatedRequest, res) => {
+    const title = safeString(req.body?.title);
+    const conversation = services.store.renameConversation(req.user?.id ?? "", req.params.id, title);
+    if (!conversation) {
+      apiError(res, 404, "Conversation not found.");
+      return;
+    }
+    res.json({ conversation });
+  });
+
+  app.delete("/api/conversations/:id", requireAuth(services.store), (req: AuthenticatedRequest, res) => {
+    const removed = services.store.deleteConversation(req.user?.id ?? "", req.params.id);
+    if (!removed) {
+      apiError(res, 404, "Conversation not found.");
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  app.post(
+    "/api/invites/:id/revoke",
+    requireAuth(services.store),
+    requireOwner,
+    (req: AuthenticatedRequest, res) => {
+      const invite = services.store.revokeInvite(req.params.id);
+      if (!invite) {
+        apiError(res, 404, "Invite not found or already revoked.");
+        return;
+      }
+      services.store.addAudit({
+        actorUserId: req.user?.id ?? "unknown",
+        actorName: req.user?.name ?? "unknown",
+        mode: "owner",
+        action: "revoke_invite",
+        runtime: "local",
+        status: "success",
+        detail: `Revoked invite: ${invite.label}`,
+      });
+      res.json({ invite: sanitizeInvite(invite) });
+    },
+  );
 
   app.get("*", (_req, res) => {
     res.sendFile(path.join(process.cwd(), "public", "index.html"));
