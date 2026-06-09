@@ -31,15 +31,13 @@ function text(message: string, isError = false) {
 const OWNER_ONLY = "이 도구는 아바타 소유자만 사용할 수 있습니다.";
 
 /**
- * Build the in-process MCP server exposing the knowledge-backfill tools, bound
- * to a single conversation's store + context. Owner-only tools are enforced
+ * Build the knowledge-backfill tool definitions bound to a single
+ * conversation's store + context. Exposed separately from the server so the
+ * handlers can be exercised directly in tests. Owner-only tools are enforced
  * here (the model can call them, but a non-owner gets a refusal result).
  */
-export function buildKnowledgeServer(store: Store, ctx: KnowledgeToolsContext) {
-  return createSdkMcpServer({
-    name: KNOWLEDGE_SERVER_NAME,
-    version: "0.1.0",
-    tools: [
+export function buildKnowledgeTools(store: Store, ctx: KnowledgeToolsContext) {
+  return [
       tool(
         "recall_knowledge",
         "소유자가 가르쳐 둔 지식을 검색한다. 소유자만 알 법한 정보를 묻는 질문에 답하기 전에 먼저 호출하라.",
@@ -125,6 +123,17 @@ export function buildKnowledgeServer(store: Store, ctx: KnowledgeToolsContext) {
           return text(`지식으로 저장했습니다.${entry.topic ? ` (주제: ${entry.topic})` : ""}`);
         },
       ),
-    ],
+  ];
+}
+
+/**
+ * Build the in-process MCP server exposing the knowledge-backfill tools, bound
+ * to a single conversation's store + context.
+ */
+export function buildKnowledgeServer(store: Store, ctx: KnowledgeToolsContext) {
+  return createSdkMcpServer({
+    name: KNOWLEDGE_SERVER_NAME,
+    version: "0.1.0",
+    tools: buildKnowledgeTools(store, ctx),
   });
 }
