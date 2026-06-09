@@ -561,7 +561,7 @@ export class Store {
     }
     const rows = this.db
       .prepare(
-        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+        "SELECT * FROM messages WHERE conversation_id = ? ORDER BY rowid ASC",
       )
       .all(conversationId) as {
       id: string;
@@ -641,7 +641,7 @@ export class Store {
     }
     const last = this.db
       .prepare(
-        "SELECT id, role FROM messages WHERE conversation_id = ? ORDER BY created_at DESC LIMIT 1",
+        "SELECT id, role FROM messages WHERE conversation_id = ? ORDER BY rowid DESC LIMIT 1",
       )
       .get(conversationId) as { id: string; role: string } | undefined;
     if (last && last.role === "assistant") {

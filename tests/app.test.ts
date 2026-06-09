@@ -28,6 +28,17 @@ function signup(agent: ReturnType<typeof request.agent>, username: string, passw
   return agent.post("/api/auth/signup").send({ username, displayName: username, password });
 }
 
+// 1x1 transparent PNG as a data URL, for avatar-image upload tests.
+const PNG_DATA_URL =
+  "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMCAYHvqzS6AAAAAElFTkSuQmCC";
+
+/** Sign up a user and return their agent + user record. */
+async function newUser(app: ReturnType<typeof createApp>, username: string) {
+  const agent = request.agent(app);
+  const res = await signup(agent, username).expect(201);
+  return { agent, user: res.body.user as { id: string; username: string; roles: string[] } };
+}
+
 /** Parse SSE text into a list of {event, data} frames. */
 function parseSse(raw: string): { event: string; data: unknown }[] {
   const frames: { event: string; data: unknown }[] = [];
@@ -202,5 +213,197 @@ describe("avatar-chat platform", () => {
     const res = await admin.get("/api/admin/users").expect(200);
     expect(res.body.users.length).toBe(1);
     expect(res.body.users[0].username).toBe("boss");
+  });
+
+  // ---- Input validation -------------------------------------------------
+
+  it("rejects invalid signup input (short/invalid username, short password)", async () => {
+    const app = testApp();
+    await request(app).post("/api/auth/signup").send({ username: "ab", displayName: "x", password: "password123" }).expect(400);
+    await request(app).post("/api/auth/signup").send({ username: "has space", displayName: "x", password: "password123" }).expect(400);
+    await request(app).post("/api/auth/signup").send({ username: "validname", displayName: "x", password: "short" }).expect(400);
+  });
+
+  it("never returns the password hash to the client", async () => {
+    const app = testApp();
+    const { user } = await newUser(app, "secure");
+    expect(user).not.toHaveProperty("password_hash");
+    expect(user).not.toHaveProperty("passwordHash");
+  });
+
+  // ---- Session lifecycle ------------------------------------------------
+
+  it("clears the session on logout", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "lori");
+    await agent.get("/api/me/plugins").expect(200);
+    await agent.post("/api/auth/logout").expect(200);
+    await agent.get("/api/me/plugins").expect(401);
+    const me = await agent.get("/api/me").expect(200);
+    expect(me.body.user).toBeNull();
+  });
+
+  // ---- Profile + persona ------------------------------------------------
+
+  it("stores bio/persona and exposes persona + plugins on the owner's avatar detail", async () => {
+    const app = testApp();
+    const { agent, user } = await newUser(app, "mira");
+    await agent.patch("/api/me").send({ bio: "도우미", persona: "간결하게", published: true }).expect(200);
+    await agent.post("/api/me/plugins").send({ repo: "owner/tool", label: "Tool" }).expect(200);
+
+    const detail = await agent.get(`/api/avatars/${user.id}`).expect(200);
+    expect(detail.body.avatar.isOwn).toBe(true);
+    expect(detail.body.avatar.persona).toBe("간결하게");
+    expect(detail.body.avatar.plugins.length).toBe(1);
+
+    const me = await agent.get("/api/me").expect(200);
+    expect(me.body.user.pluginCount).toBe(1);
+  });
+
+  // ---- Avatar image -----------------------------------------------------
+
+  it("uploads, serves, and deletes an avatar image", async () => {
+    const app = testApp();
+    const { agent, user } = await newUser(app, "nina");
+
+    await request(app).get(`/api/users/${user.id}/avatar-image`).expect(404);
+
+    const up = await agent.put("/api/me/avatar-image").send({ image: PNG_DATA_URL }).expect(200);
+    expect(up.body.hasImage).toBe(true);
+
+    const img = await request(app).get(`/api/users/${user.id}/avatar-image`).expect(200);
+    expect(img.headers["content-type"]).toContain("image/png");
+
+    await agent.delete("/api/me/avatar-image").expect(200);
+    await request(app).get(`/api/users/${user.id}/avatar-image`).expect(404);
+  });
+
+  it("rejects a non-image avatar upload and oversized images", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "olga");
+    await agent.put("/api/me/avatar-image").send({ image: "data:text/plain;base64,aGVsbG8=" }).expect(400);
+    // > 2MB once base64-decoded, but kept under the 3MB body limit.
+    const oversized = `data:image/png;base64,${"A".repeat(2_800_000)}`;
+    await agent.put("/api/me/avatar-image").send({ image: oversized }).expect(400);
+  });
+
+  // ---- Plugins ----------------------------------------------------------
+
+  it("toggles a plugin's enabled flag and 404s on unknown plugin", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "pat");
+    const added = await agent.post("/api/me/plugins").send({ repo: "owner/repo" }).expect(200);
+    const id = added.body.plugin.id;
+
+    const off = await agent.patch(`/api/me/plugins/${id}`).send({ enabled: false }).expect(200);
+    expect(off.body.plugin.enabled).toBe(false);
+
+    await agent.patch(`/api/me/plugins/${id}`).send({}).expect(400);
+    await agent.delete("/api/me/plugins/does-not-exist").expect(404);
+  });
+
+  // ---- Chat validation + authorization ----------------------------------
+
+  it("validates chat input and forbids chatting with an unpublished avatar", async () => {
+    const app = testApp();
+    const { user: owner } = await newUser(app, "quinn"); // unpublished
+    const viewer = (await newUser(app, "rex")).agent;
+
+    await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "" }).expect(400);
+    await viewer.post("/api/chat/stream").send({ message: "hi" }).expect(400);
+    // owner avatar is not published and not the viewer's own → 403.
+    await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "hi" }).expect(403);
+  });
+
+  it("regenerate replaces the last reply instead of duplicating the turn", async () => {
+    const app = testApp();
+    const { agent, user } = await newUser(app, "sam");
+    await agent.patch("/api/me").send({ published: true }).expect(200);
+
+    const first = await agent.post("/api/chat/stream").send({ avatarId: user.id, message: "처음" }).expect(200);
+    const convId = (parseSse(first.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+
+    await agent
+      .post("/api/chat/stream")
+      .send({ avatarId: user.id, message: "처음", conversationId: convId, regenerate: true })
+      .expect(200);
+
+    const messages = await agent.get(`/api/messages?conversationId=${convId}`).expect(200);
+    expect(messages.body.messages).toHaveLength(2); // not 3 or 4
+  });
+
+  // ---- Conversation ownership ------------------------------------------
+
+  it("renames and deletes conversations, and isolates them between users", async () => {
+    const app = testApp();
+    const { agent: a, user: ua } = await newUser(app, "tina");
+    await a.patch("/api/me").send({ published: true }).expect(200);
+    const chat = await a.post("/api/chat/stream").send({ avatarId: ua.id, message: "hi" }).expect(200);
+    const convId = (parseSse(chat.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+
+    const renamed = await a.patch(`/api/conversations/${convId}`).send({ title: "내 첫 대화" }).expect(200);
+    expect(renamed.body.conversation.title).toBe("내 첫 대화");
+
+    // Another user cannot read or mutate someone else's conversation.
+    const b = (await newUser(app, "uma")).agent;
+    const peek = await b.get(`/api/messages?conversationId=${convId}`).expect(200);
+    expect(peek.body.messages).toHaveLength(0);
+    await b.patch(`/api/conversations/${convId}`).send({ title: "hijack" }).expect(404);
+    await b.delete(`/api/conversations/${convId}`).expect(404);
+
+    await a.delete(`/api/conversations/${convId}`).expect(200);
+    const convs = await a.get("/api/conversations").expect(200);
+    expect(convs.body.conversations.some((c: { id: string }) => c.id === convId)).toBe(false);
+  });
+
+  // ---- Admin role management -------------------------------------------
+
+  it("lets an admin grant/revoke the admin role and blocks self-deletion", async () => {
+    const app = testApp();
+    const { agent: admin, user: adminUser } = await newUser(app, "vera"); // first → admin
+    const { user: member } = await newUser(app, "walt");
+
+    const granted = await admin
+      .post(`/api/admin/users/${member.id}/roles`)
+      .send({ role: "admin", grant: true })
+      .expect(200);
+    expect(granted.body.user.roles).toContain("admin");
+
+    const revoked = await admin
+      .post(`/api/admin/users/${member.id}/roles`)
+      .send({ role: "admin", grant: false })
+      .expect(200);
+    expect(revoked.body.user.roles).not.toContain("admin");
+
+    await admin.delete(`/api/admin/users/${adminUser.id}`).expect(400); // can't delete self
+    await admin.delete(`/api/admin/users/${member.id}`).expect(200);
+    const users = await admin.get("/api/admin/users").expect(200);
+    expect(users.body.users.some((u: { id: string }) => u.id === member.id)).toBe(false);
+  });
+
+  it("forbids members from admin user-management endpoints", async () => {
+    const app = testApp();
+    await newUser(app, "admin2"); // first → admin
+    const { agent: member, user } = await newUser(app, "mem2");
+    await member.delete(`/api/admin/users/${user.id}`).expect(403);
+    await member.post(`/api/admin/users/${user.id}/roles`).send({ role: "admin", grant: true }).expect(403);
+  });
+
+  // ---- Audit ------------------------------------------------------------
+
+  it("scopes the audit log: admin sees all, members see their own", async () => {
+    const app = testApp();
+    const { agent: admin } = await newUser(app, "xena"); // admin
+    const { agent: member } = await newUser(app, "yuki");
+
+    const adminAudit = await admin.get("/api/audit").expect(200);
+    const actors = new Set(adminAudit.body.audit.map((e: { actorName: string }) => e.actorName));
+    expect(actors.has("xena")).toBe(true);
+    expect(actors.has("yuki")).toBe(true); // admin sees others
+
+    const memberAudit = await member.get("/api/audit").expect(200);
+    const memberActors = new Set(memberAudit.body.audit.map((e: { actorName: string }) => e.actorName));
+    expect(memberActors.has("xena")).toBe(false); // member sees only own
+    expect([...memberActors].every((a) => a === "yuki")).toBe(true);
   });
 });
