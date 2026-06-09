@@ -25,7 +25,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   }
 
   return {
-    port: Number(env("PORT", "8787")),
+    port: Number(env("PORT", "48787")),
     dataDir,
     sessionSecret: env("SESSION_SECRET", isProduction ? "" : "dev-session-secret"),
     ownerSetupCode,

@@ -25,8 +25,8 @@ COPY . .
 RUN npm run build
 
 ENV NODE_ENV=production
-ENV PORT=8787
+ENV PORT=48787
 ENV APP_DATA_DIR=/app/data
-EXPOSE 8787
+EXPOSE 48787
 
 CMD ["npm", "start"]

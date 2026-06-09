@@ -24,7 +24,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:8787`.
+Open `http://localhost:48787`.
 
 For local development, the default owner setup code is:
 

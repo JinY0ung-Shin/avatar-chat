@@ -3,9 +3,9 @@ services:
     build:
       context: .
     ports:
-      - "${PORT:-8787}:8787"
+      - "${PORT:-48787}:${PORT:-48787}"
     environment:
-      PORT: 8787
+      PORT: ${PORT:-48787}
       OWNER_SETUP_CODE: ${OWNER_SETUP_CODE:-owner-local-setup}
       SESSION_SECRET: ${SESSION_SECRET:-change-me-session-secret}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
