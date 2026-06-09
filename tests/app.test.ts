@@ -4,6 +4,7 @@ import path from "node:path";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
+import { resolvePluginRoots } from "../src/server/plugins.js";
 
 let tempDir: string;
 
@@ -390,6 +391,35 @@ describe("avatar-chat platform", () => {
   });
 
   // ---- Audit ------------------------------------------------------------
+
+  it("resolves single-plugin, marketplace, and non-plugin repos correctly", async () => {
+    const mkPlugin = (root: string) => {
+      fs.mkdirSync(path.join(root, ".claude-plugin"), { recursive: true });
+      fs.writeFileSync(path.join(root, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "p" }));
+    };
+
+    // Single-plugin repo → [root]
+    const single = path.join(tempDir, "single");
+    mkPlugin(single);
+    expect(await resolvePluginRoots(single, "single")).toEqual([single]);
+
+    // Marketplace repo → each listed sub-plugin dir
+    const market = path.join(tempDir, "market");
+    fs.mkdirSync(path.join(market, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(
+      path.join(market, ".claude-plugin", "marketplace.json"),
+      JSON.stringify({ name: "m", plugins: [{ name: "confluence", source: "./plugins/confluence" }] }),
+    );
+    mkPlugin(path.join(market, "plugins", "confluence"));
+    expect(await resolvePluginRoots(market, "market")).toEqual([path.join(market, "plugins", "confluence")]);
+
+    // Neither → empty + a warning
+    const bare = path.join(tempDir, "bare");
+    fs.mkdirSync(bare, { recursive: true });
+    const warns: string[] = [];
+    expect(await resolvePluginRoots(bare, "bare", (m) => warns.push(m))).toEqual([]);
+    expect(warns.length).toBe(1);
+  });
 
   it("scopes the audit log: admin sees all, members see their own", async () => {
     const app = testApp();
