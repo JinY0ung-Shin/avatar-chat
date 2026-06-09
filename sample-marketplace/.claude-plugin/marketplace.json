@@ -1,0 +1,14 @@
+{
+  "name": "avatar-local-marketplace",
+  "owner": {
+    "name": "Avatar Chat"
+  },
+  "plugins": [
+    {
+      "name": "ops-readonly",
+      "source": "./plugins/ops-readonly",
+      "description": "Read-only sample operations skills for service and VM status",
+      "tags": ["ops", "readonly", "demo"]
+    }
+  ]
+}

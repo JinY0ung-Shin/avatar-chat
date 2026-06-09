@@ -1,0 +1,25 @@
+services:
+  avatar-chat:
+    build:
+      context: .
+    ports:
+      - "${PORT:-8787}:8787"
+    environment:
+      PORT: 8787
+      OWNER_SETUP_CODE: ${OWNER_SETUP_CODE:-owner-local-setup}
+      SESSION_SECRET: ${SESSION_SECRET:-change-me-session-secret}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_RUNTIME: ${AGENT_RUNTIME:-auto}
+      APP_DATA_DIR: /app/data
+      MARKETPLACE_SOURCE: /app/sample-marketplace
+      MARKETPLACE_REF: ${MARKETPLACE_REF:-}
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      COLLEAGUE_ALLOWED_TOOLS: ${COLLEAGUE_ALLOWED_TOOLS:-Read,Glob,Grep}
+      OWNER_PERMISSION_MODE: ${OWNER_PERMISSION_MODE:-default}
+    volumes:
+      - avatar-chat-data:/app/data
+      - ./sample-marketplace:/app/sample-marketplace:ro
+    restart: unless-stopped
+
+volumes:
+  avatar-chat-data:

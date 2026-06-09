@@ -1,0 +1,37 @@
+{
+  "commands": [
+    {
+      "name": "service-status",
+      "description": "프로젝트 서비스의 현재 상태를 표로 정리합니다.",
+      "mode": "colleague",
+      "readOnly": true,
+      "projectScoped": true,
+      "match": ["서비스", "상태", "정상", "health", "status", "service"],
+      "command": "node",
+      "args": ["scripts/service-status.js"],
+      "timeoutMs": 10000
+    },
+    {
+      "name": "vm-inventory",
+      "description": "프로젝트 VM 목록과 용도를 표로 정리합니다.",
+      "mode": "colleague",
+      "readOnly": true,
+      "projectScoped": true,
+      "match": ["vm", "VM", "서버", "인스턴스", "inventory", "host"],
+      "command": "node",
+      "args": ["scripts/vm-inventory.js"],
+      "timeoutMs": 10000
+    },
+    {
+      "name": "owner-work-summary",
+      "description": "소유자 지시를 작업 요약 형태로 정리합니다.",
+      "mode": "owner",
+      "readOnly": false,
+      "projectScoped": false,
+      "match": ["정리", "보고", "요약", "issue", "pr", "업무"],
+      "command": "node",
+      "args": ["scripts/owner-summary.js"],
+      "timeoutMs": 10000
+    }
+  ]
+}
