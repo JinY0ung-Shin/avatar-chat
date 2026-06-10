@@ -136,6 +136,61 @@ describe("avatar-chat platform", () => {
     expect(after.body.plugins).toHaveLength(0);
   });
 
+  it("lets an owner create, edit, run, and delete routine jobs", async () => {
+    const app = testApp();
+    const agent = request.agent(app);
+    await signup(agent, "rita").expect(201);
+
+    // Bad input is rejected before anything is stored.
+    await agent.post("/api/me/routines").send({ prompt: "p", time: "25:00" }).expect(400);
+    await agent.post("/api/me/routines").send({ prompt: "", time: "09:00" }).expect(400);
+    await agent.post("/api/me/routines").send({ prompt: "p", time: "09:00", enabled: "true" }).expect(400);
+
+    const created = await agent
+      .post("/api/me/routines")
+      .send({ prompt: "오늘 요약해줘", time: "09:30" })
+      .expect(200);
+    const routine = created.body.routine;
+    expect(routine.time).toBe("09:30");
+    expect(routine.enabled).toBe(true);
+    expect(routine.nextRunAt).toBeTruthy();
+
+    // The dedicated conversation exists immediately, titled from the prompt.
+    const convs = await agent.get("/api/conversations").expect(200);
+    const conv = convs.body.conversations.find(
+      (c: { id: string }) => c.id === routine.conversationId,
+    );
+    expect(conv).toBeTruthy();
+    expect(conv.title.startsWith("[루틴]")).toBe(true);
+
+    // Edit: disable + change time.
+    const edited = await agent
+      .patch(`/api/me/routines/${routine.id}`)
+      .send({ enabled: false, time: "07:00" })
+      .expect(200);
+    expect(edited.body.routine.enabled).toBe(false);
+    expect(edited.body.routine.time).toBe("07:00");
+    expect(edited.body.routine.nextRunAt).toBeNull();
+
+    // Run now (local runtime → deterministic) appends to the routine's conversation.
+    const ran = await agent.post(`/api/me/routines/${routine.id}/run`).expect(200);
+    expect(ran.body.ok).toBe(true);
+    expect(ran.body.routine.lastStatus).toBe("success");
+    const msgs = await agent
+      .get(`/api/messages?conversationId=${routine.conversationId}`)
+      .expect(200);
+    expect(msgs.body.messages.length).toBeGreaterThanOrEqual(2);
+
+    // Another user cannot touch it.
+    const { agent: stranger } = await newUser(app, "sam");
+    await stranger.patch(`/api/me/routines/${routine.id}`).send({ prompt: "x" }).expect(404);
+    await stranger.delete(`/api/me/routines/${routine.id}`).expect(404);
+
+    await agent.delete(`/api/me/routines/${routine.id}`).expect(200);
+    const list = await agent.get("/api/me/routines").expect(200);
+    expect(list.body.routines).toHaveLength(0);
+  });
+
   it("shows published avatars and hides unpublished ones from other users", async () => {
     const app = testApp();
     const publisher = request.agent(app);

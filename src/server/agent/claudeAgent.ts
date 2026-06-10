@@ -269,7 +269,12 @@ const hookDeny = (reason: string): HookOutput => ({
  * can block, and can await the user. See the runClaudeAgent doc comment for why
  * this replaces canUseTool/onUserDialog.
  */
-function buildPreToolUseHook(events: AgentEvents, viewerIsOwner: boolean, readOnlyTools: string[]) {
+function buildPreToolUseHook(
+  events: AgentEvents,
+  viewerIsOwner: boolean,
+  readOnlyTools: string[],
+  headless: boolean,
+) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
     toolUseID?: string,
@@ -283,8 +288,12 @@ function buildPreToolUseHook(events: AgentEvents, viewerIsOwner: boolean, readOn
     // (onUserDialog never fires headlessly, so we answer via a deny+reason that
     // the model reads as the user's response.)
     if (toolName === "AskUserQuestion") {
-      if (!events.onQuestion) {
-        return hookDeny("질문 기능을 사용할 수 없습니다.");
+      if (headless || !events.onQuestion) {
+        return hookDeny(
+          headless
+            ? "예약된 자동 실행 중에는 사용자에게 질문할 수 없습니다. 합리적인 가정으로 진행하세요."
+            : "질문 기능을 사용할 수 없습니다.",
+        );
       }
       const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
       const answer = await events.onQuestion({ dialogKind: "AskUserQuestion", payload: { questions }, toolUseId });
@@ -298,8 +307,9 @@ function buildPreToolUseHook(events: AgentEvents, viewerIsOwner: boolean, readOn
       return hookAllow();
     }
 
-    // Any other tool: owner may approve interactively; colleague is read-only.
-    if (viewerIsOwner && events.onPermission) {
+    // Any other tool: a PRESENT owner may approve interactively; an unattended
+    // (headless) run and a colleague chat are both read-only.
+    if (!headless && viewerIsOwner && events.onPermission) {
       const decision = await events.onPermission({
         toolUseId,
         toolName,
@@ -313,7 +323,9 @@ function buildPreToolUseHook(events: AgentEvents, viewerIsOwner: boolean, readOn
 
     events.onBlocked?.({ toolUseId, toolName, agentId, reason: "읽기 전용 대화에서는 쓸 수 없는 도구입니다." });
     return hookDeny(
-      "이 대화는 읽기 전용입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep과 knowledge 도구만 사용하세요.",
+      headless
+        ? "이 실행은 자동 루틴(읽기 전용)입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep과 knowledge 검색만 사용하세요."
+        : "이 대화는 읽기 전용입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep과 knowledge 도구만 사용하세요.",
     );
   };
 }
@@ -327,7 +339,16 @@ function buildPrompt(request: AgentRequest, openRequestCount: number): string {
   }
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner answers gaps, colleagues create them.
-  if (request.viewerIsOwner) {
+  // A headless run has NO ONE on the other side: never claim the owner is
+  // present (that invites unattended knowledge writes) and state read-only.
+  if (request.headless) {
+    lines.push(
+      "이것은 예약된 루틴 작업의 **자동 실행**입니다. 응답을 실시간으로 보는 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과를 보고하세요.",
+    );
+    lines.push(
+      "이 실행은 읽기 전용입니다. 파일을 수정/생성하거나 지식을 저장하지 말고, 읽기 도구(Read/Glob/Grep)와 지식 검색(recall_knowledge)만 사용하세요.",
+    );
+  } else if (request.viewerIsOwner) {
     const note =
       openRequestCount > 0
         ? `현재 대기 중인 정보 요청이 ${openRequestCount}건 있습니다. 대화를 시작할 때 pending_requests로 확인해 보고하세요.`
@@ -341,7 +362,7 @@ function buildPrompt(request: AgentRequest, openRequestCount: number): string {
       "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep)와 제공된 knowledge 도구만 사용하세요.",
     );
   }
-  return `${lines.join("\n\n")}\n\n사용자 메시지:\n${request.message}`;
+  return `${lines.join("\n\n")}\n\n${request.headless ? "작업 지시" : "사용자 메시지"}:\n${request.message}`;
 }
 
 /**
@@ -379,15 +400,20 @@ export async function runClaudeAgent(
 
   const streaming = Boolean(events);
   const viewerIsOwner = Boolean(request.viewerIsOwner);
+  const headless = Boolean(request.headless);
 
   // Knowledge-backfill tools, bound to this conversation's avatar + viewer.
+  // Headless runs get COLLEAGUE-level knowledge access even when run as the
+  // owner: recall stays available, but save_knowledge/pending_requests are
+  // denied — no human is present to vouch for unattended knowledge writes.
   const knowledgeServer = buildKnowledgeServer(store, {
     avatarUserId: request.avatar.id,
-    viewerIsOwner,
+    viewerIsOwner: viewerIsOwner && !headless,
     askerUserId: request.viewerUserId ?? null,
     askerName: request.viewerName ?? null,
   });
-  const openRequestCount = viewerIsOwner ? store.countOpenKnowledgeRequests(request.avatar.id) : 0;
+  const openRequestCount =
+    viewerIsOwner && !headless ? store.countOpenKnowledgeRequests(request.avatar.id) : 0;
 
   const options: Record<string, unknown> = {
     plugins: pluginRoots,
@@ -422,7 +448,9 @@ export async function runClaudeAgent(
   // PreToolUse hook: enforcement + interactivity. Runs in-process, so it can call
   // straight into the events sink and await the user.
   if (events) {
-    options.hooks = { PreToolUse: [{ hooks: [buildPreToolUseHook(events, viewerIsOwner, config.readOnlyTools)] }] };
+    options.hooks = {
+      PreToolUse: [{ hooks: [buildPreToolUseHook(events, viewerIsOwner, config.readOnlyTools, headless)] }],
+    };
   }
 
   if (events) {

@@ -24,6 +24,7 @@ import {
   openRun,
   submitResponse,
 } from "../src/server/agent/runRegistry.js";
+import { executeRoutineJob } from "../src/server/scheduler.js";
 import type { Plugin } from "../src/server/types.js";
 
 let tempDir: string;
@@ -322,5 +323,144 @@ describe("knowledge tools", () => {
 
     // All three saves are searchable.
     expect(store.searchKnowledge(ownerId, "20일").length).toBeGreaterThan(0);
+  });
+});
+
+describe("routine jobs", () => {
+  function makeStore(label: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, label),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, ownerId: owner.id };
+  }
+
+  it("creates a job with a dedicated conversation and a future next run", () => {
+    const { store, ownerId } = makeStore("rj1");
+    const job = store.createRoutineJob(ownerId, { prompt: "  요약해줘  ", minuteOfDay: 540 });
+    expect(job.prompt).toBe("요약해줘");
+    expect(job.minuteOfDay).toBe(540);
+    expect(job.time).toBe("09:00");
+    expect(job.enabled).toBe(true);
+    expect(job.conversationId).toBeTruthy();
+    expect(job.lastRunAt).toBeNull();
+    // next run is scheduled and lies in the future.
+    expect(job.nextRunAt).toBeTruthy();
+    expect(new Date(job.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+    expect(store.listRoutineJobs(ownerId)).toHaveLength(1);
+  });
+
+  it("disabling parks the schedule; re-enabling reschedules", () => {
+    const { store, ownerId } = makeStore("rj2");
+    const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 60 });
+    const off = store.updateRoutineJob(ownerId, job.id, { enabled: false });
+    expect(off?.enabled).toBe(false);
+    expect(off?.nextRunAt).toBeNull();
+    const on = store.updateRoutineJob(ownerId, job.id, { enabled: true });
+    expect(on?.enabled).toBe(true);
+    expect(on?.nextRunAt).toBeTruthy();
+  });
+
+  it("editing prompt/time keeps the conversation and recomputes the run", () => {
+    const { store, ownerId } = makeStore("rj3");
+    const job = store.createRoutineJob(ownerId, { prompt: "old", minuteOfDay: 0 });
+    const edited = store.updateRoutineJob(ownerId, job.id, { prompt: "new", minuteOfDay: 1439 });
+    expect(edited?.prompt).toBe("new");
+    expect(edited?.time).toBe("23:59");
+    expect(edited?.conversationId).toBe(job.conversationId);
+  });
+
+  it("a prompt-only edit preserves next_run_at (does not cancel a pending run)", () => {
+    const { store, ownerId } = makeStore("rj-prompt");
+    const job = store.createRoutineJob(ownerId, { prompt: "old", minuteOfDay: 300 });
+    const edited = store.updateRoutineJob(ownerId, job.id, { prompt: "new" });
+    expect(edited?.prompt).toBe("new");
+    expect(edited?.nextRunAt).toBe(job.nextRunAt);
+    // Re-sending enabled:true on an already-enabled job is also timing-neutral.
+    const same = store.updateRoutineJob(ownerId, job.id, { enabled: true });
+    expect(same?.nextRunAt).toBe(job.nextRunAt);
+  });
+
+  it("creates the dedicated conversation eagerly, titled from the prompt", () => {
+    const { store, ownerId } = makeStore("rj-conv");
+    const job = store.createRoutineJob(ownerId, { prompt: "매일 상태 요약", minuteOfDay: 540 });
+    const conv = store.listConversations(ownerId).find((c) => c.id === job.conversationId);
+    expect(conv).toBeTruthy();
+    expect(conv!.title.startsWith("[루틴]")).toBe(true);
+  });
+
+  it("executeRoutineJob runs the job, records the outcome, and blocks overlap", async () => {
+    const services = createServices({
+      dataDir: path.join(tempDir, "rj-exec"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = services.store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const job = services.store.createRoutineJob(owner.id, { prompt: "안녕", minuteOfDay: 0 });
+
+    // Two simultaneous firings: the shared guard lets exactly one through.
+    const [first, second] = await Promise.all([
+      executeRoutineJob(services, job),
+      executeRoutineJob(services, job),
+    ]);
+    const outcomes = [first, second];
+    expect(outcomes.filter((o) => o.skipped)).toHaveLength(1);
+    expect(outcomes.filter((o) => o.ok)).toHaveLength(1);
+
+    const after = services.store.listRoutineJobs(owner.id)[0];
+    expect(after.lastStatus).toBe("success");
+    expect(after.lastRunAt).toBeTruthy();
+    const messages = services.store.listMessages(owner.id, job.conversationId);
+    expect(messages).toHaveLength(2);
+    expect(messages[0].role).toBe("user");
+    expect(messages[1].role).toBe("assistant");
+  });
+
+  it("scopes updates and deletes to the owning avatar", () => {
+    const { store, ownerId } = makeStore("rj4");
+    const other = store.createUser({ username: "other", displayName: "Other", password: "password123" });
+    const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 30 });
+    expect(store.updateRoutineJob(other.id, job.id, { prompt: "x" })).toBeNull();
+    expect(store.deleteRoutineJob(other.id, job.id)).toBe(false);
+    expect(store.deleteRoutineJob(ownerId, job.id)).toBe(true);
+    expect(store.listRoutineJobs(ownerId)).toHaveLength(0);
+  });
+
+  it("lists only enabled, due jobs and rolls them forward after a run", () => {
+    const { store, ownerId } = makeStore("rj5");
+    const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 0 });
+    // Nothing is due yet (next run is in the future).
+    const future = new Date(Date.now() + 60_000).toISOString();
+    expect(store.listDueRoutineJobs(future)).toHaveLength(0);
+    // A timestamp well past the scheduled run makes it due.
+    const past = new Date(Date.now() + 1000 * 60 * 60 * 48).toISOString();
+    const due = store.listDueRoutineJobs(past);
+    expect(due.map((j) => j.id)).toContain(job.id);
+    // Recording a run advances next_run_at into the future again.
+    store.markRoutineRun(job.id, { status: "success" });
+    const after = store.listRoutineJobs(ownerId)[0];
+    expect(after.lastStatus).toBe("success");
+    expect(after.lastRunAt).toBeTruthy();
+    expect(new Date(after.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("schedules the next run at the requested Seoul (KST) time", () => {
+    const { store, ownerId } = makeStore("rj-kst");
+    const minuteOfDay = 9 * 60 + 30; // 09:30 KST
+    const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay });
+    // Convert the stored UTC instant back to KST wall-clock minutes; it must
+    // land exactly on the requested time regardless of the server's timezone.
+    const kstMs = new Date(job.nextRunAt!).getTime() + 9 * 60 * 60 * 1000;
+    const minutesInKstDay = Math.floor((kstMs % (24 * 60 * 60 * 1000)) / 60_000);
+    expect(minutesInKstDay).toBe(minuteOfDay);
+  });
+
+  it("deleting the owner removes their routine jobs", () => {
+    const { store, ownerId } = makeStore("rj6");
+    store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 10 });
+    expect(store.deleteUser(ownerId)).toBe(true);
+    expect(store.listRoutineJobs(ownerId)).toHaveLength(0);
   });
 });

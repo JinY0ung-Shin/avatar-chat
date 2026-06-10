@@ -18,6 +18,7 @@ import type {
   KnowledgeEntry,
   KnowledgeRequest,
   Plugin,
+  RoutineJob,
   StoredMessage,
   User,
 } from "./types.js";
@@ -26,6 +27,37 @@ const SESSION_DAYS = 14;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+// Routine times are interpreted in Seoul time (KST). Korea observes no DST, so
+// KST is a fixed UTC+9 offset — the arithmetic below is independent of the
+// server's own timezone.
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** "HH:MM" (KST wall-clock) for minutes-from-midnight (0..1439). */
+function formatMinuteOfDay(minuteOfDay: number): string {
+  const h = Math.floor(minuteOfDay / 60);
+  const m = minuteOfDay % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/**
+ * The next instant (ISO, UTC) a daily job fires after `from`, where
+ * `minuteOfDay` is minutes from midnight in **Seoul time (KST)**. If today's
+ * KST slot has already passed, returns tomorrow's.
+ */
+function nextDailyRunIso(minuteOfDay: number, from = new Date()): string {
+  const fromMs = from.getTime();
+  // Shift into "KST space" where flooring to a day boundary yields KST midnight.
+  const kstMs = fromMs + KST_OFFSET_MS;
+  const kstMidnight = Math.floor(kstMs / DAY_MS) * DAY_MS;
+  let candidate = kstMidnight + minuteOfDay * 60_000;
+  if (candidate <= kstMs) {
+    candidate += DAY_MS;
+  }
+  // Shift back to the real UTC instant.
+  return new Date(candidate - KST_OFFSET_MS).toISOString();
 }
 
 interface UserRow {
@@ -59,6 +91,20 @@ interface KnowledgeEntryRow {
   topic: string | null;
   content: string;
   source_request_id: string | null;
+  created_at: string;
+}
+
+interface RoutineJobRow {
+  id: string;
+  avatar_user_id: string;
+  conversation_id: string;
+  prompt: string;
+  minute_of_day: number;
+  enabled: number;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
   created_at: string;
 }
 
@@ -157,12 +203,27 @@ export class Store {
         source_request_id TEXT,
         created_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS routine_jobs (
+        id TEXT PRIMARY KEY,
+        avatar_user_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        minute_of_day INTEGER NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        next_run_at TEXT,
+        last_run_at TEXT,
+        last_status TEXT,
+        last_error TEXT,
+        created_at TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
       CREATE INDEX IF NOT EXISTS idx_avatar_plugins_user ON avatar_plugins(user_id);
       CREATE INDEX IF NOT EXISTS idx_knowledge_requests_avatar ON knowledge_requests(avatar_user_id, status);
       CREATE INDEX IF NOT EXISTS idx_knowledge_entries_avatar ON knowledge_entries(avatar_user_id);
+      CREATE INDEX IF NOT EXISTS idx_routine_jobs_avatar ON routine_jobs(avatar_user_id);
+      CREATE INDEX IF NOT EXISTS idx_routine_jobs_due ON routine_jobs(enabled, next_run_at);
     `);
   }
 
@@ -630,6 +691,138 @@ export class Store {
     return rows.map((r) => this.toKnowledgeEntry(r));
   }
 
+  // ---- Routine jobs (owner-scheduled recurring runs) -------------------
+
+  private toRoutineJob(row: RoutineJobRow): RoutineJob {
+    return {
+      id: row.id,
+      avatarUserId: row.avatar_user_id,
+      conversationId: row.conversation_id,
+      prompt: row.prompt,
+      minuteOfDay: row.minute_of_day,
+      time: formatMinuteOfDay(row.minute_of_day),
+      enabled: row.enabled === 1,
+      nextRunAt: row.next_run_at,
+      lastRunAt: row.last_run_at,
+      lastStatus: (row.last_status as RoutineJob["lastStatus"]) ?? null,
+      lastError: row.last_error,
+      createdAt: row.created_at,
+    };
+  }
+
+  private routineJobRow(id: string): RoutineJobRow | undefined {
+    return this.db.prepare("SELECT * FROM routine_jobs WHERE id = ?").get(id) as
+      | RoutineJobRow
+      | undefined;
+  }
+
+  listRoutineJobs(avatarUserId: string): RoutineJob[] {
+    const rows = this.db
+      .prepare("SELECT * FROM routine_jobs WHERE avatar_user_id = ? ORDER BY created_at ASC")
+      .all(avatarUserId) as RoutineJobRow[];
+    return rows.map((r) => this.toRoutineJob(r));
+  }
+
+  /** Enabled jobs whose next run is at or before `nowIso`. Used by the scheduler. */
+  listDueRoutineJobs(nowIso: string): RoutineJob[] {
+    const rows = this.db
+      .prepare(
+        "SELECT * FROM routine_jobs WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at ASC",
+      )
+      .all(nowIso) as RoutineJobRow[];
+    return rows.map((r) => this.toRoutineJob(r));
+  }
+
+  getRoutineJob(avatarUserId: string, id: string): RoutineJob | null {
+    const row = this.routineJobRow(id);
+    if (!row || row.avatar_user_id !== avatarUserId) {
+      return null;
+    }
+    return this.toRoutineJob(row);
+  }
+
+  createRoutineJob(
+    avatarUserId: string,
+    input: { prompt: string; minuteOfDay: number; enabled?: boolean },
+  ): RoutineJob {
+    const id = crypto.randomUUID();
+    const conversationId = crypto.randomUUID();
+    const enabled = input.enabled !== false;
+    const prompt = input.prompt.trim();
+    const nextRunAt = enabled ? nextDailyRunIso(input.minuteOfDay) : null;
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          `INSERT INTO routine_jobs (id, avatar_user_id, conversation_id, prompt, minute_of_day, enabled, next_run_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(id, avatarUserId, conversationId, prompt, input.minuteOfDay, enabled ? 1 : 0, nextRunAt, now());
+      // Create the dedicated conversation eagerly so the client can always
+      // open it (and so its title comes from the prompt, not from whatever
+      // message lands in it first).
+      this.touchConversation(avatarUserId, conversationId, avatarUserId, `[루틴] ${prompt}`);
+    });
+    tx();
+    return this.toRoutineJob(this.routineJobRow(id)!);
+  }
+
+  updateRoutineJob(
+    avatarUserId: string,
+    id: string,
+    patch: { prompt?: string; minuteOfDay?: number; enabled?: boolean },
+  ): RoutineJob | null {
+    const row = this.routineJobRow(id);
+    if (!row || row.avatar_user_id !== avatarUserId) {
+      return null;
+    }
+    const prompt = patch.prompt !== undefined ? patch.prompt.trim() : row.prompt;
+    const minuteOfDay = patch.minuteOfDay !== undefined ? patch.minuteOfDay : row.minute_of_day;
+    const wasEnabled = row.enabled === 1;
+    const enabled = patch.enabled !== undefined ? patch.enabled : wasEnabled;
+    // Recompute the next firing only when timing or enablement actually
+    // changes. A prompt-only edit must keep an overdue (missed) run intact —
+    // recomputing would silently push it to tomorrow.
+    const timeChanged = patch.minuteOfDay !== undefined && patch.minuteOfDay !== row.minute_of_day;
+    let nextRunAt: string | null;
+    if (!enabled) {
+      nextRunAt = null;
+    } else if (timeChanged || !wasEnabled || !row.next_run_at) {
+      nextRunAt = nextDailyRunIso(minuteOfDay);
+    } else {
+      nextRunAt = row.next_run_at;
+    }
+    this.db
+      .prepare(
+        "UPDATE routine_jobs SET prompt = ?, minute_of_day = ?, enabled = ?, next_run_at = ? WHERE id = ?",
+      )
+      .run(prompt, minuteOfDay, enabled ? 1 : 0, nextRunAt, id);
+    return this.toRoutineJob(this.routineJobRow(id)!);
+  }
+
+  deleteRoutineJob(avatarUserId: string, id: string): boolean {
+    const result = this.db
+      .prepare("DELETE FROM routine_jobs WHERE id = ? AND avatar_user_id = ?")
+      .run(id, avatarUserId);
+    return result.changes > 0;
+  }
+
+  /**
+   * Record the outcome of a firing and schedule the next one. An enabled job
+   * rolls forward to tomorrow's slot; a job disabled mid-run stays parked.
+   */
+  markRoutineRun(id: string, outcome: { status: "success" | "error"; error?: string | null }): void {
+    const row = this.routineJobRow(id);
+    if (!row) {
+      return;
+    }
+    const nextRunAt = row.enabled === 1 ? nextDailyRunIso(row.minute_of_day) : null;
+    this.db
+      .prepare(
+        "UPDATE routine_jobs SET last_run_at = ?, last_status = ?, last_error = ?, next_run_at = ? WHERE id = ?",
+      )
+      .run(now(), outcome.status, outcome.error ?? null, nextRunAt, id);
+  }
+
   // ---- Avatars (discovery) ---------------------------------------------
 
   private avatarUpdatedAt(userId: string): string | null {
@@ -959,6 +1152,7 @@ export class Store {
         .prepare("DELETE FROM conversations WHERE owner_user_id = ? OR avatar_user_id = ?")
         .run(id, id);
       this.db.prepare("DELETE FROM avatar_plugins WHERE user_id = ?").run(id);
+      this.db.prepare("DELETE FROM routine_jobs WHERE avatar_user_id = ?").run(id);
       this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
       this.db.prepare("DELETE FROM user_roles WHERE user_id = ?").run(id);
       this.db.prepare("DELETE FROM users WHERE id = ?").run(id);

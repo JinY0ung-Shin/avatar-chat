@@ -1,0 +1,190 @@
+import fs from "node:fs";
+import path from "node:path";
+import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "./plugins.js";
+import { runAgentStream } from "./agent/index.js";
+import type { AppServices } from "./app.js";
+import type { PluginRoot, RoutineJob } from "./types.js";
+
+const DEFAULT_TICK_MS = 30_000;
+/** Hard deadline per unattended run: a hung SDK call must not wedge the job forever. */
+const RUN_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * Jobs currently executing. Module-level on purpose: the scheduler tick and
+ * the HTTP "run now" route must share ONE overlap guard, or the same job can
+ * run twice concurrently.
+ */
+const runningJobs = new Set<string>();
+
+export function isRoutineRunning(jobId: string): boolean {
+  return runningJobs.has(jobId);
+}
+
+/**
+ * Run a single routine job headlessly and append the result to its dedicated
+ * conversation. The request is marked `headless`, so the agent prompt and the
+ * tool gate both treat it as unattended: questions and permission prompts are
+ * auto-denied and knowledge writes are blocked — the run is read-only.
+ *
+ * Never throws: every failure (including avatar/plugin/workspace setup) is
+ * returned as `{ ok: false }` so async callers can't leak a rejection.
+ */
+async function runRoutineJobNow(
+  services: AppServices,
+  job: RoutineJob,
+): Promise<{ ok: boolean; error?: string }> {
+  const { config, store } = services;
+  const abortController = new AbortController();
+  const deadline = setTimeout(() => abortController.abort(), RUN_TIMEOUT_MS);
+  try {
+    const avatar = store.resolveChatAvatar(job.avatarUserId, job.avatarUserId);
+    if (!avatar) {
+      return { ok: false, error: "아바타를 찾을 수 없습니다." };
+    }
+
+    // Mirror the chat endpoint's plugin loading; tolerate clone/resolve fails
+    // but leave a trace — there is no client to stream the warnings to.
+    const pluginWarnings: string[] = [];
+    const warn = (w: string) => pluginWarnings.push(w);
+    const pluginRoots: PluginRoot[] =
+      config.agentRuntime === "local"
+        ? []
+        : [
+            ...(await loadDefaultPluginRoots(config, warn)),
+            ...(await loadAvatarPluginRoots(avatar.id, store.listEnabledPlugins(avatar.id), config, warn)),
+          ];
+    if (pluginWarnings.length > 0) {
+      console.warn(`routine ${job.id}: plugin warnings: ${pluginWarnings.join(" | ")}`);
+    }
+
+    const workspaceDir = path.join(config.dataDir, "workspaces", avatar.id);
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
+    const response = await runAgentStream(
+      {
+        message: job.prompt,
+        avatar: { id: avatar.id, displayName: avatar.displayName, persona: avatar.persona },
+        cwd: workspaceDir,
+        viewerUserId: avatar.id,
+        viewerName: avatar.displayName,
+        viewerIsOwner: true,
+        headless: true,
+      },
+      pluginRoots,
+      config,
+      store,
+      // No callbacks: with headless set, the tool gate denies anything interactive.
+      {},
+      abortController,
+    );
+
+    store.touchConversation(avatar.id, job.conversationId, avatar.id, `[루틴] ${job.prompt}`);
+    store.addMessage(job.conversationId, { role: "user", content: job.prompt });
+    store.addMessage(job.conversationId, {
+      role: "assistant",
+      content: response.text || response.summary,
+      response,
+    });
+    store.audit({
+      actorUserId: avatar.id,
+      actorName: avatar.displayName,
+      action: "routine_run",
+      status: "success",
+      detail: `routine ${job.id} (${response.runtime})`,
+    });
+    return { ok: true };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    try {
+      store.audit({
+        actorUserId: job.avatarUserId,
+        actorName: null,
+        action: "routine_run",
+        status: "error",
+        detail: `routine ${job.id}: ${detail}`,
+      });
+    } catch {
+      /* audit must never mask the original failure */
+    }
+    return { ok: false, error: detail };
+  } finally {
+    clearTimeout(deadline);
+  }
+}
+
+/**
+ * The single entry point for firing a routine (used by both the scheduler tick
+ * and the "run now" route): takes the shared overlap guard, runs the job, and
+ * records the outcome. Never throws.
+ */
+export async function executeRoutineJob(
+  services: AppServices,
+  job: RoutineJob,
+): Promise<{ ok: boolean; error?: string; skipped?: boolean }> {
+  if (runningJobs.has(job.id)) {
+    return { ok: false, skipped: true, error: "이미 실행 중인 루틴입니다." };
+  }
+  runningJobs.add(job.id);
+  try {
+    const result = await runRoutineJobNow(services, job);
+    services.store.markRoutineRun(job.id, {
+      status: result.ok ? "success" : "error",
+      error: result.error ?? null,
+    });
+    return result;
+  } catch (error) {
+    // runRoutineJobNow handles its own errors; reaching here means RECORDING
+    // the outcome failed (e.g. DB write error). Log it — never let it escape,
+    // and don't retry the write that just failed.
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`routine ${job.id}: failed to record outcome: ${detail}`);
+    return { ok: false, error: detail };
+  } finally {
+    runningJobs.delete(job.id);
+  }
+}
+
+/**
+ * Start the routine-job ticker. Every `tickMs` it fires any due jobs, one at a
+ * time. Returns a stop function.
+ *
+ * Sequential on purpose: daily jobs have no latency requirement, and a burst
+ * of due jobs (e.g. after server downtime past many slots) must not fan out
+ * into N simultaneous agent runs. Runs missed while the server was down fire
+ * once on the next tick, then roll forward; there is no per-missed-day
+ * catch-up.
+ */
+export function startRoutineScheduler(
+  services: AppServices,
+  options: { tickMs?: number } = {},
+): () => void {
+  const { store } = services;
+  const tickMs = options.tickMs ?? DEFAULT_TICK_MS;
+  let ticking = false;
+
+  const tick = async (): Promise<void> => {
+    let due: RoutineJob[];
+    try {
+      due = store.listDueRoutineJobs(new Date().toISOString());
+    } catch (error) {
+      console.error("routine scheduler: failed to list due jobs:", error);
+      return;
+    }
+    for (const job of due) {
+      await executeRoutineJob(services, job);
+    }
+  };
+
+  const timer = setInterval(() => {
+    if (ticking) {
+      return; // previous tick still draining its due list
+    }
+    ticking = true;
+    void tick().finally(() => {
+      ticking = false;
+    });
+  }, tickMs);
+  // Don't keep the process alive solely for the scheduler.
+  timer.unref?.();
+  return () => clearInterval(timer);
+}

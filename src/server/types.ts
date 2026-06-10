@@ -113,6 +113,12 @@ export interface AgentRequest {
   viewerName?: string;
   /** True when the viewer IS the avatar's owner (viewer.id === avatar.id). */
   viewerIsOwner?: boolean;
+  /**
+   * True for unattended runs (scheduled routines): no human is present, so the
+   * agent must not ask questions, interactive permission prompts are denied,
+   * and knowledge writes are blocked — the run is strictly read-only.
+   */
+  headless?: boolean;
 }
 
 /**
@@ -129,6 +135,32 @@ export interface KnowledgeRequest {
   answer: string | null;
   createdAt: string;
   answeredAt: string | null;
+}
+
+/**
+ * A recurring task the avatar's owner schedules: a prompt the avatar runs by
+ * itself once a day at a chosen local time. Results are appended to a dedicated
+ * conversation the owner can open like any other chat.
+ */
+export interface RoutineJob {
+  id: string;
+  /** The avatar (and owner — owner chats with their own avatar). */
+  avatarUserId: string;
+  /** The dedicated conversation routine results are appended to. */
+  conversationId: string;
+  /** The message the avatar runs on each firing. */
+  prompt: string;
+  /** Minutes from midnight **in Seoul time (KST)** (0..1439) the job fires at. */
+  minuteOfDay: number;
+  /** "HH:MM" rendering of minuteOfDay, for convenience on the client. */
+  time: string;
+  enabled: boolean;
+  /** Next scheduled firing (ISO, UTC); null while disabled. */
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastStatus: "success" | "error" | null;
+  lastError: string | null;
+  createdAt: string;
 }
 
 /** A fact the owner taught the avatar; searchable when answering colleagues. */

@@ -16,6 +16,7 @@ import { Store } from "./store.js";
 import type { AgentResponse, AppConfig } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import { awaitResponse, closeRun, openRun, submitResponse, CANCELLED } from "./agent/runRegistry.js";
+import { executeRoutineJob, isRoutineRunning } from "./scheduler.js";
 
 export interface AppServices {
   config: AppConfig;
@@ -46,6 +47,24 @@ function apiError(res: Response, status: number, message: string): void {
 
 function avatarDir(config: AppConfig): string {
   return path.join(config.dataDir, "avatars");
+}
+
+/** Parse a daily-run time ("HH:MM" or 0..1439 integer) into minutes-of-day. */
+function parseTimeToMinute(value: unknown): number | null {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1439) {
+    return value;
+  }
+  if (typeof value === "string") {
+    const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
+    if (match) {
+      const h = Number(match[1]);
+      const m = Number(match[2]);
+      if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
+        return h * 60 + m;
+      }
+    }
+  }
+  return null;
 }
 
 function looksLikeRepo(value: string): boolean {
@@ -338,6 +357,94 @@ export function createApp(services = createServices()) {
       return;
     }
     res.json({ ok: true });
+  });
+
+  // ---- Routine jobs (owner-scheduled recurring runs) -------------------
+
+  app.get("/api/me/routines", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({ routines: store.listRoutineJobs(req.user!.id) });
+  });
+
+  app.post("/api/me/routines", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const prompt = safeString(req.body?.prompt);
+    if (!prompt) {
+      apiError(res, 400, "prompt를 입력해 주세요.");
+      return;
+    }
+    const minuteOfDay = parseTimeToMinute(req.body?.time);
+    if (minuteOfDay === null) {
+      apiError(res, 400, "time은 HH:MM 형식이어야 합니다.");
+      return;
+    }
+    // Reject non-boolean `enabled` ("true", 1, …) instead of silently coercing
+    // it to a parked routine the caller thinks is active.
+    if (req.body?.enabled !== undefined && typeof req.body.enabled !== "boolean") {
+      apiError(res, 400, "enabled는 boolean이어야 합니다.");
+      return;
+    }
+    const enabled = req.body?.enabled === undefined ? true : (req.body.enabled as boolean);
+    const routine = store.createRoutineJob(req.user!.id, { prompt, minuteOfDay, enabled });
+    res.json({ routine });
+  });
+
+  app.patch("/api/me/routines/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const patch: { prompt?: string; minuteOfDay?: number; enabled?: boolean } = {};
+    if (typeof req.body?.prompt === "string") {
+      const prompt = safeString(req.body.prompt);
+      if (!prompt) {
+        apiError(res, 400, "prompt를 입력해 주세요.");
+        return;
+      }
+      patch.prompt = prompt;
+    }
+    if (req.body?.time !== undefined) {
+      const minuteOfDay = parseTimeToMinute(req.body.time);
+      if (minuteOfDay === null) {
+        apiError(res, 400, "time은 HH:MM 형식이어야 합니다.");
+        return;
+      }
+      patch.minuteOfDay = minuteOfDay;
+    }
+    if (typeof req.body?.enabled === "boolean") {
+      patch.enabled = req.body.enabled;
+    }
+    const routine = store.updateRoutineJob(req.user!.id, req.params.id, patch);
+    if (!routine) {
+      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ routine });
+  });
+
+  app.delete("/api/me/routines/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const removed = store.deleteRoutineJob(req.user!.id, req.params.id);
+    if (!removed) {
+      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  // Fire a routine immediately (a "test run"), then reschedule its next firing.
+  // executeRoutineJob owns the shared overlap guard and outcome recording, so a
+  // manual run can never overlap a scheduled firing of the same job.
+  app.post("/api/me/routines/:id/run", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const job = store.getRoutineJob(req.user!.id, req.params.id);
+    if (!job) {
+      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      return;
+    }
+    if (isRoutineRunning(job.id)) {
+      apiError(res, 409, "이미 실행 중인 루틴입니다.");
+      return;
+    }
+    const result = await executeRoutineJob(services, job);
+    if (result.skipped) {
+      apiError(res, 409, "이미 실행 중인 루틴입니다.");
+      return;
+    }
+    const routine = store.getRoutineJob(req.user!.id, job.id);
+    res.json({ ok: result.ok, error: result.error, routine });
   });
 
   // ---- Discovery -------------------------------------------------------

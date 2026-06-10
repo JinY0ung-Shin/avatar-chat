@@ -27,6 +27,7 @@ const state = {
   plugins: [],
   knowledgeRequests: [],
   knowledgeEntries: [],
+  routines: [],
   adminUsers: [],
   audit: [],
   streaming: false,
@@ -1298,7 +1299,7 @@ async function renderSettings() {
   dom.main.append(header, body);
 
   try {
-    await Promise.all([refreshMe(), loadPlugins(), loadKnowledge()]);
+    await Promise.all([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines()]);
   } catch {
     /* ignore */
   }
@@ -1401,6 +1402,7 @@ async function renderSettings() {
     ]),
     el("section", { class: "settings-card" }, [el("h3", { text: "공개 설정" }), publishRow]),
     buildPluginsCard(),
+    buildRoutinesCard(),
     buildKnowledgeCard(),
   );
 }
@@ -1499,6 +1501,122 @@ function renderPluginRows(list) {
     } });
     del.append(icon("trash"));
     row.append(del);
+    list.append(row);
+  }
+}
+
+function buildRoutinesCard() {
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "루틴 작업" }),
+        el("p", { class: "muted", text: "내 아바타가 매일 정해진 시각(한국 시간, KST)에 스스로 실행할 작업. 결과는 전용 대화에 쌓입니다." }),
+      ]),
+    ]),
+  );
+  const list = el("div", { class: "plugin-rows" });
+  card.append(list);
+  renderRoutineRows(list);
+
+  const form = el("form", {
+    class: "plugin-add",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api("/api/me/routines", {
+          method: "POST",
+          body: JSON.stringify({ prompt: fd.get("prompt"), time: fd.get("time") }),
+        });
+        await loadRoutines();
+        renderRoutineRows(list);
+        formEl.reset();
+      } catch (err) {
+        alert(`추가 실패: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("input", { name: "prompt", placeholder: "예: 오늘의 서비스 상태를 요약해줘", required: "" }),
+    el("input", { name: "time", type: "time", value: "09:00", required: "", class: "narrow" }),
+    el("button", { class: "primary", type: "submit", text: "추가" }),
+  ]);
+  card.append(form);
+  return card;
+}
+
+function renderRoutineRows(list) {
+  list.replaceChildren();
+  if (!state.routines.length) {
+    list.append(el("div", { class: "empty-note", text: "등록한 루틴이 없습니다." }));
+    return;
+  }
+  for (const r of state.routines) {
+    const statusBits = [`매일 ${r.time} (KST)`];
+    if (r.lastRunAt) {
+      const mark = r.lastStatus === "error" ? "실패" : "완료";
+      statusBits.push(`최근 실행: ${timeLabel(r.lastRunAt)} (${mark})`);
+    } else {
+      statusBits.push("아직 실행 안 됨");
+    }
+
+    const row = el("div", { class: "plugin-row" }, [
+      el("div", { class: "pr-main" }, [
+        el("strong", { text: r.prompt }),
+        el("div", { class: "pr-sub", text: statusBits.join(" · ") }),
+        r.lastStatus === "error" && r.lastError
+          ? el("div", { class: "pr-sub", text: `오류: ${r.lastError}` })
+          : null,
+      ]),
+      buildToggle(r.enabled, async (val) => {
+        try {
+          await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
+          r.enabled = val;
+          await loadRoutines();
+          renderRoutineRows(list);
+        } catch (e) {
+          alert(`변경 실패: ${e.message}`);
+        }
+      }),
+    ]);
+
+    const actions = el("div", { class: "kr-actions" });
+    const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행", onclick: async () => {
+      runBtn.disabled = true;
+      runBtn.textContent = "실행 중…";
+      try {
+        const res = await api(`/api/me/routines/${encodeURIComponent(r.id)}/run`, { method: "POST" });
+        await loadRoutines();
+        renderRoutineRows(list);
+        if (!res.ok) alert(`실행 실패: ${res.error || "알 수 없는 오류"}`);
+      } catch (e) {
+        alert(`실행 실패: ${e.message}`);
+        runBtn.disabled = false;
+        runBtn.textContent = "지금 실행";
+      }
+    } });
+    actions.append(runBtn);
+    actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => {
+      selectConversation({ id: r.conversationId, avatarUserId: state.user.id, avatarDisplayName: state.user.displayName });
+    } }));
+    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
+      if (!window.confirm("이 루틴을 삭제할까요? (쌓인 결과 대화는 그대로 남습니다)")) return;
+      try {
+        await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "DELETE" });
+        state.routines = state.routines.filter((x) => x.id !== r.id);
+        renderRoutineRows(list);
+      } catch (e) {
+        alert(`삭제 실패: ${e.message}`);
+      }
+    } });
+    del.append(icon("trash"));
+    actions.append(del);
+    row.append(actions);
     list.append(row);
   }
 }
@@ -1715,6 +1833,10 @@ async function loadKnowledge() {
   ]);
   state.knowledgeRequests = reqs.requests || [];
   state.knowledgeEntries = entries.entries || [];
+}
+async function loadRoutines() {
+  const r = await api("/api/me/routines");
+  state.routines = r.routines || [];
 }
 async function loadAdminUsers() {
   const r = await api("/api/admin/users");
