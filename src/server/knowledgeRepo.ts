@@ -131,7 +131,7 @@ async function setIdentity(repoRoot: string, name: string, email: string): Promi
  */
 export async function ensureClone(ctx: KnowledgeRepoContext): Promise<string> {
   const repoRoot = knowledgeClonePath(ctx.userId, ctx.config);
-  const url = marketplaceCloneUrl(ctx.repo);
+  const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
   // Reject values git would read as options (e.g. `--upload-pack=…` → RCE).
   if (url.startsWith("-") || (ctx.branch && ctx.branch.startsWith("-"))) {
     throw new Error("Invalid repo or branch");
@@ -429,7 +429,7 @@ export async function commitAndPush(
   const commitMsg = message.trim() || "Update knowledge repo";
   await git(repoRoot, ["commit", "-m", commitMsg]);
 
-  const url = marketplaceCloneUrl(ctx.repo);
+  const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
   const auth = gitAuthArgs(url, ctx.token ?? undefined);
   const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
   const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;

@@ -10,6 +10,8 @@ export interface AppConfig {
   /** Pins the Claude model the agent runs (SDK `model` option). Unset → SDK default. */
   anthropicModel?: string;
   readOnlyTools: string[];
+  /** Default host used when a repo is entered as owner/repo. */
+  githubHost: string;
   githubToken?: string;
   /** Repo-bundled plugin dir loaded for EVERY avatar (default skills). */
   defaultPluginsDir: string;
@@ -248,6 +250,11 @@ export interface AgentRequest {
    * colleague chat stays read-only regardless.
    */
   autoApprove?: boolean;
+  /**
+   * Names of the avatar owner's configured secret-tab environment variables.
+   * Values are never included. Set only for owner, non-headless chat prompts.
+   */
+  secretNames?: string[];
 }
 
 /**

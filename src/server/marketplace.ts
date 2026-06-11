@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
+export const DEFAULT_GITHUB_HOST = "github.com";
 
 export async function pathExists(candidate: string): Promise<boolean> {
   try {
@@ -17,6 +18,20 @@ export async function pathExists(candidate: string): Promise<boolean> {
 /** Sanitize an arbitrary repo/source string into a safe directory segment. */
 export function sanitizeName(name: string): string {
   return name.replace(/[^a-zA-Z0-9._-]/g, "-");
+}
+
+/** Normalize an operator-provided GitHub host into the host[:port] part only. */
+export function normalizeGithubHost(host?: string | null): string {
+  const raw = (host ?? "").trim();
+  if (!raw) {
+    return DEFAULT_GITHUB_HOST;
+  }
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    return new URL(withScheme).host || DEFAULT_GITHUB_HOST;
+  } catch {
+    return raw.replace(/^https?:\/\//i, "").replace(/\/+$/g, "") || DEFAULT_GITHUB_HOST;
+  }
 }
 
 /**
@@ -51,9 +66,9 @@ function assertSafeArg(value: string, what: string): void {
  * instead supplied per-invocation via `gitAuthArgs` (an `http.extraHeader`),
  * which git uses for the transfer but never writes to disk.
  */
-export function marketplaceCloneUrl(source: string): string {
+export function marketplaceCloneUrl(source: string, githubHost = DEFAULT_GITHUB_HOST): string {
   if (/^[\w.-]+\/[\w.-]+$/.test(source)) {
-    return `https://github.com/${source}.git`;
+    return `https://${normalizeGithubHost(githubHost)}/${source}.git`;
   }
   return source;
 }

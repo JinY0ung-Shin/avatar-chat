@@ -59,6 +59,9 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Git auth for clones uses `http.extraHeader` (see `gitAuthArgs`), never a
   token-in-URL — keeps the token out of `.git/config`. Scrub it from git error
   text before logging/returning (`scrubGitError`).
+- Repo shorthand (`owner/repo`) resolves through `config.githubHost` (`GITHUB_HOST`,
+  default `github.com`) for both plugin and knowledge-repo clones/pushes. Full
+  `https://...` and `git@...` repo values bypass that default and are used as-is.
 - Dynamically-created elements share the global stylesheet — avoid bare generic class names
   (e.g. `main`) on them; they collide with layout rules. The activity-tree root once used
   `class="agent-node main"` and inherited `.main { height: 100dvh }`, stretching the box to
@@ -72,6 +75,8 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   `crypto.ts`, keyed on `avatar.id`=owner), `get/set/delete/listUserSecretNames`/`getUserSecrets`.
   Exposed to clients as `secretNames` ONLY (values never via `toUser`). `PUT/DELETE
   /api/me/secrets/:name` (env-key-name validated). Settings UI "시크릿" card under the 권한·연결 tab.
+  Owner, non-headless chat prompts include only those secret NAMES so the avatar knows
+  what is configured; values still never enter the prompt or generic Bash env.
 - **hex-ssh (remote SSH) is an APP-registered MCP, not a plugin one.** `claudeAgent` adds it to
   `mcpServers` ONLY when the owner stored an `SSH_PRIVATE_KEY` secret, injecting ALL owner secrets as
   the subprocess `env` (so the key is invisible to the agent's own Bash/`env`). Installed into the

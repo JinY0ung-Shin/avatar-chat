@@ -21,6 +21,7 @@ RUN sh /usr/local/bin/apt_mirror_sources.sh \
     ca-certificates \
     curl \
     git \
+    gh \
     python3 \
     python3-pip \
     python3-cryptography \

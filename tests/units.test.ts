@@ -13,6 +13,7 @@ import {
 import {
   gitAuthArgs,
   marketplaceCloneUrl,
+  normalizeGithubHost,
   pathExists,
   sanitizeName,
   scrubGitError,
@@ -179,6 +180,12 @@ describe("marketplace helpers", () => {
 
   it("resolves clone URLs for shorthand and full URLs (token never in URL)", () => {
     expect(marketplaceCloneUrl("owner/repo")).toBe("https://github.com/owner/repo.git");
+    expect(marketplaceCloneUrl("owner/repo", "github.enterprise.local")).toBe(
+      "https://github.enterprise.local/owner/repo.git",
+    );
+    expect(marketplaceCloneUrl("owner/repo", "https://github.enterprise.local/")).toBe(
+      "https://github.enterprise.local/owner/repo.git",
+    );
     expect(marketplaceCloneUrl("https://github.com/owner/repo.git")).toBe(
       "https://github.com/owner/repo.git",
     );
@@ -186,6 +193,12 @@ describe("marketplace helpers", () => {
     const ssh = "git@github.com:owner/repo.git";
     expect(marketplaceCloneUrl(ssh)).toBe(ssh);
     expect(marketplaceCloneUrl("https://example.com/x.git")).toBe("https://example.com/x.git");
+  });
+
+  it("normalizes configured GitHub hosts", () => {
+    expect(normalizeGithubHost("")).toBe("github.com");
+    expect(normalizeGithubHost("https://github.enterprise.local/")).toBe("github.enterprise.local");
+    expect(normalizeGithubHost("github.enterprise.local:8443")).toBe("github.enterprise.local:8443");
   });
 
   it("supplies token auth via an http header arg, not the URL", () => {
@@ -799,6 +812,29 @@ describe("buildPrompt", () => {
     expect(owner).toContain("**소유자**입니다.");
     const colleague = buildPrompt(req({ viewerIsOwner: false }), 0);
     expect(colleague).toContain("**동료**입니다.");
+  });
+
+  it("shows configured secret names only to the owner, never values", () => {
+    const owner = buildPrompt(
+      req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY", "API_TOKEN"] }),
+      0,
+    );
+    expect(owner).toContain("시크릿");
+    expect(owner).toContain("SSH_PRIVATE_KEY");
+    expect(owner).toContain("API_TOKEN");
+    expect(owner).not.toContain("secret-value");
+
+    const colleague = buildPrompt(
+      req({ viewerIsOwner: false, elevated: true, secretNames: ["SSH_PRIVATE_KEY"] }),
+      0,
+    );
+    expect(colleague).not.toContain("SSH_PRIVATE_KEY");
+
+    const headless = buildPrompt(
+      req({ viewerIsOwner: true, headless: true, secretNames: ["SSH_PRIVATE_KEY"] }),
+      0,
+    );
+    expect(headless).not.toContain("SSH_PRIVATE_KEY");
   });
 
   it("does not append the user message on a greeting turn", () => {

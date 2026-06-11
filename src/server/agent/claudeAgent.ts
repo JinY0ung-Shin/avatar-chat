@@ -372,6 +372,7 @@ export function buildPreToolUseHook(
 
 export function buildPrompt(request: AgentRequest, openRequestCount: number): string {
   const alias = request.avatar.alias?.trim();
+  const secretNames = Array.from(new Set((request.secretNames ?? []).filter(Boolean))).sort();
   const lines = [
     alias
       ? `당신의 이름은 "${alias}"입니다. 이 이름을 가진 아바타로서 사용자와 대화합니다.`
@@ -404,6 +405,13 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "여기에 업무 지식·스킬을 정리해 두면 다음 대화부터 당신이 그것을 사용합니다. " +
         "write_file/scaffold_skill 변경은 **commit 하기 전까지는 푸시되지 않으니**, 작업 단위가 끝났거나 소유자가 요청하면 commit 하세요.",
     );
+    if (secretNames.length > 0) {
+      lines.push(
+        "설정의 **시크릿** 탭에 등록된 환경변수 이름: " +
+          secretNames.map((name) => `\`${name}\``).join(", ") +
+          ". 값은 볼 수 없으며 출력하거나 추측하지 마세요. 필요한 MCP 도구에는 서버가 해당 값을 별도로 주입합니다.",
+      );
+    }
     // Pending requests are surfaced ONLY when the owner opens a fresh chat
     // (greeting). On every other owner turn we stay quiet so the reminder
     // isn't re-injected mid-conversation.
@@ -635,7 +643,12 @@ export async function runClaudeAgent(
   let resultText = "";
   let resultErrorSubtype = "";
 
-  for await (const message of sdk.query({ prompt: buildPrompt(request, openRequestCount), options })) {
+  const promptRequest: AgentRequest =
+    viewerIsOwner && !headless
+      ? { ...request, secretNames: store.listUserSecretNames(request.avatar.id) }
+      : { ...request, secretNames: [] };
+
+  for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {
     if (!isRecord(message)) {
       continue;
     }

@@ -221,7 +221,7 @@ export function createApp(services = createServices()) {
   // First-run probe: when no account exists yet, the client shows the
   // admin-account setup screen instead of the normal login.
   app.get("/api/bootstrap", (_req, res) => {
-    res.json({ needsSetup: !store.hasAnyUser() });
+    res.json({ needsSetup: !store.hasAnyUser(), githubHost: config.githubHost });
   });
 
   app.get("/api/me", (req, res) => {

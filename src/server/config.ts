@@ -1,5 +1,6 @@
 import path from "node:path";
 import type { AgentRuntime, AppConfig } from "./types.js";
+import { DEFAULT_GITHUB_HOST, normalizeGithubHost } from "./marketplace.js";
 
 function env(name: string, fallback = ""): string {
   return process.env[name]?.trim() || fallback;
@@ -12,6 +13,7 @@ function parseRuntime(value: string): AgentRuntime {
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const isProduction = process.env.NODE_ENV === "production";
   const dataDir = overrides.dataDir ?? env("APP_DATA_DIR", path.join(process.cwd(), "data"));
+  const githubHost = normalizeGithubHost(overrides.githubHost ?? env("GITHUB_HOST", DEFAULT_GITHUB_HOST));
 
   const sessionSecret =
     overrides.sessionSecret ?? env("SESSION_SECRET", isProduction ? "" : "dev-session-secret");
@@ -33,6 +35,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     anthropicApiKey: env("ANTHROPIC_API_KEY") || undefined,
     anthropicModel: env("ANTHROPIC_MODEL") || undefined,
     readOnlyTools,
+    githubHost,
     githubToken: env("GITHUB_TOKEN") || undefined,
     logLevel: env("LOG_LEVEL", isProduction ? "info" : "debug"),
     // Repo-bundled default skills, loaded for every avatar. cwd-based to match
@@ -57,5 +60,6 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     ...(overrides.dataDir && !overrides.agentSessionsDir
       ? { agentSessionsDir: path.join(overrides.dataDir, "agent-sessions") }
       : {}),
+    ...(overrides.githubHost !== undefined ? { githubHost } : {}),
   };
 }

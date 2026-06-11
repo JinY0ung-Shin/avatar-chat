@@ -63,11 +63,24 @@ describe("noah-almighty platform", () => {
     const app = testApp();
     const fresh = await request(app).get("/api/bootstrap").expect(200);
     expect(fresh.body.needsSetup).toBe(true);
+    expect(fresh.body.githubHost).toBe("github.com");
 
     await signup(request.agent(app), "alice").expect(201);
 
     const after = await request(app).get("/api/bootstrap").expect(200);
     expect(after.body.needsSetup).toBe(false);
+  });
+
+  it("reports the configured default GitHub host", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+      githubHost: "github.enterprise.local",
+    });
+    const app = createApp(services);
+    const res = await request(app).get("/api/bootstrap").expect(200);
+    expect(res.body.githubHost).toBe("github.enterprise.local");
   });
 
   it("makes the first signup an admin and subsequent users members only", async () => {

@@ -36,6 +36,7 @@ const state = {
   audit: [],
   streaming: false,
   authError: "",
+  githubHost: "github.com",
 };
 
 const dom = {};
@@ -2324,7 +2325,10 @@ function repoToHref(repo) {
   if (!repo) return null;
   const r = repo.trim();
   if (/^https?:\/\//.test(r)) return r.replace(/\.git$/, "");
-  if (/^[\w.-]+\/[\w.-]+$/.test(r)) return `https://github.com/${r.replace(/\.git$/, "")}`;
+  if (/^[\w.-]+\/[\w.-]+$/.test(r)) {
+    const host = (state.githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/g, "");
+    return `https://${host}/${r.replace(/\.git$/, "")}`;
+  }
   return null;
 }
 
@@ -2944,6 +2948,13 @@ async function boot() {
     el("div", { class: "boot" }, [el("div", { class: "boot-mark", text: "A" }), el("div", { class: "boot-spinner" }), el("div", { class: "boot-label", text: "불러오는 중…" })]),
   );
   let me = null;
+  let bootstrap = null;
+  try {
+    bootstrap = await api("/api/bootstrap");
+    state.githubHost = bootstrap.githubHost || state.githubHost;
+  } catch {
+    bootstrap = null;
+  }
   try {
     me = await api("/api/me");
   } catch {
@@ -2952,12 +2963,7 @@ async function boot() {
   state.user = me?.user || null;
   if (!state.user) {
     // On a fresh install (no accounts yet) show the admin-setup screen.
-    let needsSetup = false;
-    try {
-      needsSetup = Boolean((await api("/api/bootstrap")).needsSetup);
-    } catch {
-      needsSetup = false;
-    }
+    const needsSetup = Boolean(bootstrap?.needsSetup);
     renderAuth(needsSetup ? "setup" : "login");
     return;
   }

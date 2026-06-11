@@ -370,7 +370,7 @@ export async function loadAvatarPluginRoots(
     const destination = pluginClonePath(userId, plugin.repo, config);
     try {
       if (!clonedPaths.has(destination)) {
-        const url = marketplaceCloneUrl(plugin.repo);
+        const url = marketplaceCloneUrl(plugin.repo, config.githubHost);
         await syncGitRepo(url, destination, plugin.ref ?? undefined, token);
         clonedPaths.add(destination);
         logger.debug({ repo: plugin.repo, destination }, "plugin repo cloned");
@@ -417,7 +417,7 @@ export async function syncPluginRepo(
     forgetClone(destination);
   }
   if (!clonedPaths.has(destination)) {
-    const url = marketplaceCloneUrl(plugin.repo);
+    const url = marketplaceCloneUrl(plugin.repo, config.githubHost);
     await syncGitRepo(url, destination, plugin.ref ?? undefined, token);
     clonedPaths.add(destination);
   }

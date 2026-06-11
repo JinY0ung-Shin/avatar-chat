@@ -49,7 +49,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The image includes Node.js, git, Python 3, ripgrep, `jq`, and `uv`. SQLite data and
+The image includes Node.js, git, GitHub CLI (`gh`), Python 3, ripgrep, `jq`, and `uv`. SQLite data and
 uploaded avatar images persist under `APP_DATA_DIR`.
 
 ## Configuration
@@ -62,6 +62,7 @@ uploaded avatar images persist under `APP_DATA_DIR`.
 | `ANTHROPIC_API_KEY` | Optional; absent → SDK uses local Claude Code auth. |
 | `PORT` / `APP_DATA_DIR` | Server port / data directory (SQLite DB + avatar images). |
 | `READONLY_TOOLS` | Tool allowlist for plugin execution (default `Read,Glob,Grep`). |
+| `GITHUB_HOST` | Default host for shorthand repo values like `owner/repo` (default `github.com`; full URLs are used as-is). |
 | `GITHUB_TOKEN` | Optional server-wide fallback token for cloning private plugin repos (per-user tokens, set in 설정, take precedence). |
 
 ## Security note
