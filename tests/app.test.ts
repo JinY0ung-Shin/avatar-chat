@@ -380,6 +380,42 @@ describe("noah-almighty platform", () => {
     expect(res.body.users[0].username).toBe("boss");
   });
 
+  it("stores/clears a subscription token and reflects it in system status", async () => {
+    const app = testApp(); // no ANTHROPIC_API_KEY → subscription mode
+    const { agent: admin } = await newUser(app, "boss"); // first → admin
+
+    // Initially disconnected, subscription auth mode (no API key in test config).
+    let sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.subscriptionConnected).toBe(false);
+    expect(sys.apiKeyOverride).toBe(false);
+    expect(sys.authMode).toBe("subscription");
+
+    // Reject empty / malformed tokens.
+    await admin.put("/api/admin/claude-token").send({ token: "  " }).expect(400);
+    await admin.put("/api/admin/claude-token").send({ token: "nope" }).expect(400);
+
+    // Store a valid-looking token; it must never be echoed back.
+    const put = await admin.put("/api/admin/claude-token").send({ token: "sk-ant-oat01-secret" }).expect(200);
+    expect(put.body).toEqual({ ok: true });
+    expect(JSON.stringify(put.body)).not.toContain("secret");
+
+    sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.subscriptionConnected).toBe(true);
+
+    // Clearing it returns to disconnected.
+    await admin.delete("/api/admin/claude-token").expect(200);
+    sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.subscriptionConnected).toBe(false);
+  });
+
+  it("forbids the subscription-token endpoints for members (403)", async () => {
+    const app = testApp();
+    await newUser(app, "boss"); // first → admin
+    const { agent: member } = await newUser(app, "peon");
+    await member.put("/api/admin/claude-token").send({ token: "sk-ant-oat01-x" }).expect(403);
+    await member.delete("/api/admin/claude-token").expect(403);
+  });
+
   it("exposes system/runtime info to admins, gated from members", async () => {
     const services = createServices({
       dataDir: tempDir,
@@ -398,10 +434,37 @@ describe("noah-almighty platform", () => {
     expect(res.body.system.observedModel).toBeNull();
     expect(res.body.system.authMode).toBe("subscription");
     expect(Array.isArray(res.body.system.readOnlyTools)).toBe(true);
+    expect(res.body.system.hexSshTools.map((t: { name: string }) => t.name)).toContain("remote-ssh");
+    expect(res.body.system.hexSshToolPolicy.owner).toContain("remote-ssh");
+    expect(res.body.system.hexSshToolPolicy.trusted).toContain("ssh-read-lines");
+    expect(res.body.system.hexSshToolPolicy.trusted).not.toContain("remote-ssh");
 
     const member = request.agent(app);
     await signup(member, "peon").expect(201);
     await member.get("/api/admin/system").expect(403);
+  });
+
+  it("lets admins manage the hex-ssh tool policy and blocks members", async () => {
+    const app = testApp();
+    const { agent: admin } = await newUser(app, "boss");
+    const { agent: member } = await newUser(app, "member1");
+
+    const policy = {
+      owner: ["ssh-read-lines", "remote-ssh"],
+      trusted: ["ssh-read-lines"],
+      colleague: [],
+    };
+    const saved = await admin
+      .put("/api/admin/hex-ssh-policy")
+      .send({ policy })
+      .expect(200);
+    expect(saved.body.policy).toEqual(policy);
+
+    const system = await admin.get("/api/admin/system").expect(200);
+    expect(system.body.system.hexSshToolPolicy).toEqual(policy);
+
+    await admin.put("/api/admin/hex-ssh-policy").send({ policy: { owner: [] } }).expect(400);
+    await member.put("/api/admin/hex-ssh-policy").send({ policy }).expect(403);
   });
 
   it("reports configuredModel as null when ANTHROPIC_MODEL is unset", async () => {

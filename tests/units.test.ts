@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServices } from "../src/server/app.js";
 import {
   buildKnowledgeTools,
@@ -49,8 +49,14 @@ import {
   scaffoldSkill,
   readFile as readKnowledgeFile,
   writeFile as writeKnowledgeFile,
+  writeRepoTemplate,
 } from "../src/server/knowledgeRepo.js";
-import { buildRepoTools, REPO_SERVER_NAME, REPO_TOOL_NAMES } from "../src/server/agent/repoTools.js";
+import {
+  buildRepoTools,
+  REPO_CREATE_TOOL_NAME,
+  REPO_SERVER_NAME,
+  REPO_TOOL_NAMES,
+} from "../src/server/agent/repoTools.js";
 import {
   knownHostsPath,
   parseKnownHosts,
@@ -66,6 +72,11 @@ import {
 } from "../src/server/agent/sshTrustTools.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
 import type { Plugin } from "../src/server/types.js";
+import {
+  DEFAULT_HEX_SSH_TOOL_POLICY,
+  normalizeHexSshToolPolicy,
+  type HexSshToolPolicy,
+} from "../src/server/hexSshPolicy.js";
 
 let tempDir: string;
 
@@ -76,6 +87,45 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+function rpcClient(proc: ChildProcessWithoutNullStreams) {
+  let nextId = 1;
+  let buffer = "";
+  const pending = new Map<number, (value: Record<string, unknown>) => void>();
+  proc.stdout.setEncoding("utf8");
+  proc.stdout.on("data", (chunk: string) => {
+    buffer += chunk;
+    while (true) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      const message = JSON.parse(line) as Record<string, unknown>;
+      const id = typeof message.id === "number" ? message.id : null;
+      if (id !== null) {
+        pending.get(id)?.(message);
+        pending.delete(id);
+      }
+    }
+  });
+  return {
+    request(method: string, params?: Record<string, unknown>) {
+      const id = nextId++;
+      proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      return new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`RPC timeout for ${method}`));
+        }, 1000);
+        pending.set(id, (message) => {
+          clearTimeout(timer);
+          resolve(message);
+        });
+      });
+    },
+  };
+}
 
 /** Initialise a local git repo at `dir` with a single committed file and return its HEAD sha. */
 function gitInit(dir: string, seedFile = "README.md"): string {
@@ -726,6 +776,51 @@ describe("store user secrets", () => {
   });
 });
 
+describe("store app config (app-wide secrets)", () => {
+  function makeStore(secret = "appshh") {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "appconfig"),
+      agentRuntime: "local",
+      sessionSecret: secret,
+    });
+    return store;
+  }
+
+  it("round-trips and upserts an encrypted app-wide value", () => {
+    const store = makeStore();
+    expect(store.getAppSecret("claude_oauth_token")).toBeNull();
+    store.setAppSecret("claude_oauth_token", "sk-ant-oat01-abc");
+    expect(store.getAppSecret("claude_oauth_token")).toBe("sk-ant-oat01-abc");
+    store.setAppSecret("claude_oauth_token", "sk-ant-oat01-def");
+    expect(store.getAppSecret("claude_oauth_token")).toBe("sk-ant-oat01-def");
+  });
+
+  it("deletes an app-wide value", () => {
+    const store = makeStore();
+    store.setAppSecret("claude_oauth_token", "sk-ant-oat01-abc");
+    store.deleteAppSecret("claude_oauth_token");
+    expect(store.getAppSecret("claude_oauth_token")).toBeNull();
+  });
+
+  it("returns null when the value can't decrypt (e.g. SESSION_SECRET changed)", () => {
+    makeStore("secretA").setAppSecret("claude_oauth_token", "sk-ant-oat01-abc");
+    // Re-open the same DB with a different secret: the stored value can't decrypt.
+    expect(makeStore("secretB").getAppSecret("claude_oauth_token")).toBeNull();
+  });
+
+  it("stores the hex-ssh tool policy as app config", () => {
+    const store = makeStore();
+    expect(store.getHexSshToolPolicy()).toEqual(DEFAULT_HEX_SSH_TOOL_POLICY);
+    const policy: HexSshToolPolicy = {
+      owner: ["ssh-read-lines", "remote-ssh"],
+      trusted: ["ssh-read-lines"],
+      colleague: [],
+    };
+    expect(store.setHexSshToolPolicy(policy)).toEqual(policy);
+    expect(store.getHexSshToolPolicy()).toEqual(policy);
+  });
+});
+
 describe("store agent session resume", () => {
   function makeStore() {
     const { store } = createServices({
@@ -829,18 +924,77 @@ describe("buildPrompt", () => {
     expect(p).toContain('"신진영"님');
   });
 
-  it("guides the owner to create or connect a knowledge repo when none is configured", () => {
+  it("offers to create the knowledge repo via the repo tool on a greeting when a git token is set", () => {
     const p = buildPrompt(
-      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false }),
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        knowledgeRepoConfigured: false,
+        gitTokenSet: true,
+        greeting: true,
+      }),
       0,
     );
     expect(p).toContain("아직 지식 저장소가 연결되어 있지 않습니다");
-    expect(p).toContain("GitHub에 개인 지식 저장소를 만들거나 기존 repo를 설정의 지식 저장소에 연결");
-    expect(p).toContain("Claude plugin marketplace 형식");
+    expect(p).toContain("mcp__repo__create_repo");
+    // The pending-requests nudge composes into the same greeting line.
+    expect(p).toContain("그런 다음 무엇을 도와줄지 물어보세요");
+  });
+
+  it("guides the owner to set a git token first on a greeting when none is set", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        knowledgeRepoConfigured: false,
+        gitTokenSet: false,
+        greeting: true,
+      }),
+      0,
+    );
+    expect(p).toContain("git 토큰도 설정돼 있지 않습니다");
+    expect(p).toContain("git 자격증명");
+    // Falls back to the manual marketplace-format guidance when there's no token.
     expect(p).toContain(".claude-plugin/marketplace.json");
     expect(p).toContain("skills/<name>/SKILL.md");
-    expect(p).toContain("skills/<name>/.claude-plugin/plugin.json");
-    expect(p).toContain("연결된 뒤 새 스킬은 가능하면 `scaffold_skill`로 만들라고 안내하세요");
+  });
+
+  it("nudges the owner to set up a knowledge repo only on a greeting, not mid-conversation", () => {
+    const mid = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false }),
+      0,
+    );
+    expect(mid).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    // The repo-management capability blurb is also withheld until a repo is connected.
+    expect(mid).not.toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
+  });
+
+  it("shows the repo-management capability to the owner once a repo is connected", () => {
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: true }),
+      0,
+    );
+    expect(p).toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
+    expect(p).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+  });
+
+  it("tells the owner how to enable SSH tools when no SSH key is configured", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    expect(p).toContain("SSH 도구는 아직 비활성화");
+    expect(p).toContain("SSH_PRIVATE_KEY");
+    expect(p).toContain("mcp__ssh_trust__add_host");
+  });
+
+  it("omits the SSH enablement guidance once an SSH key is configured", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY"] }), 0);
+    expect(p).not.toContain("SSH 도구는 아직 비활성화");
+    // The key name still appears in the secret-names listing, not the nudge.
+    expect(p).toContain("SSH_PRIVATE_KEY");
+  });
+
+  it("does not show SSH enablement guidance to colleagues", () => {
+    const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
+    expect(p).not.toContain("SSH 도구는 아직 비활성화");
   });
 
   it("does not show the missing knowledge repo guidance to colleagues or headless runs", () => {
@@ -1159,6 +1313,163 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(JSON.parse(fs.readFileSync(path.join(verify, ".mcp.json"), "utf8"))).toEqual(original);
     expect(fs.existsSync(path.join(verify, "note.md"))).toBe(true);
   });
+
+  // ---- create_repo: a store with a git token but NO repo configured yet. The
+  // GitHub API call is stubbed (a local git remote can't model it). -----------
+  function setupNoRepo(dir: string) {
+    const dataDir = path.join(tempDir, dir);
+    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, config, ownerId: owner.id, owner: { id: owner.id, username: "owner", displayName: "Owner" } };
+  }
+  function createTools(s: ReturnType<typeof setupNoRepo>, viewerIsOwner = true) {
+    return buildRepoTools(
+      s.store,
+      { avatarUserId: s.ownerId, owner: s.owner, viewerIsOwner, config: s.config },
+      { allowCreate: true },
+    );
+  }
+
+  it("exposes create_repo only when allowCreate is set", () => {
+    const s = setupNoRepo("rt-create-flag");
+    expect(createTools(s).map((t) => t.name)).toContain("create_repo");
+    const without = buildRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: true,
+      config: s.config,
+    }).map((t) => t.name);
+    expect(without).not.toContain("create_repo");
+    expect(REPO_CREATE_TOOL_NAME).toBe("mcp__repo__create_repo");
+  });
+
+  it("create_repo refuses a non-owner viewer", async () => {
+    const s = setupNoRepo("rt-create-owner");
+    s.store.setGitToken(s.ownerId, "tok");
+    const res = await call(createTools(s, false), "create_repo", { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("아바타 소유자만");
+  });
+
+  it("create_repo requires a git token", async () => {
+    const s = setupNoRepo("rt-create-notoken");
+    const res = await call(createTools(s), "create_repo", { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("git 자격증명에 토큰");
+  });
+
+  it("create_repo rejects an invalid repo name", async () => {
+    const s = setupNoRepo("rt-create-badname");
+    s.store.setGitToken(s.ownerId, "tok");
+    const res = await call(createTools(s), "create_repo", { name: "bad name!" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("영문/숫자");
+  });
+
+  it("create_repo refuses when a repo is already connected", async () => {
+    const s = setupNoRepo("rt-create-exists");
+    s.store.setGitToken(s.ownerId, "tok");
+    s.store.setKnowledgeRepo(s.ownerId, "owner/existing", "main");
+    const res = await call(createTools(s), "create_repo", { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("이미 지식 저장소가 연결");
+  });
+
+  it("create_repo creates a repo via the API and connects it", async () => {
+    const s = setupNoRepo("rt-create-ok");
+    s.store.setGitToken(s.ownerId, "tok");
+    const fetchMock = vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
+      expect(url).toBe("https://api.github.com/user/repos");
+      expect(init.headers.Authorization).toContain("tok");
+      return {
+        ok: true,
+        status: 201,
+        statusText: "Created",
+        json: async () => ({ full_name: "owner/my-knowledge", default_branch: "main", private: true }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain("owner/my-knowledge");
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("create_repo surfaces a GitHub API error and leaves the repo unconnected", async () => {
+    const s = setupNoRepo("rt-create-fail");
+    s.store.setGitToken(s.ownerId, "tok");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        statusText: "Unprocessable Entity",
+        json: async () => ({ message: "name already exists on this account" }),
+      })),
+    );
+    try {
+      const res = await call(createTools(s), "create_repo", { name: "dup" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("HTTP 422");
+      expect(res.content[0].text).toContain("already exists");
+      expect(s.store.getKnowledgeRepo(s.ownerId).repo).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("writeRepoTemplate seeds a valid Claude marketplace + README, idempotently", async () => {
+    const dir = path.join(tempDir, "rt-template");
+    fs.mkdirSync(dir, { recursive: true });
+    expect(await writeRepoTemplate(dir, "owner/my-knowledge")).toBe(true);
+    const mp = JSON.parse(fs.readFileSync(path.join(dir, ".claude-plugin/marketplace.json"), "utf8"));
+    expect(mp).toMatchObject({ name: "my-knowledge", plugins: [] });
+    expect(fs.existsSync(path.join(dir, "README.md"))).toBe(true);
+    // No-op once a manifest exists — never clobbers an established repo.
+    expect(await writeRepoTemplate(dir, "owner/my-knowledge")).toBe(false);
+  });
+
+  it("create_repo seeds the marketplace template as the repo's initial content", async () => {
+    const s = setupNoRepo("rt-create-seed");
+    s.store.setGitToken(s.ownerId, "tok");
+    // A bare remote that already has a `main` branch — mimics GitHub auto_init.
+    const remote = path.join(tempDir, "rt-create-seed", "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" });
+    const seed = path.join(tempDir, "rt-create-seed", "seed");
+    gitInit(seed);
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("branch", "-M", "main");
+    g("remote", "add", "origin", remote);
+    g("push", "-q", "origin", "main");
+    // The API returns the local bare remote as full_name, so the post-create
+    // clone → seed → push runs fully offline against it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 201,
+        statusText: "Created",
+        json: async () => ({ full_name: remote, default_branch: "main", private: true }),
+      })),
+    );
+    try {
+      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain("초기화");
+      // The template landed on the remote as a real commit.
+      const verify = path.join(tempDir, "rt-create-seed", "verify");
+      execFileSync("git", ["clone", "-q", remote, verify], { stdio: "pipe" });
+      const mp = JSON.parse(fs.readFileSync(path.join(verify, ".claude-plugin/marketplace.json"), "utf8"));
+      expect(mp.plugins).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("routine jobs", () => {
@@ -1410,6 +1721,32 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
 
+  it("filters hex-ssh MCP tools before the blanket MCP auto-allow", async () => {
+    const policy = normalizeHexSshToolPolicy({
+      owner: ["remote-ssh", "ssh-read-lines"],
+      trusted: ["ssh-read-lines"],
+      colleague: [],
+    });
+    const trustedHook = buildPreToolUseHook({}, true, READONLY, false, true, "trusted", policy);
+    const read = await trustedHook(
+      { tool_name: "mcp__hex-ssh__ssh-read-lines", tool_input: { host: "prod", filePath: "/var/log/app.log" }, tool_use_id: "hex1" },
+      "hex1",
+    );
+    const exec = await trustedHook(
+      { tool_name: "mcp__hex-ssh__remote-ssh", tool_input: { host: "prod", command: "id" }, tool_use_id: "hex2" },
+      "hex2",
+    );
+    expect(read.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(exec.hookSpecificOutput.permissionDecision).toBe("deny");
+
+    const ownerHook = buildPreToolUseHook({}, true, READONLY, false, true, "owner", policy);
+    const ownerExec = await ownerHook(
+      { tool_name: "mcp__hex-ssh__remote-ssh", tool_input: { host: "prod", command: "id" }, tool_use_id: "hex3" },
+      "hex3",
+    );
+    expect(ownerExec.hookSpecificOutput.permissionDecision).toBe("allow");
+  });
+
   it("auto-allows TaskCreate orchestration without prompting", async () => {
     let prompted = false;
     const hook = buildPreToolUseHook(
@@ -1426,6 +1763,75 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
 
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(prompted).toBe(false);
+  });
+});
+
+describe("hex-ssh policy proxy", () => {
+  it("filters tools/list and blocks disallowed tools/call", async () => {
+    const upstreamPath = path.join(tempDir, "fake-hex-upstream.mjs");
+    fs.writeFileSync(
+      upstreamPath,
+      `
+process.stdin.setEncoding("utf8");
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  while (true) {
+    const newline = buffer.indexOf("\\n");
+    if (newline < 0) break;
+    const line = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    if (!line) continue;
+    const msg = JSON.parse(line);
+    if (msg.method === "tools/list") {
+      process.stdout.write(JSON.stringify({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          tools: [
+            { name: "ssh-read-lines", inputSchema: { type: "object" } },
+            { name: "remote-ssh", inputSchema: { type: "object" } }
+          ]
+        }
+      }) + "\\n");
+    } else if (msg.method === "tools/call") {
+      process.stdout.write(JSON.stringify({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { content: [{ type: "text", text: "called " + msg.params.name }] }
+      }) + "\\n");
+    } else {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\\n");
+    }
+  }
+});
+`,
+    );
+    const proxyPath = path.join(process.cwd(), "scripts", "hex-ssh-policy-proxy.mjs");
+    const proxy = spawn(process.execPath, [proxyPath], {
+      env: {
+        ...process.env,
+        HEX_SSH_UPSTREAM_COMMAND: `${process.execPath} ${upstreamPath}`,
+        HEX_SSH_ALLOWED_TOOLS: "ssh-read-lines",
+      },
+    });
+    try {
+      const rpc = rpcClient(proxy);
+      const listed = await rpc.request("tools/list", {});
+      const result = listed.result as { tools: { name: string }[] };
+      expect(result.tools.map((tool) => tool.name)).toEqual(["ssh-read-lines"]);
+
+      const allowed = await rpc.request("tools/call", { name: "ssh-read-lines", arguments: {} });
+      expect(JSON.stringify(allowed.result)).toContain("called ssh-read-lines");
+
+      const blocked = await rpc.request("tools/call", { name: "remote-ssh", arguments: {} });
+      expect(blocked.error).toMatchObject({
+        code: -32603,
+        message: "hex-ssh tool 'remote-ssh' is not allowed by policy",
+      });
+    } finally {
+      proxy.kill();
+    }
   });
 });
 

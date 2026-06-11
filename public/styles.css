@@ -3187,6 +3187,47 @@ textarea::placeholder {
   word-break: break-word;
 }
 
+.hex-policy-form {
+  display: grid;
+  gap: var(--s-3);
+}
+.hex-policy-grid {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) repeat(3, minmax(76px, 96px));
+  gap: 1px;
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--line);
+}
+.hex-policy-grid > * {
+  background: var(--panel);
+}
+.hex-policy-head {
+  padding: var(--s-2);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  text-align: center;
+}
+.hex-policy-tool {
+  display: grid;
+  gap: 3px;
+  min-width: 220px;
+  padding: var(--s-2);
+}
+.hex-policy-tool strong {
+  font-size: var(--t-sm);
+}
+.hex-policy-tool .mono {
+  font-size: var(--t-xs);
+}
+.hex-policy-check {
+  display: grid;
+  place-items: center;
+  min-height: 62px;
+  padding: var(--s-2);
+}
+
 /* GitHub credentials */
 .git-token-status {
   font-size: var(--t-sm);

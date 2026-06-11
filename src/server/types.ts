@@ -28,11 +28,10 @@ export interface AppConfig {
    */
   maxTurns: number;
   /**
-   * Command that launches the hex-ssh MCP server (remote-server access). The
-   * image installs the package at build time and exposes it as `hex-ssh-mcp`
-   * (the default) — avoiding a runtime `npx` download that fails on a closed
-   * network. Override via `HEX_SSH_COMMAND` (e.g. for dev where the global bin
-   * isn't present, set it to a wrapper or an `npx`-based launcher).
+   * Command that launches the upstream hex-ssh MCP server behind the app's
+   * policy proxy. The image installs the package at build time and exposes it as
+   * `hex-ssh-mcp` (the default) — avoiding a runtime `npx` download that fails
+   * on a closed network. Override via `HEX_SSH_COMMAND` for local dev.
    */
   hexSshCommand: string;
   /** Minimum log level (trace|debug|info|warn|error|fatal|silent). Defaults to "info", "silent" in test. */
@@ -260,6 +259,12 @@ export interface AgentRequest {
    * direct unit calls.
    */
   knowledgeRepoConfigured?: boolean;
+  /**
+   * Whether the avatar owner has stored a git token. Lets the greeting offer to
+   * create the knowledge repo directly (via the repo tool) vs. asking the owner
+   * to set a token first. Set only for owner, non-headless chat prompts.
+   */
+  gitTokenSet?: boolean;
 }
 
 /**

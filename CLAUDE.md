@@ -37,7 +37,11 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   (`knowledgeRepo.ts`). It's (a) auto-loaded as a plugin root in chat/skills/intro via
   `loadKnowledgeRepoRoots`/`knowledgeRepoSkillSources` (so its skills are usable), AND
   (b) edited by the avatar itself through the **owner-only** `mcp__repo__*` MCP server
-  (`agent/repoTools.ts`): list/read/write/scaffold/commit. There is NO settings file-editor
+  (`agent/repoTools.ts`): list/read/write/scaffold/commit, plus `create_repo` (creates a new
+  GitHub repo via `POST /user/repos` server-side using the stored git token, then connects it
+  with `setKnowledgeRepo`). `create_repo` is exposed **only when no repo is connected yet**
+  (`allowCreate` ← `!knowledgeRepoConfigured` in `claudeAgent.ts`) to keep the unused tool out
+  of the prompt once a repo exists; the manage tools are always present. There is NO settings file-editor
   and NO `/api/me/marketplace/*` routes — settings stores the repo location
   (`PUT /api/me/knowledge-repo`) plus an optional plugin subset (`knowledge_selected`
   column, `get/setKnowledgeSelected`, `PUT /api/me/knowledge-repo/selected`,
@@ -55,10 +59,30 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   **reversible** secrets (e.g. per-user git token) → AES-256-GCM in `crypto.ts`
   (keyed from `SESSION_SECRET`). Never serialize secrets through `toUser`. The git
   token is a `users` column; arbitrary named secrets go in the `user_secrets` vault
-  (see below).
+  (see below). App-WIDE secrets (not user-scoped) go in the `app_config` KV table
+  (`get/set/deleteAppSecret`, same AES-256-GCM).
+- **Subscription auth is app-wide and admin-managed.** Auth precedence: `.env`
+  `ANTHROPIC_API_KEY` > stored subscription token > none. When no API key is set,
+  `claudeAgent.ts` injects the admin-pasted `claude setup-token` token (stored under
+  `app_config[CLAUDE_OAUTH_TOKEN_KEY]`, see `store.ts`) as `CLAUDE_CODE_OAUTH_TOKEN`
+  into the SDK subprocess env — decrypted only there, never shown to the agent.
+  Managed via `PUT/DELETE /api/admin/claude-token` + the 관리자 ▸ 구독 로그인 card;
+  status surfaces through `GET /api/admin/system` (`subscriptionConnected`,
+  `apiKeyOverride`). setup-token tokens are long-lived, so there's no refresh logic.
 - Git auth for clones uses `http.extraHeader` (see `gitAuthArgs`), never a
   token-in-URL — keeps the token out of `.git/config`. Scrub it from git error
   text before logging/returning (`scrubGitError`).
+- **The per-user git token NEVER reaches the agent's shell.** It's used only as a
+  per-invocation `http.extraHeader` on the app's OWN clone/push (`knowledgeRepo.ts`,
+  `syncPluginRepo`) and by the `mcp__repo__create_repo` GitHub-API call — all server-side.
+  It is NOT injected into the SDK subprocess env (`options.env`), so the agent's `gh`/`git`/Bash
+  have NO GitHub credential (the server-wide `GITHUB_TOKEN` fallback was removed). So the avatar
+  can't `gh repo create`; `create_repo` is the only bridge. The prompt surfaces `gitTokenSet`
+  (not the value) so the greeting offers `create_repo` when a token is set, else asks the owner
+  to set one (`buildPrompt`, fed from `claudeAgent.ts` promptRequest).
+- **The prompt tells the owner how to enable SSH when it's off.** `buildPrompt` adds an SSH
+  enablement note on owner, non-headless turns whenever `SSH_PRIVATE_KEY` isn't in `secretNames`
+  (hex-ssh registers only when that secret exists). Drops off once the key is stored.
 - Repo shorthand (`owner/repo`) resolves through `config.githubHost` (`GITHUB_HOST`,
   default `github.com`) for both plugin and knowledge-repo clones/pushes. Full
   `https://...` and `git@...` repo values bypass that default and are used as-is.
@@ -78,10 +102,13 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   Owner, non-headless chat prompts include only those secret NAMES so the avatar knows
   what is configured; values still never enter the prompt or generic Bash env.
 - **hex-ssh (remote SSH) is an APP-registered MCP, not a plugin one.** `claudeAgent` adds it to
-  `mcpServers` ONLY when the owner stored an `SSH_PRIVATE_KEY` secret, injecting ALL owner secrets as
-  the subprocess `env` (so the key is invisible to the agent's own Bash/`env`). Installed into the
-  image at build time and run via `config.hexSshCommand` (`HEX_SSH_COMMAND`, default `hex-ssh-mcp`) —
-  NOT a runtime `npx` download, which fails on the closed corporate network.
+  `mcpServers` only when the owner stored `SSH_PRIVATE_KEY` AND the current viewer class has at least
+  one allowed hex-ssh tool. The registered command is `scripts/hex-ssh-policy-proxy.mjs`, which runs
+  the upstream command from `config.hexSshCommand` (`HEX_SSH_COMMAND`, default `hex-ssh-mcp`) and
+  filters `tools/list` by `HEX_SSH_ALLOWED_TOOLS` before the model sees the schema. The PreToolUse
+  hook separately blocks disallowed `mcp__hex-ssh__*` calls, so the proxy is token/UX optimization and
+  the hook is the final gate. The upstream package is installed into the image at build time, not via
+  runtime `npx`.
 - **App-managed MCP servers shadow same-named plugin ones.** MCP config is keyed by server name, so a
   plugin's bundled `.mcp.json` declaring `hex-ssh` (keyless) can win over the app's keyed one.
   `stripManagedMcpServers` (plugins.ts, `APP_MANAGED_MCP_SERVERS`) removes those names from each
