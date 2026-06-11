@@ -46,7 +46,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     agentSessionsDir: path.join(dataDir, "agent-sessions"),
     // Generous default: tool/skill/subagent-heavy replies blow past a handful of
     // turns. Override via MAX_TURNS; values <1 fall back to the default.
-    maxTurns: Math.max(1, Number(env("MAX_TURNS", "200")) || 200),
+    maxTurns: Math.max(1, Number(env("MAX_TURNS", "1000")) || 1000),
     // Installed into the image at build time and exposed under this fixed name
     // (see Dockerfile). Override with HEX_SSH_COMMAND when the global bin isn't
     // available (e.g. local dev).

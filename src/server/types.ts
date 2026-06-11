@@ -24,7 +24,7 @@ export interface AppConfig {
   /**
    * Max agent turns (model inferences) per chat reply. Each tool call consumes a
    * turn, so tool/skill/subagent-heavy replies need plenty of headroom — too low
-   * and the SDK aborts mid-task with `error_max_turns`. Defaults to 200 (env
+   * and the SDK aborts mid-task with `error_max_turns`. Defaults to 1000 (env
    * `MAX_TURNS`).
    */
   maxTurns: number;
