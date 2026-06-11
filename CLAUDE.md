@@ -83,6 +83,17 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - **The prompt tells the owner how to enable SSH when it's off.** `buildPrompt` adds an SSH
   enablement note on owner, non-headless turns whenever `SSH_PRIVATE_KEY` isn't in `secretNames`
   (hex-ssh registers only when that secret exists). Drops off once the key is stored.
+- **Design direction — give the avatar META-COGNITION of its own system state.** A core goal of
+  this repo: the avatar should accurately know what's configured and what it can do RIGHT NOW —
+  knowledge repo connected? (`knowledgeRepoConfigured`), git token set? (`gitTokenSet`), which
+  secrets/SSH enabled? (`secretNames`/`SSH_PRIVATE_KEY`), which tools it currently has — so it acts
+  and explains correctly instead of guessing or relaying stale manual steps. `buildPrompt` is where
+  this self-state is injected (per viewer/headless); when you add a capability, surface its current
+  state there too. The git-token, SSH, and `create_repo` bullets above are all instances of this.
+- **For the avatar to actually USE a capability, greeting-only prompt text isn't enough.** Give it
+  STANDING per-turn guidance (not just the greeting) + an action-trigger in the tool's description +
+  an error that redirects (e.g. `NO_REPO` → "use `create_repo`"). Greeting-only text plus a
+  config-gated capability blurb once left it unaware it had `create_repo` mid-conversation.
 - Repo shorthand (`owner/repo`) resolves through `config.githubHost` (`GITHUB_HOST`,
   default `github.com`) for both plugin and knowledge-repo clones/pushes. Full
   `https://...` and `git@...` repo values bypass that default and are used as-is.
@@ -95,6 +106,12 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Verifying the local server: a corporate `HTTP_PROXY` intercepts `localhost`
   (returns "Access Denied"), and no browser engine is installed. Hit the dev
   server with `curl --noproxy '*' localhost:<port>/...` (can't screenshot the UI).
+- **Testing git/repo tools offline:** repo-tool tests point the repo at a LOCAL bare remote
+  (`git init --bare`) so clone/commit/push need no network — `gitAuthArgs` returns `[]` for
+  non-`https://` URLs, so the token is ignored there. For tools hitting the GitHub API
+  (`create_repo`), stub `fetch` via `vi.stubGlobal` (`vi` is NOT imported in `units.test.ts` by
+  default); to drive the post-create clone/seed/push offline, have the mock return a local
+  bare-remote PATH as `full_name` (`marketplaceCloneUrl` leaves non-`owner/repo` strings as-is).
 - **Per-user secret vault (generic, not just SSH):** `user_secrets` table (AES-256-GCM via
   `crypto.ts`, keyed on `avatar.id`=owner), `get/set/delete/listUserSecretNames`/`getUserSecrets`.
   Exposed to clients as `secretNames` ONLY (values never via `toUser`). `PUT/DELETE
