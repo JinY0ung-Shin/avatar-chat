@@ -12,6 +12,7 @@ import {
   readFile as readRepoFile,
   scaffoldSkill,
   writeFile as writeRepoFile,
+  writeRepoTemplate,
 } from "../knowledgeRepo.js";
 
 /**
@@ -324,9 +325,30 @@ export function buildRepoTools(
           status: "success",
           detail: `created ${result.fullName}`,
         });
+        // Seed the default template (a valid empty Claude plugin marketplace +
+        // README) as the repo's initial content, so it loads as a marketplace
+        // immediately. Best-effort: the repo is already created + connected, so a
+        // clone/push hiccup shouldn't read as a hard failure — the avatar can
+        // still start with scaffold_skill (which writes the manifest itself).
+        let seeded = false;
+        let seedNote = "";
+        try {
+          const c = knowledgeRepoContextFor(store, ctx.avatarUserId, ctx.config);
+          if (c) {
+            const repoRoot = await ensureClone(c);
+            if (await writeRepoTemplate(repoRoot, result.fullName)) {
+              await commitAndPush(c, "Initialize knowledge repo", commitIdentityFor(store, ctx.owner));
+              seeded = true;
+            }
+          }
+        } catch (error) {
+          seedNote = ` (기본 템플릿 초기화는 건너뛰었습니다: ${scrubGitError(error)})`;
+        }
+        const kind = result.isPrivate ? "비공개" : "공개";
         return text(
-          `${result.isPrivate ? "비공개" : "공개"} 지식 저장소 \`${result.fullName}\`를 만들고 연결했습니다. ` +
-            "이제 `scaffold_skill`로 첫 스킬을 만든 뒤 `write_file`로 내용을 채우고 `commit`으로 푸시하세요.",
+          seeded
+            ? `${kind} 지식 저장소 \`${result.fullName}\`를 만들고 기본 템플릿(Claude plugin marketplace: \`.claude-plugin/marketplace.json\` + README)으로 초기화했습니다. 이제 \`scaffold_skill\`로 첫 스킬을 추가하고 \`commit\`으로 푸시하세요.`
+            : `${kind} 지식 저장소 \`${result.fullName}\`를 만들고 연결했습니다.${seedNote} \`scaffold_skill\`로 첫 스킬을 만든 뒤 \`commit\`으로 푸시하세요.`,
         );
       } catch (error) {
         return text(`GitHub 저장소 생성 중 오류: ${scrubGitError(error)}`, true);

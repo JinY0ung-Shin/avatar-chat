@@ -347,6 +347,48 @@ async function ensureMarketplaceManifest(repoRoot: string, slug: string): Promis
   await writeFile(repoRoot, manifestRel, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+/**
+ * Seed a freshly-created knowledge repo with a default template: a VALID (but
+ * empty) Claude plugin marketplace — a root `.claude-plugin/marketplace.json`
+ * with `{name, plugins: []}` — plus a README explaining the skill layout. This
+ * is what makes the repo loadable as a marketplace from the moment it's created.
+ * No-op (returns false) when a marketplace manifest already exists, so it never
+ * clobbers an established repo; returns true when it wrote the template.
+ */
+export async function writeRepoTemplate(repoRoot: string, repoName: string): Promise<boolean> {
+  const manifestRel = ".claude-plugin/marketplace.json";
+  if (await pathExists(resolveInRepo(repoRoot, manifestRel)!)) {
+    return false;
+  }
+  const shortName = repoName.split("/").pop() || repoName;
+  const marketplaceName =
+    sanitizeName(shortName).toLowerCase().replace(/^-+|-+$/g, "") || "knowledge";
+  await writeFile(
+    repoRoot,
+    manifestRel,
+    `${JSON.stringify({ name: marketplaceName, plugins: [] }, null, 2)}\n`,
+  );
+  await writeFile(repoRoot, "README.md", repoTemplateReadme(shortName));
+  return true;
+}
+
+/** The starter README seeded alongside the marketplace manifest. */
+function repoTemplateReadme(name: string): string {
+  return `# ${name} — 지식 저장소
+
+이 저장소는 아바타(Noah Almighty)의 **개인 지식 저장소**입니다. 아바타가 대화에서 직접
+관리하며, 여기에 정리한 스킬과 문서를 다음 대화부터 사용합니다.
+
+## 구조 (Claude plugin marketplace 형식)
+
+- \`.claude-plugin/marketplace.json\` — 스킬(플러그인) 목록
+- \`skills/<name>/SKILL.md\` — 각 스킬의 정의(무엇을, 언제·어떻게 쓰는지)
+- \`skills/<name>/.claude-plugin/plugin.json\` — 스킬 매니페스트
+
+새 스킬은 아바타에게 "○○ 스킬 만들어줘"라고 요청하면 \`scaffold_skill\`로 생성됩니다.
+`;
+}
+
 /** Relative paths with uncommitted changes (porcelain), excluding nothing. */
 export async function dirtyPaths(repoRoot: string): Promise<string[]> {
   const { stdout } = await git(repoRoot, ["status", "--porcelain"]);
