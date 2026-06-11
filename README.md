@@ -20,9 +20,8 @@ any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
   avatar, separate from the knowledge repo.
 - **Per-user GitHub token**: each user can store a personal access token (AES-256-GCM
   encrypted at rest, keyed from `SESSION_SECRET`) to clone their own private plugin/knowledge
-  repos and to let the avatar push to the knowledge repo. Falls back to the server-wide
-  `GITHUB_TOKEN` when unset. The token is supplied to git via an `http.extraHeader`, so it is
-  never written into any clone's `.git/config`.
+  repos and to let the avatar push to the knowledge repo. The token is supplied to git via an
+  `http.extraHeader`, so it is never written into any clone's `.git/config`.
 - **Onboarding**: after first login a skippable guided step prompts for the GitHub token and
   the knowledge repo link (re-openable from settings).
 - **Discovery**: published avatars appear in the Explore directory; anyone can start a chat.
@@ -63,7 +62,6 @@ uploaded avatar images persist under `APP_DATA_DIR`.
 | `PORT` / `APP_DATA_DIR` | Server port / data directory (SQLite DB + avatar images). |
 | `READONLY_TOOLS` | Tool allowlist for plugin execution (default `Read,Glob,Grep`). |
 | `GITHUB_HOST` | Default host for shorthand repo values like `owner/repo` (default `github.com`; full URLs are used as-is). |
-| `GITHUB_TOKEN` | Optional server-wide fallback token for cloning private plugin repos (per-user tokens, set in 설정, take precedence). |
 
 ## Security note
 

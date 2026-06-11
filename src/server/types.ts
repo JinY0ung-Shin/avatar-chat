@@ -12,7 +12,6 @@ export interface AppConfig {
   readOnlyTools: string[];
   /** Default host used when a repo is entered as owner/repo. */
   githubHost: string;
-  githubToken?: string;
   /** Repo-bundled plugin dir loaded for EVERY avatar (default skills). */
   defaultPluginsDir: string;
   /**

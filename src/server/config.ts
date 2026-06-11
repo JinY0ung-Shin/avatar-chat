@@ -36,7 +36,6 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     anthropicModel: env("ANTHROPIC_MODEL") || undefined,
     readOnlyTools,
     githubHost,
-    githubToken: env("GITHUB_TOKEN") || undefined,
     logLevel: env("LOG_LEVEL", isProduction ? "info" : "debug"),
     // Repo-bundled default skills, loaded for every avatar. cwd-based to match
     // dataDir; cwd is the app root under both `tsx` (dev) and `node dist` (prod).

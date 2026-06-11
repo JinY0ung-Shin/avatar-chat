@@ -28,7 +28,7 @@ services:
     # The whole .env is injected into the container, so every ANTHROPIC_* var
     # (ANTHROPIC_API_KEY/MODEL/BASE_URL/AUTH_TOKEN and any added later) reaches
     # the Claude Agent SDK without enumerating each key here. SESSION_SECRET,
-    # AGENT_RUNTIME, READONLY_TOOLS, GITHUB_HOST, GITHUB_TOKEN come from .env too. If
+    # AGENT_RUNTIME, READONLY_TOOLS, GITHUB_HOST come from .env too. If
     # SESSION_SECRET is missing the server throws on boot (NODE_ENV=production).
     env_file:
       - .env

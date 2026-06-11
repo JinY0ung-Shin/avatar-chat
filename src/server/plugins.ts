@@ -360,11 +360,10 @@ export async function loadAvatarPluginRoots(
   plugins: Plugin[],
   config: AppConfig,
   onWarn?: (message: string) => void,
-  // The avatar owner's personal GitHub token, used for private repos. Falls
-  // back to the server-wide token when absent.
+  // The avatar owner's personal GitHub token, used for private repos.
   userToken?: string | null,
 ): Promise<PluginRoot[]> {
-  const token = userToken || config.githubToken;
+  const token = userToken || undefined;
   const roots: PluginRoot[] = [];
   for (const plugin of plugins) {
     const destination = pluginClonePath(userId, plugin.repo, config);
@@ -411,7 +410,7 @@ export async function syncPluginRepo(
   force = false,
   userToken?: string | null,
 ): Promise<string> {
-  const token = userToken || config.githubToken;
+  const token = userToken || undefined;
   const destination = pluginClonePath(userId, plugin.repo, config);
   if (force) {
     forgetClone(destination);
