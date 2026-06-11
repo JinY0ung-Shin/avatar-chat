@@ -50,18 +50,39 @@ let abortController = null;
 let sessionExpired = false;
 
 /* ============================================================ Networking */
+// Known English server errors → Korean (the UI is Korean-first; raw English
+// or bare HTTP codes in alerts are unintelligible to most users here).
+const API_ERROR_KO = {
+  "Internal server error": "서버 내부 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.",
+  "Authentication required": "로그인이 필요합니다.",
+  "Admin access required": "관리자 권한이 필요합니다.",
+};
+
 async function api(path, options = {}) {
-  const response = await fetch(path, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
-    credentials: "same-origin",
-    ...options,
-  });
+  let response;
+  try {
+    response = await fetch(path, {
+      headers: { "Content-Type": "application/json", ...(options.headers || {}) },
+      credentials: "same-origin",
+      // Long timeout (repo clones can be slow), but never "forever" — a hung
+      // request would otherwise strand every disabled-while-saving button.
+      signal: typeof AbortSignal !== "undefined" && AbortSignal.timeout ? AbortSignal.timeout(120000) : undefined,
+      ...options,
+    });
+  } catch (err) {
+    if (err?.name === "TimeoutError") throw new Error("요청 시간이 초과되었습니다. 네트워크 상태를 확인해 주세요.");
+    if (err?.name === "AbortError") throw err;
+    throw new Error("서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요.");
+  }
   if (response.status === 401 && state.user) {
     handleSessionExpired();
-    throw new Error("세션이 만료되었습니다.");
+    throw new Error("세션이 만료되었습니다. 다시 로그인해 주세요.");
   }
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
+  if (!response.ok) {
+    const raw = (body.error || "").trim();
+    throw new Error(API_ERROR_KO[raw] || raw || `서버 오류가 발생했습니다. (코드 ${response.status}) 잠시 후 다시 시도해 주세요.`);
+  }
   return body;
 }
 
@@ -69,6 +90,7 @@ function handleSessionExpired() {
   if (sessionExpired) return;
   sessionExpired = true;
   stopAllChatStreams();
+  hidePromptModal();
   state.user = null;
   state.currentAvatar = null;
   state.chatPanes = [];
@@ -77,6 +99,25 @@ function handleSessionExpired() {
   state.conversations = [];
   state.authError = "세션이 만료되었습니다. 다시 로그인해 주세요.";
   renderAuth();
+}
+
+/* ============================================================ Notifications */
+// Non-blocking toast — replaces window.alert so errors don't freeze the page
+// (and don't pile on top of the login screen after a session expiry).
+let notifyWrap = null;
+function notify(message, kind = "error") {
+  if (sessionExpired) return;
+  if (!notifyWrap || !notifyWrap.isConnected) {
+    notifyWrap = el("div", { class: "toast-wrap", role: "status", "aria-live": "polite" });
+    document.body.append(notifyWrap);
+  }
+  const toast = el("div", { class: `toast ${kind}`, text: message });
+  notifyWrap.append(toast);
+  while (notifyWrap.children.length > 4) notifyWrap.firstChild.remove();
+  setTimeout(() => {
+    toast.classList.add("out");
+    setTimeout(() => toast.remove(), 300);
+  }, 5000);
 }
 
 /* ============================================================ DOM helpers */
@@ -122,6 +163,7 @@ function icon(name) {
     back: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
     book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
     clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    "arrow-down": '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
     columns: '<rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/>',
     rows: '<rect x="4" y="3" width="16" height="7" rx="1"/><rect x="4" y="14" width="16" height="7" rx="1"/>',
     grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
@@ -149,13 +191,21 @@ function enhanceCodeBlocks(container) {
     const wrapper = el("div", { class: "code-block" });
     pre.replaceWith(wrapper);
     wrapper.append(pre);
-    const btn = el("button", { class: "code-copy", type: "button", "aria-label": "코드 복사", title: "복사" });
+    const btn = el("button", { class: "code-copy", type: "button", "aria-label": "코드 복사", title: "코드 복사" });
     btn.append(icon("copy"));
     btn.addEventListener("click", (e) => {
       e.stopPropagation();
       copyText(pre.querySelector("code")?.innerText ?? pre.innerText, btn);
     });
     wrapper.append(btn);
+  });
+  // GFM tables: wrap in a horizontal scroller so a wide table can't letter-break
+  // every cell on narrow screens.
+  container.querySelectorAll("table").forEach((table) => {
+    if (table.closest(".table-wrap")) return;
+    const wrap = el("div", { class: "table-wrap" });
+    table.replaceWith(wrap);
+    wrap.append(table);
   });
 }
 
@@ -174,7 +224,11 @@ async function copyText(text, btn) {
     }
     flashCopied(btn);
   } catch {
-    /* ignore */
+    if (btn) {
+      btn.classList.add("copy-failed");
+      setTimeout(() => btn.classList.remove("copy-failed"), 1200);
+    }
+    notify("클립보드에 복사하지 못했습니다.", "warn");
   }
 }
 
@@ -193,7 +247,11 @@ function flashCopied(btn) {
 function timeLabel(iso) {
   if (!iso) return "";
   try {
-    return new Date(iso).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const d = new Date(iso);
+    const opts = { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" };
+    // Older than this year → "06. 11." alone is ambiguous; include the year.
+    if (d.getFullYear() !== new Date().getFullYear()) opts.year = "2-digit";
+    return d.toLocaleString("ko-KR", opts);
   } catch {
     return "";
   }
@@ -212,13 +270,14 @@ function paintGenerated(wrap, person) {
   wrap.style.color = "#fff";
   wrap.textContent = (person.displayName || person.username || "?").trim().charAt(0).toUpperCase();
 }
-function avatarNode(person, size = 40) {
-  const wrap = el("div", {
-    class: "avatar-img",
-    style: `width:${size}px;height:${size}px;font-size:${Math.round(size * 0.42)}px`,
-  });
+// `alt: ""` marks the image decorative (when the name is adjacent visible
+// text) — the wrap is then aria-hidden so generated-initial avatars don't
+// announce a stray letter either.
+function avatarNode(person, size = 40, { alt } = {}) {
+  const wrap = el("div", { class: "avatar-img", style: `--av-size:${size}px` });
+  if (alt === "") wrap.setAttribute("aria-hidden", "true");
   if (person?.hasImage && person.id) {
-    const img = el("img", { src: `/api/users/${person.id}/avatar-image`, alt: person.displayName || person.username || "" });
+    const img = el("img", { src: `/api/users/${person.id}/avatar-image`, alt: alt ?? (person.displayName || person.username || "") });
     img.addEventListener("error", () => {
       img.remove();
       paintGenerated(wrap, person);
@@ -253,11 +312,12 @@ async function resizeImage(file, max = 256) {
 }
 
 /* ============================================================ Auth view */
-function renderAuth(mode = "login") {
+function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
   stopAllChatStreams();
   abortController = null;
   state.streaming = false;
   document.title = "Noah Almighty";
+  if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 
   const isLogin = mode === "login";
   const isSetup = mode === "setup";
@@ -280,7 +340,9 @@ function renderAuth(mode = "login") {
         await enterApp();
       } catch (error) {
         state.authError = error.message;
-        renderAuth(mode);
+        // Keep what the user typed — re-entering the username after a wrong
+        // password is pure friction.
+        renderAuth(mode, { username: fd.get("username") || "", displayName: fd.get("displayName") || "" });
       }
     },
   });
@@ -288,15 +350,15 @@ function renderAuth(mode = "login") {
   const fields = [];
   fields.push(
     el("label", { class: "field" }, [
-      el("span", { text: "아이디" }),
-      el("input", { name: "username", autocomplete: "username", placeholder: "user123", required: "", minlength: "3" }),
+      el("span", { text: "사용자명" }),
+      el("input", { name: "username", autocomplete: "username", placeholder: "user123", required: "", minlength: "3", value: username }),
     ]),
   );
   if (!isLogin) {
     fields.push(
       el("label", { class: "field" }, [
         el("span", { text: "표시 이름" }),
-        el("input", { name: "displayName", autocomplete: "nickname", placeholder: "홍길동", required: "" }),
+        el("input", { name: "displayName", autocomplete: "nickname", placeholder: "홍길동", required: "", value: displayName }),
       ]),
     );
   }
@@ -313,7 +375,7 @@ function renderAuth(mode = "login") {
       }),
     ]),
   );
-  fields.push(el("button", { class: "primary", type: "submit", text: isLogin ? "로그인" : isSetup ? "관리자 계정 만들기" : "가입하기" }));
+  fields.push(el("button", { class: "primary", type: "submit", text: isLogin ? "로그인" : isSetup ? "관리자 계정 만들기" : "회원가입" }));
   form.append(...fields);
 
   app.replaceChildren(
@@ -321,13 +383,13 @@ function renderAuth(mode = "login") {
       el("div", { class: "auth-panel" }, [
         el("img", { class: "login-mark", src: "/icon-192.png", alt: "Noah Almighty", width: "48", height: "48" }),
         isSetup ? el("div", { class: "setup-badge", text: "첫 실행 · 관리자 설정" }) : null,
-        el("h1", { text: isSetup ? "관리자 계정 생성" : isLogin ? "다시 오신 걸 환영해요" : "Noah Almighty 시작하기" }),
+        el("h1", { text: isSetup ? "관리자 계정 만들기" : isLogin ? "다시 오신 것을 환영합니다" : "Noah Almighty 시작하기" }),
         el("p", {
           text: isSetup
             ? "서비스를 처음 시작합니다. 여기서 만드는 첫 계정이 관리자(admin)가 됩니다."
             : "나만의 아바타를 만들고, 다른 사람의 아바타와 대화하세요.",
         }),
-        state.authError ? el("div", { class: "error", text: state.authError }) : null,
+        state.authError ? el("div", { class: "error", role: "alert", text: state.authError }) : null,
         form,
         isSetup
           ? null
@@ -346,7 +408,9 @@ function renderAuth(mode = "login") {
       ]),
     ]),
   );
-  app.querySelector('input[name="username"]')?.focus();
+  const userInput = app.querySelector('input[name="username"]');
+  if (userInput && !userInput.value) userInput.focus();
+  else app.querySelector('input[name="password"]')?.focus();
 }
 
 /* ============================================================ App shell */
@@ -354,7 +418,7 @@ function mountShell() {
   const admin = state.user.roles?.includes("admin");
 
   dom.navButtons = {};
-  const nav = el("nav", { class: "rail-nav" });
+  const nav = el("nav", { class: "rail-nav", "aria-label": "주 메뉴" });
   const navItem = (view, label, ic) => {
     const btn = el("button", { class: "nav-item", type: "button", dataset: { view }, onclick: () => goView(view) }, [
       icon(ic),
@@ -365,14 +429,27 @@ function mountShell() {
     return btn;
   };
   navItem("explore", "탐색", "compass");
-  navItem("chat", "채팅", "chat");
+  navItem("chat", "대화", "chat");
   navItem("settings", "내 아바타", "user");
   if (admin) navItem("admin", "관리자", "shield");
 
+  const newChatBtn = el("button", { class: "new-chat", type: "button", onclick: () => goView("explore") }, [
+    icon("plus"),
+    el("span", { text: "새 대화" }),
+  ]);
+
   dom.convList = el("div", { class: "conv-list scroll-thin" });
+  dom.convList.append(el("div", { class: "conv-empty", text: "불러오는 중…" }));
+  dom.convSearch = el("input", {
+    class: "conv-search",
+    type: "search",
+    placeholder: "대화 검색",
+    "aria-label": "대화 검색",
+    oninput: () => renderConversations(),
+  });
 
   const meRow = el("button", { class: "rail-me", type: "button", title: "내 아바타 설정", onclick: () => goView("settings") }, [
-    avatarNode(state.user, 34),
+    avatarNode(state.user, 34, { alt: "" }),
     el("div", { class: "meta" }, [
       el("b", { text: state.user.displayName }),
       el("span", { text: `@${state.user.username}` }),
@@ -381,44 +458,123 @@ function mountShell() {
   const logoutBtn = el("button", { class: "icon-button", type: "button", "aria-label": "로그아웃", title: "로그아웃", onclick: logout });
   logoutBtn.append(icon("logout"));
 
-  const rail = el("aside", { class: "rail", id: "rail" }, [
+  const rail = el("aside", { class: "rail", id: "rail", "aria-label": "대화 목록" }, [
     el("div", { class: "rail-head" }, [
       el("div", { class: "rail-brand" }, [
-        el("img", { class: "mark", src: "/icon-192.png", alt: "Noah Almighty", width: "34", height: "34" }),
-        el("div", {}, [el("div", { class: "name", text: "Noah Almighty" }), el("div", { class: "sub", text: "avatar platform" })]),
+        el("img", { class: "mark", src: "/icon-192.png", alt: "", "aria-hidden": "true", width: "34", height: "34" }),
+        el("div", {}, [el("div", { class: "name", text: "Noah Almighty" }), el("div", { class: "sub", text: "아바타 플랫폼" })]),
       ]),
       nav,
+      newChatBtn,
     ]),
     el("div", { class: "rail-history" }, [
       el("div", { class: "rail-section-label", text: "내 대화" }),
-      dom.convList,
+      el("div", { class: "conv-list-wrap" }, [dom.convSearch, dom.convList]),
     ]),
     el("div", { class: "rail-footer" }, [el("div", { class: "rail-user-row" }, [meRow, logoutBtn])]),
   ]);
 
-  const railToggle = el("button", { class: "icon-button rail-toggle", type: "button", "aria-label": "메뉴", title: "메뉴", onclick: () => openRail() });
+  const railToggle = el("button", { class: "icon-button rail-toggle", type: "button", "aria-label": "메뉴 열기", title: "메뉴", onclick: () => openRail() });
   railToggle.append(icon("menu"));
   dom.railToggle = railToggle;
 
   dom.main = el("main", { class: "main", id: "main" });
   dom.railBackdrop = el("div", { class: "rail-backdrop", onclick: () => closeRail() });
 
+  // Polite status line for screen readers (streamed replies are announced once
+  // on completion instead of flooding on every token).
+  dom.srStatus = el("div", { class: "sr-only", role: "status", "aria-live": "polite" });
+
   // Interactive prompts (permission / AskUserQuestion) surface as a standalone
   // centered modal — not inside the chat bubble — so the owner can't miss them;
   // it's dismissed once they respond (or when the run ends).
   dom.promptModal = el("div", { class: "prompt-modal-backdrop", hidden: true });
+  dom.promptModal.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      dom.promptModal.querySelector("[data-prompt-cancel]")?.click();
+    } else if (event.key === "Tab") {
+      trapTab(event, dom.promptModal);
+    }
+  });
 
-  app.replaceChildren(el("section", { class: "workspace" }, [rail, dom.main]), dom.railBackdrop, dom.promptModal);
+  app.replaceChildren(el("section", { class: "workspace" }, [rail, dom.main]), dom.railBackdrop, dom.promptModal, dom.srStatus);
   dom.rail = rail;
 }
 
-function showPromptModal(card) {
+/* ---- Prompt modal queue ------------------------------------------------
+   Split panes can raise prompts concurrently; a single global modal would let
+   the second card silently destroy the first (stalling that run forever). We
+   queue instead, and a finishing run only dismisses ITS OWN cards. */
+const promptQueue = [];
+let promptRestoreFocus = null;
+
+function trapTab(event, container) {
+  const focusables = [...container.querySelectorAll("button:not(:disabled), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")];
+  if (!focusables.length) return;
+  const first = focusables[0];
+  const last = focusables[focusables.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !container.contains(document.activeElement))) {
+    last.focus();
+    event.preventDefault();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    first.focus();
+    event.preventDefault();
+  }
+}
+
+function showPromptModal(card, runKey = "") {
   if (!dom.promptModal) return;
+  card.dataset.run = runKey || "";
+  if (!dom.promptModal.hidden && dom.promptModal.firstChild && dom.promptModal.firstChild !== card) {
+    promptQueue.push(card);
+    return;
+  }
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  const titleEl = card.querySelector(".prompt-title") || card.querySelector(".prompt-head span:last-child");
+  if (titleEl) {
+    if (!titleEl.id) titleEl.id = `prompt-title-${newId()}`;
+    card.setAttribute("aria-labelledby", titleEl.id);
+  }
+  // Capture only at the START of a prompt session — advancing between queued
+  // cards passes through here with focus already on <body>.
+  if (dom.promptModal.hidden && !promptRestoreFocus) {
+    promptRestoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
   dom.promptModal.replaceChildren(card);
   dom.promptModal.hidden = false;
+  (card.querySelector("button:not(:disabled), input, select, textarea") || card).focus?.();
 }
+
+// Hide the current card and surface the next queued one (or close + restore focus).
+function advancePromptModal() {
+  if (!dom.promptModal) return;
+  dom.promptModal.replaceChildren();
+  const next = promptQueue.shift();
+  if (next) {
+    dom.promptModal.hidden = true; // force showPromptModal down its "show now" path
+    showPromptModal(next, next.dataset.run);
+    return;
+  }
+  dom.promptModal.hidden = true;
+  if (promptRestoreFocus?.isConnected) promptRestoreFocus.focus?.();
+  promptRestoreFocus = null;
+}
+
+// A run ended: drop its queued cards and dismiss its visible card (only its own).
+function dismissRunPrompts(runKey) {
+  const key = runKey || "";
+  for (let i = promptQueue.length - 1; i >= 0; i--) {
+    if ((promptQueue[i].dataset.run || "") === key) promptQueue.splice(i, 1);
+  }
+  const current = dom.promptModal?.firstChild;
+  if (current && (current.dataset.run || "") === key) advancePromptModal();
+}
+
 function hidePromptModal() {
   if (!dom.promptModal) return;
+  promptQueue.length = 0;
   dom.promptModal.hidden = true;
   dom.promptModal.replaceChildren();
 }
@@ -426,27 +582,63 @@ function hidePromptModal() {
 function openRail() {
   dom.rail.classList.add("open");
   dom.railBackdrop.classList.add("open");
+  dom.rail.querySelector(".nav-item")?.focus();
 }
 function closeRail() {
+  const wasOpen = dom.rail?.classList.contains("open");
   dom.rail?.classList.remove("open");
   dom.railBackdrop?.classList.remove("open");
+  if (wasOpen && dom.rail?.contains(document.activeElement)) dom.railToggle?.focus();
+}
+
+// Navigating away from a streaming chat: ask, then stop cleanly. A silent
+// dead nav (the old behavior) made the whole app feel broken during long runs.
+function confirmLeaveStreaming() {
+  if (!anyChatStreaming()) return true;
+  if (!window.confirm("응답이 생성되는 중입니다. 중지하고 이동할까요?")) return false;
+  stopAllChatStreams();
+  return true;
 }
 
 function goView(view) {
-  if (anyChatStreaming() && view !== "chat") return;
+  if (view === state.view) {
+    closeRail();
+    return;
+  }
+  if (!confirmLeaveStreaming()) return;
   state.view = view;
   closeRail();
+  syncHash();
   renderView();
 }
 
 function syncNav() {
   for (const [view, btn] of Object.entries(dom.navButtons)) {
-    btn.classList.toggle("active", view === state.view);
+    const active = view === state.view;
+    btn.classList.toggle("active", active);
+    if (active) btn.setAttribute("aria-current", "page");
+    else btn.removeAttribute("aria-current");
   }
+}
+
+const VIEW_TITLES = { explore: "탐색", chat: "대화", settings: "내 아바타", admin: "관리자" };
+
+function syncDocumentTitle() {
+  if (state.streaming) {
+    document.title = "● 응답 중 · Noah Almighty";
+    return;
+  }
+  if (!state.user) {
+    document.title = "Noah Almighty";
+    return;
+  }
+  const chatName = state.view === "chat" ? activePane()?.avatar?.alias || activePane()?.avatar?.displayName : null;
+  document.title = `${chatName || VIEW_TITLES[state.view] || "Noah Almighty"} · Noah Almighty`;
 }
 
 function renderView() {
   syncNav();
+  syncDocumentTitle();
   dom.main.replaceChildren();
   if (state.view === "explore") renderExplore();
   else if (state.view === "chat") renderChat();
@@ -454,10 +646,73 @@ function renderView() {
   else if (state.view === "admin") renderAdmin();
 }
 
+/* ---- Hash routing -------------------------------------------------------
+   #/explore · #/chat · #/chat/<convId> · #/settings/<tab> · #/admin
+   Keeps Back/Forward inside the SPA and survives a reload. */
+const VIEW_ROUTES = ["explore", "chat", "settings", "admin"];
+let applyingRoute = false;
+
+function routeFromHash() {
+  const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
+  let decoded = null;
+  try {
+    decoded = arg ? decodeURIComponent(arg) : null;
+  } catch {
+    decoded = null; // malformed percent-encoding in a hand-edited URL
+  }
+  return { view: VIEW_ROUTES.includes(view) ? view : null, arg: decoded };
+}
+
+function currentRoute() {
+  if (state.view === "chat") {
+    const pane = activePane();
+    return pane?.messages?.length && pane.conversationId ? `#/chat/${encodeURIComponent(pane.conversationId)}` : "#/chat";
+  }
+  if (state.view === "settings") return `#/settings/${state.settingsTab}`;
+  return `#/${state.view}`;
+}
+
+function syncHash(replace = false) {
+  if (applyingRoute || !state.user) return;
+  const target = currentRoute();
+  if (location.hash === target) return;
+  if (replace) history.replaceState(null, "", target);
+  else history.pushState(null, "", target);
+}
+
+async function applyRoute() {
+  if (!state.user) return;
+  const { view, arg } = routeFromHash();
+  if (!view) return;
+  applyingRoute = true;
+  try {
+    if (view === "chat" && arg && activePane()?.conversationId !== arg) {
+      const conv = state.conversations.find((c) => c.id === arg);
+      if (conv) {
+        await selectConversation(conv);
+        return;
+      }
+    }
+    if (view === "settings" && arg && arg !== state.settingsTab) state.settingsTab = arg;
+    if (view !== state.view || view === "settings") {
+      if (!confirmLeaveStreaming()) return;
+      state.view = view;
+      closeRail();
+      renderView();
+    }
+  } finally {
+    applyingRoute = false;
+  }
+}
+
+window.addEventListener("popstate", () => {
+  applyRoute();
+});
+
 function viewHeader(title, sub, extra) {
   const left = el("div", { class: "header-left" }, [
     dom.railToggle,
-    el("div", { class: "title" }, [el("h2", { text: title }), sub ? el("p", { text: sub }) : null]),
+    el("div", { class: "title" }, [el("h1", { text: title }), sub ? el("p", { text: sub }) : null]),
   ]);
   return el("header", { class: "view-header" }, [left, extra || el("div", {})]);
 }
@@ -521,6 +776,12 @@ function syncLegacyChatState(pane = activePane()) {
 function refreshStreamingState() {
   state.streaming = state.chatPanes.some((p) => p.streaming);
   abortController = activePane()?.abortController || null;
+  // Keep header "새 대화" buttons in sync with their pane's streaming state.
+  dom.main?.querySelectorAll("[data-newchat]").forEach((btn) => {
+    const paneEl = btn.closest(".chat-pane");
+    const pane = paneEl ? state.chatPanes.find((p) => p.id === paneEl.dataset.pane) : activePane();
+    btn.disabled = Boolean(pane?.streaming);
+  });
 }
 
 function anyChatStreaming() {
@@ -547,6 +808,38 @@ function splitLayoutClass() {
 }
 
 /* ============================================================ Explore view */
+// First-run pointer shown when the user skipped onboarding and never connected
+// anything — the onboarding modal itself is otherwise buried 3 levels deep.
+function buildSetupBanner() {
+  const u = state.user;
+  if (!u || u.gitTokenSet || u.knowledgeRepo) return null;
+  try {
+    if (sessionStorage.getItem("setupBannerDismissed") === "1") return null;
+  } catch {
+    /* storage unavailable — just show it */
+  }
+  const banner = el("div", { class: "setup-banner" }, [
+    el("span", { text: "아바타가 아직 지식 저장소와 연결되지 않았습니다. 연결하면 대화로 지식을 쌓을 수 있어요." }),
+    el("div", { class: "sb-actions" }, [
+      el("button", { class: "primary small", type: "button", text: "설정하기", onclick: () => openOnboarding() }),
+      el("button", {
+        class: "linkish small",
+        type: "button",
+        text: "닫기",
+        onclick: () => {
+          try {
+            sessionStorage.setItem("setupBannerDismissed", "1");
+          } catch {
+            /* ignore */
+          }
+          banner.remove();
+        },
+      }),
+    ]),
+  ]);
+  return banner;
+}
+
 async function renderExplore() {
   const header = viewHeader("탐색", "공개된 아바타와 대화를 시작하세요");
   const grid = el("div", { class: "avatar-grid" });
@@ -554,17 +847,32 @@ async function renderExplore() {
   dom.main.append(header, body);
 
   grid.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
+  let loadError = null;
   try {
     await loadAvatars();
-  } catch {
-    /* ignore */
+  } catch (e) {
+    loadError = e;
   }
   grid.replaceChildren();
-  if (!state.avatars.length) {
-    grid.append(el("div", { class: "empty-note", text: "공개된 아바타가 아직 없습니다." }));
+  if (loadError) {
+    // A failed fetch must not masquerade as "no avatars exist".
+    grid.append(
+      el("div", { class: "warn-box" }, [
+        `아바타 목록을 불러오지 못했습니다: ${loadError.message} `,
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ]),
+    );
     return;
   }
-  for (const av of state.avatars) {
+  const banner = buildSetupBanner();
+  if (banner) body.prepend(banner);
+  if (!state.avatars.length) {
+    grid.append(el("div", { class: "empty-note", text: "공개된 아바타가 아직 없습니다.\n내 아바타 탭에서 아바타를 공개해 보세요." }));
+    return;
+  }
+  // Pin my own avatar first — the most common chat target needs a stable spot.
+  const avatars = [...state.avatars].sort((a, b) => Number(b.id === state.user.id) - Number(a.id === state.user.id));
+  for (const av of avatars) {
     grid.append(buildAvatarCard(av));
   }
 }
@@ -572,7 +880,7 @@ async function renderExplore() {
 function buildAvatarCard(av) {
   const isMe = av.id === state.user.id;
   const card = el("button", { class: "avatar-card", type: "button", onclick: () => startChatWith(av) }, [
-    avatarNode(av, 56),
+    avatarNode(av, 56, { alt: "" }),
     el("div", { class: "ac-body" }, [
       el("div", { class: "ac-name" }, [
         el("strong", { text: av.displayName }),
@@ -580,7 +888,7 @@ function buildAvatarCard(av) {
         av.published ? null : el("span", { class: "tag", text: "비공개" }),
       ]),
       el("div", { class: "ac-handle", text: `@${av.username}` }),
-      av.alias ? el("div", { class: "ac-alias", text: `“${av.alias}”` }) : null,
+      av.alias ? el("div", { class: "ac-alias", text: `"${av.alias}"` }) : null,
       av.bio ? el("p", { class: "ac-bio", text: av.bio }) : null,
       el("div", { class: "ac-tags" }, [el("span", { class: "tag", text: `플러그인 ${av.pluginCount}개` })]),
     ]),
@@ -589,13 +897,22 @@ function buildAvatarCard(av) {
 }
 
 async function startChatWith(av) {
-  if (anyChatStreaming()) return;
+  if (!confirmLeaveStreaming()) return;
+  // Resume the most recent conversation with this avatar instead of silently
+  // forking a new one — Explore and the rail used to diverge here, spawning
+  // duplicate threads. "새 대화" in the chat header remains the fork path.
+  const existing = state.conversations.find((c) => c.avatarUserId === av.id);
+  if (existing && state.chatPanes.length <= 1) {
+    await selectConversation(existing);
+    return;
+  }
   state.currentAvatar = av;
   const pane = makeChatPane(av);
   state.chatPanes = [pane];
   state.activePaneId = pane.id;
   syncLegacyChatState(pane);
   state.view = "chat";
+  syncHash();
   renderView();
   await refreshConversations();
 }
@@ -604,14 +921,14 @@ async function startChatWith(av) {
 function renderChat() {
   ensureChatPanes();
   if (!state.chatPanes.length || !state.currentAvatar) {
-    const header = viewHeader("채팅", "탐색에서 아바타를 골라 대화를 시작하세요");
+    const header = viewHeader("대화", "탐색에서 아바타를 골라 대화를 시작하세요");
     dom.main.append(
       header,
       el("div", { class: "view-body" }, [
         el("div", { class: "empty-state" }, [
           el("div", { class: "hero" }, [
             el("h3", { text: "아직 선택한 아바타가 없어요" }),
-            el("p", { text: "탐색 탭에서 대화할 아바타를 선택하세요." }),
+            el("p", { text: "탐색 탭에서 대화할 아바타를 골라 보세요." }),
           ]),
           el("button", { class: "primary", type: "button", text: "아바타 탐색", onclick: () => goView("explore") }),
         ]),
@@ -624,7 +941,7 @@ function renderChat() {
   const av = activePane()?.avatar || state.currentAvatar;
   const controls = splitEnabled() ? renderSplitControls() : null;
   if (panes.length > 1) {
-    const header = viewHeader("병렬 세션", "최대 4개의 독립 대화를 동시에 실행합니다.", controls);
+    const header = viewHeader("분할 대화", "최대 4개의 대화를 동시에 진행할 수 있습니다.", controls);
     const grid = el("div", { class: `chat-workbench ${splitLayoutClass()}` }, panes.map((pane, index) => renderChatPane(pane, { compact: true, index })));
     dom.main.append(header, grid);
     panes.forEach((pane) => maybeGreet(pane));
@@ -633,19 +950,26 @@ function renderChat() {
 
   const pane = panes[0];
   // Elevated viewers (owner or trusted user) run tools; everyone else is
-  // read-only and gets the "읽기전용" tag. `elevated` comes from the avatar
+  // read-only and gets the "읽기 전용" tag. `elevated` comes from the avatar
   // detail (GET /api/avatars/:id) so trusted users aren't mislabeled.
   const elevated = av.elevated || av.id === state.user?.id;
   const headerExtra = el("div", { class: "chat-avatar" }, [
-    avatarNode(av, 36),
+    avatarNode(av, 36, { alt: "" }),
     el("div", {}, [
-      el("div", { class: "ca-name", text: av.alias || av.displayName }),
-      el("div", { class: "ca-handle", text: `@${av.username}${elevated ? "" : " · 읽기전용"}` }),
+      el("h1", { class: "ca-name", text: av.alias || av.displayName }),
+      el("div", { class: "ca-handle", text: `@${av.username}${elevated ? "" : " · 읽기 전용"}` }),
     ]),
   ]);
   const actions = el("div", { class: "chat-head-actions" }, [
     controls,
-    el("button", { class: "ghost-sm", type: "button", text: "새 대화", onclick: () => newChat(pane) }),
+    el("button", {
+      class: "ghost-sm",
+      type: "button",
+      text: "새 대화",
+      dataset: { newchat: "1" },
+      disabled: pane.streaming ? "" : null,
+      onclick: () => newChat(pane),
+    }),
   ]);
   const header = el("header", { class: "view-header chat-head" }, [
     el("div", { class: "header-left" }, [dom.railToggle, headerExtra]),
@@ -664,18 +988,21 @@ function renderChat() {
 function renderSplitControls() {
   const disabled = anyChatStreaming();
   const canAdd = splitEnabled() && state.chatPanes.length < MAX_CHAT_PANES && !disabled;
-  const wrap = el("div", { class: "split-controls", role: "group", "aria-label": "분할 세션" });
+  const wrap = el("div", { class: "split-controls", role: "group", "aria-label": "분할 대화" });
   if (!state.avatarsLoaded && !state.avatarsLoading) {
     loadAvatars()
-      .then(() => { if (state.view === "chat") renderView(); })
+      // Mid-stream re-render would detach the live streaming bubble — skip it.
+      .then(() => { if (state.view === "chat" && !anyChatStreaming()) renderView(); })
       .catch(() => {});
   }
   const layoutBtn = (layout, ic, title) => {
+    const active = state.chatLayout === layout;
     const btn = el("button", {
-      class: `split-btn ${state.chatLayout === layout ? "active" : ""}`,
+      class: `split-btn ${active ? "active" : ""}`,
       type: "button",
       title,
       "aria-label": title,
+      "aria-pressed": active ? "true" : "false",
       disabled,
       onclick: () => {
         if (anyChatStreaming()) return;
@@ -686,16 +1013,19 @@ function renderSplitControls() {
     btn.append(icon(ic));
     wrap.append(btn);
   };
-  layoutBtn("vertical", "columns", "좌우 분할");
-  layoutBtn("horizontal", "rows", "상하 분할");
-  layoutBtn("grid", "grid", "상하 좌우 분할");
+  // Layout choice only matters with 2+ panes — hide it before that.
+  if (state.chatPanes.length > 1) {
+    layoutBtn("vertical", "columns", "좌우 분할");
+    layoutBtn("horizontal", "rows", "상하 분할");
+    layoutBtn("grid", "grid", "격자 분할");
+  }
   const avatars = splitAvatarOptions();
   const activeAvatarId = activePane()?.avatar?.id || state.currentAvatar?.id || "";
   const selectedAvatarId = avatars.some((av) => av.id === state.splitAvatarId) ? state.splitAvatarId : activeAvatarId;
   const avatarSelect = el("select", {
     class: "split-avatar-select",
-    title: "추가할 아바타",
-    "aria-label": "추가할 아바타",
+    title: "분할로 추가할 아바타",
+    "aria-label": "분할로 추가할 아바타",
     disabled,
     onchange: (event) => { state.splitAvatarId = event.currentTarget.value; },
   }, avatars.map((av) => el("option", { value: av.id, text: av.alias || av.displayName || av.username || "아바타" })));
@@ -705,8 +1035,8 @@ function renderSplitControls() {
   const addBtn = el("button", {
     class: "split-add",
     type: "button",
-    title: "세션 추가",
-    "aria-label": "세션 추가",
+    title: "대화 추가 (분할)",
+    "aria-label": "대화 추가 (분할)",
     disabled: canAdd ? null : "",
     onclick: () => addChatPane(avatarSelect.value),
   });
@@ -733,19 +1063,26 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
   pane.dom = pdom;
 
   pdom.transcriptInner = el("div", { class: "transcript-inner" });
-  pdom.transcript = el("div", { class: "transcript scroll-thin", role: "log", "aria-live": "polite", "aria-relevant": "additions" });
+  pdom.transcript = el("div", {
+    class: "transcript scroll-thin",
+    role: "log",
+    "aria-live": "polite",
+    "aria-relevant": "additions",
+    "aria-label": "대화 내용",
+    tabindex: "0",
+  });
   pdom.transcript.append(pdom.transcriptInner);
   pdom.transcript.addEventListener("scroll", () => updateScrollButton(pane));
 
   pdom.scrollBtn = el("button", {
-    class: "scroll-bottom rotate-down",
+    class: "scroll-bottom",
     type: "button",
     "aria-label": "맨 아래로",
     title: "맨 아래로",
     hidden: "",
     onclick: () => scrollToBottom(pane, true),
   });
-  pdom.scrollBtn.append(icon("send"));
+  pdom.scrollBtn.append(icon("arrow-down"));
 
   pdom.textarea = el("textarea", {
     name: "message",
@@ -768,7 +1105,11 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
   }, [
     pdom.composerBox,
     el("div", { class: "composer-hint" }, [
-      compact ? el("span", { text: `세션 ${index + 1}` }) : el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")]),
+      compact
+        ? el("span", { text: `대화 ${index + 1}` })
+        : isFinePointer()
+          ? el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")])
+          : el("span", { text: "보내기 버튼으로 전송" }),
       pdom.composerState,
     ]),
   ]);
@@ -795,8 +1136,8 @@ function renderCompactPaneHeader(pane, index) {
   const closeBtn = el("button", {
     class: "msg-act",
     type: "button",
-    "aria-label": "세션 닫기",
-    title: "세션 닫기",
+    "aria-label": "대화 창 닫기",
+    title: "대화 창 닫기",
     disabled: state.chatPanes.length <= 1 || anyChatStreaming() ? "" : null,
     onclick: (event) => {
       event.stopPropagation();
@@ -808,6 +1149,7 @@ function renderCompactPaneHeader(pane, index) {
     class: "ghost-sm",
     type: "button",
     text: "새 대화",
+    dataset: { newchat: "1" },
     disabled: pane.streaming ? "" : null,
     onclick: (event) => {
       event.stopPropagation();
@@ -816,9 +1158,9 @@ function renderCompactPaneHeader(pane, index) {
   });
   return el("header", { class: "pane-head" }, [
     el("div", { class: "pane-title" }, [
-      avatarNode(av, 30),
+      avatarNode(av, 30, { alt: "" }),
       el("div", {}, [
-        el("strong", { text: `세션 ${index + 1}` }),
+        el("strong", { text: `대화 ${index + 1}` }),
         el("span", { text: av.alias || av.displayName }),
       ]),
     ]),
@@ -857,6 +1199,20 @@ function closeChatPane(pane) {
 const CAP_WIDTH_MIN = 220;
 const CAP_WIDTH_MAX = 720;
 const CAP_WIDTH_DEFAULT = 480;
+// Clamp so the panel can never squeeze the chat column out: leave room for the
+// rail (248px) plus a readable transcript (~380px). Mirrors the CSS max-width.
+function capWidthClamp(width) {
+  const available = Math.max(CAP_WIDTH_MIN, window.innerWidth - 248 - 380);
+  return Math.min(Math.min(CAP_WIDTH_MAX, available), Math.max(CAP_WIDTH_MIN, width));
+}
+// On phones the stacked panel starts collapsed — expanded it eats ~40% of the
+// screen below the composer.
+function isFinePointer() {
+  return window.matchMedia ? window.matchMedia("(hover: hover) and (pointer: fine)").matches : true;
+}
+function isMobileLayout() {
+  return window.matchMedia ? window.matchMedia("(max-width: 860px)").matches : false;
+}
 function capPref(key, fallback) {
   try {
     const v = localStorage.getItem(key);
@@ -912,14 +1268,18 @@ function renderCapabilitiesPanel(av) {
       pluginsBody,
     ]),
   ]);
-  // Slim strip shown when collapsed: just an expand button.
+  // Slim strip shown when collapsed: just an expand button. The text label
+  // only renders in the stacked mobile bar (hidden on the desktop strip).
   const expandBtn = el("button", {
     class: "cap-expand",
     type: "button",
     title: "역량 패널 펼치기",
     "aria-label": "역량 패널 펼치기",
-    text: "‹",
-  });
+    "aria-expanded": "false",
+  }, [
+    el("span", { "aria-hidden": "true", text: "‹" }),
+    el("span", { class: "cap-expand-label", text: "아바타 역량 보기" }),
+  ]);
   // Drag handle on the panel's left edge to resize its width.
   const resizer = el("div", { class: "cap-resize", "aria-hidden": "true" });
 
@@ -927,13 +1287,14 @@ function renderCapabilitiesPanel(av) {
   const panel = el("aside", {
     class: "cap-panel",
     "aria-label": "아바타 역량",
-    style: `width:${Math.min(CAP_WIDTH_MAX, Math.max(CAP_WIDTH_MIN, startWidth))}px`,
+    style: `width:${capWidthClamp(startWidth)}px`,
   }, [resizer, collapseBtn, body, expandBtn]);
 
-  if (capPref("capPanelCollapsed", "0") === "1") panel.classList.add("collapsed");
+  if (capPref("capPanelCollapsed", isMobileLayout() ? "1" : "0") === "1") panel.classList.add("collapsed");
 
   const setCollapsed = (collapsed) => {
     panel.classList.toggle("collapsed", collapsed);
+    expandBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     setCapPref("capPanelCollapsed", collapsed ? "1" : "0");
   };
   collapseBtn.addEventListener("click", () => setCollapsed(true));
@@ -954,8 +1315,7 @@ function wireCapResize(handle, panel) {
     handle.setPointerCapture(e.pointerId);
     document.body.classList.add("col-resizing");
     const onMove = (ev) => {
-      const next = Math.min(CAP_WIDTH_MAX, Math.max(CAP_WIDTH_MIN, startW + (startX - ev.clientX)));
-      panel.style.width = `${next}px`;
+      panel.style.width = `${capWidthClamp(startW + (startX - ev.clientX))}px`;
     };
     const onUp = () => {
       handle.removeEventListener("pointermove", onMove);
@@ -1050,13 +1410,18 @@ function wireComposer(pane) {
   const ta = pdom.textarea;
   const autoGrow = () => {
     ta.style.height = "auto";
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
+    // Mirror the CSS cap: never let a long draft eat the transcript.
+    const cap = Math.min(200, Math.round(window.innerHeight * 0.3));
+    ta.style.height = `${Math.min(ta.scrollHeight, cap)}px`;
   };
   ta.addEventListener("input", () => {
     autoGrow();
     updateSendState(pane);
   });
   ta.addEventListener("keydown", (event) => {
+    // Virtual keyboards have no Shift+Enter — there, Enter inserts a newline
+    // and sending is button-only.
+    if (!isFinePointer()) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       setActivePane(pane);
@@ -1076,6 +1441,10 @@ function updateSendState(pane = activePane()) {
   const pdom = pane?.dom;
   if (!pdom?.textarea || !pdom?.sendButton) return;
   const hasText = pdom.textarea.value.trim().length > 0;
+  // The same button sends or stops — its accessible name must follow.
+  const label = pane.streaming ? "응답 중지" : "보내기";
+  pdom.sendButton.setAttribute("aria-label", label);
+  pdom.sendButton.title = label;
   if (pane.streaming) {
     pdom.sendButton.disabled = false;
     pdom.sendButton.classList.add("is-stop");
@@ -1094,6 +1463,7 @@ function newChat(pane = activePane()) {
   pane.greetedConversationId = null;
   pane.greetingStarted = false;
   setActivePane(pane);
+  syncHash(true);
   renderTranscript(pane);
   renderConversations();
   pane.dom.textarea?.focus();
@@ -1117,11 +1487,12 @@ function renderTranscript(pane = activePane()) {
 
 function renderChatEmpty(pane = activePane()) {
   const av = pane?.avatar || state.currentAvatar;
+  const elevated = av.elevated || av.id === state.user?.id;
   return el("div", { class: "empty-state" }, [
-    avatarNode(av, 72),
+    avatarNode(av, 72, { alt: "" }),
     el("div", { class: "hero" }, [
-      el("h3", { text: `${av.displayName}와 대화` }),
-      el("p", { text: av.bio || "무엇이든 물어보세요. 이 아바타의 플러그인은 읽기전용으로 실행됩니다." }),
+      el("h3", { text: `${av.displayName}와(과) 대화` }),
+      el("p", { text: av.bio || (elevated ? "무엇이든 물어보세요." : "무엇이든 물어보세요. 이 아바타의 도구는 읽기 전용으로 실행됩니다.") }),
     ]),
   ]);
 }
@@ -1133,7 +1504,7 @@ function buildMessageNode(pane, message, isLast) {
     el("div", { class: "msg-role" }, [
       el("span", { class: "role-dot" }),
       el("span", { text: isUser ? "나" : pane.avatar?.displayName || "아바타" }),
-      message.createdAt ? el("time", { class: "msg-time", text: timeLabel(message.createdAt) }) : null,
+      message.createdAt ? el("time", { class: "msg-time", datetime: message.createdAt, text: timeLabel(message.createdAt) }) : null,
     ]),
   );
   const bubble = el("div", { class: "bubble" });
@@ -1175,21 +1546,32 @@ function regenerate(pane = activePane()) {
   const lastUser = roles.lastIndexOf("user");
   if (lastUser < 0) return;
   const text = pane.messages[lastUser].content;
+  // Stash the discarded tail: if the re-run errors before producing anything,
+  // the original answer is restored instead of being lost.
+  const removed = pane.messages.slice(lastUser + 1);
   pane.messages = pane.messages.slice(0, lastUser + 1);
   syncLegacyChatState(pane);
   renderTranscript(pane);
-  streamChat(pane, text, { regenerate: true });
+  streamChat(pane, text, { regenerate: true, restoreOnError: removed });
 }
+
+// Internal runtime identifiers → user-facing badge labels. `claude` is the
+// normal case and renders no badge at all; raw identifiers never surface.
+const RUNTIME_BADGE_LABELS = { claude: null, local: "로컬", blocked: "차단됨", error: "오류" };
 
 function renderAssistantInto(bubble, message) {
   const response = message.response;
   bubble.classList.toggle("blocked", response?.runtime === "blocked");
   bubble.classList.toggle("errored", response?.runtime === "error" || message.errored === true);
   if (response) {
-    const meta = [response.runtime && ["runtime", response.runtime], response.skillName && ["skill", response.skillName]].filter(Boolean);
+    const meta = [];
+    if (response.runtime && RUNTIME_BADGE_LABELS[response.runtime] !== null) {
+      meta.push(["runtime", RUNTIME_BADGE_LABELS[response.runtime] || response.runtime, response.runtime]);
+    }
+    if (response.skillName) meta.push(["skill", response.skillName, ""]);
     if (meta.length) {
       const metaRow = el("div", { class: "response-meta" });
-      for (const [kind, val] of meta) metaRow.append(el("span", { class: `meta-badge ${kind === "runtime" ? `runtime-${val}` : ""}`, text: val }));
+      for (const [kind, label, raw] of meta) metaRow.append(el("span", { class: `meta-badge ${kind === "runtime" ? `runtime-${raw}` : ""}`, text: label }));
       bubble.append(metaRow);
     }
     if (response.kind === "table" && response.table) {
@@ -1219,7 +1601,7 @@ function buildTable(response) {
   const tableWrap = el("div", { class: "table-wrap" });
   const table = el("table");
   const thead = el("tr");
-  for (const c of columns) thead.append(el("th", { text: c }));
+  for (const c of columns) thead.append(el("th", { scope: "col", text: c }));
   table.append(el("thead", {}, [thead]));
   const tbody = el("tbody");
   for (const row of rows) {
@@ -1288,25 +1670,25 @@ async function maybeGreet(pane = activePane()) {
   pane.greetingStarted = false;
 }
 
-async function streamChat(pane, message, { isNewConversation = false, regenerate = false, greeting = false } = {}) {
+async function streamChat(pane, message, { isNewConversation = false, regenerate = false, greeting = false, restoreOnError = null } = {}) {
   pane.streaming = true;
   setActivePane(pane);
   refreshStreamingState();
   updateSendState(pane);
-  setComposerState(pane, "응답 대기 중…");
+  setComposerState(pane, "응답 준비 중…");
   pane.dom.transcript.setAttribute("aria-busy", "true");
-  document.title = "● 응답 중 · Noah Almighty";
+  syncDocumentTitle();
 
   const bubble = el("div", { class: "bubble" });
   const mdNode = el("div", { class: "md" });
   const caret = el("span", { class: "stream-caret", "aria-hidden": "true" });
-  const statusRow = el("div", { class: "stream-status" }, [el("span", { class: "spinner" }), el("span", { class: "label", text: "준비 중…" })]);
+  const statusRow = el("div", { class: "stream-status" }, [el("span", { class: "spinner" }), el("span", { class: "label", text: "응답 준비 중…" })]);
   const pluginChips = el("div", { class: "plugin-chips" });
   // Interactive prompts (permission / AskUserQuestion) pop up in a standalone
   // modal, not in the bubble; the activity tree shows which agent calls which tool.
   // The tree lives inside a <details open> so a long run's tool list can be
   // collapsed mid-stream — without this it grows unbounded and crowds the bubble.
-  const activityEl = el("div", { class: "agent-activity" });
+  const activityEl = el("div", { class: "agent-activity", tabindex: "0", role: "group", "aria-label": "작업 내역" });
   const activitySummaryEl = el("span", { class: "activity-summary-text", text: "작업 중…" });
   const activityDetails = el("details", { class: "activity-live", open: "", hidden: "" }, [
     el("summary", {}, [activitySummaryEl]),
@@ -1318,7 +1700,10 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
   // delta, so a tools-only phase doesn't render a tall empty bubble.
   caret.hidden = true;
   bubble.append(activityDetails, mdNode, caret, statusRow, pluginChips);
-  const wrap = el("div", { class: "message assistant" }, [
+  // aria-live=off while streaming: every rAF flush replaces the whole answer,
+  // and a polite region would re-announce it wholesale dozens of times. The
+  // finished message is announced once via dom.srStatus instead.
+  const wrap = el("div", { class: "message assistant", "aria-live": "off" }, [
     el("div", { class: "msg-role" }, [el("span", { class: "role-dot" }), el("span", { text: pane.avatar?.displayName || "아바타" })]),
     bubble,
   ]);
@@ -1334,6 +1719,7 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
     tools: new Map(), // toolUseId -> { row }
     tasks: new Map(), // taskId -> { row }
     text: "", rafPending: false, done: false, aborted: false, isNewConversation,
+    restoreOnError: Array.isArray(restoreOnError) && restoreOnError.length ? restoreOnError : null,
   };
   const flush = () => {
     live.rafPending = false;
@@ -1374,18 +1760,32 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
     await consumeSse(response.body, (e, d) => handleSseEvent(e, d, live, scheduleFlush));
   } catch (error) {
     if (error.name === "AbortError" || live.aborted) finalizeStopped(live);
-    else {
-      finalizeError(live, error.message || "스트리밍 오류가 발생했습니다.");
-      if (!live.text && pane.dom.textarea && !pane.dom.textarea.value) {
+    else if (!live.text && !greeting && !regenerate && message) {
+      // Nothing arrived for a normal send: undo it cleanly — remove the live
+      // bubble AND the pending user message (it was delivered at most once;
+      // leaving it would render a duplicate on retry), put the text back in
+      // the composer, and surface the error as a toast.
+      live.done = true;
+      cleanupLive(live);
+      live.wrap.remove();
+      const last = pane.messages[pane.messages.length - 1];
+      if (last?.role === "user" && last.content === message) pane.messages.pop();
+      if (activePane()?.id === pane.id) syncLegacyChatState(pane);
+      renderTranscript(pane);
+      if (pane.dom.textarea && !pane.dom.textarea.value) {
         pane.dom.textarea.value = message;
         pane.dom.textarea.dispatchEvent(new Event("input"));
       }
+      notify(`메시지를 보내지 못했습니다: ${error.message}`);
+    } else {
+      finalizeError(live, error.message || "응답을 받는 중 연결 오류가 발생했습니다. 다시 시도해 주세요.");
     }
   } finally {
     if (!live.done) {
       if (live.aborted) finalizeStopped(live);
-      else if (!live.text) finalizeError(live, "연결이 종료되었습니다.");
-      else finalizeStopped(live);
+      else if (!live.text) finalizeError(live, "응답을 받지 못한 채 연결이 끊어졌습니다. 다시 시도해 주세요.");
+      // Connection dropped server-side mid-answer — NOT a user stop; label it honestly.
+      else finalizeInterrupted(live);
     }
     pane.streaming = false;
     pane.abortController = null;
@@ -1393,8 +1793,11 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
     updateSendState(pane);
     setComposerState(pane, "");
     pane.dom.transcript?.setAttribute("aria-busy", "false");
-    if (!state.streaming) document.title = "Noah Almighty";
-    pane.dom.textarea?.focus();
+    syncDocumentTitle();
+    // Don't yank focus from a composer the user is typing in (split panes).
+    const focused = document.activeElement;
+    const typingElsewhere = focused && focused.tagName === "TEXTAREA" && focused !== pane.dom.textarea;
+    if (activePane()?.id === pane.id && !typingElsewhere) pane.dom.textarea?.focus();
   }
 }
 
@@ -1439,10 +1842,13 @@ function handleSseEvent(event, data, live, scheduleFlush) {
     case "open":
       if (data?.conversationId) {
         live.pane.conversationId = data.conversationId;
-        if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
+        if (activePane()?.id === live.pane.id) {
+          syncLegacyChatState(live.pane);
+          syncHash(true);
+        }
       }
       if (data?.runId) live.runId = data.runId;
-      setStatus(live, "준비 중…");
+      setStatus(live, "응답 준비 중…");
       break;
     case "status":
       if (data?.label) setStatus(live, data.label);
@@ -1524,7 +1930,7 @@ function ensureAgentNode(live, agentId, info) {
     node = el("div", { class: "agent-node is-main", dataset: { agent: agentId, status: "running" } }, [toolsEl, childrenEl]);
     live.activityEl.append(node);
   } else {
-    const label = (info && info.label) || "서브 에이전트";
+    const label = (info && info.label) || "하위 작업";
     node = el("div", { class: "agent-node sub", dataset: { agent: agentId, status: (info && info.status) || "running" } }, [
       el("div", { class: "agent-head" }, [
         el("span", { class: "agent-spinner" }),
@@ -1545,7 +1951,7 @@ function ensureAgentNode(live, agentId, info) {
 
 function handleAgentStart(live, data) {
   if (!data?.agentId) return;
-  const label = [data.subagentType, data.description].filter(Boolean).join(" · ") || "서브 에이전트";
+  const label = [data.subagentType, data.description].filter(Boolean).join(" · ") || "하위 작업";
   ensureAgentNode(live, data.agentId, { parentId: data.parentId, label, status: "running", pending: false });
   refreshLiveActivity(live);
   setStatus(live, `에이전트 작업 중: ${label}`);
@@ -1703,18 +2109,37 @@ function handleBlocked(live, data) {
 
 /* ---- Interactive prompts (permission / question) ------------------- */
 
-// Submit the owner's response to a prompt and dismiss the modal. The tool id
-// (if any) is remembered so a later "blocked" event for the same tool isn't
-// double-reported in the activity tree.
-async function submitPromptResponse(live, data, value) {
+// Submit the owner's response to a prompt. The card stays up until the POST
+// succeeds — hiding first meant a transient failure dismissed the prompt while
+// the run kept waiting forever on an answer the UI could no longer deliver.
+// The tool id (if any) is remembered so a later "blocked" event for the same
+// tool isn't double-reported in the activity tree.
+async function submitPromptResponse(live, data, value, card) {
   if (data.toolUseId) {
     (live.resolvedPermissions || (live.resolvedPermissions = new Set())).add(data.toolUseId);
   }
-  hidePromptModal();
+  const buttons = card ? [...card.querySelectorAll("button")] : [];
+  const disabledBefore = buttons.map((b) => b.disabled);
+  buttons.forEach((b) => (b.disabled = true));
   try {
     await api("/api/chat/respond", { method: "POST", body: JSON.stringify({ runId: live.runId, requestId: data.requestId, value }) });
-  } catch {
-    /* run may have already ended; nothing actionable left to show */
+    advancePromptModal();
+  } catch (err) {
+    if (!live.done && live.pane?.streaming) {
+      // Run still alive — keep the card so the user can retry.
+      buttons.forEach((b, i) => (b.disabled = disabledBefore[i]));
+      let note = card?.querySelector(".prompt-error");
+      if (card) {
+        if (!note) {
+          note = el("div", { class: "error-note prompt-error", role: "alert" });
+          card.append(note);
+        }
+        note.textContent = `응답을 전송하지 못했습니다: ${err.message} — 다시 시도해 주세요.`;
+      }
+      return;
+    }
+    // Run already ended; nothing actionable left to show.
+    advancePromptModal();
   }
 }
 
@@ -1725,16 +2150,18 @@ function renderPermissionCard(live, data) {
   const argSummary = summarizeInputForCard(data.input);
 
   const card = el("div", { class: "prompt-card permission", dataset: { request: data.requestId, tooluse: data.toolUseId || "" } }, [
-    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon", text: "🔐" }), el("span", { text: "권한 요청" })]),
+    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon" }, [icon("lock")]), el("span", { text: "권한 요청" })]),
     el("div", { class: "prompt-title", text: title }),
     el("div", { class: "prompt-tool" }, [el("code", { text: toolName }), argSummary ? el("span", { class: "prompt-arg", text: argSummary }) : null]),
     data.description ? el("div", { class: "prompt-desc", text: data.description }) : null,
-    el("div", { class: "prompt-actions" }, [
-      el("button", { class: "btn btn-ghost btn-sm", text: "거부", onclick: () => submitPromptResponse(live, data, { behavior: "deny" }) }),
-      el("button", { class: "btn btn-primary btn-sm", text: "승인", onclick: () => submitPromptResponse(live, data, { behavior: "allow" }) }),
-    ]),
   ]);
-  showPromptModal(card);
+  card.append(
+    el("div", { class: "prompt-actions" }, [
+      el("button", { class: "btn btn-ghost btn-sm", text: "거부", "data-prompt-cancel": "", onclick: () => submitPromptResponse(live, data, { behavior: "deny" }, card) }),
+      el("button", { class: "btn btn-primary btn-sm", text: "승인", onclick: () => submitPromptResponse(live, data, { behavior: "allow" }, card) }),
+    ]),
+  );
+  showPromptModal(card, live.runId || "");
   setStatus(live, "권한 승인을 기다리는 중…", { sticky: true });
 }
 
@@ -1743,17 +2170,17 @@ function renderQuestionCard(live, data) {
   const payload = data.payload || {};
   const questions = Array.isArray(payload.questions) ? payload.questions : null;
   const card = el("div", { class: "prompt-card question", dataset: { request: data.requestId } }, [
-    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon", text: "💬" }), el("span", { text: "질문" })]),
+    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon" }, [icon("chat")]), el("span", { text: "질문" })]),
   ]);
 
   if (!questions) {
     // Unknown dialog kind: show raw payload + confirm/cancel.
     card.append(el("pre", { class: "prompt-input", text: JSON.stringify(payload, null, 2) }));
     card.append(el("div", { class: "prompt-actions" }, [
-      el("button", { class: "btn btn-ghost btn-sm", text: "취소", onclick: () => submitPromptResponse(live, data, { cancelled: true }) }),
-      el("button", { class: "btn btn-primary btn-sm", text: "확인", onclick: () => submitPromptResponse(live, data, { result: {} }) }),
+      el("button", { class: "btn btn-ghost btn-sm", text: "취소", "data-prompt-cancel": "", onclick: () => submitPromptResponse(live, data, { cancelled: true }, card) }),
+      el("button", { class: "btn btn-primary btn-sm", text: "확인", onclick: () => submitPromptResponse(live, data, { result: {} }, card) }),
     ]));
-    showPromptModal(card);
+    showPromptModal(card, live.runId || "");
     setStatus(live, "질문에 답해 주세요…", { sticky: true });
     return;
   }
@@ -1773,21 +2200,25 @@ function renderQuestionCard(live, data) {
       el("div", { class: "q-text", text: q.question || "" }),
     ]);
     const opts = Array.isArray(q.options) ? q.options : [];
-    const optsEl = el("div", { class: "q-options" });
+    const optsEl = el("div", { class: "q-options", role: "group", "aria-label": multi ? "여러 개 선택 가능" : "하나 선택" });
     opts.forEach((opt) => {
-      const optBtn = el("button", { class: "q-option", type: "button" }, [
+      const optBtn = el("button", { class: "q-option", type: "button", "aria-pressed": "false" }, [
         el("span", { class: "q-opt-label", text: opt.label || "" }),
         opt.description ? el("span", { class: "q-opt-desc", text: opt.description }) : null,
       ]);
+      const setSelected = (btn, on) => {
+        btn.classList.toggle("selected", on);
+        btn.setAttribute("aria-pressed", on ? "true" : "false");
+      };
       optBtn.addEventListener("click", () => {
         if (multi) {
           const idx = selections[qi].indexOf(opt.label);
-          if (idx >= 0) { selections[qi].splice(idx, 1); optBtn.classList.remove("selected"); }
-          else { selections[qi].push(opt.label); optBtn.classList.add("selected"); }
+          if (idx >= 0) { selections[qi].splice(idx, 1); setSelected(optBtn, false); }
+          else { selections[qi].push(opt.label); setSelected(optBtn, true); }
         } else {
           selections[qi] = [opt.label];
-          optsEl.querySelectorAll(".q-option").forEach((b) => b.classList.remove("selected"));
-          optBtn.classList.add("selected");
+          optsEl.querySelectorAll(".q-option").forEach((b) => setSelected(b, false));
+          setSelected(optBtn, true);
         }
         refreshSubmit();
       });
@@ -1802,11 +2233,16 @@ function renderQuestionCard(live, data) {
     // question text (multi-select answers comma-joined), echoing the questions.
     const answers = {};
     questions.forEach((q, qi) => { answers[q.question || `q${qi}`] = selections[qi].join(", "); });
-    submitPromptResponse(live, data, { result: { questions, answers } });
+    submitPromptResponse(live, data, { result: { questions, answers } }, card);
   });
 
-  card.append(el("div", { class: "prompt-actions" }, [submitBtn]));
-  showPromptModal(card);
+  // Always offer an exit: without 건너뛰기 the disabled submit + full-screen
+  // backdrop could hard-stick a user who doesn't want to answer.
+  card.append(el("div", { class: "prompt-actions" }, [
+    el("button", { class: "btn btn-ghost btn-sm", text: "건너뛰기", "data-prompt-cancel": "", onclick: () => submitPromptResponse(live, data, { cancelled: true }, card) }),
+    submitBtn,
+  ]));
+  showPromptModal(card, live.runId || "");
   setStatus(live, "질문에 답해 주세요…", { sticky: true });
 }
 
@@ -1845,7 +2281,7 @@ function handlePluginEvent(live, data) {
     live.pluginChips.append(chip);
   }
   chip.dataset.status = data.status || "started";
-  const m = { started: "설치 중", installed: "설치됨", completed: "로드됨", failed: "실패" };
+  const m = { started: "불러오는 중", installed: "설치됨", completed: "사용 준비됨", failed: "불러오기 실패" };
   chip.querySelector(".pc-text").textContent = `${data.name} · ${m[data.status] || data.status || ""}`;
 }
 function cssEscape(v) {
@@ -1858,11 +2294,15 @@ function setComposerState(pane, text) {
 function cleanupLive(live) {
   live.caret.remove();
   live.statusRow.remove();
-  hidePromptModal(); // dismiss any unanswered prompt when the run ends
+  // Dismiss THIS run's unanswered prompts only — in split view another pane's
+  // pending card must survive its neighbor finishing.
+  dismissRunPrompts(live.runId || "");
   if (live.activityEl) freezeActivity(live);
   if (!live.pluginChips.children.length) live.pluginChips.remove();
   // No tool/agent rows ran: drop the (still-hidden) live disclosure wrapper.
   if (live.activityEl && !live.activityEl.children.length) live.activityDetails.remove();
+  // Announce completion once (streaming announcements are suppressed).
+  if (dom.srStatus) dom.srStatus.textContent = "아바타 응답이 끝났습니다.";
 }
 // Wrap a finished activity tree in a collapsed <details> disclosure so a long
 // conversation isn't cluttered by every expanded tool log. Returns null when
@@ -1928,6 +2368,14 @@ function finalizeDone(live, data) {
   const message = data?.message || { role: "assistant", content: data?.response?.text || data?.response?.summary || live.text, response: data?.response, createdAt: new Date().toISOString() };
   live.pane.messages.push(message);
   if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
+  // The live bubble may have been detached by a mid-stream re-render — the
+  // message is already in pane.messages, so rebuild the transcript from it.
+  if (!live.wrap.isConnected) {
+    renderTranscript(live.pane);
+    refreshConversations();
+    return;
+  }
+  live.wrap.removeAttribute("aria-live");
   // Re-render the bubble with the persisted record ABOVE the answer (matching
   // the live order): collapsed activity log → answer text.
   const collapsedActivity = collapseActivity(live.activityEl);
@@ -1943,6 +2391,17 @@ function finalizeError(live, msg) {
   if (live.done) return;
   live.done = true;
   cleanupLive(live);
+  // A failed regenerate that produced nothing: restore the discarded answer.
+  const restored = !live.text && live.restoreOnError ? live.restoreOnError : null;
+  if (restored) live.pane.messages.push(...restored);
+  live.pane.messages.push({ role: "assistant", content: live.text ? `${live.text}\n\n${msg}` : msg, errored: true, response: { kind: "text", runtime: "error", summary: "오류", text: live.text || msg } });
+  if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
+  if (dom.srStatus) dom.srStatus.textContent = "응답 중 오류가 발생했습니다.";
+  if (!live.wrap.isConnected || restored) {
+    renderTranscript(live.pane);
+    return;
+  }
+  live.wrap.removeAttribute("aria-live");
   collapseActivityInPlace(live);
   live.bubble.classList.add("errored");
   if (live.text) {
@@ -1951,20 +2410,40 @@ function finalizeError(live, msg) {
   } else live.mdNode.remove();
   live.bubble.append(el("div", { class: "response-meta" }, [el("span", { class: "meta-badge runtime-error", text: "오류" })]));
   live.bubble.append(el("div", { class: "md", text: msg }));
-  live.pane.messages.push({ role: "assistant", content: live.text ? `${live.text}\n\n${msg}` : msg, errored: true, response: { kind: "text", runtime: "error", summary: "오류", text: live.text || msg } });
-  if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
 }
 function finalizeStopped(live) {
   if (live.done) return;
   live.done = true;
   live.aborted = true;
   cleanupLive(live);
+  live.pane.messages.push({ role: "assistant", content: live.text || "(중지됨)", response: { kind: "text", runtime: "claude", summary: "중지됨", text: live.text } });
+  if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
+  if (!live.wrap.isConnected) {
+    renderTranscript(live.pane);
+    return;
+  }
+  live.wrap.removeAttribute("aria-live");
   collapseActivityInPlace(live);
   live.mdNode.innerHTML = renderMarkdown(live.text);
   enhanceCodeBlocks(live.mdNode);
-  live.bubble.append(el("div", { class: "stream-status" }, [el("span", { class: "label", text: "· 사용자가 중지함" })]));
-  live.pane.messages.push({ role: "assistant", content: live.text || "(중지됨)", response: { kind: "text", runtime: "claude", summary: "중지됨", text: live.text } });
+  live.bubble.append(el("div", { class: "stream-status" }, [el("span", { class: "label", text: "사용자가 중지했습니다" })]));
+}
+// Connection dropped server-side with partial text — distinct from a user stop.
+function finalizeInterrupted(live) {
+  if (live.done) return;
+  live.done = true;
+  cleanupLive(live);
+  live.pane.messages.push({ role: "assistant", content: live.text, response: { kind: "text", runtime: "claude", summary: "중단됨", text: live.text } });
   if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
+  if (!live.wrap.isConnected) {
+    renderTranscript(live.pane);
+    return;
+  }
+  live.wrap.removeAttribute("aria-live");
+  collapseActivityInPlace(live);
+  live.mdNode.innerHTML = renderMarkdown(live.text);
+  enhanceCodeBlocks(live.mdNode);
+  live.bubble.append(el("div", { class: "stream-status" }, [el("span", { class: "label", text: "연결이 끊겨 응답이 중단되었습니다 — 다시 생성으로 이어서 받을 수 있어요" })]));
 }
 function stopStreaming(pane = activePane()) {
   pane?.abortController?.abort();
@@ -1980,31 +2459,115 @@ async function refreshConversations() {
     await loadConversations();
     renderConversations();
   } catch {
-    /* ignore */
+    if (dom.convList && !state.conversations.length) {
+      dom.convList.replaceChildren(
+        el("div", { class: "conv-empty" }, [
+          "대화 목록을 불러오지 못했습니다.\n",
+          el("button", { class: "linkish small", type: "button", text: "다시 시도", onclick: () => refreshConversations() }),
+        ]),
+      );
+    }
   }
 }
 function renderConversations() {
   if (!dom.convList) return;
+  // Don't rebuild while a rename is being typed (e.g. a finishing stream calls
+  // refreshConversations) — that would wipe the input mid-edit.
+  if (dom.convList.querySelector(".conv-item.editing")) return;
   dom.convList.replaceChildren();
   if (!state.conversations.length) {
-    dom.convList.append(el("div", { class: "conv-empty", text: "대화가 없습니다." }));
+    dom.convList.append(
+      el("div", { class: "conv-empty" }, [
+        "아직 대화가 없습니다.\n",
+        el("button", { class: "linkish small", type: "button", text: "탐색에서 시작하기", onclick: () => goView("explore") }),
+      ]),
+    );
     return;
   }
-  for (const conv of state.conversations) {
+  const query = (dom.convSearch?.value || "").trim().toLowerCase();
+  const visible = query
+    ? state.conversations.filter(
+        (c) => (c.title || "").toLowerCase().includes(query) || (c.avatarDisplayName || "").toLowerCase().includes(query),
+      )
+    : state.conversations;
+  if (!visible.length) {
+    dom.convList.append(el("div", { class: "conv-empty", text: "검색 결과가 없습니다." }));
+    return;
+  }
+  for (const conv of visible) {
     const active = state.chatPanes.some((pane) => pane.conversationId === conv.id);
     const item = el("div", { class: `conv-item ${active ? "active" : ""}`, dataset: { id: conv.id } });
     const openBtn = el("button", { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv) }, [
       el("span", { class: "conv-name", text: conv.title || "새 대화" }),
-      el("span", { class: "conv-time", text: `${conv.avatarDisplayName || ""} · ${timeLabel(conv.updatedAt)}` }),
+      el("span", { class: "conv-time", text: [conv.avatarDisplayName, timeLabel(conv.updatedAt)].filter(Boolean).join(" · ") }),
     ]);
-    const delBtn = el("button", { class: "conv-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: (e) => { e.stopPropagation(); deleteConversation(conv); } });
+    const renameBtn = el("button", { class: "conv-act", type: "button", "aria-label": "대화 이름 바꾸기", title: "이름 바꾸기", onclick: (e) => { e.stopPropagation(); startRenameConversation(item, conv); } });
+    renameBtn.append(icon("edit"));
+    const delBtn = el("button", { class: "conv-act danger", type: "button", "aria-label": "대화 삭제", title: "삭제", onclick: (e) => { e.stopPropagation(); deleteConversation(conv); } });
     delBtn.append(icon("trash"));
-    item.append(openBtn, el("div", { class: "conv-acts" }, [delBtn]));
+    item.append(openBtn, el("div", { class: "conv-acts" }, [renameBtn, delBtn]));
     dom.convList.append(item);
   }
 }
+
+// Inline rename: swaps the row content for an input; Enter/blur saves, Escape cancels.
+function startRenameConversation(item, conv) {
+  if (item.classList.contains("editing")) return;
+  item.classList.add("editing");
+  const open = item.querySelector(".conv-open");
+  const input = el("input", { class: "conv-rename", value: conv.title || "", "aria-label": "대화 이름" });
+  open.replaceWith(input);
+  input.focus();
+  input.select();
+  let finished = false;
+  const finish = (save) => {
+    if (finished) return;
+    finished = true;
+    const title = input.value.trim();
+    if (save && title && title !== conv.title) {
+      api(`/api/conversations/${encodeURIComponent(conv.id)}`, { method: "PATCH", body: JSON.stringify({ title }) })
+        .then(({ conversation }) => {
+          conv.title = conversation?.title || title;
+          renderConversations();
+        })
+        .catch((e) => {
+          notify(`이름 변경 실패: ${e.message}`);
+          renderConversations();
+        });
+      return;
+    }
+    renderConversations();
+  };
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      finish(true);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      finish(false);
+    }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
 async function selectConversation(conv) {
-  if (anyChatStreaming()) return;
+  if (!confirmLeaveStreaming()) return;
+  if (state.chatPanes.length > 1) {
+    // Already open in a split pane → just focus that pane, keep the split.
+    const openPane = state.chatPanes.find((p) => p.conversationId === conv.id);
+    if (openPane) {
+      setActivePane(openPane);
+      closeRail();
+      state.view = "chat";
+      syncHash();
+      renderView();
+      renderConversations();
+      return;
+    }
+    // Otherwise opening it replaces the whole split — ask first.
+    if (!window.confirm("분할 대화를 닫고 이 대화를 열까요?")) return;
+  }
   closeRail();
   try {
     const [msgRes, avRes] = await Promise.all([
@@ -2016,22 +2579,29 @@ async function selectConversation(conv) {
     state.chatPanes = [pane];
     state.activePaneId = pane.id;
     syncLegacyChatState(pane);
-  } catch {
-    const pane = makeChatPane({ id: conv.avatarUserId, displayName: conv.avatarDisplayName, username: "", hasImage: true }, { conversationId: conv.id, messages: [] });
-    state.chatPanes = [pane];
-    state.activePaneId = pane.id;
-    syncLegacyChatState(pane);
+  } catch (e) {
+    // Don't render an empty transcript that looks like wiped history — stay
+    // where we are and say what happened.
+    notify(`대화를 불러오지 못했습니다: ${e.message}`);
+    return;
   }
   state.view = "chat";
+  syncHash();
   renderView();
   renderConversations();
 }
 async function deleteConversation(conv) {
-  if (!window.confirm("이 대화를 삭제할까요?")) return;
+  const streamingPane = state.chatPanes.find((p) => p.conversationId === conv.id && p.streaming);
+  if (streamingPane) {
+    notify("응답 중인 대화는 삭제할 수 없습니다. 먼저 응답을 중지해 주세요.", "warn");
+    return;
+  }
+  if (!window.confirm(`"${conv.title || "새 대화"}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
   try {
     await api(`/api/conversations/${encodeURIComponent(conv.id)}`, { method: "DELETE" });
-  } catch {
-    /* ignore */
+  } catch (e) {
+    notify(`삭제 실패: ${e.message}`);
+    return;
   }
   state.conversations = state.conversations.filter((c) => c.id !== conv.id);
   const pane = state.chatPanes.find((p) => p.conversationId === conv.id);
@@ -2045,19 +2615,50 @@ async function renderSettings() {
   const body = el("div", { class: "view-body scroll-thin settings-body" });
   dom.main.append(header, body);
 
-  try {
-    await Promise.all([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines(), loadTrusted()]);
-  } catch {
-    /* ignore */
+  body.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
+  // One failed loader must NOT render every card as its empty state ("플러그인이
+  // 없습니다" 등) — that reads as data loss and invites duplicate re-adds.
+  const results = await Promise.allSettled([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines(), loadTrusted()]);
+  if (sessionExpired) return;
+  const failed = results.find((r) => r.status === "rejected");
+  if (failed) {
+    body.replaceChildren(
+      el("div", { class: "warn-box" }, [
+        `설정 정보를 불러오지 못했습니다: ${failed.reason?.message || "네트워크 오류"} `,
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ]),
+    );
+    return;
   }
+  updateKnowledgeBadge();
   const u = state.user;
 
-  // Profile card
+  // Profile card — picture edits update in place so typed-but-unsaved form
+  // text in the rest of the card survives.
   const picWrap = el("div", { class: "pic-edit" });
-  const pic = avatarNode(u, 96);
-  const fileInput = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp", style: "display:none" });
+  const fileInput = el("input", { type: "file", accept: "image/png,image/jpeg,image/webp", hidden: "" });
   const camBtn = el("button", { class: "pic-cam", type: "button", "aria-label": "사진 변경", title: "사진 변경", onclick: () => fileInput.click() });
   camBtn.append(icon("camera"));
+  const delPicBtn = el("button", {
+    class: "linkish small",
+    type: "button",
+    text: "사진 삭제",
+    onclick: async () => {
+      if (!window.confirm("아바타 사진을 삭제할까요?")) return;
+      try {
+        await api("/api/me/avatar-image", { method: "DELETE" });
+        state.user.hasImage = false;
+        renderPic();
+        renderRailUser();
+      } catch (e) {
+        notify(`사진 삭제 실패: ${e.message}`);
+      }
+    },
+  });
+  const renderPic = () => {
+    picWrap.replaceChildren(avatarNode(state.user, 96, { alt: "내 아바타 사진" }), camBtn, fileInput);
+    if (state.user.hasImage) picWrap.append(delPicBtn);
+  };
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
@@ -2065,30 +2666,15 @@ async function renderSettings() {
       const dataUrl = await resizeImage(file, 256);
       await api("/api/me/avatar-image", { method: "PUT", body: JSON.stringify({ image: dataUrl }) });
       state.user.hasImage = true;
-      renderView();
+      renderPic();
+      renderRailUser();
     } catch (e) {
-      alert(`업로드 실패: ${e.message}`);
+      notify(`업로드 실패: ${e.message}`);
+    } finally {
+      fileInput.value = "";
     }
   });
-  picWrap.append(pic, camBtn, fileInput);
-  if (u.hasImage) {
-    picWrap.append(
-      el("button", {
-        class: "linkish small",
-        type: "button",
-        text: "사진 삭제",
-        onclick: async () => {
-          try {
-            await api("/api/me/avatar-image", { method: "DELETE" });
-            state.user.hasImage = false;
-            renderView();
-          } catch {
-            /* ignore */
-          }
-        },
-      }),
-    );
-  }
+  renderPic();
 
   const profileForm = el("form", {
     class: "settings-form",
@@ -2111,7 +2697,7 @@ async function renderSettings() {
       } catch (err) {
         btn.textContent = saved;
         btn.disabled = false;
-        alert(`저장 실패: ${err.message}`);
+        notify(`저장 실패: ${err.message}`);
       }
     },
   });
@@ -2122,7 +2708,7 @@ async function renderSettings() {
   const introField = el("textarea", {
     name: "intro",
     rows: "4",
-    placeholder: "대화 상대에게 보여줄 자기소개. 직접 쓰거나 아래 버튼으로 아바타가 생성하게 할 수 있어요.",
+    placeholder: "대화 상대에게 보여줄 자기소개. 직접 쓰거나 위의 '아바타가 자동 생성' 버튼으로 만들 수 있어요.",
     text: u.intro || "",
   });
   const introGenBtn = el("button", {
@@ -2137,7 +2723,7 @@ async function renderSettings() {
         const { intro } = await api("/api/me/intro/generate", { method: "POST" });
         if (intro) introField.value = intro;
       } catch (err) {
-        alert(`생성 실패: ${err.message}`);
+        notify(`자기소개 생성 실패: ${err.message}`);
       } finally {
         introGenBtn.textContent = label;
         introGenBtn.disabled = false;
@@ -2160,28 +2746,29 @@ async function renderSettings() {
       introField,
     ]),
     el("label", { class: "field" }, [
-      el("span", { text: "페르소나 / 시스템 프롬프트" }),
+      el("span", { text: "페르소나 (행동 지침)" }),
       el("textarea", { name: "persona", rows: "4", placeholder: "이 아바타가 어떻게 행동해야 하는지 (선택)", text: u.persona || "" }),
     ]),
     el("button", { class: "primary", type: "submit", text: "프로필 저장" }),
   );
 
-  // Publish toggle
+  // Publish toggle — updates in place: a full renderView here would wipe
+  // whatever the user typed (but hasn't saved) in the profile form above.
+  const publishStrong = el("strong", { text: u.published ? "공개됨" : "비공개" });
+  const publishDesc = el("p", { class: "muted", text: u.published ? "다른 사용자가 탐색에서 찾아 대화할 수 있어요." : "나만 볼 수 있어요. 공개하면 탐색 목록에 표시돼요." });
   const publishRow = el("div", { class: "publish-row" }, [
-    el("div", {}, [
-      el("strong", { text: u.published ? "공개됨" : "비공개" }),
-      el("p", { class: "muted", text: u.published ? "다른 사용자가 탐색에서 찾아 대화할 수 있어요." : "나만 볼 수 있어요. 공개하면 탐색 목록에 표시됩니다." }),
-    ]),
+    el("div", {}, [publishStrong, publishDesc]),
     buildToggle(u.published, async (val) => {
       try {
         const res = await api("/api/me", { method: "PATCH", body: JSON.stringify({ published: val }) });
         state.user = res.user;
-        renderView();
+        publishStrong.textContent = res.user.published ? "공개됨" : "비공개";
+        publishDesc.textContent = res.user.published ? "다른 사용자가 탐색에서 찾아 대화할 수 있어요." : "나만 볼 수 있어요. 공개하면 탐색 목록에 표시돼요.";
       } catch (e) {
-        alert(`변경 실패: ${e.message}`);
-        renderView();
+        notify(`공개 설정 변경 실패: ${e.message}`);
+        throw e;
       }
-    }),
+    }, "아바타 공개"),
   ]);
 
   // Group the (many) settings cards into tabs so a single screen no longer
@@ -2200,22 +2787,35 @@ async function renderSettings() {
   ];
   if (!tabs.some((t) => t.id === state.settingsTab)) state.settingsTab = "profile";
 
-  const panel = el("div", { class: "settings-panel" });
+  const panel = el("div", { class: "settings-panel", role: "tabpanel", id: "settings-panel" });
   const renderTab = () => {
     const active = tabs.find((t) => t.id === state.settingsTab) || tabs[0];
+    panel.setAttribute("aria-labelledby", `settings-tab-${active.id}`);
     panel.replaceChildren(...active.cards());
   };
 
-  const tabBar = el("nav", { class: "settings-tabs", role: "tablist" });
+  const tabBar = el("nav", { class: "settings-tabs", role: "tablist", "aria-label": "설정 분류" });
+  const syncTabs = () => {
+    for (const b of tabBar.children) {
+      const active = b.dataset.tab === state.settingsTab;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+      b.tabIndex = active ? 0 : -1;
+    }
+  };
   for (const t of tabs) {
     const btn = el("button", {
       class: "settings-tab" + (t.id === state.settingsTab ? " active" : ""),
       type: "button",
       role: "tab",
+      id: `settings-tab-${t.id}`,
+      "aria-controls": "settings-panel",
+      dataset: { tab: t.id },
       onclick: () => {
         if (state.settingsTab === t.id) return;
         state.settingsTab = t.id;
-        for (const b of tabBar.children) b.classList.toggle("active", b === btn);
+        syncHash(true);
+        syncTabs();
         renderTab();
       },
     });
@@ -2223,15 +2823,30 @@ async function renderSettings() {
     btn.append(el("span", { text: t.label }));
     tabBar.append(btn);
   }
+  // Standard tablist keyboard interaction: arrows move + activate.
+  tabBar.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const items = [...tabBar.children];
+    const idx = items.findIndex((b) => b.dataset.tab === state.settingsTab);
+    const next = items[(idx + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
+    next.focus();
+    next.click();
+  });
+  syncTabs();
 
   renderTab();
-  body.append(tabBar, panel);
+  body.replaceChildren(tabBar, panel);
 }
 
 function renderRailUser() {
-  // refresh the rail "me" row label after profile edits
-  const meRow = dom.rail?.querySelector(".rail-me .meta b");
-  if (meRow) meRow.textContent = state.user.displayName;
+  // refresh the rail "me" row (name + picture) after profile edits
+  const meRow = dom.rail?.querySelector(".rail-me");
+  if (!meRow) return;
+  const nameEl = meRow.querySelector(".meta b");
+  if (nameEl) nameEl.textContent = state.user.displayName;
+  const oldAvatar = meRow.querySelector(".avatar-img");
+  if (oldAvatar) oldAvatar.replaceWith(avatarNode(state.user, 34, { alt: "" }));
 }
 
 /**
@@ -2268,13 +2883,13 @@ function buildTrustedUsersCard() {
         renderTrustedRows(list);
         formEl.reset();
       } catch (err) {
-        alert(`추가 실패: ${err.message}`);
+        notify(`추가 실패: ${err.message}`);
       } finally {
         btn.disabled = false;
       }
     },
   }, [
-    el("input", { name: "username", placeholder: "사용자 이름(@username)", required: "" }),
+    el("input", { name: "username", placeholder: "사용자명 (@ 제외)", "aria-label": "신뢰할 사용자명", required: "" }),
     el("button", { class: "primary", type: "submit", text: "추가" }),
   ]);
   card.append(form);
@@ -2289,14 +2904,14 @@ function renderTrustedRows(list) {
     return;
   }
   for (const t of trusted) {
-    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
+    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": `${t.displayName} 신뢰 해제`, title: "신뢰 해제", onclick: async () => {
       if (!window.confirm(`${t.displayName}님의 신뢰 권한을 해제할까요?`)) return;
       try {
         const { trusted: next } = await api(`/api/me/trusted/${encodeURIComponent(t.id)}`, { method: "DELETE" });
         state.trusted = next;
         renderTrustedRows(list);
       } catch (e) {
-        alert(`삭제 실패: ${e.message}`);
+        notify(`신뢰 해제 실패: ${e.message}`);
       }
     } });
     del.append(icon("trash"));
@@ -2312,11 +2927,32 @@ function renderTrustedRows(list) {
   }
 }
 
-function buildToggle(on, onChange) {
-  const btn = el("button", { class: `toggle ${on ? "on" : ""}`, type: "button", role: "switch", "aria-checked": on ? "true" : "false" }, [el("span", { class: "knob" })]);
-  btn.addEventListener("click", () => {
+// Accessible switch. `label` names it for screen readers (a bare "switch"
+// announcing nothing is a WCAG hard-fail). The button disables while onChange
+// is in flight and only flips visually when it resolves — callers should
+// re-throw on failure so a failed save doesn't render as "on".
+function buildToggle(on, onChange, label) {
+  const btn = el("button", {
+    class: `toggle ${on ? "on" : ""}`,
+    type: "button",
+    role: "switch",
+    "aria-checked": on ? "true" : "false",
+    "aria-label": label || "사용",
+    title: label || null,
+  }, [el("span", { class: "knob" })]);
+  btn.addEventListener("click", async () => {
+    if (btn.disabled) return;
     const next = !btn.classList.contains("on");
-    onChange(next);
+    btn.disabled = true;
+    try {
+      await onChange(next);
+      btn.classList.toggle("on", next);
+      btn.setAttribute("aria-checked", next ? "true" : "false");
+    } catch {
+      /* caller already surfaced the error; keep previous visual state */
+    } finally {
+      btn.disabled = false;
+    }
   });
   return btn;
 }
@@ -2325,7 +2961,7 @@ function buildPluginsCard() {
   const card = el("section", { class: "settings-card" });
   card.append(
     el("div", { class: "panel-section-head" }, [
-      el("div", {}, [el("h3", { text: "GitHub 플러그인" }), el("p", { class: "muted", text: "내 아바타가 사용할 플러그인. 대화 시 읽기전용으로 실행됩니다." })]),
+      el("div", {}, [el("h3", { text: "GitHub 플러그인" }), el("p", { class: "muted", text: "내 아바타가 사용할 플러그인. 다른 사용자와의 대화에서는 읽기 전용으로 실행됩니다." })]),
     ]),
   );
   const list = el("div", { class: "plugin-rows" });
@@ -2343,6 +2979,8 @@ function buildPluginsCard() {
       const fd = new FormData(formEl);
       const btn = formEl.querySelector("button[type=submit]");
       btn.disabled = true;
+      const saved = btn.textContent;
+      btn.textContent = "추가 중…"; // server-side git clone — can take a while
       try {
         await api("/api/me/plugins", { method: "POST", body: JSON.stringify({ repo: fd.get("repo"), ref: fd.get("ref") || undefined, label: fd.get("label") || undefined }) });
         await loadPlugins();
@@ -2351,26 +2989,28 @@ function buildPluginsCard() {
         invalidateSkillsCache(state.user.id);
         formEl.reset();
       } catch (err) {
-        alert(`추가 실패: ${err.message}`);
+        notify(`플러그인 추가 실패: ${err.message}`);
       } finally {
+        btn.textContent = saved;
         btn.disabled = false;
       }
     },
   }, [
-    el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", required: "" }),
-    el("input", { name: "ref", placeholder: "ref (선택)", class: "narrow" }),
-    el("input", { name: "label", placeholder: "라벨 (선택)", class: "narrow" }),
+    el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", "aria-label": "플러그인 저장소 (owner/repo 또는 git URL)", required: "" }),
+    el("input", { name: "ref", placeholder: "브랜치/태그 (선택)", "aria-label": "브랜치/태그 (선택)", class: "narrow" }),
+    el("input", { name: "label", placeholder: "라벨 (선택)", "aria-label": "라벨 (선택)", class: "narrow" }),
     el("button", { class: "primary", type: "submit", text: "추가" }),
   ]);
+  form.classList.add("rows-3");
   card.append(form);
   return card;
 }
 
 function pluginSyncLabel(p) {
-  if (!p.lastSyncedAt) return "아직 동기화 안 됨";
+  if (!p.lastSyncedAt) return "아직 동기화되지 않음";
   const d = new Date(p.lastSyncedAt);
   if (Number.isNaN(d.getTime())) return "";
-  return `동기화: ${d.toLocaleString()}`;
+  return `동기화: ${timeLabel(p.lastSyncedAt)}`;
 }
 
 function renderPluginRows(list) {
@@ -2399,18 +3039,24 @@ function renderPluginRows(list) {
           invalidateSkillsCache(state.user.id);
           renderPluginRows(list);
         } catch (e) {
-          alert(`변경 실패: ${e.message}`);
+          notify(`변경 실패: ${e.message}`);
+          throw e;
         }
-      }),
+      }, `플러그인 사용: ${p.label || p.repo}`),
     ]);
 
     // Expandable contents area for per-plugin selection within the repo.
     const contents = el("div", { class: "plugin-contents", hidden: "" });
 
     // "선택" — clone/inspect the repo and show a checkbox per contained plugin.
-    const selectBtn = el("button", { class: "msg-act", type: "button", "aria-label": "플러그인 선택", title: "repo 내 플러그인 선택", onclick: async () => {
-      if (!contents.hidden) { contents.hidden = true; return; }
+    const selectBtn = el("button", { class: "msg-act", type: "button", "aria-label": "저장소 내 플러그인 선택", title: "저장소 내 플러그인 선택", "aria-expanded": "false", onclick: async () => {
+      if (!contents.hidden) {
+        contents.hidden = true;
+        selectBtn.setAttribute("aria-expanded", "false");
+        return;
+      }
       contents.hidden = false;
+      selectBtn.setAttribute("aria-expanded", "true");
       contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
       try {
         const { contents: info } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}/contents`);
@@ -2423,24 +3069,26 @@ function renderPluginRows(list) {
     row.append(selectBtn);
 
     // "새로고침" — force git fetch + checkout, bypassing the clone cache.
-    const refreshBtn = el("button", { class: "msg-act", type: "button", "aria-label": "새로고침", title: "최신 버전으로 새로고침", onclick: async () => {
+    const refreshBtn = el("button", { class: "msg-act", type: "button", "aria-label": "최신 버전으로 새로고침", title: "최신 버전으로 새로고침", onclick: async () => {
       refreshBtn.disabled = true;
+      refreshBtn.classList.add("spinning");
       try {
         const { plugin } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}/refresh`, { method: "POST" });
         Object.assign(p, plugin);
         invalidateSkillsCache(state.user.id);
         renderPluginRows(list);
       } catch (e) {
-        alert(`새로고침 실패: ${e.message}`);
+        notify(`새로고침 실패: ${e.message}`);
       } finally {
+        refreshBtn.classList.remove("spinning");
         refreshBtn.disabled = false;
       }
     } });
     refreshBtn.append(icon("refresh"));
     row.append(refreshBtn);
 
-    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
-      if (!window.confirm("이 플러그인을 삭제할까요?")) return;
+    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": `플러그인 삭제: ${p.label || p.repo}`, title: "삭제", onclick: async () => {
+      if (!window.confirm(`플러그인 "${p.label || p.repo}"을(를) 삭제할까요?`)) return;
       try {
         await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" });
         state.plugins = state.plugins.filter((x) => x.id !== p.id);
@@ -2448,7 +3096,7 @@ function renderPluginRows(list) {
         invalidateSkillsCache(state.user.id);
         renderPluginRows(list);
       } catch (e) {
-        alert(`삭제 실패: ${e.message}`);
+        notify(`삭제 실패: ${e.message}`);
       }
     } });
     del.append(icon("trash"));
@@ -2480,7 +3128,7 @@ function renderPluginContents(container, list, p, info) {
   // null selection = all enabled; otherwise only names in the set.
   const selectedSet = p.selected ? new Set(p.selected) : null;
   const checks = [];
-  const head = el("div", { class: "pc-head muted", text: "사용할 플러그인을 선택하세요. 모두 해제하면 전체가 사용됩니다." });
+  const head = el("div", { class: "pc-head muted", text: "사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다." });
   container.append(head);
 
   for (const entry of info.plugins) {
@@ -2505,7 +3153,7 @@ function renderPluginContents(container, list, p, info) {
       invalidateSkillsCache(state.user.id);
       renderPluginRows(list);
     } catch (e) {
-      alert(`저장 실패: ${e.message}`);
+      notify(`저장 실패: ${e.message}`);
       save.disabled = false;
     }
   } });
@@ -2553,13 +3201,13 @@ function buildGitCredentialsCard() {
         formEl.reset();
         renderStatus();
       } catch (err) {
-        alert(`저장 실패: ${err.message}`);
+        notify(`저장 실패: ${err.message}`);
       } finally {
         btn.disabled = false;
       }
     },
   }, [
-    el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", required: "", autocomplete: "off" }),
+    el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", "aria-label": "GitHub 토큰", required: "", autocomplete: "off" }),
     el("button", { class: "primary", type: "submit", text: "저장" }),
   ]);
 
@@ -2568,13 +3216,13 @@ function buildGitCredentialsCard() {
     type: "button",
     text: "토큰 삭제",
     onclick: async () => {
-      if (!window.confirm("저장된 토큰을 삭제할까요?")) return;
+      if (!window.confirm("저장된 GitHub 토큰을 삭제할까요? 비공개 저장소 접근과 지식 저장소 푸시가 중단됩니다.")) return;
       try {
         const { user } = await api("/api/me/git-token", { method: "DELETE" });
         state.user = user;
         renderStatus();
       } catch (e) {
-        alert(`삭제 실패: ${e.message}`);
+        notify(`삭제 실패: ${e.message}`);
       }
     },
   });
@@ -2601,11 +3249,11 @@ function buildGitCredentialsCard() {
       } catch (err) {
         btn.textContent = saved;
         btn.disabled = false;
-        alert(`저장 실패: ${err.message}`);
+        notify(`저장 실패: ${err.message}`);
       }
     },
   }, [
-    el("div", { class: "field-row" }, [
+    el("div", { class: "field-row-2col" }, [
       el("label", { class: "field" }, [el("span", { text: "커밋 이름" }), el("input", { name: "name", value: u.gitIdentityName || "", placeholder: u.alias || u.displayName || "" })]),
       el("label", { class: "field" }, [el("span", { text: "커밋 이메일" }), el("input", { name: "email", type: "email", value: u.gitIdentityEmail || "", placeholder: `${u.username}@example.com` })]),
     ]),
@@ -2628,7 +3276,7 @@ function buildSecretsCard() {
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
         el("h3", { text: "시크릿" }),
-        el("p", { class: "muted", text: "내 아바타가 도구를 쓸 때만 주입되는 비밀값(예: SSH_PRIVATE_KEY). 암호화되어 저장되고 아바타에게도 값 자체는 보이지 않으며, 다시 표시되지 않습니다. SSH 원격 접속에 쓰려면 OpenSSH 형식 개인키를 SSH_PRIVATE_KEY 로 등록하세요." }),
+        el("p", { class: "muted", text: "내 아바타가 도구를 쓸 때만 주입되는 비밀값(예: SSH_PRIVATE_KEY). 암호화되어 저장되고 아바타에게도 값 자체는 보이지 않으며, 다시 표시되지 않습니다. SSH 원격 접속에 쓰려면 OpenSSH 형식 개인키를 SSH_PRIVATE_KEY로 등록하세요." }),
       ]),
     ]),
   );
@@ -2650,14 +3298,15 @@ function buildSecretsCard() {
             class: "linkish small",
             type: "button",
             text: "삭제",
+            "aria-label": `시크릿 삭제: ${name}`,
             onclick: async () => {
-              if (!window.confirm(`시크릿 "${name}" 을(를) 삭제할까요?`)) return;
+              if (!window.confirm(`시크릿 "${name}"을(를) 삭제할까요?`)) return;
               try {
                 const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
                 state.user = user;
                 renderList();
               } catch (err) {
-                alert(`삭제 실패: ${err.message}`);
+                notify(`삭제 실패: ${err.message}`);
               }
             },
           }),
@@ -2676,9 +3325,12 @@ function buildSecretsCard() {
       const fd = new FormData(formEl);
       const name = (fd.get("name") || "").toString().trim();
       const value = (fd.get("value") || "").toString();
-      if (!name || !value) return;
+      if (!name || !value) {
+        notify("시크릿 이름과 값을 모두 입력해 주세요.", "warn");
+        return;
+      }
       if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
-        alert("이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다. 예: SSH_PRIVATE_KEY");
+        notify("이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다. 예: SSH_PRIVATE_KEY", "warn");
         return;
       }
       const btn = formEl.querySelector("button[type=submit]");
@@ -2692,7 +3344,7 @@ function buildSecretsCard() {
         formEl.reset();
         renderList();
       } catch (err) {
-        alert(`저장 실패: ${err.message}`);
+        notify(`저장 실패: ${err.message}`);
       } finally {
         btn.disabled = false;
       }
@@ -2741,21 +3393,21 @@ function buildKnowledgeRepoCard() {
     const refreshBtn = el("button", {
       class: "linkish small",
       type: "button",
-      text: "최신화",
+      text: "새로고침",
       title: "저장소를 원격에서 다시 가져옵니다",
       onclick: async () => {
         refreshBtn.disabled = true;
         const saved = refreshBtn.textContent;
-        refreshBtn.textContent = "최신화 중…";
+        refreshBtn.textContent = "새로고침 중…";
         try {
           await api("/api/me/knowledge-repo/refresh", { method: "POST" });
           invalidateSkillsCache(state.user.id);
-          refreshBtn.textContent = "최신화됨 ✓";
+          refreshBtn.textContent = "새로고침됨 ✓";
           setTimeout(() => { refreshBtn.textContent = saved; refreshBtn.disabled = false; }, 1200);
         } catch (e) {
           refreshBtn.textContent = saved;
           refreshBtn.disabled = false;
-          alert(`최신화 실패: ${e.message}`);
+          notify(`새로고침 실패: ${e.message}`);
         }
       },
     });
@@ -2789,16 +3441,17 @@ function buildKnowledgeRepoCard() {
         state.user = user;
         renderView();
       } catch (err) {
-        alert(`저장 실패: ${err.message}`);
+        notify(`저장 실패: ${err.message}`);
       } finally {
         btn.disabled = false;
       }
     },
   }, [
-    el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", value: u.knowledgeRepo || "" }),
-    el("input", { name: "branch", placeholder: "branch (선택)", class: "narrow", value: u.knowledgeBranch || "" }),
+    el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", "aria-label": "지식 저장소 (owner/repo 또는 git URL)", value: u.knowledgeRepo || "" }),
+    el("input", { name: "branch", placeholder: "브랜치 (선택)", "aria-label": "브랜치 (선택)", class: "narrow", value: u.knowledgeBranch || "" }),
     el("button", { class: "primary", type: "submit", text: "저장" }),
   ]);
+  repoForm.classList.add("rows-2");
   card.append(repoForm);
 
   if (!u.knowledgeRepo) {
@@ -2815,8 +3468,23 @@ function buildKnowledgeRepoCard() {
   card.append(
     el("div", { class: "git-token-status muted" }, [
       u.gitTokenSet
-        ? el("span", { class: "token-set", text: "● GitHub 토큰 연결됨 — 아바타가 커밋·푸시할 수 있어요" })
-        : el("span", { text: "토큰이 없어 읽기만 가능합니다. 위 GitHub 자격증명에서 토큰을 설정하면 아바타가 커밋·푸시할 수 있어요." }),
+        ? el("span", { class: "token-set", text: "● GitHub 토큰 연결됨 · 아바타가 커밋·푸시할 수 있어요" })
+        : el("span", {}, [
+            // The git-credentials card lives in a DIFFERENT tab — link there
+            // instead of pointing at a card that isn't on this screen.
+            "토큰이 없어 읽기만 가능합니다. ",
+            el("button", {
+              class: "linkish",
+              type: "button",
+              text: "권한·연결 탭의 GitHub 자격증명",
+              onclick: () => {
+                state.settingsTab = "access";
+                syncHash(true);
+                renderView();
+              },
+            }),
+            "에서 토큰을 설정하면 아바타가 커밋·푸시할 수 있어요.",
+          ]),
     ]),
   );
 
@@ -2826,10 +3494,15 @@ function buildKnowledgeRepoCard() {
     ? "저장소의 모든 플러그인을 사용 중"
     : `${u.knowledgeSelected.length}개 플러그인만 사용 중`;
   const contents = el("div", { class: "plugin-contents", hidden: "" });
-  const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택" });
+  const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택", "aria-expanded": "false" });
   pickBtn.onclick = async () => {
-    if (!contents.hidden) { contents.hidden = true; return; }
+    if (!contents.hidden) {
+      contents.hidden = true;
+      pickBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
     contents.hidden = false;
+    pickBtn.setAttribute("aria-expanded", "true");
     contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     try {
       const { contents: info } = await api("/api/me/knowledge-repo/contents");
@@ -2893,7 +3566,7 @@ function renderKnowledgeRepoContents(container, info) {
       invalidateSkillsCache(state.user.id);
       renderView();
     } catch (e) {
-      alert(`저장 실패: ${e.message}`);
+      notify(`저장 실패: ${e.message}`);
       save.disabled = false;
     }
   } });
@@ -2905,7 +3578,7 @@ function buildRoutinesCard() {
   card.append(
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
-        el("h3", { text: "루틴 작업" }),
+        el("h3", { text: "루틴" }),
         el("p", { class: "muted", text: "내 아바타가 매일 정해진 시각(한국 시간, KST)에 스스로 실행할 작업. 결과는 전용 대화에 쌓입니다." }),
       ]),
     ]),
@@ -2931,16 +3604,17 @@ function buildRoutinesCard() {
         renderRoutineRows(list);
         formEl.reset();
       } catch (err) {
-        alert(`추가 실패: ${err.message}`);
+        notify(`루틴 추가 실패: ${err.message}`);
       } finally {
         btn.disabled = false;
       }
     },
   }, [
-    el("input", { name: "prompt", placeholder: "예: 오늘의 서비스 상태를 요약해줘", required: "" }),
-    el("input", { name: "time", type: "time", value: "09:00", required: "", class: "narrow" }),
+    el("input", { name: "prompt", placeholder: "예: 오늘의 서비스 상태를 요약해줘", "aria-label": "루틴 작업 내용", required: "" }),
+    el("input", { name: "time", type: "time", value: "09:00", required: "", class: "narrow", "aria-label": "매일 실행 시각" }),
     el("button", { class: "primary", type: "submit", text: "추가" }),
   ]);
+  form.classList.add("rows-2");
   card.append(form);
   return card;
 }
@@ -2957,7 +3631,7 @@ function renderRoutineRows(list) {
       const mark = r.lastStatus === "error" ? "실패" : "완료";
       statusBits.push(`최근 실행: ${timeLabel(r.lastRunAt)} (${mark})`);
     } else {
-      statusBits.push("아직 실행 안 됨");
+      statusBits.push("아직 실행되지 않음");
     }
 
     const row = el("div", { class: "plugin-row" }, [
@@ -2965,7 +3639,7 @@ function renderRoutineRows(list) {
         el("strong", { text: r.prompt }),
         el("div", { class: "pr-sub", text: statusBits.join(" · ") }),
         r.lastStatus === "error" && r.lastError
-          ? el("div", { class: "pr-sub", text: `오류: ${r.lastError}` })
+          ? el("div", { class: "pr-sub", text: `실행 오류 — ${r.lastError}` })
           : null,
       ]),
       buildToggle(r.enabled, async (val) => {
@@ -2975,9 +3649,10 @@ function renderRoutineRows(list) {
           await loadRoutines();
           renderRoutineRows(list);
         } catch (e) {
-          alert(`변경 실패: ${e.message}`);
+          notify(`변경 실패: ${e.message}`);
+          throw e;
         }
-      }),
+      }, `루틴 사용: ${r.prompt}`),
     ]);
 
     const actions = el("div", { class: "kr-actions" });
@@ -2988,9 +3663,9 @@ function renderRoutineRows(list) {
         const res = await api(`/api/me/routines/${encodeURIComponent(r.id)}/run`, { method: "POST" });
         await loadRoutines();
         renderRoutineRows(list);
-        if (!res.ok) alert(`실행 실패: ${res.error || "알 수 없는 오류"}`);
+        if (!res.ok) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
       } catch (e) {
-        alert(`실행 실패: ${e.message}`);
+        notify(`루틴 실행 실패: ${e.message}`);
         runBtn.disabled = false;
         runBtn.textContent = "지금 실행";
       }
@@ -2999,14 +3674,14 @@ function renderRoutineRows(list) {
     actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => {
       selectConversation({ id: r.conversationId, avatarUserId: state.user.id, avatarDisplayName: state.user.displayName });
     } }));
-    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
+    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "루틴 삭제", title: "삭제", onclick: async () => {
       if (!window.confirm("이 루틴을 삭제할까요? (쌓인 결과 대화는 그대로 남습니다)")) return;
       try {
         await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "DELETE" });
         state.routines = state.routines.filter((x) => x.id !== r.id);
         renderRoutineRows(list);
       } catch (e) {
-        alert(`삭제 실패: ${e.message}`);
+        notify(`삭제 실패: ${e.message}`);
       }
     } });
     del.append(icon("trash"));
@@ -3018,12 +3693,16 @@ function renderRoutineRows(list) {
 
 function buildKnowledgeCard() {
   const card = el("section", { class: "settings-card" });
-  const openCount = state.knowledgeRequests.filter((r) => r.status === "open").length;
+  const countLabel = () => {
+    const openCount = state.knowledgeRequests.filter((r) => r.status === "open").length;
+    return `지식·정보 요청${openCount ? ` (${openCount})` : ""}`;
+  };
+  const titleEl = el("h3", { text: countLabel() });
   card.append(
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
-        el("h3", { text: `지식 · 정보 요청${openCount ? ` (${openCount})` : ""}` }),
-        el("p", { class: "muted", text: "동료가 모르는 것을 물으면 여기에 정보 요청으로 쌓입니다. 답을 아바타에게 영구히 가르치려면 플러그인으로 추가하세요." }),
+        titleEl,
+        el("p", { class: "muted", text: "동료가 모르는 것을 물으면 여기에 정보 요청으로 쌓입니다. 아바타와 대화하며 답을 지식 저장소에 기록하게 하면 영구히 학습됩니다." }),
       ]),
     ]),
   );
@@ -3037,6 +3716,8 @@ function buildKnowledgeCard() {
     } catch (e) {
       /* keep current state */
     }
+    titleEl.textContent = countLabel(); // header count must track resolves
+    updateKnowledgeBadge();
     renderKnowledgeRequests(reqList);
   };
   renderKnowledgeRequests(reqList, refresh);
@@ -3054,14 +3735,14 @@ function renderKnowledgeRequests(list, refresh) {
     return;
   }
   for (const r of open) {
-    const resolveBtn = el("button", { class: "primary", type: "button", text: "처리 완료", onclick: async () => {
+    const resolveBtn = el("button", { class: "primary small", type: "button", text: "처리 완료", onclick: async () => {
       resolveBtn.disabled = true;
       try {
         await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
         await refresh?.();
       } catch (e) {
         resolveBtn.disabled = false;
-        alert(`실패: ${e.message}`);
+        notify(`처리 실패: ${e.message}`);
       }
     } });
     list.append(el("div", { class: "knowledge-row" }, [
@@ -3074,14 +3755,19 @@ function renderKnowledgeRequests(list, refresh) {
 
 /* ============================================================ Admin */
 async function renderAdmin() {
-  const header = viewHeader("관리자", "사용자와 권한을 관리합니다");
+  const header = viewHeader("관리자", "사용자와 권한을 관리하세요");
   const body = el("div", { class: "view-body scroll-thin" });
   dom.main.append(header, body);
   body.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
   try {
     await Promise.all([loadAdminUsers(), loadAdminSystem()]);
   } catch (e) {
-    body.replaceChildren(el("div", { class: "warn-box", text: `불러오기 실패: ${e.message}` }));
+    body.replaceChildren(
+      el("div", { class: "warn-box" }, [
+        `불러오기 실패: ${e.message} `,
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ]),
+    );
     return;
   }
   body.replaceChildren();
@@ -3091,20 +3777,22 @@ async function renderAdmin() {
     const isMe = u.id === state.user.id;
     const isAdmin = u.roles?.includes("admin");
     const row = el("div", { class: "admin-row" }, [
-      avatarNode(u, 40),
+      avatarNode(u, 40, { alt: "" }),
       el("div", { class: "ar-main" }, [
         el("strong", { text: u.displayName }),
         el("div", { class: "muted", text: `@${u.username} · 가입 ${timeLabel(u.createdAt)}` }),
       ]),
       el("div", { class: "ar-tags" }, [
-        el("span", { class: `tag ${isAdmin ? "write" : "read"}`, text: isAdmin ? "admin" : "member" }),
+        el("span", { class: `tag ${isAdmin ? "write" : "read"}`, text: isAdmin ? "관리자" : "멤버" }),
         u.published ? el("span", { class: "tag accent", text: "공개" }) : null,
       ]),
     ]);
     const actions = el("div", { class: "ar-actions" });
     if (!isMe) {
-      const roleBtn = el("button", { class: "ghost-sm", type: "button", text: isAdmin ? "admin 해제" : "admin 부여" });
+      const roleBtn = el("button", { class: "ghost-sm", type: "button", text: isAdmin ? "관리자 해제" : "관리자 지정" });
       roleBtn.addEventListener("click", async () => {
+        const verb = isAdmin ? "해제" : "부여";
+        if (!window.confirm(`${u.displayName}(@${u.username})님의 관리자 권한을 ${verb}할까요?`)) return;
         roleBtn.disabled = true;
         try {
           await api(`/api/admin/users/${encodeURIComponent(u.id)}/roles`, { method: "POST", body: JSON.stringify({ role: "admin", grant: !isAdmin }) });
@@ -3112,18 +3800,18 @@ async function renderAdmin() {
           renderView();
         } catch (e) {
           roleBtn.disabled = false;
-          alert(`실패: ${e.message}`);
+          notify(`권한 변경 실패: ${e.message}`);
         }
       });
       const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
       delBtn.addEventListener("click", async () => {
-        if (!window.confirm(`${u.displayName}(@${u.username}) 계정을 삭제할까요?`)) return;
+        if (!window.confirm(`${u.displayName}(@${u.username}) 계정을 삭제할까요?\n이 사용자의 아바타·대화·설정이 모두 영구 삭제되며 되돌릴 수 없습니다.`)) return;
         try {
           await api(`/api/admin/users/${encodeURIComponent(u.id)}`, { method: "DELETE" });
           await loadAdminUsers();
           renderView();
         } catch (e) {
-          alert(`삭제 실패: ${e.message}`);
+          notify(`삭제 실패: ${e.message}`);
         }
       });
       actions.append(roleBtn, delBtn);
@@ -3200,6 +3888,24 @@ async function loadKnowledge() {
   const reqs = await api("/api/me/knowledge/requests");
   state.knowledgeRequests = reqs.requests || [];
 }
+// Pending info-request count on the 내 아바타 nav item — otherwise owners only
+// discover waiting questions by wandering into the right settings tab.
+function updateKnowledgeBadge() {
+  const btn = dom.navButtons?.settings;
+  if (!btn) return;
+  const count = state.knowledgeRequests.filter((r) => r.status === "open").length;
+  let badge = btn.querySelector(".nav-badge");
+  if (!count) {
+    badge?.remove();
+    return;
+  }
+  if (!badge) {
+    badge = el("span", { class: "nav-badge" });
+    btn.append(badge);
+  }
+  badge.textContent = count > 9 ? "9+" : String(count);
+  btn.title = `대기 중인 정보 요청 ${count}건`;
+}
 async function loadRoutines() {
   const r = await api("/api/me/routines");
   state.routines = r.routines || [];
@@ -3220,6 +3926,7 @@ async function loadAdminSystem() {
 /* ============================================================ Lifecycle */
 async function logout() {
   stopAllChatStreams();
+  hidePromptModal();
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch {
@@ -3237,9 +3944,23 @@ async function logout() {
 
 async function enterApp() {
   mountShell();
-  state.view = "explore";
+  // Restore the view (and conversation) from the URL hash so a reload doesn't
+  // dump the user back on Explore.
+  const { view, arg } = routeFromHash();
+  const isAdmin = state.user.roles?.includes("admin");
+  state.view = view && !(view === "admin" && !isAdmin) ? view : "explore";
+  if (view === "settings" && arg) state.settingsTab = arg;
+  const wantConversation = view === "chat" && arg ? arg : null;
+  if (wantConversation) state.view = "explore"; // placeholder frame until messages load
   renderView();
-  refreshConversations();
+  syncHash(true);
+  loadKnowledge().then(updateKnowledgeBadge).catch(() => {});
+  await refreshConversations();
+  if (wantConversation) {
+    const conv = state.conversations.find((c) => c.id === wantConversation);
+    if (conv) await selectConversation(conv);
+    else syncHash(true);
+  }
   // First-time guidance: prompt for a GitHub token + knowledge repo. Skippable,
   // tracked per-user in localStorage so it doesn't reappear once dismissed.
   if (!onboardingDone(state.user.id)) {
@@ -3273,15 +3994,17 @@ function markOnboardingDone(userId) {
  */
 function openOnboarding() {
   const u = state.user;
+  const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const close = () => {
     markOnboardingDone(state.user.id);
     overlay.remove();
+    restoreFocus?.focus?.();
   };
 
   const tokenInput = el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", autocomplete: "off" });
   const repoInput = el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", value: u.knowledgeRepo || "" });
-  const branchInput = el("input", { name: "branch", class: "narrow", placeholder: "branch (선택)", value: u.knowledgeBranch || "" });
-  const errorBox = el("div", { class: "error", style: "display:none" });
+  const branchInput = el("input", { name: "branch", class: "narrow", placeholder: "main (비우면 기본 브랜치)", value: u.knowledgeBranch || "" });
+  const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
 
   const saveBtn = el("button", { class: "primary", type: "submit", text: "저장하고 시작" });
   const form = el("form", {
@@ -3289,7 +4012,9 @@ function openOnboarding() {
     onsubmit: async (e) => {
       e.preventDefault();
       saveBtn.disabled = true;
-      errorBox.style.display = "none";
+      const savedLabel = saveBtn.textContent;
+      saveBtn.textContent = "저장 중…"; // repo validation may clone — can be slow
+      errorBox.hidden = true;
       try {
         const token = tokenInput.value.trim();
         if (token) {
@@ -3309,7 +4034,8 @@ function openOnboarding() {
         renderView();
       } catch (err) {
         errorBox.textContent = err.message;
-        errorBox.style.display = "";
+        errorBox.hidden = false;
+        saveBtn.textContent = savedLabel;
         saveBtn.disabled = false;
       }
     },
@@ -3317,7 +4043,13 @@ function openOnboarding() {
     el("label", { class: "field" }, [
       el("span", {}, [
         "GitHub 토큰 (선택) ",
-        el("a", { class: "linkish", href: "https://github.samsungds.net/settings/tokens", target: "_blank", rel: "noopener noreferrer", text: "토큰 만들러 가기 ↗" }),
+        el("a", {
+          class: "linkish",
+          href: `https://${(state.githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "")}/settings/tokens`,
+          target: "_blank",
+          rel: "noopener noreferrer",
+          text: "토큰 만들러 가기 ↗",
+        }),
       ]),
       tokenInput,
     ]),
@@ -3330,24 +4062,38 @@ function openOnboarding() {
     ]),
   ]);
 
-  const overlay = el("div", { class: "modal-overlay" }, [
-    el("div", { class: "modal-card onboard-card" }, [
-      el("div", { class: "login-mark", text: "A" }),
-      el("h2", { text: "지식 저장소 연결하기" }),
-      el("p", {
-        class: "muted",
-        text: "내 아바타가 업무 지식·스킬을 쌓아 둘 전용 GitHub 저장소를 연결하세요. 비공개 저장소를 쓰거나 아바타가 직접 커밋·푸시하게 하려면 토큰도 입력하세요. 나중에 설정에서 다시 할 수 있어요.",
-      }),
-      form,
-    ]),
+  const card = el("div", { class: "modal-card onboard-card", tabindex: "-1" }, [
+    el("img", { class: "login-mark", src: "/icon-192.png", alt: "", "aria-hidden": "true", width: "48", height: "48" }),
+    el("h2", { id: "onboarding-title", text: "지식 저장소 연결하기" }),
+    el("p", {
+      class: "muted",
+      text: "내 아바타가 업무 지식·스킬을 쌓아 둘 전용 GitHub 저장소를 연결하세요. 비공개 저장소를 쓰거나 아바타가 직접 커밋·푸시하게 하려면 토큰도 입력하세요. 나중에 설정에서 다시 할 수 있어요.",
+    }),
+    form,
   ]);
+  const overlay = el("div", { class: "modal-overlay", role: "dialog", "aria-modal": "true", "aria-labelledby": "onboarding-title" }, [card]);
+  overlay.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    } else if (e.key === "Tab") {
+      trapTab(e, overlay);
+    }
+  });
   document.body.append(overlay);
-  tokenInput.focus();
+  // Autofocusing the token field pops the keyboard over the explanation on
+  // phones — focus the card itself there instead.
+  if (isFinePointer()) tokenInput.focus();
+  else card.focus();
 }
 
 async function boot() {
   app.replaceChildren(
-    el("div", { class: "boot" }, [el("div", { class: "boot-mark", text: "A" }), el("div", { class: "boot-spinner" }), el("div", { class: "boot-label", text: "불러오는 중…" })]),
+    el("div", { class: "boot" }, [
+      el("img", { class: "boot-mark", src: "/icon-192.png", alt: "", "aria-hidden": "true", width: "52", height: "52" }),
+      el("div", { class: "boot-spinner" }),
+      el("div", { class: "boot-label", text: "불러오는 중…" }),
+    ]),
   );
   let me = null;
   let bootstrap = null;
@@ -3380,6 +4126,15 @@ if (window.matchMedia) {
   if (mq.addEventListener) mq.addEventListener("change", onChange);
   else if (mq.addListener) mq.addListener(onChange);
 }
+
+// Escape closes the mobile rail drawer (modals handle their own Escape and
+// stop propagation before this fires).
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (dom.promptModal && !dom.promptModal.hidden) return;
+  if (document.querySelector(".modal-overlay")) return;
+  if (dom.rail?.classList.contains("open")) closeRail();
+});
 
 boot().catch((error) => {
   state.authError = error.message;

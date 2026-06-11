@@ -1,13 +1,13 @@
 {
   "name": "Noah Almighty",
   "short_name": "Noah Almighty",
-  "description": "Avatar platform — chat with published avatars",
+  "description": "아바타 플랫폼 — 공개된 아바타와 대화하세요",
   "lang": "ko",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#011130",
-  "theme_color": "#011130",
+  "background_color": "#0c1f1d",
+  "theme_color": "#0c1f1d",
   "icons": [
     {
       "src": "/icon-192.png",
