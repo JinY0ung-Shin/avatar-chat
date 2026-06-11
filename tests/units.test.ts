@@ -41,6 +41,7 @@ import type { AgentEvents } from "../src/server/agent/events.js";
 import { decryptSecret, encryptSecret } from "../src/server/crypto.js";
 import {
   commitAndPush,
+  commitIdentityFor,
   ensureClone,
   knowledgeClonePath,
   knowledgeRepoContextFor,
@@ -63,6 +64,7 @@ import {
   SSH_TRUST_SERVER_NAME,
   SSH_TRUST_TOOL_NAMES,
 } from "../src/server/agent/sshTrustTools.js";
+import { workspaceDirFor } from "../src/server/workspace.js";
 import type { Plugin } from "../src/server/types.js";
 
 let tempDir: string;
@@ -164,6 +166,30 @@ describe("runRegistry", () => {
 
     // Closing an unknown run is a no-op (must not throw).
     expect(() => closeRun("never-opened")).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// workspace dirs — per-conversation agent cwd isolation
+// ---------------------------------------------------------------------------
+
+describe("workspace dirs", () => {
+  it("isolates workspaces by avatar and conversation with safe path segments", () => {
+    const dataDir = path.join(tempDir, "ws");
+    const { config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const base = path.join(config.dataDir, "workspaces");
+
+    const first = workspaceDirFor(config, "avatar/../x", "conv-1");
+    const second = workspaceDirFor(config, "avatar/../x", "conv-2");
+    const otherAvatar = workspaceDirFor(config, "other-avatar", "conv-1");
+
+    expect(first).not.toBe(second);
+    expect(first).not.toBe(otherAvatar);
+    for (const dir of [first, second, otherAvatar]) {
+      const rel = path.relative(base, dir);
+      expect(path.isAbsolute(rel)).toBe(false);
+      expect(rel.startsWith("..")).toBe(false);
+    }
   });
 });
 
@@ -1061,6 +1087,22 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(fs.existsSync(path.join(verify, "notes/onboarding.md"))).toBe(true);
   });
 
+  it("commits knowledge-repo changes with the avatar alias by default", async () => {
+    const s = setup("rt-alias");
+    s.store.updateProfile(s.ownerId, { alias: "Knowledge Bot" });
+    const tools = ownerTools(s);
+
+    await call(tools, "write_file", { path: "notes/identity.md", content: "uses alias" });
+    const commit = await call(tools, "commit", { message: "identity check" });
+    expect(commit.isError).toBeFalsy();
+
+    const verify = path.join(tempDir, "rt-alias", "verify");
+    const { repo } = s.store.getKnowledgeRepo(s.ownerId) as { repo: string };
+    execFileSync("git", ["clone", "-q", repo, verify], { stdio: "pipe" });
+    const author = execFileSync("git", ["-C", verify, "log", "-1", "--format=%an"], { encoding: "utf8" }).trim();
+    expect(author).toBe("Knowledge Bot");
+  });
+
   it("never pushes the load-time hex-ssh strip back to the user's repo", async () => {
     const s = setup("rt-strip");
     const ctx = knowledgeRepoContextFor(s.store, s.ownerId, s.config)!;
@@ -1339,6 +1381,24 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
     const out = await hook({ tool_name: "Read", tool_input: { file_path: "/x" }, tool_use_id: "t2" }, "t2");
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
+
+  it("auto-allows TaskCreate orchestration without prompting", async () => {
+    let prompted = false;
+    const hook = buildPreToolUseHook(
+      { onPermission: async () => { prompted = true; return { behavior: "deny" }; } },
+      false,
+      READONLY,
+      false,
+      false,
+    );
+    const out = await hook(
+      { tool_name: "TaskCreate", tool_input: { task_subject: "검증", task_description: "테스트 실행" }, tool_use_id: "task-1" },
+      "task-1",
+    );
+
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(prompted).toBe(false);
+  });
 });
 
 describe("secret encryption", () => {
@@ -1413,6 +1473,18 @@ describe("git token storage", () => {
     expect(u2.knowledgeBranch).toBe("main");
     expect(u2.knowledgeSelected).toBeNull();
     expect(store.getKnowledgeRepo(ownerId)).toEqual({ repo: "me/knowledge", branch: "main", selected: null });
+  });
+
+  it("uses the avatar alias as the default knowledge-repo commit author name", () => {
+    const { store, ownerId } = makeStore("gt-alias");
+    store.updateProfile(ownerId, { alias: "Knowledge Bot" });
+    expect(commitIdentityFor(store, { id: ownerId, username: "owner", displayName: "Owner" })).toEqual({
+      name: "Knowledge Bot",
+      email: "owner@noah-almighty.local",
+    });
+
+    store.setGitIdentity(ownerId, "Explicit Committer", null);
+    expect(commitIdentityFor(store, { id: ownerId, username: "owner", displayName: "Owner" }).name).toBe("Explicit Committer");
   });
 
   it("persists and clears the knowledge-repo plugin selection", () => {

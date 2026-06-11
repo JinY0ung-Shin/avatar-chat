@@ -24,7 +24,7 @@ export interface RepoToolsContext {
   /** The avatar (== owner) whose knowledge repo these tools manage. */
   avatarUserId: string;
   /** The avatar owner (for the username/displayName fallback in commits). */
-  owner: { id: string; username: string; displayName: string };
+  owner: { id: string; username: string; displayName: string; alias?: string };
   /**
    * True only when the present viewer IS the owner and the run is interactive.
    * The caller computes `viewerIsOwner && !headless`; every tool refuses otherwise.

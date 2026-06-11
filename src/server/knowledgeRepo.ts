@@ -463,11 +463,11 @@ export function knowledgeRepoContextFor(
  */
 export function commitIdentityFor(
   store: Store,
-  user: { id: string; username: string; displayName: string },
+  user: { id: string; username: string; displayName: string; alias?: string },
 ): { name: string; email: string } {
   const u = store.getUserById(user.id);
   return {
-    name: u?.gitIdentityName || user.displayName || user.username,
+    name: u?.gitIdentityName || u?.alias || user.alias || user.displayName || user.username,
     email: u?.gitIdentityEmail || `${user.username}@noah-almighty.local`,
   };
 }

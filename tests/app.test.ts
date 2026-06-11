@@ -532,7 +532,7 @@ describe("noah-almighty platform", () => {
     await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "hi" }).expect(403);
   });
 
-  it("keeps split sessions owner-only and refuses cross-avatar conversation reuse", async () => {
+  it("allows mixed-avatar split sessions and refuses cross-avatar conversation reuse", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "split-owner");
     await agent.patch("/api/me").send({ published: true }).expect(200);
@@ -544,7 +544,7 @@ describe("noah-almighty platform", () => {
     await agent
       .post("/api/chat/stream")
       .send({ avatarId: otherRes.body.user.id, message: "hi", multiSession: true })
-      .expect(403);
+      .expect(200);
 
     const first = await agent
       .post("/api/chat/stream")

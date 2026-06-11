@@ -26,6 +26,23 @@ const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
 /** Tools handled by a dedicated UI (not shown as a generic tool row). */
 const UI_HANDLED_TOOLS = new Set(["AskUserQuestion"]);
 
+/** SDK orchestration tools that should never trigger the user permission modal. */
+const TASK_ORCHESTRATION_TOOLS = new Set([
+  "Task",
+  "Agent",
+  "TaskCreate",
+  "TaskCreated",
+  "TaskStarted",
+  "TaskUpdate",
+  "TaskComplete",
+  "TaskCompleted",
+  "TaskProgress",
+  "TaskStatus",
+  "TaskList",
+  "TaskRead",
+  "TaskStop",
+]);
+
 /**
  * Tools that run without a permission prompt: read-only built-ins, any MCP tool
  * (only the in-process knowledge server is configured), and orchestration
@@ -34,7 +51,7 @@ const UI_HANDLED_TOOLS = new Set(["AskUserQuestion"]);
 function isAutoAllowed(toolName: string, readOnlyTools: string[]): boolean {
   if (readOnlyTools.includes(toolName)) return true;
   if (toolName.startsWith("mcp__")) return true;
-  return ["Skill", "Task", "Agent", "TodoWrite", "ToolSearch", "SlashCommand"].includes(toolName);
+  return ["Skill", "TodoWrite", "ToolSearch", "SlashCommand"].includes(toolName) || TASK_ORCHESTRATION_TOOLS.has(toolName);
 }
 
 /** Render a question answer (from the client) into text the model can read. */
@@ -81,9 +98,145 @@ function safeToolInput(input: unknown): Record<string, unknown> {
   return out;
 }
 
+type TaskKind = "task" | "agent";
+
+interface TaskRecord {
+  uiId: string;
+  kind: TaskKind;
+}
+
 interface LoopState {
   /** tool_use ids that spawned a subagent → distinguishes onAgentEnd from onToolEnd. */
   spawnedAgentIds: Set<string>;
+  /** SDK task ids → rendered task/agent ids. */
+  tasks: Map<string, TaskRecord>;
+  /** Ambient SDK tasks that should not render in the inline transcript. */
+  hiddenTasks: Set<string>;
+}
+
+function createLoopState(): LoopState {
+  return { spawnedAgentIds: new Set(), tasks: new Map(), hiddenTasks: new Set() };
+}
+
+function taskDescription(input: Record<string, unknown>): string {
+  return (
+    asString(input.task_subject) ||
+    asString(input.subject) ||
+    asString(input.title) ||
+    asString(input.description) ||
+    asString(input.task_description) ||
+    asString(input.prompt) ||
+    asString(input.task)
+  );
+}
+
+function taskDetails(input: Record<string, unknown>): string {
+  const subject = asString(input.task_subject) || asString(input.subject) || asString(input.title);
+  const description = asString(input.task_description) || asString(input.description) || asString(input.prompt) || asString(input.task);
+  return truncate([subject, description].filter(Boolean).join(" · ").replace(/\s+/g, " ").trim(), 200);
+}
+
+function taskType(input: Record<string, unknown>): string {
+  return asString(input.task_type) || asString(input.type) || asString(input.kind);
+}
+
+function taskIdFromInput(input: Record<string, unknown>, fallback: string): string {
+  return asString(input.task_id) || asString(input.taskId) || asString(input.id) || fallback;
+}
+
+function isTaskCreateTool(name: string): boolean {
+  return name === "TaskCreate" || name === "TaskCreated" || name === "TaskStarted";
+}
+
+function isTaskUpdateTool(name: string): boolean {
+  return name === "TaskUpdate" || name === "TaskProgress" || name === "TaskStatus";
+}
+
+function isTaskEndTool(name: string): boolean {
+  return name === "TaskComplete" || name === "TaskCompleted" || name === "TaskStop";
+}
+
+function statusIsTerminal(status: string): boolean {
+  return ["completed", "failed", "killed", "stopped"].includes(status);
+}
+
+function taskOk(status: string): boolean {
+  return status === "completed";
+}
+
+function taskRecord(state: LoopState, taskId: string): TaskRecord {
+  let record = state.tasks.get(taskId);
+  if (!record) {
+    record = { uiId: taskId, kind: "task" };
+    state.tasks.set(taskId, record);
+  }
+  return record;
+}
+
+function emitTaskUpdate(
+  events: AgentEvents,
+  state: LoopState,
+  taskId: string,
+  update: { status?: string; description?: string; summary?: string; lastToolName?: string; error?: string; isBackgrounded?: boolean },
+): void {
+  const record = taskRecord(state, taskId);
+  if (record.kind === "agent") {
+    if (statusIsTerminal(update.status || "")) {
+      events.onAgentEnd?.({ agentId: record.uiId, ok: taskOk(update.status || "") });
+    } else {
+      const detail = update.summary || update.description || update.lastToolName;
+      if (detail) {
+        events.onStatus?.(`에이전트 작업 중: ${truncate(detail.replace(/\s+/g, " ").trim(), 120)}`);
+      }
+    }
+    return;
+  }
+  if (statusIsTerminal(update.status || "")) {
+    events.onTaskEnd?.({ taskId: record.uiId, ok: taskOk(update.status || ""), status: update.status, summary: update.summary || update.error });
+    return;
+  }
+  events.onTaskUpdate?.({ taskId: record.uiId, ...update });
+}
+
+function handleTaskToolUse(
+  name: string,
+  toolUseId: string,
+  input: Record<string, unknown>,
+  events: AgentEvents,
+  state: LoopState,
+): boolean {
+  if (!isTaskCreateTool(name) && !isTaskUpdateTool(name) && !isTaskEndTool(name)) {
+    return false;
+  }
+  const taskId = taskIdFromInput(input, toolUseId);
+  if (isTaskCreateTool(name)) {
+    const record = { uiId: taskId, kind: "task" as const };
+    state.tasks.set(taskId, record);
+    if (toolUseId !== taskId) {
+      state.tasks.set(toolUseId, record);
+    }
+    events.onTaskStart?.({
+      taskId,
+      toolUseId,
+      taskType: taskType(input) || undefined,
+      subagentType: asString(input.subagent_type) || asString(input.agent_type) || undefined,
+      workflowName: asString(input.workflow_name) || undefined,
+      description: taskDescription(input) || undefined,
+      prompt: asString(input.prompt) || undefined,
+    });
+    return true;
+  }
+  if (isTaskEndTool(name)) {
+    const status = name === "TaskStop" ? "stopped" : "completed";
+    emitTaskUpdate(events, state, taskId, { status, summary: taskDetails(input) || undefined });
+    return true;
+  }
+  emitTaskUpdate(events, state, taskId, {
+    status: asString(input.status) || undefined,
+    description: taskDescription(input) || undefined,
+    summary: taskDetails(input) || undefined,
+  });
+  return true;
 }
 
 /** Process a full `assistant` message: emit tool/agent starts, return main-agent text. */
@@ -115,6 +268,9 @@ function handleAssistantMessage(
       const name = asString(block.name);
       const input = isRecord(block.input) ? block.input : {};
       if (!toolUseId || !name) {
+        continue;
+      }
+      if (handleTaskToolUse(name, toolUseId, input, events, state)) {
         continue;
       }
       if (SUBAGENT_TOOLS.has(name)) {
@@ -221,8 +377,92 @@ function handleStreamEvent(message: Record<string, unknown>, events: AgentEvents
   return "";
 }
 
-function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents): void {
+function handleTaskSystemEvent(message: Record<string, unknown>, events: AgentEvents, state: LoopState): boolean {
   const subtype = asString(message.subtype);
+  const taskId = asString(message.task_id);
+  if (!taskId) {
+    return false;
+  }
+
+  if (subtype === "task_started") {
+    if (message.skip_transcript === true) {
+      state.hiddenTasks.add(taskId);
+      return true;
+    }
+    const toolUseId = asString(message.tool_use_id);
+    const existing = state.tasks.get(taskId) || (toolUseId ? state.tasks.get(toolUseId) : undefined);
+    const uiId = existing?.uiId || toolUseId || taskId;
+    const taskKind: TaskKind =
+      asString(message.task_type) === "subagent" || Boolean(asString(message.subagent_type))
+        ? "agent"
+        : existing?.kind || "task";
+    const record = { uiId, kind: taskKind };
+    state.tasks.set(taskId, record);
+    if (toolUseId) {
+      state.tasks.set(toolUseId, record);
+    }
+    if (taskKind === "agent") {
+      state.spawnedAgentIds.add(uiId);
+      events.onAgentStart?.({
+        agentId: uiId,
+        parentId: MAIN_AGENT_ID,
+        subagentType: asString(message.subagent_type) || undefined,
+        description: asString(message.description) || asString(message.prompt) || undefined,
+      });
+    } else {
+      events.onTaskStart?.({
+        taskId: uiId,
+        toolUseId: asString(message.tool_use_id) || undefined,
+        taskType: asString(message.task_type) || undefined,
+        subagentType: asString(message.subagent_type) || undefined,
+        workflowName: asString(message.workflow_name) || undefined,
+        description: asString(message.description) || undefined,
+        prompt: asString(message.prompt) || undefined,
+      });
+    }
+    return true;
+  }
+
+  if (state.hiddenTasks.has(taskId)) {
+    return true;
+  }
+
+  if (subtype === "task_progress") {
+    emitTaskUpdate(events, state, taskId, {
+      description: asString(message.description) || undefined,
+      summary: asString(message.summary) || undefined,
+      lastToolName: asString(message.last_tool_name) || undefined,
+    });
+    return true;
+  }
+
+  if (subtype === "task_updated") {
+    const patch = isRecord(message.patch) ? message.patch : {};
+    emitTaskUpdate(events, state, taskId, {
+      status: asString(patch.status) || undefined,
+      description: asString(patch.description) || undefined,
+      error: asString(patch.error) || undefined,
+      isBackgrounded: typeof patch.is_backgrounded === "boolean" ? patch.is_backgrounded : undefined,
+    });
+    return true;
+  }
+
+  if (subtype === "task_notification") {
+    emitTaskUpdate(events, state, taskId, {
+      status: asString(message.status) || undefined,
+      summary: asString(message.summary) || undefined,
+    });
+    return true;
+  }
+
+  return false;
+}
+
+function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents, state: LoopState): void {
+  const subtype = asString(message.subtype);
+  if (handleTaskSystemEvent(message, events, state)) {
+    return;
+  }
   if (subtype === "init") {
     const model = asString(message.model);
     if (model) {
@@ -526,6 +766,7 @@ export async function runClaudeAgent(
       id: request.avatar.id,
       username: ownerRow?.username ?? "",
       displayName: ownerRow?.displayName ?? request.avatar.displayName,
+      alias: ownerRow?.alias ?? request.avatar.alias,
     },
     viewerIsOwner: viewerIsOwner && !headless,
     config,
@@ -580,7 +821,15 @@ export async function runClaudeAgent(
     permissionMode: "default",
     // Auto-approve (no prompt) the read-only + knowledge + meta tools. NOTE: this
     // is only an auto-approve list, NOT a restriction — the hook does enforcement.
-    allowedTools: [...config.readOnlyTools, ...KNOWLEDGE_TOOL_NAMES, ...REPO_TOOL_NAMES, ...SSH_TRUST_TOOL_NAMES, "Skill", "Task", "Agent", "TodoWrite"],
+    allowedTools: [
+      ...config.readOnlyTools,
+      ...KNOWLEDGE_TOOL_NAMES,
+      ...REPO_TOOL_NAMES,
+      ...SSH_TRUST_TOOL_NAMES,
+      "Skill",
+      "TodoWrite",
+      ...TASK_ORCHESTRATION_TOOLS,
+    ],
     // Enable bundled + plugin skills (also auto-allows the `Skill` tool).
     skills: "all",
     // Register the SSH host-trust server alongside hex-ssh, and only when hex-ssh
@@ -617,7 +866,7 @@ export async function runClaudeAgent(
   if (abortController) {
     options.abortController = abortController;
   }
-  // Confine the run to the avatar's own workspace + its plugin dirs.
+  // Confine the run to this session's workspace + the avatar's plugin dirs.
   if (request.cwd) {
     options.cwd = request.cwd;
   }
@@ -637,7 +886,7 @@ export async function runClaudeAgent(
     events.onStatus?.("응답 생성 중…");
   }
 
-  const state: LoopState = { spawnedAgentIds: new Set() };
+  const state = createLoopState();
   const assistantChunks: string[] = [];
   const deltaChunks: string[] = [];
   let resultText = "";
@@ -661,7 +910,7 @@ export async function runClaudeAgent(
         continue;
       }
       if (message.type === "system") {
-        handleSystemEvent(message, events);
+        handleSystemEvent(message, events, state);
         continue;
       }
       if (message.type === "user") {

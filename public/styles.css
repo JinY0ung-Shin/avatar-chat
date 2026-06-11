@@ -3046,6 +3046,20 @@ tbody tr:hover td {
 .split-add {
   border-left-color: var(--line);
 }
+.split-avatar-select {
+  height: 32px;
+  min-width: 118px;
+  max-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--text-soft);
+  font-size: var(--t-xs);
+  padding: 0 8px;
+}
+.split-avatar-select:disabled {
+  opacity: 0.55;
+}
 
 .chat-workbench {
   flex: 1;
@@ -3539,6 +3553,11 @@ tbody tr:hover td {
   .split-btn,
   .split-add {
     width: 30px;
+    height: 30px;
+  }
+  .split-avatar-select {
+    min-width: 88px;
+    max-width: 120px;
     height: 30px;
   }
   .chat-workbench.vertical,

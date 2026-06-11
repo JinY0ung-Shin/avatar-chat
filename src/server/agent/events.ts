@@ -51,6 +51,28 @@ export interface ToolEvent {
   inputSummary?: string;
 }
 
+/** A background/foreground SDK task that is not necessarily a subagent. */
+export interface TaskEvent {
+  taskId: string;
+  toolUseId?: string;
+  taskType?: string;
+  subagentType?: string;
+  workflowName?: string;
+  description?: string;
+  prompt?: string;
+}
+
+/** Progress or state update for a previously created SDK task. */
+export interface TaskUpdateEvent {
+  taskId: string;
+  status?: string;
+  description?: string;
+  summary?: string;
+  lastToolName?: string;
+  error?: string;
+  isBackgrounded?: boolean;
+}
+
 /** A subagent was spawned via the Task/Agent tool. `agentId` === its tool_use id. */
 export interface AgentSpawnEvent {
   agentId: string;
@@ -95,6 +117,12 @@ export interface AgentEvents {
   onToolStart?: (event: ToolEvent) => void;
   /** A tool call finished (tool_result observed). */
   onToolEnd?: (event: { toolUseId: string; ok: boolean }) => void;
+  /** A non-subagent SDK task started. */
+  onTaskStart?: (event: TaskEvent) => void;
+  /** A non-subagent SDK task changed progress/state. */
+  onTaskUpdate?: (event: TaskUpdateEvent) => void;
+  /** A non-subagent SDK task finished. */
+  onTaskEnd?: (event: { taskId: string; ok: boolean; status?: string; summary?: string }) => void;
   /** A subagent was spawned. */
   onAgentStart?: (event: AgentSpawnEvent) => void;
   /** A subagent finished. */

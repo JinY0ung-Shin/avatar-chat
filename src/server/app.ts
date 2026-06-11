@@ -31,6 +31,7 @@ import type { AgentResponse, AppConfig, PluginRoot } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import { awaitResponse, closeRun, openRun, submitResponse, CANCELLED } from "./agent/runRegistry.js";
 import { executeRoutineJob, isRoutineRunning } from "./scheduler.js";
+import { workspaceDirFor } from "./workspace.js";
 
 export interface AppServices {
   config: AppConfig;
@@ -335,7 +336,7 @@ export function createApp(services = createServices()) {
       "소개 본문만 출력하세요.\n\n" +
       `사용 가능한 스킬:\n${skillLines}\n\n연결된 플러그인:\n${pluginLines}${personaLine}`;
 
-    const workspaceDir = path.join(config.dataDir, "workspaces", avatar.id);
+    const workspaceDir = workspaceDirFor(config, avatar.id, "intro");
     fs.mkdirSync(workspaceDir, { recursive: true });
 
     const abortController = new AbortController();
@@ -911,11 +912,6 @@ export function createApp(services = createServices()) {
     }
 
     const conversationId = safeString(req.body?.conversationId) || crypto.randomUUID();
-    const multiSession = req.body?.multiSession === true;
-    if (multiSession && req.user!.id !== avatar.id) {
-      apiError(res, 403, "분할 세션은 내 아바타에서만 사용할 수 있습니다.");
-      return;
-    }
     const existingAvatarId = store.getConversationAvatarId(req.user!.id, conversationId);
     if (existingAvatarId && existingAvatarId !== avatar.id) {
       apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
@@ -967,9 +963,9 @@ export function createApp(services = createServices()) {
             )),
           ];
 
-    // Per-avatar workspace: the SDK runs in this directory so the avatar's file
-    // reads are scoped here, not to the server tree / other avatars' data.
-    const workspaceDir = path.join(config.dataDir, "workspaces", avatar.id);
+    // Per-conversation workspace: each chat session gets an isolated cwd, scoped
+    // under the avatar so sessions cannot mix files by accident.
+    const workspaceDir = workspaceDirFor(config, avatar.id, conversationId);
     fs.mkdirSync(workspaceDir, { recursive: true });
 
     res.status(200);
@@ -1044,6 +1040,15 @@ export function createApp(services = createServices()) {
           },
           onToolEnd: (event) => {
             if (!closed) sseSend(res, "tool_end", event);
+          },
+          onTaskStart: (event) => {
+            if (!closed) sseSend(res, "task", event);
+          },
+          onTaskUpdate: (event) => {
+            if (!closed) sseSend(res, "task_update", event);
+          },
+          onTaskEnd: (event) => {
+            if (!closed) sseSend(res, "task_end", event);
           },
           onAgentStart: (event) => {
             if (!closed) sseSend(res, "agent", event);

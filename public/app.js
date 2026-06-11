@@ -21,6 +21,9 @@ const state = {
   view: "explore", // explore | chat | settings | admin
   settingsTab: "profile", // profile | access | knowledge | routines
   avatars: [],
+  avatarsLoaded: false,
+  avatarsLoading: false,
+  splitAvatarId: "",
   currentAvatar: null, // avatar being chatted with
   chatPanes: [],
   activePaneId: null,
@@ -532,8 +535,8 @@ function stopAllChatStreams() {
   state.streaming = false;
 }
 
-function selfSplitEnabled() {
-  return Boolean(state.user && state.chatPanes.length && state.chatPanes.every((p) => p.avatar?.id === state.user.id));
+function splitEnabled() {
+  return Boolean(state.user && state.chatPanes.length);
 }
 
 function splitLayoutClass() {
@@ -617,17 +620,11 @@ function renderChat() {
     return;
   }
 
-  if (!selfSplitEnabled() && state.chatPanes.length > 1) {
-    const pane = activePane();
-    state.chatPanes = pane ? [pane] : [];
-    if (pane) state.activePaneId = pane.id;
-  }
-
   const panes = ensureChatPanes();
   const av = activePane()?.avatar || state.currentAvatar;
-  const controls = selfSplitEnabled() ? renderSplitControls() : null;
+  const controls = splitEnabled() ? renderSplitControls() : null;
   if (panes.length > 1) {
-    const header = viewHeader("내 아바타 병렬 세션", "최대 4개의 독립 대화를 동시에 실행합니다.", controls);
+    const header = viewHeader("병렬 세션", "최대 4개의 독립 대화를 동시에 실행합니다.", controls);
     const grid = el("div", { class: `chat-workbench ${splitLayoutClass()}` }, panes.map((pane, index) => renderChatPane(pane, { compact: true, index })));
     dom.main.append(header, grid);
     panes.forEach((pane) => maybeGreet(pane));
@@ -666,8 +663,13 @@ function renderChat() {
 
 function renderSplitControls() {
   const disabled = anyChatStreaming();
-  const canAdd = selfSplitEnabled() && state.chatPanes.length < MAX_CHAT_PANES && !disabled;
+  const canAdd = splitEnabled() && state.chatPanes.length < MAX_CHAT_PANES && !disabled;
   const wrap = el("div", { class: "split-controls", role: "group", "aria-label": "분할 세션" });
+  if (!state.avatarsLoaded && !state.avatarsLoading) {
+    loadAvatars()
+      .then(() => { if (state.view === "chat") renderView(); })
+      .catch(() => {});
+  }
   const layoutBtn = (layout, ic, title) => {
     const btn = el("button", {
       class: `split-btn ${state.chatLayout === layout ? "active" : ""}`,
@@ -687,17 +689,42 @@ function renderSplitControls() {
   layoutBtn("vertical", "columns", "좌우 분할");
   layoutBtn("horizontal", "rows", "상하 분할");
   layoutBtn("grid", "grid", "상하 좌우 분할");
+  const avatars = splitAvatarOptions();
+  const activeAvatarId = activePane()?.avatar?.id || state.currentAvatar?.id || "";
+  const selectedAvatarId = avatars.some((av) => av.id === state.splitAvatarId) ? state.splitAvatarId : activeAvatarId;
+  const avatarSelect = el("select", {
+    class: "split-avatar-select",
+    title: "추가할 아바타",
+    "aria-label": "추가할 아바타",
+    disabled,
+    onchange: (event) => { state.splitAvatarId = event.currentTarget.value; },
+  }, avatars.map((av) => el("option", { value: av.id, text: av.alias || av.displayName || av.username || "아바타" })));
+  avatarSelect.value = selectedAvatarId;
+  state.splitAvatarId = selectedAvatarId;
+  wrap.append(avatarSelect);
   const addBtn = el("button", {
     class: "split-add",
     type: "button",
     title: "세션 추가",
     "aria-label": "세션 추가",
     disabled: canAdd ? null : "",
-    onclick: addChatPane,
+    onclick: () => addChatPane(avatarSelect.value),
   });
   addBtn.append(icon("plus"));
   wrap.append(addBtn);
   return wrap;
+}
+
+function splitAvatarOptions() {
+  const byId = new Map();
+  for (const pane of state.chatPanes) {
+    if (pane.avatar?.id) byId.set(pane.avatar.id, pane.avatar);
+  }
+  if (state.currentAvatar?.id) byId.set(state.currentAvatar.id, state.currentAvatar);
+  for (const av of state.avatars) {
+    if (av?.id) byId.set(av.id, av);
+  }
+  return [...byId.values()];
 }
 
 function renderChatPane(pane, { compact = false, index = 0, header = null } = {}) {
@@ -799,9 +826,9 @@ function renderCompactPaneHeader(pane, index) {
   ]);
 }
 
-function addChatPane() {
-  if (!selfSplitEnabled() || state.chatPanes.length >= MAX_CHAT_PANES || anyChatStreaming()) return;
-  const avatar = activePane()?.avatar || state.currentAvatar || state.user;
+function addChatPane(avatarId) {
+  if (!splitEnabled() || state.chatPanes.length >= MAX_CHAT_PANES || anyChatStreaming()) return;
+  const avatar = splitAvatarOptions().find((av) => av.id === avatarId) || activePane()?.avatar || state.currentAvatar || state.user;
   const pane = makeChatPane(avatar);
   state.chatPanes.push(pane);
   state.activePaneId = pane.id;
@@ -1305,6 +1332,7 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
     runId: null,
     agents: new Map(), // agentId -> { node, toolsEl, childrenEl }
     tools: new Map(), // toolUseId -> { row }
+    tasks: new Map(), // taskId -> { row }
     text: "", rafPending: false, done: false, aborted: false, isNewConversation,
   };
   const flush = () => {
@@ -1433,6 +1461,15 @@ function handleSseEvent(event, data, live, scheduleFlush) {
       break;
     case "tool_end":
       handleToolEnd(live, data);
+      break;
+    case "task":
+      handleTaskStart(live, data);
+      break;
+    case "task_update":
+      handleTaskUpdate(live, data);
+      break;
+    case "task_end":
+      handleTaskEnd(live, data);
       break;
     case "blocked":
       handleBlocked(live, data);
@@ -1571,6 +1608,72 @@ function handleToolEnd(live, data) {
   if (!rec) return;
   if (rec.row.dataset.status === "blocked") return; // keep the "blocked" label
   rec.row.dataset.status = data.ok === false ? "failed" : "done";
+}
+
+function taskLabel(data) {
+  if (data?.workflowName) return `워크플로 ${data.workflowName}`;
+  if (data?.subagentType) return data.subagentType;
+  if (data?.taskType) return String(data.taskType).replace(/_/g, " ");
+  return "태스크";
+}
+
+function taskDetail(data) {
+  return data?.summary || data?.description || data?.prompt || data?.lastToolName || data?.error || data?.status || "";
+}
+
+function ensureTaskRow(live, data) {
+  const taskId = data?.taskId;
+  if (!taskId) return null;
+  if (live.tasks.has(taskId)) return live.tasks.get(taskId);
+  const label = taskLabel(data);
+  const detail = taskDetail(data);
+  const agent = ensureAgentNode(live, "main", { pending: true });
+  const row = el("div", { class: "tool-row task-row", dataset: { task: taskId, status: "running" } }, [
+    el("span", { class: "tool-spinner" }),
+    el("span", { class: "tool-name", text: label }),
+    detail ? el("span", { class: "tool-arg", text: detail }) : null,
+  ]);
+  agent.toolsEl.append(row);
+  const rec = { row };
+  live.tasks.set(taskId, rec);
+  refreshLiveActivity(live);
+  return rec;
+}
+
+function updateTaskDetail(rec, text) {
+  if (!rec || !text) return;
+  let arg = rec.row.querySelector(".tool-arg");
+  if (!arg) {
+    arg = el("span", { class: "tool-arg" });
+    rec.row.append(arg);
+  }
+  arg.textContent = text;
+}
+
+function handleTaskStart(live, data) {
+  const rec = ensureTaskRow(live, data);
+  if (!rec) return;
+  const detail = taskDetail(data);
+  updateTaskDetail(rec, detail);
+  setStatus(live, `${taskLabel(data)}${detail ? ` · ${detail}` : ""}`, { sticky: true });
+}
+
+function handleTaskUpdate(live, data) {
+  const rec = ensureTaskRow(live, data);
+  if (!rec) return;
+  const detail = taskDetail(data);
+  updateTaskDetail(rec, detail);
+  if (data?.status && data.status !== "running") rec.row.dataset.taskStatus = data.status;
+  if (detail) setStatus(live, `태스크 진행 중: ${detail}`, { sticky: true });
+}
+
+function handleTaskEnd(live, data) {
+  const rec = ensureTaskRow(live, data);
+  if (!rec) return;
+  rec.row.dataset.status = data.ok === false ? "failed" : "done";
+  const detail = taskDetail(data);
+  updateTaskDetail(rec, detail);
+  setStatus(live, data.ok === false ? "태스크가 완료되지 못했습니다." : "태스크 완료", { sticky: true });
 }
 
 function handleBlocked(live, data) {
@@ -1767,10 +1870,12 @@ function cleanupLive(live) {
 // Summarize an activity tree as "도구 N개 · 에이전트 M개 사용". `suffix` overrides
 // the trailing word (e.g. "진행 중" while streaming instead of "사용").
 function activitySummaryText(activityEl, suffix = "사용") {
-  const toolCount = activityEl.querySelectorAll(".tool-row").length;
+  const toolCount = activityEl.querySelectorAll(".tool-row:not(.task-row)").length;
+  const taskCount = activityEl.querySelectorAll(".task-row").length;
   const agentCount = activityEl.querySelectorAll(".agent-node.sub").length;
   const parts = [];
   if (toolCount) parts.push(`도구 ${toolCount}개`);
+  if (taskCount) parts.push(`태스크 ${taskCount}개`);
   if (agentCount) parts.push(`에이전트 ${agentCount}개`);
   return parts.length ? `${parts.join(" · ")} ${suffix}` : "작업 내역";
 }
@@ -2501,7 +2606,7 @@ function buildGitCredentialsCard() {
     },
   }, [
     el("div", { class: "field-row" }, [
-      el("label", { class: "field" }, [el("span", { text: "커밋 이름" }), el("input", { name: "name", value: u.gitIdentityName || "", placeholder: u.displayName || "" })]),
+      el("label", { class: "field" }, [el("span", { text: "커밋 이름" }), el("input", { name: "name", value: u.gitIdentityName || "", placeholder: u.alias || u.displayName || "" })]),
       el("label", { class: "field" }, [el("span", { text: "커밋 이메일" }), el("input", { name: "email", type: "email", value: u.gitIdentityEmail || "", placeholder: `${u.username}@example.com` })]),
     ]),
     el("button", { class: "primary", type: "submit", text: "커밋 정보 저장" }),
@@ -3078,8 +3183,14 @@ async function refreshMe() {
   if (me.user) state.user = me.user;
 }
 async function loadAvatars() {
-  const r = await api("/api/avatars");
-  state.avatars = r.avatars || [];
+  state.avatarsLoading = true;
+  try {
+    const r = await api("/api/avatars");
+    state.avatars = r.avatars || [];
+    state.avatarsLoaded = true;
+  } finally {
+    state.avatarsLoading = false;
+  }
 }
 async function loadPlugins() {
   const r = await api("/api/me/plugins");

@@ -1,10 +1,10 @@
 import fs from "node:fs";
-import path from "node:path";
 import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "./plugins.js";
 import { runAgentStream } from "./agent/index.js";
 import type { AppServices } from "./app.js";
 import logger from "./logger.js";
 import type { PluginRoot, RoutineJob } from "./types.js";
+import { workspaceDirFor } from "./workspace.js";
 
 const schedLogger = logger.child({ module: "scheduler" });
 
@@ -60,7 +60,7 @@ async function runRoutineJobNow(
       schedLogger.warn({ jobId: job.id, warnings: pluginWarnings }, "routine plugin warnings");
     }
 
-    const workspaceDir = path.join(config.dataDir, "workspaces", avatar.id);
+    const workspaceDir = workspaceDirFor(config, avatar.id, job.conversationId);
     fs.mkdirSync(workspaceDir, { recursive: true });
 
     const response = await runAgentStream(
