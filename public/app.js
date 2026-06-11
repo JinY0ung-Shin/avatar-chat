@@ -22,6 +22,9 @@ const state = {
   settingsTab: "profile", // profile | access | knowledge | routines
   avatars: [],
   currentAvatar: null, // avatar being chatted with
+  chatPanes: [],
+  activePaneId: null,
+  chatLayout: "vertical", // vertical | horizontal | grid
   conversations: [],
   conversationId: newId(),
   messages: [],
@@ -62,8 +65,13 @@ async function api(path, options = {}) {
 function handleSessionExpired() {
   if (sessionExpired) return;
   sessionExpired = true;
-  abortController?.abort();
+  stopAllChatStreams();
   state.user = null;
+  state.currentAvatar = null;
+  state.chatPanes = [];
+  state.activePaneId = null;
+  state.messages = [];
+  state.conversations = [];
   state.authError = "세션이 만료되었습니다. 다시 로그인해 주세요.";
   renderAuth();
 }
@@ -111,6 +119,9 @@ function icon(name) {
     back: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
     book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
     clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    columns: '<rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/>',
+    rows: '<rect x="4" y="3" width="16" height="7" rx="1"/><rect x="4" y="14" width="16" height="7" rx="1"/>',
+    grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   };
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -240,7 +251,7 @@ async function resizeImage(file, max = 256) {
 
 /* ============================================================ Auth view */
 function renderAuth(mode = "login") {
-  abortController?.abort();
+  stopAllChatStreams();
   abortController = null;
   state.streaming = false;
   document.title = "Noah Almighty";
@@ -419,7 +430,7 @@ function closeRail() {
 }
 
 function goView(view) {
-  if (state.streaming && view !== "chat") return;
+  if (anyChatStreaming() && view !== "chat") return;
   state.view = view;
   closeRail();
   renderView();
@@ -446,6 +457,90 @@ function viewHeader(title, sub, extra) {
     el("div", { class: "title" }, [el("h2", { text: title }), sub ? el("p", { text: sub }) : null]),
   ]);
   return el("header", { class: "view-header" }, [left, extra || el("div", {})]);
+}
+
+/* ============================================================ Chat panes */
+const MAX_CHAT_PANES = 4;
+
+function makeChatPane(avatar, { conversationId = newId(), messages = [] } = {}) {
+  return {
+    id: newId(),
+    avatar,
+    conversationId,
+    messages,
+    streaming: false,
+    abortController: null,
+    dom: {},
+    greetedConversationId: null,
+    greetingStarted: false,
+  };
+}
+
+function ensureChatPanes() {
+  if (!state.chatPanes.length && state.currentAvatar) {
+    state.chatPanes = [makeChatPane(state.currentAvatar, { conversationId: state.conversationId, messages: state.messages })];
+    state.activePaneId = state.chatPanes[0].id;
+  }
+  if (state.chatPanes.length && !state.chatPanes.some((p) => p.id === state.activePaneId)) {
+    state.activePaneId = state.chatPanes[0].id;
+  }
+  syncLegacyChatState(activePane());
+  return state.chatPanes;
+}
+
+function activePane() {
+  return state.chatPanes.find((p) => p.id === state.activePaneId) || state.chatPanes[0] || null;
+}
+
+function setActivePane(pane) {
+  if (!pane) return;
+  state.activePaneId = pane.id;
+  syncLegacyChatState(pane);
+  dom.main?.querySelectorAll(".chat-pane").forEach((node) => {
+    node.classList.toggle("active", node.dataset.pane === pane.id);
+  });
+}
+
+function syncLegacyChatState(pane = activePane()) {
+  if (!pane) {
+    state.currentAvatar = null;
+    state.conversationId = newId();
+    state.messages = [];
+    refreshStreamingState();
+    return;
+  }
+  state.currentAvatar = pane.avatar;
+  state.conversationId = pane.conversationId;
+  state.messages = pane.messages;
+  refreshStreamingState();
+}
+
+function refreshStreamingState() {
+  state.streaming = state.chatPanes.some((p) => p.streaming);
+  abortController = activePane()?.abortController || null;
+}
+
+function anyChatStreaming() {
+  return state.chatPanes.some((p) => p.streaming);
+}
+
+function stopAllChatStreams() {
+  for (const pane of state.chatPanes) {
+    pane.abortController?.abort();
+  }
+  abortController = null;
+  state.streaming = false;
+}
+
+function selfSplitEnabled() {
+  return Boolean(state.user && state.chatPanes.length && state.chatPanes.every((p) => p.avatar?.id === state.user.id));
+}
+
+function splitLayoutClass() {
+  if (state.chatPanes.length <= 1) return "single";
+  if (state.chatLayout === "horizontal") return "horizontal";
+  if (state.chatLayout === "grid") return "grid";
+  return "vertical";
 }
 
 /* ============================================================ Explore view */
@@ -491,9 +586,12 @@ function buildAvatarCard(av) {
 }
 
 async function startChatWith(av) {
+  if (anyChatStreaming()) return;
   state.currentAvatar = av;
-  state.conversationId = newId();
-  state.messages = [];
+  const pane = makeChatPane(av);
+  state.chatPanes = [pane];
+  state.activePaneId = pane.id;
+  syncLegacyChatState(pane);
   state.view = "chat";
   renderView();
   await refreshConversations();
@@ -501,7 +599,8 @@ async function startChatWith(av) {
 
 /* ============================================================ Chat view */
 function renderChat() {
-  if (!state.currentAvatar) {
+  ensureChatPanes();
+  if (!state.chatPanes.length || !state.currentAvatar) {
     const header = viewHeader("채팅", "탐색에서 아바타를 골라 대화를 시작하세요");
     dom.main.append(
       header,
@@ -518,7 +617,24 @@ function renderChat() {
     return;
   }
 
-  const av = state.currentAvatar;
+  if (!selfSplitEnabled() && state.chatPanes.length > 1) {
+    const pane = activePane();
+    state.chatPanes = pane ? [pane] : [];
+    if (pane) state.activePaneId = pane.id;
+  }
+
+  const panes = ensureChatPanes();
+  const av = activePane()?.avatar || state.currentAvatar;
+  const controls = selfSplitEnabled() ? renderSplitControls() : null;
+  if (panes.length > 1) {
+    const header = viewHeader("내 아바타 병렬 세션", "최대 4개의 독립 대화를 동시에 실행합니다.", controls);
+    const grid = el("div", { class: `chat-workbench ${splitLayoutClass()}` }, panes.map((pane, index) => renderChatPane(pane, { compact: true, index })));
+    dom.main.append(header, grid);
+    panes.forEach((pane) => maybeGreet(pane));
+    return;
+  }
+
+  const pane = panes[0];
   // Elevated viewers (owner or trusted user) run tools; everyone else is
   // read-only and gets the "읽기전용" tag. `elevated` comes from the avatar
   // detail (GET /api/avatars/:id) so trusted users aren't mislabeled.
@@ -530,53 +646,175 @@ function renderChat() {
       el("div", { class: "ca-handle", text: `@${av.username}${elevated ? "" : " · 읽기전용"}` }),
     ]),
   ]);
-  const newChatBtn = el("button", { class: "ghost-sm", type: "button", text: "새 대화", onclick: () => newChat() });
+  const actions = el("div", { class: "chat-head-actions" }, [
+    controls,
+    el("button", { class: "ghost-sm", type: "button", text: "새 대화", onclick: () => newChat(pane) }),
+  ]);
   const header = el("header", { class: "view-header chat-head" }, [
     el("div", { class: "header-left" }, [dom.railToggle, headerExtra]),
-    newChatBtn,
+    actions,
   ]);
-
-  dom.transcriptInner = el("div", { class: "transcript-inner" });
-  dom.transcript = el("div", { class: "transcript scroll-thin", role: "log", "aria-live": "polite", "aria-relevant": "additions" });
-  dom.transcript.append(dom.transcriptInner);
-  dom.transcript.addEventListener("scroll", updateScrollButton);
-
-  dom.scrollBtn = el("button", { class: "scroll-bottom rotate-down", type: "button", "aria-label": "맨 아래로", title: "맨 아래로", hidden: "", onclick: () => scrollToBottom(true) });
-  dom.scrollBtn.append(icon("send"));
-
-  dom.textarea = el("textarea", { name: "message", rows: "1", placeholder: `${av.displayName}에게 메시지…  (Enter 전송 · Shift+Enter 줄바꿈)`, "aria-label": "메시지 입력" });
-  dom.sendButton = el("button", { class: "send-button", type: "submit", "aria-label": "보내기", title: "보내기" });
-  dom.sendButton.append(icon("send"));
-  dom.composerBox = el("div", { class: "composer-box" }, [dom.textarea, dom.sendButton]);
-  const composerForm = el("form", {
-    class: "composer-form",
-    onsubmit: (e) => {
-      e.preventDefault();
-      if (state.streaming) stopStreaming();
-      else submitMessage();
-    },
-  }, [
-    dom.composerBox,
-    el("div", { class: "composer-hint" }, [
-      el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")]),
-      el("span", { id: "composer-state", text: "" }),
-    ]),
-  ]);
-  const composer = el("footer", { class: "composer" }, [el("div", { class: "composer-inner" }, [composerForm])]);
 
   // Chat content (header + transcript + composer) sits in its own column; the
   // capabilities panel sits beside it. `.main` stays a plain column (shared by
   // every view), so we fill it with a single row that holds both.
-  const chatCol = el("div", { class: "chat-col" }, [
-    header,
-    el("div", { class: "chat-body" }, [dom.transcript, dom.scrollBtn]),
+  const chatCol = renderChatPane(pane, { header });
+  dom.main.append(el("div", { class: "chat-layout" }, [chatCol, renderCapabilitiesPanel(av)]));
+  // Owner opening a fresh chat with their own avatar → the avatar greets first.
+  maybeGreet(pane);
+}
+
+function renderSplitControls() {
+  const disabled = anyChatStreaming();
+  const canAdd = selfSplitEnabled() && state.chatPanes.length < MAX_CHAT_PANES && !disabled;
+  const wrap = el("div", { class: "split-controls", role: "group", "aria-label": "분할 세션" });
+  const layoutBtn = (layout, ic, title) => {
+    const btn = el("button", {
+      class: `split-btn ${state.chatLayout === layout ? "active" : ""}`,
+      type: "button",
+      title,
+      "aria-label": title,
+      disabled,
+      onclick: () => {
+        if (anyChatStreaming()) return;
+        state.chatLayout = layout;
+        renderView();
+      },
+    });
+    btn.append(icon(ic));
+    wrap.append(btn);
+  };
+  layoutBtn("vertical", "columns", "좌우 분할");
+  layoutBtn("horizontal", "rows", "상하 분할");
+  layoutBtn("grid", "grid", "상하 좌우 분할");
+  const addBtn = el("button", {
+    class: "split-add",
+    type: "button",
+    title: "세션 추가",
+    "aria-label": "세션 추가",
+    disabled: canAdd ? null : "",
+    onclick: addChatPane,
+  });
+  addBtn.append(icon("plus"));
+  wrap.append(addBtn);
+  return wrap;
+}
+
+function renderChatPane(pane, { compact = false, index = 0, header = null } = {}) {
+  const av = pane.avatar;
+  const pdom = {};
+  pane.dom = pdom;
+
+  pdom.transcriptInner = el("div", { class: "transcript-inner" });
+  pdom.transcript = el("div", { class: "transcript scroll-thin", role: "log", "aria-live": "polite", "aria-relevant": "additions" });
+  pdom.transcript.append(pdom.transcriptInner);
+  pdom.transcript.addEventListener("scroll", () => updateScrollButton(pane));
+
+  pdom.scrollBtn = el("button", {
+    class: "scroll-bottom rotate-down",
+    type: "button",
+    "aria-label": "맨 아래로",
+    title: "맨 아래로",
+    hidden: "",
+    onclick: () => scrollToBottom(pane, true),
+  });
+  pdom.scrollBtn.append(icon("send"));
+
+  pdom.textarea = el("textarea", {
+    name: "message",
+    rows: "1",
+    placeholder: `${av.displayName}에게 메시지…`,
+    "aria-label": "메시지 입력",
+  });
+  pdom.sendButton = el("button", { class: "send-button", type: "submit", "aria-label": "보내기", title: "보내기" });
+  pdom.sendButton.append(icon("send"));
+  pdom.composerBox = el("div", { class: "composer-box" }, [pdom.textarea, pdom.sendButton]);
+  pdom.composerState = el("span", { class: "composer-state", text: "" });
+  const composerForm = el("form", {
+    class: "composer-form",
+    onsubmit: (e) => {
+      e.preventDefault();
+      setActivePane(pane);
+      if (pane.streaming) stopStreaming(pane);
+      else submitMessage(pane);
+    },
+  }, [
+    pdom.composerBox,
+    el("div", { class: "composer-hint" }, [
+      compact ? el("span", { text: `세션 ${index + 1}` }) : el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")]),
+      pdom.composerState,
+    ]),
+  ]);
+  const composer = el("footer", { class: "composer" }, [el("div", { class: "composer-inner" }, [composerForm])]);
+
+  const paneHeader = header || renderCompactPaneHeader(pane, index);
+  const chatCol = el("div", {
+    class: `chat-col chat-pane ${compact ? "compact" : ""} ${pane.id === state.activePaneId ? "active" : ""}`,
+    dataset: { pane: pane.id },
+    onclick: () => setActivePane(pane),
+  }, [
+    paneHeader,
+    el("div", { class: "chat-body" }, [pdom.transcript, pdom.scrollBtn]),
     composer,
   ]);
-  dom.main.append(el("div", { class: "chat-layout" }, [chatCol, renderCapabilitiesPanel(av)]));
-  wireComposer();
-  renderTranscript();
-  // Owner opening a fresh chat with their own avatar → the avatar greets first.
-  maybeGreet();
+
+  wireComposer(pane);
+  renderTranscript(pane);
+  return chatCol;
+}
+
+function renderCompactPaneHeader(pane, index) {
+  const av = pane.avatar;
+  const closeBtn = el("button", {
+    class: "msg-act",
+    type: "button",
+    "aria-label": "세션 닫기",
+    title: "세션 닫기",
+    disabled: state.chatPanes.length <= 1 || anyChatStreaming() ? "" : null,
+    onclick: (event) => {
+      event.stopPropagation();
+      closeChatPane(pane);
+    },
+  });
+  closeBtn.append(icon("close"));
+  const newBtn = el("button", {
+    class: "ghost-sm",
+    type: "button",
+    text: "새 대화",
+    disabled: pane.streaming ? "" : null,
+    onclick: (event) => {
+      event.stopPropagation();
+      newChat(pane);
+    },
+  });
+  return el("header", { class: "pane-head" }, [
+    el("div", { class: "pane-title" }, [
+      avatarNode(av, 30),
+      el("div", {}, [
+        el("strong", { text: `세션 ${index + 1}` }),
+        el("span", { text: av.alias || av.displayName }),
+      ]),
+    ]),
+    el("div", { class: "pane-actions" }, [newBtn, closeBtn]),
+  ]);
+}
+
+function addChatPane() {
+  if (!selfSplitEnabled() || state.chatPanes.length >= MAX_CHAT_PANES || anyChatStreaming()) return;
+  const avatar = activePane()?.avatar || state.currentAvatar || state.user;
+  const pane = makeChatPane(avatar);
+  state.chatPanes.push(pane);
+  state.activePaneId = pane.id;
+  syncLegacyChatState(pane);
+  renderView();
+}
+
+function closeChatPane(pane) {
+  if (state.chatPanes.length <= 1 || anyChatStreaming()) return;
+  state.chatPanes = state.chatPanes.filter((p) => p.id !== pane.id);
+  if (state.activePaneId === pane.id) state.activePaneId = state.chatPanes[0]?.id || null;
+  syncLegacyChatState(activePane());
+  renderView();
 }
 
 /**
@@ -780,66 +1018,78 @@ function invalidateSkillsCache(avatarId) {
   if (avatarId) delete state.skillsByAvatar[avatarId];
 }
 
-function wireComposer() {
-  const ta = dom.textarea;
+function wireComposer(pane) {
+  const pdom = pane.dom;
+  const ta = pdom.textarea;
   const autoGrow = () => {
     ta.style.height = "auto";
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
   };
   ta.addEventListener("input", () => {
     autoGrow();
-    updateSendState();
+    updateSendState(pane);
   });
   ta.addEventListener("keydown", (event) => {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
-      if (!state.streaming) submitMessage();
+      setActivePane(pane);
+      if (!pane.streaming) submitMessage(pane);
     }
   });
-  dom.composerBox.addEventListener("focusin", () => dom.composerBox.classList.add("focused"));
-  dom.composerBox.addEventListener("focusout", () => dom.composerBox.classList.remove("focused"));
+  pdom.composerBox.addEventListener("focusin", () => {
+    setActivePane(pane);
+    pdom.composerBox.classList.add("focused");
+  });
+  pdom.composerBox.addEventListener("focusout", () => pdom.composerBox.classList.remove("focused"));
   autoGrow();
-  updateSendState();
+  updateSendState(pane);
 }
 
-function updateSendState() {
-  const hasText = dom.textarea.value.trim().length > 0;
-  if (state.streaming) {
-    dom.sendButton.disabled = false;
-    dom.sendButton.classList.add("is-stop");
-    dom.sendButton.replaceChildren(icon("stop"));
+function updateSendState(pane = activePane()) {
+  const pdom = pane?.dom;
+  if (!pdom?.textarea || !pdom?.sendButton) return;
+  const hasText = pdom.textarea.value.trim().length > 0;
+  if (pane.streaming) {
+    pdom.sendButton.disabled = false;
+    pdom.sendButton.classList.add("is-stop");
+    pdom.sendButton.replaceChildren(icon("stop"));
   } else {
-    dom.sendButton.disabled = !hasText;
-    dom.sendButton.classList.remove("is-stop");
-    dom.sendButton.replaceChildren(icon("send"));
+    pdom.sendButton.disabled = !hasText;
+    pdom.sendButton.classList.remove("is-stop");
+    pdom.sendButton.replaceChildren(icon("send"));
   }
 }
 
-function newChat() {
-  if (state.streaming) return;
-  state.conversationId = newId();
-  state.messages = [];
-  renderTranscript();
+function newChat(pane = activePane()) {
+  if (!pane || pane.streaming) return;
+  pane.conversationId = newId();
+  pane.messages = [];
+  pane.greetedConversationId = null;
+  pane.greetingStarted = false;
+  setActivePane(pane);
+  renderTranscript(pane);
   renderConversations();
-  dom.textarea?.focus();
+  pane.dom.textarea?.focus();
   // Owner's own avatar greets first in the new empty conversation.
-  maybeGreet();
+  maybeGreet(pane);
 }
 
 /* ---------- transcript ---------- */
-function renderTranscript() {
-  dom.transcriptInner.replaceChildren();
-  if (!state.messages.length) {
-    dom.transcriptInner.append(renderChatEmpty());
-    updateScrollButton();
+function renderTranscript(pane = activePane()) {
+  const pdom = pane?.dom;
+  if (!pdom?.transcriptInner) return;
+  pdom.transcriptInner.replaceChildren();
+  if (!pane.messages.length) {
+    pdom.transcriptInner.append(renderChatEmpty(pane));
+    updateScrollButton(pane);
     return;
   }
-  state.messages.forEach((m, i) => dom.transcriptInner.append(buildMessageNode(m, i === state.messages.length - 1)));
-  scrollToBottom(true);
+  pane.messages.forEach((m, i) => pdom.transcriptInner.append(buildMessageNode(pane, m, i === pane.messages.length - 1)));
+  scrollToBottom(pane, true);
 }
 
-function renderChatEmpty() {
-  const av = state.currentAvatar;
+function renderChatEmpty(pane = activePane()) {
+  const av = pane?.avatar || state.currentAvatar;
   return el("div", { class: "empty-state" }, [
     avatarNode(av, 72),
     el("div", { class: "hero" }, [
@@ -849,24 +1099,24 @@ function renderChatEmpty() {
   ]);
 }
 
-function buildMessageNode(message, isLast) {
+function buildMessageNode(pane, message, isLast) {
   const isUser = message.role === "user";
   const wrap = el("div", { class: `message ${message.role}` });
   wrap.append(
     el("div", { class: "msg-role" }, [
       el("span", { class: "role-dot" }),
-      el("span", { text: isUser ? "나" : state.currentAvatar?.displayName || "아바타" }),
+      el("span", { text: isUser ? "나" : pane.avatar?.displayName || "아바타" }),
       message.createdAt ? el("time", { class: "msg-time", text: timeLabel(message.createdAt) }) : null,
     ]),
   );
   const bubble = el("div", { class: "bubble" });
   if (isUser) bubble.textContent = message.content;
   else renderAssistantInto(bubble, message);
-  wrap.append(bubble, buildMessageActions(message, isUser, isLast));
+  wrap.append(bubble, buildMessageActions(pane, message, isUser, isLast));
   return wrap;
 }
 
-function buildMessageActions(message, isUser, isLast) {
+function buildMessageActions(pane, message, isUser, isLast) {
   const row = el("div", { class: "msg-actions" });
   const copyBtn = el("button", { class: "msg-act", type: "button", "aria-label": "복사", title: "복사" });
   copyBtn.append(icon("copy"));
@@ -876,29 +1126,32 @@ function buildMessageActions(message, isUser, isLast) {
     const editBtn = el("button", { class: "msg-act", type: "button", "aria-label": "편집", title: "편집 후 다시 보내기" });
     editBtn.append(icon("edit"));
     editBtn.addEventListener("click", () => {
-      dom.textarea.value = message.content;
-      dom.textarea.dispatchEvent(new Event("input"));
-      dom.textarea.focus();
+      setActivePane(pane);
+      pane.dom.textarea.value = message.content;
+      pane.dom.textarea.dispatchEvent(new Event("input"));
+      pane.dom.textarea.focus();
     });
     row.append(editBtn);
   } else if (isLast) {
     const regenBtn = el("button", { class: "msg-act regen", type: "button", "aria-label": "다시 생성", title: "다시 생성" });
     regenBtn.append(icon("refresh"));
-    regenBtn.addEventListener("click", () => regenerate());
+    regenBtn.addEventListener("click", () => regenerate(pane));
     row.append(regenBtn);
   }
   return row;
 }
 
-function regenerate() {
-  if (state.streaming) return;
-  const roles = state.messages.map((m) => m.role);
+function regenerate(pane = activePane()) {
+  if (!pane || pane.streaming) return;
+  setActivePane(pane);
+  const roles = pane.messages.map((m) => m.role);
   const lastUser = roles.lastIndexOf("user");
   if (lastUser < 0) return;
-  const text = state.messages[lastUser].content;
-  state.messages = state.messages.slice(0, lastUser + 1);
-  renderTranscript();
-  streamChat(text, { regenerate: true });
+  const text = pane.messages[lastUser].content;
+  pane.messages = pane.messages.slice(0, lastUser + 1);
+  syncLegacyChatState(pane);
+  renderTranscript(pane);
+  streamChat(pane, text, { regenerate: true });
 }
 
 function renderAssistantInto(bubble, message) {
@@ -953,53 +1206,68 @@ function buildTable(response) {
   return wrap;
 }
 
-function isNearBottom() {
-  const t = dom.transcript;
+function isNearBottom(pane = activePane()) {
+  const t = pane?.dom?.transcript;
+  if (!t) return true;
   return t.scrollHeight - t.scrollTop - t.clientHeight < 120;
 }
-function scrollToBottom(force) {
-  if (force || isNearBottom()) dom.transcript.scrollTop = dom.transcript.scrollHeight;
-  updateScrollButton();
+function scrollToBottom(pane = activePane(), force) {
+  const t = pane?.dom?.transcript;
+  if (!t) return;
+  if (force || isNearBottom(pane)) t.scrollTop = t.scrollHeight;
+  updateScrollButton(pane);
 }
-function updateScrollButton() {
-  if (!dom.scrollBtn) return;
-  const t = dom.transcript;
+function updateScrollButton(pane = activePane()) {
+  const pdom = pane?.dom;
+  if (!pdom?.scrollBtn || !pdom?.transcript) return;
+  const t = pdom.transcript;
   const scrollable = t.scrollHeight - t.clientHeight > 40;
-  dom.scrollBtn.hidden = !(scrollable && !isNearBottom());
+  pdom.scrollBtn.hidden = !(scrollable && !isNearBottom(pane));
 }
 
 /* ---------- sending / streaming ---------- */
-async function submitMessage() {
-  const message = dom.textarea.value.trim();
-  if (!message || state.streaming || !state.currentAvatar) return;
-  if (!state.messages.length) dom.transcriptInner.replaceChildren();
-  dom.transcriptInner.querySelectorAll(".msg-act.regen").forEach((b) => b.remove());
+async function submitMessage(pane = activePane()) {
+  if (!pane) return;
+  setActivePane(pane);
+  const pdom = pane.dom;
+  const message = pdom.textarea.value.trim();
+  if (!message || pane.streaming || !pane.avatar) return;
+  if (!pane.messages.length) pdom.transcriptInner.replaceChildren();
+  pdom.transcriptInner.querySelectorAll(".msg-act.regen").forEach((b) => b.remove());
   const userMsg = { role: "user", content: message, createdAt: new Date().toISOString() };
-  state.messages.push(userMsg);
-  dom.transcriptInner.append(buildMessageNode(userMsg, false));
-  dom.textarea.value = "";
-  dom.textarea.style.height = "auto";
-  scrollToBottom(true);
-  await streamChat(message, { isNewConversation: state.messages.length === 1 });
+  pane.messages.push(userMsg);
+  syncLegacyChatState(pane);
+  pdom.transcriptInner.append(buildMessageNode(pane, userMsg, false));
+  pdom.textarea.value = "";
+  pdom.textarea.style.height = "auto";
+  scrollToBottom(pane, true);
+  await streamChat(pane, message, { isNewConversation: pane.messages.length === 1 });
 }
 
 // When the owner opens a fresh chat with their OWN avatar, let the avatar speak
 // first: it greets and reports any pending info requests. Only fires on an empty
 // brand-new conversation (no typed message yet), and never while streaming.
-async function maybeGreet() {
-  if (state.streaming) return;
-  if (!state.currentAvatar || !state.user) return;
-  if (state.currentAvatar.id !== state.user.id) return;
-  if (state.messages.length) return;
-  dom.transcriptInner.replaceChildren();
-  await streamChat("", { isNewConversation: true, greeting: true });
+async function maybeGreet(pane = activePane()) {
+  if (!pane || pane.streaming || pane.greetingStarted) return;
+  if (state.chatPanes.length > 1) return;
+  if (!pane.avatar || !state.user) return;
+  if (pane.avatar.id !== state.user.id) return;
+  if (pane.messages.length) return;
+  if (pane.greetedConversationId === pane.conversationId) return;
+  pane.greetingStarted = true;
+  pane.greetedConversationId = pane.conversationId;
+  pane.dom.transcriptInner.replaceChildren();
+  await streamChat(pane, "", { isNewConversation: true, greeting: true });
+  pane.greetingStarted = false;
 }
 
-async function streamChat(message, { isNewConversation = false, regenerate = false, greeting = false } = {}) {
-  state.streaming = true;
-  updateSendState();
-  setComposerState("응답 대기 중…");
-  dom.transcript.setAttribute("aria-busy", "true");
+async function streamChat(pane, message, { isNewConversation = false, regenerate = false, greeting = false } = {}) {
+  pane.streaming = true;
+  setActivePane(pane);
+  refreshStreamingState();
+  updateSendState(pane);
+  setComposerState(pane, "응답 대기 중…");
+  pane.dom.transcript.setAttribute("aria-busy", "true");
   document.title = "● 응답 중 · Noah Almighty";
 
   const bubble = el("div", { class: "bubble" });
@@ -1024,13 +1292,14 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
   caret.hidden = true;
   bubble.append(activityDetails, mdNode, caret, statusRow, pluginChips);
   const wrap = el("div", { class: "message assistant" }, [
-    el("div", { class: "msg-role" }, [el("span", { class: "role-dot" }), el("span", { text: state.currentAvatar?.displayName || "아바타" })]),
+    el("div", { class: "msg-role" }, [el("span", { class: "role-dot" }), el("span", { text: pane.avatar?.displayName || "아바타" })]),
     bubble,
   ]);
-  dom.transcriptInner.append(wrap);
-  scrollToBottom(true);
+  pane.dom.transcriptInner.append(wrap);
+  scrollToBottom(pane, true);
 
   const live = {
+    pane,
     wrap, bubble, mdNode, caret, statusRow, statusLabel: statusRow.querySelector(".label"),
     pluginChips, activityEl, activityDetails, activitySummaryEl,
     runId: null,
@@ -1041,7 +1310,7 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
   const flush = () => {
     live.rafPending = false;
     live.mdNode.innerHTML = renderMarkdown(live.text);
-    scrollToBottom();
+    scrollToBottom(pane);
   };
   const scheduleFlush = () => {
     if (live.rafPending) return;
@@ -1049,14 +1318,22 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
     requestAnimationFrame(flush);
   };
 
-  abortController = new AbortController();
+  pane.abortController = new AbortController();
+  if (activePane()?.id === pane.id) abortController = pane.abortController;
   try {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
-      signal: abortController.signal,
-      body: JSON.stringify({ avatarId: state.currentAvatar.id, message, conversationId: state.conversationId, regenerate, greeting }),
+      signal: pane.abortController.signal,
+      body: JSON.stringify({
+        avatarId: pane.avatar.id,
+        message,
+        conversationId: pane.conversationId,
+        regenerate,
+        greeting,
+        multiSession: state.chatPanes.length > 1,
+      }),
     });
     if (response.status === 401) {
       handleSessionExpired();
@@ -1071,9 +1348,9 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
     if (error.name === "AbortError" || live.aborted) finalizeStopped(live);
     else {
       finalizeError(live, error.message || "스트리밍 오류가 발생했습니다.");
-      if (!live.text && dom.textarea && !dom.textarea.value) {
-        dom.textarea.value = message;
-        dom.textarea.dispatchEvent(new Event("input"));
+      if (!live.text && pane.dom.textarea && !pane.dom.textarea.value) {
+        pane.dom.textarea.value = message;
+        pane.dom.textarea.dispatchEvent(new Event("input"));
       }
     }
   } finally {
@@ -1082,13 +1359,14 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
       else if (!live.text) finalizeError(live, "연결이 종료되었습니다.");
       else finalizeStopped(live);
     }
-    state.streaming = false;
-    abortController = null;
-    updateSendState();
-    setComposerState("");
-    dom.transcript.setAttribute("aria-busy", "false");
-    document.title = "Noah Almighty";
-    dom.textarea.focus();
+    pane.streaming = false;
+    pane.abortController = null;
+    refreshStreamingState();
+    updateSendState(pane);
+    setComposerState(pane, "");
+    pane.dom.transcript?.setAttribute("aria-busy", "false");
+    if (!state.streaming) document.title = "Noah Almighty";
+    pane.dom.textarea?.focus();
   }
 }
 
@@ -1131,7 +1409,10 @@ function parseFrame(raw) {
 function handleSseEvent(event, data, live, scheduleFlush) {
   switch (event) {
     case "open":
-      if (data?.conversationId) state.conversationId = data.conversationId;
+      if (data?.conversationId) {
+        live.pane.conversationId = data.conversationId;
+        if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
+      }
       if (data?.runId) live.runId = data.runId;
       setStatus(live, "준비 중…");
       break;
@@ -1467,8 +1748,8 @@ function handlePluginEvent(live, data) {
 function cssEscape(v) {
   return String(v).replace(/["\\]/g, "\\$&");
 }
-function setComposerState(text) {
-  const n = document.querySelector("#composer-state");
+function setComposerState(pane, text) {
+  const n = pane?.dom?.composerState;
   if (n) n.textContent = text;
 }
 function cleanupLive(live) {
@@ -1540,7 +1821,8 @@ function finalizeDone(live, data) {
   live.done = true;
   cleanupLive(live);
   const message = data?.message || { role: "assistant", content: data?.response?.text || data?.response?.summary || live.text, response: data?.response, createdAt: new Date().toISOString() };
-  state.messages.push(message);
+  live.pane.messages.push(message);
+  if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
   // Re-render the bubble with the persisted record ABOVE the answer (matching
   // the live order): collapsed activity log → answer text.
   const collapsedActivity = collapseActivity(live.activityEl);
@@ -1548,8 +1830,8 @@ function finalizeDone(live, data) {
   live.bubble.className = "bubble";
   if (collapsedActivity) live.bubble.append(collapsedActivity);
   renderAssistantInto(live.bubble, message);
-  live.wrap.append(buildMessageActions(message, false, true));
-  scrollToBottom();
+  live.wrap.append(buildMessageActions(live.pane, message, false, true));
+  scrollToBottom(live.pane);
   refreshConversations();
 }
 function finalizeError(live, msg) {
@@ -1564,7 +1846,8 @@ function finalizeError(live, msg) {
   } else live.mdNode.remove();
   live.bubble.append(el("div", { class: "response-meta" }, [el("span", { class: "meta-badge runtime-error", text: "오류" })]));
   live.bubble.append(el("div", { class: "md", text: msg }));
-  state.messages.push({ role: "assistant", content: live.text ? `${live.text}\n\n${msg}` : msg, errored: true, response: { kind: "text", runtime: "error", summary: "오류", text: live.text || msg } });
+  live.pane.messages.push({ role: "assistant", content: live.text ? `${live.text}\n\n${msg}` : msg, errored: true, response: { kind: "text", runtime: "error", summary: "오류", text: live.text || msg } });
+  if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
 }
 function finalizeStopped(live) {
   if (live.done) return;
@@ -1575,10 +1858,11 @@ function finalizeStopped(live) {
   live.mdNode.innerHTML = renderMarkdown(live.text);
   enhanceCodeBlocks(live.mdNode);
   live.bubble.append(el("div", { class: "stream-status" }, [el("span", { class: "label", text: "· 사용자가 중지함" })]));
-  state.messages.push({ role: "assistant", content: live.text || "(중지됨)", response: { kind: "text", runtime: "claude", summary: "중지됨", text: live.text } });
+  live.pane.messages.push({ role: "assistant", content: live.text || "(중지됨)", response: { kind: "text", runtime: "claude", summary: "중지됨", text: live.text } });
+  if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
 }
-function stopStreaming() {
-  if (abortController) abortController.abort();
+function stopStreaming(pane = activePane()) {
+  pane?.abortController?.abort();
 }
 
 /* ============================================================ Conversations (rail) */
@@ -1602,7 +1886,7 @@ function renderConversations() {
     return;
   }
   for (const conv of state.conversations) {
-    const active = conv.id === state.conversationId;
+    const active = state.chatPanes.some((pane) => pane.conversationId === conv.id);
     const item = el("div", { class: `conv-item ${active ? "active" : ""}`, dataset: { id: conv.id } });
     const openBtn = el("button", { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv) }, [
       el("span", { class: "conv-name", text: conv.title || "새 대화" }),
@@ -1615,19 +1899,23 @@ function renderConversations() {
   }
 }
 async function selectConversation(conv) {
-  if (state.streaming) return;
+  if (anyChatStreaming()) return;
   closeRail();
-  state.conversationId = conv.id;
   try {
     const [msgRes, avRes] = await Promise.all([
       api(`/api/messages?conversationId=${encodeURIComponent(conv.id)}`),
       api(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`).catch(() => null),
     ]);
-    state.messages = msgRes.messages || [];
-    if (avRes?.avatar) state.currentAvatar = avRes.avatar;
-    else state.currentAvatar = { id: conv.avatarUserId, displayName: conv.avatarDisplayName, username: "", hasImage: true };
+    const avatar = avRes?.avatar || { id: conv.avatarUserId, displayName: conv.avatarDisplayName, username: "", hasImage: true };
+    const pane = makeChatPane(avatar, { conversationId: conv.id, messages: msgRes.messages || [] });
+    state.chatPanes = [pane];
+    state.activePaneId = pane.id;
+    syncLegacyChatState(pane);
   } catch {
-    state.messages = [];
+    const pane = makeChatPane({ id: conv.avatarUserId, displayName: conv.avatarDisplayName, username: "", hasImage: true }, { conversationId: conv.id, messages: [] });
+    state.chatPanes = [pane];
+    state.activePaneId = pane.id;
+    syncLegacyChatState(pane);
   }
   state.view = "chat";
   renderView();
@@ -1641,7 +1929,8 @@ async function deleteConversation(conv) {
     /* ignore */
   }
   state.conversations = state.conversations.filter((c) => c.id !== conv.id);
-  if (conv.id === state.conversationId) newChat();
+  const pane = state.chatPanes.find((p) => p.conversationId === conv.id);
+  if (pane) newChat(pane);
   else renderConversations();
 }
 
@@ -2819,7 +3108,7 @@ async function loadAdminSystem() {
 
 /* ============================================================ Lifecycle */
 async function logout() {
-  abortController?.abort();
+  stopAllChatStreams();
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch {
@@ -2828,6 +3117,8 @@ async function logout() {
   sessionExpired = false;
   state.user = null;
   state.currentAvatar = null;
+  state.chatPanes = [];
+  state.activePaneId = null;
   state.messages = [];
   state.conversations = [];
   renderAuth("login");

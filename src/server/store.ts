@@ -1161,6 +1161,13 @@ export class Store {
     return Boolean(row && row.owner_user_id === ownerId);
   }
 
+  getConversationAvatarId(ownerId: string, conversationId: string): string | null {
+    const row = this.db
+      .prepare("SELECT avatar_user_id FROM conversations WHERE id = ? AND owner_user_id = ?")
+      .get(conversationId, ownerId) as { avatar_user_id: string } | undefined;
+    return row?.avatar_user_id ?? null;
+  }
+
   touchConversation(
     ownerId: string,
     conversationId: string,

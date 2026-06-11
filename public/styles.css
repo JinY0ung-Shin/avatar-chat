@@ -3000,6 +3000,166 @@ tbody tr:hover td {
   color: var(--muted);
 }
 
+.chat-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: none;
+}
+
+.split-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.split-btn,
+.split-add {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 7px;
+}
+.split-btn:hover:not(:disabled),
+.split-add:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.split-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-strong);
+  color: var(--accent-strong);
+}
+.split-btn svg,
+.split-add svg {
+  width: 17px;
+  height: 17px;
+}
+.split-add {
+  border-left-color: var(--line);
+}
+
+.chat-workbench {
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-3);
+  gap: var(--s-3);
+  background: var(--bg);
+}
+.chat-workbench.vertical {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+}
+.chat-workbench.horizontal {
+  display: grid;
+  grid-template-rows: repeat(auto-fit, minmax(0, 1fr));
+}
+.chat-workbench.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.chat-pane.compact {
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.chat-pane.compact.active {
+  border-color: var(--accent-soft-strong);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  min-width: 0;
+}
+.pane-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.pane-title > div {
+  min-width: 0;
+}
+.pane-title strong,
+.pane-title span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-title strong {
+  font-size: var(--t-sm);
+}
+.pane-title span {
+  font-size: 11px;
+  color: var(--muted);
+}
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: none;
+}
+.chat-pane.compact .transcript {
+  padding: var(--s-3);
+}
+.chat-pane.compact .transcript-inner {
+  max-width: none;
+  gap: var(--s-3);
+}
+.chat-pane.compact .composer {
+  padding: var(--s-2) var(--s-3) var(--s-3);
+}
+.chat-pane.compact .composer-inner {
+  max-width: none;
+}
+.chat-pane.compact .composer-box {
+  border-radius: var(--r-md);
+}
+.chat-pane.compact .composer textarea {
+  max-height: 112px;
+  font-size: var(--t-sm);
+}
+.chat-pane.compact .empty-state {
+  margin-top: var(--s-5);
+  gap: var(--s-3);
+  text-align: center;
+  justify-items: center;
+}
+.chat-pane.compact .empty-state .avatar-img {
+  width: 48px !important;
+  height: 48px !important;
+  font-size: 20px !important;
+}
+.chat-pane.compact .empty-state .hero h3 {
+  font-size: var(--t-lg);
+}
+.chat-pane.compact .empty-state .hero p {
+  font-size: var(--t-sm);
+}
+.chat-pane.compact .md {
+  font-size: var(--t-base);
+}
+
 /* Settings */
 .settings-body {
   max-width: 720px;
@@ -3366,6 +3526,28 @@ tbody tr:hover td {
 @media (max-width: 860px) {
   .main {
     height: 100%;
+  }
+  .chat-head-actions {
+    gap: var(--s-1);
+  }
+  .chat-head-actions .ghost-sm {
+    display: none;
+  }
+  .split-controls {
+    max-width: 100%;
+  }
+  .split-btn,
+  .split-add {
+    width: 30px;
+    height: 30px;
+  }
+  .chat-workbench.vertical,
+  .chat-workbench.horizontal,
+  .chat-workbench.grid {
+    grid-template-columns: 1fr;
+    grid-template-rows: none;
+    grid-auto-rows: minmax(360px, 1fr);
+    overflow-y: auto;
   }
   .avatar-grid {
     grid-template-columns: 1fr;

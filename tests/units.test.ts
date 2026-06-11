@@ -733,6 +733,16 @@ describe("store agent session resume", () => {
     const other = store.createUser({ username: "other", displayName: "Other", password: "password123" });
     expect(store.getAgentSessionId(other.id, "conv-3")).toBeNull();
   });
+
+  it("returns a conversation avatar only to its owner", () => {
+    const { store, ownerId } = makeStore();
+    const avatar = store.createUser({ username: "avatar", displayName: "Avatar", password: "password123" });
+    store.touchConversation(ownerId, "conv-4", avatar.id, "hi");
+    const other = store.createUser({ username: "viewer", displayName: "Viewer", password: "password123" });
+
+    expect(store.getConversationAvatarId(ownerId, "conv-4")).toBe(avatar.id);
+    expect(store.getConversationAvatarId(other.id, "conv-4")).toBeNull();
+  });
 });
 
 describe("interpretResult", () => {

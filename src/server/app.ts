@@ -911,6 +911,16 @@ export function createApp(services = createServices()) {
     }
 
     const conversationId = safeString(req.body?.conversationId) || crypto.randomUUID();
+    const multiSession = req.body?.multiSession === true;
+    if (multiSession && req.user!.id !== avatar.id) {
+      apiError(res, 403, "분할 세션은 내 아바타에서만 사용할 수 있습니다.");
+      return;
+    }
+    const existingAvatarId = store.getConversationAvatarId(req.user!.id, conversationId);
+    if (existingAvatarId && existingAvatarId !== avatar.id) {
+      apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
+      return;
+    }
     const runId = crypto.randomUUID();
     openRun(runId, req.user!.id);
     const regenerate = req.body?.regenerate === true;

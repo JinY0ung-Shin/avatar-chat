@@ -532,6 +532,32 @@ describe("noah-almighty platform", () => {
     await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "hi" }).expect(403);
   });
 
+  it("keeps split sessions owner-only and refuses cross-avatar conversation reuse", async () => {
+    const app = testApp();
+    const { agent, user } = await newUser(app, "split-owner");
+    await agent.patch("/api/me").send({ published: true }).expect(200);
+
+    const other = request.agent(app);
+    const otherRes = await signup(other, "split-other").expect(201);
+    await other.patch("/api/me").send({ published: true }).expect(200);
+
+    await agent
+      .post("/api/chat/stream")
+      .send({ avatarId: otherRes.body.user.id, message: "hi", multiSession: true })
+      .expect(403);
+
+    const first = await agent
+      .post("/api/chat/stream")
+      .send({ avatarId: user.id, conversationId: "split-conv-1", message: "내 작업" })
+      .expect(200);
+    expect(parseSse(first.text).find((f) => f.event === "done")).toBeTruthy();
+
+    await agent
+      .post("/api/chat/stream")
+      .send({ avatarId: otherRes.body.user.id, conversationId: "split-conv-1", message: "섞기" })
+      .expect(409);
+  });
+
   it("regenerate replaces the last reply instead of duplicating the turn", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "sam");
