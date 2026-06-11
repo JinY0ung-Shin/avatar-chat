@@ -959,14 +959,28 @@ describe("buildPrompt", () => {
     expect(p).toContain("skills/<name>/SKILL.md");
   });
 
-  it("nudges the owner to set up a knowledge repo only on a greeting, not mid-conversation", () => {
+  it("gives standing create_repo guidance mid-conversation when no repo is connected", () => {
     const mid = buildPrompt(
-      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false }),
+      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false, gitTokenSet: true }),
       0,
     );
+    // Standing (every owner turn, not just greeting): the avatar is told it HAS
+    // create_repo and to use it directly instead of manual setup / scaffold-first.
+    expect(mid).toContain("mcp__repo__create_repo");
+    expect(mid).toContain("수동 절차를 안내하지 말고");
+    // The greeting-only proactive suggestion is NOT injected mid-conversation.
     expect(mid).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
-    // The repo-management capability blurb is also withheld until a repo is connected.
+    // The manage-capability blurb is withheld until a repo is connected.
     expect(mid).not.toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
+  });
+
+  it("guides the owner to set a git token mid-conversation when none is set and no repo exists", () => {
+    const mid = buildPrompt(
+      req({ viewerIsOwner: true, knowledgeRepoConfigured: false, gitTokenSet: false }),
+      0,
+    );
+    expect(mid).toContain("git 토큰도 설정돼 있지 않습니다");
+    expect(mid).toContain("git 자격증명");
   });
 
   it("shows the repo-management capability to the owner once a repo is connected", () => {
@@ -1233,7 +1247,9 @@ describe("repo tools (knowledge-repo management)", () => {
     });
     const res = await call(tools, "list_files", {});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("지식 저장소가 설정되지 않았습니다");
+    expect(res.content[0].text).toContain("지식 저장소가 아직 연결되어 있지 않습니다");
+    // The error redirects to create_repo, not manual setup.
+    expect(res.content[0].text).toContain("create_repo");
   });
 
   it("writes, scaffolds, lists, reads, then commits & pushes", async () => {

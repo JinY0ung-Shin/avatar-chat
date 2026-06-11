@@ -108,7 +108,7 @@ async function createRemoteRepo(
 
 const OWNER_ONLY = "이 도구는 아바타 소유자만 사용할 수 있습니다.";
 const NO_REPO =
-  "지식 저장소가 설정되지 않았습니다. GitHub에 Claude plugin marketplace 형식의 개인 지식 저장소를 만들거나 기존 repo를 설정에서 먼저 연결해 주세요.";
+  "지식 저장소가 아직 연결되어 있지 않습니다. 소유자라면 먼저 `create_repo` 도구로 새 저장소를 만들어 연결한 뒤 다시 시도하세요. (이미 쓰던 repo가 있으면 설정에서 직접 연결할 수도 있습니다.) 수동 설정 절차를 안내하지 말고 `create_repo`를 사용하세요.";
 
 /**
  * Build the knowledge-repo management tool definitions bound to a single
@@ -282,7 +282,7 @@ export function buildRepoTools(
   }
   const createTool = tool(
     "create_repo",
-    "설정된 git 토큰으로 새 GitHub 지식 저장소(기본 비공개)를 만들고 곧바로 연결한다. 지식 저장소가 아직 없을 때만 쓸 수 있다. 생성 후 scaffold_skill→write_file→commit으로 내용을 채운다. (소유자 전용)",
+    "**소유자가 지식 저장소를 만들거나 연결해 달라고 하면 이 도구를 사용한다** — 수동 설정을 안내하거나 scaffold_skill을 먼저 시도하지 말 것. 설정된 git 토큰으로 새 GitHub 지식 저장소(기본 비공개, Claude plugin marketplace 템플릿으로 초기화)를 만들고 곧바로 연결한다. 지식 저장소가 아직 없을 때 쓰며, 저장소 이름만 있으면 된다. 생성 후 scaffold_skill→write_file→commit으로 내용을 채운다. (소유자 전용)",
     {
       name: z.string().describe("새 저장소 이름 (영문/숫자와 - _ . 만, 예: my-knowledge)"),
       private: z.boolean().optional().describe("비공개 여부 (기본 true)"),

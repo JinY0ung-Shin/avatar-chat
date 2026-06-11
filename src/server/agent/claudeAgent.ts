@@ -665,13 +665,23 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         : "지금 대화 상대는 이 아바타의 **소유자**입니다.",
     );
     const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
-    // The owner can have the avatar manage its own knowledge repo from chat —
-    // only meaningful once a repo is connected (otherwise the repo tools no-op).
     if (knowledgeRepoConfigured) {
+      // The owner can have the avatar manage its connected knowledge repo.
       lines.push(
         "당신은 자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리할 수 있습니다: `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit`. " +
           "여기에 업무 지식·스킬을 정리해 두면 다음 대화부터 당신이 그것을 사용합니다. " +
           "write_file/scaffold_skill 변경은 **commit 하기 전까지는 푸시되지 않으니**, 작업 단위가 끝났거나 소유자가 요청하면 commit 하세요.",
+      );
+    } else {
+      // No repo yet → the `create_repo` tool IS available (exposed only in this
+      // state). STANDING guidance on every owner turn — not just the greeting —
+      // so the avatar actually uses it when asked to "make a repo" instead of
+      // giving manual setup steps or calling scaffold_skill first (which fails
+      // without a connected repo, and previously misled the avatar).
+      lines.push(
+        request.gitTokenSet
+          ? "아직 지식 저장소가 없습니다. **당신에게는 `mcp__repo__create_repo` 도구가 있습니다.** 소유자가 저장소를 만들거나 연결해 달라고 하면 — 수동 절차를 안내하지 말고 — 저장소 이름만 받아 `create_repo`로 직접 비공개 repo를 만들어 연결하세요(git 토큰은 이미 설정돼 있습니다). 저장소가 연결되기 전에는 `scaffold_skill`/`write_file`/`commit`이 실패하므로, 반드시 `create_repo`를 **먼저** 호출하세요."
+          : "아직 지식 저장소가 없고 git 토큰도 설정돼 있지 않습니다. 소유자가 저장소 생성을 원하면 먼저 설정 → **git 자격증명**에 토큰을 등록해 달라고 안내하세요(등록되면 `mcp__repo__create_repo`로 직접 만들 수 있습니다). 저장소가 연결되기 전에는 `scaffold_skill`/`write_file`/`commit`이 실패합니다.",
       );
     }
     if (secretNames.length > 0) {
