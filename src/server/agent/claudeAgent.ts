@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import path from "node:path";
 import type { AppConfig, AgentRequest, AgentResponse, PluginRoot } from "../types.js";
 import type { Store } from "../store.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
@@ -6,6 +7,16 @@ import type { AgentEvents } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
 import logger from "../logger.js";
 import { knownHostsPath } from "../sshTrust.js";
+import {
+  DEFAULT_HEX_SSH_TOOL_POLICY,
+  HEX_SSH_SERVER_NAME,
+  allowedHexSshToolsForViewer,
+  extractHexSshToolName,
+  isHexSshToolAllowed,
+  viewerClassForAgentRequest,
+  type HexSshToolPolicy,
+  type HexSshViewerClass,
+} from "../hexSshPolicy.js";
 
 const agentLogger = logger.child({ module: "agent" });
 
@@ -550,6 +561,8 @@ export function buildPreToolUseHook(
   readOnlyTools: string[],
   headless: boolean,
   autoApprove: boolean,
+  hexSshViewerClass: HexSshViewerClass = "colleague",
+  hexSshPolicy: HexSshToolPolicy = DEFAULT_HEX_SSH_TOOL_POLICY,
 ) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
@@ -576,6 +589,17 @@ export function buildPreToolUseHook(
       return answer.behavior === "completed"
         ? hookDeny(formatQuestionAnswer(answer.result))
         : hookDeny("사용자가 질문에 답하지 않았습니다(취소됨). 답변 없이 진행하세요.");
+    }
+
+    const hexSshTool = extractHexSshToolName(toolName);
+    if (hexSshTool) {
+      if (isHexSshToolAllowed(toolName, hexSshViewerClass, hexSshPolicy)) {
+        return hookAllow();
+      }
+      const reason = `현재 권한에서는 hex-ssh 도구 '${hexSshTool}' 사용이 허용되지 않습니다.`;
+      events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+      agentLogger.info({ toolName, agentId, viewerClass: hexSshViewerClass }, "hex-ssh tool blocked");
+      return hookDeny(reason);
     }
 
     // Read-only / knowledge / orchestration tools run without a prompt.
@@ -702,11 +726,11 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     // A plain colleague stays read-only.
     if (!request.elevated) {
       lines.push(
-        "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep)와 제공된 정보 요청 도구만 사용하세요.",
+        "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep), 허용된 원격 SSH 조회 도구, 제공된 정보 요청 도구만 사용하세요.",
       );
     } else {
       lines.push(
-        "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 요청에 따라 필요한 도구를 사용해 작업을 수행하세요.",
+        "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.",
       );
     }
   }
@@ -762,10 +786,22 @@ export async function runClaudeAgent(
   // Tool-permission level: the owner OR a designated trusted user. Distinct from
   // viewerIsOwner, which still gates the owner-only knowledge inbox + greeting.
   const elevated = viewerIsOwner || Boolean(request.elevated);
+  const hexSshViewerClass = viewerClassForAgentRequest({ viewerIsOwner, elevated, headless });
+  const hexSshPolicy = store.getHexSshToolPolicy();
+  const hexSshAllowedTools = allowedHexSshToolsForViewer(hexSshPolicy, hexSshViewerClass);
   const agentStart = Date.now();
 
   agentLogger.info(
-    { avatarId: request.avatar.id, viewerUserId: request.viewerUserId, headless, elevated, autoApprove, model: config.anthropicModel ?? undefined },
+    {
+      avatarId: request.avatar.id,
+      viewerUserId: request.viewerUserId,
+      headless,
+      elevated,
+      autoApprove,
+      hexSshViewerClass,
+      hexSshAllowedToolCount: hexSshAllowedTools.length,
+      model: config.anthropicModel ?? undefined,
+    },
     "agent run started",
   );
 
@@ -826,29 +862,29 @@ export async function runClaudeAgent(
   const ownerSecrets = store.getUserSecrets(request.avatar.id);
   // hex-ssh (remote-server access MCP, ssh2-based — no system ssh binary needed):
   // registered explicitly (not via a plugin's .mcp.json) so we can inject the
-  // owner's per-user SSH identity. Only when the owner has stored a private key;
-  // without one the server is keyless and useless, so we skip it. Auto-approval
-  // of `mcp__*` tools means key-holders can run remote-ssh without a prompt
-  // (intended: the avatar fully acts for its owner). `safe` mode still blocks
-  // dangerous patterns (rm -rf /, mkfs, fork bombs, …).
-  const sshServers = ownerSecrets.SSH_PRIVATE_KEY
+  // owner's per-user SSH identity. The policy proxy filters tools/list before
+  // the model sees it, and the PreToolUse hook below enforces the same allowlist
+  // again on tools/call.
+  const hexSshProxyPath = path.join(process.cwd(), "scripts", "hex-ssh-policy-proxy.mjs");
+  const sshActive = Boolean(ownerSecrets.SSH_PRIVATE_KEY && hexSshAllowedTools.length > 0);
+  const sshServers = sshActive
     ? {
-        "hex-ssh": {
+        [HEX_SSH_SERVER_NAME]: {
           type: "stdio" as const,
-          // Installed into the image at build time (see Dockerfile) and exposed
-          // under this fixed name — NOT `npx`-downloaded at runtime, which fails
-          // on a closed network where the public npm registry is unreachable.
-          // Overridable for dev where the global bin isn't present.
-          command: config.hexSshCommand,
+          command: process.execPath,
+          args: [hexSshProxyPath],
           // KNOWN_HOSTS_PATH points hex-ssh at the owner's persistent trust file
           // (under the data volume). hex-ssh re-reads it on every connection, so
           // the `mcp__ssh_trust__*` tools can add a host mid-session and it takes
           // effect immediately. ownerSecrets may also carry ALLOWED_HOST_FINGER-
-          // PRINTS, etc.; later keys win, so put ours first.
+          // PRINTS, etc. Policy/proxy env is written after owner secrets so it
+          // cannot be overridden from the user's secret tab.
           env: {
             REMOTE_SSH_MODE: "safe",
             KNOWN_HOSTS_PATH: knownHostsPath(request.avatar.id, config),
             ...ownerSecrets,
+            HEX_SSH_UPSTREAM_COMMAND: config.hexSshCommand,
+            HEX_SSH_ALLOWED_TOOLS: hexSshAllowedTools.join(","),
           },
         },
       }
@@ -880,7 +916,7 @@ export async function runClaudeAgent(
       [KNOWLEDGE_SERVER_NAME]: knowledgeServer,
       [REPO_SERVER_NAME]: repoServer,
       ...sshServers,
-      ...(ownerSecrets.SSH_PRIVATE_KEY ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
+      ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
     },
     maxTurns: config.maxTurns,
     // Isolation mode: load NO filesystem settings, so we never leak the operator's
@@ -934,7 +970,21 @@ export async function runClaudeAgent(
   // straight into the events sink and await the user.
   if (events) {
     options.hooks = {
-      PreToolUse: [{ hooks: [buildPreToolUseHook(events, elevated, config.readOnlyTools, headless, autoApprove)] }],
+      PreToolUse: [
+        {
+          hooks: [
+            buildPreToolUseHook(
+              events,
+              elevated,
+              config.readOnlyTools,
+              headless,
+              autoApprove,
+              hexSshViewerClass,
+              hexSshPolicy,
+            ),
+          ],
+        },
+      ],
     };
   }
 

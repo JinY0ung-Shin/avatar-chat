@@ -32,6 +32,7 @@ import { runAgentStream } from "./agent/index.js";
 import { awaitResponse, closeRun, openRun, submitResponse, CANCELLED } from "./agent/runRegistry.js";
 import { executeRoutineJob, isRoutineRunning } from "./scheduler.js";
 import { workspaceDirFor } from "./workspace.js";
+import { HEX_SSH_TOOL_INFOS, parseHexSshToolPolicy } from "./hexSshPolicy.js";
 
 export interface AppServices {
   config: AppConfig;
@@ -1207,8 +1208,28 @@ export function createApp(services = createServices()) {
         // surprised that pasting a token has no effect.
         apiKeyOverride: Boolean(config.anthropicApiKey),
         readOnlyTools: config.readOnlyTools,
+        hexSshTools: HEX_SSH_TOOL_INFOS,
+        hexSshToolPolicy: store.getHexSshToolPolicy(),
       },
     });
+  });
+
+  app.put("/api/admin/hex-ssh-policy", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const policy = parseHexSshToolPolicy(req.body?.policy);
+    if (!policy) {
+      apiError(res, 400, "hex-ssh 정책 형식이 올바르지 않습니다.");
+      return;
+    }
+    const saved = store.setHexSshToolPolicy(policy);
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "set_hex_ssh_policy",
+      status: "success",
+      detail: `owner=${saved.owner.length}, trusted=${saved.trusted.length}, colleague=${saved.colleague.length}`,
+    });
+    logger.warn({ actorId: req.user!.id, policy: saved }, "hex-ssh tool policy changed");
+    res.json({ policy: saved });
   });
 
   // Store/replace the Claude subscription token (`claude setup-token` output).

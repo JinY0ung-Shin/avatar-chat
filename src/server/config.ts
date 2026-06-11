@@ -46,9 +46,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // Generous default: tool/skill/subagent-heavy replies blow past a handful of
     // turns. Override via MAX_TURNS; values <1 fall back to the default.
     maxTurns: Math.max(1, Number(env("MAX_TURNS", "1000")) || 1000),
-    // Installed into the image at build time and exposed under this fixed name
-    // (see Dockerfile). Override with HEX_SSH_COMMAND when the global bin isn't
-    // available (e.g. local dev).
+    // Upstream command used by the app's hex-ssh policy proxy. Installed into
+    // the image at build time and exposed under this fixed name (see Dockerfile).
+    // Override with HEX_SSH_COMMAND when the global bin isn't available.
     hexSshCommand: env("HEX_SSH_COMMAND", "hex-ssh-mcp"),
     ...overrides,
     // dbPath + agentSessionsDir derive from dataDir; recompute if dataDir was

@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -49,6 +49,7 @@ import {
   scaffoldSkill,
   readFile as readKnowledgeFile,
   writeFile as writeKnowledgeFile,
+  writeRepoTemplate,
 } from "../src/server/knowledgeRepo.js";
 import {
   buildRepoTools,
@@ -71,6 +72,11 @@ import {
 } from "../src/server/agent/sshTrustTools.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
 import type { Plugin } from "../src/server/types.js";
+import {
+  DEFAULT_HEX_SSH_TOOL_POLICY,
+  normalizeHexSshToolPolicy,
+  type HexSshToolPolicy,
+} from "../src/server/hexSshPolicy.js";
 
 let tempDir: string;
 
@@ -81,6 +87,45 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
+
+function rpcClient(proc: ChildProcessWithoutNullStreams) {
+  let nextId = 1;
+  let buffer = "";
+  const pending = new Map<number, (value: Record<string, unknown>) => void>();
+  proc.stdout.setEncoding("utf8");
+  proc.stdout.on("data", (chunk: string) => {
+    buffer += chunk;
+    while (true) {
+      const newline = buffer.indexOf("\n");
+      if (newline < 0) break;
+      const line = buffer.slice(0, newline).trim();
+      buffer = buffer.slice(newline + 1);
+      if (!line) continue;
+      const message = JSON.parse(line) as Record<string, unknown>;
+      const id = typeof message.id === "number" ? message.id : null;
+      if (id !== null) {
+        pending.get(id)?.(message);
+        pending.delete(id);
+      }
+    }
+  });
+  return {
+    request(method: string, params?: Record<string, unknown>) {
+      const id = nextId++;
+      proc.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
+      return new Promise<Record<string, unknown>>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          pending.delete(id);
+          reject(new Error(`RPC timeout for ${method}`));
+        }, 1000);
+        pending.set(id, (message) => {
+          clearTimeout(timer);
+          resolve(message);
+        });
+      });
+    },
+  };
+}
 
 /** Initialise a local git repo at `dir` with a single committed file and return its HEAD sha. */
 function gitInit(dir: string, seedFile = "README.md"): string {
@@ -762,6 +807,18 @@ describe("store app config (app-wide secrets)", () => {
     // Re-open the same DB with a different secret: the stored value can't decrypt.
     expect(makeStore("secretB").getAppSecret("claude_oauth_token")).toBeNull();
   });
+
+  it("stores the hex-ssh tool policy as app config", () => {
+    const store = makeStore();
+    expect(store.getHexSshToolPolicy()).toEqual(DEFAULT_HEX_SSH_TOOL_POLICY);
+    const policy: HexSshToolPolicy = {
+      owner: ["ssh-read-lines", "remote-ssh"],
+      trusted: ["ssh-read-lines"],
+      colleague: [],
+    };
+    expect(store.setHexSshToolPolicy(policy)).toEqual(policy);
+    expect(store.getHexSshToolPolicy()).toEqual(policy);
+  });
 });
 
 describe("store agent session resume", () => {
@@ -1365,6 +1422,54 @@ describe("repo tools (knowledge-repo management)", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("writeRepoTemplate seeds a valid Claude marketplace + README, idempotently", async () => {
+    const dir = path.join(tempDir, "rt-template");
+    fs.mkdirSync(dir, { recursive: true });
+    expect(await writeRepoTemplate(dir, "owner/my-knowledge")).toBe(true);
+    const mp = JSON.parse(fs.readFileSync(path.join(dir, ".claude-plugin/marketplace.json"), "utf8"));
+    expect(mp).toMatchObject({ name: "my-knowledge", plugins: [] });
+    expect(fs.existsSync(path.join(dir, "README.md"))).toBe(true);
+    // No-op once a manifest exists — never clobbers an established repo.
+    expect(await writeRepoTemplate(dir, "owner/my-knowledge")).toBe(false);
+  });
+
+  it("create_repo seeds the marketplace template as the repo's initial content", async () => {
+    const s = setupNoRepo("rt-create-seed");
+    s.store.setGitToken(s.ownerId, "tok");
+    // A bare remote that already has a `main` branch — mimics GitHub auto_init.
+    const remote = path.join(tempDir, "rt-create-seed", "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" });
+    const seed = path.join(tempDir, "rt-create-seed", "seed");
+    gitInit(seed);
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("branch", "-M", "main");
+    g("remote", "add", "origin", remote);
+    g("push", "-q", "origin", "main");
+    // The API returns the local bare remote as full_name, so the post-create
+    // clone → seed → push runs fully offline against it.
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 201,
+        statusText: "Created",
+        json: async () => ({ full_name: remote, default_branch: "main", private: true }),
+      })),
+    );
+    try {
+      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain("초기화");
+      // The template landed on the remote as a real commit.
+      const verify = path.join(tempDir, "rt-create-seed", "verify");
+      execFileSync("git", ["clone", "-q", remote, verify], { stdio: "pipe" });
+      const mp = JSON.parse(fs.readFileSync(path.join(verify, ".claude-plugin/marketplace.json"), "utf8"));
+      expect(mp.plugins).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("routine jobs", () => {
@@ -1616,6 +1721,32 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
 
+  it("filters hex-ssh MCP tools before the blanket MCP auto-allow", async () => {
+    const policy = normalizeHexSshToolPolicy({
+      owner: ["remote-ssh", "ssh-read-lines"],
+      trusted: ["ssh-read-lines"],
+      colleague: [],
+    });
+    const trustedHook = buildPreToolUseHook({}, true, READONLY, false, true, "trusted", policy);
+    const read = await trustedHook(
+      { tool_name: "mcp__hex-ssh__ssh-read-lines", tool_input: { host: "prod", filePath: "/var/log/app.log" }, tool_use_id: "hex1" },
+      "hex1",
+    );
+    const exec = await trustedHook(
+      { tool_name: "mcp__hex-ssh__remote-ssh", tool_input: { host: "prod", command: "id" }, tool_use_id: "hex2" },
+      "hex2",
+    );
+    expect(read.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(exec.hookSpecificOutput.permissionDecision).toBe("deny");
+
+    const ownerHook = buildPreToolUseHook({}, true, READONLY, false, true, "owner", policy);
+    const ownerExec = await ownerHook(
+      { tool_name: "mcp__hex-ssh__remote-ssh", tool_input: { host: "prod", command: "id" }, tool_use_id: "hex3" },
+      "hex3",
+    );
+    expect(ownerExec.hookSpecificOutput.permissionDecision).toBe("allow");
+  });
+
   it("auto-allows TaskCreate orchestration without prompting", async () => {
     let prompted = false;
     const hook = buildPreToolUseHook(
@@ -1632,6 +1763,75 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
 
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(prompted).toBe(false);
+  });
+});
+
+describe("hex-ssh policy proxy", () => {
+  it("filters tools/list and blocks disallowed tools/call", async () => {
+    const upstreamPath = path.join(tempDir, "fake-hex-upstream.mjs");
+    fs.writeFileSync(
+      upstreamPath,
+      `
+process.stdin.setEncoding("utf8");
+let buffer = "";
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  while (true) {
+    const newline = buffer.indexOf("\\n");
+    if (newline < 0) break;
+    const line = buffer.slice(0, newline).trim();
+    buffer = buffer.slice(newline + 1);
+    if (!line) continue;
+    const msg = JSON.parse(line);
+    if (msg.method === "tools/list") {
+      process.stdout.write(JSON.stringify({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: {
+          tools: [
+            { name: "ssh-read-lines", inputSchema: { type: "object" } },
+            { name: "remote-ssh", inputSchema: { type: "object" } }
+          ]
+        }
+      }) + "\\n");
+    } else if (msg.method === "tools/call") {
+      process.stdout.write(JSON.stringify({
+        jsonrpc: "2.0",
+        id: msg.id,
+        result: { content: [{ type: "text", text: "called " + msg.params.name }] }
+      }) + "\\n");
+    } else {
+      process.stdout.write(JSON.stringify({ jsonrpc: "2.0", id: msg.id, result: {} }) + "\\n");
+    }
+  }
+});
+`,
+    );
+    const proxyPath = path.join(process.cwd(), "scripts", "hex-ssh-policy-proxy.mjs");
+    const proxy = spawn(process.execPath, [proxyPath], {
+      env: {
+        ...process.env,
+        HEX_SSH_UPSTREAM_COMMAND: `${process.execPath} ${upstreamPath}`,
+        HEX_SSH_ALLOWED_TOOLS: "ssh-read-lines",
+      },
+    });
+    try {
+      const rpc = rpcClient(proxy);
+      const listed = await rpc.request("tools/list", {});
+      const result = listed.result as { tools: { name: string }[] };
+      expect(result.tools.map((tool) => tool.name)).toEqual(["ssh-read-lines"]);
+
+      const allowed = await rpc.request("tools/call", { name: "ssh-read-lines", arguments: {} });
+      expect(JSON.stringify(allowed.result)).toContain("called ssh-read-lines");
+
+      const blocked = await rpc.request("tools/call", { name: "remote-ssh", arguments: {} });
+      expect(blocked.error).toMatchObject({
+        code: -32603,
+        message: "hex-ssh tool 'remote-ssh' is not allowed by policy",
+      });
+    } finally {
+      proxy.kill();
+    }
   });
 });
 

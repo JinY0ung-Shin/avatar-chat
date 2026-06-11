@@ -8,6 +8,11 @@ import {
   verifyPassword,
 } from "./auth.js";
 import { decryptSecret, encryptSecret } from "./crypto.js";
+import {
+  HEX_SSH_POLICY_CONFIG_KEY,
+  normalizeHexSshToolPolicy,
+  type HexSshToolPolicy,
+} from "./hexSshPolicy.js";
 import logger from "./logger.js";
 import type {
   AdminUserSummary,
@@ -647,6 +652,25 @@ export class Store {
   /** Remove an app-wide secret. No-op if it doesn't exist. */
   deleteAppSecret(key: string): void {
     this.db.prepare("DELETE FROM app_config WHERE key = ?").run(key);
+  }
+
+  /** Deployment-wide hex-ssh tool allowlist, grouped by viewer class. */
+  getHexSshToolPolicy(): HexSshToolPolicy {
+    const raw = this.getAppSecret(HEX_SSH_POLICY_CONFIG_KEY);
+    if (!raw) {
+      return normalizeHexSshToolPolicy(null);
+    }
+    try {
+      return normalizeHexSshToolPolicy(JSON.parse(raw));
+    } catch {
+      return normalizeHexSshToolPolicy(null);
+    }
+  }
+
+  setHexSshToolPolicy(policy: HexSshToolPolicy): HexSshToolPolicy {
+    const normalized = normalizeHexSshToolPolicy(policy);
+    this.setAppSecret(HEX_SSH_POLICY_CONFIG_KEY, JSON.stringify(normalized));
+    return normalized;
   }
 
   /** Set the commit author identity used for knowledge-repo commits. */

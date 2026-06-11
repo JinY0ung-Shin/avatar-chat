@@ -434,10 +434,37 @@ describe("noah-almighty platform", () => {
     expect(res.body.system.observedModel).toBeNull();
     expect(res.body.system.authMode).toBe("subscription");
     expect(Array.isArray(res.body.system.readOnlyTools)).toBe(true);
+    expect(res.body.system.hexSshTools.map((t: { name: string }) => t.name)).toContain("remote-ssh");
+    expect(res.body.system.hexSshToolPolicy.owner).toContain("remote-ssh");
+    expect(res.body.system.hexSshToolPolicy.trusted).toContain("ssh-read-lines");
+    expect(res.body.system.hexSshToolPolicy.trusted).not.toContain("remote-ssh");
 
     const member = request.agent(app);
     await signup(member, "peon").expect(201);
     await member.get("/api/admin/system").expect(403);
+  });
+
+  it("lets admins manage the hex-ssh tool policy and blocks members", async () => {
+    const app = testApp();
+    const { agent: admin } = await newUser(app, "boss");
+    const { agent: member } = await newUser(app, "member1");
+
+    const policy = {
+      owner: ["ssh-read-lines", "remote-ssh"],
+      trusted: ["ssh-read-lines"],
+      colleague: [],
+    };
+    const saved = await admin
+      .put("/api/admin/hex-ssh-policy")
+      .send({ policy })
+      .expect(200);
+    expect(saved.body.policy).toEqual(policy);
+
+    const system = await admin.get("/api/admin/system").expect(200);
+    expect(system.body.system.hexSshToolPolicy).toEqual(policy);
+
+    await admin.put("/api/admin/hex-ssh-policy").send({ policy: { owner: [] } }).expect(400);
+    await member.put("/api/admin/hex-ssh-policy").send({ policy }).expect(403);
   });
 
   it("reports configuredModel as null when ANTHROPIC_MODEL is unset", async () => {

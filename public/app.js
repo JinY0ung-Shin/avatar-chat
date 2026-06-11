@@ -3856,6 +3856,7 @@ function renderAdminSystem() {
       el("div", { class: "sys-grid" }, rows),
     ]),
     buildSubscriptionCard(sys),
+    buildHexSshPolicyCard(sys),
   ]);
 }
 
@@ -3947,6 +3948,88 @@ function buildSubscriptionCard(sys) {
   ]);
   card.append(form);
   return card;
+}
+
+function buildHexSshPolicyCard(sys) {
+  const tools = Array.isArray(sys.hexSshTools) ? sys.hexSshTools : [];
+  const policy = sys.hexSshToolPolicy || {};
+  const roles = [
+    { key: "owner", label: "소유자" },
+    { key: "trusted", label: "신뢰 동료" },
+    { key: "colleague", label: "일반 동료" },
+  ];
+  const categoryLabels = {
+    read: "조회",
+    execute: "실행",
+    write: "수정·전송",
+    session: "세션",
+  };
+  const form = el("form", {
+    class: "hex-policy-form",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const nextPolicy = Object.fromEntries(roles.map((role) => [role.key, []]));
+      formEl.querySelectorAll("input[data-role][data-tool]").forEach((input) => {
+        if (input.checked) nextPolicy[input.dataset.role].push(input.dataset.tool);
+      });
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api("/api/admin/hex-ssh-policy", { method: "PUT", body: JSON.stringify({ policy: nextPolicy }) });
+        notify("SSH 도구 정책을 저장했습니다.", "ok");
+        await loadAdminSystem();
+        renderView();
+      } catch (err) {
+        btn.disabled = false;
+        notify(`저장 실패: ${err.message}`);
+      }
+    },
+  });
+
+  const grid = el("div", { class: "hex-policy-grid" });
+  grid.append(
+    el("div", { class: "hex-policy-head muted", text: "도구" }),
+    ...roles.map((role) => el("div", { class: "hex-policy-head", text: role.label })),
+  );
+  for (const tool of tools) {
+    grid.append(
+      el("div", { class: "hex-policy-tool" }, [
+        el("strong", { text: tool.label || tool.name }),
+        el("span", { class: "muted mono", text: tool.name }),
+        el("span", { class: `tag ${tool.category === "read" ? "read" : "write"}`, text: categoryLabels[tool.category] || tool.category }),
+      ]),
+    );
+    for (const role of roles) {
+      const checked = Array.isArray(policy[role.key]) && policy[role.key].includes(tool.name);
+      const label = el("label", { class: "hex-policy-check" }, [
+        el("input", {
+          type: "checkbox",
+          checked,
+          dataset: { role: role.key, tool: tool.name },
+          "aria-label": `${role.label} ${tool.label || tool.name}`,
+        }),
+      ]);
+      grid.append(label);
+    }
+  }
+
+  form.append(
+    grid,
+    el("div", { class: "form-actions" }, [
+      el("button", { class: "primary", type: "submit", text: "정책 저장" }),
+    ]),
+  );
+
+  return el("section", { class: "settings-card" }, [
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "SSH 도구 정책" }),
+        el("p", { class: "muted", text: "역할별로 hex-ssh MCP 도구 노출과 실행을 제한합니다." }),
+      ]),
+    ]),
+    form,
+  ]);
 }
 
 function sysRow(label, valueNode) {

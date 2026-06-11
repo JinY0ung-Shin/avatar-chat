@@ -102,10 +102,13 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   Owner, non-headless chat prompts include only those secret NAMES so the avatar knows
   what is configured; values still never enter the prompt or generic Bash env.
 - **hex-ssh (remote SSH) is an APP-registered MCP, not a plugin one.** `claudeAgent` adds it to
-  `mcpServers` ONLY when the owner stored an `SSH_PRIVATE_KEY` secret, injecting ALL owner secrets as
-  the subprocess `env` (so the key is invisible to the agent's own Bash/`env`). Installed into the
-  image at build time and run via `config.hexSshCommand` (`HEX_SSH_COMMAND`, default `hex-ssh-mcp`) —
-  NOT a runtime `npx` download, which fails on the closed corporate network.
+  `mcpServers` only when the owner stored `SSH_PRIVATE_KEY` AND the current viewer class has at least
+  one allowed hex-ssh tool. The registered command is `scripts/hex-ssh-policy-proxy.mjs`, which runs
+  the upstream command from `config.hexSshCommand` (`HEX_SSH_COMMAND`, default `hex-ssh-mcp`) and
+  filters `tools/list` by `HEX_SSH_ALLOWED_TOOLS` before the model sees the schema. The PreToolUse
+  hook separately blocks disallowed `mcp__hex-ssh__*` calls, so the proxy is token/UX optimization and
+  the hook is the final gate. The upstream package is installed into the image at build time, not via
+  runtime `npx`.
 - **App-managed MCP servers shadow same-named plugin ones.** MCP config is keyed by server name, so a
   plugin's bundled `.mcp.json` declaring `hex-ssh` (keyless) can win over the app's keyed one.
   `stripManagedMcpServers` (plugins.ts, `APP_MANAGED_MCP_SERVERS`) removes those names from each
