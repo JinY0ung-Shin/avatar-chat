@@ -51,7 +51,7 @@ function text(message: string, isError = false) {
 
 const OWNER_ONLY = "이 도구는 아바타 소유자만 사용할 수 있습니다.";
 const NO_REPO =
-  "지식 저장소가 설정되지 않았습니다. 설정에서 먼저 저장소를 연결해 주세요.";
+  "지식 저장소가 설정되지 않았습니다. GitHub에 Claude plugin marketplace 형식의 개인 지식 저장소를 만들거나 기존 repo를 설정에서 먼저 연결해 주세요.";
 
 /**
  * Build the knowledge-repo management tool definitions bound to a single

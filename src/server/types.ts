@@ -255,6 +255,12 @@ export interface AgentRequest {
    * Values are never included. Set only for owner, non-headless chat prompts.
    */
   secretNames?: string[];
+  /**
+   * Whether the avatar owner has connected a personal knowledge repo. Filled by
+   * the server before building the Claude prompt; undefined means "unknown" for
+   * direct unit calls.
+   */
+  knowledgeRepoConfigured?: boolean;
 }
 
 /**

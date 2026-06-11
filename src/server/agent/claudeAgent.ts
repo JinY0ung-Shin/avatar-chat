@@ -645,6 +645,15 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "여기에 업무 지식·스킬을 정리해 두면 다음 대화부터 당신이 그것을 사용합니다. " +
         "write_file/scaffold_skill 변경은 **commit 하기 전까지는 푸시되지 않으니**, 작업 단위가 끝났거나 소유자가 요청하면 commit 하세요.",
     );
+    if (request.knowledgeRepoConfigured === false) {
+      lines.push(
+        "아직 지식 저장소가 연결되어 있지 않습니다. 새 대화를 시작하거나 소유자가 업무 지식·장기 기억·스킬 축적을 기대하는 요청을 하면, " +
+          "먼저 GitHub에 개인 지식 저장소를 만들거나 기존 repo를 설정의 지식 저장소에 연결하라고 짧게 안내하세요. " +
+          "이 저장소는 Claude plugin marketplace 형식이어야 합니다: 루트에 `.claude-plugin/marketplace.json`을 두고, " +
+          "각 스킬은 `skills/<name>/SKILL.md`와 `skills/<name>/.claude-plugin/plugin.json`을 갖춰야 합니다. " +
+          "저장소가 연결되기 전에는 repo 도구를 호출하지 말고, 연결된 뒤 새 스킬은 가능하면 `scaffold_skill`로 만들라고 안내하세요.",
+      );
+    }
     if (secretNames.length > 0) {
       lines.push(
         "설정의 **시크릿** 탭에 등록된 환경변수 이름: " +
@@ -894,8 +903,16 @@ export async function runClaudeAgent(
 
   const promptRequest: AgentRequest =
     viewerIsOwner && !headless
-      ? { ...request, secretNames: store.listUserSecretNames(request.avatar.id) }
-      : { ...request, secretNames: [] };
+      ? {
+          ...request,
+          secretNames: store.listUserSecretNames(request.avatar.id),
+          knowledgeRepoConfigured: Boolean(store.getKnowledgeRepo(request.avatar.id).repo),
+        }
+      : {
+          ...request,
+          secretNames: [],
+          knowledgeRepoConfigured: Boolean(store.getKnowledgeRepo(request.avatar.id).repo),
+        };
 
   for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {
     if (!isRecord(message)) {

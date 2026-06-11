@@ -829,6 +829,34 @@ describe("buildPrompt", () => {
     expect(p).toContain('"신진영"님');
   });
 
+  it("guides the owner to create or connect a knowledge repo when none is configured", () => {
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false }),
+      0,
+    );
+    expect(p).toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    expect(p).toContain("GitHub에 개인 지식 저장소를 만들거나 기존 repo를 설정의 지식 저장소에 연결");
+    expect(p).toContain("Claude plugin marketplace 형식");
+    expect(p).toContain(".claude-plugin/marketplace.json");
+    expect(p).toContain("skills/<name>/SKILL.md");
+    expect(p).toContain("skills/<name>/.claude-plugin/plugin.json");
+    expect(p).toContain("연결된 뒤 새 스킬은 가능하면 `scaffold_skill`로 만들라고 안내하세요");
+  });
+
+  it("does not show the missing knowledge repo guidance to colleagues or headless runs", () => {
+    const colleague = buildPrompt(
+      req({ viewerIsOwner: false, viewerName: "김철수", knowledgeRepoConfigured: false }),
+      0,
+    );
+    expect(colleague).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+
+    const headless = buildPrompt(
+      req({ viewerIsOwner: true, headless: true, knowledgeRepoConfigured: false }),
+      0,
+    );
+    expect(headless).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+  });
+
   it("names the colleague in the prompt for a non-owner viewer", () => {
     const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
     expect(p).toContain("동료");
