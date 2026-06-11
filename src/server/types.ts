@@ -260,6 +260,12 @@ export interface AgentRequest {
    * direct unit calls.
    */
   knowledgeRepoConfigured?: boolean;
+  /**
+   * Whether the avatar owner has stored a git token. Lets the greeting offer to
+   * create the knowledge repo directly (via the repo tool) vs. asking the owner
+   * to set a token first. Set only for owner, non-headless chat prompts.
+   */
+  gitTokenSet?: boolean;
 }
 
 /**

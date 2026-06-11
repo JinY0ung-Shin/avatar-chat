@@ -640,19 +640,14 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         ? `지금 대화 상대는 이 아바타의 **소유자** "${name}"님입니다.`
         : "지금 대화 상대는 이 아바타의 **소유자**입니다.",
     );
-    // The owner can have the avatar manage its own knowledge repo from chat.
-    lines.push(
-      "당신은 자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리할 수 있습니다: `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit`. " +
-        "여기에 업무 지식·스킬을 정리해 두면 다음 대화부터 당신이 그것을 사용합니다. " +
-        "write_file/scaffold_skill 변경은 **commit 하기 전까지는 푸시되지 않으니**, 작업 단위가 끝났거나 소유자가 요청하면 commit 하세요.",
-    );
-    if (request.knowledgeRepoConfigured === false) {
+    const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
+    // The owner can have the avatar manage its own knowledge repo from chat —
+    // only meaningful once a repo is connected (otherwise the repo tools no-op).
+    if (knowledgeRepoConfigured) {
       lines.push(
-        "아직 지식 저장소가 연결되어 있지 않습니다. 새 대화를 시작하거나 소유자가 업무 지식·장기 기억·스킬 축적을 기대하는 요청을 하면, " +
-          "먼저 GitHub에 개인 지식 저장소를 만들거나 기존 repo를 설정의 지식 저장소에 연결하라고 짧게 안내하세요. " +
-          "이 저장소는 Claude plugin marketplace 형식이어야 합니다: 루트에 `.claude-plugin/marketplace.json`을 두고, " +
-          "각 스킬은 `skills/<name>/SKILL.md`와 `skills/<name>/.claude-plugin/plugin.json`을 갖춰야 합니다. " +
-          "저장소가 연결되기 전에는 repo 도구를 호출하지 말고, 연결된 뒤 새 스킬은 가능하면 `scaffold_skill`로 만들라고 안내하세요.",
+        "당신은 자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리할 수 있습니다: `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit`. " +
+          "여기에 업무 지식·스킬을 정리해 두면 다음 대화부터 당신이 그것을 사용합니다. " +
+          "write_file/scaffold_skill 변경은 **commit 하기 전까지는 푸시되지 않으니**, 작업 단위가 끝났거나 소유자가 요청하면 commit 하세요.",
       );
     }
     if (secretNames.length > 0) {
@@ -662,15 +657,39 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
           ". 값은 볼 수 없으며 출력하거나 추측하지 마세요. 필요한 MCP 도구에는 서버가 해당 값을 별도로 주입합니다.",
       );
     }
-    // Pending requests are surfaced ONLY when the owner opens a fresh chat
-    // (greeting). On every other owner turn we stay quiet so the reminder
-    // isn't re-injected mid-conversation.
-    if (request.greeting) {
+    // SSH (hex-ssh) tools are registered only when the owner has stored an
+    // `SSH_PRIVATE_KEY` secret. When it's absent the avatar has no SSH tools, so
+    // tell it how the owner enables them — that's how it answers "I want SSH".
+    if (!secretNames.includes("SSH_PRIVATE_KEY")) {
       lines.push(
-        openRequestCount > 0
-          ? `대화를 시작합니다. 먼저 소유자에게 짧게 인사한 뒤, **pending_requests로 대기 중인 정보 요청(${openRequestCount}건)을 확인해** 번호를 붙여 간결하게 보고하세요. 그런 다음 무엇을 도와줄지 물어보세요.`
-          : "대화를 시작합니다. 소유자에게 짧게 인사하고 무엇을 도와줄지 물어보세요. (대기 중인 정보 요청은 없으니 굳이 언급하지 마세요.)",
+        "원격 **SSH 도구는 아직 비활성화** 상태입니다(이 대화에는 SSH 실행·파일전송 도구가 없습니다). " +
+          "사용자가 SSH 접속을 원하면, 설정 → **시크릿** 탭에 `SSH_PRIVATE_KEY`라는 이름으로 개인 키(OpenSSH/PEM)를 등록하라고 안내하세요. " +
+          "등록하면 다음 대화부터 SSH 도구가 활성화되고, 이후 접속할 호스트의 키는 `mcp__ssh_trust__add_host`로 신뢰 등록할 수 있습니다. " +
+          "(키 값은 서버에서 SSH 도구에만 주입되며 당신에게는 노출되지 않습니다.)",
       );
+    }
+    // Greeting-only nudges, surfaced ONLY when the owner opens a fresh chat so
+    // they aren't re-injected mid-conversation: pending info requests, plus a
+    // one-time suggestion to set up a knowledge repo when none is connected yet.
+    if (request.greeting) {
+      const greetingParts = [
+        openRequestCount > 0
+          ? `대화를 시작합니다. 먼저 소유자에게 짧게 인사한 뒤, **pending_requests로 대기 중인 정보 요청(${openRequestCount}건)을 확인해** 번호를 붙여 간결하게 보고하세요.`
+          : "대화를 시작합니다. 소유자에게 짧게 인사하세요. (대기 중인 정보 요청은 없으니 굳이 언급하지 마세요.)",
+      ];
+      if (!knowledgeRepoConfigured) {
+        greetingParts.push(
+          request.gitTokenSet
+            ? "또한 아직 지식 저장소가 연결되어 있지 않습니다. 업무 지식·장기 기억·스킬을 축적하려면 개인 지식 저장소가 필요합니다. " +
+                "git 토큰이 이미 설정돼 있으니, 원하시면 제가 `mcp__repo__create_repo`로 비공개 GitHub 저장소를 만들어 바로 연결해 드릴 수 있다고 안내하세요. " +
+                "사용자가 원하면 저장소 이름을 받아 create_repo로 만든 뒤 `scaffold_skill`→`write_file`→`commit` 순으로 채우세요. (이미 쓰던 repo가 있으면 설정의 지식 저장소에 직접 연결해도 됩니다.)"
+            : "또한 아직 지식 저장소가 연결되어 있지 않고, git 토큰도 설정돼 있지 않습니다. " +
+                "먼저 설정 → **git 자격증명**에 GitHub 토큰(repo 생성 권한)을 등록하라고 안내하세요. 등록되면 제가 `mcp__repo__create_repo`로 저장소를 만들어 연결해 드릴 수 있습니다. " +
+                "직접 만들고 싶다면 GitHub에 개인 repo를 만들어 설정의 지식 저장소에 연결해도 됩니다. 이 저장소는 Claude plugin marketplace 형식이어야 합니다: 루트에 `.claude-plugin/marketplace.json`을 두고, 각 스킬은 `skills/<name>/SKILL.md`와 `skills/<name>/.claude-plugin/plugin.json`을 갖춰야 합니다.",
+        );
+      }
+      greetingParts.push("그런 다음 무엇을 도와줄지 물어보세요.");
+      lines.push(greetingParts.join(" "));
     }
   } else {
     const name = request.viewerName?.trim();
@@ -729,7 +748,9 @@ export async function runClaudeAgent(
   const { buildKnowledgeServer, KNOWLEDGE_SERVER_NAME, KNOWLEDGE_TOOL_NAMES } = await import(
     "./knowledgeTools.js"
   );
-  const { buildRepoServer, REPO_SERVER_NAME, REPO_TOOL_NAMES } = await import("./repoTools.js");
+  const { buildRepoServer, REPO_SERVER_NAME, REPO_TOOL_NAMES, REPO_CREATE_TOOL_NAME } = await import(
+    "./repoTools.js"
+  );
   const { buildSshTrustServer, SSH_TRUST_SERVER_NAME, SSH_TRUST_TOOL_NAMES } = await import(
     "./sshTrustTools.js"
   );
@@ -770,17 +791,26 @@ export async function runClaudeAgent(
   // safety boundary, mirroring the knowledge server above. The owner identity for
   // commits is resolved from the avatar's own user row (viewer == owner here).
   const ownerRow = store.getUserById(request.avatar.id);
-  const repoServer = buildRepoServer(store, {
-    avatarUserId: request.avatar.id,
-    owner: {
-      id: request.avatar.id,
-      username: ownerRow?.username ?? "",
-      displayName: ownerRow?.displayName ?? request.avatar.displayName,
-      alias: ownerRow?.alias ?? request.avatar.alias,
+  // Computed once and reused for the prompt (below). The repo-creation tool is
+  // exposed ONLY for an owner-driven, non-headless chat with NO repo yet — once
+  // one is connected, hiding it keeps the unused tool out of every prompt.
+  const knowledgeRepoConfigured = Boolean(store.getKnowledgeRepo(request.avatar.id).repo);
+  const allowRepoCreate = viewerIsOwner && !headless && !knowledgeRepoConfigured;
+  const repoServer = buildRepoServer(
+    store,
+    {
+      avatarUserId: request.avatar.id,
+      owner: {
+        id: request.avatar.id,
+        username: ownerRow?.username ?? "",
+        displayName: ownerRow?.displayName ?? request.avatar.displayName,
+        alias: ownerRow?.alias ?? request.avatar.alias,
+      },
+      viewerIsOwner: viewerIsOwner && !headless,
+      config,
     },
-    viewerIsOwner: viewerIsOwner && !headless,
-    config,
-  });
+    { allowCreate: allowRepoCreate },
+  );
 
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
   // NOT owner-only: host fingerprints are public, and a viewer who can drive
@@ -835,6 +865,7 @@ export async function runClaudeAgent(
       ...config.readOnlyTools,
       ...KNOWLEDGE_TOOL_NAMES,
       ...REPO_TOOL_NAMES,
+      ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
       "TodoWrite",
@@ -922,12 +953,14 @@ export async function runClaudeAgent(
       ? {
           ...request,
           secretNames: store.listUserSecretNames(request.avatar.id),
-          knowledgeRepoConfigured: Boolean(store.getKnowledgeRepo(request.avatar.id).repo),
+          knowledgeRepoConfigured,
+          gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
         }
       : {
           ...request,
           secretNames: [],
-          knowledgeRepoConfigured: Boolean(store.getKnowledgeRepo(request.avatar.id).repo),
+          knowledgeRepoConfigured,
+          gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
         };
 
   for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {

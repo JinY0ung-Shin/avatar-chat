@@ -37,7 +37,11 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   (`knowledgeRepo.ts`). It's (a) auto-loaded as a plugin root in chat/skills/intro via
   `loadKnowledgeRepoRoots`/`knowledgeRepoSkillSources` (so its skills are usable), AND
   (b) edited by the avatar itself through the **owner-only** `mcp__repo__*` MCP server
-  (`agent/repoTools.ts`): list/read/write/scaffold/commit. There is NO settings file-editor
+  (`agent/repoTools.ts`): list/read/write/scaffold/commit, plus `create_repo` (creates a new
+  GitHub repo via `POST /user/repos` server-side using the stored git token, then connects it
+  with `setKnowledgeRepo`). `create_repo` is exposed **only when no repo is connected yet**
+  (`allowCreate` ← `!knowledgeRepoConfigured` in `claudeAgent.ts`) to keep the unused tool out
+  of the prompt once a repo exists; the manage tools are always present. There is NO settings file-editor
   and NO `/api/me/marketplace/*` routes — settings stores the repo location
   (`PUT /api/me/knowledge-repo`) plus an optional plugin subset (`knowledge_selected`
   column, `get/setKnowledgeSelected`, `PUT /api/me/knowledge-repo/selected`,
@@ -68,6 +72,17 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Git auth for clones uses `http.extraHeader` (see `gitAuthArgs`), never a
   token-in-URL — keeps the token out of `.git/config`. Scrub it from git error
   text before logging/returning (`scrubGitError`).
+- **The per-user git token NEVER reaches the agent's shell.** It's used only as a
+  per-invocation `http.extraHeader` on the app's OWN clone/push (`knowledgeRepo.ts`,
+  `syncPluginRepo`) and by the `mcp__repo__create_repo` GitHub-API call — all server-side.
+  It is NOT injected into the SDK subprocess env (`options.env`), so the agent's `gh`/`git`/Bash
+  have NO GitHub credential (the server-wide `GITHUB_TOKEN` fallback was removed). So the avatar
+  can't `gh repo create`; `create_repo` is the only bridge. The prompt surfaces `gitTokenSet`
+  (not the value) so the greeting offers `create_repo` when a token is set, else asks the owner
+  to set one (`buildPrompt`, fed from `claudeAgent.ts` promptRequest).
+- **The prompt tells the owner how to enable SSH when it's off.** `buildPrompt` adds an SSH
+  enablement note on owner, non-headless turns whenever `SSH_PRIVATE_KEY` isn't in `secretNames`
+  (hex-ssh registers only when that secret exists). Drops off once the key is stored.
 - Repo shorthand (`owner/repo`) resolves through `config.githubHost` (`GITHUB_HOST`,
   default `github.com`) for both plugin and knowledge-repo clones/pushes. Full
   `https://...` and `git@...` repo values bypass that default and are used as-is.

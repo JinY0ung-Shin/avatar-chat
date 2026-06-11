@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServices } from "../src/server/app.js";
 import {
   buildKnowledgeTools,
@@ -50,7 +50,12 @@ import {
   readFile as readKnowledgeFile,
   writeFile as writeKnowledgeFile,
 } from "../src/server/knowledgeRepo.js";
-import { buildRepoTools, REPO_SERVER_NAME, REPO_TOOL_NAMES } from "../src/server/agent/repoTools.js";
+import {
+  buildRepoTools,
+  REPO_CREATE_TOOL_NAME,
+  REPO_SERVER_NAME,
+  REPO_TOOL_NAMES,
+} from "../src/server/agent/repoTools.js";
 import {
   knownHostsPath,
   parseKnownHosts,
@@ -862,18 +867,77 @@ describe("buildPrompt", () => {
     expect(p).toContain('"신진영"님');
   });
 
-  it("guides the owner to create or connect a knowledge repo when none is configured", () => {
+  it("offers to create the knowledge repo via the repo tool on a greeting when a git token is set", () => {
     const p = buildPrompt(
-      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false }),
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        knowledgeRepoConfigured: false,
+        gitTokenSet: true,
+        greeting: true,
+      }),
       0,
     );
     expect(p).toContain("아직 지식 저장소가 연결되어 있지 않습니다");
-    expect(p).toContain("GitHub에 개인 지식 저장소를 만들거나 기존 repo를 설정의 지식 저장소에 연결");
-    expect(p).toContain("Claude plugin marketplace 형식");
+    expect(p).toContain("mcp__repo__create_repo");
+    // The pending-requests nudge composes into the same greeting line.
+    expect(p).toContain("그런 다음 무엇을 도와줄지 물어보세요");
+  });
+
+  it("guides the owner to set a git token first on a greeting when none is set", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        knowledgeRepoConfigured: false,
+        gitTokenSet: false,
+        greeting: true,
+      }),
+      0,
+    );
+    expect(p).toContain("git 토큰도 설정돼 있지 않습니다");
+    expect(p).toContain("git 자격증명");
+    // Falls back to the manual marketplace-format guidance when there's no token.
     expect(p).toContain(".claude-plugin/marketplace.json");
     expect(p).toContain("skills/<name>/SKILL.md");
-    expect(p).toContain("skills/<name>/.claude-plugin/plugin.json");
-    expect(p).toContain("연결된 뒤 새 스킬은 가능하면 `scaffold_skill`로 만들라고 안내하세요");
+  });
+
+  it("nudges the owner to set up a knowledge repo only on a greeting, not mid-conversation", () => {
+    const mid = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false }),
+      0,
+    );
+    expect(mid).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    // The repo-management capability blurb is also withheld until a repo is connected.
+    expect(mid).not.toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
+  });
+
+  it("shows the repo-management capability to the owner once a repo is connected", () => {
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: true }),
+      0,
+    );
+    expect(p).toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
+    expect(p).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+  });
+
+  it("tells the owner how to enable SSH tools when no SSH key is configured", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    expect(p).toContain("SSH 도구는 아직 비활성화");
+    expect(p).toContain("SSH_PRIVATE_KEY");
+    expect(p).toContain("mcp__ssh_trust__add_host");
+  });
+
+  it("omits the SSH enablement guidance once an SSH key is configured", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY"] }), 0);
+    expect(p).not.toContain("SSH 도구는 아직 비활성화");
+    // The key name still appears in the secret-names listing, not the nudge.
+    expect(p).toContain("SSH_PRIVATE_KEY");
+  });
+
+  it("does not show SSH enablement guidance to colleagues", () => {
+    const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
+    expect(p).not.toContain("SSH 도구는 아직 비활성화");
   });
 
   it("does not show the missing knowledge repo guidance to colleagues or headless runs", () => {
@@ -1191,6 +1255,115 @@ describe("repo tools (knowledge-repo management)", () => {
     execFileSync("git", ["clone", "-q", ctx.repo, verify], { stdio: "pipe" });
     expect(JSON.parse(fs.readFileSync(path.join(verify, ".mcp.json"), "utf8"))).toEqual(original);
     expect(fs.existsSync(path.join(verify, "note.md"))).toBe(true);
+  });
+
+  // ---- create_repo: a store with a git token but NO repo configured yet. The
+  // GitHub API call is stubbed (a local git remote can't model it). -----------
+  function setupNoRepo(dir: string) {
+    const dataDir = path.join(tempDir, dir);
+    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, config, ownerId: owner.id, owner: { id: owner.id, username: "owner", displayName: "Owner" } };
+  }
+  function createTools(s: ReturnType<typeof setupNoRepo>, viewerIsOwner = true) {
+    return buildRepoTools(
+      s.store,
+      { avatarUserId: s.ownerId, owner: s.owner, viewerIsOwner, config: s.config },
+      { allowCreate: true },
+    );
+  }
+
+  it("exposes create_repo only when allowCreate is set", () => {
+    const s = setupNoRepo("rt-create-flag");
+    expect(createTools(s).map((t) => t.name)).toContain("create_repo");
+    const without = buildRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: true,
+      config: s.config,
+    }).map((t) => t.name);
+    expect(without).not.toContain("create_repo");
+    expect(REPO_CREATE_TOOL_NAME).toBe("mcp__repo__create_repo");
+  });
+
+  it("create_repo refuses a non-owner viewer", async () => {
+    const s = setupNoRepo("rt-create-owner");
+    s.store.setGitToken(s.ownerId, "tok");
+    const res = await call(createTools(s, false), "create_repo", { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("아바타 소유자만");
+  });
+
+  it("create_repo requires a git token", async () => {
+    const s = setupNoRepo("rt-create-notoken");
+    const res = await call(createTools(s), "create_repo", { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("git 자격증명에 토큰");
+  });
+
+  it("create_repo rejects an invalid repo name", async () => {
+    const s = setupNoRepo("rt-create-badname");
+    s.store.setGitToken(s.ownerId, "tok");
+    const res = await call(createTools(s), "create_repo", { name: "bad name!" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("영문/숫자");
+  });
+
+  it("create_repo refuses when a repo is already connected", async () => {
+    const s = setupNoRepo("rt-create-exists");
+    s.store.setGitToken(s.ownerId, "tok");
+    s.store.setKnowledgeRepo(s.ownerId, "owner/existing", "main");
+    const res = await call(createTools(s), "create_repo", { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("이미 지식 저장소가 연결");
+  });
+
+  it("create_repo creates a repo via the API and connects it", async () => {
+    const s = setupNoRepo("rt-create-ok");
+    s.store.setGitToken(s.ownerId, "tok");
+    const fetchMock = vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
+      expect(url).toBe("https://api.github.com/user/repos");
+      expect(init.headers.Authorization).toContain("tok");
+      return {
+        ok: true,
+        status: 201,
+        statusText: "Created",
+        json: async () => ({ full_name: "owner/my-knowledge", default_branch: "main", private: true }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain("owner/my-knowledge");
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("create_repo surfaces a GitHub API error and leaves the repo unconnected", async () => {
+    const s = setupNoRepo("rt-create-fail");
+    s.store.setGitToken(s.ownerId, "tok");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: false,
+        status: 422,
+        statusText: "Unprocessable Entity",
+        json: async () => ({ message: "name already exists on this account" }),
+      })),
+    );
+    try {
+      const res = await call(createTools(s), "create_repo", { name: "dup" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("HTTP 422");
+      expect(res.content[0].text).toContain("already exists");
+      expect(s.store.getKnowledgeRepo(s.ownerId).repo).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
 
