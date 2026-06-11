@@ -9,7 +9,7 @@ import { loadDefaultPluginRoots, resolvePluginRoots } from "../src/server/plugin
 let tempDir: string;
 
 beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "avatar-chat-"));
+  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-almighty-"));
 });
 
 afterEach(() => {
@@ -58,7 +58,7 @@ function parseSse(raw: string): { event: string; data: unknown }[] {
   return frames;
 }
 
-describe("avatar-chat platform", () => {
+describe("noah-almighty platform", () => {
   it("reports needsSetup until the first account exists", async () => {
     const app = testApp();
     const fresh = await request(app).get("/api/bootstrap").expect(200);
@@ -108,10 +108,15 @@ describe("avatar-chat platform", () => {
     await signup(agent, "erin").expect(201);
     const res = await agent
       .patch("/api/me")
-      .send({ displayName: "Erin K", published: true })
+      .send({ displayName: "Erin K", alias: "  Aria  ", published: true })
       .expect(200);
     expect(res.body.user.displayName).toBe("Erin K");
+    // alias is trimmed and persisted.
+    expect(res.body.user.alias).toBe("Aria");
     expect(res.body.user.published).toBe(true);
+    // published persists: a fresh read reflects the stored value.
+    const me = await agent.get("/api/me").expect(200);
+    expect(me.body.user.published).toBe(true);
   });
 
   it("supports plugin add / list / delete", async () => {
@@ -214,6 +219,45 @@ describe("avatar-chat platform", () => {
     await viewer.get(`/api/avatars/${pubRes.body.user.id}`).expect(200);
   });
 
+  it("lets the owner manage trusted users, who can then reach an unpublished avatar", async () => {
+    const app = testApp();
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "olga").expect(201); // unpublished
+
+    const friend = request.agent(app);
+    const friendRes = await signup(friend, "fred").expect(201);
+    const friendId = friendRes.body.user.id;
+
+    // Before trust: a non-owner can't see the unpublished avatar or chat with it.
+    await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(404);
+    await friend
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerRes.body.user.id, message: "안녕" })
+      .expect(403);
+
+    // Owner grants trust by username.
+    const added = await owner.post("/api/me/trusted").send({ username: "fred" }).expect(200);
+    expect(added.body.trusted.map((t: { username: string }) => t.username)).toEqual(["fred"]);
+    // Unknown user / self → error, no row added.
+    await owner.post("/api/me/trusted").send({ username: "nobody" }).expect(404);
+    await owner.post("/api/me/trusted").send({ username: "olga" }).expect(404);
+
+    // After trust: the friend sees the (still unpublished) avatar as elevated and can chat.
+    const detail = await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(200);
+    expect(detail.body.avatar.elevated).toBe(true);
+    expect(detail.body.avatar.isOwn).toBe(false);
+    const chat = await friend
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerRes.body.user.id, message: "안녕" })
+      .expect(200);
+    expect(parseSse(chat.text).find((f) => f.event === "done")).toBeTruthy();
+
+    // Revoke: the friend loses access again.
+    const after = await owner.delete(`/api/me/trusted/${friendId}`).expect(200);
+    expect(after.body.trusted).toHaveLength(0);
+    await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(404);
+  });
+
   it("streams a local-runtime chat and persists conversation + messages", async () => {
     const app = testApp();
     const owner = request.agent(app);
@@ -246,6 +290,58 @@ describe("avatar-chat platform", () => {
     expect(messages.body.messages[1].content).toBe("[local] 안녕하세요");
   });
 
+  it("lists an avatar's skills from bundled default plugins", async () => {
+    // A default-plugins dir with one skill; runtime must be "claude" (the local
+    // runtime loads no skills). No avatar plugins, so nothing is cloned.
+    const pluginsDir = path.join(tempDir, "default-skills");
+    fs.mkdirSync(path.join(pluginsDir, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginsDir, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "defaults" }),
+    );
+    const skillDir = path.join(pluginsDir, "skills", "greet");
+    fs.mkdirSync(skillDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(skillDir, "SKILL.md"),
+      "---\nname: Greeter\ndescription: Greets colleagues warmly\n---\n# body",
+    );
+
+    const app = createApp(
+      createServices({
+        dataDir: tempDir,
+        agentRuntime: "claude",
+        sessionSecret: "test",
+        defaultPluginsDir: pluginsDir,
+      }),
+    );
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "skilluser").expect(201);
+    await owner.patch("/api/me").send({ published: true }).expect(200);
+
+    const res = await owner.get(`/api/avatars/${ownerRes.body.user.id}/skills`).expect(200);
+    expect(res.body.skills).toEqual([
+      { name: "Greeter", description: "Greets colleagues warmly", source: "default" },
+    ]);
+  });
+
+  it("returns an empty skill list under the local runtime", async () => {
+    const app = testApp(); // agentRuntime: "local"
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "localskill").expect(201);
+    const res = await owner.get(`/api/avatars/${ownerRes.body.user.id}/skills`).expect(200);
+    expect(res.body.skills).toEqual([]);
+  });
+
+  it("hides skills of an unpublished, non-own avatar (404)", async () => {
+    const app = testApp();
+    const hidden = request.agent(app);
+    const hiddenRes = await signup(hidden, "kevin").expect(201); // unpublished
+
+    const viewer = request.agent(app);
+    await signup(viewer, "laura").expect(201);
+    await viewer.get(`/api/avatars/${hiddenRes.body.user.id}/skills`).expect(404);
+  });
+
   it("returns 401 for unauthenticated requests", async () => {
     const app = testApp();
     await request(app).get("/api/me/plugins").expect(401);
@@ -269,6 +365,38 @@ describe("avatar-chat platform", () => {
     const res = await admin.get("/api/admin/users").expect(200);
     expect(res.body.users.length).toBe(1);
     expect(res.body.users[0].username).toBe("boss");
+  });
+
+  it("exposes system/runtime info to admins, gated from members", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+      anthropicModel: "claude-opus-4-8",
+    });
+    const app = createApp(services);
+
+    const admin = request.agent(app);
+    await signup(admin, "boss").expect(201);
+    const res = await admin.get("/api/admin/system").expect(200);
+    expect(res.body.system.agentRuntime).toBe("local");
+    expect(res.body.system.configuredModel).toBe("claude-opus-4-8");
+    // No Claude run has reported a model yet (local runtime never does).
+    expect(res.body.system.observedModel).toBeNull();
+    expect(res.body.system.authMode).toBe("subscription");
+    expect(Array.isArray(res.body.system.readOnlyTools)).toBe(true);
+
+    const member = request.agent(app);
+    await signup(member, "peon").expect(201);
+    await member.get("/api/admin/system").expect(403);
+  });
+
+  it("reports configuredModel as null when ANTHROPIC_MODEL is unset", async () => {
+    const app = testApp();
+    const admin = request.agent(app);
+    await signup(admin, "boss").expect(201);
+    const res = await admin.get("/api/admin/system").expect(200);
+    expect(res.body.system.configuredModel).toBeNull();
   });
 
   // ---- Input validation -------------------------------------------------
@@ -304,16 +432,36 @@ describe("avatar-chat platform", () => {
   it("stores bio/persona and exposes persona + plugins on the owner's avatar detail", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "mira");
-    await agent.patch("/api/me").send({ bio: "도우미", persona: "간결하게", published: true }).expect(200);
+    await agent.patch("/api/me").send({ bio: "도우미", persona: "간결하게", alias: "미라봇", published: true }).expect(200);
     await agent.post("/api/me/plugins").send({ repo: "owner/tool", label: "Tool" }).expect(200);
 
     const detail = await agent.get(`/api/avatars/${user.id}`).expect(200);
     expect(detail.body.avatar.isOwn).toBe(true);
     expect(detail.body.avatar.persona).toBe("간결하게");
+    expect(detail.body.avatar.alias).toBe("미라봇");
     expect(detail.body.avatar.plugins.length).toBe(1);
 
     const me = await agent.get("/api/me").expect(200);
     expect(me.body.user.pluginCount).toBe(1);
+  });
+
+  it("stores and exposes the avatar self-introduction, and generates one on demand", async () => {
+    const app = testApp();
+    const { agent, user } = await newUser(app, "intro");
+    await agent.patch("/api/me").send({ alias: "소개봇", intro: "안녕하세요, 저는 도와드립니다.", published: true }).expect(200);
+
+    const me = await agent.get("/api/me").expect(200);
+    expect(me.body.user.intro).toBe("안녕하세요, 저는 도와드립니다.");
+    const detail = await agent.get(`/api/avatars/${user.id}`).expect(200);
+    expect(detail.body.avatar.intro).toBe("안녕하세요, 저는 도와드립니다.");
+
+    // The local runtime returns a deterministic placeholder naming the avatar.
+    const gen = await agent.post("/api/me/intro/generate").expect(200);
+    expect(typeof gen.body.intro).toBe("string");
+    expect(gen.body.intro).toContain("소개봇");
+    // Generating does NOT persist — the stored value is unchanged until saved.
+    const after = await agent.get("/api/me").expect(200);
+    expect(after.body.user.intro).toBe("안녕하세요, 저는 도와드립니다.");
   });
 
   // ---- Avatar image -----------------------------------------------------
@@ -386,6 +534,45 @@ describe("avatar-chat platform", () => {
 
     const messages = await agent.get(`/api/messages?conversationId=${convId}`).expect(200);
     expect(messages.body.messages).toHaveLength(2); // not 3 or 4
+  });
+
+  it("greets first (owner only) and reports pending requests without persisting", async () => {
+    const services = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "gwen").expect(201);
+    const ownerId = ownerRes.body.user.id;
+
+    // A colleague's gap is waiting for the owner.
+    services.store.addKnowledgeRequest(ownerId, { question: "출시일?", askerName: "동료A" });
+
+    // Owner greeting with their OWN avatar streams an assistant reply.
+    const convId = "greet-conv-1";
+    const greet = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: convId, greeting: true })
+      .expect(200);
+    const done = parseSse(greet.text).find((f) => f.event === "done")!.data as {
+      message: { role: string; content: string };
+    };
+    expect(done.message.role).toBe("assistant");
+
+    // Greeting is ephemeral: nothing was persisted to the conversation.
+    const after = await owner.get(`/api/messages?conversationId=${convId}`).expect(200);
+    expect(after.body.messages).toHaveLength(0);
+
+    // The pending request is still open (greeting only reports it, never answers).
+    const stillOpen = await owner.get("/api/me/knowledge/requests?status=open").expect(200);
+    expect(stillOpen.body.requests).toHaveLength(1);
+
+    // greeting=true with no message falls back to the empty-message 400 when the
+    // viewer is NOT the avatar's owner (a colleague can't make the avatar greet).
+    const stranger = request.agent(app);
+    await signup(stranger, "hank").expect(201);
+    await stranger
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, greeting: true })
+      .expect(400);
   });
 
   it("exposes a runId on the chat stream and guards the respond endpoint", async () => {
@@ -495,7 +682,7 @@ describe("avatar-chat platform", () => {
     expect(warns.length).toBe(1);
   });
 
-  it("backfills knowledge: a colleague's gap becomes an answered entry", async () => {
+  it("backfills knowledge: a colleague's gap is queued and resolved (closed)", async () => {
     const services = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
     const app = createApp(services);
     const owner = request.agent(app);
@@ -510,30 +697,15 @@ describe("avatar-chat platform", () => {
     const reqId = open.body.requests[0].id;
     expect(open.body.requests[0].askerName).toBe("동료A");
 
-    const answered = await owner
-      .post(`/api/me/knowledge/requests/${reqId}/answer`)
-      .send({ answer: "6월 20일에 출시합니다." })
-      .expect(200);
-    expect(answered.body.request.status).toBe("answered");
+    // Resolving takes no body: there is no stored answer (the owner teaches the
+    // avatar via plugins). Closing the request is the whole action.
+    await owner.delete(`/api/me/knowledge/requests/${reqId}`).expect(200);
 
-    // The answer is now a searchable knowledge entry.
-    const entries = await owner.get("/api/me/knowledge/entries").expect(200);
-    expect(entries.body.entries).toHaveLength(1);
-    expect(entries.body.entries[0].content).toContain("6월 20일");
-    expect(services.store.searchKnowledge(ownerId, "출시").length).toBe(1);
-
-    // The request is no longer open.
     const stillOpen = await owner.get("/api/me/knowledge/requests?status=open").expect(200);
     expect(stillOpen.body.requests).toHaveLength(0);
-
-    // Manual entry add + delete.
-    const manual = await owner
-      .post("/api/me/knowledge/entries")
-      .send({ topic: "선호", content: "회의는 오전을 선호합니다." })
-      .expect(200);
-    await owner.delete(`/api/me/knowledge/entries/${manual.body.entry.id}`).expect(200);
-    const afterDelete = await owner.get("/api/me/knowledge/entries").expect(200);
-    expect(afterDelete.body.entries).toHaveLength(1);
+    const resolved = await owner.get("/api/me/knowledge/requests?status=resolved").expect(200);
+    expect(resolved.body.requests).toHaveLength(1);
+    expect(resolved.body.requests[0].status).toBe("resolved");
   });
 
   it("isolates knowledge between avatars and 404s on cross-owner access", async () => {
@@ -549,13 +721,12 @@ describe("avatar-chat platform", () => {
     expect((await ann.get("/api/me/knowledge/requests").expect(200)).body.requests).toHaveLength(1);
     expect((await bob.get("/api/me/knowledge/requests").expect(200)).body.requests).toHaveLength(0);
 
-    // Bob cannot answer or dismiss Ann's request.
-    await bob.post(`/api/me/knowledge/requests/${req.id}/answer`).send({ answer: "x" }).expect(404);
+    // Bob cannot resolve Ann's request.
     await bob.delete(`/api/me/knowledge/requests/${req.id}`).expect(404);
-    // Empty answer is rejected.
-    await ann.post(`/api/me/knowledge/requests/${req.id}/answer`).send({ answer: "" }).expect(400);
-    // Ann can dismiss her own.
+    // Ann can resolve her own.
     await ann.delete(`/api/me/knowledge/requests/${req.id}`).expect(200);
+    // Resolving again (no longer open) → 404.
+    await ann.delete(`/api/me/knowledge/requests/${req.id}`).expect(404);
   });
 
   it("loads the repo-bundled default plugin for every avatar", async () => {

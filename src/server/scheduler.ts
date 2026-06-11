@@ -3,7 +3,10 @@ import path from "node:path";
 import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "./plugins.js";
 import { runAgentStream } from "./agent/index.js";
 import type { AppServices } from "./app.js";
+import logger from "./logger.js";
 import type { PluginRoot, RoutineJob } from "./types.js";
+
+const schedLogger = logger.child({ module: "scheduler" });
 
 const DEFAULT_TICK_MS = 30_000;
 /** Hard deadline per unattended run: a hung SDK call must not wedge the job forever. */
@@ -51,10 +54,10 @@ async function runRoutineJobNow(
         ? []
         : [
             ...(await loadDefaultPluginRoots(config, warn)),
-            ...(await loadAvatarPluginRoots(avatar.id, store.listEnabledPlugins(avatar.id), config, warn)),
+            ...(await loadAvatarPluginRoots(avatar.id, store.listEnabledPlugins(avatar.id), config, warn, store.getGitToken(avatar.id))),
           ];
     if (pluginWarnings.length > 0) {
-      console.warn(`routine ${job.id}: plugin warnings: ${pluginWarnings.join(" | ")}`);
+      schedLogger.warn({ jobId: job.id, warnings: pluginWarnings }, "routine plugin warnings");
     }
 
     const workspaceDir = path.join(config.dataDir, "workspaces", avatar.id);
@@ -63,7 +66,7 @@ async function runRoutineJobNow(
     const response = await runAgentStream(
       {
         message: job.prompt,
-        avatar: { id: avatar.id, displayName: avatar.displayName, persona: avatar.persona },
+        avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
         cwd: workspaceDir,
         viewerUserId: avatar.id,
         viewerName: avatar.displayName,
@@ -125,19 +128,26 @@ export async function executeRoutineJob(
     return { ok: false, skipped: true, error: "이미 실행 중인 루틴입니다." };
   }
   runningJobs.add(job.id);
+  schedLogger.info({ jobId: job.id, avatarUserId: job.avatarUserId }, "routine job started");
+  const jobStart = Date.now();
   try {
     const result = await runRoutineJobNow(services, job);
     services.store.markRoutineRun(job.id, {
       status: result.ok ? "success" : "error",
       error: result.error ?? null,
     });
+    if (result.ok) {
+      schedLogger.info({ jobId: job.id, durationMs: Date.now() - jobStart }, "routine job completed");
+    } else {
+      schedLogger.error({ jobId: job.id, error: result.error, durationMs: Date.now() - jobStart }, "routine job failed");
+    }
     return result;
   } catch (error) {
     // runRoutineJobNow handles its own errors; reaching here means RECORDING
     // the outcome failed (e.g. DB write error). Log it — never let it escape,
     // and don't retry the write that just failed.
     const detail = error instanceof Error ? error.message : String(error);
-    console.error(`routine ${job.id}: failed to record outcome: ${detail}`);
+    schedLogger.error({ jobId: job.id, err: error }, "routine failed to record outcome");
     return { ok: false, error: detail };
   } finally {
     runningJobs.delete(job.id);
@@ -167,7 +177,7 @@ export function startRoutineScheduler(
     try {
       due = store.listDueRoutineJobs(new Date().toISOString());
     } catch (error) {
-      console.error("routine scheduler: failed to list due jobs:", error);
+      schedLogger.error({ err: error }, "scheduler tick: failed to list due jobs");
       return;
     }
     for (const job of due) {

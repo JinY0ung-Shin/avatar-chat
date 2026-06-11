@@ -79,6 +79,13 @@ export interface AgentEvents {
   onDelta?: (text: string) => void;
   /** Human-readable Korean activity label. */
   onStatus?: (label: string) => void;
+  /** The model the SDK actually initialized with (from the `init` system event). */
+  onModel?: (model: string) => void;
+  /**
+   * The SDK session id for this run (from the `init` system event). Persist it
+   * to resume the conversation's context on the next turn.
+   */
+  onSessionId?: (sessionId: string) => void;
   /** Plugin install lifecycle. */
   onPlugin?: (event: PluginEvent) => void;
   /** A tool/skill invocation started (legacy coarse signal; superseded by onToolStart). */

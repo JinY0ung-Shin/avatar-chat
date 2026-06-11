@@ -11,12 +11,22 @@ import {
   type KnowledgeToolsContext,
 } from "../src/server/agent/knowledgeTools.js";
 import {
+  gitAuthArgs,
   marketplaceCloneUrl,
   pathExists,
   sanitizeName,
+  scrubGitError,
   syncGitRepo,
 } from "../src/server/marketplace.js";
-import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "../src/server/plugins.js";
+import {
+  APP_MANAGED_MCP_SERVERS,
+  inspectRepoContents,
+  listSkillsInRoots,
+  loadAvatarPluginRoots,
+  loadDefaultPluginRoots,
+  resolvePluginRoots,
+  stripManagedMcpServers,
+} from "../src/server/plugins.js";
 import {
   awaitResponse,
   CANCELLED,
@@ -24,7 +34,34 @@ import {
   openRun,
   submitResponse,
 } from "../src/server/agent/runRegistry.js";
+import { buildPreToolUseHook, buildPrompt, interpretResult, resultErrorMessage } from "../src/server/agent/claudeAgent.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
+import type { AgentEvents } from "../src/server/agent/events.js";
+import { decryptSecret, encryptSecret } from "../src/server/crypto.js";
+import {
+  commitAndPush,
+  ensureClone,
+  knowledgeClonePath,
+  knowledgeRepoContextFor,
+  resolveInRepo,
+  scaffoldSkill,
+  readFile as readKnowledgeFile,
+  writeFile as writeKnowledgeFile,
+} from "../src/server/knowledgeRepo.js";
+import { buildRepoTools, REPO_SERVER_NAME, REPO_TOOL_NAMES } from "../src/server/agent/repoTools.js";
+import {
+  knownHostsPath,
+  parseKnownHosts,
+  upsertHostLine,
+  addTrustedHost,
+  listTrustedHosts,
+  removeTrustedHost,
+} from "../src/server/sshTrust.js";
+import {
+  buildSshTrustTools,
+  SSH_TRUST_SERVER_NAME,
+  SSH_TRUST_TOOL_NAMES,
+} from "../src/server/agent/sshTrustTools.js";
 import type { Plugin } from "../src/server/types.js";
 
 let tempDir: string;
@@ -57,6 +94,28 @@ function makePluginRepo(dir: string, name = "p"): string {
   fs.mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });
   fs.writeFileSync(path.join(dir, ".claude-plugin", "plugin.json"), JSON.stringify({ name }));
   return gitInit(dir, ".claude-plugin/plugin.json");
+}
+
+/**
+ * Build a marketplace repo at `dir` listing `names` as relative `./plugins/<n>`
+ * sources, each a valid single-plugin dir.
+ */
+function makeMarketplaceRepo(dir: string, names: string[]): void {
+  fs.mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });
+  const plugins = names.map((n) => ({ name: n, source: `./plugins/${n}` }));
+  fs.writeFileSync(path.join(dir, ".claude-plugin", "marketplace.json"), JSON.stringify({ plugins }));
+  for (const n of names) {
+    const pdir = path.join(dir, "plugins", n, ".claude-plugin");
+    fs.mkdirSync(pdir, { recursive: true });
+    fs.writeFileSync(path.join(pdir, "plugin.json"), JSON.stringify({ name: n }));
+  }
+}
+
+/** Write a `skills/<name>/SKILL.md` with the given frontmatter under `root`. */
+function makeSkill(root: string, name: string, frontmatter: string, body = ""): void {
+  const dir = path.join(root, "skills", name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "SKILL.md"), `${frontmatter}\n${body}`);
 }
 
 // ---------------------------------------------------------------------------
@@ -118,18 +177,43 @@ describe("marketplace helpers", () => {
     expect(sanitizeName("keep.dots_and-dashes")).toBe("keep.dots_and-dashes");
   });
 
-  it("resolves clone URLs for shorthand, tokens, and full URLs", () => {
+  it("resolves clone URLs for shorthand and full URLs (token never in URL)", () => {
     expect(marketplaceCloneUrl("owner/repo")).toBe("https://github.com/owner/repo.git");
-    expect(marketplaceCloneUrl("owner/repo", "tok en")).toBe(
-      "https://x-access-token:tok%20en@github.com/owner/repo.git",
-    );
-    expect(marketplaceCloneUrl("https://github.com/owner/repo.git", "tk")).toBe(
-      "https://x-access-token:tk@github.com/owner/repo.git",
+    expect(marketplaceCloneUrl("https://github.com/owner/repo.git")).toBe(
+      "https://github.com/owner/repo.git",
     );
     // ssh / arbitrary sources pass through untouched.
     const ssh = "git@github.com:owner/repo.git";
     expect(marketplaceCloneUrl(ssh)).toBe(ssh);
     expect(marketplaceCloneUrl("https://example.com/x.git")).toBe("https://example.com/x.git");
+  });
+
+  it("supplies token auth via an http header arg, not the URL", () => {
+    // No token, or non-https transport → no auth args.
+    expect(gitAuthArgs("https://github.com/o/r.git")).toEqual([]);
+    expect(gitAuthArgs("git@github.com:o/r.git", "tok")).toEqual([]);
+    // https + token → an Authorization: Basic header git uses but never persists.
+    const args = gitAuthArgs("https://github.com/o/r.git", "tok");
+    const basic = Buffer.from("x-access-token:tok").toString("base64");
+    expect(args).toEqual(["-c", `http.extraHeader=Authorization: Basic ${basic}`]);
+  });
+
+  it("scrubs the auth header (token) from git error text", () => {
+    const basic = Buffer.from("x-access-token:ghp_secret").toString("base64");
+    const err = new Error(
+      `Command failed: git -c http.extraHeader=Authorization: Basic ${basic} clone -- https://github.com/o/r.git /tmp/x`,
+    );
+    const scrubbed = scrubGitError(err);
+    expect(scrubbed).not.toContain(basic);
+    expect(scrubbed).not.toContain("ghp_secret");
+    expect(scrubbed).toContain("[REDACTED]");
+  });
+
+  it("refuses to clone a repo value that git would read as an option", async () => {
+    // `--upload-pack=…` would be an RCE if passed as a positional without `--`.
+    await expect(
+      syncGitRepo("--upload-pack=touch /tmp/pwn", path.join(tempDir, "dest-inj")),
+    ).rejects.toThrow(/must not start with/);
   });
 
   it("reports path existence", async () => {
@@ -154,6 +238,28 @@ describe("marketplace helpers", () => {
     await syncGitRepo(src, destRef, sha);
     expect(fs.existsSync(path.join(destRef, "README.md"))).toBe(true);
   });
+
+  it("removes files deleted upstream when re-syncing", async () => {
+    const src = path.join(tempDir, "del-src");
+    gitInit(src);
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", src, ...args], { stdio: "pipe" });
+    // Add a second tracked file and commit it.
+    fs.writeFileSync(path.join(src, "stale.txt"), "old skill");
+    git("add", "-A");
+    git("commit", "-q", "-m", "add stale");
+
+    const dest = path.join(tempDir, "del-dest");
+    await syncGitRepo(src, dest);
+    expect(fs.existsSync(path.join(dest, "stale.txt"))).toBe(true);
+
+    // Delete it upstream, then re-sync — the clone must drop it too.
+    git("rm", "-q", "stale.txt");
+    git("commit", "-q", "-m", "remove stale");
+    await syncGitRepo(src, dest);
+    expect(fs.existsSync(path.join(dest, "stale.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(dest, "README.md"))).toBe(true);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -167,6 +273,8 @@ describe("loadAvatarPluginRoots", () => {
     ref: null,
     label: null,
     enabled: true,
+    selected: null,
+    lastSyncedAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
   });
 
@@ -201,6 +309,503 @@ describe("loadDefaultPluginRoots", () => {
     const { config } = createServices({ dataDir: path.join(tempDir, "d"), agentRuntime: "local", sessionSecret: "t" });
     const roots = await loadDefaultPluginRoots({ ...config, defaultPluginsDir: path.join(tempDir, "nope") });
     expect(roots).toEqual([]);
+  });
+});
+
+describe("inspectRepoContents", () => {
+  it("reports a single-plugin repo", async () => {
+    const dir = path.join(tempDir, "single");
+    makePluginRepo(dir, "solo");
+    const info = await inspectRepoContents(dir);
+    expect(info.kind).toBe("single");
+    expect(info.plugins).toHaveLength(1);
+    expect(info.plugins[0].loadable).toBe(true);
+  });
+
+  it("lists every plugin in a marketplace repo", async () => {
+    const dir = path.join(tempDir, "mkt");
+    makeMarketplaceRepo(dir, ["alpha", "beta"]);
+    const info = await inspectRepoContents(dir);
+    expect(info.kind).toBe("marketplace");
+    expect(info.plugins.map((p) => p.name).sort()).toEqual(["alpha", "beta"]);
+    expect(info.plugins.every((p) => p.loadable)).toBe(true);
+  });
+
+  it("returns kind 'none' for a non-plugin repo", async () => {
+    const dir = path.join(tempDir, "plain");
+    gitInit(dir);
+    const info = await inspectRepoContents(dir);
+    expect(info.kind).toBe("none");
+  });
+});
+
+describe("resolvePluginRoots selection", () => {
+  it("loads all marketplace plugins when selected is null", async () => {
+    const dir = path.join(tempDir, "mkt-all");
+    makeMarketplaceRepo(dir, ["alpha", "beta"]);
+    const roots = await resolvePluginRoots(dir, "mkt", undefined, null);
+    expect(roots).toHaveLength(2);
+  });
+
+  it("loads only the selected marketplace plugins", async () => {
+    const dir = path.join(tempDir, "mkt-sel");
+    makeMarketplaceRepo(dir, ["alpha", "beta", "gamma"]);
+    const roots = await resolvePluginRoots(dir, "mkt", undefined, ["beta"]);
+    expect(roots).toHaveLength(1);
+    expect(roots[0].endsWith(path.join("plugins", "beta"))).toBe(true);
+  });
+
+  it("ignores selection for a single-plugin repo", async () => {
+    const dir = path.join(tempDir, "single-sel");
+    makePluginRepo(dir, "solo");
+    const roots = await resolvePluginRoots(dir, "solo", undefined, ["nonexistent"]);
+    expect(roots).toEqual([dir]);
+  });
+});
+
+describe("stripManagedMcpServers", () => {
+  const mcpPath = (dir: string) => path.join(dir, ".mcp.json");
+  const readMcp = (dir: string) => JSON.parse(fs.readFileSync(mcpPath(dir), "utf8"));
+
+  it("removes an app-managed server (hex-ssh) but keeps others", async () => {
+    const dir = path.join(tempDir, "strip1");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      mcpPath(dir),
+      JSON.stringify({
+        "hex-ssh": { command: "npx", args: ["-y", "@levnikolaevich/hex-ssh-mcp"] },
+        other: { command: "x" },
+      }),
+    );
+    const changed = await stripManagedMcpServers(dir);
+    expect(changed).toBe(true);
+    expect(readMcp(dir)).toEqual({ other: { command: "x" } });
+  });
+
+  it("is a no-op when no managed server is present", async () => {
+    const dir = path.join(tempDir, "strip2");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(mcpPath(dir), JSON.stringify({ other: { command: "x" } }));
+    expect(await stripManagedMcpServers(dir)).toBe(false);
+    expect(readMcp(dir)).toEqual({ other: { command: "x" } });
+  });
+
+  it("is a no-op when there is no .mcp.json", async () => {
+    const dir = path.join(tempDir, "strip3");
+    fs.mkdirSync(dir, { recursive: true });
+    expect(await stripManagedMcpServers(dir)).toBe(false);
+    expect(fs.existsSync(mcpPath(dir))).toBe(false);
+  });
+
+  it("strips hex-ssh from a plugin dir when resolved via resolvePluginRoots", async () => {
+    const dir = path.join(tempDir, "strip-resolve");
+    makePluginRepo(dir, "ops");
+    fs.writeFileSync(
+      mcpPath(dir),
+      JSON.stringify({ "hex-ssh": { command: "npx" }, keep: { command: "y" } }),
+    );
+    const roots = await resolvePluginRoots(dir, "ops");
+    expect(roots).toEqual([dir]);
+    expect(readMcp(dir)).toEqual({ keep: { command: "y" } });
+  });
+
+  it("hex-ssh is in the managed list (documents the collision fix)", () => {
+    expect(APP_MANAGED_MCP_SERVERS).toContain("hex-ssh");
+  });
+});
+
+describe("sshTrust", () => {
+  // A real ed25519 public key blob (base64), so the fingerprint is deterministic.
+  const KEY =
+    "AAAAC3NzaC1lZDI1NTE5AAAAIE3Q5Z7dQ2bqf3pVnE0Yk1m2sJ8t4hX9aBcDeFgHiJk";
+  const line = (host: string, key = KEY) => `${host} ssh-ed25519 ${key}`;
+
+  function makeStore() {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "ssht"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "o", displayName: "O", password: "password123" });
+    return { config, ownerId: owner.id };
+  }
+
+  it("derives a per-user known_hosts path under the data volume", () => {
+    const { config, ownerId } = makeStore();
+    const p = knownHostsPath(ownerId, config);
+    expect(p.startsWith(path.join(config.dataDir, "ssh"))).toBe(true);
+    expect(p.endsWith("known_hosts")).toBe(true);
+  });
+
+  it("parses known_hosts into host/type/fingerprint and computes SHA256: form", () => {
+    const entries = parseKnownHosts(`# comment\n${line("1.2.3.4")}\n\n`);
+    expect(entries).toHaveLength(1);
+    expect(entries[0].host).toBe("1.2.3.4");
+    expect(entries[0].keyType).toBe("ssh-ed25519");
+    expect(entries[0].fingerprint).toMatch(/^SHA256:[A-Za-z0-9+/]+$/);
+    expect(entries[0].fingerprint).not.toMatch(/=$/); // unpadded
+  });
+
+  it("expands comma-separated host fields and skips @markers/short lines", () => {
+    const entries = parseKnownHosts(
+      `${line("a,b")}\n@revoked ${line("c").replace("c ", "")}\nbroken line\n`,
+    );
+    const hosts = entries.map((e) => e.host).sort();
+    expect(hosts).toContain("a");
+    expect(hosts).toContain("b");
+  });
+
+  it("upsertHostLine appends a new host and reports changed", () => {
+    const r = upsertHostLine("", line("1.1.1.1"));
+    expect(r.changed).toBe(true);
+    expect(r.body.trim()).toBe(line("1.1.1.1"));
+  });
+
+  it("upsertHostLine is idempotent for an identical line", () => {
+    const r = upsertHostLine(`${line("1.1.1.1")}\n`, line("1.1.1.1"));
+    expect(r.changed).toBe(false);
+    expect(r.body.trim()).toBe(line("1.1.1.1"));
+  });
+
+  it("upsertHostLine replaces a rotated key for the same host+type", () => {
+    const r = upsertHostLine(`${line("1.1.1.1", "OLDKEY")}\n`, line("1.1.1.1", "NEWKEY"));
+    expect(r.changed).toBe(true);
+    expect(r.body).toContain("NEWKEY");
+    expect(r.body).not.toContain("OLDKEY");
+  });
+
+  it("lists and removes hosts from the on-disk file", async () => {
+    const { config, ownerId } = makeStore();
+    const file = knownHostsPath(ownerId, config);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${line("9.9.9.9")}\n${line("8.8.8.8")}\n`);
+
+    const before = await listTrustedHosts(ownerId, config);
+    expect(before.map((e) => e.host).sort()).toEqual(["8.8.8.8", "9.9.9.9"]);
+
+    const removed = await removeTrustedHost(ownerId, config, "9.9.9.9");
+    expect(removed).toBe(1);
+    const after = await listTrustedHosts(ownerId, config);
+    expect(after.map((e) => e.host)).toEqual(["8.8.8.8"]);
+  });
+
+  it("listTrustedHosts is empty when no file exists", async () => {
+    const { config, ownerId } = makeStore();
+    expect(await listTrustedHosts(ownerId, config)).toEqual([]);
+  });
+
+  it("trust tools: list reports empty, then reflects the file", async () => {
+    const { config, ownerId } = makeStore();
+    const tools = buildSshTrustTools({ avatarUserId: ownerId, config });
+    const callTool = (name: string, args: unknown) => {
+      const t = tools.find((x) => x.name === name)!;
+      return (t.handler as (a: unknown, e: unknown) => Promise<ToolResult>)(args, {});
+    };
+
+    expect(SSH_TRUST_SERVER_NAME).toBe("ssh_trust");
+    expect(SSH_TRUST_TOOL_NAMES).toContain("mcp__ssh_trust__add_host");
+
+    const empty = await callTool("list_hosts", {});
+    expect(empty.content[0].text).toContain("신뢰하는 호스트가 없습니다");
+
+    const file = knownHostsPath(ownerId, config);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${line("5.5.5.5")}\n`);
+    const listed = await callTool("list_hosts", {});
+    expect(listed.content[0].text).toContain("5.5.5.5");
+
+    const gone = await callTool("remove_host", { host: "5.5.5.5" });
+    expect(gone.content[0].text).toContain("제거했습니다");
+  });
+});
+
+describe("listSkillsInRoots", () => {
+  it("parses name/description from SKILL.md frontmatter and tags the source", async () => {
+    const root = path.join(tempDir, "skills-basic");
+    makeSkill(root, "alpha", "---\nname: Alpha\ndescription: Does alpha things\n---", "# body");
+    const skills = await listSkillsInRoots([{ path: root, source: "default" }]);
+    expect(skills).toEqual([{ name: "Alpha", description: "Does alpha things", source: "default" }]);
+  });
+
+  it("strips surrounding quotes from frontmatter values", async () => {
+    const root = path.join(tempDir, "skills-quoted");
+    makeSkill(root, "q", `---\nname: "Quoted"\ndescription: 'has: a colon'\n---`);
+    const skills = await listSkillsInRoots([{ path: root, source: "s" }]);
+    expect(skills[0]).toMatchObject({ name: "Quoted", description: "has: a colon" });
+  });
+
+  it("falls back to the directory name when frontmatter omits name", async () => {
+    const root = path.join(tempDir, "skills-noname");
+    makeSkill(root, "from-dir", "---\ndescription: no name field\n---");
+    const skills = await listSkillsInRoots([{ path: root, source: "s" }]);
+    expect(skills[0]).toMatchObject({ name: "from-dir", description: "no name field" });
+  });
+
+  it("tolerates a missing skills/ directory and a SKILL.md without frontmatter", async () => {
+    const empty = path.join(tempDir, "skills-empty");
+    fs.mkdirSync(empty, { recursive: true });
+    const noFm = path.join(tempDir, "skills-nofm");
+    makeSkill(noFm, "plain", "# Just a heading, no frontmatter");
+    const skills = await listSkillsInRoots([
+      { path: empty, source: "a" },
+      { path: noFm, source: "b" },
+    ]);
+    // The missing dir contributes nothing; the no-frontmatter skill still
+    // surfaces with a dir-name fallback and empty description.
+    expect(skills).toEqual([{ name: "plain", description: "", source: "b" }]);
+  });
+
+  it("de-duplicates by name (first root wins) and sorts by name", async () => {
+    const rootA = path.join(tempDir, "skills-a");
+    const rootB = path.join(tempDir, "skills-b");
+    makeSkill(rootA, "dup", "---\nname: Dup\ndescription: from A\n---");
+    makeSkill(rootB, "dup2", "---\nname: Dup\ndescription: from B\n---");
+    makeSkill(rootB, "zeta", "---\nname: Zeta\ndescription: z\n---");
+    const skills = await listSkillsInRoots([
+      { path: rootA, source: "a" },
+      { path: rootB, source: "b" },
+    ]);
+    expect(skills.map((s) => s.name)).toEqual(["Dup", "Zeta"]);
+    expect(skills.find((s) => s.name === "Dup")?.description).toBe("from A");
+  });
+
+  it("does not end frontmatter early on a body line that merely starts with ---", async () => {
+    const root = path.join(tempDir, "skills-rule");
+    // A markdown horizontal rule (`---`) and a `----` line live in the body; the
+    // closing fence is the standalone `---`, so name/description still parse.
+    makeSkill(
+      root,
+      "ruled",
+      "---\nname: Ruled\ndescription: has a rule below\n---",
+      "intro\n\n---\n\nmore\n\n----\n",
+    );
+    const skills = await listSkillsInRoots([{ path: root, source: "s" }]);
+    expect(skills[0]).toMatchObject({ name: "Ruled", description: "has a rule below" });
+  });
+});
+
+describe("store plugin persistence", () => {
+  function makeStore() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "plg"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, ownerId: owner.id };
+  }
+
+  it("defaults selected to null and lastSyncedAt to null on add", () => {
+    const { store, ownerId } = makeStore();
+    const p = store.addPlugin(ownerId, { repo: "owner/repo" });
+    expect(p.selected).toBeNull();
+    expect(p.lastSyncedAt).toBeNull();
+  });
+
+  it("round-trips a selection and clears it with null", () => {
+    const { store, ownerId } = makeStore();
+    const p = store.addPlugin(ownerId, { repo: "owner/repo" });
+    const sel = store.setPluginSelected(ownerId, p.id, ["alpha", "beta"]);
+    expect(sel?.selected).toEqual(["alpha", "beta"]);
+    expect(store.getPlugin(ownerId, p.id)?.selected).toEqual(["alpha", "beta"]);
+    const cleared = store.setPluginSelected(ownerId, p.id, null);
+    expect(cleared?.selected).toBeNull();
+  });
+
+  it("updates the tracked ref and stamps sync time", () => {
+    const { store, ownerId } = makeStore();
+    const p = store.addPlugin(ownerId, { repo: "owner/repo" });
+    expect(store.setPluginRef(ownerId, p.id, "v2")?.ref).toBe("v2");
+    const synced = store.markPluginSynced(ownerId, p.id);
+    expect(synced?.lastSyncedAt).toBeTruthy();
+  });
+});
+
+describe("store user secrets", () => {
+  function makeStore() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "secrets"),
+      agentRuntime: "local",
+      sessionSecret: "shh",
+    });
+    const owner = store.createUser({ username: "secowner", displayName: "Owner", password: "password123" });
+    return { store, ownerId: owner.id };
+  }
+
+  it("round-trips an encrypted secret value", () => {
+    const { store, ownerId } = makeStore();
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n");
+    expect(store.getUserSecrets(ownerId)).toEqual({
+      SSH_PRIVATE_KEY: "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n",
+    });
+  });
+
+  it("upserts (overwrites) an existing name and lists names sorted", () => {
+    const { store, ownerId } = makeStore();
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "v1");
+    store.setUserSecret(ownerId, "ALLOWED_HOSTS", "host1");
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "v2");
+    expect(store.listUserSecretNames(ownerId)).toEqual(["ALLOWED_HOSTS", "SSH_PRIVATE_KEY"]);
+    expect(store.getUserSecrets(ownerId).SSH_PRIVATE_KEY).toBe("v2");
+  });
+
+  it("deletes a secret", () => {
+    const { store, ownerId } = makeStore();
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "v1");
+    store.deleteUserSecret(ownerId, "SSH_PRIVATE_KEY");
+    expect(store.listUserSecretNames(ownerId)).toEqual([]);
+    expect(store.getUserSecrets(ownerId)).toEqual({});
+  });
+
+  it("exposes only names via toUser (getUserById), never values", () => {
+    const { store, ownerId } = makeStore();
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "topsecret");
+    const user = store.getUserById(ownerId)!;
+    expect(user.secretNames).toEqual(["SSH_PRIVATE_KEY"]);
+    expect(JSON.stringify(user)).not.toContain("topsecret");
+  });
+
+  it("scopes secrets per user", () => {
+    const { store, ownerId } = makeStore();
+    const other = store.createUser({ username: "secother", displayName: "Other", password: "password123" });
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "mine");
+    expect(store.getUserSecrets(other.id)).toEqual({});
+  });
+
+  it("skips entries that fail to decrypt (e.g. SESSION_SECRET changed)", () => {
+    const { store, ownerId } = makeStore();
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "v1");
+    // Re-open the same DB with a different secret: the stored value can't decrypt.
+    const { store: store2 } = createServices({
+      dataDir: path.join(tempDir, "secrets"),
+      agentRuntime: "local",
+      sessionSecret: "different",
+    });
+    expect(store2.getUserSecrets(ownerId)).toEqual({});
+    // The name is still listed (only decryption fails, the row exists).
+    expect(store2.listUserSecretNames(ownerId)).toEqual(["SSH_PRIVATE_KEY"]);
+  });
+});
+
+describe("store agent session resume", () => {
+  function makeStore() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "sess"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "sowner", displayName: "Owner", password: "password123" });
+    return { store, ownerId: owner.id };
+  }
+
+  it("returns null before any session is recorded", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-1", ownerId, "hi");
+    expect(store.getAgentSessionId(ownerId, "conv-1")).toBeNull();
+  });
+
+  it("round-trips the session id and overwrites on the next turn", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-2", ownerId, "hi");
+    store.setAgentSessionId("conv-2", "sess-aaa");
+    expect(store.getAgentSessionId(ownerId, "conv-2")).toBe("sess-aaa");
+    store.setAgentSessionId("conv-2", "sess-bbb");
+    expect(store.getAgentSessionId(ownerId, "conv-2")).toBe("sess-bbb");
+  });
+
+  it("does not leak a session id across owners", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-3", ownerId, "hi");
+    store.setAgentSessionId("conv-3", "sess-ccc");
+    const other = store.createUser({ username: "other", displayName: "Other", password: "password123" });
+    expect(store.getAgentSessionId(other.id, "conv-3")).toBeNull();
+  });
+});
+
+describe("interpretResult", () => {
+  it("returns the text of a successful result", () => {
+    expect(interpretResult({ type: "result", subtype: "success", result: "hi" })).toEqual({
+      text: "hi",
+    });
+  });
+
+  it("flags an error result (no result field, e.g. max turns)", () => {
+    const r = interpretResult({
+      type: "result",
+      subtype: "error_max_turns",
+      errors: ["Reached maximum number of turns (6)"],
+    });
+    expect(r.errorSubtype).toBe("error_max_turns");
+    expect(r.text).toBeUndefined();
+  });
+
+  it("ignores non-result messages", () => {
+    expect(interpretResult({ type: "assistant" })).toEqual({});
+    expect(interpretResult(null)).toEqual({});
+  });
+
+  it("maps max-turns to a friendly Korean message, not the raw SDK string", () => {
+    const msg = resultErrorMessage("error_max_turns");
+    expect(msg).toContain("최대 처리 단계");
+    expect(msg).not.toContain("maximum number of turns");
+  });
+});
+
+describe("buildPrompt", () => {
+  const avatar = (over = {}) => ({ id: "a1", displayName: "도우미", alias: "", persona: "", ...over });
+  const req = (over = {}) => ({ message: "안녕", avatar: avatar(), ...over });
+
+  it("opens with displayName when no alias is set", () => {
+    const p = buildPrompt(req(), 0);
+    expect(p).toContain('"도우미" 아바타로서');
+    expect(p).not.toContain("당신의 이름은");
+  });
+
+  it("gives the avatar its alias as a self-name when set", () => {
+    const p = buildPrompt(req({ avatar: avatar({ alias: "세바스찬" }) }), 0);
+    expect(p).toContain('당신의 이름은 "세바스찬"입니다');
+    // displayName no longer seeds the opening line.
+    expect(p).not.toContain('"도우미" 아바타로서');
+  });
+
+  it("treats a whitespace-only alias as unset", () => {
+    const p = buildPrompt(req({ avatar: avatar({ alias: "   " }) }), 0);
+    expect(p).toContain('"도우미" 아바타로서');
+    expect(p).not.toContain("당신의 이름은");
+  });
+
+  it("names the owner in the prompt when the viewer is the owner", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    expect(p).toContain("소유자");
+    expect(p).toContain('"신진영"님');
+  });
+
+  it("names the colleague in the prompt for a non-owner viewer", () => {
+    const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
+    expect(p).toContain("동료");
+    expect(p).toContain('"김철수"님');
+    expect(p).toContain("읽기 전용");
+  });
+
+  it("does not mark the chat read-only for a trusted (elevated) non-owner viewer", () => {
+    const p = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
+    expect(p).toContain("동료");
+    expect(p).not.toContain("읽기 전용");
+    expect(p).toContain("신뢰하는 사용자");
+  });
+
+  it("falls back to the unnamed wording when viewerName is absent", () => {
+    const owner = buildPrompt(req({ viewerIsOwner: true }), 0);
+    expect(owner).toContain("**소유자**입니다.");
+    const colleague = buildPrompt(req({ viewerIsOwner: false }), 0);
+    expect(colleague).toContain("**동료**입니다.");
+  });
+
+  it("does not append the user message on a greeting turn", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영", greeting: true }), 2);
+    expect(p).not.toContain("사용자 메시지:");
+    // The pending-request count is surfaced in the greeting.
+    expect(p).toContain("2");
   });
 });
 
@@ -241,22 +846,8 @@ describe("knowledge tools", () => {
     expect(KNOWLEDGE_SERVER_NAME).toBe("knowledge");
     const { store, ownerId } = makeStore();
     const names = buildKnowledgeTools(store, ownerCtx(ownerId)).map((t) => t.name);
-    expect(names).toEqual(["recall_knowledge", "request_info", "pending_requests", "save_knowledge"]);
-    expect(KNOWLEDGE_TOOL_NAMES).toContain("mcp__knowledge__recall_knowledge");
-  });
-
-  it("recall_knowledge returns a miss then a hit", async () => {
-    const { store, ownerId } = makeStore();
-    const tools = buildKnowledgeTools(store, visitorCtx(ownerId));
-
-    const miss = await call(tools, "recall_knowledge", { query: "출시" });
-    expect(miss.content[0].text).toContain("관련된 저장 지식이 없습니다");
-
-    store.addKnowledgeEntry(ownerId, { topic: "출시", content: "6월 20일에 출시합니다." });
-    const hit = await call(tools, "recall_knowledge", { query: "출시" });
-    expect(hit.content[0].text).toContain("저장된 지식 1건");
-    expect(hit.content[0].text).toContain("[출시]");
-    expect(hit.content[0].text).toContain("6월 20일");
+    expect(names).toEqual(["request_info", "pending_requests", "resolve_request"]);
+    expect(KNOWLEDGE_TOOL_NAMES).toContain("mcp__knowledge__request_info");
   });
 
   it("request_info records a request attributed to the asker", async () => {
@@ -289,40 +880,168 @@ describe("knowledge tools", () => {
     expect(listed.content[0].text).toContain("동료C");
   });
 
-  it("save_knowledge enforces ownership and handles each save path", async () => {
+  it("resolve_request is owner-only and closes an open request", async () => {
     const { store, ownerId } = makeStore();
 
     // Non-owner is refused.
-    const denied = await call(buildKnowledgeTools(store, visitorCtx(ownerId)), "save_knowledge", {
-      answer: "x",
+    const denied = await call(buildKnowledgeTools(store, visitorCtx(ownerId)), "resolve_request", {
+      request_id: "x",
     });
     expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toContain("아바타 소유자만");
 
-    const tools = buildKnowledgeTools(store, ownerCtx(ownerId));
+    const ownerTools = buildKnowledgeTools(store, ownerCtx(ownerId));
 
-    // Unknown request id → error.
-    const bad = await call(tools, "save_knowledge", { answer: "a", request_id: "ghost" });
+    // Unknown / already-handled id → error.
+    const bad = await call(ownerTools, "resolve_request", { request_id: "ghost" });
     expect(bad.isError).toBe(true);
     expect(bad.content[0].text).toContain("찾을 수 없습니다");
 
-    // Answering a real request resolves it and stores knowledge.
-    const req = store.addKnowledgeRequest(ownerId, { question: "출시일?" });
-    const resolved = await call(tools, "save_knowledge", { answer: "6월 20일", request_id: req.id });
-    expect(resolved.isError).toBeFalsy();
-    expect(resolved.content[0].text).toContain("출시일?");
+    // A real open request is resolved and no longer listed as open.
+    const req = store.addKnowledgeRequest(ownerId, { question: "넘길 질문", askerName: "동료D" });
+    const ok = await call(ownerTools, "resolve_request", { request_id: req.id });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content[0].text).toContain("처리 완료");
     expect(store.listKnowledgeRequests(ownerId, "open")).toHaveLength(0);
+    expect(store.listKnowledgeRequests(ownerId, "resolved")).toHaveLength(1);
+  });
+});
 
-    // Free-form save with a topic.
-    const withTopic = await call(tools, "save_knowledge", { answer: "오전 선호", question: "회의" });
-    expect(withTopic.content[0].text).toContain("주제: 회의");
+describe("repo tools (knowledge-repo management)", () => {
+  function call(tools: ReturnType<typeof buildRepoTools>, name: string, args: unknown): Promise<ToolResult> {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} not found`);
+    return (t.handler as (a: unknown, extra: unknown) => Promise<ToolResult>)(args, {});
+  }
 
-    // Free-form save without a topic.
-    const noTopic = await call(tools, "save_knowledge", { answer: "그냥 메모" });
-    expect(noTopic.content[0].text).toContain("저장했습니다");
-    expect(noTopic.content[0].text).not.toContain("주제:");
+  // A store + owner pointed at a local bare git remote, so commit/push works
+  // offline. Returns the config so tools can resolve the clone path.
+  function setup(dir: string) {
+    const dataDir = path.join(tempDir, dir);
+    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    // A bare remote + an initial commit so `ensureClone` has a branch to track.
+    const remote = path.join(tempDir, dir, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" });
+    const seed = path.join(tempDir, dir, "seed");
+    gitInit(seed);
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("branch", "-M", "main");
+    g("remote", "add", "origin", remote);
+    g("push", "-q", "origin", "main");
+    store.setKnowledgeRepo(owner.id, remote, "main");
+    store.setGitToken(owner.id, "tok"); // gate for commit; local file remote ignores it
+    const owns = { id: owner.id, username: "owner", displayName: "Owner" };
+    return { store, config, ownerId: owner.id, owner: owns };
+  }
 
-    // All three saves are searchable.
-    expect(store.searchKnowledge(ownerId, "20일").length).toBeGreaterThan(0);
+  function ownerTools(s: ReturnType<typeof setup>) {
+    return buildRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: true,
+      config: s.config,
+    });
+  }
+
+  it("exposes the documented server + tool names", () => {
+    expect(REPO_SERVER_NAME).toBe("repo");
+    expect(REPO_TOOL_NAMES).toContain("mcp__repo__write_file");
+    const s = setup("rt0");
+    const names = ownerTools(s).map((t) => t.name);
+    expect(names).toEqual(["list_files", "read_file", "write_file", "scaffold_skill", "commit"]);
+  });
+
+  it("refuses every tool for a non-owner viewer", async () => {
+    const s = setup("rt1");
+    const tools = buildRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: false,
+      config: s.config,
+    });
+    for (const name of ["list_files", "read_file", "write_file", "scaffold_skill", "commit"]) {
+      const res = await call(tools, name, { path: "x", content: "y", name: "x", message: "m" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("아바타 소유자만");
+    }
+  });
+
+  it("errors clearly when no knowledge repo is configured", async () => {
+    const dataDir = path.join(tempDir, "rt2");
+    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "o", displayName: "O", password: "password123" });
+    const tools = buildRepoTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: "o", displayName: "O" },
+      viewerIsOwner: true,
+      config,
+    });
+    const res = await call(tools, "list_files", {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("지식 저장소가 설정되지 않았습니다");
+  });
+
+  it("writes, scaffolds, lists, reads, then commits & pushes", async () => {
+    const s = setup("rt3");
+    const tools = ownerTools(s);
+
+    const w = await call(tools, "write_file", { path: "notes/onboarding.md", content: "# 온보딩\n절차" });
+    expect(w.isError).toBeFalsy();
+    expect(w.content[0].text).toContain("아직 커밋되지 않았습니다");
+
+    const sk = await call(tools, "scaffold_skill", { name: "Deploy Runbook", description: "배포" });
+    expect(sk.content[0].text).toContain("skills/deploy-runbook/SKILL.md");
+
+    const ls = await call(tools, "list_files", {});
+    expect(ls.content[0].text).toContain("notes/onboarding.md");
+    expect(ls.content[0].text).toContain("skills/deploy-runbook/SKILL.md");
+
+    const rd = await call(tools, "read_file", { path: "notes/onboarding.md" });
+    expect(rd.content[0].text).toContain("# 온보딩");
+
+    const commit = await call(tools, "commit", { message: "지식 추가" });
+    expect(commit.isError).toBeFalsy();
+    expect(commit.content[0].text).toContain("커밋하고 푸시");
+
+    // A second commit with no changes reports nothing to commit.
+    const noop = await call(tools, "commit", { message: "재시도" });
+    expect(noop.content[0].text).toContain("변경사항이 없습니다");
+
+    // The push reached the remote — clone it fresh and verify the file landed.
+    const verify = path.join(tempDir, "rt3", "verify");
+    const { repo } = s.store.getKnowledgeRepo(s.ownerId) as { repo: string };
+    execFileSync("git", ["clone", "-q", repo, verify], { stdio: "pipe" });
+    expect(fs.existsSync(path.join(verify, "notes/onboarding.md"))).toBe(true);
+  });
+
+  it("never pushes the load-time hex-ssh strip back to the user's repo", async () => {
+    const s = setup("rt-strip");
+    const ctx = knowledgeRepoContextFor(s.store, s.ownerId, s.config)!;
+    // Seed the remote with a committed .mcp.json containing the keyless hex-ssh,
+    // exactly like the ops plugin ships it.
+    const original = {
+      "hex-ssh": { command: "npx", args: ["-y", "@levnikolaevich/hex-ssh-mcp"] },
+    };
+    const clone = knowledgeClonePath(s.ownerId, s.config);
+    await ensureClone(ctx);
+    fs.writeFileSync(path.join(clone, ".mcp.json"), JSON.stringify(original, null, 2));
+    await commitAndPush(ctx, "seed mcp", { name: "Owner", email: "o@x.local" });
+
+    // Simulate a chat turn: load-time strip removes hex-ssh from the working tree.
+    await stripManagedMcpServers(clone);
+    expect(JSON.parse(fs.readFileSync(path.join(clone, ".mcp.json"), "utf8"))).toEqual({});
+
+    // The avatar then commits an unrelated edit. commitAndPush must restore
+    // .mcp.json from HEAD first, so the strip is NOT pushed.
+    fs.writeFileSync(path.join(clone, "note.md"), "hi");
+    await commitAndPush(ctx, "add note", { name: "Owner", email: "o@x.local" });
+
+    // Fresh clone of the remote: .mcp.json still has hex-ssh, note.md landed.
+    const verify = path.join(tempDir, "rt-strip", "verify");
+    execFileSync("git", ["clone", "-q", ctx.repo, verify], { stdio: "pipe" });
+    expect(JSON.parse(fs.readFileSync(path.join(verify, ".mcp.json"), "utf8"))).toEqual(original);
+    expect(fs.existsSync(path.join(verify, "note.md"))).toBe(true);
   });
 });
 
@@ -462,5 +1181,266 @@ describe("routine jobs", () => {
     store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 10 });
     expect(store.deleteUser(ownerId)).toBe(true);
     expect(store.listRoutineJobs(ownerId)).toHaveLength(0);
+  });
+});
+
+describe("trusted users", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const friend = store.createUser({ username: "friend", displayName: "Friend", password: "password123" });
+    const stranger = store.createUser({ username: "stranger", displayName: "Stranger", password: "password123" });
+    return { store, ownerId: owner.id, friendId: friend.id, strangerId: stranger.id };
+  }
+
+  it("grants and revokes trust by username; isTrustedFor reflects it", () => {
+    const { store, ownerId, friendId } = makeStore("tu1");
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
+    const added = store.addTrustedUser(ownerId, "friend");
+    expect(added?.id).toBe(friendId);
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
+    expect(store.listTrustedUsers(ownerId).map((t) => t.id)).toEqual([friendId]);
+    // Idempotent: adding again doesn't duplicate.
+    store.addTrustedUser(ownerId, "friend");
+    expect(store.listTrustedUsers(ownerId)).toHaveLength(1);
+    expect(store.removeTrustedUser(ownerId, friendId)).toBe(true);
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
+  });
+
+  it("rejects trusting a nonexistent user or oneself", () => {
+    const { store, ownerId } = makeStore("tu2");
+    expect(store.addTrustedUser(ownerId, "nobody")).toBeNull();
+    expect(store.addTrustedUser(ownerId, "owner")).toBeNull();
+    expect(store.listTrustedUsers(ownerId)).toHaveLength(0);
+  });
+
+  it("trust is directional: trusting A doesn't let A's avatar be reached by the owner", () => {
+    const { store, ownerId, friendId } = makeStore("tu3");
+    store.addTrustedUser(ownerId, "friend");
+    // friend is trusted FOR owner's avatar, not the reverse.
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
+    expect(store.isTrustedFor(ownerId, friendId)).toBe(false);
+  });
+
+  it("a trusted user can resolve/see an UNPUBLISHED avatar; a stranger cannot", () => {
+    const { store, ownerId, friendId, strangerId } = makeStore("tu4");
+    // owner's avatar is unpublished by default.
+    expect(store.resolveChatAvatar(strangerId, ownerId)).toBeNull();
+    expect(store.getAvatar(strangerId, ownerId)).toBeNull();
+    store.addTrustedUser(ownerId, "friend");
+    expect(store.resolveChatAvatar(friendId, ownerId)?.id).toBe(ownerId);
+    const detail = store.getAvatar(friendId, ownerId);
+    expect(detail?.elevated).toBe(true);
+    expect(detail?.isOwn).toBe(false);
+  });
+
+  it("deleting a user clears trust rows in both directions", () => {
+    const { store, ownerId, friendId } = makeStore("tu5");
+    store.addTrustedUser(ownerId, "friend");
+    expect(store.deleteUser(friendId)).toBe(true);
+    expect(store.listTrustedUsers(ownerId)).toHaveLength(0);
+  });
+});
+
+describe("buildPreToolUseHook auto-approve safety contract", () => {
+  const READONLY = ["Read", "Glob", "Grep"];
+  // Invoke the hook for a non-read-only tool and return the permission decision.
+  // `elevated` = owner OR trusted user (the tool-permission level).
+  const decide = (
+    opts: { elevated: boolean; headless: boolean; autoApprove: boolean },
+    events: AgentEvents = {},
+  ) => {
+    const hook = buildPreToolUseHook(events, opts.elevated, READONLY, opts.headless, opts.autoApprove);
+    return hook({ tool_name: "Bash", tool_input: { command: "rm -rf /" }, tool_use_id: "t1" }, "t1");
+  };
+
+  it("auto-approves a write tool for a present elevated viewer who opted in (no prompt)", async () => {
+    let prompted = false;
+    const out = await decide(
+      { elevated: true, headless: false, autoApprove: true },
+      { onPermission: async () => { prompted = true; return { behavior: "allow" }; } },
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(prompted).toBe(false); // auto-approve must short-circuit the prompt
+  });
+
+  it("still prompts an elevated viewer when auto-approve is off", async () => {
+    let prompted = false;
+    const out = await decide(
+      { elevated: true, headless: false, autoApprove: false },
+      { onPermission: async () => { prompted = true; return { behavior: "deny" }; } },
+    );
+    expect(prompted).toBe(true);
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("NEVER auto-approves a headless run, even with autoApprove=true", async () => {
+    const out = await decide({ elevated: true, headless: true, autoApprove: true });
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("NEVER auto-approves a non-elevated colleague, even with autoApprove=true", async () => {
+    const out = await decide({ elevated: false, headless: false, autoApprove: true });
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+  });
+
+  it("auto-allows a read-only tool regardless of autoApprove", async () => {
+    const hook = buildPreToolUseHook({}, false, READONLY, false, false);
+    const out = await hook({ tool_name: "Read", tool_input: { file_path: "/x" }, tool_use_id: "t2" }, "t2");
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+  });
+});
+
+describe("secret encryption", () => {
+  const SECRET = "session-secret-key";
+
+  it("round-trips a secret and authenticates it", () => {
+    const enc = encryptSecret("ghp_token123", SECRET);
+    expect(enc).not.toContain("ghp_token123");
+    expect(enc.startsWith("v1:")).toBe(true);
+    expect(decryptSecret(enc, SECRET)).toBe("ghp_token123");
+  });
+
+  it("produces a different ciphertext each time (random salt/iv)", () => {
+    const a = encryptSecret("same", SECRET);
+    const b = encryptSecret("same", SECRET);
+    expect(a).not.toBe(b);
+    expect(decryptSecret(a, SECRET)).toBe("same");
+    expect(decryptSecret(b, SECRET)).toBe("same");
+  });
+
+  it("fails closed on the wrong key, tampering, or garbage", () => {
+    const enc = encryptSecret("secret", SECRET);
+    expect(decryptSecret(enc, "wrong-key")).toBeNull();
+    // Tamper with the ciphertext segment — the GCM tag must reject it.
+    const parts = enc.split(":");
+    const data = Buffer.from(parts[4], "base64url");
+    data[0] ^= 0xff;
+    parts[4] = data.toString("base64url");
+    expect(decryptSecret(parts.join(":"), SECRET)).toBeNull();
+    expect(decryptSecret("not-a-token", SECRET)).toBeNull();
+    expect(decryptSecret("", SECRET)).toBeNull();
+  });
+});
+
+describe("git token storage", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "a-secret",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, ownerId: owner.id };
+  }
+
+  it("stores the token encrypted and never leaks it through the User shape", () => {
+    const { store, ownerId } = makeStore("gt1");
+    const user = store.setGitToken(ownerId, "ghp_secretvalue");
+    // The public User shape exposes only a boolean flag, never the token.
+    expect(user.gitTokenSet).toBe(true);
+    expect(JSON.stringify(user)).not.toContain("ghp_secretvalue");
+    expect(JSON.stringify(store.getUserById(ownerId))).not.toContain("ghp_secretvalue");
+    // Server-side decryption recovers the plaintext for git auth.
+    expect(store.getGitToken(ownerId)).toBe("ghp_secretvalue");
+  });
+
+  it("clears the token", () => {
+    const { store, ownerId } = makeStore("gt2");
+    store.setGitToken(ownerId, "ghp_x");
+    const cleared = store.setGitToken(ownerId, null);
+    expect(cleared.gitTokenSet).toBe(false);
+    expect(store.getGitToken(ownerId)).toBeNull();
+  });
+
+  it("persists identity and knowledge repo settings", () => {
+    const { store, ownerId } = makeStore("gt3");
+    const u1 = store.setGitIdentity(ownerId, "Avatar Bot", "bot@example.com");
+    expect(u1.gitIdentityName).toBe("Avatar Bot");
+    expect(u1.gitIdentityEmail).toBe("bot@example.com");
+    const u2 = store.setKnowledgeRepo(ownerId, "me/knowledge", "main");
+    expect(u2.knowledgeRepo).toBe("me/knowledge");
+    expect(u2.knowledgeBranch).toBe("main");
+    expect(u2.knowledgeSelected).toBeNull();
+    expect(store.getKnowledgeRepo(ownerId)).toEqual({ repo: "me/knowledge", branch: "main", selected: null });
+  });
+
+  it("persists and clears the knowledge-repo plugin selection", () => {
+    const { store, ownerId } = makeStore("gt4");
+    store.setKnowledgeRepo(ownerId, "me/knowledge", "main");
+    const u1 = store.setKnowledgeSelected(ownerId, ["alpha", "beta"]);
+    expect(u1.knowledgeSelected).toEqual(["alpha", "beta"]);
+    expect(store.getKnowledgeRepo(ownerId).selected).toEqual(["alpha", "beta"]);
+    // null = "load all".
+    const u2 = store.setKnowledgeSelected(ownerId, null);
+    expect(u2.knowledgeSelected).toBeNull();
+    // Re-pointing at a repo resets the selection to "load all".
+    store.setKnowledgeSelected(ownerId, ["alpha"]);
+    const u3 = store.setKnowledgeRepo(ownerId, "me/other", null);
+    expect(u3.knowledgeSelected).toBeNull();
+  });
+});
+
+describe("knowledge repo file ops", () => {
+  it("rejects path traversal and absolute paths", () => {
+    const root = path.join(tempDir, "repo");
+    expect(resolveInRepo(root, "../etc/passwd")).toBeNull();
+    expect(resolveInRepo(root, "a/../../b")).toBeNull();
+    expect(resolveInRepo(root, "/etc/passwd")).toBeNull();
+    expect(resolveInRepo(root, ".git/config")).toBeNull();
+    // In-repo paths resolve under the root.
+    expect(resolveInRepo(root, "skills/foo/SKILL.md")).toBe(
+      path.join(root, "skills/foo/SKILL.md"),
+    );
+  });
+
+  it("refuses to read/write outside the repo", async () => {
+    const root = path.join(tempDir, "repo2");
+    fs.mkdirSync(root, { recursive: true });
+    await expect(readKnowledgeFile(root, "../escape.txt")).rejects.toThrow("INVALID_PATH");
+    await expect(writeKnowledgeFile(root, "../escape.txt", "x")).rejects.toThrow("INVALID_PATH");
+  });
+
+  it("rejects reads/writes that escape via a symlink in the clone", async () => {
+    const root = path.join(tempDir, "symrepo");
+    fs.mkdirSync(root, { recursive: true });
+    // A committed-style symlink pointing outside the repo.
+    const secret = path.join(tempDir, "outside-secret.txt");
+    fs.writeFileSync(secret, "TOPSECRET");
+    fs.symlinkSync(secret, path.join(root, "evil"));
+    await expect(readKnowledgeFile(root, "evil")).rejects.toThrow("INVALID_PATH");
+    // A symlinked directory ancestor must not let a write escape either.
+    fs.symlinkSync(tempDir, path.join(root, "outdir"));
+    await expect(writeKnowledgeFile(root, "outdir/pwned.txt", "x")).rejects.toThrow("INVALID_PATH");
+    expect(fs.existsSync(path.join(tempDir, "pwned.txt"))).toBe(false);
+    // A not-yet-existing path UNDER a symlinked ancestor is rejected before any
+    // dirs are created at the link target.
+    await expect(writeKnowledgeFile(root, "outdir/sub/deep.txt", "x")).rejects.toThrow("INVALID_PATH");
+    expect(fs.existsSync(path.join(tempDir, "sub"))).toBe(false);
+  });
+
+  it("scaffolds a skill with a SKILL.md and marketplace manifest entry", async () => {
+    const root = path.join(tempDir, "repo3");
+    fs.mkdirSync(root, { recursive: true });
+    const rel = await scaffoldSkill(root, "Deploy Runbook", "How to deploy");
+    expect(rel).toBe("skills/deploy-runbook/SKILL.md");
+    expect(fs.existsSync(path.join(root, rel))).toBe(true);
+    expect(fs.existsSync(path.join(root, "skills/deploy-runbook/.claude-plugin/plugin.json"))).toBe(true);
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(root, ".claude-plugin/marketplace.json"), "utf8"),
+    );
+    expect(manifest.plugins).toContainEqual({ name: "deploy-runbook", source: "./skills/deploy-runbook" });
+    // A second skill is appended, not duplicated.
+    await scaffoldSkill(root, "Other", "");
+    const manifest2 = JSON.parse(
+      fs.readFileSync(path.join(root, ".claude-plugin/marketplace.json"), "utf8"),
+    );
+    expect(manifest2.plugins).toHaveLength(2);
+    // Re-scaffolding an existing skill fails.
+    await expect(scaffoldSkill(root, "Deploy Runbook", "")).rejects.toThrow("SKILL_EXISTS");
   });
 });

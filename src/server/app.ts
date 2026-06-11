@@ -11,9 +11,23 @@ import {
   type AuthenticatedRequest,
 } from "./auth.js";
 import { loadConfig } from "./config.js";
-import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "./plugins.js";
+import logger from "./logger.js";
+import {
+  forgetClone,
+  inspectRepoContents,
+  knowledgeRepoSkillSources,
+  listSkillsInRoots,
+  loadAvatarPluginRoots,
+  loadDefaultPluginRoots,
+  loadKnowledgeRepoRoots,
+  pluginClonePath,
+  resolvePluginRoots,
+  syncPluginRepo,
+} from "./plugins.js";
+import { scrubGitError } from "./marketplace.js";
+import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
 import { Store } from "./store.js";
-import type { AgentResponse, AppConfig } from "./types.js";
+import type { AgentResponse, AppConfig, PluginRoot } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import { awaitResponse, closeRun, openRun, submitResponse, CANCELLED } from "./agent/runRegistry.js";
 import { executeRoutineJob, isRoutineRunning } from "./scheduler.js";
@@ -91,6 +105,10 @@ function sseSend(res: Response, event: string, data: unknown): boolean {
 
 export function createApp(services = createServices()) {
   const { config, store } = services;
+  // The model the SDK last reported via its `init` event. Null until the first
+  // Claude run reports one; the admin "system info" view surfaces it alongside
+  // the configured model so an operator can confirm what actually ran.
+  let observedModel: string | null = null;
   const app = express();
   app.use(express.json({ limit: "3mb" }));
   app.use(
@@ -108,6 +126,29 @@ export function createApp(services = createServices()) {
   });
 
   app.use(express.static(path.join(process.cwd(), "public")));
+
+  // ---- Request logging ----------------------------------------------------
+  app.use((req, res, next) => {
+    if (!req.path.startsWith("/api/")) {
+      next();
+      return;
+    }
+    const start = Date.now();
+    res.on("finish", () => {
+      const duration = Date.now() - start;
+      logger.info(
+        {
+          method: req.method,
+          path: req.path,
+          status: res.statusCode,
+          durationMs: duration,
+          userId: (req as AuthenticatedRequest).user?.id ?? null,
+        },
+        "request",
+      );
+    });
+    next();
+  });
 
   // ---- Auth ------------------------------------------------------------
 
@@ -142,6 +183,7 @@ export function createApp(services = createServices()) {
       status: "success",
       detail: `signup as ${user.roles.join("/")}`,
     });
+    logger.info({ userId: user.id, username: user.username }, "signup");
     res.status(201).json({ user });
   });
 
@@ -162,12 +204,17 @@ export function createApp(services = createServices()) {
       status: "success",
       detail: "login",
     });
+    logger.info({ userId: user.id, username: user.username }, "login");
     res.json({ user });
   });
 
   app.post("/api/auth/logout", (req, res) => {
+    const user = store.getUserBySessionToken(sessionTokenFromRequest(req));
     store.revokeSession(sessionTokenFromRequest(req));
     clearSessionCookie(res);
+    if (user) {
+      logger.info({ userId: user.id, username: user.username }, "logout");
+    }
     res.json({ ok: true });
   });
 
@@ -185,13 +232,144 @@ export function createApp(services = createServices()) {
   // ---- Profile ---------------------------------------------------------
 
   app.patch("/api/me", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    const patch: { displayName?: string; bio?: string; persona?: string; published?: boolean } = {};
+    const patch: { displayName?: string; alias?: string; bio?: string; persona?: string; intro?: string; published?: boolean } = {};
     if (typeof req.body?.displayName === "string") patch.displayName = req.body.displayName;
+    if (typeof req.body?.alias === "string") patch.alias = req.body.alias;
     if (typeof req.body?.bio === "string") patch.bio = req.body.bio;
     if (typeof req.body?.persona === "string") patch.persona = req.body.persona;
+    if (typeof req.body?.intro === "string") patch.intro = req.body.intro;
     if (typeof req.body?.published === "boolean") patch.published = req.body.published;
     const user = store.updateProfile(req.user!.id, patch);
     res.json({ user });
+  });
+
+  // ---- Trusted users ---------------------------------------------------
+  // The owner designates users who may chat with their avatar at the owner's
+  // tool-permission level (write/Bash run, not just read-only). Trust does NOT
+  // grant the owner-only knowledge inbox or greeting (see AgentRequest.elevated).
+
+  app.get("/api/me/trusted", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({ trusted: store.listTrustedUsers(req.user!.id) });
+  });
+
+  app.post("/api/me/trusted", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const username = safeString(req.body?.username);
+    if (!username) {
+      apiError(res, 400, "사용자 이름을 입력해 주세요.");
+      return;
+    }
+    const added = store.addTrustedUser(req.user!.id, username);
+    if (!added) {
+      apiError(res, 404, "해당 사용자를 찾을 수 없거나 자기 자신은 추가할 수 없습니다.");
+      return;
+    }
+    res.json({ trusted: store.listTrustedUsers(req.user!.id), added });
+  });
+
+  app.delete("/api/me/trusted/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    store.removeTrustedUser(req.user!.id, req.params.id);
+    res.json({ trusted: store.listTrustedUsers(req.user!.id) });
+  });
+
+  // Generate a first-person self-introduction for the owner's avatar. The
+  // avatar inspects its own persona + skills and writes a short blurb the owner
+  // then reviews/edits before saving (this endpoint does NOT persist it). Runs
+  // headless and read-only, like a routine — no human is mid-conversation.
+  app.post("/api/me/intro/generate", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const avatar = store.resolveChatAvatar(req.user!.id, req.user!.id);
+    if (!avatar) {
+      apiError(res, 404, "아바타를 찾을 수 없습니다.");
+      return;
+    }
+
+    // The local runtime loads no plugins and can't introspect skills; return a
+    // deterministic placeholder so the feature still works offline/in tests.
+    if (config.agentRuntime === "local") {
+      const name = avatar.alias || avatar.displayName;
+      res.json({ intro: `안녕하세요, ${name}입니다. 무엇이든 편하게 물어보세요.` });
+      return;
+    }
+
+    // Resolve plugin roots and their skills exactly like the skills endpoint,
+    // so the intro reflects what the avatar can actually do.
+    const sourced: { path: string; source: string }[] = [];
+    for (const root of await loadDefaultPluginRoots(config)) {
+      sourced.push({ path: root.path, source: "default" });
+    }
+    const gitToken = store.getGitToken(avatar.id);
+    const enabledPlugins = store.listEnabledPlugins(avatar.id);
+    for (const plugin of enabledPlugins) {
+      try {
+        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitToken);
+        const label = plugin.label ?? plugin.repo;
+        for (const root of await resolvePluginRoots(dir, plugin.repo, undefined, plugin.selected)) {
+          sourced.push({ path: root, source: label });
+        }
+      } catch {
+        /* a plugin that won't resolve just contributes no skills */
+      }
+    }
+    // The avatar's own knowledge repo, so the intro reflects skills it accumulated.
+    sourced.push(...(await knowledgeRepoSkillSources(knowledgeRepoContextFor(store, avatar.id, config))));
+    const skills = await listSkillsInRoots(sourced);
+    const pluginRoots: PluginRoot[] = sourced.map((s) => ({ type: "local", path: s.path }));
+
+    // Describe the avatar's equipment so it can ground the intro in reality
+    // rather than inventing capabilities.
+    const skillLines = skills.length
+      ? skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`).join("\n")
+      : "(등록된 스킬 없음)";
+    const pluginLines = enabledPlugins.length
+      ? enabledPlugins.map((p) => `- ${p.label || p.repo}`).join("\n")
+      : "(연결된 플러그인 없음)";
+    const personaLine = avatar.persona?.trim()
+      ? `\n\n참고용 페르소나/지침:\n${avatar.persona.trim()}`
+      : "";
+    const message =
+      "당신은 자기 자신을 소개하는 짧은 글을 작성합니다. 대화 상대(동료)가 당신과 대화를 시작하기 전에 읽을 소개글입니다.\n\n" +
+      "다음 정보를 바탕으로, 1인칭 시점으로 '당신이 무엇을 도와줄 수 있는지'를 중심으로 자기소개를 작성하세요. " +
+      "갖춘 스킬·도구를 근거로 구체적인 역량을 드러내되 과장하지 마세요.\n\n" +
+      "마크다운 형식으로 출력하세요. 한두 문장의 짧은 인사 문단으로 시작한 뒤, " +
+      "주요 역량은 불릿 목록(`- `)으로 정리하세요. 각 불릿은 '무엇을 도울 수 있는지' 한 줄로 쓰고, " +
+      "필요하면 굵게(`**`)로 핵심 키워드를 강조하세요. 마크다운 제목(`#`)·코드블록·따옴표 감싸기는 쓰지 말고, " +
+      "소개 본문만 출력하세요.\n\n" +
+      `사용 가능한 스킬:\n${skillLines}\n\n연결된 플러그인:\n${pluginLines}${personaLine}`;
+
+    const workspaceDir = path.join(config.dataDir, "workspaces", avatar.id);
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
+    const abortController = new AbortController();
+    const deadline = setTimeout(() => abortController.abort(), 2 * 60 * 1000);
+    try {
+      const response = await runAgentStream(
+        {
+          message,
+          avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
+          cwd: workspaceDir,
+          viewerUserId: avatar.id,
+          viewerName: avatar.displayName,
+          viewerIsOwner: true,
+          headless: true,
+        },
+        pluginRoots,
+        config,
+        store,
+        {},
+        abortController,
+      );
+      const intro = (response.text || response.summary || "").trim();
+      if (!intro) {
+        apiError(res, 502, "소개글을 생성하지 못했습니다. 다시 시도해 주세요.");
+        return;
+      }
+      res.json({ intro });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logger.warn({ userId: req.user!.id, detail }, "intro generation failed");
+      apiError(res, 502, "소개글 생성 중 오류가 발생했습니다.");
+    } finally {
+      clearTimeout(deadline);
+    }
   });
 
   app.put("/api/me/avatar-image", requireAuth(store), (req: AuthenticatedRequest, res) => {
@@ -268,20 +446,86 @@ export function createApp(services = createServices()) {
     const ref = safeString(req.body?.ref) || undefined;
     const label = safeString(req.body?.label) || undefined;
     const plugin = store.addPlugin(req.user!.id, { repo, ref, label });
+    logger.info({ userId: req.user!.id, pluginId: plugin.id, repo }, "plugin added");
     res.json({ plugin });
   });
 
   app.patch("/api/me/plugins/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    if (typeof req.body?.enabled !== "boolean") {
-      apiError(res, 400, "enabled(boolean)가 필요합니다.");
+    const userId = req.user!.id;
+    const id = req.params.id;
+    const body = req.body ?? {};
+    const hasEnabled = typeof body.enabled === "boolean";
+    const hasSelected = "selected" in body;
+    const hasRef = "ref" in body;
+    if (!hasEnabled && !hasSelected && !hasRef) {
+      apiError(res, 400, "enabled(boolean), selected(배열|null), 또는 ref(문자열|null) 중 하나가 필요합니다.");
       return;
     }
-    const plugin = store.setPluginEnabled(req.user!.id, req.params.id, req.body.enabled);
+    // Validate `selected`: null (= load all) or an array of plugin-name strings.
+    let selected: string[] | null | undefined;
+    if (hasSelected) {
+      const raw = body.selected;
+      if (raw === null) {
+        selected = null;
+      } else if (Array.isArray(raw) && raw.every((s) => typeof s === "string")) {
+        selected = raw as string[];
+      } else {
+        apiError(res, 400, "selected는 문자열 배열이거나 null이어야 합니다.");
+        return;
+      }
+    }
+    if (!store.getPlugin(userId, id)) {
+      apiError(res, 404, "플러그인을 찾을 수 없습니다.");
+      return;
+    }
+    let plugin = store.getPlugin(userId, id);
+    if (hasEnabled) {
+      plugin = store.setPluginEnabled(userId, id, body.enabled);
+    }
+    if (hasSelected) {
+      plugin = store.setPluginSelected(userId, id, selected ?? null);
+    }
+    if (hasRef) {
+      plugin = store.setPluginRef(userId, id, safeString(body.ref) || null);
+      // Drop the clone cache so the next sync checks out the new ref.
+      forgetClone(pluginClonePath(userId, plugin!.repo, config));
+    }
+    res.json({ plugin });
+  });
+
+  // List the plugins a repo contains (clones/caches it), for the selection UI.
+  app.get("/api/me/plugins/:id/contents", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const plugin = store.getPlugin(req.user!.id, req.params.id);
     if (!plugin) {
       apiError(res, 404, "플러그인을 찾을 수 없습니다.");
       return;
     }
-    res.json({ plugin });
+    try {
+      const dir = await syncPluginRepo(req.user!.id, plugin, config, false, store.getGitToken(req.user!.id));
+      store.markPluginSynced(req.user!.id, req.params.id);
+      const contents = await inspectRepoContents(dir);
+      res.json({ contents });
+    } catch (error) {
+      const detail = scrubGitError(error);
+      apiError(res, 502, `저장소를 가져오지 못했습니다: ${detail}`);
+    }
+  });
+
+  // Force-refresh a plugin's clone (git fetch + checkout), bypassing the cache.
+  app.post("/api/me/plugins/:id/refresh", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const plugin = store.getPlugin(req.user!.id, req.params.id);
+    if (!plugin) {
+      apiError(res, 404, "플러그인을 찾을 수 없습니다.");
+      return;
+    }
+    try {
+      await syncPluginRepo(req.user!.id, plugin, config, true, store.getGitToken(req.user!.id));
+      const updated = store.markPluginSynced(req.user!.id, req.params.id);
+      res.json({ plugin: updated });
+    } catch (error) {
+      const detail = scrubGitError(error);
+      apiError(res, 502, `새로고침 실패: ${detail}`);
+    }
   });
 
   app.delete("/api/me/plugins/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
@@ -290,74 +534,177 @@ export function createApp(services = createServices()) {
       apiError(res, 404, "플러그인을 찾을 수 없습니다.");
       return;
     }
+    logger.info({ userId: req.user!.id, pluginId: req.params.id }, "plugin removed");
     res.json({ ok: true });
   });
 
-  // ---- Knowledge (owner's gap inbox + taught facts) --------------------
+  // ---- Git credentials & personal knowledge repo ----------------------
+  // The knowledge repo is browsed/edited/committed by the AVATAR via chat (the
+  // owner-only `mcp__repo__*` tools), not here — these routes only store the
+  // token, the commit identity, and the repo location.
+
+  // Set (or clear) the user's personal GitHub token. Write-only: the token is
+  // never returned — `user.gitTokenSet` reflects whether one is stored.
+  app.put("/api/me/git-token", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+    if (!token) {
+      apiError(res, 400, "token을 입력해 주세요.");
+      return;
+    }
+    const user = store.setGitToken(req.user!.id, token);
+    logger.info({ userId: req.user!.id }, "git token set");
+    res.json({ user });
+  });
+
+  app.delete("/api/me/git-token", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const user = store.setGitToken(req.user!.id, null);
+    logger.info({ userId: req.user!.id }, "git token cleared");
+    res.json({ user });
+  });
+
+  // Per-user secrets: named values (e.g. SSH_PRIVATE_KEY) encrypted at rest and
+  // injected ONLY into the avatar's MCP subprocess env — never returned to the
+  // client or visible to the agent. `user.secretNames` lists which are set.
+  // The name must be a valid env-var key so it can be passed through as-is.
+  const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
+
+  app.put("/api/me/secrets/:name", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const name = String(req.params.name || "");
+    if (!SECRET_NAME_RE.test(name)) {
+      apiError(res, 400, "secret 이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다.");
+      return;
+    }
+    const value = typeof req.body?.value === "string" ? req.body.value : "";
+    if (!value) {
+      apiError(res, 400, "value를 입력해 주세요.");
+      return;
+    }
+    store.setUserSecret(req.user!.id, name, value);
+    logger.info({ userId: req.user!.id, name }, "user secret set");
+    res.json({ user: store.getUserById(req.user!.id) });
+  });
+
+  app.delete("/api/me/secrets/:name", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const name = String(req.params.name || "");
+    store.deleteUserSecret(req.user!.id, name);
+    logger.info({ userId: req.user!.id, name }, "user secret cleared");
+    res.json({ user: store.getUserById(req.user!.id) });
+  });
+
+  // Set the commit author identity used for knowledge-repo commits.
+  app.put("/api/me/git-identity", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const name = safeString(req.body?.name) || null;
+    const email = safeString(req.body?.email) || null;
+    if (email && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      apiError(res, 400, "email 형식이 올바르지 않습니다.");
+      return;
+    }
+    const user = store.setGitIdentity(req.user!.id, name, email);
+    res.json({ user });
+  });
+
+  // Point the user at a personal knowledge repo (owner/repo or git URL). The
+  // avatar manages the repo's contents itself via chat; this only stores where
+  // it lives. An empty/null repo clears it.
+  app.put("/api/me/knowledge-repo", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const repoRaw = req.body?.repo;
+    if (repoRaw === null || repoRaw === "") {
+      const user = store.setKnowledgeRepo(req.user!.id, null, null);
+      res.json({ user });
+      return;
+    }
+    const repo = safeString(repoRaw);
+    if (!repo || !looksLikeRepo(repo)) {
+      apiError(res, 400, "repo는 owner/repo 또는 git/https URL 형식이어야 합니다.");
+      return;
+    }
+    const branch = safeString(req.body?.branch) || null;
+    const user = store.setKnowledgeRepo(req.user!.id, repo, branch);
+    res.json({ user });
+  });
+
+  // List the plugins the connected knowledge repo contains, for the selection
+  // UI. Clones/fetches the repo (same working tree the agent's repo tools use).
+  app.get("/api/me/knowledge-repo/contents", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+    if (!ctx) {
+      apiError(res, 404, "연결된 지식 저장소가 없습니다.");
+      return;
+    }
+    try {
+      const repoRoot = await ensureClone(ctx);
+      const contents = await inspectRepoContents(repoRoot);
+      res.json({ contents });
+    } catch (error) {
+      apiError(res, 502, `저장소를 가져오지 못했습니다: ${scrubGitError(error)}`);
+    }
+  });
+
+  // Force a re-sync of the connected knowledge repo from its remote. `ensureClone`
+  // already does `git fetch --prune` + `checkout -B <branch> origin/<branch>` on
+  // every call, so this is simply ensureClone + return the (possibly changed)
+  // plugin list. No clone-cache to clear — knowledge repos aren't in `clonedPaths`.
+  app.post("/api/me/knowledge-repo/refresh", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+    if (!ctx) {
+      apiError(res, 404, "연결된 지식 저장소가 없습니다.");
+      return;
+    }
+    try {
+      const repoRoot = await ensureClone(ctx);
+      const contents = await inspectRepoContents(repoRoot);
+      res.json({ contents });
+    } catch (error) {
+      apiError(res, 502, `새로고침 실패: ${scrubGitError(error)}`);
+    }
+  });
+
+  // Choose which knowledge-repo plugins the avatar loads. `selected: null`
+  // (or all/empty) means "load all" — the repo is the avatar's by default.
+  app.put("/api/me/knowledge-repo/selected", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    if (!store.getKnowledgeRepo(req.user!.id).repo) {
+      apiError(res, 404, "연결된 지식 저장소가 없습니다.");
+      return;
+    }
+    const raw = req.body?.selected;
+    let selected: string[] | null;
+    if (raw === null || raw === undefined) {
+      selected = null;
+    } else if (Array.isArray(raw) && raw.every((s) => typeof s === "string")) {
+      selected = raw as string[];
+    } else {
+      apiError(res, 400, "selected는 문자열 배열이거나 null이어야 합니다.");
+      return;
+    }
+    const user = store.setKnowledgeSelected(req.user!.id, selected);
+    res.json({ user });
+  });
+
+  // ---- Knowledge (owner's gap inbox: colleague questions to handle) ----
 
   app.get("/api/me/knowledge/requests", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const status = safeString(req.query.status);
-    const allowed = ["open", "answered", "dismissed"] as const;
+    const allowed = ["open", "resolved"] as const;
     const filter = (allowed as readonly string[]).includes(status)
       ? (status as (typeof allowed)[number])
       : undefined;
     res.json({ requests: store.listKnowledgeRequests(req.user!.id, filter) });
   });
 
-  app.post(
-    "/api/me/knowledge/requests/:id/answer",
-    requireAuth(store),
-    (req: AuthenticatedRequest, res) => {
-      const answer = safeString(req.body?.answer);
-      if (!answer) {
-        apiError(res, 400, "answer를 입력해 주세요.");
-        return;
-      }
-      const request = store.answerKnowledgeRequest(req.user!.id, req.params.id, answer);
-      if (!request) {
-        apiError(res, 404, "정보 요청을 찾을 수 없습니다.");
-        return;
-      }
-      res.json({ request });
-    },
-  );
-
+  // Resolve (close) a gap once handled. No body: the avatar learns via plugins,
+  // so there's no answer to store — clearing the request is the whole action.
   app.delete(
     "/api/me/knowledge/requests/:id",
     requireAuth(store),
     (req: AuthenticatedRequest, res) => {
-      const dismissed = store.dismissKnowledgeRequest(req.user!.id, req.params.id);
-      if (!dismissed) {
+      const resolved = store.resolveKnowledgeRequest(req.user!.id, req.params.id);
+      if (!resolved) {
         apiError(res, 404, "정보 요청을 찾을 수 없습니다.");
         return;
       }
       res.json({ ok: true });
     },
   );
-
-  app.get("/api/me/knowledge/entries", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    res.json({ entries: store.listKnowledgeEntries(req.user!.id) });
-  });
-
-  app.post("/api/me/knowledge/entries", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    const content = safeString(req.body?.content);
-    if (!content) {
-      apiError(res, 400, "content를 입력해 주세요.");
-      return;
-    }
-    const topic = safeString(req.body?.topic) || undefined;
-    const entry = store.addKnowledgeEntry(req.user!.id, { topic, content });
-    res.json({ entry });
-  });
-
-  app.delete("/api/me/knowledge/entries/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    const removed = store.deleteKnowledgeEntry(req.user!.id, req.params.id);
-    if (!removed) {
-      apiError(res, 404, "지식을 찾을 수 없습니다.");
-      return;
-    }
-    res.json({ ok: true });
-  });
 
   // ---- Routine jobs (owner-scheduled recurring runs) -------------------
 
@@ -384,6 +731,7 @@ export function createApp(services = createServices()) {
     }
     const enabled = req.body?.enabled === undefined ? true : (req.body.enabled as boolean);
     const routine = store.createRoutineJob(req.user!.id, { prompt, minuteOfDay, enabled });
+    logger.info({ userId: req.user!.id, routineId: routine.id, minuteOfDay }, "routine created");
     res.json({ routine });
   });
 
@@ -422,6 +770,7 @@ export function createApp(services = createServices()) {
       apiError(res, 404, "루틴을 찾을 수 없습니다.");
       return;
     }
+    logger.info({ userId: req.user!.id, routineId: req.params.id }, "routine deleted");
     res.json({ ok: true });
   });
 
@@ -443,6 +792,7 @@ export function createApp(services = createServices()) {
       apiError(res, 409, "이미 실행 중인 루틴입니다.");
       return;
     }
+    logger.info({ userId: req.user!.id, routineId: job.id, ok: result.ok }, "routine manual run");
     const routine = store.getRoutineJob(req.user!.id, job.id);
     res.json({ ok: result.ok, error: result.error, routine });
   });
@@ -460,6 +810,45 @@ export function createApp(services = createServices()) {
       return;
     }
     res.json({ avatar });
+  });
+
+  // List the skills an avatar can use, for the chat-screen capabilities panel.
+  // Lazily resolves plugin roots (may clone), so it's a separate endpoint hit
+  // only when the panel opens — not bundled into the avatar detail above.
+  // Visibility mirrors getAvatar: must be a published avatar or the viewer's own.
+  app.get("/api/avatars/:id/skills", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const avatar = store.getAvatar(req.user!.id, req.params.id);
+    if (!avatar) {
+      apiError(res, 404, "아바타를 찾을 수 없습니다.");
+      return;
+    }
+    // The local runtime loads no plugins/skills, so there's nothing to list.
+    if (config.agentRuntime === "local") {
+      res.json({ skills: [] });
+      return;
+    }
+    const sourced: { path: string; source: string }[] = [];
+    // Repo-bundled defaults, loaded for every avatar.
+    for (const root of await loadDefaultPluginRoots(config)) {
+      sourced.push({ path: root.path, source: "default" });
+    }
+    // The avatar's own plugins, resolved per-repo so each skill is attributed.
+    // Use the owner's git token (like the chat path) so private repos resolve.
+    const gitToken = store.getGitToken(avatar.id);
+    for (const plugin of store.listEnabledPlugins(avatar.id)) {
+      try {
+        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitToken);
+        const label = plugin.label ?? plugin.repo;
+        for (const root of await resolvePluginRoots(dir, plugin.repo, undefined, plugin.selected)) {
+          sourced.push({ path: root, source: label });
+        }
+      } catch {
+        // A plugin that won't clone/resolve just contributes no skills.
+      }
+    }
+    // The avatar's own knowledge repo, so its accumulated skills surface too.
+    sourced.push(...(await knowledgeRepoSkillSources(knowledgeRepoContextFor(store, avatar.id, config))));
+    res.json({ skills: await listSkillsInRoots(sourced) });
   });
 
   // ---- Conversations & messages ---------------------------------------
@@ -502,9 +891,12 @@ export function createApp(services = createServices()) {
   app.post("/api/chat/stream", requireAuth(store), async (req: AuthenticatedRequest, res) => {
     const message = safeString(req.body?.message);
     const avatarId = safeString(req.body?.avatarId);
+    // Greeting: the owner opened a fresh chat with their own avatar and typed
+    // nothing — the avatar speaks first (and reports pending info requests).
+    const greeting = req.body?.greeting === true && req.user!.id === avatarId;
 
     // Validate BEFORE switching to SSE so failures stay plain JSON.
-    if (!message) {
+    if (!message && !greeting) {
       apiError(res, 400, "메시지를 입력해 주세요.");
       return;
     }
@@ -522,12 +914,29 @@ export function createApp(services = createServices()) {
     const runId = crypto.randomUUID();
     openRun(runId, req.user!.id);
     const regenerate = req.body?.regenerate === true;
+    const chatStart = Date.now();
     if (regenerate) {
       store.dropLastAssistant(req.user!.id, conversationId);
     }
+    // Resume the conversation's prior SDK session so the model keeps its context
+    // across turns. A greeting is ephemeral (never persisted), and a regenerate
+    // re-runs the same turn — both start a fresh session to avoid duplicating
+    // history in the transcript.
+    const resumeSessionId =
+      greeting || regenerate
+        ? undefined
+        : store.getAgentSessionId(req.user!.id, conversationId) ?? undefined;
+    // The SDK session id this run reports (init event); persisted on success so
+    // the next turn can resume it.
+    let runSessionId: string | null = null;
+    logger.info(
+      { userId: req.user!.id, avatarId: avatar.id, conversationId, greeting, regenerate },
+      "chat stream started",
+    );
 
     // Load plugin roots (read-only). The repo-bundled default plugin (knowledge
-    // backfill etc.) is loaded for every avatar, ahead of its own plugins.
+    // backfill etc.) is loaded for every avatar, ahead of its own plugins, then
+    // the avatar's personal knowledge repo (the skills/knowledge it accumulates).
     // Tolerate clone/resolve fails.
     const pluginWarnings: string[] = [];
     const pluginRoots =
@@ -539,6 +948,11 @@ export function createApp(services = createServices()) {
               avatar.id,
               store.listEnabledPlugins(avatar.id),
               config,
+              (warn) => pluginWarnings.push(warn),
+              store.getGitToken(avatar.id),
+            )),
+            ...(await loadKnowledgeRepoRoots(
+              knowledgeRepoContextFor(store, avatar.id, config),
               (warn) => pluginWarnings.push(warn),
             )),
           ];
@@ -584,11 +998,17 @@ export function createApp(services = createServices()) {
       const response = await runAgentStream(
         {
           message,
-          avatar: { id: avatar.id, displayName: avatar.displayName, persona: avatar.persona },
+          avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
           cwd: workspaceDir,
+          resumeSessionId,
           viewerUserId: req.user!.id,
           viewerName: req.user!.displayName,
           viewerIsOwner: req.user!.id === avatar.id,
+          // Elevated tool permissions for the owner OR a trusted user. The tool
+          // gate denies everyone else, so auto-approving the elevated path is safe.
+          elevated: req.user!.id === avatar.id || store.isTrustedFor(req.user!.id, avatar.id),
+          autoApprove: true,
+          greeting,
         },
         pluginRoots,
         config,
@@ -599,6 +1019,12 @@ export function createApp(services = createServices()) {
           },
           onStatus: (label) => {
             if (!closed) sseSend(res, "status", { label });
+          },
+          onModel: (model) => {
+            observedModel = model;
+          },
+          onSessionId: (sessionId) => {
+            runSessionId = sessionId;
           },
           onPlugin: (event) => {
             if (!closed) sseSend(res, "plugin", { status: event.status, name: event.name });
@@ -658,7 +1084,28 @@ export function createApp(services = createServices()) {
         return;
       }
 
+      // A greeting is ephemeral: it streams to the screen but is NOT persisted,
+      // so opening a fresh chat doesn't litter the history with greeting-only
+      // conversations. The conversation starts saving on the owner's first real
+      // message.
+      if (greeting) {
+        sseSend(res, "done", {
+          message: {
+            role: "assistant",
+            content: response.text || response.summary,
+            response,
+            createdAt: new Date().toISOString(),
+          },
+          response,
+        });
+        return;
+      }
+
       store.touchConversation(req.user!.id, conversationId, avatar.id, message);
+      // Remember this run's SDK session so the next turn resumes its context.
+      if (runSessionId) {
+        store.setAgentSessionId(conversationId, runSessionId);
+      }
       if (!regenerate) {
         store.addMessage(conversationId, { role: "user", content: message });
       }
@@ -674,13 +1121,23 @@ export function createApp(services = createServices()) {
         status: "success",
         detail: `chat with ${avatar.displayName} (${response.runtime})`,
       });
+      logger.info(
+        { userId: req.user!.id, avatarId: avatar.id, conversationId, runtime: response.runtime, durationMs: Date.now() - chatStart },
+        "chat completed",
+      );
 
       sseSend(res, "done", { message: assistantMessage, response });
     } catch (error) {
       if (closed) {
         return;
       }
-      const detail = error instanceof Error ? error.message : String(error);
+      // Scrub before logging too: a git auth failure carries the token in its
+      // argv (`http.extraHeader`), which pino's `err` serializer would emit.
+      const detail = scrubGitError(error);
+      logger.error(
+        { detail, userId: req.user!.id, avatarId: avatar.id, conversationId, durationMs: Date.now() - chatStart },
+        "chat error",
+      );
       store.audit({
         actorUserId: req.user!.id,
         actorName: req.user!.username,
@@ -717,6 +1174,21 @@ export function createApp(services = createServices()) {
 
   // ---- Admin -----------------------------------------------------------
 
+  // System/runtime info: which model the agent is pinned to (config) vs. which
+  // one the SDK actually reported on its last run (observed), plus the auth mode
+  // and the read-only tool allowlist. Read-only; admin-gated.
+  app.get("/api/admin/system", requireAuth(store), requireAdmin, (_req, res) => {
+    res.json({
+      system: {
+        agentRuntime: config.agentRuntime,
+        configuredModel: config.anthropicModel ?? null,
+        observedModel,
+        authMode: config.anthropicApiKey ? "api_key" : "subscription",
+        readOnlyTools: config.readOnlyTools,
+      },
+    });
+  });
+
   app.get("/api/admin/users", requireAuth(store), requireAdmin, (_req, res) => {
     res.json({ users: store.listUsers() });
   });
@@ -742,6 +1214,7 @@ export function createApp(services = createServices()) {
         status: "success",
         detail: `deleted user ${req.params.id}`,
       });
+      logger.warn({ actorId: req.user!.id, targetId: req.params.id }, "user deleted");
       res.json({ ok: true });
     },
   );
@@ -769,6 +1242,7 @@ export function createApp(services = createServices()) {
         status: "success",
         detail: `${grant ? "grant" : "revoke"} ${role} for ${req.params.id}`,
       });
+      logger.warn({ actorId: req.user!.id, targetId: req.params.id, role, grant }, "role changed");
       res.json({ user });
     },
   );
@@ -778,6 +1252,13 @@ export function createApp(services = createServices()) {
   app.get("/api/audit", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const isAdmin = req.user!.roles.includes("admin");
     res.json({ audit: store.listAudit(req.user!.id, isAdmin) });
+  });
+
+  // ---- Error handler ------------------------------------------------------
+
+  app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    logger.error({ err, method: req.method, path: req.path, userId: (req as AuthenticatedRequest).user?.id ?? null }, "unhandled error");
+    res.status(500).json({ error: "Internal server error" });
   });
 
   // ---- SPA catch-all ---------------------------------------------------

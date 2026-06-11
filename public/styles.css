@@ -284,13 +284,8 @@ button:disabled {
 .login-mark {
   width: 48px;
   height: 48px;
-  display: grid;
-  place-items: center;
   border-radius: var(--r-md);
-  background: var(--accent);
-  color: #fff;
-  font-weight: 800;
-  font-size: 22px;
+  object-fit: cover;
   margin-bottom: var(--s-4);
   box-shadow: var(--shadow-sm);
 }
@@ -322,6 +317,15 @@ button:disabled {
   color: var(--text-soft);
   font-size: var(--t-sm);
   font-weight: 600;
+}
+
+/* A field label that carries an inline action button on the right (e.g. the
+   "자동 생성" button beside the self-introduction). */
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
 }
 
 .field input,
@@ -405,11 +409,7 @@ button:disabled {
   width: 34px;
   height: 34px;
   border-radius: var(--r-sm);
-  background: var(--accent);
-  color: #fff;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
+  object-fit: cover;
   flex: none;
 }
 
@@ -691,14 +691,250 @@ button:disabled {
 /* ============================================================
    Main chat column
    ============================================================ */
+/* Row filling `.main`: chat column on the left, capabilities panel on the right. */
+.chat-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
 .chat-col {
+  flex: 1;
   min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--bg);
-  height: 100vh;
-  height: 100dvh;
+}
+
+/* Capabilities panel: what the avatar can do (skills + plugins). Resizable via
+   the left-edge handle, collapsible to a slim strip via the chevron buttons. */
+.cap-panel {
+  flex: none;
+  width: 280px;
+  position: relative;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* Scrolling content; hidden when the panel is collapsed. */
+.cap-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-5) var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+/* Drag handle pinned to the left edge. */
+.cap-resize {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+}
+.cap-resize:hover {
+  background: linear-gradient(to right, transparent, var(--accent-soft));
+}
+body.col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Collapse button (top-right of the expanded panel). */
+.cap-collapse {
+  position: absolute;
+  top: var(--s-3);
+  right: var(--s-3);
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1;
+  cursor: pointer;
+}
+.cap-collapse:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Expand button: only shown (and only usable) when collapsed. */
+.cap-expand {
+  display: none;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: pointer;
+}
+.cap-expand:hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+
+/* Collapsed state: panel shrinks to a slim strip with only the expand button. */
+.cap-panel.collapsed {
+  width: 28px !important;
+}
+.cap-panel.collapsed .cap-body,
+.cap-panel.collapsed .cap-collapse,
+.cap-panel.collapsed .cap-resize {
+  display: none;
+}
+.cap-panel.collapsed .cap-expand {
+  display: block;
+}
+
+.cap-head h3 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.cap-sub {
+  margin: var(--s-1) 0 0;
+  font-size: 0.78rem;
+  color: var(--muted);
+}
+
+/* The avatar's self-introduction blurb at the top of the panel. */
+.cap-intro {
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+.cap-intro-text {
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+
+.cap-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.cap-section-title {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.cap-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.cap-skill {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+/* The head is a full-width toggle button (name + optional source badge). */
+.cap-skill-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.cap-skill-head[disabled] {
+  cursor: default;
+}
+.cap-skill-head:not([disabled]):hover {
+  background: var(--panel);
+}
+
+.cap-skill-caret {
+  flex: none;
+  font-size: 0.62rem;
+  color: var(--muted);
+  transition: transform 0.15s var(--ease);
+}
+.cap-skill.open .cap-skill-caret {
+  transform: rotate(90deg);
+}
+
+.cap-skill-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cap-skill-src {
+  flex: none;
+  font-size: 0.68rem;
+  color: var(--muted);
+  background: var(--panel-strong);
+  border-radius: var(--r-pill);
+  padding: 1px var(--s-2);
+}
+
+/* Description is hidden until the skill is expanded. */
+.cap-skill-desc {
+  display: none;
+  margin: 0;
+  padding: 0 var(--s-3) var(--s-3);
+  font-size: 0.76rem;
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+.cap-skill.open .cap-skill-desc {
+  display: block;
+}
+
+.cap-plugin {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--s-1) 0;
+}
+
+.cap-plugin-name {
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.cap-plugin-repo {
+  font-size: 0.7rem;
+  color: var(--muted);
+}
+
+.cap-empty,
+.cap-loading {
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 /* Middle region: holds the scrolling transcript + the scroll-to-bottom FAB. */
@@ -983,6 +1219,14 @@ button:disabled {
   margin-top: var(--s-3);
   font-size: var(--t-xs);
   color: var(--muted);
+  min-width: 0;
+}
+
+.stream-status .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 
 .stream-status .spinner {
@@ -1083,15 +1327,110 @@ button:disabled {
   opacity: 0.78;
 }
 
+/* The activity tree renders at the TOP of the streaming bubble (above the
+   answer). Kill the leading margin so a tools-only phase doesn't open with a
+   gap, and give the answer text breathing room below the activity instead. */
+.bubble > .agent-activity:first-child {
+  margin-top: 0;
+}
+.bubble > .agent-activity + .md:not(:empty) {
+  margin-top: var(--s-3);
+}
+/* An empty answer node (tools running, no text yet) must not reserve height. */
+.bubble > .md:empty {
+  display: none;
+}
+
+/* Activity log disclosure — used both live (streaming, `.activity-live`) and
+   after the run finishes (`.activity-done`). Collapsible so a long tool list
+   can be folded away mid-stream instead of crowding the bubble. */
+.activity-done,
+.activity-live {
+  margin-bottom: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+.activity-done > summary,
+.activity-live > summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 10px;
+  font-size: var(--t-xs);
+  color: var(--muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  user-select: none;
+}
+.activity-done > summary::-webkit-details-marker,
+.activity-live > summary::-webkit-details-marker {
+  display: none;
+}
+.activity-done > summary::before,
+.activity-live > summary::before {
+  content: "▸";
+  font-size: 10px;
+  transition: transform 0.15s var(--ease);
+}
+.activity-done[open] > summary::before,
+.activity-live[open] > summary::before {
+  transform: rotate(90deg);
+}
+.activity-done > summary:hover,
+.activity-live > summary:hover {
+  color: var(--text-soft);
+}
+.activity-done > .agent-activity {
+  margin: 0;
+  padding: 0 10px 10px;
+}
+/* While streaming, cap the tree's height and scroll within it so a burst of
+   tool calls can't grow the bubble unbounded; the newest rows stay in view. */
+.activity-live > .agent-activity {
+  margin: 0;
+  padding: 0 10px 10px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+/* Answer text sits below the collapsed activity in the final bubble. */
+.bubble > .activity-done + .response-meta,
+.bubble > .activity-live + .response-meta,
+.bubble > .activity-done + .md:not(:empty),
+.bubble > .activity-live + .md:not(:empty) {
+  margin-top: 0;
+}
+
 .agent-node {
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
+/* A subagent renders as a distinct "workspace" card — set apart from the flat
+   tool rows so it reads as an agent doing its own delegated work, not one more
+   tool call. While running it gets an accent border + soft glow pulse. */
 .agent-node.sub {
-  border-left: 2px solid var(--line);
-  padding-left: 10px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+  padding: 7px 10px;
   margin-left: 4px;
+}
+.agent-node.sub[data-status="running"] {
+  border-color: var(--accent);
+  animation: agent-glow 1.8s ease-in-out infinite;
+}
+@keyframes agent-glow {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-ring); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+.agent-node.sub[data-status="done"] {
+  background: transparent;
+  border-left-color: var(--ok);
+}
+.agent-node.sub[data-status="failed"] {
+  border-left-color: var(--warn);
 }
 .agent-children {
   display: flex;
@@ -1107,14 +1446,22 @@ button:disabled {
   color: var(--text-soft);
 }
 .agent-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
   font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--accent);
-  background: var(--accent-soft);
+  background: var(--accent-soft-strong);
   border-radius: var(--r-pill);
   padding: 1px 7px;
+}
+.agent-badge::before {
+  content: "◆";
+  font-size: 9px;
+  line-height: 1;
 }
 .agent-label {
   font-weight: 600;
@@ -1221,17 +1568,34 @@ button:disabled {
   font-size: 11px;
 }
 
-/* ---- Interactive prompt cards ---- */
-.agent-prompts {
+/* ---- Permission modal (standalone, centered overlay) ---- */
+.prompt-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
   display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: var(--s-3);
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-4);
+  background: rgba(16, 24, 40, 0.45);
+  backdrop-filter: blur(2px);
 }
-.agent-prompts:empty {
+.prompt-modal-backdrop[hidden] {
   display: none;
 }
+.prompt-modal-backdrop .prompt-card {
+  width: min(440px, 100%);
+  max-height: calc(100dvh - 2 * var(--s-4));
+  overflow-y: auto;
+  box-shadow: var(--shadow-lg);
+  animation: prompt-modal-in 0.16s var(--ease, ease-out);
+}
+@keyframes prompt-modal-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
 
+/* ---- Interactive prompt cards ---- */
 .prompt-card {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -1250,10 +1614,6 @@ button:disabled {
   border-color: var(--info-line);
   background: var(--info-soft);
 }
-.prompt-card[data-resolved] {
-  opacity: 0.82;
-}
-
 .prompt-head {
   display: flex;
   align-items: center;
@@ -1312,12 +1672,6 @@ button:disabled {
   align-items: center;
   gap: 8px;
   justify-content: flex-end;
-}
-.prompt-result {
-  margin-right: auto;
-  font-size: var(--t-xs);
-  font-weight: 600;
-  color: var(--text-soft);
 }
 
 /* ---- Question blocks ---- */
@@ -1793,6 +2147,12 @@ tbody tr:hover td {
   margin: 0;
   font-size: var(--t-md);
 }
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-shrink: 0;
+}
 .panel-section-head p {
   margin: 2px 0 0;
   font-size: var(--t-xs);
@@ -2262,6 +2622,34 @@ tbody tr:hover td {
     min-height: 0;
   }
 
+  /* Stack the capabilities panel below the chat on narrow screens so it never
+     squeezes the conversation; cap its height and let it scroll internally. */
+  .chat-layout {
+    flex-direction: column;
+  }
+  .chat-layout > .chat-col {
+    /* In the stacked column the chat grows; height:100% above would leave no
+       room for the panel below it. */
+    height: auto;
+    flex: 1;
+  }
+  .cap-panel,
+  .cap-panel.collapsed {
+    width: auto !important; /* override the inline resize width / collapsed strip when stacked */
+    border-left: 0;
+    border-top: 1px solid var(--line);
+    max-height: 40%;
+  }
+  /* Resize/collapse are desktop-only; the stacked panel always shows its body. */
+  .cap-resize,
+  .cap-collapse,
+  .cap-expand {
+    display: none;
+  }
+  .cap-panel.collapsed .cap-body {
+    display: flex;
+  }
+
   .chat-header {
     padding: var(--s-3) var(--s-4);
   }
@@ -2298,6 +2686,15 @@ tbody tr:hover td {
   .stream-caret {
     animation: none;
     opacity: 0.7;
+  }
+  /* Loading spinners signal "in progress" — they must keep rotating even with
+     reduced motion (the global rule above would otherwise freeze them). Re-enable
+     the spin only while actually running, so the settled check/✕ glyphs stay
+     static. */
+  .stream-status .spinner,
+  .tool-row[data-status="running"] .tool-spinner,
+  .agent-node[data-status="running"] .agent-spinner {
+    animation: spin 0.7s linear infinite !important;
   }
 }
 
@@ -2559,6 +2956,11 @@ tbody tr:hover td {
   color: var(--muted);
   margin-top: 1px;
 }
+.ac-alias {
+  font-size: var(--t-xs);
+  color: var(--accent);
+  margin-top: 2px;
+}
 .ac-bio {
   margin: var(--s-2) 0 var(--s-2);
   color: var(--text-soft);
@@ -2603,6 +3005,46 @@ tbody tr:hover td {
   max-width: 720px;
   margin: 0 auto;
   width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: var(--s-4);
+}
+.settings-tabs {
+  display: flex;
+  gap: var(--s-1);
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: var(--s-3);
+  margin-bottom: var(--s-1);
+}
+.settings-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border: 1px solid transparent;
+  border-radius: var(--r-md);
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--t-sm);
+  font-weight: 500;
+  cursor: pointer;
+}
+.settings-tab svg {
+  width: 16px;
+  height: 16px;
+}
+.settings-tab:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.settings-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.settings-panel {
   display: grid;
   gap: var(--s-4);
 }
@@ -2741,6 +3183,48 @@ tbody tr:hover td {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.pr-meta {
+  font-size: var(--t-xs);
+  margin-top: 2px;
+}
+/* Expandable repo-contents / plugin-selection area under a plugin row. */
+.plugin-contents {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s-3);
+  background: var(--bg-elevated);
+  margin-top: calc(-1 * var(--s-1));
+  display: grid;
+  gap: var(--s-2);
+}
+.plugin-contents[hidden] {
+  display: none;
+}
+.pc-head {
+  font-size: var(--t-xs);
+}
+.pc-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-sm);
+  cursor: pointer;
+}
+.pc-item input[disabled] {
+  cursor: not-allowed;
+}
+.pc-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.primary.small {
+  padding: 5px 11px;
+  font-size: var(--t-xs);
+}
+.error-note {
+  font-size: var(--t-xs);
+  color: var(--danger, #d9534f);
+}
 .plugin-add {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -2793,38 +3277,10 @@ tbody tr:hover td {
 .kr-meta {
   font-size: var(--t-xs);
 }
-.knowledge-answer {
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  padding: 9px 11px;
-  resize: vertical;
-  font: inherit;
-}
-.knowledge-answer:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
 .kr-actions {
   display: flex;
   gap: var(--s-2);
   align-items: center;
-}
-.knowledge-row .ke-main {
-  flex: 1;
-  min-width: 0;
-}
-.knowledge-row.ke-content,
-.ke-content {
-  font-size: var(--t-sm);
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-/* knowledge entries: title + content on the left, delete on the right */
-.knowledge-rows .knowledge-row:has(.ke-main) {
-  flex-direction: row;
-  align-items: flex-start;
 }
 
 /* Admin */
@@ -2861,11 +3317,60 @@ tbody tr:hover td {
   align-items: center;
 }
 
+.sys-card {
+  margin-bottom: var(--s-4);
+}
+.sys-grid {
+  display: grid;
+  gap: var(--s-2);
+}
+.sys-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--line);
+}
+.sys-row:last-child {
+  border-bottom: none;
+}
+.sys-key {
+  flex: 0 0 120px;
+  font-size: var(--t-sm);
+}
+.sys-val {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-sm);
+  word-break: break-word;
+}
+
+/* GitHub credentials */
+.git-token-status {
+  font-size: var(--t-sm);
+  margin-bottom: var(--s-2);
+}
+.git-token-status .token-set {
+  color: var(--accent);
+  font-weight: 600;
+}
+.git-token-actions {
+  margin: var(--s-2) 0 var(--s-4);
+}
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--s-3);
+}
+
 @media (max-width: 860px) {
   .main {
     height: 100%;
   }
   .avatar-grid {
+    grid-template-columns: 1fr;
+  }
+  .field-row {
     grid-template-columns: 1fr;
   }
   .plugin-add {
@@ -2878,4 +3383,62 @@ tbody tr:hover td {
   .view-header .title p {
     display: none;
   }
+}
+
+/* ---- Onboarding modal + knowledge-repo link ---- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--s-4);
+  background: rgba(16, 24, 40, 0.45);
+  backdrop-filter: blur(2px);
+}
+.modal-card {
+  width: min(460px, 100%);
+  max-height: calc(100dvh - 2 * var(--s-4));
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: var(--s-5, 22px);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3, 12px);
+  animation: prompt-modal-in 0.16s var(--ease, ease-out);
+}
+.onboard-card .login-mark {
+  align-self: flex-start;
+}
+.onboard-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3, 12px);
+  margin-top: var(--s-2, 8px);
+}
+.kr-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: var(--s-2, 8px);
+  word-break: break-all;
+}
+.kr-link svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  color: var(--text-soft);
+}
+.kr-plugins {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2, 8px);
+  flex-wrap: wrap;
+  margin-top: var(--s-2, 8px);
 }

@@ -7,6 +7,8 @@ import {
   hashToken,
   verifyPassword,
 } from "./auth.js";
+import { decryptSecret, encryptSecret } from "./crypto.js";
+import logger from "./logger.js";
 import type {
   AdminUserSummary,
   AgentResponse,
@@ -15,7 +17,6 @@ import type {
   AvatarDetail,
   AvatarSummary,
   ConversationSummary,
-  KnowledgeEntry,
   KnowledgeRequest,
   Plugin,
   RoutineJob,
@@ -27,6 +28,26 @@ const SESSION_DAYS = 14;
 
 function now(): string {
   return new Date().toISOString();
+}
+
+/**
+ * Parse a stored JSON array of plugin-name strings (used for both a plugin's
+ * `selected` subset and a user's `knowledge_selected`). Returns null — meaning
+ * "load all" — for null/blank/malformed values.
+ */
+function parseNameList(raw: string | null): string[] | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((s): s is string => typeof s === "string");
+    }
+  } catch {
+    /* fall through to null */
+  }
+  return null;
 }
 
 // Routine times are interpreted in Seoul time (KST). Korea observes no DST, so
@@ -65,12 +86,21 @@ interface UserRow {
   username: string;
   password_hash: string;
   display_name: string;
+  alias: string;
   bio: string;
   persona: string;
+  intro: string;
   avatar_ext: string | null;
   published: number;
+  auto_approve: number;
   created_at: string;
   last_seen_at: string | null;
+  git_token_enc: string | null;
+  git_identity_name: string | null;
+  git_identity_email: string | null;
+  knowledge_repo: string | null;
+  knowledge_branch: string | null;
+  knowledge_selected: string | null;
 }
 
 interface KnowledgeRequestRow {
@@ -80,17 +110,6 @@ interface KnowledgeRequestRow {
   asker_name: string | null;
   question: string;
   status: string;
-  answer: string | null;
-  created_at: string;
-  answered_at: string | null;
-}
-
-interface KnowledgeEntryRow {
-  id: string;
-  avatar_user_id: string;
-  topic: string | null;
-  content: string;
-  source_request_id: string | null;
   created_at: string;
 }
 
@@ -110,14 +129,18 @@ interface RoutineJobRow {
 
 export class Store {
   private readonly db: Database.Database;
+  /** Key secret for at-rest token encryption (from config.sessionSecret). */
+  private readonly secret: string;
 
   constructor(config: AppConfig) {
+    this.secret = config.sessionSecret;
     fs.mkdirSync(config.dataDir, { recursive: true });
     this.db = new Database(config.dbPath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
     this.migrate();
     this.seedRoles();
+    logger.info({ dbPath: config.dbPath }, "database opened");
   }
 
   private migrate(): void {
@@ -127,10 +150,12 @@ export class Store {
         username TEXT UNIQUE NOT NULL,
         password_hash TEXT NOT NULL,
         display_name TEXT NOT NULL,
+        alias TEXT DEFAULT '',
         bio TEXT DEFAULT '',
         persona TEXT DEFAULT '',
         avatar_ext TEXT,
         published INTEGER DEFAULT 0,
+        auto_approve INTEGER DEFAULT 0,
         created_at TEXT,
         last_seen_at TEXT
       );
@@ -157,6 +182,8 @@ export class Store {
         ref TEXT,
         label TEXT,
         enabled INTEGER DEFAULT 1,
+        selected TEXT,
+        last_synced_at TEXT,
         created_at TEXT
       );
       CREATE TABLE IF NOT EXISTS conversations (
@@ -191,17 +218,20 @@ export class Store {
         asker_name TEXT,
         question TEXT NOT NULL,
         status TEXT NOT NULL DEFAULT 'open',
-        answer TEXT,
-        created_at TEXT,
-        answered_at TEXT
-      );
-      CREATE TABLE IF NOT EXISTS knowledge_entries (
-        id TEXT PRIMARY KEY,
-        avatar_user_id TEXT NOT NULL,
-        topic TEXT,
-        content TEXT NOT NULL,
-        source_request_id TEXT,
         created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS avatar_trusted_users (
+        avatar_user_id TEXT NOT NULL,
+        viewer_user_id TEXT NOT NULL,
+        created_at TEXT,
+        PRIMARY KEY (avatar_user_id, viewer_user_id)
+      );
+      CREATE TABLE IF NOT EXISTS user_secrets (
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        value_enc TEXT NOT NULL,
+        created_at TEXT,
+        PRIMARY KEY (user_id, name)
       );
       CREATE TABLE IF NOT EXISTS routine_jobs (
         id TEXT PRIMARY KEY,
@@ -221,10 +251,44 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
       CREATE INDEX IF NOT EXISTS idx_avatar_plugins_user ON avatar_plugins(user_id);
       CREATE INDEX IF NOT EXISTS idx_knowledge_requests_avatar ON knowledge_requests(avatar_user_id, status);
-      CREATE INDEX IF NOT EXISTS idx_knowledge_entries_avatar ON knowledge_entries(avatar_user_id);
       CREATE INDEX IF NOT EXISTS idx_routine_jobs_avatar ON routine_jobs(avatar_user_id);
       CREATE INDEX IF NOT EXISTS idx_routine_jobs_due ON routine_jobs(enabled, next_run_at);
+      CREATE INDEX IF NOT EXISTS idx_trusted_avatar ON avatar_trusted_users(avatar_user_id);
+      CREATE INDEX IF NOT EXISTS idx_trusted_viewer ON avatar_trusted_users(viewer_user_id);
+      CREATE INDEX IF NOT EXISTS idx_user_secrets_user ON user_secrets(user_id);
     `);
+    // Additive column migrations for pre-existing DBs (CREATE TABLE above only
+    // applies to fresh installs). Each is a no-op once the column exists.
+    this.addColumnIfMissing("avatar_plugins", "selected", "TEXT");
+    this.addColumnIfMissing("avatar_plugins", "last_synced_at", "TEXT");
+    this.addColumnIfMissing("users", "auto_approve", "INTEGER DEFAULT 0");
+    // Avatar self-name (별칭): how the avatar refers to ITSELF in chat, distinct
+    // from display_name (how humans see it in lists). Injected into the system prompt.
+    this.addColumnIfMissing("users", "alias", "TEXT DEFAULT ''");
+    // Avatar self-introduction: a longer first-person blurb the avatar writes
+    // about what it can do, shown atop the chat capabilities panel. Distinct
+    // from bio (one-liner in lists) and persona (system-prompt behavior).
+    this.addColumnIfMissing("users", "intro", "TEXT DEFAULT ''");
+    // Per-user git credentials/identity + personal knowledge-repo location. The
+    // token is stored AES-256-GCM-encrypted (see crypto.ts), never plaintext.
+    this.addColumnIfMissing("users", "git_token_enc", "TEXT");
+    this.addColumnIfMissing("users", "git_identity_name", "TEXT");
+    this.addColumnIfMissing("users", "git_identity_email", "TEXT");
+    this.addColumnIfMissing("users", "knowledge_repo", "TEXT");
+    this.addColumnIfMissing("users", "knowledge_branch", "TEXT");
+    // JSON array of plugin names to load from the knowledge repo; null = all.
+    this.addColumnIfMissing("users", "knowledge_selected", "TEXT");
+    // SDK session id of the conversation's last turn, used to resume context on
+    // the next turn (see claudeAgent resume). Null until the first turn completes.
+    this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");
+  }
+
+  /** Add a column to a table if it isn't already present (idempotent). */
+  private addColumnIfMissing(table: string, column: string, type: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   private seedRoles(): void {
@@ -246,12 +310,23 @@ export class Store {
       id: row.id,
       username: row.username,
       displayName: row.display_name,
+      alias: row.alias ?? "",
       bio: row.bio ?? "",
       persona: row.persona ?? "",
+      intro: row.intro ?? "",
       hasImage: Boolean(row.avatar_ext),
       published: row.published === 1,
       roles,
       pluginCount,
+      // Never expose the token itself — only whether one is set.
+      gitTokenSet: Boolean(row.git_token_enc),
+      gitIdentityName: row.git_identity_name ?? null,
+      gitIdentityEmail: row.git_identity_email ?? null,
+      knowledgeRepo: row.knowledge_repo ?? null,
+      knowledgeBranch: row.knowledge_branch ?? null,
+      knowledgeSelected: parseNameList(row.knowledge_selected),
+      // Only the names — the encrypted values never leave the server.
+      secretNames: this.listUserSecretNames(row.id),
     };
   }
 
@@ -417,7 +492,7 @@ export class Store {
 
   updateProfile(
     userId: string,
-    patch: { displayName?: string; bio?: string; persona?: string; published?: boolean },
+    patch: { displayName?: string; alias?: string; bio?: string; persona?: string; intro?: string; published?: boolean },
   ): User {
     const row = this.userRowById(userId);
     if (!row) {
@@ -425,15 +500,17 @@ export class Store {
     }
     const displayName =
       patch.displayName !== undefined ? patch.displayName.trim() || row.display_name : row.display_name;
+    const alias = patch.alias !== undefined ? patch.alias.trim() : row.alias;
     const bio = patch.bio !== undefined ? patch.bio : row.bio;
     const persona = patch.persona !== undefined ? patch.persona : row.persona;
+    const intro = patch.intro !== undefined ? patch.intro : row.intro;
     const published =
       patch.published !== undefined ? (patch.published ? 1 : 0) : row.published;
     this.db
       .prepare(
-        "UPDATE users SET display_name = ?, bio = ?, persona = ?, published = ? WHERE id = ?",
+        "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, published = ? WHERE id = ?",
       )
-      .run(displayName, bio, persona, published, userId);
+      .run(displayName, alias, bio, persona, intro, published, userId);
     return this.toUser(this.userRowById(userId)!);
   }
 
@@ -446,6 +523,138 @@ export class Store {
     return row?.avatar_ext ?? null;
   }
 
+  // ---- Git credentials / personal knowledge repo -----------------------
+
+  /** Store (encrypted) or clear the user's personal GitHub token. */
+  setGitToken(userId: string, token: string | null): User {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    const enc = token ? encryptSecret(token, this.secret) : null;
+    this.db.prepare("UPDATE users SET git_token_enc = ? WHERE id = ?").run(enc, userId);
+    return this.toUser(this.userRowById(userId)!);
+  }
+
+  /**
+   * Decrypt and return the user's GitHub token for server-side git auth.
+   * Returns null if unset or undecryptable (e.g. SESSION_SECRET changed). This
+   * is the ONLY path the plaintext token leaves the DB — never via `toUser`.
+   */
+  getGitToken(userId: string): string | null {
+    const row = this.userRowById(userId);
+    if (!row?.git_token_enc) {
+      return null;
+    }
+    return decryptSecret(row.git_token_enc, this.secret);
+  }
+
+  // ---- Per-user secrets (encrypted env injected into avatar MCP tools) --
+
+  /**
+   * Store (encrypted) a named secret for the user. Values are AES-256-GCM
+   * encrypted at rest like the git token; they're only ever decrypted into the
+   * env of an avatar's MCP subprocess (e.g. hex-ssh's SSH_PRIVATE_KEY), never
+   * exposed to the agent or serialized via `toUser`.
+   */
+  setUserSecret(userId: string, name: string, value: string): void {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    const enc = encryptSecret(value, this.secret);
+    this.db
+      .prepare(
+        "INSERT INTO user_secrets (user_id, name, value_enc, created_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT(user_id, name) DO UPDATE SET value_enc = excluded.value_enc",
+      )
+      .run(userId, name, enc, new Date().toISOString());
+  }
+
+  /** Remove a named secret. No-op if it doesn't exist. */
+  deleteUserSecret(userId: string, name: string): void {
+    this.db.prepare("DELETE FROM user_secrets WHERE user_id = ? AND name = ?").run(userId, name);
+  }
+
+  /** Names of the user's stored secrets (for the settings UI; values omitted). */
+  listUserSecretNames(userId: string): string[] {
+    const rows = this.db
+      .prepare("SELECT name FROM user_secrets WHERE user_id = ? ORDER BY name")
+      .all(userId) as { name: string }[];
+    return rows.map((r) => r.name);
+  }
+
+  /**
+   * Decrypt all of the user's secrets into a name→value map for server-side use
+   * (injected as MCP subprocess env). Undecryptable entries (e.g. after a
+   * SESSION_SECRET change) are skipped. This is the ONLY path the plaintext
+   * values leave the DB — never via `toUser`.
+   */
+  getUserSecrets(userId: string): Record<string, string> {
+    const rows = this.db
+      .prepare("SELECT name, value_enc FROM user_secrets WHERE user_id = ?")
+      .all(userId) as { name: string; value_enc: string }[];
+    const out: Record<string, string> = {};
+    for (const r of rows) {
+      const value = decryptSecret(r.value_enc, this.secret);
+      if (value !== null) {
+        out[r.name] = value;
+      }
+    }
+    return out;
+  }
+
+  /** Set the commit author identity used for knowledge-repo commits. */
+  setGitIdentity(userId: string, name: string | null, email: string | null): User {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    this.db
+      .prepare("UPDATE users SET git_identity_name = ?, git_identity_email = ? WHERE id = ?")
+      .run(name?.trim() || null, email?.trim() || null, userId);
+    return this.toUser(this.userRowById(userId)!);
+  }
+
+  /**
+   * Point the user at a personal knowledge repo (`null` repo clears it).
+   * Clears any plugin selection too: the old subset names don't apply to a
+   * different repo, and a fresh repo should default to "load all".
+   */
+  setKnowledgeRepo(userId: string, repo: string | null, branch: string | null): User {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    this.db
+      .prepare(
+        "UPDATE users SET knowledge_repo = ?, knowledge_branch = ?, knowledge_selected = NULL WHERE id = ?",
+      )
+      .run(repo?.trim() || null, branch?.trim() || null, userId);
+    return this.toUser(this.userRowById(userId)!);
+  }
+
+  /** Set which knowledge-repo plugins the avatar loads; `null` = load all. */
+  setKnowledgeSelected(userId: string, selected: string[] | null): User {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    this.db
+      .prepare("UPDATE users SET knowledge_selected = ? WHERE id = ?")
+      .run(selected ? JSON.stringify(selected) : null, userId);
+    return this.toUser(this.userRowById(userId)!);
+  }
+
+  /** The configured knowledge repo + branch + plugin selection for a user. */
+  getKnowledgeRepo(userId: string): {
+    repo: string | null;
+    branch: string | null;
+    selected: string[] | null;
+  } {
+    const row = this.userRowById(userId);
+    return {
+      repo: row?.knowledge_repo ?? null,
+      branch: row?.knowledge_branch ?? null,
+      selected: parseNameList(row?.knowledge_selected ?? null),
+    };
+  }
+
   // ---- Plugins ----------------------------------------------------------
 
   private toPlugin(row: {
@@ -454,6 +663,8 @@ export class Store {
     ref: string | null;
     label: string | null;
     enabled: number;
+    selected: string | null;
+    last_synced_at: string | null;
     created_at: string;
   }): Plugin {
     return {
@@ -462,6 +673,8 @@ export class Store {
       ref: row.ref,
       label: row.label,
       enabled: row.enabled === 1,
+      selected: parseNameList(row.selected),
+      lastSyncedAt: row.last_synced_at ?? null,
       createdAt: row.created_at,
     };
   }
@@ -499,6 +712,13 @@ export class Store {
     return result.changes > 0;
   }
 
+  getPlugin(userId: string, id: string): Plugin | null {
+    const row = this.db
+      .prepare("SELECT * FROM avatar_plugins WHERE id = ? AND user_id = ?")
+      .get(id, userId) as Parameters<Store["toPlugin"]>[0] | undefined;
+    return row ? this.toPlugin(row) : null;
+  }
+
   setPluginEnabled(userId: string, id: string, enabled: boolean): Plugin | null {
     const result = this.db
       .prepare("UPDATE avatar_plugins SET enabled = ? WHERE id = ? AND user_id = ?")
@@ -506,14 +726,43 @@ export class Store {
     if (result.changes === 0) {
       return null;
     }
-    return this.toPlugin(
-      this.db.prepare("SELECT * FROM avatar_plugins WHERE id = ?").get(id) as Parameters<
-        Store["toPlugin"]
-      >[0],
-    );
+    return this.getPlugin(userId, id);
   }
 
-  // ---- Knowledge: requests (gaps) & entries (taught facts) -------------
+  /** Update which marketplace plugins are loaded; `null` means "load all". */
+  setPluginSelected(userId: string, id: string, selected: string[] | null): Plugin | null {
+    const result = this.db
+      .prepare("UPDATE avatar_plugins SET selected = ? WHERE id = ? AND user_id = ?")
+      .run(selected ? JSON.stringify(selected) : null, id, userId);
+    if (result.changes === 0) {
+      return null;
+    }
+    return this.getPlugin(userId, id);
+  }
+
+  /** Update the ref (branch/tag/commit) a plugin tracks. */
+  setPluginRef(userId: string, id: string, ref: string | null): Plugin | null {
+    const result = this.db
+      .prepare("UPDATE avatar_plugins SET ref = ? WHERE id = ? AND user_id = ?")
+      .run(ref, id, userId);
+    if (result.changes === 0) {
+      return null;
+    }
+    return this.getPlugin(userId, id);
+  }
+
+  /** Stamp the last successful git sync time. */
+  markPluginSynced(userId: string, id: string): Plugin | null {
+    const result = this.db
+      .prepare("UPDATE avatar_plugins SET last_synced_at = ? WHERE id = ? AND user_id = ?")
+      .run(now(), id, userId);
+    if (result.changes === 0) {
+      return null;
+    }
+    return this.getPlugin(userId, id);
+  }
+
+  // ---- Knowledge: the owner's gap inbox (colleague questions) ----------
 
   private toKnowledgeRequest(row: KnowledgeRequestRow): KnowledgeRequest {
     return {
@@ -523,19 +772,6 @@ export class Store {
       askerName: row.asker_name,
       question: row.question,
       status: row.status as KnowledgeRequest["status"],
-      answer: row.answer,
-      createdAt: row.created_at,
-      answeredAt: row.answered_at,
-    };
-  }
-
-  private toKnowledgeEntry(row: KnowledgeEntryRow): KnowledgeEntry {
-    return {
-      id: row.id,
-      avatarUserId: row.avatar_user_id,
-      topic: row.topic,
-      content: row.content,
-      sourceRequestId: row.source_request_id,
       createdAt: row.created_at,
     };
   }
@@ -595,100 +831,18 @@ export class Store {
   }
 
   /**
-   * Resolve a request with the owner's answer and turn it into a searchable
-   * knowledge entry, atomically. Returns null if the request isn't the avatar's.
+   * Resolve (close) an open request. There is no stored answer: the avatar's
+   * persistent knowledge lives in plugins, so the owner just clears the gap
+   * from the inbox once handled. Returns false if it isn't an open request of
+   * this avatar's.
    */
-  answerKnowledgeRequest(avatarUserId: string, id: string, answer: string): KnowledgeRequest | null {
-    const tx = this.db.transaction((): KnowledgeRequest | null => {
-      const row = this.db
-        .prepare("SELECT * FROM knowledge_requests WHERE id = ? AND avatar_user_id = ?")
-        .get(id, avatarUserId) as KnowledgeRequestRow | undefined;
-      if (!row) {
-        return null;
-      }
-      const answeredAt = now();
-      this.db
-        .prepare(
-          "UPDATE knowledge_requests SET status = 'answered', answer = ?, answered_at = ? WHERE id = ?",
-        )
-        .run(answer.trim(), answeredAt, id);
-      this.addKnowledgeEntry(avatarUserId, {
-        topic: row.question,
-        content: answer.trim(),
-        sourceRequestId: id,
-      });
-      return this.toKnowledgeRequest(
-        this.db
-          .prepare("SELECT * FROM knowledge_requests WHERE id = ?")
-          .get(id) as KnowledgeRequestRow,
-      );
-    });
-    return tx();
-  }
-
-  dismissKnowledgeRequest(avatarUserId: string, id: string): boolean {
+  resolveKnowledgeRequest(avatarUserId: string, id: string): boolean {
     const result = this.db
       .prepare(
-        "UPDATE knowledge_requests SET status = 'dismissed' WHERE id = ? AND avatar_user_id = ? AND status = 'open'",
+        "UPDATE knowledge_requests SET status = 'resolved' WHERE id = ? AND avatar_user_id = ? AND status = 'open'",
       )
       .run(id, avatarUserId);
     return result.changes > 0;
-  }
-
-  addKnowledgeEntry(
-    avatarUserId: string,
-    input: { topic?: string | null; content: string; sourceRequestId?: string | null },
-  ): KnowledgeEntry {
-    const id = crypto.randomUUID();
-    this.db
-      .prepare(
-        `INSERT INTO knowledge_entries (id, avatar_user_id, topic, content, source_request_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-      )
-      .run(id, avatarUserId, input.topic?.trim() || null, input.content.trim(), input.sourceRequestId ?? null, now());
-    return this.toKnowledgeEntry(
-      this.db.prepare("SELECT * FROM knowledge_entries WHERE id = ?").get(id) as KnowledgeEntryRow,
-    );
-  }
-
-  listKnowledgeEntries(avatarUserId: string): KnowledgeEntry[] {
-    const rows = this.db
-      .prepare("SELECT * FROM knowledge_entries WHERE avatar_user_id = ? ORDER BY created_at DESC")
-      .all(avatarUserId) as KnowledgeEntryRow[];
-    return rows.map((r) => this.toKnowledgeEntry(r));
-  }
-
-  deleteKnowledgeEntry(avatarUserId: string, id: string): boolean {
-    const result = this.db
-      .prepare("DELETE FROM knowledge_entries WHERE id = ? AND avatar_user_id = ?")
-      .run(id, avatarUserId);
-    return result.changes > 0;
-  }
-
-  /**
-   * Find taught facts relevant to a query (case-insensitive substring over
-   * topic + content). An empty query returns the most recent entries.
-   */
-  searchKnowledge(avatarUserId: string, query: string, limit = 10): KnowledgeEntry[] {
-    const trimmed = query.trim();
-    if (!trimmed) {
-      const rows = this.db
-        .prepare(
-          "SELECT * FROM knowledge_entries WHERE avatar_user_id = ? ORDER BY created_at DESC LIMIT ?",
-        )
-        .all(avatarUserId, limit) as KnowledgeEntryRow[];
-      return rows.map((r) => this.toKnowledgeEntry(r));
-    }
-    const like = `%${trimmed.replace(/[%_]/g, (c) => `\\${c}`)}%`;
-    const rows = this.db
-      .prepare(
-        `SELECT * FROM knowledge_entries
-         WHERE avatar_user_id = ?
-           AND (content LIKE ? ESCAPE '\\' OR topic LIKE ? ESCAPE '\\')
-         ORDER BY created_at DESC LIMIT ?`,
-      )
-      .all(avatarUserId, like, like, limit) as KnowledgeEntryRow[];
-    return rows.map((r) => this.toKnowledgeEntry(r));
   }
 
   // ---- Routine jobs (owner-scheduled recurring runs) -------------------
@@ -853,6 +1007,7 @@ export class Store {
       id: row.id,
       username: row.username,
       displayName: row.display_name,
+      alias: row.alias ?? "",
       bio: row.bio ?? "",
       hasImage: Boolean(row.avatar_ext),
       pluginCount,
@@ -867,7 +1022,8 @@ export class Store {
       return null;
     }
     const isOwn = id === viewerId;
-    if (row.published !== 1 && !isOwn) {
+    const trusted = !isOwn && this.isTrustedFor(viewerId, id);
+    if (row.published !== 1 && !isOwn && !trusted) {
       return null;
     }
     const plugins = (
@@ -880,24 +1036,85 @@ export class Store {
     return {
       ...this.toAvatarSummary(row),
       persona: row.persona ?? "",
+      intro: row.intro ?? "",
       isOwn,
+      elevated: isOwn || trusted,
       plugins,
     };
   }
 
-  /** Resolve a chat target avatar: must be published or the viewer's own. */
+  /**
+   * Resolve a chat target avatar: reachable if it's published, the viewer's own,
+   * or the viewer is a trusted user of it (trusted users may reach an UNPUBLISHED
+   * avatar — that's the point of trust).
+   */
   resolveChatAvatar(
     viewerId: string,
     id: string,
-  ): { id: string; displayName: string; persona: string } | null {
+  ): { id: string; displayName: string; alias: string; persona: string } | null {
     const row = this.userRowById(id);
     if (!row) {
       return null;
     }
-    if (row.published !== 1 && id !== viewerId) {
+    if (row.published !== 1 && id !== viewerId && !this.isTrustedFor(viewerId, id)) {
       return null;
     }
-    return { id: row.id, displayName: row.display_name, persona: row.persona ?? "" };
+    return { id: row.id, displayName: row.display_name, alias: row.alias ?? "", persona: row.persona ?? "" };
+  }
+
+  // ---- Trusted users ----------------------------------------------------
+  // A trusted user chats with someone else's avatar at the OWNER's tool-permission
+  // level (write/Bash run, not just read-only). Trust is a per-(avatar, viewer)
+  // relationship — it does NOT grant the owner-only knowledge inbox or greeting.
+
+  /** True when `viewerId` is a designated trusted user of `avatarId`'s avatar. */
+  isTrustedFor(viewerId: string, avatarId: string): boolean {
+    if (!viewerId || !avatarId || viewerId === avatarId) {
+      return false;
+    }
+    const row = this.db
+      .prepare(
+        "SELECT 1 FROM avatar_trusted_users WHERE avatar_user_id = ? AND viewer_user_id = ?",
+      )
+      .get(avatarId, viewerId);
+    return Boolean(row);
+  }
+
+  /** The users `avatarId` has trusted, for the owner's management UI. */
+  listTrustedUsers(avatarId: string): { id: string; username: string; displayName: string; createdAt: string | null }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT u.id AS id, u.username AS username, u.display_name AS display_name, t.created_at AS created_at
+         FROM avatar_trusted_users t JOIN users u ON u.id = t.viewer_user_id
+         WHERE t.avatar_user_id = ? ORDER BY u.display_name COLLATE NOCASE ASC`,
+      )
+      .all(avatarId) as { id: string; username: string; display_name: string; created_at: string | null }[];
+    return rows.map((r) => ({ id: r.id, username: r.username, displayName: r.display_name, createdAt: r.created_at }));
+  }
+
+  /**
+   * Grant trust to a user by username. Returns the trusted user's public shape,
+   * or null if no such user / attempting to trust oneself. Idempotent.
+   */
+  addTrustedUser(avatarId: string, username: string): { id: string; username: string; displayName: string } | null {
+    const target = this.userRowByUsername(username.trim());
+    if (!target || target.id === avatarId) {
+      return null;
+    }
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO avatar_trusted_users (avatar_user_id, viewer_user_id, created_at) VALUES (?, ?, ?)",
+      )
+      .run(avatarId, target.id, now());
+    return { id: target.id, username: target.username, displayName: target.display_name };
+  }
+
+  /** Revoke trust. Returns true if a row was removed. */
+  removeTrustedUser(avatarId: string, viewerId: string): boolean {
+    const res = this.db
+      .prepare("DELETE FROM avatar_trusted_users WHERE avatar_user_id = ? AND viewer_user_id = ?")
+      .run(avatarId, viewerId);
+    return res.changes > 0;
   }
 
   // ---- Conversations & messages ----------------------------------------
@@ -968,6 +1185,21 @@ export class Store {
          VALUES (?, ?, ?, ?, ?, ?)`,
       )
       .run(conversationId, ownerId, avatarUserId, title, timestamp, timestamp);
+  }
+
+  /** The SDK session to resume for this conversation's next turn (null if none). */
+  getAgentSessionId(ownerId: string, conversationId: string): string | null {
+    const row = this.db
+      .prepare("SELECT agent_session_id FROM conversations WHERE id = ? AND owner_user_id = ?")
+      .get(conversationId, ownerId) as { agent_session_id: string | null } | undefined;
+    return row?.agent_session_id ?? null;
+  }
+
+  /** Record the SDK session id produced by this conversation's latest turn. */
+  setAgentSessionId(conversationId: string, sessionId: string): void {
+    this.db
+      .prepare("UPDATE conversations SET agent_session_id = ? WHERE id = ?")
+      .run(sessionId, conversationId);
   }
 
   listMessages(ownerId: string, conversationId: string): StoredMessage[] {
@@ -1155,6 +1387,10 @@ export class Store {
       this.db.prepare("DELETE FROM routine_jobs WHERE avatar_user_id = ?").run(id);
       this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
       this.db.prepare("DELETE FROM user_roles WHERE user_id = ?").run(id);
+      // Trust relationships in either direction (as avatar or as trusted viewer).
+      this.db
+        .prepare("DELETE FROM avatar_trusted_users WHERE avatar_user_id = ? OR viewer_user_id = ?")
+        .run(id, id);
       this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
     });
     tx();

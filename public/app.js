@@ -19,16 +19,20 @@ function newId() {
 const state = {
   user: null,
   view: "explore", // explore | chat | settings | admin
+  settingsTab: "profile", // profile | access | knowledge | routines
   avatars: [],
   currentAvatar: null, // avatar being chatted with
   conversations: [],
   conversationId: newId(),
   messages: [],
+  // Skills for the chat capabilities panel, keyed by avatar id (lazy-loaded).
+  // value: { loading, error, skills } | undefined (not yet fetched)
+  skillsByAvatar: {},
   plugins: [],
   knowledgeRequests: [],
-  knowledgeEntries: [],
   routines: [],
   adminUsers: [],
+  adminSystem: null,
   audit: [],
   streaming: false,
   authError: "",
@@ -104,6 +108,8 @@ function icon(name) {
     globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/>',
     lock: '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
     back: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
+    book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
+    clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
   };
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -236,7 +242,7 @@ function renderAuth(mode = "login") {
   abortController?.abort();
   abortController = null;
   state.streaming = false;
-  document.title = "Avatar Chat";
+  document.title = "Noah Almighty";
 
   const isLogin = mode === "login";
   const isSetup = mode === "setup";
@@ -298,9 +304,9 @@ function renderAuth(mode = "login") {
   app.replaceChildren(
     el("section", { class: "auth-view" }, [
       el("div", { class: "auth-panel" }, [
-        el("div", { class: "login-mark", text: "A" }),
+        el("img", { class: "login-mark", src: "/icon-192.png", alt: "Noah Almighty", width: "48", height: "48" }),
         isSetup ? el("div", { class: "setup-badge", text: "첫 실행 · 관리자 설정" }) : null,
-        el("h1", { text: isSetup ? "관리자 계정 생성" : isLogin ? "다시 오신 걸 환영해요" : "Avatar Chat 시작하기" }),
+        el("h1", { text: isSetup ? "관리자 계정 생성" : isLogin ? "다시 오신 걸 환영해요" : "Noah Almighty 시작하기" }),
         el("p", {
           text: isSetup
             ? "서비스를 처음 시작합니다. 여기서 만드는 첫 계정이 관리자(admin)가 됩니다."
@@ -363,8 +369,8 @@ function mountShell() {
   const rail = el("aside", { class: "rail", id: "rail" }, [
     el("div", { class: "rail-head" }, [
       el("div", { class: "rail-brand" }, [
-        el("div", { class: "mark", text: "A" }),
-        el("div", {}, [el("div", { class: "name", text: "Avatar Chat" }), el("div", { class: "sub", text: "avatar platform" })]),
+        el("img", { class: "mark", src: "/icon-192.png", alt: "Noah Almighty", width: "34", height: "34" }),
+        el("div", {}, [el("div", { class: "name", text: "Noah Almighty" }), el("div", { class: "sub", text: "avatar platform" })]),
       ]),
       nav,
     ]),
@@ -382,8 +388,24 @@ function mountShell() {
   dom.main = el("main", { class: "main", id: "main" });
   dom.railBackdrop = el("div", { class: "rail-backdrop", onclick: () => closeRail() });
 
-  app.replaceChildren(el("section", { class: "workspace" }, [rail, dom.main]), dom.railBackdrop);
+  // Interactive prompts (permission / AskUserQuestion) surface as a standalone
+  // centered modal — not inside the chat bubble — so the owner can't miss them;
+  // it's dismissed once they respond (or when the run ends).
+  dom.promptModal = el("div", { class: "prompt-modal-backdrop", hidden: true });
+
+  app.replaceChildren(el("section", { class: "workspace" }, [rail, dom.main]), dom.railBackdrop, dom.promptModal);
   dom.rail = rail;
+}
+
+function showPromptModal(card) {
+  if (!dom.promptModal) return;
+  dom.promptModal.replaceChildren(card);
+  dom.promptModal.hidden = false;
+}
+function hidePromptModal() {
+  if (!dom.promptModal) return;
+  dom.promptModal.hidden = true;
+  dom.promptModal.replaceChildren();
 }
 
 function openRail() {
@@ -459,6 +481,7 @@ function buildAvatarCard(av) {
         av.published ? null : el("span", { class: "tag", text: "비공개" }),
       ]),
       el("div", { class: "ac-handle", text: `@${av.username}` }),
+      av.alias ? el("div", { class: "ac-alias", text: `“${av.alias}”` }) : null,
       av.bio ? el("p", { class: "ac-bio", text: av.bio }) : null,
       el("div", { class: "ac-tags" }, [el("span", { class: "tag", text: `플러그인 ${av.pluginCount}개` })]),
     ]),
@@ -495,16 +518,21 @@ function renderChat() {
   }
 
   const av = state.currentAvatar;
+  // Elevated viewers (owner or trusted user) run tools; everyone else is
+  // read-only and gets the "읽기전용" tag. `elevated` comes from the avatar
+  // detail (GET /api/avatars/:id) so trusted users aren't mislabeled.
+  const elevated = av.elevated || av.id === state.user?.id;
   const headerExtra = el("div", { class: "chat-avatar" }, [
     avatarNode(av, 36),
     el("div", {}, [
-      el("div", { class: "ca-name", text: av.displayName }),
-      el("div", { class: "ca-handle", text: `@${av.username} · 읽기전용` }),
+      el("div", { class: "ca-name", text: av.alias || av.displayName }),
+      el("div", { class: "ca-handle", text: `@${av.username}${elevated ? "" : " · 읽기전용"}` }),
     ]),
   ]);
+  const newChatBtn = el("button", { class: "ghost-sm", type: "button", text: "새 대화", onclick: () => newChat() });
   const header = el("header", { class: "view-header chat-head" }, [
     el("div", { class: "header-left" }, [dom.railToggle, headerExtra]),
-    el("button", { class: "ghost-sm", type: "button", text: "새 대화", onclick: () => newChat() }),
+    newChatBtn,
   ]);
 
   dom.transcriptInner = el("div", { class: "transcript-inner" });
@@ -535,9 +563,220 @@ function renderChat() {
   ]);
   const composer = el("footer", { class: "composer" }, [el("div", { class: "composer-inner" }, [composerForm])]);
 
-  dom.main.append(header, el("div", { class: "chat-body" }, [dom.transcript, dom.scrollBtn]), composer);
+  // Chat content (header + transcript + composer) sits in its own column; the
+  // capabilities panel sits beside it. `.main` stays a plain column (shared by
+  // every view), so we fill it with a single row that holds both.
+  const chatCol = el("div", { class: "chat-col" }, [
+    header,
+    el("div", { class: "chat-body" }, [dom.transcript, dom.scrollBtn]),
+    composer,
+  ]);
+  dom.main.append(el("div", { class: "chat-layout" }, [chatCol, renderCapabilitiesPanel(av)]));
   wireComposer();
   renderTranscript();
+  // Owner opening a fresh chat with their own avatar → the avatar greets first.
+  maybeGreet();
+}
+
+/**
+ * Right-side panel showing what the avatar can do — its plugins (known
+ * immediately from the avatar detail) and its skills (lazy-fetched from
+ * `/api/avatars/:id/skills`, since resolving them may clone repos). Visible to
+ * colleagues and the owner alike, so a teammate can see at a glance what the
+ * avatar is equipped with before chatting.
+ */
+// Persisted UI prefs for the capabilities panel (width + collapsed). The app
+// otherwise keeps state in memory, but panel size/visibility are preferences a
+// user expects to survive a reload, so these two live in localStorage.
+const CAP_WIDTH_MIN = 220;
+const CAP_WIDTH_MAX = 720;
+const CAP_WIDTH_DEFAULT = 480;
+function capPref(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v == null ? fallback : v;
+  } catch {
+    return fallback;
+  }
+}
+function setCapPref(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* storage may be unavailable (private mode); prefs just won't persist */
+  }
+}
+
+function renderCapabilitiesPanel(av) {
+  const skillsBody = el("div", { class: "cap-section-body cap-skills" });
+  const plugins = av.plugins || [];
+  const pluginsBody = el("div", { class: "cap-section-body cap-plugins" },
+    plugins.length
+      ? plugins.map((p) => el("div", { class: "cap-plugin" }, [
+          el("span", { class: "cap-plugin-name", text: p.label || p.repo }),
+          p.label ? el("span", { class: "cap-plugin-repo", text: p.repo }) : null,
+        ]))
+      : [el("p", { class: "cap-empty", text: "연결된 플러그인이 없습니다." })],
+  );
+
+  const collapseBtn = el("button", {
+    class: "cap-collapse",
+    type: "button",
+    title: "패널 접기",
+    "aria-label": "패널 접기",
+    text: "›",
+  });
+  // The avatar's self-introduction (markdown), shown atop the panel when present.
+  const introText = (av.intro || "").trim();
+  const introBlock = introText
+    ? el("div", { class: "cap-intro" }, [el("div", { class: "cap-intro-text md", html: renderMarkdown(introText) })])
+    : null;
+  const body = el("div", { class: "cap-body scroll-thin" }, [
+    el("div", { class: "cap-head" }, [
+      el("h3", { text: "이 아바타의 역량" }),
+      el("p", { class: "cap-sub", text: `${av.displayName}이(가) 사용할 수 있는 도구` }),
+    ]),
+    introBlock,
+    el("div", { class: "cap-section" }, [
+      el("div", { class: "cap-section-title", text: "스킬" }),
+      skillsBody,
+    ]),
+    el("div", { class: "cap-section" }, [
+      el("div", { class: "cap-section-title", text: "플러그인" }),
+      pluginsBody,
+    ]),
+  ]);
+  // Slim strip shown when collapsed: just an expand button.
+  const expandBtn = el("button", {
+    class: "cap-expand",
+    type: "button",
+    title: "역량 패널 펼치기",
+    "aria-label": "역량 패널 펼치기",
+    text: "‹",
+  });
+  // Drag handle on the panel's left edge to resize its width.
+  const resizer = el("div", { class: "cap-resize", "aria-hidden": "true" });
+
+  const startWidth = Number(capPref("capPanelWidth", String(CAP_WIDTH_DEFAULT))) || CAP_WIDTH_DEFAULT;
+  const panel = el("aside", {
+    class: "cap-panel",
+    "aria-label": "아바타 역량",
+    style: `width:${Math.min(CAP_WIDTH_MAX, Math.max(CAP_WIDTH_MIN, startWidth))}px`,
+  }, [resizer, collapseBtn, body, expandBtn]);
+
+  if (capPref("capPanelCollapsed", "0") === "1") panel.classList.add("collapsed");
+
+  const setCollapsed = (collapsed) => {
+    panel.classList.toggle("collapsed", collapsed);
+    setCapPref("capPanelCollapsed", collapsed ? "1" : "0");
+  };
+  collapseBtn.addEventListener("click", () => setCollapsed(true));
+  expandBtn.addEventListener("click", () => setCollapsed(false));
+
+  wireCapResize(resizer, panel);
+  loadCapabilitySkills(av.id, skillsBody);
+  return panel;
+}
+
+// Pointer-drag resize for the capabilities panel. The panel sits at the right
+// edge, so dragging the handle left widens it (width grows as clientX shrinks).
+function wireCapResize(handle, panel) {
+  handle.addEventListener("pointerdown", (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startW = panel.getBoundingClientRect().width;
+    handle.setPointerCapture(e.pointerId);
+    document.body.classList.add("col-resizing");
+    const onMove = (ev) => {
+      const next = Math.min(CAP_WIDTH_MAX, Math.max(CAP_WIDTH_MIN, startW + (startX - ev.clientX)));
+      panel.style.width = `${next}px`;
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      document.body.classList.remove("col-resizing");
+      setCapPref("capPanelWidth", String(Math.round(panel.getBoundingClientRect().width)));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    // A cancelled pointer (touch interruption, gesture, context menu) would
+    // otherwise never fire pointerup, leaving body stuck in .col-resizing.
+    handle.addEventListener("pointercancel", onUp);
+  });
+}
+
+/** Lazy-load and render an avatar's skills into the panel's skills section. */
+async function loadCapabilitySkills(avatarId, body) {
+  const renderState = (st) => {
+    if (st.loading) {
+      body.replaceChildren(el("p", { class: "cap-loading", text: "불러오는 중…" }));
+    } else if (st.error) {
+      body.replaceChildren(el("p", { class: "cap-empty", text: st.error }));
+    } else if (!st.skills.length) {
+      body.replaceChildren(el("p", { class: "cap-empty", text: "사용 가능한 스킬이 없습니다." }));
+    } else {
+      // Each skill is a collapsed accordion: name only by default, click to
+      // reveal its (often long) description. The "default" source is implicit
+      // and noisy, so only plugin-provided sources get a badge.
+      body.replaceChildren(...st.skills.map((s) => {
+        const hasDesc = Boolean(s.description);
+        const fromPlugin = s.source && s.source !== "default";
+        const head = el("button", {
+          class: "cap-skill-head",
+          type: "button",
+          "aria-expanded": "false",
+          disabled: hasDesc ? null : "",
+        }, [
+          hasDesc ? el("span", { class: "cap-skill-caret", text: "▸", "aria-hidden": "true" }) : null,
+          el("span", { class: "cap-skill-name", text: s.name }),
+          fromPlugin ? el("span", { class: "cap-skill-src", text: s.source }) : null,
+        ]);
+        const item = el("div", { class: "cap-skill" }, [head]);
+        if (hasDesc) {
+          const desc = el("p", { class: "cap-skill-desc", text: s.description });
+          item.append(desc);
+          head.addEventListener("click", () => {
+            const open = item.classList.toggle("open");
+            head.setAttribute("aria-expanded", open ? "true" : "false");
+          });
+        }
+        return item;
+      }));
+    }
+  };
+
+  // Reuse a cached result (skills don't change within a session unless plugins
+  // do). A still-loading entry means a fetch is already in flight — render its
+  // state and bail rather than starting a duplicate request.
+  const cached = state.skillsByAvatar[avatarId];
+  if (cached && !cached.error) {
+    renderState(cached);
+    return;
+  }
+  const loadingState = { loading: true, error: "", skills: [] };
+  state.skillsByAvatar[avatarId] = loadingState;
+  renderState(loadingState);
+  try {
+    const { skills } = await api(`/api/avatars/${avatarId}/skills`);
+    const done = { loading: false, error: "", skills: skills || [] };
+    state.skillsByAvatar[avatarId] = done;
+    // Avoid clobbering the panel if the user navigated to a different avatar.
+    if (state.currentAvatar?.id === avatarId) renderState(done);
+  } catch (err) {
+    const failed = { loading: false, error: "스킬을 불러오지 못했습니다.", skills: [] };
+    state.skillsByAvatar[avatarId] = failed;
+    if (state.currentAvatar?.id === avatarId) renderState(failed);
+  }
+}
+
+/**
+ * Drop the cached skills for an avatar so the capabilities panel re-fetches
+ * next time it opens. Called whenever the owner mutates their own plugins —
+ * the skill set is derived from those plugins, so the cache would go stale.
+ */
+function invalidateSkillsCache(avatarId) {
+  if (avatarId) delete state.skillsByAvatar[avatarId];
 }
 
 function wireComposer() {
@@ -582,6 +821,8 @@ function newChat() {
   renderTranscript();
   renderConversations();
   dom.textarea?.focus();
+  // Owner's own avatar greets first in the new empty conversation.
+  maybeGreet();
 }
 
 /* ---------- transcript ---------- */
@@ -741,23 +982,46 @@ async function submitMessage() {
   await streamChat(message, { isNewConversation: state.messages.length === 1 });
 }
 
-async function streamChat(message, { isNewConversation = false, regenerate = false } = {}) {
+// When the owner opens a fresh chat with their OWN avatar, let the avatar speak
+// first: it greets and reports any pending info requests. Only fires on an empty
+// brand-new conversation (no typed message yet), and never while streaming.
+async function maybeGreet() {
+  if (state.streaming) return;
+  if (!state.currentAvatar || !state.user) return;
+  if (state.currentAvatar.id !== state.user.id) return;
+  if (state.messages.length) return;
+  dom.transcriptInner.replaceChildren();
+  await streamChat("", { isNewConversation: true, greeting: true });
+}
+
+async function streamChat(message, { isNewConversation = false, regenerate = false, greeting = false } = {}) {
   state.streaming = true;
   updateSendState();
   setComposerState("응답 대기 중…");
   dom.transcript.setAttribute("aria-busy", "true");
-  document.title = "● 응답 중 · Avatar Chat";
+  document.title = "● 응답 중 · Noah Almighty";
 
   const bubble = el("div", { class: "bubble" });
   const mdNode = el("div", { class: "md" });
   const caret = el("span", { class: "stream-caret", "aria-hidden": "true" });
   const statusRow = el("div", { class: "stream-status" }, [el("span", { class: "spinner" }), el("span", { class: "label", text: "준비 중…" })]);
   const pluginChips = el("div", { class: "plugin-chips" });
-  // Interactive prompts (permission / AskUserQuestion) render above the activity
-  // tree; the activity tree shows which agent is calling which tool.
-  const promptsEl = el("div", { class: "agent-prompts" });
+  // Interactive prompts (permission / AskUserQuestion) pop up in a standalone
+  // modal, not in the bubble; the activity tree shows which agent calls which tool.
+  // The tree lives inside a <details open> so a long run's tool list can be
+  // collapsed mid-stream — without this it grows unbounded and crowds the bubble.
   const activityEl = el("div", { class: "agent-activity" });
-  bubble.append(mdNode, caret, promptsEl, activityEl, statusRow, pluginChips);
+  const activitySummaryEl = el("span", { class: "activity-summary-text", text: "작업 중…" });
+  const activityDetails = el("details", { class: "activity-live", open: "", hidden: "" }, [
+    el("summary", {}, [activitySummaryEl]),
+    activityEl,
+  ]);
+  // Order matches execution: tool activity → answer text → status. The answer
+  // streams in BELOW the activity that produced it, so the tool rows don't get
+  // buried under a long reply. The caret stays hidden until the first text
+  // delta, so a tools-only phase doesn't render a tall empty bubble.
+  caret.hidden = true;
+  bubble.append(activityDetails, mdNode, caret, statusRow, pluginChips);
   const wrap = el("div", { class: "message assistant" }, [
     el("div", { class: "msg-role" }, [el("span", { class: "role-dot" }), el("span", { text: state.currentAvatar?.displayName || "아바타" })]),
     bubble,
@@ -767,7 +1031,7 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
 
   const live = {
     wrap, bubble, mdNode, caret, statusRow, statusLabel: statusRow.querySelector(".label"),
-    pluginChips, promptsEl, activityEl,
+    pluginChips, activityEl, activityDetails, activitySummaryEl,
     runId: null,
     agents: new Map(), // agentId -> { node, toolsEl, childrenEl }
     tools: new Map(), // toolUseId -> { row }
@@ -791,7 +1055,7 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
       headers: { "Content-Type": "application/json" },
       credentials: "same-origin",
       signal: abortController.signal,
-      body: JSON.stringify({ avatarId: state.currentAvatar.id, message, conversationId: state.conversationId, regenerate }),
+      body: JSON.stringify({ avatarId: state.currentAvatar.id, message, conversationId: state.conversationId, regenerate, greeting }),
     });
     if (response.status === 401) {
       handleSessionExpired();
@@ -822,7 +1086,7 @@ async function streamChat(message, { isNewConversation = false, regenerate = fal
     updateSendState();
     setComposerState("");
     dom.transcript.setAttribute("aria-busy", "false");
-    document.title = "Avatar Chat";
+    document.title = "Noah Almighty";
     dom.textarea.focus();
   }
 }
@@ -899,6 +1163,7 @@ function handleSseEvent(event, data, live, scheduleFlush) {
       break;
     case "delta":
       if (typeof data?.text === "string") {
+        if (!live.text && live.caret) live.caret.hidden = false; // first token → show caret
         live.text += data.text;
         scheduleFlush();
       }
@@ -934,7 +1199,10 @@ function ensureAgentNode(live, agentId, info) {
   const childrenEl = el("div", { class: "agent-children" });
   let node;
   if (isMain) {
-    node = el("div", { class: "agent-node main", dataset: { agent: agentId, status: "running" } }, [toolsEl, childrenEl]);
+    // NB: avoid the bare `main` class here — it collides with the app layout's
+    // `.main { height: 100dvh }` rule and stretched the activity box to fill the
+    // whole viewport. `is-main` carries the same "root node" intent, unstyled.
+    node = el("div", { class: "agent-node is-main", dataset: { agent: agentId, status: "running" } }, [toolsEl, childrenEl]);
     live.activityEl.append(node);
   } else {
     const label = (info && info.label) || "서브 에이전트";
@@ -960,6 +1228,7 @@ function handleAgentStart(live, data) {
   if (!data?.agentId) return;
   const label = [data.subagentType, data.description].filter(Boolean).join(" · ") || "서브 에이전트";
   ensureAgentNode(live, data.agentId, { parentId: data.parentId, label, status: "running", pending: false });
+  refreshLiveActivity(live);
   setStatus(live, `에이전트 작업 중: ${label}`);
 }
 
@@ -969,18 +1238,50 @@ function handleAgentEnd(live, data) {
   rec.node.dataset.status = data.ok === false ? "failed" : "done";
 }
 
+// Friendly, human-readable labels for tools shown in the activity tree. Raw
+// names (e.g. `mcp__knowledge__request_info`) are an implementation detail
+// the chat viewer shouldn't see.
+const TOOL_LABELS = {
+  mcp__knowledge__request_info: "정보 요청 기록",
+  mcp__knowledge__pending_requests: "대기 요청 확인",
+  mcp__knowledge__resolve_request: "요청 처리 완료",
+  Read: "파일 읽기",
+  Glob: "파일 찾기",
+  Grep: "내용 검색",
+  Bash: "명령 실행",
+  Write: "파일 쓰기",
+  Edit: "파일 편집",
+  WebFetch: "웹 페이지 읽기",
+  WebSearch: "웹 검색",
+  Skill: "스킬 실행",
+};
+
+// Internal orchestration tools the viewer shouldn't see as activity rows.
+const HIDDEN_TOOLS = new Set(["ToolSearch", "TodoWrite", "SlashCommand"]);
+
+function toolLabel(name) {
+  if (!name) return "도구";
+  if (TOOL_LABELS[name]) return TOOL_LABELS[name];
+  // Generic MCP tool: drop the `mcp__server__` prefix, humanize the rest.
+  const mcp = /^mcp__[^_]+__(.+)$/.exec(name);
+  const base = mcp ? mcp[1] : name;
+  return base.replace(/_/g, " ");
+}
+
 function handleToolStart(live, data) {
   if (!data?.toolUseId || !data?.name) return;
+  if (HIDDEN_TOOLS.has(data.name)) return; // internal mechanism — not user-facing
+  const label = toolLabel(data.name);
   const agent = ensureAgentNode(live, data.agentId || "main", { pending: true });
   const row = el("div", { class: "tool-row", dataset: { tool: data.toolUseId, status: "running" } }, [
     el("span", { class: "tool-spinner" }),
-    el("span", { class: "tool-name", text: data.name }),
+    el("span", { class: "tool-name", text: label }),
     data.inputSummary ? el("span", { class: "tool-arg", text: data.inputSummary }) : null,
   ]);
   agent.toolsEl.append(row);
   live.tools.set(data.toolUseId, { row });
-  setStatus(live, `실행 중: ${data.name}${data.inputSummary ? ` · ${data.inputSummary}` : ""}`);
-  scrollToBottom();
+  refreshLiveActivity(live);
+  setStatus(live, `${label}${data.inputSummary ? ` · ${data.inputSummary}` : ""}`, { sticky: true });
 }
 
 function handleToolEnd(live, data) {
@@ -992,8 +1293,8 @@ function handleToolEnd(live, data) {
 
 function handleBlocked(live, data) {
   if (!data?.toolName) return;
-  // If this tool already has a permission card the owner resolved, don't double-report.
-  if (data.toolUseId && live.promptsEl.querySelector(`[data-tooluse="${cssEscape(data.toolUseId)}"]`)) return;
+  // If the owner already resolved a permission prompt for this tool, don't double-report.
+  if (data.toolUseId && live.resolvedPermissions?.has(data.toolUseId)) return;
   const reasonText = data.reason ? `차단됨 · ${data.reason}` : "읽기 전용이라 차단됨";
   // Prefer to convert the existing "running" row for this tool into a blocked row.
   const existing = data.toolUseId && live.tools.get(data.toolUseId);
@@ -1008,51 +1309,52 @@ function handleBlocked(live, data) {
   const agent = ensureAgentNode(live, data.agentId || "main", { pending: true });
   const row = el("div", { class: "tool-row blocked", dataset: { status: "blocked" } }, [
     el("span", { class: "tool-dot" }),
-    el("span", { class: "tool-name", text: data.toolName }),
+    el("span", { class: "tool-name", text: toolLabel(data.toolName) }),
     el("span", { class: "tool-arg", text: reasonText }),
   ]);
   agent.toolsEl.append(row);
-  scrollToBottom();
+  refreshLiveActivity(live);
 }
 
 /* ---- Interactive prompts (permission / question) ------------------- */
 
-async function submitPromptResponse(live, requestId, value, card, resultLabel) {
-  card.dataset.resolved = "true";
-  card.querySelectorAll("button").forEach((b) => (b.disabled = true));
-  try {
-    await api("/api/chat/respond", { method: "POST", body: JSON.stringify({ runId: live.runId, requestId, value }) });
-  } catch (err) {
-    // Run may have ended already; reflect that but don't crash the stream.
-    resultLabel = `전송 실패: ${err.message || err}`;
+// Submit the owner's response to a prompt and dismiss the modal. The tool id
+// (if any) is remembered so a later "blocked" event for the same tool isn't
+// double-reported in the activity tree.
+async function submitPromptResponse(live, data, value) {
+  if (data.toolUseId) {
+    (live.resolvedPermissions || (live.resolvedPermissions = new Set())).add(data.toolUseId);
   }
-  const status = card.querySelector(".prompt-result");
-  if (status) status.textContent = resultLabel;
+  hidePromptModal();
+  try {
+    await api("/api/chat/respond", { method: "POST", body: JSON.stringify({ runId: live.runId, requestId: data.requestId, value }) });
+  } catch {
+    /* run may have already ended; nothing actionable left to show */
+  }
 }
 
 function renderPermissionCard(live, data) {
-  if (!data?.requestId) return;
+  if (!data?.requestId || !dom.promptModal) return;
   const toolName = data.toolName || "도구";
-  const title = data.title || `이 아바타가 ${toolName} 도구를 사용하려고 합니다.`;
+  const title = data.title || `이 아바타가 "${toolLabel(toolName)}" 작업을 실행하려고 합니다.`;
   const argSummary = summarizeInputForCard(data.input);
+
   const card = el("div", { class: "prompt-card permission", dataset: { request: data.requestId, tooluse: data.toolUseId || "" } }, [
     el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon", text: "🔐" }), el("span", { text: "권한 요청" })]),
     el("div", { class: "prompt-title", text: title }),
     el("div", { class: "prompt-tool" }, [el("code", { text: toolName }), argSummary ? el("span", { class: "prompt-arg", text: argSummary }) : null]),
     data.description ? el("div", { class: "prompt-desc", text: data.description }) : null,
     el("div", { class: "prompt-actions" }, [
-      el("span", { class: "prompt-result" }),
-      el("button", { class: "btn btn-ghost btn-sm", text: "거부", onclick: () => submitPromptResponse(live, data.requestId, { behavior: "deny" }, card, "✕ 거부됨") }),
-      el("button", { class: "btn btn-primary btn-sm", text: "승인", onclick: () => submitPromptResponse(live, data.requestId, { behavior: "allow" }, card, "✓ 승인됨") }),
+      el("button", { class: "btn btn-ghost btn-sm", text: "거부", onclick: () => submitPromptResponse(live, data, { behavior: "deny" }) }),
+      el("button", { class: "btn btn-primary btn-sm", text: "승인", onclick: () => submitPromptResponse(live, data, { behavior: "allow" }) }),
     ]),
   ]);
-  live.promptsEl.append(card);
-  setStatus(live, "권한 승인을 기다리는 중…");
-  scrollToBottom();
+  showPromptModal(card);
+  setStatus(live, "권한 승인을 기다리는 중…", { sticky: true });
 }
 
 function renderQuestionCard(live, data) {
-  if (!data?.requestId) return;
+  if (!data?.requestId || !dom.promptModal) return;
   const payload = data.payload || {};
   const questions = Array.isArray(payload.questions) ? payload.questions : null;
   const card = el("div", { class: "prompt-card question", dataset: { request: data.requestId } }, [
@@ -1063,20 +1365,17 @@ function renderQuestionCard(live, data) {
     // Unknown dialog kind: show raw payload + confirm/cancel.
     card.append(el("pre", { class: "prompt-input", text: JSON.stringify(payload, null, 2) }));
     card.append(el("div", { class: "prompt-actions" }, [
-      el("span", { class: "prompt-result" }),
-      el("button", { class: "btn btn-ghost btn-sm", text: "취소", onclick: () => submitPromptResponse(live, data.requestId, { cancelled: true }, card, "취소됨") }),
-      el("button", { class: "btn btn-primary btn-sm", text: "확인", onclick: () => submitPromptResponse(live, data.requestId, { result: {} }, card, "확인됨") }),
+      el("button", { class: "btn btn-ghost btn-sm", text: "취소", onclick: () => submitPromptResponse(live, data, { cancelled: true }) }),
+      el("button", { class: "btn btn-primary btn-sm", text: "확인", onclick: () => submitPromptResponse(live, data, { result: {} }) }),
     ]));
-    live.promptsEl.append(card);
-    setStatus(live, "질문에 답해 주세요…");
-    scrollToBottom();
+    showPromptModal(card);
+    setStatus(live, "질문에 답해 주세요…", { sticky: true });
     return;
   }
 
   // selections[i] = array of chosen labels for question i.
   const selections = questions.map(() => []);
   const submitBtn = el("button", { class: "btn btn-primary btn-sm", text: "보내기", disabled: true });
-  const resultLabel = el("span", { class: "prompt-result" });
 
   const refreshSubmit = () => {
     submitBtn.disabled = selections.some((s) => s.length === 0);
@@ -1096,7 +1395,6 @@ function renderQuestionCard(live, data) {
         opt.description ? el("span", { class: "q-opt-desc", text: opt.description }) : null,
       ]);
       optBtn.addEventListener("click", () => {
-        if (card.dataset.resolved) return;
         if (multi) {
           const idx = selections[qi].indexOf(opt.label);
           if (idx >= 0) { selections[qi].splice(idx, 1); optBtn.classList.remove("selected"); }
@@ -1119,13 +1417,12 @@ function renderQuestionCard(live, data) {
     // question text (multi-select answers comma-joined), echoing the questions.
     const answers = {};
     questions.forEach((q, qi) => { answers[q.question || `q${qi}`] = selections[qi].join(", "); });
-    submitPromptResponse(live, data.requestId, { result: { questions, answers } }, card, "✓ 답변 전송됨");
+    submitPromptResponse(live, data, { result: { questions, answers } });
   });
 
-  card.append(el("div", { class: "prompt-actions" }, [resultLabel, submitBtn]));
-  live.promptsEl.append(card);
-  setStatus(live, "질문에 답해 주세요…");
-  scrollToBottom();
+  card.append(el("div", { class: "prompt-actions" }, [submitBtn]));
+  showPromptModal(card);
+  setStatus(live, "질문에 답해 주세요…", { sticky: true });
 }
 
 function summarizeInputForCard(input) {
@@ -1138,16 +1435,6 @@ function summarizeInputForCard(input) {
   return typeof firstStr === "string" ? firstStr : "";
 }
 
-// Disable any prompts still awaiting an answer (run ended).
-function disableOpenPrompts(live, note) {
-  live.promptsEl.querySelectorAll(".prompt-card:not([data-resolved])").forEach((card) => {
-    card.dataset.resolved = "true";
-    card.querySelectorAll("button").forEach((b) => (b.disabled = true));
-    const status = card.querySelector(".prompt-result");
-    if (status) status.textContent = note;
-  });
-}
-
 // Freeze the activity tree: stop spinners, keep the record visible in the final bubble.
 function freezeActivity(live) {
   live.activityEl.querySelectorAll('.tool-row[data-status="running"]').forEach((r) => (r.dataset.status = "done"));
@@ -1155,8 +1442,15 @@ function freezeActivity(live) {
   live.activityEl.classList.add("collapsed");
 }
 
-function setStatus(live, label) {
-  if (live.statusLabel) live.statusLabel.textContent = label;
+// Status text. A `sticky` update (e.g. an active tool's label) holds the line
+// for a short window so the SDK's generic "응답 생성 중…" can't immediately clobber
+// it — that overwrite-race is what made the status flicker between tool calls.
+function setStatus(live, label, { sticky = false } = {}) {
+  if (!live.statusLabel) return;
+  const now = Date.now();
+  if (!sticky && live.statusStickyUntil && now < live.statusStickyUntil) return;
+  live.statusLabel.textContent = label;
+  live.statusStickyUntil = sticky ? now + 1500 : 0;
 }
 function handlePluginEvent(live, data) {
   if (!data?.name) return;
@@ -1179,24 +1473,80 @@ function setComposerState(text) {
 function cleanupLive(live) {
   live.caret.remove();
   live.statusRow.remove();
-  if (live.promptsEl) disableOpenPrompts(live, "· 종료됨");
+  hidePromptModal(); // dismiss any unanswered prompt when the run ends
   if (live.activityEl) freezeActivity(live);
   if (!live.pluginChips.children.length) live.pluginChips.remove();
-  if (live.activityEl && !live.activityEl.children.length) live.activityEl.remove();
-  if (live.promptsEl && !live.promptsEl.children.length) live.promptsEl.remove();
+  // No tool/agent rows ran: drop the (still-hidden) live disclosure wrapper.
+  if (live.activityEl && !live.activityEl.children.length) live.activityDetails.remove();
 }
+// Wrap a finished activity tree in a collapsed <details> disclosure so a long
+// conversation isn't cluttered by every expanded tool log. Returns null when
+// there was no activity to show.
+// Summarize an activity tree as "도구 N개 · 에이전트 M개 사용". `suffix` overrides
+// the trailing word (e.g. "진행 중" while streaming instead of "사용").
+function activitySummaryText(activityEl, suffix = "사용") {
+  const toolCount = activityEl.querySelectorAll(".tool-row").length;
+  const agentCount = activityEl.querySelectorAll(".agent-node.sub").length;
+  const parts = [];
+  if (toolCount) parts.push(`도구 ${toolCount}개`);
+  if (agentCount) parts.push(`에이전트 ${agentCount}개`);
+  return parts.length ? `${parts.join(" · ")} ${suffix}` : "작업 내역";
+}
+
+// Keep the live disclosure's summary in sync as tool/agent rows stream in, and
+// hide the whole thing until the first row appears so a tools-less reply shows
+// no empty box.
+function refreshLiveActivity(live) {
+  if (!live.activityDetails || !live.activitySummaryEl) return;
+  const hasRows = live.activityEl.children.length > 0;
+  live.activityDetails.hidden = !hasRows;
+  if (!hasRows) return;
+  live.activitySummaryEl.textContent = activitySummaryText(live.activityEl, "진행 중");
+  // Keep the newest row visible within the height-capped, scrollable tree —
+  // but only when the viewer is already at the bottom. Otherwise a burst of new
+  // rows would yank the box away while they're reading earlier activity.
+  const box = live.activityEl;
+  const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+  if (atBottom) box.scrollTop = box.scrollHeight;
+}
+
+function collapseActivity(activityEl) {
+  if (!activityEl || !activityEl.children.length) return null;
+  const summaryText = activitySummaryText(activityEl, "사용");
+  const details = el("details", { class: "activity-done" }, [
+    el("summary", {}, [el("span", { class: "activity-summary-text", text: summaryText })]),
+  ]);
+  activityEl.classList.remove("collapsed");
+  details.append(activityEl);
+  return details;
+}
+
+// Collapse the live activity tree into its <details> disclosure IN PLACE,
+// keeping its position in the bubble. Used by the stop/error finalizers, which
+// (unlike finalizeDone) don't rebuild the bubble from scratch — without this
+// the frozen tree stays fully expanded as a tall, empty-looking block.
+function collapseActivityInPlace(live) {
+  const wrapper = live.activityDetails;
+  const activityEl = live.activityEl;
+  if (!wrapper || !wrapper.isConnected || !activityEl || !activityEl.children.length) return;
+  const parent = wrapper.parentNode;
+  const details = collapseActivity(activityEl); // detaches activityEl into a fresh <details>
+  if (details && parent) parent.replaceChild(details, wrapper);
+}
+
 function finalizeDone(live, data) {
   if (live.done) return;
   live.done = true;
   cleanupLive(live);
   const message = data?.message || { role: "assistant", content: data?.response?.text || data?.response?.summary || live.text, response: data?.response, createdAt: new Date().toISOString() };
   state.messages.push(message);
-  // Keep the prompt/activity record visible across the final re-render.
-  const extras = [live.promptsEl, live.activityEl].filter((n) => n && n.isConnected && n.children.length);
+  // Re-render the bubble with the persisted record ABOVE the answer (matching
+  // the live order): collapsed activity log → answer text.
+  const collapsedActivity = collapseActivity(live.activityEl);
   live.bubble.replaceChildren();
   live.bubble.className = "bubble";
+  if (collapsedActivity) live.bubble.append(collapsedActivity);
   renderAssistantInto(live.bubble, message);
-  for (const node of extras) live.bubble.append(node);
   live.wrap.append(buildMessageActions(message, false, true));
   scrollToBottom();
   refreshConversations();
@@ -1205,6 +1555,7 @@ function finalizeError(live, msg) {
   if (live.done) return;
   live.done = true;
   cleanupLive(live);
+  collapseActivityInPlace(live);
   live.bubble.classList.add("errored");
   if (live.text) {
     live.mdNode.innerHTML = renderMarkdown(live.text);
@@ -1219,6 +1570,7 @@ function finalizeStopped(live) {
   live.done = true;
   live.aborted = true;
   cleanupLive(live);
+  collapseActivityInPlace(live);
   live.mdNode.innerHTML = renderMarkdown(live.text);
   enhanceCodeBlocks(live.mdNode);
   live.bubble.append(el("div", { class: "stream-status" }, [el("span", { class: "label", text: "· 사용자가 중지함" })]));
@@ -1299,7 +1651,7 @@ async function renderSettings() {
   dom.main.append(header, body);
 
   try {
-    await Promise.all([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines()]);
+    await Promise.all([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines(), loadTrusted()]);
   } catch {
     /* ignore */
   }
@@ -1355,7 +1707,7 @@ async function renderSettings() {
       try {
         const res = await api("/api/me", {
           method: "PATCH",
-          body: JSON.stringify({ displayName: fd.get("displayName"), bio: fd.get("bio"), persona: fd.get("persona") }),
+          body: JSON.stringify({ displayName: fd.get("displayName"), alias: fd.get("alias"), bio: fd.get("bio"), persona: fd.get("persona"), intro: fd.get("intro") }),
         });
         state.user = res.user;
         btn.textContent = "저장됨 ✓";
@@ -1367,15 +1719,57 @@ async function renderSettings() {
         alert(`저장 실패: ${err.message}`);
       }
     },
-  }, [
+  });
+
+  // Self-introduction field with an "auto-generate" button: the avatar writes a
+  // first-person blurb from its persona + skills, dropped into this textarea for
+  // the owner to review/edit before saving (it isn't persisted until 프로필 저장).
+  const introField = el("textarea", {
+    name: "intro",
+    rows: "4",
+    placeholder: "대화 상대에게 보여줄 자기소개. 직접 쓰거나 아래 버튼으로 아바타가 생성하게 할 수 있어요.",
+    text: u.intro || "",
+  });
+  const introGenBtn = el("button", {
+    class: "ghost-sm",
+    type: "button",
+    text: "아바타가 자동 생성",
+    onclick: async () => {
+      introGenBtn.disabled = true;
+      const label = introGenBtn.textContent;
+      introGenBtn.textContent = "생성 중…";
+      try {
+        const { intro } = await api("/api/me/intro/generate", { method: "POST" });
+        if (intro) introField.value = intro;
+      } catch (err) {
+        alert(`생성 실패: ${err.message}`);
+      } finally {
+        introGenBtn.textContent = label;
+        introGenBtn.disabled = false;
+      }
+    },
+  });
+
+  profileForm.append(
     el("label", { class: "field" }, [el("span", { text: "표시 이름" }), el("input", { name: "displayName", value: u.displayName || "", required: "" })]),
+    el("label", { class: "field" }, [
+      el("span", { text: "별칭 (아바타가 스스로를 부르는 이름)" }),
+      el("input", { name: "alias", value: u.alias || "", placeholder: "비우면 표시 이름을 사용합니다" }),
+    ]),
     el("label", { class: "field" }, [el("span", { text: "소개 (한 줄)" }), el("input", { name: "bio", value: u.bio || "", placeholder: "어떤 아바타인지 소개하세요" })]),
+    el("div", { class: "field" }, [
+      el("div", { class: "field-row" }, [
+        el("span", { text: "자기소개 (대화 패널 상단에 표시)" }),
+        introGenBtn,
+      ]),
+      introField,
+    ]),
     el("label", { class: "field" }, [
       el("span", { text: "페르소나 / 시스템 프롬프트" }),
       el("textarea", { name: "persona", rows: "4", placeholder: "이 아바타가 어떻게 행동해야 하는지 (선택)", text: u.persona || "" }),
     ]),
     el("button", { class: "primary", type: "submit", text: "프로필 저장" }),
-  ]);
+  );
 
   // Publish toggle
   const publishRow = el("div", { class: "publish-row" }, [
@@ -1395,22 +1789,132 @@ async function renderSettings() {
     }),
   ]);
 
-  body.append(
-    el("section", { class: "settings-card" }, [
-      el("div", { class: "settings-head" }, [picWrap, el("div", { class: "settings-id" }, [el("h3", { text: u.displayName }), el("div", { class: "muted", text: `@${u.username}` })])]),
-      profileForm,
-    ]),
-    el("section", { class: "settings-card" }, [el("h3", { text: "공개 설정" }), publishRow]),
-    buildPluginsCard(),
-    buildRoutinesCard(),
-    buildKnowledgeCard(),
-  );
+  // Group the (many) settings cards into tabs so a single screen no longer
+  // dumps everything into one long scroll. Each tab lazily builds its cards.
+  const profileCard = el("section", { class: "settings-card" }, [
+    el("div", { class: "settings-head" }, [picWrap, el("div", { class: "settings-id" }, [el("h3", { text: u.displayName }), el("div", { class: "muted", text: `@${u.username}` })])]),
+    profileForm,
+  ]);
+  const publishCard = el("section", { class: "settings-card" }, [el("h3", { text: "공개 설정" }), publishRow]);
+
+  const tabs = [
+    { id: "profile", label: "프로필", icon: "user", cards: () => [profileCard, publishCard] },
+    { id: "access", label: "권한·연결", icon: "shield", cards: () => [buildTrustedUsersCard(), buildGitCredentialsCard(), buildSecretsCard()] },
+    { id: "knowledge", label: "지식·플러그인", icon: "book", cards: () => [buildKnowledgeRepoCard(), buildPluginsCard(), buildKnowledgeCard()] },
+    { id: "routines", label: "루틴", icon: "clock", cards: () => [buildRoutinesCard()] },
+  ];
+  if (!tabs.some((t) => t.id === state.settingsTab)) state.settingsTab = "profile";
+
+  const panel = el("div", { class: "settings-panel" });
+  const renderTab = () => {
+    const active = tabs.find((t) => t.id === state.settingsTab) || tabs[0];
+    panel.replaceChildren(...active.cards());
+  };
+
+  const tabBar = el("nav", { class: "settings-tabs", role: "tablist" });
+  for (const t of tabs) {
+    const btn = el("button", {
+      class: "settings-tab" + (t.id === state.settingsTab ? " active" : ""),
+      type: "button",
+      role: "tab",
+      onclick: () => {
+        if (state.settingsTab === t.id) return;
+        state.settingsTab = t.id;
+        for (const b of tabBar.children) b.classList.toggle("active", b === btn);
+        renderTab();
+      },
+    });
+    if (t.icon) btn.append(icon(t.icon));
+    btn.append(el("span", { text: t.label }));
+    tabBar.append(btn);
+  }
+
+  renderTab();
+  body.append(tabBar, panel);
 }
 
 function renderRailUser() {
   // refresh the rail "me" row label after profile edits
   const meRow = dom.rail?.querySelector(".rail-me .meta b");
   if (meRow) meRow.textContent = state.user.displayName;
+}
+
+/**
+ * Settings card: designate trusted users who may chat with MY avatar at my own
+ * tool-permission level (file edits / command execution run instead of being
+ * read-only). Backed by GET/POST/DELETE /api/me/trusted. Trust does NOT expose
+ * the owner-only knowledge inbox or greeting — only the elevated tool path.
+ */
+function buildTrustedUsersCard() {
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "신뢰하는 사용자" }),
+        el("p", { class: "muted", text: "추가한 사용자는 내 아바타와 대화할 때 소유자와 동일하게 파일 수정·명령 실행 도구를 사용할 수 있습니다(비공개 아바타 포함). 신뢰하는 사람만 추가하세요." }),
+      ]),
+    ]),
+  );
+  const list = el("div", { class: "plugin-rows" });
+  card.append(list);
+  renderTrustedRows(list);
+
+  const form = el("form", {
+    class: "plugin-add",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        const { trusted } = await api("/api/me/trusted", { method: "POST", body: JSON.stringify({ username: fd.get("username") }) });
+        state.trusted = trusted;
+        renderTrustedRows(list);
+        formEl.reset();
+      } catch (err) {
+        alert(`추가 실패: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("input", { name: "username", placeholder: "사용자 이름(@username)", required: "" }),
+    el("button", { class: "primary", type: "submit", text: "추가" }),
+  ]);
+  card.append(form);
+  return card;
+}
+
+function renderTrustedRows(list) {
+  list.replaceChildren();
+  const trusted = state.trusted || [];
+  if (!trusted.length) {
+    list.append(el("div", { class: "empty-note", text: "신뢰하는 사용자가 없습니다." }));
+    return;
+  }
+  for (const t of trusted) {
+    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
+      if (!window.confirm(`${t.displayName}님의 신뢰 권한을 해제할까요?`)) return;
+      try {
+        const { trusted: next } = await api(`/api/me/trusted/${encodeURIComponent(t.id)}`, { method: "DELETE" });
+        state.trusted = next;
+        renderTrustedRows(list);
+      } catch (e) {
+        alert(`삭제 실패: ${e.message}`);
+      }
+    } });
+    del.append(icon("trash"));
+    list.append(
+      el("div", { class: "plugin-row" }, [
+        el("div", { class: "pr-main" }, [
+          el("strong", { text: t.displayName }),
+          el("div", { class: "pr-sub", text: `@${t.username}` }),
+        ]),
+        del,
+      ]),
+    );
+  }
 }
 
 function buildToggle(on, onChange) {
@@ -1449,6 +1953,7 @@ function buildPluginsCard() {
         await loadPlugins();
         renderPluginRows(list);
         state.user.pluginCount = state.plugins.length;
+        invalidateSkillsCache(state.user.id);
         formEl.reset();
       } catch (err) {
         alert(`추가 실패: ${err.message}`);
@@ -1466,6 +1971,13 @@ function buildPluginsCard() {
   return card;
 }
 
+function pluginSyncLabel(p) {
+  if (!p.lastSyncedAt) return "아직 동기화 안 됨";
+  const d = new Date(p.lastSyncedAt);
+  if (Number.isNaN(d.getTime())) return "";
+  return `동기화: ${d.toLocaleString()}`;
+}
+
 function renderPluginRows(list) {
   list.replaceChildren();
   if (!state.plugins.length) {
@@ -1473,27 +1985,72 @@ function renderPluginRows(list) {
     return;
   }
   for (const p of state.plugins) {
+    const selSummary = !p.selected
+      ? "모든 플러그인 사용"
+      : `${p.selected.length}개 선택됨`;
+    const sub = el("div", { class: "pr-sub", text: p.ref ? `${p.repo} @ ${p.ref}` : p.repo });
+    const meta = el("div", { class: "pr-meta muted" }, [pluginSyncLabel(p), " · ", selSummary]);
+
     const row = el("div", { class: "plugin-row" }, [
       el("div", { class: "pr-main" }, [
         el("strong", { text: p.label || p.repo }),
-        el("div", { class: "pr-sub", text: p.ref ? `${p.repo} @ ${p.ref}` : p.repo }),
+        sub,
+        meta,
       ]),
       buildToggle(p.enabled, async (val) => {
         try {
           await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
           p.enabled = val;
+          invalidateSkillsCache(state.user.id);
           renderPluginRows(list);
         } catch (e) {
           alert(`변경 실패: ${e.message}`);
         }
       }),
     ]);
+
+    // Expandable contents area for per-plugin selection within the repo.
+    const contents = el("div", { class: "plugin-contents", hidden: "" });
+
+    // "선택" — clone/inspect the repo and show a checkbox per contained plugin.
+    const selectBtn = el("button", { class: "msg-act", type: "button", "aria-label": "플러그인 선택", title: "repo 내 플러그인 선택", onclick: async () => {
+      if (!contents.hidden) { contents.hidden = true; return; }
+      contents.hidden = false;
+      contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+      try {
+        const { contents: info } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}/contents`);
+        renderPluginContents(contents, list, p, info);
+      } catch (e) {
+        contents.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+      }
+    } });
+    selectBtn.append(icon("menu"));
+    row.append(selectBtn);
+
+    // "새로고침" — force git fetch + checkout, bypassing the clone cache.
+    const refreshBtn = el("button", { class: "msg-act", type: "button", "aria-label": "새로고침", title: "최신 버전으로 새로고침", onclick: async () => {
+      refreshBtn.disabled = true;
+      try {
+        const { plugin } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}/refresh`, { method: "POST" });
+        Object.assign(p, plugin);
+        invalidateSkillsCache(state.user.id);
+        renderPluginRows(list);
+      } catch (e) {
+        alert(`새로고침 실패: ${e.message}`);
+      } finally {
+        refreshBtn.disabled = false;
+      }
+    } });
+    refreshBtn.append(icon("refresh"));
+    row.append(refreshBtn);
+
     const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
       if (!window.confirm("이 플러그인을 삭제할까요?")) return;
       try {
         await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" });
         state.plugins = state.plugins.filter((x) => x.id !== p.id);
         state.user.pluginCount = state.plugins.length;
+        invalidateSkillsCache(state.user.id);
         renderPluginRows(list);
       } catch (e) {
         alert(`삭제 실패: ${e.message}`);
@@ -1501,8 +2058,448 @@ function renderPluginRows(list) {
     } });
     del.append(icon("trash"));
     row.append(del);
+
     list.append(row);
+    list.append(contents);
   }
+}
+
+// Render the repo's plugin list with per-plugin checkboxes. For a single-plugin
+// repo there's nothing to select; for a marketplace repo the owner picks a
+// subset (or "all"). `selected === null` means "load all".
+function renderPluginContents(container, list, p, info) {
+  container.replaceChildren();
+  if (info.kind === "none") {
+    container.append(el("div", { class: "error-note", text: "Claude 플러그인 저장소가 아닙니다 (plugin.json / marketplace.json 없음)." }));
+    return;
+  }
+  if (info.kind === "single") {
+    container.append(el("div", { class: "muted", text: "단일 플러그인 저장소입니다 — 선택할 항목이 없습니다." }));
+    return;
+  }
+  if (!info.plugins.length) {
+    container.append(el("div", { class: "muted", text: "불러올 수 있는 플러그인이 없습니다." }));
+    return;
+  }
+
+  // null selection = all enabled; otherwise only names in the set.
+  const selectedSet = p.selected ? new Set(p.selected) : null;
+  const checks = [];
+  const head = el("div", { class: "pc-head muted", text: "사용할 플러그인을 선택하세요. 모두 해제하면 전체가 사용됩니다." });
+  container.append(head);
+
+  for (const entry of info.plugins) {
+    const checked = !selectedSet || selectedSet.has(entry.name);
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = checked && entry.loadable;
+    cb.disabled = !entry.loadable;
+    checks.push({ cb, name: entry.name });
+    const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
+    container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
+  }
+
+  const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
+    save.disabled = true;
+    const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
+    const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
+    // If everything (or nothing) is selected, store null = "load all".
+    const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
+    try {
+      const { plugin } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ selected }) });
+      Object.assign(p, plugin);
+      invalidateSkillsCache(state.user.id);
+      renderPluginRows(list);
+    } catch (e) {
+      alert(`저장 실패: ${e.message}`);
+      save.disabled = false;
+    }
+  } });
+  container.append(el("div", { class: "pc-actions" }, [save]));
+}
+
+// GitHub 자격증명: a write-only personal access token + commit identity. The
+// token is never returned by the server — we only know whether one is set
+// (u.gitTokenSet). Used for private plugin repos and knowledge-repo push.
+function buildGitCredentialsCard() {
+  const u = state.user;
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "GitHub 자격증명" }),
+        el("p", { class: "muted", text: "비공개 플러그인 저장소 접근과 내 지식 저장소 푸시에 사용됩니다. 토큰은 암호화되어 저장되며 다시 표시되지 않습니다." }),
+      ]),
+    ]),
+  );
+
+  const status = el("div", { class: "git-token-status muted" });
+  const renderStatus = () => {
+    status.replaceChildren(
+      state.user.gitTokenSet
+        ? el("span", { class: "token-set", text: "● 토큰이 설정되어 있습니다" })
+        : el("span", { text: "토큰이 설정되지 않았습니다" }),
+    );
+  };
+  renderStatus();
+
+  const tokenForm = el("form", {
+    class: "plugin-add",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const token = (fd.get("token") || "").toString().trim();
+      if (!token) return;
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
+        state.user = user;
+        formEl.reset();
+        renderStatus();
+      } catch (err) {
+        alert(`저장 실패: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", required: "", autocomplete: "off" }),
+    el("button", { class: "primary", type: "submit", text: "저장" }),
+  ]);
+
+  const clearBtn = el("button", {
+    class: "linkish small",
+    type: "button",
+    text: "토큰 삭제",
+    onclick: async () => {
+      if (!window.confirm("저장된 토큰을 삭제할까요?")) return;
+      try {
+        const { user } = await api("/api/me/git-token", { method: "DELETE" });
+        state.user = user;
+        renderStatus();
+      } catch (e) {
+        alert(`삭제 실패: ${e.message}`);
+      }
+    },
+  });
+
+  // Commit identity used for knowledge-repo pushes.
+  const identityForm = el("form", {
+    class: "settings-form",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      const saved = btn.textContent;
+      btn.textContent = "저장 중…";
+      try {
+        const { user } = await api("/api/me/git-identity", {
+          method: "PUT",
+          body: JSON.stringify({ name: fd.get("name") || null, email: fd.get("email") || null }),
+        });
+        state.user = user;
+        btn.textContent = "저장됨 ✓";
+        setTimeout(() => { btn.textContent = saved; btn.disabled = false; }, 1200);
+      } catch (err) {
+        btn.textContent = saved;
+        btn.disabled = false;
+        alert(`저장 실패: ${err.message}`);
+      }
+    },
+  }, [
+    el("div", { class: "field-row" }, [
+      el("label", { class: "field" }, [el("span", { text: "커밋 이름" }), el("input", { name: "name", value: u.gitIdentityName || "", placeholder: u.displayName || "" })]),
+      el("label", { class: "field" }, [el("span", { text: "커밋 이메일" }), el("input", { name: "email", type: "email", value: u.gitIdentityEmail || "", placeholder: `${u.username}@example.com` })]),
+    ]),
+    el("button", { class: "primary", type: "submit", text: "커밋 정보 저장" }),
+  ]);
+
+  card.append(status, tokenForm, el("div", { class: "git-token-actions" }, [clearBtn]), identityForm);
+  return card;
+}
+
+// 시크릿: write-only named secrets (e.g. SSH_PRIVATE_KEY) encrypted at rest.
+// Values are injected ONLY into the avatar's MCP tool subprocesses as env, so
+// the avatar can use them (e.g. ssh into your servers) without ever seeing the
+// raw value, and they're never returned to the client. We only know the NAMES
+// that are set (u.secretNames). The avatar uses ITS OWNER's secrets regardless
+// of who is chatting with it.
+function buildSecretsCard() {
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "시크릿" }),
+        el("p", { class: "muted", text: "내 아바타가 도구를 쓸 때만 주입되는 비밀값(예: SSH_PRIVATE_KEY). 암호화되어 저장되고 아바타에게도 값 자체는 보이지 않으며, 다시 표시되지 않습니다. SSH 원격 접속에 쓰려면 OpenSSH 형식 개인키를 SSH_PRIVATE_KEY 로 등록하세요." }),
+      ]),
+    ]),
+  );
+
+  // List of currently-set secret names, each with a delete button.
+  const list = el("div", { class: "secret-list" });
+  const renderList = () => {
+    const names = state.user.secretNames || [];
+    if (!names.length) {
+      list.replaceChildren(el("div", { class: "muted", text: "등록된 시크릿이 없습니다." }));
+      return;
+    }
+    list.replaceChildren(
+      ...names.map((name) =>
+        el("div", { class: "secret-row" }, [
+          el("code", { text: name }),
+          el("span", { class: "muted token-set", text: "● 설정됨" }),
+          el("button", {
+            class: "linkish small",
+            type: "button",
+            text: "삭제",
+            onclick: async () => {
+              if (!window.confirm(`시크릿 "${name}" 을(를) 삭제할까요?`)) return;
+              try {
+                const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+                state.user = user;
+                renderList();
+              } catch (err) {
+                alert(`삭제 실패: ${err.message}`);
+              }
+            },
+          }),
+        ]),
+      ),
+    );
+  };
+  renderList();
+
+  // Add/update form: an env-style NAME plus a (multiline-capable) value.
+  const form = el("form", {
+    class: "settings-form",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const name = (fd.get("name") || "").toString().trim();
+      const value = (fd.get("value") || "").toString();
+      if (!name || !value) return;
+      if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
+        alert("이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다. 예: SSH_PRIVATE_KEY");
+        return;
+      }
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, {
+          method: "PUT",
+          body: JSON.stringify({ value }),
+        });
+        state.user = user;
+        formEl.reset();
+        renderList();
+      } catch (err) {
+        alert(`저장 실패: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("label", { class: "field" }, [
+      el("span", { text: "이름" }),
+      el("input", { name: "name", placeholder: "SSH_PRIVATE_KEY", autocomplete: "off", required: "" }),
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { text: "값" }),
+      el("textarea", { name: "value", rows: "4", placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----…", autocomplete: "off", required: "" }),
+    ]),
+    el("button", { class: "primary", type: "submit", text: "시크릿 저장" }),
+  ]);
+
+  card.append(list, form);
+  return card;
+}
+
+// Convert an `owner/repo` or git/https URL into a browsable https GitHub link,
+// or null if we can't (e.g. ssh `git@` remote). Strips a trailing `.git`.
+function repoToHref(repo) {
+  if (!repo) return null;
+  const r = repo.trim();
+  if (/^https?:\/\//.test(r)) return r.replace(/\.git$/, "");
+  if (/^[\w.-]+\/[\w.-]+$/.test(r)) return `https://github.com/${r.replace(/\.git$/, "")}`;
+  return null;
+}
+
+// 지식 저장소: configure the personal knowledge repo (owner/repo or git URL).
+// The avatar itself browses/edits/commits the repo via chat (the owner-only
+// mcp__repo__* tools), so this card only points at the repo + shows its status.
+function buildKnowledgeRepoCard() {
+  const u = state.user;
+  const card = el("section", { class: "settings-card" });
+  // When a repo is connected, offer a refresh button that re-fetches it from the
+  // remote (ensureClone does git fetch + checkout). Useful after the owner pushes
+  // changes from elsewhere and wants the avatar to pick them up without waiting
+  // for a process restart.
+  const headerActions = [];
+  if (u.knowledgeRepo) {
+    const refreshBtn = el("button", {
+      class: "linkish small",
+      type: "button",
+      text: "최신화",
+      title: "저장소를 원격에서 다시 가져옵니다",
+      onclick: async () => {
+        refreshBtn.disabled = true;
+        const saved = refreshBtn.textContent;
+        refreshBtn.textContent = "최신화 중…";
+        try {
+          await api("/api/me/knowledge-repo/refresh", { method: "POST" });
+          invalidateSkillsCache(state.user.id);
+          refreshBtn.textContent = "최신화됨 ✓";
+          setTimeout(() => { refreshBtn.textContent = saved; refreshBtn.disabled = false; }, 1200);
+        } catch (e) {
+          refreshBtn.textContent = saved;
+          refreshBtn.disabled = false;
+          alert(`최신화 실패: ${e.message}`);
+        }
+      },
+    });
+    headerActions.push(refreshBtn);
+  }
+  headerActions.push(el("button", { class: "linkish small", type: "button", text: "설정 안내 다시 보기", onclick: () => openOnboarding() }));
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "지식 저장소" }),
+        el("p", { class: "muted", text: "내 아바타가 일하며 쌓는 지식·스킬을 담는 전용 저장소. 아바타와 대화하며 직접 파일을 추가·수정·커밋하도록 시킬 수 있어요." }),
+      ]),
+      el("div", { class: "head-actions" }, headerActions),
+    ]),
+  );
+
+  // Repo configuration form.
+  const repoForm = el("form", {
+    class: "plugin-add",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        const { user } = await api("/api/me/knowledge-repo", {
+          method: "PUT",
+          body: JSON.stringify({ repo: (fd.get("repo") || "").toString().trim() || null, branch: (fd.get("branch") || "").toString().trim() || null }),
+        });
+        state.user = user;
+        renderView();
+      } catch (err) {
+        alert(`저장 실패: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", value: u.knowledgeRepo || "" }),
+    el("input", { name: "branch", placeholder: "branch (선택)", class: "narrow", value: u.knowledgeBranch || "" }),
+    el("button", { class: "primary", type: "submit", text: "저장" }),
+  ]);
+  card.append(repoForm);
+
+  if (!u.knowledgeRepo) {
+    card.append(el("div", { class: "empty-note", text: "지식 저장소를 연결하면 아바타가 그 저장소의 지식·스킬을 사용하고, 대화로 직접 관리할 수 있어요." }));
+    return card;
+  }
+
+  // Connected: show a clickable link + token status.
+  const href = repoToHref(u.knowledgeRepo);
+  const link = href
+    ? el("a", { href, target: "_blank", rel: "noreferrer noopener", text: u.knowledgeRepo + (u.knowledgeBranch ? ` @ ${u.knowledgeBranch}` : "") })
+    : el("code", { text: u.knowledgeRepo + (u.knowledgeBranch ? ` @ ${u.knowledgeBranch}` : "") });
+  card.append(el("div", { class: "kr-link" }, [icon("globe"), link]));
+  card.append(
+    el("div", { class: "git-token-status muted" }, [
+      u.gitTokenSet
+        ? el("span", { class: "token-set", text: "● GitHub 토큰 연결됨 — 아바타가 커밋·푸시할 수 있어요" })
+        : el("span", { text: "토큰이 없어 읽기만 가능합니다. 위 GitHub 자격증명에서 토큰을 설정하면 아바타가 커밋·푸시할 수 있어요." }),
+    ]),
+  );
+
+  // Plugin selection: the repo's plugins are all loaded by default; the owner
+  // can deselect some here. Mirrors the marketplace-plugin selection UI.
+  const selSummary = !u.knowledgeSelected
+    ? "저장소의 모든 플러그인을 사용 중"
+    : `${u.knowledgeSelected.length}개 플러그인만 사용 중`;
+  const contents = el("div", { class: "plugin-contents", hidden: "" });
+  const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택" });
+  pickBtn.onclick = async () => {
+    if (!contents.hidden) { contents.hidden = true; return; }
+    contents.hidden = false;
+    contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+    try {
+      const { contents: info } = await api("/api/me/knowledge-repo/contents");
+      renderKnowledgeRepoContents(contents, info);
+    } catch (e) {
+      contents.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+    }
+  };
+  card.append(
+    el("div", { class: "kr-plugins" }, [
+      el("span", { class: "muted", text: selSummary }),
+      pickBtn,
+    ]),
+  );
+  card.append(contents);
+  return card;
+}
+
+// Render the knowledge repo's plugin list with per-plugin checkboxes. The repo
+// is the avatar's by default, so all plugins load unless the owner deselects
+// some; `knowledgeSelected === null` means "load all". Mirrors
+// `renderPluginContents`.
+function renderKnowledgeRepoContents(container, info) {
+  container.replaceChildren();
+  if (info.kind === "none") {
+    container.append(el("div", { class: "error-note", text: "Claude 플러그인 저장소가 아닙니다 (plugin.json / marketplace.json 없음)." }));
+    return;
+  }
+  if (info.kind === "single") {
+    container.append(el("div", { class: "muted", text: "단일 플러그인 저장소입니다 — 선택할 항목이 없습니다." }));
+    return;
+  }
+  if (!info.plugins.length) {
+    container.append(el("div", { class: "muted", text: "불러올 수 있는 플러그인이 없습니다." }));
+    return;
+  }
+
+  const selectedSet = state.user.knowledgeSelected ? new Set(state.user.knowledgeSelected) : null;
+  const checks = [];
+  container.append(el("div", { class: "pc-head muted", text: "아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다." }));
+
+  for (const entry of info.plugins) {
+    const checked = !selectedSet || selectedSet.has(entry.name);
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = checked && entry.loadable;
+    cb.disabled = !entry.loadable;
+    checks.push({ cb, name: entry.name });
+    const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
+    container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
+  }
+
+  const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
+    save.disabled = true;
+    const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
+    const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
+    // All (or none) selected → store null = "load all".
+    const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
+    try {
+      const { user } = await api("/api/me/knowledge-repo/selected", { method: "PUT", body: JSON.stringify({ selected }) });
+      state.user = user;
+      invalidateSkillsCache(state.user.id);
+      renderView();
+    } catch (e) {
+      alert(`저장 실패: ${e.message}`);
+      save.disabled = false;
+    }
+  } });
+  container.append(el("div", { class: "pc-actions" }, [save]));
 }
 
 function buildRoutinesCard() {
@@ -1628,15 +2625,13 @@ function buildKnowledgeCard() {
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
         el("h3", { text: `지식 · 정보 요청${openCount ? ` (${openCount})` : ""}` }),
-        el("p", { class: "muted", text: "동료가 남긴 정보 요청에 답하면 아바타의 지식이 됩니다. 대화 중에도 보고·저장됩니다." }),
+        el("p", { class: "muted", text: "동료가 모르는 것을 물으면 여기에 정보 요청으로 쌓입니다. 답을 아바타에게 영구히 가르치려면 플러그인으로 추가하세요." }),
       ]),
     ]),
   );
 
   const reqList = el("div", { class: "knowledge-rows" });
-  const entryList = el("div", { class: "knowledge-rows" });
   card.append(el("h4", { class: "knowledge-sub", text: "대기 중인 정보 요청" }), reqList);
-  card.append(el("h4", { class: "knowledge-sub", text: "저장된 지식" }), entryList);
 
   const refresh = async () => {
     try {
@@ -1645,41 +2640,10 @@ function buildKnowledgeCard() {
       /* keep current state */
     }
     renderKnowledgeRequests(reqList);
-    renderKnowledgeEntries(entryList);
   };
   renderKnowledgeRequests(reqList, refresh);
-  renderKnowledgeEntries(entryList, refresh);
-  // wire refresh into the renderers via closure on next render
+  // wire refresh into the renderer via closure on next render
   reqList._refresh = refresh;
-  entryList._refresh = refresh;
-
-  const form = el("form", {
-    class: "plugin-add",
-    onsubmit: async (e) => {
-      e.preventDefault();
-      const formEl = e.currentTarget;
-      const fd = new FormData(formEl);
-      const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
-      try {
-        await api("/api/me/knowledge/entries", {
-          method: "POST",
-          body: JSON.stringify({ topic: fd.get("topic") || undefined, content: fd.get("content") }),
-        });
-        formEl.reset();
-        await refresh();
-      } catch (err) {
-        alert(`추가 실패: ${err.message}`);
-      } finally {
-        btn.disabled = false;
-      }
-    },
-  }, [
-    el("input", { name: "topic", placeholder: "주제 (선택)", class: "narrow" }),
-    el("input", { name: "content", placeholder: "아바타가 알아야 할 사실", required: "" }),
-    el("button", { class: "primary", type: "submit", text: "지식 추가" }),
-  ]);
-  card.append(form);
   return card;
 }
 
@@ -1692,60 +2656,20 @@ function renderKnowledgeRequests(list, refresh) {
     return;
   }
   for (const r of open) {
-    const answer = el("textarea", { class: "knowledge-answer", rows: "2", placeholder: "여기에 답을 적으면 지식으로 저장됩니다" });
-    const saveBtn = el("button", { class: "primary", type: "button", text: "답하고 저장", onclick: async () => {
-      const text = answer.value.trim();
-      if (!text) { answer.focus(); return; }
-      saveBtn.disabled = true;
-      try {
-        await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}/answer`, { method: "POST", body: JSON.stringify({ answer: text }) });
-        await refresh?.();
-      } catch (e) {
-        saveBtn.disabled = false;
-        alert(`저장 실패: ${e.message}`);
-      }
-    } });
-    const dismissBtn = el("button", { class: "ghost-sm", type: "button", text: "무시", onclick: async () => {
+    const resolveBtn = el("button", { class: "primary", type: "button", text: "처리 완료", onclick: async () => {
+      resolveBtn.disabled = true;
       try {
         await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
         await refresh?.();
       } catch (e) {
+        resolveBtn.disabled = false;
         alert(`실패: ${e.message}`);
       }
     } });
     list.append(el("div", { class: "knowledge-row" }, [
       el("div", { class: "kr-q", text: r.question }),
       r.askerName ? el("div", { class: "muted kr-meta", text: `질문자: ${r.askerName} · ${timeLabel(r.createdAt)}` }) : el("div", { class: "muted kr-meta", text: timeLabel(r.createdAt) }),
-      answer,
-      el("div", { class: "kr-actions" }, [saveBtn, dismissBtn]),
-    ]));
-  }
-}
-
-function renderKnowledgeEntries(list, refresh) {
-  refresh = refresh || list._refresh;
-  list.replaceChildren();
-  if (!state.knowledgeEntries.length) {
-    list.append(el("div", { class: "empty-note", text: "저장된 지식이 없습니다." }));
-    return;
-  }
-  for (const en of state.knowledgeEntries) {
-    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "삭제", title: "삭제", onclick: async () => {
-      if (!window.confirm("이 지식을 삭제할까요?")) return;
-      try {
-        await api(`/api/me/knowledge/entries/${encodeURIComponent(en.id)}`, { method: "DELETE" });
-        await refresh?.();
-      } catch (e) {
-        alert(`삭제 실패: ${e.message}`);
-      }
-    } });
-    del.append(icon("trash"));
-    list.append(el("div", { class: "knowledge-row" }, [
-      el("div", { class: "ke-main" }, [
-        en.topic ? el("strong", { text: en.topic }) : null,
-        el("div", { class: "ke-content", text: en.content }),
-      ]),
-      del,
+      el("div", { class: "kr-actions" }, [resolveBtn]),
     ]));
   }
 }
@@ -1757,12 +2681,13 @@ async function renderAdmin() {
   dom.main.append(header, body);
   body.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
   try {
-    await loadAdminUsers();
+    await Promise.all([loadAdminUsers(), loadAdminSystem()]);
   } catch (e) {
     body.replaceChildren(el("div", { class: "warn-box", text: `불러오기 실패: ${e.message}` }));
     return;
   }
   body.replaceChildren();
+  body.append(renderAdminSystem());
   const table = el("div", { class: "admin-list" });
   for (const u of state.adminUsers) {
     const isMe = u.id === state.user.id;
@@ -1813,6 +2738,47 @@ async function renderAdmin() {
   body.append(table);
 }
 
+/* Admin "시스템 정보" card: which model/runtime the agent is using. */
+function renderAdminSystem() {
+  const sys = state.adminSystem;
+  if (!sys) return el("div", {});
+  const runtimeLabel = sys.agentRuntime === "claude" ? "Claude Agent SDK" : "로컬 스텁";
+  const authLabel = sys.authMode === "api_key" ? "API 키" : "구독 로그인";
+  const rows = [
+    sysRow("런타임", el("span", { class: "tag mono", text: runtimeLabel })),
+    sysRow(
+      "설정된 모델",
+      sys.configuredModel
+        ? el("span", { class: "tag mono", text: sys.configuredModel })
+        : el("span", { class: "muted", text: "미설정 (SDK 기본값)" }),
+    ),
+    sysRow(
+      "실제 사용 모델",
+      sys.observedModel
+        ? el("span", { class: "tag mono accent", text: sys.observedModel })
+        : el("span", { class: "muted", text: "아직 확인되지 않음 (첫 대화 후 표시)" }),
+    ),
+    sysRow("인증 방식", el("span", { class: "tag", text: authLabel })),
+    sysRow(
+      "읽기 전용 도구",
+      el("span", { class: "muted", text: (sys.readOnlyTools || []).join(", ") || "없음" }),
+    ),
+  ];
+  return el("div", { class: "admin-list" }, [
+    el("div", { class: "settings-card sys-card" }, [
+      el("h3", { text: "시스템 정보" }),
+      el("div", { class: "sys-grid" }, rows),
+    ]),
+  ]);
+}
+
+function sysRow(label, valueNode) {
+  return el("div", { class: "sys-row" }, [
+    el("span", { class: "sys-key muted", text: label }),
+    el("span", { class: "sys-val" }, [valueNode]),
+  ]);
+}
+
 /* ============================================================ Loaders */
 async function refreshMe() {
   const me = await api("/api/me");
@@ -1827,20 +2793,24 @@ async function loadPlugins() {
   state.plugins = r.plugins || [];
 }
 async function loadKnowledge() {
-  const [reqs, entries] = await Promise.all([
-    api("/api/me/knowledge/requests"),
-    api("/api/me/knowledge/entries"),
-  ]);
+  const reqs = await api("/api/me/knowledge/requests");
   state.knowledgeRequests = reqs.requests || [];
-  state.knowledgeEntries = entries.entries || [];
 }
 async function loadRoutines() {
   const r = await api("/api/me/routines");
   state.routines = r.routines || [];
 }
+async function loadTrusted() {
+  const r = await api("/api/me/trusted");
+  state.trusted = r.trusted || [];
+}
 async function loadAdminUsers() {
   const r = await api("/api/admin/users");
   state.adminUsers = r.users || [];
+}
+async function loadAdminSystem() {
+  const r = await api("/api/admin/system");
+  state.adminSystem = r.system || null;
 }
 
 /* ============================================================ Lifecycle */
@@ -1864,6 +2834,109 @@ async function enterApp() {
   state.view = "explore";
   renderView();
   refreshConversations();
+  // First-time guidance: prompt for a GitHub token + knowledge repo. Skippable,
+  // tracked per-user in localStorage so it doesn't reappear once dismissed.
+  if (!onboardingDone(state.user.id)) {
+    openOnboarding();
+  }
+}
+
+/** localStorage key flagging that a user has seen/dismissed onboarding. */
+function onboardingKey(userId) {
+  return `onboarded:${userId}`;
+}
+function onboardingDone(userId) {
+  try {
+    return localStorage.getItem(onboardingKey(userId)) === "1";
+  } catch {
+    return false; // storage blocked → just show it; harmless
+  }
+}
+function markOnboardingDone(userId) {
+  try {
+    localStorage.setItem(onboardingKey(userId), "1");
+  } catch {
+    /* ignore */
+  }
+}
+
+/**
+ * Skippable onboarding overlay: connect a GitHub token and point at a personal
+ * knowledge repo. Reuses PUT /api/me/git-token and PUT /api/me/knowledge-repo.
+ * Re-openable from the settings 지식 저장소 card.
+ */
+function openOnboarding() {
+  const u = state.user;
+  const close = () => {
+    markOnboardingDone(state.user.id);
+    overlay.remove();
+  };
+
+  const tokenInput = el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", autocomplete: "off" });
+  const repoInput = el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", value: u.knowledgeRepo || "" });
+  const branchInput = el("input", { name: "branch", class: "narrow", placeholder: "branch (선택)", value: u.knowledgeBranch || "" });
+  const errorBox = el("div", { class: "error", style: "display:none" });
+
+  const saveBtn = el("button", { class: "primary", type: "submit", text: "저장하고 시작" });
+  const form = el("form", {
+    class: "form-stack",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      saveBtn.disabled = true;
+      errorBox.style.display = "none";
+      try {
+        const token = tokenInput.value.trim();
+        if (token) {
+          const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
+          state.user = user;
+        }
+        const repo = repoInput.value.trim();
+        // Only call when something is provided, so "skip the repo" stays valid.
+        if (repo || u.knowledgeRepo) {
+          const { user } = await api("/api/me/knowledge-repo", {
+            method: "PUT",
+            body: JSON.stringify({ repo: repo || null, branch: branchInput.value.trim() || null }),
+          });
+          state.user = user;
+        }
+        close();
+        renderView();
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.style.display = "";
+        saveBtn.disabled = false;
+      }
+    },
+  }, [
+    el("label", { class: "field" }, [
+      el("span", {}, [
+        "GitHub 토큰 (선택) ",
+        el("a", { class: "linkish", href: "https://github.samsungds.net/settings/tokens", target: "_blank", rel: "noopener noreferrer", text: "토큰 만들러 가기 ↗" }),
+      ]),
+      tokenInput,
+    ]),
+    el("label", { class: "field" }, [el("span", { text: "지식 저장소" }), repoInput]),
+    el("label", { class: "field" }, [el("span", { text: "브랜치 (선택)" }), branchInput]),
+    errorBox,
+    el("div", { class: "onboard-actions" }, [
+      el("button", { class: "linkish", type: "button", text: "건너뛰기", onclick: () => { close(); } }),
+      saveBtn,
+    ]),
+  ]);
+
+  const overlay = el("div", { class: "modal-overlay" }, [
+    el("div", { class: "modal-card onboard-card" }, [
+      el("div", { class: "login-mark", text: "A" }),
+      el("h2", { text: "지식 저장소 연결하기" }),
+      el("p", {
+        class: "muted",
+        text: "내 아바타가 업무 지식·스킬을 쌓아 둘 전용 GitHub 저장소를 연결하세요. 비공개 저장소를 쓰거나 아바타가 직접 커밋·푸시하게 하려면 토큰도 입력하세요. 나중에 설정에서 다시 할 수 있어요.",
+      }),
+      form,
+    ]),
+  ]);
+  document.body.append(overlay);
+  tokenInput.focus();
 }
 
 async function boot() {

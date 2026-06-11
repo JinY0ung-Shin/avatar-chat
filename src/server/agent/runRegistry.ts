@@ -11,6 +11,10 @@
  * the server is ever horizontally scaled this must move to a shared store.
  */
 
+import logger from "../logger.js";
+
+const regLogger = logger.child({ module: "runRegistry" });
+
 /** Returned to a parked caller when the run ends before an answer arrives. */
 export const CANCELLED = Symbol("cancelled");
 
@@ -28,6 +32,7 @@ const runs = new Map<string, Run>();
 
 export function openRun(runId: string, userId: string): void {
   runs.set(runId, { userId, pending: new Map(), ended: false });
+  regLogger.debug({ runId, userId }, "run opened");
 }
 
 /**
@@ -65,6 +70,7 @@ export function submitResponse(
   }
   run.pending.delete(requestId);
   pending.resolve(value);
+  regLogger.debug({ runId, requestId }, "response submitted");
   return true;
 }
 
@@ -75,9 +81,11 @@ export function closeRun(runId: string): void {
     return;
   }
   run.ended = true;
+  const pendingCount = run.pending.size;
   for (const pending of run.pending.values()) {
     pending.resolve(CANCELLED);
   }
   run.pending.clear();
   runs.delete(runId);
+  regLogger.debug({ runId, pendingCount }, "run closed");
 }

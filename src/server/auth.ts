@@ -1,7 +1,8 @@
 import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
-import type { User } from "./types.js";
+import logger from "./logger.js";
 import type { Store } from "./store.js";
+import type { User } from "./types.js";
 
 const SESSION_COOKIE = "ac_session";
 
@@ -54,11 +55,17 @@ export function readCookie(req: Request, name: string): string | undefined {
   return undefined;
 }
 
+// Only mark the cookie `Secure` when explicitly opted in (HTTPS deployments).
+// NODE_ENV is "production" in the Docker image even though docker-compose serves
+// plain HTTP, and a Secure cookie is never sent back over HTTP — which silently
+// breaks auth on the first post-login request. Gate on a dedicated flag instead.
+const secureCookies = process.env.SECURE_COOKIES === "true";
+
 export function setSessionCookie(res: Response, token: string): void {
   res.cookie(SESSION_COOKIE, token, {
     httpOnly: true,
     sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
+    secure: secureCookies,
     path: "/",
     maxAge: 14 * 24 * 60 * 60 * 1000,
   });
@@ -78,6 +85,7 @@ export function requireAuth(store: Store) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const user = store.getUserBySessionToken(sessionTokenFromRequest(req));
     if (!user) {
+      logger.warn({ method: req.method, path: req.path }, "auth rejected");
       res.status(401).json({ error: "Authentication required" });
       return;
     }

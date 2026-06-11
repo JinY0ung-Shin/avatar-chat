@@ -1,25 +1,44 @@
 services:
-  avatar-chat:
+  noah-almighty:
     build:
       context: .
+      # Map syntax (NAME: value) throughout — compose forbids mixing the
+      # `- NAME` list form with `NAME: value` entries in one args block, and
+      # CA_CERT_FILE needs a default value so an unset var doesn't pass "".
+      args:
+        # Corporate mirror settings (empty = use upstream defaults).
+        # On the DS network, set these in your shell before building:
+        #   export APT_MIRROR_HOST=repository.samsungds.net/repository/proxy-apt-deb.debian.org
+        #   export NPM_CONFIG_REGISTRY=https://repository.samsungds.net/repository/proxy-npm-registry.npmjs.org/
+        APT_MIRROR_HOST: ${APT_MIRROR_HOST:-}
+        NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+        # Corporate proxy CA to trust for HTTPS clones (path within the build
+        # context). Override in your shell: export CA_CERT_FILE=docker/my-ca.crt
+        CA_CERT_FILE: ${CA_CERT_FILE:-docker/samsungds-ca.crt}
+        # Docker built-in proxy args – inherited from the host shell. Unset
+        # ones resolve to "" and are simply not forwarded.
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-}
+        http_proxy: ${http_proxy:-}
+        https_proxy: ${https_proxy:-}
+        no_proxy: ${no_proxy:-}
     ports:
       - "${PORT:-48787}:${PORT:-48787}"
+    # The whole .env is injected into the container, so every ANTHROPIC_* var
+    # (ANTHROPIC_API_KEY/MODEL/BASE_URL/AUTH_TOKEN and any added later) reaches
+    # the Claude Agent SDK without enumerating each key here. SESSION_SECRET,
+    # AGENT_RUNTIME, READONLY_TOOLS, GITHUB_TOKEN come from .env too. If
+    # SESSION_SECRET is missing the server throws on boot (NODE_ENV=production).
+    env_file:
+      - .env
     environment:
-      PORT: ${PORT:-48787}
-      OWNER_SETUP_CODE: ${OWNER_SETUP_CODE:-owner-local-setup}
-      SESSION_SECRET: ${SESSION_SECRET:-change-me-session-secret}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      AGENT_RUNTIME: ${AGENT_RUNTIME:-auto}
+      # Force the container's data volume regardless of the .env value
+      # (environment wins over env_file).
       APP_DATA_DIR: /app/data
-      MARKETPLACE_SOURCE: /app/sample-marketplace
-      MARKETPLACE_REF: ${MARKETPLACE_REF:-}
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      COLLEAGUE_ALLOWED_TOOLS: ${COLLEAGUE_ALLOWED_TOOLS:-Read,Glob,Grep}
-      OWNER_PERMISSION_MODE: ${OWNER_PERMISSION_MODE:-default}
     volumes:
-      - avatar-chat-data:/app/data
-      - ./sample-marketplace:/app/sample-marketplace:ro
+      - noah-almighty-data:/app/data
     restart: unless-stopped
 
 volumes:
-  avatar-chat-data:
+  noah-almighty-data:

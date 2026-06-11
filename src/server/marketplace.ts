@@ -20,38 +20,117 @@ export function sanitizeName(name: string): string {
 }
 
 /**
- * Resolve a repo reference (`owner/repo`, a github URL, or a git/https URL) into
- * a clonable git URL, injecting a token for private repos when provided.
+ * Redact the auth header from a git error before it's returned to a client or
+ * logged. `execFile` rejections embed the full argv — including our
+ * `http.extraHeader=Authorization: Basic <base64>` — in `err.message`, and that
+ * base64 trivially decodes back to the token. Strip it so the token never
+ * escapes via an error path.
  */
-export function marketplaceCloneUrl(source: string, token?: string): string {
-  if (/^[\w.-]+\/[\w.-]+$/.test(source)) {
-    if (token) {
-      return `https://x-access-token:${encodeURIComponent(token)}@github.com/${source}.git`;
-    }
-    return `https://github.com/${source}.git`;
+export function scrubGitError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.replace(/Authorization: Basic [^\s'"]+/g, "Authorization: Basic [REDACTED]");
+}
+
+/**
+ * Reject a source that git would interpret as an option (leading `-`) rather
+ * than a repo. Combined with a `--` separator before positionals, this blocks
+ * argument-injection (e.g. `--upload-pack=…` → RCE).
+ */
+function assertSafeArg(value: string, what: string): void {
+  if (value.startsWith("-")) {
+    throw new Error(`Invalid ${what}: must not start with "-"`);
   }
-  if (token && source.startsWith("https://github.com/")) {
-    return source.replace(
-      "https://github.com/",
-      `https://x-access-token:${encodeURIComponent(token)}@github.com/`,
-    );
+}
+
+/**
+ * Resolve a repo reference (`owner/repo`, a github URL, or a git/https URL) into
+ * a clonable git URL.
+ *
+ * The token is intentionally NOT injected here: embedding it in the remote URL
+ * would persist it in the clone's `.git/config` on disk. Authentication is
+ * instead supplied per-invocation via `gitAuthArgs` (an `http.extraHeader`),
+ * which git uses for the transfer but never writes to disk.
+ */
+export function marketplaceCloneUrl(source: string): string {
+  if (/^[\w.-]+\/[\w.-]+$/.test(source)) {
+    return `https://github.com/${source}.git`;
   }
   return source;
 }
 
-/** Clone (or fetch+checkout) a git repo into `destination`. */
-export async function syncGitRepo(url: string, destination: string, ref?: string): Promise<void> {
+/**
+ * Per-invocation git auth for a token, as `git -c` args injecting an
+ * `Authorization: Basic …` HTTP header (GitHub accepts `x-access-token:TOKEN`).
+ * Returns [] when there's no token or the URL isn't an https transfer (e.g.
+ * ssh/git@), so the header is only attached where it's actually used.
+ *
+ * Unlike a token-in-URL remote, the header lives only in this process's argv —
+ * git never persists it to `.git/config`, so the clone on disk stays clean.
+ */
+export function gitAuthArgs(url: string, token?: string): string[] {
+  if (!token || !/^https:\/\//.test(url)) {
+    return [];
+  }
+  const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
+  return ["-c", `http.extraHeader=Authorization: Basic ${basic}`];
+}
+
+/**
+ * Resolve the revision a clone's working tree should be forced to:
+ * an explicit `ref` (preferring its remote-tracking branch, else the ref as-is
+ * for a tag/sha), or the default branch's upstream when no ref is given.
+ */
+async function resolveTarget(destination: string, ref?: string): Promise<string> {
+  const git = (...args: string[]) =>
+    execFileAsync("git", ["-C", destination, ...args], { timeout: 60_000 });
+  if (ref) {
+    try {
+      await git("rev-parse", "--verify", "--quiet", `origin/${ref}`);
+      return `origin/${ref}`;
+    } catch {
+      return ref;
+    }
+  }
+  try {
+    await git("rev-parse", "--verify", "--quiet", "@{upstream}");
+    return "@{upstream}";
+  } catch {
+    return "HEAD";
+  }
+}
+
+/**
+ * Clone (or fetch) a git repo into `destination` and force its working tree to
+ * exactly match the target revision. When `token` is given it is passed as a
+ * per-invocation auth header (see `gitAuthArgs`), never written into the remote.
+ *
+ * `git fetch` alone only moves remote-tracking refs — it leaves the working
+ * tree on the old commit, so files deleted upstream (e.g. a skill removed from
+ * a marketplace) would linger on refresh. We `reset --hard` to the fetched
+ * target and `clean -fd` untracked leftovers so the clone is an exact mirror.
+ */
+export async function syncGitRepo(
+  url: string,
+  destination: string,
+  ref?: string,
+  token?: string,
+): Promise<void> {
+  assertSafeArg(url, "repo");
+  const auth = gitAuthArgs(url, token);
+  const git = (...args: string[]) =>
+    execFileAsync("git", ["-C", destination, ...args], { timeout: 120_000 });
+
   if (await pathExists(path.join(destination, ".git"))) {
-    await execFileAsync("git", ["-C", destination, "fetch", "--all", "--prune"], {
-      timeout: 120_000,
-    });
+    await git(...auth, "fetch", "--all", "--prune", "--tags");
   } else {
     await fs.mkdir(path.dirname(destination), { recursive: true });
-    await execFileAsync("git", ["clone", "--depth", "1", url, destination], {
+    // `--` stops git from treating a crafted url/destination as an option.
+    await execFileAsync("git", [...auth, "clone", "--depth", "1", "--", url, destination], {
       timeout: 120_000,
     });
   }
-  if (ref) {
-    await execFileAsync("git", ["-C", destination, "checkout", ref], { timeout: 60_000 });
-  }
+
+  const target = await resolveTarget(destination, ref);
+  await git("reset", "--hard", target);
+  await git("clean", "-fd");
 }

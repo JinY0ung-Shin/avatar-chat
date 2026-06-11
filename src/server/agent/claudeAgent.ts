@@ -1,7 +1,12 @@
+import fs from "node:fs";
 import type { AppConfig, AgentRequest, AgentResponse, PluginRoot } from "../types.js";
 import type { Store } from "../store.js";
 import type { AgentEvents } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
+import logger from "../logger.js";
+import { knownHostsPath } from "../sshTrust.js";
+
+const agentLogger = logger.child({ module: "agent" });
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -162,11 +167,33 @@ function handleUserMessage(
   }
 }
 
-function extractResultText(message: unknown): string {
-  if (isRecord(message) && message.type === "result" && typeof message.result === "string") {
-    return message.result;
+/**
+ * Interpret the SDK's terminal `result` message.
+ * - success → `{ text }` with the final answer.
+ * - error (e.g. `error_max_turns`, which carries `errors[]` but NO `result`
+ *   field) → `{ errorSubtype }` so the caller can fall back to the partial
+ *   answer streamed so far instead of leaking a raw "Reached maximum number of
+ *   turns" string into the chat.
+ */
+export function interpretResult(message: unknown): { text?: string; errorSubtype?: string } {
+  if (!isRecord(message) || message.type !== "result") {
+    return {};
   }
-  return "";
+  if (message.subtype === "success" && typeof message.result === "string") {
+    return { text: message.result };
+  }
+  if (typeof message.subtype === "string" && message.subtype.startsWith("error")) {
+    return { errorSubtype: message.subtype };
+  }
+  return {};
+}
+
+/** Human-facing fallback when the run ended on an error with no usable text. */
+export function resultErrorMessage(subtype: string): string {
+  if (subtype === "error_max_turns") {
+    return "응답이 최대 처리 단계에 도달해 중단되었습니다. 질문을 더 작게 나눠 다시 시도해 주세요.";
+  }
+  return "응답 생성 중 오류가 발생해 완료하지 못했습니다. 다시 시도해 주세요.";
 }
 
 /**
@@ -198,6 +225,13 @@ function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents
   const subtype = asString(message.subtype);
   if (subtype === "init") {
     const model = asString(message.model);
+    if (model) {
+      events.onModel?.(model);
+    }
+    const sessionId = asString(message.session_id);
+    if (sessionId) {
+      events.onSessionId?.(sessionId);
+    }
     events.onStatus?.(model ? `Claude 준비 완료 (${model})` : "Claude 준비 완료");
     const pluginList =
       (Array.isArray(message.plugins) && message.plugins) ||
@@ -269,11 +303,12 @@ const hookDeny = (reason: string): HookOutput => ({
  * can block, and can await the user. See the runClaudeAgent doc comment for why
  * this replaces canUseTool/onUserDialog.
  */
-function buildPreToolUseHook(
+export function buildPreToolUseHook(
   events: AgentEvents,
-  viewerIsOwner: boolean,
+  elevated: boolean,
   readOnlyTools: string[],
   headless: boolean,
+  autoApprove: boolean,
 ) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
@@ -307,9 +342,13 @@ function buildPreToolUseHook(
       return hookAllow();
     }
 
-    // Any other tool: a PRESENT owner may approve interactively; an unattended
-    // (headless) run and a colleague chat are both read-only.
-    if (!headless && viewerIsOwner && events.onPermission) {
+    // Any other tool: a PRESENT elevated viewer (owner or trusted user) may run
+    // it; an unattended (headless) run and a plain colleague chat are read-only.
+    // Auto-approval opted in: run the tool without prompting.
+    if (!headless && elevated && autoApprove) {
+      return hookAllow();
+    }
+    if (!headless && elevated && events.onPermission) {
       const decision = await events.onPermission({
         toolUseId,
         toolName,
@@ -322,45 +361,80 @@ function buildPreToolUseHook(
     }
 
     events.onBlocked?.({ toolUseId, toolName, agentId, reason: "읽기 전용 대화에서는 쓸 수 없는 도구입니다." });
+    agentLogger.info({ toolName, agentId, reason: "read-only" }, "tool blocked");
     return hookDeny(
       headless
-        ? "이 실행은 자동 루틴(읽기 전용)입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep과 knowledge 검색만 사용하세요."
-        : "이 대화는 읽기 전용입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep과 knowledge 도구만 사용하세요.",
+        ? "이 실행은 자동 루틴(읽기 전용)입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep만 사용하세요."
+        : "이 대화는 읽기 전용입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep과 정보 요청 도구만 사용하세요.",
     );
   };
 }
 
-function buildPrompt(request: AgentRequest, openRequestCount: number): string {
+export function buildPrompt(request: AgentRequest, openRequestCount: number): string {
+  const alias = request.avatar.alias?.trim();
   const lines = [
-    `당신은 "${request.avatar.displayName}" 아바타로서 사용자와 대화합니다.`,
+    alias
+      ? `당신의 이름은 "${alias}"입니다. 이 이름을 가진 아바타로서 사용자와 대화합니다.`
+      : `당신은 "${request.avatar.displayName}" 아바타로서 사용자와 대화합니다.`,
   ];
   if (request.avatar.persona && request.avatar.persona.trim()) {
     lines.push(`페르소나/지침:\n${request.avatar.persona.trim()}`);
   }
   // Who is on the other side decides the knowledge-backfill behavior (see the
-  // knowledge-backfill skill): the owner answers gaps, colleagues create them.
+  // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
   // A headless run has NO ONE on the other side: never claim the owner is
-  // present (that invites unattended knowledge writes) and state read-only.
+  // present and state read-only.
   if (request.headless) {
     lines.push(
       "이것은 예약된 루틴 작업의 **자동 실행**입니다. 응답을 실시간으로 보는 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과를 보고하세요.",
     );
     lines.push(
-      "이 실행은 읽기 전용입니다. 파일을 수정/생성하거나 지식을 저장하지 말고, 읽기 도구(Read/Glob/Grep)와 지식 검색(recall_knowledge)만 사용하세요.",
+      "이 실행은 읽기 전용입니다. 파일을 수정/생성하지 말고, 읽기 도구(Read/Glob/Grep)만 사용하세요.",
     );
   } else if (request.viewerIsOwner) {
-    const note =
-      openRequestCount > 0
-        ? `현재 대기 중인 정보 요청이 ${openRequestCount}건 있습니다. 대화를 시작할 때 pending_requests로 확인해 보고하세요.`
-        : "대기 중인 정보 요청은 없습니다.";
-    lines.push(`지금 대화 상대는 이 아바타의 **소유자**입니다. ${note}`);
+    const name = request.viewerName?.trim();
+    lines.push(
+      name
+        ? `지금 대화 상대는 이 아바타의 **소유자** "${name}"님입니다.`
+        : "지금 대화 상대는 이 아바타의 **소유자**입니다.",
+    );
+    // The owner can have the avatar manage its own knowledge repo from chat.
+    lines.push(
+      "당신은 자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리할 수 있습니다: `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit`. " +
+        "여기에 업무 지식·스킬을 정리해 두면 다음 대화부터 당신이 그것을 사용합니다. " +
+        "write_file/scaffold_skill 변경은 **commit 하기 전까지는 푸시되지 않으니**, 작업 단위가 끝났거나 소유자가 요청하면 commit 하세요.",
+    );
+    // Pending requests are surfaced ONLY when the owner opens a fresh chat
+    // (greeting). On every other owner turn we stay quiet so the reminder
+    // isn't re-injected mid-conversation.
+    if (request.greeting) {
+      lines.push(
+        openRequestCount > 0
+          ? `대화를 시작합니다. 먼저 소유자에게 짧게 인사한 뒤, **pending_requests로 대기 중인 정보 요청(${openRequestCount}건)을 확인해** 번호를 붙여 간결하게 보고하세요. 그런 다음 무엇을 도와줄지 물어보세요.`
+          : "대화를 시작합니다. 소유자에게 짧게 인사하고 무엇을 도와줄지 물어보세요. (대기 중인 정보 요청은 없으니 굳이 언급하지 마세요.)",
+      );
+    }
   } else {
+    const name = request.viewerName?.trim();
     lines.push(
-      `지금 대화 상대는 **동료**입니다. 소유자만 알 법한 정보를 모르면 추측하지 말고, knowledge-backfill 스킬에 따라 recall_knowledge로 찾고 없으면 request_info로 소유자에게 전달하세요.`,
+      name
+        ? `지금 대화 상대는 **동료** "${name}"님입니다. 소유자만 알 법한 정보를 모르면 추측하지 말고, knowledge-backfill 스킬에 따라 request_info로 소유자에게 전달하세요.`
+        : `지금 대화 상대는 **동료**입니다. 소유자만 알 법한 정보를 모르면 추측하지 말고, knowledge-backfill 스킬에 따라 request_info로 소유자에게 전달하세요.`,
     );
-    lines.push(
-      "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep)와 제공된 knowledge 도구만 사용하세요.",
-    );
+    // A trusted user works at the owner's tool level — don't claim read-only.
+    // A plain colleague stays read-only.
+    if (!request.elevated) {
+      lines.push(
+        "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep)와 제공된 정보 요청 도구만 사용하세요.",
+      );
+    } else {
+      lines.push(
+        "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 요청에 따라 필요한 도구를 사용해 작업을 수행하세요.",
+      );
+    }
+  }
+  if (request.greeting) {
+    return lines.join("\n\n");
   }
   return `${lines.join("\n\n")}\n\n${request.headless ? "작업 지시" : "사용자 메시지"}:\n${request.message}`;
 }
@@ -397,23 +471,99 @@ export async function runClaudeAgent(
   const { buildKnowledgeServer, KNOWLEDGE_SERVER_NAME, KNOWLEDGE_TOOL_NAMES } = await import(
     "./knowledgeTools.js"
   );
+  const { buildRepoServer, REPO_SERVER_NAME, REPO_TOOL_NAMES } = await import("./repoTools.js");
+  const { buildSshTrustServer, SSH_TRUST_SERVER_NAME, SSH_TRUST_TOOL_NAMES } = await import(
+    "./sshTrustTools.js"
+  );
 
   const streaming = Boolean(events);
   const viewerIsOwner = Boolean(request.viewerIsOwner);
   const headless = Boolean(request.headless);
+  const autoApprove = Boolean(request.autoApprove);
+  // Tool-permission level: the owner OR a designated trusted user. Distinct from
+  // viewerIsOwner, which still gates the owner-only knowledge inbox + greeting.
+  const elevated = viewerIsOwner || Boolean(request.elevated);
+  const agentStart = Date.now();
+
+  agentLogger.info(
+    { avatarId: request.avatar.id, viewerUserId: request.viewerUserId, headless, elevated, autoApprove, model: config.anthropicModel ?? undefined },
+    "agent run started",
+  );
 
   // Knowledge-backfill tools, bound to this conversation's avatar + viewer.
-  // Headless runs get COLLEAGUE-level knowledge access even when run as the
-  // owner: recall stays available, but save_knowledge/pending_requests are
-  // denied — no human is present to vouch for unattended knowledge writes.
+  // Headless runs get COLLEAGUE-level access even when run as the owner:
+  // request_info stays available, but pending_requests is denied — no human is
+  // present to review the gap inbox.
   const knowledgeServer = buildKnowledgeServer(store, {
     avatarUserId: request.avatar.id,
     viewerIsOwner: viewerIsOwner && !headless,
     askerUserId: request.viewerUserId ?? null,
     askerName: request.viewerName ?? null,
   });
+  // Only needed for the owner's opening greeting — every other turn stays quiet.
   const openRequestCount =
-    viewerIsOwner && !headless ? store.countOpenKnowledgeRequests(request.avatar.id) : 0;
+    request.greeting && viewerIsOwner && !headless
+      ? store.countOpenKnowledgeRequests(request.avatar.id)
+      : 0;
+
+  // Knowledge-repo management tools (list/read/write/scaffold/commit). OWNER-ONLY:
+  // a colleague, a trusted user, or a headless routine gets a refusal from every
+  // tool. Registered unconditionally — the per-handler `viewerIsOwner` gate is the
+  // safety boundary, mirroring the knowledge server above. The owner identity for
+  // commits is resolved from the avatar's own user row (viewer == owner here).
+  const ownerRow = store.getUserById(request.avatar.id);
+  const repoServer = buildRepoServer(store, {
+    avatarUserId: request.avatar.id,
+    owner: {
+      id: request.avatar.id,
+      username: ownerRow?.username ?? "",
+      displayName: ownerRow?.displayName ?? request.avatar.displayName,
+    },
+    viewerIsOwner: viewerIsOwner && !headless,
+    config,
+  });
+
+  // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
+  // NOT owner-only: host fingerprints are public, and a viewer who can drive
+  // hex-ssh can manage its trust. The trust file is keyed to the owner
+  // (avatar.id) and injected into hex-ssh below as KNOWN_HOSTS_PATH.
+  const sshTrustServer = buildSshTrustServer({ avatarUserId: request.avatar.id, config });
+
+  // The avatar acts on its OWNER's behalf, so it uses the OWNER's secrets
+  // (avatar.id) regardless of who is chatting — a colleague talking to the
+  // owner's avatar still operates with the owner's credentials. The values are
+  // decrypted only here and handed to the MCP subprocess as env, so they never
+  // surface to the agent (Bash/`env` runs in a different process) nor to `toUser`.
+  const ownerSecrets = store.getUserSecrets(request.avatar.id);
+  // hex-ssh (remote-server access MCP, ssh2-based — no system ssh binary needed):
+  // registered explicitly (not via a plugin's .mcp.json) so we can inject the
+  // owner's per-user SSH identity. Only when the owner has stored a private key;
+  // without one the server is keyless and useless, so we skip it. Auto-approval
+  // of `mcp__*` tools means key-holders can run remote-ssh without a prompt
+  // (intended: the avatar fully acts for its owner). `safe` mode still blocks
+  // dangerous patterns (rm -rf /, mkfs, fork bombs, …).
+  const sshServers = ownerSecrets.SSH_PRIVATE_KEY
+    ? {
+        "hex-ssh": {
+          type: "stdio" as const,
+          // Installed into the image at build time (see Dockerfile) and exposed
+          // under this fixed name — NOT `npx`-downloaded at runtime, which fails
+          // on a closed network where the public npm registry is unreachable.
+          // Overridable for dev where the global bin isn't present.
+          command: config.hexSshCommand,
+          // KNOWN_HOSTS_PATH points hex-ssh at the owner's persistent trust file
+          // (under the data volume). hex-ssh re-reads it on every connection, so
+          // the `mcp__ssh_trust__*` tools can add a host mid-session and it takes
+          // effect immediately. ownerSecrets may also carry ALLOWED_HOST_FINGER-
+          // PRINTS, etc.; later keys win, so put ours first.
+          env: {
+            REMOTE_SSH_MODE: "safe",
+            KNOWN_HOSTS_PATH: knownHostsPath(request.avatar.id, config),
+            ...ownerSecrets,
+          },
+        },
+      }
+    : {};
 
   const options: Record<string, unknown> = {
     plugins: pluginRoots,
@@ -422,15 +572,37 @@ export async function runClaudeAgent(
     permissionMode: "default",
     // Auto-approve (no prompt) the read-only + knowledge + meta tools. NOTE: this
     // is only an auto-approve list, NOT a restriction — the hook does enforcement.
-    allowedTools: [...config.readOnlyTools, ...KNOWLEDGE_TOOL_NAMES, "Skill", "Task", "Agent", "TodoWrite"],
+    allowedTools: [...config.readOnlyTools, ...KNOWLEDGE_TOOL_NAMES, ...REPO_TOOL_NAMES, ...SSH_TRUST_TOOL_NAMES, "Skill", "Task", "Agent", "TodoWrite"],
     // Enable bundled + plugin skills (also auto-allows the `Skill` tool).
     skills: "all",
-    mcpServers: { [KNOWLEDGE_SERVER_NAME]: knowledgeServer },
-    maxTurns: 6,
+    // Register the SSH host-trust server alongside hex-ssh, and only when hex-ssh
+    // itself is active (the owner stored a key) — trust management is pointless
+    // without a server to connect.
+    mcpServers: {
+      [KNOWLEDGE_SERVER_NAME]: knowledgeServer,
+      [REPO_SERVER_NAME]: repoServer,
+      ...sshServers,
+      ...(ownerSecrets.SSH_PRIVATE_KEY ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
+    },
+    maxTurns: config.maxTurns,
     // Isolation mode: load NO filesystem settings, so we never leak the operator's
     // machine config (MCP servers, enabled plugins, env, CLAUDE.md) into a chat.
     settingSources: [],
   };
+  // Persist session transcripts under dataDir (not the SDK's default ~/.claude)
+  // so a conversation's session can be resumed after a server/container restart.
+  // `env` REPLACES the subprocess environment, so spread process.env first.
+  fs.mkdirSync(config.agentSessionsDir, { recursive: true });
+  options.env = { ...process.env, CLAUDE_CONFIG_DIR: config.agentSessionsDir };
+  // Resume the conversation's prior session so the model keeps its context. Only
+  // a real follow-up turn passes one (greeting/regenerate start fresh — see app.ts).
+  if (request.resumeSessionId) {
+    options.resume = request.resumeSessionId;
+  }
+  // Pin the model when configured; otherwise the SDK picks its default.
+  if (config.anthropicModel) {
+    options.model = config.anthropicModel;
+  }
   if (streaming) {
     options.includePartialMessages = true;
   }
@@ -449,7 +621,7 @@ export async function runClaudeAgent(
   // straight into the events sink and await the user.
   if (events) {
     options.hooks = {
-      PreToolUse: [{ hooks: [buildPreToolUseHook(events, viewerIsOwner, config.readOnlyTools, headless)] }],
+      PreToolUse: [{ hooks: [buildPreToolUseHook(events, elevated, config.readOnlyTools, headless, autoApprove)] }],
     };
   }
 
@@ -461,6 +633,7 @@ export async function runClaudeAgent(
   const assistantChunks: string[] = [];
   const deltaChunks: string[] = [];
   let resultText = "";
+  let resultErrorSubtype = "";
 
   for await (const message of sdk.query({ prompt: buildPrompt(request, openRequestCount), options })) {
     if (!isRecord(message)) {
@@ -500,17 +673,28 @@ export async function runClaudeAgent(
       continue;
     }
 
-    const extractedResult = extractResultText(message);
+    const { text: extractedResult, errorSubtype } = interpretResult(message);
     if (extractedResult) {
       resultText = extractedResult;
     }
+    if (errorSubtype) {
+      resultErrorSubtype = errorSubtype;
+    }
   }
 
+  // Prefer the partial answer the model already streamed; only show the error
+  // fallback when the run errored AND produced no usable text.
+  const partialText = assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();
   const text =
     resultText ||
-    assistantChunks.join("\n\n").trim() ||
-    deltaChunks.join("").trim() ||
-    "Claude Agent SDK 응답이 비어 있습니다.";
+    partialText ||
+    (resultErrorSubtype
+      ? resultErrorMessage(resultErrorSubtype)
+      : "Claude Agent SDK 응답이 비어 있습니다.");
+  agentLogger.info(
+    { avatarId: request.avatar.id, runtime: "claude", textLength: text.length, durationMs: Date.now() - agentStart },
+    "agent run completed",
+  );
   return {
     kind: "text",
     runtime: "claude",
