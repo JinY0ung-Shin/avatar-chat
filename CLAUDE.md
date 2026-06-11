@@ -55,7 +55,16 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   **reversible** secrets (e.g. per-user git token) → AES-256-GCM in `crypto.ts`
   (keyed from `SESSION_SECRET`). Never serialize secrets through `toUser`. The git
   token is a `users` column; arbitrary named secrets go in the `user_secrets` vault
-  (see below).
+  (see below). App-WIDE secrets (not user-scoped) go in the `app_config` KV table
+  (`get/set/deleteAppSecret`, same AES-256-GCM).
+- **Subscription auth is app-wide and admin-managed.** Auth precedence: `.env`
+  `ANTHROPIC_API_KEY` > stored subscription token > none. When no API key is set,
+  `claudeAgent.ts` injects the admin-pasted `claude setup-token` token (stored under
+  `app_config[CLAUDE_OAUTH_TOKEN_KEY]`, see `store.ts`) as `CLAUDE_CODE_OAUTH_TOKEN`
+  into the SDK subprocess env — decrypted only there, never shown to the agent.
+  Managed via `PUT/DELETE /api/admin/claude-token` + the 관리자 ▸ 구독 로그인 card;
+  status surfaces through `GET /api/admin/system` (`subscriptionConnected`,
+  `apiKeyOverride`). setup-token tokens are long-lived, so there's no refresh logic.
 - Git auth for clones uses `http.extraHeader` (see `gitAuthArgs`), never a
   token-in-URL — keeps the token out of `.git/config`. Scrub it from git error
   text before logging/returning (`scrubGitError`).

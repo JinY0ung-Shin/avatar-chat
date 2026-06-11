@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import type { AppConfig, AgentRequest, AgentResponse, PluginRoot } from "../types.js";
 import type { Store } from "../store.js";
+import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import type { AgentEvents } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
 import logger from "../logger.js";
@@ -860,6 +861,21 @@ export async function runClaudeAgent(
   // `env` REPLACES the subprocess environment, so spread process.env first.
   fs.mkdirSync(config.agentSessionsDir, { recursive: true });
   options.env = { ...process.env, CLAUDE_CONFIG_DIR: config.agentSessionsDir };
+  // Subscription auth: when no ANTHROPIC_API_KEY is configured, fall back to the
+  // admin-pasted `claude setup-token` token (stored encrypted in app_config),
+  // injecting it as CLAUDE_CODE_OAUTH_TOKEN. Precedence is API key (.env) > stored
+  // subscription token, matching the authMode reported by /api/admin/system. The
+  // token is decrypted only here into the subprocess env — never exposed to the
+  // agent (Bash/`env` run in a separate process), same as the secret vault. We
+  // also drop any empty ANTHROPIC_API_KEY left over from `.env` so it can't shadow
+  // the OAuth token.
+  if (!config.anthropicApiKey) {
+    const oauthToken = store.getAppSecret(CLAUDE_OAUTH_TOKEN_KEY);
+    if (oauthToken) {
+      delete (options.env as Record<string, string | undefined>).ANTHROPIC_API_KEY;
+      (options.env as Record<string, string | undefined>).CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+    }
+  }
   // Resume the conversation's prior session so the model keeps its context. Only
   // a real follow-up turn passes one (greeting/regenerate start fresh — see app.ts).
   if (request.resumeSessionId) {

@@ -26,7 +26,7 @@ import {
 } from "./plugins.js";
 import { scrubGitError } from "./marketplace.js";
 import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
-import { Store } from "./store.js";
+import { Store, CLAUDE_OAUTH_TOKEN_KEY } from "./store.js";
 import type { AgentResponse, AppConfig, PluginRoot } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import { awaitResponse, closeRun, openRun, submitResponse, CANCELLED } from "./agent/runRegistry.js";
@@ -1199,9 +1199,55 @@ export function createApp(services = createServices()) {
         configuredModel: config.anthropicModel ?? null,
         observedModel,
         authMode: config.anthropicApiKey ? "api_key" : "subscription",
+        // Whether a subscription OAuth token (claude setup-token) is stored. The
+        // raw token is never returned — only whether one is present.
+        subscriptionConnected: Boolean(store.getAppSecret(CLAUDE_OAUTH_TOKEN_KEY)),
+        // When an ANTHROPIC_API_KEY is set in .env it takes precedence over the
+        // stored subscription token; the UI surfaces this so the admin isn't
+        // surprised that pasting a token has no effect.
+        apiKeyOverride: Boolean(config.anthropicApiKey),
         readOnlyTools: config.readOnlyTools,
       },
     });
+  });
+
+  // Store/replace the Claude subscription token (`claude setup-token` output).
+  // Encrypted at rest in app_config; injected as CLAUDE_CODE_OAUTH_TOKEN into the
+  // agent subprocess when no ANTHROPIC_API_KEY is configured (see claudeAgent.ts).
+  // Write-only: the token is never echoed back.
+  app.put("/api/admin/claude-token", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
+    if (!token) {
+      apiError(res, 400, "토큰을 입력해 주세요.");
+      return;
+    }
+    if (!token.startsWith("sk-ant-")) {
+      apiError(res, 400, "`claude setup-token`이 출력한 토큰(sk-ant-…)을 붙여넣어 주세요.");
+      return;
+    }
+    store.setAppSecret(CLAUDE_OAUTH_TOKEN_KEY, token);
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "set_claude_token",
+      status: "success",
+      detail: "subscription OAuth token stored",
+    });
+    logger.info({ actorId: req.user!.id }, "claude subscription token set");
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/admin/claude-token", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    store.deleteAppSecret(CLAUDE_OAUTH_TOKEN_KEY);
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "clear_claude_token",
+      status: "success",
+      detail: "subscription OAuth token cleared",
+    });
+    logger.info({ actorId: req.user!.id }, "claude subscription token cleared");
+    res.json({ ok: true });
   });
 
   app.get("/api/admin/users", requireAuth(store), requireAdmin, (_req, res) => {

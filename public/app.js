@@ -3855,7 +3855,98 @@ function renderAdminSystem() {
       el("h3", { text: "시스템 정보" }),
       el("div", { class: "sys-grid" }, rows),
     ]),
+    buildSubscriptionCard(sys),
   ]);
+}
+
+/* Admin 구독 로그인 card: paste a `claude setup-token` token so the agent runs
+   on a Claude subscription instead of an API key. Write-only — the stored token
+   is never sent back, only whether one is present (sys.subscriptionConnected). */
+function buildSubscriptionCard(sys) {
+  const connected = Boolean(sys.subscriptionConnected);
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "구독 로그인" }),
+        el("p", {
+          class: "muted",
+          text: "Claude 구독으로 에이전트를 구동합니다. ① 내 PC에서 claude setup-token 실행 → ② 출력된 sk-ant-oat… 토큰을 아래에 붙여넣고 저장하세요. 토큰은 암호화되어 저장되며 다시 표시되지 않습니다.",
+        }),
+      ]),
+    ]),
+  );
+
+  // Connection status (+ a note when an env API key overrides the token).
+  const statusRow = el("div", { class: "sys-row" }, [
+    el("span", { class: "sys-key muted", text: "구독 연결" }),
+    el("span", { class: "sys-val" }, [
+      el("span", {
+        class: connected ? "tag accent" : "muted",
+        text: connected ? "● 연결됨" : "○ 미연결",
+      }),
+    ]),
+  ]);
+  card.append(el("div", { class: "sys-grid" }, [statusRow]));
+  if (sys.apiKeyOverride) {
+    card.append(
+      el("p", {
+        class: "muted",
+        text: ".env의 ANTHROPIC_API_KEY가 설정되어 있어 API 키가 구독 토큰보다 우선합니다. 구독 토큰을 사용하려면 API 키를 비우세요.",
+      }),
+    );
+  }
+
+  // Disconnect button when a token is stored.
+  if (connected) {
+    const disBtn = el("button", { class: "ghost-sm danger", type: "button", text: "연결 해제" });
+    disBtn.addEventListener("click", async () => {
+      if (!window.confirm("저장된 구독 토큰을 삭제할까요?")) return;
+      disBtn.disabled = true;
+      try {
+        await api("/api/admin/claude-token", { method: "DELETE" });
+        await loadAdminSystem();
+        renderView();
+      } catch (e) {
+        disBtn.disabled = false;
+        notify(`해제 실패: ${e.message}`);
+      }
+    });
+    card.append(el("div", { class: "ar-actions" }, [disBtn]));
+  }
+
+  // Paste/replace form.
+  const form = el("form", {
+    class: "settings-form",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const formEl = e.currentTarget;
+      const token = (new FormData(formEl).get("token") || "").toString().trim();
+      if (!token) {
+        notify("토큰을 붙여넣어 주세요.", "warn");
+        return;
+      }
+      const btn = formEl.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api("/api/admin/claude-token", { method: "PUT", body: JSON.stringify({ token }) });
+        notify("구독 토큰을 저장했습니다.", "ok");
+        await loadAdminSystem();
+        renderView();
+      } catch (err) {
+        btn.disabled = false;
+        notify(`저장 실패: ${err.message}`);
+      }
+    },
+  }, [
+    el("label", { class: "field" }, [
+      el("span", { text: connected ? "토큰 교체" : "Claude 구독 토큰" }),
+      el("textarea", { name: "token", rows: "3", placeholder: "sk-ant-oat01-…", autocomplete: "off", required: "" }),
+    ]),
+    el("button", { class: "primary", type: "submit", text: "저장" }),
+  ]);
+  card.append(form);
+  return card;
 }
 
 function sysRow(label, valueNode) {

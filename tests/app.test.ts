@@ -380,6 +380,42 @@ describe("noah-almighty platform", () => {
     expect(res.body.users[0].username).toBe("boss");
   });
 
+  it("stores/clears a subscription token and reflects it in system status", async () => {
+    const app = testApp(); // no ANTHROPIC_API_KEY → subscription mode
+    const { agent: admin } = await newUser(app, "boss"); // first → admin
+
+    // Initially disconnected, subscription auth mode (no API key in test config).
+    let sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.subscriptionConnected).toBe(false);
+    expect(sys.apiKeyOverride).toBe(false);
+    expect(sys.authMode).toBe("subscription");
+
+    // Reject empty / malformed tokens.
+    await admin.put("/api/admin/claude-token").send({ token: "  " }).expect(400);
+    await admin.put("/api/admin/claude-token").send({ token: "nope" }).expect(400);
+
+    // Store a valid-looking token; it must never be echoed back.
+    const put = await admin.put("/api/admin/claude-token").send({ token: "sk-ant-oat01-secret" }).expect(200);
+    expect(put.body).toEqual({ ok: true });
+    expect(JSON.stringify(put.body)).not.toContain("secret");
+
+    sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.subscriptionConnected).toBe(true);
+
+    // Clearing it returns to disconnected.
+    await admin.delete("/api/admin/claude-token").expect(200);
+    sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.subscriptionConnected).toBe(false);
+  });
+
+  it("forbids the subscription-token endpoints for members (403)", async () => {
+    const app = testApp();
+    await newUser(app, "boss"); // first → admin
+    const { agent: member } = await newUser(app, "peon");
+    await member.put("/api/admin/claude-token").send({ token: "sk-ant-oat01-x" }).expect(403);
+    await member.delete("/api/admin/claude-token").expect(403);
+  });
+
   it("exposes system/runtime info to admins, gated from members", async () => {
     const services = createServices({
       dataDir: tempDir,

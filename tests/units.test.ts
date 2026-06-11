@@ -726,6 +726,39 @@ describe("store user secrets", () => {
   });
 });
 
+describe("store app config (app-wide secrets)", () => {
+  function makeStore(secret = "appshh") {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "appconfig"),
+      agentRuntime: "local",
+      sessionSecret: secret,
+    });
+    return store;
+  }
+
+  it("round-trips and upserts an encrypted app-wide value", () => {
+    const store = makeStore();
+    expect(store.getAppSecret("claude_oauth_token")).toBeNull();
+    store.setAppSecret("claude_oauth_token", "sk-ant-oat01-abc");
+    expect(store.getAppSecret("claude_oauth_token")).toBe("sk-ant-oat01-abc");
+    store.setAppSecret("claude_oauth_token", "sk-ant-oat01-def");
+    expect(store.getAppSecret("claude_oauth_token")).toBe("sk-ant-oat01-def");
+  });
+
+  it("deletes an app-wide value", () => {
+    const store = makeStore();
+    store.setAppSecret("claude_oauth_token", "sk-ant-oat01-abc");
+    store.deleteAppSecret("claude_oauth_token");
+    expect(store.getAppSecret("claude_oauth_token")).toBeNull();
+  });
+
+  it("returns null when the value can't decrypt (e.g. SESSION_SECRET changed)", () => {
+    makeStore("secretA").setAppSecret("claude_oauth_token", "sk-ant-oat01-abc");
+    // Re-open the same DB with a different secret: the stored value can't decrypt.
+    expect(makeStore("secretB").getAppSecret("claude_oauth_token")).toBeNull();
+  });
+});
+
 describe("store agent session resume", () => {
   function makeStore() {
     const { store } = createServices({

@@ -127,6 +127,13 @@ interface RoutineJobRow {
   created_at: string;
 }
 
+/**
+ * app_config key under which the Claude subscription OAuth token (from
+ * `claude setup-token`) is stored. Injected as CLAUDE_CODE_OAUTH_TOKEN into the
+ * agent subprocess when no ANTHROPIC_API_KEY is configured (see claudeAgent.ts).
+ */
+export const CLAUDE_OAUTH_TOKEN_KEY = "claude_oauth_token";
+
 export class Store {
   private readonly db: Database.Database;
   /** Key secret for at-rest token encryption (from config.sessionSecret). */
@@ -245,6 +252,11 @@ export class Store {
         last_status TEXT,
         last_error TEXT,
         created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS app_config (
+        key TEXT PRIMARY KEY,
+        value_enc TEXT NOT NULL,
+        updated_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
@@ -600,6 +612,41 @@ export class Store {
       }
     }
     return out;
+  }
+
+  // ---- App-wide config (encrypted, not user-scoped) --------------------
+
+  /**
+   * Store (encrypted) an app-wide secret keyed by name. Unlike user_secrets
+   * this is global to the deployment — e.g. the Claude subscription OAuth token
+   * (`claude setup-token`) the admin pastes in, injected as CLAUDE_CODE_OAUTH_TOKEN
+   * into the agent subprocess. AES-256-GCM at rest like every other secret; only
+   * decrypted server-side (`getAppSecret`), never returned to clients.
+   */
+  setAppSecret(key: string, value: string): void {
+    const enc = encryptSecret(value, this.secret);
+    this.db
+      .prepare(
+        "INSERT INTO app_config (key, value_enc, updated_at) VALUES (?, ?, ?) " +
+          "ON CONFLICT(key) DO UPDATE SET value_enc = excluded.value_enc, updated_at = excluded.updated_at",
+      )
+      .run(key, enc, new Date().toISOString());
+  }
+
+  /** Decrypt an app-wide secret. Null if unset or undecryptable (e.g. SESSION_SECRET changed). */
+  getAppSecret(key: string): string | null {
+    const row = this.db.prepare("SELECT value_enc FROM app_config WHERE key = ?").get(key) as
+      | { value_enc: string }
+      | undefined;
+    if (!row) {
+      return null;
+    }
+    return decryptSecret(row.value_enc, this.secret);
+  }
+
+  /** Remove an app-wide secret. No-op if it doesn't exist. */
+  deleteAppSecret(key: string): void {
+    this.db.prepare("DELETE FROM app_config WHERE key = ?").run(key);
   }
 
   /** Set the commit author identity used for knowledge-repo commits. */
