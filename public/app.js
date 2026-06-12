@@ -4828,7 +4828,7 @@ async function enterApp() {
     if (conv) await selectConversation(conv);
     else syncHash(true);
   }
-  // First-time guidance: prompt for a GitHub token + knowledge repo. Skippable,
+  // First-time guidance: explain the app and optionally collect a GitHub token. Skippable,
   // tracked per-user in localStorage so it doesn't reappear once dismissed.
   if (!onboardingDone(state.user.id)) {
     openOnboarding();
@@ -4922,12 +4922,11 @@ function buildOnboardingGuide() {
 }
 
 /**
- * Skippable onboarding overlay: connect a GitHub token and point at a personal
- * knowledge repo. Reuses PUT /api/me/git-token and PUT /api/me/knowledge-repo.
- * Re-openable from the settings 지식 저장소 card.
+ * Skippable onboarding overlay: explains the main workflows and optionally stores
+ * a GitHub token. Knowledge repo/branch setup stays in chat or settings so first
+ * login does not feel like a repository configuration wizard.
  */
 function openOnboarding() {
-  const u = state.user;
   const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const close = () => {
     markOnboardingDone(state.user.id);
@@ -4936,8 +4935,6 @@ function openOnboarding() {
   };
 
   const tokenInput = el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", autocomplete: "off" });
-  const repoInput = el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", value: u.knowledgeRepo || "" });
-  const branchInput = el("input", { name: "branch", class: "narrow", placeholder: "main (비우면 기본 브랜치)", value: u.knowledgeBranch || "" });
   const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
 
   const saveBtn = el("button", { class: "primary", type: "submit", text: "저장하고 시작" });
@@ -4947,21 +4944,12 @@ function openOnboarding() {
       e.preventDefault();
       saveBtn.disabled = true;
       const savedLabel = saveBtn.textContent;
-      saveBtn.textContent = "저장 중…"; // repo validation may clone — can be slow
+      saveBtn.textContent = "저장 중…";
       errorBox.hidden = true;
       try {
         const token = tokenInput.value.trim();
         if (token) {
           const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
-          state.user = user;
-        }
-        const repo = repoInput.value.trim();
-        // Only call when something is provided, so "skip the repo" stays valid.
-        if (repo || u.knowledgeRepo) {
-          const { user } = await api("/api/me/knowledge-repo", {
-            method: "PUT",
-            body: JSON.stringify({ repo: repo || null, branch: branchInput.value.trim() || null }),
-          });
           state.user = user;
         }
         close();
@@ -4987,8 +4975,6 @@ function openOnboarding() {
       ]),
       tokenInput,
     ]),
-    el("label", { class: "field" }, [el("span", { text: "지식 저장소" }), repoInput]),
-    el("label", { class: "field" }, [el("span", { text: "브랜치 (선택)" }), branchInput]),
     errorBox,
     el("div", { class: "onboard-actions" }, [
       el("button", { class: "linkish", type: "button", text: "건너뛰기", onclick: () => { close(); } }),
@@ -5005,10 +4991,10 @@ function openOnboarding() {
     }),
     buildOnboardingGuide(),
     el("div", { class: "onboard-connect" }, [
-      el("h3", { text: "처음 연결하면 좋은 설정" }),
+      el("h3", { text: "처음 설정하면 좋은 권한" }),
       el("p", {
         class: "muted",
-        text: "전용 GitHub 저장소를 연결하면 아바타가 업무 지식·스킬을 쌓아 둡니다. 비공개 저장소를 쓰거나 아바타가 직접 커밋·푸시하게 하려면 토큰도 입력하세요. 나중에 내 아바타 설정에서 다시 할 수 있어요.",
+        text: "GitHub 토큰을 저장해 두면 나중에 아바타에게 비공개 저장소를 읽게 하거나, 대화 중 특정 URL의 자료를 지식 저장소에 추가하고 커밋·푸시하게 할 수 있습니다. 지식 저장소와 브랜치는 지금 고르지 않아도 됩니다.",
       }),
     ]),
     form,

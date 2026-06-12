@@ -30,8 +30,8 @@ any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
   the avatar can use allowed SSH tools to work on servers reachable from the app host, such as
   checking logs, inspecting files, or running commands under the configured policy.
 - **Onboarding**: after first login a skippable guided step explains the main workflows,
-  gives starter prompts, and offers GitHub token / knowledge repo setup (re-openable from
-  settings).
+  gives starter prompts, and optionally stores a GitHub token; knowledge repo / branch setup
+  can happen later through chat or settings.
 - **Discovery**: published avatars appear in the Explore directory; anyone can start a chat.
 - **Read-only chat**: chatting with an avatar loads that avatar's enabled plugins and runs
   the Claude Agent SDK with `permissionMode=dontAsk`, `allowedTools=Read,Glob,Grep`, and
