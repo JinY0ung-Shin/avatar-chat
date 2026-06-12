@@ -37,12 +37,17 @@ const state = {
   plugins: [],
   knowledgeRequests: [],
   routines: [],
+  adminTab: "overview", // overview | users | access | system | audit
   adminUsers: [],
+  adminUserDetail: {}, // id -> AdminUserDetail (lazy, cached per expand)
+  adminUserSearch: "",
   adminSystem: null,
+  adminStats: null,
   audit: [],
   streaming: false,
   authError: "",
   githubHost: "github.com",
+  signupMode: "open", // mirrors /api/bootstrap; gates the auth-screen signup link
 };
 
 const dom = {};
@@ -184,6 +189,12 @@ function icon(name) {
     columns: '<rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/>',
     rows: '<rect x="4" y="3" width="16" height="7" rx="1"/><rect x="4" y="14" width="16" height="7" rx="1"/>',
     grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+    list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+    key: '<circle cx="7.5" cy="15.5" r="5.5"/><path d="m21 2-9.6 9.6M15.5 7.5l3 3L22 7l-3-3"/>',
+    server: '<rect x="2" y="3" width="20" height="8" rx="2"/><rect x="2" y="13" width="20" height="8" rx="2"/><path d="M6 7h.01M6 17h.01"/>',
+    power: '<path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><path d="M12 2v10"/>',
   };
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
@@ -336,6 +347,13 @@ function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
   document.title = "Noah Almighty";
   if (location.hash) history.replaceState(null, "", location.pathname + location.search);
 
+  // Self-service signup is gated by the deployment's signup mode. The very first
+  // account (setup) is always allowed; otherwise "closed" hides the signup form.
+  const signupAllowed = mode === "setup" || state.signupMode !== "closed";
+  if (mode === "signup" && !signupAllowed) {
+    renderAuth("login", { username, displayName });
+    return;
+  }
   const isLogin = mode === "login";
   const isSetup = mode === "setup";
   const form = el("form", {
@@ -351,6 +369,14 @@ function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
           ? { username: fd.get("username"), password: fd.get("password") }
           : { username: fd.get("username"), displayName: fd.get("displayName"), password: fd.get("password") };
         const result = await api(path, { method: "POST", body: JSON.stringify(payload) });
+        // Approval-mode signup: the account is created but parked until an admin
+        // activates it — there's no session yet, so bounce back to the login form.
+        if (!isLogin && result.pending) {
+          state.authError = "";
+          renderAuth("login", { username: fd.get("username") || "" });
+          notify("가입 신청이 접수되었습니다. 관리자 승인 후 로그인할 수 있습니다.", "info");
+          return;
+        }
         sessionExpired = false;
         state.user = result.user;
         state.authError = "";
@@ -406,28 +432,41 @@ function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
             ? "서비스를 처음 시작합니다. 여기서 만드는 첫 계정이 관리자(admin)가 됩니다."
             : "나만의 아바타를 만들고, 다른 사람의 아바타와 대화하세요.",
         }),
+        !isLogin && !isSetup && state.signupMode === "approval"
+          ? el("p", { class: "muted auth-note", text: "관리자 승인 후 로그인할 수 있습니다." })
+          : null,
         state.authError ? el("div", { class: "error", role: "alert", text: state.authError }) : null,
         form,
-        isSetup
-          ? null
-          : el("div", { class: "auth-switch" }, [
-              el("span", { text: isLogin ? "계정이 없으신가요? " : "이미 계정이 있으신가요? " }),
-              el("button", {
-                class: "linkish",
-                type: "button",
-                text: isLogin ? "회원가입" : "로그인",
-                onclick: () => {
-                  state.authError = "";
-                  renderAuth(isLogin ? "signup" : "login");
-                },
-              }),
-            ]),
+        renderAuthSwitch({ isLogin, isSetup, signupAllowed }),
       ]),
     ]),
   );
   const userInput = app.querySelector('input[name="username"]');
   if (userInput && !userInput.value) userInput.focus();
   else app.querySelector('input[name="password"]')?.focus();
+}
+
+/* Login↔signup toggle. Hidden during setup; on the login screen it collapses to
+   a "signup disabled" note when the deployment has closed self-service signup. */
+function renderAuthSwitch({ isLogin, isSetup, signupAllowed }) {
+  if (isSetup) return null;
+  if (isLogin && !signupAllowed) {
+    return el("div", { class: "auth-switch" }, [
+      el("span", { class: "muted", text: "현재 회원가입을 받지 않습니다." }),
+    ]);
+  }
+  return el("div", { class: "auth-switch" }, [
+    el("span", { text: isLogin ? "계정이 없으신가요? " : "이미 계정이 있으신가요? " }),
+    el("button", {
+      class: "linkish",
+      type: "button",
+      text: isLogin ? "회원가입" : "로그인",
+      onclick: () => {
+        state.authError = "";
+        renderAuth(isLogin ? "signup" : "login");
+      },
+    }),
+  ]);
 }
 
 /* ============================================================ App shell */
@@ -695,6 +734,7 @@ function currentRoute() {
     return pane?.messages?.length && pane.conversationId ? `#/chat/${encodeURIComponent(pane.conversationId)}` : "#/chat";
   }
   if (state.view === "settings") return `#/settings/${state.settingsTab}`;
+  if (state.view === "admin") return `#/admin/${state.adminTab}`;
   return `#/${state.view}`;
 }
 
@@ -720,7 +760,8 @@ async function applyRoute() {
       }
     }
     if (view === "settings" && arg && arg !== state.settingsTab) state.settingsTab = arg;
-    if (view !== state.view || view === "settings") {
+    if (view === "admin" && arg && arg !== state.adminTab) state.adminTab = arg;
+    if (view !== state.view || view === "settings" || view === "admin") {
       if (!confirmLeaveStreaming()) return;
       state.view = view;
       closeRail();
@@ -3897,80 +3938,416 @@ function renderKnowledgeRequests(list, refresh) {
 }
 
 /* ============================================================ Admin */
+const ADMIN_TABS = [
+  { id: "overview", label: "개요", icon: "activity" },
+  { id: "users", label: "사용자", icon: "users" },
+  { id: "access", label: "가입·접근", icon: "key" },
+  { id: "system", label: "시스템", icon: "server" },
+  { id: "audit", label: "감사 로그", icon: "list" },
+];
+const ADMIN_TAB_BUILDERS = {
+  overview: adminOverviewCards,
+  users: adminUsersCards,
+  access: adminAccessCards,
+  system: adminSystemCards,
+  audit: adminAuditCards,
+};
+
 async function renderAdmin() {
-  const header = viewHeader("관리자", "사용자와 권한을 관리하세요");
+  const header = viewHeader("관리자", "사용자·접근·시스템을 관리하세요");
   const body = el("div", { class: "view-body scroll-thin" });
   dom.main.append(header, body);
-  body.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
-  try {
-    await Promise.all([loadAdminUsers(), loadAdminSystem()]);
-  } catch (e) {
-    body.replaceChildren(
-      el("div", { class: "warn-box" }, [
-        `불러오기 실패: ${e.message} `,
-        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
-      ]),
-    );
-    return;
-  }
-  body.replaceChildren();
-  body.append(renderAdminSystem());
-  const table = el("div", { class: "admin-list" });
-  for (const u of state.adminUsers) {
-    const isMe = u.id === state.user.id;
-    const isAdmin = u.roles?.includes("admin");
-    const row = el("div", { class: "admin-row" }, [
-      avatarNode(u, 40, { alt: "" }),
-      el("div", { class: "ar-main" }, [
-        el("strong", { text: u.displayName }),
-        el("div", { class: "muted", text: `@${u.username} · 가입 ${timeLabel(u.createdAt)}` }),
-      ]),
-      el("div", { class: "ar-tags" }, [
-        el("span", { class: `tag ${isAdmin ? "write" : "read"}`, text: isAdmin ? "관리자" : "멤버" }),
-        u.published ? el("span", { class: "tag accent", text: "공개" }) : null,
-      ]),
-    ]);
-    const actions = el("div", { class: "ar-actions" });
-    if (!isMe) {
-      const roleBtn = el("button", { class: "ghost-sm", type: "button", text: isAdmin ? "관리자 해제" : "관리자 지정" });
-      roleBtn.addEventListener("click", async () => {
-        const verb = isAdmin ? "해제" : "부여";
-        if (!window.confirm(`${u.displayName}(@${u.username})님의 관리자 권한을 ${verb}할까요?`)) return;
-        roleBtn.disabled = true;
-        try {
-          await api(`/api/admin/users/${encodeURIComponent(u.id)}/roles`, { method: "POST", body: JSON.stringify({ role: "admin", grant: !isAdmin }) });
-          await loadAdminUsers();
-          renderView();
-        } catch (e) {
-          roleBtn.disabled = false;
-          notify(`권한 변경 실패: ${e.message}`);
-        }
-      });
-      const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
-      delBtn.addEventListener("click", async () => {
-        if (!window.confirm(`${u.displayName}(@${u.username}) 계정을 삭제할까요?\n이 사용자의 아바타·대화·설정이 모두 영구 삭제되며 되돌릴 수 없습니다.`)) return;
-        try {
-          await api(`/api/admin/users/${encodeURIComponent(u.id)}`, { method: "DELETE" });
-          await loadAdminUsers();
-          renderView();
-        } catch (e) {
-          notify(`삭제 실패: ${e.message}`);
-        }
-      });
-      actions.append(roleBtn, delBtn);
-    } else {
-      actions.append(el("span", { class: "tag", text: "나" }));
+  if (!ADMIN_TABS.some((t) => t.id === state.adminTab)) state.adminTab = "overview";
+
+  const panel = el("div", { class: "admin-panel", role: "tabpanel", id: "admin-panel" });
+  const renderTab = async () => {
+    panel.setAttribute("aria-labelledby", `admin-tab-${state.adminTab}`);
+    panel.replaceChildren(el("div", { class: "muted pad", text: "불러오는 중…" }));
+    try {
+      const build = ADMIN_TAB_BUILDERS[state.adminTab] || adminOverviewCards;
+      const nodes = await build();
+      panel.replaceChildren(...nodes);
+    } catch (e) {
+      panel.replaceChildren(
+        el("div", { class: "warn-box" }, [
+          `불러오기 실패: ${e.message} `,
+          el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderTab() }),
+        ]),
+      );
     }
-    row.append(actions);
-    table.append(row);
+  };
+
+  const tabBar = el("nav", { class: "settings-tabs", role: "tablist", "aria-label": "관리자 분류" });
+  const syncTabs = () => {
+    for (const b of tabBar.children) {
+      const active = b.dataset.tab === state.adminTab;
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+      b.tabIndex = active ? 0 : -1;
+    }
+  };
+  for (const t of ADMIN_TABS) {
+    const btn = el("button", {
+      class: "settings-tab" + (t.id === state.adminTab ? " active" : ""),
+      type: "button",
+      role: "tab",
+      id: `admin-tab-${t.id}`,
+      "aria-controls": "admin-panel",
+      dataset: { tab: t.id },
+      onclick: () => {
+        if (state.adminTab === t.id) return;
+        state.adminTab = t.id;
+        syncHash(true);
+        syncTabs();
+        renderTab();
+      },
+    });
+    btn.append(icon(t.icon), el("span", { text: t.label }));
+    tabBar.append(btn);
   }
-  body.append(table);
+  tabBar.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const items = [...tabBar.children];
+    const idx = items.findIndex((b) => b.dataset.tab === state.adminTab);
+    const next = items[(idx + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
+    next.focus();
+    next.click();
+  });
+  syncTabs();
+
+  body.replaceChildren(tabBar, panel);
+  await renderTab();
 }
 
-/* Admin "시스템 정보" card: which model/runtime the agent is using. */
-function renderAdminSystem() {
+/* ---- 개요 (dashboard) ---- */
+async function adminOverviewCards() {
+  await loadAdminStats();
+  const s = state.adminStats || {};
+  const stat = (label, value, sub) =>
+    el("div", { class: "stat-card" }, [
+      el("div", { class: "stat-value", text: String(value ?? 0) }),
+      el("div", { class: "stat-label", text: label }),
+      sub ? el("div", { class: "stat-sub muted", text: sub }) : null,
+    ]);
+  const grid = el("div", { class: "stat-grid" }, [
+    stat("전체 사용자", s.users, s.suspended ? `정지 ${s.suspended}명 포함` : null),
+    stat("관리자", s.admins),
+    stat("공개 아바타", s.published),
+    stat("대화", s.conversations),
+    stat("메시지", s.messages),
+    stat("활성 루틴", s.activeRoutines),
+    stat("미응답 질문", s.openRequests),
+    stat("활성 세션", s.activeSessions),
+  ]);
+  return [
+    el("div", { class: "admin-list" }, [
+      el("section", { class: "settings-card" }, [
+        el("h3", { text: "현황" }),
+        el("p", { class: "muted", text: "이 인스턴스의 전체 사용 현황입니다." }),
+        grid,
+      ]),
+    ]),
+  ];
+}
+
+/* ---- 사용자 (user management) ---- */
+async function adminUsersCards() {
+  await loadAdminUsers();
+  const list = el("div", { class: "admin-list" });
+  const reload = async () => {
+    await loadAdminUsers();
+    renderList();
+  };
+  const renderList = () => {
+    const q = state.adminUserSearch.trim().toLowerCase();
+    const users = state.adminUsers.filter(
+      (u) =>
+        !q ||
+        (u.displayName || "").toLowerCase().includes(q) ||
+        (u.username || "").toLowerCase().includes(q),
+    );
+    if (!users.length) {
+      list.replaceChildren(
+        el("div", { class: "muted pad", text: q ? "일치하는 사용자가 없습니다." : "사용자가 없습니다." }),
+      );
+      return;
+    }
+    list.replaceChildren(...users.map((u) => adminUserRow(u, reload)));
+  };
+
+  const search = el("input", {
+    type: "search",
+    class: "admin-search",
+    placeholder: "이름 또는 아이디로 검색",
+    value: state.adminUserSearch,
+    "aria-label": "사용자 검색",
+  });
+  search.addEventListener("input", () => {
+    state.adminUserSearch = search.value;
+    renderList();
+  });
+
+  renderList();
+  const head = el("div", { class: "admin-users-head" }, [
+    search,
+    el("span", { class: "muted nowrap", text: `총 ${state.adminUsers.length}명` }),
+  ]);
+  return [el("div", { class: "admin-users" }, [head, list])];
+}
+
+function adminUserRow(u, reload) {
+  const isMe = u.id === state.user.id;
+  const isAdmin = u.roles?.includes("admin");
+  const tags = el("div", { class: "ar-tags" }, [
+    el("span", { class: `tag ${isAdmin ? "write" : "read"}`, text: isAdmin ? "관리자" : "멤버" }),
+    u.published ? el("span", { class: "tag accent", text: "공개" }) : null,
+    u.suspended ? el("span", { class: "tag danger", text: "정지" }) : null,
+    isMe ? el("span", { class: "tag", text: "나" }) : null,
+  ]);
+
+  const detail = el("div", { class: "ar-detail" });
+  detail.hidden = true;
+  let loaded = false;
+  const manageBtn = el("button", { class: "ghost-sm", type: "button", text: "관리" });
+  manageBtn.setAttribute("aria-expanded", "false");
+  manageBtn.addEventListener("click", async () => {
+    if (!detail.hidden) {
+      detail.hidden = true;
+      manageBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    detail.hidden = false;
+    manageBtn.setAttribute("aria-expanded", "true");
+    if (loaded) return;
+    detail.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+    try {
+      const d = await loadAdminUserDetail(u.id);
+      detail.replaceChildren(buildUserDetailGrid(d), buildUserActions(u, isAdmin, isMe, reload));
+      loaded = true;
+    } catch (e) {
+      detail.replaceChildren(el("div", { class: "warn-box", text: `불러오기 실패: ${e.message}` }));
+    }
+  });
+
+  const lastSeen = u.lastSeenAt ? timeLabel(u.lastSeenAt) : "기록 없음";
+  const row = el("div", { class: "admin-row" }, [
+    avatarNode(u, 40, { alt: "" }),
+    el("div", { class: "ar-main" }, [
+      el("strong", { text: u.displayName }),
+      el("div", { class: "muted", text: `@${u.username} · 가입 ${timeLabel(u.createdAt)} · 최근 ${lastSeen}` }),
+    ]),
+    tags,
+    el("div", { class: "ar-actions" }, [manageBtn]),
+  ]);
+  return el("div", { class: "admin-user" + (u.suspended ? " is-suspended" : "") }, [row, detail]);
+}
+
+function buildUserDetailGrid(d) {
+  const item = (k, v) =>
+    el("div", { class: "ud-item" }, [
+      el("span", { class: "ud-val", text: String(v ?? 0) }),
+      el("span", { class: "ud-key muted", text: k }),
+    ]);
+  return el("div", { class: "ud-grid" }, [
+    item("시작한 대화", d.conversationsStarted),
+    item("받은 대화", d.conversationsReceived),
+    item("플러그인", d.pluginCount),
+    item("루틴", `${d.routinesActive}/${d.routinesTotal}`),
+    item("시크릿", d.secretCount),
+    item("활성 세션", d.activeSessions),
+    item("미응답 질문", d.openRequests),
+    item("Git 토큰", d.gitTokenSet ? "있음" : "없음"),
+    item("지식 저장소", d.knowledgeRepoSet ? "연결됨" : "없음"),
+  ]);
+}
+
+function buildUserActions(u, isAdmin, isMe, reload) {
+  const wrap = el("div", { class: "ud-actions" });
+  const run = async (btn, fn, errLabel) => {
+    btn.disabled = true;
+    try {
+      await fn();
+      await reload();
+    } catch (e) {
+      btn.disabled = false;
+      notify(`${errLabel}: ${e.message}`);
+    }
+  };
+  const uid = encodeURIComponent(u.id);
+
+  const roleBtn = el("button", { class: "ghost-sm", type: "button", text: isAdmin ? "관리자 해제" : "관리자 지정" });
+  if (isMe) roleBtn.disabled = true;
+  roleBtn.addEventListener("click", () => {
+    const verb = isAdmin ? "해제" : "부여";
+    if (!window.confirm(`${u.displayName}(@${u.username})님의 관리자 권한을 ${verb}할까요?`)) return;
+    run(roleBtn, () => api(`/api/admin/users/${uid}/roles`, { method: "POST", body: JSON.stringify({ role: "admin", grant: !isAdmin }) }), "권한 변경 실패");
+  });
+
+  const pubBtn = el("button", { class: "ghost-sm", type: "button", text: u.published ? "비공개로 전환" : "공개로 전환" });
+  pubBtn.addEventListener("click", () => {
+    run(pubBtn, () => api(`/api/admin/users/${uid}/published`, { method: "POST", body: JSON.stringify({ published: !u.published }) }), "공개 설정 실패");
+  });
+
+  const susBtn = el("button", { class: "ghost-sm" + (u.suspended ? "" : " danger"), type: "button", text: u.suspended ? "활성화" : "정지" });
+  if (isMe) susBtn.disabled = true;
+  susBtn.addEventListener("click", () => {
+    if (!u.suspended && !window.confirm(`${u.displayName} 계정을 정지할까요?\n로그인과 활성 세션이 즉시 차단됩니다.`)) return;
+    run(susBtn, () => api(`/api/admin/users/${uid}/suspend`, { method: "POST", body: JSON.stringify({ suspended: !u.suspended }) }), "상태 변경 실패");
+  });
+
+  const pwBtn = el("button", { class: "ghost-sm", type: "button", text: "비밀번호 재설정" });
+  pwBtn.addEventListener("click", () => {
+    const pw = window.prompt(`${u.displayName}님의 새 비밀번호 (8자 이상).\n설정하면 이 사용자의 기존 세션이 모두 로그아웃됩니다.`);
+    if (pw === null) return;
+    if (pw.length < 8) {
+      notify("비밀번호는 8자 이상이어야 합니다.", "warn");
+      return;
+    }
+    run(
+      pwBtn,
+      async () => {
+        await api(`/api/admin/users/${uid}/password`, { method: "POST", body: JSON.stringify({ password: pw }) });
+        notify("비밀번호를 재설정했습니다.", "ok");
+      },
+      "재설정 실패",
+    );
+  });
+
+  const outBtn = el("button", { class: "ghost-sm", type: "button", text: "강제 로그아웃" });
+  outBtn.addEventListener("click", () => {
+    run(
+      outBtn,
+      async () => {
+        const r = await api(`/api/admin/users/${uid}/logout`, { method: "POST" });
+        notify(`세션 ${r.revoked ?? 0}개를 종료했습니다.`, "ok");
+      },
+      "로그아웃 실패",
+    );
+  });
+
+  const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
+  if (isMe) delBtn.disabled = true;
+  delBtn.addEventListener("click", () => {
+    if (!window.confirm(`${u.displayName}(@${u.username}) 계정을 삭제할까요?\n이 사용자의 아바타·대화·설정이 모두 영구 삭제되며 되돌릴 수 없습니다.`)) return;
+    run(delBtn, () => api(`/api/admin/users/${uid}`, { method: "DELETE" }), "삭제 실패");
+  });
+
+  wrap.append(roleBtn, pubBtn, susBtn, pwBtn, outBtn, delBtn);
+  if (isMe) {
+    wrap.append(el("p", { class: "muted ud-self-note", text: "자기 자신에게는 권한 해제·정지·삭제를 적용할 수 없습니다." }));
+  }
+  return wrap;
+}
+
+/* ---- 가입·접근 (signup policy) ---- */
+async function adminAccessCards() {
+  await loadAdminSystem();
+  return [el("div", { class: "admin-list" }, [buildSignupModeCard(state.adminSystem)])];
+}
+
+function buildSignupModeCard(sys) {
+  const current = sys?.signupMode || "open";
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "회원가입 정책" }),
+        el("p", {
+          class: "muted",
+          text: "새 사용자가 스스로 가입하는 방식을 정합니다. 첫 관리자 계정은 정책과 무관하게 항상 허용됩니다.",
+        }),
+      ]),
+    ]),
+  );
+  const modes = [
+    { id: "open", label: "개방", desc: "누구나 즉시 가입하고 바로 사용할 수 있습니다." },
+    { id: "approval", label: "승인 후 사용", desc: "가입은 가능하지만 관리자가 활성화해야 로그인됩니다. 대기 중인 계정은 사용자 탭에 ‘정지’ 상태로 표시됩니다." },
+    { id: "closed", label: "차단", desc: "신규 가입을 받지 않습니다." },
+  ];
+  const opts = el("div", { class: "radio-cards" });
+  for (const m of modes) {
+    const input = el("input", { type: "radio", name: "signup-mode", id: `sm-${m.id}` });
+    input.value = m.id;
+    input.checked = m.id === current;
+    input.addEventListener("change", async () => {
+      if (!input.checked) return;
+      opts.querySelectorAll("input").forEach((i) => (i.disabled = true));
+      try {
+        await api("/api/admin/signup-mode", { method: "PUT", body: JSON.stringify({ mode: m.id }) });
+        state.signupMode = m.id;
+        notify("회원가입 정책을 저장했습니다.", "ok");
+        await loadAdminSystem();
+      } catch (e) {
+        notify(`저장 실패: ${e.message}`);
+        input.checked = false;
+      } finally {
+        opts.querySelectorAll("input").forEach((i) => (i.disabled = false));
+      }
+    });
+    opts.append(
+      el("label", { class: "radio-card", for: `sm-${m.id}` }, [
+        input,
+        el("div", { class: "radio-card-body" }, [
+          el("strong", { text: m.label }),
+          el("div", { class: "muted", text: m.desc }),
+        ]),
+      ]),
+    );
+  }
+  card.append(opts);
+  return card;
+}
+
+/* ---- 감사 로그 ---- */
+async function adminAuditCards() {
+  await loadAudit();
+  const rows = state.audit || [];
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "감사 로그" }),
+        el("p", { class: "muted", text: `최근 활동 ${rows.length}건 (로그인·권한 변경·관리 작업 등).` }),
+      ]),
+    ]),
+  );
+
+  const tableWrap = el("div", { class: "audit-table-wrap" });
+  const render = (filterAction) => {
+    const shown = filterAction ? rows.filter((r) => r.action === filterAction) : rows;
+    if (!shown.length) {
+      tableWrap.replaceChildren(el("div", { class: "muted pad", text: "기록이 없습니다." }));
+      return;
+    }
+    const body = shown.map((r) =>
+      el("div", { class: "audit-row" }, [
+        el("span", { class: "audit-time muted", text: timeLabel(r.createdAt) }),
+        el("span", { class: "audit-actor", text: r.actorName || "—" }),
+        el("span", { class: "tag mono", text: r.action }),
+        el("span", { class: `tag ${r.status === "success" ? "read" : "danger"}`, text: r.status }),
+        el("span", { class: "audit-detail muted", text: r.detail || "" }),
+      ]),
+    );
+    tableWrap.replaceChildren(el("div", { class: "audit-table" }, body));
+  };
+
+  const actions = [...new Set(rows.map((r) => r.action))].sort();
+  const filter = el("select", { class: "admin-search", "aria-label": "액션 필터" });
+  filter.append(el("option", { value: "", text: "전체 액션" }));
+  for (const a of actions) filter.append(el("option", { value: a, text: a }));
+  filter.addEventListener("change", () => render(filter.value));
+
+  card.append(el("div", { class: "admin-users-head" }, [filter]), tableWrap);
+  render("");
+  return [el("div", { class: "admin-list" }, [card])];
+}
+
+/* Admin "시스템" tab: runtime/model info + subscription + model override + SSH policy. */
+async function adminSystemCards() {
+  await loadAdminSystem();
   const sys = state.adminSystem;
-  if (!sys) return el("div", {});
+  if (!sys) return [el("div", { class: "muted pad", text: "시스템 정보를 불러올 수 없습니다." })];
   const runtimeLabel = sys.agentRuntime === "claude" ? "Claude Agent SDK" : "로컬 스텁";
   const authLabel = sys.authMode === "api_key" ? "API 키" : "구독 로그인";
   const rows = [
@@ -3993,14 +4370,79 @@ function renderAdminSystem() {
       el("span", { class: "muted", text: (sys.readOnlyTools || []).join(", ") || "없음" }),
     ),
   ];
-  return el("div", { class: "admin-list" }, [
-    el("div", { class: "settings-card sys-card" }, [
-      el("h3", { text: "시스템 정보" }),
-      el("div", { class: "sys-grid" }, rows),
+  return [
+    el("div", { class: "admin-list" }, [
+      el("div", { class: "settings-card sys-card" }, [
+        el("h3", { text: "시스템 정보" }),
+        el("div", { class: "sys-grid" }, rows),
+      ]),
+      buildSubscriptionCard(sys),
+      buildModelOverrideCard(sys),
+      buildHexSshPolicyCard(sys),
     ]),
-    buildSubscriptionCard(sys),
-    buildHexSshPolicyCard(sys),
-  ]);
+  ];
+}
+
+/* Admin model-override card: pick the agent model from the UI. An env
+   ANTHROPIC_MODEL wins at runtime — surfaced here so the choice isn't silent. */
+function buildModelOverrideCard(sys) {
+  const override = sys.modelOverride || "";
+  const envLocked = Boolean(sys.modelEnvLocked);
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "에이전트 모델" }),
+        el("p", {
+          class: "muted",
+          text: "아바타 대화에 사용할 모델을 지정합니다. 비워 두면 SDK 기본값을 사용합니다. 예: claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5-20251001.",
+        }),
+      ]),
+    ]),
+  );
+  if (envLocked) {
+    card.append(
+      el("p", {
+        class: "muted",
+        text: ".env의 ANTHROPIC_MODEL이 설정되어 있어 환경 변수가 우선합니다. 아래 설정은 환경 변수가 없을 때만 적용됩니다.",
+      }),
+    );
+  }
+  const form = el(
+    "form",
+    {
+      class: "settings-form",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const value = (new FormData(e.currentTarget).get("model") || "").toString().trim();
+        const btn = e.currentTarget.querySelector("button[type=submit]");
+        btn.disabled = true;
+        try {
+          if (value) {
+            await api("/api/admin/model", { method: "PUT", body: JSON.stringify({ model: value }) });
+            notify("모델을 저장했습니다.", "ok");
+          } else {
+            await api("/api/admin/model", { method: "DELETE" });
+            notify("모델 지정을 해제했습니다. SDK 기본값을 사용합니다.", "ok");
+          }
+          await loadAdminSystem();
+          renderView();
+        } catch (err) {
+          btn.disabled = false;
+          notify(`저장 실패: ${err.message}`);
+        }
+      },
+    },
+    [
+      el("label", { class: "field" }, [
+        el("span", { text: "모델 이름" }),
+        el("input", { name: "model", value: override, placeholder: "claude-opus-4-8 (비우면 기본값)", autocomplete: "off" }),
+      ]),
+      el("button", { class: "primary", type: "submit", text: "저장" }),
+    ],
+  );
+  card.append(form);
+  return card;
 }
 
 /* Admin 구독 로그인 card: paste a `claude setup-token` token so the agent runs
@@ -4298,6 +4740,19 @@ async function loadAdminSystem() {
   const r = await api("/api/admin/system");
   state.adminSystem = r.system || null;
 }
+async function loadAdminStats() {
+  const r = await api("/api/admin/stats");
+  state.adminStats = r.stats || null;
+}
+async function loadAudit() {
+  const r = await api("/api/audit");
+  state.audit = r.audit || [];
+}
+async function loadAdminUserDetail(id) {
+  const r = await api(`/api/admin/users/${encodeURIComponent(id)}`);
+  state.adminUserDetail[id] = r.user;
+  return r.user;
+}
 
 /* ============================================================ Lifecycle */
 async function logout() {
@@ -4327,6 +4782,7 @@ async function enterApp() {
   const isAdmin = state.user.roles?.includes("admin");
   state.view = view && !(view === "admin" && !isAdmin) ? view : "explore";
   if (view === "settings" && arg) state.settingsTab = arg;
+  if (view === "admin" && arg) state.adminTab = arg;
   const wantConversation = view === "chat" && arg ? arg : null;
   if (wantConversation) state.view = "explore"; // placeholder frame until messages load
   renderView();
@@ -4478,6 +4934,7 @@ async function boot() {
   try {
     bootstrap = await api("/api/bootstrap");
     state.githubHost = bootstrap.githubHost || state.githubHost;
+    state.signupMode = bootstrap.signupMode || state.signupMode;
   } catch {
     bootstrap = null;
   }

@@ -3309,6 +3309,194 @@ textarea::placeholder {
   padding: var(--s-2);
 }
 
+/* ---- Admin panel (tabbed) ---- */
+.tag.danger {
+  color: var(--danger);
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+.admin-panel {
+  margin-top: var(--s-3);
+}
+.nowrap {
+  white-space: nowrap;
+}
+
+/* Dashboard stat cards */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: var(--s-3);
+  margin-top: var(--s-3);
+}
+.stat-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  padding: var(--s-3);
+  display: grid;
+  gap: 2px;
+}
+.stat-value {
+  font-size: 1.6rem;
+  font-weight: 700;
+  line-height: 1.1;
+}
+.stat-label {
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+.stat-sub {
+  font-size: var(--t-xs);
+}
+
+/* User management list */
+.admin-users {
+  max-width: 820px;
+  margin: 0 auto;
+  display: grid;
+  gap: var(--s-3);
+}
+.admin-users-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+}
+.admin-search {
+  flex: 1;
+  min-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  padding: 8px 12px;
+  font-size: var(--t-sm);
+  color: inherit;
+}
+.admin-user {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  overflow: hidden;
+}
+.admin-user.is-suspended {
+  border-color: var(--danger-line);
+}
+.admin-user .admin-row {
+  border: none;
+  border-radius: 0;
+}
+.ar-detail {
+  border-top: 1px solid var(--line);
+  padding: var(--s-3);
+  display: grid;
+  gap: var(--s-3);
+  background: var(--bg);
+}
+.ud-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: var(--s-2);
+}
+.ud-item {
+  display: grid;
+  gap: 1px;
+  padding: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+}
+.ud-val {
+  font-size: var(--t-md);
+  font-weight: 700;
+}
+.ud-key {
+  font-size: var(--t-xs);
+}
+.ud-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+}
+.ud-self-note {
+  flex-basis: 100%;
+  font-size: var(--t-xs);
+  margin: 0;
+}
+
+/* Signup-mode radio cards */
+.radio-cards {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+}
+.radio-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s-3);
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.radio-card:hover {
+  background: var(--panel-strong);
+}
+.radio-card:has(input:checked) {
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
+.radio-card input {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+.radio-card-body strong {
+  font-size: var(--t-sm);
+}
+.radio-card-body .muted {
+  font-size: var(--t-xs);
+}
+
+/* Audit log table */
+.audit-table-wrap {
+  margin-top: var(--s-3);
+  overflow-x: auto;
+}
+.audit-table {
+  display: grid;
+  gap: 1px;
+  min-width: 560px;
+}
+.audit-row {
+  display: grid;
+  grid-template-columns: 110px 120px minmax(120px, max-content) 72px 1fr;
+  gap: var(--s-2);
+  align-items: center;
+  padding: var(--s-2) 0;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-xs);
+}
+.audit-row:last-child {
+  border-bottom: none;
+}
+.audit-time,
+.audit-actor {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.audit-detail {
+  overflow-wrap: anywhere;
+}
+.audit-row .tag {
+  justify-self: start;
+}
+
+.auth-note {
+  margin-top: calc(-1 * var(--s-2));
+  font-size: var(--t-sm);
+}
+
 /* GitHub credentials */
 .git-token-status {
   font-size: var(--t-sm);

@@ -166,6 +166,14 @@ export function createApp(services = createServices()) {
       apiError(res, 400, "비밀번호는 8자 이상이어야 합니다.");
       return;
     }
+    // The very first account (admin bootstrap) is always allowed; after that the
+    // admin-configured signup mode gates self-service registration.
+    const isFirstUser = !store.hasAnyUser();
+    const signupMode = store.getSignupMode();
+    if (!isFirstUser && signupMode === "closed") {
+      apiError(res, 403, "현재 회원가입이 비활성화되어 있습니다. 관리자에게 문의하세요.");
+      return;
+    }
     let user;
     try {
       user = store.createUser({ username, displayName, password });
@@ -175,6 +183,21 @@ export function createApp(services = createServices()) {
         return;
       }
       throw error;
+    }
+    // Approval mode: the account is created but parked (suspended) with no session
+    // until an admin activates it. The client shows a "pending approval" notice.
+    if (!isFirstUser && signupMode === "approval") {
+      store.setSuspended(user.id, true);
+      store.audit({
+        actorUserId: user.id,
+        actorName: user.username,
+        action: "signup_pending",
+        status: "success",
+        detail: "awaiting admin approval",
+      });
+      logger.info({ userId: user.id, username: user.username }, "signup pending approval");
+      res.status(202).json({ pending: true });
+      return;
     }
     const token = store.createSession(user.id);
     setSessionCookie(res, token);
@@ -193,6 +216,10 @@ export function createApp(services = createServices()) {
     const username = safeString(req.body?.username);
     const password = typeof req.body?.password === "string" ? req.body.password : "";
     const user = store.verifyLogin(username, password);
+    if (user === "suspended") {
+      apiError(res, 403, "비활성화된 계정입니다. 관리자 승인이나 문의가 필요합니다.");
+      return;
+    }
     if (!user) {
       apiError(res, 401, "사용자명 또는 비밀번호가 올바르지 않습니다.");
       return;
@@ -223,7 +250,13 @@ export function createApp(services = createServices()) {
   // First-run probe: when no account exists yet, the client shows the
   // admin-account setup screen instead of the normal login.
   app.get("/api/bootstrap", (_req, res) => {
-    res.json({ needsSetup: !store.hasAnyUser(), githubHost: config.githubHost });
+    res.json({
+      needsSetup: !store.hasAnyUser(),
+      githubHost: config.githubHost,
+      // Lets the auth screen hide/adjust the signup affordance and show the right
+      // copy (open vs. approval vs. closed) before anyone tries to register.
+      signupMode: store.getSignupMode(),
+    });
   });
 
   app.get("/api/me", (req, res) => {
@@ -1218,6 +1251,12 @@ export function createApp(services = createServices()) {
         readOnlyTools: config.readOnlyTools,
         hexSshTools: HEX_SSH_TOOL_INFOS,
         hexSshToolPolicy: store.getHexSshToolPolicy(),
+        // Self-service signup gating, admin-managed (see PUT /api/admin/signup-mode).
+        signupMode: store.getSignupMode(),
+        // Admin-selected model override + whether an env ANTHROPIC_MODEL shadows it
+        // (env wins, mirroring the API-key-vs-subscription precedence).
+        modelOverride: store.getModelOverride(),
+        modelEnvLocked: Boolean(config.anthropicModel),
       },
     });
   });
@@ -1279,8 +1318,21 @@ export function createApp(services = createServices()) {
     res.json({ ok: true });
   });
 
+  app.get("/api/admin/stats", requireAuth(store), requireAdmin, (_req, res) => {
+    res.json({ stats: store.adminStats() });
+  });
+
   app.get("/api/admin/users", requireAuth(store), requireAdmin, (_req, res) => {
     res.json({ users: store.listUsers() });
+  });
+
+  app.get("/api/admin/users/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const detail = store.adminUserDetail(req.params.id);
+    if (!detail) {
+      apiError(res, 404, "사용자를 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ user: detail });
   });
 
   app.delete(
@@ -1290,6 +1342,10 @@ export function createApp(services = createServices()) {
     (req: AuthenticatedRequest, res) => {
       if (req.params.id === req.user!.id) {
         apiError(res, 400, "자기 자신은 삭제할 수 없습니다.");
+        return;
+      }
+      if (store.isAdmin(req.params.id) && store.countAdmins() <= 1) {
+        apiError(res, 400, "마지막 관리자 계정은 삭제할 수 없습니다.");
         return;
       }
       const removed = store.deleteUser(req.params.id);
@@ -1320,6 +1376,18 @@ export function createApp(services = createServices()) {
         apiError(res, 400, "role은 'admin' 또는 'member' 여야 합니다.");
         return;
       }
+      // Don't let an admin strip the last admin (or themselves) out of the role —
+      // that would lock everyone out of the admin panel.
+      if (role === "admin" && !grant) {
+        if (req.params.id === req.user!.id) {
+          apiError(res, 400, "자기 자신의 관리자 권한은 해제할 수 없습니다.");
+          return;
+        }
+        if (store.isAdmin(req.params.id) && store.countAdmins() <= 1) {
+          apiError(res, 400, "마지막 관리자의 권한은 해제할 수 없습니다.");
+          return;
+        }
+      }
       const user = store.setRole(req.params.id, role, grant);
       if (!user) {
         apiError(res, 404, "사용자를 찾을 수 없습니다.");
@@ -1336,6 +1404,166 @@ export function createApp(services = createServices()) {
       res.json({ user });
     },
   );
+
+  // Admin password reset. Also force-logs-out the target so the old password's
+  // sessions can't linger. The actor's own sessions are untouched.
+  app.post(
+    "/api/admin/users/:id/password",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const password = typeof req.body?.password === "string" ? req.body.password : "";
+      if (password.length < MIN_PASSWORD_LENGTH) {
+        apiError(res, 400, "비밀번호는 8자 이상이어야 합니다.");
+        return;
+      }
+      if (!store.setPassword(req.params.id, password)) {
+        apiError(res, 404, "사용자를 찾을 수 없습니다.");
+        return;
+      }
+      const revoked = store.revokeAllSessions(req.params.id);
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: "reset_password",
+        status: "success",
+        detail: `reset password for ${req.params.id} (revoked ${revoked} sessions)`,
+      });
+      logger.warn({ actorId: req.user!.id, targetId: req.params.id }, "admin reset password");
+      res.json({ ok: true });
+    },
+  );
+
+  // Suspend / un-suspend (activate) an account. Suspending kills its sessions.
+  app.post(
+    "/api/admin/users/:id/suspend",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const suspended = req.body?.suspended === true;
+      if (suspended && req.params.id === req.user!.id) {
+        apiError(res, 400, "자기 자신은 정지할 수 없습니다.");
+        return;
+      }
+      if (suspended && store.isAdmin(req.params.id) && store.countAdmins() <= 1) {
+        apiError(res, 400, "마지막 관리자 계정은 정지할 수 없습니다.");
+        return;
+      }
+      const user = store.setSuspended(req.params.id, suspended);
+      if (!user) {
+        apiError(res, 404, "사용자를 찾을 수 없습니다.");
+        return;
+      }
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: suspended ? "suspend_user" : "activate_user",
+        status: "success",
+        detail: `${suspended ? "suspended" : "activated"} ${req.params.id}`,
+      });
+      logger.warn({ actorId: req.user!.id, targetId: req.params.id, suspended }, "suspension changed");
+      res.json({ user });
+    },
+  );
+
+  // Force-logout: revoke every active session for a user without changing anything else.
+  app.post(
+    "/api/admin/users/:id/logout",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      if (!store.getUserById(req.params.id)) {
+        apiError(res, 404, "사용자를 찾을 수 없습니다.");
+        return;
+      }
+      const revoked = store.revokeAllSessions(req.params.id);
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: "force_logout",
+        status: "success",
+        detail: `revoked ${revoked} sessions for ${req.params.id}`,
+      });
+      logger.warn({ actorId: req.user!.id, targetId: req.params.id, revoked }, "force logout");
+      res.json({ ok: true, revoked });
+    },
+  );
+
+  // Admin override of an avatar's published visibility (content moderation).
+  app.post(
+    "/api/admin/users/:id/published",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const published = req.body?.published === true;
+      const user = store.setPublishedByAdmin(req.params.id, published);
+      if (!user) {
+        apiError(res, 404, "사용자를 찾을 수 없습니다.");
+        return;
+      }
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: published ? "publish_avatar" : "unpublish_avatar",
+        status: "success",
+        detail: `${published ? "published" : "unpublished"} avatar ${req.params.id}`,
+      });
+      logger.warn({ actorId: req.user!.id, targetId: req.params.id, published }, "admin set published");
+      res.json({ user });
+    },
+  );
+
+  // Self-service signup gating: open | closed | approval.
+  app.put("/api/admin/signup-mode", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const mode = safeString(req.body?.mode);
+    if (mode !== "open" && mode !== "closed" && mode !== "approval") {
+      apiError(res, 400, "mode는 'open' · 'closed' · 'approval' 중 하나여야 합니다.");
+      return;
+    }
+    store.setSignupMode(mode);
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "set_signup_mode",
+      status: "success",
+      detail: `signup mode = ${mode}`,
+    });
+    logger.warn({ actorId: req.user!.id, mode }, "signup mode changed");
+    res.json({ signupMode: mode });
+  });
+
+  // Admin-selected agent model. An env ANTHROPIC_MODEL still wins at runtime
+  // (claudeAgent.ts) — the UI surfaces that so the admin isn't surprised.
+  app.put("/api/admin/model", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const model = safeString(req.body?.model);
+    if (!model) {
+      apiError(res, 400, "모델 이름을 입력해 주세요.");
+      return;
+    }
+    store.setModelOverride(model);
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "set_model_override",
+      status: "success",
+      detail: `model override = ${model}`,
+    });
+    logger.warn({ actorId: req.user!.id, model }, "model override set");
+    res.json({ modelOverride: model });
+  });
+
+  app.delete("/api/admin/model", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    store.clearModelOverride();
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "clear_model_override",
+      status: "success",
+      detail: "model override cleared",
+    });
+    logger.info({ actorId: req.user!.id }, "model override cleared");
+    res.json({ ok: true });
+  });
 
   // ---- Audit -----------------------------------------------------------
 

@@ -15,6 +15,8 @@ import {
 } from "./hexSshPolicy.js";
 import logger from "./logger.js";
 import type {
+  AdminStats,
+  AdminUserDetail,
   AdminUserSummary,
   AgentResponse,
   AppConfig,
@@ -25,6 +27,7 @@ import type {
   KnowledgeRequest,
   Plugin,
   RoutineJob,
+  SignupMode,
   StoredMessage,
   User,
 } from "./types.js";
@@ -98,6 +101,7 @@ interface UserRow {
   avatar_ext: string | null;
   published: number;
   auto_approve: number;
+  suspended: number;
   created_at: string;
   last_seen_at: string | null;
   git_token_enc: string | null;
@@ -138,6 +142,12 @@ interface RoutineJobRow {
  * agent subprocess when no ANTHROPIC_API_KEY is configured (see claudeAgent.ts).
  */
 export const CLAUDE_OAUTH_TOKEN_KEY = "claude_oauth_token";
+
+/** app_config key: how self-service signups are gated ("open" | "closed" | "approval"). */
+export const SIGNUP_MODE_KEY = "signup_mode";
+/** app_config key: admin-selected agent model, overriding nothing when an env
+ *  ANTHROPIC_MODEL is set (env wins, mirroring the API-key/subscription rule). */
+export const MODEL_OVERRIDE_KEY = "agent_model_override";
 
 export class Store {
   private readonly db: Database.Database;
@@ -279,6 +289,9 @@ export class Store {
     this.addColumnIfMissing("avatar_plugins", "selected", "TEXT");
     this.addColumnIfMissing("avatar_plugins", "last_synced_at", "TEXT");
     this.addColumnIfMissing("users", "auto_approve", "INTEGER DEFAULT 0");
+    // Account suspension: blocks login and kills active sessions. Also the
+    // "pending approval" state for signups created while signup mode = approval.
+    this.addColumnIfMissing("users", "suspended", "INTEGER DEFAULT 0");
     // Avatar self-name (별칭): how the avatar refers to ITSELF in chat, distinct
     // from display_name (how humans see it in lists). Injected into the system prompt.
     this.addColumnIfMissing("users", "alias", "TEXT DEFAULT ''");
@@ -417,13 +430,17 @@ export class Store {
     return (this.db.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number }).c > 0;
   }
 
-  verifyLogin(username: string, password: string): User | null {
+  verifyLogin(username: string, password: string): User | "suspended" | null {
     const row = this.userRowByUsername(username.trim());
     if (!row) {
       return null;
     }
     if (!verifyPassword(password, row.password_hash)) {
       return null;
+    }
+    // Verify the password first so a wrong password can't probe suspension state.
+    if (row.suspended === 1) {
+      return "suspended";
     }
     return this.toUser(row);
   }
@@ -492,6 +509,12 @@ export class Store {
     }
     const row = this.userRowById(session.user_id);
     if (!row) {
+      return null;
+    }
+    // A suspension can land mid-session; drop the session so it takes effect even
+    // if the explicit revoke (setSuspended) raced or missed this token.
+    if (row.suspended === 1) {
+      this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(row.id);
       return null;
     }
     this.db.prepare("UPDATE users SET last_seen_at = ? WHERE id = ?").run(current, row.id);
@@ -1475,19 +1498,156 @@ export class Store {
 
   // ---- Admin ------------------------------------------------------------
 
-  listUsers(): AdminUserSummary[] {
-    const rows = this.db
-      .prepare("SELECT * FROM users ORDER BY created_at ASC")
-      .all() as UserRow[];
-    return rows.map((row) => ({
+  private toAdminSummary(row: UserRow): AdminUserSummary {
+    return {
       id: row.id,
       username: row.username,
       displayName: row.display_name,
       roles: this.rolesFor(row.id),
       published: row.published === 1,
+      suspended: row.suspended === 1,
+      hasImage: Boolean(row.avatar_ext),
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at,
-    }));
+    };
+  }
+
+  listUsers(): AdminUserSummary[] {
+    const rows = this.db
+      .prepare("SELECT * FROM users ORDER BY created_at ASC")
+      .all() as UserRow[];
+    return rows.map((row) => this.toAdminSummary(row));
+  }
+
+  private count(sql: string, ...params: unknown[]): number {
+    return (this.db.prepare(sql).get(...params) as { c: number }).c;
+  }
+
+  /** True once more than one admin exists — used to block locking out the last one. */
+  countAdmins(): number {
+    return this.count(
+      `SELECT COUNT(*) AS c FROM user_roles ur
+       JOIN roles r ON r.id = ur.role_id WHERE r.name = 'admin'`,
+    );
+  }
+
+  /** Deployment-wide counts for the admin dashboard. */
+  adminStats(): AdminStats {
+    const current = now();
+    return {
+      users: this.count("SELECT COUNT(*) AS c FROM users"),
+      admins: this.countAdmins(),
+      suspended: this.count("SELECT COUNT(*) AS c FROM users WHERE suspended = 1"),
+      published: this.count("SELECT COUNT(*) AS c FROM users WHERE published = 1"),
+      conversations: this.count("SELECT COUNT(*) AS c FROM conversations"),
+      messages: this.count("SELECT COUNT(*) AS c FROM messages"),
+      openRequests: this.count("SELECT COUNT(*) AS c FROM knowledge_requests WHERE status = 'open'"),
+      activeRoutines: this.count("SELECT COUNT(*) AS c FROM routine_jobs WHERE enabled = 1"),
+      activeSessions: this.count("SELECT COUNT(*) AS c FROM sessions WHERE expires_at > ?", current),
+    };
+  }
+
+  /** Per-user breakdown for the expandable admin row. Null if the user is gone. */
+  adminUserDetail(id: string): AdminUserDetail | null {
+    const row = this.userRowById(id);
+    if (!row) {
+      return null;
+    }
+    return {
+      ...this.toAdminSummary(row),
+      conversationsStarted: this.count(
+        "SELECT COUNT(*) AS c FROM conversations WHERE owner_user_id = ?",
+        id,
+      ),
+      conversationsReceived: this.count(
+        "SELECT COUNT(*) AS c FROM conversations WHERE avatar_user_id = ?",
+        id,
+      ),
+      pluginCount: this.count("SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ?", id),
+      secretCount: this.count("SELECT COUNT(*) AS c FROM user_secrets WHERE user_id = ?", id),
+      routinesTotal: this.count("SELECT COUNT(*) AS c FROM routine_jobs WHERE avatar_user_id = ?", id),
+      routinesActive: this.count(
+        "SELECT COUNT(*) AS c FROM routine_jobs WHERE avatar_user_id = ? AND enabled = 1",
+        id,
+      ),
+      openRequests: this.countOpenKnowledgeRequests(id),
+      activeSessions: this.count(
+        "SELECT COUNT(*) AS c FROM sessions WHERE user_id = ? AND expires_at > ?",
+        id,
+        now(),
+      ),
+      gitTokenSet: Boolean(row.git_token_enc),
+      knowledgeRepoSet: Boolean(row.knowledge_repo),
+    };
+  }
+
+  /** Admin password reset. Returns false if the user doesn't exist. */
+  setPassword(userId: string, password: string): boolean {
+    if (!this.userRowById(userId)) {
+      return false;
+    }
+    this.db
+      .prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+      .run(hashPassword(password), userId);
+    return true;
+  }
+
+  /** Force-logout: drop every active session for a user. Returns count removed. */
+  revokeAllSessions(userId: string): number {
+    const info = this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+    return info.changes;
+  }
+
+  /** Suspend/un-suspend an account. Suspending also kills the user's sessions so
+   *  the lockout is immediate. Returns the updated summary, or null if not found. */
+  setSuspended(userId: string, suspended: boolean): AdminUserSummary | null {
+    if (!this.userRowById(userId)) {
+      return null;
+    }
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare("UPDATE users SET suspended = ? WHERE id = ?")
+        .run(suspended ? 1 : 0, userId);
+      if (suspended) {
+        this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
+      }
+    });
+    tx();
+    return this.toAdminSummary(this.userRowById(userId)!);
+  }
+
+  /** Admin override of an avatar's published visibility. Null if not found. */
+  setPublishedByAdmin(userId: string, published: boolean): AdminUserSummary | null {
+    if (!this.userRowById(userId)) {
+      return null;
+    }
+    this.db.prepare("UPDATE users SET published = ? WHERE id = ?").run(published ? 1 : 0, userId);
+    return this.toAdminSummary(this.userRowById(userId)!);
+  }
+
+  // ---- App-wide settings (signup gating, model override) ----------------
+
+  getSignupMode(): SignupMode {
+    const raw = this.getAppSecret(SIGNUP_MODE_KEY);
+    return raw === "closed" || raw === "approval" ? raw : "open";
+  }
+
+  setSignupMode(mode: SignupMode): void {
+    this.setAppSecret(SIGNUP_MODE_KEY, mode);
+  }
+
+  /** Admin-selected agent model (UI), or null if unset. Env ANTHROPIC_MODEL wins. */
+  getModelOverride(): string | null {
+    const raw = this.getAppSecret(MODEL_OVERRIDE_KEY);
+    return raw && raw.trim() ? raw.trim() : null;
+  }
+
+  setModelOverride(model: string): void {
+    this.setAppSecret(MODEL_OVERRIDE_KEY, model.trim());
+  }
+
+  clearModelOverride(): void {
+    this.deleteAppSecret(MODEL_OVERRIDE_KEY);
   }
 
   deleteUser(id: string): boolean {

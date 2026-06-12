@@ -813,6 +813,9 @@ export async function runClaudeAgent(
   const hexSshViewerClass = viewerClassForAgentRequest({ viewerIsOwner, elevated, headless });
   const hexSshPolicy = store.getHexSshToolPolicy();
   const hexSshAllowedTools = allowedHexSshToolsForViewer(hexSshPolicy, hexSshViewerClass);
+  // Effective model: an env-pinned ANTHROPIC_MODEL wins (mirrors the API-key vs.
+  // subscription rule), otherwise the admin-selected override, otherwise the SDK default.
+  const effectiveModel = config.anthropicModel ?? store.getModelOverride() ?? undefined;
   const agentStart = Date.now();
 
   agentLogger.info(
@@ -824,7 +827,7 @@ export async function runClaudeAgent(
       autoApprove,
       hexSshViewerClass,
       hexSshAllowedToolCount: hexSshAllowedTools.length,
-      model: config.anthropicModel ?? undefined,
+      model: effectiveModel,
     },
     "agent run started",
   );
@@ -985,9 +988,9 @@ export async function runClaudeAgent(
   if (request.resumeSessionId) {
     options.resume = request.resumeSessionId;
   }
-  // Pin the model when configured; otherwise the SDK picks its default.
-  if (config.anthropicModel) {
-    options.model = config.anthropicModel;
+  // Pin the model when configured (env or admin override); otherwise the SDK default.
+  if (effectiveModel) {
+    options.model = effectiveModel;
   }
   if (streaming) {
     options.includePartialMessages = true;

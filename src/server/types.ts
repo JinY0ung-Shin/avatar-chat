@@ -191,8 +191,44 @@ export interface AdminUserSummary {
   displayName: string;
   roles: string[];
   published: boolean;
+  /** True when the account is suspended (blocked from logging in / pending approval). */
+  suspended: boolean;
+  hasImage: boolean;
   createdAt: string;
   lastSeenAt: string | null;
+}
+
+/** How new self-service signups are handled. Always allows the very first
+ *  (admin-bootstrap) account regardless of mode. */
+export type SignupMode = "open" | "closed" | "approval";
+
+/** Deployment-wide counts for the admin dashboard. */
+export interface AdminStats {
+  users: number;
+  admins: number;
+  suspended: number;
+  published: number;
+  conversations: number;
+  messages: number;
+  openRequests: number;
+  activeRoutines: number;
+  activeSessions: number;
+}
+
+/** Per-user breakdown shown when an admin expands a row. */
+export interface AdminUserDetail extends AdminUserSummary {
+  /** Conversations this user started (as an owner talking to avatars). */
+  conversationsStarted: number;
+  /** Conversations other people had with THIS user's avatar. */
+  conversationsReceived: number;
+  pluginCount: number;
+  secretCount: number;
+  routinesTotal: number;
+  routinesActive: number;
+  openRequests: number;
+  activeSessions: number;
+  gitTokenSet: boolean;
+  knowledgeRepoSet: boolean;
 }
 
 export interface AgentResponse {
