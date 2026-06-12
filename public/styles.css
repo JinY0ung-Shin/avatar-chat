@@ -2637,6 +2637,100 @@ textarea::placeholder {
   gap: 6px;
   flex-wrap: wrap;
 }
+/* Explore directory search bar (above the avatar grid). */
+.explore-search-bar {
+  max-width: 1000px;
+  margin: 0 auto var(--s-4);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: 0 var(--s-3);
+}
+.explore-search-bar svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  flex: none;
+}
+.explore-search {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--t-sm);
+  padding: 10px 0;
+  outline: none;
+}
+.explore-search::placeholder {
+  color: var(--muted);
+}
+
+/* Capability hashtags in the chat capabilities panel. */
+.cap-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: var(--s-1) 0 var(--s-3);
+}
+
+/* Capability-hashtag chip editor in the profile settings form. */
+.hashtag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: 7px 9px;
+  cursor: text;
+}
+.hashtag-editor:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+/* The chip list flows inline with the input within the editor. */
+.tag-chips {
+  display: contents;
+}
+.hashtag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 4px;
+}
+.hashtag-editor .chip-x {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
+}
+.hashtag-editor .chip-x:hover {
+  opacity: 1;
+}
+/* High specificity to override the generic .settings-form .field input rules. */
+.settings-form .field .hashtag-editor .tag-input {
+  flex: 1;
+  width: auto;
+  min-width: 120px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--t-sm);
+  padding: 2px 0;
+  box-shadow: none;
+  outline: none;
+}
+.settings-form .field .hashtag-editor .tag-input::placeholder {
+  color: var(--muted);
+}
 
 /* Chat header avatar */
 .chat-head {

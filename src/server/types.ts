@@ -64,6 +64,8 @@ export interface User {
   persona: string;
   /** First-person self-introduction the avatar generates, shown atop the chat capabilities panel. */
   intro: string;
+  /** Capability hashtags (bare, no "#") the avatar declares for discovery/search. */
+  hashtags: string[];
   hasImage: boolean;
   published: boolean;
   roles: string[];
@@ -144,6 +146,8 @@ export interface AvatarSummary {
   /** The avatar's self-name (별칭); empty falls back to displayName. */
   alias: string;
   bio: string;
+  /** Capability hashtags (bare, no "#") for discovery cards + cross-avatar search. */
+  hashtags: string[];
   hasImage: boolean;
   pluginCount: number;
   published: boolean;

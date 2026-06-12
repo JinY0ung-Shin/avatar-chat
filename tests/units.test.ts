@@ -15,6 +15,12 @@ import {
   KNOWLEDGE_TOOL_NAMES,
   type KnowledgeToolsContext,
 } from "../src/server/agent/knowledgeTools.js";
+import { normalizeHashtags } from "../src/server/store.js";
+import {
+  buildAvatarDirectoryTools,
+  AVATAR_DIRECTORY_SERVER_NAME,
+  AVATAR_DIRECTORY_TOOL_NAMES,
+} from "../src/server/agent/avatarDirectoryTools.js";
 import {
   gitAuthArgs,
   marketplaceCloneUrl,
@@ -2712,5 +2718,121 @@ describe("loadDotEnv (.env auto-load)", () => {
     if (prevFile === undefined) delete process.env.NOAH_TEST_FROM_FILE;
     else process.env.NOAH_TEST_FROM_FILE = prevFile;
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("normalizeHashtags", () => {
+  it("strips leading #/markers, trims, hyphenates spaces, dedupes case-insensitively", () => {
+    expect(normalizeHashtags(["#코드리뷰", "코드리뷰", "  - 파이썬 ", "데이터 분석"])).toEqual([
+      "코드리뷰",
+      "파이썬",
+      "데이터-분석",
+    ]);
+  });
+  it("keeps C#/C++ intact (only the LEADING # is removed)", () => {
+    expect(normalizeHashtags(["C#", "C++"])).toEqual(["C#", "C++"]);
+  });
+  it("parses a raw string by splitting on whitespace/commas", () => {
+    expect(normalizeHashtags("#a #b, c")).toEqual(["a", "b", "c"]);
+  });
+  it("caps the count at 12 and each tag at 30 chars", () => {
+    const many = Array.from({ length: 30 }, (_, i) => `tag${i}`);
+    expect(normalizeHashtags(many)).toHaveLength(12);
+    expect(normalizeHashtags(["x".repeat(50)])[0]).toHaveLength(30);
+  });
+  it("ignores non-strings, empties, and bare punctuation", () => {
+    expect(normalizeHashtags([123, "", "  ", "#", "ok"])).toEqual(["ok"]);
+  });
+});
+
+describe("searchAvatars (cross-avatar discovery)", () => {
+  function makeStore() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "search"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    return store;
+  }
+
+  it("ranks a hashtag match above a body match and excludes the querying avatar", () => {
+    const store = makeStore();
+    const reviewer = store.createUser({ username: "reviewer", displayName: "리뷰어", password: "password123" });
+    const analyst = store.createUser({ username: "analyst", displayName: "분석가", password: "password123" });
+    const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
+    store.updateProfile(reviewer.id, { hashtags: ["코드리뷰", "파이썬"] });
+    store.updateProfile(analyst.id, { hashtags: ["데이터분석"], bio: "코드리뷰도 가끔 합니다" });
+
+    const hits = store.searchAvatars(me.id, "코드리뷰", { excludeId: me.id });
+    expect(hits.map((a) => a.username)).toEqual(["reviewer", "analyst"]);
+    expect(hits.some((a) => a.username === "me")).toBe(false);
+    expect(hits[0].hashtags).toContain("코드리뷰");
+  });
+
+  it("only surfaces published avatars (plus the viewer's own)", () => {
+    const store = makeStore();
+    const a = store.createUser({ username: "a", displayName: "A", password: "password123" });
+    const hidden = store.createUser({ username: "hidden", displayName: "H", password: "password123" });
+    store.updateProfile(hidden.id, { hashtags: ["쿠버네티스"], published: false });
+
+    expect(store.searchAvatars(a.id, "쿠버네티스")).toHaveLength(0);
+    // The owner still finds their OWN unpublished avatar.
+    expect(store.searchAvatars(hidden.id, "쿠버네티스").map((x) => x.username)).toContain("hidden");
+  });
+
+  it("lists candidates for an empty query, excluding self", () => {
+    const store = makeStore();
+    const a = store.createUser({ username: "a", displayName: "A", password: "password123" });
+    store.createUser({ username: "b", displayName: "B", password: "password123" });
+    expect(store.searchAvatars(a.id, "", { excludeId: a.id }).map((x) => x.username)).toEqual(["b"]);
+  });
+});
+
+describe("avatar directory tools (cross-avatar search)", () => {
+  function call(
+    tools: ReturnType<typeof buildAvatarDirectoryTools>,
+    name: string,
+    args: unknown,
+  ): Promise<ToolResult> {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} not found`);
+    return (t.handler as (a: unknown, extra: unknown) => Promise<ToolResult>)(args, {});
+  }
+
+  function setup() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "dir"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
+    const k8s = store.createUser({ username: "kuber", displayName: "쿠버박사", password: "password123" });
+    store.updateProfile(k8s.id, { hashtags: ["쿠버네티스", "데브옵스"], bio: "클러스터 운영" });
+    return { store, meId: me.id };
+  }
+
+  it("exposes the documented server + tool names", () => {
+    expect(AVATAR_DIRECTORY_SERVER_NAME).toBe("avatars");
+    expect(AVATAR_DIRECTORY_TOOL_NAMES).toContain("mcp__avatars__search_avatars");
+    const { store, meId } = setup();
+    const names = buildAvatarDirectoryTools(store, { avatarUserId: meId, viewerUserId: meId }).map((t) => t.name);
+    expect(names).toEqual(["search_avatars"]);
+  });
+
+  it("finds a teammate avatar by capability and excludes the current avatar", async () => {
+    const { store, meId } = setup();
+    const tools = buildAvatarDirectoryTools(store, { avatarUserId: meId, viewerUserId: meId });
+    const res = await call(tools, "search_avatars", { query: "쿠버네티스" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("@kuber");
+    expect(res.content[0].text).toContain("#쿠버네티스");
+    expect(res.content[0].text).not.toContain("@me");
+  });
+
+  it("reports when nothing matches", async () => {
+    const { store, meId } = setup();
+    const tools = buildAvatarDirectoryTools(store, { avatarUserId: meId, viewerUserId: meId });
+    const res = await call(tools, "search_avatars", { query: "존재하지않는역량xyz" });
+    expect(res.content[0].text).toContain("찾지 못했습니다");
   });
 });

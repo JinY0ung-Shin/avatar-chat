@@ -9,8 +9,10 @@ any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
 - **Accounts**: self-service signup with username + password (no invite codes). The
   first user to sign up becomes the **admin**. SQLite-backed users + roles (`admin`/`member`).
 - **Avatar profile**: display name, uploaded profile picture (with a generated
-  initials/gradient fallback), one-line bio, and an optional persona / system prompt.
-  New avatars are public by default and can be made private from **내 아바타**.
+  initials/gradient fallback), one-line bio, an optional persona / system prompt, and
+  **capability hashtags** (역량 해시태그) the avatar can **auto-generate** from its own
+  skills/persona (just like the self-introduction). New avatars are public by default and
+  can be made private from **내 아바타**.
 - **Personal knowledge repo**: each user connects one dedicated GitHub repo where their
   avatar accumulates work knowledge and skills. It is **auto-loaded into the avatar** (its
   skills become available in chat), and the avatar **manages it itself**: in an owner chat
@@ -35,7 +37,10 @@ any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
 - **Onboarding**: after first login a skippable guided step explains the main workflows,
   gives starter prompts, and optionally stores a GitHub token; knowledge repo / branch setup
   can happen later through chat or settings.
-- **Discovery**: published avatars appear in the Explore directory; anyone can start a chat.
+- **Discovery**: published avatars appear in the Explore directory, searchable by name or
+  **capability hashtag**; anyone can start a chat. An avatar can also look up other avatars'
+  capabilities mid-chat (the shared read-only `mcp__avatars__search_avatars` tool) and point
+  you to a better-suited teammate avatar when a request is outside its own expertise.
 - **Read-only chat**: chatting with an avatar loads that avatar's enabled plugins and runs
   the Claude Agent SDK with `permissionMode=dontAsk`, `allowedTools=Read,Glob,Grep`, and
   `Write`/`Edit` disallowed. Streaming, markdown rendering, conversations, and per-message
@@ -92,5 +97,6 @@ npm run build
 ```
 
 Smoke test: sign up (first user = admin) → open **내 아바타**, set a name/picture/bio,
-add a plugin, toggle **공개** → from another account, open **탐색**, pick the avatar,
-and chat. Confirm the response streams and renders markdown.
+click **아바타가 자동 생성** under 역량 해시태그, add a plugin, toggle **공개** → from
+another account, open **탐색**, search by a hashtag, pick the avatar, and chat. Confirm the
+response streams and renders markdown.

@@ -26,7 +26,7 @@ import {
 } from "./plugins.js";
 import { scrubGitError } from "./marketplace.js";
 import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
-import { Store, CLAUDE_OAUTH_TOKEN_KEY } from "./store.js";
+import { Store, CLAUDE_OAUTH_TOKEN_KEY, normalizeHashtags } from "./store.js";
 import type { AgentResponse, AppConfig, PluginRoot } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import {
@@ -279,12 +279,24 @@ export function createApp(services = createServices()) {
   // ---- Profile ---------------------------------------------------------
 
   app.patch("/api/me", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    const patch: { displayName?: string; alias?: string; bio?: string; persona?: string; intro?: string; published?: boolean } = {};
+    const patch: {
+      displayName?: string;
+      alias?: string;
+      bio?: string;
+      persona?: string;
+      intro?: string;
+      hashtags?: string[];
+      published?: boolean;
+    } = {};
     if (typeof req.body?.displayName === "string") patch.displayName = req.body.displayName;
     if (typeof req.body?.alias === "string") patch.alias = req.body.alias;
     if (typeof req.body?.bio === "string") patch.bio = req.body.bio;
     if (typeof req.body?.persona === "string") patch.persona = req.body.persona;
     if (typeof req.body?.intro === "string") patch.intro = req.body.intro;
+    // Accept an array of tag strings; updateProfile normalizes/caps it.
+    if (Array.isArray(req.body?.hashtags)) {
+      patch.hashtags = req.body.hashtags.filter((t: unknown): t is string => typeof t === "string");
+    }
     if (typeof req.body?.published === "boolean") patch.published = req.body.published;
     const user = store.updateProfile(req.user!.id, patch);
     res.json({ user });
@@ -422,6 +434,105 @@ export function createApp(services = createServices()) {
       const detail = error instanceof Error ? error.message : String(error);
       logger.warn({ userId: req.user!.id, detail }, "intro generation failed");
       apiError(res, 502, "소개글 생성 중 오류가 발생했습니다.");
+    } finally {
+      clearTimeout(deadline);
+    }
+  });
+
+  // Generate capability hashtags (역량 해시태그) for the owner's avatar, mirroring
+  // intro/generate: the avatar inspects its persona + skills and proposes a short
+  // set of searchable tags the owner reviews/edits before saving (NOT persisted
+  // here). Runs headless + read-only, like a routine.
+  app.post("/api/me/hashtags/generate", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const avatar = store.resolveChatAvatar(req.user!.id, req.user!.id);
+    if (!avatar) {
+      apiError(res, 404, "아바타를 찾을 수 없습니다.");
+      return;
+    }
+
+    // The local runtime can't introspect skills; return a deterministic
+    // placeholder so the feature still works offline/in tests.
+    if (config.agentRuntime === "local") {
+      res.json({ hashtags: ["업무지원", "질문답변"] });
+      return;
+    }
+
+    // Resolve plugin roots + skills exactly like intro/generate, so the tags
+    // reflect what the avatar can actually do.
+    const sourced: { path: string; source: string }[] = [];
+    for (const root of await loadDefaultPluginRoots(config)) {
+      sourced.push({ path: root.path, source: "default" });
+    }
+    const gitToken = store.getGitToken(avatar.id);
+    const enabledPlugins = store.listEnabledPlugins(avatar.id);
+    for (const plugin of enabledPlugins) {
+      try {
+        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitToken);
+        const label = plugin.label ?? plugin.repo;
+        for (const root of await resolvePluginRoots(dir, plugin.repo, undefined, plugin.selected)) {
+          sourced.push({ path: root, source: label });
+        }
+      } catch {
+        /* a plugin that won't resolve just contributes no skills */
+      }
+    }
+    sourced.push(...(await knowledgeRepoSkillSources(knowledgeRepoContextFor(store, avatar.id, config))));
+    const skills = await listSkillsInRoots(sourced);
+    const pluginRoots: PluginRoot[] = sourced.map((s) => ({ type: "local", path: s.path }));
+
+    const skillLines = skills.length
+      ? skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`).join("\n")
+      : "(등록된 스킬 없음)";
+    const pluginLines = enabledPlugins.length
+      ? enabledPlugins.map((p) => `- ${p.label || p.repo}`).join("\n")
+      : "(연결된 플러그인 없음)";
+    const personaLine = avatar.persona?.trim()
+      ? `\n\n참고용 페르소나/지침:\n${avatar.persona.trim()}`
+      : "";
+    const message =
+      "당신은 자기 자신을 검색·분류하기 위한 '역량 해시태그'를 만듭니다. 동료들이 탐색 화면에서 당신이 무엇을 할 수 있는지 키워드로 찾을 수 있게 돕는 태그입니다.\n\n" +
+      "다음 정보를 바탕으로, 당신이 실제로 도와줄 수 있는 핵심 역량·도메인·도구를 나타내는 해시태그 5~12개를 만드세요. " +
+      "갖춘 스킬·플러그인·페르소나를 근거로 하고, 없는 능력은 지어내지 마세요.\n\n" +
+      "출력 형식: 해시태그만 공백으로 구분해 한 줄로 출력하세요. 각 태그는 `#`로 시작하고 공백 없이 쓰세요(여러 단어는 붙이거나 하이픈으로 연결). " +
+      "한국어를 기본으로 하되 널리 쓰이는 기술 용어는 영어로 써도 됩니다. 설명 문장·목록·코드블록 없이 해시태그 줄만 출력하세요.\n" +
+      "예시: #코드리뷰 #파이썬 #데이터분석 #기술문서작성\n\n" +
+      `사용 가능한 스킬:\n${skillLines}\n\n연결된 플러그인:\n${pluginLines}${personaLine}`;
+
+    const workspaceDir = workspaceDirFor(config, avatar.id, "hashtags");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+
+    const abortController = new AbortController();
+    const deadline = setTimeout(() => abortController.abort(), 2 * 60 * 1000);
+    try {
+      const response = await runAgentStream(
+        {
+          message,
+          avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
+          cwd: workspaceDir,
+          viewerUserId: avatar.id,
+          viewerName: avatar.displayName,
+          viewerIsOwner: true,
+          headless: true,
+        },
+        pluginRoots,
+        config,
+        store,
+        {},
+        abortController,
+      );
+      // Prefer explicit "#tag" tokens; fall back to splitting the whole reply.
+      const raw = response.text || response.summary || "";
+      const tagged = [...raw.matchAll(/#([^\s#,，、]+)/g)].map((m) => m[1]);
+      const hashtags = normalizeHashtags(tagged.length ? tagged : raw);
+      if (hashtags.length === 0) {
+        apiError(res, 502, "해시태그를 생성하지 못했습니다. 다시 시도해 주세요.");
+        return;
+      }
+      res.json({ hashtags });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      logger.warn({ userId: req.user!.id, detail }, "hashtag generation failed");
+      apiError(res, 502, "해시태그 생성 중 오류가 발생했습니다.");
     } finally {
       clearTimeout(deadline);
     }

@@ -923,10 +923,127 @@ function buildSetupBanner() {
   return banner;
 }
 
+const MAX_HASHTAGS = 12;
+
+// Normalize a list of capability hashtags client-side (mirrors the server's
+// normalizeHashtags): strip leading "#"/markers, collapse spaces to hyphens,
+// dedupe, cap. Bare tags (no "#") are stored; the UI renders the "#".
+function normalizeTagList(list) {
+  const out = [];
+  const seen = new Set();
+  for (const raw of [].concat(list || [])) {
+    if (typeof raw !== "string") continue;
+    let t = raw.trim().replace(/^[#*•·\-\s]+/, "").replace(/\s+/g, "-").replace(/[.,!?]+$/, "").trim();
+    if (!t) continue;
+    if (t.length > 30) t = t.slice(0, 30);
+    const k = t.toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(t);
+    if (out.length >= MAX_HASHTAGS) break;
+  }
+  return out;
+}
+
+// A chip editor for capability hashtags: type + Enter/comma/space to add, click
+// × or Backspace-on-empty to remove. Returns the wrapper plus get/set helpers.
+function buildHashtagEditor(initial) {
+  let tags = normalizeTagList(initial || []);
+  const chips = el("div", { class: "tag-chips" });
+  const input = el("input", {
+    class: "tag-input",
+    type: "text",
+    placeholder: "태그 입력 후 Enter",
+    "aria-label": "역량 해시태그 추가",
+  });
+  function renderChips() {
+    chips.replaceChildren(
+      ...tags.map((t, i) =>
+        el("span", { class: "tag accent hashtag-chip" }, [
+          el("span", { text: `#${t}` }),
+          el("button", {
+            type: "button",
+            class: "chip-x",
+            "aria-label": `${t} 제거`,
+            text: "×",
+            onclick: () => {
+              tags.splice(i, 1);
+              renderChips();
+            },
+          }),
+        ]),
+      ),
+    );
+  }
+  function addFromInput() {
+    const parts = input.value.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean);
+    const truncated = parts.some((p) => p.replace(/^[#*•·\-\s]+/, "").length > 30);
+    tags = normalizeTagList([...tags, ...parts]);
+    input.value = "";
+    renderChips();
+    if (truncated) notify("해시태그는 최대 30자까지만 사용할 수 있어 일부가 잘렸습니다.", "info");
+  }
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      addFromInput();
+    } else if (e.key === " " && input.value.trim()) {
+      e.preventDefault();
+      addFromInput();
+    } else if (e.key === "Backspace" && !input.value && tags.length) {
+      tags.pop();
+      renderChips();
+    }
+  });
+  input.addEventListener("blur", () => {
+    if (input.value.trim()) addFromInput();
+  });
+  const wrap = el("div", { class: "hashtag-editor" }, [chips, input]);
+  wrap.addEventListener("click", (e) => {
+    if (e.target === wrap || e.target === chips) input.focus();
+  });
+  renderChips();
+  return {
+    wrap,
+    getTags: () => tags.slice(),
+    setTags: (next) => {
+      tags = normalizeTagList(next);
+      renderChips();
+    },
+  };
+}
+
+// Explore directory search. renderExploreGridImpl is (re)assigned each time the
+// Explore view renders; renderExploreGrid is a stable wrapper so the search box
+// can call it safely even before the impl exists (e.g. typing while loading).
+let renderExploreGridImpl = null;
+function renderExploreGrid() {
+  if (typeof renderExploreGridImpl === "function") renderExploreGridImpl();
+}
+function matchesAvatarQuery(av, tokens) {
+  const hay = [av.displayName, av.alias, av.username, av.bio, ...(av.hashtags || [])]
+    .filter(Boolean)
+    .join(" ")
+    .toLowerCase();
+  return tokens.every((t) => hay.includes(t));
+}
+
 async function renderExplore() {
   const header = viewHeader("탐색", "공개된 아바타와 대화를 시작하세요");
+  const searchInput = el("input", {
+    class: "explore-search",
+    type: "search",
+    placeholder: "이름·해시태그로 검색 (예: #코드리뷰)",
+    value: state.exploreQuery || "",
+    "aria-label": "아바타 검색",
+    oninput: (e) => {
+      state.exploreQuery = e.target.value;
+      renderExploreGrid();
+    },
+  });
+  const searchBar = el("div", { class: "explore-search-bar" }, [icon("compass"), searchInput]);
   const grid = el("div", { class: "avatar-grid" });
-  const body = el("div", { class: "view-body scroll-thin" }, [grid]);
+  const body = el("div", { class: "view-body scroll-thin" }, [searchBar, grid]);
   dom.main.append(header, body);
 
   grid.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
@@ -939,6 +1056,7 @@ async function renderExplore() {
   grid.replaceChildren();
   if (loadError) {
     // A failed fetch must not masquerade as "no avatars exist".
+    searchBar.remove();
     grid.append(
       el("div", { class: "warn-box" }, [
         `아바타 목록을 불러오지 못했습니다: ${loadError.message} `,
@@ -950,14 +1068,25 @@ async function renderExplore() {
   const banner = buildSetupBanner();
   if (banner) body.prepend(banner);
   if (!state.avatars.length) {
+    searchBar.remove();
     grid.append(el("div", { class: "empty-note", text: "공개된 아바타가 아직 없습니다.\n내 아바타 탭에서 아바타를 공개해 보세요." }));
     return;
   }
-  // Pin my own avatar first — the most common chat target needs a stable spot.
-  const avatars = [...state.avatars].sort((a, b) => Number(b.id === state.user.id) - Number(a.id === state.user.id));
-  for (const av of avatars) {
-    grid.append(buildAvatarCard(av));
-  }
+  // Filter by the search query + (re)build cards. Reused on every keystroke.
+  renderExploreGridImpl = () => {
+    const raw = (state.exploreQuery || "").trim();
+    const tokens = raw ? raw.toLowerCase().split(/\s+/).map((t) => t.replace(/^#+/, "")).filter(Boolean) : [];
+    // Pin my own avatar first — the most common chat target needs a stable spot.
+    const sorted = [...state.avatars].sort((a, b) => Number(b.id === state.user.id) - Number(a.id === state.user.id));
+    const list = tokens.length ? sorted.filter((av) => matchesAvatarQuery(av, tokens)) : sorted;
+    grid.replaceChildren();
+    if (!list.length) {
+      grid.append(el("div", { class: "empty-note", text: `"${raw}"에 맞는 아바타가 없습니다.` }));
+      return;
+    }
+    for (const av of list) grid.append(buildAvatarCard(av));
+  };
+  renderExploreGrid();
 }
 
 function buildAvatarCard(av) {
@@ -973,7 +1102,10 @@ function buildAvatarCard(av) {
       el("div", { class: "ac-handle", text: `@${av.username}` }),
       av.alias ? el("div", { class: "ac-alias", text: `"${av.alias}"` }) : null,
       av.bio ? el("p", { class: "ac-bio", text: av.bio }) : null,
-      el("div", { class: "ac-tags" }, [el("span", { class: "tag", text: `플러그인 ${av.pluginCount}개` })]),
+      el("div", { class: "ac-tags" }, [
+        ...(av.hashtags || []).slice(0, 6).map((t) => el("span", { class: "tag accent", text: `#${t}` })),
+        el("span", { class: "tag", text: `플러그인 ${av.pluginCount}개` }),
+      ]),
     ]),
   ]);
   return card;
@@ -1359,12 +1491,19 @@ function renderCapabilitiesPanel(av) {
   const introBlock = introText
     ? el("div", { class: "cap-intro" }, [el("div", { class: "cap-intro-text md", html: renderMarkdown(introText) })])
     : null;
+  // Capability hashtags as chips under the intro — a viewer sees at a glance
+  // what the avatar is good for.
+  const capTags = av.hashtags || [];
+  const tagsBlock = capTags.length
+    ? el("div", { class: "cap-tags" }, capTags.map((t) => el("span", { class: "tag accent", text: `#${t}` })))
+    : null;
   const body = el("div", { class: "cap-body scroll-thin" }, [
     el("div", { class: "cap-head" }, [
       el("h3", { text: "이 아바타의 역량" }),
       el("p", { class: "cap-sub", text: `${av.displayName}이(가) 사용할 수 있는 도구` }),
     ]),
     introBlock,
+    tagsBlock,
     el("div", { class: "cap-section" }, [
       el("div", { class: "cap-section-title", text: "스킬" }),
       skillsBody,
@@ -2952,7 +3091,7 @@ async function renderSettings() {
       try {
         const res = await api("/api/me", {
           method: "PATCH",
-          body: JSON.stringify({ displayName: fd.get("displayName"), alias: fd.get("alias"), bio: fd.get("bio"), persona: fd.get("persona"), intro: fd.get("intro") }),
+          body: JSON.stringify({ displayName: fd.get("displayName"), alias: fd.get("alias"), bio: fd.get("bio"), persona: fd.get("persona"), intro: fd.get("intro"), hashtags: hashtagEditor.getTags() }),
         });
         state.user = res.user;
         btn.textContent = "저장됨 ✓";
@@ -2995,6 +3134,31 @@ async function renderSettings() {
     },
   });
 
+  // Capability hashtags with an "auto-generate" button: the avatar proposes a set
+  // of searchable tags from its skills/persona, dropped into the chip editor for
+  // the owner to tweak before saving (not persisted until 프로필 저장).
+  const hashtagEditor = buildHashtagEditor(u.hashtags || []);
+  const tagGenBtn = el("button", {
+    class: "ghost-sm",
+    type: "button",
+    text: "아바타가 자동 생성",
+    onclick: async () => {
+      tagGenBtn.disabled = true;
+      const label = tagGenBtn.textContent;
+      tagGenBtn.textContent = "생성 중…";
+      try {
+        const { hashtags } = await api("/api/me/hashtags/generate", { method: "POST" });
+        if (hashtags && hashtags.length) hashtagEditor.setTags(hashtags);
+        else notify("생성된 해시태그가 없습니다. 스킬이나 플러그인을 먼저 연결해 보세요.", "info");
+      } catch (err) {
+        notify(`해시태그 생성 실패: ${err.message}`);
+      } finally {
+        tagGenBtn.textContent = label;
+        tagGenBtn.disabled = false;
+      }
+    },
+  });
+
   profileForm.append(
     el("label", { class: "field" }, [el("span", { text: "표시 이름" }), el("input", { name: "displayName", value: u.displayName || "", required: "" })]),
     el("label", { class: "field" }, [
@@ -3008,6 +3172,13 @@ async function renderSettings() {
         introGenBtn,
       ]),
       introField,
+    ]),
+    el("div", { class: "field" }, [
+      el("div", { class: "field-row" }, [
+        el("span", { text: "역량 해시태그 (탐색에서 검색됨)" }),
+        tagGenBtn,
+      ]),
+      hashtagEditor.wrap,
     ]),
     el("label", { class: "field" }, [
       el("span", { text: "페르소나 (행동 지침)" }),

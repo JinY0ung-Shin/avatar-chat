@@ -881,4 +881,33 @@ describe("noah-almighty platform", () => {
     expect(memberActors.has("xena")).toBe(false); // member sees only own
     expect([...memberActors].every((a) => a === "yuki")).toBe(true);
   });
+
+  it("round-trips capability hashtags through PATCH /api/me and into discovery", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "tagowner");
+    const patched = await agent
+      .patch("/api/me")
+      .send({ hashtags: ["#코드리뷰", "코드리뷰", " 파이썬 ", "데이터 분석"] })
+      .expect(200);
+    // Normalized server-side: deduped, "#"/whitespace handled, spaces → hyphens.
+    expect(patched.body.user.hashtags).toEqual(["코드리뷰", "파이썬", "데이터-분석"]);
+
+    const me = await agent.get("/api/me").expect(200);
+    expect(me.body.user.hashtags).toEqual(["코드리뷰", "파이썬", "데이터-분석"]);
+
+    const list = await agent.get("/api/avatars").expect(200);
+    const mine = list.body.avatars.find((a: { username: string }) => a.username === "tagowner");
+    expect(mine.hashtags).toEqual(["코드리뷰", "파이썬", "데이터-분석"]);
+  });
+
+  it("auto-generates hashtags (local runtime placeholder) without persisting", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "taggen");
+    const res = await agent.post("/api/me/hashtags/generate").expect(200);
+    expect(Array.isArray(res.body.hashtags)).toBe(true);
+    expect(res.body.hashtags.length).toBeGreaterThan(0);
+    // Generation does NOT persist — the profile stays empty until the user saves.
+    const me = await agent.get("/api/me").expect(200);
+    expect(me.body.user.hashtags).toEqual([]);
+  });
 });

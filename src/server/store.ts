@@ -58,6 +58,53 @@ function parseNameList(raw: string | null): string[] | null {
   return null;
 }
 
+/** Max capability hashtags stored per avatar, and max length of each tag. */
+export const MAX_HASHTAGS = 12;
+const MAX_HASHTAG_LEN = 30;
+/** Default number of avatars a capability search returns when no limit is given. */
+const DEFAULT_SEARCH_LIMIT = 12;
+
+/**
+ * Normalize capability hashtags ("역량 해시태그") to a clean, deduped, capped list
+ * of BARE tags (no leading "#" — the UI renders that). Shared by the PATCH save
+ * path and the auto-generate endpoint so a hand-edited chip list and a parsed
+ * agent response produce identical storage. Accepts either an array (chip
+ * editor) or a raw string (agent text, split on whitespace/commas).
+ */
+export function normalizeHashtags(input: unknown): string[] {
+  const raw: string[] = Array.isArray(input)
+    ? input.filter((s): s is string => typeof s === "string")
+    : typeof input === "string"
+      ? input.split(/[\s,，、]+/)
+      : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    // Strip leading list/bullet markers and "#", collapse inner whitespace to a
+    // hyphen (a hashtag carries no spaces), and trim trailing punctuation. Only
+    // the LEADING "#" is removed, so "C#"/"C++" survive intact.
+    let tag = item
+      .trim()
+      .replace(/^[#*\-•·\s]+/u, "")
+      .replace(/\s+/g, "-")
+      .replace(/[.,!?。·…、，]+$/u, "")
+      .trim();
+    if (!tag) continue;
+    if (tag.length > MAX_HASHTAG_LEN) tag = tag.slice(0, MAX_HASHTAG_LEN);
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+    if (out.length >= MAX_HASHTAGS) break;
+  }
+  return out;
+}
+
+/** Parse the stored hashtags JSON array, defaulting to an empty list. */
+function parseHashtags(raw: string | null): string[] {
+  return parseNameList(raw) ?? [];
+}
+
 // Routine times are interpreted in Seoul time (KST). Korea observes no DST, so
 // KST is a fixed UTC+9 offset — the arithmetic below is independent of the
 // server's own timezone.
@@ -111,6 +158,7 @@ interface UserRow {
   knowledge_branch: string | null;
   knowledge_selected: string | null;
   ssh_public_key: string | null;
+  hashtags: string | null;
 }
 
 interface KnowledgeRequestRow {
@@ -316,6 +364,10 @@ export class Store {
     // SDK session id of the conversation's last turn, used to resume context on
     // the next turn (see claudeAgent resume). Null until the first turn completes.
     this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");
+    // Capability hashtags (역량 해시태그): a JSON array of short searchable tags the
+    // avatar generates from its skills/persona, shown in discovery (탐색) and queried
+    // by the cross-avatar `mcp__avatars__search_avatars` tool. Null/[] = none.
+    this.addColumnIfMissing("users", "hashtags", "TEXT");
   }
 
   /** Add a column to a table if it isn't already present (idempotent). */
@@ -349,6 +401,7 @@ export class Store {
       bio: row.bio ?? "",
       persona: row.persona ?? "",
       intro: row.intro ?? "",
+      hashtags: parseHashtags(row.hashtags),
       hasImage: Boolean(row.avatar_ext),
       published: row.published === 1,
       roles,
@@ -538,7 +591,15 @@ export class Store {
 
   updateProfile(
     userId: string,
-    patch: { displayName?: string; alias?: string; bio?: string; persona?: string; intro?: string; published?: boolean },
+    patch: {
+      displayName?: string;
+      alias?: string;
+      bio?: string;
+      persona?: string;
+      intro?: string;
+      hashtags?: string[];
+      published?: boolean;
+    },
   ): User {
     const row = this.userRowById(userId);
     if (!row) {
@@ -550,13 +611,17 @@ export class Store {
     const bio = patch.bio !== undefined ? patch.bio : row.bio;
     const persona = patch.persona !== undefined ? patch.persona : row.persona;
     const intro = patch.intro !== undefined ? patch.intro : row.intro;
+    // Normalize on write so storage is always a clean JSON array (the column is
+    // read back through parseHashtags, which tolerates null/legacy values).
+    const hashtags =
+      patch.hashtags !== undefined ? JSON.stringify(normalizeHashtags(patch.hashtags)) : row.hashtags;
     const published =
       patch.published !== undefined ? (patch.published ? 1 : 0) : row.published;
     this.db
       .prepare(
-        "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, published = ? WHERE id = ?",
+        "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, hashtags = ?, published = ? WHERE id = ?",
       )
-      .run(displayName, alias, bio, persona, intro, published, userId);
+      .run(displayName, alias, bio, persona, intro, hashtags, published, userId);
     return this.toUser(this.userRowById(userId)!);
   }
 
@@ -1135,11 +1200,60 @@ export class Store {
       displayName: row.display_name,
       alias: row.alias ?? "",
       bio: row.bio ?? "",
+      hashtags: parseHashtags(row.hashtags),
       hasImage: Boolean(row.avatar_ext),
       pluginCount,
       published: row.published === 1,
       updatedAt: this.avatarUpdatedAt(row.id),
     };
+  }
+
+  /**
+   * Find published avatars (plus the viewer's own) whose capabilities match a
+   * free-text query, ranked. Matches across hashtags, bio, intro, name, alias,
+   * and username; a hashtag hit outranks a body hit. An empty query lists all
+   * (capped). Backs the cross-avatar `mcp__avatars__search_avatars` tool, so an
+   * avatar can point the user at a teammate avatar that specializes in something
+   * it can't do. `excludeId` drops the current avatar from its own results.
+   */
+  searchAvatars(
+    viewerId: string,
+    query: string,
+    opts: { excludeId?: string; limit?: number } = {},
+  ): AvatarSummary[] {
+    const limit = Math.min(Math.max(opts.limit ?? DEFAULT_SEARCH_LIMIT, 1), 50);
+    const rows = this.db
+      .prepare("SELECT * FROM users WHERE published = 1 OR id = ?")
+      .all(viewerId) as UserRow[];
+    const tokens = query
+      .toLowerCase()
+      .split(/[\s,，、]+/)
+      .map((t) => t.replace(/^#+/, "").trim())
+      .filter(Boolean);
+    const scored = rows
+      .filter((row) => row.id !== opts.excludeId)
+      .map((row) => {
+        const tags = parseHashtags(row.hashtags);
+        const tagHay = tags.join(" ").toLowerCase();
+        const bodyHay = [row.display_name, row.alias, row.username, row.bio, row.intro]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        let score = 0;
+        // Per token, one tier only: exact hashtag (5) > partial hashtag (3) > body (1).
+        for (const token of tokens) {
+          if (tags.some((tag) => tag.toLowerCase() === token)) score += 5;
+          else if (tagHay.includes(token)) score += 3;
+          else if (bodyHay.includes(token)) score += 1;
+        }
+        return { row, score };
+      });
+    const matches = tokens.length ? scored.filter((s) => s.score > 0) : scored;
+    matches.sort(
+      (a, b) =>
+        b.score - a.score || a.row.display_name.localeCompare(b.row.display_name),
+    );
+    return matches.slice(0, limit).map((s) => this.toAvatarSummary(s.row));
   }
 
   getAvatar(viewerId: string, id: string): AvatarDetail | null {

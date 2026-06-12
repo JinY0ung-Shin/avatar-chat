@@ -73,6 +73,19 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - **Per-user settings pattern:** add a column to the `users` table + an additive
   `addColumnIfMissing` migration, then mirror the `published` toggle end-to-end
   (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→`buildToggle` in app.js).
+- **Capability hashtags (역량 해시태그) + cross-avatar discovery.** `users.hashtags` is a JSON
+  array of bare tags (`normalizeHashtags`/`parseHashtags` in store.ts) wired through the
+  per-user settings pattern, surfaced on BOTH `User` and `AvatarSummary` (so discovery cards
+  carry them), edited via a chip editor (`buildHashtagEditor` in app.js). **Auto-generated like
+  the intro:** `POST /api/me/hashtags/generate` mirrors `/api/me/intro/generate` (headless,
+  read-only, NOT persisted — parses `#tags` out of the agent reply, then `normalizeHashtags`).
+  Searchable in 탐색 (client-side filter in `renderExplore`/`matchesAvatarQuery`, via a search box;
+  cards/panel show tags as display chips) AND by the **all-viewer, read-only** `mcp__avatars__search_avatars`
+  MCP (`agent/avatarDirectoryTools.ts`, backed by `store.searchAvatars`, registered like the
+  other in-process servers in `claudeAgent.ts`). NOT owner-only (only published avatars — same
+  scope the viewer browses) and excludes the current avatar from its own results. STANDING
+  `buildPrompt` guidance (every turn, all viewer classes) tells the avatar to use it and redirect
+  the user to a better-suited teammate avatar — per the META-COGNITION direction.
 - **Knowledge repo = one per user, agent-managed.** The personal repo (`knowledge_repo`
   column, `get/setKnowledgeRepo`) is a FULL clone at `dataDir/knowledge/<userId>`
   (`knowledgeRepo.ts`). It's (a) auto-loaded as a plugin root in chat/skills/intro via

@@ -665,6 +665,13 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       `공용 Confluence 도구는 등록되어 있지만 아직 ${missing.join("와 ")} 설정이 필요합니다. Confluence 요청을 받으면 먼저 \`mcp__confluence__describe_config\`로 상태를 확인하세요.`,
     );
   }
+  // Standing (every-turn) guidance: the avatar can recommend a better-suited
+  // teammate avatar. Phrased for ANY viewer class — in a headless routine there's
+  // no user to redirect, but the search tool stays useful for the work itself.
+  lines.push(
+    "다른 아바타 찾기: 사용자가 요청한 작업이 당신의 역량(스킬·지식·역량 해시태그) 범위를 벗어난다고 판단되면, 먼저 직접 도울 수 있는지 시도한 뒤 `mcp__avatars__search_avatars`로 그 주제에 맞는 다른 공개 아바타를 검색하세요. " +
+      "더 적합한 아바타가 있으면 사용자에게 그 아바타(@사용자명)와 대화해 보라고 안내하세요.",
+  );
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
   // A headless run has NO ONE on the other side: never claim the owner is
@@ -824,6 +831,8 @@ export async function runClaudeAgent(
   const { buildConfluenceServer, CONFLUENCE_SERVER_NAME, CONFLUENCE_TOOL_NAMES } = await import(
     "./confluenceTools.js"
   );
+  const { buildAvatarDirectoryServer, AVATAR_DIRECTORY_SERVER_NAME, AVATAR_DIRECTORY_TOOL_NAMES } =
+    await import("./avatarDirectoryTools.js");
 
   const streaming = Boolean(events);
   const viewerIsOwner = Boolean(request.viewerIsOwner);
@@ -907,6 +916,14 @@ export async function runClaudeAgent(
     viewerIsOwner: viewerIsOwner && !headless,
     config,
   });
+  // Cross-avatar discovery (read-only): lets the avatar look up OTHER published
+  // avatars by capability so it can point the user at a teammate avatar for
+  // things outside its own expertise. Visibility is from the VIEWER's POV (the
+  // person chatting), and the current avatar is excluded from its own results.
+  const avatarDirectoryServer = buildAvatarDirectoryServer(store, {
+    avatarUserId: request.avatar.id,
+    viewerUserId: request.viewerUserId ?? request.avatar.id,
+  });
   const sshIdentityServer = buildSshIdentityServer(store, {
     avatarUserId: request.avatar.id,
     owner: {
@@ -979,6 +996,7 @@ export async function runClaudeAgent(
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
       ...SYSTEM_TOOL_NAMES,
       ...CONFLUENCE_TOOL_NAMES,
+      ...AVATAR_DIRECTORY_TOOL_NAMES,
       ...SSH_IDENTITY_TOOL_NAMES,
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
@@ -995,6 +1013,7 @@ export async function runClaudeAgent(
       [REPO_SERVER_NAME]: repoServer,
       [SYSTEM_SERVER_NAME]: systemServer,
       [CONFLUENCE_SERVER_NAME]: confluenceServer,
+      [AVATAR_DIRECTORY_SERVER_NAME]: avatarDirectoryServer,
       [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
