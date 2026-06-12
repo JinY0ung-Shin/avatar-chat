@@ -254,6 +254,14 @@ export function createApp(services = createServices()) {
     res.json({ trusted: store.listTrustedUsers(req.user!.id) });
   });
 
+  // Typeahead for the trusted-user picker: match by username OR display name.
+  // Excludes self; flags users already trusted. (Exact path before /:id below;
+  // GET /:id isn't a route, but keep this above the DELETE for readability.)
+  app.get("/api/me/trusted/search", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const q = safeString(req.query?.q);
+    res.json({ users: q ? store.searchUsers(q, req.user!.id) : [] });
+  });
+
   app.post("/api/me/trusted", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const username = safeString(req.body?.username);
     if (!username) {

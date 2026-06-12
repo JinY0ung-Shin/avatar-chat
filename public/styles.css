@@ -1478,12 +1478,13 @@ body.col-resizing {
 }
 
 /* ---- Permission modal (standalone, centered overlay) ----
-   z-index sits ABOVE the onboarding overlay (70): a permission prompt raised
-   while onboarding is open must stay answerable. */
+   z-index sits ABOVE the onboarding overlay (70) AND toasts (90): a blocking
+   prompt must stay answerable and must not have its action buttons covered by a
+   transient toast (which is pointer-events:auto and would steal the click). */
 .prompt-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 80;
+  z-index: 95;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1542,6 +1543,12 @@ body.col-resizing {
 .prompt-icon svg {
   width: 14px;
   height: 14px;
+}
+/* ✕ close button: shoves to the far end of the header, opting out of the head's
+   uppercase label styling. Triggers the card's own cancel/skip. */
+.prompt-close {
+  margin-left: auto;
+  margin-right: -4px;
 }
 .prompt-error {
   margin-top: var(--s-1);
@@ -3104,6 +3111,63 @@ textarea::placeholder {
 }
 .plugin-add.rows-3 .primary {
   grid-row: 1 / span 3;
+}
+
+/* Trusted-user search-and-add (settings → 권한·연결). */
+.trusted-search {
+  display: grid;
+  gap: var(--s-2);
+}
+.trusted-search-input {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: 10px 12px;
+  min-width: 0;
+}
+.trusted-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.trusted-results {
+  display: grid;
+  gap: var(--s-1);
+  max-height: 280px;
+  overflow-y: auto;
+}
+.trusted-results[hidden] {
+  display: none;
+}
+.trusted-result {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s-2) var(--s-3);
+  background: var(--bg-elevated);
+  cursor: pointer;
+}
+.trusted-result:hover:not(:disabled) {
+  border-color: var(--accent-ring);
+}
+.trusted-result:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.trusted-result .pr-main {
+  flex: 1;
+}
+.trusted-result-cta {
+  flex: none;
+  font-size: var(--t-xs);
+  font-weight: 700;
+  color: var(--accent);
+}
+.trusted-result:disabled .trusted-result-cta {
+  color: var(--muted);
 }
 
 /* Knowledge / info-request panel */

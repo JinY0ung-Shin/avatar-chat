@@ -1188,6 +1188,53 @@ export class Store {
     return res.changes > 0;
   }
 
+  /**
+   * Search users by username OR display name (case-insensitive substring) to
+   * populate the trusted-user picker. `searcherId` is excluded (you can't trust
+   * yourself) and each result is flagged `trusted` if already trusted by the
+   * searcher so the UI can show them as added. Prefix matches sort first, then
+   * by display name. Returns [] for a blank query. Capped at `limit`.
+   */
+  searchUsers(
+    query: string,
+    searcherId: string,
+    limit = 8,
+  ): { id: string; username: string; displayName: string; trusted: boolean }[] {
+    const q = query.trim();
+    if (!q) {
+      return [];
+    }
+    // Escape LIKE wildcards so a literal %, _ or \ in the query stays literal.
+    const esc = q.replace(/[\\%_]/g, (c) => `\\${c}`);
+    const like = `%${esc}%`;
+    const prefix = `${esc}%`;
+    const rows = this.db
+      .prepare(
+        `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
+                EXISTS(SELECT 1 FROM avatar_trusted_users t
+                       WHERE t.avatar_user_id = ? AND t.viewer_user_id = u.id) AS trusted
+         FROM users u
+         WHERE u.id != ?
+           AND (u.username LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\')
+         ORDER BY
+           CASE WHEN u.username LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\' THEN 0 ELSE 1 END,
+           u.display_name COLLATE NOCASE ASC
+         LIMIT ?`,
+      )
+      .all(searcherId, searcherId, like, like, prefix, prefix, limit) as {
+      id: string;
+      username: string;
+      display_name: string;
+      trusted: number;
+    }[];
+    return rows.map((r) => ({
+      id: r.id,
+      username: r.username,
+      displayName: r.display_name,
+      trusted: r.trusted === 1,
+    }));
+  }
+
   // ---- Conversations & messages ----------------------------------------
 
   listConversations(ownerId: string, avatarId?: string): ConversationSummary[] {

@@ -271,6 +271,28 @@ describe("noah-almighty platform", () => {
     await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(404);
   });
 
+  it("searches users for the trusted-user picker (by name/@id, self excluded, trusted flagged)", async () => {
+    const app = testApp();
+    const owner = request.agent(app);
+    await signup(owner, "olga").expect(201);
+    const friend = request.agent(app);
+    await signup(friend, "fred").expect(201);
+
+    // Match by substring; the searcher (olga) is never in their own results.
+    const hit = await owner.get("/api/me/trusted/search?q=fre").expect(200);
+    expect(hit.body.users.map((u: { username: string }) => u.username)).toEqual(["fred"]);
+    expect(hit.body.users[0].trusted).toBe(false);
+    const self = await owner.get("/api/me/trusted/search?q=olga").expect(200);
+    expect(self.body.users).toEqual([]);
+    // Blank query → no results, no error.
+    expect((await owner.get("/api/me/trusted/search?q=").expect(200)).body.users).toEqual([]);
+
+    // After trusting, the same user comes back flagged.
+    await owner.post("/api/me/trusted").send({ username: "fred" }).expect(200);
+    const flagged = await owner.get("/api/me/trusted/search?q=fred").expect(200);
+    expect(flagged.body.users[0].trusted).toBe(true);
+  });
+
   it("streams a local-runtime chat and persists conversation + messages", async () => {
     const app = testApp();
     const owner = request.agent(app);

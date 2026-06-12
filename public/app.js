@@ -514,6 +514,13 @@ function mountShell() {
       trapTab(event, dom.promptModal);
     }
   });
+  // Clicking the scrim (outside the card) dismisses via the card's own
+  // cancel/skip — an obvious escape so a prompt never feels like a hard trap.
+  dom.promptModal.addEventListener("click", (event) => {
+    if (event.target === dom.promptModal) {
+      dom.promptModal.querySelector("[data-prompt-cancel]")?.click();
+    }
+  });
 
   app.replaceChildren(el("section", { class: "workspace" }, [rail, dom.main]), dom.railBackdrop, dom.promptModal, dom.srStatus);
   dom.rail = rail;
@@ -549,7 +556,7 @@ function showPromptModal(card, runKey = "") {
   }
   card.setAttribute("role", "dialog");
   card.setAttribute("aria-modal", "true");
-  const titleEl = card.querySelector(".prompt-title") || card.querySelector(".prompt-head span:last-child");
+  const titleEl = card.querySelector(".prompt-title") || card.querySelector(".prompt-head-label");
   if (titleEl) {
     if (!titleEl.id) titleEl.id = `prompt-title-${newId()}`;
     card.setAttribute("aria-labelledby", titleEl.id);
@@ -561,7 +568,9 @@ function showPromptModal(card, runKey = "") {
   }
   dom.promptModal.replaceChildren(card);
   dom.promptModal.hidden = false;
-  (card.querySelector("button:not(:disabled), input, select, textarea") || card).focus?.();
+  // Skip the header ✕ for initial focus (it stays Tab-reachable) so focus lands
+  // on the first real control — an option to pick, not the dismiss button.
+  (card.querySelector("button:not(:disabled):not(.prompt-close), input, select, textarea") || card).focus?.();
 }
 
 // Hide the current card and surface the next queued one (or close + restore focus).
@@ -2190,6 +2199,28 @@ async function submitPromptResponse(live, data, value, card) {
   }
 }
 
+// Header for a prompt card: icon + label + a ✕ that triggers the card's own
+// cancel/skip action (same effect as Esc or a scrim click), so the owner always
+// has a visible way to dismiss a prompt without answering.
+function promptHead(label, iconName) {
+  const closeBtn = el("button", {
+    class: "msg-act prompt-close",
+    type: "button",
+    "aria-label": "닫기",
+    title: "닫기",
+    onclick: (event) => {
+      event.preventDefault();
+      event.currentTarget.closest(".prompt-card")?.querySelector("[data-prompt-cancel]")?.click();
+    },
+  });
+  closeBtn.append(icon("close"));
+  return el("div", { class: "prompt-head" }, [
+    el("span", { class: "prompt-icon" }, [icon(iconName)]),
+    el("span", { class: "prompt-head-label", text: label }),
+    closeBtn,
+  ]);
+}
+
 function renderPermissionCard(live, data) {
   if (!data?.requestId || !dom.promptModal) return;
   const toolName = data.toolName || "도구";
@@ -2197,7 +2228,7 @@ function renderPermissionCard(live, data) {
   const argSummary = summarizeInputForCard(data.input);
 
   const card = el("div", { class: "prompt-card permission", dataset: { request: data.requestId, tooluse: data.toolUseId || "" } }, [
-    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon" }, [icon("lock")]), el("span", { text: "권한 요청" })]),
+    promptHead("권한 요청", "lock"),
     el("div", { class: "prompt-title", text: title }),
     el("div", { class: "prompt-tool" }, [el("code", { text: toolName }), argSummary ? el("span", { class: "prompt-arg", text: argSummary }) : null]),
     data.description ? el("div", { class: "prompt-desc", text: data.description }) : null,
@@ -2217,7 +2248,7 @@ function renderQuestionCard(live, data) {
   const payload = data.payload || {};
   const questions = Array.isArray(payload.questions) ? payload.questions : null;
   const card = el("div", { class: "prompt-card question", dataset: { request: data.requestId } }, [
-    el("div", { class: "prompt-head" }, [el("span", { class: "prompt-icon" }, [icon("chat")]), el("span", { text: "질문" })]),
+    promptHead("질문", "chat"),
   ]);
 
   if (!questions) {
@@ -2916,30 +2947,95 @@ function buildTrustedUsersCard() {
   card.append(list);
   renderTrustedRows(list);
 
-  const form = el("form", {
-    class: "plugin-add",
-    onsubmit: async (e) => {
-      e.preventDefault();
-      const formEl = e.currentTarget;
-      const fd = new FormData(formEl);
-      const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
-      try {
-        const { trusted } = await api("/api/me/trusted", { method: "POST", body: JSON.stringify({ username: fd.get("username") }) });
-        state.trusted = trusted;
-        renderTrustedRows(list);
-        formEl.reset();
-      } catch (err) {
-        notify(`추가 실패: ${err.message}`);
-      } finally {
-        btn.disabled = false;
+  // Search-and-add: find users by display name OR @id and click to trust them.
+  // Replaces the old "type the exact username" form, which required knowing the
+  // username verbatim.
+  const search = el("input", {
+    type: "search",
+    class: "trusted-search-input",
+    placeholder: "이름 또는 아이디로 검색",
+    "aria-label": "신뢰할 사용자 검색 (이름 또는 아이디)",
+    autocomplete: "off",
+  });
+  const results = el("div", { class: "trusted-results", hidden: "" });
+  const searchWrap = el("div", { class: "trusted-search" }, [search, results]);
+  card.append(searchWrap);
+
+  const addTrusted = async (user) => {
+    try {
+      const { trusted } = await api("/api/me/trusted", { method: "POST", body: JSON.stringify({ username: user.username }) });
+      state.trusted = trusted;
+      renderTrustedRows(list);
+      search.value = "";
+      results.replaceChildren();
+      results.hidden = true;
+    } catch (err) {
+      notify(`추가 실패: ${err.message}`);
+    }
+  };
+
+  const renderResults = (users) => {
+    results.replaceChildren();
+    if (!users.length) {
+      results.append(el("div", { class: "empty-note", text: "일치하는 사용자가 없습니다." }));
+    } else {
+      for (const u of users) {
+        results.append(
+          el("button", {
+            type: "button",
+            class: "trusted-result",
+            disabled: u.trusted ? "" : null,
+            title: u.trusted ? "이미 신뢰함" : `${u.displayName} 신뢰에 추가`,
+            onclick: () => addTrusted(u),
+          }, [
+            el("div", { class: "pr-main" }, [
+              el("strong", { text: u.displayName }),
+              el("div", { class: "pr-sub", text: `@${u.username}` }),
+            ]),
+            el("span", { class: "trusted-result-cta", text: u.trusted ? "추가됨" : "추가" }),
+          ]),
+        );
       }
-    },
-  }, [
-    el("input", { name: "username", placeholder: "사용자명 (@ 제외)", "aria-label": "신뢰할 사용자명", required: "" }),
-    el("button", { class: "primary", type: "submit", text: "추가" }),
-  ]);
-  card.append(form);
+    }
+    results.hidden = false;
+  };
+
+  // A monotonically increasing sequence guards against out-of-order responses:
+  // a slow earlier query must not overwrite a faster later one.
+  let searchSeq = 0;
+  let searchTimer = null;
+  const runSearch = async (q) => {
+    const seq = ++searchSeq;
+    try {
+      const { users } = await api(`/api/me/trusted/search?q=${encodeURIComponent(q)}`);
+      if (seq !== searchSeq) return;
+      renderResults(users);
+    } catch (err) {
+      if (seq !== searchSeq) return;
+      results.replaceChildren(el("div", { class: "empty-note", text: `검색 실패: ${err.message}` }));
+      results.hidden = false;
+    }
+  };
+
+  search.addEventListener("input", () => {
+    const q = search.value.trim();
+    clearTimeout(searchTimer);
+    if (!q) {
+      searchSeq++; // cancel any in-flight query
+      results.replaceChildren();
+      results.hidden = true;
+      return;
+    }
+    searchTimer = setTimeout(() => runSearch(q), 200);
+  });
+  // Hide the dropdown when focus leaves the search area (delayed so a click on a
+  // result registers first — clicking a result moves focus inside searchWrap).
+  search.addEventListener("blur", () => {
+    setTimeout(() => { if (!searchWrap.contains(document.activeElement)) results.hidden = true; }, 150);
+  });
+  search.addEventListener("focus", () => {
+    if (results.children.length) results.hidden = false;
+  });
   return card;
 }
 

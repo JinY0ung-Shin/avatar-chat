@@ -1835,6 +1835,24 @@ describe("trusted users", () => {
     expect(store.listTrustedUsers(ownerId)).toHaveLength(0);
   });
 
+  it("searchUsers matches name or @id (case-insensitive), excludes self, flags trusted", () => {
+    const { store, ownerId } = makeStore("tu-search");
+    // Substring match on display name AND username, case-insensitive.
+    expect(store.searchUsers("frie", ownerId).map((u) => u.username)).toEqual(["friend"]);
+    expect(store.searchUsers("STRANGER", ownerId).map((u) => u.username)).toEqual(["stranger"]);
+    expect(store.searchUsers("r", ownerId).map((u) => u.username).sort()).toEqual(["friend", "stranger"]);
+    // The searcher is never a candidate for their own trust list.
+    expect(store.searchUsers("owner", ownerId)).toEqual([]);
+    // Blank query short-circuits.
+    expect(store.searchUsers("   ", ownerId)).toEqual([]);
+    // `trusted` reflects current state.
+    expect(store.searchUsers("friend", ownerId)[0].trusted).toBe(false);
+    store.addTrustedUser(ownerId, "friend");
+    expect(store.searchUsers("friend", ownerId)[0].trusted).toBe(true);
+    // A literal % isn't treated as a wildcard (escaped).
+    expect(store.searchUsers("%", ownerId)).toEqual([]);
+  });
+
   it("trust is directional: trusting A doesn't let A's avatar be reached by the owner", () => {
     const { store, ownerId, friendId } = makeStore("tu3");
     store.addTrustedUser(ownerId, "friend");
