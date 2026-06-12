@@ -13,6 +13,20 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   `refreshKnowledgeStatus`, app.js) — the UI end of the knowledge-backfill loop.
 
 ## Gotchas
+- **`.env` loading is in-code, not dotenv/`--env-file`.** `src/server/loadEnv.ts`
+  calls Node's built-in `process.loadEnvFile()` and is the **first import in
+  `index.ts`** (so values land before `auth.ts` SECURE_COOKIES / `logger.ts`
+  LOG_LEVEL are read at module-eval). Real env (Docker `-e`, compose, shell export)
+  WINS — the file only fills unset keys. Auto-load is **skipped when
+  `NODE_ENV==='test'`** so suites use explicit `createServices` overrides, not a
+  stray local `.env`. `tsx`/`node` do NOT auto-load `.env` and `--env-file` isn't
+  forwarded by `tsx` / allowed in `NODE_OPTIONS`, which is why it's done in code.
+- **On-prem GitHub CA = one var `GITHUB_CA_CERT`** (PEM path, `applyCustomGithubCa`
+  in `tlsCa.ts`, called from `index.ts`). Covers BOTH TLS stacks: `fetch`/undici
+  (create_repo's REST call) via runtime `tls.setDefaultCACertificates` (appends to
+  system roots), and `git` clone/push via `GIT_SSL_CAINFO` (every git execFile
+  inherits `process.env`). Replaces needing separate `NODE_EXTRA_CA_CERTS` +
+  `GIT_SSL_CAINFO`. `GITHUB_HOST` already routes the API to `/api/v3` for GHES.
 - **Project name diverges by layer:** display name "Noah Almighty", code slug
   `noah-almighty` (package name, `noah-almighty.db`, `@noah-almighty.local` git
   identity fallbacks, logs, test temp-dir prefix), and the git remote `origin` is

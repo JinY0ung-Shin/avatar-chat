@@ -2,8 +2,12 @@ import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:c
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import tls from "node:tls";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createServices } from "../src/server/app.js";
+import { loadConfig } from "../src/server/config.js";
+import { applyCustomGithubCa } from "../src/server/tlsCa.js";
+import { loadDotEnv } from "../src/server/loadEnv.js";
 import {
   buildKnowledgeTools,
   KNOWLEDGE_SERVER_NAME,
@@ -2202,5 +2206,109 @@ describe("knowledge repo file ops", () => {
     expect(manifest2.plugins).toHaveLength(2);
     // Re-scaffolding an existing skill fails.
     await expect(scaffoldSkill(root, "Deploy Runbook", "")).rejects.toThrow("SKILL_EXISTS");
+  });
+});
+
+describe("applyCustomGithubCa (one GITHUB_CA_CERT for fetch + git)", () => {
+  // A throwaway self-signed CA (10y) — only used to prove the cert is registered.
+  const TEST_CA_PEM = `-----BEGIN CERTIFICATE-----
+MIIDDzCCAfegAwIBAgIUcqTjIIRo8c5W5rPd4IUUQ2k80ggwDQYJKoZIhvcNAQEL
+BQAwFzEVMBMGA1UEAwwMTm9haCBUZXN0IENBMB4XDTI2MDYxMjA1MDUwOFoXDTM2
+MDYwOTA1MDUwOFowFzEVMBMGA1UEAwwMTm9haCBUZXN0IENBMIIBIjANBgkqhkiG
+9w0BAQEFAAOCAQ8AMIIBCgKCAQEAxiMQNWVb4iqF9mKflqgp5p+n+3LSyHeT5Har
+apRgGPVhtYpz68GjMOMn7/VKGw2D5YWVup7jKAcYCvwjT+Ukj6/3wm7nxPWgvyoz
+0XJpUG0LTYCnHRCkXzKcjlS6H51A+MkM2aJET5TB2ShKot/zbRBw8vVjipNnOozK
+3z+io0KO9IaejvKxDg7wMxbsbt/cV8+hXlv05LcbEFr/tvW8fvDvqeFzwT4GWNOT
+DdoFNCu8ZEa0XIrPCpTPr3+al5Miozbfdwq7bdpgDu4jsbcWUJrCTlbqlzExaAlP
+SGApBv1IWwnR1Ke8trvaCfoHoRyLtglxHaNroErsJE4wnf5NCQIDAQABo1MwUTAd
+BgNVHQ4EFgQUBGaTeJgpnW2L/2rPIJLI8HQL6okwHwYDVR0jBBgwFoAUBGaTeJgp
+nW2L/2rPIJLI8HQL6okwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0BAQsFAAOC
+AQEAKnENhipsapusqB11Hw7gbE1goF+7Gwyi0yvosEjdFk/mcxSqYlDNRksS3z6X
+bFYa6nNa650egp8b0zvkGTNypIFFu7Ch+DI16ksHoMqepCoaj5BvRm0gwo/b/6of
+hqc7FkZtQS0HkGmtGcxLhJQ458MVol9Jnwt8E2Exx/D3PHGtajIb5AZXkA9c9sBw
+ERc1OguGascDEMRZK6bhvTbsAV61YoK+xQ7lBWhPOPxrEACx21kqpKrPYQXCtCHs
+1QQXhW5lzK/QgKN3xYfu9Yd2XcK/KJpr2PUhlbn5YXj5x4RNRcMNhrs8sg7u2CTo
+6UIgE2hSD+xkPUz7lTgYUjA4oQ==
+-----END CERTIFICATE-----
+`;
+  const silent = { info: () => {}, warn: () => {} };
+
+  it("is a no-op when GITHUB_CA_CERT is unset", () => {
+    const prevGit = process.env.GIT_SSL_CAINFO;
+    const applied = applyCustomGithubCa({ ...loadConfig(), githubCaCert: undefined }, silent);
+    expect(applied).toBe(false);
+    expect(process.env.GIT_SSL_CAINFO).toBe(prevGit);
+  });
+
+  it("warns and returns false when the cert file is unreadable", () => {
+    const warn = vi.fn();
+    const applied = applyCustomGithubCa(
+      { ...loadConfig(), githubCaCert: "/no/such/internal-ca.pem" },
+      { info: () => {}, warn },
+    );
+    expect(applied).toBe(false);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("trusts the CA for fetch (tls default set) and git (GIT_SSL_CAINFO)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-ca-"));
+    const caPath = path.join(dir, "ca.pem");
+    fs.writeFileSync(caPath, TEST_CA_PEM);
+    const prevGit = process.env.GIT_SSL_CAINFO;
+    delete process.env.GIT_SSL_CAINFO;
+    const before = tls.getCACertificates("default").length;
+
+    const applied = applyCustomGithubCa({ ...loadConfig(), githubCaCert: caPath }, silent);
+
+    expect(applied).toBe(true);
+    // git: every `git` execFile child inherits this.
+    expect(process.env.GIT_SSL_CAINFO).toBe(path.resolve(caPath));
+    // fetch (undici): appended to the default set, not replacing system roots.
+    expect(tls.getCACertificates("default").length).toBe(before + 1);
+
+    if (prevGit === undefined) delete process.env.GIT_SSL_CAINFO;
+    else process.env.GIT_SSL_CAINFO = prevGit;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("keeps an operator-set GIT_SSL_CAINFO instead of clobbering it", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-ca-"));
+    const caPath = path.join(dir, "ca.pem");
+    fs.writeFileSync(caPath, TEST_CA_PEM);
+    const prevGit = process.env.GIT_SSL_CAINFO;
+    process.env.GIT_SSL_CAINFO = "/operator/explicit/bundle.pem";
+
+    applyCustomGithubCa({ ...loadConfig(), githubCaCert: caPath }, silent);
+    expect(process.env.GIT_SSL_CAINFO).toBe("/operator/explicit/bundle.pem");
+
+    if (prevGit === undefined) delete process.env.GIT_SSL_CAINFO;
+    else process.env.GIT_SSL_CAINFO = prevGit;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("loadDotEnv (.env auto-load)", () => {
+  it("is a no-op for a missing file", () => {
+    expect(loadDotEnv("/no/such/dir/.env")).toBe(false);
+  });
+
+  it("fills unset keys from the file but never overwrites the real environment", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-env-"));
+    const file = path.join(dir, ".env");
+    fs.writeFileSync(file, "NOAH_TEST_FROM_FILE=fromfile\nNOAH_TEST_REAL=fromfile\n");
+    const prevReal = process.env.NOAH_TEST_REAL;
+    const prevFile = process.env.NOAH_TEST_FROM_FILE;
+    process.env.NOAH_TEST_REAL = "realenv";
+    delete process.env.NOAH_TEST_FROM_FILE;
+
+    expect(loadDotEnv(file)).toBe(true);
+    expect(process.env.NOAH_TEST_FROM_FILE).toBe("fromfile"); // unset key gets filled
+    expect(process.env.NOAH_TEST_REAL).toBe("realenv"); // real env wins over the file
+
+    if (prevReal === undefined) delete process.env.NOAH_TEST_REAL;
+    else process.env.NOAH_TEST_REAL = prevReal;
+    if (prevFile === undefined) delete process.env.NOAH_TEST_FROM_FILE;
+    else process.env.NOAH_TEST_FROM_FILE = prevFile;
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });
