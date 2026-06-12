@@ -1281,6 +1281,25 @@ describe("buildPrompt", () => {
     // The pending-request count is surfaced in the greeting.
     expect(p).toContain("2");
   });
+
+  it("injects restored conversation history before the current user message", () => {
+    const p = buildPrompt(
+      req({
+        message: "방금 말한 내용을 이어서 처리해줘",
+        conversationHistory: [
+          { role: "user", content: "첫 요청: 배포 체크리스트를 만들어줘" },
+          { role: "assistant", content: "초안 작성 중이었습니다." },
+        ],
+      }),
+      0,
+    );
+    expect(p).toContain("이전 대화 기록");
+    expect(p).toContain('"role": "user"');
+    expect(p).toContain("첫 요청: 배포 체크리스트를 만들어줘");
+    expect(p.indexOf("첫 요청: 배포 체크리스트를 만들어줘")).toBeLessThan(
+      p.indexOf("사용자 메시지:\n방금 말한 내용을 이어서 처리해줘"),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -27,7 +27,7 @@ import {
 import { scrubGitError } from "./marketplace.js";
 import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
 import { Store, CLAUDE_OAUTH_TOKEN_KEY, normalizeHashtags } from "./store.js";
-import type { AgentResponse, AppConfig, PluginRoot } from "./types.js";
+import type { AgentConversationMessage, AgentResponse, AppConfig, PluginRoot, StoredMessage } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import {
   attachRunClient,
@@ -115,6 +115,27 @@ function prepareSse(res: Response): void {
   res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
   res.flushHeaders();
+}
+
+function isEmptyStoppedAssistant(message: StoredMessage): boolean {
+  return (
+    message.role === "assistant" &&
+    message.content.trim() === "(중지됨)" &&
+    message.response?.summary === "중지됨" &&
+    !message.response.text?.trim()
+  );
+}
+
+export function conversationHistoryForPrompt(messages: StoredMessage[]): AgentConversationMessage[] {
+  return messages.flatMap((message) => {
+    if (message.role !== "user" && message.role !== "assistant") {
+      return [];
+    }
+    if (!message.content.trim() || isEmptyStoppedAssistant(message)) {
+      return [];
+    }
+    return [{ role: message.role, content: message.content }];
+  });
 }
 
 export function createApp(services = createServices()) {
@@ -1097,12 +1118,6 @@ export function createApp(services = createServices()) {
     if (regenerate) {
       store.dropLastAssistant(req.user!.id, conversationId);
     }
-    if (!greeting) {
-      store.touchConversation(req.user!.id, conversationId, avatar.id, message);
-      if (!regenerate) {
-        store.addMessage(conversationId, { role: "user", content: message });
-      }
-    }
     // Resume the conversation's prior SDK session so the model keeps its context
     // across turns. A greeting is ephemeral (never persisted), and a regenerate
     // re-runs the same turn — both start a fresh session to avoid duplicating
@@ -1111,6 +1126,16 @@ export function createApp(services = createServices()) {
       greeting || regenerate
         ? undefined
         : store.getAgentSessionId(req.user!.id, conversationId) ?? undefined;
+    const conversationHistory =
+      !greeting && !regenerate && !resumeSessionId
+        ? conversationHistoryForPrompt(store.listMessages(req.user!.id, conversationId))
+        : [];
+    if (!greeting) {
+      store.touchConversation(req.user!.id, conversationId, avatar.id, message);
+      if (!regenerate) {
+        store.addMessage(conversationId, { role: "user", content: message });
+      }
+    }
     // The SDK session id this run reports (init event); persisted on success so
     // the next turn can resume it.
     let runSessionId: string | null = null;
@@ -1168,6 +1193,7 @@ export function createApp(services = createServices()) {
           avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
           cwd: workspaceDir,
           resumeSessionId,
+          conversationHistory,
           viewerUserId: req.user!.id,
           viewerName: req.user!.displayName,
           viewerIsOwner: req.user!.id === avatar.id,

@@ -184,6 +184,11 @@ export interface StoredMessage {
   createdAt: string;
 }
 
+export interface AgentConversationMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
 export interface AuditEvent {
   id: string;
   actorUserId: string | null;
@@ -267,6 +272,12 @@ export interface AgentRequest {
    * conversation's context instead of starting fresh. Unset → a new session.
    */
   resumeSessionId?: string;
+  /**
+   * Stored transcript fallback used only when no SDK session id is available.
+   * Normal conversations continue through SDK `resume`; this keeps first-turn
+   * cancellations or expired SDK transcripts from losing the visible context.
+   */
+  conversationHistory?: AgentConversationMessage[];
   /** The user currently chatting (may differ from the avatar's owner). */
   viewerUserId?: string;
   viewerName?: string;

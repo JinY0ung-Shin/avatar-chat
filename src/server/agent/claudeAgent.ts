@@ -20,6 +20,8 @@ import {
 } from "../hexSshPolicy.js";
 
 const agentLogger = logger.child({ module: "agent" });
+const HISTORY_MESSAGE_LIMIT = 24;
+const HISTORY_CHAR_LIMIT = 12_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -31,6 +33,40 @@ function asString(value: unknown): string {
 
 function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
+}
+
+function compactConversationHistory(history: AgentRequest["conversationHistory"]): NonNullable<AgentRequest["conversationHistory"]> {
+  const recent = (history ?? [])
+    .filter((message) => (message.role === "user" || message.role === "assistant") && message.content.trim())
+    .slice(-HISTORY_MESSAGE_LIMIT);
+  const compacted: NonNullable<AgentRequest["conversationHistory"]> = [];
+  let remaining = HISTORY_CHAR_LIMIT;
+
+  for (let index = recent.length - 1; index >= 0 && remaining > 0; index -= 1) {
+    const message = recent[index];
+    let content = message.content.trim();
+    if (content.length > remaining) {
+      content = `[truncated]\n${content.slice(content.length - remaining)}`;
+    }
+    compacted.unshift({ role: message.role, content });
+    remaining -= content.length;
+  }
+
+  return compacted;
+}
+
+function conversationHistoryBlock(history: AgentRequest["conversationHistory"]): string | null {
+  const compacted = compactConversationHistory(history);
+  if (compacted.length === 0) {
+    return null;
+  }
+  return [
+    "이전 대화 기록(현재 사용자 메시지 이전, 오래된 순):",
+    "```json",
+    JSON.stringify(compacted, null, 2),
+    "```",
+    "이 기록은 같은 대화에 저장된 실제 맥락입니다. 아래 사용자 메시지는 이 기록 다음에 온 새 메시지입니다.",
+  ].join("\n");
 }
 
 /** Tools that spawn a subagent (shown as an agent node, not a tool row). */
@@ -777,6 +813,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     lines.push(
       "플러그인, 루틴, 지식 저장소 같은 아바타 시스템 설정 변경은 소유자 전용입니다. 동료가 변경을 요청하면 소유자에게 요청하도록 안내하거나 필요한 맥락을 request_info로 남기세요.",
     );
+  }
+  const historyBlock = request.greeting ? null : conversationHistoryBlock(request.conversationHistory);
+  if (historyBlock) {
+    lines.push(historyBlock);
   }
   if (request.greeting) {
     return lines.join("\n\n");

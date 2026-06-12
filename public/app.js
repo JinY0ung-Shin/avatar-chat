@@ -2020,7 +2020,6 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
 
   pane.abortController = new AbortController();
   if (activePane()?.id === pane.id) abortController = pane.abortController;
-  let sawEvent = false;
   try {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
@@ -2109,6 +2108,7 @@ async function attachChatRun(pane, runId) {
   live.runId = runId;
   pane.abortController = new AbortController();
   if (activePane()?.id === pane.id) abortController = pane.abortController;
+  let sawEvent = false;
   try {
     const response = await fetch(`/api/chat/runs/${encodeURIComponent(runId)}/events`, {
       headers: { Accept: "text/event-stream" },
