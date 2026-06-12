@@ -88,11 +88,13 @@ describe("noah-almighty platform", () => {
     const first = request.agent(app);
     const firstRes = await signup(first, "alice").expect(201);
     expect(firstRes.body.user.username).toBe("alice");
+    expect(firstRes.body.user.published).toBe(true);
     expect(firstRes.body.user.roles).toContain("admin");
     expect(firstRes.body.user.roles).toContain("member");
 
     const second = request.agent(app);
     const secondRes = await signup(second, "bob").expect(201);
+    expect(secondRes.body.user.published).toBe(true);
     expect(secondRes.body.user.roles).toContain("member");
     expect(secondRes.body.user.roles).not.toContain("admin");
   });
@@ -217,6 +219,7 @@ describe("noah-almighty platform", () => {
 
     const hidden = request.agent(app);
     const hiddenRes = await signup(hidden, "henry").expect(201);
+    await hidden.patch("/api/me").send({ published: false }).expect(200);
 
     const viewer = request.agent(app);
     await signup(viewer, "ivy").expect(201);
@@ -235,7 +238,8 @@ describe("noah-almighty platform", () => {
   it("lets the owner manage trusted users, who can then reach an unpublished avatar", async () => {
     const app = testApp();
     const owner = request.agent(app);
-    const ownerRes = await signup(owner, "olga").expect(201); // unpublished
+    const ownerRes = await signup(owner, "olga").expect(201);
+    await owner.patch("/api/me").send({ published: false }).expect(200);
 
     const friend = request.agent(app);
     const friendRes = await signup(friend, "fred").expect(201);
@@ -370,7 +374,8 @@ describe("noah-almighty platform", () => {
   it("hides skills of an unpublished, non-own avatar (404)", async () => {
     const app = testApp();
     const hidden = request.agent(app);
-    const hiddenRes = await signup(hidden, "kevin").expect(201); // unpublished
+    const hiddenRes = await signup(hidden, "kevin").expect(201);
+    await hidden.patch("/api/me").send({ published: false }).expect(200);
 
     const viewer = request.agent(app);
     await signup(viewer, "laura").expect(201);
@@ -608,7 +613,8 @@ describe("noah-almighty platform", () => {
 
   it("validates chat input and forbids chatting with an unpublished avatar", async () => {
     const app = testApp();
-    const { user: owner } = await newUser(app, "quinn"); // unpublished
+    const { agent: ownerAgent, user: owner } = await newUser(app, "quinn");
+    await ownerAgent.patch("/api/me").send({ published: false }).expect(200);
     const viewer = (await newUser(app, "rex")).agent;
 
     await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "" }).expect(400);

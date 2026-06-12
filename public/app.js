@@ -4854,6 +4854,73 @@ function markOnboardingDone(userId) {
   }
 }
 
+const ONBOARDING_FEATURES = [
+  {
+    title: "내 아바타 만들기",
+    desc: "이름, 별칭, 프로필, 페르소나, 자기소개를 설정하고 공개하면 탐색 목록에서 다른 사용자가 대화할 수 있습니다.",
+  },
+  {
+    title: "나의 업무 아바타로 키우기",
+    desc: "반복 업무, 프로젝트 규칙, 운영 절차를 지식 저장소·스킬·루틴으로 쌓아 두고 점점 더 많은 일을 맡길 수 있습니다.",
+  },
+  {
+    title: "아바타와 대화하기",
+    desc: "탐색에서 공개 아바타를 고르거나 내 아바타와 바로 대화합니다. 응답은 스트리밍되고, 복사·재생성·편집 후 재전송을 지원합니다.",
+  },
+  {
+    title: "지식 저장소로 학습시키기",
+    desc: "전용 GitHub 저장소를 연결하면 아바타가 대화 중 얻은 지식과 스킬을 파일로 정리하고 다음 대화에서 다시 사용합니다.",
+  },
+  {
+    title: "플러그인과 스킬 확장",
+    desc: "GitHub 플러그인 저장소를 추가해 읽기 도구, 업무 규칙, MCP 도구 설명을 아바타에 붙일 수 있습니다.",
+  },
+  {
+    title: "SSH 서버 작업 맡기기",
+    desc: "SSH 키와 신뢰 호스트를 설정하면 이 앱이 실행되는 호스트에서 접근 가능한 서버에 접속해 로그 확인, 파일 점검, 명령 실행 같은 원격 작업을 시킬 수 있습니다.",
+  },
+  {
+    title: "루틴 자동 실행",
+    desc: "매일 정해진 시각에 내 아바타가 스스로 작업하게 하고, 결과를 전용 대화에 계속 쌓을 수 있습니다.",
+  },
+  {
+    title: "보안 설정 관리",
+    desc: "GitHub 토큰, 커밋 정보, 시크릿, SSH 키를 설정해 비공개 저장소와 원격 작업에 필요한 권한을 안전하게 제공합니다.",
+  },
+];
+
+const ONBOARDING_EXAMPLES = [
+  "내가 자주 맡기는 배포 점검 절차를 스킬로 정리하고 다음부터 그대로 수행해줘.",
+  "내 지식 저장소에 이 프로젝트 운영 절차를 스킬로 정리해줘.",
+  "이 저장소에서 로그인 흐름을 읽고 개선할 부분을 찾아줘.",
+  "접근 가능한 서버에 SSH로 접속해서 서비스 로그와 디스크 사용량을 점검해줘.",
+  "매일 09시에 어제 쌓인 정보 요청을 요약해줘.",
+];
+
+function buildOnboardingGuide() {
+  return el("div", { class: "onboard-guide" }, [
+    el("section", { class: "onboard-section" }, [
+      el("h3", { text: "이 앱에서 할 수 있는 일" }),
+      el("div", { class: "onboard-feature-list" },
+        ONBOARDING_FEATURES.map((item) =>
+          el("div", { class: "onboard-feature" }, [
+            el("strong", { text: item.title }),
+            el("p", { text: item.desc }),
+          ]),
+        ),
+      ),
+    ]),
+    el("section", { class: "onboard-section" }, [
+      el("h3", { text: "처음 대화할 때 이렇게 시켜볼 수 있어요" }),
+      el("ul", { class: "onboard-examples" }, ONBOARDING_EXAMPLES.map((text) => el("li", { text }))),
+    ]),
+    el("p", {
+      class: "onboard-note",
+      text: "권한은 대화 상대에 따라 달라집니다. 내 아바타와 신뢰한 사용자는 작업 도구를 쓸 수 있고, 일반 사용자가 다른 아바타와 대화할 때는 읽기 전용으로 실행됩니다.",
+    }),
+  ]);
+}
+
 /**
  * Skippable onboarding overlay: connect a GitHub token and point at a personal
  * knowledge repo. Reuses PUT /api/me/git-token and PUT /api/me/knowledge-repo.
@@ -4931,11 +4998,19 @@ function openOnboarding() {
 
   const card = el("div", { class: "modal-card onboard-card", tabindex: "-1" }, [
     el("img", { class: "login-mark", src: "/icon-192.png", alt: "", "aria-hidden": "true", width: "48", height: "48" }),
-    el("h2", { id: "onboarding-title", text: "지식 저장소 연결하기" }),
+    el("h2", { id: "onboarding-title", text: "아바타 사용 준비하기" }),
     el("p", {
       class: "muted",
-      text: "내 아바타가 업무 지식·스킬을 쌓아 둘 전용 GitHub 저장소를 연결하세요. 비공개 저장소를 쓰거나 아바타가 직접 커밋·푸시하게 하려면 토큰도 입력하세요. 나중에 설정에서 다시 할 수 있어요.",
+      text: "Noah Almighty는 내 업무 방식을 아바타에 축적해 점점 더 많은 일을 맡기는 앱입니다. GitHub 지식 저장소와 플러그인, 루틴, SSH 도구를 붙여 대화로 일하게 할 수 있습니다.",
     }),
+    buildOnboardingGuide(),
+    el("div", { class: "onboard-connect" }, [
+      el("h3", { text: "처음 연결하면 좋은 설정" }),
+      el("p", {
+        class: "muted",
+        text: "전용 GitHub 저장소를 연결하면 아바타가 업무 지식·스킬을 쌓아 둡니다. 비공개 저장소를 쓰거나 아바타가 직접 커밋·푸시하게 하려면 토큰도 입력하세요. 나중에 내 아바타 설정에서 다시 할 수 있어요.",
+      }),
+    ]),
     form,
   ]);
   const overlay = el("div", { class: "modal-overlay", role: "dialog", "aria-modal": "true", "aria-labelledby": "onboarding-title" }, [card]);

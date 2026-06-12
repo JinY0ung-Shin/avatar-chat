@@ -177,7 +177,7 @@ export class Store {
         bio TEXT DEFAULT '',
         persona TEXT DEFAULT '',
         avatar_ext TEXT,
-        published INTEGER DEFAULT 0,
+        published INTEGER DEFAULT 1,
         auto_approve INTEGER DEFAULT 0,
         ssh_public_key TEXT,
         created_at TEXT,
@@ -395,7 +395,7 @@ export class Store {
 
     const insertUser = this.db.prepare(`
       INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, published, created_at, last_seen_at)
-      VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 0, @created_at, @created_at)
+      VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 1, @created_at, @created_at)
     `);
     const grantRole = this.db.prepare(
       "INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",

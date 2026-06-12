@@ -2083,7 +2083,7 @@ describe("trusted users", () => {
 
   it("a trusted user can resolve/see an UNPUBLISHED avatar; a stranger cannot", () => {
     const { store, ownerId, friendId, strangerId } = makeStore("tu4");
-    // owner's avatar is unpublished by default.
+    store.updateProfile(ownerId, { published: false });
     expect(store.resolveChatAvatar(strangerId, ownerId)).toBeNull();
     expect(store.getAvatar(strangerId, ownerId)).toBeNull();
     store.addTrustedUser(ownerId, "friend");
