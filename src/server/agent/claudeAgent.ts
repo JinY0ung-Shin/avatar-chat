@@ -646,6 +646,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
   if (request.avatar.persona && request.avatar.persona.trim()) {
     lines.push(`페르소나/지침:\n${request.avatar.persona.trim()}`);
   }
+  lines.push(
+    "시스템 메타 인지: 이 서비스는 Noah Almighty avatar-chat입니다. 아바타는 프로필/페르소나, 기본 스킬, 소유자 플러그인, 개인 지식 저장소, 예약 루틴, 시크릿 이름, 신뢰 사용자 설정을 조합해 동작합니다. " +
+      "시스템 상태나 가능한 변경 작업을 말할 때는 추측하지 말고 제공된 도구와 현재 설정을 근거로 답하세요.",
+  );
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
   // A headless run has NO ONE on the other side: never claim the owner is
@@ -663,6 +667,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       name
         ? `지금 대화 상대는 이 아바타의 **소유자** "${name}"님입니다.`
         : "지금 대화 상대는 이 아바타의 **소유자**입니다.",
+    );
+    lines.push(
+      "소유자가 이 시스템 자체에 대해 묻거나 설정 변경을 요청하면 `mcp__system__describe_system`으로 현재 상태를 확인하고, 요청에 맞게 `mcp__system__create_routine`/`update_routine`/`delete_routine` 또는 `mcp__system__add_plugin`/`set_plugin_enabled`를 직접 사용하세요. " +
+        "루틴 시간은 KST `HH:MM` 기준이고, 플러그인 추가/활성화 변경은 보통 다음 대화부터 로드됩니다.",
     );
     const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
     if (knowledgeRepoConfigured) {
@@ -743,6 +751,9 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.",
       );
     }
+    lines.push(
+      "플러그인, 루틴, 지식 저장소 같은 아바타 시스템 설정 변경은 소유자 전용입니다. 동료가 변경을 요청하면 소유자에게 요청하도록 안내하거나 필요한 맥락을 request_info로 남기세요.",
+    );
   }
   if (request.greeting) {
     return lines.join("\n\n");
@@ -787,6 +798,9 @@ export async function runClaudeAgent(
   );
   const { buildSshTrustServer, SSH_TRUST_SERVER_NAME, SSH_TRUST_TOOL_NAMES } = await import(
     "./sshTrustTools.js"
+  );
+  const { buildSystemServer, SYSTEM_SERVER_NAME, SYSTEM_TOOL_NAMES } = await import(
+    "./systemTools.js"
   );
 
   const streaming = Boolean(events);
@@ -857,6 +871,17 @@ export async function runClaudeAgent(
     },
     { allowCreate: allowRepoCreate },
   );
+  const systemServer = buildSystemServer(store, {
+    avatarUserId: request.avatar.id,
+    owner: {
+      id: request.avatar.id,
+      username: ownerRow?.username ?? "",
+      displayName: ownerRow?.displayName ?? request.avatar.displayName,
+      alias: ownerRow?.alias ?? request.avatar.alias,
+    },
+    viewerIsOwner: viewerIsOwner && !headless,
+    config,
+  });
 
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
   // NOT owner-only: host fingerprints are public, and a viewer who can drive
@@ -912,6 +937,7 @@ export async function runClaudeAgent(
       ...KNOWLEDGE_TOOL_NAMES,
       ...REPO_TOOL_NAMES,
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
+      ...SYSTEM_TOOL_NAMES,
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
       "TodoWrite",
@@ -925,6 +951,7 @@ export async function runClaudeAgent(
     mcpServers: {
       [KNOWLEDGE_SERVER_NAME]: knowledgeServer,
       [REPO_SERVER_NAME]: repoServer,
+      [SYSTEM_SERVER_NAME]: systemServer,
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
     },

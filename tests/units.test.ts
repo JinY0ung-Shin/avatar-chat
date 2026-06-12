@@ -58,6 +58,12 @@ import {
   REPO_TOOL_NAMES,
 } from "../src/server/agent/repoTools.js";
 import {
+  buildSystemTools,
+  SYSTEM_SERVER_NAME,
+  SYSTEM_TOOL_NAMES,
+  type SystemToolsContext,
+} from "../src/server/agent/systemTools.js";
+import {
   knownHostsPath,
   parseKnownHosts,
   upsertHostLine,
@@ -924,6 +930,15 @@ describe("buildPrompt", () => {
     expect(p).toContain('"신진영"님');
   });
 
+  it("injects system awareness and owner system-management tool guidance", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    expect(p).toContain("Noah Almighty avatar-chat");
+    expect(p).toContain("mcp__system__describe_system");
+    expect(p).toContain("mcp__system__create_routine");
+    expect(p).toContain("mcp__system__add_plugin");
+    expect(p).toContain("다음 대화부터 로드");
+  });
+
   it("offers to create the knowledge repo via the repo tool on a greeting when a git token is set", () => {
     const p = buildPrompt(
       req({
@@ -1037,6 +1052,7 @@ describe("buildPrompt", () => {
     expect(p).toContain("동료");
     expect(p).not.toContain("읽기 전용");
     expect(p).toContain("신뢰하는 사용자");
+    expect(p).toContain("아바타 시스템 설정 변경은 소유자 전용");
   });
 
   it("falls back to the unnamed wording when viewerName is absent", () => {
@@ -1485,6 +1501,164 @@ describe("repo tools (knowledge-repo management)", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("system tools (avatar system management)", () => {
+  function call(tools: ReturnType<typeof buildSystemTools>, name: string, args: unknown): Promise<ToolResult> {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} not found`);
+    return (t.handler as (a: unknown, extra: unknown) => Promise<ToolResult>)(args, {});
+  }
+
+  function setup(dir: string) {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const baseCtx: Omit<SystemToolsContext, "viewerIsOwner"> = {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: owner.username, displayName: owner.displayName },
+      config,
+    };
+    return { store, config, owner, baseCtx };
+  }
+
+  function toolsFor(s: ReturnType<typeof setup>, viewerIsOwner = true) {
+    return buildSystemTools(s.store, { ...s.baseCtx, viewerIsOwner });
+  }
+
+  it("exposes the documented server + tool names", () => {
+    const s = setup("st0");
+    expect(SYSTEM_SERVER_NAME).toBe("system");
+    expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__create_routine");
+    expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__add_plugin");
+    expect(toolsFor(s).map((t) => t.name)).toEqual([
+      "describe_system",
+      "list_routines",
+      "create_routine",
+      "update_routine",
+      "delete_routine",
+      "list_plugins",
+      "add_plugin",
+      "set_plugin_enabled",
+    ]);
+  });
+
+  it("describes public system behavior to non-owners without private state", async () => {
+    const s = setup("st-public");
+    s.store.setGitToken(s.owner.id, "ghp_secretvalue");
+    s.store.setUserSecret(s.owner.id, "SSH_PRIVATE_KEY", "private-key");
+    const res = await call(toolsFor(s, false), "describe_system", {});
+
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("Noah Almighty avatar-chat 시스템 요약");
+    expect(res.content[0].text).toContain("소유자가 아니므로");
+    expect(res.content[0].text).not.toContain("ghp_secretvalue");
+    expect(res.content[0].text).not.toContain("SSH_PRIVATE_KEY");
+  });
+
+  it("lets the owner inspect current system state", async () => {
+    const s = setup("st-describe");
+    s.store.setKnowledgeRepo(s.owner.id, "owner/knowledge", "main");
+    s.store.setGitToken(s.owner.id, "ghp_secretvalue");
+    s.store.setUserSecret(s.owner.id, "SSH_PRIVATE_KEY", "private-key");
+    s.store.addPlugin(s.owner.id, { repo: "owner/plugin" });
+    s.store.createRoutineJob(s.owner.id, { prompt: "매일 요약", minuteOfDay: 9 * 60 });
+
+    const res = await call(toolsFor(s), "describe_system", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("runtime: local");
+    expect(res.content[0].text).toContain("owner/knowledge @ main");
+    expect(res.content[0].text).toContain("GitHub 토큰: 설정됨");
+    expect(res.content[0].text).toContain("SSH_PRIVATE_KEY");
+    expect(res.content[0].text).toContain("플러그인: 1개");
+    expect(res.content[0].text).toContain("루틴: 1개");
+    expect(res.content[0].text).not.toContain("ghp_secretvalue");
+    expect(res.content[0].text).not.toContain("private-key");
+  });
+
+  it("refuses routine and plugin mutations for non-owner viewers", async () => {
+    const s = setup("st-deny");
+    const nonOwner = toolsFor(s, false);
+    const routine = await call(nonOwner, "create_routine", { prompt: "p", time: "09:00" });
+    const plugin = await call(nonOwner, "add_plugin", { repo: "owner/repo" });
+
+    expect(routine.isError).toBe(true);
+    expect(routine.content[0].text).toContain("아바타 소유자");
+    expect(plugin.isError).toBe(true);
+    expect(plugin.content[0].text).toContain("아바타 소유자");
+    expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
+    expect(s.store.listPlugins(s.owner.id)).toHaveLength(0);
+  });
+
+  it("creates, updates, lists, and deletes owner routines", async () => {
+    const s = setup("st-routine");
+    const tools = toolsFor(s);
+
+    const bad = await call(tools, "create_routine", { prompt: "p", time: "25:00" });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toContain("HH:MM");
+
+    const created = await call(tools, "create_routine", {
+      prompt: "오늘 해야 할 일을 정리해줘",
+      time: "09:30",
+    });
+    expect(created.isError).toBeFalsy();
+    expect(created.content[0].text).toContain("time=09:30 KST");
+
+    const job = s.store.listRoutineJobs(s.owner.id)[0];
+    expect(job.prompt).toBe("오늘 해야 할 일을 정리해줘");
+
+    const updated = await call(tools, "update_routine", {
+      id: job.id,
+      prompt: "오늘 일정과 미해결 작업을 정리해줘",
+      time: "10:15",
+      enabled: false,
+    });
+    expect(updated.isError).toBeFalsy();
+    expect(updated.content[0].text).toContain("time=10:15 KST");
+    expect(updated.content[0].text).toContain("enabled=false");
+
+    const listed = await call(tools, "list_routines", {});
+    expect(listed.content[0].text).toContain(job.id);
+    expect(listed.content[0].text).toContain("오늘 일정");
+
+    const deleted = await call(tools, "delete_routine", { id: job.id });
+    expect(deleted.isError).toBeFalsy();
+    expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
+  });
+
+  it("adds and toggles owner plugins", async () => {
+    const s = setup("st-plugin");
+    const tools = toolsFor(s);
+
+    const bad = await call(tools, "add_plugin", { repo: "not a repo!!" });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toContain("owner/repo");
+
+    const added = await call(tools, "add_plugin", {
+      repo: "owner/plugin",
+      ref: "main",
+      label: "Ops Plugin",
+    });
+    expect(added.isError).toBeFalsy();
+    expect(added.content[0].text).toContain("다음 대화부터");
+
+    const plugin = s.store.listPlugins(s.owner.id)[0];
+    expect(plugin.repo).toBe("owner/plugin");
+    expect(plugin.enabled).toBe(true);
+
+    const listed = await call(tools, "list_plugins", {});
+    expect(listed.content[0].text).toContain("owner/plugin");
+    expect(listed.content[0].text).toContain("Ops Plugin");
+
+    const disabled = await call(tools, "set_plugin_enabled", { id: plugin.id, enabled: false });
+    expect(disabled.isError).toBeFalsy();
+    expect(disabled.content[0].text).toContain("enabled=false");
+    expect(s.store.getPlugin(s.owner.id, plugin.id)?.enabled).toBe(false);
   });
 });
 
