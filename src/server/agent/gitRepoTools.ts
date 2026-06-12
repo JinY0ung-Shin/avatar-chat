@@ -129,7 +129,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
   return [
     tool(
       "register_repo",
-      "일반 git 저장소를 이 아바타 소유자의 repo 목록에 등록하고 로컬 작업 복제본을 만든다. repo는 owner/repo, https URL, git URL, 로컬 bare repo 경로를 받을 수 있다. (소유자 전용)",
+      "일반 git 저장소를 이 아바타 소유자의 repo 목록에 등록하고 로컬 작업 복제본을 만든다. repo는 owner/repo, https URL, git URL, 로컬 bare repo 경로를 받을 수 있다. public repo clone/sync는 토큰 없이 시도하고, 토큰은 설정된 사내 host 또는 github.com에만 있으면 사용한다. (소유자 전용)",
       {
         repo: z.string().describe("등록할 git 저장소. 예: owner/repo, https://github.com/owner/repo.git, /path/to/repo.git"),
         name: z.string().optional().describe("대화에서 사용할 짧은 이름. 비우면 repo 이름에서 자동 생성한다."),
@@ -171,7 +171,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "sync_repo",
-      "등록된 git 저장소를 fetch 후 fast-forward로 최신화한다. 미커밋 변경이나 충돌이 있으면 실패한다. (소유자/신뢰 사용자 전용)",
+      "등록된 git 저장소를 fetch 후 fast-forward로 최신화한다. public repo는 토큰 없이 fetch/pull을 시도하며, 미커밋 변경이나 충돌이 있으면 실패한다. (소유자/신뢰 사용자 전용)",
       { name: z.string().describe("등록된 repo 이름") },
       async (args) => {
         const denied = elevatedGuard();

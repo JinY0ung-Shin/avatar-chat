@@ -9,6 +9,10 @@ import logger from "../logger.js";
 import { normalizeGithubHost } from "../marketplace.js";
 import { knownHostsPath } from "../sshTrust.js";
 import {
+  EXTERNAL_GIT_TOKEN_SECRET_NAME,
+  INTERNAL_GIT_TOKEN_SECRET_NAME,
+} from "../gitCredentials.js";
+import {
   DEFAULT_HEX_SSH_TOOL_POLICY,
   HEX_SSH_SERVER_NAME,
   allowedHexSshToolsForViewer,
@@ -22,6 +26,22 @@ import {
 const agentLogger = logger.child({ module: "agent" });
 const HISTORY_MESSAGE_LIMIT = 24;
 const HISTORY_CHAR_LIMIT = 12_000;
+const GIT_CREDENTIAL_ENV_NAMES = [
+  INTERNAL_GIT_TOKEN_SECRET_NAME,
+  EXTERNAL_GIT_TOKEN_SECRET_NAME,
+  "GH_TOKEN",
+  "GH_ENTERPRISE_TOKEN",
+  "GITHUB_ENTERPRISE_TOKEN",
+] as const;
+const SSH_MCP_SECRET_ENV_NAMES = [
+  "SSH_PRIVATE_KEY",
+  "SSH_PASSPHRASE",
+  "SSH_PASSWORD",
+  "SSH_USER",
+  "SSH_USERNAME",
+  "ALLOWED_HOSTS",
+  "ALLOWED_HOST_FINGERPRINTS",
+] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -67,6 +87,37 @@ function conversationHistoryBlock(history: AgentRequest["conversationHistory"]):
     "```",
     "이 기록은 같은 대화에 저장된 실제 맥락입니다. 아래 사용자 메시지는 이 기록 다음에 온 새 메시지입니다.",
   ].join("\n");
+}
+
+export function withoutGitCredentialEnv(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const out = { ...env };
+  for (const name of GIT_CREDENTIAL_ENV_NAMES) {
+    delete out[name];
+  }
+  return out;
+}
+
+export function agentSubprocessEnv(
+  baseEnv: Record<string, string | undefined>,
+  agentSessionsDir: string,
+): Record<string, string | undefined> {
+  return {
+    ...withoutGitCredentialEnv(baseEnv),
+    CLAUDE_CONFIG_DIR: agentSessionsDir,
+  };
+}
+
+export function sshMcpSecretEnv(ownerSecrets: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const name of SSH_MCP_SECRET_ENV_NAMES) {
+    const value = ownerSecrets[name];
+    if (value !== undefined) {
+      out[name] = value;
+    }
+  }
+  return out;
 }
 
 /** Tools that spawn a subagent (shown as an agent node, not a tool row). */
@@ -752,7 +803,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     }
     lines.push(
       "일반 **git repo 작업**은 지식 저장소 도구와 별개입니다. 소유자가 업무/코드 저장소를 관리해 달라고 하면 `mcp__git_repo__register_repo`로 repo를 등록한 뒤, `sync_repo`/`status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`를 사용하세요. " +
-        "등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 소유자 또는 신뢰 사용자 대화에서만 가능합니다. GitHub issue/PR/release 관리는 포함하지 않는 순수 git 작업 도구입니다.",
+        "사내/사외 public repo의 clone/sync는 토큰 없이 시도하므로 토큰 설정을 먼저 요구하지 마세요. push는 원격 쓰기 권한이 있는 경우에만 성공합니다. 등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 소유자 또는 신뢰 사용자 대화에서만 가능합니다. GitHub issue/PR/release 관리는 포함하지 않는 순수 git 작업 도구입니다.",
     );
     if (secretNames.length > 0) {
       lines.push(
@@ -814,7 +865,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.",
       );
       lines.push(
-        "소유자가 미리 등록한 일반 git repo는 `mcp__git_repo__list_repos`로 확인하고 `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`로 작업할 수 있습니다. 새 repo 등록/삭제 같은 설정 변경은 소유자 전용입니다.",
+        "소유자가 미리 등록한 일반 git repo는 `mcp__git_repo__list_repos`로 확인하고 `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`로 작업할 수 있습니다. public repo sync는 토큰 없이 시도하며, 새 repo 등록/삭제 같은 설정 변경은 소유자 전용입니다.",
       );
     }
     lines.push(
@@ -1009,6 +1060,7 @@ export async function runClaudeAgent(
   // decrypted only here and handed to the MCP subprocess as env, so they never
   // surface to the agent (Bash/`env` runs in a different process) nor to `toUser`.
   const ownerSecrets = store.getUserSecrets(request.avatar.id);
+  const sshSecrets = sshMcpSecretEnv(ownerSecrets);
   const confluenceServer = buildConfluenceServer({
     config,
     ownerSecrets,
@@ -1030,13 +1082,12 @@ export async function runClaudeAgent(
           // KNOWN_HOSTS_PATH points hex-ssh at the owner's persistent trust file
           // (under the data volume). hex-ssh re-reads it on every connection, so
           // the `mcp__ssh_trust__*` tools can add a host mid-session and it takes
-          // effect immediately. ownerSecrets may also carry ALLOWED_HOST_FINGER-
-          // PRINTS, etc. Policy/proxy env is written after owner secrets so it
-          // cannot be overridden from the user's secret tab.
+          // effect immediately. Only SSH-specific secrets are forwarded here:
+          // git credentials stay inside the app-managed git MCP handlers.
           env: {
             REMOTE_SSH_MODE: "safe",
             KNOWN_HOSTS_PATH: knownHostsPath(request.avatar.id, config),
-            ...ownerSecrets,
+            ...sshSecrets,
             HEX_SSH_UPSTREAM_COMMAND: config.hexSshCommand,
             HEX_SSH_ALLOWED_TOOLS: hexSshAllowedTools.join(","),
           },
@@ -1089,9 +1140,11 @@ export async function runClaudeAgent(
   };
   // Persist session transcripts under dataDir (not the SDK's default ~/.claude)
   // so a conversation's session can be resumed after a server/container restart.
-  // `env` REPLACES the subprocess environment, so spread process.env first.
+  // `env` REPLACES the subprocess environment. Start from process.env for SDK
+  // auth/proxy settings, but strip git credentials: git auth is only available
+  // through the app-managed in-process MCP bridge.
   fs.mkdirSync(config.agentSessionsDir, { recursive: true });
-  options.env = { ...process.env, CLAUDE_CONFIG_DIR: config.agentSessionsDir };
+  options.env = agentSubprocessEnv(process.env, config.agentSessionsDir);
   // Subscription auth: when no ANTHROPIC_API_KEY is configured, fall back to the
   // admin-pasted `claude setup-token` token (stored encrypted in app_config),
   // injecting it as CLAUDE_CODE_OAUTH_TOKEN. Precedence is API key (.env) > stored

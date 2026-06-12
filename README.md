@@ -31,7 +31,8 @@ any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
   configured `GITHUB_HOST` and an optional `GITHUB_TOKEN` for github.com. Tokens are
   AES-256-GCM encrypted at rest, keyed from `SESSION_SECRET`, and supplied to git via an
   `http.extraHeader`, so they are never written into any clone's `.git/config`. The knowledge
-  repo is always expected to live on the internal `GITHUB_HOST`.
+  repo is always expected to live on the internal `GITHUB_HOST`. Public general git repos can
+  be cloned/synced without a token; push still requires whatever write credential the remote accepts.
 - **SSH tools**: when the owner stores an `SSH_PRIVATE_KEY` secret and trusts target hosts,
   the avatar can use allowed SSH tools to work on servers reachable from the app host, such as
   checking logs, inspecting files, or running commands under the configured policy.

@@ -129,7 +129,9 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   `status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`.
   Each tool self-gates (`ownerGuard`/`elevatedGuard`, both `&& !headless`); the owner's
   git token is used server-side only (`gitAuthArgs`, never in the agent shell), with
-  arg-injection (`assertSafeGitValue`) and path-traversal (`resolveInRepo`) guards.
+  arg-injection (`assertSafeGitValue`) and path-traversal (`resolveInRepo`) guards. Public
+  repos on internal hosts, github.com, or other HTTPS/git hosts must clone/sync without a token;
+  tokens are opportunistic, not a prerequisite for read access.
   Unlike the owner-only knowledge repo, write/commit/push EXTEND to trusted users.
   Offline-tested against a local bare remote (same as the knowledge-repo tools).
 - Secret-at-rest tiers: passwords → scrypt (`auth.ts`), session tokens → sha256,
@@ -153,9 +155,11 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   per-invocation `http.extraHeader` on the app's OWN clone/push (`knowledgeRepo.ts`,
   `syncPluginRepo`) and by the server-side `mcp__repo__create_repo` bridge, which
   invokes `gh repo create` with the token in child-process env — all server-side.
-  It is NOT injected into the SDK subprocess env (`options.env`), so the agent's `gh`/`git`/Bash
-  have NO GitHub credential (the server-wide `GITHUB_TOKEN` fallback was removed). So the avatar
-  can't `gh repo create`; `create_repo` is the only bridge. The prompt surfaces `gitTokenSet`
+  It is NOT injected into the SDK subprocess env (`options.env`); `claudeAgent.ts` strips
+  `GIT_TOKEN`/`GITHUB_TOKEN`/`GH_TOKEN`-style names from `process.env` before launch and only
+  forwards SSH-specific secrets to the hex-ssh subprocess. The agent's `gh`/`git`/Bash therefore
+  have NO GitHub credential. So the avatar can't `gh repo create`; `create_repo` is the only bridge.
+  The prompt surfaces `gitTokenSet`
   (not the value) so the greeting offers `create_repo` when a token is set, else asks the owner
   to set one (`buildPrompt`, fed from `claudeAgent.ts` promptRequest).
 - **The prompt tells the owner how to enable SSH when it's off.** `buildPrompt` adds an SSH

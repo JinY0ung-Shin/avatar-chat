@@ -56,7 +56,14 @@ import {
   openRun,
   submitResponse,
 } from "../src/server/agent/runRegistry.js";
-import { buildPreToolUseHook, buildPrompt, interpretResult, resultErrorMessage } from "../src/server/agent/claudeAgent.js";
+import {
+  agentSubprocessEnv,
+  buildPreToolUseHook,
+  buildPrompt,
+  interpretResult,
+  resultErrorMessage,
+  sshMcpSecretEnv,
+} from "../src/server/agent/claudeAgent.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
 import type { AgentEvents } from "../src/server/agent/events.js";
 import { decryptSecret, encryptSecret } from "../src/server/crypto.js";
@@ -84,7 +91,7 @@ import {
   GIT_REPO_SERVER_NAME,
   GIT_REPO_TOOL_NAMES,
 } from "../src/server/agent/gitRepoTools.js";
-import { gitRepoClonePath } from "../src/server/gitRepos.js";
+import { gitRepoClonePath, gitRepoContextFromRecord } from "../src/server/gitRepos.js";
 import {
   buildSystemTools,
   SYSTEM_SERVER_NAME,
@@ -398,6 +405,46 @@ describe("marketplace helpers", () => {
     expect(tokenForGitUrl("https://github.com/o/r.git", config, tokens)).toBe("external-token");
     expect(tokenForGitUrl("https://gitlab.example.com/o/r.git", config, tokens)).toBeUndefined();
     expect(tokenForGitUrl("git@github.com:o/r.git", config, tokens)).toBeUndefined();
+  });
+
+  it("strips git credentials from the agent subprocess env", () => {
+    const env = agentSubprocessEnv(
+      {
+        PATH: "/usr/bin",
+        ANTHROPIC_API_KEY: "sk-test",
+        GIT_TOKEN: "internal-secret",
+        GITHUB_TOKEN: "external-secret",
+        GH_TOKEN: "gh-secret",
+        GH_ENTERPRISE_TOKEN: "ghe-secret",
+        GITHUB_ENTERPRISE_TOKEN: "github-enterprise-secret",
+      },
+      "/tmp/agent-sessions",
+    );
+
+    expect(env.PATH).toBe("/usr/bin");
+    expect(env.ANTHROPIC_API_KEY).toBe("sk-test");
+    expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/agent-sessions");
+    expect(env.GIT_TOKEN).toBeUndefined();
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.GH_TOKEN).toBeUndefined();
+    expect(env.GH_ENTERPRISE_TOKEN).toBeUndefined();
+    expect(env.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
+  });
+
+  it("only forwards SSH-specific secrets to the SSH MCP subprocess", () => {
+    expect(
+      sshMcpSecretEnv({
+        SSH_PRIVATE_KEY: "private-key",
+        ALLOWED_HOSTS: "prod",
+        GIT_TOKEN: "internal-secret",
+        GITHUB_TOKEN: "external-secret",
+        CONFLUENCE_PAT: "pat",
+        API_TOKEN: "api-secret",
+      }),
+    ).toEqual({
+      SSH_PRIVATE_KEY: "private-key",
+      ALLOWED_HOSTS: "prod",
+    });
   });
 
   it("scrubs the auth header (token) from git error text", () => {
@@ -2064,6 +2111,49 @@ describe("git repo tools (general git repository management)", () => {
     expect(remove.isError).toBeFalsy();
     expect(s.store.listGitRepos(s.ownerId)).toHaveLength(0);
     expect(fs.existsSync(clonePath)).toBe(false);
+  });
+
+  it("clones and syncs public-style repos without stored git tokens", async () => {
+    const s = setup("gr-public-sync");
+    const ownerTools = tools(s);
+    const publicUrl = `file://${s.remote}`;
+
+    const register = await call(ownerTools, "register_repo", { repo: publicUrl, name: "public", branch: "main" });
+    expect(register.isError).toBeFalsy();
+
+    const updater = path.join(tempDir, "gr-public-sync", "updater");
+    execFileSync("git", ["clone", "-q", s.remote, updater], { stdio: "pipe" });
+    fs.mkdirSync(path.join(updater, "docs"), { recursive: true });
+    fs.writeFileSync(path.join(updater, "docs", "public.md"), "# Public\n");
+    const g = (...a: string[]) => execFileSync("git", ["-C", updater, ...a], { stdio: "pipe" });
+    g("config", "user.name", "Updater");
+    g("config", "user.email", "updater@example.com");
+    g("add", "docs/public.md");
+    g("commit", "-q", "-m", "add public doc");
+    g("push", "-q", "origin", "main");
+
+    const sync = await call(ownerTools, "sync_repo", { name: "public" });
+    expect(sync.isError).toBeFalsy();
+    const read = await call(ownerTools, "read_file", { name: "public", path: "docs/public.md" });
+    expect(read.isError).toBeFalsy();
+    expect(read.content[0].text).toContain("# Public");
+  });
+
+  it("does not require tokens for public HTTPS git repo contexts", () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "gr-public-token-context"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+      githubHost: "github.enterprise.local",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const repos = [
+      store.upsertGitRepo(owner.id, "internal-public", "https://github.enterprise.local/org/repo.git", null),
+      store.upsertGitRepo(owner.id, "github-public", "https://github.com/org/repo.git", null),
+      store.upsertGitRepo(owner.id, "other-public", "https://gitlab.example.com/org/repo.git", null),
+    ];
+
+    expect(repos.map((repo) => gitRepoContextFromRecord(store, repo, config).token)).toEqual([null, null, null]);
   });
 
   it("blocks plain colleagues from registered repo contents", async () => {
