@@ -105,13 +105,30 @@ function handleSessionExpired() {
 // Non-blocking toast — replaces window.alert so errors don't freeze the page
 // (and don't pile on top of the login screen after a session expiry).
 let notifyWrap = null;
-function notify(message, kind = "error") {
+function notify(message, kind = "error", opts = {}) {
   if (sessionExpired) return;
   if (!notifyWrap || !notifyWrap.isConnected) {
     notifyWrap = el("div", { class: "toast-wrap", role: "status", "aria-live": "polite" });
     document.body.append(notifyWrap);
   }
-  const toast = el("div", { class: `toast ${kind}`, text: message });
+  const toast = el("div", { class: `toast ${kind}${opts.onClick ? " clickable" : ""}`, text: message });
+  // An actionable toast (e.g. "you have pending questions → open settings") is a
+  // button: click or Enter/Space dismisses it and runs the action.
+  if (opts.onClick) {
+    toast.setAttribute("role", "button");
+    toast.tabIndex = 0;
+    const fire = () => {
+      toast.remove();
+      opts.onClick();
+    };
+    toast.onclick = fire;
+    toast.onkeydown = (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        fire();
+      }
+    };
+  }
   notifyWrap.append(toast);
   while (notifyWrap.children.length > 4) notifyWrap.firstChild.remove();
   setTimeout(() => {
@@ -4062,12 +4079,18 @@ async function loadKnowledge() {
   const reqs = await api("/api/me/knowledge/requests");
   state.knowledgeRequests = reqs.requests || [];
 }
+// Open-request count we've already nudged the owner about, so the toast fires
+// only on genuinely NEW questions (or once on login) — not on every poll/render.
+// Every badge update resyncs it to what's shown, so a resolve lowers the baseline
+// and a later re-ask announces again.
+let lastAnnouncedRequestCount = 0;
 // Pending info-request count on the 내 아바타 nav item — otherwise owners only
 // discover waiting questions by wandering into the right settings tab.
 function updateKnowledgeBadge() {
   const btn = dom.navButtons?.settings;
   if (!btn) return;
   const count = state.knowledgeRequests.filter((r) => r.status === "open").length;
+  lastAnnouncedRequestCount = count;
   let badge = btn.querySelector(".nav-badge");
   if (!count) {
     badge?.remove();
@@ -4079,6 +4102,59 @@ function updateKnowledgeBadge() {
   }
   badge.textContent = count > 9 ? "9+" : String(count);
   btn.title = `대기 중인 정보 요청 ${count}건`;
+}
+
+// Reload open requests and refresh the badge. With { announce } it also toasts
+// when the count grew since we last nudged — this is the in-app "alarm" for gaps
+// the avatar logged via request_info while the owner was elsewhere in the app.
+async function refreshKnowledgeStatus({ announce = false } = {}) {
+  if (!state.user) return;
+  try {
+    await loadKnowledge();
+  } catch {
+    return; // transient failure: keep the current badge rather than clearing it
+  }
+  const open = state.knowledgeRequests.filter((r) => r.status === "open").length;
+  if (announce && open > lastAnnouncedRequestCount) {
+    notify(`아직 답하지 못한 정보 요청이 ${open}건 있어요. ‘내 아바타’에서 확인해 주세요.`, "info", {
+      onClick: openKnowledgeRequests,
+    });
+  }
+  updateKnowledgeBadge(); // resyncs lastAnnouncedRequestCount
+}
+
+// Jump straight to the gap inbox (knowledge tab), re-rendering even if the owner
+// is already on the settings view (goView no-ops on a same-view navigation).
+function openKnowledgeRequests() {
+  state.settingsTab = "knowledge";
+  if (state.view === "settings") {
+    syncHash();
+    renderView();
+  } else {
+    goView("settings");
+  }
+}
+
+// Keep the badge/toast fresh while the tab is open: a colleague's new question
+// then surfaces without a reload. Poll only when visible (cheap: one small GET/min)
+// and also refresh the moment the owner returns to the tab.
+let knowledgeWatchTimer = null;
+function onKnowledgeVisible() {
+  if (!document.hidden) refreshKnowledgeStatus({ announce: true });
+}
+function startKnowledgeWatch() {
+  stopKnowledgeWatch();
+  knowledgeWatchTimer = setInterval(() => {
+    if (!document.hidden) refreshKnowledgeStatus({ announce: true });
+  }, 60000);
+  document.addEventListener("visibilitychange", onKnowledgeVisible);
+}
+function stopKnowledgeWatch() {
+  if (knowledgeWatchTimer) {
+    clearInterval(knowledgeWatchTimer);
+    knowledgeWatchTimer = null;
+  }
+  document.removeEventListener("visibilitychange", onKnowledgeVisible);
 }
 async function loadRoutines() {
   const r = await api("/api/me/routines");
@@ -4100,6 +4176,7 @@ async function loadAdminSystem() {
 /* ============================================================ Lifecycle */
 async function logout() {
   stopAllChatStreams();
+  stopKnowledgeWatch();
   hidePromptModal();
   try {
     await api("/api/auth/logout", { method: "POST" });
@@ -4128,7 +4205,8 @@ async function enterApp() {
   if (wantConversation) state.view = "explore"; // placeholder frame until messages load
   renderView();
   syncHash(true);
-  loadKnowledge().then(updateKnowledgeBadge).catch(() => {});
+  refreshKnowledgeStatus({ announce: true });
+  startKnowledgeWatch();
   await refreshConversations();
   if (wantConversation) {
     const conv = state.conversations.find((c) => c.id === wantConversation);

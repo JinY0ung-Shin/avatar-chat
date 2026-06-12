@@ -314,6 +314,16 @@ input[type="radio"] {
   border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
   color: var(--ok);
 }
+.toast.info {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--line));
+  color: color-mix(in srgb, var(--accent) 80%, var(--text));
+}
+.toast.clickable {
+  cursor: pointer;
+}
+.toast.clickable:hover {
+  border-color: var(--accent);
+}
 .toast.out {
   opacity: 0;
   transition: opacity 0.25s var(--ease);
