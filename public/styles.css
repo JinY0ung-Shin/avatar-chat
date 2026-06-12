@@ -97,6 +97,7 @@
   --t-2xl: 28px;
 
   --transcript-max: 800px;
+  --list-scroll-max: clamp(220px, 42dvh, 420px);
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
@@ -441,6 +442,8 @@ input[type="radio"] {
   grid-template-columns: 248px minmax(0, 1fr);
   height: 100vh;
   height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Left rail — conversation sidebar */
@@ -453,6 +456,8 @@ input[type="radio"] {
   padding: var(--s-4) var(--s-3);
   border-right: 1px solid var(--rail-line);
   min-width: 0;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .rail-head {
@@ -525,6 +530,7 @@ input[type="radio"] {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   gap: var(--s-1);
+  overflow: hidden;
 }
 
 .conv-list {
@@ -583,6 +589,10 @@ input[type="radio"] {
 .conv-time {
   font-size: 10px;
   color: var(--rail-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .conv-acts {
@@ -2982,6 +2992,7 @@ textarea::placeholder {
 .settings-panel {
   display: grid;
   gap: var(--s-4);
+  min-width: 0;
 }
 .settings-card {
   border: 1px solid var(--line);
@@ -2989,6 +3000,7 @@ textarea::placeholder {
   background: var(--panel);
   padding: var(--s-5);
   box-shadow: var(--shadow-sm);
+  min-width: 0;
 }
 .settings-card > h3 {
   margin: 0 0 var(--s-4);
@@ -3099,6 +3111,11 @@ textarea::placeholder {
   display: grid;
   gap: var(--s-2);
   margin-bottom: var(--s-3);
+  max-height: var(--list-scroll-max);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 .plugin-row {
   display: flex;
@@ -3273,6 +3290,11 @@ textarea::placeholder {
 .knowledge-rows {
   display: grid;
   gap: var(--s-2);
+  max-height: var(--list-scroll-max);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 .knowledge-row {
   display: flex;
@@ -3319,6 +3341,8 @@ textarea::placeholder {
   margin: 0 auto;
   display: grid;
   gap: var(--s-2);
+  min-width: 0;
+  width: 100%;
 }
 .admin-row {
   display: flex;
@@ -3428,6 +3452,7 @@ textarea::placeholder {
 }
 .admin-panel {
   margin-top: var(--s-3);
+  min-width: 0;
 }
 .nowrap {
   white-space: nowrap;
@@ -3467,6 +3492,9 @@ textarea::placeholder {
   margin: 0 auto;
   display: grid;
   gap: var(--s-3);
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
 }
 .admin-users-head {
   display: flex;
@@ -3483,6 +3511,13 @@ textarea::placeholder {
   padding: 8px 12px;
   font-size: var(--t-sm);
   color: inherit;
+}
+.admin-users > .admin-list {
+  max-height: clamp(220px, calc(100dvh - 240px), 560px);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 .admin-user {
   border: 1px solid var(--line);
@@ -3571,7 +3606,9 @@ textarea::placeholder {
 /* Audit log table */
 .audit-table-wrap {
   margin-top: var(--s-3);
-  overflow-x: auto;
+  max-height: clamp(220px, calc(100dvh - 270px), 560px);
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 .audit-table {
   display: grid;
@@ -3634,6 +3671,11 @@ textarea::placeholder {
   display: grid;
   gap: var(--s-3);
   margin-bottom: var(--s-4);
+  max-height: var(--list-scroll-max);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 .secret-preset-row {
   display: grid;
@@ -3681,6 +3723,11 @@ textarea::placeholder {
   display: grid;
   gap: var(--s-2);
   margin-bottom: var(--s-3);
+  max-height: var(--list-scroll-max);
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 .secret-row {
   display: flex;
