@@ -2,7 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
 import type { AppConfig } from "../types.js";
-import { DEFAULT_GITHUB_HOST, scrubGitError } from "../marketplace.js";
+import { DEFAULT_GITHUB_HOST, normalizeGithubHost, scrubGitError } from "../marketplace.js";
 import {
   commitAndPush,
   commitIdentityFor,
@@ -61,6 +61,11 @@ type CreateRepoResult =
   | { ok: true; fullName: string; defaultBranch: string; isPrivate: boolean }
   | { ok: false; status: number; message: string };
 
+function githubApiBase(host: string): string {
+  const normalized = normalizeGithubHost(host);
+  return normalized === DEFAULT_GITHUB_HOST ? "https://api.github.com" : `https://${normalized}/api/v3`;
+}
+
 /**
  * Create a new repo under the token owner's account via the GitHub REST API
  * (`POST /user/repos`), with `auto_init` so it has a default branch to clone and
@@ -75,7 +80,7 @@ async function createRemoteRepo(
   isPrivate: boolean,
   description: string,
 ): Promise<CreateRepoResult> {
-  const apiBase = host === DEFAULT_GITHUB_HOST ? "https://api.github.com" : `https://${host}/api/v3`;
+  const apiBase = githubApiBase(host);
   const res = await fetch(`${apiBase}/user/repos`, {
     method: "POST",
     headers: {

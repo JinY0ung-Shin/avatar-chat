@@ -81,7 +81,7 @@ import {
   SSH_TRUST_TOOL_NAMES,
 } from "../src/server/agent/sshTrustTools.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
-import type { Plugin } from "../src/server/types.js";
+import type { AppConfig, Plugin } from "../src/server/types.js";
 import {
   DEFAULT_HEX_SSH_TOOL_POLICY,
   normalizeHexSshToolPolicy,
@@ -1352,9 +1352,14 @@ describe("repo tools (knowledge-repo management)", () => {
 
   // ---- create_repo: a store with a git token but NO repo configured yet. The
   // GitHub API call is stubbed (a local git remote can't model it). -----------
-  function setupNoRepo(dir: string) {
+  function setupNoRepo(dir: string, configOverrides: Partial<AppConfig> = {}) {
     const dataDir = path.join(tempDir, dir);
-    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const { store, config } = createServices({
+      dataDir,
+      agentRuntime: "local",
+      sessionSecret: "t",
+      ...configOverrides,
+    });
     const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
     return { store, config, ownerId: owner.id, owner: { id: owner.id, username: "owner", displayName: "Owner" } };
   }
@@ -1429,6 +1434,30 @@ describe("repo tools (knowledge-repo management)", () => {
       const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
       expect(res.isError).toBeFalsy();
       expect(res.content[0].text).toContain("owner/my-knowledge");
+      expect(fetchMock).toHaveBeenCalledOnce();
+      expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("create_repo uses the configured GitHub host for GHES", async () => {
+    const s = setupNoRepo("rt-create-ghe", { githubHost: "https://github.enterprise.local/" });
+    s.store.setGitToken(s.ownerId, "tok");
+    const fetchMock = vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
+      expect(url).toBe("https://github.enterprise.local/api/v3/user/repos");
+      expect(init.headers.Authorization).toContain("tok");
+      return {
+        ok: true,
+        status: 201,
+        statusText: "Created",
+        json: async () => ({ full_name: "owner/my-knowledge", default_branch: "main", private: true }),
+      };
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
+      expect(res.isError).toBeFalsy();
       expect(fetchMock).toHaveBeenCalledOnce();
       expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
     } finally {
