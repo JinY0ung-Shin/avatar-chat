@@ -12,6 +12,7 @@
  */
 
 import logger from "../logger.js";
+import type { Response } from "express";
 
 const regLogger = logger.child({ module: "runRegistry" });
 
@@ -22,17 +23,193 @@ interface Pending {
   resolve: (value: unknown) => void;
 }
 
+interface RunEvent {
+  id: number;
+  event: string;
+  data: unknown;
+}
+
+interface Client {
+  res: Response;
+  heartbeat: NodeJS.Timeout;
+}
+
 interface Run {
   userId: string;
+  conversationId?: string;
+  avatarId?: string;
+  abortController?: AbortController;
   pending: Map<string, Pending>;
+  events: RunEvent[];
+  clients: Set<Client>;
+  nextEventId: number;
   ended: boolean;
+  cancelled: boolean;
+}
+
+interface RunMeta {
+  conversationId?: string;
+  avatarId?: string;
+  abortController?: AbortController;
+}
+
+export interface RunSnapshot {
+  runId: string;
+  conversationId?: string;
+  avatarId?: string;
+  eventCount: number;
+  pendingCount: number;
+  cancelled: boolean;
 }
 
 const runs = new Map<string, Run>();
+const conversationRuns = new Map<string, string>();
 
-export function openRun(runId: string, userId: string): void {
-  runs.set(runId, { userId, pending: new Map(), ended: false });
+function conversationKey(userId: string, conversationId: string): string {
+  return `${userId}:${conversationId}`;
+}
+
+export function openRun(runId: string, userId: string, meta: RunMeta = {}): void {
+  runs.set(runId, {
+    userId,
+    conversationId: meta.conversationId,
+    avatarId: meta.avatarId,
+    abortController: meta.abortController,
+    pending: new Map(),
+    events: [],
+    clients: new Set(),
+    nextEventId: 0,
+    ended: false,
+    cancelled: false,
+  });
+  if (meta.conversationId) {
+    conversationRuns.set(conversationKey(userId, meta.conversationId), runId);
+  }
   regLogger.debug({ runId, userId }, "run opened");
+}
+
+function writeSse(res: Response, event: string, data: unknown, id?: number): boolean {
+  if (res.writableEnded) {
+    return false;
+  }
+  try {
+    if (id !== undefined) {
+      res.write(`id: ${id}\n`);
+    }
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function detachClient(run: Run, client: Client): void {
+  clearInterval(client.heartbeat);
+  run.clients.delete(client);
+}
+
+export function emitRunEvent(runId: string, event: string, data: unknown): boolean {
+  const run = runs.get(runId);
+  if (!run || run.ended) {
+    return false;
+  }
+  const frame = { id: ++run.nextEventId, event, data };
+  run.events.push(frame);
+  for (const client of [...run.clients]) {
+    if (!writeSse(client.res, frame.event, frame.data, frame.id)) {
+      detachClient(run, client);
+    }
+  }
+  return true;
+}
+
+export function attachRunClient(
+  runId: string,
+  userId: string,
+  res: Response,
+  sinceEventId = 0,
+): boolean {
+  const run = runs.get(runId);
+  if (!run || run.ended || run.userId !== userId) {
+    return false;
+  }
+  for (const frame of run.events) {
+    if (frame.id > sinceEventId) {
+      writeSse(res, frame.event, frame.data, frame.id);
+    }
+  }
+  const client: Client = {
+    res,
+    heartbeat: setInterval(() => {
+      if (res.writableEnded) {
+        detachClient(run, client);
+        return;
+      }
+      try {
+        res.write(`: ping\n\n`);
+      } catch {
+        detachClient(run, client);
+      }
+    }, 15_000),
+  };
+  run.clients.add(client);
+  res.on("close", () => detachClient(run, client));
+  return true;
+}
+
+export function getActiveRunForConversation(userId: string, conversationId: string): RunSnapshot | null {
+  const runId = conversationRuns.get(conversationKey(userId, conversationId));
+  if (!runId) {
+    return null;
+  }
+  const run = runs.get(runId);
+  if (!run || run.ended || run.userId !== userId) {
+    conversationRuns.delete(conversationKey(userId, conversationId));
+    return null;
+  }
+  return {
+    runId,
+    conversationId: run.conversationId,
+    avatarId: run.avatarId,
+    eventCount: run.events.length,
+    pendingCount: run.pending.size,
+    cancelled: run.cancelled,
+  };
+}
+
+export function getActiveRun(runId: string, userId: string): RunSnapshot | null {
+  const run = runs.get(runId);
+  if (!run || run.ended || run.userId !== userId) {
+    return null;
+  }
+  return {
+    runId,
+    conversationId: run.conversationId,
+    avatarId: run.avatarId,
+    eventCount: run.events.length,
+    pendingCount: run.pending.size,
+    cancelled: run.cancelled,
+  };
+}
+
+export function cancelRun(runId: string, userId: string): boolean {
+  const run = runs.get(runId);
+  if (!run || run.ended || run.userId !== userId) {
+    return false;
+  }
+  run.cancelled = true;
+  run.abortController?.abort();
+  for (const pending of run.pending.values()) {
+    pending.resolve(CANCELLED);
+  }
+  run.pending.clear();
+  emitRunEvent(runId, "status", { label: "응답을 중지하는 중…" });
+  regLogger.debug({ runId }, "run cancellation requested");
+  return true;
+}
+
+export function isRunCancelled(runId: string): boolean {
+  return runs.get(runId)?.cancelled === true;
 }
 
 /**
@@ -86,6 +263,15 @@ export function closeRun(runId: string): void {
     pending.resolve(CANCELLED);
   }
   run.pending.clear();
+  for (const client of [...run.clients]) {
+    detachClient(run, client);
+    if (!client.res.writableEnded) {
+      client.res.end();
+    }
+  }
+  if (run.conversationId) {
+    conversationRuns.delete(conversationKey(run.userId, run.conversationId));
+  }
   runs.delete(runId);
   regLogger.debug({ runId, pendingCount }, "run closed");
 }

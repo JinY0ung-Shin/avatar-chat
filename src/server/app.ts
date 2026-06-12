@@ -29,7 +29,19 @@ import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
 import { Store, CLAUDE_OAUTH_TOKEN_KEY } from "./store.js";
 import type { AgentResponse, AppConfig, PluginRoot } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
-import { awaitResponse, closeRun, openRun, submitResponse, CANCELLED } from "./agent/runRegistry.js";
+import {
+  attachRunClient,
+  awaitResponse,
+  cancelRun,
+  closeRun,
+  emitRunEvent,
+  getActiveRun,
+  getActiveRunForConversation,
+  isRunCancelled,
+  openRun,
+  submitResponse,
+  CANCELLED,
+} from "./agent/runRegistry.js";
 import { executeRoutineJob, isRoutineRunning } from "./scheduler.js";
 import { workspaceDirFor } from "./workspace.js";
 import { HEX_SSH_TOOL_INFOS, parseHexSshToolPolicy } from "./hexSshPolicy.js";
@@ -96,13 +108,13 @@ export function createServices(configOverrides: Partial<AppConfig> = {}): AppSer
   return { config, store };
 }
 
-/** Write a single SSE frame. Returns false if the socket is no longer writable. */
-function sseSend(res: Response, event: string, data: unknown): boolean {
-  if (res.writableEnded) {
-    return false;
-  }
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  return true;
+function prepareSse(res: Response): void {
+  res.status(200);
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache, no-transform");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders();
 }
 
 export function createApp(services = createServices()) {
@@ -959,12 +971,26 @@ export function createApp(services = createServices()) {
       apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
       return;
     }
+    const activeRun = getActiveRunForConversation(req.user!.id, conversationId);
+    if (activeRun) {
+      prepareSse(res);
+      if (!attachRunClient(activeRun.runId, req.user!.id, res)) {
+        res.end();
+      }
+      return;
+    }
+
     const runId = crypto.randomUUID();
-    openRun(runId, req.user!.id);
     const regenerate = req.body?.regenerate === true;
     const chatStart = Date.now();
     if (regenerate) {
       store.dropLastAssistant(req.user!.id, conversationId);
+    }
+    if (!greeting) {
+      store.touchConversation(req.user!.id, conversationId, avatar.id, message);
+      if (!regenerate) {
+        store.addMessage(conversationId, { role: "user", content: message });
+      }
     }
     // Resume the conversation's prior SDK session so the model keeps its context
     // across turns. A greeting is ephemeral (never persisted), and a regenerate
@@ -982,67 +1008,49 @@ export function createApp(services = createServices()) {
       "chat stream started",
     );
 
-    // Load plugin roots (read-only). The repo-bundled default plugin (knowledge
-    // backfill etc.) is loaded for every avatar, ahead of its own plugins, then
-    // the avatar's personal knowledge repo (the skills/knowledge it accumulates).
-    // Tolerate clone/resolve fails.
-    const pluginWarnings: string[] = [];
-    const pluginRoots =
-      config.agentRuntime === "local"
-        ? []
-        : [
-            ...(await loadDefaultPluginRoots(config, (warn) => pluginWarnings.push(warn))),
-            ...(await loadAvatarPluginRoots(
-              avatar.id,
-              store.listEnabledPlugins(avatar.id),
-              config,
-              (warn) => pluginWarnings.push(warn),
-              store.getGitToken(avatar.id),
-            )),
-            ...(await loadKnowledgeRepoRoots(
-              knowledgeRepoContextFor(store, avatar.id, config),
-              (warn) => pluginWarnings.push(warn),
-            )),
-          ];
-
-    // Per-conversation workspace: each chat session gets an isolated cwd, scoped
-    // under the avatar so sessions cannot mix files by accident.
-    const workspaceDir = workspaceDirFor(config, avatar.id, conversationId);
-    fs.mkdirSync(workspaceDir, { recursive: true });
-
-    res.status(200);
-    res.setHeader("Content-Type", "text/event-stream");
-    res.setHeader("Cache-Control", "no-cache, no-transform");
-    res.setHeader("Connection", "keep-alive");
-    res.setHeader("X-Accel-Buffering", "no");
-    res.flushHeaders();
-
-    let closed = false;
     const abortController = new AbortController();
-    const heartbeat = setInterval(() => {
-      if (!res.writableEnded) {
-        res.write(`: ping\n\n`);
-      }
-    }, 15_000);
-    const cleanup = () => clearInterval(heartbeat);
-    // Treat only a premature socket close (before we've finished writing) as a
-    // client disconnect/Stop. Once the response is done we ignore the close.
-    res.on("close", () => {
-      if (!res.writableEnded) {
-        closed = true;
-        abortController.abort();
-      }
-      // Unpark any blocking permission/question waits so the SDK can unwind.
+    openRun(runId, req.user!.id, { conversationId, avatarId: avatar.id, abortController });
+    prepareSse(res);
+    if (!attachRunClient(runId, req.user!.id, res)) {
+      res.end();
       closeRun(runId);
-      cleanup();
-    });
-
-    sseSend(res, "open", { conversationId, avatarId: avatar.id, runId });
-    for (const warn of pluginWarnings) {
-      sseSend(res, "status", { label: `플러그인 경고: ${warn}` });
+      return;
     }
+    emitRunEvent(runId, "open", { conversationId, avatarId: avatar.id, runId });
 
     try {
+      // Load plugin roots (read-only). The repo-bundled default plugin (knowledge
+      // backfill etc.) is loaded for every avatar, ahead of its own plugins, then
+      // the avatar's personal knowledge repo (the skills/knowledge it accumulates).
+      // Tolerate clone/resolve fails.
+      const pluginWarnings: string[] = [];
+      const pluginRoots =
+        config.agentRuntime === "local"
+          ? []
+          : [
+              ...(await loadDefaultPluginRoots(config, (warn) => pluginWarnings.push(warn))),
+              ...(await loadAvatarPluginRoots(
+                avatar.id,
+                store.listEnabledPlugins(avatar.id),
+                config,
+                (warn) => pluginWarnings.push(warn),
+                store.getGitToken(avatar.id),
+              )),
+              ...(await loadKnowledgeRepoRoots(
+                knowledgeRepoContextFor(store, avatar.id, config),
+                (warn) => pluginWarnings.push(warn),
+              )),
+            ];
+
+      // Per-conversation workspace: each chat session gets an isolated cwd, scoped
+      // under the avatar so sessions cannot mix files by accident.
+      const workspaceDir = workspaceDirFor(config, avatar.id, conversationId);
+      fs.mkdirSync(workspaceDir, { recursive: true });
+
+      for (const warn of pluginWarnings) {
+        emitRunEvent(runId, "status", { label: `플러그인 경고: ${warn}` });
+      }
+
       const response = await runAgentStream(
         {
           message,
@@ -1063,10 +1071,10 @@ export function createApp(services = createServices()) {
         store,
         {
           onDelta: (text) => {
-            if (!closed) sseSend(res, "delta", { text });
+            emitRunEvent(runId, "delta", { text });
           },
           onStatus: (label) => {
-            if (!closed) sseSend(res, "status", { label });
+            emitRunEvent(runId, "status", { label });
           },
           onModel: (model) => {
             observedModel = model;
@@ -1075,38 +1083,38 @@ export function createApp(services = createServices()) {
             runSessionId = sessionId;
           },
           onPlugin: (event) => {
-            if (!closed) sseSend(res, "plugin", { status: event.status, name: event.name });
+            emitRunEvent(runId, "plugin", { status: event.status, name: event.name });
           },
           onToolStart: (event) => {
-            if (!closed) sseSend(res, "tool", event);
+            emitRunEvent(runId, "tool", event);
           },
           onToolEnd: (event) => {
-            if (!closed) sseSend(res, "tool_end", event);
+            emitRunEvent(runId, "tool_end", event);
           },
           onTaskStart: (event) => {
-            if (!closed) sseSend(res, "task", event);
+            emitRunEvent(runId, "task", event);
           },
           onTaskUpdate: (event) => {
-            if (!closed) sseSend(res, "task_update", event);
+            emitRunEvent(runId, "task_update", event);
           },
           onTaskEnd: (event) => {
-            if (!closed) sseSend(res, "task_end", event);
+            emitRunEvent(runId, "task_end", event);
           },
           onAgentStart: (event) => {
-            if (!closed) sseSend(res, "agent", event);
+            emitRunEvent(runId, "agent", event);
           },
           onAgentEnd: (event) => {
-            if (!closed) sseSend(res, "agent_end", event);
+            emitRunEvent(runId, "agent_end", event);
           },
           onBlocked: (event) => {
-            if (!closed) sseSend(res, "blocked", event);
+            emitRunEvent(runId, "blocked", event);
           },
           // Interactive permission prompt (owner only — see claudeAgent).
           onPermission: async (requestData) => {
             const requestId = crypto.randomUUID();
-            sseSend(res, "permission", { runId, requestId, ...requestData });
+            emitRunEvent(runId, "permission", { runId, requestId, ...requestData });
             const answer = await awaitResponse(runId, requestId);
-            if (answer === CANCELLED || closed) {
+            if (answer === CANCELLED) {
               return { behavior: "deny" };
             }
             return (answer as { behavior: "allow" }).behavior === "allow"
@@ -1116,14 +1124,14 @@ export function createApp(services = createServices()) {
           // AskUserQuestion (and other request_user_dialog kinds).
           onQuestion: async (requestData) => {
             const requestId = crypto.randomUUID();
-            sseSend(res, "question", {
+            emitRunEvent(runId, "question", {
               runId,
               requestId,
               dialogKind: requestData.dialogKind,
               payload: requestData.payload,
             });
             const answer = await awaitResponse(runId, requestId);
-            if (answer === CANCELLED || closed) {
+            if (answer === CANCELLED) {
               return { behavior: "cancelled" };
             }
             const reply = answer as { cancelled?: boolean; result?: unknown };
@@ -1136,17 +1144,12 @@ export function createApp(services = createServices()) {
         abortController,
       );
 
-      // Client disconnected mid-run: abandon — do not persist.
-      if (closed) {
-        return;
-      }
-
       // A greeting is ephemeral: it streams to the screen but is NOT persisted,
       // so opening a fresh chat doesn't litter the history with greeting-only
       // conversations. The conversation starts saving on the owner's first real
       // message.
       if (greeting) {
-        sseSend(res, "done", {
+        emitRunEvent(runId, "done", {
           message: {
             role: "assistant",
             content: response.text || response.summary,
@@ -1158,13 +1161,9 @@ export function createApp(services = createServices()) {
         return;
       }
 
-      store.touchConversation(req.user!.id, conversationId, avatar.id, message);
       // Remember this run's SDK session so the next turn resumes its context.
       if (runSessionId) {
         store.setAgentSessionId(conversationId, runSessionId);
-      }
-      if (!regenerate) {
-        store.addMessage(conversationId, { role: "user", content: message });
       }
       const assistantMessage = store.addMessage(conversationId, {
         role: "assistant",
@@ -1183,9 +1182,25 @@ export function createApp(services = createServices()) {
         "chat completed",
       );
 
-      sseSend(res, "done", { message: assistantMessage, response });
+      emitRunEvent(runId, "done", { message: assistantMessage, response });
     } catch (error) {
-      if (closed) {
+      if (isRunCancelled(runId)) {
+        if (!greeting) {
+          const response: AgentResponse = {
+            kind: "text",
+            runtime: config.agentRuntime,
+            summary: "중지됨",
+            text: "",
+          };
+          const stopped = store.addMessage(conversationId, {
+            role: "assistant",
+            content: "(중지됨)",
+            response,
+          });
+          emitRunEvent(runId, "cancelled", { message: stopped, response });
+        } else {
+          emitRunEvent(runId, "cancelled", { message: null });
+        }
         return;
       }
       // Scrub before logging too: a git auth failure carries the token in its
@@ -1202,14 +1217,45 @@ export function createApp(services = createServices()) {
         status: "error",
         detail,
       });
-      sseSend(res, "error", { error: detail });
+      if (!greeting) {
+        store.addMessage(conversationId, { role: "assistant", content: detail });
+      }
+      emitRunEvent(runId, "error", { error: detail });
     } finally {
       closeRun(runId);
-      cleanup();
-      if (!res.writableEnded) {
-        res.end();
-      }
     }
+  });
+
+  app.get("/api/chat/runs", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const conversationId = safeString(req.query.conversationId);
+    if (!conversationId) {
+      apiError(res, 400, "conversationId가 필요합니다.");
+      return;
+    }
+    res.json({ run: getActiveRunForConversation(req.user!.id, conversationId) });
+  });
+
+  app.get("/api/chat/runs/:runId/events", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const runId = safeString(req.params.runId);
+    const run = getActiveRun(runId, req.user!.id);
+    if (!run) {
+      apiError(res, 404, "진행 중인 실행을 찾을 수 없습니다.");
+      return;
+    }
+    const lastEventId = Number(req.get("Last-Event-ID") || req.query.since || 0);
+    prepareSse(res);
+    if (!attachRunClient(runId, req.user!.id, res, Number.isFinite(lastEventId) ? lastEventId : 0)) {
+      res.end();
+    }
+  });
+
+  app.post("/api/chat/runs/:runId/cancel", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const runId = safeString(req.params.runId);
+    if (!cancelRun(runId, req.user!.id)) {
+      apiError(res, 404, "진행 중인 실행을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ ok: true });
   });
 
   // Answer an interactive prompt (permission / AskUserQuestion) raised mid-run.

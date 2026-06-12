@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Response } from "express";
 import { createServices } from "../src/server/app.js";
 import { loadConfig } from "../src/server/config.js";
 import { applyCustomGithubCa } from "../src/server/tlsCa.js";
@@ -33,9 +34,14 @@ import {
   stripManagedMcpServers,
 } from "../src/server/plugins.js";
 import {
+  attachRunClient,
   awaitResponse,
+  cancelRun,
   CANCELLED,
   closeRun,
+  emitRunEvent,
+  getActiveRunForConversation,
+  isRunCancelled,
   openRun,
   submitResponse,
 } from "../src/server/agent/runRegistry.js";
@@ -198,6 +204,30 @@ function makeSkill(root: string, name: string, frontmatter: string, body = ""): 
 // ---------------------------------------------------------------------------
 
 describe("runRegistry", () => {
+  function sseSink() {
+    const chunks: string[] = [];
+    const handlers = new Map<string, () => void>();
+    let ended = false;
+    const res = {
+      get writableEnded() {
+        return ended;
+      },
+      write(chunk: string) {
+        chunks.push(chunk);
+        return true;
+      },
+      end() {
+        ended = true;
+        handlers.get("close")?.();
+      },
+      on(event: string, cb: () => void) {
+        handlers.set(event, cb);
+        return this;
+      },
+    } as Response;
+    return { res, chunks };
+  }
+
   it("parks a request and resolves it when the user responds", async () => {
     openRun("run1", "user1");
     const parked = awaitResponse("run1", "req1");
@@ -238,6 +268,41 @@ describe("runRegistry", () => {
 
     // Closing an unknown run is a no-op (must not throw).
     expect(() => closeRun("never-opened")).not.toThrow();
+  });
+
+  it("buffers SSE events and replays them to attached clients", () => {
+    openRun("run5", "user5", { conversationId: "conv5", avatarId: "avatar5" });
+    expect(getActiveRunForConversation("user5", "conv5")?.runId).toBe("run5");
+    expect(emitRunEvent("run5", "status", { label: "작업 중" })).toBe(true);
+
+    const first = sseSink();
+    expect(attachRunClient("run5", "user5", first.res)).toBe(true);
+    expect(first.chunks.join("")).toContain("event: status");
+    expect(first.chunks.join("")).toContain("작업 중");
+
+    const second = sseSink();
+    expect(attachRunClient("run5", "user5", second.res, 1)).toBe(true);
+    expect(second.chunks.join("")).not.toContain("작업 중");
+    expect(emitRunEvent("run5", "delta", { text: "hello" })).toBe(true);
+    expect(first.chunks.join("")).toContain("hello");
+    expect(second.chunks.join("")).toContain("hello");
+
+    closeRun("run5");
+    expect(getActiveRunForConversation("user5", "conv5")).toBeNull();
+  });
+
+  it("marks cancellation, aborts the controller, and unparks prompts", async () => {
+    const abortController = new AbortController();
+    openRun("run6", "user6", { conversationId: "conv6", abortController });
+    const parked = awaitResponse("run6", "req6");
+
+    expect(cancelRun("run6", "intruder")).toBe(false);
+    expect(cancelRun("run6", "user6")).toBe(true);
+    expect(isRunCancelled("run6")).toBe(true);
+    expect(abortController.signal.aborted).toBe(true);
+    await expect(parked).resolves.toBe(CANCELLED);
+
+    closeRun("run6");
   });
 });
 

@@ -656,13 +656,25 @@ function closeRail() {
   if (wasOpen && dom.rail?.contains(document.activeElement)) dom.railToggle?.focus();
 }
 
-// Navigating away from a streaming chat: ask, then stop cleanly. A silent
-// dead nav (the old behavior) made the whole app feel broken during long runs.
-function confirmLeaveStreaming() {
-  if (!anyChatStreaming()) return true;
-  if (!window.confirm("응답이 생성되는 중입니다. 중지하고 이동할까요?")) return false;
-  stopAllChatStreams();
-  return true;
+function streamingPane() {
+  return state.chatPanes.find((p) => p.streaming) || null;
+}
+
+// View changes do not stop an in-flight chat. The fetch keeps running in the
+// background, and the live bubble is reattached if the user returns to Chat.
+function noteStreamingContinues() {
+  if (!anyChatStreaming()) return;
+  notify("응답은 백그라운드에서 계속 생성됩니다. 대화 화면으로 돌아오면 이어서 볼 수 있습니다.", "info");
+}
+
+// Replacing the active conversation while a run is streaming would orphan the
+// local live state. Keep that narrow path explicit: stop first, then switch.
+function guardChatReplacement(targetConversationId = "") {
+  const pane = streamingPane();
+  if (!pane) return true;
+  if (targetConversationId && pane.conversationId === targetConversationId) return true;
+  notify("응답 생성 중인 대화가 있습니다. 다른 대화로 전환하려면 먼저 중지해 주세요.", "warn");
+  return false;
 }
 
 function goView(view) {
@@ -670,7 +682,7 @@ function goView(view) {
     closeRail();
     return;
   }
-  if (!confirmLeaveStreaming()) return;
+  noteStreamingContinues();
   state.view = view;
   closeRail();
   syncHash();
@@ -766,7 +778,7 @@ async function applyRoute() {
     if (view === "settings" && arg && arg !== state.settingsTab) state.settingsTab = arg;
     if (view === "admin" && arg && arg !== state.adminTab) state.adminTab = arg;
     if (view !== state.view || view === "settings" || view === "admin") {
-      if (!confirmLeaveStreaming()) return;
+      noteStreamingContinues();
       state.view = view;
       closeRail();
       renderView();
@@ -968,7 +980,17 @@ function buildAvatarCard(av) {
 }
 
 async function startChatWith(av) {
-  if (!confirmLeaveStreaming()) return;
+  const activeStreaming = streamingPane();
+  if (activeStreaming) {
+    if (activeStreaming.avatar?.id === av.id) {
+      setActivePane(activeStreaming);
+      state.view = "chat";
+      syncHash();
+      renderView();
+      return;
+    }
+    if (!guardChatReplacement()) return;
+  }
   // Resume the most recent conversation with this avatar instead of silently
   // forking a new one — Explore and the rail used to diverge here, spawning
   // duplicate threads. "새 대화" in the chat header remains the fork path.
@@ -1569,13 +1591,30 @@ function renderTranscript(pane = activePane()) {
   const pdom = pane?.dom;
   if (!pdom?.transcriptInner) return;
   pdom.transcriptInner.replaceChildren();
+  pane.messages.forEach((m, i) => pdom.transcriptInner.append(buildMessageNode(pane, m, i === pane.messages.length - 1 && !pane.live)));
+  if (attachLiveToTranscript(pane)) {
+    scrollToBottom(pane, true);
+    return;
+  }
   if (!pane.messages.length) {
     pdom.transcriptInner.append(renderChatEmpty(pane));
     updateScrollButton(pane);
     return;
   }
-  pane.messages.forEach((m, i) => pdom.transcriptInner.append(buildMessageNode(pane, m, i === pane.messages.length - 1)));
   scrollToBottom(pane, true);
+}
+
+function attachLiveToTranscript(pane = activePane()) {
+  const live = pane?.live;
+  const pdom = pane?.dom;
+  if (!live || live.done || !pdom?.transcriptInner) return false;
+  if (live.wrap.parentElement !== pdom.transcriptInner) {
+    pdom.transcriptInner.append(live.wrap);
+  }
+  pdom.transcript?.setAttribute("aria-busy", "true");
+  setComposerState(pane, live.statusLabel?.textContent || "응답 생성 중…");
+  updateSendState(pane);
+  return true;
 }
 
 function renderChatEmpty(pane = activePane()) {
@@ -1771,7 +1810,7 @@ async function maybeGreet(pane = activePane()) {
   pane.greetingStarted = false;
 }
 
-async function streamChat(pane, message, { isNewConversation = false, regenerate = false, greeting = false, restoreOnError = null } = {}) {
+function beginLiveStream(pane, { isNewConversation = false, restoreOnError = null } = {}) {
   pane.streaming = true;
   setActivePane(pane);
   refreshStreamingState();
@@ -1822,6 +1861,7 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
     text: "", rafPending: false, done: false, aborted: false, isNewConversation,
     restoreOnError: Array.isArray(restoreOnError) && restoreOnError.length ? restoreOnError : null,
   };
+  pane.live = live;
   const flush = () => {
     live.rafPending = false;
     live.mdNode.innerHTML = renderMarkdown(live.text);
@@ -1833,8 +1873,15 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
     requestAnimationFrame(flush);
   };
 
+  return { live, scheduleFlush };
+}
+
+async function streamChat(pane, message, { isNewConversation = false, regenerate = false, greeting = false, restoreOnError = null } = {}) {
+  const { live, scheduleFlush } = beginLiveStream(pane, { isNewConversation, restoreOnError });
+
   pane.abortController = new AbortController();
   if (activePane()?.id === pane.id) abortController = pane.abortController;
+  let sawEvent = false;
   try {
     const response = await fetch("/api/chat/stream", {
       method: "POST",
@@ -1882,23 +1929,95 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
       finalizeError(live, error.message || "응답을 받는 중 연결 오류가 발생했습니다. 다시 시도해 주세요.");
     }
   } finally {
-    if (!live.done) {
-      if (live.aborted) finalizeStopped(live);
-      else if (!live.text) finalizeError(live, "응답을 받지 못한 채 연결이 끊어졌습니다. 다시 시도해 주세요.");
-      // Connection dropped server-side mid-answer — NOT a user stop; label it honestly.
-      else finalizeInterrupted(live);
+    finishLiveRequest(live, pane);
+  }
+}
+
+function finishLiveRequest(live, pane) {
+  if (!live.done) {
+    if (live.aborted) finalizeStopped(live);
+    else if (!live.text) finalizeError(live, "응답을 받지 못한 채 연결이 끊어졌습니다. 다시 시도해 주세요.");
+    // Connection dropped server-side mid-answer — NOT a user stop; label it honestly.
+    else finalizeInterrupted(live);
+  }
+  pane.streaming = false;
+  pane.abortController = null;
+  refreshStreamingState();
+  updateSendState(pane);
+  setComposerState(pane, "");
+  pane.dom.transcript?.setAttribute("aria-busy", "false");
+  syncDocumentTitle();
+  // Don't yank focus from a composer the user is typing in (split panes).
+  const focused = document.activeElement;
+  const typingElsewhere = focused && focused.tagName === "TEXTAREA" && focused !== pane.dom.textarea;
+  if (activePane()?.id === pane.id && !typingElsewhere) pane.dom.textarea?.focus();
+}
+
+async function attachActiveRun(pane = activePane()) {
+  if (!pane || pane.streaming || !pane.conversationId) return;
+  try {
+    const result = await api(`/api/chat/runs?conversationId=${encodeURIComponent(pane.conversationId)}`);
+    if (result.run?.runId && !pane.streaming) {
+      attachChatRun(pane, result.run.runId);
     }
-    pane.streaming = false;
-    pane.abortController = null;
-    refreshStreamingState();
-    updateSendState(pane);
-    setComposerState(pane, "");
-    pane.dom.transcript?.setAttribute("aria-busy", "false");
-    syncDocumentTitle();
-    // Don't yank focus from a composer the user is typing in (split panes).
-    const focused = document.activeElement;
-    const typingElsewhere = focused && focused.tagName === "TEXTAREA" && focused !== pane.dom.textarea;
-    if (activePane()?.id === pane.id && !typingElsewhere) pane.dom.textarea?.focus();
+  } catch {
+    /* best effort: a missing/finished run just means normal persisted history */
+  }
+}
+
+async function attachChatRun(pane, runId) {
+  const { live, scheduleFlush } = beginLiveStream(pane, { isNewConversation: false });
+  live.runId = runId;
+  pane.abortController = new AbortController();
+  if (activePane()?.id === pane.id) abortController = pane.abortController;
+  try {
+    const response = await fetch(`/api/chat/runs/${encodeURIComponent(runId)}/events`, {
+      headers: { Accept: "text/event-stream" },
+      credentials: "same-origin",
+      signal: pane.abortController.signal,
+    });
+    if (response.status === 401) {
+      handleSessionExpired();
+      return;
+    }
+    if (response.status === 404) {
+      live.done = true;
+      cleanupLive(live);
+      live.wrap.remove();
+      pane.streaming = false;
+      pane.abortController = null;
+      refreshStreamingState();
+      await refreshConversationMessages(pane);
+      return;
+    }
+    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    await consumeSse(response.body, (e, d) => {
+      sawEvent = true;
+      handleSseEvent(e, d, live, scheduleFlush);
+    });
+    if (!live.done && !sawEvent) {
+      live.done = true;
+      cleanupLive(live);
+      live.wrap.remove();
+      await refreshConversationMessages(pane);
+    }
+  } catch (error) {
+    if (error.name === "AbortError" || live.aborted) finalizeStopped(live);
+    else finalizeInterrupted(live);
+  } finally {
+    finishLiveRequest(live, pane);
+  }
+}
+
+async function refreshConversationMessages(pane) {
+  if (!pane?.conversationId) return;
+  try {
+    const msgRes = await api(`/api/messages?conversationId=${encodeURIComponent(pane.conversationId)}`);
+    pane.messages = msgRes.messages || [];
+    if (activePane()?.id === pane.id) syncLegacyChatState(pane);
+    renderTranscript(pane);
+  } catch {
+    /* keep the current transcript if refresh fails */
   }
 }
 
@@ -1922,19 +2041,21 @@ async function consumeSse(body, onEvent) {
 
 function parseFrame(raw) {
   let event = "message";
+  let id = "";
   const dataLines = [];
   for (const rawLine of raw.split("\n")) {
     const line = rawLine.replace(/\r$/, "");
     if (!line || line.startsWith(":")) continue;
+    if (line.startsWith("id:")) id = line.slice(3).trim();
     if (line.startsWith("event:")) event = line.slice(6).trim();
     else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^\s/, ""));
   }
   if (!dataLines.length) return null;
   const dataStr = dataLines.join("\n");
   try {
-    return { event, data: JSON.parse(dataStr) };
+    return { id, event, data: JSON.parse(dataStr) };
   } catch {
-    return { event, data: { text: dataStr } };
+    return { id, event, data: { text: dataStr } };
   }
 }
 
@@ -1947,6 +2068,7 @@ function handleSseEvent(event, data, live, scheduleFlush) {
           syncLegacyChatState(live.pane);
           syncHash(true);
         }
+        if (live.isNewConversation) refreshConversations();
       }
       if (data?.runId) live.runId = data.runId;
       setStatus(live, "응답 준비 중…");
@@ -1996,6 +2118,9 @@ function handleSseEvent(event, data, live, scheduleFlush) {
       break;
     case "done":
       finalizeDone(live, data);
+      break;
+    case "cancelled":
+      finalizeStopped(live);
       break;
     case "error":
       finalizeError(live, data?.error || "오류가 발생했습니다.");
@@ -2421,6 +2546,7 @@ function setComposerState(pane, text) {
   if (n) n.textContent = text;
 }
 function cleanupLive(live) {
+  if (live.pane?.live === live) live.pane.live = null;
   live.caret.remove();
   live.statusRow.remove();
   // Dismiss THIS run's unanswered prompts only — in split view another pane's
@@ -2575,7 +2701,15 @@ function finalizeInterrupted(live) {
   live.bubble.append(el("div", { class: "stream-status" }, [el("span", { class: "label", text: "연결이 끊겨 응답이 중단되었습니다 — 다시 생성으로 이어서 받을 수 있어요" })]));
 }
 function stopStreaming(pane = activePane()) {
-  pane?.abortController?.abort();
+  const runId = pane?.live?.runId;
+  const abortLocal = () => pane?.abortController?.abort();
+  if (!runId) {
+    abortLocal();
+    return;
+  }
+  api(`/api/chat/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" })
+    .catch((err) => notify(`중지 요청 실패: ${err.message}`, "warn"))
+    .finally(abortLocal);
 }
 
 /* ============================================================ Conversations (rail) */
@@ -2681,7 +2815,7 @@ function startRenameConversation(item, conv) {
 }
 
 async function selectConversation(conv) {
-  if (!confirmLeaveStreaming()) return;
+  if (!guardChatReplacement(conv.id)) return;
   if (state.chatPanes.length > 1) {
     // Already open in a split pane → just focus that pane, keep the split.
     const openPane = state.chatPanes.find((p) => p.conversationId === conv.id);
@@ -2718,6 +2852,7 @@ async function selectConversation(conv) {
   syncHash();
   renderView();
   renderConversations();
+  attachActiveRun(pane);
 }
 async function deleteConversation(conv) {
   const streamingPane = state.chatPanes.find((p) => p.conversationId === conv.id && p.streaming);
