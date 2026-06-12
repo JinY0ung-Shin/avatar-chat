@@ -31,6 +31,11 @@ import {
   syncGitRepo,
 } from "../src/server/marketplace.js";
 import {
+  EXTERNAL_GIT_TOKEN_SECRET_NAME,
+  INTERNAL_GIT_TOKEN_SECRET_NAME,
+  tokenForGitUrl,
+} from "../src/server/gitCredentials.js";
+import {
   APP_MANAGED_MCP_SERVERS,
   inspectRepoContents,
   listSkillsInRoots,
@@ -384,6 +389,15 @@ describe("marketplace helpers", () => {
     const args = gitAuthArgs("https://github.com/o/r.git", "tok");
     const basic = Buffer.from("x-access-token:tok").toString("base64");
     expect(args).toEqual(["-c", `http.extraHeader=Authorization: Basic ${basic}`]);
+  });
+
+  it("selects internal vs external git tokens by clone URL host", () => {
+    const config = { githubHost: "github.enterprise.local" };
+    const tokens = { internal: "internal-token", external: "external-token" };
+    expect(tokenForGitUrl("https://github.enterprise.local/o/r.git", config, tokens)).toBe("internal-token");
+    expect(tokenForGitUrl("https://github.com/o/r.git", config, tokens)).toBe("external-token");
+    expect(tokenForGitUrl("https://gitlab.example.com/o/r.git", config, tokens)).toBeUndefined();
+    expect(tokenForGitUrl("git@github.com:o/r.git", config, tokens)).toBeUndefined();
   });
 
   it("scrubs the auth header (token) from git error text", () => {
@@ -1127,7 +1141,7 @@ describe("buildPrompt", () => {
     expect(p).toContain("다음 대화부터 로드");
   });
 
-  it("offers to create the knowledge repo via the repo tool on a greeting when a git token is set", () => {
+  it("offers to create the knowledge repo via the repo tool on a greeting when GIT_TOKEN is set", () => {
     const p = buildPrompt(
       req({
         viewerIsOwner: true,
@@ -1144,7 +1158,7 @@ describe("buildPrompt", () => {
     expect(p).toContain("그런 다음 무엇을 도와줄지 물어보세요");
   });
 
-  it("guides the owner to set a git token first on a greeting when none is set", () => {
+  it("guides the owner to set GIT_TOKEN first on a greeting when none is set", () => {
     const p = buildPrompt(
       req({
         viewerIsOwner: true,
@@ -1155,8 +1169,8 @@ describe("buildPrompt", () => {
       }),
       0,
     );
-    expect(p).toContain("git 토큰도 설정돼 있지 않습니다");
-    expect(p).toContain("git 자격증명");
+    expect(p).toContain("`GIT_TOKEN`도 설정돼 있지 않습니다");
+    expect(p).toContain("Git 자격증명");
     // Falls back to the manual marketplace-format guidance when there's no token.
     expect(p).toContain(".claude-plugin/marketplace.json");
     expect(p).toContain("skills/<name>/SKILL.md");
@@ -1184,13 +1198,13 @@ describe("buildPrompt", () => {
     expect(mid).not.toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
   });
 
-  it("guides the owner to set a git token mid-conversation when none is set and no repo exists", () => {
+  it("guides the owner to set GIT_TOKEN mid-conversation when none is set and no repo exists", () => {
     const mid = buildPrompt(
       req({ viewerIsOwner: true, knowledgeRepoConfigured: false, gitTokenSet: false }),
       0,
     );
-    expect(mid).toContain("git 토큰도 설정돼 있지 않습니다");
-    expect(mid).toContain("git 자격증명");
+    expect(mid).toContain("`GIT_TOKEN`도 설정돼 있지 않습니다");
+    expect(mid).toContain("Git 자격증명");
   });
 
   it("shows the repo-management capability to the owner once a repo is connected", () => {
@@ -1677,7 +1691,7 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(fs.existsSync(path.join(verify, "note.md"))).toBe(true);
   });
 
-  // ---- create_repo: a store with a git token but NO repo configured yet. The
+  // ---- create_repo: a store with GIT_TOKEN but NO repo configured yet. The
   // GitHub API call is stubbed (a local git remote can't model it). -----------
   function setupNoRepo(dir: string, configOverrides: Partial<AppConfig> = {}) {
     const dataDir = path.join(tempDir, dir);
@@ -1727,7 +1741,7 @@ describe("repo tools (knowledge-repo management)", () => {
     const s = setupNoRepo("rt-create-notoken");
     const res = await call(createTools(s), "create_repo", { name: "x" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("git 자격증명에 토큰");
+    expect(res.content[0].text).toContain("사내 Git 토큰(GIT_TOKEN)");
   });
 
   it("create_repo rejects an invalid repo name", async () => {
@@ -2150,7 +2164,7 @@ describe("system tools (avatar system management)", () => {
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain("runtime: local");
     expect(res.content[0].text).toContain("owner/knowledge @ main");
-    expect(res.content[0].text).toContain("GitHub 토큰: 설정됨");
+    expect(res.content[0].text).toContain("사내 Git 토큰(GIT_TOKEN): 설정됨");
     expect(res.content[0].text).toContain("SSH_PRIVATE_KEY");
     expect(res.content[0].text).toContain("플러그인: 1개");
     expect(res.content[0].text).toContain("루틴: 1개");
@@ -2653,7 +2667,7 @@ describe("secret encryption", () => {
   });
 });
 
-describe("git token storage", () => {
+describe("git token secret storage", () => {
   function makeStore(dir: string) {
     const { store } = createServices({
       dataDir: path.join(tempDir, dir),
@@ -2671,6 +2685,8 @@ describe("git token storage", () => {
     expect(user.gitTokenSet).toBe(true);
     expect(JSON.stringify(user)).not.toContain("ghp_secretvalue");
     expect(JSON.stringify(store.getUserById(ownerId))).not.toContain("ghp_secretvalue");
+    expect(user.secretNames).toContain(INTERNAL_GIT_TOKEN_SECRET_NAME);
+    expect(store.getUserSecrets(ownerId)[INTERNAL_GIT_TOKEN_SECRET_NAME]).toBe("ghp_secretvalue");
     // Server-side decryption recovers the plaintext for git auth.
     expect(store.getGitToken(ownerId)).toBe("ghp_secretvalue");
   });
@@ -2680,7 +2696,19 @@ describe("git token storage", () => {
     store.setGitToken(ownerId, "ghp_x");
     const cleared = store.setGitToken(ownerId, null);
     expect(cleared.gitTokenSet).toBe(false);
+    expect(cleared.secretNames).not.toContain(INTERNAL_GIT_TOKEN_SECRET_NAME);
     expect(store.getGitToken(ownerId)).toBeNull();
+  });
+
+  it("stores the external github.com token as a separate user secret", () => {
+    const { store, ownerId } = makeStore("gt-external");
+    store.setUserSecret(ownerId, EXTERNAL_GIT_TOKEN_SECRET_NAME, "ghp_external");
+    expect(store.getExternalGitToken(ownerId)).toBe("ghp_external");
+    expect(store.getGitTokens(ownerId)).toMatchObject({
+      internal: null,
+      external: "ghp_external",
+    });
+    expect(store.getUserById(ownerId)!.secretNames).toContain(EXTERNAL_GIT_TOKEN_SECRET_NAME);
   });
 
   it("persists identity and knowledge repo settings", () => {

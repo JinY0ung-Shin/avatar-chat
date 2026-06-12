@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import logger from "./logger.js";
 import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName } from "./marketplace.js";
+import { tokenForGitUrl } from "./gitCredentials.js";
 import fsSync from "node:fs";
 import type { AppConfig, KnowledgeRepoStatus, KnowledgeRepoTreeEntry } from "./types.js";
 import type { Store } from "./store.js";
@@ -136,7 +137,7 @@ export async function ensureClone(ctx: KnowledgeRepoContext): Promise<string> {
   if (url.startsWith("-") || (ctx.branch && ctx.branch.startsWith("-"))) {
     throw new Error("Invalid repo or branch");
   }
-  const auth = gitAuthArgs(url, ctx.token ?? undefined);
+  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, { internal: ctx.token }));
 
   if (await pathExists(path.join(repoRoot, ".git"))) {
     await git(repoRoot, [...auth, "fetch", "--prune", "origin"]);
@@ -472,7 +473,7 @@ export async function commitAndPush(
   await git(repoRoot, ["commit", "-m", commitMsg]);
 
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
-  const auth = gitAuthArgs(url, ctx.token ?? undefined);
+  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, { internal: ctx.token }));
   const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
   const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;
   await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);

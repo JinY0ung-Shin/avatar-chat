@@ -27,16 +27,18 @@ any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
   their owners have built up.
 - **Per-user plugins**: each user can also add other GitHub plugin repos (read-only) to their
   avatar, separate from the knowledge repo.
-- **Per-user GitHub token**: each user can store a personal access token (AES-256-GCM
-  encrypted at rest, keyed from `SESSION_SECRET`) to clone their own private plugin/knowledge
-  repos and to let the avatar push to the knowledge repo. The token is supplied to git via an
-  `http.extraHeader`, so it is never written into any clone's `.git/config`.
+- **Per-user Git tokens**: each user can store an internal `GIT_TOKEN` user secret for the
+  configured `GITHUB_HOST` and an optional `GITHUB_TOKEN` for github.com. Tokens are
+  AES-256-GCM encrypted at rest, keyed from `SESSION_SECRET`, and supplied to git via an
+  `http.extraHeader`, so they are never written into any clone's `.git/config`. The knowledge
+  repo is always expected to live on the internal `GITHUB_HOST`.
 - **SSH tools**: when the owner stores an `SSH_PRIVATE_KEY` secret and trusts target hosts,
   the avatar can use allowed SSH tools to work on servers reachable from the app host, such as
   checking logs, inspecting files, or running commands under the configured policy.
 - **Onboarding**: after first login a skippable guided step explains the main workflows,
-  gives starter prompts, and optionally stores a GitHub token; knowledge repo / branch setup
-  can happen later through chat or settings.
+  gives starter prompts, optionally stores the internal `GIT_TOKEN`, and can generate an
+  `SSH_PRIVATE_KEY` keypair immediately. External github.com `GITHUB_TOKEN` setup and
+  knowledge repo / branch setup can happen later through settings.
 - **Discovery**: published avatars appear in the Explore directory, searchable by name or
   **capability hashtag**; anyone can start a chat. An avatar can also look up other avatars'
   capabilities mid-chat (the shared read-only `mcp__avatars__search_avatars` tool) and point
@@ -77,7 +79,7 @@ uploaded avatar images persist under `APP_DATA_DIR`.
 | `ANTHROPIC_API_KEY` | Optional; absent → SDK uses local Claude Code auth. |
 | `PORT` / `APP_DATA_DIR` | Server port / data directory (SQLite DB + avatar images). |
 | `READONLY_TOOLS` | Tool allowlist for plugin execution (default `Read,Glob,Grep`). |
-| `GITHUB_HOST` | Default host for shorthand repo values like `owner/repo` (default `github.com`; full URLs are used as-is). |
+| `GITHUB_HOST` | Internal/default GitHub host for shorthand repo values like `owner/repo` (default `github.com`). Knowledge repos must use this host; full github.com URLs can use `GITHUB_TOKEN`. |
 | `CONFLUENCE_URL` | Optional app-wide Confluence Server/Data Center base URL. Per-avatar PATs are stored as the `CONFLUENCE_PAT` user secret. |
 
 ## Security note

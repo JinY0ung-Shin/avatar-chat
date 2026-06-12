@@ -22,7 +22,7 @@ import {
 } from "../gitRepos.js";
 
 export interface GitRepoToolsContext {
-  /** The avatar owner whose registered repos and git token are used. */
+  /** The avatar owner whose registered repos and git tokens are used. */
   avatarUserId: string;
   owner: { id: string; username: string; displayName: string; alias?: string };
   /** True only for the avatar owner in an interactive chat. */

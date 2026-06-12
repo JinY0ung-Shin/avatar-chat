@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError, syncGitRepo } from "./marketplace.js";
+import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { ensureClone, type KnowledgeRepoContext } from "./knowledgeRepo.js";
 import logger from "./logger.js";
 import type {
@@ -360,16 +361,16 @@ export async function loadAvatarPluginRoots(
   plugins: Plugin[],
   config: AppConfig,
   onWarn?: (message: string) => void,
-  // The avatar owner's personal GitHub token, used for private repos.
-  userToken?: string | null,
+  // The avatar owner's internal/external git tokens, selected per repo host.
+  userTokens?: string | null | GitTokenSet,
 ): Promise<PluginRoot[]> {
-  const token = userToken || undefined;
   const roots: PluginRoot[] = [];
   for (const plugin of plugins) {
     const destination = pluginClonePath(userId, plugin.repo, config);
     try {
       if (!clonedPaths.has(destination)) {
         const url = marketplaceCloneUrl(plugin.repo, config.githubHost);
+        const token = tokenForGitUrl(url, config, userTokens);
         await syncGitRepo(url, destination, plugin.ref ?? undefined, token);
         clonedPaths.add(destination);
         logger.debug({ repo: plugin.repo, destination }, "plugin repo cloned");
@@ -408,15 +409,15 @@ export async function syncPluginRepo(
   plugin: Pick<Plugin, "repo" | "ref">,
   config: AppConfig,
   force = false,
-  userToken?: string | null,
+  userTokens?: string | null | GitTokenSet,
 ): Promise<string> {
-  const token = userToken || undefined;
   const destination = pluginClonePath(userId, plugin.repo, config);
   if (force) {
     forgetClone(destination);
   }
   if (!clonedPaths.has(destination)) {
     const url = marketplaceCloneUrl(plugin.repo, config.githubHost);
+    const token = tokenForGitUrl(url, config, userTokens);
     await syncGitRepo(url, destination, plugin.ref ?? undefined, token);
     clonedPaths.add(destination);
   }

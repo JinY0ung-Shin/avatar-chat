@@ -1,9 +1,9 @@
 import crypto from "node:crypto";
 
-// At-rest encryption for reversible secrets (the per-user GitHub token), which —
-// unlike passwords/session tokens — must be recovered in plaintext to replay
-// into git auth. We use AES-256-GCM with a key derived from SESSION_SECRET via
-// scrypt, so no extra key material has to be provisioned. The stored format is
+// At-rest encryption for reversible secrets, which — unlike passwords/session
+// tokens — must be recovered in plaintext to replay into git auth or tool env.
+// We use AES-256-GCM with a key derived from SESSION_SECRET via scrypt, so no
+// extra key material has to be provisioned. The stored format is
 // `v1:salt:iv:tag:ciphertext` (all base64url): the salt makes each ciphertext's
 // key independent, and the GCM tag authenticates it (tamper/garbage decrypts
 // fail loudly rather than yielding a bogus token).

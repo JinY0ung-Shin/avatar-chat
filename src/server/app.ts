@@ -25,10 +25,12 @@ import {
   syncPluginRepo,
 } from "./plugins.js";
 import { scrubGitError } from "./marketplace.js";
+import { isInternalGitSource } from "./gitCredentials.js";
 import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
 import { Store, CLAUDE_OAUTH_TOKEN_KEY, normalizeHashtags } from "./store.js";
 import type { AgentConversationMessage, AgentResponse, AppConfig, PluginRoot, StoredMessage } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
+import { generateSshKeyPair } from "./sshIdentity.js";
 import {
   attachRunClient,
   awaitResponse,
@@ -384,11 +386,11 @@ export function createApp(services = createServices()) {
     for (const root of await loadDefaultPluginRoots(config)) {
       sourced.push({ path: root.path, source: "default" });
     }
-    const gitToken = store.getGitToken(avatar.id);
+    const gitTokens = store.getGitTokens(avatar.id);
     const enabledPlugins = store.listEnabledPlugins(avatar.id);
     for (const plugin of enabledPlugins) {
       try {
-        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitToken);
+        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitTokens);
         const label = plugin.label ?? plugin.repo;
         for (const root of await resolvePluginRoots(dir, plugin.repo, undefined, plugin.selected)) {
           sourced.push({ path: root, source: label });
@@ -484,11 +486,11 @@ export function createApp(services = createServices()) {
     for (const root of await loadDefaultPluginRoots(config)) {
       sourced.push({ path: root.path, source: "default" });
     }
-    const gitToken = store.getGitToken(avatar.id);
+    const gitTokens = store.getGitTokens(avatar.id);
     const enabledPlugins = store.listEnabledPlugins(avatar.id);
     for (const plugin of enabledPlugins) {
       try {
-        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitToken);
+        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitTokens);
         const label = plugin.label ?? plugin.repo;
         for (const root of await resolvePluginRoots(dir, plugin.repo, undefined, plugin.selected)) {
           sourced.push({ path: root, source: label });
@@ -688,7 +690,7 @@ export function createApp(services = createServices()) {
       return;
     }
     try {
-      const dir = await syncPluginRepo(req.user!.id, plugin, config, false, store.getGitToken(req.user!.id));
+      const dir = await syncPluginRepo(req.user!.id, plugin, config, false, store.getGitTokens(req.user!.id));
       store.markPluginSynced(req.user!.id, req.params.id);
       const contents = await inspectRepoContents(dir);
       res.json({ contents });
@@ -706,7 +708,7 @@ export function createApp(services = createServices()) {
       return;
     }
     try {
-      await syncPluginRepo(req.user!.id, plugin, config, true, store.getGitToken(req.user!.id));
+      await syncPluginRepo(req.user!.id, plugin, config, true, store.getGitTokens(req.user!.id));
       const updated = store.markPluginSynced(req.user!.id, req.params.id);
       res.json({ plugin: updated });
     } catch (error) {
@@ -730,8 +732,8 @@ export function createApp(services = createServices()) {
   // owner-only `mcp__repo__*` tools), not here — these routes only store the
   // token, the commit identity, and the repo location.
 
-  // Set (or clear) the user's personal GitHub token. Write-only: the token is
-  // never returned — `user.gitTokenSet` reflects whether one is stored.
+  // Set (or clear) the user's internal Git token. Write-only: the token is
+  // never returned — `user.gitTokenSet` reflects whether GIT_TOKEN is stored.
   app.put("/api/me/git-token", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const token = typeof req.body?.token === "string" ? req.body.token.trim() : "";
     if (!token) {
@@ -739,13 +741,13 @@ export function createApp(services = createServices()) {
       return;
     }
     const user = store.setGitToken(req.user!.id, token);
-    logger.info({ userId: req.user!.id }, "git token set");
+    logger.info({ userId: req.user!.id }, "internal git token set");
     res.json({ user });
   });
 
   app.delete("/api/me/git-token", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const user = store.setGitToken(req.user!.id, null);
-    logger.info({ userId: req.user!.id }, "git token cleared");
+    logger.info({ userId: req.user!.id }, "internal git token cleared");
     res.json({ user });
   });
 
@@ -778,6 +780,37 @@ export function createApp(services = createServices()) {
     res.json({ user: store.getUserById(req.user!.id) });
   });
 
+  app.post("/api/me/ssh-key", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const user = store.getUserById(req.user!.id);
+    const secretNames = store.listUserSecretNames(req.user!.id);
+    if (secretNames.includes("SSH_PRIVATE_KEY") || user?.sshPublicKey) {
+      apiError(
+        res,
+        409,
+        user?.sshPublicKey
+          ? "이미 SSH 키가 설정되어 있습니다."
+          : "이미 SSH_PRIVATE_KEY 시크릿이 설정되어 있습니다.",
+      );
+      return;
+    }
+    try {
+      const pair = await generateSshKeyPair(`avatar-chat-${req.user!.username}`);
+      const updated = store.setSshKeyPair(req.user!.id, pair.privateKey, pair.publicKey);
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: "ssh_identity_generate_key",
+        status: "ok",
+        detail: JSON.stringify({ fingerprint: pair.fingerprint, source: "settings" }),
+      });
+      logger.info({ userId: req.user!.id }, "ssh key generated");
+      res.json({ user: updated, publicKey: pair.publicKey, fingerprint: pair.fingerprint });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      apiError(res, 500, `SSH 키를 생성하지 못했습니다: ${message}`);
+    }
+  });
+
   // Set the commit author identity used for knowledge-repo commits.
   app.put("/api/me/git-identity", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const name = safeString(req.body?.name) || null;
@@ -803,6 +836,10 @@ export function createApp(services = createServices()) {
     const repo = safeString(repoRaw);
     if (!repo || !looksLikeRepo(repo)) {
       apiError(res, 400, "repo는 owner/repo 또는 git/https URL 형식이어야 합니다.");
+      return;
+    }
+    if (!isInternalGitSource(repo, config.githubHost)) {
+      apiError(res, 400, `지식 저장소는 사내 GitHub host(${config.githubHost})에 있어야 합니다.`);
       return;
     }
     const branch = safeString(req.body?.branch) || null;
@@ -1020,11 +1057,11 @@ export function createApp(services = createServices()) {
       sourced.push({ path: root.path, source: "default" });
     }
     // The avatar's own plugins, resolved per-repo so each skill is attributed.
-    // Use the owner's git token (like the chat path) so private repos resolve.
-    const gitToken = store.getGitToken(avatar.id);
+    // Use the owner's internal/external git tokens like the chat path.
+    const gitTokens = store.getGitTokens(avatar.id);
     for (const plugin of store.listEnabledPlugins(avatar.id)) {
       try {
-        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitToken);
+        const dir = await syncPluginRepo(avatar.id, plugin, config, false, gitTokens);
         const label = plugin.label ?? plugin.repo;
         for (const root of await resolvePluginRoots(dir, plugin.repo, undefined, plugin.selected)) {
           sourced.push({ path: root, source: label });
@@ -1176,7 +1213,7 @@ export function createApp(services = createServices()) {
                 store.listEnabledPlugins(avatar.id),
                 config,
                 (warn) => pluginWarnings.push(warn),
-                store.getGitToken(avatar.id),
+                store.getGitTokens(avatar.id),
               )),
               ...(await loadKnowledgeRepoRoots(
                 knowledgeRepoContextFor(store, avatar.id, config),

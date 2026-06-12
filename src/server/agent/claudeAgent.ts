@@ -746,8 +746,8 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       // without a connected repo, and previously misled the avatar).
       lines.push(
         request.gitTokenSet
-          ? `아직 지식 저장소가 없습니다. **당신에게는 \`mcp__repo__create_repo\` 도구가 있습니다.** 현재 저장소 생성 대상 GitHub host는 \`${githubHost}\`입니다. 소유자가 저장소를 만들거나 연결해 달라고 하면 — 수동 절차를 안내하지 말고 — 저장소 이름만 받아 \`create_repo\`로 직접 비공개 repo를 만들어 연결하세요(git 토큰은 이미 설정돼 있습니다). 저장소가 연결되기 전에는 \`scaffold_skill\`/\`write_file\`/\`commit\`이 실패하므로, 반드시 \`create_repo\`를 **먼저** 호출하세요.`
-          : "아직 지식 저장소가 없고 git 토큰도 설정돼 있지 않습니다. 소유자가 저장소 생성을 원하면 먼저 설정 → **git 자격증명**에 토큰을 등록해 달라고 안내하세요(등록되면 `mcp__repo__create_repo`로 직접 만들 수 있습니다). 저장소가 연결되기 전에는 `scaffold_skill`/`write_file`/`commit`이 실패합니다.",
+          ? `아직 지식 저장소가 없습니다. **당신에게는 \`mcp__repo__create_repo\` 도구가 있습니다.** 현재 저장소 생성 대상 사내 GitHub host는 \`${githubHost}\`입니다. 소유자가 저장소를 만들거나 연결해 달라고 하면 — 수동 절차를 안내하지 말고 — 저장소 이름만 받아 \`create_repo\`로 직접 비공개 repo를 만들어 연결하세요(\`GIT_TOKEN\`은 이미 설정돼 있습니다). 저장소가 연결되기 전에는 \`scaffold_skill\`/\`write_file\`/\`commit\`이 실패하므로, 반드시 \`create_repo\`를 **먼저** 호출하세요.`
+          : "아직 지식 저장소가 없고 `GIT_TOKEN`도 설정돼 있지 않습니다. 소유자가 저장소 생성을 원하면 먼저 설정 → **Git 자격증명**에서 사내 Git 토큰(`GIT_TOKEN` 시크릿)을 등록해 달라고 안내하세요(등록되면 `mcp__repo__create_repo`로 직접 만들 수 있습니다). 저장소가 연결되기 전에는 `scaffold_skill`/`write_file`/`commit`이 실패합니다.",
       );
     }
     lines.push(
@@ -786,11 +786,11 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         greetingParts.push(
           request.gitTokenSet
             ? "또한 아직 지식 저장소가 연결되어 있지 않습니다. 업무 지식·장기 기억·스킬을 축적하려면 개인 지식 저장소가 필요합니다. " +
-                `git 토큰이 이미 설정돼 있으니, 원하시면 제가 \`mcp__repo__create_repo\`로 현재 설정된 GitHub host(\`${githubHost}\`)에 비공개 저장소를 만들어 바로 연결해 드릴 수 있다고 안내하세요. ` +
+                `\`GIT_TOKEN\`이 이미 설정돼 있으니, 원하시면 제가 \`mcp__repo__create_repo\`로 현재 설정된 사내 GitHub host(\`${githubHost}\`)에 비공개 저장소를 만들어 바로 연결해 드릴 수 있다고 안내하세요. ` +
                 "사용자가 원하면 저장소 이름을 받아 create_repo로 만든 뒤 `scaffold_skill`→`write_file`→`commit` 순으로 채우세요. (이미 쓰던 repo가 있으면 설정의 지식 저장소에 직접 연결해도 됩니다.)"
-            : "또한 아직 지식 저장소가 연결되어 있지 않고, git 토큰도 설정돼 있지 않습니다. " +
-                "먼저 설정 → **git 자격증명**에 GitHub 토큰(repo 생성 권한)을 등록하라고 안내하세요. 등록되면 제가 `mcp__repo__create_repo`로 저장소를 만들어 연결해 드릴 수 있습니다. " +
-                "직접 만들고 싶다면 GitHub에 개인 repo를 만들어 설정의 지식 저장소에 연결해도 됩니다. 이 저장소는 Claude plugin marketplace 형식이어야 합니다: 루트에 `.claude-plugin/marketplace.json`을 두고, 각 스킬은 `skills/<name>/SKILL.md`와 `skills/<name>/.claude-plugin/plugin.json`을 갖춰야 합니다.",
+            : "또한 아직 지식 저장소가 연결되어 있지 않고, `GIT_TOKEN`도 설정돼 있지 않습니다. " +
+                "먼저 설정 → **Git 자격증명**에서 사내 Git 토큰(`GIT_TOKEN`, repo 생성 권한)을 등록하라고 안내하세요. 등록되면 제가 `mcp__repo__create_repo`로 저장소를 만들어 연결해 드릴 수 있습니다. " +
+                "직접 만들고 싶다면 사내 GitHub에 개인 repo를 만들어 설정의 지식 저장소에 연결해도 됩니다. 이 저장소는 Claude plugin marketplace 형식이어야 합니다: 루트에 `.claude-plugin/marketplace.json`을 두고, 각 스킬은 `skills/<name>/SKILL.md`와 `skills/<name>/.claude-plugin/plugin.json`을 갖춰야 합니다.",
         );
       }
       greetingParts.push("그런 다음 무엇을 도와줄지 물어보세요.");

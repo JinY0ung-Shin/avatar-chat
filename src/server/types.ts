@@ -51,8 +51,8 @@ export interface AppConfig {
 }
 
 /**
- * Public user shape returned to clients. NEVER includes password_hash or the
- * encrypted git token — the token is exposed only as the `gitTokenSet` flag.
+ * Public user shape returned to clients. NEVER includes password_hash or secret
+ * values — the internal git token is exposed only as the `gitTokenSet` flag.
  */
 export interface User {
   id: string;
@@ -70,7 +70,7 @@ export interface User {
   published: boolean;
   roles: string[];
   pluginCount: number;
-  /** True when a personal GitHub token is stored (the token itself is never sent). */
+  /** True when the internal GIT_TOKEN secret is stored (the token itself is never sent). */
   gitTokenSet: boolean;
   /** Git commit author identity for knowledge-repo commits (safe to expose). */
   gitIdentityName: string | null;
@@ -335,9 +335,10 @@ export interface AgentRequest {
    */
   knowledgeRepoConfigured?: boolean;
   /**
-   * Whether the avatar owner has stored a git token. Lets the greeting offer to
-   * create the knowledge repo directly (via the repo tool) vs. asking the owner
-   * to set a token first. Set only for owner, non-headless chat prompts.
+   * Whether the avatar owner has stored the internal GIT_TOKEN. Lets the
+   * greeting offer to create the knowledge repo directly (via the repo tool)
+   * vs. asking the owner to set a token first. Set only for owner, non-headless
+   * chat prompts.
    */
   gitTokenSet?: boolean;
   /**

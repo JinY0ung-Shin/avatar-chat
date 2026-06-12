@@ -83,6 +83,42 @@ describe("noah-almighty platform", () => {
     expect(res.body.githubHost).toBe("github.enterprise.local");
   });
 
+  it("restricts knowledge repos to the configured internal GitHub host", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+      githubHost: "github.enterprise.local",
+    });
+    const app = createApp(services);
+    const { agent } = await newUser(app, "internal-owner");
+
+    await agent.put("/api/me/knowledge-repo").send({ repo: "owner/knowledge", branch: "main" }).expect(200);
+    await agent
+      .put("/api/me/knowledge-repo")
+      .send({ repo: "https://github.enterprise.local/owner/knowledge.git", branch: "main" })
+      .expect(200);
+    const rejected = await agent
+      .put("/api/me/knowledge-repo")
+      .send({ repo: "https://github.com/owner/knowledge.git", branch: "main" })
+      .expect(400);
+    expect(rejected.body.error).toContain("사내 GitHub host(github.enterprise.local)");
+  });
+
+  it("generates an SSH keypair through the owner settings API without returning the private key", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "ssh-owner");
+
+    const created = await agent.post("/api/me/ssh-key").send({}).expect(200);
+    expect(created.body.publicKey).toMatch(/^ssh-ed25519 /);
+    expect(created.body.fingerprint).toMatch(/^SHA256:/);
+    expect(created.body.user.secretNames).toContain("SSH_PRIVATE_KEY");
+    expect(created.body.user.sshPublicKey).toBe(created.body.publicKey);
+    expect(JSON.stringify(created.body)).not.toContain("BEGIN OPENSSH PRIVATE KEY");
+
+    await agent.post("/api/me/ssh-key").send({}).expect(409);
+  });
+
   it("makes the first signup an admin and subsequent users members only", async () => {
     const app = testApp();
     const first = request.agent(app);

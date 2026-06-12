@@ -54,7 +54,7 @@ async function runRoutineJobNow(
         ? []
         : [
             ...(await loadDefaultPluginRoots(config, warn)),
-            ...(await loadAvatarPluginRoots(avatar.id, store.listEnabledPlugins(avatar.id), config, warn, store.getGitToken(avatar.id))),
+            ...(await loadAvatarPluginRoots(avatar.id, store.listEnabledPlugins(avatar.id), config, warn, store.getGitTokens(avatar.id))),
           ];
     if (pluginWarnings.length > 0) {
       schedLogger.warn({ jobId: job.id, warnings: pluginWarnings }, "routine plugin warnings");

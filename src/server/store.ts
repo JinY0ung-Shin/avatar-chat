@@ -13,6 +13,11 @@ import {
   normalizeHexSshToolPolicy,
   type HexSshToolPolicy,
 } from "./hexSshPolicy.js";
+import {
+  EXTERNAL_GIT_TOKEN_SECRET_NAME,
+  INTERNAL_GIT_TOKEN_SECRET_NAME,
+  type GitTokenSet,
+} from "./gitCredentials.js";
 import logger from "./logger.js";
 import type {
   AdminStats,
@@ -388,6 +393,18 @@ export class Store {
     // avatar generates from its skills/persona, shown in discovery (탐색) and queried
     // by the cross-avatar `mcp__avatars__search_avatars` tool. Null/[] = none.
     this.addColumnIfMissing("users", "hashtags", "TEXT");
+    this.migrateGitTokenSecrets();
+  }
+
+  private migrateGitTokenSecrets(): void {
+    const createdAt = now();
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO user_secrets (user_id, name, value_enc, created_at) " +
+          "SELECT id, ?, git_token_enc, ? FROM users WHERE git_token_enc IS NOT NULL",
+      )
+      .run(INTERNAL_GIT_TOKEN_SECRET_NAME, createdAt);
+    this.db.prepare("UPDATE users SET git_token_enc = NULL WHERE git_token_enc IS NOT NULL").run();
   }
 
   /** Add a column to a table if it isn't already present (idempotent). */
@@ -408,6 +425,7 @@ export class Store {
 
   private toUser(row: UserRow): User {
     const roles = this.rolesFor(row.id);
+    const secretNames = this.listUserSecretNames(row.id);
     const pluginCount = (
       this.db
         .prepare("SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ?")
@@ -427,14 +445,14 @@ export class Store {
       roles,
       pluginCount,
       // Never expose the token itself — only whether one is set.
-      gitTokenSet: Boolean(row.git_token_enc),
+      gitTokenSet: Boolean(row.git_token_enc) || secretNames.includes(INTERNAL_GIT_TOKEN_SECRET_NAME),
       gitIdentityName: row.git_identity_name ?? null,
       gitIdentityEmail: row.git_identity_email ?? null,
       knowledgeRepo: row.knowledge_repo ?? null,
       knowledgeBranch: row.knowledge_branch ?? null,
       knowledgeSelected: parseNameList(row.knowledge_selected),
       // Only the names — the encrypted values never leave the server.
-      secretNames: this.listUserSecretNames(row.id),
+      secretNames,
       sshPublicKey: row.ssh_public_key ?? null,
     };
   }
@@ -656,22 +674,41 @@ export class Store {
 
   // ---- Git credentials / personal knowledge repo -----------------------
 
-  /** Store (encrypted) or clear the user's personal GitHub token. */
+  /** Store (encrypted) or clear the user's internal GitHub token as GIT_TOKEN. */
   setGitToken(userId: string, token: string | null): User {
     if (!this.userRowById(userId)) {
       throw new Error("USER_NOT_FOUND");
     }
-    const enc = token ? encryptSecret(token, this.secret) : null;
-    this.db.prepare("UPDATE users SET git_token_enc = ? WHERE id = ?").run(enc, userId);
+    if (token) {
+      this.setUserSecret(userId, INTERNAL_GIT_TOKEN_SECRET_NAME, token);
+    } else {
+      this.deleteUserSecret(userId, INTERNAL_GIT_TOKEN_SECRET_NAME);
+    }
+    // Legacy column retained for old DB compatibility; new writes use user_secrets.
+    this.db.prepare("UPDATE users SET git_token_enc = NULL WHERE id = ?").run(userId);
     return this.toUser(this.userRowById(userId)!);
   }
 
+  private getUserSecretValue(userId: string, name: string): string | null {
+    const row = this.db
+      .prepare("SELECT value_enc FROM user_secrets WHERE user_id = ? AND name = ?")
+      .get(userId, name) as { value_enc: string } | undefined;
+    if (!row?.value_enc) {
+      return null;
+    }
+    return decryptSecret(row.value_enc, this.secret);
+  }
+
   /**
-   * Decrypt and return the user's GitHub token for server-side git auth.
+   * Decrypt and return the user's internal GitHub token for server-side git auth.
    * Returns null if unset or undecryptable (e.g. SESSION_SECRET changed). This
    * is the ONLY path the plaintext token leaves the DB — never via `toUser`.
    */
   getGitToken(userId: string): string | null {
+    const secretToken = this.getUserSecretValue(userId, INTERNAL_GIT_TOKEN_SECRET_NAME);
+    if (secretToken !== null) {
+      return secretToken;
+    }
     const row = this.userRowById(userId);
     if (!row?.git_token_enc) {
       return null;
@@ -679,11 +716,22 @@ export class Store {
     return decryptSecret(row.git_token_enc, this.secret);
   }
 
+  getExternalGitToken(userId: string): string | null {
+    return this.getUserSecretValue(userId, EXTERNAL_GIT_TOKEN_SECRET_NAME);
+  }
+
+  getGitTokens(userId: string): GitTokenSet {
+    return {
+      internal: this.getGitToken(userId),
+      external: this.getExternalGitToken(userId),
+    };
+  }
+
   // ---- Per-user secrets (encrypted env injected into avatar MCP tools) --
 
   /**
    * Store (encrypted) a named secret for the user. Values are AES-256-GCM
-   * encrypted at rest like the git token; they're only ever decrypted into the
+   * encrypted at rest like git tokens; they're only ever decrypted into the
    * env of an avatar's MCP subprocess (e.g. hex-ssh's SSH_PRIVATE_KEY), never
    * exposed to the agent or serialized via `toUser`.
    */
@@ -1803,7 +1851,7 @@ export class Store {
         id,
         now(),
       ),
-      gitTokenSet: Boolean(row.git_token_enc),
+      gitTokenSet: this.listUserSecretNames(id).includes(INTERNAL_GIT_TOKEN_SECRET_NAME),
       knowledgeRepoSet: Boolean(row.knowledge_repo),
     };
   }

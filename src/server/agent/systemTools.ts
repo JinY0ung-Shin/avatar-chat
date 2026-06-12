@@ -131,7 +131,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "시크릿 설정됨" : "(없음)"}`,
           `- 지식 저장소: ${knowledgeRepo.repo || "(없음)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
           `- 일반 git repo: ${gitRepos.length}개`,
-          `- GitHub 토큰: ${store.getGitToken(ctx.avatarUserId) ? "설정됨" : "없음"}`,
+          `- 사내 Git 토큰(GIT_TOKEN): ${store.getGitToken(ctx.avatarUserId) ? "설정됨" : "없음"}`,
           `- 시크릿 이름: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(없음)"}`,
           `- 플러그인: ${plugins.length}개 (${plugins.filter((p) => p.enabled).length}개 활성)`,
           `- 루틴: ${routines.length}개 (${routines.filter((r) => r.enabled).length}개 활성)`,

@@ -3681,70 +3681,157 @@ function renderPluginContents(container, list, p, info) {
   container.append(el("div", { class: "pc-actions" }, [save]));
 }
 
-// GitHub 자격증명: a write-only personal access token + commit identity. The
-// token is never returned by the server — we only know whether one is set
-// (u.gitTokenSet). Used for private plugin repos and knowledge-repo push.
+const INTERNAL_GIT_TOKEN_SECRET_NAME = "GIT_TOKEN";
+const EXTERNAL_GIT_TOKEN_SECRET_NAME = "GITHUB_TOKEN";
+
+function hasSecret(name) {
+  return (state.user.secretNames || []).includes(name);
+}
+
+function buildSshPublicKeyField(publicKey) {
+  const copyBtn = el("button", { class: "msg-act", type: "button", "aria-label": "SSH 공개키 복사", title: "SSH 공개키 복사" });
+  copyBtn.append(icon("copy"));
+  copyBtn.addEventListener("click", () => copyText(publicKey, copyBtn));
+  return el("label", { class: "field ssh-public-key-field" }, [
+    el("span", { text: "SSH 공개키" }),
+    el("div", { class: "ssh-public-key-row" }, [
+      el("textarea", { rows: "3", readonly: "", text: publicKey }),
+      copyBtn,
+    ]),
+  ]);
+}
+
+// Git 자격증명: write-only internal/external tokens + commit identity. Token
+// values are never returned by the server; only set/unset state is exposed.
 function buildGitCredentialsCard() {
   const u = state.user;
   const card = el("section", { class: "settings-card" });
   card.append(
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
-        el("h3", { text: "GitHub 자격증명" }),
-        el("p", { class: "muted", text: "비공개 플러그인 저장소 접근과 내 지식 저장소 푸시에 사용됩니다. 토큰은 암호화되어 저장되며 다시 표시되지 않습니다." }),
+        el("h3", { text: "Git 자격증명" }),
+        el("p", { class: "muted", text: "사내 GitHub와 외부 github.com 토큰을 분리해 저장합니다. 값은 암호화되어 저장되며 다시 표시되지 않습니다." }),
       ]),
     ]),
   );
 
   const status = el("div", { class: "git-token-status muted" });
   const renderStatus = () => {
+    const externalSet = hasSecret(EXTERNAL_GIT_TOKEN_SECRET_NAME);
     status.replaceChildren(
       state.user.gitTokenSet
-        ? el("span", { class: "token-set", text: "● 토큰이 설정되어 있습니다" })
-        : el("span", { text: "토큰이 설정되지 않았습니다" }),
+        ? el("span", { class: "token-set", text: "● 사내 Git (GIT_TOKEN) 설정됨" })
+        : el("span", { text: "사내 Git (GIT_TOKEN) 미설정" }),
+      " · ",
+      externalSet
+        ? el("span", { class: "token-set", text: "외부 GitHub (GITHUB_TOKEN) 설정됨" })
+        : el("span", { text: "외부 GitHub (GITHUB_TOKEN) 미설정" }),
     );
   };
   renderStatus();
 
-  const tokenForm = el("form", {
-    class: "plugin-add",
-    onsubmit: async (e) => {
-      e.preventDefault();
-      const formEl = e.currentTarget;
-      const fd = new FormData(formEl);
-      const token = (fd.get("token") || "").toString().trim();
-      if (!token) return;
-      const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
-      try {
-        const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
-        state.user = user;
-        formEl.reset();
-        renderStatus();
-      } catch (err) {
-        notify(`저장 실패: ${err.message}`);
-      } finally {
-        btn.disabled = false;
-      }
-    },
-  }, [
-    el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", "aria-label": "GitHub 토큰", required: "", autocomplete: "off" }),
-    el("button", { class: "primary", type: "submit", text: "저장" }),
-  ]);
+  const buildTokenForm = ({ label, secretName, description, placeholder, ariaLabel, saveToken, clearToken, isSet }) => {
+    const input = el("input", { name: "token", type: "password", placeholder, "aria-label": ariaLabel, required: "", autocomplete: "off" });
+    const saveBtn = el("button", { class: "primary", type: "submit", text: isSet() ? "교체" : "저장" });
+    const clearBtn = el("button", {
+      class: "linkish small",
+      type: "button",
+      text: "삭제",
+      disabled: isSet() ? null : "",
+      onclick: async () => {
+        if (!window.confirm(`${label}을 삭제할까요?`)) return;
+        clearBtn.disabled = true;
+        try {
+          await clearToken();
+          renderStatus();
+          refreshRow();
+        } catch (e) {
+          notify(`삭제 실패: ${e.message}`);
+          clearBtn.disabled = false;
+        }
+      },
+    });
+    const rowStatus = el("span", {
+      class: isSet() ? "muted token-set" : "muted",
+      text: isSet() ? "● 설정됨" : "미설정",
+    });
+    const refreshRow = () => {
+      const set = isSet();
+      rowStatus.className = set ? "muted token-set" : "muted";
+      rowStatus.textContent = set ? "● 설정됨" : "미설정";
+      saveBtn.textContent = set ? "교체" : "저장";
+      clearBtn.disabled = set ? false : true;
+    };
+    return el("form", {
+      class: "secret-preset-row",
+      onsubmit: async (e) => {
+        e.preventDefault();
+        const token = input.value.trim();
+        if (!token) return;
+        saveBtn.disabled = true;
+        const saved = saveBtn.textContent;
+        saveBtn.textContent = "저장 중…";
+        try {
+          await saveToken(token);
+          input.value = "";
+          renderStatus();
+          refreshRow();
+          saveBtn.textContent = "저장됨 ✓";
+          setTimeout(() => { refreshRow(); saveBtn.disabled = false; }, 1200);
+        } catch (err) {
+          saveBtn.textContent = saved;
+          saveBtn.disabled = false;
+          notify(`저장 실패: ${err.message}`);
+        }
+      },
+    }, [
+      el("div", { class: "secret-preset-meta" }, [
+        el("div", { class: "secret-preset-title" }, [
+          el("strong", { text: label }),
+          el("code", { text: secretName }),
+          rowStatus,
+        ]),
+        el("p", { class: "muted", text: description }),
+      ]),
+      input,
+      el("div", { class: "secret-preset-actions" }, [saveBtn, clearBtn]),
+    ]);
+  };
 
-  const clearBtn = el("button", {
-    class: "linkish small",
-    type: "button",
-    text: "토큰 삭제",
-    onclick: async () => {
-      if (!window.confirm("저장된 GitHub 토큰을 삭제할까요? 비공개 저장소 접근과 지식 저장소 푸시가 중단됩니다.")) return;
-      try {
-        const { user } = await api("/api/me/git-token", { method: "DELETE" });
-        state.user = user;
-        renderStatus();
-      } catch (e) {
-        notify(`삭제 실패: ${e.message}`);
-      }
+  const internalTokenForm = buildTokenForm({
+    label: "사내 Git 토큰",
+    secretName: INTERNAL_GIT_TOKEN_SECRET_NAME,
+    description: `사내 GitHub(${state.githubHost || "GITHUB_HOST"}) 전용입니다. 지식 저장소 생성·푸시와 사내 비공개 저장소 접근에 사용됩니다.`,
+    placeholder: "사내 GitHub PAT (GIT_TOKEN)",
+    ariaLabel: "사내 Git 토큰 GIT_TOKEN",
+    isSet: () => Boolean(state.user.gitTokenSet),
+    saveToken: async (token) => {
+      const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
+      state.user = user;
+    },
+    clearToken: async () => {
+      const { user } = await api("/api/me/git-token", { method: "DELETE" });
+      state.user = user;
+    },
+  });
+
+  const externalTokenForm = buildTokenForm({
+    label: "외부 GitHub 토큰",
+    secretName: EXTERNAL_GIT_TOKEN_SECRET_NAME,
+    description: "github.com HTTPS 저장소 접근 전용입니다. 지식 저장소 생성·푸시에는 사용되지 않습니다.",
+    placeholder: "github.com PAT (GITHUB_TOKEN)",
+    ariaLabel: "외부 GitHub 토큰 GITHUB_TOKEN",
+    isSet: () => hasSecret(EXTERNAL_GIT_TOKEN_SECRET_NAME),
+    saveToken: async (token) => {
+      const { user } = await api(`/api/me/secrets/${EXTERNAL_GIT_TOKEN_SECRET_NAME}`, {
+        method: "PUT",
+        body: JSON.stringify({ value: token }),
+      });
+      state.user = user;
+    },
+    clearToken: async () => {
+      const { user } = await api(`/api/me/secrets/${EXTERNAL_GIT_TOKEN_SECRET_NAME}`, { method: "DELETE" });
+      state.user = user;
     },
   });
 
@@ -3781,7 +3868,7 @@ function buildGitCredentialsCard() {
     el("button", { class: "primary", type: "submit", text: "커밋 정보 저장" }),
   ]);
 
-  card.append(status, tokenForm, el("div", { class: "git-token-actions" }, [clearBtn]), identityForm);
+  card.append(status, internalTokenForm, externalTokenForm, identityForm);
   return card;
 }
 
@@ -3950,18 +4037,7 @@ function buildSecretsCard() {
       return;
     }
     publicKeyBox.hidden = false;
-    const copyBtn = el("button", { class: "msg-act", type: "button", "aria-label": "SSH 공개키 복사", title: "SSH 공개키 복사" });
-    copyBtn.append(icon("copy"));
-    copyBtn.addEventListener("click", () => copyText(publicKey, copyBtn));
-    publicKeyBox.replaceChildren(
-      el("label", { class: "field ssh-public-key-field" }, [
-        el("span", { text: "SSH 공개키" }),
-        el("div", { class: "ssh-public-key-row" }, [
-          el("textarea", { rows: "3", readonly: "", text: publicKey }),
-          copyBtn,
-        ]),
-      ]),
-    );
+    publicKeyBox.replaceChildren(buildSshPublicKeyField(publicKey));
   };
   renderPublicKey();
 
@@ -4038,7 +4114,7 @@ function repoToHref(repo) {
   return null;
 }
 
-// 지식 저장소: configure the personal knowledge repo (owner/repo or git URL).
+// 지식 저장소: configure the personal internal GitHub repo.
 // The avatar itself browses/edits/commits the repo via chat (the owner-only
 // mcp__repo__* tools), so this card only points at the repo + shows its status.
 function buildKnowledgeRepoCard() {
@@ -4078,7 +4154,7 @@ function buildKnowledgeRepoCard() {
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
         el("h3", { text: "지식 저장소" }),
-        el("p", { class: "muted", text: "내 아바타가 일하며 쌓는 지식·스킬을 담는 전용 저장소. 아바타와 대화하며 직접 파일을 추가·수정·커밋하도록 시킬 수 있어요." }),
+        el("p", { class: "muted", text: `내 아바타가 일하며 쌓는 지식·스킬을 담는 사내 GitHub(${state.githubHost || "github.com"}) 저장소입니다.` }),
       ]),
       el("div", { class: "head-actions" }, headerActions),
     ]),
@@ -4107,7 +4183,7 @@ function buildKnowledgeRepoCard() {
       }
     },
   }, [
-    el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", "aria-label": "지식 저장소 (owner/repo 또는 git URL)", value: u.knowledgeRepo || "" }),
+    el("input", { name: "repo", placeholder: "owner/repo 또는 사내 git URL", "aria-label": "지식 저장소 (owner/repo 또는 사내 git URL)", value: u.knowledgeRepo || "" }),
     el("input", { name: "branch", placeholder: "브랜치 (선택)", "aria-label": "브랜치 (선택)", class: "narrow", value: u.knowledgeBranch || "" }),
     el("button", { class: "primary", type: "submit", text: "저장" }),
   ]);
@@ -4128,22 +4204,22 @@ function buildKnowledgeRepoCard() {
   card.append(
     el("div", { class: "git-token-status muted" }, [
       u.gitTokenSet
-        ? el("span", { class: "token-set", text: "● GitHub 토큰 연결됨 · 아바타가 커밋·푸시할 수 있어요" })
+        ? el("span", { class: "token-set", text: "● GIT_TOKEN 연결됨 · 아바타가 커밋·푸시할 수 있어요" })
         : el("span", {}, [
             // The git-credentials card lives in a DIFFERENT tab — link there
             // instead of pointing at a card that isn't on this screen.
-            "토큰이 없어 읽기만 가능합니다. ",
+            "GIT_TOKEN이 없어 읽기만 가능합니다. ",
             el("button", {
               class: "linkish",
               type: "button",
-              text: "권한·연결 탭의 GitHub 자격증명",
+              text: "권한·연결 탭의 Git 자격증명",
               onclick: () => {
                 state.settingsTab = "access";
                 syncHash(true);
                 renderView();
               },
             }),
-            "에서 토큰을 설정하면 아바타가 커밋·푸시할 수 있어요.",
+            "에서 사내 Git 토큰을 설정하면 아바타가 커밋·푸시할 수 있어요.",
           ]),
     ]),
   );
@@ -4795,7 +4871,7 @@ function buildUserDetailGrid(d) {
     item("시크릿", d.secretCount),
     item("활성 세션", d.activeSessions),
     item("미응답 질문", d.openRequests),
-    item("Git 토큰", d.gitTokenSet ? "있음" : "없음"),
+    item("GIT_TOKEN", d.gitTokenSet ? "있음" : "없음"),
     item("지식 저장소", d.knowledgeRepoSet ? "연결됨" : "없음"),
   ]);
 }
@@ -5442,7 +5518,7 @@ async function enterApp() {
     if (conv) await selectConversation(conv);
     else syncHash(true);
   }
-  // First-time guidance: explain the app and optionally collect a GitHub token. Skippable,
+  // First-time guidance: explain the app and optionally collect the internal Git token. Skippable,
   // tracked per-user in localStorage so it doesn't reappear once dismissed.
   if (!onboardingDone(state.user.id)) {
     openOnboarding();
@@ -5503,7 +5579,7 @@ const ONBOARDING_FEATURES = [
   },
   {
     title: "보안 설정 관리",
-    desc: "GitHub 토큰, 커밋 정보, 시크릿, SSH 키를 설정해 비공개 저장소와 원격 작업에 필요한 권한을 안전하게 제공합니다.",
+    desc: "사내·외부 Git 토큰, 커밋 정보, 시크릿, SSH 키를 설정해 비공개 저장소와 원격 작업에 필요한 권한을 안전하게 제공합니다.",
   },
 ];
 
@@ -5543,7 +5619,7 @@ function buildOnboardingGuide() {
 
 /**
  * Skippable onboarding overlay: explains the main workflows and optionally stores
- * a GitHub token. Knowledge repo/branch setup stays in chat or settings so first
+ * an internal Git token. Knowledge repo/branch setup stays in chat or settings so first
  * login does not feel like a repository configuration wizard.
  */
 function openOnboarding() {
@@ -5554,8 +5630,62 @@ function openOnboarding() {
     restoreFocus?.focus?.();
   };
 
-  const tokenInput = el("input", { name: "token", type: "password", placeholder: "GitHub personal access token (repo 권한)", autocomplete: "off" });
+  const tokenInput = el("input", {
+    name: "token",
+    type: "password",
+    placeholder: "사내 GitHub PAT (GIT_TOKEN)",
+    autocomplete: "off",
+    "aria-label": "사내 Git 토큰 GIT_TOKEN",
+  });
   const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
+  const sshStatus = el("div", { class: "git-token-status muted" });
+  const sshPublicKeyBox = el("div", { class: "ssh-public-key-box" });
+  const generateSshBtn = el("button", {
+    class: "primary",
+    type: "button",
+    text: "SSH 키 생성",
+    onclick: async () => {
+      generateSshBtn.disabled = true;
+      const savedLabel = generateSshBtn.textContent;
+      generateSshBtn.textContent = "생성 중…";
+      errorBox.hidden = true;
+      try {
+        const { user } = await api("/api/me/ssh-key", { method: "POST" });
+        state.user = user;
+        renderSshSetup();
+      } catch (err) {
+        errorBox.textContent = err.message;
+        errorBox.hidden = false;
+        generateSshBtn.textContent = savedLabel;
+        generateSshBtn.disabled = false;
+      }
+    },
+  });
+  function renderSshSetup() {
+    const publicKey = (state.user.sshPublicKey || "").trim();
+    if (publicKey) {
+      sshStatus.replaceChildren(el("span", { class: "token-set", text: "● SSH_PRIVATE_KEY 생성됨" }));
+      sshPublicKeyBox.hidden = false;
+      sshPublicKeyBox.replaceChildren(buildSshPublicKeyField(publicKey));
+      generateSshBtn.textContent = "SSH 키 생성됨";
+      generateSshBtn.disabled = true;
+      return;
+    }
+    if (hasSecret("SSH_PRIVATE_KEY")) {
+      sshStatus.replaceChildren(el("span", { class: "token-set", text: "● SSH_PRIVATE_KEY 설정됨" }));
+      sshPublicKeyBox.hidden = true;
+      sshPublicKeyBox.replaceChildren();
+      generateSshBtn.textContent = "SSH 키 설정됨";
+      generateSshBtn.disabled = true;
+      return;
+    }
+    sshStatus.replaceChildren(el("span", { text: "SSH_PRIVATE_KEY 미설정" }));
+    sshPublicKeyBox.hidden = true;
+    sshPublicKeyBox.replaceChildren();
+    generateSshBtn.textContent = "SSH 키 생성";
+    generateSshBtn.disabled = false;
+  }
+  renderSshSetup();
 
   const saveBtn = el("button", { class: "primary", type: "submit", text: "저장하고 시작" });
   const form = el("form", {
@@ -5584,7 +5714,7 @@ function openOnboarding() {
   }, [
     el("label", { class: "field" }, [
       el("span", {}, [
-        "GitHub 토큰 (선택) ",
+        "사내 Git 토큰 (GIT_TOKEN, 선택) ",
         el("a", {
           class: "linkish",
           href: `https://${(state.githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "")}/settings/tokens`,
@@ -5594,6 +5724,16 @@ function openOnboarding() {
         }),
       ]),
       tokenInput,
+    ]),
+    el("div", { class: "onboard-connect" }, [
+      el("h3", { text: "SSH 키" }),
+      el("p", {
+        class: "muted",
+        text: "지금 생성하면 개인키는 SSH_PRIVATE_KEY 시크릿으로 저장되고 다시 표시되지 않습니다. 공개키만 복사해 접속 대상 서버에 등록하세요.",
+      }),
+      sshStatus,
+      el("div", { class: "git-token-actions" }, [generateSshBtn]),
+      sshPublicKeyBox,
     ]),
     errorBox,
     el("div", { class: "onboard-actions" }, [
@@ -5614,7 +5754,7 @@ function openOnboarding() {
       el("h3", { text: "처음 설정하면 좋은 권한" }),
       el("p", {
         class: "muted",
-        text: "GitHub 토큰을 저장해 두면 나중에 아바타에게 비공개 저장소를 읽게 하거나, 대화 중 특정 URL의 자료를 지식 저장소에 추가하고 커밋·푸시하게 할 수 있습니다. 지식 저장소와 브랜치는 지금 고르지 않아도 됩니다.",
+        text: "이 온보딩에서는 사내 GitHub용 GIT_TOKEN만 입력합니다. GIT_TOKEN을 저장해 두면 아바타가 사내 비공개 저장소를 읽고, 대화 중 지식 저장소에 파일을 추가한 뒤 커밋·푸시할 수 있습니다.",
       }),
     ]),
     form,

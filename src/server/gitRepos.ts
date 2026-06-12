@@ -10,6 +10,7 @@ import {
   pathExists,
   sanitizeName,
 } from "./marketplace.js";
+import { tokenForGitUrl } from "./gitCredentials.js";
 import {
   deleteFile,
   listTree,
@@ -75,12 +76,13 @@ export function gitRepoContextFor(
   if (!record) {
     return null;
   }
+  const url = marketplaceCloneUrl(record.repo, config.githubHost);
   return {
     userId,
     name: record.name,
     repo: record.repo,
     branch: record.branch,
-    token: store.getGitToken(userId),
+    token: tokenForGitUrl(url, config, store.getGitTokens(userId)) ?? null,
     config,
   };
 }
@@ -90,12 +92,13 @@ export function gitRepoContextFromRecord(
   record: GitRepository,
   config: AppConfig,
 ): GitRepoContext {
+  const url = marketplaceCloneUrl(record.repo, config.githubHost);
   return {
     userId: record.userId,
     name: record.name,
     repo: record.repo,
     branch: record.branch,
-    token: store.getGitToken(record.userId),
+    token: tokenForGitUrl(url, config, store.getGitTokens(record.userId)) ?? null,
     config,
   };
 }

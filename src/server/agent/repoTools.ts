@@ -340,7 +340,7 @@ export function buildRepoTools(
           return text(NO_REPO, true);
         }
         if (!c.token) {
-          return text("푸시하려면 먼저 설정에서 GitHub 토큰을 등록해 주세요.", true);
+          return text("푸시하려면 먼저 설정에서 사내 Git 토큰(GIT_TOKEN)을 등록해 주세요.", true);
         }
         try {
           // No ensureClone here: commitAndPush operates on the already-synced
@@ -373,7 +373,7 @@ export function buildRepoTools(
   }
   const createTool = tool(
     "create_repo",
-    `**소유자가 지식 저장소를 만들거나 연결해 달라고 하면 이 도구를 사용한다** — 수동 설정을 안내하거나 scaffold_skill을 먼저 시도하지 말 것. ${githubHostDescription(ctx.config.githubHost)} 설정된 git 토큰으로 새 GitHub 지식 저장소(기본 비공개, Claude plugin marketplace 템플릿으로 초기화)를 만들고 곧바로 연결한다. 지식 저장소가 아직 없을 때 쓰며, 저장소 이름만 있으면 된다. 생성 후 scaffold_skill→write_file→commit으로 내용을 채운다. (소유자 전용)`,
+    `**소유자가 지식 저장소를 만들거나 연결해 달라고 하면 이 도구를 사용한다** — 수동 설정을 안내하거나 scaffold_skill을 먼저 시도하지 말 것. ${githubHostDescription(ctx.config.githubHost)} 설정된 사내 Git 토큰(GIT_TOKEN)으로 새 사내 GitHub 지식 저장소(기본 비공개, Claude plugin marketplace 템플릿으로 초기화)를 만들고 곧바로 연결한다. 지식 저장소가 아직 없을 때 쓰며, 저장소 이름만 있으면 된다. 생성 후 scaffold_skill→write_file→commit으로 내용을 채운다. (소유자 전용)`,
     {
       name: z.string().describe("새 저장소 이름 (영문/숫자와 - _ . 만, 예: my-knowledge)"),
       private: z.boolean().optional().describe("비공개 여부 (기본 true)"),
@@ -389,7 +389,7 @@ export function buildRepoTools(
       const token = store.getGitToken(ctx.avatarUserId);
       if (!token) {
         return text(
-          "GitHub 저장소를 만들려면 먼저 설정 → git 자격증명에 토큰을 등록해 주세요. (repo 생성 권한이 있는 토큰이 필요합니다.)",
+          "GitHub 저장소를 만들려면 먼저 설정 → Git 자격증명에 사내 Git 토큰(GIT_TOKEN)을 등록해 주세요. (repo 생성 권한이 있는 토큰이 필요합니다.)",
           true,
         );
       }
