@@ -73,6 +73,7 @@ uploaded avatar images persist under `APP_DATA_DIR`.
 | `PORT` / `APP_DATA_DIR` | Server port / data directory (SQLite DB + avatar images). |
 | `READONLY_TOOLS` | Tool allowlist for plugin execution (default `Read,Glob,Grep`). |
 | `GITHUB_HOST` | Default host for shorthand repo values like `owner/repo` (default `github.com`; full URLs are used as-is). |
+| `CONFLUENCE_URL` | Optional app-wide Confluence Server/Data Center base URL. Per-avatar PATs are stored as the `CONFLUENCE_PAT` user secret. |
 
 ## Security note
 

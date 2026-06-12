@@ -652,6 +652,19 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     "시스템 메타 인지: 이 서비스는 Noah Almighty avatar-chat입니다. 아바타는 프로필/페르소나, 기본 스킬, 소유자 플러그인, 개인 지식 저장소, 예약 루틴, 시크릿 이름, 신뢰 사용자 설정을 조합해 동작합니다. " +
       "시스템 상태나 가능한 변경 작업을 말할 때는 추측하지 말고 제공된 도구와 현재 설정을 근거로 답하세요.",
   );
+  if (request.confluenceUrlConfigured && request.confluencePatConfigured) {
+    lines.push(
+      "공용 Confluence 도구가 활성화되어 있습니다. Confluence 검색/페이지 조회/space 조회는 `mcp__confluence__*` 도구를 사용하고, 페이지 생성/수정은 소유자 또는 신뢰 사용자 권한이 있을 때만 시도하세요.",
+    );
+  } else {
+    const missing = [
+      request.confluenceUrlConfigured ? "" : "`CONFLUENCE_URL` 환경변수",
+      request.confluencePatConfigured ? "" : "`CONFLUENCE_PAT` 시크릿",
+    ].filter(Boolean);
+    lines.push(
+      `공용 Confluence 도구는 등록되어 있지만 아직 ${missing.join("와 ")} 설정이 필요합니다. Confluence 요청을 받으면 먼저 \`mcp__confluence__describe_config\`로 상태를 확인하세요.`,
+    );
+  }
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
   // A headless run has NO ONE on the other side: never claim the owner is
@@ -808,6 +821,9 @@ export async function runClaudeAgent(
   const { buildSystemServer, SYSTEM_SERVER_NAME, SYSTEM_TOOL_NAMES } = await import(
     "./systemTools.js"
   );
+  const { buildConfluenceServer, CONFLUENCE_SERVER_NAME, CONFLUENCE_TOOL_NAMES } = await import(
+    "./confluenceTools.js"
+  );
 
   const streaming = Boolean(events);
   const viewerIsOwner = Boolean(request.viewerIsOwner);
@@ -914,6 +930,11 @@ export async function runClaudeAgent(
   // decrypted only here and handed to the MCP subprocess as env, so they never
   // surface to the agent (Bash/`env` runs in a different process) nor to `toUser`.
   const ownerSecrets = store.getUserSecrets(request.avatar.id);
+  const confluenceServer = buildConfluenceServer({
+    config,
+    ownerSecrets,
+    elevated: elevated && !headless,
+  });
   // hex-ssh (remote-server access MCP, ssh2-based — no system ssh binary needed):
   // registered explicitly (not via a plugin's .mcp.json) so we can inject the
   // owner's per-user SSH identity. The policy proxy filters tools/list before
@@ -957,6 +978,7 @@ export async function runClaudeAgent(
       ...REPO_TOOL_NAMES,
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
       ...SYSTEM_TOOL_NAMES,
+      ...CONFLUENCE_TOOL_NAMES,
       ...SSH_IDENTITY_TOOL_NAMES,
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
@@ -972,6 +994,7 @@ export async function runClaudeAgent(
       [KNOWLEDGE_SERVER_NAME]: knowledgeServer,
       [REPO_SERVER_NAME]: repoServer,
       [SYSTEM_SERVER_NAME]: systemServer,
+      [CONFLUENCE_SERVER_NAME]: confluenceServer,
       [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
@@ -1064,6 +1087,8 @@ export async function runClaudeAgent(
           knowledgeRepoConfigured,
           gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
           githubHost: config.githubHost,
+          confluenceUrlConfigured: Boolean(config.confluenceUrl),
+          confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
         }
       : {
           ...request,
@@ -1071,6 +1096,8 @@ export async function runClaudeAgent(
           knowledgeRepoConfigured,
           gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
           githubHost: config.githubHost,
+          confluenceUrlConfigured: Boolean(config.confluenceUrl),
+          confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
         };
 
   for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {

@@ -86,6 +86,11 @@ import {
   SSH_IDENTITY_SERVER_NAME,
   SSH_IDENTITY_TOOL_NAMES,
 } from "../src/server/agent/sshIdentityTools.js";
+import {
+  buildConfluenceTools,
+  CONFLUENCE_SERVER_NAME,
+  CONFLUENCE_TOOL_NAMES,
+} from "../src/server/agent/confluenceTools.js";
 import { generateSshKeyPair } from "../src/server/sshIdentity.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
 import type { AppConfig, Plugin } from "../src/server/types.js";
@@ -1302,6 +1307,122 @@ describe("knowledge tools", () => {
     expect(ok.content[0].text).toContain("처리 완료");
     expect(store.listKnowledgeRequests(ownerId, "open")).toHaveLength(0);
     expect(store.listKnowledgeRequests(ownerId, "resolved")).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// confluenceTools — app-managed Confluence MCP handlers
+// ---------------------------------------------------------------------------
+
+describe("confluence tools", () => {
+  function makeConfig(confluenceUrl?: string): AppConfig {
+    return createServices({
+      dataDir: path.join(tempDir, "confluence"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+      confluenceUrl,
+    }).config;
+  }
+
+  function call(tools: ReturnType<typeof buildConfluenceTools>, name: string, args: unknown): Promise<ToolResult> {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} not found`);
+    return (t.handler as (a: unknown, extra: unknown) => Promise<ToolResult>)(args, {});
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("exposes the documented server + tool names", () => {
+    expect(CONFLUENCE_SERVER_NAME).toBe("confluence");
+    expect(CONFLUENCE_TOOL_NAMES).toContain("mcp__confluence__search");
+    const names = buildConfluenceTools({
+      config: makeConfig("https://confluence.internal"),
+      ownerSecrets: { CONFLUENCE_PAT: "pat" },
+      elevated: false,
+    }).map((t) => t.name);
+    expect(names).toEqual([
+      "describe_config",
+      "list_spaces",
+      "search",
+      "get_page",
+      "create_page",
+      "update_page",
+    ]);
+  });
+
+  it("reports missing URL/PAT without exposing secret values", async () => {
+    const missingUrl = await call(
+      buildConfluenceTools({ config: makeConfig(), ownerSecrets: { CONFLUENCE_PAT: "pat" }, elevated: false }),
+      "search",
+      { text: "auth" },
+    );
+    expect(missingUrl.isError).toBe(true);
+    expect(missingUrl.content[0].text).toContain("CONFLUENCE_URL");
+
+    const missingPat = await call(
+      buildConfluenceTools({ config: makeConfig("https://confluence.internal"), ownerSecrets: {}, elevated: false }),
+      "search",
+      { text: "auth" },
+    );
+    expect(missingPat.isError).toBe(true);
+    expect(missingPat.content[0].text).toContain("CONFLUENCE_PAT");
+  });
+
+  it("searches with Bearer PAT and formats page summaries", async () => {
+    const calls: { url: URL; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: new URL(String(input)), init: init ?? {} });
+      return new Response(
+        JSON.stringify({
+          size: 1,
+          results: [
+            {
+              id: "123",
+              type: "page",
+              title: "API Guide",
+              space: { key: "DEV" },
+              version: { number: 7 },
+              _links: { webui: "/pages/123" },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const result = await call(
+      buildConfluenceTools({
+        config: makeConfig("https://confluence.internal/confluence"),
+        ownerSecrets: { CONFLUENCE_PAT: "super-secret-pat" },
+        elevated: false,
+      }),
+      "search",
+      { space: "DEV", text: "auth", limit: 5 },
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].url.pathname).toBe("/confluence/rest/api/content/search");
+    expect(calls[0].url.searchParams.get("cql")).toBe('space = "DEV" AND text ~ "auth" AND type = "page"');
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer super-secret-pat");
+    expect(result.content[0].text).toContain("API Guide");
+    expect(result.content[0].text).toContain("https://confluence.internal/confluence/pages/123");
+  });
+
+  it("blocks write tools when the viewer is not elevated", async () => {
+    const result = await call(
+      buildConfluenceTools({
+        config: makeConfig("https://confluence.internal"),
+        ownerSecrets: { CONFLUENCE_PAT: "pat" },
+        elevated: false,
+      }),
+      "create_page",
+      { space_key: "DEV", title: "Draft", body_storage: "<p>Hello</p>" },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("소유자 또는 신뢰 사용자");
   });
 });
 

@@ -36,6 +36,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     anthropicModel: env("ANTHROPIC_MODEL") || undefined,
     readOnlyTools,
     githubHost,
+    confluenceUrl: env("CONFLUENCE_URL") || undefined,
     githubCaCert: env("GITHUB_CA_CERT") || undefined,
     logLevel: env("LOG_LEVEL", isProduction ? "info" : "debug"),
     // Repo-bundled default skills, loaded for every avatar. cwd-based to match

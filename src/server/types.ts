@@ -13,6 +13,11 @@ export interface AppConfig {
   /** Default host used when a repo is entered as owner/repo. */
   githubHost: string;
   /**
+   * Deployment-wide Confluence base URL (env `CONFLUENCE_URL`). The PAT itself
+   * is user-scoped and stored as a `CONFLUENCE_PAT` secret.
+   */
+  confluenceUrl?: string;
+  /**
    * Optional PEM CA file path (env `GITHUB_CA_CERT`) trusted for BOTH TLS stacks
    * the app uses to reach `githubHost`: Node `fetch` and every `git` clone/push.
    * `create_repo` also passes it to gh as `SSL_CERT_FILE`. Applied once at
@@ -316,6 +321,10 @@ export interface AgentRequest {
    * credential.
    */
   githubHost?: string;
+  /** Whether the deployment has a Confluence host configured. */
+  confluenceUrlConfigured?: boolean;
+  /** Whether the avatar owner has stored a Confluence PAT secret. */
+  confluencePatConfigured?: boolean;
 }
 
 /**

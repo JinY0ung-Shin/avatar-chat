@@ -126,6 +126,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- runtime: ${ctx.config.agentRuntime}`,
           `- configuredModel: ${ctx.config.anthropicModel ?? "(SDK default)"}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
+          `- Confluence host: ${ctx.config.confluenceUrl ? "설정됨" : "(없음)"}`,
+          `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "시크릿 설정됨" : "(없음)"}`,
           `- 지식 저장소: ${knowledgeRepo.repo || "(없음)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
           `- GitHub 토큰: ${store.getGitToken(ctx.avatarUserId) ? "설정됨" : "없음"}`,
           `- 시크릿 이름: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(없음)"}`,

@@ -2071,6 +2071,12 @@ const TOOL_LABELS = {
   mcp__knowledge__request_info: "정보 요청 기록",
   mcp__knowledge__pending_requests: "대기 요청 확인",
   mcp__knowledge__resolve_request: "요청 처리 완료",
+  mcp__confluence__describe_config: "Confluence 설정 확인",
+  mcp__confluence__list_spaces: "Confluence 스페이스 조회",
+  mcp__confluence__search: "Confluence 검색",
+  mcp__confluence__get_page: "Confluence 페이지 조회",
+  mcp__confluence__create_page: "Confluence 페이지 생성",
+  mcp__confluence__update_page: "Confluence 페이지 수정",
   Read: "파일 읽기",
   Glob: "파일 찾기",
   Grep: "내용 검색",
@@ -3458,23 +3464,129 @@ function buildGitCredentialsCard() {
 // raw value, and they're never returned to the client. We only know the NAMES
 // that are set (u.secretNames). The avatar uses ITS OWNER's secrets regardless
 // of who is chatting with it.
+const SECRET_PRESETS = [
+  {
+    name: "SSH_PRIVATE_KEY",
+    label: "SSH 개인키",
+    description: "원격 SSH 도구가 사용할 OpenSSH/PEM 개인키입니다. 앱에서 키를 생성하면 자동으로 채워집니다.",
+    placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----\n...",
+    rows: 4,
+  },
+  {
+    name: "CONFLUENCE_PAT",
+    label: "Confluence PAT",
+    description: "사내 Confluence 공용 도구가 Bearer 인증에 사용할 Personal Access Token입니다.",
+    placeholder: "Confluence personal access token",
+    rows: 2,
+  },
+];
+
 function buildSecretsCard() {
   const card = el("section", { class: "settings-card" });
   card.append(
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
         el("h3", { text: "시크릿" }),
-        el("p", { class: "muted", text: "내 아바타가 도구를 쓸 때만 주입되는 비밀값(예: SSH_PRIVATE_KEY). 암호화되어 저장되고 아바타에게도 값 자체는 보이지 않으며, 다시 표시되지 않습니다. SSH 원격 접속에 쓰려면 OpenSSH 형식 개인키를 SSH_PRIVATE_KEY로 등록하세요." }),
+        el("p", { class: "muted", text: "내 아바타가 도구를 쓸 때만 주입되는 비밀값입니다. 암호화되어 저장되고 아바타에게도 값 자체는 보이지 않으며, 다시 표시되지 않습니다." }),
       ]),
     ]),
   );
 
+  const presetList = el("div", { class: "secret-preset-list" });
+
+  const saveSecret = async (name, value) => {
+    const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, {
+      method: "PUT",
+      body: JSON.stringify({ value }),
+    });
+    state.user = user;
+    renderPresetList();
+    renderList();
+    renderPublicKey();
+  };
+
+  const deleteSecret = async (name) => {
+    const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
+    state.user = user;
+    renderPresetList();
+    renderList();
+    renderPublicKey();
+  };
+
+  const renderPresetList = () => {
+    const names = new Set(state.user.secretNames || []);
+    presetList.replaceChildren(
+      ...SECRET_PRESETS.map((preset) => {
+        const isSet = names.has(preset.name);
+        const valueField = el("textarea", {
+          name: "value",
+          rows: String(preset.rows),
+          placeholder: preset.placeholder,
+          autocomplete: "off",
+          required: "",
+        });
+        const saveBtn = el("button", { class: "primary", type: "submit", text: isSet ? "교체" : "저장" });
+        const clearBtn = el("button", {
+          class: "linkish small",
+          type: "button",
+          text: "삭제",
+          disabled: isSet ? null : "",
+          onclick: async () => {
+            if (!window.confirm(`${preset.label} 시크릿을 삭제할까요?`)) return;
+            clearBtn.disabled = true;
+            try {
+              await deleteSecret(preset.name);
+            } catch (err) {
+              notify(`삭제 실패: ${err.message}`);
+              clearBtn.disabled = false;
+            }
+          },
+        });
+        const form = el("form", {
+          class: "secret-preset-row",
+          onsubmit: async (e) => {
+            e.preventDefault();
+            const value = valueField.value;
+            if (!value) {
+              notify(`${preset.label} 값을 입력해 주세요.`, "warn");
+              return;
+            }
+            saveBtn.disabled = true;
+            const saved = saveBtn.textContent;
+            saveBtn.textContent = "저장 중…";
+            try {
+              await saveSecret(preset.name, value);
+            } catch (err) {
+              notify(`저장 실패: ${err.message}`);
+              saveBtn.textContent = saved;
+              saveBtn.disabled = false;
+            }
+          },
+        }, [
+          el("div", { class: "secret-preset-meta" }, [
+            el("div", { class: "secret-preset-title" }, [
+              el("strong", { text: preset.label }),
+              el("code", { text: preset.name }),
+              isSet ? el("span", { class: "muted token-set", text: "● 설정됨" }) : el("span", { class: "muted", text: "미설정" }),
+            ]),
+            el("p", { class: "muted", text: preset.description }),
+          ]),
+          valueField,
+          el("div", { class: "secret-preset-actions" }, [saveBtn, clearBtn]),
+        ]);
+        return form;
+      }),
+    );
+  };
+  renderPresetList();
+
   // List of currently-set secret names, each with a delete button.
   const list = el("div", { class: "secret-list" });
   const renderList = () => {
-    const names = state.user.secretNames || [];
+    const presetNames = new Set(SECRET_PRESETS.map((preset) => preset.name));
+    const names = (state.user.secretNames || []).filter((name) => !presetNames.has(name));
     if (!names.length) {
-      list.replaceChildren(el("div", { class: "muted", text: "등록된 시크릿이 없습니다." }));
+      list.replaceChildren(el("div", { class: "muted", text: "추가 시크릿이 없습니다." }));
       return;
     }
     list.replaceChildren(
@@ -3490,10 +3602,7 @@ function buildSecretsCard() {
             onclick: async () => {
               if (!window.confirm(`시크릿 "${name}"을(를) 삭제할까요?`)) return;
               try {
-                const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
-                state.user = user;
-                renderList();
-                renderPublicKey();
+                await deleteSecret(name);
               } catch (err) {
                 notify(`삭제 실패: ${err.message}`);
               }
@@ -3555,6 +3664,7 @@ function buildSecretsCard() {
         });
         state.user = user;
         formEl.reset();
+        renderPresetList();
         renderList();
         renderPublicKey();
       } catch (err) {
@@ -3572,10 +3682,19 @@ function buildSecretsCard() {
       el("span", { text: "값" }),
       el("textarea", { name: "value", rows: "4", placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----…", autocomplete: "off", required: "" }),
     ]),
-    el("button", { class: "primary", type: "submit", text: "시크릿 저장" }),
+    el("button", { class: "primary", type: "submit", text: "추가 시크릿 저장" }),
   ]);
 
-  card.append(list, publicKeyBox, form);
+  card.append(
+    presetList,
+    publicKeyBox,
+    el("div", { class: "secret-extra-head" }, [
+      el("strong", { text: "기타 시크릿" }),
+      el("p", { class: "muted", text: "도구가 추가로 요구하는 환경변수 이름이 있으면 직접 등록하세요." }),
+    ]),
+    list,
+    form,
+  );
   return card;
 }
 
@@ -4401,6 +4520,12 @@ async function adminSystemCards() {
     sysRow(
       "읽기 전용 도구",
       el("span", { class: "muted", text: (sys.readOnlyTools || []).join(", ") || "없음" }),
+    ),
+    sysRow(
+      "Confluence",
+      sys.confluenceConfigured
+        ? el("span", { class: "tag", text: "host 설정됨" })
+        : el("span", { class: "muted", text: "CONFLUENCE_URL 미설정" }),
     ),
   ];
   return [

@@ -3519,6 +3519,53 @@ textarea::placeholder {
 }
 
 /* Secrets vault rows */
+.secret-preset-list {
+  display: grid;
+  gap: var(--s-3);
+  margin-bottom: var(--s-4);
+}
+.secret-preset-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.9fr) minmax(220px, 1.2fr) auto;
+  gap: var(--s-3);
+  align-items: end;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: var(--s-3);
+  background: var(--bg-elevated);
+}
+.secret-preset-meta {
+  min-width: 0;
+}
+.secret-preset-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-2);
+  margin-bottom: var(--s-1);
+}
+.secret-preset-title strong {
+  font-size: var(--t-sm);
+}
+.secret-preset-title code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--t-xs);
+  overflow-wrap: anywhere;
+}
+.secret-preset-row textarea {
+  min-height: 74px;
+}
+.secret-preset-actions {
+  display: flex;
+  gap: var(--s-2);
+  align-items: center;
+  justify-content: flex-end;
+}
+.secret-extra-head {
+  display: grid;
+  gap: var(--s-1);
+  margin: var(--s-3) 0 var(--s-2);
+}
 .secret-list {
   display: grid;
   gap: var(--s-2);
@@ -3547,6 +3594,14 @@ textarea::placeholder {
 .secret-row .linkish.small {
   margin-top: 0;
   flex: none;
+}
+@media (max-width: 760px) {
+  .secret-preset-row {
+    grid-template-columns: 1fr;
+  }
+  .secret-preset-actions {
+    justify-content: flex-start;
+  }
 }
 .ssh-public-key-box {
   margin-bottom: var(--s-3);

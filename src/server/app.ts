@@ -1249,6 +1249,7 @@ export function createApp(services = createServices()) {
         // surprised that pasting a token has no effect.
         apiKeyOverride: Boolean(config.anthropicApiKey),
         readOnlyTools: config.readOnlyTools,
+        confluenceConfigured: Boolean(config.confluenceUrl),
         hexSshTools: HEX_SSH_TOOL_INFOS,
         hexSshToolPolicy: store.getHexSshToolPolicy(),
         // Self-service signup gating, admin-managed (see PUT /api/admin/signup-mode).
