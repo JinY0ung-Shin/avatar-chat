@@ -22,11 +22,11 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   stray local `.env`. `tsx`/`node` do NOT auto-load `.env` and `--env-file` isn't
   forwarded by `tsx` / allowed in `NODE_OPTIONS`, which is why it's done in code.
 - **On-prem GitHub CA = one var `GITHUB_CA_CERT`** (PEM path, `applyCustomGithubCa`
-  in `tlsCa.ts`, called from `index.ts`). Covers BOTH TLS stacks: `fetch`/undici
-  (create_repo's REST call) via runtime `tls.setDefaultCACertificates` (appends to
-  system roots), and `git` clone/push via `GIT_SSL_CAINFO` (every git execFile
-  inherits `process.env`). Replaces needing separate `NODE_EXTRA_CA_CERTS` +
-  `GIT_SSL_CAINFO`. `GITHUB_HOST` already routes the API to `/api/v3` for GHES.
+  in `tlsCa.ts`, called from `index.ts`). Covers Node `fetch` via runtime
+  `tls.setDefaultCACertificates` (appends to system roots), `git` clone/push via
+  `GIT_SSL_CAINFO` (every git execFile inherits `process.env`), and
+  `create_repo` via `SSL_CERT_FILE` passed to `gh` in `repoTools.ts`. `GITHUB_HOST`
+  becomes `GH_HOST` for `gh repo create` on GHES.
 - **Project name diverges by layer:** display name "Noah Almighty", code slug
   `noah-almighty` (package name, `noah-almighty.db`, `@noah-almighty.local` git
   identity fallbacks, logs, test temp-dir prefix), and the git remote `origin` is
@@ -62,7 +62,7 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   `loadKnowledgeRepoRoots`/`knowledgeRepoSkillSources` (so its skills are usable), AND
   (b) edited by the avatar itself through the **owner-only** `mcp__repo__*` MCP server
   (`agent/repoTools.ts`): list/read/write/scaffold/commit, plus `create_repo` (creates a new
-  GitHub repo via `POST /user/repos` server-side using the stored git token, then connects it
+  GitHub repo via `gh repo create` server-side using the stored git token in child env, then connects it
   with `setKnowledgeRepo`). `create_repo` is exposed **only when no repo is connected yet**
   (`allowCreate` ← `!knowledgeRepoConfigured` in `claudeAgent.ts`) to keep the unused tool out
   of the prompt once a repo exists; the manage tools are always present. There is NO settings file-editor
@@ -132,10 +132,10 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   server with `curl --noproxy '*' localhost:<port>/...` (can't screenshot the UI).
 - **Testing git/repo tools offline:** repo-tool tests point the repo at a LOCAL bare remote
   (`git init --bare`) so clone/commit/push need no network — `gitAuthArgs` returns `[]` for
-  non-`https://` URLs, so the token is ignored there. For tools hitting the GitHub API
-  (`create_repo`), stub `fetch` via `vi.stubGlobal` (`vi` is NOT imported in `units.test.ts` by
-  default); to drive the post-create clone/seed/push offline, have the mock return a local
-  bare-remote PATH as `full_name` (`marketplaceCloneUrl` leaves non-`owner/repo` strings as-is).
+  non-`https://` URLs, so the token is ignored there. For `create_repo`, inject a fake
+  `createRemoteRepo` or fake `gh` runner; to drive the post-create clone/seed/push offline,
+  have it return a local bare-remote PATH as `fullName` (`marketplaceCloneUrl` leaves
+  non-`owner/repo` strings as-is).
 - **Per-user secret vault (generic, not just SSH):** `user_secrets` table (AES-256-GCM via
   `crypto.ts`, keyed on `avatar.id`=owner), `get/set/delete/listUserSecretNames`/`getUserSecrets`.
   Exposed to clients as `secretNames` ONLY (values never via `toUser`). `PUT/DELETE

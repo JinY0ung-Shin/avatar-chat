@@ -7,8 +7,8 @@ import { startRoutineScheduler } from "./scheduler.js";
 import { applyCustomGithubCa } from "./tlsCa.js";
 
 const services = createServices();
-// Trust an on-prem GitHub's internal CA (GITHUB_CA_CERT) for both the fetch and
-// git TLS stacks before anything reaches out over HTTPS.
+// Trust an on-prem GitHub's internal CA (GITHUB_CA_CERT) for Node fetch and git
+// before anything reaches out over HTTPS. create_repo also passes it to gh.
 applyCustomGithubCa(services.config, logger);
 const app = createApp(services);
 

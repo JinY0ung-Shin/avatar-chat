@@ -1,8 +1,11 @@
+import { execFile } from "node:child_process";
+import path from "node:path";
+import { promisify } from "node:util";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
 import type { AppConfig } from "../types.js";
-import { DEFAULT_GITHUB_HOST, normalizeGithubHost, scrubGitError } from "../marketplace.js";
+import { normalizeGithubHost, scrubGitError } from "../marketplace.js";
 import {
   commitAndPush,
   commitIdentityFor,
@@ -14,6 +17,8 @@ import {
   writeFile as writeRepoFile,
   writeRepoTemplate,
 } from "../knowledgeRepo.js";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Per-conversation context the knowledge-repo management tools act within. These
@@ -59,62 +64,115 @@ function text(message: string, isError = false) {
 
 type CreateRepoResult =
   | { ok: true; fullName: string; defaultBranch: string; isPrivate: boolean }
-  | { ok: false; status: number; message: string };
+  | { ok: false; status?: number; exitCode?: number; message: string };
 
-function githubApiBase(host: string): string {
-  const normalized = normalizeGithubHost(host);
-  return normalized === DEFAULT_GITHUB_HOST ? "https://api.github.com" : `https://${normalized}/api/v3`;
-}
+type GhRunner = (
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; timeout: number },
+) => Promise<{ stdout: string; stderr: string }>;
 
 function githubHostDescription(host: string): string {
   const normalized = normalizeGithubHost(host);
-  const apiBase = githubApiBase(normalized);
-  return `현재 설정된 GitHub host는 \`${normalized}\`이고, create_repo는 \`${apiBase}/user/repos\`로 요청한다.`;
+  return `현재 설정된 GitHub host는 \`${normalized}\`이고, create_repo는 \`GH_HOST=${normalized} gh repo create\`로 생성한다.`;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function redactToken(message: string, token: string): string {
+  return token ? message.replace(new RegExp(escapeRegExp(token), "g"), "[REDACTED]") : message;
+}
+
+function ghErrorMessage(error: unknown, token: string): { message: string; exitCode?: number } {
+  const err = error as Error & { stderr?: string | Buffer; stdout?: string | Buffer; code?: unknown };
+  const parts = [err.stderr, err.stdout, err.message]
+    .map((part) => (Buffer.isBuffer(part) ? part.toString("utf8") : part))
+    .filter((part): part is string => Boolean(part?.trim()));
+  const message = scrubGitError(redactToken(parts.join("\n").trim() || "gh command failed", token));
+  return { message, exitCode: typeof err.code === "number" ? err.code : undefined };
+}
+
+function ghEnv(host: string, token: string, githubCaCert?: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GH_HOST: normalizeGithubHost(host),
+    GH_PROMPT_DISABLED: "1",
+    GH_TOKEN: token,
+    GITHUB_TOKEN: token,
+    GH_ENTERPRISE_TOKEN: token,
+    GITHUB_ENTERPRISE_TOKEN: token,
+  };
+  if (githubCaCert) {
+    const certPath = path.resolve(githubCaCert);
+    env.SSL_CERT_FILE ??= certPath;
+    env.GIT_SSL_CAINFO ??= certPath;
+  }
+  return env;
+}
+
+async function runGh(
+  args: string[],
+  options: { env: NodeJS.ProcessEnv; timeout: number },
+): Promise<{ stdout: string; stderr: string }> {
+  const { stdout, stderr } = await execFileAsync("gh", args, {
+    env: options.env,
+    timeout: options.timeout,
+    maxBuffer: 1024 * 1024,
+  });
+  return { stdout, stderr };
 }
 
 /**
- * Create a new repo under the token owner's account via the GitHub REST API
- * (`POST /user/repos`), with `auto_init` so it has a default branch to clone and
- * push to immediately. The token never leaves this process; the API base honors
- * a self-hosted `GITHUB_HOST` (`/api/v3`). Returns a discriminated result so the
- * caller can surface the HTTP status/message without echoing the token.
+ * Create a new repo under the token owner's account through GitHub CLI. `gh`
+ * handles github.com vs GHES routing via GH_HOST, and the user's token is passed
+ * only in this child process's env. `--add-readme` gives the repo an initial
+ * commit/default branch so the knowledge-repo clone can push immediately.
  */
-async function createRemoteRepo(
+export async function createRemoteRepo(
   host: string,
   token: string,
   name: string,
   isPrivate: boolean,
   description: string,
+  githubCaCert?: string,
+  runner: GhRunner = runGh,
 ): Promise<CreateRepoResult> {
-  const apiBase = githubApiBase(host);
-  const res = await fetch(`${apiBase}/user/repos`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: "application/vnd.github+json",
-      "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "noah-almighty",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      name,
-      private: isPrivate,
-      auto_init: true,
-      ...(description ? { description } : {}),
-    }),
-    signal: AbortSignal.timeout(20_000),
-  });
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!res.ok) {
-    const message = typeof body.message === "string" ? body.message : res.statusText || "unknown error";
-    return { ok: false, status: res.status, message };
+  const normalizedHost = normalizeGithubHost(host);
+  const env = ghEnv(normalizedHost, token, githubCaCert);
+  try {
+    const user = await runner(["api", "user", "--jq", ".login"], { env, timeout: 20_000 });
+    const owner = user.stdout.trim();
+    if (!owner) {
+      return { ok: false, message: "gh api user did not return a login" };
+    }
+
+    const createArgs = ["repo", "create", name, isPrivate ? "--private" : "--public", "--add-readme"];
+    if (description) {
+      createArgs.push("--description", description);
+    }
+    await runner(createArgs, { env, timeout: 60_000 });
+
+    const fullName = `${owner}/${name}`;
+    const view = await runner(
+      ["repo", "view", fullName, "--json", "nameWithOwner,defaultBranchRef,visibility"],
+      { env, timeout: 20_000 },
+    );
+    const body = JSON.parse(view.stdout || "{}") as {
+      nameWithOwner?: unknown;
+      defaultBranchRef?: { name?: unknown } | null;
+      visibility?: unknown;
+    };
+    const visibility = typeof body.visibility === "string" ? body.visibility : "";
+    return {
+      ok: true,
+      fullName: typeof body.nameWithOwner === "string" ? body.nameWithOwner : fullName,
+      defaultBranch: typeof body.defaultBranchRef?.name === "string" ? body.defaultBranchRef.name : "main",
+      isPrivate: visibility.toUpperCase() !== "PUBLIC",
+    };
+  } catch (error) {
+    return { ok: false, ...ghErrorMessage(error, token) };
   }
-  return {
-    ok: true,
-    fullName: typeof body.full_name === "string" ? body.full_name : name,
-    defaultBranch: typeof body.default_branch === "string" ? body.default_branch : "main",
-    isPrivate: Boolean(body.private),
-  };
 }
 
 const OWNER_ONLY = "이 도구는 아바타 소유자만 사용할 수 있습니다.";
@@ -130,7 +188,7 @@ const NO_REPO =
 export function buildRepoTools(
   store: Store,
   ctx: RepoToolsContext,
-  opts: { allowCreate?: boolean } = {},
+  opts: { allowCreate?: boolean; createRemoteRepo?: typeof createRemoteRepo } = {},
 ) {
   // Resolve the repo context fresh on each call so a token/repo change mid-
   // conversation is picked up. Returns null when no repo is configured.
@@ -319,16 +377,19 @@ export function buildRepoTools(
       }
       const targetHost = normalizeGithubHost(ctx.config.githubHost);
       try {
-        const result = await createRemoteRepo(
+        const result = await (opts.createRemoteRepo ?? createRemoteRepo)(
           targetHost,
           token,
           name,
           args.private ?? true,
           (args.description ?? "").trim(),
+          ctx.config.githubCaCert,
         );
         if (!result.ok) {
+          const status = result.status ? `, HTTP ${result.status}` : "";
+          const exitCode = result.exitCode ? `, exit ${result.exitCode}` : "";
           return text(
-            `GitHub 저장소 생성 실패 (host: ${targetHost}, HTTP ${result.status}): ${result.message}`,
+            `GitHub 저장소 생성 실패 (host: ${targetHost}${status}${exitCode}): ${result.message}`,
             true,
           );
         }

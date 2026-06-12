@@ -57,6 +57,7 @@ import {
 } from "../src/server/knowledgeRepo.js";
 import {
   buildRepoTools,
+  createRemoteRepo,
   REPO_CREATE_TOOL_NAME,
   REPO_SERVER_NAME,
   REPO_TOOL_NAMES,
@@ -1370,11 +1371,15 @@ describe("repo tools (knowledge-repo management)", () => {
     const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
     return { store, config, ownerId: owner.id, owner: { id: owner.id, username: "owner", displayName: "Owner" } };
   }
-  function createTools(s: ReturnType<typeof setupNoRepo>, viewerIsOwner = true) {
+  function createTools(
+    s: ReturnType<typeof setupNoRepo>,
+    viewerIsOwner = true,
+    opts: Parameters<typeof buildRepoTools>[2] = {},
+  ) {
     return buildRepoTools(
       s.store,
       { avatarUserId: s.ownerId, owner: s.owner, viewerIsOwner, config: s.config },
-      { allowCreate: true },
+      { allowCreate: true, ...opts },
     );
   }
 
@@ -1423,84 +1428,115 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(res.content[0].text).toContain("이미 지식 저장소가 연결");
   });
 
-  it("create_repo creates a repo via the API and connects it", async () => {
+  it("create_repo creates a repo through the configured creator and connects it", async () => {
     const s = setupNoRepo("rt-create-ok");
     s.store.setGitToken(s.ownerId, "tok");
-    const fetchMock = vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
-      expect(url).toBe("https://api.github.com/user/repos");
-      expect(init.headers.Authorization).toContain("tok");
-      return {
-        ok: true,
-        status: 201,
-        statusText: "Created",
-        json: async () => ({ full_name: "owner/my-knowledge", default_branch: "main", private: true }),
-      };
+    const create = vi.fn(async () => ({
+      ok: true as const,
+      fullName: "owner/my-knowledge",
+      defaultBranch: "main",
+      isPrivate: true,
+    }));
+
+    const res = await call(createTools(s, true, { createRemoteRepo: create }), "create_repo", {
+      name: "my-knowledge",
     });
-    vi.stubGlobal("fetch", fetchMock);
-    try {
-      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
-      expect(res.isError).toBeFalsy();
-      expect(res.content[0].text).toContain("owner/my-knowledge");
-      expect(fetchMock).toHaveBeenCalledOnce();
-      expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("owner/my-knowledge");
+    expect(create).toHaveBeenCalledWith("github.com", "tok", "my-knowledge", true, "", undefined);
+    expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
   });
 
   it("create_repo description exposes the configured GitHub host", () => {
     const s = setupNoRepo("rt-create-desc", { githubHost: "github.enterprise.local" });
     const createRepo = createTools(s).find((t) => t.name === "create_repo");
     expect(createRepo?.description).toContain("github.enterprise.local");
-    expect(createRepo?.description).toContain("https://github.enterprise.local/api/v3/user/repos");
+    expect(createRepo?.description).toContain("GH_HOST=github.enterprise.local gh repo create");
   });
 
-  it("create_repo uses the configured GitHub host for GHES", async () => {
-    const s = setupNoRepo("rt-create-ghe", { githubHost: "https://github.enterprise.local/" });
-    s.store.setGitToken(s.ownerId, "tok");
-    const fetchMock = vi.fn(async (url: string, init: { headers: Record<string, string> }) => {
-      expect(url).toBe("https://github.enterprise.local/api/v3/user/repos");
-      expect(init.headers.Authorization).toContain("tok");
+  it("createRemoteRepo invokes gh with host token and CA env", async () => {
+    const calls: Array<{ args: string[]; env: NodeJS.ProcessEnv }> = [];
+    const runner = vi.fn(async (args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      calls.push({ args, env: options.env });
+      if (args[0] === "api") {
+        return { stdout: "owner\n", stderr: "" };
+      }
+      if (args[0] === "repo" && args[1] === "create") {
+        return { stdout: "", stderr: "" };
+      }
       return {
-        ok: true,
-        status: 201,
-        statusText: "Created",
-        json: async () => ({ full_name: "owner/my-knowledge", default_branch: "main", private: true }),
+        stdout: JSON.stringify({
+          nameWithOwner: "owner/my-knowledge",
+          defaultBranchRef: { name: "main" },
+          visibility: "PRIVATE",
+        }),
+        stderr: "",
       };
     });
-    vi.stubGlobal("fetch", fetchMock);
-    try {
-      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
-      expect(res.isError).toBeFalsy();
-      expect(fetchMock).toHaveBeenCalledOnce();
-      expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
-    } finally {
-      vi.unstubAllGlobals();
+
+    const res = await createRemoteRepo(
+      "https://github.enterprise.local/",
+      "tok-secret",
+      "my-knowledge",
+      true,
+      "desc",
+      "/tmp/ca.pem",
+      runner,
+    );
+
+    expect(res).toMatchObject({
+      ok: true,
+      fullName: "owner/my-knowledge",
+      defaultBranch: "main",
+      isPrivate: true,
+    });
+    expect(calls.map((c) => c.args)).toEqual([
+      ["api", "user", "--jq", ".login"],
+      ["repo", "create", "my-knowledge", "--private", "--add-readme", "--description", "desc"],
+      ["repo", "view", "owner/my-knowledge", "--json", "nameWithOwner,defaultBranchRef,visibility"],
+    ]);
+    for (const call of calls) {
+      expect(call.env.GH_HOST).toBe("github.enterprise.local");
+      expect(call.env.GH_TOKEN).toBe("tok-secret");
+      expect(call.env.GH_ENTERPRISE_TOKEN).toBe("tok-secret");
+      expect(call.env.SSL_CERT_FILE).toBe(path.resolve("/tmp/ca.pem"));
     }
   });
 
-  it("create_repo surfaces a GitHub API error and leaves the repo unconnected", async () => {
+  it("createRemoteRepo redacts tokens from gh errors", async () => {
+    const runner = vi.fn(async () => {
+      throw Object.assign(new Error("failed with tok-secret"), {
+        code: 1,
+        stderr: "bad credentials tok-secret",
+      });
+    });
+
+    const res = await createRemoteRepo("github.com", "tok-secret", "dup", true, "", undefined, runner);
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.exitCode).toBe(1);
+      expect(res.message).toContain("[REDACTED]");
+      expect(res.message).not.toContain("tok-secret");
+    }
+  });
+
+  it("create_repo surfaces a GitHub creation error and leaves the repo unconnected", async () => {
     const s = setupNoRepo("rt-create-fail");
     s.store.setGitToken(s.ownerId, "tok");
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: false,
-        status: 422,
-        statusText: "Unprocessable Entity",
-        json: async () => ({ message: "name already exists on this account" }),
-      })),
-    );
-    try {
-      const res = await call(createTools(s), "create_repo", { name: "dup" });
-      expect(res.isError).toBe(true);
-      expect(res.content[0].text).toContain("host: github.com");
-      expect(res.content[0].text).toContain("HTTP 422");
-      expect(res.content[0].text).toContain("already exists");
-      expect(s.store.getKnowledgeRepo(s.ownerId).repo).toBeNull();
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    const create = vi.fn(async () => ({
+      ok: false as const,
+      exitCode: 1,
+      message: "name already exists on this account",
+    }));
+
+    const res = await call(createTools(s, true, { createRemoteRepo: create }), "create_repo", { name: "dup" });
+
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("host: github.com");
+    expect(res.content[0].text).toContain("exit 1");
+    expect(res.content[0].text).toContain("already exists");
+    expect(s.store.getKnowledgeRepo(s.ownerId).repo).toBeNull();
   });
 
   it("writeRepoTemplate seeds a valid Claude marketplace + README, idempotently", async () => {
@@ -1526,29 +1562,25 @@ describe("repo tools (knowledge-repo management)", () => {
     g("branch", "-M", "main");
     g("remote", "add", "origin", remote);
     g("push", "-q", "origin", "main");
-    // The API returns the local bare remote as full_name, so the post-create
+    // The creator returns the local bare remote as fullName, so the post-create
     // clone → seed → push runs fully offline against it.
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        status: 201,
-        statusText: "Created",
-        json: async () => ({ full_name: remote, default_branch: "main", private: true }),
-      })),
-    );
-    try {
-      const res = await call(createTools(s), "create_repo", { name: "my-knowledge" });
-      expect(res.isError).toBeFalsy();
-      expect(res.content[0].text).toContain("초기화");
-      // The template landed on the remote as a real commit.
-      const verify = path.join(tempDir, "rt-create-seed", "verify");
-      execFileSync("git", ["clone", "-q", remote, verify], { stdio: "pipe" });
-      const mp = JSON.parse(fs.readFileSync(path.join(verify, ".claude-plugin/marketplace.json"), "utf8"));
-      expect(mp.plugins).toEqual([]);
-    } finally {
-      vi.unstubAllGlobals();
-    }
+    const create = vi.fn(async () => ({
+      ok: true as const,
+      fullName: remote,
+      defaultBranch: "main",
+      isPrivate: true,
+    }));
+
+    const res = await call(createTools(s, true, { createRemoteRepo: create }), "create_repo", {
+      name: "my-knowledge",
+    });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("초기화");
+    // The template landed on the remote as a real commit.
+    const verify = path.join(tempDir, "rt-create-seed", "verify");
+    execFileSync("git", ["clone", "-q", remote, verify], { stdio: "pipe" });
+    const mp = JSON.parse(fs.readFileSync(path.join(verify, ".claude-plugin/marketplace.json"), "utf8"));
+    expect(mp.plugins).toEqual([]);
   });
 });
 

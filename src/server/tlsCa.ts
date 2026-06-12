@@ -18,21 +18,21 @@ const tlsApi = tls as typeof tls & {
 
 /**
  * Trust a self-hosted / on-prem GitHub's internal CA from a SINGLE env var
- * (`GITHUB_CA_CERT`, a PEM file path), across BOTH TLS stacks the app uses to
+ * (`GITHUB_CA_CERT`, a PEM file path), across the TLS stacks the app uses to
  * reach `githubHost`:
  *
- *  - the built-in `fetch` (undici) behind `mcp__repo__create_repo`'s REST call —
- *    handled by APPENDING the cert to the process's default CA set at runtime
- *    (`tls.setDefaultCACertificates`), which the global fetch dispatcher honors.
+ *  - the built-in `fetch` (undici), handled by APPENDING the cert to the
+ *    process's default CA set at runtime (`tls.setDefaultCACertificates`).
  *    Appending (not replacing) keeps system roots + `NODE_EXTRA_CA_CERTS`, so
  *    public hosts like github.com still verify.
  *  - every `git` clone/push/seed (knowledge repo + plugins), which the app runs
  *    via `execFile` inheriting `process.env` — handled by exporting
  *    `GIT_SSL_CAINFO` (read by libcurl).
+ *  - `mcp__repo__create_repo`, which is implemented with `gh repo create` and
+ *    passes this same path as `SSL_CERT_FILE` in the `gh` child env.
  *
- * Without this, an operator would need separate `NODE_EXTRA_CA_CERTS` (fetch)
- * and `GIT_SSL_CAINFO` (git) vars. Best-effort: an unset var, an unreadable file,
- * or an old Node without `setDefaultCACertificates` is logged, not fatal.
+ * Best-effort: an unset var, an unreadable file, or an old Node without
+ * `setDefaultCACertificates` is logged, not fatal.
  *
  * Caveat: `GIT_SSL_CAINFO` makes libcurl use this file as its ENTIRE CA bundle
  * (it replaces, not appends, for git), so the PEM should contain every CA git
@@ -85,9 +85,6 @@ export function applyCustomGithubCa(config: AppConfig, logger: CaLogger): boolea
     process.env.GIT_SSL_CAINFO = absPath;
   }
 
-  logger.info(
-    { certPath: absPath, gitSslCaInfo: process.env.GIT_SSL_CAINFO },
-    "applied GITHUB_CA_CERT to the fetch + git TLS stacks",
-  );
+  logger.info({ certPath: absPath, gitSslCaInfo: process.env.GIT_SSL_CAINFO }, "applied GITHUB_CA_CERT");
   return true;
 }

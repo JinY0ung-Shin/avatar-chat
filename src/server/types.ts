@@ -14,11 +14,9 @@ export interface AppConfig {
   githubHost: string;
   /**
    * Optional PEM CA file path (env `GITHUB_CA_CERT`) trusted for BOTH TLS stacks
-   * the app uses to reach `githubHost`: the built-in `fetch` (create_repo's REST
-   * call) and every `git` clone/push. Applied once at startup by
-   * `applyCustomGithubCa` — one var instead of separate `NODE_EXTRA_CA_CERTS` +
-   * `GIT_SSL_CAINFO`. For a self-hosted / on-prem GitHub with an internal CA.
-   * Unset → only public/system CAs are trusted.
+   * the app uses to reach `githubHost`: Node `fetch` and every `git` clone/push.
+   * `create_repo` also passes it to gh as `SSL_CERT_FILE`. Applied once at
+   * startup by `applyCustomGithubCa`; unset means public/system CAs only.
    */
   githubCaCert?: string;
   /** Repo-bundled plugin dir loaded for EVERY avatar (default skills). */
