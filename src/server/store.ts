@@ -110,6 +110,7 @@ interface UserRow {
   knowledge_repo: string | null;
   knowledge_branch: string | null;
   knowledge_selected: string | null;
+  ssh_public_key: string | null;
 }
 
 interface KnowledgeRequestRow {
@@ -178,6 +179,7 @@ export class Store {
         avatar_ext TEXT,
         published INTEGER DEFAULT 0,
         auto_approve INTEGER DEFAULT 0,
+        ssh_public_key TEXT,
         created_at TEXT,
         last_seen_at TEXT
       );
@@ -308,6 +310,9 @@ export class Store {
     this.addColumnIfMissing("users", "knowledge_branch", "TEXT");
     // JSON array of plugin names to load from the knowledge repo; null = all.
     this.addColumnIfMissing("users", "knowledge_selected", "TEXT");
+    // Public half of an app-generated SSH keypair. The private half is stored
+    // only as the encrypted SSH_PRIVATE_KEY user secret.
+    this.addColumnIfMissing("users", "ssh_public_key", "TEXT");
     // SDK session id of the conversation's last turn, used to resume context on
     // the next turn (see claudeAgent resume). Null until the first turn completes.
     this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");
@@ -357,6 +362,7 @@ export class Store {
       knowledgeSelected: parseNameList(row.knowledge_selected),
       // Only the names — the encrypted values never leave the server.
       secretNames: this.listUserSecretNames(row.id),
+      sshPublicKey: row.ssh_public_key ?? null,
     };
   }
 
@@ -607,11 +613,37 @@ export class Store {
           "ON CONFLICT(user_id, name) DO UPDATE SET value_enc = excluded.value_enc",
       )
       .run(userId, name, enc, new Date().toISOString());
+    if (name === "SSH_PRIVATE_KEY") {
+      this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
+    }
+  }
+
+  /** Store a generated SSH keypair: private key encrypted, public key visible. */
+  setSshKeyPair(userId: string, privateKey: string, publicKey: string): User {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    const enc = encryptSecret(privateKey, this.secret);
+    const createdAt = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(
+          "INSERT INTO user_secrets (user_id, name, value_enc, created_at) VALUES (?, 'SSH_PRIVATE_KEY', ?, ?) " +
+            "ON CONFLICT(user_id, name) DO UPDATE SET value_enc = excluded.value_enc",
+        )
+        .run(userId, enc, createdAt);
+      this.db.prepare("UPDATE users SET ssh_public_key = ? WHERE id = ?").run(publicKey, userId);
+    });
+    tx();
+    return this.toUser(this.userRowById(userId)!);
   }
 
   /** Remove a named secret. No-op if it doesn't exist. */
   deleteUserSecret(userId: string, name: string): void {
     this.db.prepare("DELETE FROM user_secrets WHERE user_id = ? AND name = ?").run(userId, name);
+    if (name === "SSH_PRIVATE_KEY") {
+      this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
+    }
   }
 
   /** Names of the user's stored secrets (for the settings UI; values omitted). */

@@ -707,7 +707,8 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     if (!secretNames.includes("SSH_PRIVATE_KEY")) {
       lines.push(
         "원격 **SSH 도구는 아직 비활성화** 상태입니다(이 대화에는 SSH 실행·파일전송 도구가 없습니다). " +
-          "사용자가 SSH 접속을 원하면, 설정 → **시크릿** 탭에 `SSH_PRIVATE_KEY`라는 이름으로 개인 키(OpenSSH/PEM)를 등록하라고 안내하세요. " +
+          "사용자가 SSH 접속을 원하면 먼저 `mcp__ssh_identity__generate_key`로 SSH 키를 생성하세요. 생성된 개인키는 `SSH_PRIVATE_KEY` 시크릿으로 저장되고, 공개키는 사용자에게 보여주며 설정에서도 다시 확인할 수 있습니다. " +
+          "사용자가 이미 가진 키를 쓰려는 경우에는 설정 → **시크릿** 탭에 `SSH_PRIVATE_KEY`라는 이름으로 개인 키(OpenSSH/PEM)를 등록하라고 안내하세요. " +
           "등록하면 다음 대화부터 SSH 도구가 활성화되고, 이후 접속할 호스트의 키는 `mcp__ssh_trust__add_host`로 신뢰 등록할 수 있습니다. " +
           "(키 값은 서버에서 SSH 도구에만 주입되며 당신에게는 노출되지 않습니다.)",
       );
@@ -801,6 +802,9 @@ export async function runClaudeAgent(
   const { buildSshTrustServer, SSH_TRUST_SERVER_NAME, SSH_TRUST_TOOL_NAMES } = await import(
     "./sshTrustTools.js"
   );
+  const { buildSshIdentityServer, SSH_IDENTITY_SERVER_NAME, SSH_IDENTITY_TOOL_NAMES } = await import(
+    "./sshIdentityTools.js"
+  );
   const { buildSystemServer, SYSTEM_SERVER_NAME, SYSTEM_TOOL_NAMES } = await import(
     "./systemTools.js"
   );
@@ -887,6 +891,16 @@ export async function runClaudeAgent(
     viewerIsOwner: viewerIsOwner && !headless,
     config,
   });
+  const sshIdentityServer = buildSshIdentityServer(store, {
+    avatarUserId: request.avatar.id,
+    owner: {
+      id: request.avatar.id,
+      username: ownerRow?.username ?? "",
+      displayName: ownerRow?.displayName ?? request.avatar.displayName,
+      alias: ownerRow?.alias ?? request.avatar.alias,
+    },
+    viewerIsOwner: viewerIsOwner && !headless,
+  });
 
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
   // NOT owner-only: host fingerprints are public, and a viewer who can drive
@@ -943,6 +957,7 @@ export async function runClaudeAgent(
       ...REPO_TOOL_NAMES,
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
       ...SYSTEM_TOOL_NAMES,
+      ...SSH_IDENTITY_TOOL_NAMES,
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
       "TodoWrite",
@@ -957,6 +972,7 @@ export async function runClaudeAgent(
       [KNOWLEDGE_SERVER_NAME]: knowledgeServer,
       [REPO_SERVER_NAME]: repoServer,
       [SYSTEM_SERVER_NAME]: systemServer,
+      [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
     },

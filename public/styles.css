@@ -3548,6 +3548,34 @@ textarea::placeholder {
   margin-top: 0;
   flex: none;
 }
+.ssh-public-key-box {
+  margin-bottom: var(--s-3);
+}
+.ssh-public-key-field {
+  display: grid;
+  gap: var(--s-2);
+}
+.ssh-public-key-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: var(--s-2);
+  align-items: start;
+}
+.ssh-public-key-row textarea {
+  width: 100%;
+  min-height: 84px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: var(--t-xs);
+  resize: vertical;
+}
+.ssh-public-key-row .msg-act {
+  margin-top: 5px;
+}
 
 @media (max-width: 860px) {
   .main {

@@ -3493,6 +3493,7 @@ function buildSecretsCard() {
                 const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
                 state.user = user;
                 renderList();
+                renderPublicKey();
               } catch (err) {
                 notify(`삭제 실패: ${err.message}`);
               }
@@ -3503,6 +3504,30 @@ function buildSecretsCard() {
     );
   };
   renderList();
+
+  const publicKeyBox = el("div", { class: "ssh-public-key-box" });
+  const renderPublicKey = () => {
+    const publicKey = (state.user.sshPublicKey || "").trim();
+    if (!publicKey) {
+      publicKeyBox.replaceChildren();
+      publicKeyBox.hidden = true;
+      return;
+    }
+    publicKeyBox.hidden = false;
+    const copyBtn = el("button", { class: "msg-act", type: "button", "aria-label": "SSH 공개키 복사", title: "SSH 공개키 복사" });
+    copyBtn.append(icon("copy"));
+    copyBtn.addEventListener("click", () => copyText(publicKey, copyBtn));
+    publicKeyBox.replaceChildren(
+      el("label", { class: "field ssh-public-key-field" }, [
+        el("span", { text: "SSH 공개키" }),
+        el("div", { class: "ssh-public-key-row" }, [
+          el("textarea", { rows: "3", readonly: "", text: publicKey }),
+          copyBtn,
+        ]),
+      ]),
+    );
+  };
+  renderPublicKey();
 
   // Add/update form: an env-style NAME plus a (multiline-capable) value.
   const form = el("form", {
@@ -3531,6 +3556,7 @@ function buildSecretsCard() {
         state.user = user;
         formEl.reset();
         renderList();
+        renderPublicKey();
       } catch (err) {
         notify(`저장 실패: ${err.message}`);
       } finally {
@@ -3549,7 +3575,7 @@ function buildSecretsCard() {
     el("button", { class: "primary", type: "submit", text: "시크릿 저장" }),
   ]);
 
-  card.append(list, form);
+  card.append(list, publicKeyBox, form);
   return card;
 }
 

@@ -81,6 +81,12 @@ import {
   SSH_TRUST_SERVER_NAME,
   SSH_TRUST_TOOL_NAMES,
 } from "../src/server/agent/sshTrustTools.js";
+import {
+  buildSshIdentityTools,
+  SSH_IDENTITY_SERVER_NAME,
+  SSH_IDENTITY_TOOL_NAMES,
+} from "../src/server/agent/sshIdentityTools.js";
+import { generateSshKeyPair } from "../src/server/sshIdentity.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
 import type { AppConfig, Plugin } from "../src/server/types.js";
 import {
@@ -619,6 +625,74 @@ describe("sshTrust", () => {
   });
 });
 
+describe("ssh identity", () => {
+  function makeStore() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "ssh-identity"),
+      agentRuntime: "local",
+      sessionSecret: "shh",
+    });
+    const owner = store.createUser({ username: "sshowner", displayName: "Owner", password: "password123" });
+    return { store, owner };
+  }
+
+  function call(tools: ReturnType<typeof buildSshIdentityTools>, name: string, args: unknown): Promise<ToolResult> {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} not found`);
+    return (t.handler as (a: unknown, extra: unknown) => Promise<ToolResult>)(args, {});
+  }
+
+  it("generates OpenSSH private key material and a reusable public key", async () => {
+    const pair = await generateSshKeyPair("avatar-chat-test");
+    expect(pair.privateKey).toContain("BEGIN OPENSSH PRIVATE KEY");
+    expect(pair.publicKey).toMatch(/^ssh-ed25519 [A-Za-z0-9+/=]+ avatar-chat-test$/);
+    expect(pair.fingerprint).toMatch(/^SHA256:/);
+  });
+
+  it("tools generate a key, store only the public half on the user, and refuse overwrite", async () => {
+    const { store, owner } = makeStore();
+    const tools = buildSshIdentityTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: owner.username, displayName: owner.displayName },
+      viewerIsOwner: true,
+    });
+
+    expect(SSH_IDENTITY_SERVER_NAME).toBe("ssh_identity");
+    expect(SSH_IDENTITY_TOOL_NAMES).toContain("mcp__ssh_identity__generate_key");
+
+    const generated = await call(tools, "generate_key", { comment: "avatar-chat-owner" });
+    expect(generated.isError).toBeFalsy();
+    expect(generated.content[0].text).toContain("공개키:");
+    expect(generated.content[0].text).not.toContain("BEGIN OPENSSH PRIVATE KEY");
+
+    const user = store.getUserById(owner.id)!;
+    expect(user.secretNames).toEqual(["SSH_PRIVATE_KEY"]);
+    expect(user.sshPublicKey).toMatch(/^ssh-ed25519 /);
+    expect(store.getUserSecrets(owner.id).SSH_PRIVATE_KEY).toContain("BEGIN OPENSSH PRIVATE KEY");
+
+    const shown = await call(tools, "show_public_key", {});
+    expect(shown.content[0].text).toContain(user.sshPublicKey!);
+
+    const second = await call(tools, "generate_key", { comment: "again" });
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toContain("이미 SSH 키가 설정");
+  });
+
+  it("refuses key management to non-owner viewers", async () => {
+    const { store, owner } = makeStore();
+    const tools = buildSshIdentityTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: owner.username, displayName: owner.displayName },
+      viewerIsOwner: false,
+    });
+
+    const res = await call(tools, "generate_key", {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("소유자");
+    expect(store.listUserSecretNames(owner.id)).toEqual([]);
+  });
+});
+
 describe("listSkillsInRoots", () => {
   it("parses name/description from SKILL.md frontmatter and tags the source", async () => {
     const root = path.join(tempDir, "skills-basic");
@@ -762,7 +836,34 @@ describe("store user secrets", () => {
     store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "topsecret");
     const user = store.getUserById(ownerId)!;
     expect(user.secretNames).toEqual(["SSH_PRIVATE_KEY"]);
+    expect(user.sshPublicKey).toBeNull();
     expect(JSON.stringify(user)).not.toContain("topsecret");
+  });
+
+  it("stores generated SSH public key while keeping private key secret", () => {
+    const { store, ownerId } = makeStore();
+    const user = store.setSshKeyPair(
+      ownerId,
+      "-----BEGIN OPENSSH PRIVATE KEY-----\nsecret\n-----END OPENSSH PRIVATE KEY-----\n",
+      "ssh-ed25519 AAAATEST avatar-chat-owner",
+    );
+
+    expect(user.secretNames).toEqual(["SSH_PRIVATE_KEY"]);
+    expect(user.sshPublicKey).toBe("ssh-ed25519 AAAATEST avatar-chat-owner");
+    expect(store.getUserSecrets(ownerId).SSH_PRIVATE_KEY).toContain("BEGIN OPENSSH PRIVATE KEY");
+    expect(JSON.stringify(user)).not.toContain("BEGIN OPENSSH PRIVATE KEY");
+  });
+
+  it("clears generated SSH public key when SSH_PRIVATE_KEY is changed or deleted manually", () => {
+    const { store, ownerId } = makeStore();
+    store.setSshKeyPair(ownerId, "private-key", "ssh-ed25519 AAAATEST avatar-chat-owner");
+    store.setUserSecret(ownerId, "SSH_PRIVATE_KEY", "manual-private-key");
+    expect(store.getUserById(ownerId)!.sshPublicKey).toBeNull();
+
+    store.setSshKeyPair(ownerId, "private-key", "ssh-ed25519 AAAATEST avatar-chat-owner");
+    store.deleteUserSecret(ownerId, "SSH_PRIVATE_KEY");
+    expect(store.getUserById(ownerId)!.sshPublicKey).toBeNull();
+    expect(store.getUserSecrets(ownerId)).toEqual({});
   });
 
   it("scopes secrets per user", () => {
@@ -1023,6 +1124,7 @@ describe("buildPrompt", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
     expect(p).toContain("SSH 도구는 아직 비활성화");
     expect(p).toContain("SSH_PRIVATE_KEY");
+    expect(p).toContain("mcp__ssh_identity__generate_key");
     expect(p).toContain("mcp__ssh_trust__add_host");
   });
 

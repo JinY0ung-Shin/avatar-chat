@@ -10,7 +10,7 @@ ARG NPM_CONFIG_REGISTRY=
 
 # No openssh-client: remote SSH goes through the hex-ssh MCP server, which is
 # ssh2-based (pure JS) and needs no system `ssh` binary. python3-cryptography /
-# python3-paramiko back the ssh-ops skill's key generation + known_hosts
+# python3-paramiko back app-managed SSH key generation + known_hosts
 # registration (the image has no ssh-keygen/ssh-keyscan); installed via apt to
 # avoid PEP 668 pip restrictions on Debian and to resolve through the apt mirror.
 COPY docker/apt_mirror_sources.sh /usr/local/bin/apt_mirror_sources.sh
