@@ -1103,12 +1103,15 @@ export function createApp(services = createServices()) {
       apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
       return;
     }
+    // A run is already streaming for this conversation. This POST carries a NEW
+    // typed message; the old attach-and-replay path would silently swallow it
+    // (never persisted, never echoed — the client would only mirror the FIRST
+    // turn's answer). Reject so the client surfaces the error and keeps the text
+    // in the composer. Reconnecting to WATCH an in-flight run uses the dedicated
+    // GET /api/chat/runs/:runId/events path, not a second POST.
     const activeRun = getActiveRunForConversation(req.user!.id, conversationId);
     if (activeRun) {
-      prepareSse(res);
-      if (!attachRunClient(activeRun.runId, req.user!.id, res)) {
-        res.end();
-      }
+      apiError(res, 409, "이미 이 대화의 응답을 생성 중입니다. 잠시 후 다시 시도해 주세요.");
       return;
     }
 
@@ -1139,6 +1142,9 @@ export function createApp(services = createServices()) {
     // The SDK session id this run reports (init event); persisted on success so
     // the next turn can resume it.
     let runSessionId: string | null = null;
+    // Accumulate the main-agent text as it streams, so the cancel/error paths can
+    // persist the partial the user already watched (not an empty "(중지됨)" stub).
+    let streamedText = "";
     logger.info(
       { userId: req.user!.id, avatarId: avatar.id, conversationId, greeting, regenerate },
       "chat stream started",
@@ -1208,6 +1214,7 @@ export function createApp(services = createServices()) {
         store,
         {
           onDelta: (text) => {
+            streamedText += text;
             emitRunEvent(runId, "delta", { text });
           },
           onStatus: (label) => {
@@ -1323,15 +1330,18 @@ export function createApp(services = createServices()) {
     } catch (error) {
       if (isRunCancelled(runId)) {
         if (!greeting) {
+          // Keep whatever the model already streamed before the stop. The client's
+          // finalizeStopped keeps it on screen, so the persisted record must carry
+          // it too — otherwise the visible answer is gone on the next reload/revisit.
           const response: AgentResponse = {
             kind: "text",
             runtime: config.agentRuntime,
             summary: "중지됨",
-            text: "",
+            text: streamedText,
           };
           const stopped = store.addMessage(conversationId, {
             role: "assistant",
-            content: "(중지됨)",
+            content: streamedText || "(중지됨)",
             response,
           });
           emitRunEvent(runId, "cancelled", { message: stopped, response });
@@ -1355,7 +1365,10 @@ export function createApp(services = createServices()) {
         detail,
       });
       if (!greeting) {
-        store.addMessage(conversationId, { role: "assistant", content: detail });
+        // Don't discard the partial the user already watched stream — keep it
+        // alongside the error so a reload shows what the live view showed.
+        const content = streamedText ? `${streamedText}\n\n${detail}` : detail;
+        store.addMessage(conversationId, { role: "assistant", content });
       }
       emitRunEvent(runId, "error", { error: detail });
     } finally {

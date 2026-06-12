@@ -210,7 +210,15 @@ function icon(name) {
 }
 
 function renderMarkdown(text) {
-  return DOMPurify.sanitize(marked.parse(text || ""));
+  const html = DOMPurify.sanitize(marked.parse(text || ""));
+  // If sanitization reduced a non-empty answer to nothing — e.g. the model replied
+  // with only forbidden HTML (<script>/<iframe>/<style>…), whose CONTENT DOMPurify
+  // also strips — show the raw text escaped instead of leaving a blank bubble.
+  if (text && text.trim() && !html.trim()) {
+    const escaped = text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
+    return DOMPurify.sanitize(`<pre>${escaped}</pre>`);
+  }
+  return html;
 }
 
 function enhanceCodeBlocks(container) {
@@ -747,7 +755,10 @@ function routeFromHash() {
 function currentRoute() {
   if (state.view === "chat") {
     const pane = activePane();
-    return pane?.messages?.length && pane.conversationId ? `#/chat/${encodeURIComponent(pane.conversationId)}` : "#/chat";
+    // Carry the conversationId as soon as it exists (not only after a message is
+    // persisted) so a mid-stream reload — including the first turn and greetings —
+    // routes back to the conversation and re-attaches its in-flight run.
+    return pane?.conversationId ? `#/chat/${encodeURIComponent(pane.conversationId)}` : "#/chat";
   }
   if (state.view === "settings") return `#/settings/${state.settingsTab}`;
   if (state.view === "admin") return `#/admin/${state.adminTab}`;
@@ -2097,6 +2108,12 @@ async function attachActiveRun(pane = activePane()) {
     const result = await api(`/api/chat/runs?conversationId=${encodeURIComponent(pane.conversationId)}`);
     if (result.run?.runId && !pane.streaming) {
       attachChatRun(pane, result.run.runId);
+    } else if (!pane.streaming && pane.messages[pane.messages.length - 1]?.role === "user") {
+      // No active run, but the loaded history ends on an unanswered user turn — the
+      // run likely finished in the gap between loading history and this check, with
+      // its answer streaming into a now-orphaned pane. Re-pull so the just-persisted
+      // reply isn't missed. Skipped when history already ends with the assistant.
+      await refreshConversationMessages(pane);
     }
   } catch {
     /* best effort: a missing/finished run just means normal persisted history */
@@ -2955,19 +2972,23 @@ function startRenameConversation(item, conv) {
 
 async function selectConversation(conv) {
   if (!guardChatReplacement(conv.id)) return;
+  // Already open in a pane → focus it instead of rebuilding from server history.
+  // Essential when that pane is mid-stream: re-fetching history (which lacks the
+  // not-yet-persisted in-flight answer) and rebuilding the pane would drop the live
+  // streaming bubble. guardChatReplacement deliberately lets the same-id case
+  // through, so this short-circuit is what protects the streaming pane.
+  const openPane = state.chatPanes.find((p) => p.conversationId === conv.id);
+  if (openPane && (openPane.streaming || state.chatPanes.length > 1)) {
+    setActivePane(openPane);
+    closeRail();
+    state.view = "chat";
+    syncHash();
+    renderView();
+    renderConversations();
+    return;
+  }
   if (state.chatPanes.length > 1) {
-    // Already open in a split pane → just focus that pane, keep the split.
-    const openPane = state.chatPanes.find((p) => p.conversationId === conv.id);
-    if (openPane) {
-      setActivePane(openPane);
-      closeRail();
-      state.view = "chat";
-      syncHash();
-      renderView();
-      renderConversations();
-      return;
-    }
-    // Otherwise opening it replaces the whole split — ask first.
+    // Opening a not-yet-open conversation replaces the whole split — ask first.
     if (!window.confirm("분할 대화를 닫고 이 대화를 열까요?")) return;
   }
   closeRail();

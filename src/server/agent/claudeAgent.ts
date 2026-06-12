@@ -1230,12 +1230,18 @@ export async function runClaudeAgent(
     }
   }
 
-  // Prefer the partial answer the model already streamed; only show the error
-  // fallback when the run errored AND produced no usable text.
+  // Prefer the full text the model actually STREAMED (every main-agent assistant
+  // text block / delta across ALL turns) over the SDK's terminal `result` string,
+  // which is only the LAST assistant turn's text. The streamed transcript is what
+  // the user watched appear live; finalizing/persisting from `resultText` instead
+  // dropped any narration emitted before the final turn (preambles, text between
+  // tool calls) the instant the run completed — and kept it gone on reload, since
+  // this value is what gets stored. resultText is only a fallback for the rare
+  // case nothing streamed; the error fallback applies when neither produced text.
   const partialText = assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();
   const text =
-    resultText ||
     partialText ||
+    resultText ||
     (resultErrorSubtype
       ? resultErrorMessage(resultErrorSubtype)
       : "Claude Agent SDK 응답이 비어 있습니다.");
