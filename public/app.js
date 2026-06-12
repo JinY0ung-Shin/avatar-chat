@@ -1640,6 +1640,14 @@ function isNearBottom(pane = activePane()) {
 function scrollToBottom(pane = activePane(), force) {
   const t = pane?.dom?.transcript;
   if (!t) return;
+  // Called from renderTranscript before the pane is appended to the document
+  // (e.g. a full re-render when splitting or switching layout). A detached node
+  // has scrollHeight 0, so setting scrollTop is a no-op and the transcript would
+  // land at the top — defer to after attach so the latest messages stay in view.
+  if (!t.isConnected) {
+    requestAnimationFrame(() => scrollToBottom(pane, force));
+    return;
+  }
   if (force || isNearBottom(pane)) t.scrollTop = t.scrollHeight;
   updateScrollButton(pane);
 }

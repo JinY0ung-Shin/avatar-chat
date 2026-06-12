@@ -2726,6 +2726,13 @@ textarea::placeholder {
 .chat-workbench.vertical {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  /* Cap the single implicit row at the workbench height (like .grid /
+     .horizontal). Without this the row defaults to `auto` on desktop, so a pane
+     with a long transcript grows to content height, overflows the workbench and
+     gets clipped by `.main { overflow:hidden }` — the existing history looks cut
+     off and the composer is pushed off-screen. 1fr forces the transcript to
+     scroll internally instead. (Mobile/tablet already set this in media queries.) */
+  grid-auto-rows: minmax(0, 1fr);
 }
 .chat-workbench.horizontal {
   display: grid;
