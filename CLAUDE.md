@@ -6,6 +6,11 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Vanilla JS, no framework. `public/app.js` builds DOM manually via an `el(tag, props, children)` helper.
 - Single global stylesheet `public/styles.css` (CSS variables for spacing `--s-*`, colors, radii).
 - Markdown rendered with `marked` + sanitized with `DOMPurify` (`renderMarkdown`).
+- `npm run lint` (`tsc --noEmit`) covers only server TS; `public/*.js` is plain JS
+  and unchecked — sanity-check frontend edits with `node --check public/app.js`.
+- Owner sees pending `request_info` gaps in-app via a "내 아바타" nav badge + a
+  poll/visibility watcher that toasts on new gaps (`updateKnowledgeBadge`/
+  `refreshKnowledgeStatus`, app.js) — the UI end of the knowledge-backfill loop.
 
 ## Gotchas
 - **Project name diverges by layer:** display name "Noah Almighty", code slug
@@ -16,6 +21,10 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - `.claude/worktrees/` holds full embedded repo checkouts: exclude them from
   greps (`grep -v '\.claude/worktrees'`) and never `git add -A` (stage files
   explicitly — `-A` also pulls in unrelated pre-existing edits like `.env.example`).
+  When the tree has unrelated pre-existing edits and you must commit only your
+  hunks, note `git add -p` is unavailable here: diff → filter hunks by
+  `@@ -<oldstart>` → `git apply --cached`, then commit with **NO pathspec**
+  (`git commit -- <file>` commits the WORKTREE, ignoring the index).
 - **Chat keeps context across turns via SDK session *resume*, not history re-injection.**
   Each `sdk.query()` is stateless: `runClaudeAgent` passes `resume: <sessionId>` and the
   `init` event's `session_id` is persisted to `conversations.agent_session_id`
