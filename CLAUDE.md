@@ -2,6 +2,12 @@
 
 See README.md for features, setup, env vars, and verification (`npm run lint`/`test`/`build`).
 
+## Commands
+- `npm run dev` — local dev server on port 48787.
+- `npm run lint && npm test && npm run build` — standard verification gate.
+- `docker compose config` — validate compose/env wiring before Docker changes.
+- `CA_CERT_FILE=docker/tls-fullchain.crt docker compose build` — build with a local on-prem CA file.
+
 ## Frontend (public/)
 - Vanilla JS, no framework. `public/app.js` builds DOM manually via an `el(tag, props, children)` helper.
 - Single global stylesheet `public/styles.css` (CSS variables for spacing `--s-*`, colors, radii).
@@ -98,7 +104,8 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   text before logging/returning (`scrubGitError`).
 - **The per-user git token NEVER reaches the agent's shell.** It's used only as a
   per-invocation `http.extraHeader` on the app's OWN clone/push (`knowledgeRepo.ts`,
-  `syncPluginRepo`) and by the `mcp__repo__create_repo` GitHub-API call — all server-side.
+  `syncPluginRepo`) and by the server-side `mcp__repo__create_repo` bridge, which
+  invokes `gh repo create` with the token in child-process env — all server-side.
   It is NOT injected into the SDK subprocess env (`options.env`), so the agent's `gh`/`git`/Bash
   have NO GitHub credential (the server-wide `GITHUB_TOKEN` fallback was removed). So the avatar
   can't `gh repo create`; `create_repo` is the only bridge. The prompt surfaces `gitTokenSet`
@@ -136,6 +143,8 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   `createRemoteRepo` or fake `gh` runner; to drive the post-create clone/seed/push offline,
   have it return a local bare-remote PATH as `fullName` (`marketplaceCloneUrl` leaves
   non-`owner/repo` strings as-is).
+- GHES/older `gh` compatibility: do not depend on `gh repo view --json visibility`;
+  use `isPrivate` with `nameWithOwner,defaultBranchRef,isPrivate`.
 - **Per-user secret vault (generic, not just SSH):** `user_secrets` table (AES-256-GCM via
   `crypto.ts`, keyed on `avatar.id`=owner), `get/set/delete/listUserSecretNames`/`getUserSecrets`.
   Exposed to clients as `secretNames` ONLY (values never via `toUser`). `PUT/DELETE
