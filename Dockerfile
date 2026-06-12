@@ -1,3 +1,13 @@
+FROM rust:1-bookworm AS rtk-builder
+
+# RTK (Rust Token Killer) is used by the Claude SDK PreToolUse hook to rewrite
+# Bash commands into token-optimized equivalents. Build it in a separate stage so
+# the final app image only carries the binary, not the Rust toolchain.
+ARG RTK_GIT_URL=https://github.com/rtk-ai/rtk
+ARG RTK_GIT_REV=6785a6c7695d7273e722214a295249a84819b6f0
+RUN cargo install --git "$RTK_GIT_URL" --rev "$RTK_GIT_REV" rtk --root /opt/rtk \
+  && /opt/rtk/bin/rtk --version
+
 FROM node:22-bookworm-slim AS base
 
 # Optional corporate-mirror build args (empty = use upstream defaults).
@@ -57,6 +67,10 @@ RUN if grep -q "BEGIN CERTIFICATE" /tmp/extra-ca.crt; then \
   && rm -f /tmp/extra-ca.crt
 
 WORKDIR /app
+
+COPY --from=rtk-builder /opt/rtk/bin/rtk /usr/local/bin/rtk
+RUN rtk --version \
+  && test "$(rtk rewrite 'git status && git diff')" = "rtk git status && rtk git diff"
 
 # Always use npm install (not npm ci) so the build doesn't fail when the lock
 # file drifts out of sync with package.json, and so a corporate mirror can

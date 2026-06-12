@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { AppConfig, AgentRequest, AgentResponse, PluginRoot } from "../types.js";
@@ -42,6 +43,7 @@ const SSH_MCP_SECRET_ENV_NAMES = [
   "ALLOWED_HOSTS",
   "ALLOWED_HOST_FINGERPRINTS",
 ] as const;
+const RTK_REWRITE_TIMEOUT_MS = 1_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -118,6 +120,29 @@ export function sshMcpSecretEnv(ownerSecrets: Record<string, string>): Record<st
     }
   }
   return out;
+}
+
+export function rewriteBashCommandWithRtk(command: string, rtkCommand = "rtk"): string | null {
+  const trimmedCommand = command.trim();
+  const trimmedRtkCommand = rtkCommand.trim();
+  if (!trimmedCommand || !trimmedRtkCommand) {
+    return null;
+  }
+
+  const result = spawnSync(trimmedRtkCommand, ["rewrite", command], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "ignore"],
+    timeout: RTK_REWRITE_TIMEOUT_MS,
+  });
+  if (result.error) {
+    return null;
+  }
+
+  const rewritten = result.stdout.trim();
+  if (!rewritten || rewritten === trimmedCommand) {
+    return null;
+  }
+  return rewritten;
 }
 
 /** Tools that spawn a subagent (shown as an agent node, not a tool row). */
@@ -629,11 +654,19 @@ type HookOutput = {
     hookEventName: "PreToolUse";
     permissionDecision: "allow" | "deny";
     permissionDecisionReason?: string;
+    updatedInput?: Record<string, unknown>;
   };
 };
-const hookAllow = (): HookOutput => ({
-  hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
-});
+const hookAllow = (updatedInput?: Record<string, unknown>): HookOutput => {
+  const hookSpecificOutput: HookOutput["hookSpecificOutput"] = {
+    hookEventName: "PreToolUse",
+    permissionDecision: "allow",
+  };
+  if (updatedInput) {
+    hookSpecificOutput.updatedInput = updatedInput;
+  }
+  return { hookSpecificOutput };
+};
 const hookDeny = (reason: string): HookOutput => ({
   hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
 });
@@ -648,16 +681,18 @@ export function buildPreToolUseHook(
   elevated: boolean,
   readOnlyTools: string[],
   headless: boolean,
+  allowHeadlessTools: boolean,
   autoApprove: boolean,
   hexSshViewerClass: HexSshViewerClass = "colleague",
   hexSshPolicy: HexSshToolPolicy = DEFAULT_HEX_SSH_TOOL_POLICY,
+  rtkCommand = "rtk",
 ) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
     toolUseID?: string,
   ): Promise<HookOutput> => {
     const toolName = asString(input.tool_name);
-    const toolInput = isRecord(input.tool_input) ? input.tool_input : {};
+    let toolInput = isRecord(input.tool_input) ? input.tool_input : {};
     const toolUseId = toolUseID || asString(input.tool_use_id);
     const agentId = asString(input.agent_id) || MAIN_AGENT_ID;
 
@@ -679,10 +714,19 @@ export function buildPreToolUseHook(
         : hookDeny("사용자가 질문에 답하지 않았습니다(취소됨). 답변 없이 진행하세요.");
     }
 
+    let updatedToolInput: Record<string, unknown> | undefined;
+    if (toolName === "Bash") {
+      const rewrittenCommand = rewriteBashCommandWithRtk(asString(toolInput.command), rtkCommand);
+      if (rewrittenCommand) {
+        updatedToolInput = { ...toolInput, command: rewrittenCommand };
+        toolInput = updatedToolInput;
+      }
+    }
+
     const hexSshTool = extractHexSshToolName(toolName);
     if (hexSshTool) {
       if (isHexSshToolAllowed(toolName, hexSshViewerClass, hexSshPolicy)) {
-        return hookAllow();
+        return hookAllow(updatedToolInput);
       }
       const reason = `현재 권한에서는 hex-ssh 도구 '${hexSshTool}' 사용이 허용되지 않습니다.`;
       events.onBlocked?.({ toolUseId, toolName, agentId, reason });
@@ -692,14 +736,17 @@ export function buildPreToolUseHook(
 
     // Read-only / knowledge / orchestration tools run without a prompt.
     if (isAutoAllowed(toolName, readOnlyTools)) {
-      return hookAllow();
+      return hookAllow(updatedToolInput);
     }
 
+    const canRunElevatedTools = elevated && (!headless || allowHeadlessTools);
+
     // Any other tool: a PRESENT elevated viewer (owner or trusted user) may run
-    // it; an unattended (headless) run and a plain colleague chat are read-only.
+    // it; owner-scheduled routines may also run it when they explicitly opt into
+    // owner-level headless tools. Plain headless runs and colleagues stay read-only.
     // Auto-approval opted in: run the tool without prompting.
-    if (!headless && elevated && autoApprove) {
-      return hookAllow();
+    if (canRunElevatedTools && autoApprove) {
+      return hookAllow(updatedToolInput);
     }
     if (!headless && elevated && events.onPermission) {
       const decision = await events.onPermission({
@@ -709,7 +756,7 @@ export function buildPreToolUseHook(
         agentId,
       });
       return decision.behavior === "allow"
-        ? hookAllow()
+        ? hookAllow(updatedToolInput)
         : hookDeny("사용자가 이 도구 사용을 거부했습니다.");
     }
 
@@ -767,9 +814,15 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     lines.push(
       "이것은 예약된 루틴 작업의 **자동 실행**입니다. 응답을 실시간으로 보는 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과를 보고하세요.",
     );
-    lines.push(
-      "이 실행은 읽기 전용입니다. 파일을 수정/생성하지 말고, 읽기 도구(Read/Glob/Grep)만 사용하세요.",
-    );
+    if (request.allowHeadlessTools) {
+      lines.push(
+        "이 루틴은 소유자의 일반 대화와 같은 도구 권한으로 실행됩니다. 필요한 파일/원격/저장소 작업은 수행하되, 확인 질문이나 권한 프롬프트를 기다릴 수 없으므로 작업 범위를 보수적으로 지키세요. 사용자에게 따로 알려야 할 중요한 결과가 있으면 `mcp__system__notify_user`로 알림을 남기세요.",
+      );
+    } else {
+      lines.push(
+        "이 실행은 읽기 전용입니다. 파일을 수정/생성하지 말고, 읽기 도구(Read/Glob/Grep)만 사용하세요.",
+      );
+    }
   } else if (request.viewerIsOwner) {
     const name = request.viewerName?.trim();
     lines.push(
@@ -779,7 +832,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     );
     lines.push(
       "소유자가 이 시스템 자체에 대해 묻거나 설정 변경을 요청하면 `mcp__system__describe_system`으로 현재 상태를 확인하고, 요청에 맞게 `mcp__system__create_routine`/`update_routine`/`delete_routine` 또는 `mcp__system__add_plugin`/`set_plugin_enabled`를 직접 사용하세요. " +
-        "루틴 시간은 KST `HH:MM` 기준이고, 플러그인 추가/활성화 변경은 보통 다음 대화부터 로드됩니다.",
+        "사용자에게 따로 알려야 할 중요한 결과나 조치 필요 사항은 `mcp__system__notify_user`로 앱 알림을 남기세요. 루틴 시간은 KST `HH:MM` 기준이고, 플러그인 추가/활성화 변경은 보통 다음 대화부터 로드됩니다.",
     );
     const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
     if (knowledgeRepoConfigured) {
@@ -806,6 +859,26 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "`push`는 main 전용이 아니라 등록된 branch(또는 branch를 비운 경우 clone의 현재/default branch)로 `HEAD`를 푸시합니다. 소유자가 특정 브랜치를 말하면 `register_repo`의 `branch`에 그 이름을 지정하세요. " +
         "사내/사외 public repo의 clone/sync는 토큰 없이 시도하므로 토큰 설정을 먼저 요구하지 마세요. push는 원격 쓰기 권한이 있는 경우에만 성공합니다. 등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 소유자 또는 신뢰 사용자 대화에서만 가능합니다. GitHub issue/PR/release 관리는 포함하지 않는 순수 git 작업 도구입니다.",
     );
+    // Group meta-cognition: which groups the owner is in, their role, and the
+    // shared group knowledge repo (managed via mcp__group_repo__*). Group members
+    // auto-trust each other, so teammates' avatars are reachable at elevated level.
+    const groups = request.groupMemberships ?? [];
+    if (groups.length > 0) {
+      const describe = (g: (typeof groups)[number]) =>
+        `${g.name}(${g.role === "admin" ? "관리자" : "멤버"}${g.knowledgeRepoConfigured ? ", 공용 저장소 연결됨" : ", 공용 저장소 없음"})`;
+      const adminNoRepo = groups.filter((g) => g.role === "admin" && !g.knowledgeRepoConfigured);
+      const groupLines = [
+        `소유자는 다음 그룹에 속해 있습니다: ${groups.map(describe).join(", ")}. ` +
+          "같은 그룹의 멤버끼리는 **자동으로 서로 신뢰(elevated)**하므로, 같은 그룹 동료의 아바타와 대화할 때 소유자 수준의 도구 권한을 얻고, 비공개 아바타도 서로 찾고 대화할 수 있습니다.",
+        "각 그룹에는 **공용 지식 저장소**가 있을 수 있고, `mcp__group_repo__*` 도구로 다룹니다: `list_groups`로 그룹/역할을 확인하고, `list_files`/`read_file`은 그룹 멤버 전원이, `write_file`/`scaffold_skill`/`commit`은 **그룹 관리자만** 사용할 수 있습니다. 그룹 공용 저장소에 정리한 스킬은 그룹 멤버 전원의 아바타가 다음 대화부터 사용합니다.",
+      ];
+      if (adminNoRepo.length > 0) {
+        groupLines.push(
+          `당신이 관리자인 그룹 중 ${adminNoRepo.map((g) => `'${g.name}'`).join(", ")}에는 아직 공용 지식 저장소가 없습니다. 소유자가 원하면 \`mcp__group_repo__create_repo\`로 새 사내 GitHub 저장소를 만들어 그 그룹에 연결할 수 있습니다(설정의 그룹 관리에서 기존 저장소를 연결할 수도 있습니다).`,
+        );
+      }
+      lines.push(groupLines.join(" "));
+    }
     if (secretNames.length > 0) {
       lines.push(
         "설정의 **시크릿** 탭에 등록된 환경변수 이름: " +
@@ -935,15 +1008,25 @@ export async function runClaudeAgent(
   const { buildGitRepoServer, GIT_REPO_SERVER_NAME, GIT_REPO_TOOL_NAMES } = await import(
     "./gitRepoTools.js"
   );
+  const { buildGroupRepoServer, GROUP_REPO_SERVER_NAME, GROUP_REPO_TOOL_NAMES } = await import(
+    "./groupRepoTools.js"
+  );
 
   const streaming = Boolean(events);
   const viewerIsOwner = Boolean(request.viewerIsOwner);
   const headless = Boolean(request.headless);
+  const allowHeadlessTools = Boolean(request.allowHeadlessTools);
+  const ownerToolAccess = viewerIsOwner && (!headless || allowHeadlessTools);
+  const elevatedToolAccess = (viewerIsOwner || Boolean(request.elevated)) && (!headless || allowHeadlessTools);
   const autoApprove = Boolean(request.autoApprove);
   // Tool-permission level: the owner OR a designated trusted user. Distinct from
   // viewerIsOwner, which still gates the owner-only knowledge inbox + greeting.
   const elevated = viewerIsOwner || Boolean(request.elevated);
-  const hexSshViewerClass = viewerClassForAgentRequest({ viewerIsOwner, elevated, headless });
+  const hexSshViewerClass = viewerClassForAgentRequest({
+    viewerIsOwner: ownerToolAccess,
+    elevated: elevatedToolAccess,
+    headless: headless && !allowHeadlessTools,
+  });
   const hexSshPolicy = store.getHexSshToolPolicy();
   const hexSshAllowedTools = allowedHexSshToolsForViewer(hexSshPolicy, hexSshViewerClass);
   // Effective model: an env-pinned ANTHROPIC_MODEL wins (mirrors the API-key vs.
@@ -956,6 +1039,7 @@ export async function runClaudeAgent(
       avatarId: request.avatar.id,
       viewerUserId: request.viewerUserId,
       headless,
+      allowHeadlessTools,
       elevated,
       autoApprove,
       hexSshViewerClass,
@@ -966,12 +1050,11 @@ export async function runClaudeAgent(
   );
 
   // Knowledge-backfill tools, bound to this conversation's avatar + viewer.
-  // Headless runs get COLLEAGUE-level access even when run as the owner:
-  // request_info stays available, but pending_requests is denied — no human is
-  // present to review the gap inbox.
+  // Generic headless runs stay at colleague-level access, while scheduled owner
+  // routines can opt into owner-level tools through allowHeadlessTools.
   const knowledgeServer = buildKnowledgeServer(store, {
     avatarUserId: request.avatar.id,
-    viewerIsOwner: viewerIsOwner && !headless,
+    viewerIsOwner: ownerToolAccess,
     askerUserId: request.viewerUserId ?? null,
     askerName: request.viewerName ?? null,
   });
@@ -982,16 +1065,17 @@ export async function runClaudeAgent(
       : 0;
 
   // Knowledge-repo management tools (list/read/write/scaffold/commit). OWNER-ONLY:
-  // a colleague, a trusted user, or a headless routine gets a refusal from every
-  // tool. Registered unconditionally — the per-handler `viewerIsOwner` gate is the
-  // safety boundary, mirroring the knowledge server above. The owner identity for
-  // commits is resolved from the avatar's own user row (viewer == owner here).
+  // a colleague, a trusted user, or a generic headless run gets a refusal from
+  // every tool. Scheduled owner routines use ownerToolAccess above. Registered
+  // unconditionally — the per-handler `viewerIsOwner` gate is the safety boundary,
+  // mirroring the knowledge server above. The owner identity for commits is
+  // resolved from the avatar's own user row (viewer == owner here).
   const ownerRow = store.getUserById(request.avatar.id);
   // Computed once and reused for the prompt (below). The repo-creation tool is
   // exposed ONLY for an owner-driven, non-headless chat with NO repo yet — once
   // one is connected, hiding it keeps the unused tool out of every prompt.
   const knowledgeRepoConfigured = Boolean(store.getKnowledgeRepo(request.avatar.id).repo);
-  const allowRepoCreate = viewerIsOwner && !headless && !knowledgeRepoConfigured;
+  const allowRepoCreate = ownerToolAccess && !knowledgeRepoConfigured;
   const repoServer = buildRepoServer(
     store,
     {
@@ -1002,7 +1086,7 @@ export async function runClaudeAgent(
         displayName: ownerRow?.displayName ?? request.avatar.displayName,
         alias: ownerRow?.alias ?? request.avatar.alias,
       },
-      viewerIsOwner: viewerIsOwner && !headless,
+      viewerIsOwner: ownerToolAccess,
       config,
     },
     { allowCreate: allowRepoCreate },
@@ -1015,7 +1099,7 @@ export async function runClaudeAgent(
       displayName: ownerRow?.displayName ?? request.avatar.displayName,
       alias: ownerRow?.alias ?? request.avatar.alias,
     },
-    viewerIsOwner: viewerIsOwner && !headless,
+    viewerIsOwner: ownerToolAccess,
     config,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER published
@@ -1034,7 +1118,7 @@ export async function runClaudeAgent(
       displayName: ownerRow?.displayName ?? request.avatar.displayName,
       alias: ownerRow?.alias ?? request.avatar.alias,
     },
-    viewerIsOwner: viewerIsOwner && !headless,
+    viewerIsOwner: ownerToolAccess,
   });
   const gitRepoServer = buildGitRepoServer(store, {
     avatarUserId: request.avatar.id,
@@ -1044,8 +1128,26 @@ export async function runClaudeAgent(
       displayName: ownerRow?.displayName ?? request.avatar.displayName,
       alias: ownerRow?.alias ?? request.avatar.alias,
     },
-    viewerIsOwner: viewerIsOwner && !headless,
-    elevated: elevated && !headless,
+    viewerIsOwner: ownerToolAccess,
+    elevated: elevatedToolAccess,
+    config,
+  });
+  // Group knowledge-repo tools (per group the OWNER belongs to). OWNER-ONLY like
+  // the personal repo tools — a group admin edits their group repo through their
+  // own avatar; each tool then checks the owner's role in the named group (member
+  // reads, admin writes). Registered only for an owner-driven turn where the
+  // owner actually belongs to ≥1 group, to keep the tools out of other prompts.
+  const ownerGroups = store.listUserGroups(request.avatar.id);
+  const groupRepoActive = ownerToolAccess && ownerGroups.length > 0;
+  const groupRepoServer = buildGroupRepoServer(store, {
+    avatarUserId: request.avatar.id,
+    owner: {
+      id: request.avatar.id,
+      username: ownerRow?.username ?? "",
+      displayName: ownerRow?.displayName ?? request.avatar.displayName,
+      alias: ownerRow?.alias ?? request.avatar.alias,
+    },
+    viewerIsOwner: ownerToolAccess,
     config,
   });
 
@@ -1065,7 +1167,7 @@ export async function runClaudeAgent(
   const confluenceServer = buildConfluenceServer({
     config,
     ownerSecrets,
-    elevated: elevated && !headless,
+    elevated: elevatedToolAccess,
   });
   // hex-ssh (remote-server access MCP, ssh2-based — no system ssh binary needed):
   // registered explicitly (not via a plugin's .mcp.json) so we can inject the
@@ -1113,6 +1215,7 @@ export async function runClaudeAgent(
       ...AVATAR_DIRECTORY_TOOL_NAMES,
       ...SSH_IDENTITY_TOOL_NAMES,
       ...GIT_REPO_TOOL_NAMES,
+      ...(groupRepoActive ? GROUP_REPO_TOOL_NAMES : []),
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
       "TodoWrite",
@@ -1131,6 +1234,7 @@ export async function runClaudeAgent(
       [AVATAR_DIRECTORY_SERVER_NAME]: avatarDirectoryServer,
       [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
       [GIT_REPO_SERVER_NAME]: gitRepoServer,
+      ...(groupRepoActive ? { [GROUP_REPO_SERVER_NAME]: groupRepoServer } : {}),
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
     },
@@ -1196,9 +1300,11 @@ export async function runClaudeAgent(
               elevated,
               config.readOnlyTools,
               headless,
+              allowHeadlessTools,
               autoApprove,
               hexSshViewerClass,
               hexSshPolicy,
+              config.rtkCommand,
             ),
           ],
         },
@@ -1226,6 +1332,7 @@ export async function runClaudeAgent(
           githubHost: config.githubHost,
           confluenceUrlConfigured: Boolean(config.confluenceUrl),
           confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
+          groupMemberships: ownerGroups,
         }
       : {
           ...request,
@@ -1235,6 +1342,7 @@ export async function runClaudeAgent(
           githubHost: config.githubHost,
           confluenceUrlConfigured: Boolean(config.confluenceUrl),
           confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
+          groupMemberships: [],
         };
 
   for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {

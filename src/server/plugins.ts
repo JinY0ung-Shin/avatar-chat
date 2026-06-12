@@ -3,6 +3,7 @@ import path from "node:path";
 import { marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError, syncGitRepo } from "./marketplace.js";
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { ensureClone, type KnowledgeRepoContext } from "./knowledgeRepo.js";
+import { ensureGroupClone, type GroupKnowledgeRepoContext } from "./groupKnowledgeRepo.js";
 import logger from "./logger.js";
 import type {
   AppConfig,
@@ -347,6 +348,59 @@ export async function knowledgeRepoSkillSources(
   } catch {
     return [];
   }
+}
+
+/** Display label attributed to skills coming from a group's shared knowledge repo. */
+export const GROUP_KNOWLEDGE_REPO_SOURCE = "그룹 지식 저장소";
+
+/** Source label for one group's repo, including the group name when known. */
+function groupRepoSource(ctx: GroupKnowledgeRepoContext): string {
+  return ctx.groupName ? `${GROUP_KNOWLEDGE_REPO_SOURCE} · ${ctx.groupName}` : GROUP_KNOWLEDGE_REPO_SOURCE;
+}
+
+/**
+ * Resolve the group knowledge repos a member shares into plugin roots, so the
+ * shared skills load for EVERY chat the member has with their own avatar. Mirrors
+ * `loadKnowledgeRepoRoots`; tolerant — a clone/fetch failure on one group warns
+ * and contributes no roots rather than breaking chat. Accepts many contexts (a
+ * user may belong to several groups, each with a repo).
+ */
+export async function loadGroupKnowledgeRepoRoots(
+  contexts: GroupKnowledgeRepoContext[],
+  onWarn?: (message: string) => void,
+): Promise<PluginRoot[]> {
+  const roots: PluginRoot[] = [];
+  for (const ctx of contexts) {
+    const source = groupRepoSource(ctx);
+    try {
+      const repoRoot = await ensureGroupClone(ctx);
+      for (const root of await resolvePluginRoots(repoRoot, source, onWarn, ctx.selected)) {
+        roots.push({ type: "local", path: root });
+      }
+    } catch (error) {
+      onWarn?.(`${source}: 불러오기 실패 (${scrubGitError(error)})`);
+    }
+  }
+  return roots;
+}
+
+/** Like `loadGroupKnowledgeRepoRoots` but returns `{path, source}` for the skills/intro paths. */
+export async function groupKnowledgeRepoSkillSources(
+  contexts: GroupKnowledgeRepoContext[],
+): Promise<{ path: string; source: string }[]> {
+  const sources: { path: string; source: string }[] = [];
+  for (const ctx of contexts) {
+    const source = groupRepoSource(ctx);
+    try {
+      const repoRoot = await ensureGroupClone(ctx);
+      for (const root of await resolvePluginRoots(repoRoot, source, undefined, ctx.selected)) {
+        sources.push({ path: root, source });
+      }
+    } catch {
+      /* tolerate: contribute no skills for this group */
+    }
+  }
+  return sources;
 }
 
 /**

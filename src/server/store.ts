@@ -20,6 +20,7 @@ import {
 } from "./gitCredentials.js";
 import logger from "./logger.js";
 import type {
+  AdminGroupSummary,
   AdminStats,
   AdminUserDetail,
   AdminUserSummary,
@@ -27,15 +28,20 @@ import type {
   AppConfig,
   AuditEvent,
   AvatarDetail,
+  AvatarNotification,
   AvatarSummary,
   ConversationSummary,
   GitRepository,
+  Group,
+  GroupMember,
+  GroupRole,
   KnowledgeRequest,
   Plugin,
   RoutineJob,
   SignupMode,
   StoredMessage,
   User,
+  UserGroupMembership,
 } from "./types.js";
 
 const SESSION_DAYS = 14;
@@ -177,12 +183,35 @@ interface KnowledgeRequestRow {
   created_at: string;
 }
 
+interface AvatarNotificationRow {
+  id: string;
+  owner_user_id: string;
+  avatar_user_id: string;
+  title: string;
+  message: string;
+  conversation_id: string | null;
+  read_at: string | null;
+  created_at: string;
+  avatar_display_name?: string | null;
+}
+
 interface GitRepositoryRow {
   user_id: string;
   name: string;
   repo: string;
   branch: string | null;
   last_synced_at: string | null;
+  created_at: string;
+}
+
+interface GroupRow {
+  id: string;
+  name: string;
+  description: string | null;
+  knowledge_repo: string | null;
+  knowledge_branch: string | null;
+  knowledge_selected: string | null;
+  created_by: string | null;
   created_at: string;
 }
 
@@ -307,6 +336,16 @@ export class Store {
         status TEXT NOT NULL DEFAULT 'open',
         created_at TEXT
       );
+      CREATE TABLE IF NOT EXISTS avatar_notifications (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        avatar_user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        conversation_id TEXT,
+        read_at TEXT,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS avatar_trusted_users (
         avatar_user_id TEXT NOT NULL,
         viewer_user_id TEXT NOT NULL,
@@ -328,6 +367,23 @@ export class Store {
         last_synced_at TEXT,
         created_at TEXT,
         PRIMARY KEY (user_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        knowledge_repo TEXT,
+        knowledge_branch TEXT,
+        knowledge_selected TEXT,
+        created_by TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS group_members (
+        group_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        created_at TEXT,
+        PRIMARY KEY (group_id, user_id)
       );
       CREATE TABLE IF NOT EXISTS routine_jobs (
         id TEXT PRIMARY KEY,
@@ -352,12 +408,15 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
       CREATE INDEX IF NOT EXISTS idx_avatar_plugins_user ON avatar_plugins(user_id);
       CREATE INDEX IF NOT EXISTS idx_knowledge_requests_avatar ON knowledge_requests(avatar_user_id, status);
+      CREATE INDEX IF NOT EXISTS idx_avatar_notifications_owner ON avatar_notifications(owner_user_id, read_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_routine_jobs_avatar ON routine_jobs(avatar_user_id);
       CREATE INDEX IF NOT EXISTS idx_routine_jobs_due ON routine_jobs(enabled, next_run_at);
       CREATE INDEX IF NOT EXISTS idx_trusted_avatar ON avatar_trusted_users(avatar_user_id);
       CREATE INDEX IF NOT EXISTS idx_trusted_viewer ON avatar_trusted_users(viewer_user_id);
       CREATE INDEX IF NOT EXISTS idx_user_secrets_user ON user_secrets(user_id);
       CREATE INDEX IF NOT EXISTS idx_git_repositories_user ON git_repositories(user_id);
+      CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
+      CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id);
     `);
     // Additive column migrations for pre-existing DBs (CREATE TABLE above only
     // applies to fresh installs). Each is a no-op once the column exists.
@@ -454,6 +513,7 @@ export class Store {
       // Only the names — the encrypted values never leave the server.
       secretNames,
       sshPublicKey: row.ssh_public_key ?? null,
+      groups: this.listUserGroups(row.id),
     };
   }
 
@@ -1165,6 +1225,68 @@ export class Store {
     return result.changes > 0;
   }
 
+  // ---- Avatar notifications (in-app alarms for the owner) --------------
+
+  private toAvatarNotification(row: AvatarNotificationRow): AvatarNotification {
+    return {
+      id: row.id,
+      ownerUserId: row.owner_user_id,
+      avatarUserId: row.avatar_user_id,
+      avatarDisplayName: row.avatar_display_name ?? "(삭제된 아바타)",
+      title: row.title,
+      message: row.message,
+      conversationId: row.conversation_id,
+      readAt: row.read_at,
+      createdAt: row.created_at,
+    };
+  }
+
+  addAvatarNotification(
+    ownerUserId: string,
+    input: { avatarUserId: string; title?: string | null; message: string; conversationId?: string | null },
+  ): AvatarNotification {
+    const message = input.message.trim();
+    if (!message) {
+      throw new Error("EMPTY_NOTIFICATION");
+    }
+    const title = (input.title || "").trim().slice(0, 80) || "아바타 알림";
+    const id = crypto.randomUUID();
+    this.db
+      .prepare(
+        `INSERT INTO avatar_notifications (id, owner_user_id, avatar_user_id, title, message, conversation_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, ownerUserId, input.avatarUserId, title, message.slice(0, 4000), input.conversationId ?? null, now());
+    return this.listAvatarNotifications(ownerUserId).find((n) => n.id === id)!;
+  }
+
+  listAvatarNotifications(ownerUserId: string, unreadOnly = false): AvatarNotification[] {
+    const rows = this.db
+      .prepare(
+        `SELECT n.*, u.display_name AS avatar_display_name
+         FROM avatar_notifications n LEFT JOIN users u ON u.id = n.avatar_user_id
+         WHERE n.owner_user_id = ? ${unreadOnly ? "AND n.read_at IS NULL" : ""}
+         ORDER BY n.created_at DESC
+         LIMIT 100`,
+      )
+      .all(ownerUserId) as AvatarNotificationRow[];
+    return rows.map((r) => this.toAvatarNotification(r));
+  }
+
+  markAvatarNotificationRead(ownerUserId: string, id: string): boolean {
+    const result = this.db
+      .prepare("UPDATE avatar_notifications SET read_at = COALESCE(read_at, ?) WHERE id = ? AND owner_user_id = ?")
+      .run(now(), id, ownerUserId);
+    return result.changes > 0;
+  }
+
+  markAllAvatarNotificationsRead(ownerUserId: string): number {
+    const result = this.db
+      .prepare("UPDATE avatar_notifications SET read_at = COALESCE(read_at, ?) WHERE owner_user_id = ? AND read_at IS NULL")
+      .run(now(), ownerUserId);
+    return result.changes;
+  }
+
   // ---- Routine jobs (owner-scheduled recurring runs) -------------------
 
   private toRoutineJob(row: RoutineJobRow): RoutineJob {
@@ -1308,13 +1430,39 @@ export class Store {
     return row.m;
   }
 
-  listPublishedAvatars(viewerId: string): AvatarSummary[] {
+  /** User ids that share at least one group with `viewerId` (excludes self). */
+  private groupTeammateIds(viewerId: string): Set<string> {
     const rows = this.db
       .prepare(
-        "SELECT * FROM users WHERE published = 1 OR id = ? ORDER BY display_name COLLATE NOCASE ASC",
+        `SELECT DISTINCT m2.user_id AS id FROM group_members m1
+         JOIN group_members m2 ON m1.group_id = m2.group_id
+         WHERE m1.user_id = ? AND m2.user_id != ?`,
       )
-      .all(viewerId) as UserRow[];
-    return rows.map((row) => this.toAvatarSummary(row));
+      .all(viewerId, viewerId) as { id: string }[];
+    return new Set(rows.map((r) => r.id));
+  }
+
+  listPublishedAvatars(viewerId: string): AvatarSummary[] {
+    // Published avatars + the viewer's own + group teammates (incl. their
+    // unpublished avatars — group co-members auto-trust each other, so they
+    // can find and chat with each other regardless of publication).
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM users
+         WHERE published = 1 OR id = ?
+            OR id IN (
+              SELECT m2.user_id FROM group_members m1
+              JOIN group_members m2 ON m1.group_id = m2.group_id
+              WHERE m1.user_id = ?
+            )
+         ORDER BY display_name COLLATE NOCASE ASC`,
+      )
+      .all(viewerId, viewerId) as UserRow[];
+    const teammates = this.groupTeammateIds(viewerId);
+    return rows.map((row) => ({
+      ...this.toAvatarSummary(row),
+      sharesGroup: teammates.has(row.id),
+    }));
   }
 
   private toAvatarSummary(row: UserRow): AvatarSummary {
@@ -1436,7 +1584,14 @@ export class Store {
   // level (write/Bash run, not just read-only). Trust is a per-(avatar, viewer)
   // relationship — it does NOT grant the owner-only knowledge inbox or greeting.
 
-  /** True when `viewerId` is a designated trusted user of `avatarId`'s avatar. */
+  /**
+   * True when `viewerId` is a designated trusted user of `avatarId`'s avatar.
+   * Trust comes from two sources, OR'd together: an explicit per-(avatar, viewer)
+   * row in `avatar_trusted_users`, OR sharing at least one group (group members
+   * automatically trust each other — see `shareAnyGroup`). This is THE single
+   * point every trust/elevated check flows through, so adding the group source
+   * here propagates auto-trust to chat access, tool permissions, and discovery.
+   */
   isTrustedFor(viewerId: string, avatarId: string): boolean {
     if (!viewerId || !avatarId || viewerId === avatarId) {
       return false;
@@ -1446,6 +1601,28 @@ export class Store {
         "SELECT 1 FROM avatar_trusted_users WHERE avatar_user_id = ? AND viewer_user_id = ?",
       )
       .get(avatarId, viewerId);
+    if (row) {
+      return true;
+    }
+    return this.shareAnyGroup(viewerId, avatarId);
+  }
+
+  /**
+   * True when two distinct users share at least one group. Group co-membership
+   * is the second source of trust (members of the same group are mutually
+   * elevated), OR'd into `isTrustedFor`. Indexed on group_members(user_id).
+   */
+  private shareAnyGroup(userA: string, userB: string): boolean {
+    if (!userA || !userB || userA === userB) {
+      return false;
+    }
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM group_members m1
+         JOIN group_members m2 ON m1.group_id = m2.group_id
+         WHERE m1.user_id = ? AND m2.user_id = ? LIMIT 1`,
+      )
+      .get(userA, userB);
     return Boolean(row);
   }
 
@@ -1535,31 +1712,40 @@ export class Store {
 
   // ---- Conversations & messages ----------------------------------------
 
-  listConversations(ownerId: string, avatarId?: string): ConversationSummary[] {
-    const rows = (
-      avatarId
-        ? this.db
-            .prepare(
-              `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, u.display_name AS avatar_display_name
-               FROM conversations c LEFT JOIN users u ON u.id = c.avatar_user_id
-               WHERE c.owner_user_id = ? AND c.avatar_user_id = ?
-               ORDER BY c.updated_at DESC`,
-            )
-            .all(ownerId, avatarId)
-        : this.db
-            .prepare(
-              `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, u.display_name AS avatar_display_name
-               FROM conversations c LEFT JOIN users u ON u.id = c.avatar_user_id
-               WHERE c.owner_user_id = ?
-               ORDER BY c.updated_at DESC`,
-            )
-            .all(ownerId)
-    ) as {
+  listConversations(
+    ownerId: string,
+    avatarId?: string,
+    kind: "chat" | "routine" | "all" = "chat",
+  ): ConversationSummary[] {
+    const params: string[] = [ownerId];
+    const where = ["c.owner_user_id = ?"];
+    if (avatarId) {
+      where.push("c.avatar_user_id = ?");
+      params.push(avatarId);
+    }
+    if (kind === "chat") {
+      where.push("r.id IS NULL");
+    } else if (kind === "routine") {
+      where.push("r.id IS NOT NULL");
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, u.display_name AS avatar_display_name,
+                r.id AS routine_id, r.prompt AS routine_prompt
+         FROM conversations c
+         LEFT JOIN users u ON u.id = c.avatar_user_id
+         LEFT JOIN routine_jobs r ON r.conversation_id = c.id
+         WHERE ${where.join(" AND ")}
+         ORDER BY c.updated_at DESC`,
+      )
+      .all(...params) as {
       id: string;
       avatar_user_id: string;
       title: string;
       updated_at: string;
       avatar_display_name: string | null;
+      routine_id: string | null;
+      routine_prompt: string | null;
     }[];
     return rows.map((r) => ({
       id: r.id,
@@ -1567,6 +1753,9 @@ export class Store {
       avatarDisplayName: r.avatar_display_name ?? "(삭제된 아바타)",
       title: r.title,
       updatedAt: r.updated_at,
+      isRoutine: Boolean(r.routine_id),
+      routineId: r.routine_id,
+      routinePrompt: r.routine_prompt,
     }));
   }
 
@@ -1689,7 +1878,7 @@ export class Store {
     this.db
       .prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
       .run(finalTitle, now(), id);
-    return this.listConversations(ownerId).find((c) => c.id === id) ?? null;
+    return this.listConversations(ownerId, undefined, "all").find((c) => c.id === id) ?? null;
   }
 
   deleteConversation(ownerId: string, id: string): boolean {
@@ -1819,6 +2008,7 @@ export class Store {
       openRequests: this.count("SELECT COUNT(*) AS c FROM knowledge_requests WHERE status = 'open'"),
       activeRoutines: this.count("SELECT COUNT(*) AS c FROM routine_jobs WHERE enabled = 1"),
       activeSessions: this.count("SELECT COUNT(*) AS c FROM sessions WHERE expires_at > ?", current),
+      groups: this.count("SELECT COUNT(*) AS c FROM groups"),
     };
   }
 
@@ -1955,9 +2145,303 @@ export class Store {
       this.db
         .prepare("DELETE FROM avatar_trusted_users WHERE avatar_user_id = ? OR viewer_user_id = ?")
         .run(id, id);
+      // Group memberships (the group itself survives; created_by may dangle).
+      this.db.prepare("DELETE FROM group_members WHERE user_id = ?").run(id);
       this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
     });
     tx();
     return true;
+  }
+
+  // ---- Groups -----------------------------------------------------------
+  // A group is created by a SYSTEM admin. Members of a group auto-trust each
+  // other (via `shareAnyGroup` → `isTrustedFor`) and share one knowledge repo
+  // that only group admins (role='admin') may edit. Group admins manage their
+  // own group's membership; the system admin manages all groups.
+
+  private toGroup(row: GroupRow): Group {
+    return {
+      id: row.id,
+      name: row.name,
+      description: row.description ?? "",
+      knowledgeRepo: row.knowledge_repo ?? null,
+      knowledgeBranch: row.knowledge_branch ?? null,
+      knowledgeSelected: parseNameList(row.knowledge_selected),
+      createdBy: row.created_by ?? null,
+      createdAt: row.created_at,
+    };
+  }
+
+  private groupRowById(id: string): GroupRow | undefined {
+    return this.db.prepare("SELECT * FROM groups WHERE id = ?").get(id) as GroupRow | undefined;
+  }
+
+  private normalizeRole(role: string | null | undefined): GroupRole {
+    return role === "admin" ? "admin" : "member";
+  }
+
+  /** Create a group (system-admin action). `createdBy` is the acting admin. */
+  createGroup(input: { name: string; description?: string; createdBy?: string | null }): Group {
+    const name = input.name.trim();
+    if (!name) {
+      throw new Error("INVALID_GROUP_NAME");
+    }
+    const id = crypto.randomUUID();
+    this.db
+      .prepare(
+        "INSERT INTO groups (id, name, description, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
+      )
+      .run(id, name, (input.description ?? "").trim(), input.createdBy ?? null, now());
+    return this.toGroup(this.groupRowById(id)!);
+  }
+
+  getGroup(id: string): Group | null {
+    const row = this.groupRowById(id);
+    return row ? this.toGroup(row) : null;
+  }
+
+  /** All groups with member/admin counts, for the admin dashboard. */
+  listGroups(): AdminGroupSummary[] {
+    const rows = this.db
+      .prepare("SELECT * FROM groups ORDER BY name COLLATE NOCASE ASC")
+      .all() as GroupRow[];
+    return rows.map((row) => ({
+      ...this.toGroup(row),
+      memberCount: this.count("SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?", row.id),
+      adminCount: this.count(
+        "SELECT COUNT(*) AS c FROM group_members WHERE group_id = ? AND role = 'admin'",
+        row.id,
+      ),
+    }));
+  }
+
+  updateGroup(id: string, patch: { name?: string; description?: string }): Group | null {
+    const row = this.groupRowById(id);
+    if (!row) {
+      return null;
+    }
+    const name = patch.name !== undefined ? patch.name.trim() || row.name : row.name;
+    const description =
+      patch.description !== undefined ? patch.description.trim() : (row.description ?? "");
+    this.db.prepare("UPDATE groups SET name = ?, description = ? WHERE id = ?").run(name, description, id);
+    return this.toGroup(this.groupRowById(id)!);
+  }
+
+  /** Delete a group and all its memberships. Returns false if it didn't exist. */
+  deleteGroup(id: string): boolean {
+    if (!this.groupRowById(id)) {
+      return false;
+    }
+    const tx = this.db.transaction(() => {
+      this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(id);
+      this.db.prepare("DELETE FROM groups WHERE id = ?").run(id);
+    });
+    tx();
+    return true;
+  }
+
+  // ---- Group membership -------------------------------------------------
+
+  private toGroupMember(row: {
+    id: string;
+    username: string;
+    display_name: string;
+    avatar_ext: string | null;
+    published: number;
+    role: string;
+    created_at: string | null;
+  }): GroupMember {
+    return {
+      userId: row.id,
+      username: row.username,
+      displayName: row.display_name,
+      hasImage: Boolean(row.avatar_ext),
+      role: this.normalizeRole(row.role),
+      published: row.published === 1,
+      joinedAt: row.created_at,
+    };
+  }
+
+  /**
+   * Add a user to a group (or update their role if already a member). Returns
+   * the member, or null if the group/user doesn't exist.
+   */
+  addGroupMember(groupId: string, userId: string, role: GroupRole = "member"): GroupMember | null {
+    if (!this.groupRowById(groupId) || !this.userRowById(userId)) {
+      return null;
+    }
+    this.db
+      .prepare(
+        "INSERT INTO group_members (group_id, user_id, role, created_at) VALUES (?, ?, ?, ?) " +
+          "ON CONFLICT(group_id, user_id) DO UPDATE SET role = excluded.role",
+      )
+      .run(groupId, userId, this.normalizeRole(role), now());
+    return this.getGroupMember(groupId, userId);
+  }
+
+  /** Add a member by username. Returns null if the user/group doesn't exist. */
+  addGroupMemberByUsername(
+    groupId: string,
+    username: string,
+    role: GroupRole = "member",
+  ): GroupMember | null {
+    const target = this.userRowByUsername(username.trim());
+    if (!target) {
+      return null;
+    }
+    return this.addGroupMember(groupId, target.id, role);
+  }
+
+  /** Change a member's role within a group. Null if they aren't a member. */
+  setGroupMemberRole(groupId: string, userId: string, role: GroupRole): GroupMember | null {
+    if (!this.getGroupMember(groupId, userId)) {
+      return null;
+    }
+    this.db
+      .prepare("UPDATE group_members SET role = ? WHERE group_id = ? AND user_id = ?")
+      .run(this.normalizeRole(role), groupId, userId);
+    return this.getGroupMember(groupId, userId);
+  }
+
+  /** Remove a member from a group. Returns true if a row was removed. */
+  removeGroupMember(groupId: string, userId: string): boolean {
+    const res = this.db
+      .prepare("DELETE FROM group_members WHERE group_id = ? AND user_id = ?")
+      .run(groupId, userId);
+    return res.changes > 0;
+  }
+
+  getGroupMember(groupId: string, userId: string): GroupMember | null {
+    const row = this.db
+      .prepare(
+        `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
+                u.avatar_ext AS avatar_ext, u.published AS published,
+                m.role AS role, m.created_at AS created_at
+         FROM group_members m JOIN users u ON u.id = m.user_id
+         WHERE m.group_id = ? AND m.user_id = ?`,
+      )
+      .get(groupId, userId) as Parameters<Store["toGroupMember"]>[0] | undefined;
+    return row ? this.toGroupMember(row) : null;
+  }
+
+  /** Members of a group (admins first, then by display name), for the roster UI. */
+  listGroupMembers(groupId: string): GroupMember[] {
+    const rows = this.db
+      .prepare(
+        `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
+                u.avatar_ext AS avatar_ext, u.published AS published,
+                m.role AS role, m.created_at AS created_at
+         FROM group_members m JOIN users u ON u.id = m.user_id
+         WHERE m.group_id = ?
+         ORDER BY CASE WHEN m.role = 'admin' THEN 0 ELSE 1 END,
+                  u.display_name COLLATE NOCASE ASC`,
+      )
+      .all(groupId) as Parameters<Store["toGroupMember"]>[0][];
+    return rows.map((r) => this.toGroupMember(r));
+  }
+
+  /** A user's role within a group, or null if they aren't a member. */
+  groupRoleFor(userId: string, groupId: string): GroupRole | null {
+    const row = this.db
+      .prepare("SELECT role FROM group_members WHERE group_id = ? AND user_id = ?")
+      .get(groupId, userId) as { role: string } | undefined;
+    return row ? this.normalizeRole(row.role) : null;
+  }
+
+  isGroupAdmin(userId: string, groupId: string): boolean {
+    return this.groupRoleFor(userId, groupId) === "admin";
+  }
+
+  /** Groups a user belongs to, with role + repo-configured flag (for `User`/roster). */
+  listUserGroups(userId: string): UserGroupMembership[] {
+    const rows = this.db
+      .prepare(
+        `SELECT g.id AS id, g.name AS name, m.role AS role, g.knowledge_repo AS knowledge_repo
+         FROM group_members m JOIN groups g ON g.id = m.group_id
+         WHERE m.user_id = ? ORDER BY g.name COLLATE NOCASE ASC`,
+      )
+      .all(userId) as { id: string; name: string; role: string; knowledge_repo: string | null }[];
+    return rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      role: this.normalizeRole(r.role),
+      knowledgeRepoConfigured: Boolean(r.knowledge_repo),
+    }));
+  }
+
+  // ---- Group knowledge repo --------------------------------------------
+
+  /** The group's shared knowledge repo + branch + plugin selection. */
+  getGroupKnowledgeRepo(groupId: string): {
+    repo: string | null;
+    branch: string | null;
+    selected: string[] | null;
+  } {
+    const row = this.groupRowById(groupId);
+    return {
+      repo: row?.knowledge_repo ?? null,
+      branch: row?.knowledge_branch ?? null,
+      selected: parseNameList(row?.knowledge_selected ?? null),
+    };
+  }
+
+  /** Connect/clear the group's shared knowledge repo (clears selection, like the user one). */
+  setGroupKnowledgeRepo(groupId: string, repo: string | null, branch: string | null): Group | null {
+    if (!this.groupRowById(groupId)) {
+      return null;
+    }
+    this.db
+      .prepare(
+        "UPDATE groups SET knowledge_repo = ?, knowledge_branch = ?, knowledge_selected = NULL WHERE id = ?",
+      )
+      .run(repo?.trim() || null, branch?.trim() || null, groupId);
+    return this.toGroup(this.groupRowById(groupId)!);
+  }
+
+  /** Set which group-repo plugins members' avatars load; `null` = load all. */
+  setGroupKnowledgeSelected(groupId: string, selected: string[] | null): Group | null {
+    if (!this.groupRowById(groupId)) {
+      return null;
+    }
+    this.db
+      .prepare("UPDATE groups SET knowledge_selected = ? WHERE id = ?")
+      .run(selected ? JSON.stringify(selected) : null, groupId);
+    return this.toGroup(this.groupRowById(groupId)!);
+  }
+
+  /**
+   * Group knowledge repos to load as plugin roots for a user's avatar chats:
+   * every group the user is in that has a repo connected. Members read these
+   * skills; group admins edit them. Excludes groups with no repo.
+   */
+  listGroupKnowledgeReposForUser(userId: string): {
+    groupId: string;
+    groupName: string;
+    repo: string;
+    branch: string | null;
+    selected: string[] | null;
+  }[] {
+    const rows = this.db
+      .prepare(
+        `SELECT g.id AS id, g.name AS name, g.knowledge_repo AS repo,
+                g.knowledge_branch AS branch, g.knowledge_selected AS selected
+         FROM group_members m JOIN groups g ON g.id = m.group_id
+         WHERE m.user_id = ? AND g.knowledge_repo IS NOT NULL
+         ORDER BY g.name COLLATE NOCASE ASC`,
+      )
+      .all(userId) as {
+      id: string;
+      name: string;
+      repo: string;
+      branch: string | null;
+      selected: string | null;
+    }[];
+    return rows.map((r) => ({
+      groupId: r.id,
+      groupName: r.name,
+      repo: r.repo,
+      branch: r.branch,
+      selected: parseNameList(r.selected),
+    }));
   }
 }

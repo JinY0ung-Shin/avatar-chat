@@ -14,11 +14,13 @@ import { loadConfig } from "./config.js";
 import logger from "./logger.js";
 import {
   forgetClone,
+  groupKnowledgeRepoSkillSources,
   inspectRepoContents,
   knowledgeRepoSkillSources,
   listSkillsInRoots,
   loadAvatarPluginRoots,
   loadDefaultPluginRoots,
+  loadGroupKnowledgeRepoRoots,
   loadKnowledgeRepoRoots,
   pluginClonePath,
   resolvePluginRoots,
@@ -27,6 +29,11 @@ import {
 import { scrubGitError } from "./marketplace.js";
 import { isInternalGitSource } from "./gitCredentials.js";
 import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
+import {
+  ensureGroupClone,
+  groupKnowledgeRepoContextFor,
+  groupKnowledgeRepoContextsForUser,
+} from "./groupKnowledgeRepo.js";
 import { Store, CLAUDE_OAUTH_TOKEN_KEY, normalizeHashtags } from "./store.js";
 import type { AgentConversationMessage, AgentResponse, AppConfig, PluginRoot, StoredMessage } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
@@ -102,6 +109,56 @@ function looksLikeRepo(value: string): boolean {
     return true;
   }
   return /^https?:\/\//.test(value) || /^git@/.test(value) || value.endsWith(".git");
+}
+
+interface ChatSlashExpansion {
+  message: string;
+  error?: string;
+  ownerOnly?: boolean;
+}
+
+const LEARN_SLASH_PROMPT = [
+  "이번 대화 세션을 검토해서 앞으로 재사용할 가치가 있는 지식만 선별해 내 지식 저장소를 업데이트해줘.",
+  "",
+  "중요한 사실, 결정사항, 반복 가능한 절차, 프로젝트 규칙, 사용자가 선호한다고 밝힌 방식이 있으면 적절한 파일이나 스킬에 반영하고 커밋해줘.",
+  "이미 저장돼 있거나 장기적으로 유용하지 않은 잡담은 저장하지 말고, 저장한 내용과 저장하지 않은 이유를 간단히 알려줘.",
+].join("\n");
+
+export function expandChatSlashCommand(message: string): ChatSlashExpansion {
+  const trimmed = message.trim();
+  const match = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(trimmed);
+  if (!match) {
+    return { message };
+  }
+
+  const command = match[1].toLowerCase();
+  const args = (match[2] ?? "").trim();
+
+  switch (command) {
+    case "learn":
+      return { message: LEARN_SLASH_PROMPT, ownerOnly: true };
+    case "summarize":
+      return { message: "지금까지의 대화를 핵심 결정사항, 해야 할 일, 열린 질문으로 나눠 요약해줘." };
+    case "remember":
+      return args
+        ? {
+            message: `다음 내용을 내 지식 저장소에 기록해서 앞으로 같은 질문에 답할 수 있게 해줘.\n\n${args}`,
+            ownerOnly: true,
+          }
+        : { message, error: "/remember 뒤에 저장할 내용을 입력해 주세요.", ownerOnly: true };
+    case "routine":
+      return args
+        ? { message: `매일 HH:MM KST에 다음 일을 실행하는 루틴을 만들어줘.\n\n${args}`, ownerOnly: true }
+        : { message, error: "/routine 뒤에 작업 내용을 입력해 주세요.", ownerOnly: true };
+    case "find":
+      return args
+        ? { message: `이 요청에 더 적합한 팀원 아바타가 있는지 찾아보고 추천해줘.\n\n${args}` }
+        : { message, error: "/find 뒤에 요청 내용을 입력해 주세요." };
+    case "new":
+      return { message, error: "/new는 입력창의 슬래시 메뉴에서 새 대화로 실행해 주세요." };
+    default:
+      return { message };
+  }
 }
 
 export function createServices(configOverrides: Partial<AppConfig> = {}): AppServices {
@@ -401,6 +458,10 @@ export function createApp(services = createServices()) {
     }
     // The avatar's own knowledge repo, so the intro reflects skills it accumulated.
     sourced.push(...(await knowledgeRepoSkillSources(knowledgeRepoContextFor(store, avatar.id, config))));
+    // Shared group knowledge repos the owner belongs to count toward the intro too.
+    sourced.push(
+      ...(await groupKnowledgeRepoSkillSources(groupKnowledgeRepoContextsForUser(store, avatar.id, config))),
+    );
     const skills = await listSkillsInRoots(sourced);
     const pluginRoots: PluginRoot[] = sourced.map((s) => ({ type: "local", path: s.path }));
 
@@ -500,6 +561,9 @@ export function createApp(services = createServices()) {
       }
     }
     sourced.push(...(await knowledgeRepoSkillSources(knowledgeRepoContextFor(store, avatar.id, config))));
+    sourced.push(
+      ...(await groupKnowledgeRepoSkillSources(groupKnowledgeRepoContextsForUser(store, avatar.id, config))),
+    );
     const skills = await listSkillsInRoots(sourced);
     const pluginRoots: PluginRoot[] = sourced.map((s) => ({ type: "local", path: s.path }));
 
@@ -904,6 +968,217 @@ export function createApp(services = createServices()) {
     res.json({ user });
   });
 
+  // ---- Groups (membership roster + group-admin self-service) -----------
+  // Members of a group auto-trust each other (store.isTrustedFor) and share one
+  // knowledge repo only group admins may edit. System admins create groups +
+  // assign group admins via the admin API; group admins self-serve here.
+
+  const isGroupMember = (userId: string, groupId: string) =>
+    store.groupRoleFor(userId, groupId) !== null;
+  /** A group admin OR a system admin may manage a group's members/repo. */
+  const canManageGroup = (userId: string, groupId: string) =>
+    store.isAdmin(userId) || store.isGroupAdmin(userId, groupId);
+
+  // The current user's groups, each with its member roster — members discover &
+  // chat with teammates' avatars (now auto-trusted via group co-membership).
+  app.get("/api/me/groups", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groups = store.listUserGroups(req.user!.id).map((g) => {
+      const repo = store.getGroupKnowledgeRepo(g.id);
+      return {
+        ...g,
+        knowledgeRepo: repo.repo,
+        knowledgeBranch: repo.branch,
+        knowledgeSelected: repo.selected,
+        members: store.listGroupMembers(g.id),
+      };
+    });
+    res.json({ groups });
+  });
+
+  // Group admin (or system admin) adds a member by username.
+  app.post("/api/me/groups/:id/members", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!store.getGroup(groupId)) {
+      apiError(res, 404, "그룹을 찾을 수 없습니다.");
+      return;
+    }
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "이 그룹의 멤버를 관리할 권한이 없습니다. (그룹 관리자 전용)");
+      return;
+    }
+    const username = safeString(req.body?.username);
+    if (!username) {
+      apiError(res, 400, "username이 필요합니다.");
+      return;
+    }
+    const role = req.body?.role === "admin" ? "admin" : "member";
+    const member = store.addGroupMemberByUsername(groupId, username, role);
+    if (!member) {
+      apiError(res, 404, "해당 사용자를 찾을 수 없습니다.");
+      return;
+    }
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "group_member_add",
+      status: "success",
+      detail: `group=${groupId} +${member.userId} (${role})`,
+    });
+    res.json({ member });
+  });
+
+  // Change a member's role within the group (promote/demote group admin).
+  app.patch("/api/me/groups/:id/members/:userId", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "이 그룹의 멤버를 관리할 권한이 없습니다.");
+      return;
+    }
+    const role = req.body?.role === "admin" ? "admin" : "member";
+    const member = store.setGroupMemberRole(groupId, req.params.userId, role);
+    if (!member) {
+      apiError(res, 404, "멤버를 찾을 수 없습니다.");
+      return;
+    }
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "group_member_role",
+      status: "success",
+      detail: `group=${groupId} ${req.params.userId} -> ${role}`,
+    });
+    res.json({ member });
+  });
+
+  // Remove a member from the group.
+  app.delete("/api/me/groups/:id/members/:userId", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "이 그룹의 멤버를 관리할 권한이 없습니다.");
+      return;
+    }
+    const removed = store.removeGroupMember(groupId, req.params.userId);
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "group_member_remove",
+      status: "success",
+      detail: `group=${groupId} -${req.params.userId}`,
+    });
+    res.json({ ok: removed });
+  });
+
+  // Connect/clear the group's shared knowledge repo (group admin only). Validated
+  // like the personal repo: a real owner/repo|URL on the internal GitHub host.
+  app.put("/api/me/groups/:id/knowledge-repo", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!store.getGroup(groupId)) {
+      apiError(res, 404, "그룹을 찾을 수 없습니다.");
+      return;
+    }
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "그룹 관리자만 공용 지식 저장소를 설정할 수 있습니다.");
+      return;
+    }
+    const repoRaw = req.body?.repo;
+    if (repoRaw === null || repoRaw === "") {
+      const group = store.setGroupKnowledgeRepo(groupId, null, null);
+      res.json({ group });
+      return;
+    }
+    const repo = safeString(repoRaw);
+    if (!repo || !looksLikeRepo(repo)) {
+      apiError(res, 400, "repo는 owner/repo 또는 git/https URL 형식이어야 합니다.");
+      return;
+    }
+    if (!isInternalGitSource(repo, config.githubHost)) {
+      apiError(res, 400, `그룹 지식 저장소는 사내 GitHub host(${config.githubHost})에 있어야 합니다.`);
+      return;
+    }
+    const branch = safeString(req.body?.branch) || null;
+    const group = store.setGroupKnowledgeRepo(groupId, repo, branch);
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "group_repo_set",
+      status: "success",
+      detail: `group=${groupId} repo=${repo}`,
+    });
+    res.json({ group });
+  });
+
+  // Choose which group-repo plugins members' avatars load; null = load all.
+  app.put("/api/me/groups/:id/knowledge-repo/selected", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "그룹 관리자만 설정할 수 있습니다.");
+      return;
+    }
+    if (!store.getGroupKnowledgeRepo(groupId).repo) {
+      apiError(res, 404, "연결된 그룹 지식 저장소가 없습니다.");
+      return;
+    }
+    const raw = req.body?.selected;
+    let selected: string[] | null;
+    if (raw === null || raw === undefined) {
+      selected = null;
+    } else if (Array.isArray(raw) && raw.every((s) => typeof s === "string")) {
+      selected = raw as string[];
+    } else {
+      apiError(res, 400, "selected는 문자열 배열이거나 null이어야 합니다.");
+      return;
+    }
+    const group = store.setGroupKnowledgeSelected(groupId, selected);
+    res.json({ group });
+  });
+
+  // List the group repo's plugins (any member may view). Clones with the viewer's token.
+  app.get(
+    "/api/me/groups/:id/knowledge-repo/contents",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const groupId = req.params.id;
+      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        return;
+      }
+      const ctx = groupKnowledgeRepoContextFor(store, groupId, req.user!.id, config);
+      if (!ctx) {
+        apiError(res, 404, "연결된 그룹 지식 저장소가 없습니다.");
+        return;
+      }
+      try {
+        const repoRoot = await ensureGroupClone(ctx);
+        res.json({ contents: await inspectRepoContents(repoRoot) });
+      } catch (error) {
+        apiError(res, 502, `저장소를 가져오지 못했습니다: ${scrubGitError(error)}`);
+      }
+    },
+  );
+
+  app.post(
+    "/api/me/groups/:id/knowledge-repo/refresh",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const groupId = req.params.id;
+      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        return;
+      }
+      const ctx = groupKnowledgeRepoContextFor(store, groupId, req.user!.id, config);
+      if (!ctx) {
+        apiError(res, 404, "연결된 그룹 지식 저장소가 없습니다.");
+        return;
+      }
+      try {
+        const repoRoot = await ensureGroupClone(ctx);
+        res.json({ contents: await inspectRepoContents(repoRoot) });
+      } catch (error) {
+        apiError(res, 502, `새로고침 실패: ${scrubGitError(error)}`);
+      }
+    },
+  );
+
   // ---- Knowledge (owner's gap inbox: colleague questions to handle) ----
 
   app.get("/api/me/knowledge/requests", requireAuth(store), (req: AuthenticatedRequest, res) => {
@@ -929,6 +1204,25 @@ export function createApp(services = createServices()) {
       res.json({ ok: true });
     },
   );
+
+  // ---- Avatar notifications (owner inbox / alarms) ---------------------
+
+  app.get("/api/me/notifications", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({ notifications: store.listAvatarNotifications(req.user!.id, req.query.unread === "1") });
+  });
+
+  app.post("/api/me/notifications/read-all", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({ changed: store.markAllAvatarNotificationsRead(req.user!.id) });
+  });
+
+  app.patch("/api/me/notifications/:id/read", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const ok = store.markAvatarNotificationRead(req.user!.id, req.params.id);
+    if (!ok) {
+      apiError(res, 404, "알림을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ ok: true });
+  });
 
   // ---- Routine jobs (owner-scheduled recurring runs) -------------------
 
@@ -1079,7 +1373,9 @@ export function createApp(services = createServices()) {
 
   app.get("/api/conversations", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const avatarId = safeString(req.query.avatarId) || undefined;
-    res.json({ conversations: store.listConversations(req.user!.id, avatarId) });
+    const kindRaw = safeString(req.query.kind);
+    const kind = kindRaw === "routine" || kindRaw === "all" ? kindRaw : "chat";
+    res.json({ conversations: store.listConversations(req.user!.id, avatarId, kind) });
   });
 
   app.get("/api/messages", requireAuth(store), (req: AuthenticatedRequest, res) => {
@@ -1113,7 +1409,13 @@ export function createApp(services = createServices()) {
   // ---- Chat (SSE) ------------------------------------------------------
 
   app.post("/api/chat/stream", requireAuth(store), async (req: AuthenticatedRequest, res) => {
-    const message = safeString(req.body?.message);
+    const rawMessage = safeString(req.body?.message);
+    const slashExpansion = expandChatSlashCommand(rawMessage);
+    if (slashExpansion.error) {
+      apiError(res, 400, slashExpansion.error);
+      return;
+    }
+    const message = slashExpansion.message;
     const avatarId = safeString(req.body?.avatarId);
     // Greeting: the owner opened a fresh chat with their own avatar and typed
     // nothing — the avatar speaks first (and reports pending info requests).
@@ -1131,6 +1433,10 @@ export function createApp(services = createServices()) {
     const avatar = store.resolveChatAvatar(req.user!.id, avatarId);
     if (!avatar) {
       apiError(res, 403, "이 아바타와 대화할 수 없습니다.");
+      return;
+    }
+    if (slashExpansion.ownerOnly && req.user!.id !== avatar.id) {
+      apiError(res, 403, "이 명령은 내 아바타와의 대화에서만 사용할 수 있습니다.");
       return;
     }
 
@@ -1217,6 +1523,12 @@ export function createApp(services = createServices()) {
               )),
               ...(await loadKnowledgeRepoRoots(
                 knowledgeRepoContextFor(store, avatar.id, config),
+                (warn) => pluginWarnings.push(warn),
+              )),
+              // Shared knowledge repos of every group the avatar's owner belongs
+              // to — so group skills load for all members' chats.
+              ...(await loadGroupKnowledgeRepoRoots(
+                groupKnowledgeRepoContextsForUser(store, avatar.id, config),
                 (warn) => pluginWarnings.push(warn),
               )),
             ];
@@ -1744,6 +2056,143 @@ export function createApp(services = createServices()) {
       });
       logger.warn({ actorId: req.user!.id, targetId: req.params.id, published }, "admin set published");
       res.json({ user });
+    },
+  );
+
+  // ---- Admin: groups ----------------------------------------------------
+  // Only system admins create/delete groups and assign group admins. Group
+  // admins then self-serve their group's members + repo via /api/me/groups/*.
+
+  app.get("/api/admin/groups", requireAuth(store), requireAdmin, (_req, res) => {
+    res.json({ groups: store.listGroups() });
+  });
+
+  app.post("/api/admin/groups", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const name = safeString(req.body?.name);
+    if (!name) {
+      apiError(res, 400, "그룹 이름이 필요합니다.");
+      return;
+    }
+    const group = store.createGroup({
+      name,
+      description: safeString(req.body?.description),
+      createdBy: req.user!.id,
+    });
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "group_create",
+      status: "success",
+      detail: `created group ${group.id} (${name})`,
+    });
+    res.json({ group });
+  });
+
+  app.get("/api/admin/groups/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const group = store.getGroup(req.params.id);
+    if (!group) {
+      apiError(res, 404, "그룹을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ group, members: store.listGroupMembers(req.params.id) });
+  });
+
+  app.patch("/api/admin/groups/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const patch: { name?: string; description?: string } = {};
+    if (typeof req.body?.name === "string") patch.name = req.body.name;
+    if (typeof req.body?.description === "string") patch.description = req.body.description;
+    const group = store.updateGroup(req.params.id, patch);
+    if (!group) {
+      apiError(res, 404, "그룹을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ group });
+  });
+
+  app.delete("/api/admin/groups/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const removed = store.deleteGroup(req.params.id);
+    if (!removed) {
+      apiError(res, 404, "그룹을 찾을 수 없습니다.");
+      return;
+    }
+    store.audit({
+      actorUserId: req.user!.id,
+      actorName: req.user!.username,
+      action: "group_delete",
+      status: "success",
+      detail: `deleted group ${req.params.id}`,
+    });
+    logger.warn({ actorId: req.user!.id, groupId: req.params.id }, "group deleted");
+    res.json({ ok: true });
+  });
+
+  app.post(
+    "/api/admin/groups/:id/members",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      if (!store.getGroup(req.params.id)) {
+        apiError(res, 404, "그룹을 찾을 수 없습니다.");
+        return;
+      }
+      const username = safeString(req.body?.username);
+      if (!username) {
+        apiError(res, 400, "username이 필요합니다.");
+        return;
+      }
+      const role = req.body?.role === "admin" ? "admin" : "member";
+      const member = store.addGroupMemberByUsername(req.params.id, username, role);
+      if (!member) {
+        apiError(res, 404, "해당 사용자를 찾을 수 없습니다.");
+        return;
+      }
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: "group_member_add",
+        status: "success",
+        detail: `group=${req.params.id} +${member.userId} (${role})`,
+      });
+      res.json({ member });
+    },
+  );
+
+  app.patch(
+    "/api/admin/groups/:id/members/:userId",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const role = req.body?.role === "admin" ? "admin" : "member";
+      const member = store.setGroupMemberRole(req.params.id, req.params.userId, role);
+      if (!member) {
+        apiError(res, 404, "멤버를 찾을 수 없습니다.");
+        return;
+      }
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: "group_member_role",
+        status: "success",
+        detail: `group=${req.params.id} ${req.params.userId} -> ${role}`,
+      });
+      res.json({ member });
+    },
+  );
+
+  app.delete(
+    "/api/admin/groups/:id/members/:userId",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const removed = store.removeGroupMember(req.params.id, req.params.userId);
+      store.audit({
+        actorUserId: req.user!.id,
+        actorName: req.user!.username,
+        action: "group_member_remove",
+        status: "success",
+        detail: `group=${req.params.id} -${req.params.userId}`,
+      });
+      res.json({ ok: removed });
     },
   );
 

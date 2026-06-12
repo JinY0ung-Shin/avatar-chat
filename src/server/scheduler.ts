@@ -25,9 +25,9 @@ export function isRoutineRunning(jobId: string): boolean {
 
 /**
  * Run a single routine job headlessly and append the result to its dedicated
- * conversation. The request is marked `headless`, so the agent prompt and the
- * tool gate both treat it as unattended: questions and permission prompts are
- * auto-denied and knowledge writes are blocked — the run is read-only.
+ * conversation. The request is marked `headless`, so questions and permission
+ * prompts are still auto-denied. Owner-scheduled routines opt into owner-level
+ * tool access explicitly so they can perform the same work an owner chat can.
  *
  * Never throws: every failure (including avatar/plugin/workspace setup) is
  * returned as `{ ok: false }` so async callers can't leak a rejection.
@@ -71,12 +71,15 @@ async function runRoutineJobNow(
         viewerUserId: avatar.id,
         viewerName: avatar.displayName,
         viewerIsOwner: true,
+        elevated: true,
         headless: true,
+        allowHeadlessTools: true,
+        autoApprove: true,
       },
       pluginRoots,
       config,
       store,
-      // No callbacks: with headless set, the tool gate denies anything interactive.
+      // No callbacks: headless runs cannot ask questions or wait for approvals.
       {},
       abortController,
     );

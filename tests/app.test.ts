@@ -193,7 +193,12 @@ describe("noah-almighty platform", () => {
   });
 
   it("lets an owner create, edit, run, and delete routine jobs", async () => {
-    const app = testApp();
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+    });
+    const app = createApp(services);
     const agent = request.agent(app);
     await signup(agent, "rita").expect(201);
 
@@ -211,13 +216,18 @@ describe("noah-almighty platform", () => {
     expect(routine.enabled).toBe(true);
     expect(routine.nextRunAt).toBeTruthy();
 
-    // The dedicated conversation exists immediately, titled from the prompt.
-    const convs = await agent.get("/api/conversations").expect(200);
+    // The dedicated conversation exists immediately, but is listed under the
+    // routine view instead of the normal chat rail.
+    const regularConvs = await agent.get("/api/conversations").expect(200);
+    expect(regularConvs.body.conversations.some((c: { id: string }) => c.id === routine.conversationId)).toBe(false);
+    const convs = await agent.get("/api/conversations?kind=routine").expect(200);
     const conv = convs.body.conversations.find(
       (c: { id: string }) => c.id === routine.conversationId,
     );
     expect(conv).toBeTruthy();
     expect(conv.title.startsWith("[루틴]")).toBe(true);
+    expect(conv.isRoutine).toBe(true);
+    expect(conv.routineId).toBe(routine.id);
 
     // Edit: disable + change time.
     const edited = await agent
@@ -236,6 +246,19 @@ describe("noah-almighty platform", () => {
       .get(`/api/messages?conversationId=${routine.conversationId}`)
       .expect(200);
     expect(msgs.body.messages.length).toBeGreaterThanOrEqual(2);
+
+    // Avatar/system tools can leave user-facing in-app alerts.
+    const notification = await services.store.addAvatarNotification(routine.avatarUserId, {
+      avatarUserId: routine.avatarUserId,
+      title: "루틴 알림",
+      message: "확인할 결과가 있습니다.",
+      conversationId: routine.conversationId,
+    });
+    const notifications = await agent.get("/api/me/notifications").expect(200);
+    expect(notifications.body.notifications[0].id).toBe(notification.id);
+    await agent.patch(`/api/me/notifications/${notification.id}/read`).expect(200);
+    const unread = await agent.get("/api/me/notifications?unread=1").expect(200);
+    expect(unread.body.notifications).toHaveLength(0);
 
     // Another user cannot touch it.
     const { agent: stranger } = await newUser(app, "sam");
@@ -945,5 +968,67 @@ describe("noah-almighty platform", () => {
     // Generation does NOT persist — the profile stays empty until the user saves.
     const me = await agent.get("/api/me").expect(200);
     expect(me.body.user.hashtags).toEqual([]);
+  });
+});
+
+describe("groups", () => {
+  it("admin creates a group + adds members; co-members auto-trust; non-admin is blocked", async () => {
+    const app = testApp();
+    const { agent: adminA } = await newUser(app, "admin"); // first signup → admin
+    const { agent: agentB, user: bob } = await newUser(app, "bob");
+    const { agent: agentC } = await newUser(app, "carol");
+
+    // A non-admin cannot create a group.
+    await agentB.post("/api/admin/groups").send({ name: "X" }).expect(403);
+
+    const created = await adminA.post("/api/admin/groups").send({ name: "Team", description: "d" }).expect(200);
+    const groupId = created.body.group.id;
+    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "bob", role: "admin" }).expect(200);
+    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "carol" }).expect(200);
+
+    const list = await adminA.get("/api/admin/groups").expect(200);
+    expect(list.body.groups[0].memberCount).toBe(2);
+    expect(list.body.groups[0].adminCount).toBe(1);
+
+    // bob unpublishes; carol (same group) still reaches his avatar at elevated level.
+    await agentB.patch("/api/me").send({ published: false }).expect(200);
+    const seen = await agentC.get(`/api/avatars/${bob.id}`).expect(200);
+    expect(seen.body.avatar.elevated).toBe(true);
+
+    // A stranger outside the group gets 404 on the unpublished avatar.
+    const { agent: agentD } = await newUser(app, "dave");
+    await agentD.get(`/api/avatars/${bob.id}`).expect(404);
+
+    // Roster: carol sees all teammates and her own role.
+    const mine = await agentC.get("/api/me/groups").expect(200);
+    // Creating a group doesn't auto-add the system admin; only explicit members appear.
+    expect(mine.body.groups[0].members.map((m: { username: string }) => m.username).sort()).toEqual(["bob", "carol"]);
+    expect(mine.body.groups[0].role).toBe("member");
+
+    // bob (group admin) can self-serve member adds; carol (plain member) cannot.
+    await agentB.post(`/api/me/groups/${groupId}/members`).send({ username: "dave" }).expect(200);
+    await agentC.post(`/api/me/groups/${groupId}/members`).send({ username: "dave" }).expect(403);
+  });
+
+  it("group repo connect is group-admin-only and validated to the internal host", async () => {
+    const app = testApp();
+    const { agent: adminA } = await newUser(app, "admin");
+    const { agent: agentB } = await newUser(app, "bob");
+    const { agent: agentC } = await newUser(app, "carol");
+    const created = await adminA.post("/api/admin/groups").send({ name: "Team" }).expect(200);
+    const groupId = created.body.group.id;
+    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "bob", role: "admin" }).expect(200);
+    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "carol" }).expect(200);
+
+    // bob (group admin) connects an internal repo (owner/repo shorthand).
+    await agentB.put(`/api/me/groups/${groupId}/knowledge-repo`).send({ repo: "org/team-knowledge", branch: "main" }).expect(200);
+    const mine = await agentB.get("/api/me/groups").expect(200);
+    expect(mine.body.groups[0].knowledgeRepo).toBe("org/team-knowledge");
+
+    // An external host is rejected.
+    await agentB.put(`/api/me/groups/${groupId}/knowledge-repo`).send({ repo: "https://gitlab.example.com/x/y.git" }).expect(400);
+
+    // A plain member cannot set the group repo.
+    await agentC.put(`/api/me/groups/${groupId}/knowledge-repo`).send({ repo: "org/x" }).expect(403);
   });
 });

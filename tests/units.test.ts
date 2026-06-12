@@ -5,7 +5,7 @@ import path from "node:path";
 import tls from "node:tls";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Response } from "express";
-import { createServices } from "../src/server/app.js";
+import { createServices, expandChatSlashCommand } from "../src/server/app.js";
 import { loadConfig } from "../src/server/config.js";
 import { applyCustomGithubCa } from "../src/server/tlsCa.js";
 import { loadDotEnv } from "../src/server/loadEnv.js";
@@ -62,6 +62,7 @@ import {
   buildPrompt,
   interpretResult,
   resultErrorMessage,
+  rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
 } from "../src/server/agent/claudeAgent.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
@@ -86,6 +87,11 @@ import {
   REPO_SERVER_NAME,
   REPO_TOOL_NAMES,
 } from "../src/server/agent/repoTools.js";
+import {
+  buildGroupRepoTools,
+  GROUP_REPO_SERVER_NAME,
+  GROUP_REPO_TOOL_NAMES,
+} from "../src/server/agent/groupRepoTools.js";
 import {
   buildGitRepoTools,
   GIT_REPO_SERVER_NAME,
@@ -222,6 +228,44 @@ function makeSkill(root: string, name: string, frontmatter: string, body = ""): 
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "SKILL.md"), `${frontmatter}\n${body}`);
 }
+
+// ---------------------------------------------------------------------------
+// chat slash commands — server fallback for stale clients/API callers
+// ---------------------------------------------------------------------------
+
+describe("chat slash commands", () => {
+  it("expands /learn into the session learning prompt", () => {
+    const result = expandChatSlashCommand("/learn");
+
+    expect(result.error).toBeUndefined();
+    expect(result.ownerOnly).toBe(true);
+    expect(result.message).toContain("이번 대화 세션을 검토");
+    expect(result.message).toContain("지식 저장소를 업데이트");
+  });
+
+  it("expands slash commands with arguments", () => {
+    const result = expandChatSlashCommand("/remember 프로젝트 기본 포트는 48787");
+
+    expect(result.error).toBeUndefined();
+    expect(result.ownerOnly).toBe(true);
+    expect(result.message).toContain("내 지식 저장소에 기록");
+    expect(result.message).toContain("프로젝트 기본 포트는 48787");
+  });
+
+  it("rejects slash commands that require missing arguments", () => {
+    const result = expandChatSlashCommand("/remember");
+
+    expect(result.error).toBe("/remember 뒤에 저장할 내용을 입력해 주세요.");
+    expect(result.message).toBe("/remember");
+  });
+
+  it("leaves unknown slash text untouched", () => {
+    const result = expandChatSlashCommand("/not-a-command");
+
+    expect(result.error).toBeUndefined();
+    expect(result.message).toBe("/not-a-command");
+  });
+});
 
 // ---------------------------------------------------------------------------
 // runRegistry — in-memory parking of interactive-tool responses
@@ -2255,8 +2299,10 @@ describe("system tools (avatar system management)", () => {
     expect(SYSTEM_SERVER_NAME).toBe("system");
     expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__create_routine");
     expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__add_plugin");
+    expect(SYSTEM_TOOL_NAMES).toContain("mcp__system__notify_user");
     expect(toolsFor(s).map((t) => t.name)).toEqual([
       "describe_system",
+      "notify_user",
       "list_routines",
       "create_routine",
       "update_routine",
@@ -2305,13 +2351,36 @@ describe("system tools (avatar system management)", () => {
     const nonOwner = toolsFor(s, false);
     const routine = await call(nonOwner, "create_routine", { prompt: "p", time: "09:00" });
     const plugin = await call(nonOwner, "add_plugin", { repo: "owner/repo" });
+    const notification = await call(nonOwner, "notify_user", { message: "확인 필요" });
 
     expect(routine.isError).toBe(true);
     expect(routine.content[0].text).toContain("아바타 소유자");
     expect(plugin.isError).toBe(true);
     expect(plugin.content[0].text).toContain("아바타 소유자");
+    expect(notification.isError).toBe(true);
+    expect(notification.content[0].text).toContain("아바타 소유자");
     expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
     expect(s.store.listPlugins(s.owner.id)).toHaveLength(0);
+  });
+
+  it("lets the owner send an in-app notification", async () => {
+    const s = setup("st-notify");
+    const tools = toolsFor(s);
+
+    const sent = await call(tools, "notify_user", {
+      title: "점검 필요",
+      message: "배치 서버 상태를 확인하세요.",
+    });
+    expect(sent.isError).toBeFalsy();
+    expect(sent.content[0].text).toContain("점검 필요");
+
+    const notifications = s.store.listAvatarNotifications(s.owner.id);
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0]).toMatchObject({
+      title: "점검 필요",
+      message: "배치 서버 상태를 확인하세요.",
+      readAt: null,
+    });
   });
 
   it("creates, updates, lists, and deletes owner routines", async () => {
@@ -2442,9 +2511,12 @@ describe("routine jobs", () => {
   it("creates the dedicated conversation eagerly, titled from the prompt", () => {
     const { store, ownerId } = makeStore("rj-conv");
     const job = store.createRoutineJob(ownerId, { prompt: "매일 상태 요약", minuteOfDay: 540 });
-    const conv = store.listConversations(ownerId).find((c) => c.id === job.conversationId);
+    expect(store.listConversations(ownerId).some((c) => c.id === job.conversationId)).toBe(false);
+    const conv = store.listConversations(ownerId, undefined, "routine").find((c) => c.id === job.conversationId);
     expect(conv).toBeTruthy();
     expect(conv!.title.startsWith("[루틴]")).toBe(true);
+    expect(conv!.isRoutine).toBe(true);
+    expect(conv!.routineId).toBe(job.id);
   });
 
   it("executeRoutineJob runs the job, records the outcome, and blocks overlap", async () => {
@@ -2603,13 +2675,49 @@ describe("trusted users", () => {
 
 describe("buildPreToolUseHook auto-approve safety contract", () => {
   const READONLY = ["Read", "Glob", "Grep"];
+  const fakeRtk = () => {
+    const script = path.join(tempDir, "fake-rtk.sh");
+    fs.writeFileSync(
+      script,
+      `#!/bin/sh
+if [ "$1" = "rewrite" ]; then
+  shift
+  case "$*" in
+    "git status && git diff")
+      printf '%s\\n' 'rtk git status && rtk git diff'
+      exit 3
+      ;;
+    "npm run build")
+      printf '%s\\n' 'rtk npm run build'
+      exit 3
+      ;;
+    "rtk git status")
+      printf '%s\\n' 'rtk git status'
+      exit 3
+      ;;
+  esac
+fi
+exit 1
+`,
+    );
+    fs.chmodSync(script, 0o755);
+    return script;
+  };
+
   // Invoke the hook for a non-read-only tool and return the permission decision.
   // `elevated` = owner OR trusted user (the tool-permission level).
   const decide = (
-    opts: { elevated: boolean; headless: boolean; autoApprove: boolean },
+    opts: { elevated: boolean; headless: boolean; autoApprove: boolean; allowHeadlessTools?: boolean },
     events: AgentEvents = {},
   ) => {
-    const hook = buildPreToolUseHook(events, opts.elevated, READONLY, opts.headless, opts.autoApprove);
+    const hook = buildPreToolUseHook(
+      events,
+      opts.elevated,
+      READONLY,
+      opts.headless,
+      opts.allowHeadlessTools === true,
+      opts.autoApprove,
+    );
     return hook({ tool_name: "Bash", tool_input: { command: "rm -rf /" }, tool_use_id: "t1" }, "t1");
   };
 
@@ -2621,6 +2729,57 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
     );
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(prompted).toBe(false); // auto-approve must short-circuit the prompt
+  });
+
+  it("rewrites supported Bash commands through rtk before allowing execution", async () => {
+    const hook = buildPreToolUseHook({}, true, READONLY, false, false, true, "owner", DEFAULT_HEX_SSH_TOOL_POLICY, fakeRtk());
+    const out = await hook(
+      {
+        tool_name: "Bash",
+        tool_input: { command: "git status && git diff", description: "Inspect local changes" },
+        tool_use_id: "t-rtk",
+      },
+      "t-rtk",
+    );
+
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(out.hookSpecificOutput.updatedInput).toEqual({
+      command: "rtk git status && rtk git diff",
+      description: "Inspect local changes",
+    });
+  });
+
+  it("surfaces the rewritten Bash command in the permission prompt", async () => {
+    let promptedInput: Record<string, unknown> | undefined;
+    const hook = buildPreToolUseHook(
+      {
+        onPermission: async ({ input }) => {
+          promptedInput = input;
+          return { behavior: "allow" };
+        },
+      },
+      true,
+      READONLY,
+      false,
+      false,
+      false,
+      "owner",
+      DEFAULT_HEX_SSH_TOOL_POLICY,
+      fakeRtk(),
+    );
+    const out = await hook(
+      { tool_name: "Bash", tool_input: { command: "npm run build" }, tool_use_id: "t-rtk-prompt" },
+      "t-rtk-prompt",
+    );
+
+    expect(promptedInput?.command).toBe("rtk npm run build");
+    expect(out.hookSpecificOutput.updatedInput).toEqual({ command: "rtk npm run build" });
+  });
+
+  it("leaves Bash commands unchanged when rtk has no rewrite", () => {
+    expect(rewriteBashCommandWithRtk("echo hi", fakeRtk())).toBeNull();
+    expect(rewriteBashCommandWithRtk("rtk git status", fakeRtk())).toBeNull();
+    expect(rewriteBashCommandWithRtk("git status", path.join(tempDir, "missing-rtk"))).toBeNull();
   });
 
   it("still prompts an elevated viewer when auto-approve is off", async () => {
@@ -2638,13 +2797,18 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
+  it("auto-approves an elevated headless routine only when explicitly allowed", async () => {
+    const out = await decide({ elevated: true, headless: true, allowHeadlessTools: true, autoApprove: true });
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+  });
+
   it("NEVER auto-approves a non-elevated colleague, even with autoApprove=true", async () => {
     const out = await decide({ elevated: false, headless: false, autoApprove: true });
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
   it("auto-allows a read-only tool regardless of autoApprove", async () => {
-    const hook = buildPreToolUseHook({}, false, READONLY, false, false);
+    const hook = buildPreToolUseHook({}, false, READONLY, false, false, false);
     const out = await hook({ tool_name: "Read", tool_input: { file_path: "/x" }, tool_use_id: "t2" }, "t2");
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
@@ -2655,7 +2819,7 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
       trusted: ["ssh-read-lines"],
       colleague: [],
     });
-    const trustedHook = buildPreToolUseHook({}, true, READONLY, false, true, "trusted", policy);
+    const trustedHook = buildPreToolUseHook({}, true, READONLY, false, false, true, "trusted", policy);
     const read = await trustedHook(
       { tool_name: "mcp__hex-ssh__ssh-read-lines", tool_input: { host: "prod", filePath: "/var/log/app.log" }, tool_use_id: "hex1" },
       "hex1",
@@ -2667,7 +2831,7 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
     expect(read.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(exec.hookSpecificOutput.permissionDecision).toBe("deny");
 
-    const ownerHook = buildPreToolUseHook({}, true, READONLY, false, true, "owner", policy);
+    const ownerHook = buildPreToolUseHook({}, true, READONLY, false, false, true, "owner", policy);
     const ownerExec = await ownerHook(
       { tool_name: "mcp__hex-ssh__remote-ssh", tool_input: { host: "prod", command: "id" }, tool_use_id: "hex3" },
       "hex3",
@@ -2681,6 +2845,7 @@ describe("buildPreToolUseHook auto-approve safety contract", () => {
       { onPermission: async () => { prompted = true; return { behavior: "deny" }; } },
       false,
       READONLY,
+      false,
       false,
       false,
     );
@@ -3156,5 +3321,213 @@ describe("avatar directory tools (cross-avatar search)", () => {
     const tools = buildAvatarDirectoryTools(store, { avatarUserId: meId, viewerUserId: meId });
     const res = await call(tools, "search_avatars", { query: "존재하지않는역량xyz" });
     expect(res.content[0].text).toContain("찾지 못했습니다");
+  });
+});
+
+describe("store groups", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const admin = store.createUser({ username: "admin", displayName: "Admin", password: "password123" });
+    const alice = store.createUser({ username: "alice", displayName: "Alice", password: "password123" });
+    const bob = store.createUser({ username: "bob", displayName: "Bob", password: "password123" });
+    const carol = store.createUser({ username: "carol", displayName: "Carol", password: "password123" });
+    return { store, adminId: admin.id, aliceId: alice.id, bobId: bob.id, carolId: carol.id };
+  }
+
+  it("creates, lists, updates, and deletes groups", () => {
+    const { store } = makeStore("g-crud");
+    const g = store.createGroup({ name: "Team A", description: "desc", createdBy: null });
+    expect(g.name).toBe("Team A");
+    expect(store.getGroup(g.id)?.description).toBe("desc");
+    expect(store.listGroups().map((x) => x.name)).toContain("Team A");
+    expect(store.listGroups()[0].memberCount).toBe(0);
+    store.updateGroup(g.id, { name: "Team B" });
+    expect(store.getGroup(g.id)?.name).toBe("Team B");
+    expect(store.deleteGroup(g.id)).toBe(true);
+    expect(store.getGroup(g.id)).toBeNull();
+  });
+
+  it("manages members + roles", () => {
+    const { store, aliceId, bobId } = makeStore("g-mem");
+    const g = store.createGroup({ name: "T", createdBy: null });
+    expect(store.addGroupMember(g.id, aliceId, "admin")?.role).toBe("admin");
+    expect(store.addGroupMemberByUsername(g.id, "bob")?.role).toBe("member");
+    expect(store.groupRoleFor(aliceId, g.id)).toBe("admin");
+    expect(store.isGroupAdmin(aliceId, g.id)).toBe(true);
+    expect(store.isGroupAdmin(bobId, g.id)).toBe(false);
+    expect(store.listGroupMembers(g.id).map((m) => m.userId).sort()).toEqual([aliceId, bobId].sort());
+    expect(store.setGroupMemberRole(g.id, bobId, "admin")?.role).toBe("admin");
+    expect(store.listGroups()[0].adminCount).toBe(2);
+    expect(store.removeGroupMember(g.id, bobId)).toBe(true);
+    expect(store.groupRoleFor(bobId, g.id)).toBeNull();
+    expect(store.addGroupMemberByUsername(g.id, "nobody")).toBeNull();
+  });
+
+  it("group co-membership grants mutual, symmetric trust + unpublished-avatar access", () => {
+    const { store, aliceId, bobId, carolId } = makeStore("g-trust");
+    const g = store.createGroup({ name: "T", createdBy: null });
+    store.addGroupMember(g.id, aliceId, "member");
+    store.addGroupMember(g.id, bobId, "member");
+    // Unlike explicit trust, group trust is symmetric.
+    expect(store.isTrustedFor(aliceId, bobId)).toBe(true);
+    expect(store.isTrustedFor(bobId, aliceId)).toBe(true);
+    expect(store.isTrustedFor(carolId, aliceId)).toBe(false);
+    // bob reaches alice's UNPUBLISHED avatar at elevated level; carol cannot.
+    store.updateProfile(aliceId, { published: false });
+    expect(store.getAvatar(bobId, aliceId)?.elevated).toBe(true);
+    expect(store.getAvatar(carolId, aliceId)).toBeNull();
+    expect(store.resolveChatAvatar(bobId, aliceId)?.id).toBe(aliceId);
+  });
+
+  it("removing the shared group drops the auto-trust", () => {
+    const { store, aliceId, bobId } = makeStore("g-trust-drop");
+    const g = store.createGroup({ name: "T", createdBy: null });
+    store.addGroupMember(g.id, aliceId);
+    store.addGroupMember(g.id, bobId);
+    expect(store.isTrustedFor(aliceId, bobId)).toBe(true);
+    store.deleteGroup(g.id);
+    expect(store.isTrustedFor(aliceId, bobId)).toBe(false);
+  });
+
+  it("deleting a user removes their group memberships (and the trust they conferred)", () => {
+    const { store, aliceId, bobId } = makeStore("g-cascade");
+    const g = store.createGroup({ name: "T", createdBy: null });
+    store.addGroupMember(g.id, aliceId);
+    store.addGroupMember(g.id, bobId);
+    expect(store.deleteUser(bobId)).toBe(true);
+    expect(store.listGroupMembers(g.id).map((m) => m.userId)).toEqual([aliceId]);
+    expect(store.isTrustedFor(aliceId, bobId)).toBe(false);
+  });
+
+  it("toUser exposes group memberships with role", () => {
+    const { store, aliceId } = makeStore("g-user");
+    const g = store.createGroup({ name: "Team", createdBy: null });
+    store.addGroupMember(g.id, aliceId, "admin");
+    const u = store.getUserById(aliceId);
+    expect(u?.groups.map((x) => x.name)).toEqual(["Team"]);
+    expect(u?.groups[0].role).toBe("admin");
+  });
+
+  it("group knowledge repo: setting it clears selection; lists per-user repos", () => {
+    const { store, aliceId, bobId } = makeStore("g-repo");
+    const g = store.createGroup({ name: "T", createdBy: null });
+    store.addGroupMember(g.id, aliceId);
+    expect(store.getGroupKnowledgeRepo(g.id).repo).toBeNull();
+    store.setGroupKnowledgeRepo(g.id, "org/team-knowledge", "main");
+    store.setGroupKnowledgeSelected(g.id, ["a"]);
+    expect(store.getGroupKnowledgeRepo(g.id).selected).toEqual(["a"]);
+    store.setGroupKnowledgeRepo(g.id, "org/other", null);
+    expect(store.getGroupKnowledgeRepo(g.id).selected).toBeNull();
+    const repos = store.listGroupKnowledgeReposForUser(aliceId);
+    expect(repos.map((r) => r.repo)).toEqual(["org/other"]);
+    // bob isn't in the group → sees no group repos.
+    expect(store.listGroupKnowledgeReposForUser(bobId)).toEqual([]);
+  });
+
+  it("listPublishedAvatars surfaces unpublished group teammates with sharesGroup", () => {
+    const { store, aliceId, bobId, carolId } = makeStore("g-explore");
+    store.updateProfile(bobId, { published: false });
+    const g = store.createGroup({ name: "T", createdBy: null });
+    store.addGroupMember(g.id, aliceId);
+    store.addGroupMember(g.id, bobId);
+    const forAlice = store.listPublishedAvatars(aliceId);
+    const bobCard = forAlice.find((a) => a.id === bobId);
+    // bob is unpublished but a teammate → visible + flagged.
+    expect(bobCard?.sharesGroup).toBe(true);
+    // carol (published, no shared group) is visible but not flagged.
+    expect(forAlice.find((a) => a.id === carolId)?.sharesGroup).toBe(false);
+  });
+});
+
+describe("group repo tools (mcp__group_repo__*)", () => {
+  function call(tools: ReturnType<typeof buildGroupRepoTools>, name: string, args: unknown): Promise<ToolResult> {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} not found`);
+    return (t.handler as (a: unknown, extra: unknown) => Promise<ToolResult>)(args, {});
+  }
+
+  function setup(dir: string, opts: { role?: "admin" | "member" } = {}) {
+    const dataDir = path.join(tempDir, dir);
+    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    store.setGitToken(owner.id, "tkn"); // satisfies the commit token guard; ignored for file remotes
+    const group = store.createGroup({ name: "Team", createdBy: null });
+    store.addGroupMember(group.id, owner.id, opts.role ?? "admin");
+    const remote = path.join(tempDir, dir, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" });
+    const seed = path.join(tempDir, dir, "seed");
+    gitInit(seed);
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("branch", "-M", "main");
+    g("remote", "add", "origin", remote);
+    g("push", "-q", "origin", "main");
+    store.setGroupKnowledgeRepo(group.id, remote, "main");
+    return {
+      store,
+      config,
+      ownerId: owner.id,
+      owner: { id: owner.id, username: "owner", displayName: "Owner" },
+      group,
+      remote,
+    };
+  }
+
+  function tools(s: ReturnType<typeof setup>, opts: { viewerIsOwner?: boolean } = {}) {
+    return buildGroupRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: opts.viewerIsOwner ?? true,
+      config: s.config,
+    });
+  }
+
+  it("exposes the documented server + tool names", () => {
+    expect(GROUP_REPO_SERVER_NAME).toBe("group_repo");
+    expect(GROUP_REPO_TOOL_NAMES).toContain("mcp__group_repo__write_file");
+    expect(tools(setup("gp-names")).map((t) => t.name)).toEqual([
+      "list_groups",
+      "list_files",
+      "read_file",
+      "write_file",
+      "scaffold_skill",
+      "commit",
+      "create_repo",
+    ]);
+  });
+
+  it("is owner-only (a non-owner viewer is refused)", async () => {
+    const s = setup("gp-owner");
+    const res = await call(tools(s, { viewerIsOwner: false }), "list_groups", {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("소유자");
+  });
+
+  it("lets a group admin write + commit; a member can read but not write", async () => {
+    const s = setup("gp-admin");
+    const w = await call(tools(s), "write_file", { group: "Team", path: "docs/note.md", content: "hi" });
+    expect(w.isError).toBeFalsy();
+    const c = await call(tools(s), "commit", { group: "Team", message: "add note" });
+    expect(c.isError).toBeFalsy();
+    expect(c.content[0].text).toContain("커밋");
+    const r = await call(tools(s), "read_file", { group: "Team", path: "docs/note.md" });
+    expect(r.content[0].text).toBe("hi");
+
+    const sm = setup("gp-member", { role: "member" });
+    const list = await call(tools(sm), "list_files", { group: "Team" });
+    expect(list.isError).toBeFalsy();
+    const denied = await call(tools(sm), "write_file", { group: "Team", path: "x.md", content: "no" });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toContain("관리자");
+  });
+
+  it("rejects an unknown group", async () => {
+    const s = setup("gp-unknown");
+    const res = await call(tools(s), "list_files", { group: "Nope" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("그룹");
   });
 });

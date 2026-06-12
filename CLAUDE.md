@@ -134,6 +134,22 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   tokens are opportunistic, not a prerequisite for read access.
   Unlike the owner-only knowledge repo, write/commit/push EXTEND to trusted users.
   Offline-tested against a local bare remote (same as the knowledge-repo tools).
+- **Groups = system-admin-created teams; co-membership auto-trusts (symmetrically).**
+  `groups` + `group_members(role admin|member)` tables (always-run schema). System admin
+  creates/deletes groups + assigns group admins (`/api/admin/groups*`); group admins self-serve
+  their group's members + repo (`/api/me/groups*`, gated by `canManageGroup` = system admin OR
+  group admin). **`store.shareAnyGroup` is OR'd into `isTrustedFor`** → group co-members are
+  mutually + SYMMETRICALLY elevated (unlike the directional `avatar_trusted_users`) and reach each
+  other's UNPUBLISHED avatars. `isTrustedFor` is THE single choke point every elevated/trust check
+  flows through (`getAvatar`/`resolveChatAvatar`/`app.ts` chat `elevated`) — add new trust sources
+  THERE, not at call sites. Each group has ONE shared **knowledge repo** (`groupKnowledgeRepo.ts`
+  mirrors `knowledgeRepo.ts`: full clone at `dataDir/group-knowledge/<groupId>`, REUSES its
+  repo-relative file ops `listTree/readFile/writeFile/scaffoldSkill/writeRepoTemplate`; `token` =
+  acting user's `getGitToken`, applied per git-call via `tokenForGitUrl`). Members' avatars auto-load
+  its skills (`loadGroupKnowledgeRepoRoots`, wired in app.ts chat + intro/hashtag gen); only group
+  admins edit via the OWNER-ONLY `mcp__group_repo__*` server (per-tool role check: member reads,
+  admin writes/commits/`create_repo`). `buildPrompt` injects group self-state (META-COGNITION).
+  Discovery: `listPublishedAvatars` also returns unpublished group teammates flagged `sharesGroup`.
 - Secret-at-rest tiers: passwords → scrypt (`auth.ts`), session tokens → sha256,
   **reversible** secrets (e.g. per-user git token) → AES-256-GCM in `crypto.ts`
   (keyed from `SESSION_SECRET`). Never serialize secrets through `toUser`. The git

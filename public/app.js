@@ -18,7 +18,7 @@ function newId() {
 
 const state = {
   user: null,
-  view: "explore", // explore | chat | settings | admin
+  view: "explore", // explore | chat | routines | settings | admin
   settingsTab: "profile", // profile | access | knowledge | routines
   avatars: [],
   avatarsLoaded: false,
@@ -37,6 +37,10 @@ const state = {
   plugins: [],
   knowledgeRequests: [],
   routines: [],
+  routineConversations: [],
+  routineConversationId: "",
+  routineMessages: [],
+  notifications: [],
   adminTab: "overview", // overview | users | access | system | audit
   adminUsers: [],
   adminUserDetail: {}, // id -> AdminUserDetail (lazy, cached per expand)
@@ -102,6 +106,10 @@ function handleSessionExpired() {
   state.activePaneId = null;
   state.messages = [];
   state.conversations = [];
+  state.routineConversations = [];
+  state.routineConversationId = "";
+  state.routineMessages = [];
+  state.notifications = [];
   state.authError = "세션이 만료되었습니다. 다시 로그인해 주세요.";
   renderAuth();
 }
@@ -494,6 +502,7 @@ function mountShell() {
   };
   navItem("explore", "탐색", "compass");
   navItem("chat", "대화", "chat");
+  navItem("routines", "루틴", "clock");
   navItem("settings", "내 아바타", "user");
   if (admin) navItem("admin", "관리자", "shield");
 
@@ -706,7 +715,7 @@ function syncNav() {
   }
 }
 
-const VIEW_TITLES = { explore: "탐색", chat: "대화", settings: "내 아바타", admin: "관리자" };
+const VIEW_TITLES = { explore: "탐색", chat: "대화", routines: "루틴", settings: "내 아바타", admin: "관리자" };
 
 function syncDocumentTitle() {
   if (state.streaming) {
@@ -731,14 +740,15 @@ function renderView() {
   dom.main.replaceChildren();
   if (state.view === "explore") renderExplore();
   else if (state.view === "chat") renderChat();
+  else if (state.view === "routines") renderRoutinesView();
   else if (state.view === "settings") renderSettings();
   else if (state.view === "admin") renderAdmin();
 }
 
 /* ---- Hash routing -------------------------------------------------------
-   #/explore · #/chat · #/chat/<convId> · #/settings/<tab> · #/admin
+   #/explore · #/chat · #/chat/<convId> · #/routines · #/routines/<convId> · #/settings/<tab> · #/admin
    Keeps Back/Forward inside the SPA and survives a reload. */
-const VIEW_ROUTES = ["explore", "chat", "settings", "admin"];
+const VIEW_ROUTES = ["explore", "chat", "routines", "settings", "admin"];
 let applyingRoute = false;
 
 function routeFromHash() {
@@ -759,6 +769,9 @@ function currentRoute() {
     // persisted) so a mid-stream reload — including the first turn and greetings —
     // routes back to the conversation and re-attaches its in-flight run.
     return pane?.conversationId ? `#/chat/${encodeURIComponent(pane.conversationId)}` : "#/chat";
+  }
+  if (state.view === "routines") {
+    return state.routineConversationId ? `#/routines/${encodeURIComponent(state.routineConversationId)}` : "#/routines";
   }
   if (state.view === "settings") return `#/settings/${state.settingsTab}`;
   if (state.view === "admin") return `#/admin/${state.adminTab}`;
@@ -787,8 +800,9 @@ async function applyRoute() {
       }
     }
     if (view === "settings" && arg && arg !== state.settingsTab) state.settingsTab = arg;
+    if (view === "routines" && arg && arg !== state.routineConversationId) state.routineConversationId = arg;
     if (view === "admin" && arg && arg !== state.adminTab) state.adminTab = arg;
-    if (view !== state.view || view === "settings" || view === "admin") {
+    if (view !== state.view || view === "settings" || view === "routines" || view === "admin") {
       noteStreamingContinues();
       state.view = view;
       closeRail();
@@ -1087,8 +1101,12 @@ async function renderExplore() {
   renderExploreGridImpl = () => {
     const raw = (state.exploreQuery || "").trim();
     const tokens = raw ? raw.toLowerCase().split(/\s+/).map((t) => t.replace(/^#+/, "")).filter(Boolean) : [];
-    // Pin my own avatar first — the most common chat target needs a stable spot.
-    const sorted = [...state.avatars].sort((a, b) => Number(b.id === state.user.id) - Number(a.id === state.user.id));
+    // Order: my own avatar first, then group teammates (auto-trusted), then the
+    // rest. Within a tier the server's display-name order is preserved.
+    const rank = (av) => (av.id === state.user.id ? 0 : av.sharesGroup ? 1 : 2);
+    const sorted = [...state.avatars].sort(
+      (a, b) => rank(a) - rank(b) || (a.displayName || "").localeCompare(b.displayName || ""),
+    );
     const list = tokens.length ? sorted.filter((av) => matchesAvatarQuery(av, tokens)) : sorted;
     grid.replaceChildren();
     if (!list.length) {
@@ -1108,6 +1126,7 @@ function buildAvatarCard(av) {
       el("div", { class: "ac-name" }, [
         el("strong", { text: av.displayName }),
         isMe ? el("span", { class: "tag accent", text: "나" }) : null,
+        !isMe && av.sharesGroup ? el("span", { class: "tag write", text: "같은 그룹" }) : null,
         av.published ? null : el("span", { class: "tag", text: "비공개" }),
       ]),
       el("div", { class: "ac-handle", text: `@${av.username}` }),
@@ -1290,6 +1309,410 @@ function splitAvatarOptions() {
   return [...byId.values()];
 }
 
+/* ============================================================ Routines view */
+async function renderRoutinesView() {
+  const header = viewHeader("루틴", "예약 실행 결과와 아바타 알림을 확인하세요");
+  const body = el("div", { class: "view-body scroll-thin routines-body" }, [
+    el("div", { class: "muted pad", text: "불러오는 중…" }),
+  ]);
+  dom.main.append(header, body);
+
+  const results = await Promise.allSettled([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
+  if (sessionExpired) return;
+  const failed = results.find((r) => r.status === "rejected");
+  if (failed) {
+    body.replaceChildren(
+      el("div", { class: "warn-box" }, [
+        `루틴 정보를 불러오지 못했습니다: ${failed.reason?.message || "네트워크 오류"} `,
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ]),
+    );
+    return;
+  }
+  updateNotificationBadge();
+
+  if (state.routineConversationId && !state.routineConversations.some((c) => c.id === state.routineConversationId)) {
+    state.routineConversationId = state.routineConversations[0]?.id || "";
+  } else if (!state.routineConversationId && state.routineConversations.length) {
+    state.routineConversationId = state.routineConversations[0].id;
+  }
+  if (state.routineConversationId) {
+    const msgRes = await api(`/api/messages?conversationId=${encodeURIComponent(state.routineConversationId)}`);
+    state.routineMessages = msgRes.messages || [];
+  } else {
+    state.routineMessages = [];
+  }
+
+  body.replaceChildren(
+    el("div", { class: "routine-workspace" }, [
+      el("div", { class: "routine-side" }, [
+        buildNotificationsPanel(),
+        buildRoutineRunsPanel(),
+      ]),
+      buildRoutineResultPanel(),
+    ]),
+  );
+}
+
+function buildNotificationsPanel() {
+  const unread = state.notifications.filter((n) => !n.readAt).length;
+  const list = el("div", { class: "notification-list" });
+  const card = el("section", { class: "settings-card routine-card" }, [
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: `아바타 알림${unread ? ` (${unread})` : ""}` }),
+        el("p", { class: "muted", text: "아바타가 루틴이나 대화 중 남긴 앱 내부 알림입니다." }),
+      ]),
+      unread
+        ? el("button", {
+            class: "linkish small",
+            type: "button",
+            text: "모두 읽음",
+            onclick: async () => {
+              await api("/api/me/notifications/read-all", { method: "POST" });
+              await loadNotifications();
+              updateNotificationBadge();
+              renderView();
+            },
+          })
+        : null,
+    ]),
+    list,
+  ]);
+  renderNotificationRows(list);
+  return card;
+}
+
+function renderNotificationRows(list) {
+  list.replaceChildren();
+  if (!state.notifications.length) {
+    list.append(el("div", { class: "empty-note", text: "아직 알림이 없습니다." }));
+    return;
+  }
+  for (const n of state.notifications.slice(0, 20)) {
+    const row = el("div", { class: `notification-row ${n.readAt ? "" : "unread"}` }, [
+      el("div", { class: "pr-main" }, [
+        el("strong", { text: n.title }),
+        el("div", { class: "pr-sub", text: `${n.avatarDisplayName} · ${timeLabel(n.createdAt)}` }),
+        el("p", { text: n.message }),
+      ]),
+    ]);
+    const actions = el("div", { class: "kr-actions" });
+    if (n.conversationId && state.routineConversations.some((c) => c.id === n.conversationId)) {
+      actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(n.conversationId) }));
+    }
+    if (!n.readAt) {
+      actions.append(el("button", {
+        class: "ghost-sm",
+        type: "button",
+        text: "읽음",
+        onclick: async () => {
+          await api(`/api/me/notifications/${encodeURIComponent(n.id)}/read`, { method: "PATCH" });
+          await loadNotifications();
+          updateNotificationBadge();
+          renderView();
+        },
+      }));
+    }
+    if (actions.children.length) row.append(actions);
+    list.append(row);
+  }
+}
+
+function buildRoutineRunsPanel() {
+  const list = el("div", { class: "routine-run-list" });
+  const card = el("section", { class: "settings-card routine-card" }, [
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "실행 기록" }),
+        el("p", { class: "muted", text: "각 루틴의 전용 기록을 선택해 확인합니다." }),
+      ]),
+      el("button", { class: "linkish small", type: "button", text: "루틴 설정", onclick: openRoutineSettings }),
+    ]),
+    list,
+  ]);
+  renderRoutineRunRows(list);
+  return card;
+}
+
+function renderRoutineRunRows(list) {
+  list.replaceChildren();
+  if (!state.routines.length) {
+    list.append(el("div", { class: "empty-note", text: "등록한 루틴이 없습니다." }));
+    return;
+  }
+  for (const r of state.routines) {
+    const conv = state.routineConversations.find((c) => c.id === r.conversationId);
+    const active = state.routineConversationId === r.conversationId;
+    const statusBits = [`매일 ${r.time} (KST)`];
+    if (r.lastRunAt) statusBits.push(`최근 ${timeLabel(r.lastRunAt)} · ${r.lastStatus === "error" ? "실패" : "완료"}`);
+    else statusBits.push("아직 실행되지 않음");
+    const row = el("button", {
+      class: `routine-run-row ${active ? "active" : ""}`,
+      type: "button",
+      onclick: () => openRoutineResult(r.conversationId),
+    }, [
+      el("strong", { text: r.prompt }),
+      el("span", { text: statusBits.join(" · ") }),
+      r.lastStatus === "error" && r.lastError ? el("span", { class: "error-note", text: r.lastError }) : null,
+      conv ? el("span", { class: "muted", text: `기록 업데이트 ${timeLabel(conv.updatedAt)}` }) : null,
+    ]);
+    list.append(row);
+  }
+}
+
+function buildRoutineResultPanel() {
+  const conv = state.routineConversations.find((c) => c.id === state.routineConversationId);
+  const transcript = el("div", { class: "routine-result-transcript transcript scroll-thin" });
+  const inner = el("div", { class: "transcript-inner" });
+  transcript.append(inner);
+  const card = el("section", { class: "settings-card routine-result-card" }, [
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: conv?.title || "루틴 결과" }),
+        el("p", { class: "muted", text: conv ? `${conv.avatarDisplayName} · ${timeLabel(conv.updatedAt)}` : "루틴 실행 기록을 선택하세요." }),
+      ]),
+      conv ? el("button", { class: "ghost-sm", type: "button", text: "일반 대화로 열기", onclick: () => selectConversation(conv) }) : null,
+    ]),
+    transcript,
+  ]);
+  if (!conv) {
+    inner.append(el("div", { class: "empty-note", text: "아직 확인할 루틴 결과가 없습니다." }));
+    return card;
+  }
+  if (!state.routineMessages.length) {
+    inner.append(el("div", { class: "empty-note", text: "아직 실행 메시지가 없습니다." }));
+    return card;
+  }
+  for (const message of state.routineMessages) {
+    inner.append(buildRoutineMessageNode(message));
+  }
+  requestAnimationFrame(() => {
+    transcript.scrollTop = transcript.scrollHeight;
+  });
+  return card;
+}
+
+function buildRoutineMessageNode(message) {
+  const isUser = message.role === "user";
+  const wrap = el("div", { class: `message ${message.role}` });
+  wrap.append(
+    el("div", { class: "msg-role" }, [
+      el("span", { class: "role-dot" }),
+      el("span", { text: isUser ? "루틴 지시" : state.user?.displayName || "아바타" }),
+      message.createdAt ? el("time", { class: "msg-time", datetime: message.createdAt, text: timeLabel(message.createdAt) }) : null,
+    ]),
+  );
+  const bubble = el("div", { class: "bubble" });
+  if (isUser) bubble.textContent = message.content;
+  else renderAssistantInto(bubble, message);
+  wrap.append(bubble);
+  return wrap;
+}
+
+function openRoutineResult(conversationId) {
+  state.routineConversationId = conversationId || "";
+  state.view = "routines";
+  syncHash();
+  renderView();
+}
+
+function openRoutineSettings() {
+  state.settingsTab = "routines";
+  goView("settings");
+}
+
+/* ============================================================ Slash commands */
+const SLASH_COMMANDS = [
+  {
+    name: "new",
+    title: "새 대화",
+    description: "현재 아바타와 새 대화를 바로 시작합니다.",
+    action: (pane) => newChat(pane),
+  },
+  {
+    name: "summarize",
+    title: "요약",
+    description: "지금까지의 대화를 요약합니다.",
+    prompt: () => "지금까지의 대화를 핵심 결정사항, 해야 할 일, 열린 질문으로 나눠 요약해줘.",
+  },
+  {
+    name: "learn",
+    title: "세션 학습",
+    description: "이번 대화에서 재사용할 지식을 추려 저장하게 합니다.",
+    ownerOnly: true,
+    prompt: () => [
+      "이번 대화 세션을 검토해서 앞으로 재사용할 가치가 있는 지식만 선별해 내 지식 저장소를 업데이트해줘.",
+      "",
+      "중요한 사실, 결정사항, 반복 가능한 절차, 프로젝트 규칙, 사용자가 선호한다고 밝힌 방식이 있으면 적절한 파일이나 스킬에 반영하고 커밋해줘.",
+      "이미 저장돼 있거나 장기적으로 유용하지 않은 잡담은 저장하지 말고, 저장한 내용과 저장하지 않은 이유를 간단히 알려줘.",
+    ].join("\n"),
+  },
+  {
+    name: "remember",
+    title: "지식 저장",
+    argsLabel: "내용",
+    description: "뒤에 쓴 내용을 내 지식 저장소에 기록하게 합니다.",
+    ownerOnly: true,
+    requiresArgs: true,
+    prompt: (args) =>
+      `다음 내용을 내 지식 저장소에 기록해서 앞으로 같은 질문에 답할 수 있게 해줘.\n\n${args}`,
+  },
+  {
+    name: "routine",
+    title: "루틴 만들기",
+    argsLabel: "작업",
+    description: "작업 내용을 받아 매일 실행할 루틴 생성을 요청합니다.",
+    ownerOnly: true,
+    requiresArgs: true,
+    prompt: (args) =>
+      `매일 HH:MM KST에 다음 일을 실행하는 루틴을 만들어줘.\n\n${args}`,
+  },
+  {
+    name: "find",
+    title: "아바타 찾기",
+    argsLabel: "요청",
+    description: "요청에 맞는 팀원 아바타를 찾아 추천하게 합니다.",
+    requiresArgs: true,
+    prompt: (args) =>
+      `이 요청에 더 적합한 팀원 아바타가 있는지 찾아보고 추천해줘.\n\n${args}`,
+  },
+];
+
+function slashCommandsForPane(pane) {
+  const ownsAvatar = pane?.avatar?.id && pane.avatar.id === state.user?.id;
+  return SLASH_COMMANDS.filter((cmd) => !cmd.ownerOnly || ownsAvatar);
+}
+
+function slashQueryForText(text) {
+  if (typeof text !== "string" || text.startsWith("//")) return null;
+  const match = /^\/([A-Za-z0-9_-]*)$/.exec(text);
+  return match ? match[1].toLowerCase() : null;
+}
+
+function matchingSlashCommands(pane, query) {
+  const q = (query || "").toLowerCase();
+  return slashCommandsForPane(pane).filter((cmd) => {
+    if (!q) return true;
+    return [cmd.name, cmd.title, cmd.description, cmd.argsLabel || ""].some((value) => value.toLowerCase().includes(q));
+  });
+}
+
+function resolveTypedSlashCommand(pane, message) {
+  const match = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(message);
+  if (!match || message.startsWith("//")) return null;
+  const name = match[1].toLowerCase();
+  const command = slashCommandsForPane(pane).find((cmd) => cmd.name === name);
+  if (!command) return null;
+  return { command, args: (match[2] || "").trim() };
+}
+
+function slashPrompt(command, args = "") {
+  return command.prompt ? command.prompt(args) : "";
+}
+
+function hideSlashMenu(pane = activePane()) {
+  const pdom = pane?.dom;
+  if (!pdom?.slashMenu) return;
+  pdom.slashMenu.hidden = true;
+  pdom.slashMenu.replaceChildren();
+  pdom.slashMatches = [];
+  pdom.slashIndex = 0;
+  pdom.textarea?.removeAttribute("aria-controls");
+  pdom.textarea?.removeAttribute("aria-activedescendant");
+  pdom.textarea?.setAttribute("aria-expanded", "false");
+}
+
+function applySlashCommand(pane, command, args = "") {
+  const pdom = pane?.dom;
+  if (!pdom?.textarea) return;
+  hideSlashMenu(pane);
+  if (command.action) {
+    pdom.textarea.value = "";
+    pdom.textarea.dispatchEvent(new Event("input"));
+    command.action(pane, args);
+    return;
+  }
+  pdom.textarea.value = `/${command.name}${command.requiresArgs ? " " : ""}`;
+  pdom.textarea.dispatchEvent(new Event("input"));
+  pdom.textarea.focus();
+  const end = pdom.textarea.value.length;
+  pdom.textarea.setSelectionRange(end, end);
+}
+
+function renderSlashMenu(pane) {
+  const pdom = pane?.dom;
+  if (!pdom?.textarea || !pdom?.slashMenu) return;
+  const query = slashQueryForText(pdom.textarea.value);
+  if (query === null || pane.streaming) {
+    hideSlashMenu(pane);
+    return;
+  }
+  const matches = matchingSlashCommands(pane, query);
+  if (!matches.length) {
+    hideSlashMenu(pane);
+    return;
+  }
+  pdom.slashMatches = matches;
+  pdom.slashIndex = Math.min(pdom.slashIndex || 0, matches.length - 1);
+  const activeId = `${pdom.slashMenu.id}-option-${pdom.slashIndex}`;
+  pdom.textarea.setAttribute("aria-controls", pdom.slashMenu.id);
+  pdom.textarea.setAttribute("aria-expanded", "true");
+  pdom.textarea.setAttribute("aria-activedescendant", activeId);
+  pdom.slashMenu.hidden = false;
+  pdom.slashMenu.replaceChildren(
+    el("div", { class: "slash-menu-head", text: "슬래시 명령" }),
+    ...matches.map((cmd, i) => {
+      const row = el("button", {
+        id: `${pdom.slashMenu.id}-option-${i}`,
+        class: `slash-option ${i === pdom.slashIndex ? "active" : ""}`,
+        type: "button",
+        role: "option",
+        "aria-selected": i === pdom.slashIndex ? "true" : "false",
+        onclick: () => applySlashCommand(pane, cmd),
+      }, [
+        el("span", {
+          class: "slash-option-command",
+          text: `/${cmd.name}${cmd.argsLabel ? ` ${cmd.argsLabel}` : ""}`,
+        }),
+        el("span", { class: "slash-option-main" }, [
+          el("strong", { text: cmd.title }),
+          el("span", { text: cmd.description }),
+        ]),
+      ]);
+      row.addEventListener("mousedown", (event) => event.preventDefault());
+      return row;
+    }),
+  );
+}
+
+function handleSlashMenuKeydown(pane, event) {
+  const pdom = pane?.dom;
+  if (!pdom?.slashMenu || pdom.slashMenu.hidden) return false;
+  const matches = pdom.slashMatches || [];
+  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    if (matches.length) {
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      pdom.slashIndex = (pdom.slashIndex + delta + matches.length) % matches.length;
+      renderSlashMenu(pane);
+    }
+    return true;
+  }
+  if (event.key === "Enter" || event.key === "Tab") {
+    if (!matches.length) return false;
+    event.preventDefault();
+    applySlashCommand(pane, matches[pdom.slashIndex || 0]);
+    return true;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    hideSlashMenu(pane);
+    return true;
+  }
+  return false;
+}
+
 function renderChatPane(pane, { compact = false, index = 0, header = null } = {}) {
   const av = pane.avatar;
   const pdom = {};
@@ -1326,6 +1749,13 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
   pdom.sendButton = el("button", { class: "send-button", type: "submit", "aria-label": "보내기", title: "보내기" });
   pdom.sendButton.append(icon("send"));
   pdom.composerBox = el("div", { class: "composer-box" }, [pdom.textarea, pdom.sendButton]);
+  pdom.slashMenu = el("div", {
+    id: `slash-menu-${pane.id}`,
+    class: "slash-menu",
+    role: "listbox",
+    "aria-label": "슬래시 명령",
+    hidden: "",
+  });
   pdom.composerState = el("span", { class: "composer-state", text: "" });
   const composerForm = el("form", {
     class: "composer-form",
@@ -1336,6 +1766,7 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
       else submitMessage(pane);
     },
   }, [
+    pdom.slashMenu,
     pdom.composerBox,
     (pdom.composerHint = el("div", { class: "composer-hint" }, [])),
   ]);
@@ -1671,6 +2102,7 @@ function wireComposer(pane) {
   ta.addEventListener("input", () => {
     autoGrow();
     updateSendState(pane);
+    renderSlashMenu(pane);
   });
   ta.addEventListener("keydown", (event) => {
     // Detect a hardware keyboard: physical character keys carry a real
@@ -1682,6 +2114,7 @@ function wireComposer(pane) {
       physicalKeyboardSeen = true;
       refreshComposerHints();
     }
+    if (handleSlashMenuKeydown(pane, event)) return;
     // Virtual keyboards have no Shift+Enter — there, Enter inserts a newline
     // and sending is button-only.
     if (!enterSends()) return;
@@ -1694,8 +2127,14 @@ function wireComposer(pane) {
   pdom.composerBox.addEventListener("focusin", () => {
     setActivePane(pane);
     pdom.composerBox.classList.add("focused");
+    renderSlashMenu(pane);
   });
-  pdom.composerBox.addEventListener("focusout", () => pdom.composerBox.classList.remove("focused"));
+  pdom.composerBox.addEventListener("focusout", () => {
+    pdom.composerBox.classList.remove("focused");
+    setTimeout(() => {
+      if (!pdom.composerBox.contains(document.activeElement)) hideSlashMenu(pane);
+    }, 0);
+  });
   autoGrow();
   updateSendState(pane);
 }
@@ -1927,8 +2366,27 @@ async function submitMessage(pane = activePane()) {
   if (!pane) return;
   setActivePane(pane);
   const pdom = pane.dom;
-  const message = pdom.textarea.value.trim();
+  let message = pdom.textarea.value.trim();
   if (!message || pane.streaming || !pane.avatar) return;
+  const slash = resolveTypedSlashCommand(pane, message);
+  if (slash) {
+    if (slash.command.action) {
+      applySlashCommand(pane, slash.command, slash.args);
+      return;
+    }
+    if (slash.command.requiresArgs && !slash.args) {
+      pdom.textarea.value = `/${slash.command.name} `;
+      pdom.textarea.dispatchEvent(new Event("input"));
+      pdom.textarea.focus();
+      const end = pdom.textarea.value.length;
+      pdom.textarea.setSelectionRange(end, end);
+      notify(`/${slash.command.name} 뒤에 ${slash.command.argsLabel || "내용"}을 입력해 주세요.`, "warn");
+      return;
+    }
+    message = slashPrompt(slash.command, slash.args).trim();
+    if (!message) return;
+  }
+  hideSlashMenu(pane);
   if (!pane.messages.length) pdom.transcriptInner.replaceChildren();
   pdom.transcriptInner.querySelectorAll(".msg-act.regen").forEach((b) => b.remove());
   const userMsg = { role: "user", content: message, createdAt: new Date().toISOString() };
@@ -2356,6 +2814,7 @@ const TOOL_LABELS = {
   mcp__confluence__get_page: "Confluence 페이지 조회",
   mcp__confluence__create_page: "Confluence 페이지 생성",
   mcp__confluence__update_page: "Confluence 페이지 수정",
+  mcp__system__notify_user: "사용자 알림",
   Read: "파일 읽기",
   Glob: "파일 찾기",
   Grep: "내용 검색",
@@ -2990,13 +3449,14 @@ async function selectConversation(conv) {
     if (!window.confirm("분할 대화를 닫고 이 대화를 열까요?")) return;
   }
   closeRail();
+  let pane;
   try {
     const [msgRes, avRes] = await Promise.all([
       api(`/api/messages?conversationId=${encodeURIComponent(conv.id)}`),
       api(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`).catch(() => null),
     ]);
     const avatar = avRes?.avatar || { id: conv.avatarUserId, displayName: conv.avatarDisplayName, username: "", hasImage: true };
-    const pane = makeChatPane(avatar, { conversationId: conv.id, messages: msgRes.messages || [] });
+    pane = makeChatPane(avatar, { conversationId: conv.id, messages: msgRes.messages || [] });
     state.chatPanes = [pane];
     state.activePaneId = pane.id;
     syncLegacyChatState(pane);
@@ -3237,6 +3697,7 @@ async function renderSettings() {
     { id: "profile", label: "프로필", icon: "user", cards: () => [profileCard, publishCard] },
     { id: "access", label: "권한·연결", icon: "shield", cards: () => [buildTrustedUsersCard(), buildGitCredentialsCard(), buildSecretsCard()] },
     { id: "knowledge", label: "지식·플러그인", icon: "book", cards: () => [buildKnowledgeRepoCard(), buildPluginsCard(), buildKnowledgeCard()] },
+    { id: "groups", label: "그룹", icon: "users", cards: () => [buildGroupsCard()] },
     { id: "routines", label: "루틴", icon: "clock", cards: () => [buildRoutinesCard()] },
   ];
   if (!tabs.some((t) => t.id === state.settingsTab)) state.settingsTab = "profile";
@@ -4307,6 +4768,325 @@ function renderKnowledgeRepoContents(container, info) {
   container.append(el("div", { class: "pc-actions" }, [save]));
 }
 
+/* ---- 그룹 (member roster + group-admin self-service) ---- */
+// The member's view of the groups they belong to: teammate roster (with a chat
+// shortcut — teammates auto-trust each other), and for group admins, member
+// management + the shared knowledge repo (mirrors the personal knowledge repo).
+function buildGroupsCard() {
+  const card = el("section", { class: "settings-card" });
+  card.append(
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "그룹" }),
+        el("p", {
+          class: "muted",
+          text: "내가 속한 그룹과 동료입니다. 같은 그룹 동료끼리는 자동으로 서로 신뢰해 아바타에 권한이 부여됩니다. 그룹 관리자는 멤버와 공용 지식 저장소를 관리할 수 있어요. 그룹 생성·삭제는 시스템 관리자가 합니다.",
+        }),
+      ]),
+    ]),
+  );
+  const body = el("div", { class: "groups-body" });
+  card.append(body);
+  body.append(el("div", { class: "muted", text: "불러오는 중…" }));
+
+  (async () => {
+    let groups;
+    try {
+      ({ groups } = await api("/api/me/groups"));
+    } catch (e) {
+      body.replaceChildren(el("div", { class: "warn-box", text: `그룹을 불러오지 못했습니다: ${e.message}` }));
+      return;
+    }
+    const reload = async () => {
+      try {
+        const { groups: next } = await api("/api/me/groups");
+        render(next);
+      } catch (e) {
+        notify(`새로고침 실패: ${e.message}`);
+      }
+    };
+    const render = (gs) => {
+      if (!gs.length) {
+        body.replaceChildren(
+          el("div", { class: "empty-note", text: "아직 속한 그룹이 없습니다. 그룹은 시스템 관리자가 만들고 멤버를 추가합니다." }),
+        );
+        return;
+      }
+      body.replaceChildren(...gs.map((g) => buildGroupBlock(g, reload)));
+    };
+    render(groups);
+  })();
+  return card;
+}
+
+function buildGroupBlock(g, reload) {
+  const amAdmin = g.role === "admin";
+  const block = el("div", { class: "group-block" });
+  block.append(
+    el("div", { class: "group-block-head" }, [
+      el("strong", { text: g.name }),
+      amAdmin
+        ? el("span", { class: "tag write", text: "내가 관리자" })
+        : el("span", { class: "tag read", text: "멤버" }),
+    ]),
+  );
+
+  const roster = el("div", { class: "plugin-rows" });
+  for (const m of g.members || []) roster.append(buildGroupRosterRow(g, m, amAdmin, reload));
+  block.append(roster);
+
+  if (amAdmin) {
+    const addInput = el("input", { type: "search", placeholder: "추가할 동료 아이디(@) 또는 이름", "aria-label": "멤버 추가" });
+    const adminCb = el("input", { type: "checkbox" });
+    const addBtn = el("button", { class: "primary small", type: "button", text: "멤버 추가" });
+    const doAdd = async () => {
+      const username = addInput.value.trim().replace(/^@/, "");
+      if (!username) { addInput.focus(); return; }
+      addBtn.disabled = true;
+      try {
+        await api(`/api/me/groups/${encodeURIComponent(g.id)}/members`, {
+          method: "POST",
+          body: JSON.stringify({ username, role: adminCb.checked ? "admin" : "member" }),
+        });
+        addInput.value = "";
+        adminCb.checked = false;
+        await reload();
+      } catch (e) {
+        notify(`멤버 추가 실패: ${e.message}`);
+      } finally {
+        addBtn.disabled = false;
+      }
+    };
+    addBtn.addEventListener("click", doAdd);
+    addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
+    block.append(
+      el("div", { class: "group-add" }, [
+        addInput,
+        el("label", { class: "group-add-admin" }, [adminCb, el("span", { text: "그룹 관리자로" })]),
+        addBtn,
+      ]),
+    );
+    block.append(buildGroupRepoCard(g));
+  } else {
+    block.append(
+      el("p", {
+        class: "muted small",
+        text: g.knowledgeRepoConfigured
+          ? "이 그룹에는 공용 지식 저장소가 연결되어 동료들의 아바타와 공유됩니다."
+          : "이 그룹에는 아직 공용 지식 저장소가 없습니다.",
+      }),
+    );
+  }
+  return block;
+}
+
+function buildGroupRosterRow(g, m, amAdmin, reload) {
+  const isMe = m.userId === state.user.id;
+  const actions = [];
+  if (!isMe) {
+    const chatBtn = el("button", { class: "ghost-sm", type: "button", text: "대화", title: `${m.displayName}의 아바타와 대화` });
+    chatBtn.addEventListener("click", () => {
+      const av =
+        (state.avatars || []).find((a) => a.id === m.userId) || {
+          id: m.userId,
+          username: m.username,
+          displayName: m.displayName,
+          hasImage: m.hasImage,
+          published: m.published,
+          alias: "",
+          bio: "",
+          hashtags: [],
+          pluginCount: 0,
+        };
+      startChatWith(av);
+    });
+    actions.push(chatBtn);
+  }
+  if (amAdmin && !isMe) {
+    const roleBtn = el("button", { class: "ghost-sm", type: "button", text: m.role === "admin" ? "관리자 해제" : "관리자 지정" });
+    roleBtn.addEventListener("click", async () => {
+      roleBtn.disabled = true;
+      try {
+        await api(`/api/me/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(m.userId)}`, {
+          method: "PATCH",
+          body: JSON.stringify({ role: m.role === "admin" ? "member" : "admin" }),
+        });
+        await reload();
+      } catch (e) {
+        roleBtn.disabled = false;
+        notify(`역할 변경 실패: ${e.message}`);
+      }
+    });
+    const del = el("button", { class: "ghost-sm danger", type: "button", text: "제거" });
+    del.addEventListener("click", async () => {
+      if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
+      del.disabled = true;
+      try {
+        await api(`/api/me/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(m.userId)}`, { method: "DELETE" });
+        await reload();
+      } catch (e) {
+        del.disabled = false;
+        notify(`제거 실패: ${e.message}`);
+      }
+    });
+    actions.push(roleBtn, del);
+  }
+  return el("div", { class: "plugin-row" }, [
+    avatarNode({ ...m, id: m.userId }, 32, { alt: "" }),
+    el("div", { class: "pr-main" }, [
+      el("strong", { text: m.displayName + (isMe ? " (나)" : "") }),
+      el("div", { class: "pr-sub", text: `@${m.username}${m.role === "admin" ? " · 관리자" : ""}` }),
+    ]),
+    el("div", { class: "pr-actions" }, actions),
+  ]);
+}
+
+// Group admin's view of the shared knowledge repo — mirrors buildKnowledgeRepoCard
+// but group-scoped (/api/me/groups/:id/knowledge-repo*).
+function buildGroupRepoCard(g) {
+  const wrap = el("div", { class: "group-repo" });
+  wrap.append(el("h4", { class: "knowledge-sub", text: "공용 지식 저장소" }));
+  const gid = encodeURIComponent(g.id);
+
+  if (g.knowledgeRepo) {
+    const refreshBtn = el("button", {
+      class: "linkish small",
+      type: "button",
+      text: "새로고침",
+      onclick: async () => {
+        refreshBtn.disabled = true;
+        const saved = refreshBtn.textContent;
+        refreshBtn.textContent = "새로고침 중…";
+        try {
+          await api(`/api/me/groups/${gid}/knowledge-repo/refresh`, { method: "POST" });
+          invalidateSkillsCache(state.user.id);
+          refreshBtn.textContent = "새로고침됨 ✓";
+          setTimeout(() => { refreshBtn.textContent = saved; refreshBtn.disabled = false; }, 1200);
+        } catch (e) {
+          refreshBtn.textContent = saved;
+          refreshBtn.disabled = false;
+          notify(`새로고침 실패: ${e.message}`);
+        }
+      },
+    });
+    wrap.append(el("div", { class: "head-actions" }, [refreshBtn]));
+  }
+
+  const form = el("form", {
+    class: "plugin-add rows-2",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.currentTarget);
+      const btn = e.currentTarget.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api(`/api/me/groups/${gid}/knowledge-repo`, {
+          method: "PUT",
+          body: JSON.stringify({
+            repo: (fd.get("repo") || "").toString().trim() || null,
+            branch: (fd.get("branch") || "").toString().trim() || null,
+          }),
+        });
+        invalidateSkillsCache(state.user.id);
+        renderView();
+      } catch (err) {
+        notify(`저장 실패: ${err.message}`);
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("input", { name: "repo", placeholder: "owner/repo 또는 사내 git URL", "aria-label": "그룹 지식 저장소", value: g.knowledgeRepo || "" }),
+    el("input", { name: "branch", placeholder: "브랜치 (선택)", "aria-label": "브랜치", class: "narrow", value: g.knowledgeBranch || "" }),
+    el("button", { class: "primary", type: "submit", text: "저장" }),
+  ]);
+  wrap.append(form);
+
+  if (!g.knowledgeRepo) {
+    wrap.append(
+      el("div", { class: "empty-note", text: "공용 저장소를 연결하면 그룹 멤버 전원의 아바타가 그 저장소의 스킬을 사용합니다. 대화에서 아바타에게 ‘그룹 저장소 만들어줘’라고 요청해도 됩니다." }),
+    );
+    return wrap;
+  }
+
+  const href = repoToHref(g.knowledgeRepo);
+  const linkText = g.knowledgeRepo + (g.knowledgeBranch ? ` @ ${g.knowledgeBranch}` : "");
+  const link = href
+    ? el("a", { href, target: "_blank", rel: "noreferrer noopener", text: linkText })
+    : el("code", { text: linkText });
+  wrap.append(el("div", { class: "kr-link" }, [icon("globe"), link]));
+
+  // Plugin subset picker (mirrors the personal repo card).
+  const selSummary = !g.knowledgeSelected
+    ? "저장소의 모든 플러그인을 사용 중"
+    : `${g.knowledgeSelected.length}개 플러그인만 사용 중`;
+  const contents = el("div", { class: "plugin-contents", hidden: "" });
+  const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택", "aria-expanded": "false" });
+  pickBtn.onclick = async () => {
+    if (!contents.hidden) {
+      contents.hidden = true;
+      pickBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    contents.hidden = false;
+    pickBtn.setAttribute("aria-expanded", "true");
+    contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+    try {
+      const { contents: info } = await api(`/api/me/groups/${gid}/knowledge-repo/contents`);
+      renderGroupRepoContents(contents, info, g);
+    } catch (e) {
+      contents.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+    }
+  };
+  wrap.append(el("div", { class: "kr-plugins" }, [el("span", { class: "muted", text: selSummary }), pickBtn]));
+  wrap.append(contents);
+  return wrap;
+}
+
+// Per-plugin selection for a group repo. Mirrors renderKnowledgeRepoContents but
+// posts to the group endpoint and reads the group's current selection.
+function renderGroupRepoContents(container, info, g) {
+  container.replaceChildren();
+  if (info.kind === "none") {
+    container.append(el("div", { class: "error-note", text: "Claude 플러그인 저장소가 아닙니다 (plugin.json / marketplace.json 없음)." }));
+    return;
+  }
+  if (info.kind === "single") {
+    container.append(el("div", { class: "muted", text: "단일 플러그인 저장소입니다 — 선택할 항목이 없습니다." }));
+    return;
+  }
+  if (!info.plugins.length) {
+    container.append(el("div", { class: "muted", text: "불러올 수 있는 플러그인이 없습니다." }));
+    return;
+  }
+  const selectedSet = g.knowledgeSelected ? new Set(g.knowledgeSelected) : null;
+  const checks = [];
+  container.append(el("div", { class: "pc-head muted", text: "그룹 멤버 아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다." }));
+  for (const entry of info.plugins) {
+    const checked = !selectedSet || selectedSet.has(entry.name);
+    const cb = el("input", { type: "checkbox" });
+    cb.checked = checked && entry.loadable;
+    cb.disabled = !entry.loadable;
+    checks.push({ cb, name: entry.name });
+    const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
+    container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
+  }
+  const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
+    save.disabled = true;
+    const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
+    const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
+    const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
+    try {
+      await api(`/api/me/groups/${encodeURIComponent(g.id)}/knowledge-repo/selected`, { method: "PUT", body: JSON.stringify({ selected }) });
+      invalidateSkillsCache(state.user.id);
+      renderView();
+    } catch (e) {
+      notify(`저장 실패: ${e.message}`);
+      save.disabled = false;
+    }
+  } });
+  container.append(el("div", { class: "pc-actions" }, [save]));
+}
+
 function buildRoutinesCard() {
   const card = el("section", { class: "settings-card" });
   card.append(
@@ -4335,6 +5115,7 @@ function buildRoutinesCard() {
           body: JSON.stringify({ prompt: fd.get("prompt"), time: fd.get("time") }),
         });
         await loadRoutines();
+        await loadRoutineConversations();
         renderRoutineRows(list);
         formEl.reset();
       } catch (err) {
@@ -4396,6 +5177,9 @@ function renderRoutineRows(list) {
       try {
         const res = await api(`/api/me/routines/${encodeURIComponent(r.id)}/run`, { method: "POST" });
         await loadRoutines();
+        await loadRoutineConversations();
+        await loadNotifications();
+        updateNotificationBadge();
         renderRoutineRows(list);
         if (!res.ok) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
       } catch (e) {
@@ -4405,14 +5189,14 @@ function renderRoutineRows(list) {
       }
     } });
     actions.append(runBtn);
-    actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => {
-      selectConversation({ id: r.conversationId, avatarUserId: state.user.id, avatarDisplayName: state.user.displayName });
-    } }));
+    actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(r.conversationId) }));
     const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "루틴 삭제", title: "삭제", onclick: async () => {
       if (!window.confirm("이 루틴을 삭제할까요? (쌓인 결과 대화는 그대로 남습니다)")) return;
       try {
         await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "DELETE" });
         state.routines = state.routines.filter((x) => x.id !== r.id);
+        state.routineConversations = state.routineConversations.filter((x) => x.routineId !== r.id);
+        if (state.routineConversationId === r.conversationId) state.routineConversationId = "";
         renderRoutineRows(list);
       } catch (e) {
         notify(`삭제 실패: ${e.message}`);
@@ -4653,6 +5437,7 @@ async function recordKnowledgeViaAvatar(request, answer) {
 const ADMIN_TABS = [
   { id: "overview", label: "개요", icon: "activity" },
   { id: "users", label: "사용자", icon: "users" },
+  { id: "groups", label: "그룹", icon: "users" },
   { id: "access", label: "가입·접근", icon: "key" },
   { id: "system", label: "시스템", icon: "server" },
   { id: "audit", label: "감사 로그", icon: "list" },
@@ -4660,6 +5445,7 @@ const ADMIN_TABS = [
 const ADMIN_TAB_BUILDERS = {
   overview: adminOverviewCards,
   users: adminUsersCards,
+  groups: adminGroupsCards,
   access: adminAccessCards,
   system: adminSystemCards,
   audit: adminAuditCards,
@@ -4751,6 +5537,7 @@ async function adminOverviewCards() {
     stat("활성 루틴", s.activeRoutines),
     stat("미응답 질문", s.openRequests),
     stat("활성 세션", s.activeSessions),
+    stat("그룹", s.groups),
   ]);
   return [
     el("div", { class: "admin-list" }, [
@@ -4950,6 +5737,254 @@ function buildUserActions(u, isAdmin, isMe, reload) {
     wrap.append(el("p", { class: "muted ud-self-note", text: "자기 자신에게는 권한 해제·정지·삭제를 적용할 수 없습니다." }));
   }
   return wrap;
+}
+
+/* ---- 그룹 (group management) ---- */
+// System admins create/delete groups, add members, and assign group admins here.
+// Group members auto-trust each other; the group's shared knowledge repo is
+// edited by group admins from their own 내 아바타 ▸ 그룹 tab.
+async function adminGroupsCards() {
+  const { groups } = await api("/api/admin/groups");
+  const list = el("div", { class: "admin-list" });
+
+  const reload = async () => {
+    const { groups: next } = await api("/api/admin/groups");
+    renderList(next);
+  };
+  const renderList = (gs) => {
+    list.replaceChildren();
+    if (!gs.length) {
+      list.append(el("div", { class: "muted pad", text: "아직 그룹이 없습니다. 위에서 새 그룹을 만들어 보세요." }));
+      return;
+    }
+    for (const g of gs) list.append(adminGroupRow(g, reload));
+  };
+
+  const form = el("form", {
+    class: "plugin-add rows-2",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.currentTarget);
+      const name = (fd.get("name") || "").toString().trim();
+      if (!name) { notify("그룹 이름을 입력하세요.", "warn"); return; }
+      const btn = e.currentTarget.querySelector("button[type=submit]");
+      btn.disabled = true;
+      try {
+        await api("/api/admin/groups", {
+          method: "POST",
+          body: JSON.stringify({ name, description: (fd.get("description") || "").toString().trim() }),
+        });
+        e.currentTarget.reset();
+        await reload();
+      } catch (err) {
+        notify(`그룹 생성 실패: ${err.message}`);
+      } finally {
+        btn.disabled = false;
+      }
+    },
+  }, [
+    el("input", { name: "name", placeholder: "그룹 이름", "aria-label": "그룹 이름" }),
+    el("input", { name: "description", placeholder: "설명 (선택)", "aria-label": "그룹 설명" }),
+    el("button", { class: "primary", type: "submit", text: "그룹 만들기" }),
+  ]);
+
+  renderList(groups);
+  const card = el("section", { class: "settings-card" }, [
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "그룹" }),
+        el("p", {
+          class: "muted",
+          text: "같은 그룹 멤버끼리는 자동으로 서로 신뢰해 권한을 얻고, 그룹 공용 지식 저장소를 공유합니다. 그룹 생성·삭제와 그룹 관리자 지정은 시스템 관리자만 합니다. 공용 저장소 편집은 각 그룹 관리자가 ‘내 아바타 ▸ 그룹’에서 합니다.",
+        }),
+      ]),
+    ]),
+    form,
+    list,
+  ]);
+  return [card];
+}
+
+function adminGroupRow(g, reload) {
+  const detail = el("div", { class: "ar-detail" });
+  detail.hidden = true;
+  let loaded = false;
+  const manageBtn = el("button", { class: "ghost-sm", type: "button", text: "관리" });
+  manageBtn.setAttribute("aria-expanded", "false");
+  manageBtn.addEventListener("click", async () => {
+    if (!detail.hidden) {
+      detail.hidden = true;
+      manageBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    detail.hidden = false;
+    manageBtn.setAttribute("aria-expanded", "true");
+    if (loaded) return;
+    detail.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+    try {
+      const d = await api(`/api/admin/groups/${encodeURIComponent(g.id)}`);
+      detail.replaceChildren(buildAdminGroupDetail(g, d.members, reload));
+      loaded = true;
+    } catch (e) {
+      detail.replaceChildren(el("div", { class: "warn-box", text: `불러오기 실패: ${e.message}` }));
+    }
+  });
+
+  const tags = el("div", { class: "ar-tags" }, [
+    el("span", { class: "tag", text: `멤버 ${g.memberCount}` }),
+    el("span", { class: "tag write", text: `관리자 ${g.adminCount}` }),
+    g.knowledgeRepo ? el("span", { class: "tag accent", text: "공용 저장소" }) : null,
+  ]);
+  const row = el("div", { class: "admin-row" }, [
+    el("div", { class: "ar-main" }, [
+      el("strong", { text: g.name }),
+      el("div", { class: "muted", text: g.description || "(설명 없음)" }),
+    ]),
+    tags,
+    el("div", { class: "ar-actions" }, [manageBtn]),
+  ]);
+  return el("div", { class: "admin-user" }, [row, detail]);
+}
+
+function buildAdminGroupDetail(g, members, reload) {
+  const wrap = el("div", { class: "ar-detail-inner" });
+
+  const editForm = el("form", {
+    class: "plugin-add rows-2",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      const fd = new FormData(e.currentTarget);
+      try {
+        await api(`/api/admin/groups/${encodeURIComponent(g.id)}`, {
+          method: "PATCH",
+          body: JSON.stringify({
+            name: (fd.get("name") || "").toString().trim(),
+            description: (fd.get("description") || "").toString(),
+          }),
+        });
+        await reload();
+      } catch (err) {
+        notify(`수정 실패: ${err.message}`);
+      }
+    },
+  }, [
+    el("input", { name: "name", value: g.name, "aria-label": "그룹 이름" }),
+    el("input", { name: "description", value: g.description || "", placeholder: "설명", "aria-label": "그룹 설명" }),
+    el("button", { class: "ghost-sm", type: "submit", text: "수정" }),
+  ]);
+
+  const memberList = el("div", { class: "plugin-rows" });
+  const reloadMembers = async () => {
+    const d = await api(`/api/admin/groups/${encodeURIComponent(g.id)}`);
+    renderMembers(d.members);
+    reload().catch(() => {});
+  };
+  const renderMembers = (ms) => {
+    memberList.replaceChildren();
+    if (!ms.length) {
+      memberList.append(el("div", { class: "empty-note", text: "멤버가 없습니다." }));
+      return;
+    }
+    for (const m of ms) memberList.append(adminGroupMemberRow(g.id, m, reloadMembers));
+  };
+  renderMembers(members);
+
+  const addInput = el("input", { type: "search", placeholder: "추가할 사용자 아이디(@) 또는 이름", "aria-label": "멤버 추가" });
+  const adminCb = el("input", { type: "checkbox" });
+  const addBtn = el("button", { class: "primary small", type: "button", text: "멤버 추가" });
+  const doAdd = async () => {
+    const username = addInput.value.trim().replace(/^@/, "");
+    if (!username) { addInput.focus(); return; }
+    addBtn.disabled = true;
+    try {
+      await api(`/api/admin/groups/${encodeURIComponent(g.id)}/members`, {
+        method: "POST",
+        body: JSON.stringify({ username, role: adminCb.checked ? "admin" : "member" }),
+      });
+      addInput.value = "";
+      adminCb.checked = false;
+      await reloadMembers();
+    } catch (e) {
+      notify(`멤버 추가 실패: ${e.message}`);
+    } finally {
+      addBtn.disabled = false;
+    }
+  };
+  addBtn.addEventListener("click", doAdd);
+  addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
+  const addRow = el("div", { class: "group-add" }, [
+    addInput,
+    el("label", { class: "group-add-admin" }, [adminCb, el("span", { text: "그룹 관리자로" })]),
+    addBtn,
+  ]);
+
+  const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "그룹 삭제" });
+  delBtn.addEventListener("click", async () => {
+    if (!window.confirm(`'${g.name}' 그룹을 삭제할까요?\n멤버십이 모두 해제되고 멤버 간 자동 신뢰가 사라집니다. (공용 저장소 자체는 GitHub에 남습니다.)`)) return;
+    delBtn.disabled = true;
+    try {
+      await api(`/api/admin/groups/${encodeURIComponent(g.id)}`, { method: "DELETE" });
+      await reload();
+    } catch (e) {
+      delBtn.disabled = false;
+      notify(`삭제 실패: ${e.message}`);
+    }
+  });
+
+  wrap.append(
+    el("h4", { class: "knowledge-sub", text: "그룹 정보" }),
+    editForm,
+    el("h4", { class: "knowledge-sub", text: `멤버 (${members.length})` }),
+    memberList,
+    addRow,
+    el("div", { class: "ud-actions" }, [delBtn]),
+  );
+  return wrap;
+}
+
+function adminGroupMemberRow(groupId, m, reload) {
+  const isAdmin = m.role === "admin";
+  const roleBtn = el("button", {
+    class: "msg-act",
+    type: "button",
+    title: isAdmin ? "그룹 관리자 해제" : "그룹 관리자 지정",
+    text: isAdmin ? "관리자 해제" : "관리자 지정",
+  });
+  roleBtn.addEventListener("click", async () => {
+    roleBtn.disabled = true;
+    try {
+      await api(`/api/admin/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(m.userId)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ role: isAdmin ? "member" : "admin" }),
+      });
+      await reload();
+    } catch (e) {
+      roleBtn.disabled = false;
+      notify(`역할 변경 실패: ${e.message}`);
+    }
+  });
+  const del = el("button", { class: "msg-act danger", type: "button", title: "멤버 제거", "aria-label": `${m.displayName} 제거` });
+  del.append(icon("trash"));
+  del.addEventListener("click", async () => {
+    if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
+    del.disabled = true;
+    try {
+      await api(`/api/admin/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(m.userId)}`, { method: "DELETE" });
+      await reload();
+    } catch (e) {
+      del.disabled = false;
+      notify(`제거 실패: ${e.message}`);
+    }
+  });
+  return el("div", { class: "plugin-row" }, [
+    avatarNode({ ...m, id: m.userId }, 32, { alt: "" }),
+    el("div", { class: "pr-main" }, [
+      el("strong", { text: m.displayName }),
+      el("div", { class: "pr-sub", text: `@${m.username}` }),
+    ]),
+    isAdmin ? el("span", { class: "tag write", text: "관리자" }) : el("span", { class: "tag read", text: "멤버" }),
+    el("div", { class: "pr-actions" }, [roleBtn, del]),
+  ]);
 }
 
 /* ---- 가입·접근 (signup policy) ---- */
@@ -5393,6 +6428,42 @@ function updateKnowledgeBadge() {
   btn.title = `대기 중인 정보 요청 ${count}건`;
 }
 
+let lastAnnouncedNotificationCount = 0;
+function updateNotificationBadge() {
+  const btn = dom.navButtons?.routines;
+  if (!btn) return;
+  const count = state.notifications.filter((n) => !n.readAt).length;
+  lastAnnouncedNotificationCount = count;
+  let badge = btn.querySelector(".nav-badge");
+  if (!count) {
+    badge?.remove();
+    btn.removeAttribute("title");
+    return;
+  }
+  if (!badge) {
+    badge = el("span", { class: "nav-badge" });
+    btn.append(badge);
+  }
+  badge.textContent = count > 9 ? "9+" : String(count);
+  btn.title = `읽지 않은 아바타 알림 ${count}건`;
+}
+
+async function refreshNotificationStatus({ announce = false } = {}) {
+  if (!state.user) return;
+  try {
+    await loadNotifications();
+  } catch {
+    return;
+  }
+  const unread = state.notifications.filter((n) => !n.readAt).length;
+  if (announce && unread > lastAnnouncedNotificationCount) {
+    notify(`새 아바타 알림이 ${unread}건 있습니다. ‘루틴’에서 확인해 주세요.`, "info", {
+      onClick: () => goView("routines"),
+    });
+  }
+  updateNotificationBadge();
+}
+
 // Reload open requests and refresh the badge. With { announce } it also toasts
 // when the count grew since we last nudged — this is the in-app "alarm" for gaps
 // the avatar logged via request_info while the owner was elsewhere in the app.
@@ -5429,12 +6500,18 @@ function openKnowledgeRequests() {
 // and also refresh the moment the owner returns to the tab.
 let knowledgeWatchTimer = null;
 function onKnowledgeVisible() {
-  if (!document.hidden) refreshKnowledgeStatus({ announce: true });
+  if (!document.hidden) {
+    refreshKnowledgeStatus({ announce: true });
+    refreshNotificationStatus({ announce: true });
+  }
 }
 function startKnowledgeWatch() {
   stopKnowledgeWatch();
   knowledgeWatchTimer = setInterval(() => {
-    if (!document.hidden) refreshKnowledgeStatus({ announce: true });
+    if (!document.hidden) {
+      refreshKnowledgeStatus({ announce: true });
+      refreshNotificationStatus({ announce: true });
+    }
   }, 60000);
   document.addEventListener("visibilitychange", onKnowledgeVisible);
 }
@@ -5448,6 +6525,17 @@ function stopKnowledgeWatch() {
 async function loadRoutines() {
   const r = await api("/api/me/routines");
   state.routines = r.routines || [];
+}
+async function loadRoutineConversations() {
+  const r = await api("/api/conversations?kind=routine");
+  state.routineConversations = r.conversations || [];
+  if (!state.routineConversationId && state.routineConversations.length) {
+    state.routineConversationId = state.routineConversations[0].id;
+  }
+}
+async function loadNotifications() {
+  const r = await api("/api/me/notifications");
+  state.notifications = r.notifications || [];
 }
 async function loadTrusted() {
   const r = await api("/api/me/trusted");
@@ -5492,6 +6580,10 @@ async function logout() {
   state.activePaneId = null;
   state.messages = [];
   state.conversations = [];
+  state.routineConversations = [];
+  state.routineConversationId = "";
+  state.routineMessages = [];
+  state.notifications = [];
   renderAuth("login");
 }
 
@@ -5503,6 +6595,7 @@ async function enterApp() {
   const isAdmin = state.user.roles?.includes("admin");
   state.view = view && !(view === "admin" && !isAdmin) ? view : "explore";
   if (view === "settings" && arg) state.settingsTab = arg;
+  if (view === "routines" && arg) state.routineConversationId = arg;
   if (view === "admin" && arg) state.adminTab = arg;
   const wantConversation = view === "chat" && arg ? arg : null;
   if (wantConversation) state.view = "explore"; // placeholder frame until messages load
@@ -5510,6 +6603,7 @@ async function enterApp() {
   syncHash(true);
   refreshKnowledgeStatus({ announce: true });
   startKnowledgeWatch();
+  refreshNotificationStatus({ announce: true });
   await refreshConversations();
   if (wantConversation) {
     const conv = state.conversations.find((c) => c.id === wantConversation);
