@@ -702,6 +702,10 @@ function syncDocumentTitle() {
 }
 
 function renderView() {
+  // Non-admins must never land on the admin view — including via hash nav
+  // (manual URL / Back-Forward), which bypasses enterApp's initial guard.
+  // Coerce before syncNav so the nav highlight stays consistent too.
+  if (state.view === "admin" && !state.user?.roles?.includes("admin")) state.view = "explore";
   syncNav();
   syncDocumentTitle();
   dom.main.replaceChildren();
@@ -4280,7 +4284,10 @@ function buildSignupModeCard(sys) {
         await loadAdminSystem();
       } catch (e) {
         notify(`저장 실패: ${e.message}`);
-        input.checked = false;
+        // Restore the last-saved selection rather than leaving the group blank.
+        const prior = opts.querySelector(`#sm-${state.signupMode || current}`);
+        if (prior) prior.checked = true;
+        else input.checked = false;
       } finally {
         opts.querySelectorAll("input").forEach((i) => (i.disabled = false));
       }

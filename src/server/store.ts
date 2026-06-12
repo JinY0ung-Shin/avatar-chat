@@ -1672,6 +1672,10 @@ export class Store {
       this.db.prepare("DELETE FROM routine_jobs WHERE avatar_user_id = ?").run(id);
       this.db.prepare("DELETE FROM sessions WHERE user_id = ?").run(id);
       this.db.prepare("DELETE FROM user_roles WHERE user_id = ?").run(id);
+      // Personal secret vault (AES-encrypted at rest) + logged knowledge gaps —
+      // honour the UI's "permanently deleted" promise, leaving nothing behind.
+      this.db.prepare("DELETE FROM user_secrets WHERE user_id = ?").run(id);
+      this.db.prepare("DELETE FROM knowledge_requests WHERE avatar_user_id = ?").run(id);
       // Trust relationships in either direction (as avatar or as trusted viewer).
       this.db
         .prepare("DELETE FROM avatar_trusted_users WHERE avatar_user_id = ? OR viewer_user_id = ?")
