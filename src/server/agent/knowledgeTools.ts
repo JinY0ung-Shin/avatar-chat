@@ -39,7 +39,7 @@ export function buildKnowledgeTools(store: Store, ctx: KnowledgeToolsContext) {
   return [
       tool(
         "request_info",
-        "아바타가 모르는, 소유자만 알 법한 정보를 소유자에게 전달할 요청으로 기록한다.",
+        "다른 사용자가 질문했는데 아바타가 답하지 못한, 소유자만 알 법한 정보를 소유자에게 전달할 요청으로 기록한다. 아바타 자신이 소유자에게 던지는 질문 보관함이 아니다.",
         { question: z.string().describe("소유자가 답할 수 있도록 맥락을 담은 한 문장 질문") },
         async (args) => {
           const req = store.addKnowledgeRequest(ctx.avatarUserId, {
