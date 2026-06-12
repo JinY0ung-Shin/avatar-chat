@@ -3201,6 +3201,23 @@ textarea::placeholder {
   gap: var(--s-2);
   align-items: center;
 }
+.kr-compose {
+  display: grid;
+  gap: var(--s-2);
+}
+.kr-answer {
+  width: 100%;
+  resize: vertical;
+  min-height: 64px;
+  padding: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+}
+.kr-compose-actions {
+  display: flex;
+  gap: var(--s-2);
+}
 
 /* Admin */
 .admin-list {

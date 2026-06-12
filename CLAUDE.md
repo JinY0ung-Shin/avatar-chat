@@ -17,6 +17,17 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Owner sees pending `request_info` gaps in-app via a "내 아바타" nav badge + a
   poll/visibility watcher that toasts on new gaps (`updateKnowledgeBadge`/
   `refreshKnowledgeStatus`, app.js) — the UI end of the knowledge-backfill loop.
+- **Chat is SSE, and an owner turn can be driven from anywhere in the client.**
+  `POST /api/chat/stream {avatarId, message, conversationId?}` streams events
+  `open`(→conversationId,runId)/`delta`/`status`/`tool*`/`done`/`error`; omit
+  `conversationId` and the server mints one (returned on `open`). Consume with
+  `consumeSse(body, (event,data)=>…)`. Interactive prompts are answered out-of-band:
+  `POST /api/chat/respond {runId, requestId, value}` — `value` is
+  `{behavior:"allow"|"deny"}` (permission) or `{cancelled:true}`/`{result}` (question).
+  An owner messaging their OWN avatar is viewerIsOwner+elevated+autoApprove, so `mcp__*`
+  tools (repo writes, knowledge `resolve_request`) auto-approve with no prompt — so you can
+  trigger a background avatar action outside the chat view by POSTing a turn and silently
+  draining the SSE (no view switch needed).
 
 ## Gotchas
 - **`.env` loading is in-code, not dotenv/`--env-file`.** `src/server/loadEnv.ts`

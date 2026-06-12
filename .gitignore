@@ -6,3 +6,4 @@ data/
 .DS_Store
 npm-debug.log*
 docker/tls-fullchain.crt
+.claude.local.md

@@ -4035,7 +4035,7 @@ function buildKnowledgeCard() {
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
         titleEl,
-        el("p", { class: "muted", text: "동료가 모르는 것을 물으면 여기에 정보 요청으로 쌓입니다. 아바타와 대화하며 답을 지식 저장소에 기록하게 하면 영구히 학습됩니다." }),
+        el("p", { class: "muted", text: "동료가 모르는 것을 물으면 여기에 정보 요청으로 쌓입니다. ‘정보 추가’로 답을 적어 보내면 아바타가 지식 저장소에 기록해 영구히 학습하고, ‘무시’하면 알림만 지웁니다." }),
       ]),
     ]),
   );
@@ -4068,21 +4068,183 @@ function renderKnowledgeRequests(list, refresh) {
     return;
   }
   for (const r of open) {
-    const resolveBtn = el("button", { class: "primary small", type: "button", text: "처리 완료", onclick: async () => {
-      resolveBtn.disabled = true;
+    // Inline "record" composer — hidden until the owner chooses to teach the
+    // avatar an answer. Keeping it in the row means the question stays in view
+    // while typing, and the whole flow happens without leaving the settings tab.
+    const textarea = el("textarea", {
+      class: "kr-answer",
+      rows: "3",
+      placeholder: "이 질문에 대한 답·정보를 적어주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다.",
+    });
+    const sendBtn = el("button", { class: "primary small", type: "button", text: "기록 요청" });
+    const cancelBtn = el("button", { class: "ghost-sm", type: "button", text: "취소" });
+    const compose = el("div", { class: "kr-compose", hidden: "" }, [
+      textarea,
+      el("div", { class: "kr-compose-actions" }, [sendBtn, cancelBtn]),
+    ]);
+
+    // Two intents, made explicit: "정보 추가" teaches the avatar (records the
+    // answer into the knowledge repo); "무시" only clears the notification — the
+    // old DELETE resolve, which never taught the avatar anything.
+    const addBtn = el("button", { class: "primary small", type: "button", text: "정보 추가" });
+    const ignoreBtn = el("button", { class: "ghost-sm", type: "button", text: "무시" });
+
+    addBtn.addEventListener("click", () => {
+      const willShow = compose.hidden;
+      compose.hidden = !willShow;
+      addBtn.classList.toggle("active", willShow);
+      if (willShow) textarea.focus();
+    });
+    cancelBtn.addEventListener("click", () => {
+      compose.hidden = true;
+      addBtn.classList.remove("active");
+    });
+    ignoreBtn.addEventListener("click", async () => {
+      ignoreBtn.disabled = true;
       try {
         await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
         await refresh?.();
       } catch (e) {
-        resolveBtn.disabled = false;
-        notify(`처리 실패: ${e.message}`);
+        ignoreBtn.disabled = false;
+        notify(`무시 처리 실패: ${e.message}`);
       }
-    } });
+    });
+    sendBtn.addEventListener("click", async () => {
+      const answer = textarea.value.trim();
+      if (!answer) {
+        textarea.focus();
+        return;
+      }
+      const controls = [textarea, sendBtn, cancelBtn, addBtn, ignoreBtn];
+      controls.forEach((c) => (c.disabled = true));
+      const sendLabel = sendBtn.textContent;
+      sendBtn.textContent = "기록 중…";
+      const result = await recordKnowledgeViaAvatar(r, answer);
+      if (!result.ok) {
+        controls.forEach((c) => (c.disabled = false));
+        sendBtn.textContent = sendLabel;
+        notify(`기록 요청 실패: ${result.error}`);
+        return;
+      }
+      // The avatar resolves the request itself after committing; a refresh then
+      // drops this row out (the list re-renders). If it's still open afterward
+      // the recording didn't complete — say so honestly instead of claiming success.
+      try {
+        await refresh?.();
+      } catch (e) {
+        // Recording was requested fine, but re-rendering the list failed — don't
+        // leave the row stuck on "기록 중…"; the gap clears on the next poll anyway.
+        controls.forEach((c) => (c.disabled = false));
+        sendBtn.textContent = sendLabel;
+        notify(`기록은 요청했지만 목록 새로고침에 실패했어요: ${e.message}`, "warn");
+        return;
+      }
+      const stillOpen = state.knowledgeRequests.some((x) => x.id === r.id && x.status === "open");
+      notify(
+        stillOpen
+          ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 스레드를 확인해 주세요."
+          : "아바타가 답을 지식 저장소에 기록했어요.",
+        stillOpen ? "warn" : "info",
+      );
+    });
+
     list.append(el("div", { class: "knowledge-row" }, [
       el("div", { class: "kr-q", text: r.question }),
       r.askerName ? el("div", { class: "muted kr-meta", text: `질문자: ${r.askerName} · ${timeLabel(r.createdAt)}` }) : el("div", { class: "muted kr-meta", text: timeLabel(r.createdAt) }),
-      el("div", { class: "kr-actions" }, [resolveBtn]),
+      el("div", { class: "kr-actions" }, [addBtn, ignoreBtn]),
+      compose,
     ]));
+  }
+}
+
+// Per-user localStorage key for the reused "지식 기록" conversation (below).
+function knowledgeRecConvKey() {
+  return `noah.knowledgeRecordConv.${state.user?.id || "anon"}`;
+}
+
+// Recordings share one reused conversation, so two in flight would collide on
+// the same SDK session — a module-level guard serializes them.
+let knowledgeRecordInFlight = false;
+
+// Teach the avatar an answer WITHOUT leaving the settings view: post a normal
+// owner turn to the chat stream and silently drain the SSE. The avatar (the
+// owner's own, so it carries elevated repo + knowledge tools) writes the answer
+// into its knowledge repo, commits, and then calls resolve_request — so the gap
+// clears itself only once the knowledge is actually saved, not optimistically on
+// click. Reuses one hidden "지식 기록" conversation per user so these turns don't
+// litter the sidebar with a fresh conversation every time.
+async function recordKnowledgeViaAvatar(request, answer) {
+  const avatarId = state.user?.id;
+  if (!avatarId) return { ok: false, error: "로그인이 필요합니다." };
+  if (knowledgeRecordInFlight) {
+    return { ok: false, error: "다른 기록 요청을 처리하는 중이에요. 잠시 후 다시 시도해 주세요." };
+  }
+  knowledgeRecordInFlight = true;
+  try {
+    const askerBit = request.askerName ? `동료 "${request.askerName}"가` : "한 동료가";
+    const message =
+      `${askerBit} 다음을 물었는데 내가 답하지 못했어:\n` +
+      `"${request.question}"\n\n` +
+      "아래 정보를 내 지식 저장소(knowledge repo)에 기록해서 앞으로 같은 질문에 답할 수 있게 해줘. " +
+      "적절한 스킬이나 문서에 반영하고 commit까지 해줘. 기록을 커밋한 뒤에는 이 정보 요청을 " +
+      `resolve_request 도구로 닫아줘 (request_id: ${request.id}).\n\n` +
+      `--- 기록할 내용 ---\n${answer}`;
+
+    const prevConv = capPref(knowledgeRecConvKey(), "") || undefined;
+    let response;
+    try {
+      response = await fetch("/api/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({ avatarId, message, conversationId: prevConv }),
+      });
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+    if (response.status === 401) {
+      handleSessionExpired();
+      return { ok: false, error: "세션이 만료되었습니다." };
+    }
+    if (!response.ok || !response.body) {
+      const body = await response.json().catch(() => ({}));
+      return { ok: false, error: body.error || `HTTP ${response.status}` };
+    }
+
+    let convId = null;
+    let runId = null;
+    let errText = null;
+    try {
+      await consumeSse(response.body, (event, data) => {
+        if (event === "open") {
+          if (data?.conversationId) convId = data.conversationId;
+          if (data?.runId) runId = data.runId;
+        } else if (event === "error") {
+          errText = data?.error || "오류가 발생했습니다.";
+        } else if (event === "permission" && runId && data?.requestId) {
+          // No prompt UI in settings. The avatar's repo/knowledge tools are
+          // auto-approved server-side, so a prompt here means an unexpected
+          // action — deny it rather than run something the owner can't see.
+          api("/api/chat/respond", { method: "POST", body: JSON.stringify({ runId, requestId: data.requestId, value: { behavior: "deny" } }) }).catch(() => {});
+        } else if (event === "question" && runId && data?.requestId) {
+          api("/api/chat/respond", { method: "POST", body: JSON.stringify({ runId, requestId: data.requestId, value: { cancelled: true } }) }).catch(() => {});
+        }
+      });
+    } catch (e) {
+      // Network drop / aborted stream mid-run — surface it instead of leaving the
+      // row stuck on "기록 중…".
+      return { ok: false, error: e.message || "스트림 연결이 끊어졌습니다." };
+    }
+
+    // Remember (and name) the conversation so later recordings reuse one thread.
+    if (convId && convId !== prevConv) {
+      setCapPref(knowledgeRecConvKey(), convId);
+      api(`/api/conversations/${encodeURIComponent(convId)}`, { method: "PATCH", body: JSON.stringify({ title: "지식 기록" }) }).catch(() => {});
+    }
+    if (errText) return { ok: false, error: errText };
+    return { ok: true };
+  } finally {
+    knowledgeRecordInFlight = false;
   }
 }
 
