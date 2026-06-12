@@ -1222,13 +1222,13 @@ function renderChat() {
 }
 
 function renderSplitControls() {
-  const disabled = anyChatStreaming();
-  const canAdd = splitEnabled() && state.chatPanes.length < MAX_CHAT_PANES && !disabled;
+  const canAdd = splitEnabled() && state.chatPanes.length < MAX_CHAT_PANES;
   const wrap = el("div", { class: "split-controls", role: "group", "aria-label": "분할 대화" });
   if (!state.avatarsLoaded && !state.avatarsLoading) {
     loadAvatars()
-      // Mid-stream re-render would detach the live streaming bubble — skip it.
-      .then(() => { if (state.view === "chat" && !anyChatStreaming()) renderView(); })
+      // Live bubbles are pane-owned and reattach during renderTranscript(), so
+      // the avatar selector can update even while another pane is streaming.
+      .then(() => { if (state.view === "chat") renderView(); })
       .catch(() => {});
   }
   const layoutBtn = (layout, ic, title) => {
@@ -1239,9 +1239,7 @@ function renderSplitControls() {
       title,
       "aria-label": title,
       "aria-pressed": active ? "true" : "false",
-      disabled,
       onclick: () => {
-        if (anyChatStreaming()) return;
         state.chatLayout = layout;
         renderView();
       },
@@ -1262,7 +1260,6 @@ function renderSplitControls() {
     class: "split-avatar-select",
     title: "분할로 추가할 아바타",
     "aria-label": "분할로 추가할 아바타",
-    disabled,
     onchange: (event) => { state.splitAvatarId = event.currentTarget.value; },
   }, avatars.map((av) => el("option", { value: av.id, text: av.alias || av.displayName || av.username || "아바타" })));
   avatarSelect.value = selectedAvatarId;
@@ -1375,9 +1372,9 @@ function renderCompactPaneHeader(pane, index) {
   const closeBtn = el("button", {
     class: "msg-act",
     type: "button",
-    "aria-label": "대화 창 닫기",
-    title: "대화 창 닫기",
-    disabled: state.chatPanes.length <= 1 || anyChatStreaming() ? "" : null,
+    "aria-label": pane.streaming ? "응답 중지하고 대화 창 닫기" : "대화 창 닫기",
+    title: pane.streaming ? "응답 중지하고 대화 창 닫기" : "대화 창 닫기",
+    disabled: state.chatPanes.length <= 1 ? "" : null,
     onclick: (event) => {
       event.stopPropagation();
       closeChatPane(pane);
@@ -1408,7 +1405,7 @@ function renderCompactPaneHeader(pane, index) {
 }
 
 function addChatPane(avatarId) {
-  if (!splitEnabled() || state.chatPanes.length >= MAX_CHAT_PANES || anyChatStreaming()) return;
+  if (!splitEnabled() || state.chatPanes.length >= MAX_CHAT_PANES) return;
   const avatar = splitAvatarOptions().find((av) => av.id === avatarId) || activePane()?.avatar || state.currentAvatar || state.user;
   const pane = makeChatPane(avatar);
   state.chatPanes.push(pane);
@@ -1418,7 +1415,8 @@ function addChatPane(avatarId) {
 }
 
 function closeChatPane(pane) {
-  if (state.chatPanes.length <= 1 || anyChatStreaming()) return;
+  if (state.chatPanes.length <= 1) return;
+  if (pane.streaming) stopStreaming(pane);
   state.chatPanes = state.chatPanes.filter((p) => p.id !== pane.id);
   if (state.activePaneId === pane.id) state.activePaneId = state.chatPanes[0]?.id || null;
   syncLegacyChatState(activePane());

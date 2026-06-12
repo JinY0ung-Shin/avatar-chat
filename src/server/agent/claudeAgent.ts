@@ -803,6 +803,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     }
     lines.push(
       "일반 **git repo 작업**은 지식 저장소 도구와 별개입니다. 소유자가 업무/코드 저장소를 관리해 달라고 하면 `mcp__git_repo__register_repo`로 repo를 등록한 뒤, `sync_repo`/`status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`를 사용하세요. " +
+        "`push`는 main 전용이 아니라 등록된 branch(또는 branch를 비운 경우 clone의 현재/default branch)로 `HEAD`를 푸시합니다. 소유자가 특정 브랜치를 말하면 `register_repo`의 `branch`에 그 이름을 지정하세요. " +
         "사내/사외 public repo의 clone/sync는 토큰 없이 시도하므로 토큰 설정을 먼저 요구하지 마세요. push는 원격 쓰기 권한이 있는 경우에만 성공합니다. 등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 소유자 또는 신뢰 사용자 대화에서만 가능합니다. GitHub issue/PR/release 관리는 포함하지 않는 순수 git 작업 도구입니다.",
     );
     if (secretNames.length > 0) {

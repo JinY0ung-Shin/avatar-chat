@@ -1263,6 +1263,13 @@ describe("buildPrompt", () => {
     expect(p).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
   });
 
+  it("tells the owner general git repo push is not main-only", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    expect(p).toContain("일반 **git repo 작업**");
+    expect(p).toContain("`push`는 main 전용이 아니라 등록된 branch");
+    expect(p).toContain("특정 브랜치를 말하면 `register_repo`의 `branch`");
+  });
+
   it("tells the owner how to enable SSH tools when no SSH key is configured", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
     expect(p).toContain("SSH 도구는 아직 비활성화");
@@ -2111,6 +2118,37 @@ describe("git repo tools (general git repository management)", () => {
     expect(remove.isError).toBeFalsy();
     expect(s.store.listGitRepos(s.ownerId)).toHaveLength(0);
     expect(fs.existsSync(clonePath)).toBe(false);
+  });
+
+  it("pushes a general git repo to the registered non-main branch", async () => {
+    const s = setup("gr-feature-branch");
+    const ownerTools = tools(s);
+    const branch = "feature/docs";
+
+    const seed = path.join(tempDir, "gr-feature-branch", "seed-worktree");
+    execFileSync("git", ["clone", "-q", s.remote, seed], { stdio: "pipe" });
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("checkout", "-b", branch);
+    g("push", "-q", "origin", branch);
+
+    const register = await call(ownerTools, "register_repo", { repo: s.remote, name: "work", branch });
+    expect(register.isError).toBeFalsy();
+
+    await call(ownerTools, "write_file", {
+      name: "work",
+      path: "docs/branch.md",
+      content: "# Branch\n",
+    });
+    const commit = await call(ownerTools, "commit", { name: "work", message: "add branch doc" });
+    expect(commit.isError).toBeFalsy();
+
+    const push = await call(ownerTools, "push", { name: "work" });
+    expect(push.isError).toBeFalsy();
+    expect(push.content[0].text).toContain(branch);
+
+    const verify = path.join(tempDir, "gr-feature-branch", "verify");
+    execFileSync("git", ["clone", "-q", "--branch", branch, s.remote, verify], { stdio: "pipe" });
+    expect(fs.existsSync(path.join(verify, "docs/branch.md"))).toBe(true);
   });
 
   it("clones and syncs public-style repos without stored git tokens", async () => {
