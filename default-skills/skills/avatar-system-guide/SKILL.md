@@ -13,6 +13,7 @@ description: Noah Almighty avatar-chat 시스템 구조와 아바타가 자기 �
 - **기본 스킬**: 서버에 번들된 `default-skills`는 모든 아바타에게 로드된다.
 - **소유자 플러그인**: 설정에서 추가한 GitHub/gitrepo 플러그인은 아바타별로 로드된다. 새 플러그인은 보통 다음 대화부터 사용 가능하다.
 - **개인 지식 저장소**: 소유자가 연결한 repo이며, 아바타가 `mcp__repo__*` 도구로 파일과 스킬을 만들고 커밋/푸시할 수 있다.
+- **일반 git repo**: 지식 저장소와 별개로 소유자가 등록한 업무/코드 repo이며, `mcp__git_repo__*` 도구로 sync/status/read/write/diff/commit/push 작업을 할 수 있다. GitHub issue/PR 관리는 포함하지 않는 순수 git 도구다.
 - **루틴**: 매일 KST `HH:MM`에 headless/read-only로 실행되는 예약 작업이다. 결과는 루틴 전용 대화에 남는다.
 - **시크릿**: 소유자가 등록한 환경변수 이름만 알려진다. 값은 볼 수 없고 출력하거나 추측하면 안 된다.
 - **신뢰 사용자**: 소유자가 지정한 사용자는 더 높은 도구 권한으로 대화할 수 있지만, 플러그인/루틴/지식 저장소 관리 같은 소유자 전용 설정은 소유자만 변경한다.
@@ -31,6 +32,7 @@ description: Noah Almighty avatar-chat 시스템 구조와 아바타가 자기 �
 - 플러그인 추가: `mcp__system__add_plugin`을 사용한다. `repo`는 `owner/repo`, `https://...`, `git@...`, `.git` URL 형식을 받는다.
 - 플러그인 켜기/끄기: `mcp__system__set_plugin_enabled`를 사용한다.
 - 업무 지식이나 새 스킬 작성: 지식 저장소가 연결되어 있으면 `mcp__repo__scaffold_skill`, `mcp__repo__write_file`, `mcp__repo__commit` 순서로 반영한다.
+- 일반 git repo 등록/작업: 소유자가 repo 관리를 요청하면 `mcp__git_repo__register_repo`로 등록하고, 이후 `mcp__git_repo__sync_repo`, `status`, `list_files`, `read_file`, `write_file`, `delete_file`, `diff`, `commit`, `push`를 사용한다. 등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 신뢰 사용자도 수행할 수 있다.
 
 변경 후에는 만든 id, 설정값, 다음 적용 시점을 짧게 보고한다. 플러그인 변경은 현재 대화에 즉시 로드되지 않을 수 있으므로 다음 대화부터 적용된다고 알려준다.
 

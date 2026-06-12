@@ -750,6 +750,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
           : "아직 지식 저장소가 없고 git 토큰도 설정돼 있지 않습니다. 소유자가 저장소 생성을 원하면 먼저 설정 → **git 자격증명**에 토큰을 등록해 달라고 안내하세요(등록되면 `mcp__repo__create_repo`로 직접 만들 수 있습니다). 저장소가 연결되기 전에는 `scaffold_skill`/`write_file`/`commit`이 실패합니다.",
       );
     }
+    lines.push(
+      "일반 **git repo 작업**은 지식 저장소 도구와 별개입니다. 소유자가 업무/코드 저장소를 관리해 달라고 하면 `mcp__git_repo__register_repo`로 repo를 등록한 뒤, `sync_repo`/`status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`를 사용하세요. " +
+        "등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 소유자 또는 신뢰 사용자 대화에서만 가능합니다. GitHub issue/PR/release 관리는 포함하지 않는 순수 git 작업 도구입니다.",
+    );
     if (secretNames.length > 0) {
       lines.push(
         "설정의 **시크릿** 탭에 등록된 환경변수 이름: " +
@@ -808,6 +812,9 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     } else {
       lines.push(
         "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.",
+      );
+      lines.push(
+        "소유자가 미리 등록한 일반 git repo는 `mcp__git_repo__list_repos`로 확인하고 `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`로 작업할 수 있습니다. 새 repo 등록/삭제 같은 설정 변경은 소유자 전용입니다.",
       );
     }
     lines.push(
@@ -873,6 +880,9 @@ export async function runClaudeAgent(
   );
   const { buildAvatarDirectoryServer, AVATAR_DIRECTORY_SERVER_NAME, AVATAR_DIRECTORY_TOOL_NAMES } =
     await import("./avatarDirectoryTools.js");
+  const { buildGitRepoServer, GIT_REPO_SERVER_NAME, GIT_REPO_TOOL_NAMES } = await import(
+    "./gitRepoTools.js"
+  );
 
   const streaming = Boolean(events);
   const viewerIsOwner = Boolean(request.viewerIsOwner);
@@ -974,6 +984,18 @@ export async function runClaudeAgent(
     },
     viewerIsOwner: viewerIsOwner && !headless,
   });
+  const gitRepoServer = buildGitRepoServer(store, {
+    avatarUserId: request.avatar.id,
+    owner: {
+      id: request.avatar.id,
+      username: ownerRow?.username ?? "",
+      displayName: ownerRow?.displayName ?? request.avatar.displayName,
+      alias: ownerRow?.alias ?? request.avatar.alias,
+    },
+    viewerIsOwner: viewerIsOwner && !headless,
+    elevated: elevated && !headless,
+    config,
+  });
 
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
   // NOT owner-only: host fingerprints are public, and a viewer who can drive
@@ -1038,6 +1060,7 @@ export async function runClaudeAgent(
       ...CONFLUENCE_TOOL_NAMES,
       ...AVATAR_DIRECTORY_TOOL_NAMES,
       ...SSH_IDENTITY_TOOL_NAMES,
+      ...GIT_REPO_TOOL_NAMES,
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
       "TodoWrite",
@@ -1055,6 +1078,7 @@ export async function runClaudeAgent(
       [CONFLUENCE_SERVER_NAME]: confluenceServer,
       [AVATAR_DIRECTORY_SERVER_NAME]: avatarDirectoryServer,
       [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
+      [GIT_REPO_SERVER_NAME]: gitRepoServer,
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
     },

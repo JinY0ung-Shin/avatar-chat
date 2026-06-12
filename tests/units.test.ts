@@ -75,6 +75,12 @@ import {
   REPO_TOOL_NAMES,
 } from "../src/server/agent/repoTools.js";
 import {
+  buildGitRepoTools,
+  GIT_REPO_SERVER_NAME,
+  GIT_REPO_TOOL_NAMES,
+} from "../src/server/agent/gitRepoTools.js";
+import { gitRepoClonePath } from "../src/server/gitRepos.js";
+import {
   buildSystemTools,
   SYSTEM_SERVER_NAME,
   SYSTEM_TOOL_NAMES,
@@ -1932,6 +1938,147 @@ describe("repo tools (knowledge-repo management)", () => {
     execFileSync("git", ["clone", "-q", remote, verify], { stdio: "pipe" });
     const mp = JSON.parse(fs.readFileSync(path.join(verify, ".claude-plugin/marketplace.json"), "utf8"));
     expect(mp.plugins).toEqual([]);
+  });
+});
+
+describe("git repo tools (general git repository management)", () => {
+  function call(tools: ReturnType<typeof buildGitRepoTools>, name: string, args: unknown): Promise<ToolResult> {
+    const t = tools.find((x) => x.name === name);
+    if (!t) throw new Error(`tool ${name} not found`);
+    return (t.handler as (a: unknown, extra: unknown) => Promise<ToolResult>)(args, {});
+  }
+
+  function setup(dir: string) {
+    const dataDir = path.join(tempDir, dir);
+    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const remote = path.join(tempDir, dir, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" });
+    const seed = path.join(tempDir, dir, "seed");
+    gitInit(seed);
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("branch", "-M", "main");
+    g("remote", "add", "origin", remote);
+    g("push", "-q", "origin", "main");
+    const ownerShape = { id: owner.id, username: "owner", displayName: "Owner" };
+    return { store, config, ownerId: owner.id, owner: ownerShape, remote };
+  }
+
+  function tools(s: ReturnType<typeof setup>, opts: { viewerIsOwner?: boolean; elevated?: boolean } = {}) {
+    return buildGitRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: opts.viewerIsOwner ?? true,
+      elevated: opts.elevated ?? true,
+      config: s.config,
+    });
+  }
+
+  it("exposes the documented server + tool names", () => {
+    expect(GIT_REPO_SERVER_NAME).toBe("git_repo");
+    expect(GIT_REPO_TOOL_NAMES).toContain("mcp__git_repo__register_repo");
+    expect(tools(setup("gr-names")).map((t) => t.name)).toEqual([
+      "register_repo",
+      "list_repos",
+      "sync_repo",
+      "remove_repo",
+      "status",
+      "list_files",
+      "read_file",
+      "write_file",
+      "delete_file",
+      "diff",
+      "commit",
+      "push",
+    ]);
+  });
+
+  it("keeps registration/removal owner-only but allows trusted users to work registered repos", async () => {
+    const s = setup("gr-auth");
+    const trustedTools = tools(s, { viewerIsOwner: false, elevated: true });
+
+    const deniedRegister = await call(trustedTools, "register_repo", { repo: s.remote, name: "app", branch: "main" });
+    expect(deniedRegister.isError).toBe(true);
+    expect(deniedRegister.content[0].text).toContain("아바타 소유자");
+
+    await call(tools(s), "register_repo", { repo: s.remote, name: "app", branch: "main" });
+    const status = await call(trustedTools, "status", { name: "app" });
+    expect(status.isError).toBeFalsy();
+    expect(status.content[0].text).toContain("branch=main");
+
+    const deniedRemove = await call(trustedTools, "remove_repo", { name: "app" });
+    expect(deniedRemove.isError).toBe(true);
+  });
+
+  it("registers, edits, commits, pushes, and removes a general git repo", async () => {
+    const s = setup("gr-flow");
+    const ownerTools = tools(s);
+
+    const register = await call(ownerTools, "register_repo", { repo: s.remote, name: "work", branch: "main" });
+    expect(register.isError).toBeFalsy();
+    expect(register.content[0].text).toContain("work");
+    expect(s.store.listGitRepos(s.ownerId)).toHaveLength(1);
+
+    const list = await call(ownerTools, "list_files", { name: "work" });
+    expect(list.content[0].text).toContain("README.md");
+
+    const write = await call(ownerTools, "write_file", {
+      name: "work",
+      path: "docs/runbook.md",
+      content: "# Runbook\n",
+    });
+    expect(write.isError).toBeFalsy();
+
+    const status = await call(ownerTools, "status", { name: "work" });
+    expect(status.content[0].text).toContain("docs/runbook.md");
+
+    const commit = await call(ownerTools, "commit", { name: "work", message: "add runbook" });
+    expect(commit.isError).toBeFalsy();
+    expect(commit.content[0].text).toContain("커밋했습니다");
+
+    const push = await call(ownerTools, "push", { name: "work" });
+    expect(push.isError).toBeFalsy();
+    expect(push.content[0].text).toContain("main");
+
+    const verify = path.join(tempDir, "gr-flow", "verify");
+    execFileSync("git", ["clone", "-q", s.remote, verify], { stdio: "pipe" });
+    expect(fs.existsSync(path.join(verify, "docs/runbook.md"))).toBe(true);
+
+    const clonePath = gitRepoClonePath(s.ownerId, "work", s.config);
+    expect(fs.existsSync(clonePath)).toBe(true);
+    const remove = await call(ownerTools, "remove_repo", { name: "work" });
+    expect(remove.isError).toBeFalsy();
+    expect(s.store.listGitRepos(s.ownerId)).toHaveLength(0);
+    expect(fs.existsSync(clonePath)).toBe(false);
+  });
+
+  it("blocks plain colleagues from registered repo contents", async () => {
+    const s = setup("gr-colleague");
+    await call(tools(s), "register_repo", { repo: s.remote, name: "app", branch: "main" });
+
+    const colleagueTools = tools(s, { viewerIsOwner: false, elevated: false });
+    const list = await call(colleagueTools, "list_repos", {});
+    expect(list.isError).toBe(true);
+    expect(list.content[0].text).toContain("소유자 또는 신뢰 사용자");
+  });
+
+  it("rolls back a newly-registered repo when the clone fails, but keeps a prior registration", async () => {
+    const s = setup("gr-rollback");
+    const ownerTools = tools(s);
+
+    // A repo that cannot be cloned (path does not exist) → the registration row is
+    // rolled back rather than left dangling in list_repos.
+    const bogus = path.join(tempDir, "gr-rollback", "nope.git");
+    const failed = await call(ownerTools, "register_repo", { repo: bogus, name: "bad" });
+    expect(failed.isError).toBe(true);
+    expect(s.store.getGitRepo(s.ownerId, "bad")).toBeNull();
+    expect(s.store.listGitRepos(s.ownerId)).toHaveLength(0);
+
+    // A FAILED re-register of an existing repo (bad branch) must NOT delete it.
+    await call(ownerTools, "register_repo", { repo: s.remote, name: "app", branch: "main" });
+    const reReg = await call(ownerTools, "register_repo", { repo: s.remote, name: "app", branch: "does-not-exist" });
+    expect(reReg.isError).toBe(true);
+    expect(s.store.getGitRepo(s.ownerId, "app")).not.toBeNull();
   });
 });
 

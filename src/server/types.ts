@@ -110,6 +110,16 @@ export interface Plugin {
   createdAt: string;
 }
 
+/** A user-registered general-purpose git repository managed by MCP tools. */
+export interface GitRepository {
+  userId: string;
+  name: string;
+  repo: string;
+  branch: string | null;
+  lastSyncedAt: string | null;
+  createdAt: string;
+}
+
 /** A plugin found inside a cloned repo, surfaced to the UI for selection. */
 export interface RepoPluginEntry {
   name: string;

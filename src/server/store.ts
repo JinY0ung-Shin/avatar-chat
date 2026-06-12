@@ -24,6 +24,7 @@ import type {
   AvatarDetail,
   AvatarSummary,
   ConversationSummary,
+  GitRepository,
   KnowledgeRequest,
   Plugin,
   RoutineJob,
@@ -171,6 +172,15 @@ interface KnowledgeRequestRow {
   created_at: string;
 }
 
+interface GitRepositoryRow {
+  user_id: string;
+  name: string;
+  repo: string;
+  branch: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+}
+
 interface RoutineJobRow {
   id: string;
   avatar_user_id: string;
@@ -305,6 +315,15 @@ export class Store {
         created_at TEXT,
         PRIMARY KEY (user_id, name)
       );
+      CREATE TABLE IF NOT EXISTS git_repositories (
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT,
+        last_synced_at TEXT,
+        created_at TEXT,
+        PRIMARY KEY (user_id, name)
+      );
       CREATE TABLE IF NOT EXISTS routine_jobs (
         id TEXT PRIMARY KEY,
         avatar_user_id TEXT NOT NULL,
@@ -333,6 +352,7 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_trusted_avatar ON avatar_trusted_users(avatar_user_id);
       CREATE INDEX IF NOT EXISTS idx_trusted_viewer ON avatar_trusted_users(viewer_user_id);
       CREATE INDEX IF NOT EXISTS idx_user_secrets_user ON user_secrets(user_id);
+      CREATE INDEX IF NOT EXISTS idx_git_repositories_user ON git_repositories(user_id);
     `);
     // Additive column migrations for pre-existing DBs (CREATE TABLE above only
     // applies to fresh installs). Each is a no-op once the column exists.
@@ -844,6 +864,67 @@ export class Store {
       branch: row?.knowledge_branch ?? null,
       selected: parseNameList(row?.knowledge_selected ?? null),
     };
+  }
+
+  // ---- General git repositories ----------------------------------------
+
+  private toGitRepository(row: GitRepositoryRow): GitRepository {
+    return {
+      userId: row.user_id,
+      name: row.name,
+      repo: row.repo,
+      branch: row.branch ?? null,
+      lastSyncedAt: row.last_synced_at ?? null,
+      createdAt: row.created_at,
+    };
+  }
+
+  /** Register or update a user-scoped general git repo by short name. */
+  upsertGitRepo(userId: string, name: string, repo: string, branch: string | null): GitRepository {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    const cleanName = name.trim();
+    const cleanRepo = repo.trim();
+    if (!cleanName || !cleanRepo) {
+      throw new Error("INVALID_GIT_REPO");
+    }
+    const createdAt = new Date().toISOString();
+    this.db
+      .prepare(
+        "INSERT INTO git_repositories (user_id, name, repo, branch, last_synced_at, created_at) VALUES (?, ?, ?, ?, NULL, ?) " +
+          "ON CONFLICT(user_id, name) DO UPDATE SET repo = excluded.repo, branch = excluded.branch, last_synced_at = NULL",
+      )
+      .run(userId, cleanName, cleanRepo, branch?.trim() || null, createdAt);
+    return this.getGitRepo(userId, cleanName)!;
+  }
+
+  listGitRepos(userId: string): GitRepository[] {
+    const rows = this.db
+      .prepare("SELECT * FROM git_repositories WHERE user_id = ? ORDER BY name")
+      .all(userId) as GitRepositoryRow[];
+    return rows.map((row) => this.toGitRepository(row));
+  }
+
+  getGitRepo(userId: string, name: string): GitRepository | null {
+    const row = this.db
+      .prepare("SELECT * FROM git_repositories WHERE user_id = ? AND name = ?")
+      .get(userId, name.trim()) as GitRepositoryRow | undefined;
+    return row ? this.toGitRepository(row) : null;
+  }
+
+  deleteGitRepo(userId: string, name: string): boolean {
+    const result = this.db
+      .prepare("DELETE FROM git_repositories WHERE user_id = ? AND name = ?")
+      .run(userId, name.trim());
+    return result.changes > 0;
+  }
+
+  markGitRepoSynced(userId: string, name: string): GitRepository | null {
+    this.db
+      .prepare("UPDATE git_repositories SET last_synced_at = ? WHERE user_id = ? AND name = ?")
+      .run(new Date().toISOString(), userId, name.trim());
+    return this.getGitRepo(userId, name);
   }
 
   // ---- Plugins ----------------------------------------------------------
