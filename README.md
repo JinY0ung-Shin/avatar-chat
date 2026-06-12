@@ -20,6 +20,9 @@ any avatar. Chats run through the Claude Agent SDK in **read-only** mode.
 - **Delegation loop**: grow your avatar by turning repeated work, project rules, runbooks,
   and answers to teammate questions into skills / knowledge files / routines, then delegate
   more of that work back to the avatar over time.
+- **Teammate avatars**: browse coworkers' published avatars and ask them work questions or
+  request research, review, summarization, and other tasks against the knowledge and skills
+  their owners have built up.
 - **Per-user plugins**: each user can also add other GitHub plugin repos (read-only) to their
   avatar, separate from the knowledge repo.
 - **Per-user GitHub token**: each user can store a personal access token (AES-256-GCM
