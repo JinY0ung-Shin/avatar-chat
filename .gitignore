@@ -5,3 +5,4 @@ data/
 .env
 .DS_Store
 npm-debug.log*
+docker/tls-fullchain.crt

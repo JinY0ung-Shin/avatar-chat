@@ -980,12 +980,19 @@ describe("buildPrompt", () => {
 
   it("gives standing create_repo guidance mid-conversation when no repo is connected", () => {
     const mid = buildPrompt(
-      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: false, gitTokenSet: true }),
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        knowledgeRepoConfigured: false,
+        gitTokenSet: true,
+        githubHost: "github.enterprise.local",
+      }),
       0,
     );
     // Standing (every owner turn, not just greeting): the avatar is told it HAS
     // create_repo and to use it directly instead of manual setup / scaffold-first.
     expect(mid).toContain("mcp__repo__create_repo");
+    expect(mid).toContain("github.enterprise.local");
     expect(mid).toContain("수동 절차를 안내하지 말고");
     // The greeting-only proactive suggestion is NOT injected mid-conversation.
     expect(mid).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
@@ -1441,6 +1448,13 @@ describe("repo tools (knowledge-repo management)", () => {
     }
   });
 
+  it("create_repo description exposes the configured GitHub host", () => {
+    const s = setupNoRepo("rt-create-desc", { githubHost: "github.enterprise.local" });
+    const createRepo = createTools(s).find((t) => t.name === "create_repo");
+    expect(createRepo?.description).toContain("github.enterprise.local");
+    expect(createRepo?.description).toContain("https://github.enterprise.local/api/v3/user/repos");
+  });
+
   it("create_repo uses the configured GitHub host for GHES", async () => {
     const s = setupNoRepo("rt-create-ghe", { githubHost: "https://github.enterprise.local/" });
     s.store.setGitToken(s.ownerId, "tok");
@@ -1480,6 +1494,7 @@ describe("repo tools (knowledge-repo management)", () => {
     try {
       const res = await call(createTools(s), "create_repo", { name: "dup" });
       expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("host: github.com");
       expect(res.content[0].text).toContain("HTTP 422");
       expect(res.content[0].text).toContain("already exists");
       expect(s.store.getKnowledgeRepo(s.ownerId).repo).toBeNull();

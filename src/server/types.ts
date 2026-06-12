@@ -310,6 +310,12 @@ export interface AgentRequest {
    * to set a token first. Set only for owner, non-headless chat prompts.
    */
   gitTokenSet?: boolean;
+  /**
+   * GitHub host the server is currently configured to use for shorthand repos
+   * and repo creation. Safe to show in prompts/tool descriptions; it is not a
+   * credential.
+   */
+  githubHost?: string;
 }
 
 /**

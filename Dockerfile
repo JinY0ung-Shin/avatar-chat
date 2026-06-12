@@ -2,9 +2,9 @@ FROM node:22-bookworm-slim AS base
 
 # Optional corporate-mirror build args (empty = use upstream defaults).
 # Pass them via docker compose build args or --build-arg.
-# On the DS network:
-#   APT_MIRROR_HOST=repository.samsungds.net/repository/proxy-apt-deb.debian.org
-#   NPM_CONFIG_REGISTRY=http://repository.samsungds.net/repository/proxy-npm-registry.npmjs.org/
+# Example:
+#   APT_MIRROR_HOST=mirror.example.internal/repository/proxy-apt-deb.debian.org
+#   NPM_CONFIG_REGISTRY=http://mirror.example.internal/repository/proxy-npm-registry.npmjs.org/
 ARG APT_MIRROR_HOST=
 ARG NPM_CONFIG_REGISTRY=
 
@@ -36,21 +36,25 @@ RUN sh /usr/local/bin/apt_mirror_sources.sh \
   && rm -rf /var/lib/apt/lists/* \
   && rm -f /usr/local/bin/apt_mirror_sources.sh
 
-# Trust a corporate proxy CA so git/curl/node can clone over HTTPS through an
-# intercepting proxy. Without it, `git clone` of a knowledge repo fails with
-# "server certificate verification failed. CAfile: none". Folding it into the
-# system bundle covers git (libcurl) AND curl AND node, so no per-tool env
-# (GIT_SSL_CAINFO / NODE_EXTRA_CA_CERTS) is needed. A CA cert is a public key,
-# not a secret. Off such a network the bundled default is harmless.
+# Trust an optional corporate proxy CA so git/curl/node can clone over HTTPS
+# through an intercepting proxy. Folding it into the system bundle covers git
+# (libcurl), curl, and node, so no per-tool env is needed.
 #
 # CA_CERT_FILE is the path (relative to the build context) of the cert to trust.
 # Override it at build time to point at your own CA:
-#   docker build --build-arg CA_CERT_FILE=docker/my-ca.crt .
+#   docker build --build-arg CA_CERT_FILE=docker/tls-fullchain.crt .
 # or in compose via the `args:` block. It must resolve to a file inside the
-# build context (Docker COPY can't read paths outside it).
-ARG CA_CERT_FILE=docker/samsungds-ca.crt
-COPY ${CA_CERT_FILE} /usr/local/share/ca-certificates/extra-proxy-ca.crt
-RUN update-ca-certificates
+# build context (Docker COPY can't read paths outside it). The default is a
+# placeholder so builds that do not need a custom CA still work.
+ARG CA_CERT_FILE=docker/extra-ca.crt.example
+COPY ${CA_CERT_FILE} /tmp/extra-ca.crt
+RUN if grep -q "BEGIN CERTIFICATE" /tmp/extra-ca.crt; then \
+      cp /tmp/extra-ca.crt /usr/local/share/ca-certificates/extra-proxy-ca.crt; \
+      update-ca-certificates; \
+    else \
+      echo "No extra CA certificate configured; skipping trust-store update."; \
+    fi \
+  && rm -f /tmp/extra-ca.crt
 
 WORKDIR /app
 

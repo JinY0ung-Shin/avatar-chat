@@ -66,6 +66,12 @@ function githubApiBase(host: string): string {
   return normalized === DEFAULT_GITHUB_HOST ? "https://api.github.com" : `https://${normalized}/api/v3`;
 }
 
+function githubHostDescription(host: string): string {
+  const normalized = normalizeGithubHost(host);
+  const apiBase = githubApiBase(normalized);
+  return `현재 설정된 GitHub host는 \`${normalized}\`이고, create_repo는 \`${apiBase}/user/repos\`로 요청한다.`;
+}
+
 /**
  * Create a new repo under the token owner's account via the GitHub REST API
  * (`POST /user/repos`), with `auto_init` so it has a default branch to clone and
@@ -287,7 +293,7 @@ export function buildRepoTools(
   }
   const createTool = tool(
     "create_repo",
-    "**소유자가 지식 저장소를 만들거나 연결해 달라고 하면 이 도구를 사용한다** — 수동 설정을 안내하거나 scaffold_skill을 먼저 시도하지 말 것. 설정된 git 토큰으로 새 GitHub 지식 저장소(기본 비공개, Claude plugin marketplace 템플릿으로 초기화)를 만들고 곧바로 연결한다. 지식 저장소가 아직 없을 때 쓰며, 저장소 이름만 있으면 된다. 생성 후 scaffold_skill→write_file→commit으로 내용을 채운다. (소유자 전용)",
+    `**소유자가 지식 저장소를 만들거나 연결해 달라고 하면 이 도구를 사용한다** — 수동 설정을 안내하거나 scaffold_skill을 먼저 시도하지 말 것. ${githubHostDescription(ctx.config.githubHost)} 설정된 git 토큰으로 새 GitHub 지식 저장소(기본 비공개, Claude plugin marketplace 템플릿으로 초기화)를 만들고 곧바로 연결한다. 지식 저장소가 아직 없을 때 쓰며, 저장소 이름만 있으면 된다. 생성 후 scaffold_skill→write_file→commit으로 내용을 채운다. (소유자 전용)`,
     {
       name: z.string().describe("새 저장소 이름 (영문/숫자와 - _ . 만, 예: my-knowledge)"),
       private: z.boolean().optional().describe("비공개 여부 (기본 true)"),
@@ -311,16 +317,20 @@ export function buildRepoTools(
       if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
         return text("저장소 이름은 영문/숫자와 - _ . 문자만 사용할 수 있습니다.", true);
       }
+      const targetHost = normalizeGithubHost(ctx.config.githubHost);
       try {
         const result = await createRemoteRepo(
-          ctx.config.githubHost,
+          targetHost,
           token,
           name,
           args.private ?? true,
           (args.description ?? "").trim(),
         );
         if (!result.ok) {
-          return text(`GitHub 저장소 생성 실패 (HTTP ${result.status}): ${result.message}`, true);
+          return text(
+            `GitHub 저장소 생성 실패 (host: ${targetHost}, HTTP ${result.status}): ${result.message}`,
+            true,
+          );
         }
         store.setKnowledgeRepo(ctx.avatarUserId, result.fullName, result.defaultBranch);
         store.audit({
@@ -356,7 +366,7 @@ export function buildRepoTools(
             : `${kind} 지식 저장소 \`${result.fullName}\`를 만들고 연결했습니다.${seedNote} \`scaffold_skill\`로 첫 스킬을 만든 뒤 \`commit\`으로 푸시하세요.`,
         );
       } catch (error) {
-        return text(`GitHub 저장소 생성 중 오류: ${scrubGitError(error)}`, true);
+        return text(`GitHub 저장소 생성 중 오류 (host: ${targetHost}): ${scrubGitError(error)}`, true);
       }
     },
   );

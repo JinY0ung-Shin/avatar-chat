@@ -1,0 +1,3 @@
+# Placeholder used as the default Docker build CA file.
+# Set CA_CERT_FILE=docker/tls-fullchain.crt or another build-context-relative path
+# when a deployment needs an extra trusted CA.

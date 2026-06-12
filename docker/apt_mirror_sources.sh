@@ -6,7 +6,7 @@ set -eu
 #
 # Build args:
 #   APT_MIRROR_HOST         – replaces the host portion of deb.debian.org
-#                             e.g. "repository.samsungds.net/repository/proxy-apt-deb.debian.org"
+#                             e.g. "mirror.example.internal/repository/proxy-apt-deb.debian.org"
 #                             This preserves the /debian and /debian-security paths,
 #                             so both suites work through the same mirror proxy.
 #   APT_SOURCES_FILE        – path to the DEB822 sources file

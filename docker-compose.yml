@@ -3,18 +3,15 @@ services:
     build:
       context: .
       # Map syntax (NAME: value) throughout — compose forbids mixing the
-      # `- NAME` list form with `NAME: value` entries in one args block, and
-      # CA_CERT_FILE needs a default value so an unset var doesn't pass "".
+      # `- NAME` list form with `NAME: value` entries in one args block.
       args:
         # Corporate mirror settings (empty = use upstream defaults).
-        # On the DS network, set these in your shell before building:
-        #   export APT_MIRROR_HOST=repository.samsungds.net/repository/proxy-apt-deb.debian.org
-        #   export NPM_CONFIG_REGISTRY=https://repository.samsungds.net/repository/proxy-npm-registry.npmjs.org/
+        # Set these in your shell before building when your network requires a mirror.
         APT_MIRROR_HOST: ${APT_MIRROR_HOST:-}
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
         # Corporate proxy CA to trust for HTTPS clones (path within the build
-        # context). Override in your shell: export CA_CERT_FILE=docker/my-ca.crt
-        CA_CERT_FILE: ${CA_CERT_FILE:-docker/samsungds-ca.crt}
+        # context). Override in your shell: export CA_CERT_FILE=docker/tls-fullchain.crt
+        CA_CERT_FILE: ${CA_CERT_FILE:-docker/extra-ca.crt.example}
         # Docker built-in proxy args – inherited from the host shell. Unset
         # ones resolve to "" and are simply not forwarded.
         HTTP_PROXY: ${HTTP_PROXY:-}
