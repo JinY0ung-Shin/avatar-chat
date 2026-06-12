@@ -1468,7 +1468,7 @@ describe("repo tools (knowledge-repo management)", () => {
         stdout: JSON.stringify({
           nameWithOwner: "owner/my-knowledge",
           defaultBranchRef: { name: "main" },
-          visibility: "PRIVATE",
+          isPrivate: true,
         }),
         stderr: "",
       };
@@ -1493,7 +1493,7 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(calls.map((c) => c.args)).toEqual([
       ["api", "user", "--jq", ".login"],
       ["repo", "create", "my-knowledge", "--private", "--add-readme", "--description", "desc"],
-      ["repo", "view", "owner/my-knowledge", "--json", "nameWithOwner,defaultBranchRef,visibility"],
+      ["repo", "view", "owner/my-knowledge", "--json", "nameWithOwner,defaultBranchRef,isPrivate"],
     ]);
     for (const call of calls) {
       expect(call.env.GH_HOST).toBe("github.enterprise.local");
@@ -1501,6 +1501,44 @@ describe("repo tools (knowledge-repo management)", () => {
       expect(call.env.GH_ENTERPRISE_TOKEN).toBe("tok-secret");
       expect(call.env.SSL_CERT_FILE).toBe(path.resolve("/tmp/ca.pem"));
     }
+  });
+
+  it("createRemoteRepo connects an already-created repo on retry", async () => {
+    const calls: string[][] = [];
+    const runner = vi.fn(async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "api") {
+        return { stdout: "owner\n", stderr: "" };
+      }
+      if (args[0] === "repo" && args[1] === "create") {
+        throw Object.assign(new Error("GraphQL: name already exists on this account"), {
+          code: 1,
+          stderr: "GraphQL: name already exists on this account",
+        });
+      }
+      return {
+        stdout: JSON.stringify({
+          nameWithOwner: "owner/my-knowledge",
+          defaultBranchRef: { name: "main" },
+          isPrivate: true,
+        }),
+        stderr: "",
+      };
+    });
+
+    const res = await createRemoteRepo("github.enterprise.local", "tok", "my-knowledge", true, "", undefined, runner);
+
+    expect(res).toMatchObject({
+      ok: true,
+      fullName: "owner/my-knowledge",
+      defaultBranch: "main",
+      isPrivate: true,
+    });
+    expect(calls).toEqual([
+      ["api", "user", "--jq", ".login"],
+      ["repo", "create", "my-knowledge", "--private", "--add-readme"],
+      ["repo", "view", "owner/my-knowledge", "--json", "nameWithOwner,defaultBranchRef,isPrivate"],
+    ]);
   });
 
   it("createRemoteRepo redacts tokens from gh errors", async () => {

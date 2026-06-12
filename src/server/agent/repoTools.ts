@@ -93,6 +93,10 @@ function ghErrorMessage(error: unknown, token: string): { message: string; exitC
   return { message, exitCode: typeof err.code === "number" ? err.code : undefined };
 }
 
+function isAlreadyExistsError(message: string): boolean {
+  return /already exists|name.*exists|exists on this account/i.test(message);
+}
+
 function ghEnv(host: string, token: string, githubCaCert?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
     ...process.env,
@@ -123,6 +127,27 @@ async function runGh(
   return { stdout, stderr };
 }
 
+async function viewGhRepo(
+  runner: GhRunner,
+  env: NodeJS.ProcessEnv,
+  fullName: string,
+): Promise<{ fullName: string; defaultBranch: string; isPrivate: boolean }> {
+  const view = await runner(
+    ["repo", "view", fullName, "--json", "nameWithOwner,defaultBranchRef,isPrivate"],
+    { env, timeout: 20_000 },
+  );
+  const body = JSON.parse(view.stdout || "{}") as {
+    nameWithOwner?: unknown;
+    defaultBranchRef?: { name?: unknown } | null;
+    isPrivate?: unknown;
+  };
+  return {
+    fullName: typeof body.nameWithOwner === "string" ? body.nameWithOwner : fullName,
+    defaultBranch: typeof body.defaultBranchRef?.name === "string" ? body.defaultBranchRef.name : "main",
+    isPrivate: body.isPrivate === true,
+  };
+}
+
 /**
  * Create a new repo under the token owner's account through GitHub CLI. `gh`
  * handles github.com vs GHES routing via GH_HOST, and the user's token is passed
@@ -151,24 +176,21 @@ export async function createRemoteRepo(
     if (description) {
       createArgs.push("--description", description);
     }
-    await runner(createArgs, { env, timeout: 60_000 });
-
     const fullName = `${owner}/${name}`;
-    const view = await runner(
-      ["repo", "view", fullName, "--json", "nameWithOwner,defaultBranchRef,visibility"],
-      { env, timeout: 20_000 },
-    );
-    const body = JSON.parse(view.stdout || "{}") as {
-      nameWithOwner?: unknown;
-      defaultBranchRef?: { name?: unknown } | null;
-      visibility?: unknown;
-    };
-    const visibility = typeof body.visibility === "string" ? body.visibility : "";
+    try {
+      await runner(createArgs, { env, timeout: 60_000 });
+    } catch (error) {
+      const detail = ghErrorMessage(error, token);
+      if (!isAlreadyExistsError(detail.message)) {
+        return { ok: false, ...detail };
+      }
+    }
+    const repo = await viewGhRepo(runner, env, fullName);
     return {
       ok: true,
-      fullName: typeof body.nameWithOwner === "string" ? body.nameWithOwner : fullName,
-      defaultBranch: typeof body.defaultBranchRef?.name === "string" ? body.defaultBranchRef.name : "main",
-      isPrivate: visibility.toUpperCase() !== "PUBLIC",
+      fullName: repo.fullName,
+      defaultBranch: repo.defaultBranch,
+      isPrivate: repo.isPrivate,
     };
   } catch (error) {
     return { ok: false, ...ghErrorMessage(error, token) };
