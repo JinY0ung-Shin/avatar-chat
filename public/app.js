@@ -1121,15 +1121,18 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
     },
   }, [
     pdom.composerBox,
-    el("div", { class: "composer-hint" }, [
-      compact
-        ? el("span", { text: `대화 ${index + 1}` })
-        : isFinePointer()
-          ? el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")])
-          : el("span", { text: "보내기 버튼으로 전송" }),
-      pdom.composerState,
-    ]),
+    (pdom.composerHint = el("div", { class: "composer-hint" }, [])),
   ]);
+  // Rebuilt when a physical keyboard is detected mid-session (enterSends() flips).
+  pdom.renderHint = () => {
+    const lead = compact
+      ? el("span", { text: `대화 ${index + 1}` })
+      : enterSends()
+        ? el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")])
+        : el("span", { text: "보내기 버튼으로 전송" });
+    pdom.composerHint.replaceChildren(lead, pdom.composerState);
+  };
+  pdom.renderHint();
   const composer = el("footer", { class: "composer" }, [el("div", { class: "composer-inner" }, [composerForm])]);
 
   const paneHeader = header || renderCompactPaneHeader(pane, index);
@@ -1226,6 +1229,16 @@ function capWidthClamp(width) {
 // screen below the composer.
 function isFinePointer() {
   return window.matchMedia ? window.matchMedia("(hover: hover) and (pointer: fine)").matches : true;
+}
+// Flipped once we observe a hardware keystroke (see the composer keydown handler).
+// A tablet reports a coarse primary pointer even with a keyboard attached, so the
+// pointer media query alone can't tell — we infer it from KeyboardEvent.code.
+let physicalKeyboardSeen = false;
+function enterSends() {
+  return isFinePointer() || physicalKeyboardSeen;
+}
+function refreshComposerHints() {
+  state.chatPanes.forEach((p) => p.dom?.renderHint?.());
 }
 function isMobileLayout() {
   return window.matchMedia ? window.matchMedia("(max-width: 860px)").matches : false;
@@ -1436,9 +1449,18 @@ function wireComposer(pane) {
     updateSendState(pane);
   });
   ta.addEventListener("keydown", (event) => {
+    // Detect a hardware keyboard: physical character keys carry a real
+    // KeyboardEvent.code ("KeyR", "Digit1" — even mid-IME composition), while
+    // on-screen keyboards send an empty code + keyCode 229. A non-empty message
+    // always types a character before Enter, so this fires in time. Once seen,
+    // Enter sends like on a PC (e.g. a tablet with a keyboard attached).
+    if (!physicalKeyboardSeen && /^(Key|Digit|Numpad|Arrow|F\d)/.test(event.code || "")) {
+      physicalKeyboardSeen = true;
+      refreshComposerHints();
+    }
     // Virtual keyboards have no Shift+Enter — there, Enter inserts a newline
     // and sending is button-only.
-    if (!isFinePointer()) return;
+    if (!enterSends()) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       setActivePane(pane);
