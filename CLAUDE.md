@@ -65,14 +65,27 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   resume survives a restart. `greeting` (ephemeral) and `regenerate` (re-runs a turn)
   start a fresh session. SDK `cleanupPeriodDays` (default 30) sweeps old transcripts —
   conversations idle >30d resume as new.
+- **A streamed answer must survive completion/reload.** The live bubble shows every
+  main-agent `delta` (all turns); on `done`/reload it's rebuilt from the PERSISTED
+  `response.text`, NOT `live.text`. So `response.text` must be the full streamed
+  transcript (`partialText` in `claudeAgent.ts`, preferred over the SDK terminal
+  `result` which is the LAST turn only) — else pre-final-turn narration (preambles,
+  text between tool calls) vanishes the instant the run completes. Cancel/error paths
+  persist the server-side `streamedText` accumulator (`app.ts`), not an empty stub.
 - **Tool permissions go through one gate:** the `PreToolUse` hook in
   `src/server/agent/claudeAgent.ts` (`buildPreToolUseHook`). The SDK's
   `canUseTool`/`onUserDialog` are unused (don't fire headlessly). Auto-approve
-  only applies on the `viewerIsOwner && !headless` path; headless routines and
-  colleague chats stay read-only.
+  applies on the `!headless && elevated && autoApprove` path — **`elevated` = owner
+  OR trusted user**, not owner-only; headless routines and plain colleague chats stay
+  read-only. But `isAutoAllowed` auto-allows EVERY `mcp__*` tool at the hook BEFORE
+  that check, so any in-process MCP server MUST self-gate in its handlers (owner/
+  elevated checks) — don't rely on the hook.
 - **Per-user settings pattern:** add a column to the `users` table + an additive
   `addColumnIfMissing` migration, then mirror the `published` toggle end-to-end
   (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→`buildToggle` in app.js).
+  A NEW table just goes in the always-run schema `db.exec()` block (`CREATE TABLE IF
+  NOT EXISTS` covers existing DBs too) — `addColumnIfMissing` is ONLY for adding a
+  column to an existing table.
 - **Capability hashtags (역량 해시태그) + cross-avatar discovery.** `users.hashtags` is a JSON
   array of bare tags (`normalizeHashtags`/`parseHashtags` in store.ts) wired through the
   per-user settings pattern, surfaced on BOTH `User` and `AvatarSummary` (so discovery cards
@@ -109,6 +122,16 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   it — so an edit must be followed by `commit` to persist. (`ensureClone` re-syncs with
   `git checkout -B <branch> origin/<branch>`, not a hard reset, so it won't silently clobber
   uncommitted edits, but it also won't preserve or push them.)
+- **General git repos (`mcp__git_repo__*`) ≠ the knowledge repo.** A user can register
+  arbitrary work/code repos: `git_repositories` table (`get/list/upsert/delete/
+  markGitRepoSynced`), plumbing in `gitRepos.ts`, MCP server in `agent/gitRepoTools.ts`.
+  Owner-only `register_repo`/`remove_repo`; owner OR **trusted** users may `sync_repo`/
+  `status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`.
+  Each tool self-gates (`ownerGuard`/`elevatedGuard`, both `&& !headless`); the owner's
+  git token is used server-side only (`gitAuthArgs`, never in the agent shell), with
+  arg-injection (`assertSafeGitValue`) and path-traversal (`resolveInRepo`) guards.
+  Unlike the owner-only knowledge repo, write/commit/push EXTEND to trusted users.
+  Offline-tested against a local bare remote (same as the knowledge-repo tools).
 - Secret-at-rest tiers: passwords → scrypt (`auth.ts`), session tokens → sha256,
   **reversible** secrets (e.g. per-user git token) → AES-256-GCM in `crypto.ts`
   (keyed from `SESSION_SECRET`). Never serialize secrets through `toUser`. The git
