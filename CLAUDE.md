@@ -15,9 +15,10 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 ## Gotchas
 - **Project name diverges by layer:** display name "Noah Almighty", code slug
   `noah-almighty` (package name, `noah-almighty.db`, `@noah-almighty.local` git
-  identity fallbacks, logs, test temp-dir prefix), but the git remote is
-  `avatar-square` and the working dir is `avatar-chat`. Grep both old/new slugs
-  when auditing names.
+  identity fallbacks, logs, test temp-dir prefix), and the git remote `origin` is
+  `noah-almighty` (`github.com/JinY0ung-Shin/noah-almighty`) — but the working dir
+  is `avatar-chat`, and the older `avatar-square`/`avatar-chat` slugs still surface
+  in history. Grep both old/new slugs when auditing names.
 - `.claude/worktrees/` holds full embedded repo checkouts: exclude them from
   greps (`grep -v '\.claude/worktrees'`) and never `git add -A` (stage files
   explicitly — `-A` also pulls in unrelated pre-existing edits like `.env.example`).
