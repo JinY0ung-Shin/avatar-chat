@@ -1765,6 +1765,8 @@ function openRoutineModal(routine) {
           }
           errorBox.hidden = true;
           saveBtn.disabled = true;
+          const savedLabel = saveBtn.textContent;
+          saveBtn.textContent = "저장 중…";
           try {
             const payload = {
               name: (nameInput.value || "").trim() || null,
@@ -1780,6 +1782,7 @@ function openRoutineModal(routine) {
           } catch (err) {
             errorBox.textContent = err.message || "저장에 실패했습니다.";
             errorBox.hidden = false;
+            saveBtn.textContent = savedLabel;
             saveBtn.disabled = false;
           }
         },
@@ -1828,6 +1831,8 @@ function openRoutineModal(routine) {
         delBtn.addEventListener("click", async () => {
           if (!window.confirm("이 루틴을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
           delBtn.disabled = true;
+          const saved = delBtn.textContent;
+          delBtn.textContent = "삭제 중…";
           try {
             await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });
             state.routines = state.routines.filter((x) => x.id !== routine.id);
@@ -1837,6 +1842,7 @@ function openRoutineModal(routine) {
             renderView();
           } catch (err) {
             notify(`삭제 실패: ${err.message}`);
+            delBtn.textContent = saved;
             delBtn.disabled = false;
           }
         });
@@ -1956,11 +1962,17 @@ function buildNotificationRow(n, refresh) {
   delBtn.append(icon("trash"));
   delBtn.addEventListener("click", async () => {
     delBtn.disabled = true;
+    const savedTitle = delBtn.title;
+    const savedLabel = delBtn.getAttribute("aria-label");
+    delBtn.title = "삭제 중…";
+    delBtn.setAttribute("aria-label", "알림 삭제 중");
     try {
       await api(`/api/me/notifications/${encodeURIComponent(n.id)}`, { method: "DELETE" });
       await refresh?.();
     } catch (e) {
       delBtn.disabled = false;
+      delBtn.title = savedTitle;
+      delBtn.setAttribute("aria-label", savedLabel || "알림 삭제");
       notify(`삭제 실패: ${e.message}`);
     }
   });
@@ -6496,10 +6508,13 @@ function buildKnowledgeRequestRow(r, refresh) {
   });
   ignoreBtn.addEventListener("click", async () => {
     ignoreBtn.disabled = true;
+    const saved = ignoreBtn.textContent;
+    ignoreBtn.textContent = "무시 중…";
     try {
       await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
       await refresh?.();
     } catch (e) {
+      ignoreBtn.textContent = saved;
       ignoreBtn.disabled = false;
       notify(`무시 처리 실패: ${e.message}`);
     }
@@ -7443,6 +7458,8 @@ function buildModelOverrideCard(sys) {
         const value = (new FormData(e.currentTarget).get("model") || "").toString().trim();
         const btn = e.currentTarget.querySelector("button[type=submit]");
         btn.disabled = true;
+        const saved = btn.textContent;
+        btn.textContent = "저장 중…";
         try {
           if (value) {
             await api("/api/admin/model", { method: "PUT", body: JSON.stringify({ model: value }) });
@@ -7454,6 +7471,7 @@ function buildModelOverrideCard(sys) {
           await loadAdminSystem();
           renderView();
         } catch (err) {
+          btn.textContent = saved;
           btn.disabled = false;
           notify(`저장 실패: ${err.message}`);
         }
@@ -7515,11 +7533,14 @@ function buildSubscriptionCard(sys) {
     disBtn.addEventListener("click", async () => {
       if (!window.confirm("저장된 구독 토큰을 삭제할까요?")) return;
       disBtn.disabled = true;
+      const saved = disBtn.textContent;
+      disBtn.textContent = "해제 중…";
       try {
         await api("/api/admin/claude-token", { method: "DELETE" });
         await loadAdminSystem();
         renderView();
       } catch (e) {
+        disBtn.textContent = saved;
         disBtn.disabled = false;
         notify(`해제 실패: ${e.message}`);
       }
@@ -7540,12 +7561,15 @@ function buildSubscriptionCard(sys) {
       }
       const btn = formEl.querySelector("button[type=submit]");
       btn.disabled = true;
+      const saved = btn.textContent;
+      btn.textContent = "저장 중…";
       try {
         await api("/api/admin/claude-token", { method: "PUT", body: JSON.stringify({ token }) });
         notify("구독 토큰을 저장했습니다.", "ok");
         await loadAdminSystem();
         renderView();
       } catch (err) {
+        btn.textContent = saved;
         btn.disabled = false;
         notify(`저장 실패: ${err.message}`);
       }
@@ -7586,12 +7610,15 @@ function buildHexSshPolicyCard(sys) {
       });
       const btn = formEl.querySelector("button[type=submit]");
       btn.disabled = true;
+      const saved = btn.textContent;
+      btn.textContent = "저장 중…";
       try {
         await api("/api/admin/hex-ssh-policy", { method: "PUT", body: JSON.stringify({ policy: nextPolicy }) });
         notify("SSH 도구 정책을 저장했습니다.", "ok");
         await loadAdminSystem();
         renderView();
       } catch (err) {
+        btn.textContent = saved;
         btn.disabled = false;
         notify(`저장 실패: ${err.message}`);
       }
