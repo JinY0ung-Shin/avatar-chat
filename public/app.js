@@ -2395,6 +2395,7 @@ async function renderInboxView() {
   const list = el("div", { class: "inbox-list" });
   const headerActions = el("div", { class: "head-actions" });
   const filterBar = el("div", { class: "inbox-filter seg-control", role: "radiogroup", "aria-label": "알림 필터" });
+  wireSegmentedRadioKeys(filterBar);
   const card = el("section", { class: "settings-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
@@ -2425,6 +2426,8 @@ async function renderInboxView() {
           type: "button",
           role: "radio",
           "aria-checked": active ? "true" : "false",
+          tabindex: active ? "0" : "-1",
+          dataset: { value: f.id },
           text: f.label,
           onclick: () => {
             state.inboxFilter = f.id;
@@ -4870,6 +4873,34 @@ function buildTabBar({ tabs, getTab, setTab, ariaLabel, idPrefix, panelId, onAct
   return { tabBar, syncTabs };
 }
 
+function wireSegmentedRadioKeys(group) {
+  group.addEventListener("keydown", (e) => {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+    const buttons = [...group.querySelectorAll('button[role="radio"]:not(:disabled)')];
+    if (!buttons.length) return;
+    e.preventDefault();
+    const activeIndex = buttons.findIndex((b) => b.getAttribute("aria-checked") === "true");
+    const focusIndex = buttons.indexOf(document.activeElement);
+    const current = activeIndex >= 0 ? activeIndex : Math.max(0, focusIndex);
+    const nextIndex =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? buttons.length - 1
+          : (current + (["ArrowRight", "ArrowDown"].includes(e.key) ? 1 : buttons.length - 1)) % buttons.length;
+    const next = buttons[nextIndex];
+    const nextValue = next.dataset.value || "";
+    next.focus();
+    next.click();
+    requestAnimationFrame(() => {
+      const currentButtons = [...group.querySelectorAll('button[role="radio"]:not(:disabled)')];
+      const target = currentButtons.find((b) => nextValue && b.dataset.value === nextValue) ||
+        currentButtons.find((b) => b.getAttribute("aria-checked") === "true");
+      target?.focus();
+    });
+  });
+}
+
 let settingsViewSeq = 0;
 
 async function renderSettings() {
@@ -5169,10 +5200,11 @@ function buildVisibilitySelect(current, onChange) {
     }
   };
   for (const opt of VISIBILITY_OPTIONS) {
-    const btn = el("button", { type: "button", class: "seg-btn", role: "radio", text: opt.label, onclick: () => choose(opt.value) });
+    const btn = el("button", { type: "button", class: "seg-btn", role: "radio", dataset: { value: opt.value }, text: opt.label, onclick: () => choose(opt.value) });
     buttons.set(opt.value, btn);
     seg.append(btn);
   }
+  wireSegmentedRadioKeys(seg);
   sync();
   return el("div", { class: "visibility-row" }, [seg, desc]);
 }
