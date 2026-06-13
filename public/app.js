@@ -1056,6 +1056,9 @@ function setupGroupKnowledgeToggle(pane, pdom) {
     else off.add(groupId);
     pane.groupKnowledgeOff = [...off];
     renderBtn();
+    const group = eligibleGroups().find((g) => g.id === groupId);
+    const label = group?.name || "그룹";
+    notify(`"${label}" 그룹 지식을 ${enabled ? "사용" : "사용 해제"}했습니다. 다음 메시지부터 적용됩니다.`, "info");
     saveGroupKnowledgeDefault(pane.groupKnowledgeOff);
   };
   const renderPanel = () => {
@@ -1082,6 +1085,8 @@ function setupGroupKnowledgeToggle(pane, pdom) {
     const off = new Set(pane.groupKnowledgeOff || []);
     const onCount = groups.filter((g) => !off.has(g.id)).length;
     btn.textContent = `그룹 지식 ${onCount}/${groups.length}`;
+    btn.title = "이 대화에서 다음 메시지부터 사용할 그룹 지식을 고릅니다";
+    btn.setAttribute("aria-label", `이 대화에서 사용할 그룹 지식 ${onCount}/${groups.length}`);
     btn.setAttribute("aria-expanded", open ? "true" : "false");
   };
   btn.addEventListener("click", (e) => {
