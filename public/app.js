@@ -6658,6 +6658,103 @@ function buildUserDetailGrid(d) {
   ]);
 }
 
+function openAdminPasswordResetModal(u, triggerBtn, reload) {
+  triggerBtn.disabled = true;
+  const uid = encodeURIComponent(u.id);
+  openModal({
+    cardClass: "password-reset-card",
+    ariaLabelledby: "admin-password-reset-title",
+    onBeforeClose: () => { triggerBtn.disabled = false; },
+    buildCard: (card, close) => {
+      const passwordField = buildRevealableInput({
+        name: "password",
+        autocomplete: "new-password",
+        placeholder: "새 비밀번호",
+        ariaLabel: `${u.displayName} 새 비밀번호`,
+        required: true,
+        minlength: 8,
+      });
+      const confirmField = buildRevealableInput({
+        name: "confirmPassword",
+        autocomplete: "new-password",
+        placeholder: "새 비밀번호 확인",
+        ariaLabel: `${u.displayName} 새 비밀번호 확인`,
+        required: true,
+        minlength: 8,
+      });
+      const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
+      const saveBtn = el("button", { class: "primary", type: "submit", text: "재설정" });
+      const cancelBtn = el("button", { class: "ghost-sm", type: "button", text: "취소", onclick: () => close() });
+      const setBusy = (busy) => {
+        passwordField.input.disabled = busy;
+        confirmField.input.disabled = busy;
+        saveBtn.disabled = busy;
+        cancelBtn.disabled = busy;
+        saveBtn.textContent = busy ? "재설정 중…" : "재설정";
+      };
+      const showError = (message) => {
+        errorBox.textContent = message;
+        errorBox.hidden = false;
+      };
+      const form = el("form", {
+        class: "routine-modal-form",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          const pw = passwordField.input.value;
+          const confirm = confirmField.input.value;
+          if (pw.length < 8) {
+            showError("비밀번호는 8자 이상이어야 합니다.");
+            passwordField.input.focus();
+            return;
+          }
+          if (pw !== confirm) {
+            showError("두 비밀번호가 일치하지 않습니다.");
+            confirmField.input.focus();
+            return;
+          }
+          errorBox.hidden = true;
+          setBusy(true);
+          try {
+            await api(`/api/admin/users/${uid}/password`, { method: "POST", body: JSON.stringify({ password: pw }) });
+            notify("비밀번호를 재설정했습니다.", "ok");
+            close();
+            try {
+              await reload();
+            } catch (err) {
+              notify(`비밀번호는 재설정했지만 목록 새로고침에 실패했습니다: ${err.message}`, "warn");
+            }
+          } catch (err) {
+            setBusy(false);
+            showError(`재설정 실패: ${err.message}`);
+          }
+        },
+      }, [
+        el("label", { class: "field" }, [
+          el("span", { text: "새 비밀번호" }),
+          passwordField.wrap,
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { text: "새 비밀번호 확인" }),
+          confirmField.wrap,
+        ]),
+        errorBox,
+        el("div", { class: "routine-modal-actions" }, [
+          el("div", { class: "routine-modal-actions-left" }, [
+            el("span", { class: "muted", text: `대상: ${u.displayName} (@${u.username})` }),
+          ]),
+          el("div", { class: "routine-modal-actions-right" }, [cancelBtn, saveBtn]),
+        ]),
+      ]);
+      card.append(
+        el("h2", { id: "admin-password-reset-title", text: "비밀번호 재설정" }),
+        el("p", { class: "muted", text: "저장하면 이 사용자의 기존 세션이 모두 로그아웃됩니다." }),
+        form,
+      );
+      return { focusTarget: passwordField.input };
+    },
+  });
+}
+
 function buildUserActions(u, isAdmin, isMe, reload) {
   const wrap = el("div", { class: "ud-actions" });
   const run = async (btn, fn, errLabel) => {
@@ -6697,20 +6794,7 @@ function buildUserActions(u, isAdmin, isMe, reload) {
 
   const pwBtn = el("button", { class: "ghost-sm", type: "button", text: "비밀번호 재설정" });
   pwBtn.addEventListener("click", () => {
-    const pw = window.prompt(`${u.displayName}님의 새 비밀번호 (8자 이상).\n설정하면 이 사용자의 기존 세션이 모두 로그아웃됩니다.`);
-    if (pw === null) return;
-    if (pw.length < 8) {
-      notify("비밀번호는 8자 이상이어야 합니다.", "warn");
-      return;
-    }
-    run(
-      pwBtn,
-      async () => {
-        await api(`/api/admin/users/${uid}/password`, { method: "POST", body: JSON.stringify({ password: pw }) });
-        notify("비밀번호를 재설정했습니다.", "ok");
-      },
-      "재설정 실패",
-    );
+    openAdminPasswordResetModal(u, pwBtn, reload);
   });
 
   const outBtn = el("button", { class: "ghost-sm", type: "button", text: "강제 로그아웃" });
