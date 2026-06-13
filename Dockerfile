@@ -1,13 +1,3 @@
-FROM rust:1-bookworm AS rtk-builder
-
-# RTK (Rust Token Killer) is used by the Claude SDK PreToolUse hook to rewrite
-# Bash commands into token-optimized equivalents. Build it in a separate stage so
-# the final app image only carries the binary, not the Rust toolchain.
-ARG RTK_GIT_URL=https://github.com/rtk-ai/rtk
-ARG RTK_GIT_REV=6785a6c7695d7273e722214a295249a84819b6f0
-RUN cargo install --git "$RTK_GIT_URL" --rev "$RTK_GIT_REV" rtk --root /opt/rtk \
-  && /opt/rtk/bin/rtk --version
-
 FROM node:22-bookworm-slim AS base
 
 # Optional corporate-mirror build args (empty = use upstream defaults).
@@ -68,8 +58,23 @@ RUN if grep -q "BEGIN CERTIFICATE" /tmp/extra-ca.crt; then \
 
 WORKDIR /app
 
-COPY --from=rtk-builder /opt/rtk/bin/rtk /usr/local/bin/rtk
-RUN rtk --version \
+# RTK (Rust Token Killer) rewrites Bash commands into token-optimized equivalents
+# in the Claude SDK PreToolUse hook. Download the prebuilt static binary instead
+# of `cargo install`-ing from source: a single HTTPS fetch through the
+# already-trusted corporate proxy CA above — no Rust toolchain and no crates.io
+# dependency tree to resolve on a closed network. Pinned for reproducibility;
+# bump RTK_VERSION (and re-run the self-test) to upgrade.
+ARG RTK_VERSION=0.42.4
+ARG TARGETARCH
+RUN case "$TARGETARCH" in \
+      amd64|"") RTK_TARGET=x86_64-unknown-linux-musl ;; \
+      arm64)    RTK_TARGET=aarch64-unknown-linux-gnu ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${RTK_TARGET}.tar.gz" \
+       | tar -xz -C /usr/local/bin rtk \
+  && chmod +x /usr/local/bin/rtk \
+  && rtk --version \
   && test "$(rtk rewrite 'git status && git diff')" = "rtk git status && rtk git diff"
 
 # Always use npm install (not npm ci) so the build doesn't fail when the lock

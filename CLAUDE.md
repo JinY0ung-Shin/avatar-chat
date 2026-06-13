@@ -252,6 +252,15 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   is REQUIRED to boot (`NODE_ENV=production`), the image runs as non-root `node` (so `uv` /
   global bins must be world-accessible, NOT symlinked into `/root`), and `docker stop` should
   exit in <1s via the SIGTERM handler in `index.ts`.
+- **Dockerfile CA trust is PER-STAGE.** The `CA_CERT_FILE`→`update-ca-certificates` block
+  lives in the `base` stage and covers ONLY that stage — an HTTPS fetch (curl/npm/cargo) in a
+  *different* earlier stage hits the corporate intercepting proxy with no trusted CA and dies
+  `SSL peer certificate ... was not ok`. Put any network step in `base`, AFTER that block.
+  (rtk was a `FROM rust` `cargo install` builder stage with no CA block — exactly this trap — so
+  it now downloads a pinned prebuilt binary: `RTK_VERSION` arg, `rtk-ai/rtk` releases, musl/amd64
+  + gnu/arm64. Upgrade = bump `RTK_VERSION` + confirm the `rtk rewrite 'git status && git diff'`
+  self-test still equals `rtk git status && rtk git diff`.) Test one RUN step without a full
+  build: `docker run --rm node:22-bookworm-slim bash -c '<step>'`.
 - **Testing git/repo tools offline:** repo-tool tests point the repo at a LOCAL bare remote
   (`git init --bare`) so clone/commit/push need no network — `gitAuthArgs` returns `[]` for
   non-`https://` URLs, so the token is ignored there. For `create_repo`, inject a fake
