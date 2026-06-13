@@ -3192,23 +3192,35 @@ function renderCompactPaneHeader(pane, index) {
 }
 
 function addChatPane(avatarId) {
-  if (!splitEnabled() || state.chatPanes.length >= MAX_CHAT_PANES) return;
-  if (state.chatPanes.some((pane) => pane.avatar?.id === avatarId)) return;
+  if (!splitEnabled()) return;
+  if (state.chatPanes.length >= MAX_CHAT_PANES) {
+    notify(`분할 대화는 최대 ${MAX_CHAT_PANES}개까지 가능합니다.`, "info");
+    return;
+  }
+  if (state.chatPanes.some((pane) => pane.avatar?.id === avatarId)) {
+    notify("이미 분할 대화에 열려 있는 아바타입니다.", "info");
+    return;
+  }
   const avatar = splitAvatarOptions().find((av) => av.id === avatarId) || activePane()?.avatar || state.currentAvatar || state.user;
   const pane = makeChatPane(avatar);
   state.chatPanes.push(pane);
   state.activePaneId = pane.id;
   syncLegacyChatState(pane);
   renderView();
+  notify(`${avatar.alias || avatar.displayName || avatar.username || "아바타"} 대화를 분할에 추가했습니다.`, "ok");
 }
 
 function closeChatPane(pane) {
   if (state.chatPanes.length <= 1) return;
+  const avatar = pane.avatar || {};
+  const label = avatar.alias || avatar.displayName || avatar.username || "아바타";
+  const wasStreaming = Boolean(pane.streaming);
   if (pane.streaming) stopStreaming(pane);
   state.chatPanes = state.chatPanes.filter((p) => p.id !== pane.id);
   if (state.activePaneId === pane.id) state.activePaneId = state.chatPanes[0]?.id || null;
   syncLegacyChatState(activePane());
   renderView();
+  notify(wasStreaming ? `${label} 응답을 중지하고 대화 창을 닫았습니다.` : `${label} 대화 창을 닫았습니다.`, "ok");
 }
 
 /**
