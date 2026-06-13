@@ -2075,7 +2075,15 @@ function buildNotificationRow(n, refresh) {
   ]);
   const actions = el("div", { class: "kr-actions" });
   if (n.conversationId && state.routineConversations.some((c) => c.id === n.conversationId)) {
-    actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(n.conversationId) }));
+    actions.append(el("button", {
+      class: "ghost-sm",
+      type: "button",
+      text: "결과 보기",
+      onclick: () => {
+        markNotificationRead(n);
+        openRoutineResult(n.conversationId);
+      },
+    }));
   }
   const delBtn = el("button", { class: "msg-act danger", type: "button", "aria-label": "알림 삭제", title: "알림 삭제" });
   delBtn.append(icon("trash"));
@@ -2100,15 +2108,18 @@ function buildNotificationRow(n, refresh) {
   return row;
 }
 
+function markNotificationRead(n) {
+  if (!n || n.readAt) return;
+  n.readAt = new Date().toISOString();
+  updateInboxBadge();
+  // Fire-and-forget; the navigation target should not wait on this bookkeeping.
+  api(`/api/me/notifications/${encodeURIComponent(n.id)}/read`, { method: "PATCH" }).catch(() => {});
+}
+
 // Open a new chat with my own avatar, composer pre-filled with the notification's
 // topic (the owner can edit before sending). Marks the notification read in passing.
 function openNotificationChat(n) {
-  if (!n.readAt) {
-    n.readAt = new Date().toISOString();
-    updateInboxBadge();
-    // Fire-and-forget; we're navigating away from the inbox anyway.
-    api(`/api/me/notifications/${encodeURIComponent(n.id)}/read`, { method: "PATCH" }).catch(() => {});
-  }
+  markNotificationRead(n);
   const seed = `다음은 네가 남긴 알림이야. 이 주제로 이어서 이야기하자.\n\n[${n.title}]\n${n.message}`;
   chatAboutTopic(seed);
 }
