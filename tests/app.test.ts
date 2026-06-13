@@ -233,6 +233,25 @@ describe("noah-almighty platform", () => {
     await agent.patch(`/api/me/notifications/${notification.id}/read`).expect(200);
     const unread = await agent.get("/api/me/notifications?unread=1").expect(200);
     expect(unread.body.notifications).toHaveLength(0);
+    await agent.delete(`/api/me/notifications/${notification.id}`).expect(200);
+    const emptyNotifications = await agent.get("/api/me/notifications").expect(200);
+    expect(emptyNotifications.body.notifications).toHaveLength(0);
+    services.store.addAvatarNotification(routine.avatarUserId, {
+      avatarUserId: routine.avatarUserId,
+      title: "첫 번째 알림",
+      message: "정리 대상입니다.",
+      conversationId: routine.conversationId,
+    });
+    services.store.addAvatarNotification(routine.avatarUserId, {
+      avatarUserId: routine.avatarUserId,
+      title: "두 번째 알림",
+      message: "함께 삭제됩니다.",
+      conversationId: routine.conversationId,
+    });
+    const cleared = await agent.delete("/api/me/notifications").expect(200);
+    expect(cleared.body.deleted).toBe(2);
+    const afterClear = await agent.get("/api/me/notifications").expect(200);
+    expect(afterClear.body.notifications).toHaveLength(0);
 
     // Another user cannot touch it.
     const { agent: stranger } = await newUser(app, "sam");

@@ -1376,6 +1376,13 @@ export class Store {
     return result.changes > 0;
   }
 
+  deleteAllAvatarNotifications(ownerUserId: string): number {
+    const result = this.db
+      .prepare("DELETE FROM avatar_notifications WHERE owner_user_id = ?")
+      .run(ownerUserId);
+    return result.changes;
+  }
+
   // ---- Routine jobs (owner-scheduled recurring runs) -------------------
 
   private toRoutineJob(row: RoutineJobRow): RoutineJob {

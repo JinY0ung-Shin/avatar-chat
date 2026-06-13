@@ -1855,8 +1855,8 @@ function buildNotificationRow(n, refresh) {
   if (n.conversationId && state.routineConversations.some((c) => c.id === n.conversationId)) {
     actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(n.conversationId) }));
   }
-  const delBtn = el("button", { class: "msg-act", type: "button", "aria-label": "알림 삭제", title: "삭제" });
-  delBtn.append(icon("close"));
+  const delBtn = el("button", { class: "msg-act danger", type: "button", "aria-label": "알림 삭제", title: "알림 삭제" });
+  delBtn.append(icon("trash"));
   delBtn.addEventListener("click", async () => {
     delBtn.disabled = true;
     try {
@@ -2196,10 +2196,11 @@ async function renderInboxView() {
   const syncHeaderActions = () => {
     headerActions.replaceChildren();
     const unread = state.notifications.filter((n) => !n.readAt).length;
+    const total = state.notifications.length;
     if (unread) {
       headerActions.append(
         el("button", {
-          class: "linkish small",
+          class: "ghost-sm",
           type: "button",
           text: "알림 모두 읽음",
           onclick: async () => {
@@ -2207,6 +2208,25 @@ async function renderInboxView() {
               await api("/api/me/notifications/read-all", { method: "POST" });
             } catch (e) {
               notify(`처리 실패: ${e.message}`);
+              return;
+            }
+            await refresh();
+          },
+        }),
+      );
+    }
+    if (total) {
+      headerActions.append(
+        el("button", {
+          class: "ghost-sm danger",
+          type: "button",
+          text: "알림 비우기",
+          onclick: async () => {
+            if (!window.confirm(`알림 ${total}개를 모두 삭제할까요? 정보 요청은 삭제되지 않습니다.`)) return;
+            try {
+              await api("/api/me/notifications", { method: "DELETE" });
+            } catch (e) {
+              notify(`삭제 실패: ${e.message}`);
               return;
             }
             await refresh();

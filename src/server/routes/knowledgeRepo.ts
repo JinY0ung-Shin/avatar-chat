@@ -232,6 +232,10 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
     res.json({ changed: store.markAllAvatarNotificationsRead(req.user!.id) });
   });
 
+  router.delete("/api/me/notifications", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({ deleted: store.deleteAllAvatarNotifications(req.user!.id) });
+  });
+
   router.patch("/api/me/notifications/:id/read", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const ok = store.markAvatarNotificationRead(req.user!.id, req.params.id);
     if (!ok) {
