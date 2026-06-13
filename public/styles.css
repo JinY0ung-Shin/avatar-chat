@@ -3207,6 +3207,25 @@ textarea::placeholder {
 .routine-search:disabled {
   opacity: 0.6;
 }
+.routine-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.routine-tools .routine-search {
+  min-width: 0;
+  flex: 1;
+}
+.routine-filter {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.routine-filter .seg-btn {
+  flex: 0 0 auto;
+}
 .routine-manage-list {
   display: grid;
   gap: var(--s-2);

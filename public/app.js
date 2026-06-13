@@ -38,6 +38,7 @@ const state = {
   knowledgeRequests: [],
   routines: [],
   routineSearch: "",
+  routineFilter: "all", // all | enabled | paused | error
   routineConversations: [],
   routineConversationId: "",
   routineMessages: [],
@@ -2141,6 +2142,9 @@ function chatAboutTopic(seedText) {
 // the right. The old settings ▸ 루틴 tab is gone — this replaces it.
 function buildRoutineManagePanel() {
   const list = el("div", { class: "routine-manage-list" });
+  const filterBar = el("div", { class: "routine-filter seg-control", role: "radiogroup", "aria-label": "루틴 필터" });
+  wireSegmentedRadioKeys(filterBar);
+  const countLabel = el("span", { class: "muted nowrap" });
   const search = el("input", {
     class: "routine-search",
     type: "search",
@@ -2150,11 +2154,12 @@ function buildRoutineManagePanel() {
     disabled: state.routines.length ? null : "",
     oninput: () => {
       state.routineSearch = search.value;
-      renderRoutineManageRows(list, search);
+      renderRoutineManageRows(list, { searchInput: search, filterBar, countLabel });
     },
   });
   const addBtn = el("button", { class: "primary small routine-add-btn", type: "button", onclick: () => openRoutineModal(null) });
   addBtn.append(icon("plus"), el("span", { text: "루틴 추가" }));
+  const tools = el("div", { class: "routine-tools" }, [search, countLabel]);
   const card = el("section", { class: "settings-card routine-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
@@ -2163,16 +2168,50 @@ function buildRoutineManagePanel() {
       ]),
       addBtn,
     ]),
-    search,
+    tools,
+    filterBar,
     list,
   ]);
-  renderRoutineManageRows(list, search);
+  renderRoutineManageRows(list, { searchInput: search, filterBar, countLabel });
   return card;
 }
 
-function renderRoutineManageRows(list, searchInput = null) {
+function renderRoutineManageRows(list, { searchInput = null, filterBar = null, countLabel = null } = {}) {
   list.replaceChildren();
+  const filterDefs = [
+    { id: "all", label: "전체", match: () => true },
+    { id: "enabled", label: "사용 중", match: (r) => r.enabled },
+    { id: "paused", label: "일시 정지", match: (r) => !r.enabled },
+    { id: "error", label: "실패", match: (r) => r.lastStatus === "error" },
+  ];
+  const filterLabel = (id) => filterDefs.find((f) => f.id === id)?.label || "전체";
+  if (!filterDefs.some((f) => f.id === state.routineFilter)) state.routineFilter = "all";
+  const syncFilters = () => {
+    if (!filterBar) return;
+    filterBar.replaceChildren(
+      ...filterDefs.map((f) => {
+        const active = state.routineFilter === f.id;
+        const count = state.routines.filter(f.match).length;
+        return el("button", {
+          class: `seg-btn ${active ? "active" : ""}`,
+          type: "button",
+          role: "radio",
+          "aria-checked": active ? "true" : "false",
+          tabindex: active ? "0" : "-1",
+          dataset: { value: f.id },
+          text: `${f.label} ${count}`,
+          onclick: () => {
+            state.routineFilter = f.id;
+            renderRoutineManageRows(list, { searchInput, filterBar, countLabel });
+          },
+        });
+      }),
+    );
+  };
+  syncFilters();
   if (!state.routines.length) {
+    if (countLabel) countLabel.textContent = "총 0개";
+    if (filterBar) filterBar.hidden = true;
     list.append(
       el("div", { class: "empty-note" }, [
         "아직 등록한 루틴이 없습니다.\n",
@@ -2181,9 +2220,12 @@ function renderRoutineManageRows(list, searchInput = null) {
     );
     return;
   }
+  if (filterBar) filterBar.hidden = false;
   const q = state.routineSearch.trim().toLowerCase();
+  const activeFilter = filterDefs.find((f) => f.id === state.routineFilter) || filterDefs[0];
+  const filtered = state.routines.filter(activeFilter.match);
   const routines = q
-    ? state.routines.filter((r) => {
+    ? filtered.filter((r) => {
         const haystack = [
           routineTitle(r),
           r.prompt || "",
@@ -2193,19 +2235,29 @@ function renderRoutineManageRows(list, searchInput = null) {
         ].join(" ").toLowerCase();
         return haystack.includes(q);
       })
-    : state.routines;
+    : filtered;
+  if (countLabel) countLabel.textContent = routines.length === state.routines.length ? `총 ${state.routines.length}개` : `표시 ${routines.length}개 / 전체 ${state.routines.length}개`;
   if (!routines.length) {
+    const resetRoutineFilter = () => {
+      state.routineFilter = "all";
+      renderRoutineManageRows(list, { searchInput, filterBar, countLabel });
+      filterBar?.querySelector('[data-value="all"]')?.focus();
+    };
     const clearRoutineSearch = () => {
       state.routineSearch = "";
       if (searchInput) searchInput.value = "";
-      renderRoutineManageRows(list, searchInput);
+      renderRoutineManageRows(list, { searchInput, filterBar, countLabel });
       searchInput?.focus();
     };
+    const children = [
+      q
+        ? `"${state.routineSearch.trim()}"에 맞는 ${state.routineFilter === "all" ? "루틴" : `${filterLabel(state.routineFilter)} 루틴`}이 없습니다.\n`
+        : `${filterLabel(state.routineFilter)} 루틴이 없습니다.\n`,
+    ];
+    if (q) children.push(el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearRoutineSearch }));
+    if (state.routineFilter !== "all") children.push(q ? " " : "", el("button", { class: "linkish small", type: "button", text: "전체 루틴 보기", onclick: resetRoutineFilter }));
     list.append(
-      el("div", { class: "empty-note" }, [
-        `"${state.routineSearch.trim()}"에 맞는 루틴이 없습니다.\n`,
-        el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearRoutineSearch }),
-      ]),
+      el("div", { class: "empty-note" }, children),
     );
     return;
   }
@@ -2222,7 +2274,7 @@ function renderRoutineManageRows(list, searchInput = null) {
         await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
         r.enabled = val;
         await loadRoutines();
-        renderRoutineManageRows(list, searchInput);
+        renderRoutineManageRows(list, { searchInput, filterBar, countLabel });
       } catch (e) {
         notify(`변경 실패: ${e.message}`);
         throw e;
