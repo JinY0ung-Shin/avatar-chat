@@ -1872,11 +1872,20 @@ function openRoutineModal(routine) {
     ariaLabelledby: "routine-modal-title",
     canClose: () => !routineModalBusy,
     buildCard: (card, close) => {
-      const afterSave = async () => {
-        await Promise.all([loadRoutines(), loadRoutineConversations()]);
+      const afterSave = async (successMessage) => {
+        try {
+          await Promise.all([loadRoutines(), loadRoutineConversations()]);
+        } catch (err) {
+          routineModalBusy = false;
+          close();
+          renderView();
+          notify(`루틴은 저장했지만 목록 새로고침에 실패했습니다: ${err.message}`, "warn");
+          return;
+        }
         routineModalBusy = false;
         close();
         renderView();
+        notify(successMessage, "ok");
       };
       const setRoutineModalBusy = (busy) => {
         routineModalBusy = busy;
@@ -1925,7 +1934,7 @@ function openRoutineModal(routine) {
             } else {
               await api("/api/me/routines", { method: "POST", body: JSON.stringify(payload) });
             }
-            await afterSave();
+            await afterSave(isEdit ? "루틴을 수정했습니다." : "루틴을 추가했습니다.");
           } catch (err) {
             errorBox.textContent = err.message || "저장에 실패했습니다.";
             errorBox.hidden = false;
@@ -1985,6 +1994,7 @@ function openRoutineModal(routine) {
             routineModalBusy = false;
             close();
             renderView();
+            notify("루틴을 삭제했습니다.", "ok");
           } catch (err) {
             notify(`삭제 실패: ${err.message}`);
             delBtn.textContent = saved;
