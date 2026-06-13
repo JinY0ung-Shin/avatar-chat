@@ -6176,17 +6176,17 @@ function buildKnowledgeRepoCard() {
       text: "새로고침",
       title: "저장소를 원격에서 다시 가져옵니다",
       onclick: async () => {
-        refreshBtn.disabled = true;
         const saved = refreshBtn.textContent;
+        setFormBusy(card, true);
         refreshBtn.textContent = "새로고침 중…";
         try {
           await api("/api/me/knowledge-repo/refresh", { method: "POST" });
           invalidateSkillsCache(state.user.id);
           refreshBtn.textContent = "새로고침됨 ✓";
-          setTimeout(() => { refreshBtn.textContent = saved; refreshBtn.disabled = false; }, 1200);
+          setTimeout(() => { refreshBtn.textContent = saved; setFormBusy(card, false); }, 1200);
         } catch (e) {
           refreshBtn.textContent = saved;
-          refreshBtn.disabled = false;
+          setFormBusy(card, false);
           notify(`새로고침 실패: ${e.message}`);
         }
       },
@@ -6199,14 +6199,14 @@ function buildKnowledgeRepoCard() {
       title: "이 저장소 연결을 해제합니다 (GitHub의 저장소 자체는 삭제되지 않습니다)",
       onclick: async () => {
         if (!window.confirm("지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 아바타가 더 이상 그 스킬을 불러오지 않습니다.")) return;
-        disconnectBtn.disabled = true;
+        setFormBusy(card, true);
         try {
           const { user } = await api("/api/me/knowledge-repo", { method: "PUT", body: JSON.stringify({ repo: null }) });
           state.user = user;
           invalidateSkillsCache(state.user.id);
           renderView();
         } catch (e) {
-          disconnectBtn.disabled = false;
+          setFormBusy(card, false);
           notify(`연결 해제 실패: ${e.message}`);
         }
       },
@@ -6233,7 +6233,7 @@ function buildKnowledgeRepoCard() {
       const fd = new FormData(formEl);
       const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
-      setFormBusy(formEl, true);
+      setFormBusy(card, true);
       btn.textContent = "저장 중…";
       try {
         const { user } = await api("/api/me/knowledge-repo", {
@@ -6245,7 +6245,7 @@ function buildKnowledgeRepoCard() {
       } catch (err) {
         btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
-        setFormBusy(formEl, false);
+        setFormBusy(card, false);
       }
     },
   }, [
@@ -6713,17 +6713,17 @@ function buildGroupRepoCard(g) {
       type: "button",
       text: "새로고침",
       onclick: async () => {
-        refreshBtn.disabled = true;
         const saved = refreshBtn.textContent;
+        setFormBusy(wrap, true);
         refreshBtn.textContent = "새로고침 중…";
         try {
           await api(`/api/me/groups/${gid}/knowledge-repo/refresh`, { method: "POST" });
           invalidateSkillsCache(state.user.id);
           refreshBtn.textContent = "새로고침됨 ✓";
-          setTimeout(() => { refreshBtn.textContent = saved; refreshBtn.disabled = false; }, 1200);
+          setTimeout(() => { refreshBtn.textContent = saved; setFormBusy(wrap, false); }, 1200);
         } catch (e) {
           refreshBtn.textContent = saved;
-          refreshBtn.disabled = false;
+          setFormBusy(wrap, false);
           notify(`새로고침 실패: ${e.message}`);
         }
       },
@@ -6735,13 +6735,13 @@ function buildGroupRepoCard(g) {
       title: "이 그룹의 공용 저장소 연결을 해제합니다 (GitHub의 저장소 자체는 삭제되지 않습니다)",
       onclick: async () => {
         if (!window.confirm("이 그룹의 공용 지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 멤버 아바타들이 더 이상 그 스킬을 불러오지 않습니다.")) return;
-        disconnectBtn.disabled = true;
+        setFormBusy(wrap, true);
         try {
           await api(`/api/me/groups/${gid}/knowledge-repo`, { method: "PUT", body: JSON.stringify({ repo: null }) });
           invalidateSkillsCache(state.user.id);
           renderView();
         } catch (e) {
-          disconnectBtn.disabled = false;
+          setFormBusy(wrap, false);
           notify(`연결 해제 실패: ${e.message}`);
         }
       },
@@ -6757,7 +6757,7 @@ function buildGroupRepoCard(g) {
       const fd = new FormData(formEl);
       const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
-      setFormBusy(formEl, true);
+      setFormBusy(wrap, true);
       btn.textContent = "저장 중…";
       try {
         await api(`/api/me/groups/${gid}/knowledge-repo`, {
@@ -6772,7 +6772,7 @@ function buildGroupRepoCard(g) {
       } catch (err) {
         btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
-        setFormBusy(formEl, false);
+        setFormBusy(wrap, false);
       }
     },
   }, [
