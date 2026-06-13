@@ -315,6 +315,15 @@ function timeLabel(iso) {
 // true (default false), the load is skipped on subsequent re-opens.
 function wireExpander(btn, contents, load, { once = false } = {}) {
   let loaded = false;
+  const runLoad = async () => {
+    btn.disabled = true;
+    try {
+      await load(contents);
+      loaded = true;
+    } finally {
+      btn.disabled = false;
+    }
+  };
   btn.addEventListener("click", async () => {
     if (!contents.hidden) {
       contents.hidden = true;
@@ -324,9 +333,9 @@ function wireExpander(btn, contents, load, { once = false } = {}) {
     contents.hidden = false;
     btn.setAttribute("aria-expanded", "true");
     if (once && loaded) return;
-    await load(contents);
-    loaded = true;
+    await runLoad();
   });
+  return runLoad;
 }
 
 /* ============================================================ Avatar image */
@@ -5320,13 +5329,16 @@ function renderPluginRows(list) {
 
     // "선택" — clone/inspect the repo and show a checkbox per contained plugin.
     const selectBtn = el("button", { class: "msg-act", type: "button", "aria-label": "저장소 내 플러그인 선택", title: "저장소 내 플러그인 선택", "aria-expanded": "false" });
-    wireExpander(selectBtn, contents, async (c) => {
+    const reloadPluginContents = wireExpander(selectBtn, contents, async (c) => {
       c.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
       try {
         const { contents: info } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}/contents`);
         renderPluginContents(c, list, p, info);
       } catch (e) {
-        c.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+        c.replaceChildren(el("div", { class: "error-note" }, [
+          `조회 실패: ${e.message} `,
+          el("button", { class: "linkish small", type: "button", text: "다시 시도", onclick: () => reloadPluginContents() }),
+        ]));
       }
     });
     selectBtn.append(icon("menu"));
@@ -6028,13 +6040,16 @@ function buildKnowledgeRepoCard() {
     : `${u.knowledgeSelected.length}개 플러그인만 사용 중`;
   const contents = el("div", { class: "plugin-contents", hidden: "" });
   const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택", "aria-expanded": "false" });
-  wireExpander(pickBtn, contents, async (c) => {
+  const reloadKnowledgeContents = wireExpander(pickBtn, contents, async (c) => {
     c.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     try {
       const { contents: info } = await api("/api/me/knowledge-repo/contents");
       renderKnowledgeRepoContents(c, info);
     } catch (e) {
-      c.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+      c.replaceChildren(el("div", { class: "error-note" }, [
+        `조회 실패: ${e.message} `,
+        el("button", { class: "linkish small", type: "button", text: "다시 시도", onclick: () => reloadKnowledgeContents() }),
+      ]));
     }
   });
   card.append(
@@ -6474,13 +6489,16 @@ function buildGroupRepoCard(g) {
     : `${g.knowledgeSelected.length}개 플러그인만 사용 중`;
   const contents = el("div", { class: "plugin-contents", hidden: "" });
   const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택", "aria-expanded": "false" });
-  wireExpander(pickBtn, contents, async (c) => {
+  const reloadGroupContents = wireExpander(pickBtn, contents, async (c) => {
     c.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     try {
       const { contents: info } = await api(`/api/me/groups/${gid}/knowledge-repo/contents`);
       renderGroupRepoContents(c, info, g);
     } catch (e) {
-      c.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+      c.replaceChildren(el("div", { class: "error-note" }, [
+        `조회 실패: ${e.message} `,
+        el("button", { class: "linkish small", type: "button", text: "다시 시도", onclick: () => reloadGroupContents() }),
+      ]));
     }
   });
   wrap.append(el("div", { class: "kr-plugins" }, [el("span", { class: "muted", text: selSummary }), pickBtn]));
