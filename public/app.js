@@ -1599,15 +1599,17 @@ function routineTitle(r) {
 // buildCard(card, close) populates the card element and returns { focusTarget }
 // where focusTarget is the element to focus on fine-pointer devices.
 // onBeforeClose() is called before overlay.remove() (e.g. bookkeeping).
-function openModal({ cardClass, ariaLabelledby, buildCard, onBeforeClose } = {}) {
+function openModal({ cardClass, ariaLabelledby, buildCard, onBeforeClose, canClose } = {}) {
   const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const card = el("div", { class: `modal-card ${cardClass}`, tabindex: "-1" });
   const overlay = el("div", { class: "modal-overlay", role: "dialog", "aria-modal": "true", "aria-labelledby": ariaLabelledby }, [card]);
   const close = () => {
+    if (canClose && !canClose()) return false;
     onBeforeClose?.();
     overlay.remove();
     document.removeEventListener("keydown", onKeydown, true);
     restoreFocus?.focus?.();
+    return true;
   };
   const { focusTarget } = buildCard(card, close);
   overlay.addEventListener("mousedown", (e) => {
@@ -1739,7 +1741,13 @@ function buildScheduleForm(routine) {
     return null;
   };
 
-  return { element, getSchedulePayload, validateSchedule, applyKindVisibility };
+  const focusInvalid = () => {
+    const kind = kindSelect.value;
+    if (kind === "weekly" && selectedDays.size === 0) dayChips[0]?.focus();
+    else if (kind === "interval" && intervalMinutesFromInputs() < 15) intervalInput.focus();
+  };
+
+  return { element, getSchedulePayload, validateSchedule, focusInvalid, applyKindVisibility };
 }
 
 // Centered create/edit modal for a routine. `routine === null` = create mode.
@@ -1770,21 +1778,39 @@ function openRoutineModal(routine) {
     if (text) preview.innerHTML = renderMarkdown(text);
     else preview.replaceChildren(el("span", { class: "muted", text: "프롬프트 미리보기가 여기에 표시됩니다." }));
   };
-  promptInput.addEventListener("input", updatePreview);
+  promptInput.addEventListener("input", () => {
+    updatePreview();
+    if (promptInput.value.trim()) promptInput.removeAttribute("aria-invalid");
+  });
 
   const schedule = buildScheduleForm(routine);
 
   const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
   const saveBtn = el("button", { class: "primary", type: "submit", text: "저장" });
+  let routineModalBusy = false;
 
   openModal({
     cardClass: "routine-modal-card",
     ariaLabelledby: "routine-modal-title",
+    canClose: () => !routineModalBusy,
     buildCard: (card, close) => {
       const afterSave = async () => {
         await Promise.all([loadRoutines(), loadRoutineConversations()]);
+        routineModalBusy = false;
         close();
         renderView();
+      };
+      const setRoutineModalBusy = (busy) => {
+        routineModalBusy = busy;
+        card.setAttribute("aria-busy", busy ? "true" : "false");
+        nameInput.disabled = busy;
+        promptInput.disabled = busy;
+        schedule.element.querySelectorAll("input, select, button").forEach((control) => {
+          control.disabled = busy;
+        });
+        card.querySelectorAll(".routine-modal-actions button").forEach((control) => {
+          control.disabled = busy;
+        });
       };
 
       const form = el("form", {
@@ -1794,17 +1820,21 @@ function openRoutineModal(routine) {
           if (!promptInput.value.trim()) {
             errorBox.textContent = "작업 프롬프트를 입력해 주세요.";
             errorBox.hidden = false;
+            promptInput.setAttribute("aria-invalid", "true");
+            promptInput.focus();
             return;
           }
+          promptInput.removeAttribute("aria-invalid");
           const schedErr = schedule.validateSchedule();
           if (schedErr) {
             errorBox.textContent = schedErr;
             errorBox.hidden = false;
+            schedule.focusInvalid();
             return;
           }
           errorBox.hidden = true;
-          saveBtn.disabled = true;
           const savedLabel = saveBtn.textContent;
+          setRoutineModalBusy(true);
           saveBtn.textContent = "저장 중…";
           try {
             const payload = {
@@ -1822,7 +1852,7 @@ function openRoutineModal(routine) {
             errorBox.textContent = err.message || "저장에 실패했습니다.";
             errorBox.hidden = false;
             saveBtn.textContent = savedLabel;
-            saveBtn.disabled = false;
+            setRoutineModalBusy(false);
           }
         },
       }, [
@@ -1848,20 +1878,21 @@ function openRoutineModal(routine) {
       if (isEdit) {
         const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행" });
         runBtn.addEventListener("click", async () => {
-          runBtn.disabled = true;
           const saved = runBtn.textContent;
+          setRoutineModalBusy(true);
           runBtn.textContent = "실행 중…";
           try {
             const res = await api(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
             await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
             updateNotificationBadge();
             if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+            routineModalBusy = false;
             close();
             renderView();
           } catch (err) {
             notify(`루틴 실행 실패: ${err.message}`);
-            runBtn.disabled = false;
             runBtn.textContent = saved;
+            setRoutineModalBusy(false);
           }
         });
         leftActions.append(runBtn);
@@ -1869,20 +1900,21 @@ function openRoutineModal(routine) {
         const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
         delBtn.addEventListener("click", async () => {
           if (!window.confirm("이 루틴을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
-          delBtn.disabled = true;
           const saved = delBtn.textContent;
+          setRoutineModalBusy(true);
           delBtn.textContent = "삭제 중…";
           try {
             await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });
             state.routines = state.routines.filter((x) => x.id !== routine.id);
             state.routineConversations = state.routineConversations.filter((x) => x.routineId !== routine.id);
             if (state.routineConversationId === routine.conversationId) state.routineConversationId = "";
+            routineModalBusy = false;
             close();
             renderView();
           } catch (err) {
             notify(`삭제 실패: ${err.message}`);
             delBtn.textContent = saved;
-            delBtn.disabled = false;
+            setRoutineModalBusy(false);
           }
         });
         leftActions.append(delBtn);
