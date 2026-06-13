@@ -1924,13 +1924,9 @@ function openRoutineModal(routine) {
           setRoutineModalBusy(true);
           runBtn.textContent = "실행 중…";
           try {
-            const res = await api(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
-            await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
-            updateNotificationBadge();
-            if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+            await runRoutineNow(routine);
             routineModalBusy = false;
             close();
-            renderView();
           } catch (err) {
             notify(`루틴 실행 실패: ${err.message}`);
             runBtn.textContent = saved;
