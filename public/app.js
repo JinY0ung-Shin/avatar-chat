@@ -2115,7 +2115,7 @@ function buildRoutineManagePanel() {
     disabled: state.routines.length ? null : "",
     oninput: () => {
       state.routineSearch = search.value;
-      renderRoutineManageRows(list);
+      renderRoutineManageRows(list, search);
     },
   });
   const addBtn = el("button", { class: "primary small routine-add-btn", type: "button", onclick: () => openRoutineModal(null) });
@@ -2131,11 +2131,11 @@ function buildRoutineManagePanel() {
     search,
     list,
   ]);
-  renderRoutineManageRows(list);
+  renderRoutineManageRows(list, search);
   return card;
 }
 
-function renderRoutineManageRows(list) {
+function renderRoutineManageRows(list, searchInput = null) {
   list.replaceChildren();
   if (!state.routines.length) {
     list.append(el("div", { class: "empty-note", text: "아직 등록한 루틴이 없습니다. ‘루틴 추가’로 첫 루틴을 만들어 보세요." }));
@@ -2155,7 +2155,18 @@ function renderRoutineManageRows(list) {
       })
     : state.routines;
   if (!routines.length) {
-    list.append(el("div", { class: "empty-note", text: `"${state.routineSearch.trim()}"에 맞는 루틴이 없습니다.` }));
+    const clearRoutineSearch = () => {
+      state.routineSearch = "";
+      if (searchInput) searchInput.value = "";
+      renderRoutineManageRows(list, searchInput);
+      searchInput?.focus();
+    };
+    list.append(
+      el("div", { class: "empty-note" }, [
+        `"${state.routineSearch.trim()}"에 맞는 루틴이 없습니다.\n`,
+        el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearRoutineSearch }),
+      ]),
+    );
     return;
   }
   for (const r of routines) {
@@ -2171,7 +2182,7 @@ function renderRoutineManageRows(list) {
         await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
         r.enabled = val;
         await loadRoutines();
-        renderRoutineManageRows(list);
+        renderRoutineManageRows(list, searchInput);
       } catch (e) {
         notify(`변경 실패: ${e.message}`);
         throw e;
@@ -7015,9 +7026,24 @@ async function adminUsersCards() {
         (u.username || "").toLowerCase().includes(q),
     );
     if (!users.length) {
-      list.replaceChildren(
-        el("div", { class: "muted pad", text: q ? "일치하는 사용자가 없습니다." : "사용자가 없습니다." }),
-      );
+      if (q) {
+        const clearAdminUserSearch = () => {
+          state.adminUserSearch = "";
+          search.value = "";
+          renderList();
+          search.focus();
+        };
+        list.replaceChildren(
+          el("div", { class: "muted pad" }, [
+            `"${state.adminUserSearch.trim()}"에 맞는 사용자가 없습니다. `,
+            el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearAdminUserSearch }),
+          ]),
+        );
+      } else {
+        list.replaceChildren(
+          el("div", { class: "muted pad", text: "사용자가 없습니다." }),
+        );
+      }
       return;
     }
     list.replaceChildren(...users.map((u) => adminUserRow(u, reload)));
