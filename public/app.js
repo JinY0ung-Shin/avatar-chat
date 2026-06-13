@@ -7968,19 +7968,27 @@ async function adminGroupsCards() {
           method: "POST",
           body: JSON.stringify({ name, description: (fd.get("description") || "").toString().trim() }),
         });
-        formEl.reset();
-        state.adminGroupSearch = "";
-        search.value = "";
-        await reload();
       } catch (err) {
         notify(`그룹 생성 실패: ${err.message}`);
+        btn.textContent = saved;
+        setFormBusy(formEl, false);
+        return;
+      }
+      formEl.reset();
+      state.adminGroupSearch = "";
+      search.value = "";
+      try {
+        await reload();
+        notify(`그룹 "${name}"을 만들었습니다.`, "ok");
+      } catch (err) {
+        notify(`그룹은 만들었지만 목록 새로고침에 실패했습니다: ${err.message}`, "warn");
       } finally {
         btn.textContent = saved;
         setFormBusy(formEl, false);
       }
     },
   }, [
-    groupNameInput = el("input", { name: "name", placeholder: "그룹 이름", "aria-label": "그룹 이름" }),
+    groupNameInput = el("input", { name: "name", placeholder: "그룹 이름", "aria-label": "그룹 이름", required: "" }),
     el("input", { name: "description", placeholder: "설명 (선택)", "aria-label": "그룹 설명" }),
     el("button", { class: "primary", type: "submit", text: "그룹 만들기" }),
   ]);
@@ -8074,6 +8082,7 @@ function buildAdminGroupDetail(g, members, reload) {
       e.preventDefault();
       const formEl = e.currentTarget;
       const fd = new FormData(formEl);
+      const nextName = (fd.get("name") || "").toString().trim();
       const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
       setFormBusy(formEl, true);
@@ -8082,15 +8091,23 @@ function buildAdminGroupDetail(g, members, reload) {
         await api(`/api/admin/groups/${encodeURIComponent(g.id)}`, {
           method: "PATCH",
           body: JSON.stringify({
-            name: (fd.get("name") || "").toString().trim(),
+            name: nextName,
             description: (fd.get("description") || "").toString(),
           }),
         });
-        await reload();
       } catch (err) {
         notify(`수정 실패: ${err.message}`);
         btn.textContent = saved;
         setFormBusy(formEl, false);
+        return;
+      }
+      try {
+        await reload();
+        notify(`그룹 "${nextName || g.name}" 정보를 수정했습니다.`, "ok");
+      } catch (err) {
+        btn.textContent = saved;
+        setFormBusy(formEl, false);
+        notify(`그룹 정보는 수정했지만 목록 새로고침에 실패했습니다: ${err.message}`, "warn");
       }
     },
   }, [
@@ -8173,11 +8190,19 @@ function buildAdminGroupDetail(g, members, reload) {
     delBtn.textContent = "삭제 중…";
     try {
       await api(`/api/admin/groups/${encodeURIComponent(g.id)}`, { method: "DELETE" });
-      await reload();
     } catch (e) {
       delBtn.textContent = saved;
       delBtn.disabled = false;
       notify(`삭제 실패: ${e.message}`);
+      return;
+    }
+    try {
+      await reload();
+      notify(`그룹 "${g.name}"을 삭제했습니다.`, "ok");
+    } catch (e) {
+      delBtn.textContent = saved;
+      delBtn.disabled = false;
+      notify(`그룹은 삭제했지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
     }
   });
 
@@ -8219,6 +8244,7 @@ function adminGroupMemberRow(groupId, m, reload) {
     }
     try {
       await reload();
+      notify(`${m.displayName}님의 그룹 관리자 역할을 ${isAdmin ? "해제" : "부여"}했습니다.`, "ok");
     } catch (e) {
       roleBtn.textContent = saved;
       if (row.isConnected) setFormBusy(row, false);
@@ -8245,6 +8271,7 @@ function adminGroupMemberRow(groupId, m, reload) {
     }
     try {
       await reload();
+      notify(`${m.displayName}님을 그룹에서 제거했습니다.`, "ok");
     } catch (e) {
       del.title = savedTitle;
       del.setAttribute("aria-label", savedLabel || `${m.displayName} 제거`);
