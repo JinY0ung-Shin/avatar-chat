@@ -2539,17 +2539,18 @@ async function renderInboxView() {
           onclick: async (event) => {
             const btn = event.currentTarget;
             const saved = btn.textContent;
-            btn.disabled = true;
+            setFormBusy(card, true);
             btn.textContent = "처리 중…";
             try {
               await api("/api/me/notifications/read-all", { method: "POST" });
             } catch (e) {
-              btn.disabled = false;
+              setFormBusy(card, false);
               btn.textContent = saved;
               notify(`처리 실패: ${e.message}`);
               return;
             }
             await refresh();
+            setFormBusy(card, false);
           },
         }),
       );
@@ -2564,17 +2565,18 @@ async function renderInboxView() {
             if (!window.confirm(`알림 ${total}개를 모두 삭제할까요? 정보 요청은 삭제되지 않습니다.`)) return;
             const btn = event.currentTarget;
             const saved = btn.textContent;
-            btn.disabled = true;
+            setFormBusy(card, true);
             btn.textContent = "삭제 중…";
             try {
               await api("/api/me/notifications", { method: "DELETE" });
             } catch (e) {
-              btn.disabled = false;
+              setFormBusy(card, false);
               btn.textContent = saved;
               notify(`삭제 실패: ${e.message}`);
               return;
             }
             await refresh();
+            setFormBusy(card, false);
           },
         }),
       );
