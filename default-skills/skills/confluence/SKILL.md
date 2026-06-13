@@ -1,6 +1,6 @@
 ---
 name: confluence
-description: 사내 Confluence 문서를 검색, 조회, 생성, 업데이트해야 할 때 사용한다. 앱 공용 MCP 도구 `mcp__confluence__*`를 사용하며, host는 서버 환경변수 `CONFLUENCE_URL`, 인증은 소유자 시크릿 `CONFLUENCE_PAT`로 제공된다.
+description: 사내 Confluence 문서와 첨부 이미지/draw.io 자산을 검색, 조회, 생성, 업데이트해야 할 때 사용한다. 앱 공용 MCP 도구 `mcp__confluence__*`를 사용하며, host는 서버 환경변수 `CONFLUENCE_URL`, 인증은 소유자 시크릿 `CONFLUENCE_PAT`로 제공된다.
 ---
 
 # Confluence
@@ -20,8 +20,13 @@ description: 사내 Confluence 문서를 검색, 조회, 생성, 업데이트해
 - space 목록: `mcp__confluence__list_spaces`
 - CQL 검색: `mcp__confluence__search`
 - 페이지 조회: `mcp__confluence__get_page`
+- 페이지 첨부 목록: `mcp__confluence__list_attachments`
+- 첨부 다운로드: `mcp__confluence__get_attachment`
+- 페이지 본문에서 이미지/draw.io 참조 추출: `mcp__confluence__extract_page_assets`
 
 검색은 raw CQL을 쓰거나 `space`, `title`, `text`, `label` 조건을 조합한다. 페이지 URL이나 ID가 있으면 ID를 확인해 `get_page`로 읽는다.
+
+이미지나 draw.io 그래프가 필요하면 먼저 `extract_page_assets`로 페이지 storage body의 `ac:image`, `ri:attachment`, `ac:structured-macro ac:name="drawio"` 참조를 확인하고, 필요한 첨부를 `get_attachment`로 가져온다. PNG/JPEG/GIF/WebP 첨부는 이미지 블록으로 반환될 수 있다. draw.io가 `.drawio` XML로만 저장된 경우에는 XML 내용을 읽어 구조를 파악할 수 있지만, 별도 렌더러 없이 새 이미지로 변환하지는 않는다.
 
 ## 쓰기 작업
 

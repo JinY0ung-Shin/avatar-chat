@@ -276,6 +276,9 @@ describe("confluence tools", () => {
       "list_spaces",
       "search",
       "get_page",
+      "list_attachments",
+      "get_attachment",
+      "extract_page_assets",
       "create_page",
       "update_page",
     ]);
@@ -338,6 +341,179 @@ describe("confluence tools", () => {
     expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer super-secret-pat");
     expect(result.content[0].text).toContain("API Guide");
     expect(result.content[0].text).toContain("https://confluence.internal/confluence/pages/123");
+  });
+
+  it("lists page attachments with download metadata", async () => {
+    const calls: { url: URL; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: new URL(String(input)), init: init ?? {} });
+      return new Response(
+        JSON.stringify({
+          results: [
+            {
+              id: "att-1",
+              type: "attachment",
+              title: "diagram.png",
+              metadata: { mediaType: "image/png", comment: "Architecture" },
+              extensions: { fileSize: 42 },
+              version: { number: 3 },
+              _links: { webui: "/pages/123?preview=att-1", download: "/download/attachments/123/diagram.png" },
+            },
+          ],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const result = await callTool(
+      buildConfluenceTools({
+        config: makeConfig("https://confluence.internal/confluence"),
+        ownerSecrets: { CONFLUENCE_PAT: "pat" },
+        elevated: false,
+      }),
+      "list_attachments",
+      { page_id: "123", media_type: "image/png" },
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(calls[0].url.pathname).toBe("/confluence/rest/api/content/123/child/attachment");
+    expect(calls[0].url.searchParams.get("expand")).toBe("version,metadata,extensions");
+    expect((calls[0].init.headers as Record<string, string>).Authorization).toBe("Bearer pat");
+    const payload = JSON.parse(result.content[0].text ?? "{}");
+    expect(payload.attachments[0]).toMatchObject({
+      id: "att-1",
+      title: "diagram.png",
+      mediaType: "image/png",
+      fileSize: 42,
+      downloadUrl: "https://confluence.internal/confluence/download/attachments/123/diagram.png",
+    });
+  });
+
+  it("downloads supported image attachments as MCP image blocks", async () => {
+    const calls: { url: URL; init: RequestInit }[] = [];
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ url, init: init ?? {} });
+      if (url.pathname.endsWith("/rest/api/content/att-1")) {
+        return new Response(
+          JSON.stringify({
+            id: "att-1",
+            type: "attachment",
+            title: "diagram.png",
+            metadata: { mediaType: "image/png" },
+            extensions: { fileSize: 3 },
+            version: { number: 1 },
+            _links: { download: "/download/attachments/123/diagram.png" },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { "content-type": "image/png", "content-length": "3" },
+      });
+    });
+
+    const result = await callTool(
+      buildConfluenceTools({
+        config: makeConfig("https://confluence.internal/confluence"),
+        ownerSecrets: { CONFLUENCE_PAT: "pat" },
+        elevated: false,
+      }),
+      "get_attachment",
+      { attachment_id: "att-1" },
+    );
+
+    expect(result.isError).not.toBe(true);
+    expect(calls.map((call) => call.url.pathname)).toEqual([
+      "/confluence/rest/api/content/att-1",
+      "/confluence/download/attachments/123/diagram.png",
+    ]);
+    expect((calls[1].init.headers as Record<string, string>).Authorization).toBe("Bearer pat");
+    const payload = JSON.parse(result.content[0].text ?? "{}");
+    expect(payload.download.returnedAs).toBe("image");
+    expect(result.content[1]).toMatchObject({
+      type: "image",
+      data: Buffer.from([1, 2, 3]).toString("base64"),
+      mimeType: "image/png",
+    });
+  });
+
+  it("extracts page image and draw.io asset references", async () => {
+    vi.stubGlobal("fetch", async (input: string | URL | Request) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("/rest/api/content/page-1/child/attachment")) {
+        return new Response(
+          JSON.stringify({
+            results: [
+              {
+                id: "img-1",
+                type: "attachment",
+                title: "architecture.png",
+                metadata: { mediaType: "image/png" },
+                extensions: { fileSize: 10 },
+                _links: { download: "/download/attachments/page-1/architecture.png" },
+              },
+              {
+                id: "draw-1",
+                type: "attachment",
+                title: "flow.drawio",
+                metadata: { mediaType: "application/vnd.jgraph.mxfile" },
+                extensions: { fileSize: 20 },
+                _links: { download: "/download/attachments/page-1/flow.drawio" },
+              },
+              {
+                id: "draw-preview",
+                type: "attachment",
+                title: "flow.png",
+                metadata: { mediaType: "image/png" },
+                extensions: { fileSize: 30 },
+                _links: { download: "/download/attachments/page-1/flow.png" },
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          id: "page-1",
+          type: "page",
+          title: "Architecture",
+          space: { key: "DEV" },
+          version: { number: 2 },
+          _links: { webui: "/pages/page-1" },
+          body: {
+            storage: {
+              value:
+                '<p>Diagram</p><ac:image><ri:attachment ri:filename="architecture.png" /></ac:image>' +
+                '<ac:structured-macro ac:name="drawio"><ac:parameter ac:name="diagramName">flow.drawio</ac:parameter></ac:structured-macro>',
+            },
+          },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    });
+
+    const result = await callTool(
+      buildConfluenceTools({
+        config: makeConfig("https://confluence.internal/confluence"),
+        ownerSecrets: { CONFLUENCE_PAT: "pat" },
+        elevated: false,
+      }),
+      "extract_page_assets",
+      { page_id: "page-1" },
+    );
+
+    expect(result.isError).not.toBe(true);
+    const payload = JSON.parse(result.content[0].text ?? "{}");
+    expect(payload.references.imageFilenames).toEqual(["architecture.png"]);
+    expect(payload.references.drawioMacros[0].candidateFilenames).toContain("flow.drawio");
+    expect(payload.matched.referencedImages[0].title).toBe("architecture.png");
+    expect(payload.matched.drawioAttachments.map((attachment: { title: string }) => attachment.title)).toEqual([
+      "flow.drawio",
+      "flow.png",
+    ]);
   });
 
   it("blocks write tools when the viewer is not elevated", async () => {

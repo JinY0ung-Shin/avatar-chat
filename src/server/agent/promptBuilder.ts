@@ -238,7 +238,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
   }
   if (request.confluenceUrlConfigured && request.confluencePatConfigured) {
     lines.push(
-      "The shared Confluence tools are enabled. Use the `mcp__confluence__*` tools for Confluence search / page retrieval / space lookup, and only attempt page creation or updates when you have owner or trusted-user permission.",
+      "The shared Confluence tools are enabled. Use the `mcp__confluence__*` tools for Confluence search / page retrieval / space lookup / attachment and image asset retrieval, and only attempt page creation or updates when you have owner or trusted-user permission.",
     );
   } else {
     const missing = [

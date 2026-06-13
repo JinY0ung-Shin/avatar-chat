@@ -114,7 +114,7 @@ uploaded avatar images persist under `APP_DATA_DIR`. The container runs as the n
 | `READONLY_TOOLS` | Tool allowlist for unelevated colleague chat sessions (default `Read,Glob,Grep`). |
 | `GITHUB_HOST` | Internal/default GitHub host for shorthand repo values like `owner/repo` (default `github.com`). Knowledge repos must use this host; full github.com URLs can use `GITHUB_TOKEN`. |
 | `GITHUB_CA_CERT` | Optional PEM CA bundle for on-prem GitHub Enterprise (GHES) with a private CA. |
-| `CONFLUENCE_URL` | Optional app-wide Confluence Server/Data Center base URL. Per-avatar PATs are stored as the `CONFLUENCE_PAT` user secret. |
+| `CONFLUENCE_URL` | Optional app-wide Confluence Server/Data Center base URL for page, attachment, and image/draw.io asset tools. Per-avatar PATs are stored as the `CONFLUENCE_PAT` user secret. |
 | `LOG_LEVEL` | Pino log level: `trace`/`debug`/`info`/`warn`/`error` (default `debug` in dev, `info` in prod). |
 | `MAX_TURNS` | Maximum agent turns per chat run (default `1000`). |
 | `DEFAULT_PLUGINS_DIR` | Path to built-in skills loaded for every avatar (default `<cwd>/default-skills`). |

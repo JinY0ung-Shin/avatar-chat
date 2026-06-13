@@ -50,7 +50,7 @@ export function withTempDir(label: string, onSetup?: () => void): () => string {
 }
 
 export interface ToolResult {
-  content: { type: string; text: string }[];
+  content: { type: string; text?: string; data?: string; mimeType?: string }[];
   isError?: boolean;
 }
 

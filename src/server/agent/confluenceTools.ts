@@ -11,6 +11,9 @@ export const CONFLUENCE_TOOL_NAMES = [
   "mcp__confluence__list_spaces",
   "mcp__confluence__search",
   "mcp__confluence__get_page",
+  "mcp__confluence__list_attachments",
+  "mcp__confluence__get_attachment",
+  "mcp__confluence__extract_page_assets",
   "mcp__confluence__create_page",
   "mcp__confluence__update_page",
 ] as const;
@@ -28,7 +31,22 @@ type JsonRecord = Record<string, unknown>;
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_BODY_CHARS = 20_000;
+const DEFAULT_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
+const MAX_ATTACHMENT_TEXT_CHARS = 40_000;
 const WRITE_DENIED = "Confluence write tools can only be used in avatar owner or trusted user conversations.";
+const SUPPORTED_IMAGE_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+const TEXT_ATTACHMENT_MEDIA_TYPES = new Set([
+  "application/json",
+  "application/xml",
+  "application/vnd.jgraph.mxfile",
+  "image/svg+xml",
+  "text/csv",
+  "text/html",
+  "text/markdown",
+  "text/plain",
+  "text/xml",
+]);
 
 function asRecord(value: unknown): JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
@@ -44,8 +62,60 @@ function asNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function asNumberish(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
 function truncate(value: string, max = MAX_BODY_CHARS): string {
   return value.length > max ? `${value.slice(0, max)}\n\n[truncated ${value.length - max} chars]` : value;
+}
+
+function unique(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
+}
+
+function normalizeMediaType(value: string | null | undefined): string {
+  const mediaType = (value ?? "").split(";")[0].trim().toLowerCase();
+  return mediaType === "image/jpg" ? "image/jpeg" : mediaType;
+}
+
+function mediaTypeFromFilename(filename: string): string {
+  const lower = filename.toLowerCase();
+  if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+  if (lower.endsWith(".png")) return "image/png";
+  if (lower.endsWith(".gif")) return "image/gif";
+  if (lower.endsWith(".webp")) return "image/webp";
+  if (lower.endsWith(".svg")) return "image/svg+xml";
+  if (lower.endsWith(".drawio")) return "application/vnd.jgraph.mxfile";
+  if (lower.endsWith(".xml")) return "application/xml";
+  if (lower.endsWith(".json")) return "application/json";
+  if (lower.endsWith(".md") || lower.endsWith(".markdown")) return "text/markdown";
+  if (lower.endsWith(".txt")) return "text/plain";
+  if (lower.endsWith(".csv")) return "text/csv";
+  if (lower.endsWith(".html") || lower.endsWith(".htm")) return "text/html";
+  return "";
+}
+
+function isSupportedImageMediaType(mediaType: string): boolean {
+  return SUPPORTED_IMAGE_MEDIA_TYPES.has(normalizeMediaType(mediaType));
+}
+
+function isTextAttachment(mediaType: string, title: string): boolean {
+  const normalized = normalizeMediaType(mediaType) || mediaTypeFromFilename(title);
+  return normalized.startsWith("text/") || TEXT_ATTACHMENT_MEDIA_TYPES.has(normalized);
 }
 
 function cqlQuote(value: string): string {
@@ -86,6 +156,17 @@ function webBase(rawUrl: string): string {
   return trimmed;
 }
 
+function resolveConfluenceLink(baseUrl: string, link: string): string | null {
+  const trimmed = link.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed).toString();
+  } catch {
+    const base = webBase(baseUrl).replace(/\/+$/g, "");
+    return trimmed.startsWith("/") ? `${base}${trimmed}` : `${base}/${trimmed}`;
+  }
+}
+
 function apiBase(rawUrl: string): string {
   return `${webBase(rawUrl)}/rest/api`;
 }
@@ -107,7 +188,7 @@ function normalizeBaseUrl(rawUrl: string): string | null {
 
 function webUrl(baseUrl: string, links: JsonRecord): string | null {
   const webui = asString(links.webui);
-  return webui ? `${webBase(baseUrl)}${webui}` : null;
+  return webui ? resolveConfluenceLink(baseUrl, webui) : null;
 }
 
 function credentials(ctx: ConfluenceToolsContext):
@@ -192,6 +273,55 @@ async function requestJson(
   }
 }
 
+async function requestBinary(
+  ctx: ConfluenceToolsContext,
+  url: string,
+  maxBytes: number,
+): Promise<
+  | { ok: true; baseUrl: string; data: Buffer; mediaType: string; bytes: number }
+  | { ok: false; message: string }
+> {
+  const creds = credentials(ctx);
+  if (!creds.ok) return creds;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Accept: "*/*",
+        Authorization: `Bearer ${creds.pat}`,
+      },
+      signal: controller.signal,
+    });
+    const contentLength = asNumberish(res.headers.get("content-length"));
+    if (contentLength !== null && contentLength > maxBytes) {
+      return { ok: false, message: `Confluence attachment is too large (${contentLength} bytes, max ${maxBytes}).` };
+    }
+    if (!res.ok) {
+      const raw = await res.text().catch(() => "");
+      const detail = raw ? `: ${truncate(raw.replace(/\s+/g, " "), 500)}` : "";
+      return { ok: false, message: `Confluence HTTP ${res.status}${detail}` };
+    }
+    const data = Buffer.from(await res.arrayBuffer());
+    if (data.length > maxBytes) {
+      return { ok: false, message: `Confluence attachment is too large (${data.length} bytes, max ${maxBytes}).` };
+    }
+    return {
+      ok: true,
+      baseUrl: creds.baseUrl,
+      data,
+      mediaType: normalizeMediaType(res.headers.get("content-type")),
+      bytes: data.length,
+    };
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    return { ok: false, message: `Confluence request failed: ${msg}` };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function formatPageSummary(baseUrl: string, page: JsonRecord): JsonRecord {
   const space = asRecord(page.space);
   const version = asRecord(page.version);
@@ -209,6 +339,205 @@ function pageBody(page: JsonRecord): string {
   const body = asRecord(page.body);
   const storage = asRecord(body.storage);
   return asString(storage.value);
+}
+
+function attachmentDownloadUrl(baseUrl: string, attachment: JsonRecord): string | null {
+  const links = asRecord(attachment._links);
+  return resolveConfluenceLink(baseUrl, asString(links.download) || asString(attachment.downloadLink));
+}
+
+function formatAttachmentSummary(baseUrl: string, attachment: JsonRecord): JsonRecord {
+  const links = asRecord(attachment._links);
+  const metadata = asRecord(attachment.metadata);
+  const extensions = asRecord(attachment.extensions);
+  const version = asRecord(attachment.version);
+  const title = asString(attachment.title) || asString(attachment.filename);
+  const mediaType =
+    normalizeMediaType(
+      asString(metadata.mediaType) || asString(extensions.mediaType) || asString(attachment.mediaType),
+    ) || mediaTypeFromFilename(title);
+  return {
+    id: asString(attachment.id),
+    title,
+    type: asString(attachment.type),
+    mediaType,
+    fileSize:
+      asNumberish(extensions.fileSize) ??
+      asNumberish(metadata.fileSize) ??
+      asNumberish(attachment.fileSize),
+    version: asNumberish(version.number),
+    comment: asString(metadata.comment) || asString(attachment.comment),
+    webUrl: webUrl(baseUrl, links) || resolveConfluenceLink(baseUrl, asString(attachment.webuiLink)),
+    downloadUrl: attachmentDownloadUrl(baseUrl, attachment),
+  };
+}
+
+function attachmentsFrom(data: JsonRecord): JsonRecord[] {
+  return Array.isArray(data.results) ? data.results.map(asRecord) : [];
+}
+
+function attachmentTitle(summary: JsonRecord): string {
+  return asString(summary.title);
+}
+
+function matchesAttachmentFilter(summary: JsonRecord, args: { filename?: string; media_type?: string }): boolean {
+  const filename = args.filename?.trim();
+  const mediaType = normalizeMediaType(args.media_type);
+  if (filename && attachmentTitle(summary) !== filename) return false;
+  if (mediaType && normalizeMediaType(asString(summary.mediaType)) !== mediaType) return false;
+  return true;
+}
+
+async function fetchPageAttachments(
+  ctx: ConfluenceToolsContext,
+  pageId: string,
+  args: { limit?: number; start?: number } = {},
+): Promise<{ ok: true; baseUrl: string; data: JsonRecord; attachments: JsonRecord[] } | { ok: false; message: string }> {
+  const res = await requestJson(ctx, `/content/${encodeURIComponent(pageId)}/child/attachment`, {
+    query: {
+      expand: "version,metadata,extensions",
+      limit: args.limit ?? 25,
+      start: args.start ?? 0,
+    },
+  });
+  if (!res.ok) return res;
+  return { ok: true, baseUrl: res.baseUrl, data: res.data, attachments: attachmentsFrom(res.data) };
+}
+
+async function resolveAttachment(
+  ctx: ConfluenceToolsContext,
+  args: { page_id?: string; attachment_id?: string; filename?: string },
+): Promise<{ ok: true; baseUrl: string; attachment: JsonRecord } | { ok: false; message: string }> {
+  const attachmentId = args.attachment_id?.trim();
+  const filename = args.filename?.trim();
+  const pageId = args.page_id?.trim();
+
+  if (pageId) {
+    const listed = await fetchPageAttachments(ctx, pageId, { limit: 100 });
+    if (!listed.ok) return listed;
+    const found = listed.attachments.find((attachment) => {
+      if (attachmentId && asString(attachment.id) === attachmentId) return true;
+      return Boolean(filename && (asString(attachment.title) || asString(attachment.filename)) === filename);
+    });
+    if (found) return { ok: true, baseUrl: listed.baseUrl, attachment: found };
+    if (filename) {
+      return { ok: false, message: `No Confluence attachment named "${filename}" was found on page ${pageId}.` };
+    }
+  }
+
+  if (attachmentId) {
+    const res = await requestJson(ctx, `/content/${encodeURIComponent(attachmentId)}`, {
+      query: { expand: "version,metadata,extensions" },
+    });
+    if (!res.ok) return res;
+    return { ok: true, baseUrl: res.baseUrl, attachment: res.data };
+  }
+
+  return { ok: false, message: "Provide attachment_id, or provide page_id with filename." };
+}
+
+function effectiveAttachmentMediaType(summary: JsonRecord, binaryMediaType?: string): string {
+  const title = attachmentTitle(summary);
+  const binary = normalizeMediaType(binaryMediaType);
+  if (binary && binary !== "application/octet-stream") return binary;
+  return normalizeMediaType(asString(summary.mediaType)) || mediaTypeFromFilename(title) || binary;
+}
+
+function decodeEntities(value: string): string {
+  return value
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex: string) => String.fromCodePoint(Number.parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, code: string) => String.fromCodePoint(Number.parseInt(code, 10)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+}
+
+function stripTags(value: string): string {
+  return decodeEntities(value.replace(/<[^>]*>/g, "")).trim();
+}
+
+function extractAssetReferences(storageBody: string): {
+  attachmentFilenames: string[];
+  imageFilenames: string[];
+  drawioMacros: JsonRecord[];
+} {
+  const attachmentFilenames: string[] = [];
+  const imageFilenames: string[] = [];
+
+  const attachmentRe = /<ri:attachment\b[^>]*\bri:filename=(["'])(.*?)\1/gi;
+  for (const match of storageBody.matchAll(attachmentRe)) {
+    attachmentFilenames.push(decodeEntities(match[2] ?? ""));
+  }
+
+  const imageRe = /<ac:image\b[\s\S]*?<\/ac:image>|<ac:image\b[^>]*\/>/gi;
+  for (const match of storageBody.matchAll(imageRe)) {
+    for (const attachment of match[0].matchAll(attachmentRe)) {
+      imageFilenames.push(decodeEntities(attachment[2] ?? ""));
+    }
+  }
+
+  const drawioMacros: JsonRecord[] = [];
+  const macroRe =
+    /<ac:structured-macro\b(?=[^>]*\bac:name=(["'])drawio\1)[^>]*>[\s\S]*?<\/ac:structured-macro>/gi;
+  const paramRe =
+    /<ac:parameter\b[^>]*\bac:name=(["'])([^"']+)\1[^>]*>([\s\S]*?)<\/ac:parameter>/gi;
+  const fileLikeRe = /[^<>"']+\.(?:drawio|png|jpe?g|gif|webp|svg|xml)\b/gi;
+  for (const match of storageBody.matchAll(macroRe)) {
+    const block = match[0];
+    const parameters: JsonRecord = {};
+    const candidates: string[] = [];
+    for (const param of block.matchAll(paramRe)) {
+      const name = decodeEntities(param[2] ?? "").trim();
+      const value = stripTags(param[3] ?? "");
+      if (!name) continue;
+      parameters[name] = value;
+      if (/\b(diagram|file|filename|name)\b/i.test(name) && /\.[a-z0-9]+$/i.test(value)) {
+        candidates.push(value);
+      }
+    }
+    for (const fileLike of block.matchAll(fileLikeRe)) {
+      candidates.push(stripTags(fileLike[0]));
+    }
+    drawioMacros.push({ parameters, candidateFilenames: unique(candidates) });
+  }
+
+  return {
+    attachmentFilenames: unique(attachmentFilenames),
+    imageFilenames: unique(imageFilenames),
+    drawioMacros,
+  };
+}
+
+function isDrawioAttachment(summary: JsonRecord): boolean {
+  const title = attachmentTitle(summary).toLowerCase();
+  const mediaType = normalizeMediaType(asString(summary.mediaType));
+  return title.endsWith(".drawio") || title.includes("drawio") || mediaType === "application/vnd.jgraph.mxfile";
+}
+
+function isImageAttachment(summary: JsonRecord): boolean {
+  const mediaType = normalizeMediaType(asString(summary.mediaType)) || mediaTypeFromFilename(attachmentTitle(summary));
+  return isSupportedImageMediaType(mediaType);
+}
+
+function findByTitle(summaries: JsonRecord[], title: string): JsonRecord | null {
+  return summaries.find((summary) => attachmentTitle(summary) === title) ?? null;
+}
+
+function assetStem(filename: string): string {
+  const name = filename.trim().toLowerCase().split(/[\\/]/).pop() ?? "";
+  return name
+    .replace(/\.(png|jpe?g|gif|webp|svg|xml)$/i, "")
+    .replace(/\.drawio$/i, "");
+}
+
+function matchesDrawioCandidate(summary: JsonRecord, candidates: string[]): boolean {
+  const title = attachmentTitle(summary);
+  if (candidates.includes(title)) return true;
+  if (!isImageAttachment(summary)) return false;
+  const titleStem = assetStem(title);
+  return Boolean(titleStem && candidates.some((candidate) => assetStem(candidate) === titleStem));
 }
 
 export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
@@ -315,6 +644,208 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
           body_storage: max === 0 ? undefined : truncate(body, max),
         };
         return text(JSON.stringify(payload, null, 2));
+      },
+    ),
+    tool(
+      "list_attachments",
+      "Fetch metadata for attachments on a Confluence page. Use this before downloading images or draw.io files.",
+      {
+        page_id: z.string().describe("Confluence page id"),
+        filename: z.string().optional().describe("Exact filename to filter locally"),
+        media_type: z.string().optional().describe("Exact media type to filter locally, e.g. image/png"),
+        limit: z.number().int().min(1).max(100).optional().describe("Number of results to fetch, default 25"),
+        start: z.number().int().min(0).optional().describe("Pagination start offset, default 0"),
+      },
+      async (args) => {
+        const res = await fetchPageAttachments(ctx, args.page_id, { limit: args.limit, start: args.start });
+        if (!res.ok) return text(res.message, true);
+        const attachments = res.attachments
+          .map((attachment) => formatAttachmentSummary(res.baseUrl, attachment))
+          .filter((summary) => matchesAttachmentFilter(summary, args));
+        return text(
+          JSON.stringify(
+            {
+              page_id: args.page_id,
+              size: attachments.length,
+              attachments,
+            },
+            null,
+            2,
+          ),
+        );
+      },
+    ),
+    tool(
+      "get_attachment",
+      "Download a Confluence attachment by attachment id, or by page id + filename. Supported image attachments are returned as MCP image blocks.",
+      {
+        page_id: z.string().optional().describe("Confluence page id. Required when using filename."),
+        attachment_id: z.string().optional().describe("Confluence attachment content id"),
+        filename: z.string().optional().describe("Exact attachment filename on the page"),
+        max_bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_ATTACHMENT_BYTES)
+          .optional()
+          .describe(`Maximum bytes to download, default ${DEFAULT_ATTACHMENT_BYTES}`),
+        max_text_chars: z
+          .number()
+          .int()
+          .min(0)
+          .max(100_000)
+          .optional()
+          .describe(`Maximum text/XML characters to return for non-image text attachments, default ${MAX_ATTACHMENT_TEXT_CHARS}`),
+      },
+      async (args) => {
+        const resolved = await resolveAttachment(ctx, args);
+        if (!resolved.ok) return text(resolved.message, true);
+
+        const summary = formatAttachmentSummary(resolved.baseUrl, resolved.attachment);
+        const downloadUrl = asString(summary.downloadUrl);
+        if (!downloadUrl) {
+          return text(
+            JSON.stringify(
+              {
+                attachment: summary,
+                error: "The attachment metadata did not include a download URL.",
+              },
+              null,
+              2,
+            ),
+            true,
+          );
+        }
+
+        const bytes = await requestBinary(ctx, downloadUrl, args.max_bytes ?? DEFAULT_ATTACHMENT_BYTES);
+        if (!bytes.ok) return text(bytes.message, true);
+
+        const mediaType = effectiveAttachmentMediaType(summary, bytes.mediaType);
+        summary.mediaType = mediaType;
+        const payload: JsonRecord = {
+          attachment: summary,
+          download: {
+            bytes: bytes.bytes,
+            returnedAs: "metadata",
+          },
+        };
+        const content: Array<
+          { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+        > = [];
+
+        if (isSupportedImageMediaType(mediaType)) {
+          payload.download = { bytes: bytes.bytes, returnedAs: "image" };
+          content.push({ type: "text", text: JSON.stringify(payload, null, 2) });
+          content.push({ type: "image", data: bytes.data.toString("base64"), mimeType: mediaType });
+          return { content };
+        }
+
+        if (isTextAttachment(mediaType, attachmentTitle(summary))) {
+          const decoded = bytes.data.toString("utf8");
+          payload.download = { bytes: bytes.bytes, returnedAs: "text" };
+          payload.text = args.max_text_chars === 0 ? undefined : truncate(decoded, args.max_text_chars ?? MAX_ATTACHMENT_TEXT_CHARS);
+        } else {
+          payload.note = "Attachment bytes were downloaded but not returned inline because this media type is not an inline image or text/XML attachment.";
+        }
+        return text(JSON.stringify(payload, null, 2));
+      },
+    ),
+    tool(
+      "extract_page_assets",
+      "Inspect a Confluence page storage body for image and draw.io references, then match those references with page attachments.",
+      {
+        page_id: z.string().describe("Confluence page id"),
+        include_images: z.boolean().optional().describe("Download matched raster image attachments as MCP image blocks, default false"),
+        max_images: z.number().int().min(1).max(5).optional().describe("Maximum image blocks to return, default 3"),
+        max_bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(MAX_ATTACHMENT_BYTES)
+          .optional()
+          .describe(`Maximum bytes per downloaded image, default ${DEFAULT_ATTACHMENT_BYTES}`),
+      },
+      async (args) => {
+        const page = await requestJson(ctx, `/content/${encodeURIComponent(args.page_id)}`, {
+          query: { expand: "body.storage,version,space,ancestors,metadata.labels" },
+        });
+        if (!page.ok) return text(page.message, true);
+        const attachments = await fetchPageAttachments(ctx, args.page_id, { limit: 100 });
+        if (!attachments.ok) return text(attachments.message, true);
+
+        const body = pageBody(page.data);
+        const references = extractAssetReferences(body);
+        const summaries = attachments.attachments.map((attachment) =>
+          formatAttachmentSummary(attachments.baseUrl, attachment),
+        );
+        const referencedImages = references.imageFilenames
+          .map((filename) => findByTitle(summaries, filename))
+          .filter((summary): summary is JsonRecord => Boolean(summary));
+        const referencedAttachments = references.attachmentFilenames
+          .map((filename) => findByTitle(summaries, filename))
+          .filter((summary): summary is JsonRecord => Boolean(summary));
+        const drawioCandidateFilenames = unique(
+          references.drawioMacros.flatMap((macro) =>
+            Array.isArray(macro.candidateFilenames) ? macro.candidateFilenames.map(asString) : [],
+          ),
+        );
+        const drawioAttachments = summaries.filter((summary) => {
+          if (isDrawioAttachment(summary)) return true;
+          return matchesDrawioCandidate(summary, drawioCandidateFilenames);
+        });
+        const availableImages = summaries.filter(isImageAttachment);
+
+        const inlineImages: JsonRecord[] = [];
+        const imageBlocks: Array<{ type: "image"; data: string; mimeType: string }> = [];
+        if (args.include_images) {
+          const candidates = unique(
+            [...referencedImages, ...drawioAttachments.filter(isImageAttachment)]
+              .map(attachmentTitle)
+              .filter(Boolean),
+          )
+            .map((title) => findByTitle(summaries, title))
+            .filter((summary): summary is JsonRecord => Boolean(summary))
+            .slice(0, args.max_images ?? 3);
+          for (const candidate of candidates) {
+            const downloadUrl = asString(candidate.downloadUrl);
+            const mediaType = normalizeMediaType(asString(candidate.mediaType)) || mediaTypeFromFilename(attachmentTitle(candidate));
+            if (!downloadUrl || !isSupportedImageMediaType(mediaType)) continue;
+            const bytes = await requestBinary(ctx, downloadUrl, args.max_bytes ?? DEFAULT_ATTACHMENT_BYTES);
+            if (!bytes.ok) {
+              inlineImages.push({ attachment: candidate, error: bytes.message });
+              continue;
+            }
+            const effectiveMediaType = effectiveAttachmentMediaType(candidate, bytes.mediaType);
+            if (!isSupportedImageMediaType(effectiveMediaType)) {
+              inlineImages.push({ attachment: candidate, error: `Unsupported image media type ${effectiveMediaType}` });
+              continue;
+            }
+            inlineImages.push({ attachment: { ...candidate, mediaType: effectiveMediaType }, bytes: bytes.bytes });
+            imageBlocks.push({
+              type: "image",
+              data: bytes.data.toString("base64"),
+              mimeType: effectiveMediaType,
+            });
+          }
+        }
+
+        const payload = {
+          page: formatPageSummary(page.baseUrl, page.data),
+          references,
+          matched: {
+            referencedImages,
+            referencedAttachments,
+            drawioAttachments,
+          },
+          available: {
+            imageAttachments: availableImages,
+            drawioAttachments: summaries.filter(isDrawioAttachment),
+          },
+          inlineImages,
+        };
+        return {
+          content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }, ...imageBlocks],
+        };
       },
     ),
     tool(
