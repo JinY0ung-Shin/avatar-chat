@@ -1569,7 +1569,7 @@ const SLASH_COMMANDS = [
     ownerOnly: true,
     requiresArgs: true,
     prompt: (args) =>
-      `매일 HH:MM KST에 다음 일을 실행하는 루틴을 만들어줘.\n\n${args}`,
+      `다음 작업을 정기적으로 실행하는 루틴을 만들어줘. 실행 시각(KST 기준)이 아래에 적혀 있으면 그대로 쓰고, 없으면 먼저 물어봐줘.\n\n${args}`,
   },
   {
     name: "find",
@@ -1626,6 +1626,22 @@ function hideSlashMenu(pane = activePane()) {
   pdom.textarea?.setAttribute("aria-expanded", "false");
 }
 
+// Tab-completion: drop the command's canonical text into the box WITHOUT running
+// it. Used by Tab and when a command still needs arguments.
+function completeSlashCommand(pane, command) {
+  const pdom = pane?.dom;
+  if (!pdom?.textarea) return;
+  pdom.textarea.value = `/${command.name}${command.requiresArgs ? " " : ""}`;
+  pdom.textarea.dispatchEvent(new Event("input"));
+  pdom.textarea.focus();
+  const end = pdom.textarea.value.length;
+  pdom.textarea.setSelectionRange(end, end);
+}
+
+// The user PICKED this command (click or Enter): run it if it's ready, or park
+// the cursor in the argument slot if it still needs input. A bare no-arg command
+// like /learn used to only refill the box here — and the resulting `input` event
+// reopened the menu, so Enter could never send it. Now it submits.
 function applySlashCommand(pane, command, args = "") {
   const pdom = pane?.dom;
   if (!pdom?.textarea) return;
@@ -1636,11 +1652,16 @@ function applySlashCommand(pane, command, args = "") {
     command.action(pane, args);
     return;
   }
-  pdom.textarea.value = `/${command.name}${command.requiresArgs ? " " : ""}`;
+  // Needs arguments the user hasn't typed yet: complete the name and wait.
+  if (command.requiresArgs && !args) {
+    completeSlashCommand(pane, command);
+    return;
+  }
+  // Ready to run (no args needed, or args already supplied): normalize the box
+  // to the canonical command and submit — submitMessage expands the prompt.
+  pdom.textarea.value = `/${command.name}${args ? ` ${args}` : ""}`;
   pdom.textarea.dispatchEvent(new Event("input"));
-  pdom.textarea.focus();
-  const end = pdom.textarea.value.length;
-  pdom.textarea.setSelectionRange(end, end);
+  submitMessage(pane);
 }
 
 function renderSlashMenu(pane) {
@@ -1702,10 +1723,16 @@ function handleSlashMenuKeydown(pane, event) {
     }
     return true;
   }
-  if (event.key === "Enter" || event.key === "Tab") {
+  if (event.key === "Enter") {
     if (!matches.length) return false;
     event.preventDefault();
     applySlashCommand(pane, matches[pdom.slashIndex || 0]);
+    return true;
+  }
+  if (event.key === "Tab") {
+    if (!matches.length) return false;
+    event.preventDefault();
+    completeSlashCommand(pane, matches[pdom.slashIndex || 0]);
     return true;
   }
   if (event.key === "Escape") {

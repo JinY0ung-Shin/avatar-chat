@@ -150,7 +150,10 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
         : { message, error: "/remember 뒤에 저장할 내용을 입력해 주세요.", ownerOnly: true };
     case "routine":
       return args
-        ? { message: `매일 HH:MM KST에 다음 일을 실행하는 루틴을 만들어줘.\n\n${args}`, ownerOnly: true }
+        ? {
+            message: `다음 작업을 정기적으로 실행하는 루틴을 만들어줘. 실행 시각(KST 기준)이 아래에 적혀 있으면 그대로 쓰고, 없으면 먼저 물어봐줘.\n\n${args}`,
+            ownerOnly: true,
+          }
         : { message, error: "/routine 뒤에 작업 내용을 입력해 주세요.", ownerOnly: true };
     case "find":
       return args
@@ -1491,6 +1494,12 @@ export function createApp(services = createServices()) {
       apiError(res, 403, "이 아바타와 대화할 수 없습니다.");
       return;
     }
+    // ownerOnly only bites on a RAW `/command` (stale client / direct API caller);
+    // the current client sends the already-expanded prompt, which no longer matches
+    // here. This is a backstop, not the real guard — the owner-only effects (knowledge
+    // repo writes, routine creation) run through `mcp__repo__*` / routine APIs that
+    // owner-gate in their own handlers, so an expanded prompt from a non-owner can't
+    // reach them.
     if (slashExpansion.ownerOnly && req.user!.id !== avatar.id) {
       apiError(res, 403, "이 명령은 내 아바타와의 대화에서만 사용할 수 있습니다.");
       return;

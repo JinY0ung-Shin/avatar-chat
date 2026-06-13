@@ -266,6 +266,22 @@ describe("chat slash commands", () => {
     expect(result.error).toBeUndefined();
     expect(result.message).toBe("/not-a-command");
   });
+
+  // The same prompts live in BOTH the server (expandChatSlashCommand, the fallback
+  // for stale clients/API callers) and the client (public/app.js SLASH_COMMANDS,
+  // the normal path that expands before sending so the bubble shows the prompt).
+  // public/app.js is served raw — no bundler — so they can't share a constant; this
+  // guards against the two copies drifting apart.
+  it("client app.js carries the same slash prompts as the server", () => {
+    const appJs = fs.readFileSync(path.join(process.cwd(), "public", "app.js"), "utf8");
+    const cases = ["/summarize", "/learn", "/remember 내용", "/routine 작업", "/find 요청"];
+    for (const input of cases) {
+      const { message } = expandChatSlashCommand(input);
+      // Compare the static template, dropping any trailing "\n\n<args>" we injected.
+      const staticPart = message.split("\n\n")[0];
+      expect(appJs, `slash prompt for "${input}" drifted between server and client`).toContain(staticPart);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
