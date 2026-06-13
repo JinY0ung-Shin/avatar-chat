@@ -4567,6 +4567,29 @@ textarea::placeholder {
   padding-top: var(--s-2);
   border-top: 1px solid var(--line);
 }
+.onboard-highlight {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  border: 1px solid var(--accent-soft-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: var(--accent-soft);
+}
+.onboard-highlight strong {
+  color: var(--accent-strong);
+  font-size: var(--t-sm);
+}
+.onboard-highlight p {
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+.onboard-highlight .onboard-highlight-note {
+  color: var(--text-soft);
+  font-size: var(--t-xs);
+}
 .onboard-actions {
   display: flex;
   align-items: center;

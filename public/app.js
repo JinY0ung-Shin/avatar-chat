@@ -52,6 +52,7 @@ const state = {
   authError: "",
   githubHost: "github.com",
   signupMode: "open", // mirrors /api/bootstrap; gates the auth-screen signup link
+  confluenceConfigured: false, // mirrors /api/bootstrap; gates the onboarding Confluence PAT field
 };
 
 const dom = {};
@@ -7384,6 +7385,13 @@ function openOnboarding() {
     autocomplete: "off",
     "aria-label": "사내 Git 토큰 GIT_TOKEN",
   });
+  const confluenceInput = el("input", {
+    name: "confluence",
+    type: "password",
+    placeholder: "Confluence PAT (CONFLUENCE_PAT)",
+    autocomplete: "off",
+    "aria-label": "Confluence Personal Access Token CONFLUENCE_PAT",
+  });
   const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
   const sshStatus = el("div", { class: "git-token-status muted" });
   const sshPublicKeyBox = el("div", { class: "ssh-public-key-box" });
@@ -7455,6 +7463,14 @@ function openOnboarding() {
               const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
               state.user = user;
             }
+            const confluencePat = confluenceInput.value.trim();
+            if (confluencePat) {
+              const { user } = await api("/api/me/secrets/CONFLUENCE_PAT", {
+                method: "PUT",
+                body: JSON.stringify({ value: confluencePat }),
+              });
+              state.user = user;
+            }
             close();
             renderView();
           } catch (err) {
@@ -7480,14 +7496,37 @@ function openOnboarding() {
         ]),
         el("div", { class: "onboard-connect" }, [
           el("h3", { text: "SSH 키" }),
+          el("div", { class: "onboard-highlight" }, [
+            el("strong", { text: "왜 SSH를 설정하면 좋나요?" }),
+            el("p", {
+              text: "SSH 키를 등록하면 아바타가 이 앱이 접근할 수 있는 원격 서버에 직접 접속해 일할 수 있습니다. 예를 들어 서비스 로그·디스크·프로세스 상태 점검, 설정 파일 확인, 배포·재시작 같은 명령 실행, 파일 송수신을 대화만으로 맡길 수 있어 매번 직접 터미널에 접속하는 수고를 덜어 줍니다.",
+            }),
+            el("p", {
+              class: "onboard-highlight-note",
+              text: "개인키는 암호화되어 저장되고 도구 실행 시에만 주입됩니다 — 아바타도 값 자체는 볼 수 없습니다. 공개키만 접속 대상 서버에 등록하면 됩니다.",
+            }),
+          ]),
           el("p", {
             class: "muted",
-            text: "지금 생성하면 개인키는 SSH_PRIVATE_KEY 시크릿으로 저장되고 다시 표시되지 않습니다. 공개키만 복사해 접속 대상 서버에 등록하세요.",
+            text: "지금 생성하면 개인키는 SSH_PRIVATE_KEY 시크릿으로 저장되고 다시 표시되지 않습니다. 공개키는 생성 후에도 설정에서 다시 확인할 수 있습니다.",
           }),
           sshStatus,
           el("div", { class: "git-token-actions" }, [generateSshBtn]),
           sshPublicKeyBox,
         ]),
+        state.confluenceConfigured
+          ? el("div", { class: "onboard-connect" }, [
+              el("h3", { text: "Confluence 연결" }),
+              el("p", {
+                class: "muted",
+                text: "Confluence PAT를 저장해 두면 아바타가 사내 Confluence에서 문서를 검색·조회하고 페이지를 작성·수정할 수 있습니다. 값은 암호화되어 저장되고 다시 표시되지 않습니다.",
+              }),
+              el("label", { class: "field" }, [
+                el("span", { text: "Confluence PAT (CONFLUENCE_PAT, 선택)" }),
+                confluenceInput,
+              ]),
+            ])
+          : null,
         errorBox,
         el("div", { class: "onboard-actions" }, [
           el("button", { class: "linkish", type: "button", text: "건너뛰기", onclick: () => { close(); } }),
@@ -7507,7 +7546,7 @@ function openOnboarding() {
           el("h3", { text: "처음 설정하면 좋은 권한" }),
           el("p", {
             class: "muted",
-            text: "이 온보딩에서는 사내 GitHub용 GIT_TOKEN만 입력합니다. GIT_TOKEN을 저장해 두면 아바타가 사내 비공개 저장소를 읽고, 대화 중 지식 저장소에 파일을 추가한 뒤 커밋·푸시할 수 있습니다.",
+            text: "GIT_TOKEN을 저장해 두면 아바타가 사내 비공개 저장소를 읽고, 대화 중 지식 저장소에 파일을 추가한 뒤 커밋·푸시할 수 있습니다. SSH 키와 Confluence 연결도 지금 함께 설정해 두면 첫 대화부터 더 많은 일을 맡길 수 있습니다.",
           }),
         ]),
         form,
@@ -7533,6 +7572,7 @@ async function boot() {
     bootstrap = await api("/api/bootstrap");
     state.githubHost = bootstrap.githubHost || state.githubHost;
     state.signupMode = bootstrap.signupMode || state.signupMode;
+    state.confluenceConfigured = Boolean(bootstrap.confluenceConfigured);
   } catch {
     bootstrap = null;
   }

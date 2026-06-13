@@ -67,3 +67,70 @@ export async function generateSshKeyPair(comment = "avatar-chat"): Promise<Gener
   });
   return parseGenerated(stdout);
 }
+
+export interface DerivedSshPublicKey {
+  publicKey: string;
+  fingerprint: string;
+}
+
+/**
+ * Derive the OpenSSH public key (+ SHA256 fingerprint) from a stored private
+ * key so the public half stays queryable even when the owner pasted their own
+ * `SSH_PRIVATE_KEY` instead of generating one in-app. Accepts OpenSSH or PEM
+ * private keys; returns null when the key can't be parsed (e.g. unsupported
+ * format or passphrase-protected) so callers can treat it as "no public key"
+ * rather than failing the secret save.
+ */
+export async function deriveSshPublicKey(
+  privateKey: string,
+  comment = "avatar-chat",
+): Promise<DerivedSshPublicKey | null> {
+  const script = [
+    "import sys, json, base64, hashlib",
+    "from cryptography.hazmat.primitives import serialization",
+    "data = sys.argv[1].encode()",
+    "comment = sys.argv[2] if len(sys.argv) > 2 else ''",
+    "key = None",
+    "try:",
+    "    key = serialization.load_ssh_private_key(data, password=None)",
+    "except Exception:",
+    "    try:",
+    "        key = serialization.load_pem_private_key(data, password=None)",
+    "    except Exception:",
+    "        print(json.dumps({\"error\": \"PARSE_FAILED\"}))",
+    "        sys.exit(0)",
+    "public_blob = key.public_key().public_bytes(",
+    "    serialization.Encoding.OpenSSH,",
+    "    serialization.PublicFormat.OpenSSH,",
+    ").decode()",
+    "public_key = public_blob + ((\" \" + comment) if comment else \"\")",
+    "raw = base64.b64decode(public_blob.split()[1])",
+    "fingerprint = \"SHA256:\" + base64.b64encode(hashlib.sha256(raw).digest()).decode().rstrip(\"=\")",
+    "print(json.dumps({\"publicKey\": public_key, \"fingerprint\": fingerprint}))",
+  ].join("\n");
+  let stdout: string;
+  try {
+    stdout = await runPython(script, [privateKey, cleanComment(comment)], {
+      timeout: 15_000,
+      maxBuffer: 256 * 1024,
+    });
+  } catch {
+    return null;
+  }
+  let parsed: Partial<DerivedSshPublicKey> & { error?: string };
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (
+    parsed.error ||
+    typeof parsed.publicKey !== "string" ||
+    !parsed.publicKey.includes(" ") ||
+    typeof parsed.fingerprint !== "string" ||
+    !parsed.fingerprint.startsWith("SHA256:")
+  ) {
+    return null;
+  }
+  return { publicKey: parsed.publicKey, fingerprint: parsed.fingerprint };
+}

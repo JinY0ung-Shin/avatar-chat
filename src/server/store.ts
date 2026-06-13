@@ -895,6 +895,15 @@ export class Store {
     return this.toUser(this.userRowById(userId)!);
   }
 
+  /**
+   * Set (or clear) the stored SSH public key without touching the private-key
+   * secret. Used to keep the public half queryable when the owner pastes their
+   * own `SSH_PRIVATE_KEY` (the route derives the public key and stores it here).
+   */
+  setSshPublicKey(userId: string, publicKey: string | null): void {
+    this.db.prepare("UPDATE users SET ssh_public_key = ? WHERE id = ?").run(publicKey, userId);
+  }
+
   /** Remove a named secret. No-op if it doesn't exist. */
   deleteUserSecret(userId: string, name: string): void {
     this.db.prepare("DELETE FROM user_secrets WHERE user_id = ? AND name = ?").run(userId, name);

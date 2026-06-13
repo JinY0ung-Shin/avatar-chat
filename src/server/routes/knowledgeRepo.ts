@@ -5,7 +5,7 @@ import { inspectRepoContents } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import { isInternalGitSource } from "../gitCredentials.js";
 import { ensureClone, knowledgeRepoContextFor } from "../knowledgeRepo.js";
-import { generateSshKeyPair } from "../sshIdentity.js";
+import { generateSshKeyPair, deriveSshPublicKey } from "../sshIdentity.js";
 import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
 
 // ---- Git credentials & personal knowledge repo ----------------------
@@ -40,7 +40,7 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
   // The name must be a valid env-var key so it can be passed through as-is.
   const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 
-  router.put("/api/me/secrets/:name", requireAuth(store), (req: AuthenticatedRequest, res) => {
+  router.put("/api/me/secrets/:name", requireAuth(store), async (req: AuthenticatedRequest, res) => {
     const name = String(req.params.name || "");
     if (!SECRET_NAME_RE.test(name)) {
       apiError(res, 400, "secret 이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다.");
@@ -52,6 +52,17 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       return;
     }
     store.setUserSecret(req.user!.id, name, value);
+    // Keep the SSH public key queryable: setUserSecret clears ssh_public_key
+    // when SSH_PRIVATE_KEY changes, so derive and re-store the public half for a
+    // pasted key (best-effort — an unparseable/passphrase key just leaves it unset).
+    if (name === "SSH_PRIVATE_KEY") {
+      const derived = await deriveSshPublicKey(value, `avatar-chat-${req.user!.username}`);
+      if (derived) {
+        store.setSshPublicKey(req.user!.id, derived.publicKey);
+      } else {
+        logger.warn({ userId: req.user!.id }, "could not derive ssh public key from pasted SSH_PRIVATE_KEY");
+      }
+    }
     logger.info({ userId: req.user!.id, name }, "user secret set");
     res.json({ user: store.getUserById(req.user!.id) });
   });

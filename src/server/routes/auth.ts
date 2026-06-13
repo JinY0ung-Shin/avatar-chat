@@ -130,6 +130,9 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
       // Lets the auth screen hide/adjust the signup affordance and show the right
       // copy (open vs. approval vs. closed) before anyone tries to register.
       signupMode: store.getSignupMode(),
+      // Lets onboarding show the Confluence PAT field only when the deployment
+      // has a Confluence host configured (the PAT is useless otherwise).
+      confluenceConfigured: Boolean(config.confluenceUrl),
     });
   });
 

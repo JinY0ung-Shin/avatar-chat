@@ -136,7 +136,7 @@ import {
   CONFLUENCE_SERVER_NAME,
   CONFLUENCE_TOOL_NAMES,
 } from "../src/server/agent/confluenceTools.js";
-import { generateSshKeyPair } from "../src/server/sshIdentity.js";
+import { generateSshKeyPair, deriveSshPublicKey } from "../src/server/sshIdentity.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
 import type { AppConfig, Plugin } from "../src/server/types.js";
 import {
@@ -414,6 +414,19 @@ describe("ssh identity", () => {
     expect(pair.privateKey).toContain("BEGIN OPENSSH PRIVATE KEY");
     expect(pair.publicKey).toMatch(/^ssh-ed25519 [A-Za-z0-9+/=]+ avatar-chat-test$/);
     expect(pair.fingerprint).toMatch(/^SHA256:/);
+  });
+
+  it("derives the same public key/fingerprint back from a private key, and rejects junk", async () => {
+    const pair = await generateSshKeyPair("derive-test");
+    const derived = await deriveSshPublicKey(pair.privateKey, "derive-test");
+    expect(derived).not.toBeNull();
+    // Same key material (blob) and fingerprint as generation produced.
+    expect(derived!.publicKey.split(" ").slice(0, 2).join(" ")).toBe(
+      pair.publicKey.split(" ").slice(0, 2).join(" "),
+    );
+    expect(derived!.fingerprint).toBe(pair.fingerprint);
+    // Unparseable input returns null rather than throwing, so the secret save survives.
+    expect(await deriveSshPublicKey("not a private key", "x")).toBeNull();
   });
 
   it("tools generate a key, store only the public half on the user, and refuse overwrite", async () => {
