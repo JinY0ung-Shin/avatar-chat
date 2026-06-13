@@ -9071,8 +9071,16 @@ function openOnboarding() {
   }
   renderSshSetup();
 
-  const saveBtn = el("button", { class: "primary", type: "submit", text: "저장하고 시작" });
+  const saveBtn = el("button", { class: "primary", type: "submit", text: "시작하기" });
   const skipBtn = el("button", { class: "linkish", type: "button", text: "건너뛰기" });
+  const updateSaveButtonLabel = () => {
+    const hasToken = Boolean(tokenInput.value.trim());
+    const hasConfluencePat = state.confluenceConfigured && Boolean(confluenceInput.value.trim());
+    saveBtn.textContent = hasToken || hasConfluencePat ? "저장하고 시작" : "시작하기";
+  };
+  tokenInput.addEventListener("input", updateSaveButtonLabel);
+  confluenceInput.addEventListener("input", updateSaveButtonLabel);
+  updateSaveButtonLabel();
 
   openModal({
     cardClass: "onboard-card",
