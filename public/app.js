@@ -18,8 +18,8 @@ function newId() {
 
 const state = {
   user: null,
-  view: "explore", // explore | chat | routines | settings | admin
-  settingsTab: "profile", // profile | access | knowledge | routines
+  view: "explore", // explore | chat | inbox | routines | settings | admin
+  settingsTab: "profile", // profile | access | knowledge | groups
   avatars: [],
   avatarsLoaded: false,
   avatarsLoading: false,
@@ -43,7 +43,7 @@ const state = {
   routineMessages: [],
   notifications: [],
   inboxFilter: "all",
-  adminTab: "overview", // overview | users | access | system | audit
+  adminTab: "overview", // overview | users | groups | access | system | audit
   adminUsers: [],
   adminUserDetail: {}, // id -> AdminUserDetail (lazy, cached per expand)
   adminUserSearch: "",
@@ -887,7 +887,7 @@ function renderView() {
 }
 
 /* ---- Hash routing -------------------------------------------------------
-   #/explore · #/chat · #/chat/<convId> · #/routines · #/routines/<convId> · #/settings/<tab> · #/admin
+   #/explore · #/chat · #/chat/<convId> · #/routines · #/routines/<convId> · #/settings/<tab> · #/admin/<tab>
    Keeps Back/Forward inside the SPA and survives a reload. */
 const VIEW_ROUTES = ["explore", "chat", "inbox", "routines", "settings", "admin"];
 let applyingRoute = false;
@@ -925,6 +925,10 @@ function syncHash(replace = false) {
   if (location.hash === target) return;
   if (replace) history.replaceState(null, "", target);
   else history.pushState(null, "", target);
+}
+
+function syncHashAfterRoute(replace = true) {
+  queueMicrotask(() => syncHash(replace));
 }
 
 async function applyRoute() {
@@ -5254,7 +5258,9 @@ async function renderSettings() {
     { id: "knowledge", label: "지식·플러그인", icon: "book", cards: () => [buildKnowledgeRepoCard(), buildPluginsCard()] },
     { id: "groups", label: "그룹", icon: "users", cards: () => [buildGroupsCard()] },
   ];
+  const requestedSettingsTab = state.settingsTab;
   if (!tabs.some((t) => t.id === state.settingsTab)) state.settingsTab = "profile";
+  if (state.settingsTab !== requestedSettingsTab) syncHashAfterRoute();
 
   const panel = el("div", { class: "settings-panel", role: "tabpanel", id: "settings-panel" });
   const renderTab = () => {
@@ -7132,7 +7138,9 @@ async function renderAdmin() {
   const header = viewHeader("관리자", "사용자·접근·시스템을 관리하세요");
   const body = el("div", { class: "view-body scroll-thin" });
   dom.main.append(header, body);
+  const requestedAdminTab = state.adminTab;
   if (!ADMIN_TABS.some((t) => t.id === state.adminTab)) state.adminTab = "overview";
+  if (state.adminTab !== requestedAdminTab) syncHashAfterRoute();
 
   const panel = el("div", { class: "admin-panel", role: "tabpanel", id: "admin-panel" });
   let tabRenderSeq = 0;
