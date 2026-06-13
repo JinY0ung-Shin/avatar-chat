@@ -6376,6 +6376,15 @@ function buildKnowledgeRepoCard() {
   );
 
   // Repo configuration form.
+  const knowledgeRepoInput = el("input", {
+    name: "repo",
+    placeholder: "owner/repo 또는 사내 git URL",
+    "aria-label": "지식 저장소 (owner/repo 또는 사내 git URL)",
+    value: u.knowledgeRepo || "",
+  });
+  knowledgeRepoInput.addEventListener("input", () => {
+    if (knowledgeRepoInput.value.trim()) knowledgeRepoInput.removeAttribute("aria-invalid");
+  });
   const repoForm = el("form", {
     class: "plugin-add",
     onsubmit: async (e) => {
@@ -6389,7 +6398,8 @@ function buildKnowledgeRepoCard() {
           u.knowledgeRepo ? "저장소 연결을 해제하려면 오른쪽의 ‘연결 해제’ 버튼을 사용해 주세요." : "지식 저장소 주소를 입력해 주세요.",
           "warn",
         );
-        formEl.querySelector('input[name="repo"]')?.focus();
+        knowledgeRepoInput.setAttribute("aria-invalid", "true");
+        knowledgeRepoInput.focus();
         return;
       }
       const btn = formEl.querySelector("button[type=submit]");
@@ -6410,7 +6420,7 @@ function buildKnowledgeRepoCard() {
       }
     },
   }, [
-    el("input", { name: "repo", placeholder: "owner/repo 또는 사내 git URL", "aria-label": "지식 저장소 (owner/repo 또는 사내 git URL)", value: u.knowledgeRepo || "" }),
+    knowledgeRepoInput,
     el("input", { name: "branch", placeholder: "브랜치 (선택)", "aria-label": "브랜치 (선택)", class: "narrow", value: u.knowledgeBranch || "" }),
     el("button", { class: "primary", type: "submit", text: "저장" }),
   ]);
@@ -6976,6 +6986,15 @@ function buildGroupRepoCard(g) {
     wrap.append(el("div", { class: "head-actions" }, [refreshBtn, disconnectBtn]));
   }
 
+  const groupRepoInput = el("input", {
+    name: "repo",
+    placeholder: "owner/repo 또는 사내 git URL",
+    "aria-label": "그룹 지식 저장소",
+    value: g.knowledgeRepo || "",
+  });
+  groupRepoInput.addEventListener("input", () => {
+    if (groupRepoInput.value.trim()) groupRepoInput.removeAttribute("aria-invalid");
+  });
   const form = el("form", {
     class: "plugin-add rows-2",
     onsubmit: async (e) => {
@@ -6989,7 +7008,8 @@ function buildGroupRepoCard(g) {
           g.knowledgeRepo ? "공용 저장소 연결을 해제하려면 위의 ‘연결 해제’ 버튼을 사용해 주세요." : "공용 지식 저장소 주소를 입력해 주세요.",
           "warn",
         );
-        formEl.querySelector('input[name="repo"]')?.focus();
+        groupRepoInput.setAttribute("aria-invalid", "true");
+        groupRepoInput.focus();
         return;
       }
       const btn = formEl.querySelector("button[type=submit]");
@@ -7013,7 +7033,7 @@ function buildGroupRepoCard(g) {
       }
     },
   }, [
-    el("input", { name: "repo", placeholder: "owner/repo 또는 사내 git URL", "aria-label": "그룹 지식 저장소", value: g.knowledgeRepo || "" }),
+    groupRepoInput,
     el("input", { name: "branch", placeholder: "브랜치 (선택)", "aria-label": "브랜치", class: "narrow", value: g.knowledgeBranch || "" }),
     el("button", { class: "primary", type: "submit", text: "저장" }),
   ]);

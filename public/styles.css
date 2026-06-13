@@ -3868,6 +3868,13 @@ textarea::placeholder {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
+.plugin-add input[aria-invalid="true"] {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+.plugin-add input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--danger-line) 45%, transparent);
+}
 .plugin-add input.narrow {
   grid-column: 1;
 }
