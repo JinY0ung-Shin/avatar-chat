@@ -12,6 +12,10 @@ export function asString(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+export function asNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
 export function truncate(value: string, max: number): string {
   return value.length > max ? `${value.slice(0, max)}…` : value;
 }

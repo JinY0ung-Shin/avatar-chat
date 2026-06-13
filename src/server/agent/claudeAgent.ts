@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig, AgentRequest, AgentResponse, AgentOwner, PluginRoot } from "../types.js";
+import type { AppConfig, AgentRequest, AgentResponse, AgentUsage, AgentOwner, PluginRoot } from "../types.js";
 import type { Store } from "../store.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import type { AgentEvents } from "./events.js";
@@ -508,6 +508,7 @@ export async function runClaudeAgent(
   const deltaChunks: string[] = [];
   let resultText = "";
   let resultErrorSubtype = "";
+  let runUsage: AgentUsage | undefined;
 
   // Owner self-state (secret names, group memberships) flows to every
   // OWNER-DRIVEN turn: interactive owner chats AND owner-scheduled routines
@@ -563,12 +564,15 @@ export async function runClaudeAgent(
       continue;
     }
 
-    const { text: extractedResult, errorSubtype } = interpretResult(message);
+    const { text: extractedResult, errorSubtype, usage } = interpretResult(message);
     if (extractedResult) {
       resultText = extractedResult;
     }
     if (errorSubtype) {
       resultErrorSubtype = errorSubtype;
+    }
+    if (usage) {
+      runUsage = usage;
     }
   }
 
@@ -596,5 +600,6 @@ export async function runClaudeAgent(
     runtime: "claude",
     summary: "Claude Agent SDK 실행이 완료되었습니다.",
     text,
+    ...(runUsage ? { usage: runUsage } : {}),
   };
 }

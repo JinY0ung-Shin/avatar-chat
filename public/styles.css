@@ -1092,6 +1092,11 @@ body.col-resizing {
   background: var(--bg);
   font-weight: 600;
 }
+.meta-badge.meta-usage {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
 .meta-badge.runtime-blocked {
   color: var(--warn);
   border-color: var(--warn-line);
@@ -1659,6 +1664,29 @@ body.col-resizing {
 .q-opt-desc {
   font-size: var(--t-xs);
   color: var(--muted);
+}
+.q-option-custom {
+  border-style: dashed;
+}
+.q-custom-input {
+  margin-top: 6px;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 8px 11px;
+  font: inherit;
+  font-size: var(--t-sm);
+  resize: vertical;
+}
+.q-custom-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.q-custom-input[hidden] {
+  display: none;
 }
 
 /* ============================================================

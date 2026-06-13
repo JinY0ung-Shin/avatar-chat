@@ -346,11 +346,23 @@ export interface AdminUserDetail extends AdminUserSummary {
   knowledgeRepoSet: boolean;
 }
 
+/** Token usage for a single chat turn, surfaced to the client for display. */
+export interface AgentUsage {
+  /** Prompt tokens fed in this turn (input + cache read + cache creation). */
+  inputTokens: number;
+  /** Tokens the model generated this turn. */
+  outputTokens: number;
+  /** The model's context-window size, if the SDK reported it. */
+  contextWindow?: number;
+}
+
 export interface AgentResponse {
   kind: "text";
   runtime: "local" | "claude";
   summary: string;
   text: string;
+  /** Per-turn token usage (Claude runtime only; omitted for local runs). */
+  usage?: AgentUsage;
   raw?: unknown;
 }
 

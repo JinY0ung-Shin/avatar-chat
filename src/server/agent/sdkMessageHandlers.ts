@@ -1,6 +1,7 @@
 import type { AgentEvents } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
-import { asString, isRecord, truncate } from "./agentUtils.js";
+import type { AgentUsage } from "../types.js";
+import { asNumber, asString, isRecord, truncate } from "./agentUtils.js";
 
 /** Tools that spawn a subagent (shown as an agent node, not a tool row). */
 const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
@@ -261,17 +262,45 @@ export function handleUserMessage(
  *   answer streamed so far instead of leaking a raw "Reached maximum number of
  *   turns" string into the chat.
  */
-export function interpretResult(message: unknown): { text?: string; errorSubtype?: string } {
+export function interpretResult(message: unknown): { text?: string; errorSubtype?: string; usage?: AgentUsage } {
   if (!isRecord(message) || message.type !== "result") {
     return {};
   }
+  const usage = extractUsage(message);
+  const withUsage = usage ? { usage } : {};
   if (message.subtype === "success" && typeof message.result === "string") {
-    return { text: message.result };
+    return { text: message.result, ...withUsage };
   }
   if (typeof message.subtype === "string" && message.subtype.startsWith("error")) {
-    return { errorSubtype: message.subtype };
+    return { errorSubtype: message.subtype, ...withUsage };
   }
-  return {};
+  return withUsage;
+}
+
+/**
+ * Pull per-turn token usage out of the SDK's terminal `result` message.
+ * `usage` (snake_case) carries the input/output/cache counts; `modelUsage`
+ * (camelCase, keyed by model) carries the `contextWindow` size. Returns
+ * undefined when the message has no usable counts (e.g. error results).
+ */
+function extractUsage(message: Record<string, unknown>): AgentUsage | undefined {
+  const usage = isRecord(message.usage) ? message.usage : undefined;
+  const inputTokens = usage
+    ? asNumber(usage.input_tokens) +
+      asNumber(usage.cache_read_input_tokens) +
+      asNumber(usage.cache_creation_input_tokens)
+    : 0;
+  const outputTokens = usage ? asNumber(usage.output_tokens) : 0;
+  let contextWindow = 0;
+  if (isRecord(message.modelUsage)) {
+    for (const entry of Object.values(message.modelUsage)) {
+      if (isRecord(entry)) contextWindow = Math.max(contextWindow, asNumber(entry.contextWindow));
+    }
+  }
+  if (!inputTokens && !outputTokens && !contextWindow) {
+    return undefined;
+  }
+  return { inputTokens, outputTokens, ...(contextWindow ? { contextWindow } : {}) };
 }
 
 /** Human-facing fallback when the run ended on an error with no usable text. */

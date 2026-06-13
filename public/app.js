@@ -2919,6 +2919,32 @@ function regenerate(pane = activePane()) {
 // normal case and renders no badge at all; raw identifiers never surface.
 const RUNTIME_BADGE_LABELS = { claude: null, local: "로컬", blocked: "차단됨", error: "오류" };
 
+// Compact token count: 950 → "950", 17500 → "17.5K", 184000 → "184K".
+function formatTokenCount(n) {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1000) return String(Math.round(n));
+  const k = n / 1000;
+  return (k < 100 ? k.toFixed(1) : Math.round(k)) + "K";
+}
+
+// "이번 턴" 토큰 사용량 배지 라벨: 컨텍스트 점유(입력 토큰/윈도우) + 출력 토큰.
+function formatUsageLabel(usage) {
+  if (!usage) return "";
+  const input = Number(usage.inputTokens) || 0;
+  const output = Number(usage.outputTokens) || 0;
+  const ctx = Number(usage.contextWindow) || 0;
+  if (!input && !output) return "";
+  const parts = [];
+  if (ctx) {
+    const pct = Math.round((input / ctx) * 100);
+    parts.push(`컨텍스트 ${formatTokenCount(input)}/${formatTokenCount(ctx)} (${pct}%)`);
+  } else {
+    parts.push(`입력 ${formatTokenCount(input)}`);
+  }
+  parts.push(`출력 ${formatTokenCount(output)}`);
+  return parts.join(" · ");
+}
+
 function renderAssistantInto(bubble, message) {
   const response = message.response;
   bubble.classList.toggle("blocked", response?.runtime === "blocked");
@@ -2929,9 +2955,15 @@ function renderAssistantInto(bubble, message) {
       meta.push(["runtime", RUNTIME_BADGE_LABELS[response.runtime] || response.runtime, response.runtime]);
     }
     if (response.skillName) meta.push(["skill", response.skillName, ""]);
-    if (meta.length) {
+    const usageLabel = formatUsageLabel(response.usage);
+    if (meta.length || usageLabel) {
       const metaRow = el("div", { class: "response-meta" });
       for (const [kind, label, raw] of meta) metaRow.append(el("span", { class: `meta-badge ${kind === "runtime" ? `runtime-${raw}` : ""}`, text: label }));
+      if (usageLabel) {
+        const u = response.usage;
+        const title = `입력 ${u.inputTokens.toLocaleString()} · 출력 ${u.outputTokens.toLocaleString()}${u.contextWindow ? ` · 컨텍스트 윈도우 ${u.contextWindow.toLocaleString()}` : ""}`;
+        metaRow.append(el("span", { class: "meta-badge meta-usage", text: usageLabel, title }));
+      }
       bubble.append(metaRow);
     }
     if (response.kind === "table" && response.table) {
@@ -3738,12 +3770,21 @@ function renderQuestionCard(live, data) {
     return;
   }
 
-  // selections[i] = array of chosen labels for question i.
+  // Per-question state: selections[i] = chosen option labels; customOn[i] +
+  // customText[i] = the "직접 입력" free-text branch (AskUserQuestion always lets
+  // the user answer with their own text instead of a preset option).
   const selections = questions.map(() => []);
+  const customOn = questions.map(() => false);
+  const customText = questions.map(() => "");
   const submitBtn = el("button", { class: "btn btn-primary btn-sm", text: "보내기", disabled: true });
 
+  const answeredFor = (qi) => selections[qi].length > 0 || (customOn[qi] && customText[qi].trim().length > 0);
   const refreshSubmit = () => {
-    submitBtn.disabled = selections.some((s) => s.length === 0);
+    submitBtn.disabled = !questions.every((_, qi) => answeredFor(qi));
+  };
+  const setSelected = (btn, on) => {
+    btn.classList.toggle("selected", on);
+    btn.setAttribute("aria-pressed", on ? "true" : "false");
   };
 
   questions.forEach((q, qi) => {
@@ -3754,15 +3795,21 @@ function renderQuestionCard(live, data) {
     ]);
     const opts = Array.isArray(q.options) ? q.options : [];
     const optsEl = el("div", { class: "q-options", role: "group", "aria-label": multi ? "여러 개 선택 가능" : "하나 선택" });
+
+    // Free-text input, revealed when "직접 입력" is active.
+    const customInput = el("textarea", {
+      class: "q-custom-input",
+      rows: "2",
+      placeholder: "직접 답변을 입력하세요…",
+      hidden: true,
+    });
+    customInput.addEventListener("input", () => { customText[qi] = customInput.value; refreshSubmit(); });
+
     opts.forEach((opt) => {
       const optBtn = el("button", { class: "q-option", type: "button", "aria-pressed": "false" }, [
         el("span", { class: "q-opt-label", text: opt.label || "" }),
         opt.description ? el("span", { class: "q-opt-desc", text: opt.description }) : null,
       ]);
-      const setSelected = (btn, on) => {
-        btn.classList.toggle("selected", on);
-        btn.setAttribute("aria-pressed", on ? "true" : "false");
-      };
       optBtn.addEventListener("click", () => {
         if (multi) {
           const idx = selections[qi].indexOf(opt.label);
@@ -3772,20 +3819,51 @@ function renderQuestionCard(live, data) {
           selections[qi] = [opt.label];
           optsEl.querySelectorAll(".q-option").forEach((b) => setSelected(b, false));
           setSelected(optBtn, true);
+          // Single-select: picking a preset cancels the free-text branch.
+          customOn[qi] = false;
+          customInput.hidden = true;
+          customBtn.classList.remove("selected");
+          customBtn.setAttribute("aria-pressed", "false");
         }
         refreshSubmit();
       });
       optsEl.append(optBtn);
     });
+
+    // "직접 입력" toggle — reveals the textarea and (single-select) clears presets.
+    const customBtn = el("button", { class: "q-option q-option-custom", type: "button", "aria-pressed": "false" }, [
+      el("span", { class: "q-opt-label", text: "✎ 직접 입력" }),
+    ]);
+    customBtn.addEventListener("click", () => {
+      customOn[qi] = !customOn[qi];
+      setSelected(customBtn, customOn[qi]);
+      customInput.hidden = !customOn[qi];
+      if (customOn[qi]) {
+        if (!multi) {
+          selections[qi] = [];
+          optsEl.querySelectorAll(".q-option:not(.q-option-custom)").forEach((b) => setSelected(b, false));
+        }
+        customInput.focus();
+      }
+      refreshSubmit();
+    });
+    optsEl.append(customBtn);
+
     block.append(optsEl);
+    block.append(customInput);
     card.append(block);
   });
 
   submitBtn.addEventListener("click", () => {
     // Shape the result like AskUserQuestionOutput: an answers map keyed by the
     // question text (multi-select answers comma-joined), echoing the questions.
+    // A "직접 입력" value is appended as just another answer string.
     const answers = {};
-    questions.forEach((q, qi) => { answers[q.question || `q${qi}`] = selections[qi].join(", "); });
+    questions.forEach((q, qi) => {
+      const vals = selections[qi].slice();
+      if (customOn[qi] && customText[qi].trim()) vals.push(customText[qi].trim());
+      answers[q.question || `q${qi}`] = vals.join(", ");
+    });
     submitPromptResponse(live, data, { result: { questions, answers } }, card);
   });
 

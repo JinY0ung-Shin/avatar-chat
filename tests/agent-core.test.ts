@@ -868,6 +868,27 @@ describe("interpretResult", () => {
     expect(r.text).toBeUndefined();
   });
 
+  it("extracts per-turn token usage (input incl. cache, output, context window)", () => {
+    const r = interpretResult({
+      type: "result",
+      subtype: "success",
+      result: "hi",
+      usage: {
+        input_tokens: 100,
+        output_tokens: 40,
+        cache_read_input_tokens: 900,
+        cache_creation_input_tokens: 0,
+      },
+      modelUsage: { "claude-opus-4-8": { contextWindow: 200000 } },
+    });
+    expect(r.text).toBe("hi");
+    expect(r.usage).toEqual({ inputTokens: 1000, outputTokens: 40, contextWindow: 200000 });
+  });
+
+  it("omits usage when the result carries no counts", () => {
+    expect(interpretResult({ type: "result", subtype: "success", result: "hi" })).toEqual({ text: "hi" });
+  });
+
   it("ignores non-result messages", () => {
     expect(interpretResult({ type: "assistant" })).toEqual({});
     expect(interpretResult(null)).toEqual({});
