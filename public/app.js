@@ -1234,6 +1234,7 @@ function buildHashtagEditor(initial) {
 // Explore view renders; renderExploreGrid is a stable wrapper so the search box
 // can call it safely even before the impl exists (e.g. typing while loading).
 let renderExploreGridImpl = null;
+let exploreViewSeq = 0;
 function renderExploreGrid() {
   if (typeof renderExploreGridImpl === "function") renderExploreGridImpl();
 }
@@ -1246,6 +1247,8 @@ function matchesAvatarQuery(av, tokens) {
 }
 
 async function renderExplore() {
+  const renderSeq = ++exploreViewSeq;
+  renderExploreGridImpl = null;
   const header = viewHeader("탐색", "공개된 아바타와 대화를 시작하세요");
   const searchInput = el("input", {
     class: "explore-search",
@@ -1262,6 +1265,7 @@ async function renderExplore() {
   const grid = el("div", { class: "avatar-grid" });
   const body = el("div", { class: "view-body scroll-thin" }, [searchBar, grid]);
   dom.main.append(header, body);
+  const isCurrent = () => renderSeq === exploreViewSeq && state.view === "explore" && body.isConnected;
 
   grid.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
   let loadError = null;
@@ -1270,6 +1274,7 @@ async function renderExplore() {
   } catch (e) {
     loadError = e;
   }
+  if (!isCurrent()) return;
   grid.replaceChildren();
   if (loadError) {
     // A failed fetch must not masquerade as "no avatars exist".
@@ -1291,6 +1296,7 @@ async function renderExplore() {
   }
   // Filter by the search query + (re)build cards. Reused on every keystroke.
   renderExploreGridImpl = () => {
+    if (!isCurrent()) return;
     const raw = (state.exploreQuery || "").trim();
     const tokens = raw ? raw.toLowerCase().split(/\s+/).map((t) => t.replace(/^#+/, "")).filter(Boolean) : [];
     // Order: my own avatar first, then group teammates (auto-trusted), then the
