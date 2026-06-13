@@ -5830,18 +5830,35 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
   const currentSelected = getSelected();
   const selectedSet = currentSelected ? new Set(currentSelected) : null;
   const checks = [];
+  const loadableNames = info.plugins.filter((entry) => entry.loadable).map((entry) => entry.name);
+  const selectionSummary = el("div", { class: "pc-summary muted", role: "status", "aria-live": "polite" });
   let saving = false;
   container.append(el("div", { class: "pc-head muted", text: headText }));
+  const updateSelectionSummary = () => {
+    const chosen = checks.filter((c) => c.loadable && c.cb.checked).length;
+    if (!loadableNames.length) {
+      selectionSummary.textContent = "로드 가능한 플러그인이 없습니다.";
+    } else if (chosen === 0) {
+      selectionSummary.textContent = `선택된 항목이 없습니다. 저장하면 로드 가능한 ${loadableNames.length}개 전체가 사용됩니다.`;
+    } else if (chosen === loadableNames.length) {
+      selectionSummary.textContent = `로드 가능한 ${loadableNames.length}개 전체가 사용됩니다.`;
+    } else {
+      selectionSummary.textContent = `${chosen}개만 사용하도록 저장됩니다.`;
+    }
+  };
 
   for (const entry of info.plugins) {
     const checked = !selectedSet || selectedSet.has(entry.name);
     const cb = el("input", { type: "checkbox" });
     cb.checked = checked && entry.loadable;
     cb.disabled = !entry.loadable;
+    cb.addEventListener("change", updateSelectionSummary);
     checks.push({ cb, name: entry.name, loadable: entry.loadable });
     const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
     container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
   }
+  container.append(selectionSummary);
+  updateSelectionSummary();
 
   const setSaving = (busy) => {
     saving = busy;
@@ -5856,10 +5873,9 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
     const saved = save.textContent;
     setSaving(true);
     save.textContent = "저장 중…";
-    const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
-    const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
+    const chosen = checks.filter((c) => c.loadable && c.cb.checked).map((c) => c.name);
     // If everything (or nothing) is selected, store null = "load all".
-    const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
+    const selected = chosen.length === 0 || chosen.length === loadableNames.length ? null : chosen;
     try {
       await onSave(selected);
     } catch (e) {
