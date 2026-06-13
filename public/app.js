@@ -8563,21 +8563,29 @@ function buildModelOverrideCard(sys) {
         const saved = btn.textContent;
         setFormBusy(formEl, true);
         btn.textContent = "저장 중…";
+        const successMessage = value ? "모델을 저장했습니다." : "모델 지정을 해제했습니다. SDK 기본값을 사용합니다.";
         try {
           if (value) {
             await api("/api/admin/model", { method: "PUT", body: JSON.stringify({ model: value }) });
-            notify("모델을 저장했습니다.", "ok");
           } else {
             await api("/api/admin/model", { method: "DELETE" });
-            notify("모델 지정을 해제했습니다. SDK 기본값을 사용합니다.", "ok");
           }
+        } catch (err) {
+          btn.textContent = saved;
+          setFormBusy(formEl, false);
+          notify(`저장 실패: ${err.message}`);
+          return;
+        }
+        try {
           await loadAdminSystem();
           renderView();
         } catch (err) {
           btn.textContent = saved;
           setFormBusy(formEl, false);
-          notify(`저장 실패: ${err.message}`);
+          notify(`모델 설정은 저장했지만 상태 새로고침에 실패했습니다: ${err.message}`, "warn");
+          return;
         }
+        notify(successMessage, "ok");
       },
     },
     [
