@@ -7960,7 +7960,14 @@ async function adminAuditCards() {
 async function adminSystemCards() {
   await loadAdminSystem();
   const sys = state.adminSystem;
-  if (!sys) return [el("div", { class: "muted pad", text: "시스템 정보를 불러올 수 없습니다." })];
+  if (!sys) {
+    return [
+      el("div", { class: "warn-box" }, [
+        "시스템 정보를 불러올 수 없습니다. ",
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ]),
+    ];
+  }
   const runtimeLabel = sys.agentRuntime === "claude" ? "Claude Agent SDK" : "로컬 스텁";
   const authLabel = sys.authMode === "api_key" ? "API 키" : "구독 로그인";
   const rows = [
