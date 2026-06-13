@@ -2653,17 +2653,24 @@ function renderSlashMenu(pane) {
       return row;
     }),
   );
+  const activeOption = document.getElementById(activeId);
+  if (activeOption) requestAnimationFrame(() => activeOption.scrollIntoView({ block: "nearest" }));
 }
 
 function handleSlashMenuKeydown(pane, event) {
   const pdom = pane?.dom;
   if (!pdom?.slashMenu || pdom.slashMenu.hidden) return false;
   const matches = pdom.slashMatches || [];
-  if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+  if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
     event.preventDefault();
     if (matches.length) {
-      const delta = event.key === "ArrowDown" ? 1 : -1;
-      pdom.slashIndex = (pdom.slashIndex + delta + matches.length) % matches.length;
+      const current = pdom.slashIndex || 0;
+      if (event.key === "Home") pdom.slashIndex = 0;
+      else if (event.key === "End") pdom.slashIndex = matches.length - 1;
+      else {
+        const delta = event.key === "ArrowDown" ? 1 : -1;
+        pdom.slashIndex = (current + delta + matches.length) % matches.length;
+      }
       renderSlashMenu(pane);
     }
     return true;
