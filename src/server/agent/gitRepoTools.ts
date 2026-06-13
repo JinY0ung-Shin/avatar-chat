@@ -51,8 +51,8 @@ export const GIT_REPO_TOOL_NAMES = [
   "mcp__git_repo__push",
 ] as const;
 
-const OWNER_ONLY = "이 도구는 아바타 소유자가 참여 중인 대화에서만 사용할 수 있습니다.";
-const ELEVATED_ONLY = "이 git repo 도구는 아바타 소유자 또는 신뢰 사용자 대화에서만 사용할 수 있습니다.";
+const OWNER_ONLY = "This tool can only be used in a conversation the avatar owner is taking part in.";
+const ELEVATED_ONLY = "This git repo tool can only be used in a conversation with the avatar owner or a trusted user.";
 
 function text(message: string, isError = false) {
   return { content: [{ type: "text" as const, text: message }], isError };
@@ -82,7 +82,7 @@ function renderStatus(status: Awaited<ReturnType<typeof gitRepoStatus>>): string
       `repo=${status.repo}`,
       status.branch ? `branch=${status.branch}` : "branch=(default)",
       "cloned=false",
-      "sync_repo로 먼저 clone/sync 하세요.",
+      "Run clone/sync first with sync_repo.",
     ].join(" | ");
   }
   const aheadBehind =
@@ -108,7 +108,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
   const ownerRepoContext = (name: string) => {
     const repoCtx = gitRepoContextFor(store, ctx.avatarUserId, name, ctx.config);
     if (!repoCtx) {
-      throw new Error(`등록된 git repo '${normalizeGitRepoName(name)}'을(를) 찾을 수 없습니다. 먼저 register_repo를 사용하세요.`);
+      throw new Error(`Could not find a registered git repo named '${normalizeGitRepoName(name)}'. Use register_repo first.`);
     }
     return repoCtx;
   };
@@ -129,11 +129,11 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
   return [
     tool(
       "register_repo",
-      "일반 git 저장소를 이 아바타 소유자의 repo 목록에 등록하고 로컬 작업 복제본을 만든다. repo는 owner/repo, https URL, git URL, 로컬 bare repo 경로를 받을 수 있다. branch를 지정하면 이후 sync/commit/push가 그 브랜치를 대상으로 동작하고, 비우면 저장소 기본 브랜치를 사용한다. public repo clone/sync는 토큰 없이 시도하고, 토큰은 설정된 사내 host 또는 github.com에만 있으면 사용한다. (소유자 전용)",
+      "Register a general git repository in this avatar owner's repo list and create a local working clone. repo accepts owner/repo, an https URL, a git URL, or a local bare repo path. If branch is specified, subsequent sync/commit/push target that branch; if left empty, the repository's default branch is used. Public repo clone/sync is attempted without a token, and a token is only used if one exists for the configured internal host or github.com. (owner only)",
       {
-        repo: z.string().describe("등록할 git 저장소. 예: owner/repo, https://github.com/owner/repo.git, /path/to/repo.git"),
-        name: z.string().optional().describe("대화에서 사용할 짧은 이름. 비우면 repo 이름에서 자동 생성한다."),
-        branch: z.string().optional().describe("사용할 브랜치. main 전용이 아니며, 비우면 저장소 기본 브랜치를 사용한다."),
+        repo: z.string().describe("The git repository to register. e.g. owner/repo, https://github.com/owner/repo.git, /path/to/repo.git"),
+        name: z.string().optional().describe("A short name to use in the conversation. If empty, it is auto-generated from the repo name."),
+        branch: z.string().optional().describe("The branch to use. Not limited to main; if empty, the repository's default branch is used."),
       },
       async (args) => {
         const denied = ownerGuard();
@@ -148,11 +148,11 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           const repoCtx = gitRepoContextFromRecord(store, record, ctx.config);
           await ensureGitRepoClone(repoCtx, { sync: true });
           store.markGitRepoSynced(ctx.avatarUserId, name);
-          return text(`git repo를 등록하고 sync했습니다: ${renderRepo(store.getGitRepo(ctx.avatarUserId, name)!)}.`);
+          return text(`Registered and synced the git repo: ${renderRepo(store.getGitRepo(ctx.avatarUserId, name)!)}.`);
         } catch (error) {
           if (!existed) store.deleteGitRepo(ctx.avatarUserId, name);
           return text(
-            `git repo 등록/sync 실패: ${errorMessage(error)}\nrepo 주소·브랜치 이름·접근 권한을 확인하세요. private repo는 설정 → Git 자격증명의 토큰이 필요합니다. Bash \`git clone\`으로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            `Failed to register/sync git repo: ${errorMessage(error)}\nCheck the repo address, branch name, and access permissions. A private repo requires the token under Settings → Git credentials. Do not work around this with Bash \`git clone\` — the shell has no git credentials.`,
             true,
           );
         }
@@ -160,22 +160,22 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "list_repos",
-      "이 아바타 소유자에게 등록된 일반 git 저장소 목록을 조회한다. (소유자/신뢰 사용자 전용)",
+      "List the general git repositories registered for this avatar owner. (owner / trusted user only)",
       {},
       async () => {
         const denied = elevatedGuard();
         if (denied) return denied;
         const repos = store.listGitRepos(ctx.avatarUserId);
         if (repos.length === 0) {
-          return text("등록된 일반 git repo가 없습니다. 소유자가 register_repo로 먼저 등록해야 합니다.");
+          return text("There are no registered general git repos. The owner must register one first with register_repo.");
         }
-        return text(`등록된 git repo ${repos.length}개:\n${repos.map(renderRepo).join("\n")}`);
+        return text(`${repos.length} registered git repo(s):\n${repos.map(renderRepo).join("\n")}`);
       },
     ),
     tool(
       "sync_repo",
-      "등록된 git 저장소를 fetch 후 fast-forward로 최신화한다. public repo는 토큰 없이 fetch/pull을 시도하며, 미커밋 변경이나 충돌이 있으면 실패한다. (소유자/신뢰 사용자 전용)",
-      { name: z.string().describe("등록된 repo 이름") },
+      "Fetch a registered git repository and update it via fast-forward. A public repo attempts fetch/pull without a token; this fails if there are uncommitted changes or conflicts. (owner / trusted user only)",
+      { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
@@ -183,10 +183,10 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           const repoCtx = ownerRepoContext(args.name);
           await ensureGitRepoClone(repoCtx, { sync: true });
           store.markGitRepoSynced(ctx.avatarUserId, repoCtx.name);
-          return text(`git repo를 sync했습니다: ${repoCtx.name}`);
+          return text(`Synced the git repo: ${repoCtx.name}`);
         } catch (error) {
           return text(
-            `sync 실패: ${errorMessage(error)}\n미커밋 변경이나 충돌이 있으면 실패합니다 — status로 작업트리를 확인하세요. Bash git으로 우회하지 마세요.`,
+            `Sync failed: ${errorMessage(error)}\nThis fails if there are uncommitted changes or conflicts — check the working tree with status. Do not work around this with Bash git.`,
             true,
           );
         }
@@ -194,8 +194,8 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "remove_repo",
-      "등록된 일반 git 저장소를 목록에서 제거하고 로컬 작업 복제본도 삭제한다. 원격 저장소는 삭제하지 않는다. (소유자 전용)",
-      { name: z.string().describe("등록된 repo 이름") },
+      "Remove a registered general git repository from the list and delete its local working clone. Does not delete the remote repository. (owner only)",
+      { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = ownerGuard();
         if (denied) return denied;
@@ -203,48 +203,48 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           const repoCtx = ownerRepoContext(args.name);
           const removed = store.deleteGitRepo(ctx.avatarUserId, repoCtx.name);
           await removeGitRepoClone(repoCtx);
-          return text(removed ? `git repo 등록을 제거했습니다: ${repoCtx.name}` : `등록된 git repo가 없습니다: ${repoCtx.name}`);
+          return text(removed ? `Removed the git repo registration: ${repoCtx.name}` : `No registered git repo found: ${repoCtx.name}`);
         } catch (error) {
-          return text(`repo 제거 실패: ${errorMessage(error)}`, true);
+          return text(`Failed to remove repo: ${errorMessage(error)}`, true);
         }
       },
     ),
     tool(
       "status",
-      "등록된 git 저장소의 현재 브랜치, HEAD, ahead/behind, 미커밋 변경 파일을 조회한다. (소유자/신뢰 사용자 전용)",
-      { name: z.string().describe("등록된 repo 이름") },
+      "Show a registered git repository's current branch, HEAD, ahead/behind, and uncommitted changed files. (owner / trusted user only)",
+      { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
         try {
           return text(renderStatus(await gitRepoStatus(ownerRepoContext(args.name))));
         } catch (error) {
-          return text(`status 실패: ${errorMessage(error)}`, true);
+          return text(`status failed: ${errorMessage(error)}`, true);
         }
       },
     ),
     tool(
       "list_files",
-      "등록된 git 저장소의 파일 트리를 나열한다. `.git`은 제외된다. (소유자/신뢰 사용자 전용)",
-      { name: z.string().describe("등록된 repo 이름") },
+      "List the file tree of a registered git repository. `.git` is excluded. (owner / trusted user only)",
+      { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
         try {
           const entries = await listGitRepoTree(ownerRepoContext(args.name));
-          if (entries.length === 0) return text("저장소가 비어 있습니다.");
+          if (entries.length === 0) return text("The repository is empty.");
           return text(entries.map((e) => `${e.type === "dir" ? "dir " : "file"} ${e.path}`).join("\n"));
         } catch (error) {
-          return text(`파일 목록 조회 실패: ${errorMessage(error)}`, true);
+          return text(`Failed to list files: ${errorMessage(error)}`, true);
         }
       },
     ),
     tool(
       "read_file",
-      "등록된 git 저장소의 텍스트 파일을 읽는다. (소유자/신뢰 사용자 전용)",
+      "Read a text file from a registered git repository. (owner / trusted user only)",
       {
-        name: z.string().describe("등록된 repo 이름"),
-        path: z.string().describe("repo 루트 기준 상대 경로"),
+        name: z.string().describe("Registered repo name"),
+        path: z.string().describe("Path relative to the repo root"),
       },
       async (args) => {
         const denied = elevatedGuard();
@@ -252,72 +252,72 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
         try {
           return text(await readGitRepoFile(ownerRepoContext(args.name), args.path));
         } catch (error) {
-          return text(`파일 읽기 실패: ${errorMessage(error)}`, true);
+          return text(`Failed to read file: ${errorMessage(error)}`, true);
         }
       },
     ),
     tool(
       "write_file",
-      "등록된 git 저장소의 텍스트 파일을 작성/수정한다. 변경은 로컬 작업트리에만 반영되며 commit/push 전까지 원격에 반영되지 않는다. (소유자/신뢰 사용자 전용)",
+      "Create/modify a text file in a registered git repository. Changes apply only to the local working tree and are not reflected on the remote until commit/push. (owner / trusted user only)",
       {
-        name: z.string().describe("등록된 repo 이름"),
-        path: z.string().describe("repo 루트 기준 상대 경로"),
-        content: z.string().describe("파일 전체 내용"),
+        name: z.string().describe("Registered repo name"),
+        path: z.string().describe("Path relative to the repo root"),
+        content: z.string().describe("The full file content"),
       },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
         try {
           await writeGitRepoFile(ownerRepoContext(args.name), args.path, args.content);
-          return text(`파일을 저장했습니다: ${args.path}\n아직 커밋/푸시되지 않았습니다. 필요하면 diff 후 commit/push 하세요.`);
+          return text(`Saved the file: ${args.path}\nNot committed/pushed yet. If needed, run diff and then commit/push.`);
         } catch (error) {
-          return text(`파일 쓰기 실패: ${errorMessage(error)}`, true);
+          return text(`Failed to write file: ${errorMessage(error)}`, true);
         }
       },
     ),
     tool(
       "delete_file",
-      "등록된 git 저장소의 파일을 삭제한다. 삭제는 로컬 작업트리에만 반영된다. (소유자/신뢰 사용자 전용)",
+      "Delete a file from a registered git repository. The deletion applies only to the local working tree. (owner / trusted user only)",
       {
-        name: z.string().describe("등록된 repo 이름"),
-        path: z.string().describe("repo 루트 기준 상대 경로"),
+        name: z.string().describe("Registered repo name"),
+        path: z.string().describe("Path relative to the repo root"),
       },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
         try {
           await deleteGitRepoFile(ownerRepoContext(args.name), args.path);
-          return text(`파일을 삭제했습니다: ${args.path}\n아직 커밋/푸시되지 않았습니다.`);
+          return text(`Deleted the file: ${args.path}\nNot committed/pushed yet.`);
         } catch (error) {
-          return text(`파일 삭제 실패: ${errorMessage(error)}`, true);
+          return text(`Failed to delete file: ${errorMessage(error)}`, true);
         }
       },
     ),
     tool(
       "diff",
-      "등록된 git 저장소의 unstaged diff를 조회한다. paths를 주면 해당 경로로 제한한다. (소유자/신뢰 사용자 전용)",
+      "Show the unstaged diff of a registered git repository. If paths are given, the diff is limited to those paths. (owner / trusted user only)",
       {
-        name: z.string().describe("등록된 repo 이름"),
-        paths: z.array(z.string()).optional().describe("선택 경로 목록"),
+        name: z.string().describe("Registered repo name"),
+        paths: z.array(z.string()).optional().describe("Optional list of paths"),
       },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
         try {
           const diff = await gitRepoDiff(ownerRepoContext(args.name), args.paths);
-          return text(diff.trim() ? diff : "변경 diff가 없습니다. 새 untracked 파일은 commit 전 status에서 확인하세요.");
+          return text(diff.trim() ? diff : "There is no changed diff. Check new untracked files with status before commit.");
         } catch (error) {
-          return text(`diff 실패: ${errorMessage(error)}`, true);
+          return text(`diff failed: ${errorMessage(error)}`, true);
         }
       },
     ),
     tool(
       "commit",
-      "등록된 git 저장소의 변경사항을 커밋한다. paths를 주면 해당 경로만 stage한다. push는 별도 push 도구로 수행한다. (소유자/신뢰 사용자 전용)",
+      "Commit the changes in a registered git repository. If paths are given, only those paths are staged. Pushing is done with the separate push tool. (owner / trusted user only)",
       {
-        name: z.string().describe("등록된 repo 이름"),
-        message: z.string().describe("커밋 메시지"),
-        paths: z.array(z.string()).optional().describe("선택 경로 목록"),
+        name: z.string().describe("Registered repo name"),
+        message: z.string().describe("Commit message"),
+        paths: z.array(z.string()).optional().describe("Optional list of paths"),
       },
       async (args) => {
         const denied = elevatedGuard();
@@ -325,10 +325,10 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
         try {
           const repoCtx = ownerRepoContext(args.name);
           const committed = await commitGitRepo(repoCtx, args.message, commitIdentityFor(store, ctx.owner), args.paths);
-          return text(committed ? `변경사항을 커밋했습니다: ${repoCtx.name}` : "커밋할 변경사항이 없습니다.");
+          return text(committed ? `Committed the changes: ${repoCtx.name}` : "There are no changes to commit.");
         } catch (error) {
           return text(
-            `commit 실패: ${errorMessage(error)}\nstatus/diff로 작업트리 상태를 확인하세요. Bash git으로 우회하지 마세요.`,
+            `commit failed: ${errorMessage(error)}\nCheck the working tree state with status/diff. Do not work around this with Bash git.`,
             true,
           );
         }
@@ -336,18 +336,18 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "push",
-      "등록된 git 저장소의 현재 HEAD를 origin의 대상 브랜치로 push한다. 대상은 register_repo에 저장된 branch이며, branch가 비어 있으면 현재/default branch다. main 전용이 아니다. (소유자/신뢰 사용자 전용)",
-      { name: z.string().describe("등록된 repo 이름") },
+      "Push the registered git repository's current HEAD to the target branch on origin. The target is the branch saved in register_repo; if branch is empty, it's the current/default branch. Not limited to main. (owner / trusted user only)",
+      { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
         try {
           const repoCtx = ownerRepoContext(args.name);
           const branch = await pushGitRepo(repoCtx);
-          return text(`변경사항을 push했습니다: ${repoCtx.name} -> ${branch}`);
+          return text(`Pushed the changes: ${repoCtx.name} -> ${branch}`);
         } catch (error) {
           return text(
-            `push 실패: ${errorMessage(error)}\n원격 쓰기 권한·토큰·보호된 브랜치 여부를 확인하세요(public repo도 push에는 쓰기 권한이 필요합니다). Bash \`git push\`로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            `push failed: ${errorMessage(error)}\nCheck remote write permission, token, and whether the branch is protected (even a public repo needs write permission to push). Do not work around this with Bash \`git push\` — the shell has no git credentials.`,
             true,
           );
         }

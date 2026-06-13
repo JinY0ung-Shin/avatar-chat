@@ -857,7 +857,7 @@ describe("sshTrust", () => {
     expect(SSH_TRUST_TOOL_NAMES).toContain("mcp__ssh_trust__add_host");
 
     const empty = await callTool("list_hosts", {});
-    expect(empty.content[0].text).toContain("신뢰하는 호스트가 없습니다");
+    expect(empty.content[0].text).toContain("No trusted hosts");
 
     const file = knownHostsPath(ownerId, config);
     fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -866,7 +866,7 @@ describe("sshTrust", () => {
     expect(listed.content[0].text).toContain("5.5.5.5");
 
     const gone = await callTool("remove_host", { host: "5.5.5.5" });
-    expect(gone.content[0].text).toContain("제거했습니다");
+    expect(gone.content[0].text).toContain("Removed");
   });
 });
 
@@ -907,7 +907,7 @@ describe("ssh identity", () => {
 
     const generated = await call(tools, "generate_key", { comment: "avatar-chat-owner" });
     expect(generated.isError).toBeFalsy();
-    expect(generated.content[0].text).toContain("공개키:");
+    expect(generated.content[0].text).toContain("Public key:");
     expect(generated.content[0].text).not.toContain("BEGIN OPENSSH PRIVATE KEY");
 
     const user = store.getUserById(owner.id)!;
@@ -920,7 +920,7 @@ describe("ssh identity", () => {
 
     const second = await call(tools, "generate_key", { comment: "again" });
     expect(second.isError).toBe(true);
-    expect(second.content[0].text).toContain("이미 SSH 키가 설정");
+    expect(second.content[0].text).toContain("An SSH key is already configured");
   });
 
   it("refuses key management to non-owner viewers", async () => {
@@ -933,7 +933,7 @@ describe("ssh identity", () => {
 
     const res = await call(tools, "generate_key", {});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("소유자");
+    expect(res.content[0].text).toContain("avatar owner is present");
     expect(store.listUserSecretNames(owner.id)).toEqual([]);
   });
 });
@@ -1261,36 +1261,36 @@ describe("buildPrompt", () => {
 
   it("opens with displayName when no alias is set", () => {
     const p = buildPrompt(req(), 0);
-    expect(p).toContain('"도우미" 아바타로서');
-    expect(p).not.toContain("당신의 이름은");
+    expect(p).toContain('the "도우미" avatar');
+    expect(p).not.toContain("Your name is");
   });
 
   it("gives the avatar its alias as a self-name when set", () => {
     const p = buildPrompt(req({ avatar: avatar({ alias: "세바스찬" }) }), 0);
-    expect(p).toContain('당신의 이름은 "세바스찬"입니다');
+    expect(p).toContain('Your name is "세바스찬"');
     // displayName no longer seeds the opening line.
-    expect(p).not.toContain('"도우미" 아바타로서');
+    expect(p).not.toContain('the "도우미" avatar');
   });
 
   it("treats a whitespace-only alias as unset", () => {
     const p = buildPrompt(req({ avatar: avatar({ alias: "   " }) }), 0);
-    expect(p).toContain('"도우미" 아바타로서');
-    expect(p).not.toContain("당신의 이름은");
+    expect(p).toContain('the "도우미" avatar');
+    expect(p).not.toContain("Your name is");
   });
 
   it("names the owner in the prompt when the viewer is the owner", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
-    expect(p).toContain("소유자");
-    expect(p).toContain('"신진영"님');
+    expect(p).toContain("**owner**");
+    expect(p).toContain('"신진영"');
   });
 
   it("injects system awareness and owner system-management tool guidance", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
-    expect(p).toContain("Noah Almighty avatar-chat");
+    expect(p).toContain("Noah Almighty (avatar-chat)");
     expect(p).toContain("mcp__system__describe_system");
     expect(p).toContain("mcp__system__create_routine");
     expect(p).toContain("mcp__system__add_plugin");
-    expect(p).toContain("다음 대화부터 로드");
+    expect(p).toContain("load starting from the next conversation");
   });
 
   it("offers to create the knowledge repo via the repo tool on a greeting when GIT_TOKEN is set", () => {
@@ -1304,10 +1304,10 @@ describe("buildPrompt", () => {
       }),
       0,
     );
-    expect(p).toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    expect(p).toContain("no knowledge repository is connected yet");
     expect(p).toContain("mcp__repo__create_repo");
     // The pending-requests nudge composes into the same greeting line.
-    expect(p).toContain("그런 다음 무엇을 도와줄지 물어보세요");
+    expect(p).toContain("Then ask what you can help with");
   });
 
   it("guides the owner to set GIT_TOKEN first on a greeting when none is set", () => {
@@ -1321,8 +1321,8 @@ describe("buildPrompt", () => {
       }),
       0,
     );
-    expect(p).toContain("`GIT_TOKEN`도 설정돼 있지 않습니다");
-    expect(p).toContain("Git 자격증명");
+    expect(p).toContain("`GIT_TOKEN` is not set either");
+    expect(p).toContain("Git credentials");
     // Falls back to the manual marketplace-format guidance when there's no token.
     expect(p).toContain(".claude-plugin/marketplace.json");
     expect(p).toContain("skills/<name>/SKILL.md");
@@ -1343,11 +1343,11 @@ describe("buildPrompt", () => {
     // create_repo and to use it directly instead of manual setup / scaffold-first.
     expect(mid).toContain("mcp__repo__create_repo");
     expect(mid).toContain("github.enterprise.local");
-    expect(mid).toContain("수동 절차를 안내하지 말고");
+    expect(mid).toContain("do not walk them through manual steps");
     // The greeting-only proactive suggestion is NOT injected mid-conversation.
-    expect(mid).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    expect(mid).not.toContain("no knowledge repository is connected yet");
     // The manage-capability blurb is withheld until a repo is connected.
-    expect(mid).not.toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
+    expect(mid).not.toContain("directly manage your own **knowledge repository**");
   });
 
   it("guides the owner to set GIT_TOKEN mid-conversation when none is set and no repo exists", () => {
@@ -1355,8 +1355,8 @@ describe("buildPrompt", () => {
       req({ viewerIsOwner: true, knowledgeRepoConfigured: false, gitTokenSet: false }),
       0,
     );
-    expect(mid).toContain("`GIT_TOKEN`도 설정돼 있지 않습니다");
-    expect(mid).toContain("Git 자격증명");
+    expect(mid).toContain("`GIT_TOKEN` is not set either");
+    expect(mid).toContain("Git credentials");
   });
 
   it("shows the repo-management capability to the owner once a repo is connected", () => {
@@ -1364,20 +1364,20 @@ describe("buildPrompt", () => {
       req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: true }),
       0,
     );
-    expect(p).toContain("자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리");
-    expect(p).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    expect(p).toContain("directly manage your own **knowledge repository** (an owner-only personal repo)");
+    expect(p).not.toContain("no knowledge repository is connected yet");
   });
 
   it("tells the owner general git repo push is not main-only", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
-    expect(p).toContain("일반 **git repo 작업**");
-    expect(p).toContain("`push`는 main 전용이 아니라 등록된 branch");
-    expect(p).toContain("특정 브랜치를 말하면 `register_repo`의 `branch`");
+    expect(p).toContain("General **git repo work**");
+    expect(p).toContain("`push` is not main-only");
+    expect(p).toContain("set that name as `register_repo`'s `branch`");
   });
 
   it("tells the owner how to enable SSH tools when no SSH key is configured", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
-    expect(p).toContain("SSH 도구는 아직 비활성화");
+    expect(p).toContain("SSH tools are still disabled");
     expect(p).toContain("SSH_PRIVATE_KEY");
     expect(p).toContain("mcp__ssh_identity__generate_key");
     expect(p).toContain("mcp__ssh_trust__add_host");
@@ -1385,14 +1385,14 @@ describe("buildPrompt", () => {
 
   it("omits the SSH enablement guidance once an SSH key is configured", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY"] }), 0);
-    expect(p).not.toContain("SSH 도구는 아직 비활성화");
+    expect(p).not.toContain("SSH tools are still disabled");
     // The key name still appears in the secret-names listing, not the nudge.
     expect(p).toContain("SSH_PRIVATE_KEY");
   });
 
   it("does not show SSH enablement guidance to colleagues", () => {
     const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
-    expect(p).not.toContain("SSH 도구는 아직 비활성화");
+    expect(p).not.toContain("SSH tools are still disabled");
   });
 
   it("does not show the missing knowledge repo guidance to colleagues or headless runs", () => {
@@ -1400,35 +1400,35 @@ describe("buildPrompt", () => {
       req({ viewerIsOwner: false, viewerName: "김철수", knowledgeRepoConfigured: false }),
       0,
     );
-    expect(colleague).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    expect(colleague).not.toContain("no knowledge repository is connected yet");
 
     const headless = buildPrompt(
       req({ viewerIsOwner: true, headless: true, knowledgeRepoConfigured: false }),
       0,
     );
-    expect(headless).not.toContain("아직 지식 저장소가 연결되어 있지 않습니다");
+    expect(headless).not.toContain("no knowledge repository is connected yet");
   });
 
   it("names the colleague in the prompt for a non-owner viewer", () => {
     const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
-    expect(p).toContain("동료");
-    expect(p).toContain('"김철수"님');
-    expect(p).toContain("읽기 전용");
+    expect(p).toContain("**colleague**");
+    expect(p).toContain('"김철수"');
+    expect(p).toContain("read-only");
   });
 
   it("does not mark the chat read-only for a trusted (elevated) non-owner viewer", () => {
     const p = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
-    expect(p).toContain("동료");
-    expect(p).not.toContain("읽기 전용");
-    expect(p).toContain("신뢰하는 사용자");
-    expect(p).toContain("아바타 시스템 설정 변경은 소유자 전용");
+    expect(p).toContain("**colleague**");
+    expect(p).not.toContain("read-only");
+    expect(p).toContain("a user the owner trusts");
+    expect(p).toContain("Changing avatar system settings");
   });
 
   it("falls back to the unnamed wording when viewerName is absent", () => {
     const owner = buildPrompt(req({ viewerIsOwner: true }), 0);
-    expect(owner).toContain("**소유자**입니다.");
+    expect(owner).toContain("**owner**.");
     const colleague = buildPrompt(req({ viewerIsOwner: false }), 0);
-    expect(colleague).toContain("**동료**입니다.");
+    expect(colleague).toContain("**colleague**.");
   });
 
   it("shows configured secret names only to the owner, never values", () => {
@@ -1436,7 +1436,7 @@ describe("buildPrompt", () => {
       req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY", "API_TOKEN"] }),
       0,
     );
-    expect(owner).toContain("시크릿");
+    expect(owner).toContain("Secrets");
     expect(owner).toContain("SSH_PRIVATE_KEY");
     expect(owner).toContain("API_TOKEN");
     expect(owner).not.toContain("secret-value");
@@ -1456,7 +1456,7 @@ describe("buildPrompt", () => {
 
   it("does not append the user message on a greeting turn", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영", greeting: true }), 2);
-    expect(p).not.toContain("사용자 메시지:");
+    expect(p).not.toContain("User message:");
     // The pending-request count is surfaced in the greeting.
     expect(p).toContain("2");
   });
@@ -1472,11 +1472,11 @@ describe("buildPrompt", () => {
       }),
       0,
     );
-    expect(p).toContain("이전 대화 기록");
+    expect(p).toContain("Earlier conversation history");
     expect(p).toContain('"role": "user"');
     expect(p).toContain("첫 요청: 배포 체크리스트를 만들어줘");
     expect(p.indexOf("첫 요청: 배포 체크리스트를 만들어줘")).toBeLessThan(
-      p.indexOf("사용자 메시지:\n방금 말한 내용을 이어서 처리해줘"),
+      p.indexOf("User message:\n방금 말한 내용을 이어서 처리해줘"),
     );
   });
 
@@ -1494,13 +1494,13 @@ describe("buildPrompt", () => {
       }),
       0,
     );
-    expect(p).toContain("예약된 루틴 작업");
-    expect(p).toContain("현재 자기 상태");
-    expect(p).toContain("개인 지식 저장소: 연결됨");
-    expect(p).toContain("플랫폼팀(관리자, 공용 저장소 연결됨)");
+    expect(p).toContain("scheduled routine task");
+    expect(p).toContain("Current self-state");
+    expect(p).toContain("Personal knowledge repository: connected");
+    expect(p).toContain("플랫폼팀(admin, shared repository connected)");
     expect(p).toContain("`GIT_TOKEN`");
     expect(p).toContain("mcp__system__describe_system");
-    expect(p).toContain("git 원격 작업은 MCP 도구로만");
+    expect(p).toContain("Remote git work goes through MCP tools ONLY");
   });
 
   it("points a routine without a knowledge repo at create_repo instead of letting it guess", () => {
@@ -1514,7 +1514,7 @@ describe("buildPrompt", () => {
       }),
       0,
     );
-    expect(p).toContain("개인 지식 저장소: 없음");
+    expect(p).toContain("Personal knowledge repository: none");
     expect(p).toContain("mcp__repo__create_repo");
   });
 
@@ -1529,21 +1529,21 @@ describe("buildPrompt", () => {
       0,
     );
     // Not falsely framed as a scheduled routine, and no owner-state leakage.
-    expect(p).toContain("자동 실행 작업");
-    expect(p).not.toContain("예약된 루틴 작업");
-    expect(p).not.toContain("현재 자기 상태");
+    expect(p).toContain("automated task");
+    expect(p).not.toContain("scheduled routine task");
+    expect(p).not.toContain("Current self-state");
     expect(p).not.toContain("GIT_TOKEN");
-    expect(p).toContain("읽기 전용");
+    expect(p).toContain("read-only");
   });
 
   it("injects the git-MCP-only rule for owners and trusted users but not plain colleagues", () => {
     const owner = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
-    expect(owner).toContain("git 원격 작업은 MCP 도구로만");
-    expect(owner).toContain("우회하거나 재시도하지 말고");
+    expect(owner).toContain("Remote git work goes through MCP tools ONLY");
+    expect(owner).toContain("do NOT work around it or retry with Bash git");
     const trusted = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
-    expect(trusted).toContain("git 원격 작업은 MCP 도구로만");
+    expect(trusted).toContain("Remote git work goes through MCP tools ONLY");
     const colleague = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
-    expect(colleague).not.toContain("git 원격 작업은 MCP 도구로만");
+    expect(colleague).not.toContain("Remote git work goes through MCP tools ONLY");
   });
 
   it("explains group-sourced trust when the elevated viewer shares a group with the owner", () => {
@@ -1557,11 +1557,11 @@ describe("buildPrompt", () => {
       0,
     );
     expect(p).toContain("'플랫폼팀'");
-    expect(p).toContain("자동으로 신뢰");
+    expect(p).toContain("automatically trusted");
     // Without a shared group the original direct-trust wording is kept.
     const direct = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
-    expect(direct).toContain("소유자가 신뢰하는 사용자");
-    expect(direct).not.toContain("자동으로 신뢰");
+    expect(direct).toContain("a user the owner trusts");
+    expect(direct).not.toContain("automatically trusted");
   });
 });
 
@@ -1611,7 +1611,7 @@ describe("knowledge tools", () => {
     const tools = buildKnowledgeTools(store, visitorCtx(ownerId));
 
     const res = await call(tools, "request_info", { question: "다음 출시일은?" });
-    expect(res.content[0].text).toContain("요청 id");
+    expect(res.content[0].text).toContain("request id");
 
     const open = store.listKnowledgeRequests(ownerId, "open");
     expect(open).toHaveLength(1);
@@ -1623,15 +1623,15 @@ describe("knowledge tools", () => {
 
     const denied = await call(buildKnowledgeTools(store, visitorCtx(ownerId)), "pending_requests", {});
     expect(denied.isError).toBe(true);
-    expect(denied.content[0].text).toContain("아바타 소유자만");
+    expect(denied.content[0].text).toContain("can only be used by the avatar owner");
 
     const ownerTools = buildKnowledgeTools(store, ownerCtx(ownerId));
     const empty = await call(ownerTools, "pending_requests", {});
-    expect(empty.content[0].text).toContain("대기 중인 정보 요청이 없습니다");
+    expect(empty.content[0].text).toContain("There are no pending information requests");
 
     store.addKnowledgeRequest(ownerId, { question: "비밀 질문", askerName: "동료C" });
     const listed = await call(ownerTools, "pending_requests", {});
-    expect(listed.content[0].text).toContain("대기 중인 정보 요청 1건");
+    expect(listed.content[0].text).toContain("pending information request(s)");
     expect(listed.content[0].text).toContain("비밀 질문");
     expect(listed.content[0].text).toContain("동료C");
   });
@@ -1644,20 +1644,20 @@ describe("knowledge tools", () => {
       request_id: "x",
     });
     expect(denied.isError).toBe(true);
-    expect(denied.content[0].text).toContain("아바타 소유자만");
+    expect(denied.content[0].text).toContain("can only be used by the avatar owner");
 
     const ownerTools = buildKnowledgeTools(store, ownerCtx(ownerId));
 
     // Unknown / already-handled id → error.
     const bad = await call(ownerTools, "resolve_request", { request_id: "ghost" });
     expect(bad.isError).toBe(true);
-    expect(bad.content[0].text).toContain("찾을 수 없습니다");
+    expect(bad.content[0].text).toContain("Could not find request id");
 
     // A real open request is resolved and no longer listed as open.
     const req = store.addKnowledgeRequest(ownerId, { question: "넘길 질문", askerName: "동료D" });
     const ok = await call(ownerTools, "resolve_request", { request_id: req.id });
     expect(ok.isError).toBeFalsy();
-    expect(ok.content[0].text).toContain("처리 완료");
+    expect(ok.content[0].text).toContain("Closed the information request as resolved");
     expect(store.listKnowledgeRequests(ownerId, "open")).toHaveLength(0);
     expect(store.listKnowledgeRequests(ownerId, "resolved")).toHaveLength(1);
   });
@@ -1775,7 +1775,7 @@ describe("confluence tools", () => {
       { space_key: "DEV", title: "Draft", body_storage: "<p>Hello</p>" },
     );
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("소유자 또는 신뢰 사용자");
+    expect(result.content[0].text).toContain("avatar owner or trusted user conversations");
   });
 });
 
@@ -1835,7 +1835,7 @@ describe("repo tools (knowledge-repo management)", () => {
     for (const name of ["list_files", "read_file", "write_file", "scaffold_skill", "commit"]) {
       const res = await call(tools, name, { path: "x", content: "y", name: "x", message: "m" });
       expect(res.isError).toBe(true);
-      expect(res.content[0].text).toContain("아바타 소유자만");
+      expect(res.content[0].text).toContain("can only be used by the avatar owner");
     }
   });
 
@@ -1851,7 +1851,7 @@ describe("repo tools (knowledge-repo management)", () => {
     });
     const res = await call(tools, "list_files", {});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("지식 저장소가 아직 연결되어 있지 않습니다");
+    expect(res.content[0].text).toContain("No knowledge repository is connected yet");
     // The error redirects to create_repo, not manual setup.
     expect(res.content[0].text).toContain("create_repo");
   });
@@ -1862,7 +1862,7 @@ describe("repo tools (knowledge-repo management)", () => {
 
     const w = await call(tools, "write_file", { path: "notes/onboarding.md", content: "# 온보딩\n절차" });
     expect(w.isError).toBeFalsy();
-    expect(w.content[0].text).toContain("아직 커밋되지 않았습니다");
+    expect(w.content[0].text).toContain("Not committed yet");
 
     const sk = await call(tools, "scaffold_skill", { name: "Deploy Runbook", description: "배포" });
     expect(sk.content[0].text).toContain("skills/deploy-runbook/SKILL.md");
@@ -1876,11 +1876,11 @@ describe("repo tools (knowledge-repo management)", () => {
 
     const commit = await call(tools, "commit", { message: "지식 추가" });
     expect(commit.isError).toBeFalsy();
-    expect(commit.content[0].text).toContain("커밋하고 푸시");
+    expect(commit.content[0].text).toContain("Committed and pushed the changes");
 
     // A second commit with no changes reports nothing to commit.
     const noop = await call(tools, "commit", { message: "재시도" });
-    expect(noop.content[0].text).toContain("변경사항이 없습니다");
+    expect(noop.content[0].text).toContain("no changes to commit");
 
     // The push reached the remote — clone it fresh and verify the file landed.
     const verify = path.join(tempDir, "rt3", "verify");
@@ -1977,14 +1977,14 @@ describe("repo tools (knowledge-repo management)", () => {
     s.store.setGitToken(s.ownerId, "tok");
     const res = await call(createTools(s, false), "create_repo", { name: "x" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("아바타 소유자만");
+    expect(res.content[0].text).toContain("can only be used by the avatar owner");
   });
 
   it("create_repo requires a git token", async () => {
     const s = setupNoRepo("rt-create-notoken");
     const res = await call(createTools(s), "create_repo", { name: "x" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("사내 Git 토큰(GIT_TOKEN)");
+    expect(res.content[0].text).toContain("internal Git token (GIT_TOKEN)");
   });
 
   it("create_repo rejects an invalid repo name", async () => {
@@ -1992,7 +1992,7 @@ describe("repo tools (knowledge-repo management)", () => {
     s.store.setGitToken(s.ownerId, "tok");
     const res = await call(createTools(s), "create_repo", { name: "bad name!" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("영문/숫자");
+    expect(res.content[0].text).toContain("letters/digits");
   });
 
   it("create_repo refuses when a repo is already connected", async () => {
@@ -2001,7 +2001,7 @@ describe("repo tools (knowledge-repo management)", () => {
     s.store.setKnowledgeRepo(s.ownerId, "owner/existing", "main");
     const res = await call(createTools(s), "create_repo", { name: "x" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("이미 지식 저장소가 연결");
+    expect(res.content[0].text).toContain("A knowledge repository is already connected");
   });
 
   it("create_repo creates a repo through the configured creator and connects it", async () => {
@@ -2189,7 +2189,7 @@ describe("repo tools (knowledge-repo management)", () => {
       name: "my-knowledge",
     });
     expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain("초기화");
+    expect(res.content[0].text).toContain("initialized it with the default template");
     // The template landed on the remote as a real commit.
     const verify = path.join(tempDir, "rt-create-seed", "verify");
     execFileSync("git", ["clone", "-q", remote, verify], { stdio: "pipe" });
@@ -2256,7 +2256,7 @@ describe("git repo tools (general git repository management)", () => {
 
     const deniedRegister = await call(trustedTools, "register_repo", { repo: s.remote, name: "app", branch: "main" });
     expect(deniedRegister.isError).toBe(true);
-    expect(deniedRegister.content[0].text).toContain("아바타 소유자");
+    expect(deniedRegister.content[0].text).toContain("avatar owner is taking part in");
 
     await call(tools(s), "register_repo", { repo: s.remote, name: "app", branch: "main" });
     const status = await call(trustedTools, "status", { name: "app" });
@@ -2291,7 +2291,7 @@ describe("git repo tools (general git repository management)", () => {
 
     const commit = await call(ownerTools, "commit", { name: "work", message: "add runbook" });
     expect(commit.isError).toBeFalsy();
-    expect(commit.content[0].text).toContain("커밋했습니다");
+    expect(commit.content[0].text).toContain("Committed the changes");
 
     const push = await call(ownerTools, "push", { name: "work" });
     expect(push.isError).toBeFalsy();
@@ -2390,7 +2390,7 @@ describe("git repo tools (general git repository management)", () => {
     const colleagueTools = tools(s, { viewerIsOwner: false, elevated: false });
     const list = await call(colleagueTools, "list_repos", {});
     expect(list.isError).toBe(true);
-    expect(list.content[0].text).toContain("소유자 또는 신뢰 사용자");
+    expect(list.content[0].text).toContain("avatar owner or a trusted user");
   });
 
   it("rolls back a newly-registered repo when the clone fails, but keeps a prior registration", async () => {
@@ -2465,8 +2465,8 @@ describe("system tools (avatar system management)", () => {
     const res = await call(toolsFor(s, false), "describe_system", {});
 
     expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain("Noah Almighty avatar-chat 시스템 요약");
-    expect(res.content[0].text).toContain("소유자가 아니므로");
+    expect(res.content[0].text).toContain("Noah Almighty avatar-chat system summary");
+    expect(res.content[0].text).toContain("conversation partner is not the owner");
     expect(res.content[0].text).not.toContain("ghp_secretvalue");
     expect(res.content[0].text).not.toContain("SSH_PRIVATE_KEY");
   });
@@ -2483,14 +2483,14 @@ describe("system tools (avatar system management)", () => {
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain("runtime: local");
     expect(res.content[0].text).toContain("owner/knowledge @ main");
-    expect(res.content[0].text).toContain("사내 Git 토큰(GIT_TOKEN): 설정됨");
+    expect(res.content[0].text).toContain("Internal Git token (GIT_TOKEN): set");
     expect(res.content[0].text).toContain("SSH_PRIVATE_KEY");
-    expect(res.content[0].text).toContain("플러그인: 1개");
-    expect(res.content[0].text).toContain("루틴: 1개");
+    expect(res.content[0].text).toContain("Plugins: 1");
+    expect(res.content[0].text).toContain("Routines: 1");
     expect(res.content[0].text).not.toContain("ghp_secretvalue");
     expect(res.content[0].text).not.toContain("private-key");
     // SSH key present → the dedicated status line reports SSH tools as active.
-    expect(res.content[0].text).toContain("원격 SSH 도구: 활성");
+    expect(res.content[0].text).toContain("Remote SSH tools: enabled");
   });
 
   it("reports the effective model, groups, trust, profile state and pending requests", async () => {
@@ -2510,12 +2510,12 @@ describe("system tools (avatar system management)", () => {
     const res = await call(toolsFor(s), "describe_system", {});
     expect(res.isError).toBeFalsy();
     const body = res.content[0].text;
-    expect(body).toContain("claude-test-model (관리자 설정)");
-    expect(body).toContain("플랫폼팀(관리자, 공용 저장소 없음)");
+    expect(body).toContain("claude-test-model (admin setting)");
+    expect(body).toContain("플랫폼팀(admin, shared repository none)");
     expect(body).toContain("동료(@colleague)");
-    expect(body).toContain("공개됨(탐색에 노출)");
-    expect(body).toContain("원격 SSH 도구: 비활성");
-    expect(body).toContain("대기 중 정보 요청: 1건");
+    expect(body).toContain("published (visible in discovery)");
+    expect(body).toContain("Remote SSH tools: disabled");
+    expect(body).toContain("Pending information requests: 1");
   });
 
   it("refuses routine and plugin mutations for non-owner viewers", async () => {
@@ -2526,11 +2526,11 @@ describe("system tools (avatar system management)", () => {
     const notification = await call(nonOwner, "notify_user", { message: "확인 필요" });
 
     expect(routine.isError).toBe(true);
-    expect(routine.content[0].text).toContain("아바타 소유자");
+    expect(routine.content[0].text).toContain("avatar owner is participating in");
     expect(plugin.isError).toBe(true);
-    expect(plugin.content[0].text).toContain("아바타 소유자");
+    expect(plugin.content[0].text).toContain("avatar owner is participating in");
     expect(notification.isError).toBe(true);
-    expect(notification.content[0].text).toContain("아바타 소유자");
+    expect(notification.content[0].text).toContain("avatar owner is participating in");
     expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
     expect(s.store.listPlugins(s.owner.id)).toHaveLength(0);
   });
@@ -2606,7 +2606,7 @@ describe("system tools (avatar system management)", () => {
       label: "Ops Plugin",
     });
     expect(added.isError).toBeFalsy();
-    expect(added.content[0].text).toContain("다음 대화부터");
+    expect(added.content[0].text).toContain("starting from the next conversation");
 
     const plugin = s.store.listPlugins(s.owner.id)[0];
     expect(plugin.repo).toBe("owner/plugin");
@@ -3492,7 +3492,7 @@ describe("avatar directory tools (cross-avatar search)", () => {
     const { store, meId } = setup();
     const tools = buildAvatarDirectoryTools(store, { avatarUserId: meId, viewerUserId: meId });
     const res = await call(tools, "search_avatars", { query: "존재하지않는역량xyz" });
-    expect(res.content[0].text).toContain("찾지 못했습니다");
+    expect(res.content[0].text).toContain("Could not find any published avatar matching");
   });
 });
 
@@ -3675,7 +3675,7 @@ describe("group repo tools (mcp__group_repo__*)", () => {
     const s = setup("gp-owner");
     const res = await call(tools(s, { viewerIsOwner: false }), "list_groups", {});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("소유자");
+    expect(res.content[0].text).toContain("can only be used by the avatar owner");
   });
 
   it("lets a group admin write + commit; a member can read but not write", async () => {
@@ -3684,7 +3684,7 @@ describe("group repo tools (mcp__group_repo__*)", () => {
     expect(w.isError).toBeFalsy();
     const c = await call(tools(s), "commit", { group: "Team", message: "add note" });
     expect(c.isError).toBeFalsy();
-    expect(c.content[0].text).toContain("커밋");
+    expect(c.content[0].text).toContain("Committed and pushed the changes");
     const r = await call(tools(s), "read_file", { group: "Team", path: "docs/note.md" });
     expect(r.content[0].text).toBe("hi");
 
@@ -3693,13 +3693,13 @@ describe("group repo tools (mcp__group_repo__*)", () => {
     expect(list.isError).toBeFalsy();
     const denied = await call(tools(sm), "write_file", { group: "Team", path: "x.md", content: "no" });
     expect(denied.isError).toBe(true);
-    expect(denied.content[0].text).toContain("관리자");
+    expect(denied.content[0].text).toContain("Only a group admin can modify");
   });
 
   it("rejects an unknown group", async () => {
     const s = setup("gp-unknown");
     const res = await call(tools(s), "list_files", { group: "Nope" });
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain("그룹");
+    expect(res.content[0].text).toContain("Could not find a group with that name/ID");
   });
 });

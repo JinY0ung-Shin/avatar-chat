@@ -35,7 +35,7 @@ export const SYSTEM_TOOL_NAMES = [
   "mcp__system__set_plugin_enabled",
 ] as const;
 
-const OWNER_ONLY = "이 도구는 아바타 소유자가 참여 중인 대화에서만 사용할 수 있습니다.";
+const OWNER_ONLY = "This tool can only be used in a conversation the avatar owner is participating in.";
 
 function text(message: string, isError = false) {
   return { content: [{ type: "text" as const, text: message }], isError };
@@ -99,22 +99,22 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
   return [
     tool(
       "describe_system",
-      "현재 아바타 시스템의 구조와 이 아바타가 관리할 수 있는 설정을 요약한다. 소유자에게는 현재 상태(프로필 공개 여부·소개·해시태그, 지식 저장소, 일반 git repo, 그룹과 역할, 시크릿 이름, SSH 활성 여부, 신뢰 사용자, 플러그인, 루틴, 대기 중 정보 요청)를 포함한다. 자신의 설정·상태에 대한 질문을 받으면 추측하지 말고 먼저 이 도구를 호출한다.",
+      "Summarizes the current avatar system's structure and the settings this avatar can manage. For the owner, it includes the current state (profile published status, intro, hashtags; knowledge repository; general git repos; groups and roles; secret names; whether SSH is enabled; trusted users; plugins; routines; pending information requests). When asked about your own settings or state, call this tool first instead of guessing.",
       {},
       async () => {
         const user = store.getUserById(ctx.avatarUserId);
         const publicGuide = [
-          "Noah Almighty avatar-chat 시스템 요약:",
-          "- 아바타는 프로필/페르소나, 기본 스킬, 소유자 플러그인, 개인 지식 저장소를 함께 로드해 대화합니다.",
-          "- 지식 저장소는 아바타가 직접 파일과 스킬을 만들고 커밋할 수 있는 개인 repo입니다.",
-          "- 플러그인은 GitHub repo 또는 git URL로 추가되며 다음 대화부터 로드됩니다.",
-          "- 루틴은 매일 KST 기준 지정 시간에 headless로 실행되며, 소유자와 같은 도구 권한으로 작업하고 루틴 탭에 결과를 남깁니다.",
-          "- 시크릿 값은 노출되지 않고, 이름만 아바타에게 알려집니다.",
-          "- git 원격 작업(clone/push 등)은 전용 MCP 도구로만 수행됩니다. 셸에는 git 자격증명이 없습니다.",
+          "Noah Almighty avatar-chat system summary:",
+          "- The avatar converses by loading its profile/persona, base skills, owner plugins, and personal knowledge repository together.",
+          "- The knowledge repository is a personal repo where the avatar can directly create and commit files and skills.",
+          "- Plugins are added via a GitHub repo or git URL and load starting from the next conversation.",
+          "- Routines run headlessly every day at a specified time in KST, work with the same tool permissions as the owner, and leave their results in the routines tab.",
+          "- Secret values are not exposed; only their names are revealed to the avatar.",
+          "- Remote git operations (clone/push, etc.) are performed only through dedicated MCP tools. The shell has no git credentials.",
         ];
         if (!ctx.viewerIsOwner) {
           return text(
-            `${publicGuide.join("\n")}\n\n현재 대화 상대는 소유자가 아니므로 플러그인/루틴/지식 저장소 설정 변경은 할 수 없습니다.`,
+            `${publicGuide.join("\n")}\n\nThe current conversation partner is not the owner, so changes to plugin/routine/knowledge-repository settings cannot be made.`,
           );
         }
         const plugins = store.listPlugins(ctx.avatarUserId);
@@ -130,43 +130,43 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         // runs with, not just the env value.
         const adminModel = store.getModelOverride();
         const modelLine = ctx.config.anthropicModel
-          ? `${ctx.config.anthropicModel} (환경변수 고정)`
+          ? `${ctx.config.anthropicModel} (pinned via environment variable)`
           : adminModel
-            ? `${adminModel} (관리자 설정)`
-            : "(SDK 기본값)";
+            ? `${adminModel} (admin setting)`
+            : "(SDK default)";
         const hashtags = user?.hashtags ?? [];
         const lines = [
           ...publicGuide,
           "",
-          "현재 아바타 상태:",
-          `- 이름: ${user?.alias || user?.displayName || ctx.owner.displayName}`,
-          `- 프로필: ${user?.published ? "공개됨(탐색에 노출)" : "비공개(탐색에 숨김)"}, 소개글 ${user?.intro?.trim() ? "설정됨" : "(없음)"}, 역량 해시태그 ${hashtags.length ? hashtags.map((t) => `#${t}`).join(" ") : "(없음)"}`,
+          "Current avatar state:",
+          `- Name: ${user?.alias || user?.displayName || ctx.owner.displayName}`,
+          `- Profile: ${user?.published ? "published (visible in discovery)" : "unpublished (hidden from discovery)"}, intro ${user?.intro?.trim() ? "set" : "(none)"}, capability hashtags ${hashtags.length ? hashtags.map((t) => `#${t}`).join(" ") : "(none)"}`,
           `- runtime: ${ctx.config.agentRuntime}`,
-          `- 사용 모델: ${modelLine}`,
+          `- Model in use: ${modelLine}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
-          `- Confluence host: ${ctx.config.confluenceUrl ? "설정됨" : "(없음)"}`,
-          `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "시크릿 설정됨" : "(없음)"}`,
-          `- 지식 저장소: ${knowledgeRepo.repo || "(없음)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
-          `- 일반 git repo: ${gitRepos.length}개`,
-          `- 사내 Git 토큰(GIT_TOKEN): ${store.getGitToken(ctx.avatarUserId) ? "설정됨" : "없음"}`,
-          `- 시크릿 이름: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(없음)"}`,
-          `- 원격 SSH 도구: ${secretNames.includes("SSH_PRIVATE_KEY") ? "활성(SSH_PRIVATE_KEY 설정됨)" : "비활성(SSH_PRIVATE_KEY 시크릿 없음)"}`,
-          `- 그룹: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "관리자" : "멤버"}, 공용 저장소 ${g.knowledgeRepoConfigured ? "연결됨" : "없음"})`).join(", ") : "(없음)"} — 같은 그룹 멤버끼리는 자동으로 상호 신뢰됩니다.`,
-          `- 직접 신뢰 설정한 사용자: ${trustedUsers.length ? trustedUsers.map((t) => `${t.displayName}(@${t.username})`).join(", ") : "(없음)"}`,
-          `- 플러그인: ${plugins.length}개 (${plugins.filter((p) => p.enabled).length}개 활성)`,
-          `- 루틴: ${routines.length}개 (${routines.filter((r) => r.enabled).length}개 활성)`,
-          `- 대기 중 정보 요청: ${openRequests}건${openRequests > 0 ? " (pending_requests로 내용 확인)" : ""}`,
+          `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
+          `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
+          `- Knowledge repository: ${knowledgeRepo.repo || "(none)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
+          `- General git repos: ${gitRepos.length}`,
+          `- Internal Git token (GIT_TOKEN): ${store.getGitToken(ctx.avatarUserId) ? "set" : "not set"}`,
+          `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(none)"}`,
+          `- Remote SSH tools: ${secretNames.includes("SSH_PRIVATE_KEY") ? "enabled (SSH_PRIVATE_KEY set)" : "disabled (no SSH_PRIVATE_KEY secret)"}`,
+          `- Groups: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`).join(", ") : "(none)"} — members of the same group automatically trust each other mutually.`,
+          `- Directly trusted users: ${trustedUsers.length ? trustedUsers.map((t) => `${t.displayName}(@${t.username})`).join(", ") : "(none)"}`,
+          `- Plugins: ${plugins.length} (${plugins.filter((p) => p.enabled).length} enabled)`,
+          `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)`,
+          `- Pending information requests: ${openRequests}${openRequests > 0 ? " (use pending_requests to view the details)" : ""}`,
         ];
         return text(lines.join("\n"));
       },
     ),
     tool(
       "notify_user",
-      "아바타 소유자에게 앱 내부 알림 메시지를 보낸다. 루틴 실행 중 중요한 결과, 조치 필요 사항, 장애 감지 등을 사용자에게 따로 알릴 때 사용한다. (소유자/소유자 루틴 전용)",
+      "Sends an in-app notification message to the avatar owner. Use this to separately notify the user of important results during a routine run, items requiring action, detected failures, and so on. (owner / owner routine only)",
       {
-        title: z.string().optional().describe("알림 제목. 비우면 '아바타 알림'"),
-        message: z.string().describe("사용자에게 보여줄 알림 본문"),
-        conversationId: z.string().optional().describe("관련 대화 ID. 비우면 알림만 남긴다."),
+        title: z.string().optional().describe("Notification title. Defaults to 'Avatar notification' if empty."),
+        message: z.string().describe("Notification body to show the user"),
+        conversationId: z.string().optional().describe("Related conversation ID. If empty, only the notification is left."),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -186,18 +186,18 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
             status: "success",
             detail: `notification ${notification.id}`,
           });
-          return text(`알림을 보냈습니다: ${notification.title}`);
+          return text(`Notification sent: ${notification.title}`);
         } catch (error) {
           const message = error instanceof Error && error.message === "EMPTY_NOTIFICATION"
-            ? "알림 본문을 입력해 주세요."
-            : "알림을 저장하지 못했습니다.";
+            ? "Please enter a notification body."
+            : "Failed to save the notification.";
           return text(message, true);
         }
       },
     ),
     tool(
       "list_routines",
-      "소유자의 아바타 루틴 목록을 조회한다. 루틴은 매일 KST 시간에 headless로 실행되며 소유자와 같은 도구 권한을 사용한다. (소유자 전용)",
+      "Lists the owner's avatar routines. Routines run headlessly every day at a KST time and use the same tool permissions as the owner. (owner only)",
       {},
       async () => {
         if (!ctx.viewerIsOwner) {
@@ -205,18 +205,18 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         }
         const routines = store.listRoutineJobs(ctx.avatarUserId);
         if (routines.length === 0) {
-          return text("등록된 루틴이 없습니다.");
+          return text("There are no registered routines.");
         }
-        return text(`등록된 루틴 ${routines.length}건:\n${routines.map(renderRoutine).join("\n")}`);
+        return text(`${routines.length} registered routine(s):\n${routines.map(renderRoutine).join("\n")}`);
       },
     ),
     tool(
       "create_routine",
-      "새 루틴 업무를 만든다. 매일 KST 기준 time(HH:MM)에 prompt를 headless로 실행하고, 소유자와 같은 도구 권한으로 작업한 결과를 루틴 탭에 남긴다. (소유자 전용)",
+      "Creates a new routine task. Runs the prompt headlessly every day at time (HH:MM) in KST, and leaves the result of working with the same tool permissions as the owner in the routines tab. (owner only)",
       {
-        prompt: z.string().describe("매일 실행할 작업 지시"),
-        time: z.string().describe("KST 기준 HH:MM, 예: 09:30"),
-        enabled: z.boolean().optional().describe("생성 직후 활성화 여부 (기본 true)"),
+        prompt: z.string().describe("The task instruction to run daily"),
+        time: z.string().describe("HH:MM in KST, e.g.: 09:30"),
+        enabled: z.boolean().optional().describe("Whether to enable immediately after creation (default true)"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -224,11 +224,11 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         }
         const prompt = args.prompt.trim();
         if (!prompt) {
-          return text("prompt를 입력해 주세요.", true);
+          return text("Please enter a prompt.", true);
         }
         const minuteOfDay = parseTimeToMinute(args.time);
         if (minuteOfDay === null) {
-          return text("time은 HH:MM 형식이어야 합니다.", true);
+          return text("time must be in HH:MM format.", true);
         }
         const routine = store.createRoutineJob(ctx.avatarUserId, {
           prompt,
@@ -241,17 +241,17 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           status: "success",
           detail: `routine ${routine.id} at ${routine.time}`,
         });
-        return text(`루틴을 만들었습니다:\n${renderRoutine(routine)}`);
+        return text(`Created the routine:\n${renderRoutine(routine)}`);
       },
     ),
     tool(
       "update_routine",
-      "기존 루틴의 prompt, time(HH:MM KST), enabled 값을 수정한다. (소유자 전용)",
+      "Updates an existing routine's prompt, time (HH:MM KST), and enabled values. (owner only)",
       {
-        id: z.string().describe("수정할 루틴 id"),
-        prompt: z.string().optional().describe("새 작업 지시"),
-        time: z.string().optional().describe("KST 기준 HH:MM"),
-        enabled: z.boolean().optional().describe("활성화 여부"),
+        id: z.string().describe("id of the routine to update"),
+        prompt: z.string().optional().describe("New task instruction"),
+        time: z.string().optional().describe("HH:MM in KST"),
+        enabled: z.boolean().optional().describe("Whether enabled"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -261,14 +261,14 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         if (args.prompt !== undefined) {
           const prompt = args.prompt.trim();
           if (!prompt) {
-            return text("prompt를 입력해 주세요.", true);
+            return text("Please enter a prompt.", true);
           }
           patch.prompt = prompt;
         }
         if (args.time !== undefined) {
           const minuteOfDay = parseTimeToMinute(args.time);
           if (minuteOfDay === null) {
-            return text("time은 HH:MM 형식이어야 합니다.", true);
+            return text("time must be in HH:MM format.", true);
           }
           patch.minuteOfDay = minuteOfDay;
         }
@@ -276,11 +276,11 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           patch.enabled = args.enabled;
         }
         if (Object.keys(patch).length === 0) {
-          return text("수정할 값(prompt, time, enabled) 중 하나 이상이 필요합니다.", true);
+          return text("At least one of the values to update (prompt, time, enabled) is required.", true);
         }
         const routine = store.updateRoutineJob(ctx.avatarUserId, args.id, patch);
         if (!routine) {
-          return text("루틴을 찾을 수 없습니다.", true);
+          return text("Routine not found.", true);
         }
         store.audit({
           ...actor(ctx),
@@ -288,19 +288,19 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           status: "success",
           detail: `routine ${routine.id}`,
         });
-        return text(`루틴을 수정했습니다:\n${renderRoutine(routine)}`);
+        return text(`Updated the routine:\n${renderRoutine(routine)}`);
       },
     ),
     tool(
       "delete_routine",
-      "기존 루틴을 삭제한다. (소유자 전용)",
-      { id: z.string().describe("삭제할 루틴 id") },
+      "Deletes an existing routine. (owner only)",
+      { id: z.string().describe("id of the routine to delete") },
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
         }
         if (!store.deleteRoutineJob(ctx.avatarUserId, args.id)) {
-          return text("루틴을 찾을 수 없습니다.", true);
+          return text("Routine not found.", true);
         }
         store.audit({
           ...actor(ctx),
@@ -308,12 +308,12 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           status: "success",
           detail: `routine ${args.id}`,
         });
-        return text(`루틴을 삭제했습니다: ${args.id}`);
+        return text(`Deleted the routine: ${args.id}`);
       },
     ),
     tool(
       "list_plugins",
-      "소유자 아바타에 등록된 플러그인 목록을 조회한다. (소유자 전용)",
+      "Lists the plugins registered to the owner's avatar. (owner only)",
       {},
       async () => {
         if (!ctx.viewerIsOwner) {
@@ -321,18 +321,18 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         }
         const plugins = store.listPlugins(ctx.avatarUserId);
         if (plugins.length === 0) {
-          return text("등록된 플러그인이 없습니다.");
+          return text("There are no registered plugins.");
         }
-        return text(`등록된 플러그인 ${plugins.length}건:\n${plugins.map(renderPlugin).join("\n")}`);
+        return text(`${plugins.length} registered plugin(s):\n${plugins.map(renderPlugin).join("\n")}`);
       },
     ),
     tool(
       "add_plugin",
-      "아바타에 GitHub/gitrepo 플러그인을 추가한다. repo는 owner/repo, https URL, git@ URL, .git URL을 허용한다. 추가한 플러그인은 다음 대화부터 로드된다. (소유자 전용)",
+      "Adds a GitHub/git-repo plugin to the avatar. repo accepts owner/repo, an https URL, a git@ URL, or a .git URL. The added plugin loads starting from the next conversation. (owner only)",
       {
-        repo: z.string().describe("owner/repo 또는 git/https URL"),
-        ref: z.string().optional().describe("브랜치/태그/커밋 ref (선택)"),
-        label: z.string().optional().describe("표시용 이름 (선택)"),
+        repo: z.string().describe("owner/repo or a git/https URL"),
+        ref: z.string().optional().describe("branch/tag/commit ref (optional)"),
+        label: z.string().optional().describe("display name (optional)"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -340,7 +340,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         }
         const repo = args.repo.trim();
         if (!repo || !looksLikeRepo(repo)) {
-          return text("repo는 owner/repo 또는 git/https URL 형식이어야 합니다.", true);
+          return text("repo must be in owner/repo or git/https URL format.", true);
         }
         const plugin = store.addPlugin(ctx.avatarUserId, {
           repo,
@@ -354,16 +354,16 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           detail: plugin.repo,
         });
         return text(
-          `플러그인을 추가했습니다:\n${renderPlugin(plugin)}\n\n현재 대화에는 즉시 로드되지 않을 수 있습니다. 다음 대화부터 활성 플러그인으로 로드됩니다.`,
+          `Added the plugin:\n${renderPlugin(plugin)}\n\nIt may not load immediately in the current conversation. It loads as an active plugin starting from the next conversation.`,
         );
       },
     ),
     tool(
       "set_plugin_enabled",
-      "등록된 플러그인을 활성화하거나 비활성화한다. 변경은 다음 대화부터 로드 상태에 반영된다. (소유자 전용)",
+      "Enables or disables a registered plugin. The change is reflected in the load state starting from the next conversation. (owner only)",
       {
-        id: z.string().describe("플러그인 id"),
-        enabled: z.boolean().describe("활성화 여부"),
+        id: z.string().describe("plugin id"),
+        enabled: z.boolean().describe("whether enabled"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -371,7 +371,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         }
         const plugin = store.setPluginEnabled(ctx.avatarUserId, args.id, args.enabled);
         if (!plugin) {
-          return text("플러그인을 찾을 수 없습니다.", true);
+          return text("Plugin not found.", true);
         }
         store.audit({
           ...actor(ctx),
@@ -379,7 +379,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           status: "success",
           detail: `${plugin.repo} enabled=${plugin.enabled}`,
         });
-        return text(`플러그인 상태를 변경했습니다:\n${renderPlugin(plugin)}`);
+        return text(`Changed the plugin state:\n${renderPlugin(plugin)}`);
       },
     ),
   ];

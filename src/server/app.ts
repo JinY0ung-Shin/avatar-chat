@@ -518,22 +518,22 @@ export function createApp(services = createServices()) {
     // rather than inventing capabilities.
     const skillLines = skills.length
       ? skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`).join("\n")
-      : "(등록된 스킬 없음)";
+      : "(no skills registered)";
     const pluginLines = enabledPlugins.length
       ? enabledPlugins.map((p) => `- ${p.label || p.repo}`).join("\n")
-      : "(연결된 플러그인 없음)";
+      : "(no plugins connected)";
     const personaLine = avatar.persona?.trim()
-      ? `\n\n참고용 페르소나/지침:\n${avatar.persona.trim()}`
+      ? `\n\nReference persona/instructions:\n${avatar.persona.trim()}`
       : "";
     const message =
-      "당신은 자기 자신을 소개하는 짧은 글을 작성합니다. 대화 상대(동료)가 당신과 대화를 시작하기 전에 읽을 소개글입니다.\n\n" +
-      "다음 정보를 바탕으로, 1인칭 시점으로 '당신이 무엇을 도와줄 수 있는지'를 중심으로 자기소개를 작성하세요. " +
-      "갖춘 스킬·도구를 근거로 구체적인 역량을 드러내되 과장하지 마세요.\n\n" +
-      "마크다운 형식으로 출력하세요. 한두 문장의 짧은 인사 문단으로 시작한 뒤, " +
-      "주요 역량은 불릿 목록(`- `)으로 정리하세요. 각 불릿은 '무엇을 도울 수 있는지' 한 줄로 쓰고, " +
-      "필요하면 굵게(`**`)로 핵심 키워드를 강조하세요. 마크다운 제목(`#`)·코드블록·따옴표 감싸기는 쓰지 말고, " +
-      "소개 본문만 출력하세요.\n\n" +
-      `사용 가능한 스킬:\n${skillLines}\n\n연결된 플러그인:\n${pluginLines}${personaLine}`;
+      "You are writing a short self-introduction. It is the intro a conversation partner (a colleague) will read before they start talking to you.\n\n" +
+      "Based on the information below, write the introduction in the first person, centered on 'what you can help with'. " +
+      "Ground concrete capabilities in the skills and tools you have, but do not exaggerate.\n\n" +
+      "**Write the introduction in Korean.** Output in Markdown. Start with a short one- or two-sentence greeting paragraph, then " +
+      "organize your main capabilities as a bullet list (`- `). Write each bullet as a single line about 'what you can help with', " +
+      "and use bold (`**`) to emphasize key keywords where helpful. Do not use Markdown headings (`#`), code blocks, or wrapping quotes — " +
+      "output only the introduction body.\n\n" +
+      `Available skills:\n${skillLines}\n\nConnected plugins:\n${pluginLines}${personaLine}`;
 
     const workspaceDir = workspaceDirFor(config, avatar.id, "intro");
     fs.mkdirSync(workspaceDir, { recursive: true });
@@ -618,21 +618,21 @@ export function createApp(services = createServices()) {
 
     const skillLines = skills.length
       ? skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`).join("\n")
-      : "(등록된 스킬 없음)";
+      : "(no skills registered)";
     const pluginLines = enabledPlugins.length
       ? enabledPlugins.map((p) => `- ${p.label || p.repo}`).join("\n")
-      : "(연결된 플러그인 없음)";
+      : "(no plugins connected)";
     const personaLine = avatar.persona?.trim()
-      ? `\n\n참고용 페르소나/지침:\n${avatar.persona.trim()}`
+      ? `\n\nReference persona/instructions:\n${avatar.persona.trim()}`
       : "";
     const message =
-      "당신은 자기 자신을 검색·분류하기 위한 '역량 해시태그'를 만듭니다. 동료들이 탐색 화면에서 당신이 무엇을 할 수 있는지 키워드로 찾을 수 있게 돕는 태그입니다.\n\n" +
-      "다음 정보를 바탕으로, 당신이 실제로 도와줄 수 있는 핵심 역량·도메인·도구를 나타내는 해시태그 5~12개를 만드세요. " +
-      "갖춘 스킬·플러그인·페르소나를 근거로 하고, 없는 능력은 지어내지 마세요.\n\n" +
-      "출력 형식: 해시태그만 공백으로 구분해 한 줄로 출력하세요. 각 태그는 `#`로 시작하고 공백 없이 쓰세요(여러 단어는 붙이거나 하이픈으로 연결). " +
-      "한국어를 기본으로 하되 널리 쓰이는 기술 용어는 영어로 써도 됩니다. 설명 문장·목록·코드블록 없이 해시태그 줄만 출력하세요.\n" +
-      "예시: #코드리뷰 #파이썬 #데이터분석 #기술문서작성\n\n" +
-      `사용 가능한 스킬:\n${skillLines}\n\n연결된 플러그인:\n${pluginLines}${personaLine}`;
+      "You are creating 'capability hashtags' for searching and categorizing yourself. These tags help colleagues find what you can do by keyword on the discovery screen.\n\n" +
+      "Based on the information below, create 5–12 hashtags representing the core capabilities, domains, and tools you can actually help with. " +
+      "Ground them in the skills, plugins, and persona you have, and do not invent capabilities you lack.\n\n" +
+      "Output format: output only the hashtags on a single line separated by spaces. Each tag starts with `#` and contains no spaces (join multiple words together or connect them with hyphens). " +
+      "Default to Korean, but widely used technical terms may be written in English. Output only the hashtag line — no explanatory sentences, lists, or code blocks.\n" +
+      "Example: #코드리뷰 #파이썬 #데이터분석 #기술문서작성\n\n" +
+      `Available skills:\n${skillLines}\n\nConnected plugins:\n${pluginLines}${personaLine}`;
 
     const workspaceDir = workspaceDirFor(config, avatar.id, "hashtags");
     fs.mkdirSync(workspaceDir, { recursive: true });

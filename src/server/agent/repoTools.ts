@@ -73,7 +73,7 @@ type GhRunner = (
 
 function githubHostDescription(host: string): string {
   const normalized = normalizeGithubHost(host);
-  return `현재 설정된 GitHub host는 \`${normalized}\`이고, create_repo는 \`GH_HOST=${normalized} gh repo create\`로 생성한다.`;
+  return `The currently configured GitHub host is \`${normalized}\`, and create_repo creates the repo with \`GH_HOST=${normalized} gh repo create\`.`;
 }
 
 function escapeRegExp(value: string): string {
@@ -197,9 +197,9 @@ export async function createRemoteRepo(
   }
 }
 
-const OWNER_ONLY = "이 도구는 아바타 소유자만 사용할 수 있습니다.";
+const OWNER_ONLY = "This tool can only be used by the avatar owner.";
 const NO_REPO =
-  "지식 저장소가 아직 연결되어 있지 않습니다. 소유자라면 먼저 `create_repo` 도구로 새 저장소를 만들어 연결한 뒤 다시 시도하세요. (이미 쓰던 repo가 있으면 설정에서 직접 연결할 수도 있습니다.) 수동 설정 절차를 안내하지 말고 `create_repo`를 사용하세요.";
+  "No knowledge repository is connected yet. If you are the owner, first create and connect a new repository with the `create_repo` tool, then try again. (If you already have a repo you've been using, you can also connect it directly in settings.) Do not walk through manual setup steps — use `create_repo`.";
 
 /**
  * Build the knowledge-repo management tool definitions bound to a single
@@ -219,7 +219,7 @@ export function buildRepoTools(
   const manageTools = [
     tool(
       "list_files",
-      "내 지식 저장소(개인 repo)의 파일 목록을 가져온다. (소유자 전용)",
+      "Get the file list of my knowledge repository (personal repo). (owner only)",
       {},
       async () => {
         if (!ctx.viewerIsOwner) {
@@ -233,15 +233,15 @@ export function buildRepoTools(
           const repoRoot = await ensureClone(c);
           const entries = await listTree(repoRoot);
           if (entries.length === 0) {
-            return text("(빈 저장소입니다.)");
+            return text("(The repository is empty.)");
           }
           const body = entries
             .map((e) => (e.type === "dir" ? `${e.path}/` : e.path))
             .join("\n");
-          return text(`지식 저장소 파일 목록:\n${body}`);
+          return text(`Knowledge repository file list:\n${body}`);
         } catch (error) {
           return text(
-            `저장소를 불러오지 못했습니다: ${scrubGitError(error)}\n저장소 주소/브랜치와 토큰 권한을 확인하세요. Bash git으로 직접 clone하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            `Failed to load the repository: ${scrubGitError(error)}\nCheck the repository address/branch and token permissions. Do not clone directly with Bash git — the shell has no git credentials.`,
             true,
           );
         }
@@ -249,8 +249,8 @@ export function buildRepoTools(
     ),
     tool(
       "read_file",
-      "내 지식 저장소의 파일 내용을 읽는다. (소유자 전용)",
-      { path: z.string().describe("저장소 루트 기준 상대 경로 (예: skills/foo/SKILL.md)") },
+      "Read the content of a file in my knowledge repository. (owner only)",
+      { path: z.string().describe("Path relative to the repository root (e.g. skills/foo/SKILL.md)") },
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
@@ -265,19 +265,19 @@ export function buildRepoTools(
           return text(content);
         } catch (error) {
           const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("잘못된 경로입니다.", true);
-          if (detail === "FILE_TOO_LARGE") return text("파일이 너무 큽니다.", true);
-          if (detail === "NOT_A_FILE") return text("파일이 아닙니다.", true);
-          return text(`파일을 읽지 못했습니다: ${detail}`, true);
+          if (detail === "INVALID_PATH") return text("Invalid path.", true);
+          if (detail === "FILE_TOO_LARGE") return text("The file is too large.", true);
+          if (detail === "NOT_A_FILE") return text("Not a file.", true);
+          return text(`Failed to read the file: ${detail}`, true);
         }
       },
     ),
     tool(
       "write_file",
-      "내 지식 저장소의 파일을 작성/수정한다(없으면 새로 만든다). 변경은 작업 트리에만 반영되며, **commit 도구로 커밋·푸시하기 전까지는 임시 저장**이라 다음 동기화 때 사라질 수 있다. (소유자 전용)",
+      "Create/modify a file in my knowledge repository (creates it if it doesn't exist). Changes apply only to the working tree, and **until you commit & push with the commit tool they are saved only temporarily** and may disappear on the next sync. (owner only)",
       {
-        path: z.string().describe("저장소 루트 기준 상대 경로"),
-        content: z.string().describe("파일 전체 내용"),
+        path: z.string().describe("Path relative to the repository root"),
+        content: z.string().describe("The full file content"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -291,22 +291,22 @@ export function buildRepoTools(
           const repoRoot = await ensureClone(c);
           await writeRepoFile(repoRoot, args.path, args.content);
           return text(
-            `${args.path} 파일을 저장했습니다. (아직 커밋되지 않았습니다 — commit 도구로 푸시하세요.)`,
+            `Saved the file ${args.path}. (Not committed yet — push it with the commit tool.)`,
           );
         } catch (error) {
           const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("잘못된 경로입니다.", true);
-          if (detail === "FILE_TOO_LARGE") return text("내용이 너무 큽니다.", true);
-          return text(`파일을 저장하지 못했습니다: ${detail}`, true);
+          if (detail === "INVALID_PATH") return text("Invalid path.", true);
+          if (detail === "FILE_TOO_LARGE") return text("The content is too large.", true);
+          return text(`Failed to save the file: ${detail}`, true);
         }
       },
     ),
     tool(
       "scaffold_skill",
-      "내 지식 저장소에 새 스킬(skills/<이름>/SKILL.md + marketplace 등록)을 만든다. 생성 후 write_file로 내용을 채우고 commit으로 푸시하면 다음 대화부터 아바타가 그 스킬을 쓸 수 있다. (소유자 전용)",
+      "Create a new skill (skills/<name>/SKILL.md + marketplace registration) in my knowledge repository. After creating it, fill in the content with write_file and push with commit, and from the next conversation the avatar can use that skill. (owner only)",
       {
-        name: z.string().describe("스킬 이름 (예: deploy-runbook)"),
-        description: z.string().optional().describe("스킬 한 줄 설명"),
+        name: z.string().describe("Skill name (e.g. deploy-runbook)"),
+        description: z.string().optional().describe("One-line description of the skill"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -320,20 +320,20 @@ export function buildRepoTools(
           const repoRoot = await ensureClone(c);
           const filePath = await scaffoldSkill(repoRoot, args.name, args.description ?? "");
           return text(
-            `새 스킬을 만들었습니다: ${filePath} (write_file로 내용을 채운 뒤 commit으로 푸시하세요.)`,
+            `Created a new skill: ${filePath} (fill in the content with write_file, then push with commit.)`,
           );
         } catch (error) {
           const detail = scrubGitError(error);
-          if (detail === "SKILL_EXISTS") return text("같은 이름의 스킬이 이미 있습니다.", true);
-          if (detail === "INVALID_PATH") return text("잘못된 경로입니다.", true);
-          return text(`스킬을 만들지 못했습니다: ${detail}`, true);
+          if (detail === "SKILL_EXISTS") return text("A skill with the same name already exists.", true);
+          if (detail === "INVALID_PATH") return text("Invalid path.", true);
+          return text(`Failed to create the skill: ${detail}`, true);
         }
       },
     ),
     tool(
       "commit",
-      "내 지식 저장소의 모든 변경사항을 커밋하고 원격(branch)에 푸시한다. 작업 단위가 끝났거나 소유자가 요청하면 호출한다. (소유자 전용)",
-      { message: z.string().describe("커밋 메시지") },
+      "Commit all changes in my knowledge repository and push to the remote (branch). Call this when a unit of work is finished or when the owner requests it. (owner only)",
+      { message: z.string().describe("Commit message") },
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
@@ -343,7 +343,7 @@ export function buildRepoTools(
           return text(NO_REPO, true);
         }
         if (!c.token) {
-          return text("푸시하려면 먼저 설정에서 사내 Git 토큰(GIT_TOKEN)을 등록해 주세요.", true);
+          return text("To push, please first register an internal Git token (GIT_TOKEN) in settings.", true);
         }
         try {
           // No ensureClone here: commitAndPush operates on the already-synced
@@ -351,7 +351,7 @@ export function buildRepoTools(
           // its own NOT_CLONED check. Re-syncing would only add a needless fetch.
           const committed = await commitAndPush(c, args.message, commitIdentityFor(store, ctx.owner));
           if (!committed) {
-            return text("커밋할 변경사항이 없습니다.");
+            return text("There are no changes to commit.");
           }
           store.audit({
             actorUserId: ctx.owner.id,
@@ -360,10 +360,10 @@ export function buildRepoTools(
             status: "success",
             detail: `pushed to ${c.repo}`,
           });
-          return text(`변경사항을 커밋하고 푸시했습니다: ${c.repo}`);
+          return text(`Committed and pushed the changes: ${c.repo}`);
         } catch (error) {
           return text(
-            `커밋/푸시 실패: ${scrubGitError(error)}\n토큰(GIT_TOKEN)의 쓰기 권한과 원격 브랜치 보호 설정을 확인하세요. Bash \`git push\`로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            `Commit/push failed: ${scrubGitError(error)}\nCheck the write permission of the token (GIT_TOKEN) and the remote branch protection settings. Do not work around this with Bash \`git push\` — the shell has no git credentials.`,
             true,
           );
         }
@@ -379,29 +379,29 @@ export function buildRepoTools(
   }
   const createTool = tool(
     "create_repo",
-    `**소유자가 지식 저장소를 만들거나 연결해 달라고 하면 이 도구를 사용한다** — 수동 설정을 안내하거나 scaffold_skill을 먼저 시도하지 말 것. ${githubHostDescription(ctx.config.githubHost)} 설정된 사내 Git 토큰(GIT_TOKEN)으로 새 사내 GitHub 지식 저장소(기본 비공개, Claude plugin marketplace 템플릿으로 초기화)를 만들고 곧바로 연결한다. 지식 저장소가 아직 없을 때 쓰며, 저장소 이름만 있으면 된다. 생성 후 scaffold_skill→write_file→commit으로 내용을 채운다. (소유자 전용)`,
+    `**Use this tool when the owner asks you to create or connect a knowledge repository** — do not walk through manual setup or try scaffold_skill first. ${githubHostDescription(ctx.config.githubHost)} Using the configured internal Git token (GIT_TOKEN), it creates a new internal GitHub knowledge repository (private by default, initialized from the Claude plugin marketplace template) and connects it right away. Use it when there is no knowledge repository yet; you only need the repository name. After creation, fill in the content with scaffold_skill → write_file → commit. (owner only)`,
     {
-      name: z.string().describe("새 저장소 이름 (영문/숫자와 - _ . 만, 예: my-knowledge)"),
-      private: z.boolean().optional().describe("비공개 여부 (기본 true)"),
-      description: z.string().optional().describe("저장소 설명 (선택)"),
+      name: z.string().describe("New repository name (letters/digits and - _ . only, e.g. my-knowledge)"),
+      private: z.boolean().optional().describe("Whether it is private (default true)"),
+      description: z.string().optional().describe("Repository description (optional)"),
     },
     async (args) => {
       if (!ctx.viewerIsOwner) {
         return text(OWNER_ONLY, true);
       }
       if (repoCtx()) {
-        return text("이미 지식 저장소가 연결되어 있습니다. 새로 만들 필요가 없습니다.", true);
+        return text("A knowledge repository is already connected. There is no need to create a new one.", true);
       }
       const token = store.getGitToken(ctx.avatarUserId);
       if (!token) {
         return text(
-          "GitHub 저장소를 만들려면 먼저 설정 → Git 자격증명에 사내 Git 토큰(GIT_TOKEN)을 등록해 주세요. (repo 생성 권한이 있는 토큰이 필요합니다.)",
+          "To create a GitHub repository, please first register an internal Git token (GIT_TOKEN) under Settings → Git credentials. (A token with repo-creation permission is required.)",
           true,
         );
       }
       const name = args.name.trim();
       if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
-        return text("저장소 이름은 영문/숫자와 - _ . 문자만 사용할 수 있습니다.", true);
+        return text("The repository name may only use letters/digits and the characters - _ .", true);
       }
       const targetHost = normalizeGithubHost(ctx.config.githubHost);
       try {
@@ -417,7 +417,7 @@ export function buildRepoTools(
           const status = result.status ? `, HTTP ${result.status}` : "";
           const exitCode = result.exitCode ? `, exit ${result.exitCode}` : "";
           return text(
-            `GitHub 저장소 생성 실패 (host: ${targetHost}${status}${exitCode}): ${result.message}\n토큰(GIT_TOKEN)에 repo 생성 권한이 있는지, 같은 이름의 저장소가 이미 있는지 확인하세요. Bash \`gh\`/git으로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            `Failed to create GitHub repository (host: ${targetHost}${status}${exitCode}): ${result.message}\nCheck whether the token (GIT_TOKEN) has repo-creation permission and whether a repository with the same name already exists. Do not work around this with Bash \`gh\`/git — the shell has no git credentials.`,
             true,
           );
         }
@@ -446,16 +446,16 @@ export function buildRepoTools(
             }
           }
         } catch (error) {
-          seedNote = ` (기본 템플릿 초기화는 건너뛰었습니다: ${scrubGitError(error)})`;
+          seedNote = ` (Skipped initializing the default template: ${scrubGitError(error)})`;
         }
-        const kind = result.isPrivate ? "비공개" : "공개";
+        const kind = result.isPrivate ? "private" : "public";
         return text(
           seeded
-            ? `${kind} 지식 저장소 \`${result.fullName}\`를 만들고 기본 템플릿(Claude plugin marketplace: \`.claude-plugin/marketplace.json\` + README)으로 초기화했습니다. 이제 \`scaffold_skill\`로 첫 스킬을 추가하고 \`commit\`으로 푸시하세요.`
-            : `${kind} 지식 저장소 \`${result.fullName}\`를 만들고 연결했습니다.${seedNote} \`scaffold_skill\`로 첫 스킬을 만든 뒤 \`commit\`으로 푸시하세요.`,
+            ? `Created the ${kind} knowledge repository \`${result.fullName}\` and initialized it with the default template (Claude plugin marketplace: \`.claude-plugin/marketplace.json\` + README). Now add your first skill with \`scaffold_skill\` and push with \`commit\`.`
+            : `Created and connected the ${kind} knowledge repository \`${result.fullName}\`.${seedNote} Create your first skill with \`scaffold_skill\`, then push with \`commit\`.`,
         );
       } catch (error) {
-        return text(`GitHub 저장소 생성 중 오류 (host: ${targetHost}): ${scrubGitError(error)}`, true);
+        return text(`Error while creating GitHub repository (host: ${targetHost}): ${scrubGitError(error)}`, true);
       }
     },
   );

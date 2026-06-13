@@ -49,13 +49,13 @@ export const GROUP_REPO_TOOL_NAMES = [
   "mcp__group_repo__create_repo",
 ] as const;
 
-const OWNER_ONLY = "이 도구는 아바타 소유자만 사용할 수 있습니다.";
+const OWNER_ONLY = "This tool can only be used by the avatar owner.";
 const NO_SUCH_GROUP =
-  "그런 이름/ID의 그룹을 찾을 수 없습니다. 먼저 list_groups로 내가 속한 그룹을 확인하세요.";
+  "Could not find a group with that name/ID. First check the groups you belong to with list_groups.";
 const ADMIN_ONLY =
-  "이 그룹의 공용 지식 저장소는 그룹 관리자만 수정할 수 있습니다. (멤버는 읽기만 가능합니다.)";
+  "Only a group admin can modify this group's shared knowledge repository. (Members can only read.)";
 const NO_REPO =
-  "이 그룹에는 아직 공용 지식 저장소가 연결되어 있지 않습니다. 그룹 관리자라면 `create_repo`로 새로 만들거나, 설정의 그룹 관리에서 기존 저장소를 연결하세요.";
+  "This group does not have a shared knowledge repository connected yet. If you are a group admin, create a new one with `create_repo`, or connect an existing repository from group management in settings.";
 
 function text(message: string, isError = false) {
   return { content: [{ type: "text" as const, text: message }], isError };
@@ -63,7 +63,7 @@ function text(message: string, isError = false) {
 
 function githubHostDescription(host: string): string {
   const normalized = normalizeGithubHost(host);
-  return `현재 GitHub host는 \`${normalized}\`이고, create_repo는 \`GH_HOST=${normalized} gh repo create\`로 생성한다.`;
+  return `The current GitHub host is \`${normalized}\`, and create_repo creates the repo with \`GH_HOST=${normalized} gh repo create\`.`;
 }
 
 /**
@@ -99,7 +99,7 @@ export function buildGroupRepoTools(
   return [
     tool(
       "list_groups",
-      "내가 속한 그룹 목록과 각 그룹에서의 내 역할(admin/member), 공용 지식 저장소 연결 여부를 조회한다. 그룹 지식 저장소 작업 전에 먼저 호출해 그룹 이름을 확인한다. (소유자 전용)",
+      "List the groups I belong to, my role in each group (admin/member), and whether a shared knowledge repository is connected. Call this first, before working on a group knowledge repository, to confirm the group name. (owner only)",
       {},
       async () => {
         if (!ctx.viewerIsOwner) {
@@ -107,23 +107,23 @@ export function buildGroupRepoTools(
         }
         const groups = ownerGroups();
         if (groups.length === 0) {
-          return text("속한 그룹이 없습니다. 그룹은 시스템 관리자가 만들고 멤버를 추가합니다.");
+          return text("You do not belong to any group. Groups are created and have members added by the system admin.");
         }
         const body = groups
           .map(
             (g) =>
-              `- ${g.name} (역할: ${g.role === "admin" ? "관리자" : "멤버"}, 공용 저장소: ${
-                g.knowledgeRepoConfigured ? "연결됨" : "없음"
+              `- ${g.name} (role: ${g.role === "admin" ? "admin" : "member"}, shared repository: ${
+                g.knowledgeRepoConfigured ? "connected" : "none"
               })`,
           )
           .join("\n");
-        return text(`내가 속한 그룹 ${groups.length}개:\n${body}`);
+        return text(`${groups.length} group(s) I belong to:\n${body}`);
       },
     ),
     tool(
       "list_files",
-      "지정한 그룹의 공용 지식 저장소 파일 목록을 가져온다. (그룹 멤버 전용)",
-      { group: z.string().describe("그룹 이름 또는 ID (list_groups로 확인)") },
+      "Get the file list of the specified group's shared knowledge repository. (group member only)",
+      { group: z.string().describe("Group name or ID (confirm with list_groups)") },
       async (args) => {
         if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
         const group = resolveGroup(args.group);
@@ -133,12 +133,12 @@ export function buildGroupRepoTools(
         try {
           const repoRoot = await ensureGroupClone(c);
           const entries = await listTree(repoRoot);
-          if (entries.length === 0) return text("(빈 저장소입니다.)");
+          if (entries.length === 0) return text("(The repository is empty.)");
           const list = entries.map((e) => (e.type === "dir" ? `${e.path}/` : e.path)).join("\n");
-          return text(`'${group.name}' 그룹 지식 저장소 파일 목록:\n${list}`);
+          return text(`File list of the '${group.name}' group knowledge repository:\n${list}`);
         } catch (error) {
           return text(
-            `저장소를 불러오지 못했습니다: ${scrubGitError(error)}\n저장소 주소/브랜치와 토큰 권한을 확인하세요. Bash git으로 직접 clone하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            `Failed to load the repository: ${scrubGitError(error)}\nCheck the repository address/branch and token permissions. Do not clone directly with Bash git — the shell has no git credentials.`,
             true,
           );
         }
@@ -146,10 +146,10 @@ export function buildGroupRepoTools(
     ),
     tool(
       "read_file",
-      "지정한 그룹의 공용 지식 저장소에서 파일 내용을 읽는다. (그룹 멤버 전용)",
+      "Read the content of a file from the specified group's shared knowledge repository. (group member only)",
       {
-        group: z.string().describe("그룹 이름 또는 ID"),
-        path: z.string().describe("저장소 루트 기준 상대 경로 (예: skills/foo/SKILL.md)"),
+        group: z.string().describe("Group name or ID"),
+        path: z.string().describe("Path relative to the repository root (e.g. skills/foo/SKILL.md)"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
@@ -162,20 +162,20 @@ export function buildGroupRepoTools(
           return text(await readRepoFile(repoRoot, args.path));
         } catch (error) {
           const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("잘못된 경로입니다.", true);
-          if (detail === "FILE_TOO_LARGE") return text("파일이 너무 큽니다.", true);
-          if (detail === "NOT_A_FILE") return text("파일이 아닙니다.", true);
-          return text(`파일을 읽지 못했습니다: ${detail}`, true);
+          if (detail === "INVALID_PATH") return text("Invalid path.", true);
+          if (detail === "FILE_TOO_LARGE") return text("The file is too large.", true);
+          if (detail === "NOT_A_FILE") return text("Not a file.", true);
+          return text(`Failed to read the file: ${detail}`, true);
         }
       },
     ),
     tool(
       "write_file",
-      "지정한 그룹의 공용 지식 저장소 파일을 작성/수정한다(없으면 새로 만든다). 변경은 작업 트리에만 반영되며 **commit 전까지는 임시 저장**이다. (그룹 관리자 전용)",
+      "Create/modify a file in the specified group's shared knowledge repository (creates it if it doesn't exist). Changes apply only to the working tree and are **saved only temporarily until commit**. (group admin only)",
       {
-        group: z.string().describe("그룹 이름 또는 ID"),
-        path: z.string().describe("저장소 루트 기준 상대 경로"),
-        content: z.string().describe("파일 전체 내용"),
+        group: z.string().describe("Group name or ID"),
+        path: z.string().describe("Path relative to the repository root"),
+        content: z.string().describe("The full file content"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
@@ -187,22 +187,22 @@ export function buildGroupRepoTools(
         try {
           const repoRoot = await ensureGroupClone(c);
           await writeRepoFile(repoRoot, args.path, args.content);
-          return text(`${args.path} 파일을 저장했습니다. (아직 커밋되지 않았습니다 — commit으로 푸시하세요.)`);
+          return text(`Saved the file ${args.path}. (Not committed yet — push it with commit.)`);
         } catch (error) {
           const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("잘못된 경로입니다.", true);
-          if (detail === "FILE_TOO_LARGE") return text("내용이 너무 큽니다.", true);
-          return text(`파일을 저장하지 못했습니다: ${detail}`, true);
+          if (detail === "INVALID_PATH") return text("Invalid path.", true);
+          if (detail === "FILE_TOO_LARGE") return text("The content is too large.", true);
+          return text(`Failed to save the file: ${detail}`, true);
         }
       },
     ),
     tool(
       "scaffold_skill",
-      "지정한 그룹의 공용 지식 저장소에 새 스킬(skills/<이름>/SKILL.md + marketplace 등록)을 만든다. 이후 write_file로 채우고 commit으로 푸시하면 그룹 멤버 전원의 아바타가 그 스킬을 쓸 수 있다. (그룹 관리자 전용)",
+      "Create a new skill (skills/<name>/SKILL.md + marketplace registration) in the specified group's shared knowledge repository. After that, fill it in with write_file and push with commit, and the avatars of all group members can use that skill. (group admin only)",
       {
-        group: z.string().describe("그룹 이름 또는 ID"),
-        name: z.string().describe("스킬 이름 (예: team-runbook)"),
-        description: z.string().optional().describe("스킬 한 줄 설명"),
+        group: z.string().describe("Group name or ID"),
+        name: z.string().describe("Skill name (e.g. team-runbook)"),
+        description: z.string().optional().describe("One-line description of the skill"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
@@ -214,21 +214,21 @@ export function buildGroupRepoTools(
         try {
           const repoRoot = await ensureGroupClone(c);
           const filePath = await scaffoldSkill(repoRoot, args.name, args.description ?? "");
-          return text(`새 스킬을 만들었습니다: ${filePath} (write_file로 내용을 채운 뒤 commit으로 푸시하세요.)`);
+          return text(`Created a new skill: ${filePath} (fill in the content with write_file, then push with commit.)`);
         } catch (error) {
           const detail = scrubGitError(error);
-          if (detail === "SKILL_EXISTS") return text("같은 이름의 스킬이 이미 있습니다.", true);
-          if (detail === "INVALID_PATH") return text("잘못된 경로입니다.", true);
-          return text(`스킬을 만들지 못했습니다: ${detail}`, true);
+          if (detail === "SKILL_EXISTS") return text("A skill with the same name already exists.", true);
+          if (detail === "INVALID_PATH") return text("Invalid path.", true);
+          return text(`Failed to create the skill: ${detail}`, true);
         }
       },
     ),
     tool(
       "commit",
-      "지정한 그룹의 공용 지식 저장소 변경사항을 커밋하고 원격에 푸시한다. 작업 단위가 끝나면 호출한다. (그룹 관리자 전용)",
+      "Commit the changes in the specified group's shared knowledge repository and push to the remote. Call this when a unit of work is finished. (group admin only)",
       {
-        group: z.string().describe("그룹 이름 또는 ID"),
-        message: z.string().describe("커밋 메시지"),
+        group: z.string().describe("Group name or ID"),
+        message: z.string().describe("Commit message"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
@@ -238,11 +238,11 @@ export function buildGroupRepoTools(
         const c = repoCtx(group.id, group.name);
         if (!c) return text(NO_REPO, true);
         if (!c.token) {
-          return text("푸시하려면 먼저 설정에서 사내 Git 토큰(GIT_TOKEN)을 등록해 주세요.", true);
+          return text("To push, please first register an internal Git token (GIT_TOKEN) in settings.", true);
         }
         try {
           const committed = await groupCommitAndPush(c, args.message, commitIdentityFor(store, ctx.owner));
-          if (!committed) return text("커밋할 변경사항이 없습니다.");
+          if (!committed) return text("There are no changes to commit.");
           store.audit({
             actorUserId: ctx.owner.id,
             actorName: ctx.owner.username,
@@ -250,10 +250,10 @@ export function buildGroupRepoTools(
             status: "success",
             detail: `group=${group.name} pushed to ${c.repo}`,
           });
-          return text(`'${group.name}' 그룹 지식 저장소에 변경사항을 커밋·푸시했습니다: ${c.repo}`);
+          return text(`Committed and pushed the changes to the '${group.name}' group knowledge repository: ${c.repo}`);
         } catch (error) {
           return text(
-            `커밋/푸시 실패: ${scrubGitError(error)}\n토큰(GIT_TOKEN)의 쓰기 권한과 원격 브랜치 보호 설정을 확인하세요. Bash \`git push\`로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            `Commit/push failed: ${scrubGitError(error)}\nCheck the write permission of the token (GIT_TOKEN) and the remote branch protection settings. Do not work around this with Bash \`git push\` — the shell has no git credentials.`,
             true,
           );
         }
@@ -261,14 +261,14 @@ export function buildGroupRepoTools(
     ),
     tool(
       "create_repo",
-      `**그룹 관리자가 그룹 공용 지식 저장소를 만들어 달라고 하면 이 도구를 사용한다.** ${githubHostDescription(
+      `**Use this tool when a group admin asks you to create the group's shared knowledge repository.** ${githubHostDescription(
         ctx.config.githubHost,
-      )} 설정된 사내 Git 토큰(GIT_TOKEN)으로 새 사내 GitHub 저장소(기본 비공개, Claude plugin marketplace 템플릿으로 초기화)를 만들고 해당 그룹에 곧바로 연결한다. 그룹에 저장소가 아직 없을 때만 동작한다. (그룹 관리자 전용)`,
+      )} Using the configured internal Git token (GIT_TOKEN), it creates a new internal GitHub repository (private by default, initialized from the Claude plugin marketplace template) and connects it to that group right away. It only works when the group does not have a repository yet. (group admin only)`,
       {
-        group: z.string().describe("그룹 이름 또는 ID"),
-        name: z.string().describe("새 저장소 이름 (영문/숫자와 - _ . 만, 예: team-knowledge)"),
-        private: z.boolean().optional().describe("비공개 여부 (기본 true)"),
-        description: z.string().optional().describe("저장소 설명 (선택)"),
+        group: z.string().describe("Group name or ID"),
+        name: z.string().describe("New repository name (letters/digits and - _ . only, e.g. team-knowledge)"),
+        private: z.boolean().optional().describe("Whether it is private (default true)"),
+        description: z.string().optional().describe("Repository description (optional)"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
@@ -276,18 +276,18 @@ export function buildGroupRepoTools(
         if (!group) return text(NO_SUCH_GROUP, true);
         if (group.role !== "admin") return text(ADMIN_ONLY, true);
         if (group.knowledgeRepoConfigured) {
-          return text("이 그룹에는 이미 공용 지식 저장소가 연결되어 있습니다.", true);
+          return text("This group already has a shared knowledge repository connected.", true);
         }
         const token = store.getGitToken(ctx.avatarUserId);
         if (!token) {
           return text(
-            "GitHub 저장소를 만들려면 먼저 설정 → Git 자격증명에 사내 Git 토큰(GIT_TOKEN)을 등록해 주세요.",
+            "To create a GitHub repository, please first register an internal Git token (GIT_TOKEN) under Settings → Git credentials.",
             true,
           );
         }
         const name = args.name.trim();
         if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
-          return text("저장소 이름은 영문/숫자와 - _ . 문자만 사용할 수 있습니다.", true);
+          return text("The repository name may only use letters/digits and the characters - _ .", true);
         }
         const targetHost = normalizeGithubHost(ctx.config.githubHost);
         try {
@@ -303,7 +303,7 @@ export function buildGroupRepoTools(
             const status = result.status ? `, HTTP ${result.status}` : "";
             const exitCode = result.exitCode ? `, exit ${result.exitCode}` : "";
             return text(
-              `GitHub 저장소 생성 실패 (host: ${targetHost}${status}${exitCode}): ${result.message}\n토큰(GIT_TOKEN)에 repo 생성 권한이 있는지, 같은 이름의 저장소가 이미 있는지 확인하세요. Bash \`gh\`/git으로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+              `Failed to create GitHub repository (host: ${targetHost}${status}${exitCode}): ${result.message}\nCheck whether the token (GIT_TOKEN) has repo-creation permission and whether a repository with the same name already exists. Do not work around this with Bash \`gh\`/git — the shell has no git credentials.`,
               true,
             );
           }
@@ -327,16 +327,16 @@ export function buildGroupRepoTools(
               }
             }
           } catch (error) {
-            seedNote = ` (기본 템플릿 초기화는 건너뛰었습니다: ${scrubGitError(error)})`;
+            seedNote = ` (Skipped initializing the default template: ${scrubGitError(error)})`;
           }
-          const kind = result.isPrivate ? "비공개" : "공개";
+          const kind = result.isPrivate ? "private" : "public";
           return text(
             seeded
-              ? `'${group.name}' 그룹의 ${kind} 공용 지식 저장소 \`${result.fullName}\`를 만들고 기본 템플릿으로 초기화했습니다. 이제 scaffold_skill로 첫 스킬을 추가하고 commit으로 푸시하세요.`
-              : `'${group.name}' 그룹의 ${kind} 공용 지식 저장소 \`${result.fullName}\`를 만들고 연결했습니다.${seedNote}`,
+              ? `Created the ${kind} shared knowledge repository \`${result.fullName}\` for the '${group.name}' group and initialized it with the default template. Now add your first skill with scaffold_skill and push with commit.`
+              : `Created and connected the ${kind} shared knowledge repository \`${result.fullName}\` for the '${group.name}' group.${seedNote}`,
           );
         } catch (error) {
-          return text(`GitHub 저장소 생성 중 오류 (host: ${targetHost}): ${scrubGitError(error)}`, true);
+          return text(`Error while creating GitHub repository (host: ${targetHost}): ${scrubGitError(error)}`, true);
         }
       },
     ),

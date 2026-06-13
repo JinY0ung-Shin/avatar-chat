@@ -83,11 +83,11 @@ function conversationHistoryBlock(history: AgentRequest["conversationHistory"]):
     return null;
   }
   return [
-    "이전 대화 기록(현재 사용자 메시지 이전, 오래된 순):",
+    "Earlier conversation history (before the current user message, oldest first):",
     "```json",
     JSON.stringify(compacted, null, 2),
     "```",
-    "이 기록은 같은 대화에 저장된 실제 맥락입니다. 아래 사용자 메시지는 이 기록 다음에 온 새 메시지입니다.",
+    "This history is the actual context saved in this same conversation. The user message below is a new message that follows this history.",
   ].join("\n");
 }
 
@@ -246,13 +246,13 @@ function isAutoAllowed(toolName: string, readOnlyTools: string[]): boolean {
 /** Render a question answer (from the client) into text the model can read. */
 function formatQuestionAnswer(result: unknown): string {
   if (!isRecord(result)) {
-    return "사용자가 답변을 제공했습니다.";
+    return "The user provided an answer.";
   }
   const answers = isRecord(result.answers) ? result.answers : {};
   const lines = Object.entries(answers).map(([q, a]) => `- "${q}" → ${asString(a) || String(a)}`);
   return lines.length
-    ? `사용자가 질문에 다음과 같이 답했습니다:\n${lines.join("\n")}`
-    : "사용자가 답변을 제공했습니다.";
+    ? `The user answered the question(s) as follows:\n${lines.join("\n")}`
+    : "The user provided an answer.";
 }
 
 /** One-line, human-readable summary of a tool's input for the activity UI. */
@@ -767,15 +767,15 @@ export function buildPreToolUseHook(
       if (headless || !events.onQuestion) {
         return hookDeny(
           headless
-            ? "예약된 자동 실행 중에는 사용자에게 질문할 수 없습니다. 합리적인 가정으로 진행하세요."
-            : "질문 기능을 사용할 수 없습니다.",
+            ? "During a scheduled automated run you cannot ask the user questions. Proceed with reasonable assumptions."
+            : "The question feature is unavailable.",
         );
       }
       const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
       const answer = await events.onQuestion({ dialogKind: "AskUserQuestion", payload: { questions }, toolUseId });
       return answer.behavior === "completed"
         ? hookDeny(formatQuestionAnswer(answer.result))
-        : hookDeny("사용자가 질문에 답하지 않았습니다(취소됨). 답변 없이 진행하세요.");
+        : hookDeny("The user did not answer the question (cancelled). Proceed without an answer.");
     }
 
     let updatedToolInput: Record<string, unknown> | undefined;
@@ -795,7 +795,7 @@ export function buildPreToolUseHook(
       const reason = `현재 권한에서는 hex-ssh 도구 '${hexSshTool}' 사용이 허용되지 않습니다.`;
       events.onBlocked?.({ toolUseId, toolName, agentId, reason });
       agentLogger.info({ toolName, agentId, viewerClass: hexSshViewerClass }, "hex-ssh tool blocked");
-      return hookDeny(reason);
+      return hookDeny(`The hex-ssh tool '${hexSshTool}' is not permitted at your current permission level.`);
     }
 
     // Read-only / knowledge / orchestration tools run without a prompt.
@@ -821,15 +821,15 @@ export function buildPreToolUseHook(
       });
       return decision.behavior === "allow"
         ? hookAllow(updatedToolInput)
-        : hookDeny("사용자가 이 도구 사용을 거부했습니다.");
+        : hookDeny("The user denied the use of this tool.");
     }
 
     events.onBlocked?.({ toolUseId, toolName, agentId, reason: "읽기 전용 대화에서는 쓸 수 없는 도구입니다." });
     agentLogger.info({ toolName, agentId, reason: "read-only" }, "tool blocked");
     return hookDeny(
       headless
-        ? "이 실행은 자동 루틴(읽기 전용)입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep만 사용하세요."
-        : "이 대화는 읽기 전용입니다. 파일 수정/명령 실행 도구는 사용할 수 없으니 Read/Glob/Grep과 정보 요청 도구만 사용하세요.",
+        ? "This run is an automated routine (read-only). File-editing/command-execution tools are unavailable, so use only Read/Glob/Grep."
+        : "This conversation is read-only. File-editing/command-execution tools are unavailable, so use only Read/Glob/Grep and the information-request tools.",
     );
   };
 }
@@ -843,10 +843,10 @@ export function buildPreToolUseHook(
  * doesn't drift into shell git after an MCP failure.
  */
 const GIT_MCP_ONLY_GUIDANCE =
-  "**git 원격 작업은 MCP 도구로만**: 저장소 clone/pull/push/fetch 같은 원격 git 작업은 반드시 전용 MCP 도구(`mcp__repo__*` 개인 지식 저장소, `mcp__git_repo__*` 일반 repo, `mcp__group_repo__*` 그룹 저장소)로만 수행하세요. " +
-  "git 자격증명은 서버가 이 도구들에만 주입하며 당신의 셸에는 없습니다 — Bash로 `git clone`/`git push`/`gh`를 실행해도 인증할 수 없습니다. " +
-  "MCP 도구가 실패하면 Bash git으로 우회하거나 재시도하지 말고, 실패 메시지의 원인(토큰/권한/브랜치/URL)을 해결하거나 사용자에게 보고하세요. " +
-  "앱이 관리하는 로컬 클론 디렉토리에서 직접 git 명령을 실행하는 것도 금지입니다.";
+  "**Remote git work goes through MCP tools ONLY**: remote git operations such as clone/pull/push/fetch MUST be performed exclusively via the dedicated MCP tools (`mcp__repo__*` for the personal knowledge repository, `mcp__git_repo__*` for general repos, `mcp__group_repo__*` for group repositories). " +
+  "Git credentials are injected by the server into those tools only and are NOT present in your shell — running `git clone`/`git push`/`gh` via Bash cannot authenticate. " +
+  "If an MCP tool fails, do NOT work around it or retry with Bash git; instead resolve the cause shown in the failure message (token/permission/branch/URL) or report it to the user. " +
+  "Running git commands directly inside the app-managed local clone directories is also forbidden.";
 
 export function buildPrompt(request: AgentRequest, openRequestCount: number): string {
   const alias = request.avatar.alias?.trim();
@@ -854,35 +854,39 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
   const githubHost = normalizeGithubHost(request.githubHost);
   const lines = [
     alias
-      ? `당신의 이름은 "${alias}"입니다. 이 이름을 가진 아바타로서 사용자와 대화합니다.`
-      : `당신은 "${request.avatar.displayName}" 아바타로서 사용자와 대화합니다.`,
+      ? `Your name is "${alias}". You converse with the user as the avatar bearing this name.`
+      : `You converse with the user as the "${request.avatar.displayName}" avatar.`,
   ];
+  lines.push(
+    "Respond in the same language the user writes in; if it is unclear, default to Korean (한국어). " +
+      "These instructions are written in English for your benefit, but your replies should match the user's language.",
+  );
   if (request.avatar.persona && request.avatar.persona.trim()) {
-    lines.push(`페르소나/지침:\n${request.avatar.persona.trim()}`);
+    lines.push(`Persona/instructions:\n${request.avatar.persona.trim()}`);
   }
   lines.push(
-    "시스템 메타 인지: 이 서비스는 Noah Almighty avatar-chat입니다. 아바타는 프로필/페르소나, 기본 스킬, 소유자 플러그인, 개인 지식 저장소, 예약 루틴, 시크릿 이름, 신뢰 사용자 설정을 조합해 동작합니다. " +
-      "시스템 상태나 가능한 변경 작업을 말할 때는 추측하지 말고 제공된 도구와 현재 설정을 근거로 답하세요.",
+    "System meta-cognition: this service is Noah Almighty (avatar-chat). An avatar operates from a combination of its profile/persona, default skills, owner plugins, a personal knowledge repository, scheduled routines, secret names, and trusted-user settings. " +
+      "When you describe system state or what changes are possible, do not guess — base your answer on the provided tools and the current configuration.",
   );
   if (request.confluenceUrlConfigured && request.confluencePatConfigured) {
     lines.push(
-      "공용 Confluence 도구가 활성화되어 있습니다. Confluence 검색/페이지 조회/space 조회는 `mcp__confluence__*` 도구를 사용하고, 페이지 생성/수정은 소유자 또는 신뢰 사용자 권한이 있을 때만 시도하세요.",
+      "The shared Confluence tools are enabled. Use the `mcp__confluence__*` tools for Confluence search / page retrieval / space lookup, and only attempt page creation or updates when you have owner or trusted-user permission.",
     );
   } else {
     const missing = [
-      request.confluenceUrlConfigured ? "" : "`CONFLUENCE_URL` 환경변수",
-      request.confluencePatConfigured ? "" : "`CONFLUENCE_PAT` 시크릿",
+      request.confluenceUrlConfigured ? "" : "the `CONFLUENCE_URL` environment variable",
+      request.confluencePatConfigured ? "" : "the `CONFLUENCE_PAT` secret",
     ].filter(Boolean);
     lines.push(
-      `공용 Confluence 도구는 등록되어 있지만 아직 ${missing.join("와 ")} 설정이 필요합니다. Confluence 요청을 받으면 먼저 \`mcp__confluence__describe_config\`로 상태를 확인하세요.`,
+      `The shared Confluence tools are registered, but still need ${missing.join(" and ")} to be configured. When you receive a Confluence request, first check status with \`mcp__confluence__describe_config\`.`,
     );
   }
   // Standing (every-turn) guidance: the avatar can recommend a better-suited
   // teammate avatar. Phrased for ANY viewer class — in a headless routine there's
   // no user to redirect, but the search tool stays useful for the work itself.
   lines.push(
-    "다른 아바타 찾기: 사용자가 요청한 작업이 당신의 역량(스킬·지식·역량 해시태그) 범위를 벗어난다고 판단되면, 먼저 직접 도울 수 있는지 시도한 뒤 `mcp__avatars__search_avatars`로 그 주제에 맞는 다른 공개 아바타를 검색하세요. " +
-      "더 적합한 아바타가 있으면 사용자에게 그 아바타(@사용자명)와 대화해 보라고 안내하세요.",
+    "Finding other avatars: if you judge that the user's request falls outside your capabilities (skills, knowledge, capability hashtags), first try to help directly, then use `mcp__avatars__search_avatars` to find other public avatars suited to that topic. " +
+      "If a better-suited avatar exists, suggest that the user try talking to that avatar (@username).",
   );
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
@@ -891,12 +895,12 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
   if (request.headless) {
     lines.push(
       request.allowHeadlessTools
-        ? "이것은 예약된 루틴 작업의 **자동 실행**입니다. 응답을 실시간으로 보는 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과를 보고하세요."
-        : "이것은 대화가 아닌 **자동 실행 작업**입니다(예: 프로필 소개·해시태그 생성). 중간 질문에 답할 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과만 출력하세요.",
+        ? "This is the **automated execution** of a scheduled routine task. No one is watching the response in real time, so do not ask questions — carry the given task through to completion and report the result."
+        : "This is an **automated task**, not a conversation (e.g. generating a profile intro or hashtags). There is no one to answer follow-up questions, so do not ask questions — carry the given task through to completion and output only the result.",
     );
     if (request.allowHeadlessTools) {
       lines.push(
-        "이 루틴은 소유자의 일반 대화와 같은 도구 권한으로 실행됩니다. 필요한 파일/원격/저장소 작업은 수행하되, 확인 질문이나 권한 프롬프트를 기다릴 수 없으므로 작업 범위를 보수적으로 지키세요. 사용자에게 따로 알려야 할 중요한 결과가 있으면 `mcp__system__notify_user`로 알림을 남기세요.",
+        "This routine runs with the same tool permissions as the owner's normal conversation. Perform the file/remote/repository operations it needs, but since you cannot wait for confirmation questions or permission prompts, keep the scope of your work conservative. If there is an important result the user should be told about separately, leave an app notification with `mcp__system__notify_user`.",
       );
       // Routine self-state (META-COGNITION): owner-level tools ARE registered
       // for this run, so the routine needs the same state an owner chat gets —
@@ -904,53 +908,53 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       // or never realizes its group repo tools exist).
       const routineState: string[] = [
         request.knowledgeRepoConfigured !== false
-          ? "개인 지식 저장소: 연결됨 — `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit` 사용 가능(변경은 commit 해야 푸시됩니다)."
+          ? "Personal knowledge repository: connected — `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit` are available (changes must be committed to be pushed)."
           : request.gitTokenSet
-            ? "개인 지식 저장소: 없음 — 저장소가 필요한 작업이면 `mcp__repo__create_repo`로 먼저 만들어 연결하세요(연결 전에는 `scaffold_skill`/`write_file`/`commit`이 실패합니다)."
-            : "개인 지식 저장소: 없음, `GIT_TOKEN`도 미설정 — 저장소가 필요한 작업이면 수행할 수 없으니 결과 보고에 토큰 등록이 필요하다고 남기세요.",
+            ? "Personal knowledge repository: none — if a task needs a repository, create and connect one first with `mcp__repo__create_repo` (`scaffold_skill`/`write_file`/`commit` fail before one is connected)."
+            : "Personal knowledge repository: none, and `GIT_TOKEN` is also not set — you cannot do tasks that need a repository, so note in your result report that a token needs to be registered.",
       ];
       const routineGroups = request.groupMemberships ?? [];
       if (routineGroups.length > 0) {
         routineState.push(
-          `소유자의 그룹: ${routineGroups
+          `Owner's groups: ${routineGroups
             .map(
               (g) =>
-                `${g.name}(${g.role === "admin" ? "관리자" : "멤버"}, 공용 저장소 ${g.knowledgeRepoConfigured ? "연결됨" : "없음"})`,
+                `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`,
             )
-            .join(", ")} — \`mcp__group_repo__*\` 도구를 쓸 수 있습니다(멤버는 읽기, 관리자만 쓰기/commit).`,
+            .join(", ")} — you can use the \`mcp__group_repo__*\` tools (members read, only admins write/commit).`,
         );
       }
       if (secretNames.length > 0) {
         routineState.push(
-          `설정된 시크릿 이름: ${secretNames.map((name) => `\`${name}\``).join(", ")} (값은 노출되지 않으며 출력하지 마세요).`,
+          `Configured secret names: ${secretNames.map((name) => `\`${name}\``).join(", ")} (the values are not exposed; do not output them).`,
         );
       }
-      routineState.push("그 밖의 현재 설정·상태가 필요하면 `mcp__system__describe_system`을 호출하세요.");
-      lines.push(`현재 자기 상태: ${routineState.join(" ")}`);
+      routineState.push("If you need any other current configuration or state, call `mcp__system__describe_system`.");
+      lines.push(`Current self-state: ${routineState.join(" ")}`);
       lines.push(GIT_MCP_ONLY_GUIDANCE);
     } else {
       lines.push(
-        "이 실행은 읽기 전용입니다. 파일을 수정/생성하지 말고, 읽기 도구(Read/Glob/Grep)만 사용하세요.",
+        "This run is read-only. Do not modify or create files; use only the read tools (Read/Glob/Grep).",
       );
     }
   } else if (request.viewerIsOwner) {
     const name = request.viewerName?.trim();
     lines.push(
       name
-        ? `지금 대화 상대는 이 아바타의 **소유자** "${name}"님입니다.`
-        : "지금 대화 상대는 이 아바타의 **소유자**입니다.",
+        ? `The person you are talking to right now is this avatar's **owner**, "${name}".`
+        : "The person you are talking to right now is this avatar's **owner**.",
     );
     lines.push(
-      "소유자가 이 시스템 자체에 대해 묻거나 설정 변경을 요청하면 `mcp__system__describe_system`으로 현재 상태를 확인하고, 요청에 맞게 `mcp__system__create_routine`/`update_routine`/`delete_routine` 또는 `mcp__system__add_plugin`/`set_plugin_enabled`를 직접 사용하세요. " +
-        "사용자에게 따로 알려야 할 중요한 결과나 조치 필요 사항은 `mcp__system__notify_user`로 앱 알림을 남기세요. 루틴 시간은 KST `HH:MM` 기준이고, 플러그인 추가/활성화 변경은 보통 다음 대화부터 로드됩니다.",
+      "When the owner asks about this system itself or requests configuration changes, check the current state with `mcp__system__describe_system`, then directly use `mcp__system__create_routine`/`update_routine`/`delete_routine` or `mcp__system__add_plugin`/`set_plugin_enabled` as appropriate. " +
+        "For an important result or required action the user should be told about separately, leave an app notification with `mcp__system__notify_user`. Routine times are based on KST `HH:MM`, and plugin add/enable changes usually load starting from the next conversation.",
     );
     const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
     if (knowledgeRepoConfigured) {
       // The owner can have the avatar manage its connected knowledge repo.
       lines.push(
-        "당신은 자신의 **지식 저장소**(소유자 전용 개인 repo)를 직접 관리할 수 있습니다: `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit`. " +
-          "여기에 업무 지식·스킬을 정리해 두면 다음 대화부터 당신이 그것을 사용합니다. " +
-          "write_file/scaffold_skill 변경은 **commit 하기 전까지는 푸시되지 않으니**, 작업 단위가 끝났거나 소유자가 요청하면 commit 하세요.",
+        "You can directly manage your own **knowledge repository** (an owner-only personal repo): `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit`. " +
+          "If you organize work knowledge and skills here, you will use them starting from the next conversation. " +
+          "write_file/scaffold_skill changes are **not pushed until you commit**, so commit when a unit of work is finished or the owner asks.",
       );
     } else {
       // No repo yet → the `create_repo` tool IS available (exposed only in this
@@ -960,14 +964,14 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       // without a connected repo, and previously misled the avatar).
       lines.push(
         request.gitTokenSet
-          ? `아직 지식 저장소가 없습니다. **당신에게는 \`mcp__repo__create_repo\` 도구가 있습니다.** 현재 저장소 생성 대상 사내 GitHub host는 \`${githubHost}\`입니다. 소유자가 저장소를 만들거나 연결해 달라고 하면 — 수동 절차를 안내하지 말고 — 저장소 이름만 받아 \`create_repo\`로 직접 비공개 repo를 만들어 연결하세요(\`GIT_TOKEN\`은 이미 설정돼 있습니다). 저장소가 연결되기 전에는 \`scaffold_skill\`/\`write_file\`/\`commit\`이 실패하므로, 반드시 \`create_repo\`를 **먼저** 호출하세요.`
-          : "아직 지식 저장소가 없고 `GIT_TOKEN`도 설정돼 있지 않습니다. 소유자가 저장소 생성을 원하면 먼저 설정 → **Git 자격증명**에서 사내 Git 토큰(`GIT_TOKEN` 시크릿)을 등록해 달라고 안내하세요(등록되면 `mcp__repo__create_repo`로 직접 만들 수 있습니다). 저장소가 연결되기 전에는 `scaffold_skill`/`write_file`/`commit`이 실패합니다.",
+          ? `You do not have a knowledge repository yet. **You have the \`mcp__repo__create_repo\` tool.** The internal GitHub host where repositories are currently created is \`${githubHost}\`. When the owner asks you to create or connect a repository — do not walk them through manual steps — just take a repository name and create and connect a private repo directly with \`create_repo\` (\`GIT_TOKEN\` is already set). \`scaffold_skill\`/\`write_file\`/\`commit\` fail before a repository is connected, so you MUST call \`create_repo\` **first**.`
+          : "You do not have a knowledge repository yet, and `GIT_TOKEN` is not set either. If the owner wants to create a repository, first guide them to register an internal Git token (the `GIT_TOKEN` secret) under Settings → **Git credentials** (once registered, you can create one directly with `mcp__repo__create_repo`). `scaffold_skill`/`write_file`/`commit` fail before a repository is connected.",
       );
     }
     lines.push(
-      "일반 **git repo 작업**은 지식 저장소 도구와 별개입니다. 소유자가 업무/코드 저장소를 관리해 달라고 하면 `mcp__git_repo__register_repo`로 repo를 등록한 뒤, `sync_repo`/`status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`를 사용하세요. " +
-        "`push`는 main 전용이 아니라 등록된 branch(또는 branch를 비운 경우 clone의 현재/default branch)로 `HEAD`를 푸시합니다. 소유자가 특정 브랜치를 말하면 `register_repo`의 `branch`에 그 이름을 지정하세요. " +
-        "사내/사외 public repo의 clone/sync는 토큰 없이 시도하므로 토큰 설정을 먼저 요구하지 마세요. push는 원격 쓰기 권한이 있는 경우에만 성공합니다. 등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 소유자 또는 신뢰 사용자 대화에서만 가능합니다. GitHub issue/PR/release 관리는 포함하지 않는 순수 git 작업 도구입니다.",
+      "General **git repo work** is separate from the knowledge-repository tools. When the owner asks you to manage a work/code repository, register it with `mcp__git_repo__register_repo`, then use `sync_repo`/`status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`. " +
+        "`push` is not main-only — it pushes `HEAD` to the registered branch (or, if branch was left empty, the clone's current/default branch). If the owner names a specific branch, set that name as `register_repo`'s `branch`. " +
+        "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. Registration/removal is owner-only, and work on an already-registered repo is possible only in owner or trusted-user conversations. These are pure git tools and do not cover GitHub issue/PR/release management.",
     );
     lines.push(GIT_MCP_ONLY_GUIDANCE);
     // Group meta-cognition: which groups the owner is in, their role, and the
@@ -976,25 +980,25 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     const groups = request.groupMemberships ?? [];
     if (groups.length > 0) {
       const describe = (g: (typeof groups)[number]) =>
-        `${g.name}(${g.role === "admin" ? "관리자" : "멤버"}${g.knowledgeRepoConfigured ? ", 공용 저장소 연결됨" : ", 공용 저장소 없음"})`;
+        `${g.name}(${g.role === "admin" ? "admin" : "member"}${g.knowledgeRepoConfigured ? ", shared repository connected" : ", no shared repository"})`;
       const adminNoRepo = groups.filter((g) => g.role === "admin" && !g.knowledgeRepoConfigured);
       const groupLines = [
-        `소유자는 다음 그룹에 속해 있습니다: ${groups.map(describe).join(", ")}. ` +
-          "같은 그룹의 멤버끼리는 **자동으로 서로 신뢰(elevated)**하므로, 같은 그룹 동료의 아바타와 대화할 때 소유자 수준의 도구 권한을 얻고, 비공개 아바타도 서로 찾고 대화할 수 있습니다.",
-        "각 그룹에는 **공용 지식 저장소**가 있을 수 있고, `mcp__group_repo__*` 도구로 다룹니다: `list_groups`로 그룹/역할을 확인하고, `list_files`/`read_file`은 그룹 멤버 전원이, `write_file`/`scaffold_skill`/`commit`은 **그룹 관리자만** 사용할 수 있습니다. 그룹 공용 저장소에 정리한 스킬은 그룹 멤버 전원의 아바타가 다음 대화부터 사용합니다.",
+        `The owner belongs to the following groups: ${groups.map(describe).join(", ")}. ` +
+          "Members of the same group **automatically trust each other (elevated)**, so when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and even unpublished avatars can find and talk to each other.",
+        "Each group may have a **shared knowledge repository**, handled with the `mcp__group_repo__*` tools: use `list_groups` to check groups/roles; all group members can `list_files`/`read_file`, while only **group admins** can `write_file`/`scaffold_skill`/`commit`. Skills organized in a group's shared repository are used by every group member's avatar starting from the next conversation.",
       ];
       if (adminNoRepo.length > 0) {
         groupLines.push(
-          `당신이 관리자인 그룹 중 ${adminNoRepo.map((g) => `'${g.name}'`).join(", ")}에는 아직 공용 지식 저장소가 없습니다. 소유자가 원하면 \`mcp__group_repo__create_repo\`로 새 사내 GitHub 저장소를 만들어 그 그룹에 연결할 수 있습니다(설정의 그룹 관리에서 기존 저장소를 연결할 수도 있습니다).`,
+          `Among the groups where you are an admin, ${adminNoRepo.map((g) => `'${g.name}'`).join(", ")} do not have a shared knowledge repository yet. If the owner wants, you can create a new internal GitHub repository with \`mcp__group_repo__create_repo\` and connect it to that group (you can also connect an existing repository via Group management in Settings).`,
         );
       }
       lines.push(groupLines.join(" "));
     }
     if (secretNames.length > 0) {
       lines.push(
-        "설정의 **시크릿** 탭에 등록된 환경변수 이름: " +
+        "Environment-variable names registered in the **Secrets** tab of Settings: " +
           secretNames.map((name) => `\`${name}\``).join(", ") +
-          ". 값은 볼 수 없으며 출력하거나 추측하지 마세요. 필요한 MCP 도구에는 서버가 해당 값을 별도로 주입합니다.",
+          ". You cannot see the values; do not output or guess them. The server injects those values separately into the MCP tools that need them.",
       );
     }
     // SSH (hex-ssh) tools are registered only when the owner has stored an
@@ -1002,11 +1006,11 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     // tell it how the owner enables them — that's how it answers "I want SSH".
     if (!secretNames.includes("SSH_PRIVATE_KEY")) {
       lines.push(
-        "원격 **SSH 도구는 아직 비활성화** 상태입니다(이 대화에는 SSH 실행·파일전송 도구가 없습니다). " +
-          "사용자가 SSH 접속을 원하면 먼저 `mcp__ssh_identity__generate_key`로 SSH 키를 생성하세요. 생성된 개인키는 `SSH_PRIVATE_KEY` 시크릿으로 저장되고, 공개키는 사용자에게 보여주며 설정에서도 다시 확인할 수 있습니다. " +
-          "사용자가 이미 가진 키를 쓰려는 경우에는 설정 → **시크릿** 탭에 `SSH_PRIVATE_KEY`라는 이름으로 개인 키(OpenSSH/PEM)를 등록하라고 안내하세요. " +
-          "등록하면 다음 대화부터 SSH 도구가 활성화되고, 이후 접속할 호스트의 키는 `mcp__ssh_trust__add_host`로 신뢰 등록할 수 있습니다. " +
-          "(키 값은 서버에서 SSH 도구에만 주입되며 당신에게는 노출되지 않습니다.)",
+        "Remote **SSH tools are still disabled** (this conversation has no SSH execution / file-transfer tools). " +
+          "If the user wants SSH access, first generate an SSH key with `mcp__ssh_identity__generate_key`. The generated private key is stored as the `SSH_PRIVATE_KEY` secret, and the public key is shown to the user and can also be viewed again in Settings. " +
+          "If the user wants to use a key they already have, guide them to register the private key (OpenSSH/PEM) under the Settings → **Secrets** tab with the name `SSH_PRIVATE_KEY`. " +
+          "Once registered, the SSH tools become active from the next conversation, and host keys for hosts you connect to afterward can be trusted with `mcp__ssh_trust__add_host`. " +
+          "(The key value is injected by the server into the SSH tools only and is not exposed to you.)",
       );
     }
     // Greeting-only nudges, surfaced ONLY when the owner opens a fresh chat so
@@ -1015,35 +1019,35 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     if (request.greeting) {
       const greetingParts = [
         openRequestCount > 0
-          ? `대화를 시작합니다. 먼저 소유자에게 짧게 인사한 뒤, **pending_requests로 대기 중인 정보 요청(${openRequestCount}건)을 확인해** 번호를 붙여 간결하게 보고하세요.`
-          : "대화를 시작합니다. 소유자에게 짧게 인사하세요. (대기 중인 정보 요청은 없으니 굳이 언급하지 마세요.)",
+          ? `You are starting a conversation. First greet the owner briefly, then **check the pending information requests with pending_requests (${openRequestCount} open)** and report them concisely, numbered.`
+          : "You are starting a conversation. Greet the owner briefly. (There are no pending information requests, so there is no need to mention them.)",
       ];
       if (!knowledgeRepoConfigured) {
         greetingParts.push(
           request.gitTokenSet
-            ? "또한 아직 지식 저장소가 연결되어 있지 않습니다. 업무 지식·장기 기억·스킬을 축적하려면 개인 지식 저장소가 필요합니다. " +
-                `\`GIT_TOKEN\`이 이미 설정돼 있으니, 원하시면 제가 \`mcp__repo__create_repo\`로 현재 설정된 사내 GitHub host(\`${githubHost}\`)에 비공개 저장소를 만들어 바로 연결해 드릴 수 있다고 안내하세요. ` +
-                "사용자가 원하면 저장소 이름을 받아 create_repo로 만든 뒤 `scaffold_skill`→`write_file`→`commit` 순으로 채우세요. (이미 쓰던 repo가 있으면 설정의 지식 저장소에 직접 연결해도 됩니다.)"
-            : "또한 아직 지식 저장소가 연결되어 있지 않고, `GIT_TOKEN`도 설정돼 있지 않습니다. " +
-                "먼저 설정 → **Git 자격증명**에서 사내 Git 토큰(`GIT_TOKEN`, repo 생성 권한)을 등록하라고 안내하세요. 등록되면 제가 `mcp__repo__create_repo`로 저장소를 만들어 연결해 드릴 수 있습니다. " +
-                "직접 만들고 싶다면 사내 GitHub에 개인 repo를 만들어 설정의 지식 저장소에 연결해도 됩니다. 이 저장소는 Claude plugin marketplace 형식이어야 합니다: 루트에 `.claude-plugin/marketplace.json`을 두고, 각 스킬은 `skills/<name>/SKILL.md`와 `skills/<name>/.claude-plugin/plugin.json`을 갖춰야 합니다.",
+            ? "Also, no knowledge repository is connected yet. A personal knowledge repository is needed to accumulate work knowledge, long-term memory, and skills. " +
+                `Since \`GIT_TOKEN\` is already set, let the owner know that, if they want, you can create a private repository on the currently configured internal GitHub host (\`${githubHost}\`) with \`mcp__repo__create_repo\` and connect it right away. ` +
+                "If the user wants, take a repository name, create it with create_repo, then fill it in the order `scaffold_skill`→`write_file`→`commit`. (If they already have a repo in use, they can connect it directly under the knowledge repository setting.)"
+            : "Also, no knowledge repository is connected yet, and `GIT_TOKEN` is not set either. " +
+                "First guide them to register an internal Git token (`GIT_TOKEN`, with repo-creation permission) under Settings → **Git credentials**. Once registered, you can create and connect a repository with `mcp__repo__create_repo`. " +
+                "If they want to create it themselves, they can make a personal repo on internal GitHub and connect it under the knowledge repository setting. This repository must be in Claude plugin marketplace format: place `.claude-plugin/marketplace.json` at the root, and each skill must have `skills/<name>/SKILL.md` and `skills/<name>/.claude-plugin/plugin.json`.",
         );
       }
-      greetingParts.push("그런 다음 무엇을 도와줄지 물어보세요.");
+      greetingParts.push("Then ask what you can help with.");
       lines.push(greetingParts.join(" "));
     }
   } else {
     const name = request.viewerName?.trim();
     lines.push(
       name
-        ? `지금 대화 상대는 **동료** "${name}"님입니다. 소유자만 알 법한 정보를 모르면 추측하지 말고, knowledge-backfill 스킬에 따라 request_info로 소유자에게 전달하세요.`
-        : `지금 대화 상대는 **동료**입니다. 소유자만 알 법한 정보를 모르면 추측하지 말고, knowledge-backfill 스킬에 따라 request_info로 소유자에게 전달하세요.`,
+        ? `The person you are talking to right now is a **colleague**, "${name}". If you do not know information that only the owner would know, do not guess — relay it to the owner via request_info, following the knowledge-backfill skill.`
+        : `The person you are talking to right now is a **colleague**. If you do not know information that only the owner would know, do not guess — relay it to the owner via request_info, following the knowledge-backfill skill.`,
     );
     // A trusted user works at the owner's tool level — don't claim read-only.
     // A plain colleague stays read-only.
     if (!request.elevated) {
       lines.push(
-        "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep), 허용된 원격 SSH 조회 도구, 제공된 정보 요청 도구만 사용하세요.",
+        "This conversation is read-only. Do not modify or create files; use only the read tools (Read/Glob/Grep), the permitted remote SSH lookup tools, and the provided information-request tools.",
       );
     } else {
       // Tell the avatar WHY this viewer is elevated when the trust comes from
@@ -1052,16 +1056,16 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       const viaGroups = (request.trustedViaGroups ?? []).filter(Boolean);
       lines.push(
         viaGroups.length > 0
-          ? `이 대화 상대는 소유자와 같은 그룹(${viaGroups.map((g) => `'${g}'`).join(", ")}) 소속이라 **자동으로 신뢰(elevated)** 된 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 같은 그룹의 공용 지식 저장소 스킬을 공유하고 있을 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.`
-          : "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.",
+          ? `This person belongs to the same group(s) as the owner (${viaGroups.map((g) => `'${g}'`).join(", ")}), so they are an **automatically trusted (elevated)** user and can use file-editing and command-execution tools. They may share skills from the group's shared knowledge repository. Use remote SSH tools only within the scope the admin has permitted.`
+          : "This person is a user the owner trusts and can use file-editing and command-execution tools. Use remote SSH tools only within the scope the admin has permitted.",
       );
       lines.push(
-        "소유자가 미리 등록한 일반 git repo는 `mcp__git_repo__list_repos`로 확인하고 `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`로 작업할 수 있습니다. public repo sync는 토큰 없이 시도하며, 새 repo 등록/삭제 같은 설정 변경은 소유자 전용입니다.",
+        "You can check the general git repos the owner has pre-registered with `mcp__git_repo__list_repos` and work on them with `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`. public repo sync is attempted without a token, and configuration changes such as registering/removing repos are owner-only.",
       );
       lines.push(GIT_MCP_ONLY_GUIDANCE);
     }
     lines.push(
-      "플러그인, 루틴, 지식 저장소 같은 아바타 시스템 설정 변경은 소유자 전용입니다. 동료가 변경을 요청하면 소유자에게 요청하도록 안내하거나 필요한 맥락을 request_info로 남기세요.",
+      "Changing avatar system settings such as plugins, routines, and the knowledge repository is owner-only. If a colleague requests a change, guide them to ask the owner, or leave the needed context via request_info.",
     );
   }
   const historyBlock = request.greeting ? null : conversationHistoryBlock(request.conversationHistory);
@@ -1071,7 +1075,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
   if (request.greeting) {
     return lines.join("\n\n");
   }
-  return `${lines.join("\n\n")}\n\n${request.headless ? "작업 지시" : "사용자 메시지"}:\n${request.message}`;
+  return `${lines.join("\n\n")}\n\n${request.headless ? "Task instruction" : "User message"}:\n${request.message}`;
 }
 
 /**

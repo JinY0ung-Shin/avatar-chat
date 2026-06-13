@@ -40,26 +40,26 @@ export function buildSshTrustTools(ctx: SshTrustToolsContext) {
   return [
     tool(
       "add_host",
-      "원격 호스트의 SSH 호스트 키를 가져와 신뢰 목록(known_hosts)에 등록한다. hex-ssh는 신뢰되지 않은 호스트 접속을 'Host denied (verification failed)'로 거부하므로, 처음 보는 호스트에 접속하기 전에 호출한다. 등록은 즉시 반영되고 컨테이너 재시작 후에도 유지된다. 호스트 키는 비밀이 아니다.",
+      "Fetch a remote host's SSH host key and register it in the trust list (known_hosts). hex-ssh rejects connections to untrusted hosts with 'Host denied (verification failed)', so call this before connecting to a host for the first time. The registration takes effect immediately and persists across container restarts. Host keys are not secrets.",
       {
-        host: z.string().describe("호스트명 또는 IP (예: 202.20.185.100)"),
-        port: z.number().int().optional().describe("SSH 포트 (기본 22)"),
+        host: z.string().describe("Hostname or IP (e.g. 202.20.185.100)"),
+        port: z.number().int().optional().describe("SSH port (default 22)"),
       },
       async (args) => {
         const port = args.port ?? 22;
         try {
           const { entry, changed } = await addTrustedHost(ctx.avatarUserId, ctx.config, args.host, port);
-          const note = changed ? "등록했습니다" : "이미 등록되어 있습니다";
+          const note = changed ? "Registered the host key" : "Host key is already registered";
           return text(
-            `호스트 키를 ${note}: ${entry.host} (${entry.keyType})\n` +
-              `지문: ${entry.fingerprint}\n이제 이 호스트에 접속할 수 있습니다.`,
+            `${note}: ${entry.host} (${entry.keyType})\n` +
+              `Fingerprint: ${entry.fingerprint}\nYou can now connect to this host.`,
           );
         } catch (error) {
           const msg = error instanceof Error ? error.message : String(error);
           // The handshake failure is usually network/firewall, not auth.
           return text(
-            `호스트 키를 가져오지 못했습니다 (${args.host}:${port}): ${msg}. ` +
-              `호스트/포트가 맞는지, 네트워크에서 접근 가능한지 확인하세요.`,
+            `Could not fetch the host key (${args.host}:${port}): ${msg}. ` +
+              `Check that the host/port are correct and reachable from the network.`,
             true,
           );
         }
@@ -67,32 +67,32 @@ export function buildSshTrustTools(ctx: SshTrustToolsContext) {
     ),
     tool(
       "list_hosts",
-      "현재 신뢰하는 SSH 호스트 키 목록을 보여준다. (호스트, 키 종류, 지문)",
+      "Show the list of currently trusted SSH host keys. (host, key type, fingerprint)",
       {},
       async () => {
         const entries = await listTrustedHosts(ctx.avatarUserId, ctx.config);
         if (entries.length === 0) {
-          return text("신뢰하는 호스트가 없습니다. add_host로 등록하세요.");
+          return text("No trusted hosts. Register one with add_host.");
         }
         const body = entries
           .map((e) => `- ${e.host} (${e.keyType}) ${e.fingerprint}`)
           .join("\n");
-        return text(`신뢰하는 호스트:\n${body}`);
+        return text(`Trusted hosts:\n${body}`);
       },
     ),
     tool(
       "remove_host",
-      "신뢰 목록에서 한 호스트의 키를 제거한다. 호스트 키가 바뀌었거나 더 이상 쓰지 않을 때 사용한다.",
+      "Remove a single host's key from the trust list. Use this when a host key has changed or is no longer in use.",
       {
-        host: z.string().describe("제거할 호스트명 또는 IP"),
-        port: z.number().int().optional().describe("SSH 포트 (기본 22)"),
+        host: z.string().describe("Hostname or IP to remove"),
+        port: z.number().int().optional().describe("SSH port (default 22)"),
       },
       async (args) => {
         const removed = await removeTrustedHost(ctx.avatarUserId, ctx.config, args.host, args.port ?? 22);
         if (removed === 0) {
-          return text(`${args.host} 은(는) 신뢰 목록에 없습니다.`);
+          return text(`${args.host} is not in the trust list.`);
         }
-        return text(`${args.host} 의 호스트 키 ${removed}개를 제거했습니다.`);
+        return text(`Removed ${removed} host key(s) for ${args.host}.`);
       },
     ),
   ];

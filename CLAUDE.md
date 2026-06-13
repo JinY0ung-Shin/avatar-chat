@@ -209,6 +209,19 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   state; `mcp__system__describe_system` is the runtime mirror of the same info (effective model =
   env pin > admin override > SDK default, profile publish state, groups/roles, direct-trust list,
   SSH on/off, pending request count) — keep BOTH in sync when adding capability state.
+- **Language split: agent-facing text is English, user-facing text is Korean.** Classify a new
+  string by *"does the model read it as INPUT?"* → English; else Korean. English (model reads it):
+  `buildPrompt` (claudeAgent.ts), `GIT_MCP_ONLY_GUIDANCE`, the `PreToolUse` **`hookDeny(...)` reasons**,
+  and every `agent/*Tools.ts` tool `description`/`.describe()`/`text()` result; the headless
+  intro/hashtag-generation prompts in `app.ts` are English too but explicitly instruct **Korean
+  OUTPUT**. Korean (a human sees it): `public/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
+  labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks, slash-command
+  expansions (rendered as the user's OWN message bubble), conversation titles/`[루틴]`/`(중지됨)`.
+  A string used on BOTH channels is split (hex-ssh block ~claudeAgent.ts:795 = Korean `onBlocked`
+  reason + English `hookDeny`). Response language is anchored in `buildPrompt`'s 2nd line ("respond
+  in the user's language; default Korean"). **`units.test.ts` asserts the English agent-facing
+  strings** — update them when prompt/tool text changes; `app.test.ts`/`chat-history.test.ts`
+  assert the Korean user-facing ones.
 - **git remote work is MCP-only BY DESIGN; the prompt + errors enforce it.** The agent shell has
   no git credentials (stripped from the subprocess env), so Bash `git clone/push`/`gh` can never
   authenticate. `GIT_MCP_ONLY_GUIDANCE` (claudeAgent.ts) is injected on every tool-capable turn

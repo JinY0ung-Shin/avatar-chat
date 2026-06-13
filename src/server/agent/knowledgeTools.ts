@@ -27,7 +27,7 @@ function text(message: string, isError = false) {
   return { content: [{ type: "text" as const, text: message }], isError };
 }
 
-const OWNER_ONLY = "이 도구는 아바타 소유자만 사용할 수 있습니다.";
+const OWNER_ONLY = "This tool can only be used by the avatar owner.";
 
 /**
  * Build the knowledge-backfill tool definitions bound to a single
@@ -39,20 +39,20 @@ export function buildKnowledgeTools(store: Store, ctx: KnowledgeToolsContext) {
   return [
       tool(
         "request_info",
-        "다른 사용자가 질문했는데 아바타가 답하지 못한, 소유자만 알 법한 정보를 소유자에게 전달할 요청으로 기록한다. 아바타 자신이 소유자에게 던지는 질문 보관함이 아니다.",
-        { question: z.string().describe("소유자가 답할 수 있도록 맥락을 담은 한 문장 질문") },
+        "Records, as a request to relay to the owner, information that only the owner would likely know — when another user asked something the avatar could not answer. This is not a box for the avatar's own questions to the owner.",
+        { question: z.string().describe("A one-sentence question with enough context for the owner to answer") },
         async (args) => {
           const req = store.addKnowledgeRequest(ctx.avatarUserId, {
             question: args.question,
             askerUserId: ctx.askerUserId ?? null,
             askerName: ctx.askerName ?? null,
           });
-          return text(`정보 요청을 소유자에게 전달했습니다. (요청 id: ${req.id})`);
+          return text(`Relayed the information request to the owner. (request id: ${req.id})`);
         },
       ),
       tool(
         "pending_requests",
-        "소유자에게 전달된, 아직 답변되지 않은 정보 요청 목록을 가져온다. (소유자 전용)",
+        "Retrieves the list of information requests relayed to the owner that have not yet been answered. (owner only)",
         {},
         async () => {
           if (!ctx.viewerIsOwner) {
@@ -60,21 +60,21 @@ export function buildKnowledgeTools(store: Store, ctx: KnowledgeToolsContext) {
           }
           const open = store.listKnowledgeRequests(ctx.avatarUserId, "open");
           if (open.length === 0) {
-            return text("대기 중인 정보 요청이 없습니다.");
+            return text("There are no pending information requests.");
           }
           const body = open
             .map(
               (r, i) =>
-                `${i + 1}. (id: ${r.id}) ${r.question}${r.askerName ? ` — 질문자: ${r.askerName}` : ""}`,
+                `${i + 1}. (id: ${r.id}) ${r.question}${r.askerName ? ` — asker: ${r.askerName}` : ""}`,
             )
             .join("\n");
-          return text(`대기 중인 정보 요청 ${open.length}건:\n${body}`);
+          return text(`${open.length} pending information request(s):\n${body}`);
         },
       ),
       tool(
         "resolve_request",
-        "대기 중인 정보 요청을 처리 완료로 닫는다. 소유자가 특정 요청을 '처리했다'/'무시'/'넘겨'/'필요 없다'고 하면 그 요청의 id로 호출한다. (소유자 전용)",
-        { request_id: z.string().describe("닫을 정보 요청의 id (pending_requests에서 얻음)") },
+        "Closes a pending information request as resolved. When the owner says they've 'handled' / 'ignore' / 'skip' / 'don't need' a specific request, call this with that request's id. (owner only)",
+        { request_id: z.string().describe("id of the information request to close (obtained from pending_requests)") },
         async (args) => {
           if (!ctx.viewerIsOwner) {
             return text(OWNER_ONLY, true);
@@ -82,11 +82,11 @@ export function buildKnowledgeTools(store: Store, ctx: KnowledgeToolsContext) {
           const resolved = store.resolveKnowledgeRequest(ctx.avatarUserId, args.request_id);
           if (!resolved) {
             return text(
-              `요청 id ${args.request_id} 를 찾을 수 없습니다. (이미 처리되었거나 대기 중이 아닐 수 있습니다.)`,
+              `Could not find request id ${args.request_id}. (It may already be resolved or no longer pending.)`,
               true,
             );
           }
-          return text(`정보 요청을 처리 완료로 닫았습니다. (id: ${args.request_id})`);
+          return text(`Closed the information request as resolved. (id: ${args.request_id})`);
         },
       ),
   ];

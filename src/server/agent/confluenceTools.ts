@@ -27,7 +27,7 @@ type JsonRecord = Record<string, unknown>;
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_BODY_CHARS = 20_000;
-const WRITE_DENIED = "Confluence 쓰기 도구는 아바타 소유자 또는 신뢰 사용자 대화에서만 사용할 수 있습니다.";
+const WRITE_DENIED = "Confluence write tools can only be used in avatar owner or trusted user conversations.";
 
 function text(message: string, isError = false) {
   return { content: [{ type: "text" as const, text: message }], isError };
@@ -118,11 +118,11 @@ function credentials(ctx: ConfluenceToolsContext):
   | { ok: false; message: string } {
   const baseUrl = ctx.config.confluenceUrl?.trim();
   if (!baseUrl) {
-    return { ok: false, message: "CONFLUENCE_URL 환경변수가 설정되어 있지 않습니다." };
+    return { ok: false, message: "The CONFLUENCE_URL environment variable is not set." };
   }
   const normalizedUrl = normalizeBaseUrl(baseUrl);
   if (!normalizedUrl) {
-    return { ok: false, message: "CONFLUENCE_URL 형식이 올바르지 않습니다." };
+    return { ok: false, message: "The CONFLUENCE_URL format is invalid." };
   }
   const pat =
     ctx.ownerSecrets[CONFLUENCE_PAT_SECRET_NAME]?.trim() ||
@@ -130,7 +130,7 @@ function credentials(ctx: ConfluenceToolsContext):
   if (!pat) {
     return {
       ok: false,
-      message: "CONFLUENCE_PAT 시크릿이 설정되어 있지 않습니다. 설정 > 권한·연결 > 시크릿에 CONFLUENCE_PAT을 등록하세요.",
+      message: "The CONFLUENCE_PAT secret is not set. Register CONFLUENCE_PAT under Settings > Permissions & Connections > Secrets.",
     };
   }
   return { ok: true, baseUrl: normalizedUrl, apiBase: apiBase(normalizedUrl), pat };
@@ -189,7 +189,7 @@ async function requestJson(
     return { ok: true, baseUrl: creds.baseUrl, data };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    return { ok: false, message: `Confluence 요청 실패: ${msg}` };
+    return { ok: false, message: `Confluence request failed: ${msg}` };
   } finally {
     clearTimeout(timer);
   }
@@ -218,7 +218,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
   return [
     tool(
       "describe_config",
-      "Confluence 공용 도구 설정 상태를 확인한다. URL/PAT 값 자체는 반환하지 않는다.",
+      "Check the configuration status of the shared Confluence tools. Does not return the URL/PAT values themselves.",
       {},
       async () => {
         const baseUrl = ctx.config.confluenceUrl?.trim();
@@ -227,9 +227,9 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
             ctx.ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN?.trim(),
         );
         const lines = [
-          "Confluence 도구 설정:",
-          `- host: ${baseUrl ? "설정됨" : "없음"}`,
-          `- PAT secret: ${hasPat ? "설정됨" : "없음"}`,
+          "Confluence tool configuration:",
+          `- host: ${baseUrl ? "configured" : "not set"}`,
+          `- PAT secret: ${hasPat ? "configured" : "not set"}`,
           "- auth: on-prem Personal Access Token (Bearer)",
         ];
         return text(lines.join("\n"));
@@ -237,10 +237,10 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
     ),
     tool(
       "list_spaces",
-      "Confluence space 목록을 조회한다.",
+      "Fetch the list of Confluence spaces.",
       {
-        limit: z.number().int().min(1).max(100).optional().describe("조회 개수, 기본 25"),
-        start: z.number().int().min(0).optional().describe("페이지네이션 시작 위치, 기본 0"),
+        limit: z.number().int().min(1).max(100).optional().describe("Number of results to fetch, default 25"),
+        start: z.number().int().min(0).optional().describe("Pagination start offset, default 0"),
       },
       async (args) => {
         const res = await requestJson(ctx, "/space", {
@@ -249,7 +249,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
         if (!res.ok) return text(res.message, true);
         const results = Array.isArray(res.data.results) ? res.data.results.map(asRecord) : [];
         if (!results.length) {
-          return text("Confluence space가 없습니다.");
+          return text("No Confluence spaces found.");
         }
         return text(JSON.stringify(results.map((s) => ({
           key: asString(s.key),
@@ -260,21 +260,21 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
     ),
     tool(
       "search",
-      "Confluence CQL로 페이지를 검색한다. cql을 직접 주거나 space/title/text/label 조건을 조합한다.",
+      "Search Confluence pages with CQL. Provide cql directly, or combine space/title/text/label conditions.",
       {
-        cql: z.string().optional().describe("Raw CQL. 있으면 다른 검색 조건보다 우선한다."),
+        cql: z.string().optional().describe("Raw CQL. If present, takes precedence over the other search conditions."),
         space: z.string().optional().describe("space key"),
-        title: z.string().optional().describe("제목 fuzzy 검색"),
-        text: z.string().optional().describe("본문 fuzzy 검색"),
-        label: z.string().optional().describe("label 정확히 일치"),
-        type: z.string().optional().describe("content type, 기본 page"),
-        limit: z.number().int().min(1).max(100).optional().describe("조회 개수, 기본 25"),
-        start: z.number().int().min(0).optional().describe("페이지네이션 시작 위치, 기본 0"),
+        title: z.string().optional().describe("Fuzzy search on title"),
+        text: z.string().optional().describe("Fuzzy search on body"),
+        label: z.string().optional().describe("Exact label match"),
+        type: z.string().optional().describe("content type, default page"),
+        limit: z.number().int().min(1).max(100).optional().describe("Number of results to fetch, default 25"),
+        start: z.number().int().min(0).optional().describe("Pagination start offset, default 0"),
       },
       async (args) => {
         const cql = buildCql(args);
         if (!cql) {
-          return text("cql 또는 space/title/text/label 중 하나 이상을 입력하세요.", true);
+          return text("Provide cql or at least one of space/title/text/label.", true);
         }
         const res = await requestJson(ctx, "/content/search", {
           query: {
@@ -296,10 +296,10 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
     ),
     tool(
       "get_page",
-      "Confluence page를 ID로 조회한다. 기본은 메타데이터+storage body를 반환한다.",
+      "Fetch a Confluence page by ID. By default returns metadata + storage body.",
       {
         page_id: z.string().describe("Confluence page id"),
-        max_body_chars: z.number().int().min(0).max(100_000).optional().describe("본문 최대 문자 수, 기본 20000"),
+        max_body_chars: z.number().int().min(0).max(100_000).optional().describe("Maximum number of body characters, default 20000"),
       },
       async (args) => {
         const res = await requestJson(ctx, `/content/${encodeURIComponent(args.page_id)}`, {
@@ -322,12 +322,12 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
     ),
     tool(
       "create_page",
-      "Confluence page를 생성한다. body_storage는 Confluence storage XHTML 형식이어야 한다. (owner/trusted 전용)",
+      "Create a Confluence page. body_storage must be in Confluence storage XHTML format. (owner/trusted only)",
       {
-        space_key: z.string().describe("생성할 space key"),
-        title: z.string().describe("페이지 제목"),
+        space_key: z.string().describe("space key to create the page in"),
+        title: z.string().describe("Page title"),
         body_storage: z.string().describe("Confluence storage XHTML body"),
-        parent_id: z.string().optional().describe("부모 page id"),
+        parent_id: z.string().optional().describe("Parent page id"),
       },
       async (args) => {
         if (!ctx.elevated) return text(WRITE_DENIED, true);
@@ -347,13 +347,13 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
     ),
     tool(
       "update_page",
-      "Confluence page body/title을 업데이트한다. 현재 version을 조회한 뒤 +1로 PUT한다. (owner/trusted 전용)",
+      "Update a Confluence page body/title. Fetches the current version, then PUTs with version +1. (owner/trusted only)",
       {
-        page_id: z.string().describe("수정할 page id"),
-        body_storage: z.string().describe("새 Confluence storage XHTML body"),
-        title: z.string().optional().describe("새 제목. 생략하면 기존 제목 유지"),
-        version_message: z.string().optional().describe("버전 코멘트"),
-        minor_edit: z.boolean().optional().describe("minor edit 여부, 기본 false"),
+        page_id: z.string().describe("page id to update"),
+        body_storage: z.string().describe("New Confluence storage XHTML body"),
+        title: z.string().optional().describe("New title. If omitted, keeps the existing title"),
+        version_message: z.string().optional().describe("Version comment"),
+        minor_edit: z.boolean().optional().describe("Whether this is a minor edit, default false"),
       },
       async (args) => {
         if (!ctx.elevated) return text(WRITE_DENIED, true);
@@ -363,7 +363,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
         if (!current.ok) return text(current.message, true);
         const version = asNumber(asRecord(current.data.version).number);
         if (!version) {
-          return text("현재 페이지 version을 확인하지 못했습니다.", true);
+          return text("Could not determine the current page version.", true);
         }
         const payload: JsonRecord = {
           id: args.page_id,

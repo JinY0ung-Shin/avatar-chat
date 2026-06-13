@@ -27,7 +27,7 @@ function text(message: string, isError = false) {
 /** One result line: handle, name/alias, capability hashtags, and a short bio. */
 function formatAvatar(av: AvatarSummary): string {
   const name = av.alias ? `${av.displayName} ("${av.alias}")` : av.displayName;
-  const tags = av.hashtags.length ? av.hashtags.map((t) => `#${t}`).join(" ") : "(해시태그 없음)";
+  const tags = av.hashtags.length ? av.hashtags.map((t) => `#${t}`).join(" ") : "(no hashtags)";
   // Bio is user-controlled and flows into the searching avatar's model as tool
   // output, so keep it short — bounds the result size and the injection surface.
   const trimmed = av.bio?.trim() ?? "";
@@ -46,14 +46,14 @@ export function buildAvatarDirectoryTools(store: Store, ctx: AvatarDirectoryCont
   return [
     tool(
       "search_avatars",
-      "다른 아바타(동료들의 공개 아바타)가 무엇을 할 수 있는지 역량 해시태그·소개·이름으로 검색한다. " +
-        "사용자가 요청한 일이 당신의 역량 밖이거나, 그 주제에 더 적합한 다른 아바타가 있을 것 같을 때 사용하라. " +
-        "검색 결과의 아바타가 더 적합하면 사용자에게 그 아바타(@사용자명)와 대화해 보라고 안내하라. " +
-        "공개된 아바타만 검색되며(=사용자가 탐색에서 볼 수 있는 범위), 당신 자신은 결과에서 제외된다.",
+      "Searches what other avatars (colleagues' published avatars) can do, by capability hashtags, intro, and name. " +
+        "Use this when the task the user requested is outside your capabilities, or when there is likely another avatar better suited to that topic. " +
+        "If an avatar in the search results is a better fit, guide the user to chat with that avatar (@username). " +
+        "Only published avatars are searched (= the scope the user can see in discovery), and you yourself are excluded from the results.",
       {
         query: z
           .string()
-          .describe("찾고 싶은 역량/주제 키워드. 예: '코드리뷰', '데이터 분석', '쿠버네티스'. 비우면 공개 아바타를 두루 나열한다."),
+          .describe("Capability/topic keywords you want to find. e.g.: 'code review', 'data analysis', 'kubernetes'. If empty, lists published avatars broadly."),
       },
       async (args) => {
         const results = store.searchAvatars(ctx.viewerUserId, args.query ?? "", {
@@ -63,13 +63,13 @@ export function buildAvatarDirectoryTools(store: Store, ctx: AvatarDirectoryCont
         if (results.length === 0) {
           return text(
             args.query?.trim()
-              ? `"${args.query.trim()}"에 맞는 공개 아바타를 찾지 못했습니다.`
-              : "검색할 수 있는 다른 공개 아바타가 없습니다.",
+              ? `Could not find any published avatar matching "${args.query.trim()}".`
+              : "There are no other published avatars available to search.",
           );
         }
         const header = args.query?.trim()
-          ? `"${args.query.trim()}" 관련 공개 아바타 ${results.length}명:`
-          : `공개 아바타 ${results.length}명:`;
+          ? `${results.length} published avatar(s) related to "${args.query.trim()}":`
+          : `${results.length} published avatar(s):`;
         return text(`${header}\n${results.map(formatAvatar).join("\n")}`);
       },
     ),
