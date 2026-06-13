@@ -7527,6 +7527,8 @@ function buildUserActions(u, isAdmin, isMe, reload) {
 async function adminGroupsCards() {
   const { groups } = await api("/api/admin/groups");
   const list = el("div", { class: "admin-list" });
+  let groupNameInput;
+  const focusGroupForm = () => groupNameInput?.focus();
 
   const reload = async () => {
     const { groups: next } = await api("/api/admin/groups");
@@ -7535,7 +7537,12 @@ async function adminGroupsCards() {
   const renderList = (gs) => {
     list.replaceChildren();
     if (!gs.length) {
-      list.append(el("div", { class: "muted pad", text: "아직 그룹이 없습니다. 위에서 새 그룹을 만들어 보세요." }));
+      list.append(
+        el("div", { class: "muted pad" }, [
+          "아직 그룹이 없습니다. ",
+          el("button", { class: "linkish small", type: "button", text: "그룹 이름 입력", onclick: focusGroupForm }),
+        ]),
+      );
       return;
     }
     for (const g of gs) list.append(adminGroupRow(g, reload));
@@ -7570,7 +7577,7 @@ async function adminGroupsCards() {
       }
     },
   }, [
-    el("input", { name: "name", placeholder: "그룹 이름", "aria-label": "그룹 이름" }),
+    groupNameInput = el("input", { name: "name", placeholder: "그룹 이름", "aria-label": "그룹 이름" }),
     el("input", { name: "description", placeholder: "설명 (선택)", "aria-label": "그룹 설명" }),
     el("button", { class: "primary", type: "submit", text: "그룹 만들기" }),
   ]);
