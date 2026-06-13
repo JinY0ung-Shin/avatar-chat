@@ -3074,12 +3074,18 @@ function newChat(pane = activePane()) {
   if (!pane || pane.streaming) return;
   pane.conversationId = newId();
   pane.messages = [];
+  pane.draft = "";
   pane.greetedConversationId = null;
   pane.greetingStarted = false;
   setActivePane(pane);
   syncHash(true);
   renderTranscript(pane);
   renderConversations();
+  if (pane.dom.textarea) {
+    pane.dom.textarea.value = "";
+    pane.dom.textarea.style.height = "auto";
+    pane.dom.textarea.dispatchEvent(new Event("input"));
+  }
   pane.dom.textarea?.focus();
   // Owner's own avatar greets first in the new empty conversation.
   maybeGreet(pane);
