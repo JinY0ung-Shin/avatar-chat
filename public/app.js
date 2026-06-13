@@ -8429,15 +8429,21 @@ function buildSignupModeCard(sys) {
       opts.querySelectorAll("input").forEach((i) => (i.disabled = true));
       try {
         await api("/api/admin/signup-mode", { method: "PUT", body: JSON.stringify({ mode: m.id }) });
-        state.signupMode = m.id;
-        notify("회원가입 정책을 저장했습니다.", "ok");
-        await loadAdminSystem();
       } catch (e) {
         notify(`저장 실패: ${e.message}`);
         // Restore the last-saved selection rather than leaving the group blank.
         const prior = opts.querySelector(`#sm-${state.signupMode || current}`);
         if (prior) prior.checked = true;
         else input.checked = false;
+        opts.querySelectorAll("input").forEach((i) => (i.disabled = false));
+        return;
+      }
+      state.signupMode = m.id;
+      try {
+        await loadAdminSystem();
+        notify("회원가입 정책을 저장했습니다.", "ok");
+      } catch (e) {
+        notify(`회원가입 정책은 저장했지만 상태 새로고침에 실패했습니다: ${e.message}`, "warn");
       } finally {
         opts.querySelectorAll("input").forEach((i) => (i.disabled = false));
       }
