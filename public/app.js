@@ -48,6 +48,7 @@ const state = {
   adminUserDetail: {}, // id -> AdminUserDetail (lazy, cached per expand)
   adminUserSearch: "",
   adminUserFilter: "all", // all | admins | suspended | public | sessions
+  adminGroupSearch: "",
   adminSystem: null,
   adminStats: null,
   audit: [],
@@ -7617,17 +7618,31 @@ function buildUserActions(u, isAdmin, isMe, reload) {
 // edited by group admins from their own 내 아바타 ▸ 그룹 tab.
 async function adminGroupsCards() {
   const { groups } = await api("/api/admin/groups");
+  let currentGroups = groups;
   const list = el("div", { class: "admin-list" });
+  const countLabel = el("span", { class: "muted nowrap" });
+  const search = el("input", {
+    type: "search",
+    class: "admin-search",
+    placeholder: "그룹 이름·설명 검색",
+    value: state.adminGroupSearch,
+    "aria-label": "그룹 검색",
+    disabled: groups.length ? null : "",
+  });
   let groupNameInput;
   const focusGroupForm = () => groupNameInput?.focus();
 
   const reload = async () => {
     const { groups: next } = await api("/api/admin/groups");
-    renderList(next);
+    currentGroups = next;
+    renderList(currentGroups);
   };
   const renderList = (gs) => {
     list.replaceChildren();
+    search.disabled = gs.length ? false : true;
+    const q = state.adminGroupSearch.trim().toLowerCase();
     if (!gs.length) {
+      countLabel.textContent = "총 0개";
       list.append(
         el("div", { class: "muted pad" }, [
           "아직 그룹이 없습니다. ",
@@ -7636,7 +7651,34 @@ async function adminGroupsCards() {
       );
       return;
     }
-    for (const g of gs) list.append(adminGroupRow(g, reload));
+    const shown = q
+      ? gs.filter((g) =>
+          [
+            g.name,
+            g.description || "",
+            g.knowledgeRepo ? "공용 저장소" : "",
+            `멤버 ${g.memberCount}`,
+            `관리자 ${g.adminCount}`,
+          ].join(" ").toLowerCase().includes(q),
+        )
+      : gs;
+    countLabel.textContent = shown.length === gs.length ? `총 ${gs.length}개` : `표시 ${shown.length}개 / 전체 ${gs.length}개`;
+    if (!shown.length) {
+      const clearAdminGroupSearch = () => {
+        state.adminGroupSearch = "";
+        search.value = "";
+        renderList(gs);
+        search.focus();
+      };
+      list.append(
+        el("div", { class: "muted pad" }, [
+          `"${state.adminGroupSearch.trim()}"에 맞는 그룹이 없습니다. `,
+          el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearAdminGroupSearch }),
+        ]),
+      );
+      return;
+    }
+    for (const g of shown) list.append(adminGroupRow(g, reload));
   };
 
   const form = el("form", {
@@ -7659,6 +7701,8 @@ async function adminGroupsCards() {
           body: JSON.stringify({ name, description: (fd.get("description") || "").toString().trim() }),
         });
         formEl.reset();
+        state.adminGroupSearch = "";
+        search.value = "";
         await reload();
       } catch (err) {
         notify(`그룹 생성 실패: ${err.message}`);
@@ -7673,7 +7717,13 @@ async function adminGroupsCards() {
     el("button", { class: "primary", type: "submit", text: "그룹 만들기" }),
   ]);
 
-  renderList(groups);
+  search.addEventListener("input", () => {
+    state.adminGroupSearch = search.value;
+    renderList(currentGroups);
+  });
+
+  renderList(currentGroups);
+  const searchHead = el("div", { class: "admin-users-head" }, [search, countLabel]);
   const card = el("section", { class: "settings-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
@@ -7685,6 +7735,7 @@ async function adminGroupsCards() {
       ]),
     ]),
     form,
+    searchHead,
     list,
   ]);
   return [card];
