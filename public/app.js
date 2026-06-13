@@ -530,8 +530,13 @@ function renderAuthSwitch({ isLogin, isSetup, signupAllowed }) {
       type: "button",
       text: isLogin ? "회원가입" : "로그인",
       onclick: () => {
+        const currentUsername = app.querySelector('input[name="username"]')?.value || "";
+        const currentDisplayName = app.querySelector('input[name="displayName"]')?.value || "";
         state.authError = "";
-        renderAuth(isLogin ? "signup" : "login");
+        renderAuth(isLogin ? "signup" : "login", {
+          username: currentUsername,
+          displayName: currentDisplayName,
+        });
       },
     }),
   ]);
