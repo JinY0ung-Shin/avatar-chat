@@ -2560,6 +2560,16 @@ async function renderInboxView() {
     );
     return;
   }
+  const loadWarnings = [];
+  if (results[0].status === "rejected") loadWarnings.push("정보 요청");
+  if (results[1].status === "rejected") loadWarnings.push("아바타 알림");
+  if (results[2].status === "rejected") loadWarnings.push("루틴 결과 링크");
+  const loadWarning = loadWarnings.length
+    ? el("div", { class: "warn-box inbox-load-warning" }, [
+        `일부 항목(${loadWarnings.join(" · ")})을 불러오지 못했습니다. 표시된 목록은 일부만 최신일 수 있습니다. `,
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ])
+    : null;
   updateKnowledgeBadge();
   updateNotificationBadge();
 
@@ -2575,6 +2585,7 @@ async function renderInboxView() {
       ]),
       headerActions,
     ]),
+    loadWarning,
     filterBar,
     list,
   ]);
