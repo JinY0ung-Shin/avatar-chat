@@ -3675,8 +3675,12 @@ textarea::placeholder {
   cursor: pointer;
   white-space: nowrap;
 }
-.seg-btn:hover {
+.seg-btn:hover:not(:disabled) {
   color: var(--text);
+}
+.seg-btn:disabled {
+  cursor: progress;
+  opacity: 0.72;
 }
 .seg-btn.active {
   background: var(--accent);

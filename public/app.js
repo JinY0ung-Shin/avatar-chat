@@ -4803,12 +4803,19 @@ async function renderSettings() {
     text: "사진 삭제",
     onclick: async () => {
       if (!window.confirm("아바타 사진을 삭제할까요?")) return;
+      const saved = delPicBtn.textContent;
+      delPicBtn.disabled = true;
+      delPicBtn.textContent = "삭제 중…";
+      camBtn.disabled = true;
       try {
         await api("/api/me/avatar-image", { method: "DELETE" });
         state.user.hasImage = false;
         renderPic();
         renderRailUser();
       } catch (e) {
+        delPicBtn.textContent = saved;
+        delPicBtn.disabled = false;
+        camBtn.disabled = false;
         notify(`사진 삭제 실패: ${e.message}`);
       }
     },
@@ -4820,6 +4827,11 @@ async function renderSettings() {
   fileInput.addEventListener("change", async () => {
     const file = fileInput.files?.[0];
     if (!file) return;
+    const savedTitle = camBtn.title;
+    camBtn.disabled = true;
+    camBtn.title = "업로드 중…";
+    camBtn.setAttribute("aria-label", "사진 업로드 중");
+    delPicBtn.disabled = true;
     try {
       const dataUrl = await resizeImage(file, 256);
       await api("/api/me/avatar-image", { method: "PUT", body: JSON.stringify({ image: dataUrl }) });
@@ -4827,6 +4839,10 @@ async function renderSettings() {
       renderPic();
       renderRailUser();
     } catch (e) {
+      camBtn.disabled = false;
+      camBtn.title = savedTitle;
+      camBtn.setAttribute("aria-label", "사진 변경");
+      delPicBtn.disabled = false;
       notify(`업로드 실패: ${e.message}`);
     } finally {
       fileInput.value = "";
@@ -5012,30 +5028,37 @@ const VISIBILITY_OPTIONS = [
 // the chosen option while the save is in flight.
 function buildVisibilitySelect(current, onChange) {
   let value = VISIBILITY_OPTIONS.some((o) => o.value === current) ? current : "group";
+  let saving = false;
   const desc = el("p", { class: "muted" });
   const seg = el("div", { class: "seg-control", role: "radiogroup", "aria-label": "아바타 공개 범위" });
   const buttons = new Map();
   const sync = () => {
+    seg.setAttribute("aria-busy", saving ? "true" : "false");
     for (const [val, btn] of buttons) {
       const active = val === value;
       btn.classList.toggle("active", active);
       btn.setAttribute("aria-checked", active ? "true" : "false");
       btn.tabIndex = active ? 0 : -1;
+      btn.disabled = saving;
     }
-    desc.textContent = VISIBILITY_OPTIONS.find((o) => o.value === value)?.desc || "";
+    const baseDesc = VISIBILITY_OPTIONS.find((o) => o.value === value)?.desc || "";
+    desc.textContent = saving ? `${baseDesc} 저장 중…` : baseDesc;
   };
   const choose = async (val) => {
-    if (val === value) return;
+    if (saving || val === value) return;
     const prev = value;
     value = val;
+    saving = true;
     sync();
     try {
       const saved = await onChange(val);
       if (saved && saved !== value) { value = saved; sync(); }
     } catch (e) {
       value = prev;
-      sync();
       notify(`공개 범위 변경 실패: ${e.message}`);
+    } finally {
+      saving = false;
+      sync();
     }
   };
   for (const opt of VISIBILITY_OPTIONS) {
