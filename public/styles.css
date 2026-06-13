@@ -984,6 +984,15 @@ body.col-resizing {
   font-size: var(--t-xs);
   color: var(--muted);
 }
+.cap-empty-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-1);
+}
+.cap-empty-action .linkish.small {
+  padding: 0;
+}
 .cap-error {
   display: flex;
   align-items: center;

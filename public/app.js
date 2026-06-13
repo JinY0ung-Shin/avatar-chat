@@ -3043,16 +3043,28 @@ function setCapPref(key, value) {
   }
 }
 
+function openKnowledgeSettings() {
+  state.settingsTab = "knowledge";
+  goView("settings");
+}
+
 function renderCapabilitiesPanel(av) {
   const skillsBody = el("div", { class: "cap-section-body cap-skills" });
   const plugins = av.plugins || [];
+  const canManageCapabilities = state.user?.id === av.id;
+  const pluginEmpty = canManageCapabilities
+    ? el("div", { class: "cap-empty cap-empty-action" }, [
+        el("span", { text: "연결된 플러그인이 없습니다." }),
+        el("button", { class: "linkish small", type: "button", text: "지식·플러그인 설정", onclick: openKnowledgeSettings }),
+      ])
+    : el("p", { class: "cap-empty", text: "연결된 플러그인이 없습니다." });
   const pluginsBody = el("div", { class: "cap-section-body cap-plugins" },
     plugins.length
       ? plugins.map((p) => el("div", { class: "cap-plugin" }, [
           el("span", { class: "cap-plugin-name", text: p.label || p.repo }),
           p.label ? el("span", { class: "cap-plugin-repo", text: p.repo }) : null,
         ]))
-      : [el("p", { class: "cap-empty", text: "연결된 플러그인이 없습니다." })],
+      : [pluginEmpty],
   );
 
   const collapseBtn = el("button", {
@@ -3174,7 +3186,15 @@ async function loadCapabilitySkills(avatarId, body) {
         ]),
       );
     } else if (!st.skills.length) {
-      body.replaceChildren(el("p", { class: "cap-empty", text: "사용 가능한 스킬이 없습니다." }));
+      const canManageCapabilities = state.user?.id === avatarId;
+      body.replaceChildren(
+        canManageCapabilities
+          ? el("div", { class: "cap-empty cap-empty-action" }, [
+              el("span", { text: "사용 가능한 스킬이 없습니다." }),
+              el("button", { class: "linkish small", type: "button", text: "지식·플러그인 설정", onclick: openKnowledgeSettings }),
+            ])
+          : el("p", { class: "cap-empty", text: "사용 가능한 스킬이 없습니다." }),
+      );
     } else {
       // Each skill is a collapsed accordion: name only by default, click to
       // reveal its (often long) description. The "default" source is implicit
