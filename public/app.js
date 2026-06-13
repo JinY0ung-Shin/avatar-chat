@@ -4988,6 +4988,7 @@ function startRenameConversation(item, conv) {
         .then(({ conversation }) => {
           conv.title = conversation?.title || title;
           renderConversations();
+          notify("대화 이름을 변경했습니다.", "ok");
         })
         .catch((e) => {
           notify(`이름 변경 실패: ${e.message}`);
@@ -5077,7 +5078,8 @@ async function deleteConversation(conv, triggerBtn = null, row = null) {
     notify("응답 중인 대화는 삭제할 수 없습니다. 먼저 응답을 중지해 주세요.", "warn");
     return;
   }
-  if (!window.confirm(`"${conv.title || "새 대화"}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
+  const title = conv.title || "새 대화";
+  if (!window.confirm(`"${title}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
   if (triggerBtn) {
     setFormBusy(row || triggerBtn, true);
     triggerBtn.title = "삭제 중…";
@@ -5098,6 +5100,7 @@ async function deleteConversation(conv, triggerBtn = null, row = null) {
   const pane = state.chatPanes.find((p) => p.conversationId === conv.id);
   if (pane) newChat(pane);
   else renderConversations();
+  notify(`"${title}" 대화를 삭제했습니다.`, "ok");
 }
 
 /* ============================================================ Settings (my avatar) */
