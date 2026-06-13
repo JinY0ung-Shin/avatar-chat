@@ -399,6 +399,17 @@ describe("store agent session resume", () => {
     store.setConversationGroupKnowledgeOff(other.id, "conv-gk", ["g3"]);
     expect(store.getConversationGroupKnowledgeOff(ownerId, "conv-gk")).toEqual(["g2"]);
   });
+
+  it("round-trips the per-user default group-knowledge OFF set (seeds new conversations)", () => {
+    const { store, ownerId } = makeStore();
+    // Default on a fresh user: every group on.
+    expect(store.getUserById(ownerId)?.groupKnowledgeOffDefault).toEqual([]);
+    // Saving the default surfaces on the User; [] clears it back to "all on".
+    expect(store.setGroupKnowledgeOffDefault(ownerId, ["g1", "g2"]).groupKnowledgeOffDefault).toEqual(["g1", "g2"]);
+    expect(store.getUserById(ownerId)?.groupKnowledgeOffDefault).toEqual(["g1", "g2"]);
+    expect(store.setGroupKnowledgeOffDefault(ownerId, []).groupKnowledgeOffDefault).toEqual([]);
+    expect(store.getUserById(ownerId)?.groupKnowledgeOffDefault).toEqual([]);
+  });
 });
 
 

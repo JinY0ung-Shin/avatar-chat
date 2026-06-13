@@ -85,7 +85,7 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   transcript (`partialText` in `claudeAgent.ts`, preferred over the SDK terminal
   `result` which is the LAST turn only) — else pre-final-turn narration (preambles,
   text between tool calls) vanishes the instant the run completes. Cancel/error paths
-  persist the server-side `streamedText` accumulator (`app.ts`), not an empty stub.
+  persist the server-side `streamedText` accumulator (`routes/chat.ts`), not an empty stub.
 - **Tool permissions go through one gate:** the `PreToolUse` hook in
   `src/server/agent/claudeAgent.ts` (`buildPreToolUseHook`). The SDK's
   `canUseTool`/`onUserDialog` are unused (don't fire headlessly). Auto-approve
@@ -174,12 +174,12 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   trust source) → group co-members are mutually + SYMMETRICALLY elevated and reach each
   other's `group`-visible avatars (but NOT each other's `private` ones — visibility is a
   separate axis; see the visibility bullet above). `isTrustedFor` is THE single choke point
-  every elevated/trust check flows through (`getAvatar`/`resolveChatAvatar`/`app.ts` chat
+  every elevated/trust check flows through (`getAvatar`/`resolveChatAvatar`/`routes/chat.ts` chat
   `elevated`) — add new trust sources THERE, not at call sites. Each group has ONE shared **knowledge repo** (`groupKnowledgeRepo.ts`
   mirrors `knowledgeRepo.ts`: full clone at `dataDir/group-knowledge/<groupId>`, REUSES its
   repo-relative file ops `listTree/readFile/writeFile/scaffoldSkill/writeRepoTemplate`; `token` =
   acting user's `getGitToken`, applied per git-call via `tokenForGitUrl`). Members' avatars auto-load
-  its skills (`loadGroupKnowledgeRepoRoots`, wired in app.ts chat + intro/hashtag gen); only group
+  its skills (`loadGroupKnowledgeRepoRoots`, wired in `routes/chat.ts` + intro/hashtag gen); only group
   admins edit via the OWNER-ONLY `mcp__group_repo__*` server (per-tool role check: member reads,
   admin writes/deletes/moves/commits/`create_repo`). `buildPrompt` injects group self-state (META-COGNITION).
   Discovery: `listPublishedAvatars` also returns `group`-visible group teammates flagged `sharesGroup`.
@@ -245,7 +245,7 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   for all schedule math + validation): **daily** (`minuteOfDay` KST), **weekly** (`daysOfWeek`
   0=Sun..6=Sat at `minuteOfDay`), **interval** (`intervalMinutes`, 15..10080). `parseRoutineSchedule`
   validates raw API/MCP input → a `RoutineSchedule` or a `ScheduleError` CODE; each caller maps the
-  code to its own channel (`app.ts` `KOREAN_SCHEDULE_ERROR`, `systemTools.ts` `ENGLISH_SCHEDULE_ERROR`)
+  code to its own channel (`routes/_shared.ts` `KOREAN_SCHEDULE_ERROR`, `systemTools.ts` `ENGLISH_SCHEDULE_ERROR`)
   — per the language split. `nextRunIso` computes the next firing in fixed UTC+9 (no DST); a
   name/prompt-only `updateRoutineJob` edit preserves an overdue `next_run_at`, only a schedule change
   recomputes. `store.create/updateRoutineJob` stay backward-compatible with `{prompt, minuteOfDay}`
@@ -255,7 +255,7 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   `daysOfWeek`/`intervalMinutes`). New schedule fields go in `routineSchedule.ts` + the two error maps
   + `RoutineJob` (types.ts) + the `addColumnIfMissing` migration — never re-derive schedule math elsewhere.
 - **Routines load the same skills as chat** via the shared `loadAgentPluginRoots` (plugins.ts):
-  default + avatar plugins + personal & group knowledge-repo roots. Both the chat endpoint (`app.ts`)
+  default + avatar plugins + personal & group knowledge-repo roots. Both the chat endpoint (`routes/chat.ts`)
   and the scheduler (`scheduler.ts`) call it, so they can't drift; `local` runtime returns `[]`.
   (Routines once loaded only default+avatar plugins and silently missed knowledge-repo skills.)
 - **Knowledge-repo `CLAUDE.md` IS now injected as standing memory** (extends the old "settingSources
@@ -270,13 +270,13 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   string by *"does the model read it as INPUT?"* → English; else Korean. English (model reads it):
   `buildPrompt` (claudeAgent.ts), `GIT_MCP_ONLY_GUIDANCE`, the `PreToolUse` **`hookDeny(...)` reasons**,
   and every `agent/*Tools.ts` tool `description`/`.describe()`/`text()` result; the headless
-  intro/hashtag-generation prompts in `app.ts` are English too but explicitly instruct **Korean
+  intro/hashtag-generation prompts in `routes/profile.ts` are English too but explicitly instruct **Korean
   OUTPUT**. Korean (a human sees it): `public/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
   labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks, **client-expanded**
   slash-command expansions (rendered as the user's OWN message bubble), conversation titles/`[루틴]`/`(중지됨)`.
   EXCEPTION: a slash command flagged `serverExpand` in `public/app.js` (currently **`/learn`**) sends the
   literal `/command` as the bubble + persisted turn and the SERVER swaps in the expanded prompt for the
-  model — so that prompt (`LEARN_SLASH_PROMPT` in `app.ts`) is **agent-facing English** (the avatar still
+  model — so that prompt (`LEARN_SLASH_PROMPT` in `routes/chat.ts`) is **agent-facing English** (the avatar still
   REPLIES in the user's language). Such a command carries NO client-side `prompt()` copy; the
   `expandChatSlashCommand`↔`app.js` drift test excludes it. The chat handler stores `displayMessage` (raw)
   but feeds `agentMessage` (expanded) to `runAgentStream`.

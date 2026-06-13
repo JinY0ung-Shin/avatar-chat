@@ -46,6 +46,20 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     res.json({ user });
   });
 
+  // Owner's DEFAULT group-knowledge OFF-set (group ids turned off). The composer
+  // toggle writes here so the choice seeds every NEW conversation/greeting — the
+  // per-conversation value (chat POST `groupKnowledgeOff`) still overrides it for
+  // an already-started conversation. Body: `{ off: string[] }` ([] re-enables all).
+  router.put("/api/me/group-knowledge-default", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const raw = req.body?.off;
+    if (!Array.isArray(raw) || !raw.every((s) => typeof s === "string")) {
+      apiError(res, 400, "off는 문자열 배열이어야 합니다.");
+      return;
+    }
+    const user = store.setGroupKnowledgeOffDefault(req.user!.id, raw as string[]);
+    res.json({ user });
+  });
+
   // Typeahead for the group member-add picker: match by username OR display name.
   // Excludes self. Used by the group management UIs (managing group membership is
   // how trust/elevation is granted — see Store.isTrustedFor).

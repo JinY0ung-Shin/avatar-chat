@@ -148,6 +148,7 @@ interface UserRow {
   knowledge_selected: string | null;
   ssh_public_key: string | null;
   hashtags: string | null;
+  group_knowledge_off_default: string | null;
 }
 
 interface PluginRow {
@@ -438,6 +439,12 @@ export class Store {
     this.addColumnIfMissing("users", "knowledge_branch", "TEXT");
     // JSON array of plugin names to load from the knowledge repo; null = all.
     this.addColumnIfMissing("users", "knowledge_selected", "TEXT");
+    // The owner's DEFAULT group-knowledge OFF-set, seeding every NEW conversation
+    // (including the auto-greeting, which fires before any toggle interaction).
+    // JSON array of group ids; NULL/[] = every group on by default. Mirrors the
+    // per-conversation `conversations.group_knowledge_off`, but at the user level:
+    // the composer toggle writes here so the choice persists across conversations.
+    this.addColumnIfMissing("users", "group_knowledge_off_default", "TEXT");
     // Public half of an app-generated SSH keypair. The private half is stored
     // only as the encrypted SSH_PRIVATE_KEY user secret.
     this.addColumnIfMissing("users", "ssh_public_key", "TEXT");
@@ -575,6 +582,8 @@ export class Store {
       knowledgeRepo: row.knowledge_repo ?? null,
       knowledgeBranch: row.knowledge_branch ?? null,
       knowledgeSelected: parseNameList(row.knowledge_selected),
+      // OFF-set seeding new conversations/greetings ([] = every group on).
+      groupKnowledgeOffDefault: parseNameList(row.group_knowledge_off_default) ?? [],
       // Only the names — the encrypted values never leave the server.
       secretNames,
       sshPublicKey: row.ssh_public_key ?? null,
@@ -1030,6 +1039,20 @@ export class Store {
     this.db
       .prepare("UPDATE users SET knowledge_selected = ? WHERE id = ?")
       .run(selected ? JSON.stringify(selected) : null, userId);
+    return this.toUser(this.userRowById(userId)!);
+  }
+
+  /**
+   * Set the owner's DEFAULT group-knowledge OFF-set (group ids turned off),
+   * which seeds every new conversation/greeting. `[]` (or null) re-enables all.
+   */
+  setGroupKnowledgeOffDefault(userId: string, off: string[]): User {
+    if (!this.userRowById(userId)) {
+      throw new Error("USER_NOT_FOUND");
+    }
+    this.db
+      .prepare("UPDATE users SET group_knowledge_off_default = ? WHERE id = ?")
+      .run(off.length ? JSON.stringify(off) : null, userId);
     return this.toUser(this.userRowById(userId)!);
   }
 

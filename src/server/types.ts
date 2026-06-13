@@ -111,6 +111,13 @@ export interface User {
    */
   knowledgeSelected: string[] | null;
   /**
+   * The owner's DEFAULT group-knowledge OFF-set (group ids whose shared knowledge
+   * is off). Seeds every NEW conversation — including the auto-greeting, which
+   * fires before the composer toggle can be touched — so the toggle choice
+   * persists across conversations. `[]` = every group on (the default).
+   */
+  groupKnowledgeOffDefault: string[];
+  /**
    * Names of the user's stored secrets (e.g. SSH_PRIVATE_KEY). Only the NAMES
    * are exposed — the encrypted values never leave the server. The avatar's
    * MCP tools receive them as subprocess env (injected by the owner's identity),

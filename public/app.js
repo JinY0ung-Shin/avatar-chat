@@ -856,7 +856,34 @@ function viewHeader(title, sub, extra) {
 /* ============================================================ Chat panes */
 const MAX_CHAT_PANES = 4;
 
-function makeChatPane(avatar, { conversationId = newId(), messages = [], groupKnowledgeOff = [] } = {}) {
+// A NEW conversation with the owner's OWN avatar seeds its group-knowledge
+// selection from the saved per-user default (state.user.groupKnowledgeOffDefault).
+// This is what makes the toggle meaningful for the auto-greeting, which fires
+// before the user can touch the composer. Colleague chats and existing
+// conversations (which pass their persisted value explicitly) ignore this.
+function defaultGroupKnowledgeOff(avatar) {
+  return avatar?.id && avatar.id === state.user?.id
+    ? [...(state.user?.groupKnowledgeOffDefault || [])]
+    : [];
+}
+
+// Persist the owner's group-knowledge OFF-set as the per-user default so future
+// conversations/greetings start from it. Updates state.user optimistically and
+// fires the PUT in the background. We do NOT overwrite from the response: rapid
+// toggles can resolve out of order, and the optimistic value is always the latest
+// the user picked. A failure only loses the cross-conversation default (the
+// current conversation still gets the selection via its chat POST), so we just
+// toast rather than block the toggle.
+function saveGroupKnowledgeDefault(off) {
+  if (!state.user) return;
+  state.user.groupKnowledgeOffDefault = [...off];
+  api("/api/me/group-knowledge-default", {
+    method: "PUT",
+    body: JSON.stringify({ off }),
+  }).catch((e) => notify(`그룹 지식 기본값을 저장하지 못했습니다: ${e.message}`));
+}
+
+function makeChatPane(avatar, { conversationId = newId(), messages = [], groupKnowledgeOff = defaultGroupKnowledgeOff(avatar) } = {}) {
   return {
     id: newId(),
     avatar,
@@ -897,14 +924,16 @@ function setupGroupKnowledgeToggle(pane, pdom) {
     panel.hidden = true;
     btn.setAttribute("aria-expanded", "false");
   };
-  // Toggle is purely local: it's applied to the conversation when the next turn is
-  // sent. No request here, so it works on a brand-new chat with no row yet.
+  // The selection applies to THIS conversation on the next turn (it rides the
+  // chat POST — works on a brand-new chat with no row yet) AND is saved as the
+  // owner's per-user default so it seeds future conversations + their greetings.
   const setGroup = (groupId, enabled) => {
     const off = new Set(pane.groupKnowledgeOff || []);
     if (enabled) off.delete(groupId);
     else off.add(groupId);
     pane.groupKnowledgeOff = [...off];
     renderBtn();
+    saveGroupKnowledgeDefault(pane.groupKnowledgeOff);
   };
   const renderPanel = () => {
     const groups = eligibleGroups();
