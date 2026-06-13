@@ -454,7 +454,9 @@ function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
       event.preventDefault();
       const fd = new FormData(event.currentTarget);
       const btn = event.currentTarget.querySelector("button[type=submit]");
+      const savedLabel = btn.textContent;
       btn.disabled = true;
+      btn.textContent = isLogin ? "로그인 중…" : isSetup ? "계정 만드는 중…" : "가입 중…";
       try {
         const path = isLogin ? "/api/auth/login" : "/api/auth/signup";
         const payload = isLogin
@@ -478,6 +480,7 @@ function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
         // Keep what the user typed — re-entering the username after a wrong
         // password is pure friction.
         renderAuth(mode, { username: fd.get("username") || "", displayName: fd.get("displayName") || "" });
+        btn.textContent = savedLabel;
       }
     },
   });
