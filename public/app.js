@@ -5855,10 +5855,11 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
     cb.addEventListener("change", updateSelectionSummary);
     checks.push({ cb, name: entry.name, loadable: entry.loadable });
     const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
-    container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
+    container.append(el("label", { class: `pc-item ${entry.loadable ? "" : "disabled"}` }, [cb, el("span", { text: labelText })]));
   }
   container.append(selectionSummary);
   updateSelectionSummary();
+  if (!loadableNames.length) return;
 
   const setSaving = (busy) => {
     saving = busy;

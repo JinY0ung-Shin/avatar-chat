@@ -3834,6 +3834,10 @@ textarea::placeholder {
 .pc-item input[disabled] {
   cursor: not-allowed;
 }
+.pc-item.disabled {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
 .pc-summary {
   font-size: var(--t-xs);
 }
