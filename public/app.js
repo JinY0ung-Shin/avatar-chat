@@ -1832,15 +1832,20 @@ function openRoutineModal(routine) {
   updatePreview();
 }
 
+let routinesViewSeq = 0;
+
 async function renderRoutinesView() {
+  const renderSeq = ++routinesViewSeq;
   const header = viewHeader("루틴", "아바타가 스스로 실행하는 예약 작업과 그 결과를 관리하세요");
   const body = el("div", { class: "view-body routines-body" }, [
     el("div", { class: "muted pad", text: "불러오는 중…" }),
   ]);
   dom.main.append(header, body);
+  const isCurrent = () => renderSeq === routinesViewSeq && state.view === "routines" && body.isConnected;
 
   const results = await Promise.allSettled([loadRoutines(), loadRoutineConversations()]);
   if (sessionExpired) return;
+  if (!isCurrent()) return;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
     body.replaceChildren(
@@ -1857,19 +1862,29 @@ async function renderRoutinesView() {
   } else if (!state.routineConversationId && state.routineConversations.length) {
     state.routineConversationId = state.routineConversations[0].id;
   }
+  let messageLoadError = "";
   if (state.routineConversationId) {
-    const msgRes = await api(`/api/messages?conversationId=${encodeURIComponent(state.routineConversationId)}`);
-    state.routineMessages = msgRes.messages || [];
+    const conversationId = state.routineConversationId;
+    try {
+      const msgRes = await api(`/api/messages?conversationId=${encodeURIComponent(conversationId)}`);
+      if (!isCurrent() || state.routineConversationId !== conversationId) return;
+      state.routineMessages = msgRes.messages || [];
+    } catch (e) {
+      if (!isCurrent() || state.routineConversationId !== conversationId) return;
+      state.routineMessages = [];
+      messageLoadError = e.message || "네트워크 오류";
+    }
   } else {
     state.routineMessages = [];
   }
 
+  if (!isCurrent()) return;
   body.replaceChildren(
     el("div", { class: "routine-workspace" }, [
       el("div", { class: "routine-side scroll-thin" }, [
         buildRoutineManagePanel(),
       ]),
-      buildRoutineResultPanel(),
+      buildRoutineResultPanel(messageLoadError),
     ]),
   );
 }
@@ -2102,7 +2117,7 @@ function renderRoutineManageRows(list) {
   }
 }
 
-function buildRoutineResultPanel() {
+function buildRoutineResultPanel(messageLoadError = "") {
   const conv = state.routineConversations.find((c) => c.id === state.routineConversationId);
   const routine = conv ? state.routines.find((r) => r.conversationId === conv.id) : null;
   const transcript = el("div", { class: "routine-result-transcript transcript scroll-thin" });
@@ -2134,6 +2149,15 @@ function buildRoutineResultPanel() {
   ]);
   if (!conv) {
     inner.append(el("div", { class: "empty-note", text: "아직 확인할 루틴 결과가 없습니다." }));
+    return card;
+  }
+  if (messageLoadError) {
+    inner.append(
+      el("div", { class: "warn-box" }, [
+        `루틴 결과를 불러오지 못했습니다: ${messageLoadError} `,
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ]),
+    );
     return card;
   }
   if (!state.routineMessages.length) {
@@ -2229,17 +2253,22 @@ function openRoutineResult(conversationId) {
 // chronological list. Notifications are messenger-style (click → chat about the
 // topic, X → delete); info-requests keep their answer/dismiss flow. Two backends
 // (avatar_notifications / knowledge_requests) stay distinct — this merges only the UI.
+let inboxViewSeq = 0;
+
 async function renderInboxView() {
+  const renderSeq = ++inboxViewSeq;
   const header = viewHeader("알림", "아바타가 남긴 알림과 동료의 정보 요청을 한곳에서 확인하세요");
   const body = el("div", { class: "view-body scroll-thin inbox-body" }, [
     el("div", { class: "muted pad", text: "불러오는 중…" }),
   ]);
   dom.main.append(header, body);
+  const isCurrent = () => renderSeq === inboxViewSeq && state.view === "inbox" && body.isConnected;
 
   // routineConversations only gates the notification "결과 보기" link — its failure
   // shouldn't blank the whole list, so it's tolerated separately.
   const results = await Promise.allSettled([loadKnowledge(), loadNotifications(), loadRoutineConversations()]);
   if (sessionExpired) return;
+  if (!isCurrent()) return;
   if (results[0].status === "rejected" && results[1].status === "rejected") {
     body.replaceChildren(
       el("div", { class: "warn-box" }, [
@@ -2302,6 +2331,7 @@ async function renderInboxView() {
     } catch {
       /* keep current state on transient failure */
     }
+    if (!isCurrent()) return;
     updateKnowledgeBadge();
     updateNotificationBadge();
     syncHeaderActions();
@@ -2355,6 +2385,7 @@ async function renderInboxView() {
   syncHeaderActions();
   syncFilters();
   renderInboxItems(list, refresh);
+  if (!isCurrent()) return;
   body.replaceChildren(el("div", { class: "inbox-wrap" }, [card]));
 }
 
