@@ -4,11 +4,12 @@ import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { Response } from "express";
+import type { NextFunction, Request, Response } from "express";
 import { createServices, expandChatSlashCommand } from "../src/server/app.js";
 import { loadConfig } from "../src/server/config.js";
 import { applyCustomGithubCa } from "../src/server/tlsCa.js";
 import { loadDotEnv } from "../src/server/loadEnv.js";
+import { createRateLimiter } from "../src/server/rateLimit.js";
 import {
   buildKnowledgeTools,
   KNOWLEDGE_SERVER_NAME,
@@ -147,13 +148,127 @@ import {
 import { callTool } from "./helpers.js";
 
 let tempDir: string;
+const originalNodeEnv = process.env.NODE_ENV;
 
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-units-"));
+  process.env.NODE_ENV = originalNodeEnv;
 });
 
 afterEach(() => {
+  process.env.NODE_ENV = originalNodeEnv;
+  vi.restoreAllMocks();
   fs.rmSync(tempDir, { recursive: true, force: true });
+});
+
+
+describe("rate limiter", () => {
+  function makeResponse() {
+    const headers = new Map<string, string>();
+    const res = {
+      setHeader: vi.fn((name: string, value: string | number) => {
+        headers.set(name, String(value));
+      }),
+      status: vi.fn(function status(this: Response, _code: number) {
+        return this;
+      }),
+      json: vi.fn(function json(this: Response, _body: unknown) {
+        return this;
+      }),
+    } as unknown as Response & {
+      setHeader: ReturnType<typeof vi.fn>;
+      status: ReturnType<typeof vi.fn>;
+      json: ReturnType<typeof vi.fn>;
+    };
+    return { res, headers };
+  }
+
+  function runLimiter(
+    limiter: ReturnType<typeof createRateLimiter>,
+    key: string,
+  ): { headers: Map<string, string>; next: ReturnType<typeof vi.fn>; res: ReturnType<typeof makeResponse>["res"] } {
+    const { res, headers } = makeResponse();
+    const req = { testKey: key } as unknown as Request & { testKey: string };
+    const next = vi.fn() as NextFunction & ReturnType<typeof vi.fn>;
+    limiter(req, res, next);
+    return { headers, next, res };
+  }
+
+  it("bypasses checks in test mode", () => {
+    process.env.NODE_ENV = "test";
+    const limiter = createRateLimiter({
+      windowMs: 1_000,
+      max: 0,
+      keyFn: () => {
+        throw new Error("keyFn should not run in test mode");
+      },
+    });
+
+    const { next, res } = runLimiter(limiter, "ignored");
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  it("allows requests up to the fixed-window limit and then returns 429", () => {
+    process.env.NODE_ENV = "production";
+    vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const limiter = createRateLimiter({
+      windowMs: 5_000,
+      max: 2,
+      keyFn: (req) => (req as Request & { testKey: string }).testKey,
+      message: "slow down",
+    });
+
+    expect(runLimiter(limiter, "same").next).toHaveBeenCalledTimes(1);
+    expect(runLimiter(limiter, "same").next).toHaveBeenCalledTimes(1);
+    const blocked = runLimiter(limiter, "same");
+
+    expect(blocked.next).not.toHaveBeenCalled();
+    expect(blocked.res.status).toHaveBeenCalledWith(429);
+    expect(blocked.res.json).toHaveBeenCalledWith({ error: "slow down" });
+    expect(blocked.headers.get("Retry-After")).toBe("5");
+  });
+
+  it("starts a fresh bucket after expiry and keeps keys independent", () => {
+    process.env.NODE_ENV = "production";
+    const now = vi.spyOn(Date, "now").mockReturnValue(10_000);
+    const limiter = createRateLimiter({
+      windowMs: 1_000,
+      max: 1,
+      keyFn: (req) => (req as Request & { testKey: string }).testKey,
+    });
+
+    expect(runLimiter(limiter, "a").next).toHaveBeenCalledTimes(1);
+    expect(runLimiter(limiter, "b").next).toHaveBeenCalledTimes(1);
+    expect(runLimiter(limiter, "a").res.status).toHaveBeenCalledWith(429);
+
+    now.mockReturnValue(11_000);
+    const reset = runLimiter(limiter, "a");
+
+    expect(reset.next).toHaveBeenCalledTimes(1);
+    expect(reset.res.status).not.toHaveBeenCalled();
+  });
+
+  it("prunes expired buckets once many keys have accumulated", () => {
+    process.env.NODE_ENV = "production";
+    const now = vi.spyOn(Date, "now").mockReturnValue(20_000);
+    const limiter = createRateLimiter({
+      windowMs: 1,
+      max: 1,
+      keyFn: (req) => (req as Request & { testKey: string }).testKey,
+    });
+
+    for (let i = 0; i < 5_001; i += 1) {
+      expect(runLimiter(limiter, `key-${i}`).next).toHaveBeenCalledTimes(1);
+    }
+
+    now.mockReturnValue(20_002);
+    const afterPrune = runLimiter(limiter, "fresh");
+
+    expect(afterPrune.next).toHaveBeenCalledTimes(1);
+    expect(afterPrune.res.status).not.toHaveBeenCalled();
+  });
 });
 
 

@@ -67,7 +67,7 @@ import {
   rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
 } from "../src/server/agent/claudeAgent.js";
-import { executeRoutineJob } from "../src/server/scheduler.js";
+import { executeRoutineJob, startRoutineScheduler } from "../src/server/scheduler.js";
 import {
   formatMinuteOfDay,
   nextRunIso,
@@ -744,6 +744,90 @@ describe("routine jobs", () => {
     expect(messages).toHaveLength(2);
     expect(messages[0].role).toBe("user");
     expect(messages[1].role).toBe("assistant");
+  });
+
+  it("executeRoutineJob records an error when the avatar no longer exists", async () => {
+    const services = createServices({
+      dataDir: path.join(tempDir, "rj-missing-avatar"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const job = {
+      id: "missing-job",
+      avatarUserId: "missing-avatar",
+      conversationId: "missing-conversation",
+      name: null,
+      prompt: "안녕",
+      scheduleKind: "daily",
+      minuteOfDay: 0,
+      time: "00:00",
+      daysOfWeek: null,
+      intervalMinutes: null,
+      enabled: true,
+      nextRunAt: new Date().toISOString(),
+      lastRunAt: null,
+      lastStatus: null,
+      lastError: null,
+      createdAt: new Date().toISOString(),
+    } as const;
+
+    const result = await executeRoutineJob(services, job);
+
+    expect(result).toEqual({ ok: false, error: "아바타를 찾을 수 없습니다." });
+  });
+
+  it("executeRoutineJob releases the overlap guard when outcome recording fails", async () => {
+    const services = createServices({
+      dataDir: path.join(tempDir, "rj-record-fail"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = services.store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const job = services.store.createRoutineJob(owner.id, { prompt: "안녕", minuteOfDay: 0 });
+    const markRoutineRun = services.store.markRoutineRun.bind(services.store);
+    vi.spyOn(services.store, "markRoutineRun")
+      .mockImplementationOnce(() => {
+        throw new Error("db write failed");
+      })
+      .mockImplementation(markRoutineRun);
+
+    const failed = await executeRoutineJob(services, job);
+    const retried = await executeRoutineJob(services, job);
+
+    expect(failed).toEqual({ ok: false, error: "db write failed" });
+    expect(retried.ok).toBe(true);
+  });
+
+  it("startRoutineScheduler runs due jobs and survives list failures", async () => {
+    vi.useFakeTimers();
+    try {
+      const services = createServices({
+        dataDir: path.join(tempDir, "rj-scheduler"),
+        agentRuntime: "local",
+        sessionSecret: "t",
+      });
+      const owner = services.store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+      const job = services.store.createRoutineJob(owner.id, { prompt: "안녕", minuteOfDay: 0 });
+      vi.spyOn(services.store, "listDueRoutineJobs")
+        .mockImplementationOnce(() => {
+          throw new Error("temporary db failure");
+        })
+        .mockReturnValueOnce([job])
+        .mockReturnValue([]);
+
+      const stop = startRoutineScheduler(services, { tickMs: 10 });
+      try {
+        await vi.advanceTimersByTimeAsync(10);
+        expect(services.store.listMessages(owner.id, job.conversationId)).toHaveLength(0);
+
+        await vi.advanceTimersByTimeAsync(10);
+        expect(services.store.listMessages(owner.id, job.conversationId)).toHaveLength(2);
+      } finally {
+        stop();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("scopes updates and deletes to the owning avatar", () => {

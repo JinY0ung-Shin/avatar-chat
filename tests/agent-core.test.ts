@@ -67,6 +67,15 @@ import {
   rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
 } from "../src/server/agent/claudeAgent.js";
+import {
+  createLoopState,
+  extractMainAssistantText,
+  handleAssistantMessage,
+  handleStreamEvent,
+  handleSystemEvent,
+  handleUserMessage,
+  summarizeToolInput,
+} from "../src/server/agent/sdkMessageHandlers.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
 import {
   formatMinuteOfDay,
@@ -898,6 +907,321 @@ describe("interpretResult", () => {
     const msg = resultErrorMessage("error_max_turns");
     expect(msg).toContain("최대 처리 단계");
     expect(msg).not.toContain("maximum number of turns");
+  });
+});
+
+
+describe("sdk message handlers", () => {
+  function events() {
+    return {
+      onDelta: vi.fn(),
+      onStatus: vi.fn(),
+      onModel: vi.fn(),
+      onSessionId: vi.fn(),
+      onPlugin: vi.fn(),
+      onToolStart: vi.fn(),
+      onToolEnd: vi.fn(),
+      onTaskStart: vi.fn(),
+      onTaskUpdate: vi.fn(),
+      onTaskEnd: vi.fn(),
+      onAgentStart: vi.fn(),
+      onAgentEnd: vi.fn(),
+      onBlocked: vi.fn(),
+    };
+  }
+
+  it("summarizes common tool inputs for activity rows", () => {
+    expect(summarizeToolInput("Bash", { command: "  npm   test\n-- --runInBand  " })).toBe("npm test -- --runInBand");
+    expect(summarizeToolInput("Grep", { pattern: "needle", path: "src" })).toBe("needle · src");
+    expect(summarizeToolInput("Fetch", { url: "https://example.com/page" })).toBe("https://example.com/page");
+    expect(summarizeToolInput("Ask", { prompt: "x".repeat(200) })).toHaveLength(161);
+  });
+
+  it("turns assistant tool_use blocks into tool, task, and subagent events", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    const text = handleAssistantMessage(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "hello" },
+            { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "src/app.ts" } },
+            { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: { question: "ok?" } },
+            { type: "tool_use", id: "agent-1", name: "Task", input: { subagent_type: "research", prompt: "find" } },
+            {
+              type: "tool_use",
+              id: "task-tool",
+              name: "TaskCreate",
+              input: {
+                task_id: "task-1",
+                task_type: "workflow",
+                workflow_name: "deploy",
+                task_subject: "Ship it",
+                prompt: "do the work",
+              },
+            },
+          ],
+        },
+      },
+      sink,
+      state,
+    );
+
+    expect(text).toBe("hello");
+    expect(sink.onToolStart).toHaveBeenCalledWith({
+      toolUseId: "read-1",
+      name: "Read",
+      agentId: "main",
+      inputSummary: "src/app.ts",
+    });
+    expect(sink.onToolStart).toHaveBeenCalledTimes(1);
+    expect(sink.onAgentStart).toHaveBeenCalledWith({
+      agentId: "agent-1",
+      parentId: "main",
+      subagentType: "research",
+      description: "find",
+    });
+    expect(sink.onTaskStart).toHaveBeenCalledWith({
+      taskId: "task-1",
+      toolUseId: "task-tool",
+      taskType: "workflow",
+      subagentType: undefined,
+      workflowName: "deploy",
+      description: "Ship it",
+      prompt: "do the work",
+    });
+  });
+
+  it("routes tool results back to tools or spawned agents", () => {
+    const sink = events();
+    const state = createLoopState();
+    handleAssistantMessage(
+      {
+        message: {
+          content: [
+            { type: "tool_use", id: "agent-1", name: "Task", input: { prompt: "subtask" } },
+            { type: "tool_use", id: "read-1", name: "Read", input: { path: "README.md" } },
+          ],
+        },
+      },
+      sink,
+      state,
+    );
+
+    handleUserMessage(
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "agent-1", is_error: true },
+            { type: "tool_result", tool_use_id: "read-1", content: "ok" },
+            { type: "tool_result", content: "missing id" },
+          ],
+        },
+      },
+      sink,
+      state,
+    );
+
+    expect(sink.onAgentEnd).toHaveBeenCalledWith({ agentId: "agent-1", ok: false });
+    expect(sink.onToolEnd).toHaveBeenCalledWith({ toolUseId: "read-1", ok: true });
+  });
+
+  it("emits task progress and terminal task state from task tools", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleAssistantMessage(
+      {
+        message: {
+          content: [{ type: "tool_use", id: "create-1", name: "TaskCreate", input: { task_id: "task-1", title: "Plan" } }],
+        },
+      },
+      sink,
+      state,
+    );
+    handleAssistantMessage(
+      {
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "progress-1",
+              name: "TaskProgress",
+              input: { task_id: "task-1", status: "running", description: "Halfway" },
+            },
+          ],
+        },
+      },
+      sink,
+      state,
+    );
+    handleAssistantMessage(
+      {
+        message: {
+          content: [{ type: "tool_use", id: "done-1", name: "TaskComplete", input: { task_id: "task-1", description: "Done" } }],
+        },
+      },
+      sink,
+      state,
+    );
+
+    expect(sink.onTaskUpdate).toHaveBeenCalledWith({
+      taskId: "task-1",
+      status: "running",
+      description: "Halfway",
+      summary: "Halfway",
+    });
+    expect(sink.onTaskEnd).toHaveBeenCalledWith({
+      taskId: "task-1",
+      ok: true,
+      status: "completed",
+      summary: "Done",
+    });
+  });
+
+  it("handles system init, plugin, permission, and status events", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent(
+      {
+        subtype: "init",
+        model: "claude-sonnet",
+        session_id: "sess-1",
+        plugins: ["alpha", { name: "beta" }, { notName: true }],
+      },
+      sink,
+      state,
+    );
+    handleSystemEvent({ subtype: "plugin_install", name: "alpha", status: "installed" }, sink, state);
+    handleSystemEvent(
+      {
+        subtype: "permission_denied",
+        tool_use_id: "tool-1",
+        tool_name: "Bash",
+        decision_reason: "readonly",
+      },
+      sink,
+      state,
+    );
+    handleSystemEvent({ subtype: "status", status: "requesting" }, sink, state);
+    handleSystemEvent({ subtype: "status", status: "compacting" }, sink, state);
+    handleSystemEvent({ subtype: "status", status: "other" }, sink, state);
+
+    expect(sink.onModel).toHaveBeenCalledWith("claude-sonnet");
+    expect(sink.onSessionId).toHaveBeenCalledWith("sess-1");
+    expect(sink.onStatus).toHaveBeenCalledWith("Claude 준비 완료 (claude-sonnet)");
+    expect(sink.onPlugin).toHaveBeenCalledWith({ status: "completed", name: "alpha" });
+    expect(sink.onPlugin).toHaveBeenCalledWith({ status: "completed", name: "beta" });
+    expect(sink.onPlugin).toHaveBeenCalledWith({ status: "installed", name: "alpha" });
+    expect(sink.onBlocked).toHaveBeenCalledWith({
+      toolUseId: "tool-1",
+      toolName: "Bash",
+      agentId: "main",
+      reason: "readonly",
+    });
+    expect(sink.onStatus).toHaveBeenCalledWith("응답 생성 중…");
+    expect(sink.onStatus).toHaveBeenCalledWith("맥락 정리 중…");
+    expect(sink.onStatus).toHaveBeenCalledWith("처리 중…");
+  });
+
+  it("handles system task events, hidden tasks, and subagent task state", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent({ subtype: "task_started", task_id: "hidden", skip_transcript: true }, sink, state);
+    handleSystemEvent({ subtype: "task_progress", task_id: "hidden", summary: "ignored" }, sink, state);
+    handleSystemEvent(
+      { subtype: "task_started", task_id: "task-1", tool_use_id: "tool-1", task_type: "workflow", description: "Work" },
+      sink,
+      state,
+    );
+    handleSystemEvent({ subtype: "task_progress", task_id: "task-1", last_tool_name: "Read" }, sink, state);
+    handleSystemEvent(
+      { subtype: "task_updated", task_id: "task-1", patch: { status: "failed", error: "bad", is_backgrounded: true } },
+      sink,
+      state,
+    );
+    handleSystemEvent(
+      {
+        subtype: "task_started",
+        task_id: "agent-task",
+        tool_use_id: "agent-tool",
+        task_type: "subagent",
+        subagent_type: "research",
+        prompt: "Investigate",
+      },
+      sink,
+      state,
+    );
+    handleSystemEvent({ subtype: "task_progress", task_id: "agent-task", summary: "Reading" }, sink, state);
+    handleSystemEvent({ subtype: "task_notification", task_id: "agent-task", status: "completed", summary: "Done" }, sink, state);
+
+    expect(sink.onTaskStart).toHaveBeenCalledTimes(1);
+    expect(sink.onTaskStart).toHaveBeenCalledWith({
+      taskId: "tool-1",
+      toolUseId: "tool-1",
+      taskType: "workflow",
+      subagentType: undefined,
+      workflowName: undefined,
+      description: "Work",
+      prompt: undefined,
+    });
+    expect(sink.onTaskUpdate).toHaveBeenCalledWith({ taskId: "tool-1", lastToolName: "Read" });
+    expect(sink.onTaskEnd).toHaveBeenCalledWith({
+      taskId: "tool-1",
+      ok: false,
+      status: "failed",
+      summary: "bad",
+    });
+    expect(sink.onAgentStart).toHaveBeenCalledWith({
+      agentId: "agent-tool",
+      parentId: "main",
+      subagentType: "research",
+      description: "Investigate",
+    });
+    expect(sink.onStatus).toHaveBeenCalledWith("에이전트 작업 중: Reading");
+    expect(sink.onAgentEnd).toHaveBeenCalledWith({ agentId: "agent-tool", ok: true });
+  });
+
+  it("streams only main-agent deltas and extracts main assistant text", () => {
+    const sink = events();
+
+    expect(
+      handleStreamEvent(
+        { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } } },
+        sink,
+      ),
+    ).toBe("hi");
+    expect(sink.onDelta).toHaveBeenCalledWith("hi");
+    expect(
+      handleStreamEvent(
+        {
+          type: "stream_event",
+          parent_tool_use_id: "agent-1",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "hidden" } },
+        },
+        sink,
+      ),
+    ).toBe("");
+    expect(handleStreamEvent({ type: "stream_event", event: { type: "other" } }, sink)).toBe("");
+
+    expect(
+      extractMainAssistantText({
+        message: {
+          content: [
+            { type: "text", text: "A" },
+            { type: "tool_use", name: "Read" },
+            { type: "text", text: "B" },
+          ],
+        },
+      }),
+    ).toBe("A\nB");
+    expect(extractMainAssistantText({ parent_tool_use_id: "agent-1", message: { content: [{ type: "text", text: "C" }] } })).toBe("");
+    expect(extractMainAssistantText({ message: { content: null } })).toBe("");
   });
 });
 
