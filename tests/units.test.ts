@@ -247,8 +247,10 @@ describe("chat slash commands", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.ownerOnly).toBe(true);
-    expect(result.message).toContain("이번 대화 세션을 검토");
-    expect(result.message).toContain("지식 저장소를 업데이트");
+    // Agent-facing (the user only sees the literal "/learn"), so it's English and
+    // includes the capability/limitation self-record instruction.
+    expect(result.message).toContain("update my knowledge repository");
+    expect(result.message).toContain("CAN and CANNOT do");
   });
 
   it("expands slash commands with arguments", () => {
@@ -274,20 +276,24 @@ describe("chat slash commands", () => {
     expect(result.message).toBe("/not-a-command");
   });
 
-  // The same prompts live in BOTH the server (expandChatSlashCommand, the fallback
-  // for stale clients/API callers) and the client (public/app.js SLASH_COMMANDS,
-  // the normal path that expands before sending so the bubble shows the prompt).
-  // public/app.js is served raw — no bundler — so they can't share a constant; this
-  // guards against the two copies drifting apart.
+  // Client-expanded commands carry their (user-facing, Korean) prompt in BOTH the
+  // server (expandChatSlashCommand, the fallback for stale clients/API callers) and
+  // the client (public/app.js SLASH_COMMANDS, which expands before sending so the
+  // bubble shows the prompt). public/app.js is served raw — no bundler — so they
+  // can't share a constant; this guards against the two copies drifting apart.
+  // `/learn` is EXCLUDED: it is server-expanded (serverExpand: true), so the client
+  // sends the literal "/learn" and intentionally carries no copy of the prompt.
   it("client app.js carries the same slash prompts as the server", () => {
     const appJs = fs.readFileSync(path.join(process.cwd(), "public", "app.js"), "utf8");
-    const cases = ["/summarize", "/learn", "/remember 내용", "/routine 작업", "/find 요청"];
+    const cases = ["/summarize", "/remember 내용", "/routine 작업", "/find 요청"];
     for (const input of cases) {
       const { message } = expandChatSlashCommand(input);
       // Compare the static template, dropping any trailing "\n\n<args>" we injected.
       const staticPart = message.split("\n\n")[0];
       expect(appJs, `slash prompt for "${input}" drifted between server and client`).toContain(staticPart);
     }
+    // /learn is server-only: its expanded text must NOT be duplicated in the client.
+    expect(appJs).not.toContain(expandChatSlashCommand("/learn").message.split("\n\n")[0]);
   });
 });
 

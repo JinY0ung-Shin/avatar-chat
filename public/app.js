@@ -1864,12 +1864,10 @@ const SLASH_COMMANDS = [
     title: "세션 학습",
     description: "이번 대화에서 재사용할 지식을 추려 저장하게 합니다.",
     ownerOnly: true,
-    prompt: () => [
-      "이번 대화 세션을 검토해서 앞으로 재사용할 가치가 있는 지식만 선별해 내 지식 저장소를 업데이트해줘.",
-      "",
-      "중요한 사실, 결정사항, 반복 가능한 절차, 프로젝트 규칙, 사용자가 선호한다고 밝힌 방식이 있으면 적절한 파일이나 스킬에 반영하고 커밋해줘.",
-      "이미 저장돼 있거나 장기적으로 유용하지 않은 잡담은 저장하지 말고, 저장한 내용과 저장하지 않은 이유를 간단히 알려줘.",
-    ].join("\n"),
+    // Expanded on the SERVER (LEARN_SLASH_PROMPT in app.ts): the bubble shows the
+    // literal "/learn" and the model receives the full instruction. No client
+    // prompt() — the long instruction never appears in the user's message.
+    serverExpand: true,
   },
   {
     name: "remember",
@@ -2736,7 +2734,12 @@ async function submitMessage(pane = activePane()) {
       notify(`/${slash.command.name} 뒤에 ${slash.command.argsLabel || "내용"}을 입력해 주세요.`, "warn");
       return;
     }
-    message = slashPrompt(slash.command, slash.args).trim();
+    // serverExpand commands (e.g. /learn) are sent verbatim so the bubble shows
+    // the literal command; the server swaps in the full prompt for the model.
+    // Others expand here so their (user-facing, Korean) prompt shows in the bubble.
+    message = slash.command.serverExpand
+      ? `/${slash.command.name}${slash.args ? ` ${slash.args}` : ""}`
+      : slashPrompt(slash.command, slash.args).trim();
     if (!message) return;
   }
   hideSlashMenu(pane);

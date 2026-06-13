@@ -254,8 +254,14 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   and every `agent/*Tools.ts` tool `description`/`.describe()`/`text()` result; the headless
   intro/hashtag-generation prompts in `app.ts` are English too but explicitly instruct **Korean
   OUTPUT**. Korean (a human sees it): `public/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
-  labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks, slash-command
-  expansions (rendered as the user's OWN message bubble), conversation titles/`[루틴]`/`(중지됨)`.
+  labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks, **client-expanded**
+  slash-command expansions (rendered as the user's OWN message bubble), conversation titles/`[루틴]`/`(중지됨)`.
+  EXCEPTION: a slash command flagged `serverExpand` in `public/app.js` (currently **`/learn`**) sends the
+  literal `/command` as the bubble + persisted turn and the SERVER swaps in the expanded prompt for the
+  model — so that prompt (`LEARN_SLASH_PROMPT` in `app.ts`) is **agent-facing English** (the avatar still
+  REPLIES in the user's language). Such a command carries NO client-side `prompt()` copy; the
+  `expandChatSlashCommand`↔`app.js` drift test excludes it. The chat handler stores `displayMessage` (raw)
+  but feeds `agentMessage` (expanded) to `runAgentStream`.
   A string used on BOTH channels is split (hex-ssh block ~claudeAgent.ts:795 = Korean `onBlocked`
   reason + English `hookDeny`). Response language is anchored in `buildPrompt`'s 2nd line ("respond
   in the user's language; default Korean"). **`units.test.ts` asserts the English agent-facing

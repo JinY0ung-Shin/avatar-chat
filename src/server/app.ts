@@ -115,11 +115,15 @@ interface ChatSlashExpansion {
   ownerOnly?: boolean;
 }
 
+// Agent-facing (the user only ever sees the literal "/learn" in their bubble;
+// this expanded instruction goes to the model), so it is written in English.
+// The avatar still REPLIES in the user's language per buildPrompt.
 const LEARN_SLASH_PROMPT = [
-  "이번 대화 세션을 검토해서 앞으로 재사용할 가치가 있는 지식만 선별해 내 지식 저장소를 업데이트해줘.",
+  "Review this conversation session and update my knowledge repository with only the knowledge that is worth reusing later.",
   "",
-  "중요한 사실, 결정사항, 반복 가능한 절차, 프로젝트 규칙, 사용자가 선호한다고 밝힌 방식이 있으면 적절한 파일이나 스킬에 반영하고 커밋해줘.",
-  "이미 저장돼 있거나 장기적으로 유용하지 않은 잡담은 저장하지 말고, 저장한 내용과 저장하지 않은 이유를 간단히 알려줘.",
+  "If there are important facts, decisions, repeatable procedures, project rules, or ways the user said they prefer to work, capture them in the appropriate file or skill and commit them.",
+  "Also record clearly and explicitly what you (this avatar) CAN and CANNOT do right now — your current capabilities, the tools/repositories/skills you have connected, and any known limitations or things you were unable to do this session — so future sessions act on an accurate self-picture instead of guessing.",
+  "Do not save small talk, anything already stored, or anything not useful long-term. Then briefly tell me what you saved and what you deliberately skipped and why.",
 ].join("\n");
 
 export function expandChatSlashCommand(message: string): ChatSlashExpansion {
@@ -1486,14 +1490,19 @@ export function createApp(services = createServices()) {
       apiError(res, 400, slashExpansion.error);
       return;
     }
-    const message = slashExpansion.message;
+    // Show/store the literal command the user typed (e.g. "/learn"); feed the
+    // EXPANDED prompt to the agent. So the bubble + persisted turn stay "/learn"
+    // while the model receives the full instruction. For a normal (non-slash)
+    // message the two are identical.
+    const displayMessage = rawMessage;
+    const agentMessage = slashExpansion.message;
     const avatarId = safeString(req.body?.avatarId);
     // Greeting: the owner opened a fresh chat with their own avatar and typed
     // nothing — the avatar speaks first (and reports pending info requests).
     const greeting = req.body?.greeting === true && req.user!.id === avatarId;
 
     // Validate BEFORE switching to SSE so failures stay plain JSON.
-    if (!message && !greeting) {
+    if (!displayMessage && !greeting) {
       apiError(res, 400, "메시지를 입력해 주세요.");
       return;
     }
@@ -1506,12 +1515,13 @@ export function createApp(services = createServices()) {
       apiError(res, 403, "이 아바타와 대화할 수 없습니다.");
       return;
     }
-    // ownerOnly only bites on a RAW `/command` (stale client / direct API caller);
-    // the current client sends the already-expanded prompt, which no longer matches
-    // here. This is a backstop, not the real guard — the owner-only effects (knowledge
-    // repo writes, routine creation) run through `mcp__repo__*` / routine APIs that
-    // owner-gate in their own handlers, so an expanded prompt from a non-owner can't
-    // reach them.
+    // ownerOnly bites on a RAW `/command`: server-expanded commands (e.g. /learn)
+    // arrive verbatim and DO match here, and so does a stale client / direct API
+    // caller. Client-expanded commands arrive already-expanded and slip past — but
+    // that's fine: this is a convenience guard, not the real boundary. The owner-only
+    // EFFECTS (knowledge-repo writes, routine creation) run through `mcp__repo__*` /
+    // routine APIs that owner-gate in their own handlers, so an expanded prompt from
+    // a non-owner can't reach them.
     if (slashExpansion.ownerOnly && req.user!.id !== avatar.id) {
       apiError(res, 403, "이 명령은 내 아바타와의 대화에서만 사용할 수 있습니다.");
       return;
@@ -1580,9 +1590,9 @@ export function createApp(services = createServices()) {
       conversationHistory.pop();
     }
     if (!greeting) {
-      store.touchConversation(req.user!.id, conversationId, avatar.id, message);
+      store.touchConversation(req.user!.id, conversationId, avatar.id, displayMessage);
       if (!regenerate) {
-        store.addMessage(conversationId, { role: "user", content: message });
+        store.addMessage(conversationId, { role: "user", content: displayMessage });
       }
     }
     // The SDK session id this run reports (init event); persisted on success so
@@ -1627,7 +1637,7 @@ export function createApp(services = createServices()) {
 
       const response = await runAgentStream(
         {
-          message,
+          message: agentMessage,
           avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
           cwd: workspaceDir,
           resumeSessionId,
