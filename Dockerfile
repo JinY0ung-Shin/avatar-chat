@@ -40,7 +40,7 @@ RUN sh /usr/local/bin/apt_mirror_sources.sh \
     procps \
     jq \
   && (curl -LsSf https://astral.sh/uv/install.sh | sh \
-      && ln -s /root/.local/bin/uv /usr/local/bin/uv \
+      && cp /root/.local/bin/uv /usr/local/bin/uv \
       || echo "uv install skipped (no internet access)") \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/* \
@@ -95,11 +95,13 @@ RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then \
 # `hex-ssh-mcp` (the actual bin key in package.json is resolved at build time, so
 # claudeAgent can spawn a stable command). Kept in its own layer so an upstream
 # version bump only rebuilds this step. Pinned for reproducibility.
-ARG HEX_SSH_MCP_VERSION=latest
+ARG HEX_SSH_MCP_VERSION=1.9.2
 RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then \
       printf 'registry=%s\nstrict-ssl=false\n' "$NPM_CONFIG_REGISTRY" > /root/.npmrc; \
+      NODE_TLS_REJECT_UNAUTHORIZED=0 npm install -g "@levnikolaevich/hex-ssh-mcp@${HEX_SSH_MCP_VERSION}"; \
+    else \
+      npm install -g "@levnikolaevich/hex-ssh-mcp@${HEX_SSH_MCP_VERSION}"; \
     fi \
-  && NODE_TLS_REJECT_UNAUTHORIZED=0 npm install -g "@levnikolaevich/hex-ssh-mcp@${HEX_SSH_MCP_VERSION}" \
   && rm -f /root/.npmrc \
   && PKG_DIR="$(npm root -g)/@levnikolaevich/hex-ssh-mcp" \
   && BIN_REL="$(node -e "const b=require('$PKG_DIR/package.json').bin; process.stdout.write(typeof b==='string'?b:Object.values(b)[0])")" \
@@ -115,9 +117,28 @@ RUN if [ -n "$NPM_CONFIG_REGISTRY" ]; then \
 COPY . .
 RUN npm run build
 
+# uv was installed into /root during the base layer, then COPIED (not symlinked)
+# to /usr/local/bin/uv so the unprivileged `node` user can execute it — a symlink
+# into /root would be unreadable because /root is mode 700.
+
 ENV NODE_ENV=production
 ENV PORT=48787
 ENV APP_DATA_DIR=/app/data
 EXPOSE 48787
 
-CMD ["npm", "start"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD curl -f --noproxy '*' http://localhost:48787/api/bootstrap || exit 1
+
+# Drop root privileges: the node:22 base image ships a `node` user (uid 1000).
+# /app and the data dir are owned by root at this point; chown them so the
+# `node` user can write the SQLite DB, avatar images, agent-session transcripts,
+# and any cloned repos under APP_DATA_DIR.
+RUN chown -R node:node /app
+# APP_DATA_DIR defaults to /app/data (set above) and is typically a named volume
+# mounted at runtime. The directory is created here so the volume mount point
+# has the right owner even before a volume is attached.
+RUN mkdir -p /app/data && chown node:node /app/data
+
+USER node
+
+CMD ["node", "dist/server/index.js"]

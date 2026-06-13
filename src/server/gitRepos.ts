@@ -9,8 +9,11 @@ import {
   marketplaceCloneUrl,
   pathExists,
   sanitizeName,
+  scrubGitError,
 } from "./marketplace.js";
 import { tokenForGitUrl } from "./gitCredentials.js";
+import { withRepoLock } from "./gitMutex.js";
+import logger from "./logger.js";
 import {
   deleteFile,
   listTree,
@@ -46,9 +49,22 @@ function git(repoRoot: string, args: string[], timeout = 120_000) {
   return execFileAsync("git", ["-C", repoRoot, ...args], { timeout });
 }
 
+// `scheme::` remote-helper syntax (e.g. `ext::sh -c …`, `fd::`) makes git run an
+// arbitrary transport helper — a command-execution vector. The pattern is a
+// run of scheme chars followed by `::`; no legitimate branch, path, repo
+// shorthand, or https/ssh URL we accept contains `::`, so rejecting it is safe
+// across every value kind assertSafeGitValue guards (sec-03).
+const REMOTE_HELPER_RE = /^[a-z0-9+.-]*::/i;
+
 function assertSafeGitValue(value: string | null, what: string): void {
-  if (value?.startsWith("-")) {
+  if (value == null) {
+    return;
+  }
+  if (value.startsWith("-")) {
     throw new Error(`Invalid ${what}: must not start with "-"`);
+  }
+  if (REMOTE_HELPER_RE.test(value)) {
+    throw new Error(`Invalid ${what}: remote-helper syntax ("<scheme>::") is not allowed`);
   }
 }
 
@@ -151,16 +167,49 @@ async function pullFastForward(ctx: GitRepoContext, repoRoot: string, url: strin
 }
 
 /**
+ * True when the clone has commits not present on ANY upstream — i.e. local work
+ * that a `rm -rf` would silently destroy. Uses the configured-branch upstream
+ * when set, else the tracking upstream of HEAD; returns false when there's no
+ * upstream to compare against (can't prove unpushed work, so don't block).
+ */
+async function hasUnpushedCommits(repoRoot: string, branch: string | null): Promise<boolean> {
+  const upstream = branch ? `origin/${branch}` : "@{upstream}";
+  try {
+    const { stdout } = await git(repoRoot, ["rev-list", `${upstream}..HEAD`, "--count"]);
+    return Number.parseInt(stdout.trim(), 10) > 0;
+  } catch {
+    // No such upstream / detached with no tracking ref: can't determine, and a
+    // freshly-cloned mismatch typically has none. Treat as "no unpushed work".
+    return false;
+  }
+}
+
+/**
  * Ensure the user-registered repo has a local full clone under dataDir. When
  * `sync` is true, fetch and fast-forward; otherwise preserve local work.
+ * Serialized per clone path so concurrent turns/tools can't interleave
+ * clone/fetch/checkout on one working tree (git-02).
  */
 export async function ensureGitRepoClone(
   ctx: GitRepoContext,
   options: { sync?: boolean } = {},
 ): Promise<string> {
+  const repoRoot = gitRepoClonePath(ctx.userId, ctx.name, ctx.config);
+  return withRepoLock(repoRoot, () => ensureGitRepoCloneLocked(ctx, repoRoot, options));
+}
+
+/**
+ * Clone/fetch body of ensureGitRepoClone WITHOUT the per-path lock. Callers that
+ * already hold the lock for `repoRoot` (commit/push) call this directly so they
+ * never re-enter `withRepoLock` for the same key (deadlock-free, see gitMutex).
+ */
+async function ensureGitRepoCloneLocked(
+  ctx: GitRepoContext,
+  repoRoot: string,
+  options: { sync?: boolean } = {},
+): Promise<string> {
   assertSafeGitValue(ctx.repo, "repo");
   assertSafeGitValue(ctx.branch, "branch");
-  const repoRoot = gitRepoClonePath(ctx.userId, ctx.name, ctx.config);
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
   assertSafeGitValue(url, "repo");
   const auth = gitAuthArgs(url, ctx.token ?? undefined);
@@ -168,6 +217,20 @@ export async function ensureGitRepoClone(
   if (await pathExists(path.join(repoRoot, ".git"))) {
     const existing = await remoteUrl(repoRoot);
     if (existing && existing !== url) {
+      // The remote URL changed. Blowing the clone away silently destroys any
+      // committed-but-unpushed work, so refuse when such work exists; only
+      // auto-remove a clone with nothing unpushed (git-07).
+      if (await hasUnpushedCommits(repoRoot, ctx.branch)) {
+        throw new Error(
+          scrubGitError(
+            `로컬 클론의 원격 주소가 등록된 저장소와 다른데(기존: ${existing}), 푸시되지 않은 커밋이 있어 자동으로 교체하지 않았습니다. 변경사항을 푸시하거나 백업한 뒤 다시 시도해 주세요.`,
+          ),
+        );
+      }
+      logger.warn(
+        { userId: ctx.userId, name: ctx.name, existing, url },
+        "git repo clone remote URL changed; removing clone (no unpushed commits)",
+      );
       await fs.rm(repoRoot, { recursive: true, force: true });
     }
   }
@@ -179,7 +242,13 @@ export async function ensureGitRepoClone(
       args.push("--branch", ctx.branch);
     }
     args.push("--", url, repoRoot);
-    await execFileAsync("git", args, { timeout: 180_000 });
+    try {
+      await execFileAsync("git", args, { timeout: 180_000 });
+    } catch (error) {
+      // Remove a half-initialized clone so the next run re-clones cleanly (git-06).
+      await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
     return repoRoot;
   }
 
@@ -298,26 +367,36 @@ export async function commitGitRepo(
   identity: { name: string; email: string },
   paths?: string[],
 ): Promise<boolean> {
-  const repoRoot = await ensureGitRepoClone(ctx);
-  const pathArgs = normalizeRepoPaths(repoRoot, paths);
-  const name = identity.name.startsWith("-") ? "noah-almighty" : identity.name;
-  const email = identity.email.startsWith("-") ? "avatar@noah-almighty.local" : identity.email;
-  await git(repoRoot, ["config", "user.name", name]);
-  await git(repoRoot, ["config", "user.email", email]);
-  await git(repoRoot, pathArgs.length ? ["add", "-A", "--", ...pathArgs] : ["add", "-A"]);
-  if (!(await hasStagedChanges(repoRoot))) {
-    return false;
-  }
-  await git(repoRoot, ["commit", "-m", message.trim() || "Update repository"]);
-  return true;
+  const repoRoot = gitRepoClonePath(ctx.userId, ctx.name, ctx.config);
+  // One lock for the whole ensure+add+commit so the staged state can't be
+  // disturbed mid-commit by a concurrent op on the same clone (git-02). Use the
+  // lock-free clone internal to avoid re-entering the same key.
+  return withRepoLock(repoRoot, async () => {
+    await ensureGitRepoCloneLocked(ctx, repoRoot);
+    const pathArgs = normalizeRepoPaths(repoRoot, paths);
+    const name = identity.name.startsWith("-") ? "noah-almighty" : identity.name;
+    const email = identity.email.startsWith("-") ? "avatar@noah-almighty.local" : identity.email;
+    await git(repoRoot, ["config", "user.name", name]);
+    await git(repoRoot, ["config", "user.email", email]);
+    await git(repoRoot, pathArgs.length ? ["add", "-A", "--", ...pathArgs] : ["add", "-A"]);
+    if (!(await hasStagedChanges(repoRoot))) {
+      return false;
+    }
+    await git(repoRoot, ["commit", "-m", message.trim() || "Update repository"]);
+    return true;
+  });
 }
 
 export async function pushGitRepo(ctx: GitRepoContext): Promise<string> {
-  const repoRoot = await ensureGitRepoClone(ctx);
-  const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
-  const auth = gitAuthArgs(url, ctx.token ?? undefined);
-  const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
-  const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;
-  await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
-  return branch;
+  const repoRoot = gitRepoClonePath(ctx.userId, ctx.name, ctx.config);
+  // Serialize the ensure+push against concurrent ops on the same clone (git-02).
+  return withRepoLock(repoRoot, async () => {
+    await ensureGitRepoCloneLocked(ctx, repoRoot);
+    const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
+    const auth = gitAuthArgs(url, ctx.token ?? undefined);
+    const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
+    const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;
+    await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
+    return branch;
+  });
 }

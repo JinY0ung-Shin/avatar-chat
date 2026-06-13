@@ -36,6 +36,10 @@ services:
     volumes:
       - noah-almighty-data:/app/data
     restart: unless-stopped
+    # PID-1 reaping backstop: tini reaps zombie child processes so the app's
+    # graceful-shutdown handlers receive signals reliably even when the node
+    # process spawns child processes (SDK subprocess, git, gh, etc.).
+    init: true
 
 volumes:
   noah-almighty-data:

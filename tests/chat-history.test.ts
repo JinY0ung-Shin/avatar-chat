@@ -85,7 +85,7 @@ describe("chat history fallback", () => {
 
     services.store.touchConversation(ownerId, conversationId, ownerId, "첫 요청");
     services.store.addMessage(conversationId, { role: "user", content: "첫 요청" });
-    services.store.setAgentSessionId(conversationId, "sess-existing");
+    services.store.setAgentSessionId(ownerId, conversationId, "sess-existing");
 
     await owner
       .post("/api/chat/stream")

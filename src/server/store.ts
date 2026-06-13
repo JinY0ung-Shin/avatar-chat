@@ -1321,9 +1321,15 @@ export class Store {
 
   /** Enabled jobs whose next run is at or before `nowIso`. Used by the scheduler. */
   listDueRoutineJobs(nowIso: string): RoutineJob[] {
+    // Skip jobs whose owner is suspended: a suspended account's avatar must not
+    // keep running headless, elevated routines (with its stored secrets/tokens).
     const rows = this.db
       .prepare(
-        "SELECT * FROM routine_jobs WHERE enabled = 1 AND next_run_at IS NOT NULL AND next_run_at <= ? ORDER BY next_run_at ASC",
+        `SELECT rj.* FROM routine_jobs rj
+         JOIN users u ON u.id = rj.avatar_user_id
+         WHERE rj.enabled = 1 AND rj.next_run_at IS NOT NULL AND rj.next_run_at <= ?
+           AND u.suspended = 0
+         ORDER BY rj.next_run_at ASC`,
       )
       .all(nowIso) as RoutineJobRow[];
     return rows.map((r) => this.toRoutineJob(r));
@@ -1449,12 +1455,13 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT * FROM users
-         WHERE published = 1 OR id = ?
+         WHERE (published = 1 OR id = ?
             OR id IN (
               SELECT m2.user_id FROM group_members m1
               JOIN group_members m2 ON m1.group_id = m2.group_id
               WHERE m1.user_id = ?
-            )
+            ))
+            AND suspended = 0
          ORDER BY display_name COLLATE NOCASE ASC`,
       )
       .all(viewerId, viewerId) as UserRow[];
@@ -1499,9 +1506,24 @@ export class Store {
     opts: { excludeId?: string; limit?: number } = {},
   ): AvatarSummary[] {
     const limit = Math.min(Math.max(opts.limit ?? DEFAULT_SEARCH_LIMIT, 1), 50);
+    // Visibility mirrors listPublishedAvatars: published avatars, the viewer's
+    // own, and group teammates (incl. their UNPUBLISHED avatars — co-members
+    // auto-trust each other). Suspended users are never discoverable. Keeping
+    // this in sync with listPublishedAvatars is what the avatar-directory MCP
+    // tool relies on to surface the same teammates the viewer can browse.
     const rows = this.db
-      .prepare("SELECT * FROM users WHERE published = 1 OR id = ?")
-      .all(viewerId) as UserRow[];
+      .prepare(
+        `SELECT * FROM users
+         WHERE (published = 1 OR id = ?
+            OR id IN (
+              SELECT m2.user_id FROM group_members m1
+              JOIN group_members m2 ON m1.group_id = m2.group_id
+              WHERE m1.user_id = ?
+            ))
+            AND suspended = 0`,
+      )
+      .all(viewerId, viewerId) as UserRow[];
+    const teammates = this.groupTeammateIds(viewerId);
     const tokens = query
       .toLowerCase()
       .split(/[\s,，、]+/)
@@ -1530,12 +1552,19 @@ export class Store {
       (a, b) =>
         b.score - a.score || a.row.display_name.localeCompare(b.row.display_name),
     );
-    return matches.slice(0, limit).map((s) => this.toAvatarSummary(s.row));
+    return matches
+      .slice(0, limit)
+      .map((s) => ({ ...this.toAvatarSummary(s.row), sharesGroup: teammates.has(s.row.id) }));
   }
 
   getAvatar(viewerId: string, id: string): AvatarDetail | null {
     const row = this.userRowById(id);
     if (!row) {
+      return null;
+    }
+    // A suspended owner's avatar is not discoverable/viewable by others (the
+    // owner can't log in to view their own either, so the self-exception is moot).
+    if (row.suspended === 1 && id !== viewerId) {
       return null;
     }
     const isOwn = id === viewerId;
@@ -1571,6 +1600,12 @@ export class Store {
   ): { id: string; displayName: string; alias: string; persona: string } | null {
     const row = this.userRowById(id);
     if (!row) {
+      return null;
+    }
+    // A suspended owner's avatar is unreachable for chat (and the scheduler skips
+    // suspended owners' routines via listDueRoutineJobs). Self is moot — a
+    // suspended user has no session.
+    if (row.suspended === 1 && id !== viewerId) {
       return null;
     }
     if (row.published !== 1 && id !== viewerId && !this.isTrustedFor(viewerId, id)) {
@@ -1773,6 +1808,14 @@ export class Store {
     return row?.avatar_user_id ?? null;
   }
 
+  /** The owner of a conversation regardless of caller (null if it doesn't exist). */
+  conversationOwner(conversationId: string): string | null {
+    const row = this.db
+      .prepare("SELECT owner_user_id FROM conversations WHERE id = ?")
+      .get(conversationId) as { owner_user_id: string } | undefined;
+    return row?.owner_user_id ?? null;
+  }
+
   touchConversation(
     ownerId: string,
     conversationId: string,
@@ -1780,10 +1823,18 @@ export class Store {
     firstUserText: string,
   ): void {
     const timestamp = now();
+    // Look up by id ALONE so a conversation id that already exists under a
+    // DIFFERENT owner is detected here, rather than falling through to the INSERT
+    // below and hitting the PRIMARY KEY constraint (which would throw and, on
+    // Express 4, escape the async handler as an unhandled rejection). The chat
+    // route also rejects a foreign supplied id up front with a 409.
     const existing = this.db
-      .prepare("SELECT id FROM conversations WHERE id = ? AND owner_user_id = ?")
-      .get(conversationId, ownerId);
+      .prepare("SELECT owner_user_id FROM conversations WHERE id = ?")
+      .get(conversationId) as { owner_user_id: string } | undefined;
     if (existing) {
+      if (existing.owner_user_id !== ownerId) {
+        throw new Error("CONVERSATION_OWNER_MISMATCH");
+      }
       this.db
         .prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
         .run(timestamp, conversationId);
@@ -1807,11 +1858,31 @@ export class Store {
     return row?.agent_session_id ?? null;
   }
 
-  /** Record the SDK session id produced by this conversation's latest turn. */
-  setAgentSessionId(conversationId: string, sessionId: string): void {
+  /**
+   * Record (or clear, when sessionId is null) the SDK session id produced by this
+   * conversation's latest turn. Owner-scoped so a guessed conversation id can't
+   * point another owner's conversation at a different session.
+   */
+  setAgentSessionId(ownerId: string, conversationId: string, sessionId: string | null): void {
     this.db
-      .prepare("UPDATE conversations SET agent_session_id = ? WHERE id = ?")
-      .run(sessionId, conversationId);
+      .prepare("UPDATE conversations SET agent_session_id = ? WHERE id = ? AND owner_user_id = ?")
+      .run(sessionId, conversationId, ownerId);
+  }
+
+  /**
+   * Parse a persisted response_json column, tolerating corruption: a single bad
+   * row must not throw and brick listMessages for an entire conversation.
+   */
+  private parseResponseJson(json: string | null): AgentResponse | null {
+    if (!json) {
+      return null;
+    }
+    try {
+      return JSON.parse(json) as AgentResponse;
+    } catch {
+      logger.warn("skipping corrupt response_json on a stored message");
+      return null;
+    }
   }
 
   listMessages(ownerId: string, conversationId: string): StoredMessage[] {
@@ -1835,7 +1906,7 @@ export class Store {
       conversationId: r.conversation_id,
       role: r.role as StoredMessage["role"],
       content: r.content,
-      response: r.response_json ? (JSON.parse(r.response_json) as AgentResponse) : null,
+      response: this.parseResponseJson(r.response_json),
       createdAt: r.created_at,
     }));
   }
@@ -2115,6 +2186,11 @@ export class Store {
     this.deleteAppSecret(MODEL_OVERRIDE_KEY);
   }
 
+  /** Close the underlying SQLite handle. Called on graceful shutdown. */
+  close(): void {
+    this.db.close();
+  }
+
   deleteUser(id: string): boolean {
     if (!this.userRowById(id)) {
       return false;
@@ -2147,6 +2223,12 @@ export class Store {
         .run(id, id);
       // Group memberships (the group itself survives; created_by may dangle).
       this.db.prepare("DELETE FROM group_members WHERE user_id = ?").run(id);
+      // Registered work repos + notifications in either direction — otherwise
+      // these orphan rows outlive the "permanently deleted" account.
+      this.db.prepare("DELETE FROM git_repositories WHERE user_id = ?").run(id);
+      this.db
+        .prepare("DELETE FROM avatar_notifications WHERE owner_user_id = ? OR avatar_user_id = ?")
+        .run(id, id);
       this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
     });
     tx();

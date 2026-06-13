@@ -101,12 +101,26 @@ export function withoutGitCredentialEnv(
   return out;
 }
 
+// App-internal secrets the agent subprocess must NEVER be able to read from its
+// environment. SESSION_SECRET is the AES-256-GCM master key for EVERY user's
+// at-rest secrets (git tokens, the secret vault, the Claude subscription token):
+// a Bash-capable elevated viewer that read it out of the subprocess env (or
+// /proc) could decrypt all tenants' secrets straight out of the shared DB. The
+// subprocess never opens the app DB, so stripping it costs nothing. (Git
+// credentials are stripped separately above — they flow only through the
+// app-managed git MCP bridge.)
+const SENSITIVE_APP_ENV_NAMES = ["SESSION_SECRET"] as const;
+
 export function agentSubprocessEnv(
   baseEnv: Record<string, string | undefined>,
   agentSessionsDir: string,
 ): Record<string, string | undefined> {
+  const env = withoutGitCredentialEnv(baseEnv);
+  for (const name of SENSITIVE_APP_ENV_NAMES) {
+    delete env[name];
+  }
   return {
-    ...withoutGitCredentialEnv(baseEnv),
+    ...env,
     CLAUDE_CONFIG_DIR: agentSessionsDir,
   };
 }
@@ -120,6 +134,56 @@ export function sshMcpSecretEnv(ownerSecrets: Record<string, string>): Record<st
     }
   }
   return out;
+}
+
+export interface AgentToolAccess {
+  viewerIsOwner: boolean;
+  headless: boolean;
+  allowHeadlessTools: boolean;
+  /** Owner-level tool access: owner AND (non-headless OR a headless run that opted in). */
+  ownerToolAccess: boolean;
+  /** Elevated (owner OR trusted) tool access, with the same headless gating. */
+  elevatedToolAccess: boolean;
+  /** Owner OR trusted, IGNORING headless — gates the auto-approve path + greeting. */
+  elevated: boolean;
+  autoApprove: boolean;
+  hexSshViewerClass: HexSshViewerClass;
+}
+
+/**
+ * Derive a run's tool-permission level from the request. Pure and exported so it
+ * can be unit-tested directly: because the PreToolUse hook auto-allows every
+ * `mcp__*` tool, these booleans are the REAL gate between a run and the owner-only
+ * tools. A regression that, e.g., passed raw `viewerIsOwner` through would
+ * silently grant headless intro/hashtag-generation runs full owner repo-write
+ * access — so the four viewer classes are pinned in tests.
+ */
+export function deriveAgentToolAccess(request: AgentRequest): AgentToolAccess {
+  const viewerIsOwner = Boolean(request.viewerIsOwner);
+  const headless = Boolean(request.headless);
+  const allowHeadlessTools = Boolean(request.allowHeadlessTools);
+  // A headless run is tool-restricted UNLESS it explicitly opted in (scheduled
+  // owner routines do). `!headlessRestricted` === `(!headless || allowHeadlessTools)`.
+  const headlessRestricted = headless && !allowHeadlessTools;
+  const ownerToolAccess = viewerIsOwner && !headlessRestricted;
+  const elevatedToolAccess = (viewerIsOwner || Boolean(request.elevated)) && !headlessRestricted;
+  const elevated = viewerIsOwner || Boolean(request.elevated);
+  const autoApprove = Boolean(request.autoApprove);
+  const hexSshViewerClass = viewerClassForAgentRequest({
+    viewerIsOwner: ownerToolAccess,
+    elevated: elevatedToolAccess,
+    headless: headlessRestricted,
+  });
+  return {
+    viewerIsOwner,
+    headless,
+    allowHeadlessTools,
+    ownerToolAccess,
+    elevatedToolAccess,
+    elevated,
+    autoApprove,
+    hexSshViewerClass,
+  };
 }
 
 export function rewriteBashCommandWithRtk(command: string, rtkCommand = "rtk"): string | null {
@@ -1013,20 +1077,20 @@ export async function runClaudeAgent(
   );
 
   const streaming = Boolean(events);
-  const viewerIsOwner = Boolean(request.viewerIsOwner);
-  const headless = Boolean(request.headless);
-  const allowHeadlessTools = Boolean(request.allowHeadlessTools);
-  const ownerToolAccess = viewerIsOwner && (!headless || allowHeadlessTools);
-  const elevatedToolAccess = (viewerIsOwner || Boolean(request.elevated)) && (!headless || allowHeadlessTools);
-  const autoApprove = Boolean(request.autoApprove);
-  // Tool-permission level: the owner OR a designated trusted user. Distinct from
-  // viewerIsOwner, which still gates the owner-only knowledge inbox + greeting.
-  const elevated = viewerIsOwner || Boolean(request.elevated);
-  const hexSshViewerClass = viewerClassForAgentRequest({
-    viewerIsOwner: ownerToolAccess,
-    elevated: elevatedToolAccess,
-    headless: headless && !allowHeadlessTools,
-  });
+  // Tool-access derivation lives in deriveAgentToolAccess (a pure, unit-tested
+  // helper): because the PreToolUse hook auto-allows every mcp__* tool, these
+  // booleans are the real gate between a headless/colleague run and owner-only
+  // tools, so the logic must be testable in isolation.
+  const {
+    viewerIsOwner,
+    headless,
+    allowHeadlessTools,
+    ownerToolAccess,
+    elevatedToolAccess,
+    elevated,
+    autoApprove,
+    hexSshViewerClass,
+  } = deriveAgentToolAccess(request);
   const hexSshPolicy = store.getHexSshToolPolicy();
   const hexSshAllowedTools = allowedHexSshToolsForViewer(hexSshPolicy, hexSshViewerClass);
   // Effective model: an env-pinned ANTHROPIC_MODEL wins (mirrors the API-key vs.

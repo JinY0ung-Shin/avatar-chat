@@ -5,3 +5,7 @@ data
 .git
 .omx
 npm-debug.log*
+# Agent worktrees: full embedded repo checkouts with their own node_modules.
+# Exclude to keep the Docker build context small and avoid accidentally
+# baking developer/agent state into the image.
+.claude/

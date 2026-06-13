@@ -48,8 +48,6 @@ export interface AppConfig {
   hexSshCommand: string;
   /** Command used to rewrite Bash tool calls through RTK when available. */
   rtkCommand: string;
-  /** Minimum log level (trace|debug|info|warn|error|fatal|silent). Defaults to "info", "silent" in test. */
-  logLevel: string;
 }
 
 /**

@@ -60,6 +60,7 @@ import {
   agentSubprocessEnv,
   buildPreToolUseHook,
   buildPrompt,
+  deriveAgentToolAccess,
   interpretResult,
   resultErrorMessage,
   rewriteBashCommandWithRtk,
@@ -451,11 +452,12 @@ describe("marketplace helpers", () => {
     expect(tokenForGitUrl("git@github.com:o/r.git", config, tokens)).toBeUndefined();
   });
 
-  it("strips git credentials from the agent subprocess env", () => {
+  it("strips git credentials and SESSION_SECRET from the agent subprocess env", () => {
     const env = agentSubprocessEnv(
       {
         PATH: "/usr/bin",
         ANTHROPIC_API_KEY: "sk-test",
+        SESSION_SECRET: "aes-master-key",
         GIT_TOKEN: "internal-secret",
         GITHUB_TOKEN: "external-secret",
         GH_TOKEN: "gh-secret",
@@ -468,6 +470,9 @@ describe("marketplace helpers", () => {
     expect(env.PATH).toBe("/usr/bin");
     expect(env.ANTHROPIC_API_KEY).toBe("sk-test");
     expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/agent-sessions");
+    // SESSION_SECRET is the AES master key for every at-rest secret — it must
+    // never reach the subprocess env where the agent's Bash/`env` could read it.
+    expect(env.SESSION_SECRET).toBeUndefined();
     expect(env.GIT_TOKEN).toBeUndefined();
     expect(env.GITHUB_TOKEN).toBeUndefined();
     expect(env.GH_TOKEN).toBeUndefined();
@@ -558,6 +563,59 @@ describe("marketplace helpers", () => {
 // ---------------------------------------------------------------------------
 // plugins — cloning enabled avatar plugins, default plugin loading
 // ---------------------------------------------------------------------------
+
+describe("deriveAgentToolAccess", () => {
+  // The PreToolUse hook auto-allows every mcp__* tool, so these booleans are the
+  // real gate between a run and owner-only tools. Pin all four viewer classes.
+  const base = {
+    message: "hi",
+    avatar: { id: "u1", displayName: "U", alias: "", persona: "" },
+  };
+
+  it("owner, interactive chat → owner + elevated tools, auto-approve, owner ssh class", () => {
+    const a = deriveAgentToolAccess({ ...base, viewerIsOwner: true, autoApprove: true });
+    expect(a.ownerToolAccess).toBe(true);
+    expect(a.elevatedToolAccess).toBe(true);
+    expect(a.elevated).toBe(true);
+    expect(a.autoApprove).toBe(true);
+    expect(a.hexSshViewerClass).toBe("owner");
+  });
+
+  it("owner, headless WITHOUT opt-in → no tool access (read-only)", () => {
+    const a = deriveAgentToolAccess({ ...base, viewerIsOwner: true, headless: true });
+    expect(a.ownerToolAccess).toBe(false);
+    expect(a.elevatedToolAccess).toBe(false);
+    expect(a.hexSshViewerClass).toBe("colleague");
+  });
+
+  it("owner, headless WITH allowHeadlessTools → full owner tools (scheduled routine)", () => {
+    const a = deriveAgentToolAccess({
+      ...base,
+      viewerIsOwner: true,
+      headless: true,
+      allowHeadlessTools: true,
+    });
+    expect(a.ownerToolAccess).toBe(true);
+    expect(a.elevatedToolAccess).toBe(true);
+    expect(a.hexSshViewerClass).toBe("owner");
+  });
+
+  it("trusted (not owner), interactive → elevated tools but NOT owner tools", () => {
+    const a = deriveAgentToolAccess({ ...base, viewerIsOwner: false, elevated: true });
+    expect(a.ownerToolAccess).toBe(false);
+    expect(a.elevatedToolAccess).toBe(true);
+    expect(a.elevated).toBe(true);
+    expect(a.hexSshViewerClass).toBe("trusted");
+  });
+
+  it("plain colleague → neither owner nor elevated tools", () => {
+    const a = deriveAgentToolAccess({ ...base, viewerIsOwner: false });
+    expect(a.ownerToolAccess).toBe(false);
+    expect(a.elevatedToolAccess).toBe(false);
+    expect(a.elevated).toBe(false);
+    expect(a.hexSshViewerClass).toBe("colleague");
+  });
+});
 
 describe("loadAvatarPluginRoots", () => {
   const plugin = (repo: string): Plugin => ({
@@ -1140,18 +1198,21 @@ describe("store agent session resume", () => {
   it("round-trips the session id and overwrites on the next turn", () => {
     const { store, ownerId } = makeStore();
     store.touchConversation(ownerId, "conv-2", ownerId, "hi");
-    store.setAgentSessionId("conv-2", "sess-aaa");
+    store.setAgentSessionId(ownerId, "conv-2", "sess-aaa");
     expect(store.getAgentSessionId(ownerId, "conv-2")).toBe("sess-aaa");
-    store.setAgentSessionId("conv-2", "sess-bbb");
+    store.setAgentSessionId(ownerId, "conv-2", "sess-bbb");
     expect(store.getAgentSessionId(ownerId, "conv-2")).toBe("sess-bbb");
   });
 
   it("does not leak a session id across owners", () => {
     const { store, ownerId } = makeStore();
     store.touchConversation(ownerId, "conv-3", ownerId, "hi");
-    store.setAgentSessionId("conv-3", "sess-ccc");
+    store.setAgentSessionId(ownerId, "conv-3", "sess-ccc");
     const other = store.createUser({ username: "other", displayName: "Other", password: "password123" });
     expect(store.getAgentSessionId(other.id, "conv-3")).toBeNull();
+    // A different owner can't overwrite it either — the UPDATE is owner-scoped.
+    store.setAgentSessionId(other.id, "conv-3", "sess-evil");
+    expect(store.getAgentSessionId(ownerId, "conv-3")).toBe("sess-ccc");
   });
 
   it("returns a conversation avatar only to its owner", () => {

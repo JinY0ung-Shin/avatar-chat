@@ -12,6 +12,10 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Vanilla JS, no framework. `public/app.js` builds DOM manually via an `el(tag, props, children)` helper.
 - Single global stylesheet `public/styles.css` (CSS variables for spacing `--s-*`, colors, radii).
 - Markdown rendered with `marked` + sanitized with `DOMPurify` (`renderMarkdown`).
+- **`app.ts` serves a strict same-origin CSP** (`script-src`/`connect-src` `'self'`, `img-src
+  'self' data:`). So remote `<img>` in rendered markdown is BLOCKED and the browser can't fetch
+  cross-origin — widen the relevant directive in `app.ts` if a feature needs it. There's no
+  inline `<script>`, so `script-src 'self'` is safe.
 - `npm run lint` (`tsc --noEmit`) covers only server TS; `public/*.js` is plain JS
   and unchecked — sanity-check frontend edits with `node --check public/app.js`.
 - Owner sees pending `request_info` gaps in-app via a "내 아바타" nav badge + a
@@ -151,11 +155,14 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   admin writes/commits/`create_repo`). `buildPrompt` injects group self-state (META-COGNITION).
   Discovery: `listPublishedAvatars` also returns unpublished group teammates flagged `sharesGroup`.
 - Secret-at-rest tiers: passwords → scrypt (`auth.ts`), session tokens → sha256,
-  **reversible** secrets (e.g. per-user git token) → AES-256-GCM in `crypto.ts`
-  (keyed from `SESSION_SECRET`). Never serialize secrets through `toUser`. The git
-  token is a `users` column; arbitrary named secrets go in the `user_secrets` vault
-  (see below). App-WIDE secrets (not user-scoped) go in the `app_config` KV table
-  (`get/set/deleteAppSecret`, same AES-256-GCM).
+  **reversible** secrets (e.g. per-user git tokens) → AES-256-GCM in `crypto.ts`
+  (keyed from `SESSION_SECRET`). Never serialize secrets through `toUser`. Git tokens
+  are stored as named entries in the `user_secrets` vault (`INTERNAL_GIT_TOKEN_SECRET_NAME`
+  = `"GIT_TOKEN"` for the configured `GITHUB_HOST`, `EXTERNAL_GIT_TOKEN_SECRET_NAME` =
+  `"GITHUB_TOKEN"` for github.com); the legacy `git_token_enc` `users` column is a
+  read fallback only (`getGitToken` tries the secret vault first). Arbitrary named
+  secrets go in the same `user_secrets` vault (see below). App-WIDE secrets (not
+  user-scoped) go in the `app_config` KV table (`get/set/deleteAppSecret`, same AES-256-GCM).
 - **Subscription auth is app-wide and admin-managed.** Auth precedence: `.env`
   `ANTHROPIC_API_KEY` > stored subscription token > none. When no API key is set,
   `claudeAgent.ts` injects the admin-pasted `claude setup-token` token (stored under
@@ -167,17 +174,26 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Git auth for clones uses `http.extraHeader` (see `gitAuthArgs`), never a
   token-in-URL — keeps the token out of `.git/config`. Scrub it from git error
   text before logging/returning (`scrubGitError`).
-- **The per-user git token NEVER reaches the agent's shell.** It's used only as a
-  per-invocation `http.extraHeader` on the app's OWN clone/push (`knowledgeRepo.ts`,
-  `syncPluginRepo`) and by the server-side `mcp__repo__create_repo` bridge, which
-  invokes `gh repo create` with the token in child-process env — all server-side.
-  It is NOT injected into the SDK subprocess env (`options.env`); `claudeAgent.ts` strips
-  `GIT_TOKEN`/`GITHUB_TOKEN`/`GH_TOKEN`-style names from `process.env` before launch and only
-  forwards SSH-specific secrets to the hex-ssh subprocess. The agent's `gh`/`git`/Bash therefore
-  have NO GitHub credential. So the avatar can't `gh repo create`; `create_repo` is the only bridge.
-  The prompt surfaces `gitTokenSet`
-  (not the value) so the greeting offers `create_repo` when a token is set, else asks the owner
-  to set one (`buildPrompt`, fed from `claudeAgent.ts` promptRequest).
+- **Two git tokens, vault-backed, host-routed.** Each user can store TWO git tokens as
+  named `user_secrets`: `GIT_TOKEN` (`INTERNAL_GIT_TOKEN_SECRET_NAME`) for the internal
+  `GITHUB_HOST`, and `GITHUB_TOKEN` (`EXTERNAL_GIT_TOKEN_SECRET_NAME`) for github.com.
+  `tokenForGitUrl` in `gitCredentials.ts` selects the right one by matching the clone URL's
+  host against `config.githubHost` (internal) or `DEFAULT_GITHUB_HOST` / github.com (external);
+  unknown hosts get no token. Both tokens are supplied as `http.extraHeader` per git call
+  (`gitAuthArgs`) — never written into `.git/config` and never in a URL. The legacy
+  `git_token_enc` column in `users` is only a fallback for migration (the new `setGitToken`
+  writes to the vault and NULLs the column; `getGitToken` reads the vault first).
+- **The per-user git tokens NEVER reach the agent's shell.** They are used only server-side:
+  as a per-invocation `http.extraHeader` on the app's OWN clone/push (`knowledgeRepo.ts`,
+  `syncPluginRepo`, `gitRepos.ts`) and by the server-side `mcp__repo__create_repo` bridge
+  (invokes `gh repo create` with the token in child-process env). They are NOT injected into
+  the SDK subprocess env (`options.env`); `claudeAgent.ts` strips `GIT_TOKEN`/`GITHUB_TOKEN`/
+  `GH_TOKEN`-style names from `process.env` before launch and only forwards SSH-specific
+  secrets to the hex-ssh subprocess. The agent's `gh`/`git`/Bash therefore have NO GitHub
+  credential. So the avatar can't `gh repo create`; `create_repo` is the only bridge.
+  The prompt surfaces `gitTokenSet` (not the value) so the greeting offers `create_repo`
+  when a token is set, else asks the owner to set one (`buildPrompt`, fed from
+  `claudeAgent.ts` promptRequest).
 - **The prompt tells the owner how to enable SSH when it's off.** `buildPrompt` adds an SSH
   enablement note on owner, non-headless turns whenever `SSH_PRIVATE_KEY` isn't in `secretNames`
   (hex-ssh registers only when that secret exists). Drops off once the key is stored.
@@ -204,6 +220,12 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
 - Verifying the local server: a corporate `HTTP_PROXY` intercepts `localhost`
   (returns "Access Denied"), and no browser engine is installed. Hit the dev
   server with `curl --noproxy '*' localhost:<port>/...` (can't screenshot the UI).
+- Verifying Docker changes: `docker build` and `docker run` DO work here. Smoke-test:
+  `docker run -d -e SESSION_SECRET=x <img>` then `docker exec <c> curl -fsS --noproxy '*'
+  localhost:48787/api/bootstrap` (the unauth health probe + HEALTHCHECK). `SESSION_SECRET`
+  is REQUIRED to boot (`NODE_ENV=production`), the image runs as non-root `node` (so `uv` /
+  global bins must be world-accessible, NOT symlinked into `/root`), and `docker stop` should
+  exit in <1s via the SIGTERM handler in `index.ts`.
 - **Testing git/repo tools offline:** repo-tool tests point the repo at a LOCAL bare remote
   (`git init --bare`) so clone/commit/push need no network — `gitAuthArgs` returns `[]` for
   non-`https://` URLs, so the token is ignored there. For `create_repo`, inject a fake

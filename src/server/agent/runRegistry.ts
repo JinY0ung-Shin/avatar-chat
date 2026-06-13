@@ -19,8 +19,18 @@ const regLogger = logger.child({ module: "runRegistry" });
 /** Returned to a parked caller when the run ends before an answer arrives. */
 export const CANCELLED = Symbol("cancelled");
 
+/**
+ * How long an interactive prompt waits before auto-cancelling. Without this an
+ * abandoned prompt (user closed the tab mid-permission) parks the run, its SDK
+ * subprocess, and the conversation lock forever. Generous — the user may simply
+ * be away from the tab.
+ */
+const PROMPT_TTL_MS = 30 * 60 * 1000;
+
 interface Pending {
   resolve: (value: unknown) => void;
+  /** Auto-cancel timer; cleared when the prompt is answered or the run ends. */
+  timeout?: NodeJS.Timeout;
 }
 
 interface RunEvent {
@@ -199,13 +209,38 @@ export function cancelRun(runId: string, userId: string): boolean {
   }
   run.cancelled = true;
   run.abortController?.abort();
-  for (const pending of run.pending.values()) {
+  for (const [requestId, pending] of run.pending) {
+    if (pending.timeout) {
+      clearTimeout(pending.timeout);
+    }
+    emitRunEvent(runId, "prompt_resolved", { requestId });
     pending.resolve(CANCELLED);
   }
   run.pending.clear();
   emitRunEvent(runId, "status", { label: "응답을 중지하는 중…" });
   regLogger.debug({ runId }, "run cancellation requested");
   return true;
+}
+
+/**
+ * Abort EVERY active run (graceful shutdown). Aborts each SDK call so the chat
+ * handler's cancel path persists its streamed partial, then resolves parked
+ * prompts so the runs can finish and the SSE responses end. No user scoping —
+ * shutdown is global.
+ */
+export function cancelAllRuns(): void {
+  for (const [runId, run] of runs) {
+    run.cancelled = true;
+    run.abortController?.abort();
+    for (const [requestId, pending] of run.pending) {
+      if (pending.timeout) {
+        clearTimeout(pending.timeout);
+      }
+      emitRunEvent(runId, "prompt_resolved", { requestId });
+      pending.resolve(CANCELLED);
+    }
+    run.pending.clear();
+  }
 }
 
 export function isRunCancelled(runId: string): boolean {
@@ -223,7 +258,19 @@ export function awaitResponse(runId: string, requestId: string): Promise<unknown
     return Promise.resolve(CANCELLED);
   }
   return new Promise((resolve) => {
-    run.pending.set(requestId, { resolve });
+    const timeout = setTimeout(() => {
+      const current = runs.get(runId);
+      const pending = current?.pending.get(requestId);
+      if (!current || !pending) {
+        return;
+      }
+      current.pending.delete(requestId);
+      regLogger.warn({ runId, requestId }, "interactive prompt timed out — auto-cancelling");
+      emitRunEvent(runId, "prompt_resolved", { requestId });
+      pending.resolve(CANCELLED);
+    }, PROMPT_TTL_MS);
+    timeout.unref?.();
+    run.pending.set(requestId, { resolve, timeout });
   });
 }
 
@@ -246,6 +293,13 @@ export function submitResponse(
     return false;
   }
   run.pending.delete(requestId);
+  if (pending.timeout) {
+    clearTimeout(pending.timeout);
+  }
+  // Tell every (re)connected client this prompt is answered, so a reconnect that
+  // replays the original permission/question event can dismiss the stale modal
+  // instead of leaving it blocking (re-answering it would 404).
+  emitRunEvent(runId, "prompt_resolved", { requestId });
   pending.resolve(value);
   regLogger.debug({ runId, requestId }, "response submitted");
   return true;
@@ -260,6 +314,9 @@ export function closeRun(runId: string): void {
   run.ended = true;
   const pendingCount = run.pending.size;
   for (const pending of run.pending.values()) {
+    if (pending.timeout) {
+      clearTimeout(pending.timeout);
+    }
     pending.resolve(CANCELLED);
   }
   run.pending.clear();

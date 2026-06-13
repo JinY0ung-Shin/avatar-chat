@@ -28,7 +28,8 @@ import {
 } from "./plugins.js";
 import { scrubGitError } from "./marketplace.js";
 import { isInternalGitSource } from "./gitCredentials.js";
-import { ensureClone, knowledgeRepoContextFor } from "./knowledgeRepo.js";
+import { ensureClone, knowledgeClonePath, knowledgeRepoContextFor } from "./knowledgeRepo.js";
+import { knownHostsPath } from "./sshTrust.js";
 import {
   ensureGroupClone,
   groupKnowledgeRepoContextFor,
@@ -38,6 +39,7 @@ import { Store, CLAUDE_OAUTH_TOKEN_KEY, normalizeHashtags } from "./store.js";
 import type { AgentConversationMessage, AgentResponse, AppConfig, PluginRoot, StoredMessage } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import { generateSshKeyPair } from "./sshIdentity.js";
+import { createRateLimiter } from "./rateLimit.js";
 import {
   attachRunClient,
   awaitResponse,
@@ -205,6 +207,53 @@ export function createApp(services = createServices()) {
   let observedModel: string | null = null;
   const app = express();
   app.use(express.json({ limit: "3mb" }));
+
+  // ---- Security headers ---------------------------------------------------
+  // CSP locks scripts/connections/images to same-origin. The avatar renders
+  // untrusted markdown (colleague turns, fetched pages, repo files): img-src
+  // 'self' data: neutralizes the classic remote-image exfiltration beacon, and
+  // script-src 'self' means a DOMPurify miss can't execute injected script.
+  // Every asset is same-origin (vendored marked/dompurify, local fonts), so this
+  // is low-friction. NOTE: it also blocks remote <img> in rendered markdown by
+  // design — relax img-src if remote images are wanted.
+  app.use((_req, res, next) => {
+    res.setHeader(
+      "Content-Security-Policy",
+      [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline'",
+        "img-src 'self' data:",
+        "font-src 'self'",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+        "object-src 'none'",
+      ].join("; "),
+    );
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("Referrer-Policy", "same-origin");
+    next();
+  });
+
+  // Throttle credential guessing / signup floods (in-memory, single-process;
+  // bypassed under NODE_ENV=test). Login is keyed per (ip, username) so one
+  // account can't be hammered; signup is keyed per ip.
+  const loginLimiter = createRateLimiter({
+    windowMs: 5 * 60 * 1000,
+    max: 20,
+    keyFn: (req) =>
+      `${req.ip ?? "?"}:${safeString((req.body as { username?: unknown } | undefined)?.username).toLowerCase()}`,
+    message: "로그인 시도가 너무 많습니다. 잠시 후 다시 시도해 주세요.",
+  });
+  const signupLimiter = createRateLimiter({
+    windowMs: 10 * 60 * 1000,
+    max: 20,
+    keyFn: (req) => req.ip ?? "?",
+  });
+
   app.use(
     "/fonts/noto-sans-kr",
     express.static(path.join(process.cwd(), "node_modules", "@fontsource-variable", "noto-sans-kr")),
@@ -246,7 +295,7 @@ export function createApp(services = createServices()) {
 
   // ---- Auth ------------------------------------------------------------
 
-  app.post("/api/auth/signup", (req, res) => {
+  app.post("/api/auth/signup", signupLimiter, (req, res) => {
     const username = safeString(req.body?.username);
     const displayName = safeString(req.body?.displayName) || username;
     const password = typeof req.body?.password === "string" ? req.body.password : "";
@@ -304,7 +353,7 @@ export function createApp(services = createServices()) {
     res.status(201).json({ user });
   });
 
-  app.post("/api/auth/login", (req, res) => {
+  app.post("/api/auth/login", loginLimiter, (req, res) => {
     const username = safeString(req.body?.username);
     const password = typeof req.body?.password === "string" ? req.body.password : "";
     const user = store.verifyLogin(username, password);
@@ -1398,6 +1447,13 @@ export function createApp(services = createServices()) {
   });
 
   app.delete("/api/conversations/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    // Cancel any in-flight run for this conversation first so it stops streaming
+    // and its cancel/error path skips the (now-impossible) message persistence
+    // instead of racing the row deletion. (lifecycle-03)
+    const active = getActiveRunForConversation(req.user!.id, req.params.id);
+    if (active) {
+      cancelRun(active.runId, req.user!.id);
+    }
     const removed = store.deleteConversation(req.user!.id, req.params.id);
     if (!removed) {
       apiError(res, 404, "대화를 찾을 수 없습니다.");
@@ -1440,7 +1496,18 @@ export function createApp(services = createServices()) {
       return;
     }
 
-    const conversationId = safeString(req.body?.conversationId) || crypto.randomUUID();
+    const suppliedConversationId = safeString(req.body?.conversationId);
+    // Reject a supplied id that already belongs to ANOTHER user before any DB
+    // write: otherwise touchConversation falls through to an INSERT that hits the
+    // conversations PRIMARY KEY and throws (an unhandled rejection on Express 4).
+    if (suppliedConversationId) {
+      const owner = store.conversationOwner(suppliedConversationId);
+      if (owner && owner !== req.user!.id) {
+        apiError(res, 409, "사용할 수 없는 대화 ID입니다.");
+        return;
+      }
+    }
+    const conversationId = suppliedConversationId || crypto.randomUUID();
     const existingAvatarId = store.getConversationAvatarId(req.user!.id, conversationId);
     if (existingAvatarId && existingAvatarId !== avatar.id) {
       apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
@@ -1472,10 +1539,25 @@ export function createApp(services = createServices()) {
       greeting || regenerate
         ? undefined
         : store.getAgentSessionId(req.user!.id, conversationId) ?? undefined;
+    // Inject prior context whenever there's no SDK session to resume. A greeting
+    // has none. A regenerate deliberately starts a FRESH session (so the re-run
+    // turn isn't duplicated in the transcript) but must STILL carry the
+    // conversation so far — otherwise the model answers the regenerated turn
+    // blind, AND the fresh session id is then persisted, so every later turn
+    // would resume a context-less session too. (chat-01 / lifecycle-02)
     const conversationHistory =
-      !greeting && !regenerate && !resumeSessionId
+      !greeting && !resumeSessionId
         ? conversationHistoryForPrompt(store.listMessages(req.user!.id, conversationId))
         : [];
+    // On regenerate the trailing history entry is the user turn being re-run,
+    // which is ALSO re-sent as `message` — drop it so it isn't duplicated.
+    if (
+      regenerate &&
+      conversationHistory.length > 0 &&
+      conversationHistory[conversationHistory.length - 1].role === "user"
+    ) {
+      conversationHistory.pop();
+    }
     if (!greeting) {
       store.touchConversation(req.user!.id, conversationId, avatar.id, message);
       if (!regenerate) {
@@ -1656,13 +1738,18 @@ export function createApp(services = createServices()) {
 
       // Remember this run's SDK session so the next turn resumes its context.
       if (runSessionId) {
-        store.setAgentSessionId(conversationId, runSessionId);
+        store.setAgentSessionId(req.user!.id, conversationId, runSessionId);
       }
-      const assistantMessage = store.addMessage(conversationId, {
-        role: "assistant",
-        content: response.text || response.summary,
-        response,
-      });
+      // The conversation may have been deleted mid-run; skip persistence (the FK
+      // on messages would reject the insert) and just signal completion.
+      const assistantMessage =
+        store.conversationOwner(conversationId) === req.user!.id
+          ? store.addMessage(conversationId, {
+              role: "assistant",
+              content: response.text || response.summary,
+              response,
+            })
+          : null;
       store.audit({
         actorUserId: req.user!.id,
         actorName: req.user!.username,
@@ -1679,6 +1766,11 @@ export function createApp(services = createServices()) {
     } catch (error) {
       if (isRunCancelled(runId)) {
         if (!greeting) {
+          // Clear the persisted SDK session: the aborted run's transcript is
+          // incomplete, so the NEXT turn rebuilds context from stored messages
+          // (which now include this cancelled turn's user message + partial)
+          // instead of resuming a half-written session that omits it. (chat-02)
+          store.setAgentSessionId(req.user!.id, conversationId, null);
           // Keep whatever the model already streamed before the stop. The client's
           // finalizeStopped keeps it on screen, so the persisted record must carry
           // it too — otherwise the visible answer is gone on the next reload/revisit.
@@ -1688,11 +1780,15 @@ export function createApp(services = createServices()) {
             summary: "중지됨",
             text: streamedText,
           };
-          const stopped = store.addMessage(conversationId, {
-            role: "assistant",
-            content: streamedText || "(중지됨)",
-            response,
-          });
+          // Skip the insert if the conversation was deleted mid-run (FK would reject).
+          const stopped =
+            store.conversationOwner(conversationId) === req.user!.id
+              ? store.addMessage(conversationId, {
+                  role: "assistant",
+                  content: streamedText || "(중지됨)",
+                  response,
+                })
+              : null;
           emitRunEvent(runId, "cancelled", { message: stopped, response });
         } else {
           emitRunEvent(runId, "cancelled", { message: null });
@@ -1713,9 +1809,11 @@ export function createApp(services = createServices()) {
         status: "error",
         detail,
       });
-      if (!greeting) {
-        // Don't discard the partial the user already watched stream — keep it
+      if (!greeting && store.conversationOwner(conversationId) === req.user!.id) {
+        // Clear the session for the same reason as the cancel path (chat-02), and
+        // don't discard the partial the user already watched stream — keep it
         // alongside the error so a reload shows what the live view showed.
+        store.setAgentSessionId(req.user!.id, conversationId, null);
         const content = streamedText ? `${streamedText}\n\n${detail}` : detail;
         store.addMessage(conversationId, { role: "assistant", content });
       }
@@ -1766,7 +1864,14 @@ export function createApp(services = createServices()) {
       apiError(res, 400, "runId와 requestId가 필요합니다.");
       return;
     }
-    const delivered = submitResponse(runId, requestId, req.user!.id, req.body?.value);
+    // The value is consumed by onPermission/onQuestion as an object
+    // ({behavior} | {cancelled} | {result}); reject a non-object up front.
+    const value = req.body?.value;
+    if (value !== undefined && (typeof value !== "object" || value === null)) {
+      apiError(res, 400, "응답 형식이 올바르지 않습니다.");
+      return;
+    }
+    const delivered = submitResponse(runId, requestId, req.user!.id, value);
     if (!delivered) {
       apiError(res, 404, "처리할 수 없는 응답입니다(만료되었거나 권한 없음).");
       return;
@@ -1907,6 +2012,24 @@ export function createApp(services = createServices()) {
         detail: `deleted user ${req.params.id}`,
       });
       logger.warn({ actorId: req.user!.id, targetId: req.params.id }, "user deleted");
+      // Best-effort on-disk cleanup (the DB rows are already gone). Never throw:
+      // a cleanup failure must not turn a successful deletion into a 500. The
+      // knowledge clone is a full copy of a possibly-private repo, so removing it
+      // matters most; also drop the per-user ssh trust dir and avatar image. (store-03)
+      try {
+        fs.rmSync(knowledgeClonePath(req.params.id, config), { recursive: true, force: true });
+        fs.rmSync(path.dirname(knownHostsPath(req.params.id, config)), { recursive: true, force: true });
+        const avatarsDir = avatarDir(config);
+        if (fs.existsSync(avatarsDir)) {
+          for (const f of fs.readdirSync(avatarsDir)) {
+            if (f === req.params.id || f.startsWith(`${req.params.id}.`)) {
+              fs.rmSync(path.join(avatarsDir, f), { force: true });
+            }
+          }
+        }
+      } catch (err) {
+        logger.warn({ err, targetId: req.params.id }, "post-delete disk cleanup failed");
+      }
       res.json({ ok: true });
     },
   );

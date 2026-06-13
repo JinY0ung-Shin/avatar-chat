@@ -83,7 +83,9 @@ export function marketplaceCloneUrl(source: string, githubHost = DEFAULT_GITHUB_
  * git never persists it to `.git/config`, so the clone on disk stays clean.
  */
 export function gitAuthArgs(url: string, token?: string): string[] {
-  if (!token || !/^https:\/\//.test(url)) {
+  // Case-insensitive https check to match `tokenForGitUrl` (gitCredentials.ts):
+  // a `HTTPS://`-cased URL must route auth consistently in both places (git-08).
+  if (!token || !/^https:\/\//i.test(url)) {
     return [];
   }
   const basic = Buffer.from(`x-access-token:${token}`).toString("base64");
@@ -123,6 +125,13 @@ async function resolveTarget(destination: string, ref?: string): Promise<string>
  * tree on the old commit, so files deleted upstream (e.g. a skill removed from
  * a marketplace) would linger on refresh. We `reset --hard` to the fetched
  * target and `clean -fd` untracked leftovers so the clone is an exact mirror.
+ *
+ * Shallow but multi-branch: a plain `clone --depth 1` implies `--single-branch`
+ * (only the default branch's refspec), so a plugin pinned to a NON-default
+ * branch never materializes `origin/<ref>` — `resolveTarget` falls back to the
+ * raw ref and `reset --hard <branch>` errors on every clone and refresh. We add
+ * `--no-single-branch` so all branches' remote-tracking refs exist (still
+ * shallow), and the existing `fetch --all` keeps them current on refresh (git-03).
  */
 export async function syncGitRepo(
   url: string,
@@ -131,6 +140,12 @@ export async function syncGitRepo(
   token?: string,
 ): Promise<void> {
   assertSafeArg(url, "repo");
+  // The ref reaches `git reset --hard <ref>` (via resolveTarget's fallback) and
+  // a `git rev-parse origin/<ref>`; reject a leading-dash value git would parse
+  // as an option, consistent with the url guard above (git-04).
+  if (ref !== undefined) {
+    assertSafeArg(ref, "ref");
+  }
   const auth = gitAuthArgs(url, token);
   const git = (...args: string[]) =>
     execFileAsync("git", ["-C", destination, ...args], { timeout: 120_000 });
@@ -140,9 +155,13 @@ export async function syncGitRepo(
   } else {
     await fs.mkdir(path.dirname(destination), { recursive: true });
     // `--` stops git from treating a crafted url/destination as an option.
-    await execFileAsync("git", [...auth, "clone", "--depth", "1", "--", url, destination], {
-      timeout: 120_000,
-    });
+    // `--no-single-branch` keeps every branch's remote-tracking ref (so a
+    // non-default `ref` resolves) while staying shallow.
+    await execFileAsync(
+      "git",
+      [...auth, "clone", "--depth", "1", "--no-single-branch", "--", url, destination],
+      { timeout: 120_000 },
+    );
   }
 
   const target = await resolveTarget(destination, ref);

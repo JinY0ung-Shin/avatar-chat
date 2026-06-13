@@ -3,8 +3,9 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import logger from "./logger.js";
-import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName } from "./marketplace.js";
-import { tokenForGitUrl } from "./gitCredentials.js";
+import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError } from "./marketplace.js";
+import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
+import { withRepoLock } from "./gitMutex.js";
 import fsSync from "node:fs";
 import type { AppConfig, KnowledgeRepoStatus, KnowledgeRepoTreeEntry } from "./types.js";
 import type { Store } from "./store.js";
@@ -27,11 +28,24 @@ export interface KnowledgeRepoContext {
   userId: string;
   repo: string;
   branch: string | null;
+  // The INTERNAL git token (sees a `users` column / GIT_TOKEN secret). Doubles
+  // as the "is a token configured?" gate in repoTools.ts (`if (!c.token)`), so
+  // its type/meaning must stay a nullable string. Host routing happens below.
   token: string | null;
+  // The EXTERNAL git token (GITHUB_TOKEN secret), used when the repo is hosted
+  // on github.com under a GHES deployment. Resolved alongside `token` and
+  // routed per-URL via `tokenForGitUrl` (git-05). Optional so existing callers
+  // that build this context don't break.
+  externalToken?: string | null;
   config: AppConfig;
   // Subset of plugin names to load when the repo is a marketplace of many;
   // null means "load all". Mirrors a plugin's `selected`.
   selected: string[] | null;
+}
+
+/** Host-aware token set for a knowledge-repo context (internal + external). */
+function repoTokens(ctx: KnowledgeRepoContext): GitTokenSet {
+  return { internal: ctx.token, external: ctx.externalToken ?? null };
 }
 
 /** On-disk clone path for a user's knowledge-repo working tree. */
@@ -127,17 +141,26 @@ async function setIdentity(repoRoot: string, name: string, email: string): Promi
 
 /**
  * Ensure the user's knowledge repo is cloned (full clone) and up to date on
- * the configured branch. Returns the working-tree path. Fetches + hard-resets
- * to the remote branch tip if already cloned.
+ * the configured branch. Returns the working-tree path. Fetches if already
+ * cloned, then fast-forwards the branch to the remote tip — but PRESERVES
+ * committed-but-unpushed work: if HEAD is ahead of origin/<branch> (e.g. a prior
+ * commitAndPush committed locally but the push failed on token/network/branch
+ * protection), it merges --ff-only and, if that can't fast-forward, leaves the
+ * local branch untouched rather than hard-resetting it away. Serialized per
+ * clone path so concurrent turns can't interleave fetch/checkout (git-02).
  */
 export async function ensureClone(ctx: KnowledgeRepoContext): Promise<string> {
   const repoRoot = knowledgeClonePath(ctx.userId, ctx.config);
+  return withRepoLock(repoRoot, () => ensureCloneLocked(ctx, repoRoot));
+}
+
+async function ensureCloneLocked(ctx: KnowledgeRepoContext, repoRoot: string): Promise<string> {
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
   // Reject values git would read as options (e.g. `--upload-pack=…` → RCE).
   if (url.startsWith("-") || (ctx.branch && ctx.branch.startsWith("-"))) {
     throw new Error("Invalid repo or branch");
   }
-  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, { internal: ctx.token }));
+  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
 
   if (await pathExists(path.join(repoRoot, ".git"))) {
     await git(repoRoot, [...auth, "fetch", "--prune", "origin"]);
@@ -149,21 +172,86 @@ export async function ensureClone(ctx: KnowledgeRepoContext): Promise<string> {
       args.push("--branch", ctx.branch);
     }
     args.push("--", url, repoRoot);
-    await execFileAsync("git", args, { timeout: 180_000 });
+    try {
+      await execFileAsync("git", args, { timeout: 180_000 });
+    } catch (error) {
+      // A failed/interrupted clone leaves a half-initialized dir that poisons
+      // every later sync (next run sees a dir, skips clone, then fails). Remove
+      // the partial destination so the next run re-clones cleanly (git-06).
+      await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
     logger.info({ userId: ctx.userId, repo: ctx.repo }, "knowledge repo cloned");
   }
 
   // Align the working tree with the chosen branch's remote tip.
   const branch = ctx.branch || (await currentBranch(repoRoot));
   if (branch && !branch.startsWith("-")) {
+    await alignBranch(repoRoot, branch, { userId: ctx.userId, repo: ctx.repo });
+  }
+  return repoRoot;
+}
+
+/**
+ * Move the working tree onto `branch`@origin without discarding unpushed
+ * commits. If local HEAD is ahead of origin/<branch>, a hard `checkout -B`
+ * would silently destroy those commits — so we only `checkout -B` when HEAD is
+ * NOT ahead; when it is, we merge --ff-only (a no-op if the remote didn't move,
+ * a clean catch-up otherwise) and, if that can't fast-forward (diverged), leave
+ * the branch as-is with a warning so the unpushed work survives (git-01). When
+ * the branch doesn't exist on the remote yet (fresh repo), stay on HEAD.
+ */
+async function alignBranch(
+  repoRoot: string,
+  branch: string,
+  log: Record<string, unknown>,
+): Promise<void> {
+  const ahead = await aheadOfRemote(repoRoot, branch);
+  if (ahead === null) {
+    // origin/<branch> doesn't exist yet (fresh repo) — keep the clone's HEAD.
+    return;
+  }
+  if (ahead === 0) {
+    // No unpushed work — safe to re-point the branch at the remote tip.
     try {
       await git(repoRoot, ["checkout", "-B", branch, `origin/${branch}`]);
     } catch {
-      // Branch may not exist on the remote yet (fresh repo) — stay on whatever
-      // HEAD the clone produced.
+      // Branch may not exist locally/remotely in some edge state — stay put.
     }
+    return;
   }
-  return repoRoot;
+  // HEAD is ahead of the remote: preserve the local commits. Make sure we're on
+  // the branch, then only fast-forward (never reset) to absorb new remote work.
+  try {
+    await git(repoRoot, ["checkout", branch]);
+    await git(repoRoot, ["merge", "--ff-only", `origin/${branch}`]);
+  } catch (error) {
+    logger.warn(
+      { ...log, branch, ahead, error: scrubGitError(error) },
+      "knowledge repo has unpushed commits that can't fast-forward; leaving local branch as-is",
+    );
+  }
+}
+
+/**
+ * Count commits on local HEAD not yet on origin/<branch>. Returns 0 when the
+ * branch is up to date or behind, a positive count when ahead, and null when
+ * origin/<branch> doesn't exist (so callers can tell "fresh repo" apart from
+ * "in sync").
+ */
+async function aheadOfRemote(repoRoot: string, branch: string): Promise<number | null> {
+  try {
+    await git(repoRoot, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
+  } catch {
+    return null;
+  }
+  try {
+    const { stdout } = await git(repoRoot, ["rev-list", `origin/${branch}..HEAD`, "--count"]);
+    const n = Number.parseInt(stdout.trim(), 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
 }
 
 async function currentBranch(repoRoot: string): Promise<string | null> {
@@ -448,6 +536,18 @@ export async function commitAndPush(
   identity: { name: string; email: string },
 ): Promise<boolean> {
   const repoRoot = knowledgeClonePath(ctx.userId, ctx.config);
+  // Serialize the add/commit/push against any concurrent ensureClone or other
+  // commit on the same working tree (git-02). Keyed by clone path, same as
+  // ensureClone, and never nested under that lock (commitAndPush doesn't clone).
+  return withRepoLock(repoRoot, () => commitAndPushLocked(ctx, repoRoot, message, identity));
+}
+
+async function commitAndPushLocked(
+  ctx: KnowledgeRepoContext,
+  repoRoot: string,
+  message: string,
+  identity: { name: string; email: string },
+): Promise<boolean> {
   if (!(await pathExists(path.join(repoRoot, ".git")))) {
     throw new Error("NOT_CLONED");
   }
@@ -473,7 +573,7 @@ export async function commitAndPush(
   await git(repoRoot, ["commit", "-m", commitMsg]);
 
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
-  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, { internal: ctx.token }));
+  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
   const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
   const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;
   await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
@@ -495,7 +595,19 @@ export function knowledgeRepoContextFor(
   if (!repo) {
     return null;
   }
-  return { userId, repo, branch, selected, token: store.getGitToken(userId), config };
+  // Resolve BOTH tokens: the internal one (and its truthiness gate) plus the
+  // external GITHUB_TOKEN, so a github.com-hosted repo on a GHES deployment
+  // still authenticates (git-05). `tokenForGitUrl` routes by host per git call.
+  const tokens = store.getGitTokens(userId);
+  return {
+    userId,
+    repo,
+    branch,
+    selected,
+    token: tokens.internal ?? null,
+    externalToken: tokens.external ?? null,
+    config,
+  };
 }
 
 /**

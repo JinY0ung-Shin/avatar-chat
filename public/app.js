@@ -99,6 +99,7 @@ function handleSessionExpired() {
   if (sessionExpired) return;
   sessionExpired = true;
   stopAllChatStreams();
+  stopKnowledgeWatch();
   hidePromptModal();
   state.user = null;
   state.currentAvatar = null;
@@ -590,7 +591,9 @@ const promptQueue = [];
 let promptRestoreFocus = null;
 
 function trapTab(event, container) {
-  const focusables = [...container.querySelectorAll("button:not(:disabled), [href], input, select, textarea, [tabindex]:not([tabindex='-1'])")];
+  const focusables = [...container.querySelectorAll(
+    "button:not(:disabled), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+  )].filter((el) => !el.disabled && el.getAttribute("aria-hidden") !== "true");
   if (!focusables.length) return;
   const first = focusables[0];
   const last = focusables[focusables.length - 1];
@@ -2068,16 +2071,19 @@ async function loadCapabilitySkills(avatarId, body) {
   const loadingState = { loading: true, error: "", skills: [] };
   state.skillsByAvatar[avatarId] = loadingState;
   renderState(loadingState);
+  // Capture a generation token so the async completion can detect a stale panel
+  // (e.g. the user navigated to a different avatar while the fetch was in flight).
+  const targetBody = body;
   try {
     const { skills } = await api(`/api/avatars/${avatarId}/skills`);
     const done = { loading: false, error: "", skills: skills || [] };
     state.skillsByAvatar[avatarId] = done;
-    // Avoid clobbering the panel if the user navigated to a different avatar.
-    if (state.currentAvatar?.id === avatarId) renderState(done);
+    // Bail if the panel element was replaced/detached or the avatar changed.
+    if (state.currentAvatar?.id === avatarId && targetBody.isConnected) renderState(done);
   } catch (err) {
     const failed = { loading: false, error: "스킬을 불러오지 못했습니다.", skills: [] };
     state.skillsByAvatar[avatarId] = failed;
-    if (state.currentAvatar?.id === avatarId) renderState(failed);
+    if (state.currentAvatar?.id === avatarId && targetBody.isConnected) renderState(failed);
   }
 }
 
@@ -2464,6 +2470,10 @@ function beginLiveStream(pane, { isNewConversation = false, restoreOnError = nul
     agents: new Map(), // agentId -> { node, toolsEl, childrenEl }
     tools: new Map(), // toolUseId -> { row }
     tasks: new Map(), // taskId -> { row }
+    // requestIds for permission/question prompts that have already been resolved
+    // server-side — used to skip re-rendering them during replay and to dismiss
+    // them immediately if a prompt_resolved event arrives while the card is up.
+    resolvedRequestIds: new Set(),
     text: "", rafPending: false, done: false, aborted: false, isNewConversation,
     restoreOnError: Array.isArray(restoreOnError) && restoreOnError.length ? restoreOnError : null,
   };
@@ -2649,6 +2659,13 @@ async function consumeSse(body, onEvent) {
       if (frame) onEvent(frame.event, frame.data);
     }
   }
+  // Flush the streaming TextDecoder and process any final buffered frame that
+  // arrived without a trailing delimiter (e.g. connection dropped cleanly).
+  buffer += decoder.decode();
+  if (buffer.trim()) {
+    const frame = parseFrame(buffer);
+    if (frame) onEvent(frame.event, frame.data);
+  }
 }
 
 function parseFrame(raw) {
@@ -2716,10 +2733,13 @@ function handleSseEvent(event, data, live, scheduleFlush) {
       handleBlocked(live, data);
       break;
     case "permission":
-      renderPermissionCard(live, data);
+      if (!live.resolvedRequestIds.has(data?.requestId)) renderPermissionCard(live, data);
       break;
     case "question":
-      renderQuestionCard(live, data);
+      if (!live.resolvedRequestIds.has(data?.requestId)) renderQuestionCard(live, data);
+      break;
+    case "prompt_resolved":
+      handlePromptResolved(live, data);
       break;
     case "delta":
       if (typeof data?.text === "string") {
@@ -2953,6 +2973,32 @@ function handleBlocked(live, data) {
 }
 
 /* ---- Interactive prompts (permission / question) ------------------- */
+
+// Dismiss a prompt card by requestId without posting to the server (the run
+// already resolved it). If the card is currently visible it is removed and the
+// queue is advanced; if it is still queued it is spliced out. Called when we
+// receive a `prompt_resolved` SSE event, or proactively during replay.
+function dismissPromptById(live, requestId) {
+  if (!requestId || !dom.promptModal) return;
+  live.resolvedRequestIds.add(requestId);
+  // Remove from the queue first.
+  for (let i = promptQueue.length - 1; i >= 0; i--) {
+    const queued = promptQueue[i];
+    if (queued.dataset.request === requestId && (queued.dataset.run || "") === (live.runId || "")) {
+      promptQueue.splice(i, 1);
+    }
+  }
+  // Dismiss the currently visible card if it belongs to this request.
+  const current = dom.promptModal?.firstChild;
+  if (current && current.dataset.request === requestId) {
+    advancePromptModal();
+  }
+}
+
+function handlePromptResolved(live, data) {
+  if (!data?.requestId) return;
+  dismissPromptById(live, data.requestId);
+}
 
 // Submit the owner's response to a prompt. The card stays up until the POST
 // succeeds — hiding first meant a transient failure dismissed the prompt while
