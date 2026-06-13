@@ -2248,12 +2248,7 @@ function renderRoutineManageRows(list, searchInput = null) {
       setFormBusy(row, true);
       runBtn.textContent = "실행 중…";
       try {
-        const res = await api(`/api/me/routines/${encodeURIComponent(r.id)}/run`, { method: "POST" });
-        await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
-        updateNotificationBadge();
-        if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
-        // Jump straight to the result this run just produced.
-        openRoutineResult(r.conversationId);
+        await runRoutineNow(r);
       } catch (err) {
         notify(`루틴 실행 실패: ${err.message}`);
         setFormBusy(row, false);
@@ -2293,6 +2288,15 @@ function renderRoutineManageRows(list, searchInput = null) {
   }
 }
 
+async function runRoutineNow(routine) {
+  const res = await api(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
+  await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
+  updateNotificationBadge();
+  if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+  // Jump straight to the result this run just produced.
+  openRoutineResult(routine.conversationId);
+}
+
 function buildRoutineResultPanel(messageLoadError = "") {
   const conv = state.routineConversations.find((c) => c.id === state.routineConversationId);
   const routine = conv ? state.routines.find((r) => r.conversationId === conv.id) : null;
@@ -2324,9 +2328,33 @@ function buildRoutineResultPanel(messageLoadError = "") {
     transcript,
   ]);
   if (!conv) {
+    const firstRoutine = state.routines[0];
+    const runFirstRoutine = async (button) => {
+      const saved = button.textContent;
+      button.disabled = true;
+      button.textContent = "실행 중…";
+      try {
+        await runRoutineNow(firstRoutine);
+      } catch (err) {
+        button.disabled = false;
+        button.textContent = saved;
+        notify(`루틴 실행 실패: ${err.message}`);
+      }
+    };
+    const runFirstBtn = firstRoutine
+      ? el("button", {
+          class: "linkish small",
+          type: "button",
+          text: "첫 루틴 지금 실행",
+          onclick: (event) => runFirstRoutine(event.currentTarget),
+        })
+      : null;
     inner.append(
       state.routines.length
-        ? el("div", { class: "empty-note", text: "아직 확인할 실행 결과가 없습니다. 왼쪽에서 루틴을 지금 실행하거나 다음 예약 실행 후 결과가 표시됩니다." })
+        ? el("div", { class: "empty-note" }, [
+            "아직 확인할 실행 결과가 없습니다. 바로 실행하거나 다음 예약 실행 후 결과가 표시됩니다.\n",
+            runFirstBtn,
+          ])
         : el("div", { class: "empty-note" }, [
             "아직 확인할 루틴 결과가 없습니다.\n",
             el("button", { class: "linkish small", type: "button", text: "첫 루틴 추가", onclick: () => openRoutineModal(null) }),
