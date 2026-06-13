@@ -6213,6 +6213,7 @@ function buildSecretsCard() {
             clearBtn.textContent = "삭제 중…";
             try {
               await deleteSecret(preset.name);
+              notify(`${preset.label} 시크릿을 삭제했습니다.`, "ok");
             } catch (err) {
               notify(`삭제 실패: ${err.message}`);
               clearBtn.textContent = saved;
@@ -6235,6 +6236,7 @@ function buildSecretsCard() {
             saveBtn.textContent = "저장 중…";
             try {
               await saveSecret(preset.name, value);
+              notify(`${preset.label} 시크릿을 저장했습니다.`, "ok");
             } catch (err) {
               notify(`저장 실패: ${err.message}`);
               saveBtn.textContent = saved;
