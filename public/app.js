@@ -5255,8 +5255,12 @@ async function renderSettings() {
       try {
         await api("/api/me/avatar-image", { method: "DELETE" });
         state.user.hasImage = false;
+        delPicBtn.textContent = saved;
+        delPicBtn.disabled = false;
+        camBtn.disabled = false;
         renderPic();
         renderRailUser();
+        notify("아바타 사진을 삭제했습니다.", "ok");
       } catch (e) {
         delPicBtn.textContent = saved;
         delPicBtn.disabled = false;
@@ -5281,8 +5285,13 @@ async function renderSettings() {
       const dataUrl = await resizeImage(file, 256);
       await api("/api/me/avatar-image", { method: "PUT", body: JSON.stringify({ image: dataUrl }) });
       state.user.hasImage = true;
+      camBtn.disabled = false;
+      camBtn.title = savedTitle;
+      camBtn.setAttribute("aria-label", "사진 변경");
+      delPicBtn.disabled = false;
       renderPic();
       renderRailUser();
+      notify("아바타 사진을 변경했습니다.", "ok");
     } catch (e) {
       camBtn.disabled = false;
       camBtn.title = savedTitle;
