@@ -5543,7 +5543,15 @@ function buildVisibilitySelect(current, onChange) {
     sync();
     try {
       const saved = await onChange(val);
-      if (saved && saved !== value) { value = saved; sync(); }
+      if (saved && saved !== value) {
+        value = saved;
+        sync();
+        const savedLabel = VISIBILITY_OPTIONS.find((o) => o.value === saved)?.label || saved;
+        notify(`공개 범위가 서버에서 ${savedLabel}(으)로 저장되었습니다.`, "warn");
+      } else {
+        const savedLabel = VISIBILITY_OPTIONS.find((o) => o.value === value)?.label || value;
+        notify(`공개 범위를 ${savedLabel}(으)로 변경했습니다.`, "ok");
+      }
     } catch (e) {
       value = prev;
       notify(`공개 범위 변경 실패: ${e.message}`);
