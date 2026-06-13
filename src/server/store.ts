@@ -440,11 +440,29 @@ export class Store {
     this.addColumnIfMissing("routine_jobs", "schedule_kind", "TEXT");
     this.addColumnIfMissing("routine_jobs", "days_of_week", "TEXT");
     this.addColumnIfMissing("routine_jobs", "interval_minutes", "INTEGER");
+    // Routine conversations must never show in the normal chat history, even after
+    // their routine is deleted (which orphans the conversation). Tag the row itself
+    // so classification doesn't depend on the routine_jobs link still existing.
+    this.addColumnIfMissing("conversations", "is_routine", "INTEGER NOT NULL DEFAULT 0");
+    this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     // Trust is now derived purely from group co-membership; the old per-(avatar,
     // viewer) trust table is dropped (its grants don't survive the migration).
     this.db.exec("DROP TABLE IF EXISTS avatar_trusted_users");
+  }
+
+  /** Backfill is_routine on existing conversations. Linked ones come from the
+   *  routine_jobs join; already-orphaned ones (routine since deleted) are matched
+   *  by the "[루틴] " title prefix createRoutineJob writes. Idempotent. */
+  private migrateRoutineConversations(): void {
+    this.db
+      .prepare(
+        "UPDATE conversations SET is_routine = 1 WHERE is_routine = 0 AND " +
+          "(id IN (SELECT conversation_id FROM routine_jobs WHERE conversation_id IS NOT NULL) " +
+          "OR title LIKE '[루틴] %')",
+      )
+      .run();
   }
 
   /** Backfill the visibility enum from the legacy `published` flag. Idempotent:
@@ -1418,7 +1436,7 @@ export class Store {
       // Create the dedicated conversation eagerly so the client can always
       // open it (and so its title comes from the name/prompt, not from whatever
       // message lands in it first).
-      this.touchConversation(avatarUserId, conversationId, avatarUserId, `[루틴] ${name || prompt}`);
+      this.touchConversation(avatarUserId, conversationId, avatarUserId, `[루틴] ${name || prompt}`, { isRoutine: true });
     });
     tx();
     return this.toRoutineJob(this.routineJobRow(id)!);
@@ -1834,9 +1852,9 @@ export class Store {
       params.push(avatarId);
     }
     if (kind === "chat") {
-      where.push("r.id IS NULL");
+      where.push("c.is_routine = 0");
     } else if (kind === "routine") {
-      where.push("r.id IS NOT NULL");
+      where.push("c.is_routine = 1");
     }
     const rows = this.db
       .prepare(
@@ -1896,6 +1914,7 @@ export class Store {
     conversationId: string,
     avatarUserId: string,
     firstUserText: string,
+    opts: { isRoutine?: boolean } = {},
   ): void {
     const timestamp = now();
     // Look up by id ALONE so a conversation id that already exists under a
@@ -1910,8 +1929,9 @@ export class Store {
       if (existing.owner_user_id !== ownerId) {
         throw new Error("CONVERSATION_OWNER_MISMATCH");
       }
+      // Promote to routine-tagged if asked (idempotent); never clears the flag.
       this.db
-        .prepare("UPDATE conversations SET updated_at = ? WHERE id = ?")
+        .prepare(`UPDATE conversations SET updated_at = ?${opts.isRoutine ? ", is_routine = 1" : ""} WHERE id = ?`)
         .run(timestamp, conversationId);
       return;
     }
@@ -1919,10 +1939,10 @@ export class Store {
     const title = rawTitle.length > 0 ? rawTitle.slice(0, 40) : "새 대화";
     this.db
       .prepare(
-        `INSERT INTO conversations (id, owner_user_id, avatar_user_id, title, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO conversations (id, owner_user_id, avatar_user_id, title, is_routine, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(conversationId, ownerId, avatarUserId, title, timestamp, timestamp);
+      .run(conversationId, ownerId, avatarUserId, title, opts.isRoutine ? 1 : 0, timestamp, timestamp);
   }
 
   /** The SDK session to resume for this conversation's next turn (null if none). */

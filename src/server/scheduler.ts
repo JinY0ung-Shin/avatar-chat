@@ -81,7 +81,7 @@ async function runRoutineJobNow(
       abortController,
     );
 
-    store.touchConversation(avatar.id, job.conversationId, avatar.id, `[루틴] ${job.prompt}`);
+    store.touchConversation(avatar.id, job.conversationId, avatar.id, `[루틴] ${job.prompt}`, { isRoutine: true });
     store.addMessage(job.conversationId, { role: "user", content: job.prompt });
     store.addMessage(job.conversationId, {
       role: "assistant",

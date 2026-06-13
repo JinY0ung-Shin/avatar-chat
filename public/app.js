@@ -1571,7 +1571,7 @@ function openRoutineModal(routine) {
 
     const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
     delBtn.addEventListener("click", async () => {
-      if (!window.confirm("이 루틴을 삭제할까요? (쌓인 결과 대화는 그대로 남습니다)")) return;
+      if (!window.confirm("이 루틴을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
       delBtn.disabled = true;
       try {
         await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });
