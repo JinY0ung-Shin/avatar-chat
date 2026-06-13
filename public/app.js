@@ -8648,13 +8648,22 @@ function buildSubscriptionCard(sys) {
       disBtn.textContent = "해제 중…";
       try {
         await api("/api/admin/claude-token", { method: "DELETE" });
+      } catch (e) {
+        disBtn.textContent = saved;
+        disBtn.disabled = false;
+        notify(`해제 실패: ${e.message}`);
+        return;
+      }
+      try {
         await loadAdminSystem();
         renderView();
       } catch (e) {
         disBtn.textContent = saved;
         disBtn.disabled = false;
-        notify(`해제 실패: ${e.message}`);
+        notify(`구독 토큰은 삭제했지만 상태 새로고침에 실패했습니다: ${e.message}`, "warn");
+        return;
       }
+      notify("구독 토큰 연결을 해제했습니다.", "ok");
     });
     card.append(el("div", { class: "ar-actions" }, [disBtn]));
   }
@@ -8676,14 +8685,22 @@ function buildSubscriptionCard(sys) {
       btn.textContent = "저장 중…";
       try {
         await api("/api/admin/claude-token", { method: "PUT", body: JSON.stringify({ token }) });
-        notify("구독 토큰을 저장했습니다.", "ok");
+      } catch (err) {
+        btn.textContent = saved;
+        setFormBusy(formEl, false);
+        notify(`저장 실패: ${err.message}`);
+        return;
+      }
+      try {
         await loadAdminSystem();
         renderView();
       } catch (err) {
         btn.textContent = saved;
         setFormBusy(formEl, false);
-        notify(`저장 실패: ${err.message}`);
+        notify(`구독 토큰은 저장했지만 상태 새로고침에 실패했습니다: ${err.message}`, "warn");
+        return;
       }
+      notify("구독 토큰을 저장했습니다.", "ok");
     },
   }, [
     el("label", { class: "field" }, [
