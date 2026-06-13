@@ -6382,6 +6382,16 @@ function buildKnowledgeRepoCard() {
       e.preventDefault();
       const formEl = e.currentTarget;
       const fd = new FormData(formEl);
+      const repo = (fd.get("repo") || "").toString().trim();
+      const branch = (fd.get("branch") || "").toString().trim();
+      if (!repo) {
+        notify(
+          u.knowledgeRepo ? "저장소 연결을 해제하려면 오른쪽의 ‘연결 해제’ 버튼을 사용해 주세요." : "지식 저장소 주소를 입력해 주세요.",
+          "warn",
+        );
+        formEl.querySelector('input[name="repo"]')?.focus();
+        return;
+      }
       const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
       setFormBusy(card, true);
@@ -6389,7 +6399,7 @@ function buildKnowledgeRepoCard() {
       try {
         const { user } = await api("/api/me/knowledge-repo", {
           method: "PUT",
-          body: JSON.stringify({ repo: (fd.get("repo") || "").toString().trim() || null, branch: (fd.get("branch") || "").toString().trim() || null }),
+          body: JSON.stringify({ repo, branch: branch || null }),
         });
         state.user = user;
         renderView();
@@ -6972,6 +6982,16 @@ function buildGroupRepoCard(g) {
       e.preventDefault();
       const formEl = e.currentTarget;
       const fd = new FormData(formEl);
+      const repo = (fd.get("repo") || "").toString().trim();
+      const branch = (fd.get("branch") || "").toString().trim();
+      if (!repo) {
+        notify(
+          g.knowledgeRepo ? "공용 저장소 연결을 해제하려면 위의 ‘연결 해제’ 버튼을 사용해 주세요." : "공용 지식 저장소 주소를 입력해 주세요.",
+          "warn",
+        );
+        formEl.querySelector('input[name="repo"]')?.focus();
+        return;
+      }
       const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
       setFormBusy(wrap, true);
@@ -6980,8 +7000,8 @@ function buildGroupRepoCard(g) {
         await api(`/api/me/groups/${gid}/knowledge-repo`, {
           method: "PUT",
           body: JSON.stringify({
-            repo: (fd.get("repo") || "").toString().trim() || null,
-            branch: (fd.get("branch") || "").toString().trim() || null,
+            repo,
+            branch: branch || null,
           }),
         });
         invalidateSkillsCache(state.user.id);
