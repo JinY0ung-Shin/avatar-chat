@@ -6852,23 +6852,37 @@ function adminUserRow(u, reload) {
   let loaded = false;
   const manageBtn = el("button", { class: "ghost-sm", type: "button", text: "관리" });
   manageBtn.setAttribute("aria-expanded", "false");
-  manageBtn.addEventListener("click", async () => {
-    if (!detail.hidden) {
-      detail.hidden = true;
-      manageBtn.setAttribute("aria-expanded", "false");
-      return;
-    }
+  const loadDetail = async () => {
     detail.hidden = false;
     manageBtn.setAttribute("aria-expanded", "true");
     if (loaded) return;
+    const saved = manageBtn.textContent;
+    manageBtn.disabled = true;
+    manageBtn.textContent = "불러오는 중…";
     detail.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     try {
       const d = await loadAdminUserDetail(u.id);
       detail.replaceChildren(buildUserDetailGrid(d), buildUserActions(u, isAdmin, isMe, reload));
       loaded = true;
     } catch (e) {
-      detail.replaceChildren(el("div", { class: "warn-box", text: `불러오기 실패: ${e.message}` }));
+      detail.replaceChildren(
+        el("div", { class: "warn-box" }, [
+          `불러오기 실패: ${e.message} `,
+          el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => loadDetail() }),
+        ]),
+      );
+    } finally {
+      manageBtn.textContent = saved;
+      manageBtn.disabled = false;
     }
+  };
+  manageBtn.addEventListener("click", async () => {
+    if (!detail.hidden) {
+      detail.hidden = true;
+      manageBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    await loadDetail();
   });
 
   const lastSeen = u.lastSeenAt ? timeLabel(u.lastSeenAt) : "기록 없음";
@@ -7149,23 +7163,37 @@ function adminGroupRow(g, reload) {
   let loaded = false;
   const manageBtn = el("button", { class: "ghost-sm", type: "button", text: "관리" });
   manageBtn.setAttribute("aria-expanded", "false");
-  manageBtn.addEventListener("click", async () => {
-    if (!detail.hidden) {
-      detail.hidden = true;
-      manageBtn.setAttribute("aria-expanded", "false");
-      return;
-    }
+  const loadDetail = async () => {
     detail.hidden = false;
     manageBtn.setAttribute("aria-expanded", "true");
     if (loaded) return;
+    const saved = manageBtn.textContent;
+    manageBtn.disabled = true;
+    manageBtn.textContent = "불러오는 중…";
     detail.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     try {
       const d = await api(`/api/admin/groups/${encodeURIComponent(g.id)}`);
       detail.replaceChildren(buildAdminGroupDetail(g, d.members, reload));
       loaded = true;
     } catch (e) {
-      detail.replaceChildren(el("div", { class: "warn-box", text: `불러오기 실패: ${e.message}` }));
+      detail.replaceChildren(
+        el("div", { class: "warn-box" }, [
+          `불러오기 실패: ${e.message} `,
+          el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => loadDetail() }),
+        ]),
+      );
+    } finally {
+      manageBtn.textContent = saved;
+      manageBtn.disabled = false;
     }
+  };
+  manageBtn.addEventListener("click", async () => {
+    if (!detail.hidden) {
+      detail.hidden = true;
+      manageBtn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    await loadDetail();
   });
 
   const tags = el("div", { class: "ar-tags" }, [
