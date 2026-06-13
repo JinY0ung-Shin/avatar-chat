@@ -1305,6 +1305,12 @@ async function renderExplore() {
   const body = el("div", { class: "view-body scroll-thin" }, [searchBar, grid]);
   dom.main.append(header, body);
   const isCurrent = () => renderSeq === exploreViewSeq && state.view === "explore" && body.isConnected;
+  const clearExploreSearch = () => {
+    state.exploreQuery = "";
+    searchInput.value = "";
+    renderExploreGrid();
+    searchInput.focus();
+  };
 
   grid.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
   let loadError = null;
@@ -1347,7 +1353,12 @@ async function renderExplore() {
     const list = tokens.length ? sorted.filter((av) => matchesAvatarQuery(av, tokens)) : sorted;
     grid.replaceChildren();
     if (!list.length) {
-      grid.append(el("div", { class: "empty-note", text: `"${raw}"에 맞는 아바타가 없습니다.` }));
+      grid.append(
+        el("div", { class: "empty-note" }, [
+          `"${raw}"에 맞는 아바타가 없습니다.\n`,
+          el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearExploreSearch }),
+        ]),
+      );
       return;
     }
     for (const av of list) grid.append(buildAvatarCard(av));
