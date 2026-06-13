@@ -6620,6 +6620,7 @@ function buildGroupBlock(g, reload) {
 function buildGroupRosterRow(g, m, amAdmin, reload) {
   const isMe = m.userId === state.user.id;
   const actions = [];
+  let row;
   if (!isMe) {
     const chatBtn = el("button", { class: "ghost-sm", type: "button", text: "대화", title: `${m.displayName}의 아바타와 대화` });
     chatBtn.addEventListener("click", () => {
@@ -6642,39 +6643,53 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
   if (amAdmin && !isMe) {
     const roleBtn = el("button", { class: "ghost-sm", type: "button", text: m.role === "admin" ? "관리자 해제" : "관리자 지정" });
     roleBtn.addEventListener("click", async () => {
-      roleBtn.disabled = true;
       const saved = roleBtn.textContent;
+      setFormBusy(row, true);
       roleBtn.textContent = "변경 중…";
       try {
         await api(`/api/me/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(m.userId)}`, {
           method: "PATCH",
           body: JSON.stringify({ role: m.role === "admin" ? "member" : "admin" }),
         });
+      } catch (e) {
+        roleBtn.textContent = saved;
+        setFormBusy(row, false);
+        notify(`역할 변경 실패: ${e.message}`);
+        return;
+      }
+      try {
         await reload();
       } catch (e) {
         roleBtn.textContent = saved;
-        roleBtn.disabled = false;
-        notify(`역할 변경 실패: ${e.message}`);
+        if (row.isConnected) setFormBusy(row, false);
+        notify(`역할은 변경됐지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
       }
     });
     const del = el("button", { class: "ghost-sm danger", type: "button", text: "제거" });
     del.addEventListener("click", async () => {
       if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
-      del.disabled = true;
       const saved = del.textContent;
+      setFormBusy(row, true);
       del.textContent = "제거 중…";
       try {
         await api(`/api/me/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(m.userId)}`, { method: "DELETE" });
+      } catch (e) {
+        del.textContent = saved;
+        setFormBusy(row, false);
+        notify(`제거 실패: ${e.message}`);
+        return;
+      }
+      try {
         await reload();
       } catch (e) {
         del.textContent = saved;
-        del.disabled = false;
-        notify(`제거 실패: ${e.message}`);
+        if (row.isConnected) setFormBusy(row, false);
+        notify(`멤버는 제거됐지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
       }
     });
     actions.push(roleBtn, del);
   }
-  return el("div", { class: "plugin-row" }, [
+  row = el("div", { class: "plugin-row" }, [
     avatarNode({ ...m, id: m.userId }, 32, { alt: "" }),
     el("div", { class: "pr-main" }, [
       el("strong", { text: m.displayName + (isMe ? " (나)" : "") }),
@@ -6682,6 +6697,7 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
     ]),
     el("div", { class: "pr-actions" }, actions),
   ]);
+  return row;
 }
 
 // Group admin's view of the shared knowledge repo — mirrors buildKnowledgeRepoCard
@@ -7681,6 +7697,7 @@ function buildAdminGroupDetail(g, members, reload) {
 
 function adminGroupMemberRow(groupId, m, reload) {
   const isAdmin = m.role === "admin";
+  let row;
   const roleBtn = el("button", {
     class: "ghost-sm",
     type: "button",
@@ -7688,41 +7705,56 @@ function adminGroupMemberRow(groupId, m, reload) {
     text: isAdmin ? "관리자 해제" : "관리자 지정",
   });
   roleBtn.addEventListener("click", async () => {
-    roleBtn.disabled = true;
     const saved = roleBtn.textContent;
+    setFormBusy(row, true);
     roleBtn.textContent = "변경 중…";
     try {
       await api(`/api/admin/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(m.userId)}`, {
         method: "PATCH",
         body: JSON.stringify({ role: isAdmin ? "member" : "admin" }),
       });
+    } catch (e) {
+      roleBtn.textContent = saved;
+      setFormBusy(row, false);
+      notify(`역할 변경 실패: ${e.message}`);
+      return;
+    }
+    try {
       await reload();
     } catch (e) {
       roleBtn.textContent = saved;
-      roleBtn.disabled = false;
-      notify(`역할 변경 실패: ${e.message}`);
+      if (row.isConnected) setFormBusy(row, false);
+      notify(`역할은 변경됐지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
     }
   });
   const del = el("button", { class: "msg-act danger", type: "button", title: "멤버 제거", "aria-label": `${m.displayName} 제거` });
   del.append(icon("trash"));
   del.addEventListener("click", async () => {
     if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
-    del.disabled = true;
     const savedTitle = del.title;
     const savedLabel = del.getAttribute("aria-label");
+    setFormBusy(row, true);
     del.title = "제거 중…";
     del.setAttribute("aria-label", `${m.displayName} 제거 중`);
     try {
       await api(`/api/admin/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(m.userId)}`, { method: "DELETE" });
+    } catch (e) {
+      del.title = savedTitle;
+      del.setAttribute("aria-label", savedLabel || `${m.displayName} 제거`);
+      setFormBusy(row, false);
+      notify(`제거 실패: ${e.message}`);
+      return;
+    }
+    try {
       await reload();
     } catch (e) {
       del.title = savedTitle;
       del.setAttribute("aria-label", savedLabel || `${m.displayName} 제거`);
-      del.disabled = false;
-      notify(`제거 실패: ${e.message}`);
+      if (row.isConnected) setFormBusy(row, false);
+      notify(`멤버는 제거됐지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
     }
   });
-  return el("div", { class: "plugin-row" }, [
+  row = el("div", { class: "plugin-row" }, [
     avatarNode({ ...m, id: m.userId }, 32, { alt: "" }),
     el("div", { class: "pr-main" }, [
       el("strong", { text: m.displayName }),
@@ -7731,6 +7763,7 @@ function adminGroupMemberRow(groupId, m, reload) {
     isAdmin ? el("span", { class: "tag write", text: "관리자" }) : el("span", { class: "tag read", text: "멤버" }),
     el("div", { class: "pr-actions" }, [roleBtn, del]),
   ]);
+  return row;
 }
 
 /* ---- 가입·접근 (signup policy) ---- */
