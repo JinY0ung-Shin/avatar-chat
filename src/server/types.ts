@@ -2,6 +2,18 @@ import type { ScheduleKind } from "./routineSchedule.js";
 
 export type AgentRuntime = "claude" | "local";
 
+/**
+ * Minimal avatar-owner descriptor the in-process MCP tool servers
+ * (`agent/*Tools.ts`) act on behalf of: identity for commit attribution and the
+ * username/displayName fallbacks. `alias` is the avatar's self-name (optional).
+ */
+export interface AgentOwner {
+  id: string;
+  username: string;
+  displayName: string;
+  alias?: string;
+}
+
 export interface AppConfig {
   port: number;
   dataDir: string;
@@ -516,6 +528,18 @@ export interface RoutineJob {
   lastStatus: "success" | "error" | null;
   lastError: string | null;
   createdAt: string;
+}
+
+/**
+ * The optional schedule-field patch shared by `createRoutineJob`/
+ * `updateRoutineJob`: every schedule field is optional, and callers supplying a
+ * subset leave the rest at their default (create) or current value (update).
+ */
+export interface RoutineSchedulePatch {
+  scheduleKind?: ScheduleKind;
+  minuteOfDay?: number;
+  daysOfWeek?: number[] | null;
+  intervalMinutes?: number | null;
 }
 
 export interface PluginRoot {
