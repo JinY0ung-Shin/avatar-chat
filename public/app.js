@@ -4667,16 +4667,21 @@ function buildTabBar({ tabs, getTab, setTab, ariaLabel, idPrefix, panelId, onAct
   return { tabBar, syncTabs };
 }
 
+let settingsViewSeq = 0;
+
 async function renderSettings() {
+  const renderSeq = ++settingsViewSeq;
   const header = viewHeader("내 아바타", "프로필과 플러그인을 관리하고 공개하세요");
   const body = el("div", { class: "view-body scroll-thin settings-body" });
   dom.main.append(header, body);
+  const isCurrent = () => renderSeq === settingsViewSeq && state.view === "settings" && body.isConnected;
 
   body.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
   // One failed loader must NOT render every card as its empty state ("플러그인이
   // 없습니다" 등) — that reads as data loss and invites duplicate re-adds.
   const results = await Promise.allSettled([refreshMe(), loadPlugins(), loadKnowledge()]);
   if (sessionExpired) return;
+  if (!isCurrent()) return;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
     body.replaceChildren(
@@ -4882,6 +4887,7 @@ async function renderSettings() {
     onActivate: renderTab,
   });
   renderTab();
+  if (!isCurrent()) return;
   body.replaceChildren(tabBar, panel);
   syncTabs();
 }
