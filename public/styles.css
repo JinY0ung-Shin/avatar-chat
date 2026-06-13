@@ -3801,6 +3801,7 @@ textarea::placeholder {
   display: flex;
   gap: var(--s-2);
   align-items: center;
+  flex-wrap: wrap;
 }
 .kr-compose {
   display: grid;
@@ -3818,6 +3819,7 @@ textarea::placeholder {
 .kr-compose-actions {
   display: flex;
   gap: var(--s-2);
+  flex-wrap: wrap;
 }
 
 /* Admin */
@@ -4371,6 +4373,20 @@ textarea::placeholder {
   .group-add .primary {
     flex: 1 1 160px;
   }
+  .kr-actions,
+  .kr-compose-actions,
+  .routine-modal-actions-left,
+  .routine-modal-actions-right,
+  .setup-banner .sb-actions {
+    width: 100%;
+  }
+  .kr-actions > button,
+  .kr-compose-actions > button,
+  .routine-modal-actions-left > button,
+  .routine-modal-actions-right > button,
+  .setup-banner .sb-actions > button {
+    flex: 1 1 140px;
+  }
 }
 
 /* ---- Onboarding modal + knowledge-repo link ---- */
@@ -4538,6 +4554,7 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: var(--s-2);
+  flex-wrap: wrap;
 }
 .routine-modal-actions .ghost-sm.danger {
   color: var(--danger);
@@ -4821,5 +4838,6 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  flex-wrap: wrap;
   flex: none;
 }
