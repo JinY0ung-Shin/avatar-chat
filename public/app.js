@@ -6574,8 +6574,23 @@ function buildGroupsCard() {
     };
     const render = (gs) => {
       if (!gs.length) {
+        const emptyChildren = ["아직 속한 그룹이 없습니다. 그룹은 시스템 관리자가 만들고 멤버를 추가합니다."];
+        if (state.user?.roles?.includes("admin")) {
+          emptyChildren.push(
+            "\n",
+            el("button", {
+              class: "linkish small",
+              type: "button",
+              text: "관리자에서 그룹 만들기",
+              onclick: () => {
+                state.adminTab = "groups";
+                goView("admin");
+              },
+            }),
+          );
+        }
         body.replaceChildren(
-          el("div", { class: "empty-note", text: "아직 속한 그룹이 없습니다. 그룹은 시스템 관리자가 만들고 멤버를 추가합니다." }),
+          el("div", { class: "empty-note" }, emptyChildren),
         );
         return;
       }
