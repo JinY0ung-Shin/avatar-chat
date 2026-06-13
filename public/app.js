@@ -5386,6 +5386,7 @@ async function renderSettings() {
         });
         state.user = res.user;
         btn.textContent = "저장됨 ✓";
+        notify("프로필을 저장했습니다.", "ok");
         setTimeout(() => { btn.textContent = saved; setFormBusy(formEl, false); }, 1200);
         if (dom.navButtons) renderRailUser();
       } catch (err) {
@@ -6147,6 +6148,7 @@ function buildGitCredentialsCard() {
           refreshRow();
           setFormBusy(formEl, true);
           saveBtn.textContent = "저장됨 ✓";
+          notify(`${label}을 저장했습니다.`, "ok");
           setTimeout(() => { setFormBusy(formEl, false); refreshRow(); }, 1200);
         } catch (err) {
           saveBtn.textContent = saved;
@@ -6225,6 +6227,7 @@ function buildGitCredentialsCard() {
         });
         state.user = user;
         btn.textContent = "저장됨 ✓";
+        notify("커밋 정보를 저장했습니다.", "ok");
         setTimeout(() => { btn.textContent = saved; setFormBusy(formEl, false); }, 1200);
       } catch (err) {
         btn.textContent = saved;
@@ -6466,6 +6469,7 @@ function buildSecretsCard() {
         renderList();
         renderPublicKey();
         btn.textContent = "저장됨 ✓";
+        notify(`시크릿 "${name}"을(를) 저장했습니다.`, "ok");
         setTimeout(() => { btn.textContent = saved; setFormBusy(formEl, false); }, 1200);
       } catch (err) {
         notify(`저장 실패: ${err.message}`);
