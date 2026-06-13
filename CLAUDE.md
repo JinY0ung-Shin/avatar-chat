@@ -2,6 +2,14 @@
 
 See README.md for features, setup, env vars, and verification (`npm run lint`/`test`/`build`).
 
+## Module structure & sub-notes
+After a 2026-06 cleanup, the big files were split behind **unchanged exports** — import paths are stable:
+- **HTTP:** `app.ts` is thin glue (`createApp` mounts per-domain routers); handlers live in `src/server/routes/{auth,profile,plugins,knowledgeRepo,groups,routines,chat,admin}.ts` (+ `_shared.ts`).
+- **Agent:** `claudeAgent.ts` re-exports `buildPrompt` (now in `agent/promptBuilder.ts`), the SDK-message handlers (`agent/sdkMessageHandlers.ts`), and the PreToolUse hook (`agent/preToolUseHook.ts`). Shared self-state in `agent/ownerState.ts`; MCP helpers in `agent/mcpTools.ts`; repo-tool skeleton in `agent/repoToolKit.ts`.
+- **Repo git:** low-level plumbing shared via `repoGitCore.ts` + `repoGitGuards.ts`.
+- **Tests:** `units.test.ts` split into `agent-core`/`agent-tools`/`store`/`infra` (+ `tests/helpers.ts`).
+- Module-level cautions: [`src/server/CLAUDE.md`](src/server/CLAUDE.md), [`src/server/agent/CLAUDE.md`](src/server/agent/CLAUDE.md), [`public/CLAUDE.md`](public/CLAUDE.md). Deferred/riskier work: [`docs/REFACTORING-BACKLOG.md`](docs/REFACTORING-BACKLOG.md).
+
 ## Commands
 - `npm run dev` — local dev server on port 48787.
 - `npm run lint && npm test && npm run build` — standard verification gate.

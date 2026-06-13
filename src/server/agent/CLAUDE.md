@@ -1,0 +1,25 @@
+# src/server/agent — Claude notes
+
+Agent orchestration + in-process MCP tool servers. Read with the **root `CLAUDE.md`** (language split, permission gate, MCP-only git, self-state/meta-cognition) and [`../CLAUDE.md`](../CLAUDE.md). This file adds module-structure cautions.
+
+## claudeAgent.ts is split (behind unchanged exports)
+`claudeAgent.ts` is now the orchestrator (`runClaudeAgent` + subprocess-env helpers) and **re-exports** the moved symbols so importers (app.ts/routes, tests) keep their paths:
+- `promptBuilder.ts` — `buildPrompt` + `compactConversationHistory`/`conversationHistoryBlock` + `GIT_MCP_ONLY_GUIDANCE`. `buildPrompt` now assembles per-section helpers (knowledgeRepo/gitRepo/groups/secrets/sshEnablement/greeting). **`agent-core.test.ts` asserts the assembled prompt byte-for-byte** — section edits must keep output identical.
+- `sdkMessageHandlers.ts` — SDK-message→`AgentEvents` translation (`handle*` + Task helpers + `LoopState` + `interpretResult`/`resultErrorMessage`).
+- `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput` + `rewriteBashCommandWithRtk`.
+- `agentUtils.ts` — small shared helpers.
+Internal helpers (`LoopState`, etc.) are exported from the new siblings but were never public from `claudeAgent.ts`, so no importer path changed. Keep the re-export set in `claudeAgent.ts` minimal to the original public surface.
+
+## Adding / changing an MCP tool server
+- **One template per `*Tools.ts`:** `buildXTools` (handler-level owner/elevated guards) + `buildXServer` + a `SERVER_NAME`/`TOOL_NAMES` const pair.
+- **A new tool means updating BOTH `mcpServers` AND `allowedTools` in `claudeAgent.ts`** — they are two hand-synced lists keyed on the same servers. Add to one but not the other and the model either sees a tool it can't call or can call a tool it can't see. (Making this data-driven is deferred, T3.5.)
+- **Guard convention differs per file BY DESIGN:** repo/groupRepo/system/sshIdentity/knowledge-write gate on `ctx.viewerIsOwner` (= `ownerToolAccess` = owner chat OR owner routine); `gitRepoTools` splits owner vs elevated; `confluenceTools` gates writes on `ctx.elevated`; `sshTrustTools`/`avatarDirectoryTools` are intentionally UNGATED (fingerprints aren't secrets; directory search is all-viewer read-only). Don't "normalize" these.
+- **The `mcp__`-prefix auto-allow in the PreToolUse hook fires BEFORE the owner check**, so every tool MUST self-gate in its handler. Don't rely on the hook.
+
+## Shared helpers (don't re-copy)
+- **`mcpTools.ts`** — `text(message, isError?)` (the MCP result wrapper, was copy-pasted in all 9 servers), plus `decodeRepoFsError` (INVALID_PATH/FILE_TOO_LARGE/NOT_A_FILE/SKILL_EXISTS sentinels) and `decodeExecError(err, {redactToken?, fallback?})` (git/gh stderr+`scrubGitError`). Use these; don't reintroduce a local `text()`.
+- **`repoToolKit.ts`** — the shared guard→resolve→ensureClone→decode skeleton for skill/file CRUD used by `repoTools` (owner-only) and `groupRepoTools` (owner + group + admin-role write gate). `commit` handlers and `create_repo` are intentionally NOT folded in (they keep their own token gate/audit/no-ensureClone optimization). `OWNER_ONLY` here = `'This tool can only be used by the avatar owner.'`; **`systemTools` has a DIFFERENT `OWNER_ONLY` string** (`…in a conversation the avatar owner is participating in.`) — they are not the same constant.
+- **`ownerState.ts`** — `summarizeOwnerState(store, config, avatarUserId): OwnerState` returns UNFORMATTED self-state DATA shared by `buildPrompt` (English prompt paragraphs) and `systemTools.describe_system` (tool text). The root CLAUDE.md mandates these two stay in sync — this module is the structural sync point. **It returns ungated facts; gating + formatting stay at each call site** (e.g. `buildPrompt` blanks secrets/groups to `[]` unless `ownerToolAccess`; Confluence presence is computed differently in each and intentionally NOT shared). When you add a self-state fact to one consumer, add it to `OwnerState` and the other.
+
+## Owner identity
+The `AgentOwner` type (`{id, username, displayName, alias?}`) lives in `../types.ts` and the descriptor is built ONCE in `runClaudeAgent` and passed to all tool servers. Don't re-declare the shape or rebuild the literal per server.
