@@ -5995,6 +5995,7 @@ function buildGitCredentialsCard() {
         clearBtn.textContent = "삭제 중…";
         try {
           await clearToken();
+          notify(`${label}을 삭제했습니다.`, "ok");
           renderStatus();
           clearBtn.textContent = saved;
           setFormBusy(form, false);
@@ -6292,6 +6293,7 @@ function buildSecretsCard() {
           delBtn.textContent = "삭제 중…";
           try {
             await deleteSecret(name);
+            notify(`시크릿 "${name}"을(를) 삭제했습니다.`, "ok");
           } catch (err) {
             notify(`삭제 실패: ${err.message}`);
             delBtn.disabled = false;
