@@ -2047,10 +2047,12 @@ function buildNotificationRow(n, refresh) {
     role: "button",
     tabindex: "0",
     onclick: (e) => {
+      if (row.getAttribute("aria-busy") === "true") return;
       if (e.target.closest("button")) return; // inner actions handle themselves
       openNotificationChat(n);
     },
     onkeydown: (e) => {
+      if (row.getAttribute("aria-busy") === "true") return;
       if (e.target !== e.currentTarget) return;
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
@@ -2074,7 +2076,7 @@ function buildNotificationRow(n, refresh) {
   const delBtn = el("button", { class: "msg-act danger", type: "button", "aria-label": "알림 삭제", title: "알림 삭제" });
   delBtn.append(icon("trash"));
   delBtn.addEventListener("click", async () => {
-    delBtn.disabled = true;
+    setFormBusy(row, true);
     const savedTitle = delBtn.title;
     const savedLabel = delBtn.getAttribute("aria-label");
     delBtn.title = "삭제 중…";
@@ -2083,7 +2085,7 @@ function buildNotificationRow(n, refresh) {
       await api(`/api/me/notifications/${encodeURIComponent(n.id)}`, { method: "DELETE" });
       await refresh?.();
     } catch (e) {
-      delBtn.disabled = false;
+      setFormBusy(row, false);
       delBtn.title = savedTitle;
       delBtn.setAttribute("aria-label", savedLabel || "알림 삭제");
       notify(`삭제 실패: ${e.message}`);
@@ -6897,7 +6899,8 @@ function buildKnowledgeRequestRow(r, refresh) {
     addBtn.classList.remove("active");
   });
   ignoreBtn.addEventListener("click", async () => {
-    ignoreBtn.disabled = true;
+    const controls = [textarea, sendBtn, cancelBtn, addBtn, ignoreBtn];
+    controls.forEach((c) => (c.disabled = true));
     const saved = ignoreBtn.textContent;
     ignoreBtn.textContent = "무시 중…";
     try {
@@ -6905,7 +6908,7 @@ function buildKnowledgeRequestRow(r, refresh) {
       await refresh?.();
     } catch (e) {
       ignoreBtn.textContent = saved;
-      ignoreBtn.disabled = false;
+      controls.forEach((c) => (c.disabled = false));
       notify(`무시 처리 실패: ${e.message}`);
     }
   });
