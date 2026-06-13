@@ -99,7 +99,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
   return [
     tool(
       "describe_system",
-      "현재 아바타 시스템의 구조와 이 아바타가 관리할 수 있는 설정(지식 저장소, 플러그인, 루틴, 시크릿 이름 등)을 요약한다. 소유자에게는 현재 상태를 포함한다.",
+      "현재 아바타 시스템의 구조와 이 아바타가 관리할 수 있는 설정을 요약한다. 소유자에게는 현재 상태(프로필 공개 여부·소개·해시태그, 지식 저장소, 일반 git repo, 그룹과 역할, 시크릿 이름, SSH 활성 여부, 신뢰 사용자, 플러그인, 루틴, 대기 중 정보 요청)를 포함한다. 자신의 설정·상태에 대한 질문을 받으면 추측하지 말고 먼저 이 도구를 호출한다.",
       {},
       async () => {
         const user = store.getUserById(ctx.avatarUserId);
@@ -110,6 +110,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           "- 플러그인은 GitHub repo 또는 git URL로 추가되며 다음 대화부터 로드됩니다.",
           "- 루틴은 매일 KST 기준 지정 시간에 headless로 실행되며, 소유자와 같은 도구 권한으로 작업하고 루틴 탭에 결과를 남깁니다.",
           "- 시크릿 값은 노출되지 않고, 이름만 아바타에게 알려집니다.",
+          "- git 원격 작업(clone/push 등)은 전용 MCP 도구로만 수행됩니다. 셸에는 git 자격증명이 없습니다.",
         ];
         if (!ctx.viewerIsOwner) {
           return text(
@@ -121,13 +122,27 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         const knowledgeRepo = store.getKnowledgeRepo(ctx.avatarUserId);
         const gitRepos = store.listGitRepos(ctx.avatarUserId);
         const secretNames = store.listUserSecretNames(ctx.avatarUserId);
+        const groups = user?.groups ?? store.listUserGroups(ctx.avatarUserId);
+        const trustedUsers = store.listTrustedUsers(ctx.avatarUserId);
+        const openRequests = store.countOpenKnowledgeRequests(ctx.avatarUserId);
+        // Mirrors the runtime's model resolution (claudeAgent: env pin > admin
+        // override > SDK default) so the avatar reports the model it ACTUALLY
+        // runs with, not just the env value.
+        const adminModel = store.getModelOverride();
+        const modelLine = ctx.config.anthropicModel
+          ? `${ctx.config.anthropicModel} (환경변수 고정)`
+          : adminModel
+            ? `${adminModel} (관리자 설정)`
+            : "(SDK 기본값)";
+        const hashtags = user?.hashtags ?? [];
         const lines = [
           ...publicGuide,
           "",
           "현재 아바타 상태:",
           `- 이름: ${user?.alias || user?.displayName || ctx.owner.displayName}`,
+          `- 프로필: ${user?.published ? "공개됨(탐색에 노출)" : "비공개(탐색에 숨김)"}, 소개글 ${user?.intro?.trim() ? "설정됨" : "(없음)"}, 역량 해시태그 ${hashtags.length ? hashtags.map((t) => `#${t}`).join(" ") : "(없음)"}`,
           `- runtime: ${ctx.config.agentRuntime}`,
-          `- configuredModel: ${ctx.config.anthropicModel ?? "(SDK default)"}`,
+          `- 사용 모델: ${modelLine}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
           `- Confluence host: ${ctx.config.confluenceUrl ? "설정됨" : "(없음)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "시크릿 설정됨" : "(없음)"}`,
@@ -135,8 +150,12 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- 일반 git repo: ${gitRepos.length}개`,
           `- 사내 Git 토큰(GIT_TOKEN): ${store.getGitToken(ctx.avatarUserId) ? "설정됨" : "없음"}`,
           `- 시크릿 이름: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(없음)"}`,
+          `- 원격 SSH 도구: ${secretNames.includes("SSH_PRIVATE_KEY") ? "활성(SSH_PRIVATE_KEY 설정됨)" : "비활성(SSH_PRIVATE_KEY 시크릿 없음)"}`,
+          `- 그룹: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "관리자" : "멤버"}, 공용 저장소 ${g.knowledgeRepoConfigured ? "연결됨" : "없음"})`).join(", ") : "(없음)"} — 같은 그룹 멤버끼리는 자동으로 상호 신뢰됩니다.`,
+          `- 직접 신뢰 설정한 사용자: ${trustedUsers.length ? trustedUsers.map((t) => `${t.displayName}(@${t.username})`).join(", ") : "(없음)"}`,
           `- 플러그인: ${plugins.length}개 (${plugins.filter((p) => p.enabled).length}개 활성)`,
           `- 루틴: ${routines.length}개 (${routines.filter((r) => r.enabled).length}개 활성)`,
+          `- 대기 중 정보 요청: ${openRequests}건${openRequests > 0 ? " (pending_requests로 내용 확인)" : ""}`,
         ];
         return text(lines.join("\n"));
       },

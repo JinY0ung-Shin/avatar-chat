@@ -137,7 +137,10 @@ export function buildGroupRepoTools(
           const list = entries.map((e) => (e.type === "dir" ? `${e.path}/` : e.path)).join("\n");
           return text(`'${group.name}' 그룹 지식 저장소 파일 목록:\n${list}`);
         } catch (error) {
-          return text(`저장소를 불러오지 못했습니다: ${scrubGitError(error)}`, true);
+          return text(
+            `저장소를 불러오지 못했습니다: ${scrubGitError(error)}\n저장소 주소/브랜치와 토큰 권한을 확인하세요. Bash git으로 직접 clone하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            true,
+          );
         }
       },
     ),
@@ -249,7 +252,10 @@ export function buildGroupRepoTools(
           });
           return text(`'${group.name}' 그룹 지식 저장소에 변경사항을 커밋·푸시했습니다: ${c.repo}`);
         } catch (error) {
-          return text(`커밋/푸시 실패: ${scrubGitError(error)}`, true);
+          return text(
+            `커밋/푸시 실패: ${scrubGitError(error)}\n토큰(GIT_TOKEN)의 쓰기 권한과 원격 브랜치 보호 설정을 확인하세요. Bash \`git push\`로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            true,
+          );
         }
       },
     ),
@@ -297,7 +303,7 @@ export function buildGroupRepoTools(
             const status = result.status ? `, HTTP ${result.status}` : "";
             const exitCode = result.exitCode ? `, exit ${result.exitCode}` : "";
             return text(
-              `GitHub 저장소 생성 실패 (host: ${targetHost}${status}${exitCode}): ${result.message}`,
+              `GitHub 저장소 생성 실패 (host: ${targetHost}${status}${exitCode}): ${result.message}\n토큰(GIT_TOKEN)에 repo 생성 권한이 있는지, 같은 이름의 저장소가 이미 있는지 확인하세요. Bash \`gh\`/git으로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
               true,
             );
           }

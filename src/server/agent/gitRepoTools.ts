@@ -151,7 +151,10 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           return text(`git repo를 등록하고 sync했습니다: ${renderRepo(store.getGitRepo(ctx.avatarUserId, name)!)}.`);
         } catch (error) {
           if (!existed) store.deleteGitRepo(ctx.avatarUserId, name);
-          return text(`git repo 등록/sync 실패: ${errorMessage(error)}`, true);
+          return text(
+            `git repo 등록/sync 실패: ${errorMessage(error)}\nrepo 주소·브랜치 이름·접근 권한을 확인하세요. private repo는 설정 → Git 자격증명의 토큰이 필요합니다. Bash \`git clone\`으로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            true,
+          );
         }
       },
     ),
@@ -182,7 +185,10 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           store.markGitRepoSynced(ctx.avatarUserId, repoCtx.name);
           return text(`git repo를 sync했습니다: ${repoCtx.name}`);
         } catch (error) {
-          return text(`sync 실패: ${errorMessage(error)}`, true);
+          return text(
+            `sync 실패: ${errorMessage(error)}\n미커밋 변경이나 충돌이 있으면 실패합니다 — status로 작업트리를 확인하세요. Bash git으로 우회하지 마세요.`,
+            true,
+          );
         }
       },
     ),
@@ -321,7 +327,10 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           const committed = await commitGitRepo(repoCtx, args.message, commitIdentityFor(store, ctx.owner), args.paths);
           return text(committed ? `변경사항을 커밋했습니다: ${repoCtx.name}` : "커밋할 변경사항이 없습니다.");
         } catch (error) {
-          return text(`commit 실패: ${errorMessage(error)}`, true);
+          return text(
+            `commit 실패: ${errorMessage(error)}\nstatus/diff로 작업트리 상태를 확인하세요. Bash git으로 우회하지 마세요.`,
+            true,
+          );
         }
       },
     ),
@@ -337,7 +346,10 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           const branch = await pushGitRepo(repoCtx);
           return text(`변경사항을 push했습니다: ${repoCtx.name} -> ${branch}`);
         } catch (error) {
-          return text(`push 실패: ${errorMessage(error)}`, true);
+          return text(
+            `push 실패: ${errorMessage(error)}\n원격 쓰기 권한·토큰·보호된 브랜치 여부를 확인하세요(public repo도 push에는 쓰기 권한이 필요합니다). Bash \`git push\`로 우회하지 마세요 — 셸에는 git 자격증명이 없습니다.`,
+            true,
+          );
         }
       },
     ),

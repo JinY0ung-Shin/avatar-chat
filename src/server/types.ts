@@ -396,7 +396,8 @@ export interface AgentRequest {
   autoApprove?: boolean;
   /**
    * Names of the avatar owner's configured secret-tab environment variables.
-   * Values are never included. Set only for owner, non-headless chat prompts.
+   * Values are never included. Set only for owner-driven turns: owner chats
+   * AND owner-scheduled routines running with owner tool access.
    */
   secretNames?: string[];
   /**
@@ -425,9 +426,18 @@ export interface AgentRequest {
   /**
    * Groups the avatar owner belongs to, with role + whether each has a shared
    * knowledge repo. Injected into the prompt so the avatar knows its group
-   * context (META-COGNITION). Set only for owner, non-headless chats.
+   * context (META-COGNITION). Set only for owner-driven turns (owner chats and
+   * owner-scheduled routines) — group repo tools register on the same gate.
    */
   groupMemberships?: UserGroupMembership[];
+  /**
+   * Group names the (non-owner) viewer shares with the avatar owner — i.e. the
+   * REASON this viewer is auto-trusted, when group co-membership is the source.
+   * Lets the prompt explain why the current colleague is elevated
+   * (META-COGNITION) instead of presenting trust as unexplained. Empty for the
+   * owner, for directly-trusted viewers, and for plain colleagues.
+   */
+  trustedViaGroups?: string[];
 }
 
 /**

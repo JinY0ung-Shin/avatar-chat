@@ -1637,6 +1637,10 @@ export function createApp(services = createServices()) {
           // Elevated tool permissions for the owner OR a trusted user. The tool
           // gate denies everyone else, so auto-approving the elevated path is safe.
           elevated: req.user!.id === avatar.id || store.isTrustedFor(req.user!.id, avatar.id),
+          // WHY a non-owner viewer is elevated, when group co-membership is the
+          // source: the shared group names surface in the prompt (META-COGNITION).
+          trustedViaGroups:
+            req.user!.id === avatar.id ? [] : store.sharedGroupNames(req.user!.id, avatar.id),
           autoApprove: true,
           greeting,
         },

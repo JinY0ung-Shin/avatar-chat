@@ -834,6 +834,20 @@ export function buildPreToolUseHook(
   };
 }
 
+/**
+ * Standing guidance for every tool-capable run (owner, trusted user, owner
+ * routine): remote git work goes through the app-managed MCP bridges ONLY. The
+ * agent shell has no git credentials (they're stripped from the subprocess
+ * env), so a Bash `git clone`/`git push` fallback can't authenticate — and it
+ * bypasses the app's audit/error-scrub path. Injected per turn so the avatar
+ * doesn't drift into shell git after an MCP failure.
+ */
+const GIT_MCP_ONLY_GUIDANCE =
+  "**git 원격 작업은 MCP 도구로만**: 저장소 clone/pull/push/fetch 같은 원격 git 작업은 반드시 전용 MCP 도구(`mcp__repo__*` 개인 지식 저장소, `mcp__git_repo__*` 일반 repo, `mcp__group_repo__*` 그룹 저장소)로만 수행하세요. " +
+  "git 자격증명은 서버가 이 도구들에만 주입하며 당신의 셸에는 없습니다 — Bash로 `git clone`/`git push`/`gh`를 실행해도 인증할 수 없습니다. " +
+  "MCP 도구가 실패하면 Bash git으로 우회하거나 재시도하지 말고, 실패 메시지의 원인(토큰/권한/브랜치/URL)을 해결하거나 사용자에게 보고하세요. " +
+  "앱이 관리하는 로컬 클론 디렉토리에서 직접 git 명령을 실행하는 것도 금지입니다.";
+
 export function buildPrompt(request: AgentRequest, openRequestCount: number): string {
   const alias = request.avatar.alias?.trim();
   const secretNames = Array.from(new Set((request.secretNames ?? []).filter(Boolean))).sort();
@@ -876,12 +890,44 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
   // present and state read-only.
   if (request.headless) {
     lines.push(
-      "이것은 예약된 루틴 작업의 **자동 실행**입니다. 응답을 실시간으로 보는 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과를 보고하세요.",
+      request.allowHeadlessTools
+        ? "이것은 예약된 루틴 작업의 **자동 실행**입니다. 응답을 실시간으로 보는 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과를 보고하세요."
+        : "이것은 대화가 아닌 **자동 실행 작업**입니다(예: 프로필 소개·해시태그 생성). 중간 질문에 답할 사람이 없으므로 질문하지 말고, 주어진 작업을 끝까지 수행해 결과만 출력하세요.",
     );
     if (request.allowHeadlessTools) {
       lines.push(
         "이 루틴은 소유자의 일반 대화와 같은 도구 권한으로 실행됩니다. 필요한 파일/원격/저장소 작업은 수행하되, 확인 질문이나 권한 프롬프트를 기다릴 수 없으므로 작업 범위를 보수적으로 지키세요. 사용자에게 따로 알려야 할 중요한 결과가 있으면 `mcp__system__notify_user`로 알림을 남기세요.",
       );
+      // Routine self-state (META-COGNITION): owner-level tools ARE registered
+      // for this run, so the routine needs the same state an owner chat gets —
+      // otherwise it guesses (e.g. calls scaffold_skill with no repo connected,
+      // or never realizes its group repo tools exist).
+      const routineState: string[] = [
+        request.knowledgeRepoConfigured !== false
+          ? "개인 지식 저장소: 연결됨 — `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit` 사용 가능(변경은 commit 해야 푸시됩니다)."
+          : request.gitTokenSet
+            ? "개인 지식 저장소: 없음 — 저장소가 필요한 작업이면 `mcp__repo__create_repo`로 먼저 만들어 연결하세요(연결 전에는 `scaffold_skill`/`write_file`/`commit`이 실패합니다)."
+            : "개인 지식 저장소: 없음, `GIT_TOKEN`도 미설정 — 저장소가 필요한 작업이면 수행할 수 없으니 결과 보고에 토큰 등록이 필요하다고 남기세요.",
+      ];
+      const routineGroups = request.groupMemberships ?? [];
+      if (routineGroups.length > 0) {
+        routineState.push(
+          `소유자의 그룹: ${routineGroups
+            .map(
+              (g) =>
+                `${g.name}(${g.role === "admin" ? "관리자" : "멤버"}, 공용 저장소 ${g.knowledgeRepoConfigured ? "연결됨" : "없음"})`,
+            )
+            .join(", ")} — \`mcp__group_repo__*\` 도구를 쓸 수 있습니다(멤버는 읽기, 관리자만 쓰기/commit).`,
+        );
+      }
+      if (secretNames.length > 0) {
+        routineState.push(
+          `설정된 시크릿 이름: ${secretNames.map((name) => `\`${name}\``).join(", ")} (값은 노출되지 않으며 출력하지 마세요).`,
+        );
+      }
+      routineState.push("그 밖의 현재 설정·상태가 필요하면 `mcp__system__describe_system`을 호출하세요.");
+      lines.push(`현재 자기 상태: ${routineState.join(" ")}`);
+      lines.push(GIT_MCP_ONLY_GUIDANCE);
     } else {
       lines.push(
         "이 실행은 읽기 전용입니다. 파일을 수정/생성하지 말고, 읽기 도구(Read/Glob/Grep)만 사용하세요.",
@@ -923,6 +969,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "`push`는 main 전용이 아니라 등록된 branch(또는 branch를 비운 경우 clone의 현재/default branch)로 `HEAD`를 푸시합니다. 소유자가 특정 브랜치를 말하면 `register_repo`의 `branch`에 그 이름을 지정하세요. " +
         "사내/사외 public repo의 clone/sync는 토큰 없이 시도하므로 토큰 설정을 먼저 요구하지 마세요. push는 원격 쓰기 권한이 있는 경우에만 성공합니다. 등록/삭제는 소유자 전용이고, 이미 등록된 repo 작업은 소유자 또는 신뢰 사용자 대화에서만 가능합니다. GitHub issue/PR/release 관리는 포함하지 않는 순수 git 작업 도구입니다.",
     );
+    lines.push(GIT_MCP_ONLY_GUIDANCE);
     // Group meta-cognition: which groups the owner is in, their role, and the
     // shared group knowledge repo (managed via mcp__group_repo__*). Group members
     // auto-trust each other, so teammates' avatars are reachable at elevated level.
@@ -999,12 +1046,19 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "이 대화는 읽기 전용입니다. 파일을 수정하거나 생성하지 말고, 읽기 도구(Read/Glob/Grep), 허용된 원격 SSH 조회 도구, 제공된 정보 요청 도구만 사용하세요.",
       );
     } else {
+      // Tell the avatar WHY this viewer is elevated when the trust comes from
+      // group co-membership (META-COGNITION) — group context changes how the
+      // avatar should respond (shared group skills/repo).
+      const viaGroups = (request.trustedViaGroups ?? []).filter(Boolean);
       lines.push(
-        "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.",
+        viaGroups.length > 0
+          ? `이 대화 상대는 소유자와 같은 그룹(${viaGroups.map((g) => `'${g}'`).join(", ")}) 소속이라 **자동으로 신뢰(elevated)** 된 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 같은 그룹의 공용 지식 저장소 스킬을 공유하고 있을 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.`
+          : "이 대화 상대는 소유자가 신뢰하는 사용자로, 파일 수정·명령 실행 도구를 사용할 수 있습니다. 원격 SSH 도구는 관리자가 허용한 범위에서만 사용하세요.",
       );
       lines.push(
         "소유자가 미리 등록한 일반 git repo는 `mcp__git_repo__list_repos`로 확인하고 `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`로 작업할 수 있습니다. public repo sync는 토큰 없이 시도하며, 새 repo 등록/삭제 같은 설정 변경은 소유자 전용입니다.",
       );
+      lines.push(GIT_MCP_ONLY_GUIDANCE);
     }
     lines.push(
       "플러그인, 루틴, 지식 저장소 같은 아바타 시스템 설정 변경은 소유자 전용입니다. 동료가 변경을 요청하면 소유자에게 요청하도록 안내하거나 필요한 맥락을 request_info로 남기세요.",
@@ -1386,28 +1440,32 @@ export async function runClaudeAgent(
   let resultText = "";
   let resultErrorSubtype = "";
 
-  const promptRequest: AgentRequest =
-    viewerIsOwner && !headless
-      ? {
-          ...request,
-          secretNames: store.listUserSecretNames(request.avatar.id),
-          knowledgeRepoConfigured,
-          gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
-          githubHost: config.githubHost,
-          confluenceUrlConfigured: Boolean(config.confluenceUrl),
-          confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
-          groupMemberships: ownerGroups,
-        }
-      : {
-          ...request,
-          secretNames: [],
-          knowledgeRepoConfigured,
-          gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
-          githubHost: config.githubHost,
-          confluenceUrlConfigured: Boolean(config.confluenceUrl),
-          confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
-          groupMemberships: [],
-        };
+  // Owner self-state (secret names, group memberships) flows to every
+  // OWNER-DRIVEN turn: interactive owner chats AND owner-scheduled routines
+  // (ownerToolAccess) — the same gate that registers the owner-level tools, so
+  // prompt awareness and tool availability never diverge. Restricted headless
+  // runs (intro/hashtag generation) and colleague/trusted chats keep them empty.
+  const promptRequest: AgentRequest = ownerToolAccess
+    ? {
+        ...request,
+        secretNames: store.listUserSecretNames(request.avatar.id),
+        knowledgeRepoConfigured,
+        gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
+        githubHost: config.githubHost,
+        confluenceUrlConfigured: Boolean(config.confluenceUrl),
+        confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
+        groupMemberships: ownerGroups,
+      }
+    : {
+        ...request,
+        secretNames: [],
+        knowledgeRepoConfigured,
+        gitTokenSet: Boolean(store.getGitToken(request.avatar.id)),
+        githubHost: config.githubHost,
+        confluenceUrlConfigured: Boolean(config.confluenceUrl),
+        confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
+        groupMemberships: [],
+      };
 
   for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {
     if (!isRecord(message)) {

@@ -204,6 +204,19 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   and explains correctly instead of guessing or relaying stale manual steps. `buildPrompt` is where
   this self-state is injected (per viewer/headless); when you add a capability, surface its current
   state there too. The git-token, SSH, and `create_repo` bullets above are all instances of this.
+  Self-state flows on the `ownerToolAccess` gate (owner chats AND owner-scheduled routines — NOT
+  `viewerIsOwner && !headless`), so routines with owner tools also get their repo/group/secret
+  state; `mcp__system__describe_system` is the runtime mirror of the same info (effective model =
+  env pin > admin override > SDK default, profile publish state, groups/roles, direct-trust list,
+  SSH on/off, pending request count) — keep BOTH in sync when adding capability state.
+- **git remote work is MCP-only BY DESIGN; the prompt + errors enforce it.** The agent shell has
+  no git credentials (stripped from the subprocess env), so Bash `git clone/push`/`gh` can never
+  authenticate. `GIT_MCP_ONLY_GUIDANCE` (claudeAgent.ts) is injected on every tool-capable turn
+  (owner, trusted, owner routine) telling the avatar to use `mcp__repo__*`/`mcp__git_repo__*`/
+  `mcp__group_repo__*` ONLY and never retry a failed MCP git call via Bash; the git tools' failure
+  messages repeat the no-Bash-fallback line with cause hints (token/permission/branch/URL). When
+  adding a git-ish capability, route it through an in-process MCP bridge and keep that line in its
+  error text.
 - **For the avatar to actually USE a capability, greeting-only prompt text isn't enough.** Give it
   STANDING per-turn guidance (not just the greeting) + an action-trigger in the tool's description +
   an error that redirects (e.g. `NO_REPO` → "use `create_repo`"). Greeting-only text plus a

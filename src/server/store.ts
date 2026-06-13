@@ -1661,6 +1661,26 @@ export class Store {
     return Boolean(row);
   }
 
+  /**
+   * Names of the groups two distinct users share. Explains WHY a viewer is
+   * auto-trusted (group co-membership) for the prompt — the trust DECISION
+   * itself still goes through `isTrustedFor`/`shareAnyGroup`.
+   */
+  sharedGroupNames(userA: string, userB: string): string[] {
+    if (!userA || !userB || userA === userB) {
+      return [];
+    }
+    const rows = this.db
+      .prepare(
+        `SELECT g.name AS name FROM groups g
+         JOIN group_members m1 ON m1.group_id = g.id AND m1.user_id = ?
+         JOIN group_members m2 ON m2.group_id = g.id AND m2.user_id = ?
+         ORDER BY g.name COLLATE NOCASE ASC`,
+      )
+      .all(userA, userB) as { name: string }[];
+    return rows.map((r) => r.name);
+  }
+
   /** The users `avatarId` has trusted, for the owner's management UI. */
   listTrustedUsers(avatarId: string): { id: string; username: string; displayName: string; createdAt: string | null }[] {
     const rows = this.db

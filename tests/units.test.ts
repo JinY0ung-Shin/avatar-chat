@@ -1479,6 +1479,90 @@ describe("buildPrompt", () => {
       p.indexOf("사용자 메시지:\n방금 말한 내용을 이어서 처리해줘"),
     );
   });
+
+  it("gives an owner-scheduled routine its self-state and the git-MCP-only rule", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        headless: true,
+        allowHeadlessTools: true,
+        knowledgeRepoConfigured: true,
+        secretNames: ["GIT_TOKEN", "SSH_PRIVATE_KEY"],
+        groupMemberships: [
+          { id: "g1", name: "플랫폼팀", role: "admin", knowledgeRepoConfigured: true },
+        ],
+      }),
+      0,
+    );
+    expect(p).toContain("예약된 루틴 작업");
+    expect(p).toContain("현재 자기 상태");
+    expect(p).toContain("개인 지식 저장소: 연결됨");
+    expect(p).toContain("플랫폼팀(관리자, 공용 저장소 연결됨)");
+    expect(p).toContain("`GIT_TOKEN`");
+    expect(p).toContain("mcp__system__describe_system");
+    expect(p).toContain("git 원격 작업은 MCP 도구로만");
+  });
+
+  it("points a routine without a knowledge repo at create_repo instead of letting it guess", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        headless: true,
+        allowHeadlessTools: true,
+        knowledgeRepoConfigured: false,
+        gitTokenSet: true,
+      }),
+      0,
+    );
+    expect(p).toContain("개인 지식 저장소: 없음");
+    expect(p).toContain("mcp__repo__create_repo");
+  });
+
+  it("keeps restricted headless runs (intro/hashtag generation) free of owner self-state", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        headless: true,
+        secretNames: ["GIT_TOKEN"],
+        knowledgeRepoConfigured: true,
+      }),
+      0,
+    );
+    // Not falsely framed as a scheduled routine, and no owner-state leakage.
+    expect(p).toContain("자동 실행 작업");
+    expect(p).not.toContain("예약된 루틴 작업");
+    expect(p).not.toContain("현재 자기 상태");
+    expect(p).not.toContain("GIT_TOKEN");
+    expect(p).toContain("읽기 전용");
+  });
+
+  it("injects the git-MCP-only rule for owners and trusted users but not plain colleagues", () => {
+    const owner = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    expect(owner).toContain("git 원격 작업은 MCP 도구로만");
+    expect(owner).toContain("우회하거나 재시도하지 말고");
+    const trusted = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
+    expect(trusted).toContain("git 원격 작업은 MCP 도구로만");
+    const colleague = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
+    expect(colleague).not.toContain("git 원격 작업은 MCP 도구로만");
+  });
+
+  it("explains group-sourced trust when the elevated viewer shares a group with the owner", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: false,
+        elevated: true,
+        viewerName: "김철수",
+        trustedViaGroups: ["플랫폼팀"],
+      }),
+      0,
+    );
+    expect(p).toContain("'플랫폼팀'");
+    expect(p).toContain("자동으로 신뢰");
+    // Without a shared group the original direct-trust wording is kept.
+    const direct = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
+    expect(direct).toContain("소유자가 신뢰하는 사용자");
+    expect(direct).not.toContain("자동으로 신뢰");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2405,6 +2489,33 @@ describe("system tools (avatar system management)", () => {
     expect(res.content[0].text).toContain("루틴: 1개");
     expect(res.content[0].text).not.toContain("ghp_secretvalue");
     expect(res.content[0].text).not.toContain("private-key");
+    // SSH key present → the dedicated status line reports SSH tools as active.
+    expect(res.content[0].text).toContain("원격 SSH 도구: 활성");
+  });
+
+  it("reports the effective model, groups, trust, profile state and pending requests", async () => {
+    const s = setup("st-describe-full");
+    // No env model pin in tests → the admin override is the effective model.
+    s.store.setModelOverride("claude-test-model");
+    const group = s.store.createGroup({ name: "플랫폼팀" });
+    s.store.addGroupMember(group.id, s.owner.id, "admin");
+    const colleague = s.store.createUser({
+      username: "colleague",
+      displayName: "동료",
+      password: "password123",
+    });
+    s.store.addTrustedUser(s.owner.id, colleague.username);
+    s.store.addKnowledgeRequest(s.owner.id, { question: "다음 출시일은?", askerName: "동료" });
+
+    const res = await call(toolsFor(s), "describe_system", {});
+    expect(res.isError).toBeFalsy();
+    const body = res.content[0].text;
+    expect(body).toContain("claude-test-model (관리자 설정)");
+    expect(body).toContain("플랫폼팀(관리자, 공용 저장소 없음)");
+    expect(body).toContain("동료(@colleague)");
+    expect(body).toContain("공개됨(탐색에 노출)");
+    expect(body).toContain("원격 SSH 도구: 비활성");
+    expect(body).toContain("대기 중 정보 요청: 1건");
   });
 
   it("refuses routine and plugin mutations for non-owner viewers", async () => {
