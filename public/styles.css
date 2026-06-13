@@ -1092,11 +1092,6 @@ body.col-resizing {
   background: var(--bg);
   font-weight: 600;
 }
-.meta-badge.meta-usage {
-  font-weight: 500;
-  font-variant-numeric: tabular-nums;
-  cursor: default;
-}
 .meta-badge.runtime-blocked {
   color: var(--warn);
   border-color: var(--warn-line);
@@ -1980,6 +1975,20 @@ textarea::placeholder {
   border-radius: 4px;
   padding: 0 5px;
   font-size: 10px;
+}
+.composer-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.composer-usage {
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+  white-space: nowrap;
+}
+.composer-usage:not(:empty)::before {
+  content: "🪙 ";
 }
 
 .slash-menu {

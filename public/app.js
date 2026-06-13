@@ -2395,6 +2395,8 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
     hidden: "",
   });
   pdom.composerState = el("span", { class: "composer-state", text: "" });
+  // 현재 세션(직전 턴) 토큰 사용량 — 입력창 힌트 우측에 상주.
+  pdom.usageBadge = el("span", { class: "composer-usage", text: "" });
   const composerForm = el("form", {
     class: "composer-form",
     onsubmit: (e) => {
@@ -2415,7 +2417,7 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
       : enterSends()
         ? el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")])
         : el("span", { text: "보내기 버튼으로 전송" });
-    pdom.composerHint.replaceChildren(lead, pdom.composerState);
+    pdom.composerHint.replaceChildren(lead, el("span", { class: "composer-meta" }, [pdom.usageBadge, pdom.composerState]));
   };
   pdom.renderHint();
   const composer = el("footer", { class: "composer" }, [el("div", { class: "composer-inner" }, [composerForm])]);
@@ -2818,6 +2820,7 @@ function newChat(pane = activePane()) {
 function renderTranscript(pane = activePane()) {
   const pdom = pane?.dom;
   if (!pdom?.transcriptInner) return;
+  updateComposerUsage(pane);
   pdom.transcriptInner.replaceChildren();
   pane.messages.forEach((m, i) => pdom.transcriptInner.append(buildMessageNode(pane, m, i === pane.messages.length - 1 && !pane.live)));
   if (attachLiveToTranscript(pane)) {
@@ -2945,6 +2948,26 @@ function formatUsageLabel(usage) {
   return parts.join(" · ");
 }
 
+// 입력창 힌트 우측의 토큰 배지를 현재 세션(usage가 있는 가장 최근 어시스턴트 턴) 기준으로 갱신.
+// 직전 턴의 inputTokens는 그 턴이 본 전체 컨텍스트(캐시 포함)라 현재 세션 점유의 근사치.
+function updateComposerUsage(pane = activePane()) {
+  const badge = pane?.dom?.usageBadge;
+  if (!badge) return;
+  let usage = null;
+  const msgs = pane.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const u = msgs[i]?.response?.usage;
+    if (u && (Number(u.inputTokens) || Number(u.outputTokens))) { usage = u; break; }
+  }
+  const label = formatUsageLabel(usage);
+  badge.textContent = label;
+  if (label) {
+    badge.title = `입력 ${usage.inputTokens.toLocaleString()} · 출력 ${usage.outputTokens.toLocaleString()}${usage.contextWindow ? ` · 컨텍스트 윈도우 ${usage.contextWindow.toLocaleString()}` : ""}`;
+  } else {
+    badge.removeAttribute("title");
+  }
+}
+
 function renderAssistantInto(bubble, message) {
   const response = message.response;
   bubble.classList.toggle("blocked", response?.runtime === "blocked");
@@ -2955,15 +2978,9 @@ function renderAssistantInto(bubble, message) {
       meta.push(["runtime", RUNTIME_BADGE_LABELS[response.runtime] || response.runtime, response.runtime]);
     }
     if (response.skillName) meta.push(["skill", response.skillName, ""]);
-    const usageLabel = formatUsageLabel(response.usage);
-    if (meta.length || usageLabel) {
+    if (meta.length) {
       const metaRow = el("div", { class: "response-meta" });
       for (const [kind, label, raw] of meta) metaRow.append(el("span", { class: `meta-badge ${kind === "runtime" ? `runtime-${raw}` : ""}`, text: label }));
-      if (usageLabel) {
-        const u = response.usage;
-        const title = `입력 ${u.inputTokens.toLocaleString()} · 출력 ${u.outputTokens.toLocaleString()}${u.contextWindow ? ` · 컨텍스트 윈도우 ${u.contextWindow.toLocaleString()}` : ""}`;
-        metaRow.append(el("span", { class: "meta-badge meta-usage", text: usageLabel, title }));
-      }
       bubble.append(metaRow);
     }
     if (response.kind === "table" && response.table) {
@@ -3999,6 +4016,7 @@ function finalizeDone(live, data) {
   cleanupLive(live);
   const message = data?.message || { role: "assistant", content: data?.response?.text || data?.response?.summary || live.text, response: data?.response, createdAt: new Date().toISOString() };
   live.pane.messages.push(message);
+  updateComposerUsage(live.pane);
   if (activePane()?.id === live.pane.id) syncLegacyChatState(live.pane);
   // The live bubble may have been detached by a mid-stream re-render — the
   // message is already in pane.messages, so rebuild the transcript from it.
