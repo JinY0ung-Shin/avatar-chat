@@ -6568,6 +6568,7 @@ function buildGroupMemberAddForm({
     ]),
     selectedList,
   );
+  panel.focusMemberSearch = () => input.focus();
   return panel;
 }
 
@@ -7715,12 +7716,16 @@ function buildAdminGroupDetail(g, members, reload) {
   const renderMembers = (ms) => {
     memberList.replaceChildren();
     if (!ms.length) {
-      memberList.append(el("div", { class: "empty-note", text: "멤버가 없습니다." }));
+      memberList.append(
+        el("div", { class: "empty-note" }, [
+          "멤버가 없습니다.\n",
+          el("button", { class: "linkish small", type: "button", text: "멤버 검색 입력", onclick: () => addRow.focusMemberSearch?.() }),
+        ]),
+      );
       return;
     }
     for (const m of ms) memberList.append(adminGroupMemberRow(g.id, m, reloadMembers));
   };
-  renderMembers(members);
 
   const addRow = buildGroupMemberAddForm({
     members,
@@ -7728,6 +7733,7 @@ function buildAdminGroupDetail(g, members, reload) {
     reload: reloadMembers,
     placeholder: "추가할 사용자 아이디(@) 또는 이름",
   });
+  renderMembers(members);
 
   const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "그룹 삭제" });
   delBtn.addEventListener("click", async () => {
