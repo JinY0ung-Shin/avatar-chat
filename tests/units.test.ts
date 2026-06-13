@@ -253,6 +253,16 @@ describe("chat slash commands", () => {
     expect(result.message).toContain("CAN and CANNOT do");
   });
 
+  it("forwards text after /learn as an extra focus hint", () => {
+    const result = expandChatSlashCommand("/learn 보안 설정 위주로");
+
+    expect(result.error).toBeUndefined();
+    expect(result.ownerOnly).toBe(true);
+    // The standing instruction is kept AND the user's trailing text is appended.
+    expect(result.message).toContain("update my knowledge repository");
+    expect(result.message).toContain("보안 설정 위주로");
+  });
+
   it("expands slash commands with arguments", () => {
     const result = expandChatSlashCommand("/remember 프로젝트 기본 포트는 48787");
 

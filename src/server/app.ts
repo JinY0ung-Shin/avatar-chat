@@ -138,7 +138,14 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
 
   switch (command) {
     case "learn":
-      return { message: LEARN_SLASH_PROMPT, ownerOnly: true };
+      // Text typed after "/learn" is forwarded as an extra focus hint for what to
+      // capture (e.g. "/learn 보안 설정 위주로"), appended to the standing instruction.
+      return {
+        message: args
+          ? `${LEARN_SLASH_PROMPT}\n\nThe user added this focus for what to learn or record this time:\n${args}`
+          : LEARN_SLASH_PROMPT,
+        ownerOnly: true,
+      };
     case "summarize":
       return { message: "지금까지의 대화를 핵심 결정사항, 해야 할 일, 열린 질문으로 나눠 요약해줘." };
     case "remember":
