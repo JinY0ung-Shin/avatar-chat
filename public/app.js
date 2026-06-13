@@ -4439,6 +4439,11 @@ async function deleteConversation(conv) {
 // Returns { tabBar, syncTabs } — caller appends tabBar and calls syncTabs() once.
 function buildTabBar({ tabs, getTab, setTab, ariaLabel, idPrefix, panelId, onActivate }) {
   const tabBar = el("nav", { class: "settings-tabs", role: "tablist", "aria-label": ariaLabel });
+  const scrollActiveTabIntoView = () => {
+    const active = tabBar.querySelector(".settings-tab.active");
+    if (!active || !tabBar.isConnected) return;
+    requestAnimationFrame(() => active.scrollIntoView({ block: "nearest", inline: "nearest" }));
+  };
   const syncTabs = () => {
     for (const b of tabBar.children) {
       const active = b.dataset.tab === getTab();
@@ -4446,6 +4451,7 @@ function buildTabBar({ tabs, getTab, setTab, ariaLabel, idPrefix, panelId, onAct
       b.setAttribute("aria-selected", active ? "true" : "false");
       b.tabIndex = active ? 0 : -1;
     }
+    scrollActiveTabIntoView();
   };
   for (const t of tabs) {
     const btn = el("button", {
@@ -4694,10 +4700,9 @@ async function renderSettings() {
     panelId: "settings-panel",
     onActivate: renderTab,
   });
-  syncTabs();
-
   renderTab();
   body.replaceChildren(tabBar, panel);
+  syncTabs();
 }
 
 function renderRailUser() {
@@ -6373,9 +6378,8 @@ async function renderAdmin() {
     panelId: "admin-panel",
     onActivate: renderTab,
   });
-  syncTabs();
-
   body.replaceChildren(tabBar, panel);
+  syncTabs();
   await renderTab();
 }
 

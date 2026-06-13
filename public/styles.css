@@ -3453,7 +3453,12 @@ textarea::placeholder {
 .settings-tabs {
   display: flex;
   gap: var(--s-1);
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
   border-bottom: 1px solid var(--line);
   padding-bottom: var(--s-3);
   margin-bottom: var(--s-1);
@@ -3462,6 +3467,7 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   gap: 6px;
+  flex: 0 0 auto;
   padding: 8px 14px;
   border: 1px solid transparent;
   border-radius: var(--r-md);
@@ -3470,6 +3476,7 @@ textarea::placeholder {
   font-size: var(--t-sm);
   font-weight: 500;
   cursor: pointer;
+  white-space: nowrap;
 }
 .settings-tab svg {
   width: 16px;
