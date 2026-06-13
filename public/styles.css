@@ -4197,6 +4197,11 @@ textarea::placeholder {
   font-size: var(--t-sm);
   color: inherit;
 }
+.admin-search:disabled {
+  color: var(--muted);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
 .admin-users > .admin-list {
   max-height: clamp(220px, calc(100dvh - 240px), 560px);
   min-height: 0;

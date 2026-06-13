@@ -8341,8 +8341,8 @@ async function adminAuditCards() {
   };
 
   const actions = [...new Set(rows.map((r) => r.action))].sort();
-  const filter = el("select", { class: "admin-search", "aria-label": "액션 필터" });
-  filter.append(el("option", { value: "", text: "전체 액션" }));
+  const filter = el("select", { class: "admin-search", "aria-label": "액션 필터", disabled: actions.length ? null : "" });
+  filter.append(el("option", { value: "", text: actions.length ? "전체 액션" : "필터할 액션 없음" }));
   for (const a of actions) filter.append(el("option", { value: a, text: a }));
   filter.addEventListener("change", () => render(filter.value));
 
