@@ -3224,6 +3224,17 @@ textarea::placeholder {
   display: grid;
   gap: var(--s-2);
 }
+.inbox-filter {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  margin-bottom: var(--s-3);
+}
+.inbox-filter .seg-btn {
+  flex: 0 0 auto;
+}
 .inbox-row-head {
   display: flex;
   align-items: center;

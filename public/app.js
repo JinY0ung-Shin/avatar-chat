@@ -42,6 +42,7 @@ const state = {
   routineConversationId: "",
   routineMessages: [],
   notifications: [],
+  inboxFilter: "all",
   adminTab: "overview", // overview | users | access | system | audit
   adminUsers: [],
   adminUserDetail: {}, // id -> AdminUserDetail (lazy, cached per expand)
@@ -2234,16 +2235,47 @@ async function renderInboxView() {
 
   const list = el("div", { class: "inbox-list" });
   const headerActions = el("div", { class: "head-actions" });
+  const filterBar = el("div", { class: "inbox-filter seg-control", role: "radiogroup", "aria-label": "알림 필터" });
   const card = el("section", { class: "settings-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
         el("h3", { text: "알림" }),
-        el("p", { class: "muted", text: "알림을 누르면 그 주제로 내 아바타와 대화할 수 있고, X로 삭제합니다. ‘정보 요청’은 답을 적어 보내면 아바타가 지식 저장소에 기록합니다." }),
+        el("p", { class: "muted", text: "알림을 누르면 그 주제로 내 아바타와 대화할 수 있고, 휴지통으로 삭제합니다. ‘정보 요청’은 답을 적어 보내면 아바타가 지식 저장소에 기록합니다." }),
       ]),
       headerActions,
     ]),
+    filterBar,
     list,
   ]);
+  const syncFilters = () => {
+    const openRequests = state.knowledgeRequests.filter((r) => r.status === "open").length;
+    const totalNotifications = state.notifications.length;
+    const unreadNotifications = state.notifications.filter((n) => !n.readAt).length;
+    const filters = [
+      { id: "all", label: `전체 ${openRequests + totalNotifications}` },
+      { id: "requests", label: `정보 요청 ${openRequests}` },
+      { id: "unread", label: `읽지 않은 알림 ${unreadNotifications}` },
+      { id: "notifications", label: `알림 ${totalNotifications}` },
+    ];
+    if (!filters.some((f) => f.id === state.inboxFilter)) state.inboxFilter = "all";
+    filterBar.replaceChildren(
+      ...filters.map((f) => {
+        const active = state.inboxFilter === f.id;
+        return el("button", {
+          class: `seg-btn ${active ? "active" : ""}`,
+          type: "button",
+          role: "radio",
+          "aria-checked": active ? "true" : "false",
+          text: f.label,
+          onclick: () => {
+            state.inboxFilter = f.id;
+            syncFilters();
+            renderInboxItems(list, refresh);
+          },
+        });
+      }),
+    );
+  };
 
   const refresh = async () => {
     try {
@@ -2253,8 +2285,9 @@ async function renderInboxView() {
     }
     updateKnowledgeBadge();
     updateNotificationBadge();
-    renderInboxItems(list, refresh);
     syncHeaderActions();
+    syncFilters();
+    renderInboxItems(list, refresh);
   };
 
   const syncHeaderActions = () => {
@@ -2300,8 +2333,9 @@ async function renderInboxView() {
     }
   };
 
-  renderInboxItems(list, refresh);
   syncHeaderActions();
+  syncFilters();
+  renderInboxItems(list, refresh);
   body.replaceChildren(el("div", { class: "inbox-wrap" }, [card]));
 }
 
@@ -2313,12 +2347,21 @@ function renderInboxItems(list, refresh) {
       .map((r) => ({ kind: "request", at: r.createdAt || "", data: r })),
     ...state.notifications.map((n) => ({ kind: "notification", at: n.createdAt || "", data: n })),
   ].sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+  const filtered =
+    state.inboxFilter === "requests"
+      ? items.filter((item) => item.kind === "request")
+      : state.inboxFilter === "unread"
+        ? items.filter((item) => item.kind === "notification" && !item.data.readAt)
+        : state.inboxFilter === "notifications"
+          ? items.filter((item) => item.kind === "notification")
+          : items;
 
-  if (!items.length) {
-    list.append(el("div", { class: "empty-note", text: "새 알림이 없습니다." }));
+  if (!filtered.length) {
+    const emptyText = items.length ? "이 필터에 해당하는 항목이 없습니다." : "새 알림이 없습니다.";
+    list.append(el("div", { class: "empty-note", text: emptyText }));
     return;
   }
-  for (const item of items) {
+  for (const item of filtered) {
     list.append(
       item.kind === "request"
         ? buildKnowledgeRequestRow(item.data, refresh)
