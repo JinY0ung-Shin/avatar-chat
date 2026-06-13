@@ -1092,11 +1092,6 @@ body.col-resizing {
   background: var(--bg);
   font-weight: 600;
 }
-.meta-badge.runtime-claude {
-  color: var(--accent-strong);
-  border-color: var(--accent-soft-strong);
-  background: var(--accent-soft);
-}
 .meta-badge.runtime-blocked {
   color: var(--warn);
   border-color: var(--warn-line);
@@ -3447,20 +3442,6 @@ textarea::placeholder {
 .settings-form .primary {
   justify-self: start;
 }
-.publish-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-4);
-}
-.publish-row strong {
-  font-size: var(--t-base);
-}
-.publish-row p {
-  margin: 2px 0 0;
-  font-size: var(--t-sm);
-}
-
 /* Avatar visibility selector (모두 공개 / 그룹 공개 / 비공개) */
 .visibility-row {
   display: flex;
@@ -3651,18 +3632,6 @@ textarea::placeholder {
   display: grid;
   gap: var(--s-2);
 }
-.trusted-search-input {
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg-elevated);
-  padding: 10px 12px;
-  min-width: 0;
-}
-.trusted-search-input:focus {
-  outline: none;
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
-}
 .trusted-results {
   display: grid;
   gap: var(--s-1);
@@ -3693,30 +3662,11 @@ textarea::placeholder {
 .trusted-result .pr-main {
   flex: 1;
 }
-.trusted-result-cta {
-  flex: none;
-  font-size: var(--t-xs);
-  font-weight: 700;
-  color: var(--accent);
-}
-.trusted-result:disabled .trusted-result-cta {
-  color: var(--muted);
-}
-
 /* Knowledge / info-request panel */
 .knowledge-sub {
   margin: var(--s-4) 0 var(--s-2);
   font-size: var(--t-sm);
   color: var(--muted);
-}
-.knowledge-rows {
-  display: grid;
-  gap: var(--s-2);
-  max-height: var(--list-scroll-max);
-  min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 2px;
 }
 .knowledge-row {
   display: flex;

@@ -304,6 +304,26 @@ function timeLabel(iso) {
   }
 }
 
+// Wire an expand/collapse toggle between a button and its associated content
+// element. The button must already have aria-expanded="false".
+// `load(contents)` is called when the contents are first shown; if `once` is
+// true (default false), the load is skipped on subsequent re-opens.
+function wireExpander(btn, contents, load, { once = false } = {}) {
+  let loaded = false;
+  btn.addEventListener("click", async () => {
+    if (!contents.hidden) {
+      contents.hidden = true;
+      btn.setAttribute("aria-expanded", "false");
+      return;
+    }
+    contents.hidden = false;
+    btn.setAttribute("aria-expanded", "true");
+    if (once && loaded) return;
+    await load(contents);
+    loaded = true;
+  });
+}
+
 /* ============================================================ Avatar image */
 function hashHue(str) {
   let h = 0;
@@ -1344,42 +1364,43 @@ function routineTitle(r) {
   return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine || "(이름 없는 루틴)";
 }
 
-// Centered create/edit modal for a routine. `routine === null` = create mode.
-function openRoutineModal(routine) {
-  const isEdit = Boolean(routine);
+// Generic modal builder used by openRoutineModal and openOnboarding.
+// Handles: restoreFocus, overlay + card creation, backdrop click, document-level
+// Escape/Tab (capture, cleaned up on close). Returns { overlay, close }.
+// buildCard(card, close) populates the card element and returns { focusTarget }
+// where focusTarget is the element to focus on fine-pointer devices.
+// onBeforeClose() is called before overlay.remove() (e.g. bookkeeping).
+function openModal({ cardClass, ariaLabelledby, buildCard, onBeforeClose } = {}) {
   const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const card = el("div", { class: `modal-card ${cardClass}`, tabindex: "-1" });
+  const overlay = el("div", { class: "modal-overlay", role: "dialog", "aria-modal": "true", "aria-labelledby": ariaLabelledby }, [card]);
   const close = () => {
+    onBeforeClose?.();
     overlay.remove();
     document.removeEventListener("keydown", onKeydown, true);
     restoreFocus?.focus?.();
   };
-
-  // ---- Fields ----
-  const nameInput = el("input", {
-    name: "name",
-    type: "text",
-    placeholder: "예: 아침 서비스 점검",
-    "aria-label": "루틴 이름",
-    value: routine?.name || "",
+  const { focusTarget } = buildCard(card, close);
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) close();
   });
-
-  const promptInput = el("textarea", {
-    name: "prompt",
-    rows: "4",
-    placeholder: "예: 오늘의 서비스 상태를 요약해줘",
-    "aria-label": "작업 프롬프트",
-    required: "",
-  });
-  promptInput.value = routine?.prompt || "";
-
-  const preview = el("div", { class: "routine-prompt-preview md" });
-  const updatePreview = () => {
-    const text = promptInput.value.trim();
-    if (text) preview.innerHTML = renderMarkdown(text);
-    else preview.replaceChildren(el("span", { class: "muted", text: "프롬프트 미리보기가 여기에 표시됩니다." }));
+  const onKeydown = (e) => {
+    if (!overlay.isConnected) return;
+    if (e.key === "Escape") { e.stopPropagation(); close(); }
+    else if (e.key === "Tab") { trapTab(e, overlay); }
   };
-  promptInput.addEventListener("input", updatePreview);
+  document.addEventListener("keydown", onKeydown, true);
+  document.body.append(overlay);
+  if (isFinePointer()) focusTarget?.focus();
+  else card.focus();
+  return { overlay, close };
+}
 
+// Builds the schedule-form section (daily/weekly/interval) for the routine modal.
+// Mirrors the server's routineSchedule.ts semantics on the client.
+// `routine` is the existing routine object (or null for create).
+// Returns { element, getSchedulePayload, validateSchedule, applyKindVisibility }.
+function buildScheduleForm(routine) {
   const initialKind = routine?.scheduleKind || "daily";
   const kindSelect = el("select", { name: "scheduleKind", "aria-label": "주기" }, [
     el("option", { value: "daily", text: "매일" }),
@@ -1457,7 +1478,6 @@ function openRoutineModal(routine) {
     return intervalUnit.value === "hour" ? n * 60 : n;
   };
 
-  // Toggle field visibility by kind.
   const applyKindVisibility = () => {
     const kind = kindSelect.value;
     timeRow.hidden = kind === "interval";
@@ -1471,154 +1491,183 @@ function openRoutineModal(routine) {
     kindSelect,
   ]);
 
-  const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
+  const element = el("div", { class: "schedule-builder" }, [kindRow, timeRow, daysRow, intervalRow]);
 
-  const saveBtn = el("button", { class: "primary", type: "submit", text: "저장" });
-
-  const buildPayload = () => {
+  const getSchedulePayload = () => {
     const kind = kindSelect.value;
-    const payload = {
-      name: (nameInput.value || "").trim() || null,
-      prompt: promptInput.value,
-      scheduleKind: kind,
-    };
+    const payload = { scheduleKind: kind };
     if (kind === "daily" || kind === "weekly") payload.time = timeInput.value;
     if (kind === "weekly") payload.daysOfWeek = [...selectedDays].sort((a, b) => a - b);
     if (kind === "interval") payload.intervalMinutes = intervalMinutesFromInputs();
     return payload;
   };
 
-  const afterSave = async () => {
-    await Promise.all([loadRoutines(), loadRoutineConversations()]);
-    close();
-    renderView();
+  // Returns null if valid, or an error string if invalid.
+  const validateSchedule = () => {
+    const kind = kindSelect.value;
+    if (kind === "weekly" && selectedDays.size === 0) return "매주 반복은 요일을 1개 이상 선택해 주세요.";
+    if (kind === "interval" && intervalMinutesFromInputs() < 15) return "반복 간격은 15분 이상이어야 합니다.";
+    return null;
   };
 
-  const form = el("form", {
-    class: "routine-modal-form",
-    onsubmit: async (e) => {
-      e.preventDefault();
-      if (!promptInput.value.trim()) {
-        errorBox.textContent = "작업 프롬프트를 입력해 주세요.";
-        errorBox.hidden = false;
-        return;
-      }
-      if (kindSelect.value === "weekly" && selectedDays.size === 0) {
-        errorBox.textContent = "매주 반복은 요일을 1개 이상 선택해 주세요.";
-        errorBox.hidden = false;
-        return;
-      }
-      if (kindSelect.value === "interval" && intervalMinutesFromInputs() < 15) {
-        errorBox.textContent = "반복 간격은 15분 이상이어야 합니다.";
-        errorBox.hidden = false;
-        return;
-      }
-      errorBox.hidden = true;
-      saveBtn.disabled = true;
-      try {
-        const payload = buildPayload();
-        if (isEdit) {
-          await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "PATCH", body: JSON.stringify(payload) });
-        } else {
-          await api("/api/me/routines", { method: "POST", body: JSON.stringify(payload) });
-        }
-        await afterSave();
-      } catch (err) {
-        errorBox.textContent = err.message || "저장에 실패했습니다.";
-        errorBox.hidden = false;
-        saveBtn.disabled = false;
-      }
-    },
-  }, [
-    el("label", { class: "field" }, [
-      el("span", { text: "이름 (선택)" }),
-      nameInput,
-    ]),
-    el("label", { class: "field" }, [
-      el("span", { text: "작업 프롬프트" }),
-      promptInput,
-    ]),
-    el("div", { class: "routine-preview-wrap" }, [
-      el("span", { class: "field-hint muted", text: "미리보기" }),
-      preview,
-    ]),
-    el("div", { class: "schedule-builder" }, [kindRow, timeRow, daysRow, intervalRow]),
-    errorBox,
-  ]);
+  return { element, getSchedulePayload, validateSchedule, applyKindVisibility };
+}
 
-  // Action buttons.
-  const actions = el("div", { class: "routine-modal-actions" });
-  const leftActions = el("div", { class: "routine-modal-actions-left" });
-  if (isEdit) {
-    const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행" });
-    runBtn.addEventListener("click", async () => {
-      runBtn.disabled = true;
-      const saved = runBtn.textContent;
-      runBtn.textContent = "실행 중…";
-      try {
-        const res = await api(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
-        await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
-        updateNotificationBadge();
-        if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
-        close();
-        renderView();
-      } catch (err) {
-        notify(`루틴 실행 실패: ${err.message}`);
-        runBtn.disabled = false;
-        runBtn.textContent = saved;
-      }
-    });
-    leftActions.append(runBtn);
+// Centered create/edit modal for a routine. `routine === null` = create mode.
+function openRoutineModal(routine) {
+  const isEdit = Boolean(routine);
 
-    const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
-    delBtn.addEventListener("click", async () => {
-      if (!window.confirm("이 루틴을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
-      delBtn.disabled = true;
-      try {
-        await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });
-        state.routines = state.routines.filter((x) => x.id !== routine.id);
-        state.routineConversations = state.routineConversations.filter((x) => x.routineId !== routine.id);
-        if (state.routineConversationId === routine.conversationId) state.routineConversationId = "";
-        close();
-        renderView();
-      } catch (err) {
-        notify(`삭제 실패: ${err.message}`);
-        delBtn.disabled = false;
-      }
-    });
-    leftActions.append(delBtn);
-  }
-  const rightActions = el("div", { class: "routine-modal-actions-right" }, [
-    el("button", { class: "ghost-sm", type: "button", text: "닫기", onclick: () => close() }),
-    saveBtn,
-  ]);
-  actions.append(leftActions, rightActions);
-  form.append(actions);
-
-  const card = el("div", { class: "modal-card routine-modal-card", tabindex: "-1" }, [
-    el("h2", { id: "routine-modal-title", text: isEdit ? "루틴 편집" : "루틴 추가" }),
-    form,
-  ]);
-  const overlay = el("div", { class: "modal-overlay", role: "dialog", "aria-modal": "true", "aria-labelledby": "routine-modal-title" }, [card]);
-  overlay.addEventListener("mousedown", (e) => {
-    if (e.target === overlay) close();
+  // ---- Fields ----
+  const nameInput = el("input", {
+    name: "name",
+    type: "text",
+    placeholder: "예: 아침 서비스 점검",
+    "aria-label": "루틴 이름",
+    value: routine?.name || "",
   });
-  const onKeydown = (e) => {
-    if (!overlay.isConnected) return;
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    } else if (e.key === "Tab") {
-      trapTab(e, overlay);
-    }
-  };
-  document.addEventListener("keydown", onKeydown, true);
 
-  document.body.append(overlay);
-  applyKindVisibility();
+  const promptInput = el("textarea", {
+    name: "prompt",
+    rows: "4",
+    placeholder: "예: 오늘의 서비스 상태를 요약해줘",
+    "aria-label": "작업 프롬프트",
+    required: "",
+  });
+  promptInput.value = routine?.prompt || "";
+
+  const preview = el("div", { class: "routine-prompt-preview md" });
+  const updatePreview = () => {
+    const text = promptInput.value.trim();
+    if (text) preview.innerHTML = renderMarkdown(text);
+    else preview.replaceChildren(el("span", { class: "muted", text: "프롬프트 미리보기가 여기에 표시됩니다." }));
+  };
+  promptInput.addEventListener("input", updatePreview);
+
+  const schedule = buildScheduleForm(routine);
+
+  const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
+  const saveBtn = el("button", { class: "primary", type: "submit", text: "저장" });
+
+  openModal({
+    cardClass: "routine-modal-card",
+    ariaLabelledby: "routine-modal-title",
+    buildCard: (card, close) => {
+      const afterSave = async () => {
+        await Promise.all([loadRoutines(), loadRoutineConversations()]);
+        close();
+        renderView();
+      };
+
+      const form = el("form", {
+        class: "routine-modal-form",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          if (!promptInput.value.trim()) {
+            errorBox.textContent = "작업 프롬프트를 입력해 주세요.";
+            errorBox.hidden = false;
+            return;
+          }
+          const schedErr = schedule.validateSchedule();
+          if (schedErr) {
+            errorBox.textContent = schedErr;
+            errorBox.hidden = false;
+            return;
+          }
+          errorBox.hidden = true;
+          saveBtn.disabled = true;
+          try {
+            const payload = {
+              name: (nameInput.value || "").trim() || null,
+              prompt: promptInput.value,
+              ...schedule.getSchedulePayload(),
+            };
+            if (isEdit) {
+              await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "PATCH", body: JSON.stringify(payload) });
+            } else {
+              await api("/api/me/routines", { method: "POST", body: JSON.stringify(payload) });
+            }
+            await afterSave();
+          } catch (err) {
+            errorBox.textContent = err.message || "저장에 실패했습니다.";
+            errorBox.hidden = false;
+            saveBtn.disabled = false;
+          }
+        },
+      }, [
+        el("label", { class: "field" }, [
+          el("span", { text: "이름 (선택)" }),
+          nameInput,
+        ]),
+        el("label", { class: "field" }, [
+          el("span", { text: "작업 프롬프트" }),
+          promptInput,
+        ]),
+        el("div", { class: "routine-preview-wrap" }, [
+          el("span", { class: "field-hint muted", text: "미리보기" }),
+          preview,
+        ]),
+        schedule.element,
+        errorBox,
+      ]);
+
+      // Action buttons.
+      const actions = el("div", { class: "routine-modal-actions" });
+      const leftActions = el("div", { class: "routine-modal-actions-left" });
+      if (isEdit) {
+        const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행" });
+        runBtn.addEventListener("click", async () => {
+          runBtn.disabled = true;
+          const saved = runBtn.textContent;
+          runBtn.textContent = "실행 중…";
+          try {
+            const res = await api(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
+            await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
+            updateNotificationBadge();
+            if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+            close();
+            renderView();
+          } catch (err) {
+            notify(`루틴 실행 실패: ${err.message}`);
+            runBtn.disabled = false;
+            runBtn.textContent = saved;
+          }
+        });
+        leftActions.append(runBtn);
+
+        const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
+        delBtn.addEventListener("click", async () => {
+          if (!window.confirm("이 루틴을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
+          delBtn.disabled = true;
+          try {
+            await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });
+            state.routines = state.routines.filter((x) => x.id !== routine.id);
+            state.routineConversations = state.routineConversations.filter((x) => x.routineId !== routine.id);
+            if (state.routineConversationId === routine.conversationId) state.routineConversationId = "";
+            close();
+            renderView();
+          } catch (err) {
+            notify(`삭제 실패: ${err.message}`);
+            delBtn.disabled = false;
+          }
+        });
+        leftActions.append(delBtn);
+      }
+      const rightActions = el("div", { class: "routine-modal-actions-right" }, [
+        el("button", { class: "ghost-sm", type: "button", text: "닫기", onclick: () => close() }),
+        saveBtn,
+      ]);
+      actions.append(leftActions, rightActions);
+      form.append(actions);
+
+      card.append(
+        el("h2", { id: "routine-modal-title", text: isEdit ? "루틴 편집" : "루틴 추가" }),
+        form,
+      );
+      return { focusTarget: isEdit ? promptInput : nameInput };
+    },
+  });
+  schedule.applyKindVisibility();
   updatePreview();
-  if (isFinePointer()) (isEdit ? promptInput : nameInput).focus();
-  else card.focus();
 }
 
 async function renderRoutinesView() {
@@ -4129,6 +4178,58 @@ async function deleteConversation(conv) {
 }
 
 /* ============================================================ Settings (my avatar) */
+// Shared tablist builder used by renderSettings and renderAdmin.
+// tabs: array of { id, label, icon? }
+// getTab: () => current tab id
+// setTab: (id) => void — updates state
+// ariaLabel: string for the nav element
+// idPrefix: string prepended to "tab-<id>" for each button id
+// panelId: aria-controls value
+// onActivate: () => void — called after setTab when a tab is clicked
+// Returns { tabBar, syncTabs } — caller appends tabBar and calls syncTabs() once.
+function buildTabBar({ tabs, getTab, setTab, ariaLabel, idPrefix, panelId, onActivate }) {
+  const tabBar = el("nav", { class: "settings-tabs", role: "tablist", "aria-label": ariaLabel });
+  const syncTabs = () => {
+    for (const b of tabBar.children) {
+      const active = b.dataset.tab === getTab();
+      b.classList.toggle("active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+      b.tabIndex = active ? 0 : -1;
+    }
+  };
+  for (const t of tabs) {
+    const btn = el("button", {
+      class: "settings-tab" + (t.id === getTab() ? " active" : ""),
+      type: "button",
+      role: "tab",
+      id: `${idPrefix}-${t.id}`,
+      "aria-controls": panelId,
+      dataset: { tab: t.id },
+      onclick: () => {
+        if (getTab() === t.id) return;
+        setTab(t.id);
+        syncHash(true);
+        syncTabs();
+        onActivate();
+      },
+    });
+    if (t.icon) btn.append(icon(t.icon));
+    btn.append(el("span", { text: t.label }));
+    tabBar.append(btn);
+  }
+  // Standard tablist keyboard interaction: arrows move + activate.
+  tabBar.addEventListener("keydown", (e) => {
+    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    e.preventDefault();
+    const items = [...tabBar.children];
+    const idx = items.findIndex((b) => b.dataset.tab === getTab());
+    const next = items[(idx + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
+    next.focus();
+    next.click();
+  });
+  return { tabBar, syncTabs };
+}
+
 async function renderSettings() {
   const header = viewHeader("내 아바타", "프로필과 플러그인을 관리하고 공개하세요");
   const body = el("div", { class: "view-body scroll-thin settings-body" });
@@ -4334,44 +4435,14 @@ async function renderSettings() {
     panel.replaceChildren(...active.cards());
   };
 
-  const tabBar = el("nav", { class: "settings-tabs", role: "tablist", "aria-label": "설정 분류" });
-  const syncTabs = () => {
-    for (const b of tabBar.children) {
-      const active = b.dataset.tab === state.settingsTab;
-      b.classList.toggle("active", active);
-      b.setAttribute("aria-selected", active ? "true" : "false");
-      b.tabIndex = active ? 0 : -1;
-    }
-  };
-  for (const t of tabs) {
-    const btn = el("button", {
-      class: "settings-tab" + (t.id === state.settingsTab ? " active" : ""),
-      type: "button",
-      role: "tab",
-      id: `settings-tab-${t.id}`,
-      "aria-controls": "settings-panel",
-      dataset: { tab: t.id },
-      onclick: () => {
-        if (state.settingsTab === t.id) return;
-        state.settingsTab = t.id;
-        syncHash(true);
-        syncTabs();
-        renderTab();
-      },
-    });
-    if (t.icon) btn.append(icon(t.icon));
-    btn.append(el("span", { text: t.label }));
-    tabBar.append(btn);
-  }
-  // Standard tablist keyboard interaction: arrows move + activate.
-  tabBar.addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    e.preventDefault();
-    const items = [...tabBar.children];
-    const idx = items.findIndex((b) => b.dataset.tab === state.settingsTab);
-    const next = items[(idx + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
-    next.focus();
-    next.click();
+  const { tabBar, syncTabs } = buildTabBar({
+    tabs,
+    getTab: () => state.settingsTab,
+    setTab: (id) => { state.settingsTab = id; },
+    ariaLabel: "설정 분류",
+    idPrefix: "settings-tab",
+    panelId: "settings-panel",
+    onActivate: renderTab,
   });
   syncTabs();
 
@@ -4613,22 +4684,16 @@ function renderPluginRows(list) {
     const contents = el("div", { class: "plugin-contents", hidden: "" });
 
     // "선택" — clone/inspect the repo and show a checkbox per contained plugin.
-    const selectBtn = el("button", { class: "msg-act", type: "button", "aria-label": "저장소 내 플러그인 선택", title: "저장소 내 플러그인 선택", "aria-expanded": "false", onclick: async () => {
-      if (!contents.hidden) {
-        contents.hidden = true;
-        selectBtn.setAttribute("aria-expanded", "false");
-        return;
-      }
-      contents.hidden = false;
-      selectBtn.setAttribute("aria-expanded", "true");
-      contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+    const selectBtn = el("button", { class: "msg-act", type: "button", "aria-label": "저장소 내 플러그인 선택", title: "저장소 내 플러그인 선택", "aria-expanded": "false" });
+    wireExpander(selectBtn, contents, async (c) => {
+      c.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
       try {
         const { contents: info } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}/contents`);
-        renderPluginContents(contents, list, p, info);
+        renderPluginContents(c, list, p, info);
       } catch (e) {
-        contents.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+        c.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
       }
-    } });
+    });
     selectBtn.append(icon("menu"));
     row.append(selectBtn);
 
@@ -4671,10 +4736,12 @@ function renderPluginRows(list) {
   }
 }
 
-// Render the repo's plugin list with per-plugin checkboxes. For a single-plugin
-// repo there's nothing to select; for a marketplace repo the owner picks a
-// subset (or "all"). `selected === null` means "load all".
-function renderPluginContents(container, list, p, info) {
+// Shared core for plugin-selection UIs. `getSelected()` returns the current
+// selection array-or-null; `onSave(selected)` persists it and returns a promise.
+// Used by renderPluginContents and renderKnowledgeRepoContents (both call sites
+// must produce identical DOM/behavior, differing only in selection source and
+// save destination).
+function renderPluginSelectionContents(container, info, { getSelected, onSave, headText }) {
   container.replaceChildren();
   if (info.kind === "none") {
     container.append(el("div", { class: "error-note", text: "Claude 플러그인 저장소가 아닙니다 (plugin.json / marketplace.json 없음)." }));
@@ -4690,10 +4757,10 @@ function renderPluginContents(container, list, p, info) {
   }
 
   // null selection = all enabled; otherwise only names in the set.
-  const selectedSet = p.selected ? new Set(p.selected) : null;
+  const currentSelected = getSelected();
+  const selectedSet = currentSelected ? new Set(currentSelected) : null;
   const checks = [];
-  const head = el("div", { class: "pc-head muted", text: "사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다." });
-  container.append(head);
+  container.append(el("div", { class: "pc-head muted", text: headText }));
 
   for (const entry of info.plugins) {
     const checked = !selectedSet || selectedSet.has(entry.name);
@@ -4712,16 +4779,29 @@ function renderPluginContents(container, list, p, info) {
     // If everything (or nothing) is selected, store null = "load all".
     const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
     try {
-      const { plugin } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ selected }) });
-      Object.assign(p, plugin);
-      invalidateSkillsCache(state.user.id);
-      renderPluginRows(list);
+      await onSave(selected);
     } catch (e) {
       notify(`저장 실패: ${e.message}`);
       save.disabled = false;
     }
   } });
   container.append(el("div", { class: "pc-actions" }, [save]));
+}
+
+// Render the repo's plugin list with per-plugin checkboxes. For a single-plugin
+// repo there's nothing to select; for a marketplace repo the owner picks a
+// subset (or "all"). `selected === null` means "load all".
+function renderPluginContents(container, list, p, info) {
+  renderPluginSelectionContents(container, info, {
+    getSelected: () => p.selected,
+    headText: "사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다.",
+    onSave: async (selected) => {
+      const { plugin } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ selected }) });
+      Object.assign(p, plugin);
+      invalidateSkillsCache(state.user.id);
+      renderPluginRows(list);
+    },
+  });
 }
 
 const INTERNAL_GIT_TOKEN_SECRET_NAME = "GIT_TOKEN";
@@ -5274,22 +5354,15 @@ function buildKnowledgeRepoCard() {
     : `${u.knowledgeSelected.length}개 플러그인만 사용 중`;
   const contents = el("div", { class: "plugin-contents", hidden: "" });
   const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택", "aria-expanded": "false" });
-  pickBtn.onclick = async () => {
-    if (!contents.hidden) {
-      contents.hidden = true;
-      pickBtn.setAttribute("aria-expanded", "false");
-      return;
-    }
-    contents.hidden = false;
-    pickBtn.setAttribute("aria-expanded", "true");
-    contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+  wireExpander(pickBtn, contents, async (c) => {
+    c.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     try {
       const { contents: info } = await api("/api/me/knowledge-repo/contents");
-      renderKnowledgeRepoContents(contents, info);
+      renderKnowledgeRepoContents(c, info);
     } catch (e) {
-      contents.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+      c.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
     }
-  };
+  });
   card.append(
     el("div", { class: "kr-plugins" }, [
       el("span", { class: "muted", text: selSummary }),
@@ -5305,51 +5378,16 @@ function buildKnowledgeRepoCard() {
 // some; `knowledgeSelected === null` means "load all". Mirrors
 // `renderPluginContents`.
 function renderKnowledgeRepoContents(container, info) {
-  container.replaceChildren();
-  if (info.kind === "none") {
-    container.append(el("div", { class: "error-note", text: "Claude 플러그인 저장소가 아닙니다 (plugin.json / marketplace.json 없음)." }));
-    return;
-  }
-  if (info.kind === "single") {
-    container.append(el("div", { class: "muted", text: "단일 플러그인 저장소입니다 — 선택할 항목이 없습니다." }));
-    return;
-  }
-  if (!info.plugins.length) {
-    container.append(el("div", { class: "muted", text: "불러올 수 있는 플러그인이 없습니다." }));
-    return;
-  }
-
-  const selectedSet = state.user.knowledgeSelected ? new Set(state.user.knowledgeSelected) : null;
-  const checks = [];
-  container.append(el("div", { class: "pc-head muted", text: "아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다." }));
-
-  for (const entry of info.plugins) {
-    const checked = !selectedSet || selectedSet.has(entry.name);
-    const cb = el("input", { type: "checkbox" });
-    cb.checked = checked && entry.loadable;
-    cb.disabled = !entry.loadable;
-    checks.push({ cb, name: entry.name });
-    const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
-    container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
-  }
-
-  const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
-    save.disabled = true;
-    const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
-    const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
-    // All (or none) selected → store null = "load all".
-    const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
-    try {
+  renderPluginSelectionContents(container, info, {
+    getSelected: () => state.user.knowledgeSelected,
+    headText: "아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다.",
+    onSave: async (selected) => {
       const { user } = await api("/api/me/knowledge-repo/selected", { method: "PUT", body: JSON.stringify({ selected }) });
       state.user = user;
       invalidateSkillsCache(state.user.id);
       renderView();
-    } catch (e) {
-      notify(`저장 실패: ${e.message}`);
-      save.disabled = false;
-    }
-  } });
-  container.append(el("div", { class: "pc-actions" }, [save]));
+    },
+  });
 }
 
 /* ---- 그룹 (member roster + group-admin self-service) ---- */
@@ -5605,22 +5643,15 @@ function buildGroupRepoCard(g) {
     : `${g.knowledgeSelected.length}개 플러그인만 사용 중`;
   const contents = el("div", { class: "plugin-contents", hidden: "" });
   const pickBtn = el("button", { class: "linkish small", type: "button", text: "사용할 플러그인 선택", "aria-expanded": "false" });
-  pickBtn.onclick = async () => {
-    if (!contents.hidden) {
-      contents.hidden = true;
-      pickBtn.setAttribute("aria-expanded", "false");
-      return;
-    }
-    contents.hidden = false;
-    pickBtn.setAttribute("aria-expanded", "true");
-    contents.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
+  wireExpander(pickBtn, contents, async (c) => {
+    c.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     try {
       const { contents: info } = await api(`/api/me/groups/${gid}/knowledge-repo/contents`);
-      renderGroupRepoContents(contents, info, g);
+      renderGroupRepoContents(c, info, g);
     } catch (e) {
-      contents.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
+      c.replaceChildren(el("div", { class: "error-note", text: `조회 실패: ${e.message}` }));
     }
-  };
+  });
   wrap.append(el("div", { class: "kr-plugins" }, [el("span", { class: "muted", text: selSummary }), pickBtn]));
   wrap.append(contents);
   return wrap;
@@ -5898,42 +5929,14 @@ async function renderAdmin() {
     }
   };
 
-  const tabBar = el("nav", { class: "settings-tabs", role: "tablist", "aria-label": "관리자 분류" });
-  const syncTabs = () => {
-    for (const b of tabBar.children) {
-      const active = b.dataset.tab === state.adminTab;
-      b.classList.toggle("active", active);
-      b.setAttribute("aria-selected", active ? "true" : "false");
-      b.tabIndex = active ? 0 : -1;
-    }
-  };
-  for (const t of ADMIN_TABS) {
-    const btn = el("button", {
-      class: "settings-tab" + (t.id === state.adminTab ? " active" : ""),
-      type: "button",
-      role: "tab",
-      id: `admin-tab-${t.id}`,
-      "aria-controls": "admin-panel",
-      dataset: { tab: t.id },
-      onclick: () => {
-        if (state.adminTab === t.id) return;
-        state.adminTab = t.id;
-        syncHash(true);
-        syncTabs();
-        renderTab();
-      },
-    });
-    btn.append(icon(t.icon), el("span", { text: t.label }));
-    tabBar.append(btn);
-  }
-  tabBar.addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
-    e.preventDefault();
-    const items = [...tabBar.children];
-    const idx = items.findIndex((b) => b.dataset.tab === state.adminTab);
-    const next = items[(idx + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
-    next.focus();
-    next.click();
+  const { tabBar, syncTabs } = buildTabBar({
+    tabs: ADMIN_TABS,
+    getTab: () => state.adminTab,
+    setTab: (id) => { state.adminTab = id; },
+    ariaLabel: "관리자 분류",
+    idPrefix: "admin-tab",
+    panelId: "admin-panel",
+    onActivate: renderTab,
   });
   syncTabs();
 
@@ -7136,13 +7139,6 @@ function buildOnboardingGuide() {
  * login does not feel like a repository configuration wizard.
  */
 function openOnboarding() {
-  const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  const close = () => {
-    markOnboardingDone(state.user.id);
-    overlay.remove();
-    restoreFocus?.focus?.();
-  };
-
   const tokenInput = el("input", {
     name: "token",
     type: "password",
@@ -7201,91 +7197,88 @@ function openOnboarding() {
   renderSshSetup();
 
   const saveBtn = el("button", { class: "primary", type: "submit", text: "저장하고 시작" });
-  const form = el("form", {
-    class: "form-stack",
-    onsubmit: async (e) => {
-      e.preventDefault();
-      saveBtn.disabled = true;
-      const savedLabel = saveBtn.textContent;
-      saveBtn.textContent = "저장 중…";
-      errorBox.hidden = true;
-      try {
-        const token = tokenInput.value.trim();
-        if (token) {
-          const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
-          state.user = user;
-        }
-        close();
-        renderView();
-      } catch (err) {
-        errorBox.textContent = err.message;
-        errorBox.hidden = false;
-        saveBtn.textContent = savedLabel;
-        saveBtn.disabled = false;
-      }
-    },
-  }, [
-    el("label", { class: "field" }, [
-      el("span", {}, [
-        "사내 Git 토큰 (GIT_TOKEN, 선택) ",
-        el("a", {
-          class: "linkish",
-          href: `https://${(state.githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "")}/settings/tokens`,
-          target: "_blank",
-          rel: "noopener noreferrer",
-          text: "토큰 만들러 가기 ↗",
-        }),
-      ]),
-      tokenInput,
-    ]),
-    el("div", { class: "onboard-connect" }, [
-      el("h3", { text: "SSH 키" }),
-      el("p", {
-        class: "muted",
-        text: "지금 생성하면 개인키는 SSH_PRIVATE_KEY 시크릿으로 저장되고 다시 표시되지 않습니다. 공개키만 복사해 접속 대상 서버에 등록하세요.",
-      }),
-      sshStatus,
-      el("div", { class: "git-token-actions" }, [generateSshBtn]),
-      sshPublicKeyBox,
-    ]),
-    errorBox,
-    el("div", { class: "onboard-actions" }, [
-      el("button", { class: "linkish", type: "button", text: "건너뛰기", onclick: () => { close(); } }),
-      saveBtn,
-    ]),
-  ]);
 
-  const card = el("div", { class: "modal-card onboard-card", tabindex: "-1" }, [
-    el("img", { class: "login-mark", src: "/icon-192.png", alt: "", "aria-hidden": "true", width: "48", height: "48" }),
-    el("h2", { id: "onboarding-title", text: "아바타 사용 준비하기" }),
-    el("p", {
-      class: "muted",
-      text: "Noah Almighty는 내 업무 방식을 아바타에 축적하고, 동료들의 아바타에게도 업무를 질문·요청하는 앱입니다. GitHub 지식 저장소와 플러그인, 루틴, SSH 도구를 붙여 대화로 일하게 할 수 있습니다.",
-    }),
-    buildOnboardingGuide(),
-    el("div", { class: "onboard-connect" }, [
-      el("h3", { text: "처음 설정하면 좋은 권한" }),
-      el("p", {
-        class: "muted",
-        text: "이 온보딩에서는 사내 GitHub용 GIT_TOKEN만 입력합니다. GIT_TOKEN을 저장해 두면 아바타가 사내 비공개 저장소를 읽고, 대화 중 지식 저장소에 파일을 추가한 뒤 커밋·푸시할 수 있습니다.",
-      }),
-    ]),
-    form,
-  ]);
-  const overlay = el("div", { class: "modal-overlay", role: "dialog", "aria-modal": "true", "aria-labelledby": "onboarding-title" }, [card]);
-  overlay.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      close();
-    } else if (e.key === "Tab") {
-      trapTab(e, overlay);
-    }
+  openModal({
+    cardClass: "onboard-card",
+    ariaLabelledby: "onboarding-title",
+    onBeforeClose: () => markOnboardingDone(state.user.id),
+    buildCard: (card, close) => {
+      const form = el("form", {
+        class: "form-stack",
+        onsubmit: async (e) => {
+          e.preventDefault();
+          saveBtn.disabled = true;
+          const savedLabel = saveBtn.textContent;
+          saveBtn.textContent = "저장 중…";
+          errorBox.hidden = true;
+          try {
+            const token = tokenInput.value.trim();
+            if (token) {
+              const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
+              state.user = user;
+            }
+            close();
+            renderView();
+          } catch (err) {
+            errorBox.textContent = err.message;
+            errorBox.hidden = false;
+            saveBtn.textContent = savedLabel;
+            saveBtn.disabled = false;
+          }
+        },
+      }, [
+        el("label", { class: "field" }, [
+          el("span", {}, [
+            "사내 Git 토큰 (GIT_TOKEN, 선택) ",
+            el("a", {
+              class: "linkish",
+              href: `https://${(state.githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "")}/settings/tokens`,
+              target: "_blank",
+              rel: "noopener noreferrer",
+              text: "토큰 만들러 가기 ↗",
+            }),
+          ]),
+          tokenInput,
+        ]),
+        el("div", { class: "onboard-connect" }, [
+          el("h3", { text: "SSH 키" }),
+          el("p", {
+            class: "muted",
+            text: "지금 생성하면 개인키는 SSH_PRIVATE_KEY 시크릿으로 저장되고 다시 표시되지 않습니다. 공개키만 복사해 접속 대상 서버에 등록하세요.",
+          }),
+          sshStatus,
+          el("div", { class: "git-token-actions" }, [generateSshBtn]),
+          sshPublicKeyBox,
+        ]),
+        errorBox,
+        el("div", { class: "onboard-actions" }, [
+          el("button", { class: "linkish", type: "button", text: "건너뛰기", onclick: () => { close(); } }),
+          saveBtn,
+        ]),
+      ]);
+
+      card.append(
+        el("img", { class: "login-mark", src: "/icon-192.png", alt: "", "aria-hidden": "true", width: "48", height: "48" }),
+        el("h2", { id: "onboarding-title", text: "아바타 사용 준비하기" }),
+        el("p", {
+          class: "muted",
+          text: "Noah Almighty는 내 업무 방식을 아바타에 축적하고, 동료들의 아바타에게도 업무를 질문·요청하는 앱입니다. GitHub 지식 저장소와 플러그인, 루틴, SSH 도구를 붙여 대화로 일하게 할 수 있습니다.",
+        }),
+        buildOnboardingGuide(),
+        el("div", { class: "onboard-connect" }, [
+          el("h3", { text: "처음 설정하면 좋은 권한" }),
+          el("p", {
+            class: "muted",
+            text: "이 온보딩에서는 사내 GitHub용 GIT_TOKEN만 입력합니다. GIT_TOKEN을 저장해 두면 아바타가 사내 비공개 저장소를 읽고, 대화 중 지식 저장소에 파일을 추가한 뒤 커밋·푸시할 수 있습니다.",
+          }),
+        ]),
+        form,
+      );
+      // Autofocusing the token field pops the keyboard over the explanation on
+      // phones — focus the card itself there instead.
+      return { focusTarget: tokenInput };
+    },
   });
-  document.body.append(overlay);
-  // Autofocusing the token field pops the keyboard over the explanation on
-  // phones — focus the card itself there instead.
-  if (isFinePointer()) tokenInput.focus();
-  else card.focus();
 }
 
 async function boot() {
