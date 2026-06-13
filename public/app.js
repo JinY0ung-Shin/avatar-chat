@@ -7887,7 +7887,21 @@ async function adminAuditCards() {
   const render = (filterAction) => {
     const shown = filterAction ? rows.filter((r) => r.action === filterAction) : rows;
     if (!shown.length) {
-      tableWrap.replaceChildren(el("div", { class: "muted pad", text: "기록이 없습니다." }));
+      if (filterAction) {
+        const resetAuditFilter = () => {
+          filter.value = "";
+          render("");
+          filter.focus();
+        };
+        tableWrap.replaceChildren(
+          el("div", { class: "muted pad" }, [
+            `"${filterAction}" 액션 기록이 없습니다. `,
+            el("button", { class: "linkish small", type: "button", text: "전체 액션 보기", onclick: resetAuditFilter }),
+          ]),
+        );
+      } else {
+        tableWrap.replaceChildren(el("div", { class: "muted pad", text: "기록이 없습니다." }));
+      }
       return;
     }
     const body = shown.map((r) =>
