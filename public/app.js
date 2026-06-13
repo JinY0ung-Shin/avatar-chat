@@ -8766,14 +8766,22 @@ function buildHexSshPolicyCard(sys) {
       btn.textContent = "저장 중…";
       try {
         await api("/api/admin/hex-ssh-policy", { method: "PUT", body: JSON.stringify({ policy: nextPolicy }) });
-        notify("SSH 도구 정책을 저장했습니다.", "ok");
+      } catch (err) {
+        btn.textContent = saved;
+        setFormBusy(formEl, false);
+        notify(`저장 실패: ${err.message}`);
+        return;
+      }
+      try {
         await loadAdminSystem();
         renderView();
       } catch (err) {
         btn.textContent = saved;
         setFormBusy(formEl, false);
-        notify(`저장 실패: ${err.message}`);
+        notify(`SSH 도구 정책은 저장했지만 상태 새로고침에 실패했습니다: ${err.message}`, "warn");
+        return;
       }
+      notify("SSH 도구 정책을 저장했습니다.", "ok");
     },
   });
 
