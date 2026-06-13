@@ -1413,7 +1413,14 @@ async function renderExplore() {
 
 function buildAvatarCard(av) {
   const isMe = av.id === state.user.id;
-  const card = el("button", { class: "avatar-card", type: "button", onclick: () => startChatWith(av, card) }, [
+  const cardLabel = `${av.alias || av.displayName} 아바타와 대화`;
+  const card = el("button", {
+    class: "avatar-card",
+    type: "button",
+    "aria-label": cardLabel,
+    title: cardLabel,
+    onclick: () => startChatWith(av, card),
+  }, [
     avatarNode(av, 56, { alt: "" }),
     el("div", { class: "ac-body" }, [
       el("div", { class: "ac-name" }, [
@@ -1467,6 +1474,9 @@ async function startChatWith(av, triggerCard = null) {
   try {
     if (existing && state.chatPanes.length <= 1) {
       await selectConversation(existing);
+      if (state.view === "chat" && activePane()?.conversationId === existing.id) {
+        notify(`"${existing.title || av.displayName || "기존 대화"}" 대화를 이어서 열었습니다.`, "info");
+      }
       return;
     }
     state.currentAvatar = av;
