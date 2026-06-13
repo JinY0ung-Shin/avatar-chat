@@ -5696,17 +5696,21 @@ function buildPluginsCard() {
       // a false "추가 실패" even though the plugin was added.
       const formEl = e.currentTarget;
       const fd = new FormData(formEl);
+      const repo = (fd.get("repo") || "").toString().trim();
+      const ref = (fd.get("ref") || "").toString().trim();
+      const label = (fd.get("label") || "").toString().trim();
       const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
       setFormBusy(formEl, true);
       btn.textContent = "추가 중…"; // server-side git clone — can take a while
       try {
-        await api("/api/me/plugins", { method: "POST", body: JSON.stringify({ repo: fd.get("repo"), ref: fd.get("ref") || undefined, label: fd.get("label") || undefined }) });
+        await api("/api/me/plugins", { method: "POST", body: JSON.stringify({ repo, ref: ref || undefined, label: label || undefined }) });
         await loadPlugins();
         renderPluginRows(list, focusPluginForm);
         state.user.pluginCount = state.plugins.length;
         invalidateSkillsCache(state.user.id);
         formEl.reset();
+        notify(`플러그인 "${label || repo}"을 추가했습니다.`, "ok");
       } catch (err) {
         notify(`플러그인 추가 실패: ${err.message}`);
       } finally {
@@ -5764,6 +5768,7 @@ function renderPluginRows(list, focusAddForm = null) {
           p.enabled = val;
           invalidateSkillsCache(state.user.id);
           renderPluginRows(list);
+          notify(`"${p.label || p.repo}" 플러그인을 ${val ? "사용" : "사용 중지"}했습니다.`, "ok");
         } catch (e) {
           notify(`변경 실패: ${e.message}`);
           throw e;
@@ -5802,6 +5807,7 @@ function renderPluginRows(list, focusAddForm = null) {
         Object.assign(p, plugin);
         invalidateSkillsCache(state.user.id);
         renderPluginRows(list);
+        notify(`"${p.label || p.repo}" 플러그인을 최신 버전으로 새로고침했습니다.`, "ok");
       } catch (e) {
         notify(`새로고침 실패: ${e.message}`);
       } finally {
@@ -5821,6 +5827,7 @@ function renderPluginRows(list, focusAddForm = null) {
         state.user.pluginCount = state.plugins.length;
         invalidateSkillsCache(state.user.id);
         renderPluginRows(list);
+        notify(`"${p.label || p.repo}" 플러그인을 삭제했습니다.`, "ok");
       } catch (e) {
         if (row.isConnected) setFormBusy(row, false);
         notify(`삭제 실패: ${e.message}`);
