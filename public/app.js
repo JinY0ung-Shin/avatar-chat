@@ -2739,7 +2739,15 @@ function renderInboxItems(list, refresh, resetFilter = null) {
           : items;
 
   if (!filtered.length) {
-    const emptyText = items.length ? "이 필터에 해당하는 항목이 없습니다." : "새 알림이 없습니다.";
+    const emptyTexts = {
+      all: "새 알림이나 정보 요청이 없습니다.",
+      requests: "열린 정보 요청이 없습니다.",
+      unread: "읽지 않은 알림이 없습니다.",
+      notifications: "아바타 알림이 없습니다.",
+    };
+    const emptyText = items.length
+      ? `이 필터에 해당하는 항목이 없습니다. ${emptyTexts[state.inboxFilter] || ""}`.trim()
+      : emptyTexts[state.inboxFilter] || emptyTexts.all;
     const emptyChildren = [emptyText];
     if (items.length && state.inboxFilter !== "all") {
       emptyChildren.push("\n", el("button", { class: "linkish small", type: "button", text: "전체 보기", onclick: () => resetFilter?.() }));
