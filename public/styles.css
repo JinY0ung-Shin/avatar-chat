@@ -4663,9 +4663,22 @@ textarea::placeholder {
   flex-wrap: wrap;
   margin-top: var(--s-1);
 }
-.group-add > input[type="search"] {
-  flex: 1 1 200px;
+.group-add-panel {
+  display: grid;
+  gap: var(--s-2);
+}
+.group-add > .trusted-search {
+  flex: 1 1 260px;
   min-width: 0;
+}
+.group-add > .trusted-search input[type="search"] {
+  width: 100%;
+}
+.group-add-pick {
+  flex: none;
+}
+.group-add .primary {
+  flex: none;
 }
 .group-add-admin {
   display: inline-flex;
@@ -4674,6 +4687,38 @@ textarea::placeholder {
   white-space: nowrap;
   color: var(--text-soft);
   font-size: var(--t-sm);
+}
+.group-add-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+.group-add-selected[hidden] {
+  display: none;
+}
+.group-add-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 4px 4px 4px 10px;
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.group-add-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.group-add-chip .msg-act {
+  flex: none;
+  width: 22px;
+  height: 22px;
 }
 .group-repo {
   display: flex;

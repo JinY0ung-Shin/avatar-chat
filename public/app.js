@@ -4744,22 +4744,42 @@ function buildVisibilitySelect(current, onChange) {
 // Returns a wrapper element (input + results) to place in the layout. Used by
 // the group member-add forms — group membership is how trust/elevation is
 // granted, so finding people by name (not just exact username) matters.
-function attachUserSearch(input) {
+function attachUserSearch(input, opts = {}) {
+  const {
+    onSelect = null,
+    excludeUserIds = () => new Set(),
+    excludeUsernames = () => new Set(),
+  } = opts;
   const results = el("div", { class: "trusted-results", hidden: "" });
   const wrap = el("div", { class: "trusted-search" }, [input, results]);
   let seq = 0;
   let timer = null;
   const render = (users) => {
     results.replaceChildren();
-    if (!users.length) {
+    const excludedIds = excludeUserIds();
+    const excludedNames = excludeUsernames();
+    const visibleUsers = users.filter((u) => {
+      const key = (u.username || "").toLowerCase();
+      return !(excludedIds.has(u.id) || excludedNames.has(key));
+    });
+    if (!visibleUsers.length) {
       results.append(el("div", { class: "empty-note", text: "일치하는 사용자가 없습니다." }));
     } else {
-      for (const u of users) {
+      for (const u of visibleUsers) {
         results.append(
           el("button", {
             type: "button",
             class: "trusted-result",
-            onclick: () => { input.value = u.username; results.hidden = true; input.focus(); },
+            onclick: () => {
+              if (onSelect) {
+                const accepted = onSelect(u);
+                if (accepted !== false) input.value = "";
+              } else {
+                input.value = u.username;
+              }
+              results.hidden = true;
+              input.focus();
+            },
           }, [
             el("div", { class: "pr-main" }, [
               el("strong", { text: u.displayName }),
@@ -5644,6 +5664,156 @@ function renderKnowledgeRepoContents(container, info) {
 // The member's view of the groups they belong to: teammate roster (with a chat
 // shortcut — teammates auto-trust each other), and for group admins, member
 // management + the shared knowledge repo (mirrors the personal knowledge repo).
+function buildGroupMemberAddForm({
+  members = [],
+  endpoint,
+  reload,
+  placeholder = "추가할 동료 아이디(@) 또는 이름",
+  ariaLabel = "멤버 추가",
+}) {
+  const selected = new Map();
+  const existingIds = new Set(members.map((m) => m.userId).filter(Boolean));
+  const existingNames = new Set(members.map((m) => (m.username || "").toLowerCase()).filter(Boolean));
+  const input = el("input", { type: "search", placeholder, "aria-label": ariaLabel });
+  const adminCb = el("input", { type: "checkbox" });
+  const addTypedBtn = el("button", {
+    class: "icon-button group-add-pick",
+    type: "button",
+    title: "입력한 사용자를 선택 목록에 추가",
+    "aria-label": "입력한 사용자를 선택 목록에 추가",
+  }, [icon("plus")]);
+  const submitBtn = el("button", { class: "primary small", type: "button", text: "선택한 멤버 추가" });
+  const selectedList = el("div", { class: "group-add-selected", hidden: "" });
+
+  const excludeSelectedIds = () => new Set([
+    ...existingIds,
+    ...[...selected.values()].map((u) => u.id).filter(Boolean),
+  ]);
+  const excludeSelectedNames = () => new Set([...existingNames, ...selected.keys()]);
+  const renderSelected = () => {
+    selectedList.replaceChildren();
+    if (!selected.size) {
+      selectedList.hidden = true;
+      submitBtn.textContent = "선택한 멤버 추가";
+      return;
+    }
+    selectedList.hidden = false;
+    for (const [key, user] of selected) {
+      const remove = el("button", {
+        class: "msg-act",
+        type: "button",
+        title: "선택 해제",
+        "aria-label": `${user.displayName || user.username} 선택 해제`,
+      }, [icon("close")]);
+      remove.addEventListener("click", () => {
+        selected.delete(key);
+        renderSelected();
+      });
+      selectedList.append(
+        el("span", { class: "group-add-chip" }, [
+          el("span", { text: `${user.displayName || user.username} · @${user.username}` }),
+          remove,
+        ]),
+      );
+    }
+    submitBtn.textContent = `${selected.size}명 추가`;
+  };
+  const selectUser = (user) => {
+    const username = (user.username || "").trim().replace(/^@/, "");
+    const key = username.toLowerCase();
+    if (!username) return false;
+    if (existingNames.has(key) || (user.id && existingIds.has(user.id))) {
+      notify("이미 그룹에 있는 사용자입니다.", "info");
+      input.value = "";
+      return false;
+    }
+    if (selected.has(key)) {
+      notify("이미 선택한 사용자입니다.", "info");
+      input.value = "";
+      return false;
+    }
+    selected.set(key, { ...user, username, displayName: user.displayName || username });
+    input.value = "";
+    renderSelected();
+    return true;
+  };
+  const addTyped = () => {
+    const username = input.value.trim().replace(/^@/, "");
+    if (!username) {
+      input.focus();
+      return false;
+    }
+    return selectUser({ username, displayName: username });
+  };
+  const search = attachUserSearch(input, {
+    onSelect: selectUser,
+    excludeUserIds: excludeSelectedIds,
+    excludeUsernames: excludeSelectedNames,
+  });
+  addTypedBtn.addEventListener("click", addTyped);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      addTyped();
+    }
+  });
+  submitBtn.addEventListener("click", async () => {
+    if (!selected.size && input.value.trim()) addTyped();
+    if (!selected.size) {
+      input.focus();
+      return;
+    }
+    const queued = [...selected.entries()];
+    const role = adminCb.checked ? "admin" : "member";
+    submitBtn.disabled = true;
+    addTypedBtn.disabled = true;
+    try {
+      const failures = [];
+      const successes = [];
+      for (const [key, user] of queued) {
+        try {
+          const res = await api(endpoint, {
+            method: "POST",
+            body: JSON.stringify({ username: user.username, role }),
+          });
+          const member = res.member || {};
+          existingNames.add((member.username || user.username).toLowerCase());
+          if (member.userId) existingIds.add(member.userId);
+          successes.push(key);
+        } catch (e) {
+          failures.push(`@${user.username}: ${e.message}`);
+        }
+      }
+      for (const key of successes) selected.delete(key);
+      if (successes.length) {
+        adminCb.checked = false;
+        input.value = "";
+        await reload?.();
+      }
+      if (failures.length) {
+        notify(`일부 멤버를 추가하지 못했습니다. ${failures.join(" / ")}`, "warn");
+      } else {
+        notify(`${successes.length}명을 그룹에 추가했습니다.`, "ok");
+      }
+    } finally {
+      submitBtn.disabled = false;
+      addTypedBtn.disabled = false;
+      renderSelected();
+    }
+  });
+
+  renderSelected();
+  return el("div", { class: "group-add-panel" }, [
+    el("div", { class: "group-add" }, [
+      search,
+      addTypedBtn,
+      el("label", { class: "group-add-admin" }, [adminCb, el("span", { text: "그룹 관리자로" })]),
+      submitBtn,
+    ]),
+    selectedList,
+  ]);
+}
+
 function buildGroupsCard() {
   const card = el("section", { class: "settings-card" });
   card.append(
@@ -5708,35 +5878,12 @@ function buildGroupBlock(g, reload) {
   block.append(roster);
 
   if (amAdmin) {
-    const addInput = el("input", { type: "search", placeholder: "추가할 동료 아이디(@) 또는 이름", "aria-label": "멤버 추가" });
-    const adminCb = el("input", { type: "checkbox" });
-    const addBtn = el("button", { class: "primary small", type: "button", text: "멤버 추가" });
-    const doAdd = async () => {
-      const username = addInput.value.trim().replace(/^@/, "");
-      if (!username) { addInput.focus(); return; }
-      addBtn.disabled = true;
-      try {
-        await api(`/api/me/groups/${encodeURIComponent(g.id)}/members`, {
-          method: "POST",
-          body: JSON.stringify({ username, role: adminCb.checked ? "admin" : "member" }),
-        });
-        addInput.value = "";
-        adminCb.checked = false;
-        await reload();
-      } catch (e) {
-        notify(`멤버 추가 실패: ${e.message}`);
-      } finally {
-        addBtn.disabled = false;
-      }
-    };
-    addBtn.addEventListener("click", doAdd);
-    addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
     block.append(
-      el("div", { class: "group-add" }, [
-        attachUserSearch(addInput),
-        el("label", { class: "group-add-admin" }, [adminCb, el("span", { text: "그룹 관리자로" })]),
-        addBtn,
-      ]),
+      buildGroupMemberAddForm({
+        members: g.members || [],
+        endpoint: `/api/me/groups/${encodeURIComponent(g.id)}/members`,
+        reload,
+      }),
     );
     block.append(buildGroupRepoCard(g));
   } else {
@@ -6591,34 +6738,12 @@ function buildAdminGroupDetail(g, members, reload) {
   };
   renderMembers(members);
 
-  const addInput = el("input", { type: "search", placeholder: "추가할 사용자 아이디(@) 또는 이름", "aria-label": "멤버 추가" });
-  const adminCb = el("input", { type: "checkbox" });
-  const addBtn = el("button", { class: "primary small", type: "button", text: "멤버 추가" });
-  const doAdd = async () => {
-    const username = addInput.value.trim().replace(/^@/, "");
-    if (!username) { addInput.focus(); return; }
-    addBtn.disabled = true;
-    try {
-      await api(`/api/admin/groups/${encodeURIComponent(g.id)}/members`, {
-        method: "POST",
-        body: JSON.stringify({ username, role: adminCb.checked ? "admin" : "member" }),
-      });
-      addInput.value = "";
-      adminCb.checked = false;
-      await reloadMembers();
-    } catch (e) {
-      notify(`멤버 추가 실패: ${e.message}`);
-    } finally {
-      addBtn.disabled = false;
-    }
-  };
-  addBtn.addEventListener("click", doAdd);
-  addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
-  const addRow = el("div", { class: "group-add" }, [
-    attachUserSearch(addInput),
-    el("label", { class: "group-add-admin" }, [adminCb, el("span", { text: "그룹 관리자로" })]),
-    addBtn,
-  ]);
+  const addRow = buildGroupMemberAddForm({
+    members,
+    endpoint: `/api/admin/groups/${encodeURIComponent(g.id)}/members`,
+    reload: reloadMembers,
+    placeholder: "추가할 사용자 아이디(@) 또는 이름",
+  });
 
   const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "그룹 삭제" });
   delBtn.addEventListener("click", async () => {
@@ -6647,7 +6772,7 @@ function buildAdminGroupDetail(g, members, reload) {
 function adminGroupMemberRow(groupId, m, reload) {
   const isAdmin = m.role === "admin";
   const roleBtn = el("button", {
-    class: "msg-act",
+    class: "ghost-sm",
     type: "button",
     title: isAdmin ? "그룹 관리자 해제" : "그룹 관리자 지정",
     text: isAdmin ? "관리자 해제" : "관리자 지정",
