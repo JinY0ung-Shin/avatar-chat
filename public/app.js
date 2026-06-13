@@ -2133,7 +2133,15 @@ function buildNotificationRow(n, refresh) {
     delBtn.setAttribute("aria-label", "알림 삭제 중");
     try {
       await api(`/api/me/notifications/${encodeURIComponent(n.id)}`, { method: "DELETE" });
-      await refresh?.();
+      try {
+        await refresh?.({ surfaceErrors: true });
+        notify("알림을 삭제했습니다.", "ok");
+      } catch (err) {
+        setFormBusy(row, false);
+        delBtn.title = savedTitle;
+        delBtn.setAttribute("aria-label", savedLabel || "알림 삭제");
+        notify(`알림은 삭제했지만 목록 새로고침에 실패했습니다: ${err.message}`, "warn");
+      }
     } catch (e) {
       setFormBusy(row, false);
       delBtn.title = savedTitle;
@@ -2660,10 +2668,12 @@ async function renderInboxView() {
     );
   };
 
-  const refresh = async () => {
+  const refresh = async ({ surfaceErrors = false } = {}) => {
+    let refreshError = null;
     try {
       await Promise.all([loadKnowledge(), loadNotifications()]);
-    } catch {
+    } catch (err) {
+      refreshError = err;
       /* keep current state on transient failure */
     }
     if (!isCurrent()) return;
@@ -2672,6 +2682,7 @@ async function renderInboxView() {
     syncHeaderActions();
     syncFilters();
     renderInboxItems(list, refresh, resetInboxFilter);
+    if (refreshError && surfaceErrors) throw refreshError;
   };
 
   const syncHeaderActions = () => {
@@ -2697,8 +2708,15 @@ async function renderInboxView() {
               notify(`처리 실패: ${e.message}`);
               return;
             }
-            await refresh();
-            setFormBusy(card, false);
+            try {
+              await refresh({ surfaceErrors: true });
+              setFormBusy(card, false);
+              notify(`알림 ${unread}개를 읽음 처리했습니다.`, "ok");
+            } catch (e) {
+              setFormBusy(card, false);
+              btn.textContent = saved;
+              notify(`알림은 읽음 처리했지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
+            }
           },
         }),
       );
@@ -2723,8 +2741,15 @@ async function renderInboxView() {
               notify(`삭제 실패: ${e.message}`);
               return;
             }
-            await refresh();
-            setFormBusy(card, false);
+            try {
+              await refresh({ surfaceErrors: true });
+              setFormBusy(card, false);
+              notify(`알림 ${total}개를 삭제했습니다.`, "ok");
+            } catch (e) {
+              setFormBusy(card, false);
+              btn.textContent = saved;
+              notify(`알림은 삭제했지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
+            }
           },
         }),
       );
