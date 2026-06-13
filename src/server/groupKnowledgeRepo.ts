@@ -7,7 +7,7 @@ import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName, scrubGitErr
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
 import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
-import { git, currentBranch, dirtyPaths } from "./repoGitCore.js";
+import { git, currentBranch, originUrl, dirtyPaths } from "./repoGitCore.js";
 import type { AppConfig } from "./types.js";
 import type { Store } from "./store.js";
 
@@ -75,6 +75,18 @@ async function ensureGroupCloneLocked(
     throw new Error("Invalid repo or branch");
   }
   const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
+
+  // A settings change to a different repo leaves the old `origin` in
+  // .git/config, so `git fetch origin` would keep pulling the OLD repo. When
+  // origin no longer matches the configured repo, discard the stale clone and
+  // re-clone (its tree belonged to a different repo). Mirrors ensureClone.
+  if (await pathExists(path.join(repoRoot, ".git"))) {
+    const origin = await originUrl(repoRoot);
+    if (origin !== null && origin !== url) {
+      logger.info({ groupId: ctx.groupId, repo: ctx.repo, origin }, "group knowledge repo changed; re-cloning");
+      await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 
   if (await pathExists(path.join(repoRoot, ".git"))) {
     await git(repoRoot, [...auth, "fetch", "--prune", "origin"]);

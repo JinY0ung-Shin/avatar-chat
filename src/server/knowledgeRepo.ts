@@ -7,7 +7,7 @@ import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName, scrubGitErr
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
 import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
-import { git, currentBranch, dirtyPaths as coreDirtyPaths } from "./repoGitCore.js";
+import { git, currentBranch, originUrl, dirtyPaths as coreDirtyPaths } from "./repoGitCore.js";
 import fsSync from "node:fs";
 import type { AppConfig, KnowledgeRepoStatus, KnowledgeRepoTreeEntry } from "./types.js";
 import type { Store } from "./store.js";
@@ -159,6 +159,19 @@ async function ensureCloneLocked(ctx: KnowledgeRepoContext, repoRoot: string): P
     throw new Error("Invalid repo or branch");
   }
   const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
+
+  // If the connected repo was changed in settings, the existing clone's `origin`
+  // still points at the OLD repo and `git fetch origin` would silently keep
+  // pulling it (the new URL is only used on the first clone). When origin no
+  // longer matches the configured repo, discard the stale clone and re-clone —
+  // its branches/commits belonged to a different repo and don't apply here.
+  if (await pathExists(path.join(repoRoot, ".git"))) {
+    const origin = await originUrl(repoRoot);
+    if (origin !== null && origin !== url) {
+      logger.info({ userId: ctx.userId, repo: ctx.repo, origin }, "knowledge repo changed; re-cloning");
+      await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 
   if (await pathExists(path.join(repoRoot, ".git"))) {
     await git(repoRoot, [...auth, "fetch", "--prune", "origin"]);

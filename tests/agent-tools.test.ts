@@ -459,6 +459,45 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(fs.existsSync(path.join(verify, "notes/onboarding.md"))).toBe(true);
   });
 
+  it("re-clones when the connected repo changes (stale origin not reused)", async () => {
+    // Regression: changing the connected repo in settings left the on-disk
+    // clone's `origin` pointing at the OLD repo, so `git fetch origin` kept
+    // pulling it (e.g. a personal repo lingering after switching to an org one).
+    const dataDir = path.join(tempDir, "rt-switch");
+    const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "o", displayName: "O", password: "password123" });
+
+    // Two distinct bare remotes, each with a uniquely-named file on `main`.
+    const seedRemote = (name: string, file: string) => {
+      const remote = makeBareRemote(path.join(dataDir, `${name}.git`));
+      const seed = path.join(dataDir, `${name}-seed`);
+      gitInit(seed);
+      fs.writeFileSync(path.join(seed, file), "x");
+      const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+      g("add", "-A");
+      g("commit", "-q", "-m", "seed");
+      g("branch", "-M", "main");
+      g("remote", "add", "origin", remote);
+      g("push", "-q", "origin", "main");
+      return remote;
+    };
+    const remoteA = seedRemote("a", "from-a.txt");
+    const remoteB = seedRemote("b", "from-b.txt");
+
+    store.setKnowledgeRepo(owner.id, remoteA, "main");
+    const clone = knowledgeClonePath(owner.id, config);
+    await ensureClone(knowledgeRepoContextFor(store, owner.id, config)!);
+    expect(fs.existsSync(path.join(clone, "from-a.txt"))).toBe(true);
+
+    // Switch the connected repo; the next ensure must track B, not stale A.
+    store.setKnowledgeRepo(owner.id, remoteB, "main");
+    await ensureClone(knowledgeRepoContextFor(store, owner.id, config)!);
+    const origin = execFileSync("git", ["-C", clone, "remote", "get-url", "origin"], { encoding: "utf8" }).trim();
+    expect(origin).toBe(remoteB);
+    expect(fs.existsSync(path.join(clone, "from-b.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(clone, "from-a.txt"))).toBe(false);
+  });
+
   it("commits knowledge-repo changes with the avatar alias by default", async () => {
     const s = setup("rt-alias");
     s.store.updateProfile(s.ownerId, { alias: "Knowledge Bot" });

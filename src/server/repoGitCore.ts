@@ -28,6 +28,21 @@ export function git(repoRoot: string, args: string[], timeout = 120_000) {
 }
 
 /**
+ * The clone's `origin` remote URL (clean, without any auth — auth is supplied
+ * per-call via `http.extraHeader`, never written to `.git/config`), or null when
+ * there's no origin / on error. Used to detect that the configured repo changed
+ * out from under an existing clone so the stale one can be re-cloned.
+ */
+export async function originUrl(repoRoot: string): Promise<string | null> {
+  try {
+    const { stdout } = await git(repoRoot, ["remote", "get-url", "origin"]);
+    return stdout.trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The clone's current branch name, or null when detached (`HEAD`) or on error.
  * Identical to the inline `currentBranch` each repo module used.
  */
