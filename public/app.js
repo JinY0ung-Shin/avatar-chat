@@ -5541,6 +5541,7 @@ function renderPluginRows(list) {
         meta,
       ]),
       buildToggle(p.enabled, async (val) => {
+        setFormBusy(row, true);
         try {
           await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
           p.enabled = val;
@@ -5549,6 +5550,8 @@ function renderPluginRows(list) {
         } catch (e) {
           notify(`변경 실패: ${e.message}`);
           throw e;
+        } finally {
+          if (row.isConnected) setFormBusy(row, false);
         }
       }, `플러그인 사용: ${p.label || p.repo}`),
     ]);
@@ -5575,7 +5578,7 @@ function renderPluginRows(list) {
 
     // "새로고침" — force git fetch + checkout, bypassing the clone cache.
     const refreshBtn = el("button", { class: "msg-act", type: "button", "aria-label": "최신 버전으로 새로고침", title: "최신 버전으로 새로고침", onclick: async () => {
-      refreshBtn.disabled = true;
+      setFormBusy(row, true);
       refreshBtn.classList.add("spinning");
       try {
         const { plugin } = await api(`/api/me/plugins/${encodeURIComponent(p.id)}/refresh`, { method: "POST" });
@@ -5586,7 +5589,7 @@ function renderPluginRows(list) {
         notify(`새로고침 실패: ${e.message}`);
       } finally {
         refreshBtn.classList.remove("spinning");
-        refreshBtn.disabled = false;
+        if (row.isConnected) setFormBusy(row, false);
       }
     } });
     refreshBtn.append(icon("refresh"));
@@ -5594,6 +5597,7 @@ function renderPluginRows(list) {
 
     const del = el("button", { class: "msg-act danger", type: "button", "aria-label": `플러그인 삭제: ${p.label || p.repo}`, title: "삭제", onclick: async () => {
       if (!window.confirm(`플러그인 "${p.label || p.repo}"을(를) 삭제할까요?`)) return;
+      setFormBusy(row, true);
       try {
         await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" });
         state.plugins = state.plugins.filter((x) => x.id !== p.id);
@@ -5601,6 +5605,7 @@ function renderPluginRows(list) {
         invalidateSkillsCache(state.user.id);
         renderPluginRows(list);
       } catch (e) {
+        if (row.isConnected) setFormBusy(row, false);
         notify(`삭제 실패: ${e.message}`);
       }
     } });
