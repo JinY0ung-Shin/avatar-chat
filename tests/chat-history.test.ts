@@ -1,9 +1,7 @@
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { AgentRequest, AgentResponse } from "../src/server/types.js";
+import { signup, withTempDir } from "./helpers.js";
 
 const capturedRequests = vi.hoisted(() => [] as AgentRequest[]);
 
@@ -24,19 +22,10 @@ vi.mock("../src/server/agent/index.js", () => ({
 import { createApp, createServices } from "../src/server/app.js";
 
 let tempDir: string;
-
-beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-history-"));
+const getTempDir = withTempDir("history", () => {
+  tempDir = getTempDir();
   capturedRequests.length = 0;
 });
-
-afterEach(() => {
-  fs.rmSync(tempDir, { recursive: true, force: true });
-});
-
-function signup(agent: ReturnType<typeof request.agent>, username: string, password = "password123") {
-  return agent.post("/api/auth/signup").send({ username, displayName: username, password });
-}
 
 describe("chat history fallback", () => {
   it("passes stored messages when no SDK session exists after a stopped first turn", async () => {

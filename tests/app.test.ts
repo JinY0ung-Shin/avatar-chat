@@ -1,19 +1,14 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import request from "supertest";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
 import { loadDefaultPluginRoots, resolvePluginRoots } from "../src/server/plugins.js";
+import { parseSse, signup, withTempDir } from "./helpers.js";
 
 let tempDir: string;
-
-beforeEach(() => {
-  tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-almighty-"));
-});
-
-afterEach(() => {
-  fs.rmSync(tempDir, { recursive: true, force: true });
+const getTempDir = withTempDir("almighty", () => {
+  tempDir = getTempDir();
 });
 
 function testApp() {
@@ -25,10 +20,6 @@ function testApp() {
   return createApp(services);
 }
 
-function signup(agent: ReturnType<typeof request.agent>, username: string, password = "password123") {
-  return agent.post("/api/auth/signup").send({ username, displayName: username, password });
-}
-
 // 1x1 transparent PNG as a data URL, for avatar-image upload tests.
 const PNG_DATA_URL =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMCAYHvqzS6AAAAAElFTkSuQmCC";
@@ -38,24 +29,6 @@ async function newUser(app: ReturnType<typeof createApp>, username: string) {
   const agent = request.agent(app);
   const res = await signup(agent, username).expect(201);
   return { agent, user: res.body.user as { id: string; username: string; roles: string[] } };
-}
-
-/** Parse SSE text into a list of {event, data} frames. */
-function parseSse(raw: string): { event: string; data: unknown }[] {
-  const frames: { event: string; data: unknown }[] = [];
-  for (const block of raw.split("\n\n")) {
-    const lines = block.split("\n");
-    let event = "";
-    let data = "";
-    for (const line of lines) {
-      if (line.startsWith("event:")) event = line.slice(6).trim();
-      else if (line.startsWith("data:")) data += line.slice(5).trim();
-    }
-    if (event) {
-      frames.push({ event, data: data ? JSON.parse(data) : undefined });
-    }
-  }
-  return frames;
 }
 
 describe("noah-almighty platform", () => {
