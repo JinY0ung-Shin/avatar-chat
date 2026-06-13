@@ -7800,14 +7800,28 @@ function adminUserRow(u, reload) {
     isMe ? el("span", { class: "tag", text: "나" }) : null,
   ]);
 
-  const detail = el("div", { class: "ar-detail" });
+  const detailId = `admin-user-detail-${newId()}`;
+  const detail = el("div", { id: detailId, class: "ar-detail" });
   detail.hidden = true;
   let loaded = false;
-  const manageBtn = el("button", { class: "ghost-sm", type: "button", text: "관리" });
-  manageBtn.setAttribute("aria-expanded", "false");
+  const manageBtn = el("button", {
+    class: "ghost-sm",
+    type: "button",
+    text: "관리",
+    "aria-controls": detailId,
+    "aria-expanded": "false",
+    "aria-label": `${u.displayName} 사용자 관리 열기`,
+    title: `${u.displayName} 사용자 관리 열기`,
+  });
+  const setManageExpanded = (expanded) => {
+    detail.hidden = !expanded;
+    manageBtn.textContent = expanded ? "접기" : "관리";
+    manageBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    manageBtn.setAttribute("aria-label", expanded ? `${u.displayName} 사용자 관리 접기` : `${u.displayName} 사용자 관리 열기`);
+    manageBtn.title = expanded ? `${u.displayName} 사용자 관리 접기` : `${u.displayName} 사용자 관리 열기`;
+  };
   const loadDetail = async () => {
-    detail.hidden = false;
-    manageBtn.setAttribute("aria-expanded", "true");
+    setManageExpanded(true);
     if (loaded) return;
     const saved = manageBtn.textContent;
     manageBtn.disabled = true;
@@ -7831,8 +7845,7 @@ function adminUserRow(u, reload) {
   };
   manageBtn.addEventListener("click", async () => {
     if (!detail.hidden) {
-      detail.hidden = true;
-      manageBtn.setAttribute("aria-expanded", "false");
+      setManageExpanded(false);
       return;
     }
     await loadDetail();
@@ -8199,14 +8212,28 @@ async function adminGroupsCards() {
 }
 
 function adminGroupRow(g, reload) {
-  const detail = el("div", { class: "ar-detail" });
+  const detailId = `admin-group-detail-${newId()}`;
+  const detail = el("div", { id: detailId, class: "ar-detail" });
   detail.hidden = true;
   let loaded = false;
-  const manageBtn = el("button", { class: "ghost-sm", type: "button", text: "관리" });
-  manageBtn.setAttribute("aria-expanded", "false");
+  const manageBtn = el("button", {
+    class: "ghost-sm",
+    type: "button",
+    text: "관리",
+    "aria-controls": detailId,
+    "aria-expanded": "false",
+    "aria-label": `${g.name} 그룹 관리 열기`,
+    title: `${g.name} 그룹 관리 열기`,
+  });
+  const setManageExpanded = (expanded) => {
+    detail.hidden = !expanded;
+    manageBtn.textContent = expanded ? "접기" : "관리";
+    manageBtn.setAttribute("aria-expanded", expanded ? "true" : "false");
+    manageBtn.setAttribute("aria-label", expanded ? `${g.name} 그룹 관리 접기` : `${g.name} 그룹 관리 열기`);
+    manageBtn.title = expanded ? `${g.name} 그룹 관리 접기` : `${g.name} 그룹 관리 열기`;
+  };
   const loadDetail = async () => {
-    detail.hidden = false;
-    manageBtn.setAttribute("aria-expanded", "true");
+    setManageExpanded(true);
     if (loaded) return;
     const saved = manageBtn.textContent;
     manageBtn.disabled = true;
@@ -8230,8 +8257,7 @@ function adminGroupRow(g, reload) {
   };
   manageBtn.addEventListener("click", async () => {
     if (!detail.hidden) {
-      detail.hidden = true;
-      manageBtn.setAttribute("aria-expanded", "false");
+      setManageExpanded(false);
       return;
     }
     await loadDetail();
