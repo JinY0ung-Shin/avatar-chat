@@ -2327,17 +2327,24 @@ function renderRoutineManageRows(list, { searchInput = null, filterBar = null, c
     const dotClass = !r.enabled ? "off" : errored ? "err" : "on";
     const dot = el("span", { class: `routine-dot ${dotClass}`, "aria-hidden": "true" });
 
+    const title = routineTitle(r);
     const toggle = buildToggle(r.enabled, async (val) => {
       try {
         await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
-        r.enabled = val;
-        await loadRoutines();
-        renderRoutineManageRows(list, { searchInput, filterBar, countLabel });
       } catch (e) {
         notify(`변경 실패: ${e.message}`);
         throw e;
       }
-    }, `루틴 사용: ${routineTitle(r)}`);
+      r.enabled = val;
+      try {
+        await loadRoutines();
+        renderRoutineManageRows(list, { searchInput, filterBar, countLabel });
+        notify(`"${title}" 루틴을 ${val ? "사용" : "일시 정지"}했습니다.`, "ok");
+      } catch (e) {
+        renderRoutineManageRows(list, { searchInput, filterBar, countLabel });
+        notify(`루틴 상태는 변경했지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
+      }
+    }, `루틴 사용: ${title}`);
     // Don't let the toggle's click bubble to the row (which would change selection).
     toggle.addEventListener("click", (e) => e.stopPropagation());
 
