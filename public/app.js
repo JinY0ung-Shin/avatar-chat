@@ -4085,13 +4085,16 @@ function handlePromptResolved(live, data) {
 // the run kept waiting forever on an answer the UI could no longer deliver.
 // The tool id (if any) is remembered so a later "blocked" event for the same
 // tool isn't double-reported in the activity tree.
-async function submitPromptResponse(live, data, value, card) {
+async function submitPromptResponse(live, data, value, card, triggerBtn = null, busyText = "처리 중…") {
   if (data.toolUseId) {
     (live.resolvedPermissions || (live.resolvedPermissions = new Set())).add(data.toolUseId);
   }
   const buttons = card ? [...card.querySelectorAll("button")] : [];
   const disabledBefore = buttons.map((b) => b.disabled);
+  const triggerLabel = triggerBtn?.textContent || "";
+  card?.querySelector(".prompt-error")?.remove();
   buttons.forEach((b) => (b.disabled = true));
+  if (triggerBtn) triggerBtn.textContent = busyText;
   try {
     await api("/api/chat/respond", { method: "POST", body: JSON.stringify({ runId: live.runId, requestId: data.requestId, value }) });
     advancePromptModal();
@@ -4099,6 +4102,7 @@ async function submitPromptResponse(live, data, value, card) {
     if (!live.done && live.pane?.streaming) {
       // Run still alive — keep the card so the user can retry.
       buttons.forEach((b, i) => (b.disabled = disabledBefore[i]));
+      if (triggerBtn) triggerBtn.textContent = triggerLabel;
       let note = card?.querySelector(".prompt-error");
       if (card) {
         if (!note) {
@@ -4150,8 +4154,8 @@ function renderPermissionCard(live, data) {
   ]);
   card.append(
     el("div", { class: "prompt-actions" }, [
-      el("button", { class: "btn btn-ghost btn-sm", text: "거부", "data-prompt-cancel": "", onclick: () => submitPromptResponse(live, data, { behavior: "deny" }, card) }),
-      el("button", { class: "btn btn-primary btn-sm", text: "승인", onclick: () => submitPromptResponse(live, data, { behavior: "allow" }, card) }),
+      el("button", { class: "btn btn-ghost btn-sm", text: "거부", "data-prompt-cancel": "", onclick: (event) => submitPromptResponse(live, data, { behavior: "deny" }, card, event.currentTarget, "거부 중…") }),
+      el("button", { class: "btn btn-primary btn-sm", text: "승인", onclick: (event) => submitPromptResponse(live, data, { behavior: "allow" }, card, event.currentTarget, "승인 중…") }),
     ]),
   );
   showPromptModal(card, live.runId || "");
@@ -4170,8 +4174,8 @@ function renderQuestionCard(live, data) {
     // Unknown dialog kind: show raw payload + confirm/cancel.
     card.append(el("pre", { class: "prompt-input", text: JSON.stringify(payload, null, 2) }));
     card.append(el("div", { class: "prompt-actions" }, [
-      el("button", { class: "btn btn-ghost btn-sm", text: "취소", "data-prompt-cancel": "", onclick: () => submitPromptResponse(live, data, { cancelled: true }, card) }),
-      el("button", { class: "btn btn-primary btn-sm", text: "확인", onclick: () => submitPromptResponse(live, data, { result: {} }, card) }),
+      el("button", { class: "btn btn-ghost btn-sm", text: "취소", "data-prompt-cancel": "", onclick: (event) => submitPromptResponse(live, data, { cancelled: true }, card, event.currentTarget, "취소 중…") }),
+      el("button", { class: "btn btn-primary btn-sm", text: "확인", onclick: (event) => submitPromptResponse(live, data, { result: {} }, card, event.currentTarget, "확인 중…") }),
     ]));
     showPromptModal(card, live.runId || "");
     setStatus(live, "질문에 답해 주세요…", { sticky: true });
@@ -4272,13 +4276,13 @@ function renderQuestionCard(live, data) {
       if (customOn[qi] && customText[qi].trim()) vals.push(customText[qi].trim());
       answers[q.question || `q${qi}`] = vals.join(", ");
     });
-    submitPromptResponse(live, data, { result: { questions, answers } }, card);
+    submitPromptResponse(live, data, { result: { questions, answers } }, card, submitBtn, "보내는 중…");
   });
 
   // Always offer an exit: without 건너뛰기 the disabled submit + full-screen
   // backdrop could hard-stick a user who doesn't want to answer.
   card.append(el("div", { class: "prompt-actions" }, [
-    el("button", { class: "btn btn-ghost btn-sm", text: "건너뛰기", "data-prompt-cancel": "", onclick: () => submitPromptResponse(live, data, { cancelled: true }, card) }),
+    el("button", { class: "btn btn-ghost btn-sm", text: "건너뛰기", "data-prompt-cancel": "", onclick: (event) => submitPromptResponse(live, data, { cancelled: true }, card, event.currentTarget, "건너뛰는 중…") }),
     submitBtn,
   ]));
   showPromptModal(card, live.runId || "");
