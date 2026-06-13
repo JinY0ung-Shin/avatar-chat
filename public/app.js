@@ -5851,6 +5851,8 @@ function buildKnowledgeRepoCard() {
       const fd = new FormData(formEl);
       const btn = formEl.querySelector("button[type=submit]");
       btn.disabled = true;
+      const saved = btn.textContent;
+      btn.textContent = "저장 중…";
       try {
         const { user } = await api("/api/me/knowledge-repo", {
           method: "PUT",
@@ -5859,8 +5861,8 @@ function buildKnowledgeRepoCard() {
         state.user = user;
         renderView();
       } catch (err) {
+        btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
-      } finally {
         btn.disabled = false;
       }
     },
@@ -6305,6 +6307,8 @@ function buildGroupRepoCard(g) {
       const fd = new FormData(e.currentTarget);
       const btn = e.currentTarget.querySelector("button[type=submit]");
       btn.disabled = true;
+      const saved = btn.textContent;
+      btn.textContent = "저장 중…";
       try {
         await api(`/api/me/groups/${gid}/knowledge-repo`, {
           method: "PUT",
@@ -6316,6 +6320,7 @@ function buildGroupRepoCard(g) {
         invalidateSkillsCache(state.user.id);
         renderView();
       } catch (err) {
+        btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
         btn.disabled = false;
       }
