@@ -6902,11 +6902,14 @@ function openAdminPasswordResetModal(u, triggerBtn, reload) {
 function buildUserActions(u, isAdmin, isMe, reload) {
   const wrap = el("div", { class: "ud-actions" });
   const run = async (btn, fn, errLabel) => {
+    const saved = btn.textContent;
     btn.disabled = true;
+    btn.textContent = "처리 중…";
     try {
       await fn();
       await reload();
     } catch (e) {
+      btn.textContent = saved;
       btn.disabled = false;
       notify(`${errLabel}: ${e.message}`);
     }
@@ -6999,7 +7002,9 @@ async function adminGroupsCards() {
       const name = (fd.get("name") || "").toString().trim();
       if (!name) { notify("그룹 이름을 입력하세요.", "warn"); return; }
       const btn = formEl.querySelector("button[type=submit]");
+      const saved = btn.textContent;
       btn.disabled = true;
+      btn.textContent = "생성 중…";
       try {
         await api("/api/admin/groups", {
           method: "POST",
@@ -7010,6 +7015,7 @@ async function adminGroupsCards() {
       } catch (err) {
         notify(`그룹 생성 실패: ${err.message}`);
       } finally {
+        btn.textContent = saved;
         btn.disabled = false;
       }
     },
@@ -7085,6 +7091,10 @@ function buildAdminGroupDetail(g, members, reload) {
     onsubmit: async (e) => {
       e.preventDefault();
       const fd = new FormData(e.currentTarget);
+      const btn = e.currentTarget.querySelector("button[type=submit]");
+      const saved = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "저장 중…";
       try {
         await api(`/api/admin/groups/${encodeURIComponent(g.id)}`, {
           method: "PATCH",
@@ -7096,6 +7106,8 @@ function buildAdminGroupDetail(g, members, reload) {
         await reload();
       } catch (err) {
         notify(`수정 실패: ${err.message}`);
+        btn.textContent = saved;
+        btn.disabled = false;
       }
     },
   }, [
