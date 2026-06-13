@@ -2118,10 +2118,14 @@ textarea::placeholder {
 
 .panel-section-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--s-3);
+  flex-wrap: wrap;
   margin-bottom: var(--s-4);
+}
+.panel-section-head > :first-child {
+  min-width: 0;
 }
 .panel-section-head h3 {
   margin: 0;
@@ -2131,6 +2135,8 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  justify-content: flex-end;
+  flex-wrap: wrap;
   flex-shrink: 0;
 }
 .panel-section-head p {
@@ -2730,6 +2736,9 @@ textarea::placeholder {
   background: color-mix(in srgb, var(--bg) 82%, transparent);
   backdrop-filter: saturate(160%) blur(8px);
   flex: none;
+}
+.view-header .title {
+  min-width: 0;
 }
 .view-header .title h1 {
   margin: 0;
@@ -3824,6 +3833,7 @@ textarea::placeholder {
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  flex-wrap: wrap;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: var(--s-3);
@@ -3844,11 +3854,15 @@ textarea::placeholder {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .ar-actions {
   display: flex;
   gap: var(--s-2);
   align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  flex: none;
 }
 
 .sys-card {
@@ -4330,6 +4344,32 @@ textarea::placeholder {
   }
   .plugin-row .pr-main {
     flex-basis: 100%;
+  }
+  .plugin-row .pr-actions {
+    flex-basis: 100%;
+    justify-content: flex-start;
+    margin-left: 0;
+  }
+  .admin-row {
+    align-items: flex-start;
+  }
+  .admin-row .ar-tags,
+  .admin-row .ar-actions {
+    flex-basis: 100%;
+    justify-content: flex-start;
+  }
+  .panel-section-head .head-actions {
+    justify-content: flex-start;
+  }
+  .group-add {
+    align-items: stretch;
+  }
+  .group-add > .trusted-search,
+  .group-add-admin {
+    flex-basis: 100%;
+  }
+  .group-add .primary {
+    flex: 1 1 160px;
   }
 }
 
