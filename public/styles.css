@@ -5019,6 +5019,10 @@ textarea::placeholder {
 .conv-search::placeholder {
   color: var(--rail-muted);
 }
+.conv-search:disabled {
+  opacity: 0.65;
+  cursor: not-allowed;
+}
 .conv-search:focus {
   outline: none;
   border-color: var(--accent);

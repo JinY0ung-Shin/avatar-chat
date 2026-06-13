@@ -658,8 +658,9 @@ function mountShell() {
   dom.convSearch = el("input", {
     class: "conv-search",
     type: "search",
-    placeholder: "대화 검색",
+    placeholder: "대화 불러오는 중",
     "aria-label": "대화 검색",
+    disabled: "",
     oninput: () => renderConversations(),
   });
 
@@ -4879,6 +4880,11 @@ async function refreshConversations() {
     renderConversations();
   } catch {
     if (dom.convList && !state.conversations.length) {
+      if (dom.convSearch) {
+        dom.convSearch.disabled = true;
+        dom.convSearch.placeholder = "대화 목록 오류";
+        dom.convSearch.value = "";
+      }
       dom.convList.replaceChildren(
         el("div", { class: "conv-empty" }, [
           "대화 목록을 불러오지 못했습니다.\n",
@@ -4893,6 +4899,12 @@ function renderConversations() {
   // Don't rebuild while a rename is being typed (e.g. a finishing stream calls
   // refreshConversations) — that would wipe the input mid-edit.
   if (dom.convList.querySelector(".conv-item.editing")) return;
+  if (dom.convSearch) {
+    const hasConversations = state.conversations.length > 0;
+    dom.convSearch.disabled = !hasConversations;
+    dom.convSearch.placeholder = hasConversations ? "대화 검색" : "검색할 대화 없음";
+    if (!hasConversations) dom.convSearch.value = "";
+  }
   dom.convList.replaceChildren();
   if (!state.conversations.length) {
     dom.convList.append(
