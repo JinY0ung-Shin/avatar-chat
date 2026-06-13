@@ -6218,7 +6218,17 @@ function buildKnowledgeRepoCard() {
   card.append(repoForm);
 
   if (!u.knowledgeRepo) {
-    card.append(el("div", { class: "empty-note", text: "지식 저장소를 연결하면 아바타가 그 저장소의 지식·스킬을 사용하고, 대화로 직접 관리할 수 있어요." }));
+    card.append(
+      el("div", { class: "empty-note" }, [
+        "지식 저장소를 연결하면 아바타가 그 저장소의 지식·스킬을 사용하고, 대화로 직접 관리할 수 있어요.\n",
+        el("button", {
+          class: "linkish small",
+          type: "button",
+          text: "아바타에게 저장소 만들기 요청",
+          onclick: () => chatAboutTopic("내 지식 저장소를 만들어서 연결해줘. 사내 GitHub에 저장소를 만들고, 앞으로 쓸 기본 지식/스킬 구조까지 준비해줘."),
+        }),
+      ]),
+    );
     return card;
   }
 
@@ -6719,7 +6729,15 @@ function buildGroupRepoCard(g) {
 
   if (!g.knowledgeRepo) {
     wrap.append(
-      el("div", { class: "empty-note", text: "공용 저장소를 연결하면 그룹 멤버 전원의 아바타가 그 저장소의 스킬을 사용합니다. 대화에서 아바타에게 ‘그룹 저장소 만들어줘’라고 요청해도 됩니다." }),
+      el("div", { class: "empty-note" }, [
+        "공용 저장소를 연결하면 그룹 멤버 전원의 아바타가 그 저장소의 스킬을 사용합니다.\n",
+        el("button", {
+          class: "linkish small",
+          type: "button",
+          text: "아바타에게 공용 저장소 만들기 요청",
+          onclick: () => chatAboutTopic(`"${g.name}" 그룹의 공용 지식 저장소를 만들어서 연결해줘. 그룹 멤버들이 함께 사용할 기본 지식/스킬 구조까지 준비해줘.`),
+        }),
+      ]),
     );
     return wrap;
   }
