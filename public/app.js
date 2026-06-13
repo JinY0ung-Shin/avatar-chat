@@ -2429,6 +2429,7 @@ async function renderInboxView() {
     filterBar,
     list,
   ]);
+  let resetInboxFilter = null;
   const syncFilters = () => {
     const openRequests = state.knowledgeRequests.filter((r) => r.status === "open").length;
     const totalNotifications = state.notifications.length;
@@ -2454,7 +2455,7 @@ async function renderInboxView() {
           onclick: () => {
             state.inboxFilter = f.id;
             syncFilters();
-            renderInboxItems(list, refresh);
+            renderInboxItems(list, refresh, resetInboxFilter);
           },
         });
       }),
@@ -2472,7 +2473,7 @@ async function renderInboxView() {
     updateNotificationBadge();
     syncHeaderActions();
     syncFilters();
-    renderInboxItems(list, refresh);
+    renderInboxItems(list, refresh, resetInboxFilter);
   };
 
   const syncHeaderActions = () => {
@@ -2530,14 +2531,20 @@ async function renderInboxView() {
     }
   };
 
+  resetInboxFilter = () => {
+    state.inboxFilter = "all";
+    syncFilters();
+    renderInboxItems(list, refresh, resetInboxFilter);
+    filterBar.querySelector('[data-value="all"]')?.focus();
+  };
   syncHeaderActions();
   syncFilters();
-  renderInboxItems(list, refresh);
+  renderInboxItems(list, refresh, resetInboxFilter);
   if (!isCurrent()) return;
   body.replaceChildren(el("div", { class: "inbox-wrap" }, [card]));
 }
 
-function renderInboxItems(list, refresh) {
+function renderInboxItems(list, refresh, resetFilter = null) {
   list.replaceChildren();
   const items = [
     ...state.knowledgeRequests
@@ -2556,7 +2563,11 @@ function renderInboxItems(list, refresh) {
 
   if (!filtered.length) {
     const emptyText = items.length ? "이 필터에 해당하는 항목이 없습니다." : "새 알림이 없습니다.";
-    list.append(el("div", { class: "empty-note", text: emptyText }));
+    const emptyChildren = [emptyText];
+    if (items.length && state.inboxFilter !== "all") {
+      emptyChildren.push("\n", el("button", { class: "linkish small", type: "button", text: "전체 보기", onclick: () => resetFilter?.() }));
+    }
+    list.append(el("div", { class: "empty-note" }, emptyChildren));
     return;
   }
   for (const item of filtered) {
