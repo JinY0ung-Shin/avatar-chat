@@ -448,6 +448,7 @@ function buildRevealableInput({
   autocomplete = "off",
   placeholder = "",
   ariaLabel = "",
+  revealLabel = "비밀번호",
   required = false,
   minlength = null,
 }) {
@@ -463,13 +464,13 @@ function buildRevealableInput({
   const toggle = el("button", {
     class: "password-toggle",
     type: "button",
-    "aria-label": "비밀번호 보기",
-    title: "비밀번호 보기",
+    "aria-label": `${revealLabel} 보기`,
+    title: `${revealLabel} 보기`,
   });
   const sync = () => {
     const visible = input.type === "text";
-    toggle.setAttribute("aria-label", visible ? "비밀번호 숨기기" : "비밀번호 보기");
-    toggle.title = visible ? "비밀번호 숨기기" : "비밀번호 보기";
+    toggle.setAttribute("aria-label", visible ? `${revealLabel} 숨기기` : `${revealLabel} 보기`);
+    toggle.title = visible ? `${revealLabel} 숨기기` : `${revealLabel} 보기`;
     toggle.replaceChildren(icon(visible ? "eye-off" : "eye"));
   };
   toggle.addEventListener("click", () => {
@@ -5862,7 +5863,7 @@ function buildGitCredentialsCard() {
 
   const buildTokenForm = ({ label, secretName, description, placeholder, ariaLabel, saveToken, clearToken, isSet }) => {
     let form;
-    const tokenField = buildRevealableInput({ name: "token", placeholder, ariaLabel, required: true });
+    const tokenField = buildRevealableInput({ name: "token", placeholder, ariaLabel, revealLabel: "토큰", required: true });
     const input = tokenField.input;
     const saveBtn = el("button", { class: "primary", type: "submit", text: isSet() ? "교체" : "저장" });
     const clearBtn = el("button", {
@@ -8848,6 +8849,7 @@ function openOnboarding() {
     placeholder: "사내 GitHub PAT (GIT_TOKEN)",
     autocomplete: "off",
     ariaLabel: "사내 Git 토큰 GIT_TOKEN",
+    revealLabel: "토큰",
   });
   const tokenInput = gitTokenField.input;
   const confluenceField = buildRevealableInput({
@@ -8855,6 +8857,7 @@ function openOnboarding() {
     placeholder: "Confluence PAT (CONFLUENCE_PAT)",
     autocomplete: "off",
     ariaLabel: "Confluence Personal Access Token CONFLUENCE_PAT",
+    revealLabel: "토큰",
   });
   const confluenceInput = confluenceField.input;
   const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
