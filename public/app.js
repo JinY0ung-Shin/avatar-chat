@@ -4607,7 +4607,12 @@ function renderConversations() {
       )
     : state.conversations;
   if (!visible.length) {
-    dom.convList.append(el("div", { class: "conv-empty", text: "검색 결과가 없습니다." }));
+    dom.convList.append(
+      el("div", { class: "conv-empty" }, [
+        `"${dom.convSearch.value.trim()}"에 맞는 대화가 없습니다.\n`,
+        el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearConversationSearch }),
+      ]),
+    );
     return;
   }
   for (const conv of visible) {
@@ -4624,6 +4629,13 @@ function renderConversations() {
     item.append(openBtn, el("div", { class: "conv-acts" }, [renameBtn, delBtn]));
     dom.convList.append(item);
   }
+}
+
+function clearConversationSearch() {
+  if (!dom.convSearch) return;
+  dom.convSearch.value = "";
+  renderConversations();
+  dom.convSearch.focus();
 }
 
 // Inline rename: swaps the row content for an input; Enter/blur saves, Escape cancels.
