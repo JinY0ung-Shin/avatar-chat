@@ -4910,10 +4910,44 @@ function attachUserSearch(input, opts = {}) {
     excludeUserIds = () => new Set(),
     excludeUsernames = () => new Set(),
   } = opts;
-  const results = el("div", { class: "trusted-results", hidden: "" });
+  const resultsId = `user-search-${newId()}`;
+  const results = el("div", { id: resultsId, class: "trusted-results", role: "listbox", hidden: "" });
   const wrap = el("div", { class: "trusted-search" }, [input, results]);
   let seq = 0;
   let timer = null;
+  let activeIndex = -1;
+
+  input.setAttribute("aria-autocomplete", "list");
+  input.setAttribute("aria-controls", resultsId);
+  input.setAttribute("aria-expanded", "false");
+
+  const optionButtons = () => [...results.querySelectorAll(".trusted-result")];
+  const hideResults = () => {
+    activeIndex = -1;
+    results.hidden = true;
+    input.setAttribute("aria-expanded", "false");
+    input.removeAttribute("aria-activedescendant");
+  };
+  const syncActive = () => {
+    const buttons = optionButtons();
+    buttons.forEach((btn, idx) => {
+      const active = idx === activeIndex;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-selected", active ? "true" : "false");
+      if (active) input.setAttribute("aria-activedescendant", btn.id);
+    });
+    if (!buttons.length || activeIndex < 0) input.removeAttribute("aria-activedescendant");
+  };
+  const chooseUser = (user) => {
+    if (onSelect) {
+      const accepted = onSelect(user);
+      if (accepted !== false) input.value = "";
+    } else {
+      input.value = user.username;
+    }
+    hideResults();
+    input.focus();
+  };
   const render = (users) => {
     results.replaceChildren();
     const excludedIds = excludeUserIds();
@@ -4923,23 +4957,19 @@ function attachUserSearch(input, opts = {}) {
       return !(excludedIds.has(u.id) || excludedNames.has(key));
     });
     if (!visibleUsers.length) {
+      activeIndex = -1;
       results.append(el("div", { class: "empty-note", text: "일치하는 사용자가 없습니다." }));
     } else {
-      for (const u of visibleUsers) {
+      activeIndex = 0;
+      visibleUsers.forEach((u, idx) => {
         results.append(
           el("button", {
+            id: `${resultsId}-${idx}`,
             type: "button",
             class: "trusted-result",
-            onclick: () => {
-              if (onSelect) {
-                const accepted = onSelect(u);
-                if (accepted !== false) input.value = "";
-              } else {
-                input.value = u.username;
-              }
-              results.hidden = true;
-              input.focus();
-            },
+            role: "option",
+            "aria-selected": idx === activeIndex ? "true" : "false",
+            onclick: () => chooseUser(u),
           }, [
             el("div", { class: "pr-main" }, [
               el("strong", { text: u.displayName }),
@@ -4947,9 +4977,11 @@ function attachUserSearch(input, opts = {}) {
             ]),
           ]),
         );
-      }
+      });
     }
     results.hidden = false;
+    input.setAttribute("aria-expanded", "true");
+    syncActive();
   };
   const run = async (q) => {
     const s = ++seq;
@@ -4957,17 +4989,38 @@ function attachUserSearch(input, opts = {}) {
       const { users } = await api(`/api/me/users/search?q=${encodeURIComponent(q)}`);
       if (s === seq) render(users);
     } catch {
-      /* typeahead is best-effort; the add button still validates server-side */
+      if (s === seq) hideResults();
     }
   };
   input.addEventListener("input", () => {
     const q = input.value.trim().replace(/^@/, "");
     clearTimeout(timer);
-    if (!q) { seq++; results.replaceChildren(); results.hidden = true; return; }
+    if (!q) { seq++; results.replaceChildren(); hideResults(); return; }
     timer = setTimeout(() => run(q), 200);
   });
+  input.addEventListener("keydown", (e) => {
+    const buttons = optionButtons();
+    if (e.key === "Escape" && !results.hidden) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      hideResults();
+      return;
+    }
+    if (results.hidden || !buttons.length) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      activeIndex = (activeIndex + step + buttons.length) % buttons.length;
+      syncActive();
+      buttons[activeIndex]?.scrollIntoView({ block: "nearest" });
+    } else if (e.key === "Enter" && activeIndex >= 0) {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      buttons[activeIndex].click();
+    }
+  });
   input.addEventListener("blur", () => {
-    setTimeout(() => { if (!wrap.contains(document.activeElement)) results.hidden = true; }, 150);
+    setTimeout(() => { if (!wrap.contains(document.activeElement)) hideResults(); }, 150);
   });
   return wrap;
 }

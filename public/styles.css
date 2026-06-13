@@ -3837,6 +3837,10 @@ textarea::placeholder {
 .trusted-result:hover:not(:disabled) {
   border-color: var(--accent-ring);
 }
+.trusted-result.active {
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
 .trusted-result:disabled {
   cursor: default;
   opacity: 0.6;
