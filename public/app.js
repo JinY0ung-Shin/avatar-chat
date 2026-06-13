@@ -2400,9 +2400,20 @@ function renderRoutineManageRows(list, { searchInput = null, filterBar = null, c
 
 async function runRoutineNow(routine) {
   const res = await api(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
-  await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
-  updateNotificationBadge();
-  if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+  let refreshError = null;
+  try {
+    await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
+    updateNotificationBadge();
+  } catch (e) {
+    refreshError = e;
+  }
+  if (res && res.ok === false) {
+    notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+  } else if (refreshError) {
+    notify(`루틴은 실행했지만 상태 새로고침에 실패했습니다: ${refreshError.message}`, "warn");
+  } else {
+    notify(`"${routineTitle(routine)}" 루틴을 실행했습니다.`, "ok");
+  }
   // Jump straight to the result this run just produced.
   openRoutineResult(routine.conversationId);
 }
