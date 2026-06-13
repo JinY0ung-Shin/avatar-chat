@@ -4718,13 +4718,21 @@ function buildTabBar({ tabs, getTab, setTab, ariaLabel, idPrefix, panelId, onAct
     btn.append(el("span", { text: t.label }));
     tabBar.append(btn);
   }
-  // Standard tablist keyboard interaction: arrows move + activate.
+  // Standard tablist keyboard interaction: arrows/Home/End move + activate.
   tabBar.addEventListener("keydown", (e) => {
-    if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+    if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
     e.preventDefault();
     const items = [...tabBar.children];
+    if (!items.length) return;
     const idx = items.findIndex((b) => b.dataset.tab === getTab());
-    const next = items[(idx + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length];
+    const current = idx >= 0 ? idx : 0;
+    const nextIndex =
+      e.key === "Home"
+        ? 0
+        : e.key === "End"
+          ? items.length - 1
+          : (current + (e.key === "ArrowRight" ? 1 : items.length - 1)) % items.length;
+    const next = items[nextIndex];
     next.focus();
     next.click();
   });
