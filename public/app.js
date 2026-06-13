@@ -173,6 +173,23 @@ function el(tag, attrs = {}, children = []) {
   return node;
 }
 
+function setFormBusy(root, busy) {
+  if (!root) return;
+  root.setAttribute("aria-busy", busy ? "true" : "false");
+  root.querySelectorAll("input, textarea, select, button").forEach((control) => {
+    if (busy) {
+      if (!("busyWasDisabled" in control.dataset)) {
+        control.dataset.busyWasDisabled = control.disabled ? "true" : "false";
+      }
+      control.disabled = true;
+      return;
+    }
+    const wasDisabled = control.dataset.busyWasDisabled === "true";
+    delete control.dataset.busyWasDisabled;
+    control.disabled = wasDisabled;
+  });
+}
+
 function icon(name) {
   const paths = {
     compass: '<circle cx="12" cy="12" r="10"/><polygon points="16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88 16.24 7.76"/>',
@@ -491,10 +508,11 @@ function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
     class: "form-stack",
     onsubmit: async (event) => {
       event.preventDefault();
-      const fd = new FormData(event.currentTarget);
-      const btn = event.currentTarget.querySelector("button[type=submit]");
+      const formEl = event.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
       const savedLabel = btn.textContent;
-      btn.disabled = true;
+      setFormBusy(formEl, true);
       btn.textContent = isLogin ? "로그인 중…" : isSetup ? "계정 만드는 중…" : "가입 중…";
       try {
         const path = isLogin ? "/api/auth/login" : "/api/auth/signup";
@@ -5025,10 +5043,11 @@ async function renderSettings() {
     class: "settings-form",
     onsubmit: async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.currentTarget);
-      const btn = e.currentTarget.querySelector("button[type=submit]");
-      btn.disabled = true;
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         const res = await api("/api/me", {
@@ -5037,11 +5056,11 @@ async function renderSettings() {
         });
         state.user = res.user;
         btn.textContent = "저장됨 ✓";
-        setTimeout(() => { btn.textContent = saved; btn.disabled = false; }, 1200);
+        setTimeout(() => { btn.textContent = saved; setFormBusy(formEl, false); }, 1200);
         if (dom.navButtons) renderRailUser();
       } catch (err) {
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
         notify(`저장 실패: ${err.message}`);
       }
     },
@@ -5420,8 +5439,8 @@ function buildPluginsCard() {
       const formEl = e.currentTarget;
       const fd = new FormData(formEl);
       const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "추가 중…"; // server-side git clone — can take a while
       try {
         await api("/api/me/plugins", { method: "POST", body: JSON.stringify({ repo: fd.get("repo"), ref: fd.get("ref") || undefined, label: fd.get("label") || undefined }) });
@@ -5434,7 +5453,7 @@ function buildPluginsCard() {
         notify(`플러그인 추가 실패: ${err.message}`);
       } finally {
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
       }
     },
   }, [
@@ -5677,6 +5696,7 @@ function buildGitCredentialsCard() {
   renderStatus();
 
   const buildTokenForm = ({ label, secretName, description, placeholder, ariaLabel, saveToken, clearToken, isSet }) => {
+    let form;
     const tokenField = buildRevealableInput({ name: "token", placeholder, ariaLabel, required: true });
     const input = tokenField.input;
     const saveBtn = el("button", { class: "primary", type: "submit", text: isSet() ? "교체" : "저장" });
@@ -5687,14 +5707,20 @@ function buildGitCredentialsCard() {
       disabled: isSet() ? null : "",
       onclick: async () => {
         if (!window.confirm(`${label}을 삭제할까요?`)) return;
-        clearBtn.disabled = true;
+        const saved = clearBtn.textContent;
+        setFormBusy(form, true);
+        clearBtn.textContent = "삭제 중…";
         try {
           await clearToken();
           renderStatus();
+          clearBtn.textContent = saved;
+          setFormBusy(form, false);
           refreshRow();
         } catch (e) {
           notify(`삭제 실패: ${e.message}`);
-          clearBtn.disabled = false;
+          clearBtn.textContent = saved;
+          setFormBusy(form, false);
+          refreshRow();
         }
       },
     });
@@ -5709,25 +5735,28 @@ function buildGitCredentialsCard() {
       saveBtn.textContent = set ? "교체" : "저장";
       clearBtn.disabled = set ? false : true;
     };
-    return el("form", {
+    form = el("form", {
       class: "secret-preset-row",
       onsubmit: async (e) => {
         e.preventDefault();
+        const formEl = e.currentTarget;
         const token = input.value.trim();
         if (!token) return;
-        saveBtn.disabled = true;
         const saved = saveBtn.textContent;
+        setFormBusy(formEl, true);
         saveBtn.textContent = "저장 중…";
         try {
           await saveToken(token);
           input.value = "";
           renderStatus();
           refreshRow();
+          setFormBusy(formEl, true);
           saveBtn.textContent = "저장됨 ✓";
-          setTimeout(() => { refreshRow(); saveBtn.disabled = false; }, 1200);
+          setTimeout(() => { setFormBusy(formEl, false); refreshRow(); }, 1200);
         } catch (err) {
           saveBtn.textContent = saved;
-          saveBtn.disabled = false;
+          setFormBusy(formEl, false);
+          refreshRow();
           notify(`저장 실패: ${err.message}`);
         }
       },
@@ -5743,6 +5772,7 @@ function buildGitCredentialsCard() {
       tokenField.wrap,
       el("div", { class: "secret-preset-actions" }, [saveBtn, clearBtn]),
     ]);
+    return form;
   };
 
   const internalTokenForm = buildTokenForm({
@@ -5790,8 +5820,8 @@ function buildGitCredentialsCard() {
       const formEl = e.currentTarget;
       const fd = new FormData(formEl);
       const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         const { user } = await api("/api/me/git-identity", {
@@ -5800,10 +5830,10 @@ function buildGitCredentialsCard() {
         });
         state.user = user;
         btn.textContent = "저장됨 ✓";
-        setTimeout(() => { btn.textContent = saved; btn.disabled = false; }, 1200);
+        setTimeout(() => { btn.textContent = saved; setFormBusy(formEl, false); }, 1200);
       } catch (err) {
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
         notify(`저장 실패: ${err.message}`);
       }
     },
@@ -5894,15 +5924,16 @@ function buildSecretsCard() {
           disabled: isSet ? null : "",
           onclick: async () => {
             if (!window.confirm(`${preset.label} 시크릿을 삭제할까요?`)) return;
-            clearBtn.disabled = true;
+            const formEl = clearBtn.closest("form");
             const saved = clearBtn.textContent;
+            setFormBusy(formEl, true);
             clearBtn.textContent = "삭제 중…";
             try {
               await deleteSecret(preset.name);
             } catch (err) {
               notify(`삭제 실패: ${err.message}`);
-              clearBtn.disabled = false;
               clearBtn.textContent = saved;
+              setFormBusy(formEl, false);
             }
           },
         });
@@ -5910,20 +5941,21 @@ function buildSecretsCard() {
           class: "secret-preset-row",
           onsubmit: async (e) => {
             e.preventDefault();
+            const formEl = e.currentTarget;
             const value = valueField.value;
             if (!value) {
               notify(`${preset.label} 값을 입력해 주세요.`, "warn");
               return;
             }
-            saveBtn.disabled = true;
             const saved = saveBtn.textContent;
+            setFormBusy(formEl, true);
             saveBtn.textContent = "저장 중…";
             try {
               await saveSecret(preset.name, value);
             } catch (err) {
               notify(`저장 실패: ${err.message}`);
               saveBtn.textContent = saved;
-              saveBtn.disabled = false;
+              setFormBusy(formEl, false);
             }
           },
         }, [
@@ -6015,8 +6047,8 @@ function buildSecretsCard() {
         return;
       }
       const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, {
@@ -6029,11 +6061,11 @@ function buildSecretsCard() {
         renderList();
         renderPublicKey();
         btn.textContent = "저장됨 ✓";
-        setTimeout(() => { btn.textContent = saved; btn.disabled = false; }, 1200);
+        setTimeout(() => { btn.textContent = saved; setFormBusy(formEl, false); }, 1200);
       } catch (err) {
         notify(`저장 실패: ${err.message}`);
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
       }
     },
   }, [
@@ -6148,8 +6180,8 @@ function buildKnowledgeRepoCard() {
       const formEl = e.currentTarget;
       const fd = new FormData(formEl);
       const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         const { user } = await api("/api/me/knowledge-repo", {
@@ -6161,7 +6193,7 @@ function buildKnowledgeRepoCard() {
       } catch (err) {
         btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
-        btn.disabled = false;
+        setFormBusy(formEl, false);
       }
     },
   }, [
@@ -6636,10 +6668,11 @@ function buildGroupRepoCard(g) {
     class: "plugin-add rows-2",
     onsubmit: async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.currentTarget);
-      const btn = e.currentTarget.querySelector("button[type=submit]");
-      btn.disabled = true;
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         await api(`/api/me/groups/${gid}/knowledge-repo`, {
@@ -6654,7 +6687,7 @@ function buildGroupRepoCard(g) {
       } catch (err) {
         btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
-        btn.disabled = false;
+        setFormBusy(formEl, false);
       }
     },
   }, [
@@ -7383,7 +7416,7 @@ async function adminGroupsCards() {
       if (!name) { notify("그룹 이름을 입력하세요.", "warn"); return; }
       const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
-      btn.disabled = true;
+      setFormBusy(formEl, true);
       btn.textContent = "생성 중…";
       try {
         await api("/api/admin/groups", {
@@ -7396,7 +7429,7 @@ async function adminGroupsCards() {
         notify(`그룹 생성 실패: ${err.message}`);
       } finally {
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
       }
     },
   }, [
@@ -7484,10 +7517,11 @@ function buildAdminGroupDetail(g, members, reload) {
     class: "plugin-add rows-2",
     onsubmit: async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.currentTarget);
-      const btn = e.currentTarget.querySelector("button[type=submit]");
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
+      const btn = formEl.querySelector("button[type=submit]");
       const saved = btn.textContent;
-      btn.disabled = true;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         await api(`/api/admin/groups/${encodeURIComponent(g.id)}`, {
@@ -7501,7 +7535,7 @@ function buildAdminGroupDetail(g, members, reload) {
       } catch (err) {
         notify(`수정 실패: ${err.message}`);
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
       }
     },
   }, [
@@ -7797,10 +7831,11 @@ function buildModelOverrideCard(sys) {
       class: "settings-form",
       onsubmit: async (e) => {
         e.preventDefault();
-        const value = (new FormData(e.currentTarget).get("model") || "").toString().trim();
-        const btn = e.currentTarget.querySelector("button[type=submit]");
-        btn.disabled = true;
+        const formEl = e.currentTarget;
+        const value = (new FormData(formEl).get("model") || "").toString().trim();
+        const btn = formEl.querySelector("button[type=submit]");
         const saved = btn.textContent;
+        setFormBusy(formEl, true);
         btn.textContent = "저장 중…";
         try {
           if (value) {
@@ -7814,7 +7849,7 @@ function buildModelOverrideCard(sys) {
           renderView();
         } catch (err) {
           btn.textContent = saved;
-          btn.disabled = false;
+          setFormBusy(formEl, false);
           notify(`저장 실패: ${err.message}`);
         }
       },
@@ -7902,8 +7937,8 @@ function buildSubscriptionCard(sys) {
         return;
       }
       const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         await api("/api/admin/claude-token", { method: "PUT", body: JSON.stringify({ token }) });
@@ -7912,7 +7947,7 @@ function buildSubscriptionCard(sys) {
         renderView();
       } catch (err) {
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
         notify(`저장 실패: ${err.message}`);
       }
     },
@@ -7951,8 +7986,8 @@ function buildHexSshPolicyCard(sys) {
         if (input.checked) nextPolicy[input.dataset.role].push(input.dataset.tool);
       });
       const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
       const saved = btn.textContent;
+      setFormBusy(formEl, true);
       btn.textContent = "저장 중…";
       try {
         await api("/api/admin/hex-ssh-policy", { method: "PUT", body: JSON.stringify({ policy: nextPolicy }) });
@@ -7961,7 +7996,7 @@ function buildHexSshPolicyCard(sys) {
         renderView();
       } catch (err) {
         btn.textContent = saved;
-        btn.disabled = false;
+        setFormBusy(formEl, false);
         notify(`저장 실패: ${err.message}`);
       }
     },
@@ -8425,11 +8460,10 @@ function openOnboarding() {
         class: "form-stack",
         onsubmit: async (e) => {
           e.preventDefault();
-          saveBtn.disabled = true;
+          const formEl = e.currentTarget;
           const savedLabel = saveBtn.textContent;
+          setFormBusy(formEl, true);
           saveBtn.textContent = "저장 중…";
-          skipBtn.disabled = true;
-          generateSshBtn.disabled = true;
           errorBox.hidden = true;
           try {
             const token = tokenInput.value.trim();
@@ -8451,8 +8485,7 @@ function openOnboarding() {
             errorBox.textContent = err.message;
             errorBox.hidden = false;
             saveBtn.textContent = savedLabel;
-            saveBtn.disabled = false;
-            skipBtn.disabled = false;
+            setFormBusy(formEl, false);
             renderSshSetup();
           }
         },
