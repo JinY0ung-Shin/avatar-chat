@@ -2103,6 +2103,8 @@ function buildNotificationRow(n, refresh) {
     class: `notification-row clickable ${n.readAt ? "" : "unread"}`,
     role: "button",
     tabindex: "0",
+    "aria-label": `알림 열기: ${n.title}`,
+    title: "알림 주제로 대화 열기",
     onclick: (e) => {
       if (row.getAttribute("aria-busy") === "true") return;
       if (e.target.closest("button")) return; // inner actions handle themselves
@@ -2206,6 +2208,7 @@ function chatAboutTopic(seedText) {
     ta.dispatchEvent(new Event("input"));
     ta.focus();
     ta.setSelectionRange(ta.value.length, ta.value.length);
+    notify("입력창에 주제를 채웠습니다. 검토 후 보내기를 누르세요.", "info");
   }
   refreshConversations();
 }
