@@ -7341,14 +7341,16 @@ function buildKnowledgeRequestRow(r, refresh) {
   // Inline "record" composer — hidden until the owner chooses to teach the
   // avatar an answer. Keeping it in the row means the question stays in view
   // while typing, and the whole flow happens without leaving the inbox.
+  const composeId = `knowledge-compose-${r.id || newId()}`;
   const textarea = el("textarea", {
     class: "kr-answer",
     rows: "3",
     placeholder: "이 질문에 대한 답·정보를 적어주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다.",
+    "aria-label": "정보 요청 답변",
   });
   const sendBtn = el("button", { class: "primary small", type: "button", text: "기록 요청" });
   const cancelBtn = el("button", { class: "ghost-sm", type: "button", text: "취소" });
-  const compose = el("div", { class: "kr-compose", hidden: "" }, [
+  const compose = el("div", { id: composeId, class: "kr-compose", hidden: "" }, [
     textarea,
     el("div", { class: "kr-compose-actions" }, [sendBtn, cancelBtn]),
   ]);
@@ -7356,18 +7358,27 @@ function buildKnowledgeRequestRow(r, refresh) {
   // Two intents, made explicit: "정보 추가" teaches the avatar (records the
   // answer into the knowledge repo); "무시" only clears the notification — the
   // old DELETE resolve, which never taught the avatar anything.
-  const addBtn = el("button", { class: "primary small", type: "button", text: "정보 추가" });
+  const addBtn = el("button", {
+    class: "primary small",
+    type: "button",
+    text: "정보 추가",
+    "aria-controls": composeId,
+    "aria-expanded": "false",
+    title: "답변 입력창 열기",
+  });
   const ignoreBtn = el("button", { class: "ghost-sm", type: "button", text: "무시" });
 
   addBtn.addEventListener("click", () => {
     const willShow = compose.hidden;
     compose.hidden = !willShow;
     addBtn.classList.toggle("active", willShow);
+    addBtn.setAttribute("aria-expanded", willShow ? "true" : "false");
     if (willShow) textarea.focus();
   });
   cancelBtn.addEventListener("click", () => {
     compose.hidden = true;
     addBtn.classList.remove("active");
+    addBtn.setAttribute("aria-expanded", "false");
   });
   ignoreBtn.addEventListener("click", async () => {
     const controls = [textarea, sendBtn, cancelBtn, addBtn, ignoreBtn];
@@ -7395,6 +7406,7 @@ function buildKnowledgeRequestRow(r, refresh) {
     const answer = textarea.value.trim();
     if (!answer) {
       textarea.focus();
+      notify("기록할 답변을 입력해 주세요.", "warn");
       return;
     }
     const controls = [textarea, sendBtn, cancelBtn, addBtn, ignoreBtn];
