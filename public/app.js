@@ -6659,17 +6659,29 @@ function buildGroupBlock(g, reload) {
   );
 
   const roster = el("div", { class: "plugin-rows" });
-  for (const m of g.members || []) roster.append(buildGroupRosterRow(g, m, amAdmin, reload));
+  const members = g.members || [];
+  let addRow = null;
+  if (amAdmin) {
+    addRow = buildGroupMemberAddForm({
+      members,
+      endpoint: `/api/me/groups/${encodeURIComponent(g.id)}/members`,
+      reload,
+    });
+  }
+  if (!members.length) {
+    roster.append(
+      el("div", { class: "empty-note" }, [
+        "멤버가 없습니다.\n",
+        amAdmin ? el("button", { class: "linkish small", type: "button", text: "멤버 검색 입력", onclick: () => addRow?.focusMemberSearch?.() }) : null,
+      ]),
+    );
+  } else {
+    for (const m of members) roster.append(buildGroupRosterRow(g, m, amAdmin, reload));
+  }
   block.append(roster);
 
   if (amAdmin) {
-    block.append(
-      buildGroupMemberAddForm({
-        members: g.members || [],
-        endpoint: `/api/me/groups/${encodeURIComponent(g.id)}/members`,
-        reload,
-      }),
-    );
+    block.append(addRow);
     block.append(buildGroupRepoCard(g));
   } else {
     block.append(
