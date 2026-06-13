@@ -6073,11 +6073,18 @@ function buildSecretsCard() {
 
   // List of currently-set secret names, each with a delete button.
   const list = el("div", { class: "secret-list" });
+  let extraSecretNameInput;
+  const focusExtraSecretForm = () => extraSecretNameInput?.focus();
   const renderList = () => {
     const presetNames = new Set(SECRET_PRESETS.map((preset) => preset.name));
     const names = (state.user.secretNames || []).filter((name) => !presetNames.has(name));
     if (!names.length) {
-      list.replaceChildren(el("div", { class: "muted", text: "추가 시크릿이 없습니다." }));
+      list.replaceChildren(
+        el("div", { class: "empty-note" }, [
+          "추가 시크릿이 없습니다.\n",
+          el("button", { class: "linkish small", type: "button", text: "시크릿 이름 입력", onclick: focusExtraSecretForm }),
+        ]),
+      );
       return;
     }
     list.replaceChildren(
@@ -6166,7 +6173,7 @@ function buildSecretsCard() {
   }, [
     el("label", { class: "field" }, [
       el("span", { text: "이름" }),
-      el("input", { name: "name", placeholder: "SSH_PRIVATE_KEY", autocomplete: "off", required: "" }),
+      extraSecretNameInput = el("input", { name: "name", placeholder: "SSH_PRIVATE_KEY", autocomplete: "off", required: "" }),
     ]),
     el("label", { class: "field" }, [
       el("span", { text: "값" }),
