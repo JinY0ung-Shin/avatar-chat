@@ -4751,13 +4751,13 @@ function renderConversations() {
   for (const conv of visible) {
     const active = state.chatPanes.some((pane) => pane.conversationId === conv.id);
     const item = el("div", { class: `conv-item ${active ? "active" : ""}`, dataset: { id: conv.id } });
-    const openBtn = el("button", { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv, openBtn) }, [
+    const openBtn = el("button", { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv, openBtn, item) }, [
       el("span", { class: "conv-name", text: conv.title || "새 대화" }),
       el("span", { class: "conv-time", text: [conv.avatarDisplayName, timeLabel(conv.updatedAt)].filter(Boolean).join(" · ") }),
     ]);
     const renameBtn = el("button", { class: "conv-act", type: "button", "aria-label": "대화 이름 바꾸기", title: "이름 바꾸기", onclick: (e) => { e.stopPropagation(); startRenameConversation(item, conv); } });
     renameBtn.append(icon("edit"));
-    const delBtn = el("button", { class: "conv-act danger", type: "button", "aria-label": "대화 삭제", title: "삭제", onclick: (e) => { e.stopPropagation(); deleteConversation(conv, delBtn); } });
+    const delBtn = el("button", { class: "conv-act danger", type: "button", "aria-label": "대화 삭제", title: "삭제", onclick: (e) => { e.stopPropagation(); deleteConversation(conv, delBtn, item); } });
     delBtn.append(icon("trash"));
     item.append(openBtn, el("div", { class: "conv-acts" }, [renameBtn, delBtn]));
     dom.convList.append(item);
@@ -4776,6 +4776,7 @@ function startRenameConversation(item, conv) {
   if (item.classList.contains("editing")) return;
   item.classList.add("editing");
   const open = item.querySelector(".conv-open");
+  item.querySelectorAll(".conv-act").forEach((btn) => (btn.disabled = true));
   const input = el("input", { class: "conv-rename", value: conv.title || "", "aria-label": "대화 이름" });
   open.replaceWith(input);
   input.focus();
@@ -4786,7 +4787,7 @@ function startRenameConversation(item, conv) {
     finished = true;
     const title = input.value.trim();
     if (save && title && title !== conv.title) {
-      input.disabled = true;
+      setFormBusy(item, true);
       input.title = "저장 중…";
       api(`/api/conversations/${encodeURIComponent(conv.id)}`, { method: "PATCH", body: JSON.stringify({ title }) })
         .then(({ conversation }) => {
@@ -4814,7 +4815,7 @@ function startRenameConversation(item, conv) {
   input.addEventListener("blur", () => finish(true));
 }
 
-async function selectConversation(conv, triggerBtn = null) {
+async function selectConversation(conv, triggerBtn = null, row = null) {
   if (!guardChatReplacement(conv.id)) return;
   // Already open in a pane → focus it instead of rebuilding from server history.
   // Essential when that pane is mid-stream: re-fetching history (which lacks the
@@ -4838,7 +4839,7 @@ async function selectConversation(conv, triggerBtn = null) {
   const meta = triggerBtn?.querySelector(".conv-time");
   const previousMeta = meta?.textContent || "";
   if (triggerBtn) {
-    triggerBtn.disabled = true;
+    setFormBusy(row || triggerBtn, true);
     triggerBtn.title = "대화 불러오는 중…";
     if (meta) meta.textContent = "불러오는 중…";
   }
@@ -4860,7 +4861,7 @@ async function selectConversation(conv, triggerBtn = null) {
     syncLegacyChatState(pane);
   } catch (e) {
     if (triggerBtn) {
-      triggerBtn.disabled = false;
+      setFormBusy(row || triggerBtn, false);
       triggerBtn.title = conv.title || "새 대화";
       if (meta) meta.textContent = previousMeta;
     }
@@ -4875,7 +4876,7 @@ async function selectConversation(conv, triggerBtn = null) {
   renderConversations();
   attachActiveRun(pane);
 }
-async function deleteConversation(conv, triggerBtn = null) {
+async function deleteConversation(conv, triggerBtn = null, row = null) {
   const streamingPane = state.chatPanes.find((p) => p.conversationId === conv.id && p.streaming);
   if (streamingPane) {
     notify("응답 중인 대화는 삭제할 수 없습니다. 먼저 응답을 중지해 주세요.", "warn");
@@ -4883,7 +4884,7 @@ async function deleteConversation(conv, triggerBtn = null) {
   }
   if (!window.confirm(`"${conv.title || "새 대화"}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
   if (triggerBtn) {
-    triggerBtn.disabled = true;
+    setFormBusy(row || triggerBtn, true);
     triggerBtn.title = "삭제 중…";
     triggerBtn.setAttribute("aria-label", "대화 삭제 중");
   }
@@ -4891,7 +4892,7 @@ async function deleteConversation(conv, triggerBtn = null) {
     await api(`/api/conversations/${encodeURIComponent(conv.id)}`, { method: "DELETE" });
   } catch (e) {
     if (triggerBtn) {
-      triggerBtn.disabled = false;
+      setFormBusy(row || triggerBtn, false);
       triggerBtn.title = "삭제";
       triggerBtn.setAttribute("aria-label", "대화 삭제");
     }
