@@ -2366,7 +2366,15 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
     tabindex: "0",
   });
   pdom.transcript.append(pdom.transcriptInner);
-  pdom.transcript.addEventListener("scroll", () => updateScrollButton(pane));
+  // Track whether the viewer is "stuck" to the bottom by INTENT (did they scroll
+  // up?), not by re-deriving position on every flush. Deriving per-flush detaches
+  // auto-follow whenever a single delta grows the bubble past the near-bottom
+  // threshold (a big code block/table arriving at once) even though the user never
+  // scrolled away. Updated here on user scroll; honored by scrollToBottom.
+  pdom.transcript.addEventListener("scroll", () => {
+    pane.stickBottom = isNearBottom(pane);
+    updateScrollButton(pane);
+  });
 
   pdom.scrollBtn = el("button", {
     class: "scroll-bottom",
@@ -3040,7 +3048,11 @@ function scrollToBottom(pane = activePane(), force) {
     requestAnimationFrame(() => scrollToBottom(pane, force));
     return;
   }
-  if (force || isNearBottom(pane)) t.scrollTop = t.scrollHeight;
+  // Follow the bottom when forced, or while the viewer hasn't scrolled away.
+  // stickBottom is intent-based (set on user scroll); undefined defaults to true
+  // for a fresh pane. force also re-pins (e.g. the "맨 아래로" button, send).
+  if (force) pane.stickBottom = true;
+  if (force || pane.stickBottom !== false) t.scrollTop = t.scrollHeight;
   updateScrollButton(pane);
 }
 function updateScrollButton(pane = activePane()) {
