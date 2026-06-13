@@ -5510,7 +5510,8 @@ function buildPluginsCard() {
   );
   const list = el("div", { class: "plugin-rows" });
   card.append(list);
-  renderPluginRows(list);
+  let repoInput;
+  const focusPluginForm = () => repoInput?.focus();
 
   const form = el("form", {
     class: "plugin-add",
@@ -5528,7 +5529,7 @@ function buildPluginsCard() {
       try {
         await api("/api/me/plugins", { method: "POST", body: JSON.stringify({ repo: fd.get("repo"), ref: fd.get("ref") || undefined, label: fd.get("label") || undefined }) });
         await loadPlugins();
-        renderPluginRows(list);
+        renderPluginRows(list, focusPluginForm);
         state.user.pluginCount = state.plugins.length;
         invalidateSkillsCache(state.user.id);
         formEl.reset();
@@ -5540,13 +5541,14 @@ function buildPluginsCard() {
       }
     },
   }, [
-    el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", "aria-label": "플러그인 저장소 (owner/repo 또는 git URL)", required: "" }),
+    repoInput = el("input", { name: "repo", placeholder: "owner/repo 또는 git URL", "aria-label": "플러그인 저장소 (owner/repo 또는 git URL)", required: "" }),
     el("input", { name: "ref", placeholder: "브랜치/태그 (선택)", "aria-label": "브랜치/태그 (선택)", class: "narrow" }),
     el("input", { name: "label", placeholder: "라벨 (선택)", "aria-label": "라벨 (선택)", class: "narrow" }),
     el("button", { class: "primary", type: "submit", text: "추가" }),
   ]);
   form.classList.add("rows-3");
   card.append(form);
+  renderPluginRows(list, focusPluginForm);
   return card;
 }
 
@@ -5557,10 +5559,15 @@ function pluginSyncLabel(p) {
   return `동기화: ${timeLabel(p.lastSyncedAt)}`;
 }
 
-function renderPluginRows(list) {
+function renderPluginRows(list, focusAddForm = null) {
   list.replaceChildren();
   if (!state.plugins.length) {
-    list.append(el("div", { class: "empty-note", text: "추가한 플러그인이 없습니다." }));
+    list.append(
+      el("div", { class: "empty-note" }, [
+        "추가한 플러그인이 없습니다.\n",
+        focusAddForm ? el("button", { class: "linkish small", type: "button", text: "플러그인 저장소 입력", onclick: focusAddForm }) : null,
+      ]),
+    );
     return;
   }
   for (const p of state.plugins) {
