@@ -6142,7 +6142,9 @@ function buildGroupMemberAddForm({
     }
     const queued = [...selected.entries()];
     const role = adminCb.checked ? "admin" : "member";
+    const saved = submitBtn.textContent;
     submitBtn.disabled = true;
+    submitBtn.textContent = "추가 중…";
     addTypedBtn.disabled = true;
     try {
       const failures = [];
@@ -6174,6 +6176,7 @@ function buildGroupMemberAddForm({
       }
     } finally {
       submitBtn.disabled = false;
+      submitBtn.textContent = saved;
       addTypedBtn.disabled = false;
       renderSelected();
     }
@@ -6302,6 +6305,8 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
     const roleBtn = el("button", { class: "ghost-sm", type: "button", text: m.role === "admin" ? "관리자 해제" : "관리자 지정" });
     roleBtn.addEventListener("click", async () => {
       roleBtn.disabled = true;
+      const saved = roleBtn.textContent;
+      roleBtn.textContent = "변경 중…";
       try {
         await api(`/api/me/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(m.userId)}`, {
           method: "PATCH",
@@ -6309,6 +6314,7 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
         });
         await reload();
       } catch (e) {
+        roleBtn.textContent = saved;
         roleBtn.disabled = false;
         notify(`역할 변경 실패: ${e.message}`);
       }
@@ -6317,10 +6323,13 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
     del.addEventListener("click", async () => {
       if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
       del.disabled = true;
+      const saved = del.textContent;
+      del.textContent = "제거 중…";
       try {
         await api(`/api/me/groups/${encodeURIComponent(g.id)}/members/${encodeURIComponent(m.userId)}`, { method: "DELETE" });
         await reload();
       } catch (e) {
+        del.textContent = saved;
         del.disabled = false;
         notify(`제거 실패: ${e.message}`);
       }
@@ -7235,10 +7244,13 @@ function buildAdminGroupDetail(g, members, reload) {
   delBtn.addEventListener("click", async () => {
     if (!window.confirm(`'${g.name}' 그룹을 삭제할까요?\n멤버십이 모두 해제되고 멤버 간 자동 신뢰가 사라집니다. (공용 저장소 자체는 GitHub에 남습니다.)`)) return;
     delBtn.disabled = true;
+    const saved = delBtn.textContent;
+    delBtn.textContent = "삭제 중…";
     try {
       await api(`/api/admin/groups/${encodeURIComponent(g.id)}`, { method: "DELETE" });
       await reload();
     } catch (e) {
+      delBtn.textContent = saved;
       delBtn.disabled = false;
       notify(`삭제 실패: ${e.message}`);
     }
@@ -7265,6 +7277,8 @@ function adminGroupMemberRow(groupId, m, reload) {
   });
   roleBtn.addEventListener("click", async () => {
     roleBtn.disabled = true;
+    const saved = roleBtn.textContent;
+    roleBtn.textContent = "변경 중…";
     try {
       await api(`/api/admin/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(m.userId)}`, {
         method: "PATCH",
@@ -7272,6 +7286,7 @@ function adminGroupMemberRow(groupId, m, reload) {
       });
       await reload();
     } catch (e) {
+      roleBtn.textContent = saved;
       roleBtn.disabled = false;
       notify(`역할 변경 실패: ${e.message}`);
     }
@@ -7281,10 +7296,16 @@ function adminGroupMemberRow(groupId, m, reload) {
   del.addEventListener("click", async () => {
     if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
     del.disabled = true;
+    const savedTitle = del.title;
+    const savedLabel = del.getAttribute("aria-label");
+    del.title = "제거 중…";
+    del.setAttribute("aria-label", `${m.displayName} 제거 중`);
     try {
       await api(`/api/admin/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(m.userId)}`, { method: "DELETE" });
       await reload();
     } catch (e) {
+      del.title = savedTitle;
+      del.setAttribute("aria-label", savedLabel || `${m.displayName} 제거`);
       del.disabled = false;
       notify(`제거 실패: ${e.message}`);
     }
