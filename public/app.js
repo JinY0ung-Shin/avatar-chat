@@ -3496,12 +3496,42 @@ function attachLiveToTranscript(pane = activePane()) {
 function renderChatEmpty(pane = activePane()) {
   const av = pane?.avatar || state.currentAvatar;
   const elevated = av.elevated || av.id === state.user?.id;
+  const promptOptions = elevated
+    ? [
+        "내가 지금 맡길 수 있는 일을 3가지로 제안해줘.",
+        "이 대화에서 필요한 배경 정보를 먼저 물어봐줘.",
+        "반복 업무로 만들 만한 루틴을 같이 설계해줘.",
+      ]
+    : [
+        "이 아바타가 잘 아는 분야를 요약해줘.",
+        "내 질문에 답하기 전에 필요한 맥락을 물어봐줘.",
+        "관련된 지식을 바탕으로 핵심만 정리해줘.",
+      ];
+  const useStarterPrompt = (text) => {
+    setActivePane(pane);
+    const ta = pane?.dom?.textarea;
+    if (!ta) return;
+    ta.value = text;
+    ta.dispatchEvent(new Event("input"));
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  };
   return el("div", { class: "empty-state" }, [
     avatarNode(av, 72, { alt: "" }),
     el("div", { class: "hero" }, [
       el("h3", { text: `${av.displayName}와(과) 대화` }),
       el("p", { text: av.bio || (elevated ? "무엇이든 물어보세요." : "무엇이든 물어보세요. 이 아바타의 도구는 읽기 전용으로 실행됩니다.") }),
     ]),
+    el("div", { class: "starter-prompts", role: "group", "aria-label": "시작 프롬프트" },
+      promptOptions.map((text) =>
+        el("button", {
+          class: "starter-prompt",
+          type: "button",
+          text,
+          onclick: () => useStarterPrompt(text),
+        }),
+      ),
+    ),
   ]);
 }
 

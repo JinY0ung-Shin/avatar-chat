@@ -1049,6 +1049,28 @@ body.col-resizing {
   line-height: 1.55;
   max-width: 60ch;
 }
+.starter-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: 68ch;
+}
+.starter-prompt {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: var(--t-sm);
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+.starter-prompt:hover,
+.starter-prompt:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
 .empty-state > .primary {
   justify-self: start;
 }
@@ -3541,6 +3563,9 @@ textarea::placeholder {
 }
 .chat-pane.compact .empty-state .hero p {
   font-size: var(--t-sm);
+}
+.chat-pane.compact .starter-prompts {
+  display: none;
 }
 .chat-pane.compact .md {
   font-size: var(--t-base);
