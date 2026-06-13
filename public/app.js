@@ -37,6 +37,7 @@ const state = {
   plugins: [],
   knowledgeRequests: [],
   routines: [],
+  routineSearch: "",
   routineConversations: [],
   routineConversationId: "",
   routineMessages: [],
@@ -1948,6 +1949,18 @@ function chatAboutTopic(seedText) {
 // the right. The old settings ▸ 루틴 tab is gone — this replaces it.
 function buildRoutineManagePanel() {
   const list = el("div", { class: "routine-manage-list" });
+  const search = el("input", {
+    class: "routine-search",
+    type: "search",
+    placeholder: "루틴 검색",
+    value: state.routineSearch,
+    "aria-label": "루틴 검색",
+    disabled: state.routines.length ? null : "",
+    oninput: () => {
+      state.routineSearch = search.value;
+      renderRoutineManageRows(list);
+    },
+  });
   const addBtn = el("button", { class: "primary small routine-add-btn", type: "button", onclick: () => openRoutineModal(null) });
   addBtn.append(icon("plus"), el("span", { text: "루틴 추가" }));
   const card = el("section", { class: "settings-card routine-card" }, [
@@ -1958,6 +1971,7 @@ function buildRoutineManagePanel() {
       ]),
       addBtn,
     ]),
+    search,
     list,
   ]);
   renderRoutineManageRows(list);
@@ -1970,7 +1984,24 @@ function renderRoutineManageRows(list) {
     list.append(el("div", { class: "empty-note", text: "아직 등록한 루틴이 없습니다. ‘루틴 추가’로 첫 루틴을 만들어 보세요." }));
     return;
   }
-  for (const r of state.routines) {
+  const q = state.routineSearch.trim().toLowerCase();
+  const routines = q
+    ? state.routines.filter((r) => {
+        const haystack = [
+          routineTitle(r),
+          r.prompt || "",
+          formatRoutineSchedule(r),
+          r.enabled ? "사용 중" : "일시 정지",
+          r.lastStatus === "error" ? "실패" : "완료",
+        ].join(" ").toLowerCase();
+        return haystack.includes(q);
+      })
+    : state.routines;
+  if (!routines.length) {
+    list.append(el("div", { class: "empty-note", text: `"${state.routineSearch.trim()}"에 맞는 루틴이 없습니다.` }));
+    return;
+  }
+  for (const r of routines) {
     const active = state.routineConversationId === r.conversationId;
     const errored = r.lastStatus === "error";
 

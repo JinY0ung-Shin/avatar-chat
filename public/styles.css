@@ -3161,6 +3161,23 @@ textarea::placeholder {
   width: 15px;
   height: 15px;
 }
+.routine-search {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: inherit;
+  font-size: var(--t-sm);
+  padding: 9px 12px;
+}
+.routine-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.routine-search:disabled {
+  opacity: 0.6;
+}
 .routine-manage-list {
   display: grid;
   gap: var(--s-2);
