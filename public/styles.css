@@ -410,6 +410,10 @@ input[type="radio"] {
   align-items: center;
   justify-content: space-between;
   gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.field-row > span {
+  min-width: 0;
 }
 
 .field input,
