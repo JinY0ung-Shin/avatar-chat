@@ -7798,6 +7798,7 @@ function adminGroupRow(g, reload) {
 
 function buildAdminGroupDetail(g, members, reload) {
   const wrap = el("div", { class: "ar-detail-inner" });
+  let currentMembers = members;
 
   const editForm = el("form", {
     class: "plugin-add rows-2",
@@ -7831,14 +7832,27 @@ function buildAdminGroupDetail(g, members, reload) {
   ]);
 
   const memberList = el("div", { class: "plugin-rows" });
+  const memberSearch = el("input", {
+    type: "search",
+    class: "admin-search",
+    placeholder: "멤버 이름·아이디 검색",
+    value: "",
+    "aria-label": "그룹 멤버 검색",
+    disabled: members.length ? null : "",
+  });
+  const memberCount = el("span", { class: "muted nowrap" });
   const reloadMembers = async () => {
     const d = await api(`/api/admin/groups/${encodeURIComponent(g.id)}`);
-    renderMembers(d.members);
+    currentMembers = d.members;
+    renderMembers(currentMembers);
     reload().catch(() => {});
   };
   const renderMembers = (ms) => {
     memberList.replaceChildren();
+    memberSearch.disabled = ms.length ? false : true;
+    const q = memberSearch.value.trim().toLowerCase();
     if (!ms.length) {
+      memberCount.textContent = "멤버 0명";
       memberList.append(
         el("div", { class: "empty-note" }, [
           "멤버가 없습니다.\n",
@@ -7847,7 +7861,31 @@ function buildAdminGroupDetail(g, members, reload) {
       );
       return;
     }
-    for (const m of ms) memberList.append(adminGroupMemberRow(g.id, m, reloadMembers));
+    const shown = q
+      ? ms.filter((m) =>
+          [
+            m.displayName || "",
+            m.username || "",
+            m.role === "admin" ? "관리자" : "멤버",
+          ].join(" ").toLowerCase().includes(q),
+        )
+      : ms;
+    memberCount.textContent = shown.length === ms.length ? `멤버 ${ms.length}명` : `표시 ${shown.length}명 / 전체 ${ms.length}명`;
+    if (!shown.length) {
+      const clearMemberSearch = () => {
+        memberSearch.value = "";
+        renderMembers(ms);
+        memberSearch.focus();
+      };
+      memberList.append(
+        el("div", { class: "empty-note" }, [
+          `"${memberSearch.value.trim()}"에 맞는 멤버가 없습니다.\n`,
+          el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearMemberSearch }),
+        ]),
+      );
+      return;
+    }
+    for (const m of shown) memberList.append(adminGroupMemberRow(g.id, m, reloadMembers));
   };
 
   const addRow = buildGroupMemberAddForm({
@@ -7856,6 +7894,7 @@ function buildAdminGroupDetail(g, members, reload) {
     reload: reloadMembers,
     placeholder: "추가할 사용자 아이디(@) 또는 이름",
   });
+  memberSearch.addEventListener("input", () => renderMembers(currentMembers));
   renderMembers(members);
 
   const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "그룹 삭제" });
@@ -7877,7 +7916,8 @@ function buildAdminGroupDetail(g, members, reload) {
   wrap.append(
     el("h4", { class: "knowledge-sub", text: "그룹 정보" }),
     editForm,
-    el("h4", { class: "knowledge-sub", text: `멤버 (${members.length})` }),
+    el("h4", { class: "knowledge-sub", text: "멤버" }),
+    el("div", { class: "admin-users-head" }, [memberSearch, memberCount]),
     memberList,
     addRow,
     el("div", { class: "ud-actions" }, [delBtn]),
