@@ -1582,7 +1582,9 @@ function renderSplitControls() {
   }
   const avatars = splitAvatarOptions();
   const activeAvatarId = activePane()?.avatar?.id || state.currentAvatar?.id || "";
-  const selectedAvatarId = avatars.some((av) => av.id === state.splitAvatarId) ? state.splitAvatarId : activeAvatarId;
+  const openAvatarIds = new Set(state.chatPanes.map((pane) => pane.avatar?.id).filter(Boolean));
+  const suggestedAvatarId = avatars.find((av) => av.id && !openAvatarIds.has(av.id))?.id || activeAvatarId;
+  const selectedAvatarId = avatars.some((av) => av.id === state.splitAvatarId) ? state.splitAvatarId : suggestedAvatarId;
   const avatarSelect = el("select", {
     class: "split-avatar-select",
     title: canAdd ? "분할로 추가할 아바타" : "분할 대화는 최대 4개까지 가능합니다",
