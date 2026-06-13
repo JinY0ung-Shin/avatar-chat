@@ -7044,6 +7044,7 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
       }
       try {
         await reload();
+        notify(`${m.displayName}님의 그룹 관리자 역할을 ${m.role === "admin" ? "해제" : "부여"}했습니다.`, "ok");
       } catch (e) {
         roleBtn.textContent = saved;
         if (row.isConnected) setFormBusy(row, false);
@@ -7066,6 +7067,7 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
       }
       try {
         await reload();
+        notify(`${m.displayName}님을 그룹에서 제거했습니다.`, "ok");
       } catch (e) {
         del.textContent = saved;
         if (row.isConnected) setFormBusy(row, false);
@@ -7105,6 +7107,7 @@ function buildGroupRepoCard(g) {
           await api(`/api/me/groups/${gid}/knowledge-repo/refresh`, { method: "POST" });
           invalidateSkillsCache(state.user.id);
           refreshBtn.textContent = "새로고침됨 ✓";
+          notify(`"${g.name}" 공용 지식 저장소를 최신 상태로 새로고침했습니다.`, "ok");
           setTimeout(() => { refreshBtn.textContent = saved; setFormBusy(wrap, false); }, 1200);
         } catch (e) {
           refreshBtn.textContent = saved;
@@ -7125,6 +7128,7 @@ function buildGroupRepoCard(g) {
           await api(`/api/me/groups/${gid}/knowledge-repo`, { method: "PUT", body: JSON.stringify({ repo: null }) });
           invalidateSkillsCache(state.user.id);
           renderView();
+          notify(`"${g.name}" 공용 지식 저장소 연결을 해제했습니다.`, "ok");
         } catch (e) {
           setFormBusy(wrap, false);
           notify(`연결 해제 실패: ${e.message}`);
@@ -7174,6 +7178,7 @@ function buildGroupRepoCard(g) {
         });
         invalidateSkillsCache(state.user.id);
         renderView();
+        notify(`"${g.name}" 공용 지식 저장소 "${repo}"을 연결했습니다.`, "ok");
       } catch (err) {
         btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
