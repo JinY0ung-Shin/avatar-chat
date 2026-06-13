@@ -276,23 +276,53 @@ async function copyText(text, btn) {
     }
     flashCopied(btn);
   } catch {
-    if (btn) {
-      btn.classList.add("copy-failed");
-      setTimeout(() => btn.classList.remove("copy-failed"), 1200);
-    }
+    flashCopyFailed(btn);
     notify("클립보드에 복사하지 못했습니다.", "warn");
   }
 }
 
 function flashCopied(btn) {
   if (!btn) return;
-  if (!btn._copyOriginal) btn._copyOriginal = [...btn.childNodes];
+  if (!btn._copyOriginal) {
+    btn._copyOriginal = {
+      nodes: [...btn.childNodes],
+      label: btn.getAttribute("aria-label"),
+      title: btn.title,
+    };
+  }
   clearTimeout(btn._copyTimer);
+  btn.classList.remove("copy-failed");
   btn.classList.add("copied");
+  btn.setAttribute("aria-label", "복사됨");
+  btn.title = "복사됨";
   btn.replaceChildren(icon("check"));
   btn._copyTimer = setTimeout(() => {
+    const original = btn._copyOriginal;
     btn.classList.remove("copied");
-    btn.replaceChildren(...btn._copyOriginal);
+    btn.replaceChildren(...original.nodes);
+    if (original.label) btn.setAttribute("aria-label", original.label);
+    else btn.removeAttribute("aria-label");
+    btn.title = original.title || "";
+  }, 1200);
+}
+
+function flashCopyFailed(btn) {
+  if (!btn) return;
+  const original = btn._copyOriginal || {
+    label: btn.getAttribute("aria-label"),
+    title: btn.title,
+  };
+  clearTimeout(btn._copyTimer);
+  btn.classList.remove("copied");
+  btn.classList.add("copy-failed");
+  if (original.nodes) btn.replaceChildren(...original.nodes);
+  btn.setAttribute("aria-label", "복사 실패");
+  btn.title = "복사 실패";
+  btn._copyTimer = setTimeout(() => {
+    btn.classList.remove("copy-failed");
+    if (original.label) btn.setAttribute("aria-label", original.label);
+    else btn.removeAttribute("aria-label");
+    btn.title = original.title || "";
   }, 1200);
 }
 
@@ -3283,26 +3313,50 @@ function buildMessageActions(pane, message, isUser, isLast) {
   } else if (isLast) {
     const regenBtn = el("button", { class: "msg-act regen", type: "button", "aria-label": "다시 생성", title: "다시 생성" });
     regenBtn.append(icon("refresh"));
-    regenBtn.addEventListener("click", () => regenerate(pane));
+    regenBtn.addEventListener("click", () => regenerate(pane, regenBtn));
     row.append(regenBtn);
   }
   return row;
 }
 
-function regenerate(pane = activePane()) {
+function setRegenerateBusy(btn, busy) {
+  if (!btn) return;
+  if (busy) {
+    if (!btn._regenOriginal) {
+      btn._regenOriginal = {
+        label: btn.getAttribute("aria-label"),
+        title: btn.title,
+      };
+    }
+    btn.disabled = true;
+    btn.classList.add("spinning");
+    btn.setAttribute("aria-label", "다시 생성 중");
+    btn.title = "다시 생성 중…";
+    return;
+  }
+  btn.disabled = false;
+  btn.classList.remove("spinning");
+  const original = btn._regenOriginal || {};
+  if (original.label) btn.setAttribute("aria-label", original.label);
+  else btn.setAttribute("aria-label", "다시 생성");
+  btn.title = original.title || "다시 생성";
+}
+
+function regenerate(pane = activePane(), triggerBtn = null) {
   if (!pane || pane.streaming) return;
   setActivePane(pane);
   const roles = pane.messages.map((m) => m.role);
   const lastUser = roles.lastIndexOf("user");
   if (lastUser < 0) return;
   const text = pane.messages[lastUser].content;
+  setRegenerateBusy(triggerBtn, true);
   // Stash the discarded tail: if the re-run errors before producing anything,
   // the original answer is restored instead of being lost.
   const removed = pane.messages.slice(lastUser + 1);
   pane.messages = pane.messages.slice(0, lastUser + 1);
   syncLegacyChatState(pane);
   renderTranscript(pane);
-  streamChat(pane, text, { regenerate: true, restoreOnError: removed });
+  streamChat(pane, text, { regenerate: true, restoreOnError: removed }).catch(() => setRegenerateBusy(triggerBtn, false));
 }
 
 // Internal runtime identifiers → user-facing badge labels. `claude` is the
