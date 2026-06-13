@@ -9093,16 +9093,17 @@ function openOnboarding() {
           e.preventDefault();
           const formEl = e.currentTarget;
           const savedLabel = saveBtn.textContent;
+          const token = tokenInput.value.trim();
+          const confluencePat = confluenceInput.value.trim();
+          const willSave = Boolean(token || confluencePat);
           setFormBusy(formEl, true);
-          saveBtn.textContent = "저장 중…";
+          saveBtn.textContent = willSave ? "저장 중…" : "시작 중…";
           errorBox.hidden = true;
           try {
-            const token = tokenInput.value.trim();
             if (token) {
               const { user } = await api("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
               state.user = user;
             }
-            const confluencePat = confluenceInput.value.trim();
             if (confluencePat) {
               const { user } = await api("/api/me/secrets/CONFLUENCE_PAT", {
                 method: "PUT",
