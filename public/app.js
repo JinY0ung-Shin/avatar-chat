@@ -5298,7 +5298,9 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
   }
 
   const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
+    const saved = save.textContent;
     save.disabled = true;
+    save.textContent = "저장 중…";
     const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
     const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
     // If everything (or nothing) is selected, store null = "load all".
@@ -5307,6 +5309,7 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
       await onSave(selected);
     } catch (e) {
       notify(`저장 실패: ${e.message}`);
+      save.textContent = saved;
       save.disabled = false;
     }
   } });
@@ -6395,7 +6398,9 @@ function renderGroupRepoContents(container, info, g) {
     container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
   }
   const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
+    const saved = save.textContent;
     save.disabled = true;
+    save.textContent = "저장 중…";
     const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
     const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
     const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
@@ -6405,6 +6410,7 @@ function renderGroupRepoContents(container, info, g) {
       renderView();
     } catch (e) {
       notify(`저장 실패: ${e.message}`);
+      save.textContent = saved;
       save.disabled = false;
     }
   } });
