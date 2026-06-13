@@ -4119,6 +4119,16 @@ textarea::placeholder {
   gap: var(--s-3);
   flex-wrap: wrap;
 }
+.admin-filter {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.admin-filter .seg-btn {
+  flex: 0 0 auto;
+}
 .admin-search {
   flex: 1;
   min-width: 180px;

@@ -47,6 +47,7 @@ const state = {
   adminUsers: [],
   adminUserDetail: {}, // id -> AdminUserDetail (lazy, cached per expand)
   adminUserSearch: "",
+  adminUserFilter: "all", // all | admins | suspended | public
   adminSystem: null,
   adminStats: null,
   audit: [],
@@ -7192,12 +7193,13 @@ async function renderAdmin() {
 async function adminOverviewCards() {
   await loadAdminStats();
   const s = state.adminStats || {};
-  const goAdminOverviewTarget = (tabId) => {
+  const goAdminOverviewTarget = (tabId, userFilter = "all") => {
     state.adminTab = tabId;
+    if (tabId === "users") state.adminUserFilter = userFilter;
     syncHash(true);
     renderView();
   };
-  const stat = (label, value, sub, targetTab = "") => {
+  const stat = (label, value, sub, targetTab = "", userFilter = "all") => {
     const children = [
       el("div", { class: "stat-value", text: String(value ?? 0) }),
       el("div", { class: "stat-label", text: label }),
@@ -7209,13 +7211,13 @@ async function adminOverviewCards() {
       class: "stat-card stat-clickable",
       type: "button",
       "aria-label": `${label} ${targetTab === "groups" ? "그룹 관리" : "사용자 관리"}로 이동`,
-      onclick: () => goAdminOverviewTarget(targetTab),
+      onclick: () => goAdminOverviewTarget(targetTab, userFilter),
     }, children);
   };
   const grid = el("div", { class: "stat-grid" }, [
     stat("전체 사용자", s.users, s.suspended ? `정지 ${s.suspended}명 포함` : null, "users"),
-    stat("관리자", s.admins, null, "users"),
-    stat("공개 아바타", s.publicAvatars, null, "users"),
+    stat("관리자", s.admins, null, "users", "admins"),
+    stat("공개 아바타", s.publicAvatars, null, "users", "public"),
     stat("대화", s.conversations),
     stat("메시지", s.messages),
     stat("활성 루틴", s.activeRoutines),
@@ -7238,19 +7240,70 @@ async function adminOverviewCards() {
 async function adminUsersCards() {
   await loadAdminUsers();
   const list = el("div", { class: "admin-list" });
+  const filterBar = el("div", { class: "admin-filter seg-control", role: "radiogroup", "aria-label": "사용자 필터" });
+  wireSegmentedRadioKeys(filterBar);
+  const search = el("input", {
+    type: "search",
+    class: "admin-search",
+    placeholder: "이름 또는 아이디로 검색",
+    value: state.adminUserSearch,
+    "aria-label": "사용자 검색",
+  });
+  const countLabel = el("span", { class: "muted nowrap" });
+  const filterDefs = [
+    { id: "all", label: "전체", match: () => true },
+    { id: "admins", label: "관리자", match: (u) => u.roles?.includes("admin") },
+    { id: "suspended", label: "정지", match: (u) => u.suspended },
+    { id: "public", label: "공개", match: (u) => u.visibility === "public" },
+  ];
+  const filterLabel = (id) => filterDefs.find((f) => f.id === id)?.label || "전체";
+  const currentFilter = () => filterDefs.find((f) => f.id === state.adminUserFilter) || filterDefs[0];
+  const syncFilters = () => {
+    if (!filterDefs.some((f) => f.id === state.adminUserFilter)) state.adminUserFilter = "all";
+    filterBar.replaceChildren(
+      ...filterDefs.map((f) => {
+        const active = state.adminUserFilter === f.id;
+        const count = state.adminUsers.filter(f.match).length;
+        return el("button", {
+          class: `seg-btn ${active ? "active" : ""}`,
+          type: "button",
+          role: "radio",
+          "aria-checked": active ? "true" : "false",
+          tabindex: active ? "0" : "-1",
+          dataset: { value: f.id },
+          text: `${f.label} ${count}`,
+          onclick: () => {
+            state.adminUserFilter = f.id;
+            syncFilters();
+            renderList();
+          },
+        });
+      }),
+    );
+  };
   const reload = async () => {
     await loadAdminUsers();
+    syncFilters();
     renderList();
   };
   const renderList = () => {
     const q = state.adminUserSearch.trim().toLowerCase();
+    const activeFilter = currentFilter();
     const users = state.adminUsers.filter(
       (u) =>
-        !q ||
-        (u.displayName || "").toLowerCase().includes(q) ||
-        (u.username || "").toLowerCase().includes(q),
+        activeFilter.match(u) &&
+        (!q ||
+          (u.displayName || "").toLowerCase().includes(q) ||
+          (u.username || "").toLowerCase().includes(q)),
     );
+    countLabel.textContent = `표시 ${users.length}명 / 전체 ${state.adminUsers.length}명`;
     if (!users.length) {
+      const resetUserFilter = () => {
+        state.adminUserFilter = "all";
+        syncFilters();
+        renderList();
+        filterBar.querySelector('[data-value="all"]')?.focus();
+      };
       if (q) {
         const clearAdminUserSearch = () => {
           state.adminUserSearch = "";
@@ -7258,10 +7311,21 @@ async function adminUsersCards() {
           renderList();
           search.focus();
         };
+        const children = [
+          `"${state.adminUserSearch.trim()}"에 맞는 ${state.adminUserFilter === "all" ? "사용자" : `${filterLabel(state.adminUserFilter)} 사용자`}가 없습니다. `,
+          el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearAdminUserSearch }),
+        ];
+        if (state.adminUserFilter !== "all") {
+          children.push(" ", el("button", { class: "linkish small", type: "button", text: "전체 사용자 보기", onclick: resetUserFilter }));
+        }
+        list.replaceChildren(
+          el("div", { class: "muted pad" }, children),
+        );
+      } else if (state.adminUserFilter !== "all") {
         list.replaceChildren(
           el("div", { class: "muted pad" }, [
-            `"${state.adminUserSearch.trim()}"에 맞는 사용자가 없습니다. `,
-            el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearAdminUserSearch }),
+            `${filterLabel(state.adminUserFilter)} 사용자가 없습니다. `,
+            el("button", { class: "linkish small", type: "button", text: "전체 사용자 보기", onclick: resetUserFilter }),
           ]),
         );
       } else {
@@ -7274,24 +7338,18 @@ async function adminUsersCards() {
     list.replaceChildren(...users.map((u) => adminUserRow(u, reload)));
   };
 
-  const search = el("input", {
-    type: "search",
-    class: "admin-search",
-    placeholder: "이름 또는 아이디로 검색",
-    value: state.adminUserSearch,
-    "aria-label": "사용자 검색",
-  });
   search.addEventListener("input", () => {
     state.adminUserSearch = search.value;
     renderList();
   });
 
+  syncFilters();
   renderList();
   const head = el("div", { class: "admin-users-head" }, [
     search,
-    el("span", { class: "muted nowrap", text: `총 ${state.adminUsers.length}명` }),
+    countLabel,
   ]);
-  return [el("div", { class: "admin-users" }, [head, list])];
+  return [el("div", { class: "admin-users" }, [head, filterBar, list])];
 }
 
 function adminUserRow(u, reload) {
