@@ -197,6 +197,10 @@ button {
   color: var(--text);
   cursor: pointer;
   border-radius: var(--r-sm);
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: normal;
+  word-break: keep-all;
   transition: background 0.15s var(--ease), border-color 0.15s var(--ease),
     color 0.15s var(--ease), box-shadow 0.15s var(--ease), transform 0.06s ease;
 }
@@ -344,6 +348,7 @@ input[type="radio"] {
   border-radius: var(--r-md);
   padding: 10px 16px;
   font-weight: 700;
+  white-space: nowrap;
   box-shadow: var(--shadow-sm);
 }
 .primary:hover:not(:disabled) {
@@ -1205,6 +1210,7 @@ body.col-resizing {
   font-weight: 600;
   cursor: pointer;
   color: var(--text);
+  white-space: nowrap;
 }
 .btn:disabled {
   opacity: 0.55;
@@ -2363,6 +2369,7 @@ textarea::placeholder {
   font-size: var(--t-xs);
   font-weight: 600;
   flex: none;
+  white-space: nowrap;
 }
 .ghost-sm:hover {
   background: var(--panel-strong);
@@ -2575,6 +2582,7 @@ textarea::placeholder {
   font-weight: 600;
   padding: 0;
   cursor: pointer;
+  white-space: nowrap;
 }
 .linkish:hover {
   color: var(--accent-strong);
