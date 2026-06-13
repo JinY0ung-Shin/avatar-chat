@@ -5570,6 +5570,7 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
   const currentSelected = getSelected();
   const selectedSet = currentSelected ? new Set(currentSelected) : null;
   const checks = [];
+  let saving = false;
   container.append(el("div", { class: "pc-head muted", text: headText }));
 
   for (const entry of info.plugins) {
@@ -5577,14 +5578,23 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
     const cb = el("input", { type: "checkbox" });
     cb.checked = checked && entry.loadable;
     cb.disabled = !entry.loadable;
-    checks.push({ cb, name: entry.name });
+    checks.push({ cb, name: entry.name, loadable: entry.loadable });
     const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
     container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
   }
 
+  const setSaving = (busy) => {
+    saving = busy;
+    container.setAttribute("aria-busy", busy ? "true" : "false");
+    save.disabled = busy;
+    checks.forEach(({ cb, loadable }) => {
+      cb.disabled = busy || !loadable;
+    });
+  };
   const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
+    if (saving) return;
     const saved = save.textContent;
-    save.disabled = true;
+    setSaving(true);
     save.textContent = "저장 중…";
     const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
     const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
@@ -5595,7 +5605,7 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
     } catch (e) {
       notify(`저장 실패: ${e.message}`);
       save.textContent = saved;
-      save.disabled = false;
+      setSaving(false);
     }
   } });
   container.append(el("div", { class: "pc-actions" }, [save]));
@@ -6709,19 +6719,29 @@ function renderGroupRepoContents(container, info, g) {
   }
   const selectedSet = g.knowledgeSelected ? new Set(g.knowledgeSelected) : null;
   const checks = [];
+  let saving = false;
   container.append(el("div", { class: "pc-head muted", text: "그룹 멤버 아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다." }));
   for (const entry of info.plugins) {
     const checked = !selectedSet || selectedSet.has(entry.name);
     const cb = el("input", { type: "checkbox" });
     cb.checked = checked && entry.loadable;
     cb.disabled = !entry.loadable;
-    checks.push({ cb, name: entry.name });
+    checks.push({ cb, name: entry.name, loadable: entry.loadable });
     const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
     container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
   }
+  const setSaving = (busy) => {
+    saving = busy;
+    container.setAttribute("aria-busy", busy ? "true" : "false");
+    save.disabled = busy;
+    checks.forEach(({ cb, loadable }) => {
+      cb.disabled = busy || !loadable;
+    });
+  };
   const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
+    if (saving) return;
     const saved = save.textContent;
-    save.disabled = true;
+    setSaving(true);
     save.textContent = "저장 중…";
     const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
     const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
@@ -6733,7 +6753,7 @@ function renderGroupRepoContents(container, info, g) {
     } catch (e) {
       notify(`저장 실패: ${e.message}`);
       save.textContent = saved;
-      save.disabled = false;
+      setSaving(false);
     }
   } });
   container.append(el("div", { class: "pc-actions" }, [save]));
