@@ -2816,10 +2816,14 @@ textarea::placeholder {
   box-shadow: var(--shadow-sm);
   align-items: flex-start;
 }
-.avatar-card:hover {
+.avatar-card:hover:not(:disabled) {
   border-color: var(--accent);
   box-shadow: var(--shadow-md);
   transform: translateY(-1px);
+}
+.avatar-card:disabled {
+  cursor: progress;
+  opacity: 0.72;
 }
 .ac-body {
   min-width: 0;

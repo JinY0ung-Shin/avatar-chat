@@ -1318,7 +1318,7 @@ async function renderExplore() {
 
 function buildAvatarCard(av) {
   const isMe = av.id === state.user.id;
-  const card = el("button", { class: "avatar-card", type: "button", onclick: () => startChatWith(av) }, [
+  const card = el("button", { class: "avatar-card", type: "button", onclick: () => startChatWith(av, card) }, [
     avatarNode(av, 56, { alt: "" }),
     el("div", { class: "ac-body" }, [
       el("div", { class: "ac-name" }, [
@@ -1340,7 +1340,7 @@ function buildAvatarCard(av) {
   return card;
 }
 
-async function startChatWith(av) {
+async function startChatWith(av, triggerCard = null) {
   const activeStreaming = streamingPane();
   if (activeStreaming) {
     if (activeStreaming.avatar?.id === av.id) {
@@ -1352,23 +1352,42 @@ async function startChatWith(av) {
     }
     if (!guardChatReplacement()) return;
   }
+  const handle = triggerCard?.querySelector(".ac-handle");
+  const previousHandle = handle?.textContent || "";
+  if (triggerCard) {
+    triggerCard.disabled = true;
+    triggerCard.setAttribute("aria-busy", "true");
+    if (handle) handle.textContent = "대화 여는 중…";
+  }
+  const restoreTrigger = () => {
+    if (!triggerCard?.isConnected) return;
+    triggerCard.disabled = false;
+    triggerCard.removeAttribute("aria-busy");
+    if (handle) handle.textContent = previousHandle;
+  };
   // Resume the most recent conversation with this avatar instead of silently
   // forking a new one — Explore and the rail used to diverge here, spawning
   // duplicate threads. "새 대화" in the chat header remains the fork path.
   const existing = state.conversations.find((c) => c.avatarUserId === av.id);
-  if (existing && state.chatPanes.length <= 1) {
-    await selectConversation(existing);
-    return;
+  try {
+    if (existing && state.chatPanes.length <= 1) {
+      await selectConversation(existing);
+      return;
+    }
+    state.currentAvatar = av;
+    const pane = makeChatPane(av);
+    state.chatPanes = [pane];
+    state.activePaneId = pane.id;
+    syncLegacyChatState(pane);
+    state.view = "chat";
+    syncHash();
+    renderView();
+    await refreshConversations();
+  } catch (e) {
+    notify(`대화를 시작하지 못했습니다: ${e.message}`);
+  } finally {
+    restoreTrigger();
   }
-  state.currentAvatar = av;
-  const pane = makeChatPane(av);
-  state.chatPanes = [pane];
-  state.activePaneId = pane.id;
-  syncLegacyChatState(pane);
-  state.view = "chat";
-  syncHash();
-  renderView();
-  await refreshConversations();
 }
 
 /* ============================================================ Chat view */
