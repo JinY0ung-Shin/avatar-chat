@@ -1823,12 +1823,9 @@ function renderRoutineManageRows(list) {
     }, [
       el("div", { class: "routine-manage-head" }, [
         dot,
-        el("strong", { class: "routine-manage-title", text: (r.name || "").trim() || "루틴 작업" }),
+        el("strong", { class: "routine-manage-title", text: routineTitle(r) }),
         toggle,
       ]),
-      // The prompt is the routine's substance — show it inline (clamped) so it's
-      // readable without opening the edit modal. The selected card un-clamps it.
-      el("p", { class: "routine-manage-prompt", text: (r.prompt || "").trim() || "(프롬프트 없음)" }),
       el("div", { class: "routine-manage-meta", text: meta.join(" · ") }),
       errored && r.lastError ? el("div", { class: "error-note", text: r.lastError }) : null,
       el("div", { class: "routine-manage-actions" }, [editBtn, runBtn]),
@@ -1845,12 +1842,17 @@ function buildRoutineResultPanel() {
   transcript.append(inner);
   // Standing prompt block: the instruction this routine runs, always in view above
   // the results (own scroll so a long prompt can't crowd out the transcript).
-  const promptBlock = routine
-    ? el("div", { class: "routine-result-prompt" }, [
-        el("div", { class: "routine-result-prompt-label muted", text: "지시 프롬프트" }),
-        el("div", { class: "routine-result-prompt-body scroll-thin", text: (routine.prompt || "").trim() || "(프롬프트 없음)" }),
-      ])
-    : null;
+  let promptBlock = null;
+  if (routine) {
+    const promptBody = el("div", { class: "routine-result-prompt-body md scroll-thin" });
+    const promptText = (routine.prompt || "").trim();
+    if (promptText) promptBody.innerHTML = renderMarkdown(promptText);
+    else promptBody.append(el("span", { class: "muted", text: "(프롬프트 없음)" }));
+    promptBlock = el("div", { class: "routine-result-prompt" }, [
+      el("div", { class: "routine-result-prompt-label muted", text: "지시 프롬프트" }),
+      promptBody,
+    ]);
+  }
   const card = el("section", { class: "settings-card routine-result-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
@@ -1870,13 +1872,64 @@ function buildRoutineResultPanel() {
     inner.append(el("div", { class: "empty-note", text: "아직 실행 메시지가 없습니다." }));
     return card;
   }
-  for (const message of state.routineMessages) {
-    inner.append(buildRoutineMessageNode(message));
+  // A flat thread grows unreadable over many runs. Group it into per-run blocks
+  // (one user-prompt → its assistant result(s)), newest FIRST and only the newest
+  // expanded; the rest collapse to a one-line header you can open on demand.
+  const runs = groupRoutineRuns(state.routineMessages);
+  const currentPrompt = (routine?.prompt || "").trim();
+  for (let i = runs.length - 1; i >= 0; i--) {
+    inner.append(buildRoutineRunBlock(runs[i], i + 1, i === runs.length - 1, currentPrompt));
   }
-  requestAnimationFrame(() => {
-    transcript.scrollTop = transcript.scrollHeight;
-  });
   return card;
+}
+
+// Split the alternating user/assistant transcript into runs: each user message
+// starts a new run and the assistant message(s) that follow belong to it.
+function groupRoutineRuns(messages) {
+  const runs = [];
+  let current = null;
+  for (const m of messages) {
+    if (m.role === "user") {
+      current = { prompt: m, responses: [], at: m.createdAt || null };
+      runs.push(current);
+    } else {
+      if (!current) {
+        current = { prompt: null, responses: [], at: m.createdAt || null };
+        runs.push(current);
+      }
+      current.responses.push(m);
+      if (m.createdAt) current.at = m.createdAt;
+    }
+  }
+  return runs;
+}
+
+function buildRoutineRunBlock(run, runNumber, expanded, currentPrompt) {
+  const time = run.at ? timeLabel(run.at) : "";
+  const details = el("details", { class: "routine-run-block", ...(expanded ? { open: "" } : {}) });
+  details.append(
+    el("summary", { class: "routine-run-summary" }, [
+      el("span", { class: "routine-run-chevron", "aria-hidden": "true" }),
+      el("span", { class: "routine-run-num", text: `실행 #${runNumber}` }),
+      time ? el("span", { class: "routine-run-time muted", text: time }) : null,
+    ]),
+  );
+  const body = el("div", { class: "routine-run-body" });
+  // If this run's prompt differs from the routine's current one (it was edited
+  // since), surface that run's actual instruction; otherwise the pinned block covers it.
+  const runPrompt = (run.prompt?.content || "").trim();
+  if (runPrompt && runPrompt !== currentPrompt) {
+    const note = el("div", { class: "routine-run-prompt md" });
+    note.innerHTML = renderMarkdown(runPrompt);
+    body.append(el("div", { class: "routine-run-prompt-label muted", text: "이때의 지시" }), note);
+  }
+  if (run.responses.length) {
+    for (const m of run.responses) body.append(buildRoutineMessageNode(m));
+  } else {
+    body.append(el("div", { class: "empty-note", text: "이 실행에는 결과 메시지가 없습니다." }));
+  }
+  details.append(body);
+  return details;
 }
 
 function buildRoutineMessageNode(message) {

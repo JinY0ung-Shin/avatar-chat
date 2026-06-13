@@ -3083,24 +3083,6 @@ textarea::placeholder {
   font-size: var(--t-base);
   overflow-wrap: anywhere;
 }
-/* Prompt shown inline on every card (clamped); the selected card reveals it in
-   full so the instruction is readable without opening the edit modal. */
-.routine-manage-prompt {
-  margin: 0;
-  color: var(--text);
-  font-size: var(--t-sm);
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  overflow: hidden;
-}
-.routine-manage-row.active .routine-manage-prompt {
-  -webkit-line-clamp: unset;
-  overflow: visible;
-}
 .routine-dot {
   flex: none;
   width: 8px;
@@ -3164,10 +3146,70 @@ textarea::placeholder {
   color: var(--text);
   font-size: var(--t-sm);
   line-height: 1.55;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 22vh;
   overflow-y: auto;
+}
+
+/* Per-run collapsible blocks inside the routine transcript: newest expanded,
+   older runs fold to a one-line header so the thread stays scannable. */
+.routine-run-block {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  overflow: hidden;
+}
+.routine-run-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--t-sm);
+  list-style: none;
+}
+.routine-run-summary::-webkit-details-marker {
+  display: none;
+}
+.routine-run-summary:hover {
+  background: var(--panel-strong);
+}
+.routine-run-chevron {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--muted);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+}
+.routine-run-block[open] .routine-run-chevron {
+  transform: rotate(90deg);
+}
+.routine-run-num {
+  font-weight: 700;
+  color: var(--text);
+}
+.routine-run-time {
+  margin-left: auto;
+  font-size: var(--t-xs);
+}
+.routine-run-body {
+  padding: var(--s-3);
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: var(--s-2);
+}
+.routine-run-prompt-label {
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.routine-run-prompt {
+  font-size: var(--t-sm);
+  color: var(--muted);
+  border-left: 2px solid var(--line);
+  padding-left: var(--s-2);
 }
 .routine-result-card .routine-result-transcript {
   flex: 1;
