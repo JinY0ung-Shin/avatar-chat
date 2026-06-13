@@ -3021,7 +3021,20 @@ async function loadCapabilitySkills(avatarId, body) {
     if (st.loading) {
       body.replaceChildren(el("p", { class: "cap-loading", text: "불러오는 중…" }));
     } else if (st.error) {
-      body.replaceChildren(el("p", { class: "cap-empty", text: st.error }));
+      body.replaceChildren(
+        el("div", { class: "cap-empty cap-error" }, [
+          el("span", { text: st.error }),
+          el("button", {
+            class: "linkish small",
+            type: "button",
+            text: "다시 시도",
+            onclick: () => {
+              delete state.skillsByAvatar[avatarId];
+              loadCapabilitySkills(avatarId, body);
+            },
+          }),
+        ]),
+      );
     } else if (!st.skills.length) {
       body.replaceChildren(el("p", { class: "cap-empty", text: "사용 가능한 스킬이 없습니다." }));
     } else {

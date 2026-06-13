@@ -984,6 +984,16 @@ body.col-resizing {
   font-size: var(--t-xs);
   color: var(--muted);
 }
+.cap-error {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.cap-error .linkish.small {
+  margin-top: 0;
+  padding: 0;
+}
 
 /* Middle region: holds the scrolling transcript + the scroll-to-bottom FAB. */
 .chat-body {
