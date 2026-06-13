@@ -8331,6 +8331,14 @@ function buildModelOverrideCard(sys) {
    is never sent back, only whether one is present (sys.subscriptionConnected). */
 function buildSubscriptionCard(sys) {
   const connected = Boolean(sys.subscriptionConnected);
+  const tokenField = buildRevealableInput({
+    name: "token",
+    placeholder: "sk-ant-oat01-...",
+    autocomplete: "off",
+    ariaLabel: connected ? "Claude 구독 토큰 교체" : "Claude 구독 토큰",
+    revealLabel: "토큰",
+    required: true,
+  });
   const card = el("section", { class: "settings-card" });
   card.append(
     el("div", { class: "panel-section-head" }, [
@@ -8414,7 +8422,7 @@ function buildSubscriptionCard(sys) {
   }, [
     el("label", { class: "field" }, [
       el("span", { text: connected ? "토큰 교체" : "Claude 구독 토큰" }),
-      el("textarea", { name: "token", rows: "3", placeholder: "sk-ant-oat01-…", autocomplete: "off", required: "" }),
+      tokenField.wrap,
     ]),
     el("button", { class: "primary", type: "submit", text: "저장" }),
   ]);
