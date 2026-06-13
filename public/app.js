@@ -7192,22 +7192,36 @@ async function renderAdmin() {
 async function adminOverviewCards() {
   await loadAdminStats();
   const s = state.adminStats || {};
-  const stat = (label, value, sub) =>
-    el("div", { class: "stat-card" }, [
+  const goAdminOverviewTarget = (tabId) => {
+    state.adminTab = tabId;
+    syncHash(true);
+    renderView();
+  };
+  const stat = (label, value, sub, targetTab = "") => {
+    const children = [
       el("div", { class: "stat-value", text: String(value ?? 0) }),
       el("div", { class: "stat-label", text: label }),
       sub ? el("div", { class: "stat-sub muted", text: sub }) : null,
-    ]);
+    ];
+    if (!targetTab) return el("div", { class: "stat-card" }, children);
+    children.push(el("div", { class: "stat-link muted", text: targetTab === "groups" ? "그룹 관리" : "사용자 관리" }));
+    return el("button", {
+      class: "stat-card stat-clickable",
+      type: "button",
+      "aria-label": `${label} ${targetTab === "groups" ? "그룹 관리" : "사용자 관리"}로 이동`,
+      onclick: () => goAdminOverviewTarget(targetTab),
+    }, children);
+  };
   const grid = el("div", { class: "stat-grid" }, [
-    stat("전체 사용자", s.users, s.suspended ? `정지 ${s.suspended}명 포함` : null),
-    stat("관리자", s.admins),
-    stat("공개 아바타", s.publicAvatars),
+    stat("전체 사용자", s.users, s.suspended ? `정지 ${s.suspended}명 포함` : null, "users"),
+    stat("관리자", s.admins, null, "users"),
+    stat("공개 아바타", s.publicAvatars, null, "users"),
     stat("대화", s.conversations),
     stat("메시지", s.messages),
     stat("활성 루틴", s.activeRoutines),
     stat("미응답 질문", s.openRequests),
-    stat("활성 세션", s.activeSessions),
-    stat("그룹", s.groups),
+    stat("활성 세션", s.activeSessions, null, "users"),
+    stat("그룹", s.groups, null, "groups"),
   ]);
   return [
     el("div", { class: "admin-list" }, [

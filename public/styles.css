@@ -4071,6 +4071,21 @@ textarea::placeholder {
   display: grid;
   gap: 2px;
 }
+.stat-card.stat-clickable {
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.stat-card.stat-clickable:hover,
+.stat-card.stat-clickable:focus-visible {
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
+.stat-card.stat-clickable:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 .stat-value {
   font-size: 1.6rem;
   font-weight: 700;
@@ -4082,6 +4097,10 @@ textarea::placeholder {
 }
 .stat-sub {
   font-size: var(--t-xs);
+}
+.stat-link {
+  font-size: var(--t-xs);
+  margin-top: var(--s-1);
 }
 
 /* User management list */
