@@ -5663,9 +5663,9 @@ function renderPluginRows(list, focusAddForm = null) {
 
 // Shared core for plugin-selection UIs. `getSelected()` returns the current
 // selection array-or-null; `onSave(selected)` persists it and returns a promise.
-// Used by renderPluginContents and renderKnowledgeRepoContents (both call sites
-// must produce identical DOM/behavior, differing only in selection source and
-// save destination).
+// Used by plugin, personal knowledge repo, and group knowledge repo selectors;
+// all three must produce identical DOM/behavior, differing only in selection
+// source and save destination.
 function renderPluginSelectionContents(container, info, { getSelected, onSave, headText }) {
   container.replaceChildren();
   if (info.kind === "none") {
@@ -6909,59 +6909,16 @@ function buildGroupRepoCard(g) {
 // Per-plugin selection for a group repo. Mirrors renderKnowledgeRepoContents but
 // posts to the group endpoint and reads the group's current selection.
 function renderGroupRepoContents(container, info, g) {
-  container.replaceChildren();
-  if (info.kind === "none") {
-    container.append(el("div", { class: "error-note", text: "Claude 플러그인 저장소가 아닙니다 (plugin.json / marketplace.json 없음)." }));
-    return;
-  }
-  if (info.kind === "single") {
-    container.append(el("div", { class: "muted", text: "단일 플러그인 저장소입니다 — 선택할 항목이 없습니다." }));
-    return;
-  }
-  if (!info.plugins.length) {
-    container.append(el("div", { class: "muted", text: "불러올 수 있는 플러그인이 없습니다." }));
-    return;
-  }
-  const selectedSet = g.knowledgeSelected ? new Set(g.knowledgeSelected) : null;
-  const checks = [];
-  let saving = false;
-  container.append(el("div", { class: "pc-head muted", text: "그룹 멤버 아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다." }));
-  for (const entry of info.plugins) {
-    const checked = !selectedSet || selectedSet.has(entry.name);
-    const cb = el("input", { type: "checkbox" });
-    cb.checked = checked && entry.loadable;
-    cb.disabled = !entry.loadable;
-    checks.push({ cb, name: entry.name, loadable: entry.loadable });
-    const labelText = entry.loadable ? entry.name : `${entry.name} (로드 불가)`;
-    container.append(el("label", { class: "pc-item" }, [cb, el("span", { text: labelText })]));
-  }
-  const setSaving = (busy) => {
-    saving = busy;
-    container.setAttribute("aria-busy", busy ? "true" : "false");
-    save.disabled = busy;
-    checks.forEach(({ cb, loadable }) => {
-      cb.disabled = busy || !loadable;
-    });
-  };
-  const save = el("button", { class: "primary small", type: "button", text: "선택 저장", onclick: async () => {
-    if (saving) return;
-    const saved = save.textContent;
-    setSaving(true);
-    save.textContent = "저장 중…";
-    const loadable = info.plugins.filter((e) => e.loadable).map((e) => e.name);
-    const chosen = checks.filter((c) => c.cb.checked).map((c) => c.name);
-    const selected = chosen.length === 0 || chosen.length === loadable.length ? null : chosen;
-    try {
-      await api(`/api/me/groups/${encodeURIComponent(g.id)}/knowledge-repo/selected`, { method: "PUT", body: JSON.stringify({ selected }) });
+  renderPluginSelectionContents(container, info, {
+    getSelected: () => g.knowledgeSelected,
+    headText: "그룹 멤버 아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다.",
+    onSave: async (selected) => {
+      const { group } = await api(`/api/me/groups/${encodeURIComponent(g.id)}/knowledge-repo/selected`, { method: "PUT", body: JSON.stringify({ selected }) });
+      Object.assign(g, group);
       invalidateSkillsCache(state.user.id);
       renderView();
-    } catch (e) {
-      notify(`저장 실패: ${e.message}`);
-      save.textContent = saved;
-      setSaving(false);
-    }
-  } });
-  container.append(el("div", { class: "pc-actions" }, [save]));
+    },
+  });
 }
 
 // One info-request row (colleague → owner). `refresh` re-renders the inbox after
