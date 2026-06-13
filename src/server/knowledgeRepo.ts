@@ -347,19 +347,59 @@ export async function writeFile(repoRoot: string, relPath: string, content: stri
   await fs.writeFile(abs, content, "utf8");
 }
 
-/** Delete a tracked file. Throws on traversal. No-op if already gone. */
+/**
+ * Delete a tracked file OR directory (recursively). Throws on traversal. No-op
+ * if already gone. `recursive` lets a whole skill directory be removed in one
+ * call; `force` won't follow a symlinked leaf (it removes the link itself) and
+ * the realpath'd parent containment guards against symlinked ancestors.
+ */
 export async function deleteFile(repoRoot: string, relPath: string): Promise<void> {
   const lexical = resolveInRepo(repoRoot, relPath);
   if (!lexical || lexical === repoRoot) {
     throw new Error("INVALID_PATH");
   }
-  // Containment of the parent (realpath'd) guards against symlinked ancestors;
-  // `fs.rm` won't follow a symlinked leaf (it removes the link itself).
   const abs = realpathContained(repoRoot, lexical, false);
   if (!abs) {
     throw new Error("INVALID_PATH");
   }
-  await fs.rm(abs, { force: true });
+  await fs.rm(abs, { force: true, recursive: true });
+}
+
+/**
+ * Move/rename a file or directory within the repo. Throws on traversal, a
+ * missing source (NOT_FOUND), or a symlinked source/destination leaf. Creates
+ * the destination's parent dirs. Works for both files and directories.
+ */
+export async function moveFile(repoRoot: string, fromRel: string, toRel: string): Promise<void> {
+  const fromLex = resolveInRepo(repoRoot, fromRel);
+  const toLex = resolveInRepo(repoRoot, toRel);
+  if (!fromLex || fromLex === repoRoot || !toLex || toLex === repoRoot) {
+    throw new Error("INVALID_PATH");
+  }
+  const absFrom = realpathContained(repoRoot, fromLex, false);
+  const absTo = realpathContained(repoRoot, toLex, false);
+  if (!absFrom || !absTo) {
+    throw new Error("INVALID_PATH");
+  }
+  // Source must exist and not be a symlink (don't move the link target out).
+  const src = await fs.lstat(absFrom).catch(() => null);
+  if (!src) {
+    throw new Error("NOT_FOUND");
+  }
+  if (src.isSymbolicLink()) {
+    throw new Error("INVALID_PATH");
+  }
+  // Refuse to overwrite through an existing symlink at the destination leaf.
+  try {
+    if ((await fs.lstat(absTo)).isSymbolicLink()) {
+      throw new Error("INVALID_PATH");
+    }
+  } catch (e) {
+    if (e instanceof Error && e.message === "INVALID_PATH") throw e;
+    // ENOENT: destination doesn't exist yet — fine.
+  }
+  await fs.mkdir(path.dirname(absTo), { recursive: true });
+  await fs.rename(absFrom, absTo);
 }
 
 /**

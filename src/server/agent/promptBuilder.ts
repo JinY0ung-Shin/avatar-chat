@@ -61,9 +61,9 @@ function knowledgeRepoSection(request: AgentRequest, knowledgeRepoConfigured: bo
   if (knowledgeRepoConfigured) {
     // The owner can have the avatar manage its connected knowledge repo.
     return (
-      "You can directly manage your own **knowledge repository** (an owner-only personal repo): `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit`. " +
-      "If you organize work knowledge and skills here, you will use them starting from the next conversation. " +
-      "write_file/scaffold_skill changes are **not pushed until you commit**, so commit when a unit of work is finished or the owner asks."
+      "You can directly manage your own **knowledge repository** (an owner-only personal repo): `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. " +
+      "If you organize work knowledge and skills here, you will use them starting from the next conversation; use `delete_file` to remove outdated knowledge/skills (a file or a whole skill folder) and `move_file` to rename/relocate them. " +
+      "write_file/delete_file/move_file/scaffold_skill changes are **not pushed until you commit**, so commit when a unit of work is finished or the owner asks."
     );
   }
   // No repo yet → the `create_repo` tool IS available (exposed only in this
@@ -101,7 +101,7 @@ function groupsSection(request: AgentRequest): string | null {
   const groupLines = [
     `The owner belongs to the following groups: ${groups.map(describe).join(", ")}. ` +
       "Members of the same group **automatically trust each other (elevated)** — group co-membership is the ONLY source of elevated (owner-level tool) access. So when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and group-visible avatars can find and talk to each other.",
-    "Each group may have a **shared knowledge repository**, handled with the `mcp__group_repo__*` tools: use `list_groups` to check groups/roles; all group members can `list_files`/`read_file`, while only **group admins** can `write_file`/`scaffold_skill`/`commit`. Skills organized in a group's shared repository are used by every group member's avatar starting from the next conversation.",
+    "Each group may have a **shared knowledge repository**, handled with the `mcp__group_repo__*` tools: use `list_groups` to check groups/roles; all group members can `list_files`/`read_file`, while only **group admins** can `write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. Skills organized in a group's shared repository are used by every group member's avatar starting from the next conversation.",
   ];
   if (adminNoRepo.length > 0) {
     groupLines.push(
@@ -240,7 +240,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       // or never realizes its group repo tools exist).
       const routineState: string[] = [
         request.knowledgeRepoConfigured !== false
-          ? "Personal knowledge repository: connected — `mcp__repo__list_files`/`read_file`/`write_file`/`scaffold_skill`/`commit` are available (changes must be committed to be pushed)."
+          ? "Personal knowledge repository: connected — `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit` are available (changes must be committed to be pushed)."
           : request.gitTokenSet
             ? "Personal knowledge repository: none — if a task needs a repository, create and connect one first with `mcp__repo__create_repo` (`scaffold_skill`/`write_file`/`commit` fail before one is connected)."
             : "Personal knowledge repository: none, and `GIT_TOKEN` is also not set — you cannot do tasks that need a repository, so note in your result report that a token needs to be registered.",

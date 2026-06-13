@@ -6,7 +6,9 @@ import { normalizeGithubHost, scrubGitError } from "../marketplace.js";
 import { text } from "./mcpTools.js";
 import {
   commitIdentityFor,
+  deleteFile as deleteRepoFile,
   listTree,
+  moveFile as moveRepoFile,
   readFile as readRepoFile,
   scaffoldSkill,
   writeFile as writeRepoFile,
@@ -23,7 +25,9 @@ import {
   OWNER_ONLY as REPO_OWNER_ONLY,
   type Resolved,
   commitFailureMessage,
+  runDeleteFile,
   runListFiles,
+  runMoveFile,
   runReadFile,
   runScaffoldSkill,
   runWriteFile,
@@ -55,6 +59,8 @@ export const GROUP_REPO_TOOL_NAMES = [
   "mcp__group_repo__list_files",
   "mcp__group_repo__read_file",
   "mcp__group_repo__write_file",
+  "mcp__group_repo__delete_file",
+  "mcp__group_repo__move_file",
   "mcp__group_repo__scaffold_skill",
   "mcp__group_repo__commit",
   "mcp__group_repo__create_repo",
@@ -188,6 +194,39 @@ export function buildGroupRepoTools(
           writeRepoFile,
           args,
           (path) => `Saved the file ${path}. (Not committed yet — push it with commit.)`,
+        ),
+    ),
+    tool(
+      "delete_file",
+      "Delete a file OR a whole directory (e.g. an entire skill folder `skills/<name>`) from the specified group's shared knowledge repository. The deletion applies only to the working tree and is **not removed from the remote until commit**. (group admin only)",
+      {
+        group: z.string().describe("Group name or ID"),
+        path: z.string().describe("Path relative to the repository root — a file (skills/foo/SKILL.md) or a directory (skills/foo)"),
+      },
+      (args) =>
+        runDeleteFile(
+          resolveWrite(args.group),
+          cloneResolved,
+          deleteRepoFile,
+          args.path,
+          (path) => `Deleted ${path}. (Not committed yet — push it with commit.)`,
+        ),
+    ),
+    tool(
+      "move_file",
+      "Rename or move a file/directory within the specified group's shared knowledge repository. Applies only to the working tree until commit. (group admin only)",
+      {
+        group: z.string().describe("Group name or ID"),
+        from: z.string().describe("Current path relative to the repository root"),
+        to: z.string().describe("New path relative to the repository root"),
+      },
+      (args) =>
+        runMoveFile(
+          resolveWrite(args.group),
+          cloneResolved,
+          moveRepoFile,
+          args,
+          (from, to) => `Moved ${from} → ${to}. (Not committed yet — push it with commit.)`,
         ),
     ),
     tool(

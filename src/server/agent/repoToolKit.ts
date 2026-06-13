@@ -66,6 +66,20 @@ export function scaffoldErrorMessage(error: unknown): string {
   });
 }
 
+/** delete_file's shared error decode. */
+export function deleteFileErrorMessage(error: unknown): string {
+  return decodeRepoFsError(scrubGitError(error), {
+    fallback: "Failed to delete the file",
+  });
+}
+
+/** move_file's shared error decode (adds a NOT_FOUND sentinel for a missing source). */
+export function moveFileErrorMessage(error: unknown): string {
+  const detail = scrubGitError(error);
+  if (detail === "NOT_FOUND") return "The source path does not exist.";
+  return decodeRepoFsError(detail, { fallback: "Failed to move the file" });
+}
+
 /**
  * The repo-relative file ops both servers import from `knowledgeRepo` (the group
  * server reuses them on its own clone). Bundled so a runner can take one object.
@@ -74,6 +88,8 @@ export interface RepoFileOps {
   listTree: (repoRoot: string) => Promise<Array<{ type: string; path: string }>>;
   readFile: (repoRoot: string, p: string) => Promise<string>;
   writeFile: (repoRoot: string, p: string, content: string) => Promise<void>;
+  deleteFile: (repoRoot: string, p: string) => Promise<void>;
+  moveFile: (repoRoot: string, from: string, to: string) => Promise<void>;
   scaffoldSkill: (repoRoot: string, name: string, description: string) => Promise<string>;
 }
 
@@ -140,6 +156,42 @@ export async function runWriteFile<C>(
     return text(success(args.path));
   } catch (error) {
     return text(writeFileErrorMessage(error), true);
+  }
+}
+
+/** Run the shared delete_file body; `success` builds the caller-specific message. */
+export async function runDeleteFile<C>(
+  resolved: Resolved<C>,
+  ensureClone: (repo: C) => Promise<string>,
+  deleteFile: RepoFileOps["deleteFile"],
+  path: string,
+  success: (path: string) => string,
+): Promise<ReturnType<typeof text>> {
+  if (!resolved.ok) return resolved.result;
+  try {
+    const repoRoot = await ensureClone(resolved.repo);
+    await deleteFile(repoRoot, path);
+    return text(success(path));
+  } catch (error) {
+    return text(deleteFileErrorMessage(error), true);
+  }
+}
+
+/** Run the shared move_file body; `success` builds the caller-specific message. */
+export async function runMoveFile<C>(
+  resolved: Resolved<C>,
+  ensureClone: (repo: C) => Promise<string>,
+  moveFile: RepoFileOps["moveFile"],
+  args: { from: string; to: string },
+  success: (from: string, to: string) => string,
+): Promise<ReturnType<typeof text>> {
+  if (!resolved.ok) return resolved.result;
+  try {
+    const repoRoot = await ensureClone(resolved.repo);
+    await moveFile(repoRoot, args.from, args.to);
+    return text(success(args.from, args.to));
+  } catch (error) {
+    return text(moveFileErrorMessage(error), true);
   }
 }
 

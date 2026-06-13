@@ -269,7 +269,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "delete_file",
-      "Delete a file from a registered git repository. The deletion applies only to the local working tree. (owner / trusted user only)",
+      "Delete a file or a whole directory (recursively) from a registered git repository. The deletion applies only to the local working tree. (owner / trusted user only)",
       {
         name: z.string().describe("Registered repo name"),
         path: z.string().describe("Path relative to the repo root"),

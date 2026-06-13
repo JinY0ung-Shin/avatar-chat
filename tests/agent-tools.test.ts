@@ -391,7 +391,7 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(REPO_TOOL_NAMES).toContain("mcp__repo__write_file");
     const s = setup("rt0");
     const names = ownerTools(s).map((t) => t.name);
-    expect(names).toEqual(["list_files", "read_file", "write_file", "scaffold_skill", "commit"]);
+    expect(names).toEqual(["list_files", "read_file", "write_file", "delete_file", "move_file", "scaffold_skill", "commit"]);
   });
 
   it("refuses every tool for a non-owner viewer", async () => {
@@ -402,8 +402,8 @@ describe("repo tools (knowledge-repo management)", () => {
       viewerIsOwner: false,
       config: s.config,
     });
-    for (const name of ["list_files", "read_file", "write_file", "scaffold_skill", "commit"]) {
-      const res = await callTool(tools, name, { path: "x", content: "y", name: "x", message: "m" });
+    for (const name of ["list_files", "read_file", "write_file", "delete_file", "move_file", "scaffold_skill", "commit"]) {
+      const res = await callTool(tools, name, { path: "x", content: "y", name: "x", message: "m", from: "x", to: "z" });
       expect(res.isError).toBe(true);
       expect(res.content[0].text).toContain("can only be used by the avatar owner");
     }
@@ -444,6 +444,25 @@ describe("repo tools (knowledge-repo management)", () => {
     const rd = await callTool(tools, "read_file", { path: "notes/onboarding.md" });
     expect(rd.content[0].text).toContain("# 온보딩");
 
+    // Rename a note via move_file (works on files).
+    const mv = await callTool(tools, "move_file", { from: "notes/onboarding.md", to: "notes/setup.md" });
+    expect(mv.isError).toBeFalsy();
+    expect(mv.content[0].text).toContain("Moved notes/onboarding.md → notes/setup.md");
+    const moved = await callTool(tools, "read_file", { path: "notes/setup.md" });
+    expect(moved.content[0].text).toContain("# 온보딩");
+
+    // move_file on a missing source surfaces the NOT_FOUND message.
+    const mvMissing = await callTool(tools, "move_file", { from: "notes/onboarding.md", to: "notes/x.md" });
+    expect(mvMissing.isError).toBe(true);
+    expect(mvMissing.content[0].text).toContain("source path does not exist");
+
+    // delete_file removes a whole directory recursively (the entire skill folder).
+    const del = await callTool(tools, "delete_file", { path: "skills/deploy-runbook" });
+    expect(del.isError).toBeFalsy();
+    expect(del.content[0].text).toContain("Deleted skills/deploy-runbook");
+    const lsAfter = await callTool(tools, "list_files", {});
+    expect(lsAfter.content[0].text).not.toContain("skills/deploy-runbook");
+
     const commit = await callTool(tools, "commit", { message: "지식 추가" });
     expect(commit.isError).toBeFalsy();
     expect(commit.content[0].text).toContain("Committed and pushed the changes");
@@ -456,7 +475,9 @@ describe("repo tools (knowledge-repo management)", () => {
     const verify = path.join(tempDir, "rt3", "verify");
     const { repo } = s.store.getKnowledgeRepo(s.ownerId) as { repo: string };
     execFileSync("git", ["clone", "-q", repo, verify], { stdio: "pipe" });
-    expect(fs.existsSync(path.join(verify, "notes/onboarding.md"))).toBe(true);
+    expect(fs.existsSync(path.join(verify, "notes/setup.md"))).toBe(true);
+    expect(fs.existsSync(path.join(verify, "notes/onboarding.md"))).toBe(false);
+    expect(fs.existsSync(path.join(verify, "skills/deploy-runbook"))).toBe(false);
   });
 
   it("re-clones when the connected repo changes (stale origin not reused)", async () => {
@@ -1391,6 +1412,8 @@ describe("group repo tools (mcp__group_repo__*)", () => {
       "list_files",
       "read_file",
       "write_file",
+      "delete_file",
+      "move_file",
       "scaffold_skill",
       "commit",
       "create_repo",
@@ -1414,12 +1437,28 @@ describe("group repo tools (mcp__group_repo__*)", () => {
     const r = await callTool(tools(s), "read_file", { group: "Team", path: "docs/note.md" });
     expect(r.content[0].text).toBe("hi");
 
+    // An admin can rename and delete.
+    const mv = await callTool(tools(s), "move_file", { group: "Team", from: "docs/note.md", to: "docs/renamed.md" });
+    expect(mv.isError).toBeFalsy();
+    expect(mv.content[0].text).toContain("Moved docs/note.md → docs/renamed.md");
+    const del = await callTool(tools(s), "delete_file", { group: "Team", path: "docs/renamed.md" });
+    expect(del.isError).toBeFalsy();
+    expect(del.content[0].text).toContain("Deleted docs/renamed.md");
+    const lsAfter = await callTool(tools(s), "list_files", { group: "Team" });
+    expect(lsAfter.content[0].text).not.toContain("docs/renamed.md");
+
     const sm = setup("gp-member", { role: "member" });
     const list = await callTool(tools(sm), "list_files", { group: "Team" });
     expect(list.isError).toBeFalsy();
     const denied = await callTool(tools(sm), "write_file", { group: "Team", path: "x.md", content: "no" });
     expect(denied.isError).toBe(true);
     expect(denied.content[0].text).toContain("Only a group admin can modify");
+    const deniedDel = await callTool(tools(sm), "delete_file", { group: "Team", path: "docs/note.md" });
+    expect(deniedDel.isError).toBe(true);
+    expect(deniedDel.content[0].text).toContain("Only a group admin can modify");
+    const deniedMv = await callTool(tools(sm), "move_file", { group: "Team", from: "docs/note.md", to: "docs/y.md" });
+    expect(deniedMv.isError).toBe(true);
+    expect(deniedMv.content[0].text).toContain("Only a group admin can modify");
   });
 
   it("rejects an unknown group", async () => {

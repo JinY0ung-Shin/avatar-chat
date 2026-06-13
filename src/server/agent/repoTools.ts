@@ -10,9 +10,11 @@ import { decodeExecError, text } from "./mcpTools.js";
 import {
   commitAndPush,
   commitIdentityFor,
+  deleteFile as deleteRepoFile,
   ensureClone,
   knowledgeRepoContextFor,
   listTree,
+  moveFile as moveRepoFile,
   readFile as readRepoFile,
   scaffoldSkill,
   writeFile as writeRepoFile,
@@ -22,7 +24,9 @@ import {
   OWNER_ONLY as REPO_OWNER_ONLY,
   type Resolved,
   commitFailureMessage,
+  runDeleteFile,
   runListFiles,
+  runMoveFile,
   runReadFile,
   runScaffoldSkill,
   runWriteFile,
@@ -57,6 +61,8 @@ export const REPO_TOOL_NAMES = [
   "mcp__repo__list_files",
   "mcp__repo__read_file",
   "mcp__repo__write_file",
+  "mcp__repo__delete_file",
+  "mcp__repo__move_file",
   "mcp__repo__scaffold_skill",
   "mcp__repo__commit",
 ] as const;
@@ -262,6 +268,35 @@ export function buildRepoTools(
           writeRepoFile,
           args,
           (path) => `Saved the file ${path}. (Not committed yet — push it with the commit tool.)`,
+        ),
+    ),
+    tool(
+      "delete_file",
+      "Delete a file OR a whole directory (e.g. an entire skill folder `skills/<name>`) from my knowledge repository. The deletion applies only to the working tree, and **until you commit & push with the commit tool it is not removed from the remote** and may reappear on the next sync. (owner only)",
+      { path: z.string().describe("Path relative to the repository root — a file (skills/foo/SKILL.md) or a directory (skills/foo)") },
+      (args) =>
+        runDeleteFile(
+          resolve(),
+          ensureClone,
+          deleteRepoFile,
+          args.path,
+          (path) => `Deleted ${path}. (Not committed yet — push it with the commit tool.)`,
+        ),
+    ),
+    tool(
+      "move_file",
+      "Rename or move a file/directory within my knowledge repository (e.g. rename a skill folder or relocate a note). Applies only to the working tree until you commit & push. (owner only)",
+      {
+        from: z.string().describe("Current path relative to the repository root"),
+        to: z.string().describe("New path relative to the repository root"),
+      },
+      (args) =>
+        runMoveFile(
+          resolve(),
+          ensureClone,
+          moveRepoFile,
+          args,
+          (from, to) => `Moved ${from} → ${to}. (Not committed yet — push it with the commit tool.)`,
         ),
     ),
     tool(

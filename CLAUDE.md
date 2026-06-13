@@ -134,7 +134,7 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   (`knowledgeRepo.ts`). It's (a) auto-loaded as a plugin root in chat/skills/intro via
   `loadKnowledgeRepoRoots`/`knowledgeRepoSkillSources` (so its skills are usable), AND
   (b) edited by the avatar itself through the **owner-only** `mcp__repo__*` MCP server
-  (`agent/repoTools.ts`): list/read/write/scaffold/commit, plus `create_repo` (creates a new
+  (`agent/repoTools.ts`): list/read/write/delete(file or dir, recursive)/move/scaffold/commit, plus `create_repo` (creates a new
   GitHub repo via `gh repo create` server-side using the stored git token in child env, then connects it
   with `setKnowledgeRepo`). `create_repo` is exposed **only when no repo is connected yet**
   (`allowCreate` ← `!knowledgeRepoConfigured` in `claudeAgent.ts`) to keep the unused tool out
@@ -179,7 +179,7 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   acting user's `getGitToken`, applied per git-call via `tokenForGitUrl`). Members' avatars auto-load
   its skills (`loadGroupKnowledgeRepoRoots`, wired in app.ts chat + intro/hashtag gen); only group
   admins edit via the OWNER-ONLY `mcp__group_repo__*` server (per-tool role check: member reads,
-  admin writes/commits/`create_repo`). `buildPrompt` injects group self-state (META-COGNITION).
+  admin writes/deletes/moves/commits/`create_repo`). `buildPrompt` injects group self-state (META-COGNITION).
   Discovery: `listPublishedAvatars` also returns `group`-visible group teammates flagged `sharesGroup`.
 - Secret-at-rest tiers: passwords → scrypt (`auth.ts`), session tokens → sha256,
   **reversible** secrets (e.g. per-user git tokens) → AES-256-GCM in `crypto.ts`
