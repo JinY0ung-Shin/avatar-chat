@@ -19,6 +19,12 @@ import {
   type GitTokenSet,
 } from "./gitCredentials.js";
 import logger from "./logger.js";
+import {
+  formatMinuteOfDay,
+  nextRunIso,
+  type RoutineSchedule,
+  type ScheduleKind,
+} from "./routineSchedule.js";
 import type {
   AdminGroupSummary,
   AdminStats,
@@ -118,37 +124,6 @@ function parseHashtags(raw: string | null): string[] {
   return parseNameList(raw) ?? [];
 }
 
-// Routine times are interpreted in Seoul time (KST). Korea observes no DST, so
-// KST is a fixed UTC+9 offset — the arithmetic below is independent of the
-// server's own timezone.
-const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** "HH:MM" (KST wall-clock) for minutes-from-midnight (0..1439). */
-function formatMinuteOfDay(minuteOfDay: number): string {
-  const h = Math.floor(minuteOfDay / 60);
-  const m = minuteOfDay % 60;
-  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-}
-
-/**
- * The next instant (ISO, UTC) a daily job fires after `from`, where
- * `minuteOfDay` is minutes from midnight in **Seoul time (KST)**. If today's
- * KST slot has already passed, returns tomorrow's.
- */
-function nextDailyRunIso(minuteOfDay: number, from = new Date()): string {
-  const fromMs = from.getTime();
-  // Shift into "KST space" where flooring to a day boundary yields KST midnight.
-  const kstMs = fromMs + KST_OFFSET_MS;
-  const kstMidnight = Math.floor(kstMs / DAY_MS) * DAY_MS;
-  let candidate = kstMidnight + minuteOfDay * 60_000;
-  if (candidate <= kstMs) {
-    candidate += DAY_MS;
-  }
-  // Shift back to the real UTC instant.
-  return new Date(candidate - KST_OFFSET_MS).toISOString();
-}
-
 interface UserRow {
   id: string;
   username: string;
@@ -221,8 +196,12 @@ interface RoutineJobRow {
   id: string;
   avatar_user_id: string;
   conversation_id: string;
+  name: string | null;
   prompt: string;
   minute_of_day: number;
+  schedule_kind: string | null;
+  days_of_week: string | null;
+  interval_minutes: number | null;
   enabled: number;
   next_run_at: string | null;
   last_run_at: string | null;
@@ -452,6 +431,15 @@ export class Store {
     // from `published` below (1→public, 0→group). The `published` column is kept
     // for migration only and is no longer read by any visibility decision.
     this.addColumnIfMissing("users", "visibility", "TEXT");
+    // Flexible routine scheduling: an optional human label plus the schedule
+    // shape. schedule_kind defaults to "daily" (legacy rows have it NULL → read
+    // as "daily"); days_of_week is a JSON array string (weekly only); and
+    // interval_minutes drives interval schedules. The legacy minute_of_day stays
+    // the daily/weekly time-of-day.
+    this.addColumnIfMissing("routine_jobs", "name", "TEXT");
+    this.addColumnIfMissing("routine_jobs", "schedule_kind", "TEXT");
+    this.addColumnIfMissing("routine_jobs", "days_of_week", "TEXT");
+    this.addColumnIfMissing("routine_jobs", "interval_minutes", "INTEGER");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     // Trust is now derived purely from group co-membership; the old per-(avatar,
@@ -1320,15 +1308,29 @@ export class Store {
       id: row.id,
       avatarUserId: row.avatar_user_id,
       conversationId: row.conversation_id,
+      name: row.name ?? null,
       prompt: row.prompt,
+      scheduleKind: (row.schedule_kind as ScheduleKind) ?? "daily",
       minuteOfDay: row.minute_of_day,
       time: formatMinuteOfDay(row.minute_of_day),
+      daysOfWeek: row.days_of_week ? (JSON.parse(row.days_of_week) as number[]) : null,
+      intervalMinutes: row.interval_minutes ?? null,
       enabled: row.enabled === 1,
       nextRunAt: row.next_run_at,
       lastRunAt: row.last_run_at,
       lastStatus: (row.last_status as RoutineJob["lastStatus"]) ?? null,
       lastError: row.last_error,
       createdAt: row.created_at,
+    };
+  }
+
+  /** Reconstruct a RoutineSchedule from a stored row (legacy NULL kind → daily). */
+  private scheduleFromRow(row: RoutineJobRow): RoutineSchedule {
+    return {
+      kind: (row.schedule_kind as ScheduleKind) ?? "daily",
+      minuteOfDay: row.minute_of_day,
+      daysOfWeek: row.days_of_week ? (JSON.parse(row.days_of_week) as number[]) : null,
+      intervalMinutes: row.interval_minutes ?? null,
     };
   }
 
@@ -1371,24 +1373,52 @@ export class Store {
 
   createRoutineJob(
     avatarUserId: string,
-    input: { prompt: string; minuteOfDay: number; enabled?: boolean },
+    input: {
+      name?: string | null;
+      prompt: string;
+      scheduleKind?: ScheduleKind;
+      minuteOfDay?: number;
+      daysOfWeek?: number[] | null;
+      intervalMinutes?: number | null;
+      enabled?: boolean;
+    },
   ): RoutineJob {
     const id = crypto.randomUUID();
     const conversationId = crypto.randomUUID();
     const enabled = input.enabled !== false;
     const prompt = input.prompt.trim();
-    const nextRunAt = enabled ? nextDailyRunIso(input.minuteOfDay) : null;
+    const name = input.name?.trim() || null;
+    const kind: ScheduleKind = input.scheduleKind ?? "daily";
+    const minuteOfDay = input.minuteOfDay ?? 0;
+    const daysOfWeek = input.daysOfWeek ?? null;
+    const intervalMinutes = input.intervalMinutes ?? null;
+    const nextRunAt = enabled
+      ? nextRunIso({ kind, minuteOfDay, daysOfWeek, intervalMinutes })
+      : null;
     const tx = this.db.transaction(() => {
       this.db
         .prepare(
-          `INSERT INTO routine_jobs (id, avatar_user_id, conversation_id, prompt, minute_of_day, enabled, next_run_at, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO routine_jobs (id, avatar_user_id, conversation_id, name, prompt, minute_of_day, schedule_kind, days_of_week, interval_minutes, enabled, next_run_at, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, avatarUserId, conversationId, prompt, input.minuteOfDay, enabled ? 1 : 0, nextRunAt, now());
+        .run(
+          id,
+          avatarUserId,
+          conversationId,
+          name,
+          prompt,
+          minuteOfDay,
+          kind,
+          daysOfWeek ? JSON.stringify(daysOfWeek) : null,
+          intervalMinutes,
+          enabled ? 1 : 0,
+          nextRunAt,
+          now(),
+        );
       // Create the dedicated conversation eagerly so the client can always
-      // open it (and so its title comes from the prompt, not from whatever
+      // open it (and so its title comes from the name/prompt, not from whatever
       // message lands in it first).
-      this.touchConversation(avatarUserId, conversationId, avatarUserId, `[루틴] ${prompt}`);
+      this.touchConversation(avatarUserId, conversationId, avatarUserId, `[루틴] ${name || prompt}`);
     });
     tx();
     return this.toRoutineJob(this.routineJobRow(id)!);
@@ -1397,33 +1427,64 @@ export class Store {
   updateRoutineJob(
     avatarUserId: string,
     id: string,
-    patch: { prompt?: string; minuteOfDay?: number; enabled?: boolean },
+    patch: {
+      name?: string | null;
+      prompt?: string;
+      scheduleKind?: ScheduleKind;
+      minuteOfDay?: number;
+      daysOfWeek?: number[] | null;
+      intervalMinutes?: number | null;
+      enabled?: boolean;
+    },
   ): RoutineJob | null {
     const row = this.routineJobRow(id);
     if (!row || row.avatar_user_id !== avatarUserId) {
       return null;
     }
+    // name === null clears the label; undefined leaves it as-is.
+    const name =
+      patch.name !== undefined ? (patch.name?.trim() || null) : (row.name ?? null);
     const prompt = patch.prompt !== undefined ? patch.prompt.trim() : row.prompt;
-    const minuteOfDay = patch.minuteOfDay !== undefined ? patch.minuteOfDay : row.minute_of_day;
+    const existing = this.scheduleFromRow(row);
+    const kind: ScheduleKind = patch.scheduleKind ?? existing.kind;
+    const minuteOfDay = patch.minuteOfDay !== undefined ? patch.minuteOfDay : existing.minuteOfDay;
+    const daysOfWeek = patch.daysOfWeek !== undefined ? patch.daysOfWeek : existing.daysOfWeek;
+    const intervalMinutes =
+      patch.intervalMinutes !== undefined ? patch.intervalMinutes : existing.intervalMinutes;
     const wasEnabled = row.enabled === 1;
     const enabled = patch.enabled !== undefined ? patch.enabled : wasEnabled;
-    // Recompute the next firing only when timing or enablement actually
-    // changes. A prompt-only edit must keep an overdue (missed) run intact —
-    // recomputing would silently push it to tomorrow.
-    const timeChanged = patch.minuteOfDay !== undefined && patch.minuteOfDay !== row.minute_of_day;
+    // The schedule changed if any schedule field was supplied AND differs from
+    // the stored value. A name/prompt-only edit must keep an overdue (missed)
+    // run intact — recomputing would silently push it forward.
+    const scheduleChanged =
+      (patch.scheduleKind !== undefined && patch.scheduleKind !== existing.kind) ||
+      (patch.minuteOfDay !== undefined && patch.minuteOfDay !== existing.minuteOfDay) ||
+      (patch.daysOfWeek !== undefined &&
+        JSON.stringify(patch.daysOfWeek ?? null) !== JSON.stringify(existing.daysOfWeek)) ||
+      (patch.intervalMinutes !== undefined && patch.intervalMinutes !== existing.intervalMinutes);
     let nextRunAt: string | null;
     if (!enabled) {
       nextRunAt = null;
-    } else if (timeChanged || !wasEnabled || !row.next_run_at) {
-      nextRunAt = nextDailyRunIso(minuteOfDay);
+    } else if (scheduleChanged || !wasEnabled || !row.next_run_at) {
+      nextRunAt = nextRunIso({ kind, minuteOfDay, daysOfWeek, intervalMinutes });
     } else {
       nextRunAt = row.next_run_at;
     }
     this.db
       .prepare(
-        "UPDATE routine_jobs SET prompt = ?, minute_of_day = ?, enabled = ?, next_run_at = ? WHERE id = ?",
+        "UPDATE routine_jobs SET name = ?, prompt = ?, schedule_kind = ?, minute_of_day = ?, days_of_week = ?, interval_minutes = ?, enabled = ?, next_run_at = ? WHERE id = ?",
       )
-      .run(prompt, minuteOfDay, enabled ? 1 : 0, nextRunAt, id);
+      .run(
+        name,
+        prompt,
+        kind,
+        minuteOfDay,
+        daysOfWeek ? JSON.stringify(daysOfWeek) : null,
+        intervalMinutes,
+        enabled ? 1 : 0,
+        nextRunAt,
+        id,
+      );
     return this.toRoutineJob(this.routineJobRow(id)!);
   }
 
@@ -1436,14 +1497,14 @@ export class Store {
 
   /**
    * Record the outcome of a firing and schedule the next one. An enabled job
-   * rolls forward to tomorrow's slot; a job disabled mid-run stays parked.
+   * rolls forward to its next slot; a job disabled mid-run stays parked.
    */
   markRoutineRun(id: string, outcome: { status: "success" | "error"; error?: string | null }): void {
     const row = this.routineJobRow(id);
     if (!row) {
       return;
     }
-    const nextRunAt = row.enabled === 1 ? nextDailyRunIso(row.minute_of_day) : null;
+    const nextRunAt = row.enabled === 1 ? nextRunIso(this.scheduleFromRow(row)) : null;
     this.db
       .prepare(
         "UPDATE routine_jobs SET last_run_at = ?, last_status = ?, last_error = ?, next_run_at = ? WHERE id = ?",

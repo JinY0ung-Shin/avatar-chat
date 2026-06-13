@@ -2,9 +2,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError, syncGitRepo } from "./marketplace.js";
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
-import { ensureClone, type KnowledgeRepoContext } from "./knowledgeRepo.js";
-import { ensureGroupClone, type GroupKnowledgeRepoContext } from "./groupKnowledgeRepo.js";
+import { ensureClone, knowledgeRepoContextFor, type KnowledgeRepoContext } from "./knowledgeRepo.js";
+import {
+  ensureGroupClone,
+  groupKnowledgeRepoContextsForUser,
+  type GroupKnowledgeRepoContext,
+} from "./groupKnowledgeRepo.js";
 import logger from "./logger.js";
+import type { Store } from "./store.js";
 import type {
   AppConfig,
   Plugin,
@@ -382,6 +387,41 @@ export async function loadGroupKnowledgeRepoRoots(
     }
   }
   return roots;
+}
+
+/**
+ * The full set of plugin roots an avatar's AGENT should load for a real turn:
+ * the repo-bundled default plugins, the avatar's own enabled plugins, its
+ * personal knowledge repo, and every group knowledge repo its owner belongs to.
+ * Returns `[]` in `local` runtime (no plugins in local dev). This is the SINGLE
+ * source of truth shared by the chat endpoint AND the routine scheduler, so the
+ * two cannot drift — a routine must be able to USE the same skills a chat can.
+ * (The intro/hashtag-generation paths deliberately do NOT use this — they only
+ * introspect skill sources read-only, not load full roots.)
+ */
+export async function loadAgentPluginRoots(
+  store: Store,
+  avatarId: string,
+  config: AppConfig,
+  onWarn?: (message: string) => void,
+): Promise<PluginRoot[]> {
+  if (config.agentRuntime === "local") {
+    return [];
+  }
+  return [
+    ...(await loadDefaultPluginRoots(config, onWarn)),
+    ...(await loadAvatarPluginRoots(
+      avatarId,
+      store.listEnabledPlugins(avatarId),
+      config,
+      onWarn,
+      store.getGitTokens(avatarId),
+    )),
+    ...(await loadKnowledgeRepoRoots(knowledgeRepoContextFor(store, avatarId, config), onWarn)),
+    // Shared knowledge repos of every group the avatar's owner belongs to — so
+    // group skills load for all members' chats and routines alike.
+    ...(await loadGroupKnowledgeRepoRoots(groupKnowledgeRepoContextsForUser(store, avatarId, config), onWarn)),
+  ];
 }
 
 /** Like `loadGroupKnowledgeRepoRoots` but returns `{path, source}` for the skills/intro paths. */

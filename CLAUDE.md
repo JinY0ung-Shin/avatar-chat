@@ -228,6 +228,26 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   state; `mcp__system__describe_system` is the runtime mirror of the same info (effective model =
   env pin > admin override > SDK default, profile publish state, groups/roles, direct-trust list,
   SSH on/off, pending request count) — keep BOTH in sync when adding capability state.
+- **Routines = owner-scheduled headless runs, flexible KST schedule.** A routine
+  (`routine_jobs` table, `get/list/create/update/deleteRoutineJob`, `markRoutineRun`) runs its
+  `prompt` headlessly with owner-level tools and appends results to a dedicated conversation
+  (`[루틴] <name|prompt>` title). Schedule kinds (`src/server/routineSchedule.ts`, the ONE place
+  for all schedule math + validation): **daily** (`minuteOfDay` KST), **weekly** (`daysOfWeek`
+  0=Sun..6=Sat at `minuteOfDay`), **interval** (`intervalMinutes`, 15..10080). `parseRoutineSchedule`
+  validates raw API/MCP input → a `RoutineSchedule` or a `ScheduleError` CODE; each caller maps the
+  code to its own channel (`app.ts` `KOREAN_SCHEDULE_ERROR`, `systemTools.ts` `ENGLISH_SCHEDULE_ERROR`)
+  — per the language split. `nextRunIso` computes the next firing in fixed UTC+9 (no DST); a
+  name/prompt-only `updateRoutineJob` edit preserves an overdue `next_run_at`, only a schedule change
+  recomputes. `store.create/updateRoutineJob` stay backward-compatible with `{prompt, minuteOfDay}`
+  (kind defaults daily; legacy rows with NULL `schedule_kind` read as daily). Editable by owner (UI
+  modal: clickable title → name/prompt(markdown preview)/schedule builder, `PUT/PATCH /api/me/routines`)
+  AND by the avatar (`mcp__system__{create,update}_routine` carry `name` + `scheduleKind`/`time`/
+  `daysOfWeek`/`intervalMinutes`). New schedule fields go in `routineSchedule.ts` + the two error maps
+  + `RoutineJob` (types.ts) + the `addColumnIfMissing` migration — never re-derive schedule math elsewhere.
+- **Routines load the same skills as chat** via the shared `loadAgentPluginRoots` (plugins.ts):
+  default + avatar plugins + personal & group knowledge-repo roots. Both the chat endpoint (`app.ts`)
+  and the scheduler (`scheduler.ts`) call it, so they can't drift; `local` runtime returns `[]`.
+  (Routines once loaded only default+avatar plugins and silently missed knowledge-repo skills.)
 - **Language split: agent-facing text is English, user-facing text is Korean.** Classify a new
   string by *"does the model read it as INPUT?"* → English; else Korean. English (model reads it):
   `buildPrompt` (claudeAgent.ts), `GIT_MCP_ONLY_GUIDANCE`, the `PreToolUse` **`hookDeny(...)` reasons**,

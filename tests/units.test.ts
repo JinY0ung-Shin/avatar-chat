@@ -39,6 +39,7 @@ import {
   APP_MANAGED_MCP_SERVERS,
   inspectRepoContents,
   listSkillsInRoots,
+  loadAgentPluginRoots,
   loadAvatarPluginRoots,
   loadDefaultPluginRoots,
   resolvePluginRoots,
@@ -67,6 +68,12 @@ import {
   sshMcpSecretEnv,
 } from "../src/server/agent/claudeAgent.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
+import {
+  formatMinuteOfDay,
+  nextRunIso,
+  parseRoutineSchedule,
+  parseTimeToMinute,
+} from "../src/server/routineSchedule.js";
 import type { AgentEvents } from "../src/server/agent/events.js";
 import { decryptSecret, encryptSecret } from "../src/server/crypto.js";
 import {
@@ -675,6 +682,57 @@ describe("loadDefaultPluginRoots", () => {
   it("returns [] when the default plugins dir is missing", async () => {
     const { config } = createServices({ dataDir: path.join(tempDir, "d"), agentRuntime: "local", sessionSecret: "t" });
     const roots = await loadDefaultPluginRoots({ ...config, defaultPluginsDir: path.join(tempDir, "nope") });
+    expect(roots).toEqual([]);
+  });
+});
+
+describe("loadAgentPluginRoots", () => {
+  // Regression guard: the chat endpoint AND the routine scheduler both build
+  // their agent plugin roots through THIS one helper, so a routine can USE the
+  // same skills (the personal knowledge repo, group repos) an owner chat can.
+  // Routines once loaded only default + avatar plugins and silently missed
+  // knowledge-repo skills; this test is the canary if the two ever drift again.
+  function setupKnowledgeRepo(dir: string) {
+    const dataDir = path.join(tempDir, dir);
+    const { store, config } = createServices({
+      dataDir,
+      agentRuntime: "claude",
+      sessionSecret: "t",
+      // Isolate the knowledge-repo assertion from any bundled default plugins.
+      defaultPluginsDir: path.join(dataDir, "no-default-plugins"),
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    // A bare remote knowledge repo that is itself a valid plugin
+    // (.claude-plugin/plugin.json) carrying one skill, pushed to `main` so
+    // ensureClone has a branch to track.
+    const remote = path.join(dataDir, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" });
+    const seed = path.join(dataDir, "seed");
+    makePluginRepo(seed, "knowledge"); // git init + commit with .claude-plugin/plugin.json
+    makeSkill(seed, "daily-summary", "---\nname: daily-summary\ndescription: Summarize the day\n---");
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("add", "-A");
+    g("commit", "-q", "-m", "add skill");
+    g("branch", "-M", "main");
+    g("remote", "add", "origin", remote);
+    g("push", "-q", "origin", "main");
+    store.setKnowledgeRepo(owner.id, remote, "main");
+    return { store, config, ownerId: owner.id };
+  }
+
+  it("includes the connected knowledge repo's skill root (chat/routine parity)", async () => {
+    const { store, config, ownerId } = setupKnowledgeRepo("lapr-kr");
+    const warns: string[] = [];
+    const roots = await loadAgentPluginRoots(store, ownerId, config, (m) => warns.push(m));
+
+    const clone = knowledgeClonePath(ownerId, config);
+    expect(roots.map((r) => r.path)).toContain(clone);
+    expect(fs.existsSync(path.join(clone, "skills", "daily-summary", "SKILL.md"))).toBe(true);
+  });
+
+  it("returns [] in local runtime even with a knowledge repo connected", async () => {
+    const { store, config, ownerId } = setupKnowledgeRepo("lapr-local");
+    const roots = await loadAgentPluginRoots(store, ownerId, { ...config, agentRuntime: "local" }, () => {});
     expect(roots).toEqual([]);
   });
 });
@@ -2578,7 +2636,7 @@ describe("system tools (avatar system management)", () => {
       time: "09:30",
     });
     expect(created.isError).toBeFalsy();
-    expect(created.content[0].text).toContain("time=09:30 KST");
+    expect(created.content[0].text).toContain("schedule=daily at 09:30 KST");
 
     const job = s.store.listRoutineJobs(s.owner.id)[0];
     expect(job.prompt).toBe("오늘 해야 할 일을 정리해줘");
@@ -2590,7 +2648,7 @@ describe("system tools (avatar system management)", () => {
       enabled: false,
     });
     expect(updated.isError).toBeFalsy();
-    expect(updated.content[0].text).toContain("time=10:15 KST");
+    expect(updated.content[0].text).toContain("schedule=daily at 10:15 KST");
     expect(updated.content[0].text).toContain("enabled=false");
 
     const listed = await call(tools, "list_routines", {});
@@ -2600,6 +2658,70 @@ describe("system tools (avatar system management)", () => {
     const deleted = await call(tools, "delete_routine", { id: job.id });
     expect(deleted.isError).toBeFalsy();
     expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
+  });
+
+  it("creates weekly and interval routines and names them", async () => {
+    const s = setup("st-routine-flex");
+    const tools = toolsFor(s);
+
+    const weekly = await call(tools, "create_routine", {
+      name: "주간 리뷰",
+      prompt: "주간 회고를 정리해줘",
+      scheduleKind: "weekly",
+      time: "09:00",
+      daysOfWeek: [1, 3, 5],
+    });
+    expect(weekly.isError).toBeFalsy();
+    expect(weekly.content[0].text).toContain('name="주간 리뷰"');
+    expect(weekly.content[0].text).toContain("schedule=weekly on Mon,Wed,Fri at 09:00 KST");
+
+    const interval = await call(tools, "create_routine", {
+      prompt: "30분마다 점검",
+      scheduleKind: "interval",
+      intervalMinutes: 30,
+    });
+    expect(interval.isError).toBeFalsy();
+    expect(interval.content[0].text).toContain("name=(unnamed)");
+    expect(interval.content[0].text).toContain("schedule=every 30m");
+
+    const hourly = await call(tools, "create_routine", {
+      prompt: "매시간 점검",
+      scheduleKind: "interval",
+      intervalMinutes: 120,
+    });
+    expect(hourly.isError).toBeFalsy();
+    expect(hourly.content[0].text).toContain("schedule=every 2h");
+
+    const stored = s.store.listRoutineJobs(s.owner.id);
+    const weeklyJob = stored.find((j) => j.name === "주간 리뷰");
+    expect(weeklyJob?.scheduleKind).toBe("weekly");
+    expect(weeklyJob?.daysOfWeek).toEqual([1, 3, 5]);
+    const intervalJob = stored.find((j) => j.prompt === "30분마다 점검");
+    expect(intervalJob?.scheduleKind).toBe("interval");
+    expect(intervalJob?.intervalMinutes).toBe(30);
+  });
+
+  it("rejects a weekly routine without weekdays with the English error", async () => {
+    const s = setup("st-routine-noweekday");
+    const tools = toolsFor(s);
+    const res = await call(tools, "create_routine", {
+      prompt: "p",
+      scheduleKind: "weekly",
+      time: "09:00",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toBe(
+      "weekly schedules require at least one weekday in daysOfWeek.",
+    );
+    expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
+  });
+
+  it("describes routines as daily/weekly/interval, not daily-only", async () => {
+    const s = setup("st-routine-describe");
+    const res = await call(toolsFor(s), "describe_system", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("daily, weekly, or interval schedule in KST");
+    expect(res.content[0].text).not.toContain("once a day");
   });
 
   it("adds and toggles owner plugins", async () => {
@@ -2630,6 +2752,189 @@ describe("system tools (avatar system management)", () => {
     expect(disabled.isError).toBeFalsy();
     expect(disabled.content[0].text).toContain("enabled=false");
     expect(s.store.getPlugin(s.owner.id, plugin.id)?.enabled).toBe(false);
+  });
+});
+
+describe("routineSchedule", () => {
+  // Fixed UTC+9 KST math, no DST.
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  // The KST wall-clock minute-of-day of a UTC instant.
+  function kstMinuteOfDay(iso: string): number {
+    const kstMs = new Date(iso).getTime() + KST_OFFSET_MS;
+    return Math.floor((kstMs % DAY_MS) / 60_000);
+  }
+  // The KST weekday (0=Sun..6=Sat) of a UTC instant.
+  function kstWeekday(iso: string): number {
+    const kstMs = new Date(iso).getTime() + KST_OFFSET_MS;
+    return (((Math.floor(kstMs / DAY_MS) + 4) % 7) + 7) % 7;
+  }
+
+  it("formatMinuteOfDay renders zero-padded HH:MM", () => {
+    expect(formatMinuteOfDay(0)).toBe("00:00");
+    expect(formatMinuteOfDay(9 * 60 + 5)).toBe("09:05");
+    expect(formatMinuteOfDay(1439)).toBe("23:59");
+  });
+
+  it("parseTimeToMinute parses valid times and rejects junk", () => {
+    expect(parseTimeToMinute("00:00")).toBe(0);
+    expect(parseTimeToMinute("09:30")).toBe(9 * 60 + 30);
+    expect(parseTimeToMinute("23:59")).toBe(1439);
+    expect(parseTimeToMinute("  09:30  ")).toBe(9 * 60 + 30);
+    expect(parseTimeToMinute("24:00")).toBeNull();
+    expect(parseTimeToMinute("09:60")).toBeNull();
+    expect(parseTimeToMinute("9:5")).toBeNull();
+    expect(parseTimeToMinute("nope")).toBeNull();
+    expect(parseTimeToMinute(930)).toBeNull();
+    expect(parseTimeToMinute(undefined)).toBeNull();
+    expect(parseTimeToMinute(null)).toBeNull();
+  });
+
+  describe("parseRoutineSchedule", () => {
+    it("defaults to a daily schedule when scheduleKind is absent", () => {
+      const res = parseRoutineSchedule({ time: "09:30" });
+      expect(res).toEqual({
+        ok: true,
+        value: { kind: "daily", minuteOfDay: 9 * 60 + 30, daysOfWeek: null, intervalMinutes: null },
+      });
+    });
+
+    it("parses an explicit daily schedule", () => {
+      const res = parseRoutineSchedule({ scheduleKind: "daily", time: "07:00" });
+      expect(res).toEqual({
+        ok: true,
+        value: { kind: "daily", minuteOfDay: 7 * 60, daysOfWeek: null, intervalMinutes: null },
+      });
+    });
+
+    it("parses a weekly schedule and normalizes days to sorted-unique", () => {
+      const res = parseRoutineSchedule({
+        scheduleKind: "weekly",
+        time: "08:15",
+        daysOfWeek: [5, 1, 1, 3],
+      });
+      expect(res).toEqual({
+        ok: true,
+        value: { kind: "weekly", minuteOfDay: 8 * 60 + 15, daysOfWeek: [1, 3, 5], intervalMinutes: null },
+      });
+    });
+
+    it("parses an interval schedule", () => {
+      const res = parseRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 90 });
+      expect(res).toEqual({
+        ok: true,
+        value: { kind: "interval", minuteOfDay: 0, daysOfWeek: null, intervalMinutes: 90 },
+      });
+    });
+
+    it("returns each ScheduleError code for the matching invalid input", () => {
+      expect(parseRoutineSchedule({ scheduleKind: "monthly" })).toEqual({
+        ok: false,
+        error: "INVALID_KIND",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "daily" })).toEqual({
+        ok: false,
+        error: "TIME_REQUIRED",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "daily", time: "" })).toEqual({
+        ok: false,
+        error: "TIME_REQUIRED",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "daily", time: "25:00" })).toEqual({
+        ok: false,
+        error: "INVALID_TIME",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "weekly", time: "09:00" })).toEqual({
+        ok: false,
+        error: "DAYS_REQUIRED",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "weekly", time: "09:00", daysOfWeek: [] })).toEqual({
+        ok: false,
+        error: "DAYS_REQUIRED",
+      });
+      expect(
+        parseRoutineSchedule({ scheduleKind: "weekly", time: "09:00", daysOfWeek: [7] }),
+      ).toEqual({ ok: false, error: "INVALID_DAYS" });
+      expect(
+        parseRoutineSchedule({ scheduleKind: "weekly", time: "09:00", daysOfWeek: [1.5] }),
+      ).toEqual({ ok: false, error: "INVALID_DAYS" });
+      expect(parseRoutineSchedule({ scheduleKind: "interval" })).toEqual({
+        ok: false,
+        error: "INTERVAL_REQUIRED",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 10 })).toEqual({
+        ok: false,
+        error: "INVALID_INTERVAL",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 10081 })).toEqual({
+        ok: false,
+        error: "INVALID_INTERVAL",
+      });
+      expect(parseRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 30.5 })).toEqual({
+        ok: false,
+        error: "INVALID_INTERVAL",
+      });
+    });
+  });
+
+  describe("nextRunIso", () => {
+    it("daily: lands on the requested KST minute, strictly after `from`", () => {
+      const from = new Date("2026-06-13T00:00:00.000Z"); // 09:00 KST
+      const iso = nextRunIso(
+        { kind: "daily", minuteOfDay: 9 * 60 + 30, daysOfWeek: null, intervalMinutes: null },
+        from,
+      );
+      expect(new Date(iso).getTime()).toBeGreaterThan(from.getTime());
+      expect(kstMinuteOfDay(iso)).toBe(9 * 60 + 30);
+    });
+
+    it("daily: rolls to tomorrow when today's slot already passed", () => {
+      const from = new Date("2026-06-13T01:00:00.000Z"); // 10:00 KST
+      const iso = nextRunIso(
+        { kind: "daily", minuteOfDay: 9 * 60, daysOfWeek: null, intervalMinutes: null },
+        from,
+      );
+      expect(kstMinuteOfDay(iso)).toBe(9 * 60);
+      // 9:00 KST already passed at 10:00 KST → next slot is the following day.
+      expect(new Date(iso).getTime() - from.getTime()).toBeGreaterThan(20 * 60 * 60 * 1000);
+    });
+
+    it("weekly: returns the soonest matching weekday slot in KST, strictly after `from`", () => {
+      // 2026-06-13 is a Saturday; 2026-06-13T00:00Z is 09:00 KST Saturday.
+      const from = new Date("2026-06-13T00:00:00.000Z");
+      expect(kstWeekday(from.toISOString())).toBe(6);
+      // Schedule for Monday(1)/Wednesday(3) at 08:00 KST → next is Monday.
+      const iso = nextRunIso(
+        { kind: "weekly", minuteOfDay: 8 * 60, daysOfWeek: [1, 3], intervalMinutes: null },
+        from,
+      );
+      expect(kstWeekday(iso)).toBe(1);
+      expect(kstMinuteOfDay(iso)).toBe(8 * 60);
+      expect(new Date(iso).getTime()).toBeGreaterThan(from.getTime());
+    });
+
+    it("weekly: same weekday but earlier slot today rolls a full week forward", () => {
+      // Saturday 09:00 KST `from`; schedule Saturday(6) at 08:00 KST (already past today).
+      const from = new Date("2026-06-13T00:00:00.000Z");
+      const iso = nextRunIso(
+        { kind: "weekly", minuteOfDay: 8 * 60, daysOfWeek: [6], intervalMinutes: null },
+        from,
+      );
+      expect(kstWeekday(iso)).toBe(6);
+      const days = (new Date(iso).getTime() - from.getTime()) / DAY_MS;
+      expect(days).toBeGreaterThan(6);
+      expect(days).toBeLessThan(8);
+    });
+
+    it("interval: exactly from + intervalMinutes", () => {
+      const from = new Date("2026-06-13T12:00:00.000Z");
+      const iso = nextRunIso(
+        { kind: "interval", minuteOfDay: 0, daysOfWeek: null, intervalMinutes: 45 },
+        from,
+      );
+      expect(new Date(iso).getTime()).toBe(from.getTime() + 45 * 60_000);
+    });
   });
 });
 
@@ -2688,6 +2993,91 @@ describe("routine jobs", () => {
     // Re-sending enabled:true on an already-enabled job is also timing-neutral.
     const same = store.updateRoutineJob(ownerId, job.id, { enabled: true });
     expect(same?.nextRunAt).toBe(job.nextRunAt);
+  });
+
+  it("legacy { prompt, minuteOfDay } calls still behave as a daily schedule", () => {
+    const { store, ownerId } = makeStore("rj-legacy");
+    const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 9 * 60 });
+    expect(job.scheduleKind).toBe("daily");
+    expect(job.daysOfWeek).toBeNull();
+    expect(job.intervalMinutes).toBeNull();
+    expect(job.time).toBe("09:00");
+    expect(job.nextRunAt).toBeTruthy();
+  });
+
+  it("persists a weekly schedule (daysOfWeek + future next run)", () => {
+    const { store, ownerId } = makeStore("rj-weekly");
+    const job = store.createRoutineJob(ownerId, {
+      name: "주간",
+      prompt: "p",
+      scheduleKind: "weekly",
+      minuteOfDay: 8 * 60,
+      daysOfWeek: [1, 3, 5],
+    });
+    expect(job.scheduleKind).toBe("weekly");
+    expect(job.daysOfWeek).toEqual([1, 3, 5]);
+    expect(job.intervalMinutes).toBeNull();
+    expect(job.nextRunAt).toBeTruthy();
+    expect(new Date(job.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+    // Round-trips through toRoutineJob after reload.
+    const reloaded = store.listRoutineJobs(ownerId)[0];
+    expect(reloaded.name).toBe("주간");
+    expect(reloaded.daysOfWeek).toEqual([1, 3, 5]);
+    expect(reloaded.scheduleKind).toBe("weekly");
+  });
+
+  it("persists an interval schedule (intervalMinutes)", () => {
+    const { store, ownerId } = makeStore("rj-interval");
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "p",
+      scheduleKind: "interval",
+      intervalMinutes: 45,
+    });
+    expect(job.scheduleKind).toBe("interval");
+    expect(job.intervalMinutes).toBe(45);
+    expect(job.daysOfWeek).toBeNull();
+    expect(job.name).toBeNull();
+    expect(new Date(job.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+    const reloaded = store.listRoutineJobs(ownerId)[0];
+    expect(reloaded.intervalMinutes).toBe(45);
+    expect(reloaded.scheduleKind).toBe("interval");
+  });
+
+  it("a name-only edit does not reschedule, but a schedule change does", () => {
+    const { store, ownerId } = makeStore("rj-name-vs-sched");
+    const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 300 });
+    // Name-only: nextRunAt preserved.
+    const renamed = store.updateRoutineJob(ownerId, job.id, { name: "라벨" });
+    expect(renamed?.name).toBe("라벨");
+    expect(renamed?.nextRunAt).toBe(job.nextRunAt);
+    // name=null clears the label, still no reschedule.
+    const cleared = store.updateRoutineJob(ownerId, job.id, { name: null });
+    expect(cleared?.name).toBeNull();
+    expect(cleared?.nextRunAt).toBe(job.nextRunAt);
+    // Switching to a weekly schedule recomputes nextRunAt.
+    const rescheduled = store.updateRoutineJob(ownerId, job.id, {
+      scheduleKind: "weekly",
+      minuteOfDay: 8 * 60,
+      daysOfWeek: [2],
+    });
+    expect(rescheduled?.scheduleKind).toBe("weekly");
+    expect(rescheduled?.daysOfWeek).toEqual([2]);
+    expect(rescheduled?.nextRunAt).not.toBe(job.nextRunAt);
+    expect(new Date(rescheduled!.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
+  });
+
+  it("markRoutineRun rolls an interval job forward by its interval", () => {
+    const { store, ownerId } = makeStore("rj-mark-interval");
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "p",
+      scheduleKind: "interval",
+      intervalMinutes: 30,
+    });
+    store.markRoutineRun(job.id, { status: "success" });
+    const after = store.listRoutineJobs(ownerId)[0];
+    expect(after.scheduleKind).toBe("interval");
+    expect(after.lastStatus).toBe("success");
+    expect(new Date(after.nextRunAt!).getTime()).toBeGreaterThan(Date.now());
   });
 
   it("creates the dedicated conversation eagerly, titled from the prompt", () => {

@@ -18,10 +18,8 @@ import {
   inspectRepoContents,
   knowledgeRepoSkillSources,
   listSkillsInRoots,
-  loadAvatarPluginRoots,
+  loadAgentPluginRoots,
   loadDefaultPluginRoots,
-  loadGroupKnowledgeRepoRoots,
-  loadKnowledgeRepoRoots,
   pluginClonePath,
   resolvePluginRoots,
   syncPluginRepo,
@@ -54,6 +52,7 @@ import {
   CANCELLED,
 } from "./agent/runRegistry.js";
 import { executeRoutineJob, isRoutineRunning } from "./scheduler.js";
+import { parseRoutineSchedule, type ScheduleError, type ScheduleKind } from "./routineSchedule.js";
 import { workspaceDirFor } from "./workspace.js";
 import { HEX_SSH_TOOL_INFOS, parseHexSshToolPolicy } from "./hexSshPolicy.js";
 
@@ -88,26 +87,19 @@ function apiError(res: Response, status: number, message: string): void {
   res.status(status).json({ error: message });
 }
 
+/** User-facing (Korean) messages for routine-schedule validation errors. */
+const KOREAN_SCHEDULE_ERROR: Record<ScheduleError, string> = {
+  INVALID_KIND: "주기 종류가 올바르지 않습니다.",
+  TIME_REQUIRED: "실행 시각(time)을 입력해 주세요.",
+  INVALID_TIME: "time은 HH:MM 형식이어야 합니다.",
+  DAYS_REQUIRED: "매주 반복은 요일을 1개 이상 선택해야 합니다.",
+  INVALID_DAYS: "요일 값이 올바르지 않습니다 (0=일 ~ 6=토).",
+  INTERVAL_REQUIRED: "반복 간격(분)을 입력해 주세요.",
+  INVALID_INTERVAL: "반복 간격은 15분 이상 10080분(7일) 이하의 정수여야 합니다.",
+};
+
 function avatarDir(config: AppConfig): string {
   return path.join(config.dataDir, "avatars");
-}
-
-/** Parse a daily-run time ("HH:MM" or 0..1439 integer) into minutes-of-day. */
-function parseTimeToMinute(value: unknown): number | null {
-  if (typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1439) {
-    return value;
-  }
-  if (typeof value === "string") {
-    const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
-    if (match) {
-      const h = Number(match[1]);
-      const m = Number(match[2]);
-      if (h >= 0 && h <= 23 && m >= 0 && m <= 59) {
-        return h * 60 + m;
-      }
-    }
-  }
-  return null;
 }
 
 function looksLikeRepo(value: string): boolean {
@@ -1259,14 +1251,11 @@ export function createApp(services = createServices()) {
   });
 
   app.post("/api/me/routines", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const rawName = safeString(req.body?.name);
+    const name = rawName || null;
     const prompt = safeString(req.body?.prompt);
     if (!prompt) {
       apiError(res, 400, "prompt를 입력해 주세요.");
-      return;
-    }
-    const minuteOfDay = parseTimeToMinute(req.body?.time);
-    if (minuteOfDay === null) {
-      apiError(res, 400, "time은 HH:MM 형식이어야 합니다.");
       return;
     }
     // Reject non-boolean `enabled` ("true", 1, …) instead of silently coercing
@@ -1276,13 +1265,47 @@ export function createApp(services = createServices()) {
       return;
     }
     const enabled = req.body?.enabled === undefined ? true : (req.body.enabled as boolean);
-    const routine = store.createRoutineJob(req.user!.id, { prompt, minuteOfDay, enabled });
-    logger.info({ userId: req.user!.id, routineId: routine.id, minuteOfDay }, "routine created");
+    const parsed = parseRoutineSchedule({
+      scheduleKind: req.body?.scheduleKind,
+      time: req.body?.time,
+      daysOfWeek: req.body?.daysOfWeek,
+      intervalMinutes: req.body?.intervalMinutes,
+    });
+    if (!parsed.ok) {
+      apiError(res, 400, KOREAN_SCHEDULE_ERROR[parsed.error]);
+      return;
+    }
+    const routine = store.createRoutineJob(req.user!.id, {
+      name,
+      prompt,
+      scheduleKind: parsed.value.kind,
+      minuteOfDay: parsed.value.minuteOfDay,
+      daysOfWeek: parsed.value.daysOfWeek,
+      intervalMinutes: parsed.value.intervalMinutes,
+      enabled,
+    });
+    logger.info(
+      { userId: req.user!.id, routineId: routine.id, scheduleKind: parsed.value.kind },
+      "routine created",
+    );
     res.json({ routine });
   });
 
   app.patch("/api/me/routines/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    const patch: { prompt?: string; minuteOfDay?: number; enabled?: boolean } = {};
+    const patch: {
+      name?: string | null;
+      prompt?: string;
+      scheduleKind?: ScheduleKind;
+      minuteOfDay?: number;
+      daysOfWeek?: number[] | null;
+      intervalMinutes?: number | null;
+      enabled?: boolean;
+    } = {};
+    if (typeof req.body?.name === "string") {
+      patch.name = safeString(req.body.name) || null;
+    } else if (req.body?.name === null) {
+      patch.name = null;
+    }
     if (typeof req.body?.prompt === "string") {
       const prompt = safeString(req.body.prompt);
       if (!prompt) {
@@ -1291,16 +1314,29 @@ export function createApp(services = createServices()) {
       }
       patch.prompt = prompt;
     }
-    if (req.body?.time !== undefined) {
-      const minuteOfDay = parseTimeToMinute(req.body.time);
-      if (minuteOfDay === null) {
-        apiError(res, 400, "time은 HH:MM 형식이어야 합니다.");
-        return;
-      }
-      patch.minuteOfDay = minuteOfDay;
-    }
     if (typeof req.body?.enabled === "boolean") {
       patch.enabled = req.body.enabled;
+    }
+    const scheduleTouched =
+      req.body?.scheduleKind !== undefined ||
+      req.body?.time !== undefined ||
+      req.body?.daysOfWeek !== undefined ||
+      req.body?.intervalMinutes !== undefined;
+    if (scheduleTouched) {
+      const parsed = parseRoutineSchedule({
+        scheduleKind: req.body?.scheduleKind,
+        time: req.body?.time,
+        daysOfWeek: req.body?.daysOfWeek,
+        intervalMinutes: req.body?.intervalMinutes,
+      });
+      if (!parsed.ok) {
+        apiError(res, 400, KOREAN_SCHEDULE_ERROR[parsed.error]);
+        return;
+      }
+      patch.scheduleKind = parsed.value.kind;
+      patch.minuteOfDay = parsed.value.minuteOfDay;
+      patch.daysOfWeek = parsed.value.daysOfWeek;
+      patch.intervalMinutes = parsed.value.intervalMinutes;
     }
     const routine = store.updateRoutineJob(req.user!.id, req.params.id, patch);
     if (!routine) {
@@ -1571,34 +1607,14 @@ export function createApp(services = createServices()) {
     emitRunEvent(runId, "open", { conversationId, avatarId: avatar.id, runId });
 
     try {
-      // Load plugin roots (read-only). The repo-bundled default plugin (knowledge
-      // backfill etc.) is loaded for every avatar, ahead of its own plugins, then
-      // the avatar's personal knowledge repo (the skills/knowledge it accumulates).
-      // Tolerate clone/resolve fails.
+      // Load plugin roots (read-only): default plugins + the avatar's own + its
+      // personal knowledge repo + group knowledge repos. Shared with the routine
+      // scheduler via `loadAgentPluginRoots` so the two can't drift. Tolerate
+      // clone/resolve fails.
       const pluginWarnings: string[] = [];
-      const pluginRoots =
-        config.agentRuntime === "local"
-          ? []
-          : [
-              ...(await loadDefaultPluginRoots(config, (warn) => pluginWarnings.push(warn))),
-              ...(await loadAvatarPluginRoots(
-                avatar.id,
-                store.listEnabledPlugins(avatar.id),
-                config,
-                (warn) => pluginWarnings.push(warn),
-                store.getGitTokens(avatar.id),
-              )),
-              ...(await loadKnowledgeRepoRoots(
-                knowledgeRepoContextFor(store, avatar.id, config),
-                (warn) => pluginWarnings.push(warn),
-              )),
-              // Shared knowledge repos of every group the avatar's owner belongs
-              // to — so group skills load for all members' chats.
-              ...(await loadGroupKnowledgeRepoRoots(
-                groupKnowledgeRepoContextsForUser(store, avatar.id, config),
-                (warn) => pluginWarnings.push(warn),
-              )),
-            ];
+      const pluginRoots = await loadAgentPluginRoots(store, avatar.id, config, (warn) =>
+        pluginWarnings.push(warn),
+      );
 
       // Per-conversation workspace: each chat session gets an isolated cwd, scoped
       // under the avatar so sessions cannot mix files by accident.

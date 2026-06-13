@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { loadAvatarPluginRoots, loadDefaultPluginRoots } from "./plugins.js";
+import { loadAgentPluginRoots } from "./plugins.js";
 import { runAgentStream } from "./agent/index.js";
 import type { AppServices } from "./app.js";
 import logger from "./logger.js";
@@ -45,17 +45,14 @@ async function runRoutineJobNow(
       return { ok: false, error: "아바타를 찾을 수 없습니다." };
     }
 
-    // Mirror the chat endpoint's plugin loading; tolerate clone/resolve fails
+    // Mirror the chat endpoint's plugin loading via the shared helper (default +
+    // avatar plugins + personal & group knowledge-repo skill roots) so routines
+    // can USE the same skills an owner chat would; tolerate clone/resolve fails
     // but leave a trace — there is no client to stream the warnings to.
     const pluginWarnings: string[] = [];
-    const warn = (w: string) => pluginWarnings.push(w);
-    const pluginRoots: PluginRoot[] =
-      config.agentRuntime === "local"
-        ? []
-        : [
-            ...(await loadDefaultPluginRoots(config, warn)),
-            ...(await loadAvatarPluginRoots(avatar.id, store.listEnabledPlugins(avatar.id), config, warn, store.getGitTokens(avatar.id))),
-          ];
+    const pluginRoots: PluginRoot[] = await loadAgentPluginRoots(store, avatar.id, config, (w) =>
+      pluginWarnings.push(w),
+    );
     if (pluginWarnings.length > 0) {
       schedLogger.warn({ jobId: job.id, warnings: pluginWarnings }, "routine plugin warnings");
     }

@@ -1314,6 +1314,309 @@ function splitAvatarOptions() {
 }
 
 /* ============================================================ Routines view */
+const WEEKDAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
+
+// Korean schedule formatter (user-facing). Mirrors the RoutineSchedule contract.
+function formatRoutineSchedule(r) {
+  const kind = r.scheduleKind || "daily";
+  if (kind === "weekly") {
+    const days = Array.isArray(r.daysOfWeek) ? r.daysOfWeek : [];
+    const labels = days.map((d) => WEEKDAY_NAMES[d] ?? "?").join("·");
+    return `매주 ${labels} ${r.time} (KST)`;
+  }
+  if (kind === "interval") {
+    const n = Number(r.intervalMinutes) || 0;
+    if (n % 60 === 0) return `${n / 60}시간마다`;
+    return `${n}분마다`;
+  }
+  return `매일 ${r.time} (KST)`;
+}
+
+// Short title for a routine row: explicit name, else a one-line prompt preview.
+function routineTitle(r) {
+  const name = (r.name || "").trim();
+  if (name) return name;
+  const oneLine = (r.prompt || "").replace(/\s+/g, " ").trim();
+  return oneLine.length > 40 ? `${oneLine.slice(0, 40)}…` : oneLine || "(이름 없는 루틴)";
+}
+
+// Centered create/edit modal for a routine. `routine === null` = create mode.
+function openRoutineModal(routine) {
+  const isEdit = Boolean(routine);
+  const restoreFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKeydown, true);
+    restoreFocus?.focus?.();
+  };
+
+  // ---- Fields ----
+  const nameInput = el("input", {
+    name: "name",
+    type: "text",
+    placeholder: "예: 아침 서비스 점검",
+    "aria-label": "루틴 이름",
+    value: routine?.name || "",
+  });
+
+  const promptInput = el("textarea", {
+    name: "prompt",
+    rows: "4",
+    placeholder: "예: 오늘의 서비스 상태를 요약해줘",
+    "aria-label": "작업 프롬프트",
+    required: "",
+  });
+  promptInput.value = routine?.prompt || "";
+
+  const preview = el("div", { class: "routine-prompt-preview md" });
+  const updatePreview = () => {
+    const text = promptInput.value.trim();
+    if (text) preview.innerHTML = renderMarkdown(text);
+    else preview.replaceChildren(el("span", { class: "muted", text: "프롬프트 미리보기가 여기에 표시됩니다." }));
+  };
+  promptInput.addEventListener("input", updatePreview);
+
+  const initialKind = routine?.scheduleKind || "daily";
+  const kindSelect = el("select", { name: "scheduleKind", "aria-label": "주기" }, [
+    el("option", { value: "daily", text: "매일" }),
+    el("option", { value: "weekly", text: "매주" }),
+    el("option", { value: "interval", text: "간격" }),
+  ]);
+  kindSelect.value = initialKind;
+
+  const timeInput = el("input", {
+    name: "time",
+    type: "time",
+    "aria-label": "실행 시각",
+    value: routine?.time || "09:00",
+  });
+  const timeRow = el("div", { class: "schedule-row" }, [
+    el("label", { class: "schedule-label", text: "시각" }),
+    timeInput,
+  ]);
+
+  // Weekday chips (매주).
+  const selectedDays = new Set(Array.isArray(routine?.daysOfWeek) ? routine.daysOfWeek : []);
+  const dayChips = WEEKDAY_NAMES.map((label, idx) => {
+    const chip = el("button", {
+      type: "button",
+      class: `weekday-chip ${selectedDays.has(idx) ? "selected" : ""}`,
+      "aria-pressed": selectedDays.has(idx) ? "true" : "false",
+      text: label,
+    });
+    chip.addEventListener("click", () => {
+      if (selectedDays.has(idx)) selectedDays.delete(idx);
+      else selectedDays.add(idx);
+      const on = selectedDays.has(idx);
+      chip.classList.toggle("selected", on);
+      chip.setAttribute("aria-pressed", on ? "true" : "false");
+    });
+    return chip;
+  });
+  const daysRow = el("div", { class: "schedule-row" }, [
+    el("label", { class: "schedule-label", text: "요일" }),
+    el("div", { class: "weekday-chips" }, dayChips),
+  ]);
+
+  // Interval (간격): number + unit.
+  const intervalMin = Number(routine?.intervalMinutes) || 0;
+  const intervalUnit = el("select", { class: "narrow", "aria-label": "반복 간격 단위" }, [
+    el("option", { value: "hour", text: "시간" }),
+    el("option", { value: "minute", text: "분" }),
+  ]);
+  let intervalValue = 1;
+  if (intervalMin > 0 && intervalMin % 60 === 0) {
+    intervalUnit.value = "hour";
+    intervalValue = intervalMin / 60;
+  } else if (intervalMin > 0) {
+    intervalUnit.value = "minute";
+    intervalValue = intervalMin;
+  } else {
+    intervalUnit.value = "hour";
+    intervalValue = 1;
+  }
+  const intervalInput = el("input", {
+    type: "number",
+    min: "1",
+    step: "1",
+    class: "narrow",
+    "aria-label": "반복 간격 값",
+    value: String(intervalValue),
+  });
+  const intervalRow = el("div", { class: "schedule-row" }, [
+    el("label", { class: "schedule-label", text: "반복 간격" }),
+    el("div", { class: "interval-inputs" }, [intervalInput, intervalUnit]),
+  ]);
+
+  const intervalMinutesFromInputs = () => {
+    const n = Math.floor(Number(intervalInput.value) || 0);
+    return intervalUnit.value === "hour" ? n * 60 : n;
+  };
+
+  // Toggle field visibility by kind.
+  const applyKindVisibility = () => {
+    const kind = kindSelect.value;
+    timeRow.hidden = kind === "interval";
+    daysRow.hidden = kind !== "weekly";
+    intervalRow.hidden = kind !== "interval";
+  };
+  kindSelect.addEventListener("change", applyKindVisibility);
+
+  const kindRow = el("div", { class: "schedule-row" }, [
+    el("label", { class: "schedule-label", text: "주기" }),
+    kindSelect,
+  ]);
+
+  const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
+
+  const saveBtn = el("button", { class: "primary", type: "submit", text: "저장" });
+
+  const buildPayload = () => {
+    const kind = kindSelect.value;
+    const payload = {
+      name: (nameInput.value || "").trim() || null,
+      prompt: promptInput.value,
+      scheduleKind: kind,
+    };
+    if (kind === "daily" || kind === "weekly") payload.time = timeInput.value;
+    if (kind === "weekly") payload.daysOfWeek = [...selectedDays].sort((a, b) => a - b);
+    if (kind === "interval") payload.intervalMinutes = intervalMinutesFromInputs();
+    return payload;
+  };
+
+  const afterSave = async () => {
+    await Promise.all([loadRoutines(), loadRoutineConversations()]);
+    close();
+    renderView();
+  };
+
+  const form = el("form", {
+    class: "routine-modal-form",
+    onsubmit: async (e) => {
+      e.preventDefault();
+      if (!promptInput.value.trim()) {
+        errorBox.textContent = "작업 프롬프트를 입력해 주세요.";
+        errorBox.hidden = false;
+        return;
+      }
+      if (kindSelect.value === "weekly" && selectedDays.size === 0) {
+        errorBox.textContent = "매주 반복은 요일을 1개 이상 선택해 주세요.";
+        errorBox.hidden = false;
+        return;
+      }
+      if (kindSelect.value === "interval" && intervalMinutesFromInputs() < 15) {
+        errorBox.textContent = "반복 간격은 15분 이상이어야 합니다.";
+        errorBox.hidden = false;
+        return;
+      }
+      errorBox.hidden = true;
+      saveBtn.disabled = true;
+      try {
+        const payload = buildPayload();
+        if (isEdit) {
+          await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "PATCH", body: JSON.stringify(payload) });
+        } else {
+          await api("/api/me/routines", { method: "POST", body: JSON.stringify(payload) });
+        }
+        await afterSave();
+      } catch (err) {
+        errorBox.textContent = err.message || "저장에 실패했습니다.";
+        errorBox.hidden = false;
+        saveBtn.disabled = false;
+      }
+    },
+  }, [
+    el("label", { class: "field" }, [
+      el("span", { text: "이름 (선택)" }),
+      nameInput,
+    ]),
+    el("label", { class: "field" }, [
+      el("span", { text: "작업 프롬프트" }),
+      promptInput,
+    ]),
+    el("div", { class: "routine-preview-wrap" }, [
+      el("span", { class: "field-hint muted", text: "미리보기" }),
+      preview,
+    ]),
+    el("div", { class: "schedule-builder" }, [kindRow, timeRow, daysRow, intervalRow]),
+    errorBox,
+  ]);
+
+  // Action buttons.
+  const actions = el("div", { class: "routine-modal-actions" });
+  const leftActions = el("div", { class: "routine-modal-actions-left" });
+  if (isEdit) {
+    const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행" });
+    runBtn.addEventListener("click", async () => {
+      runBtn.disabled = true;
+      const saved = runBtn.textContent;
+      runBtn.textContent = "실행 중…";
+      try {
+        const res = await api(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
+        await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
+        updateNotificationBadge();
+        if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+        close();
+        renderView();
+      } catch (err) {
+        notify(`루틴 실행 실패: ${err.message}`);
+        runBtn.disabled = false;
+        runBtn.textContent = saved;
+      }
+    });
+    leftActions.append(runBtn);
+
+    const delBtn = el("button", { class: "ghost-sm danger", type: "button", text: "삭제" });
+    delBtn.addEventListener("click", async () => {
+      if (!window.confirm("이 루틴을 삭제할까요? (쌓인 결과 대화는 그대로 남습니다)")) return;
+      delBtn.disabled = true;
+      try {
+        await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });
+        state.routines = state.routines.filter((x) => x.id !== routine.id);
+        state.routineConversations = state.routineConversations.filter((x) => x.routineId !== routine.id);
+        if (state.routineConversationId === routine.conversationId) state.routineConversationId = "";
+        close();
+        renderView();
+      } catch (err) {
+        notify(`삭제 실패: ${err.message}`);
+        delBtn.disabled = false;
+      }
+    });
+    leftActions.append(delBtn);
+  }
+  const rightActions = el("div", { class: "routine-modal-actions-right" }, [
+    el("button", { class: "ghost-sm", type: "button", text: "닫기", onclick: () => close() }),
+    saveBtn,
+  ]);
+  actions.append(leftActions, rightActions);
+  form.append(actions);
+
+  const card = el("div", { class: "modal-card routine-modal-card", tabindex: "-1" }, [
+    el("h2", { id: "routine-modal-title", text: isEdit ? "루틴 편집" : "루틴 추가" }),
+    form,
+  ]);
+  const overlay = el("div", { class: "modal-overlay", role: "dialog", "aria-modal": "true", "aria-labelledby": "routine-modal-title" }, [card]);
+  overlay.addEventListener("mousedown", (e) => {
+    if (e.target === overlay) close();
+  });
+  const onKeydown = (e) => {
+    if (!overlay.isConnected) return;
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    } else if (e.key === "Tab") {
+      trapTab(e, overlay);
+    }
+  };
+  document.addEventListener("keydown", onKeydown, true);
+
+  document.body.append(overlay);
+  applyKindVisibility();
+  updatePreview();
+  if (isFinePointer()) (isEdit ? promptInput : nameInput).focus();
+  else card.focus();
+}
+
 async function renderRoutinesView() {
   const header = viewHeader("루틴", "예약 실행 결과와 아바타 알림을 확인하세요");
   const body = el("div", { class: "view-body scroll-thin routines-body" }, [
@@ -1448,15 +1751,31 @@ function renderRoutineRunRows(list) {
   for (const r of state.routines) {
     const conv = state.routineConversations.find((c) => c.id === r.conversationId);
     const active = state.routineConversationId === r.conversationId;
-    const statusBits = [`매일 ${r.time} (KST)`];
+    const statusBits = [formatRoutineSchedule(r)];
     if (r.lastRunAt) statusBits.push(`최근 ${timeLabel(r.lastRunAt)} · ${r.lastStatus === "error" ? "실패" : "완료"}`);
     else statusBits.push("아직 실행되지 않음");
-    const row = el("button", {
-      class: `routine-run-row ${active ? "active" : ""}`,
+    const titleBtn = el("button", {
+      class: "routine-title-link",
       type: "button",
+      text: routineTitle(r),
+      onclick: (e) => {
+        e.stopPropagation();
+        openRoutineModal(r);
+      },
+    });
+    const row = el("div", {
+      class: `routine-run-row ${active ? "active" : ""}`,
+      role: "button",
+      tabindex: "0",
       onclick: () => openRoutineResult(r.conversationId),
+      onkeydown: (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openRoutineResult(r.conversationId);
+        }
+      },
     }, [
-      el("strong", { text: r.prompt }),
+      titleBtn,
       el("span", { text: statusBits.join(" · ") }),
       r.lastStatus === "error" && r.lastError ? el("span", { class: "error-note", text: r.lastError }) : null,
       conv ? el("span", { class: "muted", text: `기록 업데이트 ${timeLabel(conv.updatedAt)}` }) : null,
@@ -5115,44 +5434,14 @@ function buildRoutinesCard() {
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
         el("h3", { text: "루틴" }),
-        el("p", { class: "muted", text: "내 아바타가 매일 정해진 시각(한국 시간, KST)에 스스로 실행할 작업. 결과는 전용 대화에 쌓입니다." }),
+        el("p", { class: "muted", text: "내 아바타가 매일·매주 또는 일정 간격(한국 시간, KST)으로 스스로 실행할 작업. 결과는 전용 대화에 쌓입니다." }),
       ]),
+      el("button", { class: "linkish small", type: "button", text: "루틴 추가", onclick: () => openRoutineModal(null) }),
     ]),
   );
   const list = el("div", { class: "plugin-rows" });
   card.append(list);
   renderRoutineRows(list);
-
-  const form = el("form", {
-    class: "plugin-add",
-    onsubmit: async (e) => {
-      e.preventDefault();
-      const formEl = e.currentTarget;
-      const fd = new FormData(formEl);
-      const btn = formEl.querySelector("button[type=submit]");
-      btn.disabled = true;
-      try {
-        await api("/api/me/routines", {
-          method: "POST",
-          body: JSON.stringify({ prompt: fd.get("prompt"), time: fd.get("time") }),
-        });
-        await loadRoutines();
-        await loadRoutineConversations();
-        renderRoutineRows(list);
-        formEl.reset();
-      } catch (err) {
-        notify(`루틴 추가 실패: ${err.message}`);
-      } finally {
-        btn.disabled = false;
-      }
-    },
-  }, [
-    el("input", { name: "prompt", placeholder: "예: 오늘의 서비스 상태를 요약해줘", "aria-label": "루틴 작업 내용", required: "" }),
-    el("input", { name: "time", type: "time", value: "09:00", required: "", class: "narrow", "aria-label": "매일 실행 시각" }),
-    el("button", { class: "primary", type: "submit", text: "추가" }),
-  ]);
-  form.classList.add("rows-2");
-  card.append(form);
   return card;
 }
 
@@ -5163,7 +5452,7 @@ function renderRoutineRows(list) {
     return;
   }
   for (const r of state.routines) {
-    const statusBits = [`매일 ${r.time} (KST)`];
+    const statusBits = [formatRoutineSchedule(r)];
     if (r.lastRunAt) {
       const mark = r.lastStatus === "error" ? "실패" : "완료";
       statusBits.push(`최근 실행: ${timeLabel(r.lastRunAt)} (${mark})`);
@@ -5173,7 +5462,7 @@ function renderRoutineRows(list) {
 
     const row = el("div", { class: "plugin-row" }, [
       el("div", { class: "pr-main" }, [
-        el("strong", { text: r.prompt }),
+        el("button", { class: "routine-title-link", type: "button", text: routineTitle(r), onclick: () => openRoutineModal(r) }),
         el("div", { class: "pr-sub", text: statusBits.join(" · ") }),
         r.lastStatus === "error" && r.lastError
           ? el("div", { class: "pr-sub", text: `실행 오류 — ${r.lastError}` })

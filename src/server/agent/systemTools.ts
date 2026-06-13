@@ -1,5 +1,6 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { parseRoutineSchedule, type ScheduleError, type ScheduleKind } from "../routineSchedule.js";
 import type { Store } from "../store.js";
 import type { AppConfig, Plugin, RoutineJob } from "../types.js";
 
@@ -41,17 +42,34 @@ function text(message: string, isError = false) {
   return { content: [{ type: "text" as const, text: message }], isError };
 }
 
-function parseTimeToMinute(value: string): number | null {
-  const match = /^(\d{1,2}):(\d{2})$/.exec(value.trim());
-  if (!match) {
-    return null;
+/** Agent-facing (English) messages for each schedule validation error. */
+const ENGLISH_SCHEDULE_ERROR: Record<ScheduleError, string> = {
+  INVALID_KIND: "scheduleKind must be one of: daily, weekly, interval.",
+  TIME_REQUIRED: "time (HH:MM, KST) is required for daily and weekly schedules.",
+  INVALID_TIME: "time must be in HH:MM format.",
+  DAYS_REQUIRED: "weekly schedules require at least one weekday in daysOfWeek.",
+  INVALID_DAYS: "daysOfWeek must be integers 0-6 (0=Sunday, 6=Saturday).",
+  INTERVAL_REQUIRED: "intervalMinutes is required for interval schedules.",
+  INVALID_INTERVAL: "intervalMinutes must be an integer between 15 and 10080.",
+};
+
+const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+
+/** A concise English summary of a routine's firing schedule. */
+function formatScheduleEnglish(job: RoutineJob): string {
+  switch (job.scheduleKind) {
+    case "weekly": {
+      const days = (job.daysOfWeek ?? []).map((d) => WEEKDAY_NAMES[d] ?? String(d)).join(",");
+      return `weekly on ${days} at ${job.time} KST`;
+    }
+    case "interval": {
+      const n = job.intervalMinutes ?? 0;
+      return n % 60 === 0 ? `every ${n / 60}h` : `every ${n}m`;
+    }
+    case "daily":
+    default:
+      return `daily at ${job.time} KST`;
   }
-  const h = Number(match[1]);
-  const m = Number(match[2]);
-  if (h < 0 || h > 23 || m < 0 || m > 59) {
-    return null;
-  }
-  return h * 60 + m;
 }
 
 function looksLikeRepo(value: string): boolean {
@@ -64,7 +82,8 @@ function looksLikeRepo(value: string): boolean {
 function renderRoutine(job: RoutineJob): string {
   return [
     `id=${job.id}`,
-    `time=${job.time} KST`,
+    `name=${job.name ? JSON.stringify(job.name) : "(unnamed)"}`,
+    `schedule=${formatScheduleEnglish(job)}`,
     `enabled=${job.enabled ? "true" : "false"}`,
     `prompt=${JSON.stringify(job.prompt)}`,
     job.nextRunAt ? `nextRunAt=${job.nextRunAt}` : "nextRunAt=null",
@@ -108,7 +127,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           "- The avatar converses by loading its profile/persona, base skills, owner plugins, and personal knowledge repository together.",
           "- The knowledge repository is a personal repo where the avatar can directly create and commit files and skills.",
           "- Plugins are added via a GitHub repo or git URL and load starting from the next conversation.",
-          "- Routines run headlessly every day at a specified time in KST, work with the same tool permissions as the owner, and leave their results in the routines tab.",
+          "- Routines run headlessly on a daily, weekly, or interval schedule in KST, work with the same tool permissions as the owner, and leave their results in the routines tab.",
           "- Secret values are not exposed; only their names are revealed to the avatar.",
           "- Remote git operations (clone/push, etc.) are performed only through dedicated MCP tools. The shell has no git credentials.",
         ];
@@ -201,7 +220,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
     ),
     tool(
       "list_routines",
-      "Lists the owner's avatar routines. Routines run headlessly every day at a KST time and use the same tool permissions as the owner. (owner only)",
+      "Lists the owner's avatar routines. Routines run headlessly on a daily, weekly, or interval schedule in KST and use the same tool permissions as the owner. (owner only)",
       {},
       async () => {
         if (!ctx.viewerIsOwner) {
@@ -216,10 +235,23 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
     ),
     tool(
       "create_routine",
-      "Creates a new routine task. Runs the prompt headlessly every day at time (HH:MM) in KST, and leaves the result of working with the same tool permissions as the owner in the routines tab. (owner only)",
+      "Creates a new routine task. Runs the prompt headlessly on a daily, weekly, or interval schedule in KST, and leaves the result of working with the same tool permissions as the owner in the routines tab. (owner only)",
       {
-        prompt: z.string().describe("The task instruction to run daily"),
-        time: z.string().describe("HH:MM in KST, e.g.: 09:30"),
+        prompt: z.string().describe("The task instruction to run on schedule"),
+        name: z.string().optional().describe("Short display name for the routine (optional)"),
+        scheduleKind: z
+          .enum(["daily", "weekly", "interval"])
+          .optional()
+          .describe("Schedule type; defaults to daily"),
+        time: z.string().optional().describe("HH:MM in KST for daily/weekly, e.g.: 09:30"),
+        daysOfWeek: z
+          .array(z.number())
+          .optional()
+          .describe("Weekdays for weekly schedules: 0=Sun..6=Sat"),
+        intervalMinutes: z
+          .number()
+          .optional()
+          .describe("Interval length in minutes for interval schedules; 15..10080"),
         enabled: z.boolean().optional().describe("Whether to enable immediately after creation (default true)"),
       },
       async (args) => {
@@ -230,38 +262,68 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         if (!prompt) {
           return text("Please enter a prompt.", true);
         }
-        const minuteOfDay = parseTimeToMinute(args.time);
-        if (minuteOfDay === null) {
-          return text("time must be in HH:MM format.", true);
+        const parsed = parseRoutineSchedule({
+          scheduleKind: args.scheduleKind,
+          time: args.time,
+          daysOfWeek: args.daysOfWeek,
+          intervalMinutes: args.intervalMinutes,
+        });
+        if (!parsed.ok) {
+          return text(ENGLISH_SCHEDULE_ERROR[parsed.error], true);
         }
         const routine = store.createRoutineJob(ctx.avatarUserId, {
+          name: args.name?.trim() || null,
           prompt,
-          minuteOfDay,
+          scheduleKind: parsed.value.kind,
+          minuteOfDay: parsed.value.minuteOfDay,
+          daysOfWeek: parsed.value.daysOfWeek,
+          intervalMinutes: parsed.value.intervalMinutes,
           enabled: args.enabled,
         });
         store.audit({
           ...actor(ctx),
           action: "system_tool_create_routine",
           status: "success",
-          detail: `routine ${routine.id} at ${routine.time}`,
+          detail: `routine ${routine.id} (${formatScheduleEnglish(routine)})`,
         });
         return text(`Created the routine:\n${renderRoutine(routine)}`);
       },
     ),
     tool(
       "update_routine",
-      "Updates an existing routine's prompt, time (HH:MM KST), and enabled values. (owner only)",
+      "Updates an existing routine's name, prompt, schedule (daily/weekly/interval in KST), and enabled values. Provide any of scheduleKind/time/daysOfWeek/intervalMinutes to replace the schedule. (owner only)",
       {
         id: z.string().describe("id of the routine to update"),
         prompt: z.string().optional().describe("New task instruction"),
-        time: z.string().optional().describe("HH:MM in KST"),
+        name: z.string().optional().describe("New display name; pass an empty string to clear it"),
+        scheduleKind: z
+          .enum(["daily", "weekly", "interval"])
+          .optional()
+          .describe("New schedule type"),
+        time: z.string().optional().describe("HH:MM in KST for daily/weekly"),
+        daysOfWeek: z
+          .array(z.number())
+          .optional()
+          .describe("Weekdays for weekly schedules: 0=Sun..6=Sat"),
+        intervalMinutes: z
+          .number()
+          .optional()
+          .describe("Interval length in minutes for interval schedules; 15..10080"),
         enabled: z.boolean().optional().describe("Whether enabled"),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
         }
-        const patch: { prompt?: string; minuteOfDay?: number; enabled?: boolean } = {};
+        const patch: {
+          name?: string | null;
+          prompt?: string;
+          scheduleKind?: ScheduleKind;
+          minuteOfDay?: number;
+          daysOfWeek?: number[] | null;
+          intervalMinutes?: number | null;
+          enabled?: boolean;
+        } = {};
         if (args.prompt !== undefined) {
           const prompt = args.prompt.trim();
           if (!prompt) {
@@ -269,18 +331,34 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           }
           patch.prompt = prompt;
         }
-        if (args.time !== undefined) {
-          const minuteOfDay = parseTimeToMinute(args.time);
-          if (minuteOfDay === null) {
-            return text("time must be in HH:MM format.", true);
+        if (args.name !== undefined) {
+          patch.name = args.name.trim() || null;
+        }
+        const scheduleProvided =
+          args.scheduleKind !== undefined ||
+          args.time !== undefined ||
+          args.daysOfWeek !== undefined ||
+          args.intervalMinutes !== undefined;
+        if (scheduleProvided) {
+          const parsed = parseRoutineSchedule({
+            scheduleKind: args.scheduleKind,
+            time: args.time,
+            daysOfWeek: args.daysOfWeek,
+            intervalMinutes: args.intervalMinutes,
+          });
+          if (!parsed.ok) {
+            return text(ENGLISH_SCHEDULE_ERROR[parsed.error], true);
           }
-          patch.minuteOfDay = minuteOfDay;
+          patch.scheduleKind = parsed.value.kind;
+          patch.minuteOfDay = parsed.value.minuteOfDay;
+          patch.daysOfWeek = parsed.value.daysOfWeek;
+          patch.intervalMinutes = parsed.value.intervalMinutes;
         }
         if (args.enabled !== undefined) {
           patch.enabled = args.enabled;
         }
         if (Object.keys(patch).length === 0) {
-          return text("At least one of the values to update (prompt, time, enabled) is required.", true);
+          return text("At least one of the values to update (name, prompt, schedule, enabled) is required.", true);
         }
         const routine = store.updateRoutineJob(ctx.avatarUserId, args.id, patch);
         if (!routine) {

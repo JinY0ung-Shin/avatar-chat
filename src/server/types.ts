@@ -1,3 +1,5 @@
+import type { ScheduleKind } from "./routineSchedule.js";
+
 export type AgentRuntime = "claude" | "local";
 
 export interface AppConfig {
@@ -483,8 +485,9 @@ export interface AvatarNotification {
 
 /**
  * A recurring task the avatar's owner schedules: a prompt the avatar runs by
- * itself once a day at a chosen local time. Results are appended to a dedicated
- * routine conversation the owner can inspect from the routine view.
+ * itself on a daily, weekly, or interval schedule (KST wall-clock for daily/
+ * weekly). Results are appended to a dedicated routine conversation the owner
+ * can inspect from the routine view.
  */
 export interface RoutineJob {
   id: string;
@@ -492,12 +495,20 @@ export interface RoutineJob {
   avatarUserId: string;
   /** The dedicated conversation routine results are appended to. */
   conversationId: string;
+  /** Optional human label for the routine; null when unset. */
+  name: string | null;
   /** The message the avatar runs on each firing. */
   prompt: string;
+  /** How the schedule recurs: daily, weekly, or fixed interval. */
+  scheduleKind: ScheduleKind;
   /** Minutes from midnight **in Seoul time (KST)** (0..1439) the job fires at. */
   minuteOfDay: number;
   /** "HH:MM" rendering of minuteOfDay, for convenience on the client. */
   time: string;
+  /** weekly only: sorted unique ints 0(Sun)..6(Sat); null otherwise. */
+  daysOfWeek: number[] | null;
+  /** interval only: minutes between firings (15..10080); null otherwise. */
+  intervalMinutes: number | null;
   enabled: boolean;
   /** Next scheduled firing (ISO, UTC); null while disabled. */
   nextRunAt: string | null;

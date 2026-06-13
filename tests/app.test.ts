@@ -271,6 +271,72 @@ describe("noah-almighty platform", () => {
     expect(list.body.routines).toHaveLength(0);
   });
 
+  it("creates weekly and interval routines and rejects invalid schedules", async () => {
+    const app = testApp();
+    const agent = request.agent(app);
+    await signup(agent, "wendy").expect(201);
+
+    // Weekly with weekdays + time persists.
+    const weekly = await agent
+      .post("/api/me/routines")
+      .send({
+        name: "주간 회고",
+        prompt: "주간 회고를 정리해줘",
+        scheduleKind: "weekly",
+        time: "09:00",
+        daysOfWeek: [1, 3, 5],
+      })
+      .expect(200);
+    expect(weekly.body.routine.name).toBe("주간 회고");
+    expect(weekly.body.routine.scheduleKind).toBe("weekly");
+    expect(weekly.body.routine.daysOfWeek).toEqual([1, 3, 5]);
+    expect(weekly.body.routine.time).toBe("09:00");
+    expect(weekly.body.routine.nextRunAt).toBeTruthy();
+
+    // Interval persists.
+    const interval = await agent
+      .post("/api/me/routines")
+      .send({ prompt: "30분마다 점검", scheduleKind: "interval", intervalMinutes: 30 })
+      .expect(200);
+    expect(interval.body.routine.scheduleKind).toBe("interval");
+    expect(interval.body.routine.intervalMinutes).toBe(30);
+    expect(interval.body.routine.nextRunAt).toBeTruthy();
+
+    // Weekly without weekdays → 400.
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", scheduleKind: "weekly", time: "09:00" })
+      .expect(400);
+    // Interval with an out-of-range value → 400.
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", scheduleKind: "interval", intervalMinutes: 5 })
+      .expect(400);
+    // Unknown schedule kind → 400.
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", scheduleKind: "monthly", time: "09:00" })
+      .expect(400);
+
+    // PATCH name-only does not reschedule.
+    const before = weekly.body.routine.nextRunAt;
+    const renamed = await agent
+      .patch(`/api/me/routines/${weekly.body.routine.id}`)
+      .send({ name: "주간 정리" })
+      .expect(200);
+    expect(renamed.body.routine.name).toBe("주간 정리");
+    expect(renamed.body.routine.nextRunAt).toBe(before);
+
+    // PATCH switching the schedule to interval replaces it as a unit.
+    const switched = await agent
+      .patch(`/api/me/routines/${weekly.body.routine.id}`)
+      .send({ scheduleKind: "interval", intervalMinutes: 60 })
+      .expect(200);
+    expect(switched.body.routine.scheduleKind).toBe("interval");
+    expect(switched.body.routine.intervalMinutes).toBe(60);
+    expect(switched.body.routine.daysOfWeek).toBeNull();
+  });
+
   it("shows public avatars to everyone but hides group/private ones from outsiders", async () => {
     const app = testApp();
     const publisher = request.agent(app);
