@@ -2638,6 +2638,12 @@ textarea::placeholder {
   color: var(--accent-strong);
   text-decoration: underline;
 }
+.linkish:disabled {
+  color: var(--muted);
+  cursor: default;
+  text-decoration: none;
+  opacity: 0.65;
+}
 .linkish.small {
   font-size: var(--t-xs);
   margin-top: var(--s-1);

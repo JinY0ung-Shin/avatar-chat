@@ -609,7 +609,7 @@ function mountShell() {
       el("span", { text: `@${state.user.username}` }),
     ]),
   ]);
-  const logoutBtn = el("button", { class: "icon-button", type: "button", "aria-label": "로그아웃", title: "로그아웃", onclick: logout });
+  const logoutBtn = el("button", { class: "icon-button", type: "button", "aria-label": "로그아웃", title: "로그아웃", onclick: () => logout(logoutBtn) });
   logoutBtn.append(icon("logout"));
 
   const rail = el("aside", { class: "rail", id: "rail", "aria-label": "대화 목록" }, [
@@ -7928,7 +7928,12 @@ async function loadAdminUserDetail(id) {
 }
 
 /* ============================================================ Lifecycle */
-async function logout() {
+async function logout(triggerBtn = null) {
+  if (triggerBtn) {
+    triggerBtn.disabled = true;
+    triggerBtn.title = "로그아웃 중…";
+    triggerBtn.setAttribute("aria-label", "로그아웃 중");
+  }
   stopAllChatStreams();
   stopKnowledgeWatch();
   hidePromptModal();
@@ -8144,6 +8149,7 @@ function openOnboarding() {
   renderSshSetup();
 
   const saveBtn = el("button", { class: "primary", type: "submit", text: "저장하고 시작" });
+  const skipBtn = el("button", { class: "linkish", type: "button", text: "건너뛰기" });
 
   openModal({
     cardClass: "onboard-card",
@@ -8157,6 +8163,8 @@ function openOnboarding() {
           saveBtn.disabled = true;
           const savedLabel = saveBtn.textContent;
           saveBtn.textContent = "저장 중…";
+          skipBtn.disabled = true;
+          generateSshBtn.disabled = true;
           errorBox.hidden = true;
           try {
             const token = tokenInput.value.trim();
@@ -8179,6 +8187,8 @@ function openOnboarding() {
             errorBox.hidden = false;
             saveBtn.textContent = savedLabel;
             saveBtn.disabled = false;
+            skipBtn.disabled = false;
+            renderSshSetup();
           }
         },
       }, [
@@ -8230,10 +8240,11 @@ function openOnboarding() {
           : null,
         errorBox,
         el("div", { class: "onboard-actions" }, [
-          el("button", { class: "linkish", type: "button", text: "건너뛰기", onclick: () => { close(); } }),
+          skipBtn,
           saveBtn,
         ]),
       ]);
+      skipBtn.onclick = () => close();
 
       card.append(
         el("img", { class: "login-mark", src: "/icon-192.png", alt: "", "aria-hidden": "true", width: "48", height: "48" }),
