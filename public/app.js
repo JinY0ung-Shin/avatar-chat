@@ -6693,7 +6693,45 @@ function buildGroupBlock(g, reload) {
       ]),
     );
   } else {
-    for (const m of members) roster.append(buildGroupRosterRow(g, m, amAdmin, reload));
+    const memberSearch = el("input", {
+      type: "search",
+      class: "admin-search",
+      placeholder: "멤버 이름·아이디 검색",
+      "aria-label": `${g.name} 멤버 검색`,
+    });
+    const memberCount = el("span", { class: "muted nowrap" });
+    const renderRoster = () => {
+      roster.replaceChildren();
+      const q = memberSearch.value.trim().toLowerCase();
+      const shown = q
+        ? members.filter((m) =>
+            [
+              m.displayName || "",
+              m.username || "",
+              m.role === "admin" ? "관리자" : "멤버",
+            ].join(" ").toLowerCase().includes(q),
+          )
+        : members;
+      memberCount.textContent = shown.length === members.length ? `멤버 ${members.length}명` : `표시 ${shown.length}명 / 전체 ${members.length}명`;
+      if (!shown.length) {
+        const clearRosterSearch = () => {
+          memberSearch.value = "";
+          renderRoster();
+          memberSearch.focus();
+        };
+        roster.append(
+          el("div", { class: "empty-note" }, [
+            `"${memberSearch.value.trim()}"에 맞는 멤버가 없습니다.\n`,
+            el("button", { class: "linkish small", type: "button", text: "검색어 지우기", onclick: clearRosterSearch }),
+          ]),
+        );
+        return;
+      }
+      for (const m of shown) roster.append(buildGroupRosterRow(g, m, amAdmin, reload));
+    };
+    memberSearch.addEventListener("input", renderRoster);
+    block.append(el("div", { class: "admin-users-head group-roster-head" }, [memberSearch, memberCount]));
+    renderRoster();
   }
   block.append(roster);
 
