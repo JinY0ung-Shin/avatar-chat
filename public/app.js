@@ -4495,7 +4495,7 @@ function renderConversations() {
   for (const conv of visible) {
     const active = state.chatPanes.some((pane) => pane.conversationId === conv.id);
     const item = el("div", { class: `conv-item ${active ? "active" : ""}`, dataset: { id: conv.id } });
-    const openBtn = el("button", { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv) }, [
+    const openBtn = el("button", { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv, openBtn) }, [
       el("span", { class: "conv-name", text: conv.title || "새 대화" }),
       el("span", { class: "conv-time", text: [conv.avatarDisplayName, timeLabel(conv.updatedAt)].filter(Boolean).join(" · ") }),
     ]);
@@ -4551,7 +4551,7 @@ function startRenameConversation(item, conv) {
   input.addEventListener("blur", () => finish(true));
 }
 
-async function selectConversation(conv) {
+async function selectConversation(conv, triggerBtn = null) {
   if (!guardChatReplacement(conv.id)) return;
   // Already open in a pane → focus it instead of rebuilding from server history.
   // Essential when that pane is mid-stream: re-fetching history (which lacks the
@@ -4572,6 +4572,13 @@ async function selectConversation(conv) {
     // Opening a not-yet-open conversation replaces the whole split — ask first.
     if (!window.confirm("분할 대화를 닫고 이 대화를 열까요?")) return;
   }
+  const meta = triggerBtn?.querySelector(".conv-time");
+  const previousMeta = meta?.textContent || "";
+  if (triggerBtn) {
+    triggerBtn.disabled = true;
+    triggerBtn.title = "대화 불러오는 중…";
+    if (meta) meta.textContent = "불러오는 중…";
+  }
   closeRail();
   let pane;
   try {
@@ -4589,6 +4596,11 @@ async function selectConversation(conv) {
     state.activePaneId = pane.id;
     syncLegacyChatState(pane);
   } catch (e) {
+    if (triggerBtn) {
+      triggerBtn.disabled = false;
+      triggerBtn.title = conv.title || "새 대화";
+      if (meta) meta.textContent = previousMeta;
+    }
     // Don't render an empty transcript that looks like wiped history — stay
     // where we are and say what happened.
     notify(`대화를 불러오지 못했습니다: ${e.message}`);
