@@ -1549,7 +1549,8 @@ function renderChat() {
 }
 
 function renderSplitControls() {
-  const canAdd = splitEnabled() && state.chatPanes.length < MAX_CHAT_PANES;
+  const atPaneLimit = state.chatPanes.length >= MAX_CHAT_PANES;
+  let canAdd = splitEnabled() && !atPaneLimit;
   const wrap = el("div", { class: "split-controls", role: "group", "aria-label": "분할 대화" });
   if (!state.avatarsLoaded && !state.avatarsLoading) {
     loadAvatars()
@@ -1583,23 +1584,31 @@ function renderSplitControls() {
   const avatars = splitAvatarOptions();
   const activeAvatarId = activePane()?.avatar?.id || state.currentAvatar?.id || "";
   const openAvatarIds = new Set(state.chatPanes.map((pane) => pane.avatar?.id).filter(Boolean));
-  const suggestedAvatarId = avatars.find((av) => av.id && !openAvatarIds.has(av.id))?.id || activeAvatarId;
-  const selectedAvatarId = avatars.some((av) => av.id === state.splitAvatarId) ? state.splitAvatarId : suggestedAvatarId;
+  const addableAvatars = avatars.filter((av) => av.id && !openAvatarIds.has(av.id));
+  canAdd = canAdd && addableAvatars.length > 0;
+  const unavailableLabel = atPaneLimit
+    ? "분할 대화는 최대 4개까지 가능합니다"
+    : state.avatarsLoaded
+      ? "추가할 다른 아바타가 없습니다"
+      : "아바타 목록 불러오는 중";
+  const selectedAvatarId = addableAvatars.some((av) => av.id === state.splitAvatarId)
+    ? state.splitAvatarId
+    : addableAvatars[0]?.id || activeAvatarId;
   const avatarSelect = el("select", {
     class: "split-avatar-select",
-    title: canAdd ? "분할로 추가할 아바타" : "분할 대화는 최대 4개까지 가능합니다",
-    "aria-label": canAdd ? "분할로 추가할 아바타" : "분할 대화 최대 개수 도달",
+    title: canAdd ? "분할로 추가할 아바타" : unavailableLabel,
+    "aria-label": canAdd ? "분할로 추가할 아바타" : unavailableLabel,
     disabled: canAdd ? null : "",
     onchange: (event) => { state.splitAvatarId = event.currentTarget.value; },
-  }, avatars.map((av) => el("option", { value: av.id, text: av.alias || av.displayName || av.username || "아바타" })));
+  }, (canAdd ? addableAvatars : avatars).map((av) => el("option", { value: av.id, text: av.alias || av.displayName || av.username || "아바타" })));
   avatarSelect.value = selectedAvatarId;
   state.splitAvatarId = selectedAvatarId;
   wrap.append(avatarSelect);
   const addBtn = el("button", {
     class: "split-add",
     type: "button",
-    title: canAdd ? "대화 추가 (분할)" : "분할 대화는 최대 4개까지 가능합니다",
-    "aria-label": canAdd ? "대화 추가 (분할)" : "분할 대화 최대 개수 도달",
+    title: canAdd ? "대화 추가 (분할)" : unavailableLabel,
+    "aria-label": canAdd ? "대화 추가 (분할)" : unavailableLabel,
     disabled: canAdd ? null : "",
     onclick: () => addChatPane(avatarSelect.value),
   });
@@ -3131,6 +3140,7 @@ function renderCompactPaneHeader(pane, index) {
 
 function addChatPane(avatarId) {
   if (!splitEnabled() || state.chatPanes.length >= MAX_CHAT_PANES) return;
+  if (state.chatPanes.some((pane) => pane.avatar?.id === avatarId)) return;
   const avatar = splitAvatarOptions().find((av) => av.id === avatarId) || activePane()?.avatar || state.currentAvatar || state.user;
   const pane = makeChatPane(avatar);
   state.chatPanes.push(pane);
