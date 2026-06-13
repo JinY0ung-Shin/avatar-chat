@@ -2240,11 +2240,12 @@ function renderRoutineManageRows(list, searchInput = null) {
       openRoutineModal(r);
     });
 
+    let row;
     const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행" });
     runBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      runBtn.disabled = true;
       const saved = runBtn.textContent;
+      setFormBusy(row, true);
       runBtn.textContent = "실행 중…";
       try {
         const res = await api(`/api/me/routines/${encodeURIComponent(r.id)}/run`, { method: "POST" });
@@ -2255,18 +2256,22 @@ function renderRoutineManageRows(list, searchInput = null) {
         openRoutineResult(r.conversationId);
       } catch (err) {
         notify(`루틴 실행 실패: ${err.message}`);
-        runBtn.disabled = false;
+        setFormBusy(row, false);
         runBtn.textContent = saved;
       }
     });
 
-    const row = el("div", {
+    row = el("div", {
       class: `routine-manage-row ${active ? "active" : ""} ${r.enabled ? "" : "paused"}`,
       role: "button",
       tabindex: "0",
       "aria-pressed": active ? "true" : "false",
-      onclick: () => openRoutineResult(r.conversationId),
+      onclick: () => {
+        if (row.getAttribute("aria-busy") === "true") return;
+        openRoutineResult(r.conversationId);
+      },
       onkeydown: (e) => {
+        if (row.getAttribute("aria-busy") === "true") return;
         // Only act on keys aimed at the row itself, not its inner buttons.
         if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
