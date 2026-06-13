@@ -4,8 +4,9 @@ import { promisify } from "node:util";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
-import type { AppConfig } from "../types.js";
+import type { AgentOwner, AppConfig } from "../types.js";
 import { normalizeGithubHost, scrubGitError } from "../marketplace.js";
+import { decodeExecError, text } from "./mcpTools.js";
 import {
   commitAndPush,
   commitIdentityFor,
@@ -17,6 +18,15 @@ import {
   writeFile as writeRepoFile,
   writeRepoTemplate,
 } from "../knowledgeRepo.js";
+import {
+  OWNER_ONLY as REPO_OWNER_ONLY,
+  type Resolved,
+  commitFailureMessage,
+  runListFiles,
+  runReadFile,
+  runScaffoldSkill,
+  runWriteFile,
+} from "./repoToolKit.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -30,7 +40,7 @@ export interface RepoToolsContext {
   /** The avatar (== owner) whose knowledge repo these tools manage. */
   avatarUserId: string;
   /** The avatar owner (for the username/displayName fallback in commits). */
-  owner: { id: string; username: string; displayName: string; alias?: string };
+  owner: AgentOwner;
   /**
    * True only when the present viewer IS the owner and the run is interactive.
    * The caller computes `viewerIsOwner && !headless`; every tool refuses otherwise.
@@ -58,10 +68,6 @@ export const REPO_TOOL_NAMES = [
  */
 export const REPO_CREATE_TOOL_NAME = "mcp__repo__create_repo";
 
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
-
 type CreateRepoResult =
   | { ok: true; fullName: string; defaultBranch: string; isPrivate: boolean }
   | { ok: false; status?: number; exitCode?: number; message: string };
@@ -76,21 +82,8 @@ function githubHostDescription(host: string): string {
   return `The currently configured GitHub host is \`${normalized}\`, and create_repo creates the repo with \`GH_HOST=${normalized} gh repo create\`.`;
 }
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function redactToken(message: string, token: string): string {
-  return token ? message.replace(new RegExp(escapeRegExp(token), "g"), "[REDACTED]") : message;
-}
-
 function ghErrorMessage(error: unknown, token: string): { message: string; exitCode?: number } {
-  const err = error as Error & { stderr?: string | Buffer; stdout?: string | Buffer; code?: unknown };
-  const parts = [err.stderr, err.stdout, err.message]
-    .map((part) => (Buffer.isBuffer(part) ? part.toString("utf8") : part))
-    .filter((part): part is string => Boolean(part?.trim()));
-  const message = scrubGitError(redactToken(parts.join("\n").trim() || "gh command failed", token));
-  return { message, exitCode: typeof err.code === "number" ? err.code : undefined };
+  return decodeExecError(error, { redactToken: token, fallback: "gh command failed" });
 }
 
 function isAlreadyExistsError(message: string): boolean {
@@ -197,7 +190,7 @@ export async function createRemoteRepo(
   }
 }
 
-const OWNER_ONLY = "This tool can only be used by the avatar owner.";
+const OWNER_ONLY = REPO_OWNER_ONLY;
 const NO_REPO =
   "No knowledge repository is connected yet. If you are the owner, first create and connect a new repository with the `create_repo` tool, then try again. (If you already have a repo you've been using, you can also connect it directly in settings.) Do not walk through manual setup steps — use `create_repo`.";
 
@@ -216,61 +209,37 @@ export function buildRepoTools(
   // conversation is picked up. Returns null when no repo is configured.
   const repoCtx = () => knowledgeRepoContextFor(store, ctx.avatarUserId, ctx.config);
 
+  // Shared guard chain for the file-CRUD tools: owner gate → repo configured.
+  // The personal repo has no group resolution or role gate, so read and write
+  // share the same resolution.
+  type RepoCtx = NonNullable<ReturnType<typeof repoCtx>>;
+  const resolve = (): Resolved<RepoCtx> => {
+    if (!ctx.viewerIsOwner) {
+      return { ok: false, result: text(OWNER_ONLY, true) };
+    }
+    const c = repoCtx();
+    if (!c) {
+      return { ok: false, result: text(NO_REPO, true) };
+    }
+    return { ok: true, repo: c };
+  };
+
   const manageTools = [
     tool(
       "list_files",
       "Get the file list of my knowledge repository (personal repo). (owner only)",
       {},
-      async () => {
-        if (!ctx.viewerIsOwner) {
-          return text(OWNER_ONLY, true);
-        }
-        const c = repoCtx();
-        if (!c) {
-          return text(NO_REPO, true);
-        }
-        try {
-          const repoRoot = await ensureClone(c);
-          const entries = await listTree(repoRoot);
-          if (entries.length === 0) {
-            return text("(The repository is empty.)");
-          }
-          const body = entries
-            .map((e) => (e.type === "dir" ? `${e.path}/` : e.path))
-            .join("\n");
-          return text(`Knowledge repository file list:\n${body}`);
-        } catch (error) {
-          return text(
-            `Failed to load the repository: ${scrubGitError(error)}\nCheck the repository address/branch and token permissions. Do not clone directly with Bash git — the shell has no git credentials.`,
-            true,
-          );
-        }
-      },
+      () =>
+        runListFiles(resolve(), ensureClone, listTree, {
+          empty: "(The repository is empty.)",
+          onBody: (body) => `Knowledge repository file list:\n${body}`,
+        }),
     ),
     tool(
       "read_file",
       "Read the content of a file in my knowledge repository. (owner only)",
       { path: z.string().describe("Path relative to the repository root (e.g. skills/foo/SKILL.md)") },
-      async (args) => {
-        if (!ctx.viewerIsOwner) {
-          return text(OWNER_ONLY, true);
-        }
-        const c = repoCtx();
-        if (!c) {
-          return text(NO_REPO, true);
-        }
-        try {
-          const repoRoot = await ensureClone(c);
-          const content = await readRepoFile(repoRoot, args.path);
-          return text(content);
-        } catch (error) {
-          const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("Invalid path.", true);
-          if (detail === "FILE_TOO_LARGE") return text("The file is too large.", true);
-          if (detail === "NOT_A_FILE") return text("Not a file.", true);
-          return text(`Failed to read the file: ${detail}`, true);
-        }
-      },
+      (args) => runReadFile(resolve(), ensureClone, readRepoFile, args.path),
     ),
     tool(
       "write_file",
@@ -279,27 +248,14 @@ export function buildRepoTools(
         path: z.string().describe("Path relative to the repository root"),
         content: z.string().describe("The full file content"),
       },
-      async (args) => {
-        if (!ctx.viewerIsOwner) {
-          return text(OWNER_ONLY, true);
-        }
-        const c = repoCtx();
-        if (!c) {
-          return text(NO_REPO, true);
-        }
-        try {
-          const repoRoot = await ensureClone(c);
-          await writeRepoFile(repoRoot, args.path, args.content);
-          return text(
-            `Saved the file ${args.path}. (Not committed yet — push it with the commit tool.)`,
-          );
-        } catch (error) {
-          const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("Invalid path.", true);
-          if (detail === "FILE_TOO_LARGE") return text("The content is too large.", true);
-          return text(`Failed to save the file: ${detail}`, true);
-        }
-      },
+      (args) =>
+        runWriteFile(
+          resolve(),
+          ensureClone,
+          writeRepoFile,
+          args,
+          (path) => `Saved the file ${path}. (Not committed yet — push it with the commit tool.)`,
+        ),
     ),
     tool(
       "scaffold_skill",
@@ -308,27 +264,7 @@ export function buildRepoTools(
         name: z.string().describe("Skill name (e.g. deploy-runbook)"),
         description: z.string().optional().describe("One-line description of the skill"),
       },
-      async (args) => {
-        if (!ctx.viewerIsOwner) {
-          return text(OWNER_ONLY, true);
-        }
-        const c = repoCtx();
-        if (!c) {
-          return text(NO_REPO, true);
-        }
-        try {
-          const repoRoot = await ensureClone(c);
-          const filePath = await scaffoldSkill(repoRoot, args.name, args.description ?? "");
-          return text(
-            `Created a new skill: ${filePath} (fill in the content with write_file, then push with commit.)`,
-          );
-        } catch (error) {
-          const detail = scrubGitError(error);
-          if (detail === "SKILL_EXISTS") return text("A skill with the same name already exists.", true);
-          if (detail === "INVALID_PATH") return text("Invalid path.", true);
-          return text(`Failed to create the skill: ${detail}`, true);
-        }
-      },
+      (args) => runScaffoldSkill(resolve(), ensureClone, scaffoldSkill, args),
     ),
     tool(
       "commit",
@@ -362,10 +298,7 @@ export function buildRepoTools(
           });
           return text(`Committed and pushed the changes: ${c.repo}`);
         } catch (error) {
-          return text(
-            `Commit/push failed: ${scrubGitError(error)}\nCheck the write permission of the token (GIT_TOKEN) and the remote branch protection settings. Do not work around this with Bash \`git push\` — the shell has no git credentials.`,
-            true,
-          );
+          return text(commitFailureMessage(error), true);
         }
       },
     ),

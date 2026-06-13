@@ -1,8 +1,10 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { parseRoutineSchedule, type ScheduleError, type ScheduleKind } from "../routineSchedule.js";
+import { parseRoutineSchedule, type ScheduleError } from "../routineSchedule.js";
 import type { Store } from "../store.js";
-import type { AppConfig, Plugin, RoutineJob } from "../types.js";
+import type { AgentOwner, AppConfig, Plugin, RoutineJob, RoutineSchedulePatch } from "../types.js";
+import { text } from "./mcpTools.js";
+import { summarizeOwnerState } from "./ownerState.js";
 
 /**
  * Per-conversation context for avatar-system management tools. These tools let
@@ -14,7 +16,7 @@ export interface SystemToolsContext {
   /** The avatar (== owner) whose settings these tools manage. */
   avatarUserId: string;
   /** The avatar owner, used for audit attribution. */
-  owner: { id: string; username: string; displayName: string; alias?: string };
+  owner: AgentOwner;
   /** True only when the present viewer IS the owner and the run is interactive. */
   viewerIsOwner: boolean;
   config: AppConfig;
@@ -37,10 +39,6 @@ export const SYSTEM_TOOL_NAMES = [
 ] as const;
 
 const OWNER_ONLY = "This tool can only be used in a conversation the avatar owner is participating in.";
-
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
 
 /** Agent-facing (English) messages for each schedule validation error. */
 const ENGLISH_SCHEDULE_ERROR: Record<ScheduleError, string> = {
@@ -136,19 +134,25 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
             `${publicGuide.join("\n")}\n\nThe current conversation partner is not the owner, so changes to plugin/routine/knowledge-repository settings cannot be made.`,
           );
         }
+        // Repo/token/secret/group/git-repo/open-request/model facts come from the
+        // shared owner self-state reader (the same source buildPrompt derives from),
+        // so describe_system and buildPrompt can't drift in WHAT they read. The
+        // describe_system-only facts below (plugins/routines/visibility/intro/
+        // hashtags/runtime/maxTurns/Confluence) stay read here, as buildPrompt
+        // never surfaces them.
+        const state = summarizeOwnerState(store, ctx.config, ctx.avatarUserId);
         const plugins = store.listPlugins(ctx.avatarUserId);
         const routines = store.listRoutineJobs(ctx.avatarUserId);
-        const knowledgeRepo = store.getKnowledgeRepo(ctx.avatarUserId);
-        const gitRepos = store.listGitRepos(ctx.avatarUserId);
-        const secretNames = store.listUserSecretNames(ctx.avatarUserId);
-        const groups = user?.groups ?? store.listUserGroups(ctx.avatarUserId);
-        const openRequests = store.countOpenKnowledgeRequests(ctx.avatarUserId);
+        const knowledgeRepo = state.knowledgeRepo;
+        const secretNames = state.secretNames;
+        const groups = state.groups;
+        const openRequests = state.openRequestCount;
         // Mirrors the runtime's model resolution (claudeAgent: env pin > admin
         // override > SDK default) so the avatar reports the model it ACTUALLY
         // runs with, not just the env value.
-        const adminModel = store.getModelOverride();
-        const modelLine = ctx.config.anthropicModel
-          ? `${ctx.config.anthropicModel} (pinned via environment variable)`
+        const adminModel = state.modelOverride;
+        const modelLine = state.anthropicModel
+          ? `${state.anthropicModel} (pinned via environment variable)`
           : adminModel
             ? `${adminModel} (admin setting)`
             : "(SDK default)";
@@ -171,8 +175,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
           `- Knowledge repository: ${knowledgeRepo.repo || "(none)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
-          `- General git repos: ${gitRepos.length}`,
-          `- Internal Git token (GIT_TOKEN): ${store.getGitToken(ctx.avatarUserId) ? "set" : "not set"}`,
+          `- General git repos: ${state.gitRepoCount}`,
+          `- Internal Git token (GIT_TOKEN): ${state.gitTokenSet ? "set" : "not set"}`,
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(none)"}`,
           `- Remote SSH tools: ${secretNames.includes("SSH_PRIVATE_KEY") ? "enabled (SSH_PRIVATE_KEY set)" : "disabled (no SSH_PRIVATE_KEY secret)"}`,
           `- Groups: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`).join(", ") : "(none)"} — members of the same group automatically trust each other mutually (this is the ONLY source of elevated access; manage trust by managing group membership).`,
@@ -315,13 +319,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
         }
-        const patch: {
+        const patch: RoutineSchedulePatch & {
           name?: string | null;
           prompt?: string;
-          scheduleKind?: ScheduleKind;
-          minuteOfDay?: number;
-          daysOfWeek?: number[] | null;
-          intervalMinutes?: number | null;
           enabled?: boolean;
         } = {};
         if (args.prompt !== undefined) {

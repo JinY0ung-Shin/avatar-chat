@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { AppConfig } from "../types.js";
+import { text } from "./mcpTools.js";
 
 export const CONFLUENCE_SERVER_NAME = "confluence";
 export const CONFLUENCE_PAT_SECRET_NAME = "CONFLUENCE_PAT";
@@ -28,10 +29,6 @@ type JsonRecord = Record<string, unknown>;
 const REQUEST_TIMEOUT_MS = 30_000;
 const MAX_BODY_CHARS = 20_000;
 const WRITE_DENIED = "Confluence write tools can only be used in avatar owner or trusted user conversations.";
-
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
 
 function asRecord(value: unknown): JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)

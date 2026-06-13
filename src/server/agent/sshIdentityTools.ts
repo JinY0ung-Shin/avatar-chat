@@ -1,13 +1,15 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
+import type { AgentOwner } from "../types.js";
 import { generateSshKeyPair } from "../sshIdentity.js";
+import { text } from "./mcpTools.js";
 
 export interface SshIdentityToolsContext {
   /** The avatar (== owner) whose SSH identity is managed. */
   avatarUserId: string;
   /** The avatar owner, used only for key comments and audit attribution. */
-  owner: { id: string; username: string; displayName: string; alias?: string };
+  owner: AgentOwner;
   /** True only when the present viewer IS the owner and the run is interactive. */
   viewerIsOwner: boolean;
 }
@@ -20,10 +22,6 @@ export const SSH_IDENTITY_TOOL_NAMES = [
 ] as const;
 
 const OWNER_ONLY = "This tool can only be used in conversations where the avatar owner is present.";
-
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
 
 function defaultComment(ctx: SshIdentityToolsContext): string {
   return `avatar-chat-${ctx.owner.username || ctx.avatarUserId}`;

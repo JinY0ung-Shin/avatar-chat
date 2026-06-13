@@ -1,8 +1,9 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
-import type { AppConfig, UserGroupMembership } from "../types.js";
+import type { AgentOwner, AppConfig, UserGroupMembership } from "../types.js";
 import { normalizeGithubHost, scrubGitError } from "../marketplace.js";
+import { text } from "./mcpTools.js";
 import {
   commitIdentityFor,
   listTree,
@@ -14,9 +15,19 @@ import {
 import {
   ensureGroupClone,
   groupCommitAndPush,
+  type GroupKnowledgeRepoContext,
   groupKnowledgeRepoContextFor,
 } from "../groupKnowledgeRepo.js";
 import { createRemoteRepo } from "./repoTools.js";
+import {
+  OWNER_ONLY as REPO_OWNER_ONLY,
+  type Resolved,
+  commitFailureMessage,
+  runListFiles,
+  runReadFile,
+  runScaffoldSkill,
+  runWriteFile,
+} from "./repoToolKit.js";
 
 /**
  * Per-conversation context the group knowledge-repo tools act within. These let
@@ -29,7 +40,7 @@ import { createRemoteRepo } from "./repoTools.js";
 export interface GroupRepoToolsContext {
   /** The avatar (== owner) whose group memberships these tools act on. */
   avatarUserId: string;
-  owner: { id: string; username: string; displayName: string; alias?: string };
+  owner: AgentOwner;
   /** True only when the present viewer IS the owner and the run is interactive. */
   viewerIsOwner: boolean;
   config: AppConfig;
@@ -49,17 +60,13 @@ export const GROUP_REPO_TOOL_NAMES = [
   "mcp__group_repo__create_repo",
 ] as const;
 
-const OWNER_ONLY = "This tool can only be used by the avatar owner.";
+const OWNER_ONLY = REPO_OWNER_ONLY;
 const NO_SUCH_GROUP =
   "Could not find a group with that name/ID. First check the groups you belong to with list_groups.";
 const ADMIN_ONLY =
   "Only a group admin can modify this group's shared knowledge repository. (Members can only read.)";
 const NO_REPO =
   "This group does not have a shared knowledge repository connected yet. If you are a group admin, create a new one with `create_repo`, or connect an existing repository from group management in settings.";
-
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
 
 function githubHostDescription(host: string): string {
   const normalized = normalizeGithubHost(host);
@@ -96,6 +103,30 @@ export function buildGroupRepoTools(
   const repoCtx = (groupId: string, groupName?: string) =>
     groupKnowledgeRepoContextFor(store, groupId, ctx.avatarUserId, ctx.config, groupName);
 
+  // The resolved file-CRUD context: the group (for its name in success text) plus
+  // the cloned repo context. Read tools gate on owner + group + repo; write tools
+  // additionally require the owner be a group admin.
+  type GroupResolved = { group: UserGroupMembership; repo: GroupKnowledgeRepoContext };
+  const resolveRead = (groupArg: string): Resolved<GroupResolved> => {
+    if (!ctx.viewerIsOwner) return { ok: false, result: text(OWNER_ONLY, true) };
+    const group = resolveGroup(groupArg);
+    if (!group) return { ok: false, result: text(NO_SUCH_GROUP, true) };
+    const c = repoCtx(group.id, group.name);
+    if (!c) return { ok: false, result: text(NO_REPO, true) };
+    return { ok: true, repo: { group, repo: c } };
+  };
+  const resolveWrite = (groupArg: string): Resolved<GroupResolved> => {
+    if (!ctx.viewerIsOwner) return { ok: false, result: text(OWNER_ONLY, true) };
+    const group = resolveGroup(groupArg);
+    if (!group) return { ok: false, result: text(NO_SUCH_GROUP, true) };
+    if (group.role !== "admin") return { ok: false, result: text(ADMIN_ONLY, true) };
+    const c = repoCtx(group.id, group.name);
+    if (!c) return { ok: false, result: text(NO_REPO, true) };
+    return { ok: true, repo: { group, repo: c } };
+  };
+  // Adapt the kit's ensureClone(repo) shape to the resolved {group,repo} bundle.
+  const cloneResolved = (r: GroupResolved) => ensureGroupClone(r.repo);
+
   return [
     tool(
       "list_groups",
@@ -124,24 +155,13 @@ export function buildGroupRepoTools(
       "list_files",
       "Get the file list of the specified group's shared knowledge repository. (group member only)",
       { group: z.string().describe("Group name or ID (confirm with list_groups)") },
-      async (args) => {
-        if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
-        const group = resolveGroup(args.group);
-        if (!group) return text(NO_SUCH_GROUP, true);
-        const c = repoCtx(group.id, group.name);
-        if (!c) return text(NO_REPO, true);
-        try {
-          const repoRoot = await ensureGroupClone(c);
-          const entries = await listTree(repoRoot);
-          if (entries.length === 0) return text("(The repository is empty.)");
-          const list = entries.map((e) => (e.type === "dir" ? `${e.path}/` : e.path)).join("\n");
-          return text(`File list of the '${group.name}' group knowledge repository:\n${list}`);
-        } catch (error) {
-          return text(
-            `Failed to load the repository: ${scrubGitError(error)}\nCheck the repository address/branch and token permissions. Do not clone directly with Bash git — the shell has no git credentials.`,
-            true,
-          );
-        }
+      (args) => {
+        const r = resolveRead(args.group);
+        return runListFiles(r, cloneResolved, listTree, {
+          empty: "(The repository is empty.)",
+          onBody: (body) =>
+            `File list of the '${r.ok ? r.repo.group.name : ""}' group knowledge repository:\n${body}`,
+        });
       },
     ),
     tool(
@@ -151,23 +171,7 @@ export function buildGroupRepoTools(
         group: z.string().describe("Group name or ID"),
         path: z.string().describe("Path relative to the repository root (e.g. skills/foo/SKILL.md)"),
       },
-      async (args) => {
-        if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
-        const group = resolveGroup(args.group);
-        if (!group) return text(NO_SUCH_GROUP, true);
-        const c = repoCtx(group.id, group.name);
-        if (!c) return text(NO_REPO, true);
-        try {
-          const repoRoot = await ensureGroupClone(c);
-          return text(await readRepoFile(repoRoot, args.path));
-        } catch (error) {
-          const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("Invalid path.", true);
-          if (detail === "FILE_TOO_LARGE") return text("The file is too large.", true);
-          if (detail === "NOT_A_FILE") return text("Not a file.", true);
-          return text(`Failed to read the file: ${detail}`, true);
-        }
-      },
+      (args) => runReadFile(resolveRead(args.group), cloneResolved, readRepoFile, args.path),
     ),
     tool(
       "write_file",
@@ -177,24 +181,14 @@ export function buildGroupRepoTools(
         path: z.string().describe("Path relative to the repository root"),
         content: z.string().describe("The full file content"),
       },
-      async (args) => {
-        if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
-        const group = resolveGroup(args.group);
-        if (!group) return text(NO_SUCH_GROUP, true);
-        if (group.role !== "admin") return text(ADMIN_ONLY, true);
-        const c = repoCtx(group.id, group.name);
-        if (!c) return text(NO_REPO, true);
-        try {
-          const repoRoot = await ensureGroupClone(c);
-          await writeRepoFile(repoRoot, args.path, args.content);
-          return text(`Saved the file ${args.path}. (Not committed yet — push it with commit.)`);
-        } catch (error) {
-          const detail = scrubGitError(error);
-          if (detail === "INVALID_PATH") return text("Invalid path.", true);
-          if (detail === "FILE_TOO_LARGE") return text("The content is too large.", true);
-          return text(`Failed to save the file: ${detail}`, true);
-        }
-      },
+      (args) =>
+        runWriteFile(
+          resolveWrite(args.group),
+          cloneResolved,
+          writeRepoFile,
+          args,
+          (path) => `Saved the file ${path}. (Not committed yet — push it with commit.)`,
+        ),
     ),
     tool(
       "scaffold_skill",
@@ -204,24 +198,7 @@ export function buildGroupRepoTools(
         name: z.string().describe("Skill name (e.g. team-runbook)"),
         description: z.string().optional().describe("One-line description of the skill"),
       },
-      async (args) => {
-        if (!ctx.viewerIsOwner) return text(OWNER_ONLY, true);
-        const group = resolveGroup(args.group);
-        if (!group) return text(NO_SUCH_GROUP, true);
-        if (group.role !== "admin") return text(ADMIN_ONLY, true);
-        const c = repoCtx(group.id, group.name);
-        if (!c) return text(NO_REPO, true);
-        try {
-          const repoRoot = await ensureGroupClone(c);
-          const filePath = await scaffoldSkill(repoRoot, args.name, args.description ?? "");
-          return text(`Created a new skill: ${filePath} (fill in the content with write_file, then push with commit.)`);
-        } catch (error) {
-          const detail = scrubGitError(error);
-          if (detail === "SKILL_EXISTS") return text("A skill with the same name already exists.", true);
-          if (detail === "INVALID_PATH") return text("Invalid path.", true);
-          return text(`Failed to create the skill: ${detail}`, true);
-        }
-      },
+      (args) => runScaffoldSkill(resolveWrite(args.group), cloneResolved, scaffoldSkill, args),
     ),
     tool(
       "commit",
@@ -252,10 +229,7 @@ export function buildGroupRepoTools(
           });
           return text(`Committed and pushed the changes to the '${group.name}' group knowledge repository: ${c.repo}`);
         } catch (error) {
-          return text(
-            `Commit/push failed: ${scrubGitError(error)}\nCheck the write permission of the token (GIT_TOKEN) and the remote branch protection settings. Do not work around this with Bash \`git push\` — the shell has no git credentials.`,
-            true,
-          );
+          return text(commitFailureMessage(error), true);
         }
       },
     ),

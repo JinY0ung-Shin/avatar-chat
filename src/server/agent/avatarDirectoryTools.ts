@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
 import type { AvatarSummary } from "../types.js";
+import { text } from "./mcpTools.js";
 
 /** Per-conversation context the avatar-directory tool acts within. */
 export interface AvatarDirectoryContext {
@@ -19,10 +20,6 @@ export const AVATAR_DIRECTORY_TOOL_NAMES = ["mcp__avatars__search_avatars"] as c
 
 /** How many matching avatars a single search returns. */
 const SEARCH_LIMIT = 8;
-
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
 
 /** One result line: handle, name/alias, capability hashtags, and a short bio. */
 function formatAvatar(av: AvatarSummary): string {

@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
+import { text } from "./mcpTools.js";
 
 /** Per-conversation context the knowledge tools act within. */
 export interface KnowledgeToolsContext {
@@ -22,10 +23,6 @@ export const KNOWLEDGE_TOOL_NAMES = [
   "mcp__knowledge__pending_requests",
   "mcp__knowledge__resolve_request",
 ] as const;
-
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
 
 const OWNER_ONLY = "This tool can only be used by the avatar owner.";
 

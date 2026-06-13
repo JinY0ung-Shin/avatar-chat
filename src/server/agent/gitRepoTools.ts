@@ -1,9 +1,9 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
-import type { AppConfig } from "../types.js";
-import { scrubGitError } from "../marketplace.js";
+import type { AgentOwner, AppConfig } from "../types.js";
 import { commitIdentityFor } from "../knowledgeRepo.js";
+import { decodeExecError, text } from "./mcpTools.js";
 import {
   commitGitRepo,
   defaultGitRepoName,
@@ -24,7 +24,7 @@ import {
 export interface GitRepoToolsContext {
   /** The avatar owner whose registered repos and git tokens are used. */
   avatarUserId: string;
-  owner: { id: string; username: string; displayName: string; alias?: string };
+  owner: AgentOwner;
   /** True only for the avatar owner in an interactive chat. */
   viewerIsOwner: boolean;
   /** True for owner/trusted-user interactive chats. */
@@ -54,16 +54,8 @@ export const GIT_REPO_TOOL_NAMES = [
 const OWNER_ONLY = "This tool can only be used in a conversation the avatar owner is taking part in.";
 const ELEVATED_ONLY = "This git repo tool can only be used in a conversation with the avatar owner or a trusted user.";
 
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
-
 function errorMessage(error: unknown): string {
-  const err = error as Error & { stderr?: string | Buffer; stdout?: string | Buffer };
-  const parts = [err.stderr, err.stdout, err.message]
-    .map((part) => (Buffer.isBuffer(part) ? part.toString("utf8") : part))
-    .filter((part): part is string => Boolean(part?.trim()));
-  return scrubGitError(parts.join("\n").trim() || String(error));
+  return decodeExecError(error).message;
 }
 
 function renderRepo(repo: ReturnType<Store["listGitRepos"]>[number]): string {

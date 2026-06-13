@@ -2,6 +2,7 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { AppConfig } from "../types.js";
 import { addTrustedHost, listTrustedHosts, removeTrustedHost } from "../sshTrust.js";
+import { text } from "./mcpTools.js";
 
 /**
  * Per-conversation context for the SSH host-trust tools. They let the avatar
@@ -27,10 +28,6 @@ export const SSH_TRUST_TOOL_NAMES = [
   "mcp__ssh_trust__list_hosts",
   "mcp__ssh_trust__remove_host",
 ] as const;
-
-function text(message: string, isError = false) {
-  return { content: [{ type: "text" as const, text: message }], isError };
-}
 
 /**
  * Build the SSH host-trust tool definitions bound to a single conversation's
