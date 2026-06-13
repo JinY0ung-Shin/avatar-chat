@@ -6482,14 +6482,19 @@ async function renderAdmin() {
   if (!ADMIN_TABS.some((t) => t.id === state.adminTab)) state.adminTab = "overview";
 
   const panel = el("div", { class: "admin-panel", role: "tabpanel", id: "admin-panel" });
+  let tabRenderSeq = 0;
   const renderTab = async () => {
-    panel.setAttribute("aria-labelledby", `admin-tab-${state.adminTab}`);
+    const tabId = state.adminTab;
+    const seq = ++tabRenderSeq;
+    panel.setAttribute("aria-labelledby", `admin-tab-${tabId}`);
     panel.replaceChildren(el("div", { class: "muted pad", text: "불러오는 중…" }));
     try {
-      const build = ADMIN_TAB_BUILDERS[state.adminTab] || adminOverviewCards;
+      const build = ADMIN_TAB_BUILDERS[tabId] || adminOverviewCards;
       const nodes = await build();
+      if (seq !== tabRenderSeq || state.adminTab !== tabId) return;
       panel.replaceChildren(...nodes);
     } catch (e) {
+      if (seq !== tabRenderSeq || state.adminTab !== tabId) return;
       panel.replaceChildren(
         el("div", { class: "warn-box" }, [
           `불러오기 실패: ${e.message} `,
