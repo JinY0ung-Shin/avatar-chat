@@ -188,6 +188,8 @@ function icon(name) {
     trash: '<path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>',
     copy: '<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>',
     check: '<path d="M20 6 9 17l-5-5"/>',
+    eye: '<path d="M2.06 12.35a1 1 0 0 1 0-.7C3.49 7.17 7.61 4 12 4s8.51 3.17 9.94 7.65a1 1 0 0 1 0 .7C20.51 16.83 16.39 20 12 20s-8.51-3.17-9.94-7.65Z"/><circle cx="12" cy="12" r="3"/>',
+    "eye-off": '<path d="m2 2 20 20"/><path d="M10.58 10.58a2 2 0 0 0 2.83 2.83"/><path d="M9.88 4.24A10.95 10.95 0 0 1 12 4c4.39 0 8.51 3.17 9.94 7.65a1 1 0 0 1 0 .7 10.7 10.7 0 0 1-2.29 3.95"/><path d="M6.61 6.61a10.73 10.73 0 0 0-4.55 5.04 1 1 0 0 0 0 .7C3.49 16.83 7.61 20 12 20a10.9 10.9 0 0 0 5.39-1.43"/>',
     logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
     camera: '<path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2Z"/><circle cx="12" cy="13" r="4"/>',
     globe: '<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10Z"/>',
@@ -380,6 +382,36 @@ async function resizeImage(file, max = 256) {
 }
 
 /* ============================================================ Auth view */
+function buildPasswordInput({ autocomplete, placeholder }) {
+  const input = el("input", {
+    name: "password",
+    type: "password",
+    autocomplete,
+    placeholder,
+    required: "",
+    minlength: "8",
+  });
+  const toggle = el("button", {
+    class: "password-toggle",
+    type: "button",
+    "aria-label": "비밀번호 보기",
+    title: "비밀번호 보기",
+  });
+  const sync = () => {
+    const visible = input.type === "text";
+    toggle.setAttribute("aria-label", visible ? "비밀번호 숨기기" : "비밀번호 보기");
+    toggle.title = visible ? "비밀번호 숨기기" : "비밀번호 보기";
+    toggle.replaceChildren(icon(visible ? "eye-off" : "eye"));
+  };
+  toggle.addEventListener("click", () => {
+    input.type = input.type === "password" ? "text" : "password";
+    sync();
+    input.focus();
+  });
+  sync();
+  return el("div", { class: "password-field" }, [input, toggle]);
+}
+
 function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
   stopAllChatStreams();
   abortController = null;
@@ -448,13 +480,9 @@ function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
   fields.push(
     el("label", { class: "field" }, [
       el("span", { text: "비밀번호" }),
-      el("input", {
-        name: "password",
-        type: "password",
+      buildPasswordInput({
         autocomplete: isLogin ? "current-password" : "new-password",
         placeholder: isLogin ? "비밀번호" : "8자 이상",
-        required: "",
-        minlength: "8",
       }),
     ]),
   );
