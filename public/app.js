@@ -6233,6 +6233,8 @@ function buildGroupMemberAddForm({
   }, [icon("plus")]);
   const submitBtn = el("button", { class: "primary small", type: "button", text: "선택한 멤버 추가" });
   const selectedList = el("div", { class: "group-add-selected", hidden: "" });
+  const panel = el("div", { class: "group-add-panel" });
+  let addingMembers = false;
 
   const excludeSelectedIds = () => new Set([
     ...existingIds,
@@ -6253,8 +6255,10 @@ function buildGroupMemberAddForm({
         type: "button",
         title: "선택 해제",
         "aria-label": `${user.displayName || user.username} 선택 해제`,
+        disabled: addingMembers ? "" : null,
       }, [icon("close")]);
       remove.addEventListener("click", () => {
+        if (addingMembers) return;
         selected.delete(key);
         renderSelected();
       });
@@ -6267,7 +6271,24 @@ function buildGroupMemberAddForm({
     }
     submitBtn.textContent = `${selected.size}명 추가`;
   };
+  const setAddingMembers = (busy) => {
+    addingMembers = busy;
+    panel.setAttribute("aria-busy", busy ? "true" : "false");
+    input.disabled = busy;
+    adminCb.disabled = busy;
+    addTypedBtn.disabled = busy;
+    submitBtn.disabled = busy;
+    selectedList.querySelectorAll("button").forEach((btn) => {
+      btn.disabled = busy;
+    });
+    if (busy) {
+      search.querySelector(".trusted-results")?.setAttribute("hidden", "");
+      input.setAttribute("aria-expanded", "false");
+      input.removeAttribute("aria-activedescendant");
+    }
+  };
   const selectUser = (user) => {
+    if (addingMembers) return false;
     const username = (user.username || "").trim().replace(/^@/, "");
     const key = username.toLowerCase();
     if (!username) return false;
@@ -6287,6 +6308,7 @@ function buildGroupMemberAddForm({
     return true;
   };
   const addTyped = () => {
+    if (addingMembers) return false;
     const username = input.value.trim().replace(/^@/, "");
     if (!username) {
       input.focus();
@@ -6307,6 +6329,7 @@ function buildGroupMemberAddForm({
     }
   });
   submitBtn.addEventListener("click", async () => {
+    if (addingMembers) return;
     if (!selected.size && input.value.trim()) addTyped();
     if (!selected.size) {
       input.focus();
@@ -6315,9 +6338,8 @@ function buildGroupMemberAddForm({
     const queued = [...selected.entries()];
     const role = adminCb.checked ? "admin" : "member";
     const saved = submitBtn.textContent;
-    submitBtn.disabled = true;
+    setAddingMembers(true);
     submitBtn.textContent = "추가 중…";
-    addTypedBtn.disabled = true;
     try {
       const failures = [];
       const successes = [];
@@ -6347,15 +6369,14 @@ function buildGroupMemberAddForm({
         notify(`${successes.length}명을 그룹에 추가했습니다.`, "ok");
       }
     } finally {
-      submitBtn.disabled = false;
       submitBtn.textContent = saved;
-      addTypedBtn.disabled = false;
+      setAddingMembers(false);
       renderSelected();
     }
   });
 
   renderSelected();
-  return el("div", { class: "group-add-panel" }, [
+  panel.append(
     el("div", { class: "group-add" }, [
       search,
       addTypedBtn,
@@ -6363,7 +6384,8 @@ function buildGroupMemberAddForm({
       submitBtn,
     ]),
     selectedList,
-  ]);
+  );
+  return panel;
 }
 
 function buildGroupsCard() {
