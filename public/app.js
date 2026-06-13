@@ -5966,6 +5966,15 @@ function renderPluginSelectionContents(container, info, { getSelected, onSave, h
     const selected = chosen.length === 0 || chosen.length === loadableNames.length ? null : chosen;
     try {
       await onSave(selected);
+      notify("플러그인 선택을 저장했습니다.", "ok");
+      if (container.isConnected) {
+        save.textContent = "저장됨 ✓";
+        setTimeout(() => {
+          if (!container.isConnected) return;
+          save.textContent = saved;
+          setSaving(false);
+        }, 1200);
+      }
     } catch (e) {
       notify(`저장 실패: ${e.message}`);
       save.textContent = saved;
