@@ -3675,9 +3675,14 @@ function buildMessageActions(pane, message, isUser, isLast) {
     editBtn.append(icon("edit"));
     editBtn.addEventListener("click", () => {
       setActivePane(pane);
-      pane.dom.textarea.value = message.content;
-      pane.dom.textarea.dispatchEvent(new Event("input"));
-      pane.dom.textarea.focus();
+      const textarea = pane.dom?.textarea;
+      if (!textarea) return;
+      const text = message.content || "";
+      textarea.value = text;
+      textarea.dispatchEvent(new Event("input"));
+      textarea.focus();
+      textarea.setSelectionRange(text.length, text.length);
+      notify("메시지를 입력창에 불러왔습니다. 수정 후 보내기를 누르세요.", "info");
     });
     row.append(editBtn);
   } else if (isLast) {
