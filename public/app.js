@@ -2383,15 +2383,22 @@ function renderRoutineManageRows(list, { searchInput = null, filterBar = null, c
       e.stopPropagation();
       await runRoutineFromButton(r, runBtn, row);
     });
+    const selectResult = () => {
+      openRoutineResult(r.conversationId);
+      notify(active ? `"${title}" 루틴 결과를 보고 있습니다.` : `"${title}" 루틴 결과를 표시했습니다.`, "info");
+    };
+    const rowLabel = active ? `선택된 루틴 결과: ${title}` : `루틴 결과 보기: ${title}`;
 
     row = el("div", {
       class: `routine-manage-row ${active ? "active" : ""} ${r.enabled ? "" : "paused"}`,
       role: "button",
       tabindex: "0",
       "aria-pressed": active ? "true" : "false",
+      "aria-label": rowLabel,
+      title: rowLabel,
       onclick: () => {
         if (row.getAttribute("aria-busy") === "true") return;
-        openRoutineResult(r.conversationId);
+        selectResult();
       },
       onkeydown: (e) => {
         if (row.getAttribute("aria-busy") === "true") return;
@@ -2399,7 +2406,7 @@ function renderRoutineManageRows(list, { searchInput = null, filterBar = null, c
         if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          openRoutineResult(r.conversationId);
+          selectResult();
         }
       },
     }, [
