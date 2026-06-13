@@ -5597,11 +5597,14 @@ function buildSecretsCard() {
           onclick: async () => {
             if (!window.confirm(`${preset.label} 시크릿을 삭제할까요?`)) return;
             clearBtn.disabled = true;
+            const saved = clearBtn.textContent;
+            clearBtn.textContent = "삭제 중…";
             try {
               await deleteSecret(preset.name);
             } catch (err) {
               notify(`삭제 실패: ${err.message}`);
               clearBtn.disabled = false;
+              clearBtn.textContent = saved;
             }
           },
         });
@@ -5653,26 +5656,32 @@ function buildSecretsCard() {
       return;
     }
     list.replaceChildren(
-      ...names.map((name) =>
-        el("div", { class: "secret-row" }, [
+      ...names.map((name) => {
+        const delBtn = el("button", {
+          class: "linkish small",
+          type: "button",
+          text: "삭제",
+          "aria-label": `시크릿 삭제: ${name}`,
+        });
+        delBtn.addEventListener("click", async () => {
+          if (!window.confirm(`시크릿 "${name}"을(를) 삭제할까요?`)) return;
+          const saved = delBtn.textContent;
+          delBtn.disabled = true;
+          delBtn.textContent = "삭제 중…";
+          try {
+            await deleteSecret(name);
+          } catch (err) {
+            notify(`삭제 실패: ${err.message}`);
+            delBtn.disabled = false;
+            delBtn.textContent = saved;
+          }
+        });
+        return el("div", { class: "secret-row" }, [
           el("code", { text: name }),
           el("span", { class: "muted token-set", text: "● 설정됨" }),
-          el("button", {
-            class: "linkish small",
-            type: "button",
-            text: "삭제",
-            "aria-label": `시크릿 삭제: ${name}`,
-            onclick: async () => {
-              if (!window.confirm(`시크릿 "${name}"을(를) 삭제할까요?`)) return;
-              try {
-                await deleteSecret(name);
-              } catch (err) {
-                notify(`삭제 실패: ${err.message}`);
-              }
-            },
-          }),
-        ]),
-      ),
+          delBtn,
+        ]);
+      }),
     );
   };
   renderList();
@@ -5709,6 +5718,8 @@ function buildSecretsCard() {
       }
       const btn = formEl.querySelector("button[type=submit]");
       btn.disabled = true;
+      const saved = btn.textContent;
+      btn.textContent = "저장 중…";
       try {
         const { user } = await api(`/api/me/secrets/${encodeURIComponent(name)}`, {
           method: "PUT",
@@ -5719,9 +5730,11 @@ function buildSecretsCard() {
         renderPresetList();
         renderList();
         renderPublicKey();
+        btn.textContent = "저장됨 ✓";
+        setTimeout(() => { btn.textContent = saved; btn.disabled = false; }, 1200);
       } catch (err) {
         notify(`저장 실패: ${err.message}`);
-      } finally {
+        btn.textContent = saved;
         btn.disabled = false;
       }
     },
