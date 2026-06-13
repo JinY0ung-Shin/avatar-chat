@@ -4501,7 +4501,7 @@ function renderConversations() {
     ]);
     const renameBtn = el("button", { class: "conv-act", type: "button", "aria-label": "대화 이름 바꾸기", title: "이름 바꾸기", onclick: (e) => { e.stopPropagation(); startRenameConversation(item, conv); } });
     renameBtn.append(icon("edit"));
-    const delBtn = el("button", { class: "conv-act danger", type: "button", "aria-label": "대화 삭제", title: "삭제", onclick: (e) => { e.stopPropagation(); deleteConversation(conv); } });
+    const delBtn = el("button", { class: "conv-act danger", type: "button", "aria-label": "대화 삭제", title: "삭제", onclick: (e) => { e.stopPropagation(); deleteConversation(conv, delBtn); } });
     delBtn.append(icon("trash"));
     item.append(openBtn, el("div", { class: "conv-acts" }, [renameBtn, delBtn]));
     dom.convList.append(item);
@@ -4523,6 +4523,8 @@ function startRenameConversation(item, conv) {
     finished = true;
     const title = input.value.trim();
     if (save && title && title !== conv.title) {
+      input.disabled = true;
+      input.title = "저장 중…";
       api(`/api/conversations/${encodeURIComponent(conv.id)}`, { method: "PATCH", body: JSON.stringify({ title }) })
         .then(({ conversation }) => {
           conv.title = conversation?.title || title;
@@ -4598,16 +4600,26 @@ async function selectConversation(conv) {
   renderConversations();
   attachActiveRun(pane);
 }
-async function deleteConversation(conv) {
+async function deleteConversation(conv, triggerBtn = null) {
   const streamingPane = state.chatPanes.find((p) => p.conversationId === conv.id && p.streaming);
   if (streamingPane) {
     notify("응답 중인 대화는 삭제할 수 없습니다. 먼저 응답을 중지해 주세요.", "warn");
     return;
   }
   if (!window.confirm(`"${conv.title || "새 대화"}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
+  if (triggerBtn) {
+    triggerBtn.disabled = true;
+    triggerBtn.title = "삭제 중…";
+    triggerBtn.setAttribute("aria-label", "대화 삭제 중");
+  }
   try {
     await api(`/api/conversations/${encodeURIComponent(conv.id)}`, { method: "DELETE" });
   } catch (e) {
+    if (triggerBtn) {
+      triggerBtn.disabled = false;
+      triggerBtn.title = "삭제";
+      triggerBtn.setAttribute("aria-label", "대화 삭제");
+    }
     notify(`삭제 실패: ${e.message}`);
     return;
   }
