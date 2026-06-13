@@ -2522,6 +2522,12 @@ textarea::placeholder {
   font-size: var(--t-xs);
   margin-top: var(--s-1);
 }
+.linkish.danger {
+  color: var(--danger);
+}
+.linkish.danger:hover {
+  color: var(--danger);
+}
 .setup-badge {
   display: inline-block;
   margin-bottom: var(--s-3);

@@ -142,10 +142,13 @@ async function viewGhRepo(
 }
 
 /**
- * Create a new repo under the token owner's account through GitHub CLI. `gh`
- * handles github.com vs GHES routing via GH_HOST, and the user's token is passed
- * only in this child process's env. `--add-readme` gives the repo an initial
- * commit/default branch so the knowledge-repo clone can push immediately.
+ * Create a new repo through GitHub CLI. `gh` handles github.com vs GHES routing
+ * via GH_HOST, and the user's token is passed only in this child process's env.
+ * `--add-readme` gives the repo an initial commit/default branch so the
+ * knowledge-repo clone can push immediately. When `org` is given the repo is
+ * created under that organization (`org/name`) — required for a shared GROUP
+ * repo so every member's token can reach it via org/team permissions; otherwise
+ * it lands under the token owner's personal account (resolved via `gh api user`).
  */
 export async function createRemoteRepo(
   host: string,
@@ -154,22 +157,26 @@ export async function createRemoteRepo(
   isPrivate: boolean,
   description: string,
   githubCaCert?: string,
+  org?: string,
   runner: GhRunner = runGh,
 ): Promise<CreateRepoResult> {
   const normalizedHost = normalizeGithubHost(host);
   const env = ghEnv(normalizedHost, token, githubCaCert);
   try {
-    const user = await runner(["api", "user", "--jq", ".login"], { env, timeout: 20_000 });
-    const owner = user.stdout.trim();
+    let owner = (org ?? "").trim();
     if (!owner) {
-      return { ok: false, message: "gh api user did not return a login" };
+      const user = await runner(["api", "user", "--jq", ".login"], { env, timeout: 20_000 });
+      owner = user.stdout.trim();
+      if (!owner) {
+        return { ok: false, message: "gh api user did not return a login" };
+      }
     }
 
-    const createArgs = ["repo", "create", name, isPrivate ? "--private" : "--public", "--add-readme"];
+    const fullName = `${owner}/${name}`;
+    const createArgs = ["repo", "create", fullName, isPrivate ? "--private" : "--public", "--add-readme"];
     if (description) {
       createArgs.push("--description", description);
     }
-    const fullName = `${owner}/${name}`;
     try {
       await runner(createArgs, { env, timeout: 60_000 });
     } catch (error) {
@@ -312,9 +319,10 @@ export function buildRepoTools(
   }
   const createTool = tool(
     "create_repo",
-    `**Use this tool when the owner asks you to create or connect a knowledge repository** — do not walk through manual setup or try scaffold_skill first. ${githubHostDescription(ctx.config.githubHost)} Using the configured internal Git token (GIT_TOKEN), it creates a new internal GitHub knowledge repository (private by default, initialized from the Claude plugin marketplace template) and connects it right away. Use it when there is no knowledge repository yet; you only need the repository name. After creation, fill in the content with scaffold_skill → write_file → commit. (owner only)`,
+    `**Use this tool when the owner asks you to create or connect a knowledge repository** — do not walk through manual setup or try scaffold_skill first. ${githubHostDescription(ctx.config.githubHost)} Using the configured internal Git token (GIT_TOKEN), it creates a new internal GitHub knowledge repository (private by default, initialized from the Claude plugin marketplace template) and connects it right away. By default the repo is created under the owner's personal account; pass \`org\` to create it under a GitHub organization instead. Use it when there is no knowledge repository yet; you only need the repository name. After creation, fill in the content with scaffold_skill → write_file → commit. (owner only)`,
     {
       name: z.string().describe("New repository name (letters/digits and - _ . only, e.g. my-knowledge)"),
+      org: z.string().optional().describe("GitHub organization to create the repo under (e.g. acme). Omit to create under the owner's personal account."),
       private: z.boolean().optional().describe("Whether it is private (default true)"),
       description: z.string().optional().describe("Repository description (optional)"),
     },
@@ -336,6 +344,10 @@ export function buildRepoTools(
       if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
         return text("The repository name may only use letters/digits and the characters - _ .", true);
       }
+      const org = (args.org ?? "").trim();
+      if (org && !/^[A-Za-z0-9._-]{1,100}$/.test(org)) {
+        return text("The organization name may only use letters/digits and the characters - _ .", true);
+      }
       const targetHost = normalizeGithubHost(ctx.config.githubHost);
       try {
         const result = await (opts.createRemoteRepo ?? createRemoteRepo)(
@@ -345,6 +357,7 @@ export function buildRepoTools(
           args.private ?? true,
           (args.description ?? "").trim(),
           ctx.config.githubCaCert,
+          org || undefined,
         );
         if (!result.ok) {
           const status = result.status ? `, HTTP ${result.status}` : "";

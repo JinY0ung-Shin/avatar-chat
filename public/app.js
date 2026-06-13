@@ -5349,6 +5349,26 @@ function buildKnowledgeRepoCard() {
       },
     });
     headerActions.push(refreshBtn);
+    const disconnectBtn = el("button", {
+      class: "linkish small danger",
+      type: "button",
+      text: "연결 해제",
+      title: "이 저장소 연결을 해제합니다 (GitHub의 저장소 자체는 삭제되지 않습니다)",
+      onclick: async () => {
+        if (!window.confirm("지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 아바타가 더 이상 그 스킬을 불러오지 않습니다.")) return;
+        disconnectBtn.disabled = true;
+        try {
+          const { user } = await api("/api/me/knowledge-repo", { method: "PUT", body: JSON.stringify({ repo: null }) });
+          state.user = user;
+          invalidateSkillsCache(state.user.id);
+          renderView();
+        } catch (e) {
+          disconnectBtn.disabled = false;
+          notify(`연결 해제 실패: ${e.message}`);
+        }
+      },
+    });
+    headerActions.push(disconnectBtn);
   }
   headerActions.push(el("button", { class: "linkish small", type: "button", text: "설정 안내 다시 보기", onclick: () => openOnboarding() }));
   card.append(
@@ -5669,7 +5689,25 @@ function buildGroupRepoCard(g) {
         }
       },
     });
-    wrap.append(el("div", { class: "head-actions" }, [refreshBtn]));
+    const disconnectBtn = el("button", {
+      class: "linkish small danger",
+      type: "button",
+      text: "연결 해제",
+      title: "이 그룹의 공용 저장소 연결을 해제합니다 (GitHub의 저장소 자체는 삭제되지 않습니다)",
+      onclick: async () => {
+        if (!window.confirm("이 그룹의 공용 지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 멤버 아바타들이 더 이상 그 스킬을 불러오지 않습니다.")) return;
+        disconnectBtn.disabled = true;
+        try {
+          await api(`/api/me/groups/${gid}/knowledge-repo`, { method: "PUT", body: JSON.stringify({ repo: null }) });
+          invalidateSkillsCache(state.user.id);
+          renderView();
+        } catch (e) {
+          disconnectBtn.disabled = false;
+          notify(`연결 해제 실패: ${e.message}`);
+        }
+      },
+    });
+    wrap.append(el("div", { class: "head-actions" }, [refreshBtn, disconnectBtn]));
   }
 
   const form = el("form", {

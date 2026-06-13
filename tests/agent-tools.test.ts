@@ -589,7 +589,7 @@ describe("repo tools (knowledge-repo management)", () => {
     });
     expect(res.isError).toBeFalsy();
     expect(res.content[0].text).toContain("owner/my-knowledge");
-    expect(create).toHaveBeenCalledWith("github.com", "tok", "my-knowledge", true, "", undefined);
+    expect(create).toHaveBeenCalledWith("github.com", "tok", "my-knowledge", true, "", undefined, undefined);
     expect(s.store.getKnowledgeRepo(s.ownerId)).toMatchObject({ repo: "owner/my-knowledge", branch: "main" });
   });
 
@@ -627,6 +627,7 @@ describe("repo tools (knowledge-repo management)", () => {
       true,
       "desc",
       "/tmp/ca.pem",
+      undefined,
       runner,
     );
 
@@ -638,7 +639,7 @@ describe("repo tools (knowledge-repo management)", () => {
     });
     expect(calls.map((c) => c.args)).toEqual([
       ["api", "user", "--jq", ".login"],
-      ["repo", "create", "my-knowledge", "--private", "--add-readme", "--description", "desc"],
+      ["repo", "create", "owner/my-knowledge", "--private", "--add-readme", "--description", "desc"],
       ["repo", "view", "owner/my-knowledge", "--json", "nameWithOwner,defaultBranchRef,isPrivate"],
     ]);
     for (const call of calls) {
@@ -672,7 +673,7 @@ describe("repo tools (knowledge-repo management)", () => {
       };
     });
 
-    const res = await createRemoteRepo("github.enterprise.local", "tok", "my-knowledge", true, "", undefined, runner);
+    const res = await createRemoteRepo("github.enterprise.local", "tok", "my-knowledge", true, "", undefined, undefined, runner);
 
     expect(res).toMatchObject({
       ok: true,
@@ -682,8 +683,35 @@ describe("repo tools (knowledge-repo management)", () => {
     });
     expect(calls).toEqual([
       ["api", "user", "--jq", ".login"],
-      ["repo", "create", "my-knowledge", "--private", "--add-readme"],
+      ["repo", "create", "owner/my-knowledge", "--private", "--add-readme"],
       ["repo", "view", "owner/my-knowledge", "--json", "nameWithOwner,defaultBranchRef,isPrivate"],
+    ]);
+  });
+
+  it("createRemoteRepo targets an org and skips the personal-login lookup", async () => {
+    const calls: string[][] = [];
+    const runner = vi.fn(async (args: string[]) => {
+      calls.push(args);
+      if (args[0] === "repo" && args[1] === "create") {
+        return { stdout: "", stderr: "" };
+      }
+      return {
+        stdout: JSON.stringify({
+          nameWithOwner: "acme/team-knowledge",
+          defaultBranchRef: { name: "main" },
+          isPrivate: true,
+        }),
+        stderr: "",
+      };
+    });
+
+    const res = await createRemoteRepo("github.enterprise.local", "tok", "team-knowledge", true, "", undefined, "acme", runner);
+
+    expect(res).toMatchObject({ ok: true, fullName: "acme/team-knowledge", isPrivate: true });
+    // No `gh api user` call — the org IS the owner.
+    expect(calls).toEqual([
+      ["repo", "create", "acme/team-knowledge", "--private", "--add-readme"],
+      ["repo", "view", "acme/team-knowledge", "--json", "nameWithOwner,defaultBranchRef,isPrivate"],
     ]);
   });
 
@@ -695,7 +723,7 @@ describe("repo tools (knowledge-repo management)", () => {
       });
     });
 
-    const res = await createRemoteRepo("github.com", "tok-secret", "dup", true, "", undefined, runner);
+    const res = await createRemoteRepo("github.com", "tok-secret", "dup", true, "", undefined, undefined, runner);
 
     expect(res.ok).toBe(false);
     if (!res.ok) {

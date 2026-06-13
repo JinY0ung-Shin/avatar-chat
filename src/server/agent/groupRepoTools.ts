@@ -237,10 +237,11 @@ export function buildGroupRepoTools(
       "create_repo",
       `**Use this tool when a group admin asks you to create the group's shared knowledge repository.** ${githubHostDescription(
         ctx.config.githubHost,
-      )} Using the configured internal Git token (GIT_TOKEN), it creates a new internal GitHub repository (private by default, initialized from the Claude plugin marketplace template) and connects it to that group right away. It only works when the group does not have a repository yet. (group admin only)`,
+      )} Using the configured internal Git token (GIT_TOKEN), it creates a new internal GitHub repository (private by default, initialized from the Claude plugin marketplace template) and connects it to that group right away. It only works when the group does not have a repository yet. **IMPORTANT: a shared group repo should normally live under a GitHub ORGANIZATION, not your personal account — a private repo under your personal account is NOT reachable by other members' tokens, so the shared skills will silently fail to load for them. Before creating, ASK the group admin which organization to create it under (pass it as \`org\`), or confirm they really want it under your personal account.** (group admin only)`,
       {
         group: z.string().describe("Group name or ID"),
         name: z.string().describe("New repository name (letters/digits and - _ . only, e.g. team-knowledge)"),
+        org: z.string().optional().describe("GitHub organization to create the shared repo under (e.g. acme), so all members can access it. Ask the admin which org to use. Omit only if they explicitly want it under the personal account."),
         private: z.boolean().optional().describe("Whether it is private (default true)"),
         description: z.string().optional().describe("Repository description (optional)"),
       },
@@ -263,6 +264,10 @@ export function buildGroupRepoTools(
         if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
           return text("The repository name may only use letters/digits and the characters - _ .", true);
         }
+        const org = (args.org ?? "").trim();
+        if (org && !/^[A-Za-z0-9._-]{1,100}$/.test(org)) {
+          return text("The organization name may only use letters/digits and the characters - _ .", true);
+        }
         const targetHost = normalizeGithubHost(ctx.config.githubHost);
         try {
           const result = await create(
@@ -272,6 +277,7 @@ export function buildGroupRepoTools(
             args.private ?? true,
             (args.description ?? "").trim(),
             ctx.config.githubCaCert,
+            org || undefined,
           );
           if (!result.ok) {
             const status = result.status ? `, HTTP ${result.status}` : "";
