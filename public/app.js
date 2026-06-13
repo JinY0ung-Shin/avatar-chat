@@ -6435,6 +6435,7 @@ function buildKnowledgeRepoCard() {
           await api("/api/me/knowledge-repo/refresh", { method: "POST" });
           invalidateSkillsCache(state.user.id);
           refreshBtn.textContent = "새로고침됨 ✓";
+          notify("지식 저장소를 최신 상태로 새로고침했습니다.", "ok");
           setTimeout(() => { refreshBtn.textContent = saved; setFormBusy(card, false); }, 1200);
         } catch (e) {
           refreshBtn.textContent = saved;
@@ -6457,6 +6458,7 @@ function buildKnowledgeRepoCard() {
           state.user = user;
           invalidateSkillsCache(state.user.id);
           renderView();
+          notify("지식 저장소 연결을 해제했습니다.", "ok");
         } catch (e) {
           setFormBusy(card, false);
           notify(`연결 해제 실패: ${e.message}`);
@@ -6514,6 +6516,7 @@ function buildKnowledgeRepoCard() {
         });
         state.user = user;
         renderView();
+        notify(`지식 저장소 "${repo}"을 연결했습니다.`, "ok");
       } catch (err) {
         btn.textContent = saved;
         notify(`저장 실패: ${err.message}`);
