@@ -118,6 +118,25 @@ function detachClient(run: Run, client: Client): void {
   run.clients.delete(client);
 }
 
+/**
+ * Resolve every parked prompt with CANCELLED and clear the pending map: clear
+ * each auto-cancel timer, optionally tell clients the prompt is resolved
+ * (`notify`), then settle the parked promise. `notify` is false on a final close
+ * (the SSE is ending anyway, so a prompt_resolved frame is pointless).
+ */
+function resolvePending(runId: string, run: Run, { notify }: { notify: boolean }): void {
+  for (const [requestId, pending] of run.pending) {
+    if (pending.timeout) {
+      clearTimeout(pending.timeout);
+    }
+    if (notify) {
+      emitRunEvent(runId, "prompt_resolved", { requestId });
+    }
+    pending.resolve(CANCELLED);
+  }
+  run.pending.clear();
+}
+
 export function emitRunEvent(runId: string, event: string, data: unknown): boolean {
   const run = runs.get(runId);
   if (!run || run.ended) {
@@ -209,14 +228,7 @@ export function cancelRun(runId: string, userId: string): boolean {
   }
   run.cancelled = true;
   run.abortController?.abort();
-  for (const [requestId, pending] of run.pending) {
-    if (pending.timeout) {
-      clearTimeout(pending.timeout);
-    }
-    emitRunEvent(runId, "prompt_resolved", { requestId });
-    pending.resolve(CANCELLED);
-  }
-  run.pending.clear();
+  resolvePending(runId, run, { notify: true });
   emitRunEvent(runId, "status", { label: "응답을 중지하는 중…" });
   regLogger.debug({ runId }, "run cancellation requested");
   return true;
@@ -232,14 +244,7 @@ export function cancelAllRuns(): void {
   for (const [runId, run] of runs) {
     run.cancelled = true;
     run.abortController?.abort();
-    for (const [requestId, pending] of run.pending) {
-      if (pending.timeout) {
-        clearTimeout(pending.timeout);
-      }
-      emitRunEvent(runId, "prompt_resolved", { requestId });
-      pending.resolve(CANCELLED);
-    }
-    run.pending.clear();
+    resolvePending(runId, run, { notify: true });
   }
 }
 
@@ -313,13 +318,7 @@ export function closeRun(runId: string): void {
   }
   run.ended = true;
   const pendingCount = run.pending.size;
-  for (const pending of run.pending.values()) {
-    if (pending.timeout) {
-      clearTimeout(pending.timeout);
-    }
-    pending.resolve(CANCELLED);
-  }
-  run.pending.clear();
+  resolvePending(runId, run, { notify: false });
   for (const client of [...run.clients]) {
     detachClient(run, client);
     if (!client.res.writableEnded) {
