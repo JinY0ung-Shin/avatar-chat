@@ -2244,16 +2244,7 @@ function renderRoutineManageRows(list, searchInput = null) {
     const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행" });
     runBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      const saved = runBtn.textContent;
-      setFormBusy(row, true);
-      runBtn.textContent = "실행 중…";
-      try {
-        await runRoutineNow(r);
-      } catch (err) {
-        notify(`루틴 실행 실패: ${err.message}`);
-        setFormBusy(row, false);
-        runBtn.textContent = saved;
-      }
+      await runRoutineFromButton(r, runBtn, row);
     });
 
     row = el("div", {
@@ -2297,6 +2288,22 @@ async function runRoutineNow(routine) {
   openRoutineResult(routine.conversationId);
 }
 
+async function runRoutineFromButton(routine, button, busyRoot = null) {
+  if (!routine || !button) return;
+  const saved = button.textContent;
+  if (busyRoot) setFormBusy(busyRoot, true);
+  else button.disabled = true;
+  button.textContent = "실행 중…";
+  try {
+    await runRoutineNow(routine);
+  } catch (err) {
+    if (busyRoot) setFormBusy(busyRoot, false);
+    else button.disabled = false;
+    button.textContent = saved;
+    notify(`루틴 실행 실패: ${err.message}`);
+  }
+}
+
 function buildRoutineResultPanel(messageLoadError = "") {
   const conv = state.routineConversations.find((c) => c.id === state.routineConversationId);
   const routine = conv ? state.routines.find((r) => r.conversationId === conv.id) : null;
@@ -2329,24 +2336,12 @@ function buildRoutineResultPanel(messageLoadError = "") {
   ]);
   if (!conv) {
     const firstRoutine = state.routines[0];
-    const runFirstRoutine = async (button) => {
-      const saved = button.textContent;
-      button.disabled = true;
-      button.textContent = "실행 중…";
-      try {
-        await runRoutineNow(firstRoutine);
-      } catch (err) {
-        button.disabled = false;
-        button.textContent = saved;
-        notify(`루틴 실행 실패: ${err.message}`);
-      }
-    };
     const runFirstBtn = firstRoutine
       ? el("button", {
           class: "linkish small",
           type: "button",
           text: "첫 루틴 지금 실행",
-          onclick: (event) => runFirstRoutine(event.currentTarget),
+          onclick: (event) => runRoutineFromButton(firstRoutine, event.currentTarget, card),
         })
       : null;
     inner.append(
@@ -2372,7 +2367,12 @@ function buildRoutineResultPanel(messageLoadError = "") {
     return card;
   }
   if (!state.routineMessages.length) {
-    inner.append(el("div", { class: "empty-note", text: "아직 실행 메시지가 없습니다." }));
+    inner.append(
+      el("div", { class: "empty-note" }, [
+        "아직 실행 메시지가 없습니다.\n",
+        routine ? el("button", { class: "linkish small", type: "button", text: "지금 다시 실행", onclick: (event) => runRoutineFromButton(routine, event.currentTarget, card) }) : null,
+      ]),
+    );
     return card;
   }
   // A flat thread grows unreadable over many runs. Group it into per-run blocks
