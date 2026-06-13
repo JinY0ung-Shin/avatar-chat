@@ -5034,7 +5034,15 @@ function renderConversations() {
   for (const conv of visible) {
     const active = state.chatPanes.some((pane) => pane.conversationId === conv.id);
     const item = el("div", { class: `conv-item ${active ? "active" : ""}`, dataset: { id: conv.id } });
-    const openBtn = el("button", { class: "conv-open", type: "button", title: conv.title, onclick: () => selectConversation(conv, openBtn, item) }, [
+    const title = conv.title || "새 대화";
+    const openLabel = active ? `열려 있는 대화로 이동: ${title}` : `대화 열기: ${title}`;
+    const openBtn = el("button", {
+      class: "conv-open",
+      type: "button",
+      title: openLabel,
+      "aria-label": openLabel,
+      onclick: () => selectConversation(conv, openBtn, item),
+    }, [
       el("span", { class: "conv-name", text: conv.title || "새 대화" }),
       el("span", { class: "conv-time", text: [conv.avatarDisplayName, timeLabel(conv.updatedAt)].filter(Boolean).join(" · ") }),
     ]);
@@ -5060,7 +5068,7 @@ function startRenameConversation(item, conv) {
   item.classList.add("editing");
   const open = item.querySelector(".conv-open");
   item.querySelectorAll(".conv-act").forEach((btn) => (btn.disabled = true));
-  const input = el("input", { class: "conv-rename", value: conv.title || "", "aria-label": "대화 이름" });
+  const input = el("input", { class: "conv-rename", value: conv.title || "", placeholder: "대화 이름", "aria-label": "대화 이름", title: "Enter 저장 · Esc 취소" });
   open.replaceWith(input);
   input.focus();
   input.select();
@@ -5114,6 +5122,7 @@ async function selectConversation(conv, triggerBtn = null, row = null) {
     syncHash();
     renderView();
     renderConversations();
+    notify(`"${conv.title || "새 대화"}" 대화로 이동했습니다.`, "info");
     return;
   }
   if (state.chatPanes.length > 1) {
