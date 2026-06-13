@@ -1,7 +1,4 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-
-const execFileAsync = promisify(execFile);
+import { runPython } from "./pythonExec.js";
 
 export interface GeneratedSshKeyPair {
   privateKey: string;
@@ -64,7 +61,7 @@ export async function generateSshKeyPair(comment = "avatar-chat"): Promise<Gener
     "fingerprint = \"SHA256:\" + base64.b64encode(hashlib.sha256(raw).digest()).decode().rstrip(\"=\")",
     "print(json.dumps({\"privateKey\": private_key, \"publicKey\": public_key, \"fingerprint\": fingerprint}))",
   ].join("\n");
-  const { stdout } = await execFileAsync("python3", ["-c", script, cleanComment(comment)], {
+  const stdout = await runPython(script, [cleanComment(comment)], {
     timeout: 15_000,
     maxBuffer: 256 * 1024,
   });

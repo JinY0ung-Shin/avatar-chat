@@ -1,12 +1,9 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 import type { AppConfig } from "./types.js";
 import { sanitizeName } from "./marketplace.js";
-
-const execFileAsync = promisify(execFile);
+import { runPython } from "./pythonExec.js";
 
 // Per-user SSH host-trust store. hex-ssh verifies host keys fail-closed against
 // a known_hosts file (its `KNOWN_HOSTS_PATH`), RE-READING it on every connection
@@ -119,9 +116,7 @@ export async function fetchHostKey(
     'print("%s %s %s" % (tok, k.get_name(), k.get_base64()))',
     "print(fp)",
   ].join("\n");
-  const { stdout } = await execFileAsync("python3", ["-c", script, host, String(port)], {
-    timeout: 15_000,
-  });
+  const stdout = await runPython(script, [host, String(port)], { timeout: 15_000 });
   const [line, fingerprint] = stdout.trim().split("\n");
   if (!line || !fingerprint) {
     throw new Error("EMPTY_HOST_KEY");
