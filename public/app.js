@@ -7301,11 +7301,19 @@ function buildKnowledgeRequestRow(r, refresh) {
     ignoreBtn.textContent = "무시 중…";
     try {
       await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
-      await refresh?.();
     } catch (e) {
       ignoreBtn.textContent = saved;
       controls.forEach((c) => (c.disabled = false));
       notify(`무시 처리 실패: ${e.message}`);
+      return;
+    }
+    try {
+      await refresh?.({ surfaceErrors: true });
+      notify("정보 요청을 무시했습니다.", "ok");
+    } catch (e) {
+      ignoreBtn.textContent = saved;
+      controls.forEach((c) => (c.disabled = false));
+      notify(`정보 요청은 무시했지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
     }
   });
   sendBtn.addEventListener("click", async () => {
