@@ -384,14 +384,22 @@ async function resizeImage(file, max = 256) {
 }
 
 /* ============================================================ Auth view */
-function buildPasswordInput({ autocomplete, placeholder }) {
+function buildRevealableInput({
+  name,
+  autocomplete = "off",
+  placeholder = "",
+  ariaLabel = "",
+  required = false,
+  minlength = null,
+}) {
   const input = el("input", {
-    name: "password",
+    name,
     type: "password",
     autocomplete,
     placeholder,
-    required: "",
-    minlength: "8",
+    ...(ariaLabel ? { "aria-label": ariaLabel } : {}),
+    ...(required ? { required: "" } : {}),
+    ...(minlength ? { minlength: String(minlength) } : {}),
   });
   const toggle = el("button", {
     class: "password-toggle",
@@ -411,7 +419,17 @@ function buildPasswordInput({ autocomplete, placeholder }) {
     input.focus();
   });
   sync();
-  return el("div", { class: "password-field" }, [input, toggle]);
+  return { input, wrap: el("div", { class: "password-field" }, [input, toggle]) };
+}
+
+function buildPasswordInput({ autocomplete, placeholder }) {
+  return buildRevealableInput({
+    name: "password",
+    autocomplete,
+    placeholder,
+    required: true,
+    minlength: 8,
+  }).wrap;
 }
 
 function renderAuth(mode = "login", { username = "", displayName = "" } = {}) {
@@ -5236,7 +5254,8 @@ function buildGitCredentialsCard() {
   renderStatus();
 
   const buildTokenForm = ({ label, secretName, description, placeholder, ariaLabel, saveToken, clearToken, isSet }) => {
-    const input = el("input", { name: "token", type: "password", placeholder, "aria-label": ariaLabel, required: "", autocomplete: "off" });
+    const tokenField = buildRevealableInput({ name: "token", placeholder, ariaLabel, required: true });
+    const input = tokenField.input;
     const saveBtn = el("button", { class: "primary", type: "submit", text: isSet() ? "교체" : "저장" });
     const clearBtn = el("button", {
       class: "linkish small",
@@ -5298,7 +5317,7 @@ function buildGitCredentialsCard() {
         ]),
         el("p", { class: "muted", text: description }),
       ]),
-      input,
+      tokenField.wrap,
       el("div", { class: "secret-preset-actions" }, [saveBtn, clearBtn]),
     ]);
   };
@@ -7663,20 +7682,20 @@ function buildOnboardingGuide() {
  * login does not feel like a repository configuration wizard.
  */
 function openOnboarding() {
-  const tokenInput = el("input", {
+  const gitTokenField = buildRevealableInput({
     name: "token",
-    type: "password",
     placeholder: "사내 GitHub PAT (GIT_TOKEN)",
     autocomplete: "off",
-    "aria-label": "사내 Git 토큰 GIT_TOKEN",
+    ariaLabel: "사내 Git 토큰 GIT_TOKEN",
   });
-  const confluenceInput = el("input", {
+  const tokenInput = gitTokenField.input;
+  const confluenceField = buildRevealableInput({
     name: "confluence",
-    type: "password",
     placeholder: "Confluence PAT (CONFLUENCE_PAT)",
     autocomplete: "off",
-    "aria-label": "Confluence Personal Access Token CONFLUENCE_PAT",
+    ariaLabel: "Confluence Personal Access Token CONFLUENCE_PAT",
   });
+  const confluenceInput = confluenceField.input;
   const errorBox = el("div", { class: "error", role: "alert", hidden: "" });
   const sshStatus = el("div", { class: "git-token-status muted" });
   const sshPublicKeyBox = el("div", { class: "ssh-public-key-box" });
@@ -7777,7 +7796,7 @@ function openOnboarding() {
               text: "토큰 만들러 가기 ↗",
             }),
           ]),
-          tokenInput,
+          gitTokenField.wrap,
         ]),
         el("div", { class: "onboard-connect" }, [
           el("h3", { text: "SSH 키" }),
@@ -7808,7 +7827,7 @@ function openOnboarding() {
               }),
               el("label", { class: "field" }, [
                 el("span", { text: "Confluence PAT (CONFLUENCE_PAT, 선택)" }),
-                confluenceInput,
+                confluenceField.wrap,
               ]),
             ])
           : null,
