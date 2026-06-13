@@ -2377,7 +2377,7 @@ function buildRoutineResultPanel(messageLoadError = "") {
   const runs = groupRoutineRuns(state.routineMessages);
   const currentPrompt = (routine?.prompt || "").trim();
   for (let i = runs.length - 1; i >= 0; i--) {
-    inner.append(buildRoutineRunBlock(runs[i], i + 1, i === runs.length - 1, currentPrompt));
+    inner.append(buildRoutineRunBlock(runs[i], i + 1, i === runs.length - 1, currentPrompt, routine));
   }
   return card;
 }
@@ -2403,7 +2403,7 @@ function groupRoutineRuns(messages) {
   return runs;
 }
 
-function buildRoutineRunBlock(run, runNumber, expanded, currentPrompt) {
+function buildRoutineRunBlock(run, runNumber, expanded, currentPrompt, routine = null) {
   const time = run.at ? timeLabel(run.at) : "";
   const details = el("details", { class: "routine-run-block", ...(expanded ? { open: "" } : {}) });
   details.append(
@@ -2425,7 +2425,12 @@ function buildRoutineRunBlock(run, runNumber, expanded, currentPrompt) {
   if (run.responses.length) {
     for (const m of run.responses) body.append(buildRoutineMessageNode(m));
   } else {
-    body.append(el("div", { class: "empty-note", text: "이 실행에는 결과 메시지가 없습니다." }));
+    body.append(
+      el("div", { class: "empty-note" }, [
+        "이 실행에는 결과 메시지가 없습니다.\n",
+        routine ? el("button", { class: "linkish small", type: "button", text: "현재 루틴 다시 실행", onclick: (event) => runRoutineFromButton(routine, event.currentTarget, details) }) : null,
+      ]),
+    );
   }
   details.append(body);
   return details;
