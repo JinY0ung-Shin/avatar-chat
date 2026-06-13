@@ -5173,7 +5173,12 @@ async function renderSettings() {
       introGenBtn.textContent = "생성 중…";
       try {
         const { intro } = await api("/api/me/intro/generate", { method: "POST" });
-        if (intro) introField.value = intro;
+        if (intro) {
+          introField.value = intro;
+          notify("자기소개 초안이 채워졌습니다. 저장하려면 프로필 저장을 누르세요.", "info");
+        } else {
+          notify("생성된 자기소개가 없습니다. 페르소나나 스킬을 먼저 보강해 보세요.", "info");
+        }
       } catch (err) {
         notify(`자기소개 생성 실패: ${err.message}`);
       } finally {
@@ -5197,8 +5202,12 @@ async function renderSettings() {
       tagGenBtn.textContent = "생성 중…";
       try {
         const { hashtags } = await api("/api/me/hashtags/generate", { method: "POST" });
-        if (hashtags && hashtags.length) hashtagEditor.setTags(hashtags);
-        else notify("생성된 해시태그가 없습니다. 스킬이나 플러그인을 먼저 연결해 보세요.", "info");
+        if (hashtags && hashtags.length) {
+          hashtagEditor.setTags(hashtags);
+          notify("해시태그 초안이 채워졌습니다. 저장하려면 프로필 저장을 누르세요.", "info");
+        } else {
+          notify("생성된 해시태그가 없습니다. 스킬이나 플러그인을 먼저 연결해 보세요.", "info");
+        }
       } catch (err) {
         notify(`해시태그 생성 실패: ${err.message}`);
       } finally {
