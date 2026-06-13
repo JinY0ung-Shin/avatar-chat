@@ -150,6 +150,17 @@ interface UserRow {
   hashtags: string | null;
 }
 
+interface PluginRow {
+  id: string;
+  repo: string;
+  ref: string | null;
+  label: string | null;
+  enabled: number;
+  selected: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+}
+
 interface KnowledgeRequestRow {
   id: string;
   avatar_user_id: string;
@@ -190,6 +201,17 @@ interface GroupRow {
   knowledge_selected: string | null;
   created_by: string | null;
   created_at: string;
+}
+
+interface GroupMemberRow {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_ext: string | null;
+  visibility: string | null;
+  published: number;
+  role: string;
+  created_at: string | null;
 }
 
 interface RoutineJobRow {
@@ -501,6 +523,11 @@ export class Store {
     insert.run("member");
   }
 
+  /** Run a `SELECT COUNT(*) AS c ...` query and return the scalar count. */
+  private count(sql: string, ...params: unknown[]): number {
+    return (this.db.prepare(sql).get(...params) as { c: number }).c;
+  }
+
   // ---- Users ------------------------------------------------------------
 
   /** Resolve a row's avatar visibility, falling back to the legacy `published`
@@ -517,11 +544,10 @@ export class Store {
   private toUser(row: UserRow): User {
     const roles = this.rolesFor(row.id);
     const secretNames = this.listUserSecretNames(row.id);
-    const pluginCount = (
-      this.db
-        .prepare("SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ?")
-        .get(row.id) as { c: number }
-    ).c;
+    const pluginCount = this.count(
+      "SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ?",
+      row.id,
+    );
     return {
       id: row.id,
       username: row.username,
@@ -573,8 +599,7 @@ export class Store {
     }
     const timestamp = now();
     const id = crypto.randomUUID();
-    const isFirstUser =
-      (this.db.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number }).c === 0;
+    const isFirstUser = this.count("SELECT COUNT(*) AS c FROM users") === 0;
 
     const insertUser = this.db.prepare(`
       INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, published, visibility, created_at, last_seen_at)
@@ -616,7 +641,7 @@ export class Store {
 
   /** True once at least one account exists. False only on a fresh install. */
   hasAnyUser(): boolean {
-    return (this.db.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number }).c > 0;
+    return this.count("SELECT COUNT(*) AS c FROM users") > 0;
   }
 
   verifyLogin(username: string, password: string): User | "suspended" | null {
@@ -1069,16 +1094,7 @@ export class Store {
 
   // ---- Plugins ----------------------------------------------------------
 
-  private toPlugin(row: {
-    id: string;
-    repo: string;
-    ref: string | null;
-    label: string | null;
-    enabled: number;
-    selected: string | null;
-    last_synced_at: string | null;
-    created_at: string;
-  }): Plugin {
+  private toPlugin(row: PluginRow): Plugin {
     return {
       id: row.id,
       repo: row.repo,
@@ -1094,7 +1110,7 @@ export class Store {
   listPlugins(userId: string): Plugin[] {
     const rows = this.db
       .prepare("SELECT * FROM avatar_plugins WHERE user_id = ? ORDER BY created_at ASC")
-      .all(userId) as Parameters<Store["toPlugin"]>[0][];
+      .all(userId) as PluginRow[];
     return rows.map((r) => this.toPlugin(r));
   }
 
@@ -1111,9 +1127,7 @@ export class Store {
       )
       .run(id, userId, input.repo.trim(), input.ref?.trim() || null, input.label?.trim() || null, now());
     return this.toPlugin(
-      this.db.prepare("SELECT * FROM avatar_plugins WHERE id = ?").get(id) as Parameters<
-        Store["toPlugin"]
-      >[0],
+      this.db.prepare("SELECT * FROM avatar_plugins WHERE id = ?").get(id) as PluginRow,
     );
   }
 
@@ -1127,7 +1141,7 @@ export class Store {
   getPlugin(userId: string, id: string): Plugin | null {
     const row = this.db
       .prepare("SELECT * FROM avatar_plugins WHERE id = ? AND user_id = ?")
-      .get(id, userId) as Parameters<Store["toPlugin"]>[0] | undefined;
+      .get(id, userId) as PluginRow | undefined;
     return row ? this.toPlugin(row) : null;
   }
 
@@ -1233,13 +1247,10 @@ export class Store {
   }
 
   countOpenKnowledgeRequests(avatarUserId: string): number {
-    return (
-      this.db
-        .prepare(
-          "SELECT COUNT(*) AS c FROM knowledge_requests WHERE avatar_user_id = ? AND status = 'open'",
-        )
-        .get(avatarUserId) as { c: number }
-    ).c;
+    return this.count(
+      "SELECT COUNT(*) AS c FROM knowledge_requests WHERE avatar_user_id = ? AND status = 'open'",
+      avatarUserId,
+    );
   }
 
   /**
@@ -1329,17 +1340,18 @@ export class Store {
   // ---- Routine jobs (owner-scheduled recurring runs) -------------------
 
   private toRoutineJob(row: RoutineJobRow): RoutineJob {
+    const schedule = this.scheduleFromRow(row);
     return {
       id: row.id,
       avatarUserId: row.avatar_user_id,
       conversationId: row.conversation_id,
       name: row.name ?? null,
       prompt: row.prompt,
-      scheduleKind: (row.schedule_kind as ScheduleKind) ?? "daily",
-      minuteOfDay: row.minute_of_day,
-      time: formatMinuteOfDay(row.minute_of_day),
-      daysOfWeek: row.days_of_week ? (JSON.parse(row.days_of_week) as number[]) : null,
-      intervalMinutes: row.interval_minutes ?? null,
+      scheduleKind: schedule.kind,
+      minuteOfDay: schedule.minuteOfDay,
+      time: formatMinuteOfDay(schedule.minuteOfDay),
+      daysOfWeek: schedule.daysOfWeek,
+      intervalMinutes: schedule.intervalMinutes,
       enabled: row.enabled === 1,
       nextRunAt: row.next_run_at,
       lastRunAt: row.last_run_at,
@@ -1349,12 +1361,26 @@ export class Store {
     };
   }
 
+  /** Decode the stored days_of_week JSON, tolerating a corrupt value (→ null) so
+   *  one bad row can't throw and abort a scheduler tick. */
+  private parseDaysOfWeek(raw: string | null): number[] | null {
+    if (!raw) {
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as number[]) : null;
+    } catch {
+      return null;
+    }
+  }
+
   /** Reconstruct a RoutineSchedule from a stored row (legacy NULL kind → daily). */
   private scheduleFromRow(row: RoutineJobRow): RoutineSchedule {
     return {
       kind: (row.schedule_kind as ScheduleKind) ?? "daily",
       minuteOfDay: row.minute_of_day,
-      daysOfWeek: row.days_of_week ? (JSON.parse(row.days_of_week) as number[]) : null,
+      daysOfWeek: this.parseDaysOfWeek(row.days_of_week),
       intervalMinutes: row.interval_minutes ?? null,
     };
   }
@@ -1401,6 +1427,9 @@ export class Store {
     input: {
       name?: string | null;
       prompt: string;
+      /** Pre-validated schedule (from parseRoutineSchedule); takes precedence over
+       *  the legacy individual schedule fields below when provided. */
+      schedule?: RoutineSchedule;
       scheduleKind?: ScheduleKind;
       minuteOfDay?: number;
       daysOfWeek?: number[] | null;
@@ -1413,10 +1442,14 @@ export class Store {
     const enabled = input.enabled !== false;
     const prompt = input.prompt.trim();
     const name = input.name?.trim() || null;
-    const kind: ScheduleKind = input.scheduleKind ?? "daily";
-    const minuteOfDay = input.minuteOfDay ?? 0;
-    const daysOfWeek = input.daysOfWeek ?? null;
-    const intervalMinutes = input.intervalMinutes ?? null;
+    // A validated RoutineSchedule object fully defines the schedule when present;
+    // otherwise fall back to the legacy individual fields (scheduleKind/
+    // minuteOfDay/...) for backward-compat callers.
+    const schedule = input.schedule;
+    const kind: ScheduleKind = schedule?.kind ?? input.scheduleKind ?? "daily";
+    const minuteOfDay = schedule ? schedule.minuteOfDay : (input.minuteOfDay ?? 0);
+    const daysOfWeek = schedule ? schedule.daysOfWeek : (input.daysOfWeek ?? null);
+    const intervalMinutes = schedule ? schedule.intervalMinutes : (input.intervalMinutes ?? null);
     const nextRunAt = enabled
       ? nextRunIso({ kind, minuteOfDay, daysOfWeek, intervalMinutes })
       : null;
@@ -1455,6 +1488,10 @@ export class Store {
     patch: {
       name?: string | null;
       prompt?: string;
+      /** Pre-validated schedule (from parseRoutineSchedule); when provided it
+       *  replaces the whole schedule, equivalent to supplying every individual
+       *  schedule field below. */
+      schedule?: RoutineSchedule;
       scheduleKind?: ScheduleKind;
       minuteOfDay?: number;
       daysOfWeek?: number[] | null;
@@ -1470,23 +1507,32 @@ export class Store {
     const name =
       patch.name !== undefined ? (patch.name?.trim() || null) : (row.name ?? null);
     const prompt = patch.prompt !== undefined ? patch.prompt.trim() : row.prompt;
+    // A validated RoutineSchedule replaces the whole schedule; otherwise the
+    // legacy per-field patch values apply. Either way `schedule*` below is what
+    // the existing diff/recompute logic compares against the stored row.
+    const scheduleKind = patch.schedule?.kind ?? patch.scheduleKind;
+    const patchMinuteOfDay = patch.schedule ? patch.schedule.minuteOfDay : patch.minuteOfDay;
+    const patchDaysOfWeek = patch.schedule ? patch.schedule.daysOfWeek : patch.daysOfWeek;
+    const patchIntervalMinutes = patch.schedule
+      ? patch.schedule.intervalMinutes
+      : patch.intervalMinutes;
     const existing = this.scheduleFromRow(row);
-    const kind: ScheduleKind = patch.scheduleKind ?? existing.kind;
-    const minuteOfDay = patch.minuteOfDay !== undefined ? patch.minuteOfDay : existing.minuteOfDay;
-    const daysOfWeek = patch.daysOfWeek !== undefined ? patch.daysOfWeek : existing.daysOfWeek;
+    const kind: ScheduleKind = scheduleKind ?? existing.kind;
+    const minuteOfDay = patchMinuteOfDay !== undefined ? patchMinuteOfDay : existing.minuteOfDay;
+    const daysOfWeek = patchDaysOfWeek !== undefined ? patchDaysOfWeek : existing.daysOfWeek;
     const intervalMinutes =
-      patch.intervalMinutes !== undefined ? patch.intervalMinutes : existing.intervalMinutes;
+      patchIntervalMinutes !== undefined ? patchIntervalMinutes : existing.intervalMinutes;
     const wasEnabled = row.enabled === 1;
     const enabled = patch.enabled !== undefined ? patch.enabled : wasEnabled;
     // The schedule changed if any schedule field was supplied AND differs from
     // the stored value. A name/prompt-only edit must keep an overdue (missed)
     // run intact — recomputing would silently push it forward.
     const scheduleChanged =
-      (patch.scheduleKind !== undefined && patch.scheduleKind !== existing.kind) ||
-      (patch.minuteOfDay !== undefined && patch.minuteOfDay !== existing.minuteOfDay) ||
-      (patch.daysOfWeek !== undefined &&
-        JSON.stringify(patch.daysOfWeek ?? null) !== JSON.stringify(existing.daysOfWeek)) ||
-      (patch.intervalMinutes !== undefined && patch.intervalMinutes !== existing.intervalMinutes);
+      (scheduleKind !== undefined && scheduleKind !== existing.kind) ||
+      (patchMinuteOfDay !== undefined && patchMinuteOfDay !== existing.minuteOfDay) ||
+      (patchDaysOfWeek !== undefined &&
+        JSON.stringify(patchDaysOfWeek ?? null) !== JSON.stringify(existing.daysOfWeek)) ||
+      (patchIntervalMinutes !== undefined && patchIntervalMinutes !== existing.intervalMinutes);
     let nextRunAt: string | null;
     if (!enabled) {
       nextRunAt = null;
@@ -1586,11 +1632,10 @@ export class Store {
   }
 
   private toAvatarSummary(row: UserRow): AvatarSummary {
-    const pluginCount = (
-      this.db
-        .prepare("SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ? AND enabled = 1")
-        .get(row.id) as { c: number }
-    ).c;
+    const pluginCount = this.count(
+      "SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ? AND enabled = 1",
+      row.id,
+    );
     return {
       id: row.id,
       username: row.username,
@@ -2156,10 +2201,6 @@ export class Store {
     return rows.map((row) => this.toAdminSummary(row));
   }
 
-  private count(sql: string, ...params: unknown[]): number {
-    return (this.db.prepare(sql).get(...params) as { c: number }).c;
-  }
-
   /** True once more than one admin exists — used to block locking out the last one. */
   countAdmins(): number {
     return this.count(
@@ -2422,16 +2463,7 @@ export class Store {
 
   // ---- Group membership -------------------------------------------------
 
-  private toGroupMember(row: {
-    id: string;
-    username: string;
-    display_name: string;
-    avatar_ext: string | null;
-    visibility: string | null;
-    published: number;
-    role: string;
-    created_at: string | null;
-  }): GroupMember {
+  private toGroupMember(row: GroupMemberRow): GroupMember {
     return {
       userId: row.id,
       username: row.username,
@@ -2501,7 +2533,7 @@ export class Store {
          FROM group_members m JOIN users u ON u.id = m.user_id
          WHERE m.group_id = ? AND m.user_id = ?`,
       )
-      .get(groupId, userId) as Parameters<Store["toGroupMember"]>[0] | undefined;
+      .get(groupId, userId) as GroupMemberRow | undefined;
     return row ? this.toGroupMember(row) : null;
   }
 
@@ -2517,7 +2549,7 @@ export class Store {
          ORDER BY CASE WHEN m.role = 'admin' THEN 0 ELSE 1 END,
                   u.display_name COLLATE NOCASE ASC`,
       )
-      .all(groupId) as Parameters<Store["toGroupMember"]>[0][];
+      .all(groupId) as GroupMemberRow[];
     return rows.map((r) => this.toGroupMember(r));
   }
 
