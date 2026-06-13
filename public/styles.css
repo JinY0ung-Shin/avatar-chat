@@ -4710,6 +4710,10 @@ textarea::placeholder {
 .weekday-chip:hover {
   border-color: var(--accent-soft-strong);
 }
+.weekday-chips[aria-invalid="true"] .weekday-chip {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
 .weekday-chip.selected {
   border-color: var(--accent);
   background: var(--accent);
@@ -4726,6 +4730,10 @@ textarea::placeholder {
   border-radius: var(--r-md);
   background: var(--bg-elevated);
   padding: 8px 10px;
+}
+.interval-inputs input[aria-invalid="true"] {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
 }
 .routine-modal-actions {
   display: flex;

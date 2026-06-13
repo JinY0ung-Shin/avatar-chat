@@ -1703,6 +1703,7 @@ function buildScheduleForm(routine) {
 
   // Weekday chips (매주).
   const selectedDays = new Set(Array.isArray(routine?.daysOfWeek) ? routine.daysOfWeek : []);
+  const dayChipWrap = el("div", { class: "weekday-chips", role: "group", "aria-label": "반복 요일" });
   const dayChips = WEEKDAY_NAMES.map((label, idx) => {
     const chip = el("button", {
       type: "button",
@@ -1716,12 +1717,14 @@ function buildScheduleForm(routine) {
       const on = selectedDays.has(idx);
       chip.classList.toggle("selected", on);
       chip.setAttribute("aria-pressed", on ? "true" : "false");
+      dayChipWrap.removeAttribute("aria-invalid");
     });
     return chip;
   });
+  dayChipWrap.append(...dayChips);
   const daysRow = el("div", { class: "schedule-row" }, [
     el("label", { class: "schedule-label", text: "요일" }),
-    el("div", { class: "weekday-chips" }, dayChips),
+    dayChipWrap,
   ]);
 
   // Interval (간격): number + unit.
@@ -1749,6 +1752,8 @@ function buildScheduleForm(routine) {
     "aria-label": "반복 간격 값",
     value: String(intervalValue),
   });
+  intervalInput.addEventListener("input", () => intervalInput.removeAttribute("aria-invalid"));
+  intervalUnit.addEventListener("change", () => intervalInput.removeAttribute("aria-invalid"));
   const intervalRow = el("div", { class: "schedule-row" }, [
     el("label", { class: "schedule-label", text: "반복 간격" }),
     el("div", { class: "interval-inputs" }, [intervalInput, intervalUnit]),
@@ -1761,6 +1766,8 @@ function buildScheduleForm(routine) {
 
   const applyKindVisibility = () => {
     const kind = kindSelect.value;
+    dayChipWrap.removeAttribute("aria-invalid");
+    intervalInput.removeAttribute("aria-invalid");
     timeRow.hidden = kind === "interval";
     daysRow.hidden = kind !== "weekly";
     intervalRow.hidden = kind !== "interval";
@@ -1786,8 +1793,16 @@ function buildScheduleForm(routine) {
   // Returns null if valid, or an error string if invalid.
   const validateSchedule = () => {
     const kind = kindSelect.value;
-    if (kind === "weekly" && selectedDays.size === 0) return "매주 반복은 요일을 1개 이상 선택해 주세요.";
-    if (kind === "interval" && intervalMinutesFromInputs() < 15) return "반복 간격은 15분 이상이어야 합니다.";
+    dayChipWrap.removeAttribute("aria-invalid");
+    intervalInput.removeAttribute("aria-invalid");
+    if (kind === "weekly" && selectedDays.size === 0) {
+      dayChipWrap.setAttribute("aria-invalid", "true");
+      return "매주 반복은 요일을 1개 이상 선택해 주세요.";
+    }
+    if (kind === "interval" && intervalMinutesFromInputs() < 15) {
+      intervalInput.setAttribute("aria-invalid", "true");
+      return "반복 간격은 15분 이상이어야 합니다.";
+    }
     return null;
   };
 
