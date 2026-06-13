@@ -3310,6 +3310,7 @@ function renderCapabilitiesPanel(av) {
   const skillsBody = el("div", { class: "cap-section-body cap-skills" });
   const plugins = av.plugins || [];
   const canManageCapabilities = state.user?.id === av.id;
+  const bodyId = `cap-body-${av.id || newId()}`;
   const pluginEmpty = canManageCapabilities
     ? el("div", { class: "cap-empty cap-empty-action" }, [
         el("span", { text: "연결된 플러그인이 없습니다." }),
@@ -3330,6 +3331,8 @@ function renderCapabilitiesPanel(av) {
     type: "button",
     title: "패널 접기",
     "aria-label": "패널 접기",
+    "aria-controls": bodyId,
+    "aria-expanded": "true",
     text: "›",
   });
   // The avatar's self-introduction (markdown), shown atop the panel when present.
@@ -3343,7 +3346,7 @@ function renderCapabilitiesPanel(av) {
   const tagsBlock = capTags.length
     ? el("div", { class: "cap-tags" }, capTags.map((t) => el("span", { class: "tag accent", text: `#${t}` })))
     : null;
-  const body = el("div", { class: "cap-body scroll-thin" }, [
+  const body = el("div", { id: bodyId, class: "cap-body scroll-thin" }, [
     el("div", { class: "cap-head" }, [
       el("h3", { text: "이 아바타의 역량" }),
       el("p", { class: "cap-sub", text: `${av.displayName}이(가) 사용할 수 있는 도구` }),
@@ -3366,6 +3369,7 @@ function renderCapabilitiesPanel(av) {
     type: "button",
     title: "역량 패널 펼치기",
     "aria-label": "역량 패널 펼치기",
+    "aria-controls": bodyId,
     "aria-expanded": "false",
   }, [
     el("span", { "aria-hidden": "true", text: "‹" }),
@@ -3381,13 +3385,14 @@ function renderCapabilitiesPanel(av) {
     style: `width:${capWidthClamp(startWidth)}px`,
   }, [resizer, collapseBtn, body, expandBtn]);
 
-  if (capPref("capPanelCollapsed", isMobileLayout() ? "1" : "0") === "1") panel.classList.add("collapsed");
-
+  const initialCollapsed = capPref("capPanelCollapsed", isMobileLayout() ? "1" : "0") === "1";
   const setCollapsed = (collapsed) => {
     panel.classList.toggle("collapsed", collapsed);
+    collapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     expandBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
     setCapPref("capPanelCollapsed", collapsed ? "1" : "0");
   };
+  setCollapsed(initialCollapsed);
   collapseBtn.addEventListener("click", () => setCollapsed(true));
   expandBtn.addEventListener("click", () => setCollapsed(false));
 
