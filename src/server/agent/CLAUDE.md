@@ -4,7 +4,7 @@ Agent orchestration + in-process MCP tool servers. Read with the **root `CLAUDE.
 
 ## claudeAgent.ts is split (behind unchanged exports)
 `claudeAgent.ts` is now the orchestrator (`runClaudeAgent` + subprocess-env helpers) and **re-exports** the moved symbols so importers (app.ts/routes, tests) keep their paths:
-- `promptBuilder.ts` — `buildPrompt` + `compactConversationHistory`/`conversationHistoryBlock` + `GIT_MCP_ONLY_GUIDANCE`. `buildPrompt` now assembles per-section helpers (knowledgeRepo/gitRepo/groups/secrets/sshEnablement/greeting). **`agent-core.test.ts` asserts the assembled prompt byte-for-byte** — section edits must keep output identical.
+- `promptBuilder.ts` — `buildPrompt` + `compactConversationHistory`/`conversationHistoryBlock` + `GIT_MCP_ONLY_GUIDANCE`. `buildPrompt` assembles per-section helpers (knowledgeRepo/gitRepo/groups/secrets/sshEnablement/**knowledgeMemory**/greeting). **`agent-core.test.ts` checks the prompt with `toContain`/`not.toContain` substrings, NOT byte-for-byte** — ADDING a section is safe; only changing an EXISTING string (or its presence per viewer class) breaks a test.
 - `sdkMessageHandlers.ts` — SDK-message→`AgentEvents` translation (`handle*` + Task helpers + `LoopState` + `interpretResult`/`resultErrorMessage`).
 - `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput` + `rewriteBashCommandWithRtk`.
 - `agentUtils.ts` — small shared helpers.

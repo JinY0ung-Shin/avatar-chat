@@ -13,6 +13,8 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
 ## Commands
 - `npm run dev` — local dev server on port 48787.
 - `npm run lint && npm test && npm run build` — standard verification gate.
+- `rtk proxy npx vitest run tests/<file>.test.ts` — run ONE test file (full suite is ~16s); the
+  suites are split agent-core/agent-tools/store/infra/app/chat-history.
 - `docker compose config` — validate compose/env wiring before Docker changes.
 - `CA_CERT_FILE=docker/tls-fullchain.crt docker compose build` — build with a local on-prem CA file.
 
@@ -256,6 +258,14 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   default + avatar plugins + personal & group knowledge-repo roots. Both the chat endpoint (`app.ts`)
   and the scheduler (`scheduler.ts`) call it, so they can't drift; `local` runtime returns `[]`.
   (Routines once loaded only default+avatar plugins and silently missed knowledge-repo skills.)
+- **Knowledge-repo `CLAUDE.md` IS now injected as standing memory** (extends the old "settingSources
+  `[]` → no CLAUDE.md" understanding). The repo-root `CLAUDE.md` of the personal repo (ALWAYS) + each
+  ENABLED group repo is read DIRECTLY from the clone (NOT via settingSources, which stays `[]`),
+  size-capped, and pushed into the prompt EVERY turn via `AgentRequest.knowledgeMemory`
+  (`loadKnowledgeRepoMemory` in plugins.ts → `knowledgeMemorySection` in promptBuilder.ts) — distinct
+  from on-demand skills, with an injection guard (system/safety instructions win). Wired in chat +
+  scheduler (routines = all groups, no toggle); intro/hashtag gen leaves it unset. `writeRepoTemplate`
+  seeds a starter root `CLAUDE.md`.
 - **Language split: agent-facing text is English, user-facing text is Korean.** Classify a new
   string by *"does the model read it as INPUT?"* → English; else Korean. English (model reads it):
   `buildPrompt` (claudeAgent.ts), `GIT_MCP_ONLY_GUIDANCE`, the `PreToolUse` **`hookDeny(...)` reasons**,
