@@ -6,6 +6,8 @@ import logger from "./logger.js";
 import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError } from "./marketplace.js";
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
+import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
+import { git, currentBranch, dirtyPaths } from "./repoGitCore.js";
 import type { AppConfig } from "./types.js";
 import type { Store } from "./store.js";
 
@@ -48,29 +50,6 @@ function repoTokens(ctx: GroupKnowledgeRepoContext): GitTokenSet {
 /** On-disk clone path for a group's shared knowledge-repo working tree. */
 export function groupKnowledgeClonePath(groupId: string, config: AppConfig): string {
   return path.join(config.dataDir, "group-knowledge", sanitizeName(groupId));
-}
-
-function git(repoRoot: string, args: string[], timeout = 120_000) {
-  return execFileAsync("git", ["-C", repoRoot, ...args], { timeout });
-}
-
-async function currentBranch(repoRoot: string): Promise<string | null> {
-  try {
-    const { stdout } = await git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
-    const name = stdout.trim();
-    return name && name !== "HEAD" ? name : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Relative paths with uncommitted changes (porcelain). */
-async function dirtyPaths(repoRoot: string): Promise<string[]> {
-  const { stdout } = await git(repoRoot, ["status", "--porcelain"]);
-  return stdout
-    .split("\n")
-    .map((line) => line.slice(3).trim())
-    .filter(Boolean);
 }
 
 /**
@@ -224,8 +203,7 @@ async function groupCommitAndPushLocked(
   if (!(await pathExists(path.join(repoRoot, ".git")))) {
     throw new Error("NOT_CLONED");
   }
-  const name = identity.name.startsWith("-") ? "noah-almighty" : identity.name;
-  const email = identity.email.startsWith("-") ? "avatar@noah-almighty.local" : identity.email;
+  const { name, email } = safeIdentity(identity);
   await git(repoRoot, ["config", "user.name", name]);
   await git(repoRoot, ["config", "user.email", email]);
   await restoreTrackedMcpJson(repoRoot);
@@ -238,8 +216,7 @@ async function groupCommitAndPushLocked(
 
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
   const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
-  const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
-  const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;
+  const branch = safePushBranch(ctx.branch || (await currentBranch(repoRoot)) || "HEAD");
   await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
   logger.info({ groupId: ctx.groupId, repo: ctx.repo, branch }, "group knowledge repo pushed");
   return true;

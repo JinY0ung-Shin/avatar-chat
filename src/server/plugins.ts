@@ -102,6 +102,59 @@ async function isPluginDir(dir: string): Promise<boolean> {
   return pathExists(path.join(dir, ".claude-plugin", "plugin.json"));
 }
 
+/** One marketplace manifest entry, classified by its on-disk layout. */
+interface EnumeratedPlugin {
+  /** The raw manifest entry (its `name`/`source`), as authored. */
+  entry: MarketplaceEntry;
+  /**
+   * Absolute dir for a relative (`./...`) in-repo source, else null when the
+   * source is missing/non-string/non-relative (remote or object sources, which
+   * neither consumer can expand from a local clone). Carries the (string) source
+   * alongside so consumers can interpolate it without re-narrowing `unknown`.
+   */
+  dir: { abs: string; source: string } | null;
+  /** Whether `dir` is a loadable plugin dir (has `.claude-plugin/plugin.json`). */
+  loadable: boolean;
+}
+
+/** The overall repo layout, used by both resolve + inspect walks. */
+type MarketplaceLayout =
+  | { kind: "single" }
+  | { kind: "marketplace"; entries: EnumeratedPlugin[] }
+  | { kind: "none" };
+
+/**
+ * Walk a cloned repo's marketplace manifest layout ONCE, shared by
+ * `resolvePluginRoots` (resolves SDK roots) and `inspectRepoContents` (reports
+ * names for the selection UI) — they previously re-implemented the same detect-
+ * layout + per-entry resolve loop ("Mirrors" comment). Returns the layout kind
+ * and, for a marketplace, every entry already classified (resolved dir +
+ * loadable flag). Name resolution (`pluginNameAt`) and warnings stay in each
+ * consumer so their exact behavior is unchanged.
+ */
+async function enumerateMarketplacePlugins(repoRoot: string): Promise<MarketplaceLayout> {
+  if (await isPluginDir(repoRoot)) {
+    return { kind: "single" };
+  }
+  const manifest = await readJson<MarketplaceManifest>(
+    path.join(repoRoot, ".claude-plugin", "marketplace.json"),
+  );
+  if (manifest && Array.isArray(manifest.plugins)) {
+    const entries: EnumeratedPlugin[] = [];
+    for (const entry of manifest.plugins) {
+      const source = entry?.source;
+      if (typeof source === "string" && source.startsWith(".")) {
+        const abs = path.resolve(repoRoot, source);
+        entries.push({ entry, dir: { abs, source }, loadable: await isPluginDir(abs) });
+      } else {
+        entries.push({ entry, dir: null, loadable: false });
+      }
+    }
+    return { kind: "marketplace", entries };
+  }
+  return { kind: "none" };
+}
+
 /**
  * Pull `name` and `description` out of a SKILL.md YAML frontmatter block. We
  * only need two scalar string keys, so a tiny line scanner beats pulling in a
@@ -200,37 +253,34 @@ export async function resolvePluginRoots(
   onWarn?: (m: string) => void,
   selected?: string[] | null,
 ): Promise<string[]> {
-  if (await isPluginDir(repoRoot)) {
+  const layout = await enumerateMarketplacePlugins(repoRoot);
+  if (layout.kind === "single") {
     await stripManagedMcpServers(repoRoot);
     return [repoRoot];
   }
-
-  const manifest = await readJson<MarketplaceManifest>(path.join(repoRoot, ".claude-plugin", "marketplace.json"));
-  if (manifest && Array.isArray(manifest.plugins)) {
+  if (layout.kind === "marketplace") {
     const selectedSet = selected ? new Set(selected) : null;
     const roots: string[] = [];
-    for (const entry of manifest.plugins) {
-      const source = entry?.source;
+    for (const { entry, dir, loadable } of layout.entries) {
       // Only relative in-repo sources are expanded; remote/object sources in a
       // marketplace would need their own clone and are skipped with a warning.
-      if (typeof source === "string" && source.startsWith(".")) {
-        const dir = path.resolve(repoRoot, source);
-        if (await isPluginDir(dir)) {
+      if (dir !== null) {
+        if (loadable) {
           // Filter against the owner's selection by the manifest `name`,
           // falling back to the entry name when plugin.json omits one.
           if (selectedSet) {
-            const name = (await pluginNameAt(dir)) ?? entry?.name;
+            const name = (await pluginNameAt(dir.abs)) ?? entry?.name;
             if (!name || !selectedSet.has(name)) {
               continue;
             }
           }
           // Strip any app-managed MCP server (e.g. a keyless `hex-ssh`) so it
           // can't shadow the app's keyed registration. See claudeAgent.
-          await stripManagedMcpServers(dir);
-          roots.push(dir);
+          await stripManagedMcpServers(dir.abs);
+          roots.push(dir.abs);
           continue;
         }
-        onWarn?.(`${label}: marketplace plugin "${entry?.name ?? source}" has no .claude-plugin/plugin.json`);
+        onWarn?.(`${label}: marketplace plugin "${entry?.name ?? dir.source}" has no .claude-plugin/plugin.json`);
       } else {
         onWarn?.(`${label}: marketplace plugin "${entry?.name ?? "?"}" uses an unsupported source`);
       }
@@ -251,22 +301,16 @@ export async function resolvePluginRoots(
  * resolving SDK roots.
  */
 export async function inspectRepoContents(repoRoot: string): Promise<RepoPluginContents> {
-  if (await isPluginDir(repoRoot)) {
+  const layout = await enumerateMarketplacePlugins(repoRoot);
+  if (layout.kind === "single") {
     const name = (await pluginNameAt(repoRoot)) ?? "(unnamed)";
     return { kind: "single", plugins: [{ name, loadable: true }] };
   }
-
-  const manifest = await readJson<MarketplaceManifest>(
-    path.join(repoRoot, ".claude-plugin", "marketplace.json"),
-  );
-  if (manifest && Array.isArray(manifest.plugins)) {
+  if (layout.kind === "marketplace") {
     const plugins: RepoPluginEntry[] = [];
-    for (const entry of manifest.plugins) {
-      const source = entry?.source;
-      if (typeof source === "string" && source.startsWith(".")) {
-        const dir = path.resolve(repoRoot, source);
-        const loadable = await isPluginDir(dir);
-        const name = (loadable ? await pluginNameAt(dir) : null) ?? entry?.name ?? source;
+    for (const { entry, dir, loadable } of layout.entries) {
+      if (dir !== null) {
+        const name = (loadable ? await pluginNameAt(dir.abs) : null) ?? entry?.name ?? dir.source;
         plugins.push({ name, loadable });
       } else if (entry?.name) {
         // Unsupported (remote/object) source — surfaced as non-loadable.
@@ -303,6 +347,51 @@ export async function loadDefaultPluginRoots(
 export const KNOWLEDGE_REPO_SOURCE = "지식 저장소";
 
 /**
+ * One knowledge-repo clone job: how to materialize the working tree (`ensure`),
+ * the UI source label to attribute its skills to, and the plugin subset to load.
+ * Personal and group knowledge repos differ ONLY in these three fields, so both
+ * flow through the single resolver below.
+ */
+interface KnowledgeRepoJob {
+  ensure: () => Promise<string>;
+  source: string;
+  selected: string[] | null;
+}
+
+/**
+ * THE shared knowledge-repo resolver: clone each job's working tree and resolve
+ * it into `{path, source}` skill-source entries. The 4 public functions below
+ * (personal/group × roots/sources) are thin views over this — they differ only
+ * in how the jobs are built and whether failures warn (Korean) or stay silent.
+ * Tolerant: a clone/fetch failure on one job warns (when `onWarn` given) and
+ * contributes no skills, so chat never breaks.
+ */
+async function resolveKnowledgeRepoSources(
+  jobs: KnowledgeRepoJob[],
+  onWarn?: (message: string) => void,
+): Promise<{ path: string; source: string }[]> {
+  const sources: { path: string; source: string }[] = [];
+  for (const job of jobs) {
+    try {
+      const repoRoot = await job.ensure();
+      for (const root of await resolvePluginRoots(repoRoot, job.source, onWarn, job.selected)) {
+        sources.push({ path: root, source: job.source });
+      }
+    } catch (error) {
+      onWarn?.(`${job.source}: 불러오기 실패 (${scrubGitError(error)})`);
+    }
+  }
+  return sources;
+}
+
+/** Wrap a personal knowledge-repo context as a clone job (or none if unset). */
+function knowledgeRepoJobs(ctx: KnowledgeRepoContext | null): KnowledgeRepoJob[] {
+  return ctx
+    ? [{ ensure: () => ensureClone(ctx), source: KNOWLEDGE_REPO_SOURCE, selected: ctx.selected }]
+    : [];
+}
+
+/**
  * Resolve the avatar's personal knowledge repo into plugin roots, so the skills
  * and knowledge the avatar accumulates there are loaded for EVERY chat. The
  * repo is a FULL clone (via `ensureClone`) shared with the agent's repo-
@@ -316,20 +405,8 @@ export async function loadKnowledgeRepoRoots(
   ctx: KnowledgeRepoContext | null,
   onWarn?: (message: string) => void,
 ): Promise<PluginRoot[]> {
-  if (!ctx) {
-    return [];
-  }
-  try {
-    const repoRoot = await ensureClone(ctx);
-    const roots: PluginRoot[] = [];
-    for (const root of await resolvePluginRoots(repoRoot, KNOWLEDGE_REPO_SOURCE, onWarn, ctx.selected)) {
-      roots.push({ type: "local", path: root });
-    }
-    return roots;
-  } catch (error) {
-    onWarn?.(`${KNOWLEDGE_REPO_SOURCE}: 불러오기 실패 (${scrubGitError(error)})`);
-    return [];
-  }
+  const sources = await resolveKnowledgeRepoSources(knowledgeRepoJobs(ctx), onWarn);
+  return sources.map(({ path }) => ({ type: "local", path }));
 }
 
 /**
@@ -340,19 +417,7 @@ export async function loadKnowledgeRepoRoots(
 export async function knowledgeRepoSkillSources(
   ctx: KnowledgeRepoContext | null,
 ): Promise<{ path: string; source: string }[]> {
-  if (!ctx) {
-    return [];
-  }
-  try {
-    const repoRoot = await ensureClone(ctx);
-    const sources: { path: string; source: string }[] = [];
-    for (const root of await resolvePluginRoots(repoRoot, KNOWLEDGE_REPO_SOURCE, undefined, ctx.selected)) {
-      sources.push({ path: root, source: KNOWLEDGE_REPO_SOURCE });
-    }
-    return sources;
-  } catch {
-    return [];
-  }
+  return resolveKnowledgeRepoSources(knowledgeRepoJobs(ctx));
 }
 
 /** Display label attributed to skills coming from a group's shared knowledge repo. */
@@ -361,6 +426,15 @@ export const GROUP_KNOWLEDGE_REPO_SOURCE = "그룹 지식 저장소";
 /** Source label for one group's repo, including the group name when known. */
 function groupRepoSource(ctx: GroupKnowledgeRepoContext): string {
   return ctx.groupName ? `${GROUP_KNOWLEDGE_REPO_SOURCE} · ${ctx.groupName}` : GROUP_KNOWLEDGE_REPO_SOURCE;
+}
+
+/** Wrap each group knowledge-repo context as a clone job. */
+function groupKnowledgeRepoJobs(contexts: GroupKnowledgeRepoContext[]): KnowledgeRepoJob[] {
+  return contexts.map((ctx) => ({
+    ensure: () => ensureGroupClone(ctx),
+    source: groupRepoSource(ctx),
+    selected: ctx.selected,
+  }));
 }
 
 /**
@@ -374,19 +448,8 @@ export async function loadGroupKnowledgeRepoRoots(
   contexts: GroupKnowledgeRepoContext[],
   onWarn?: (message: string) => void,
 ): Promise<PluginRoot[]> {
-  const roots: PluginRoot[] = [];
-  for (const ctx of contexts) {
-    const source = groupRepoSource(ctx);
-    try {
-      const repoRoot = await ensureGroupClone(ctx);
-      for (const root of await resolvePluginRoots(repoRoot, source, onWarn, ctx.selected)) {
-        roots.push({ type: "local", path: root });
-      }
-    } catch (error) {
-      onWarn?.(`${source}: 불러오기 실패 (${scrubGitError(error)})`);
-    }
-  }
-  return roots;
+  const sources = await resolveKnowledgeRepoSources(groupKnowledgeRepoJobs(contexts), onWarn);
+  return sources.map(({ path }) => ({ type: "local", path }));
 }
 
 /**
@@ -428,19 +491,7 @@ export async function loadAgentPluginRoots(
 export async function groupKnowledgeRepoSkillSources(
   contexts: GroupKnowledgeRepoContext[],
 ): Promise<{ path: string; source: string }[]> {
-  const sources: { path: string; source: string }[] = [];
-  for (const ctx of contexts) {
-    const source = groupRepoSource(ctx);
-    try {
-      const repoRoot = await ensureGroupClone(ctx);
-      for (const root of await resolvePluginRoots(repoRoot, source, undefined, ctx.selected)) {
-        sources.push({ path: root, source });
-      }
-    } catch {
-      /* tolerate: contribute no skills for this group */
-    }
-  }
-  return sources;
+  return resolveKnowledgeRepoSources(groupKnowledgeRepoJobs(contexts));
 }
 
 /**

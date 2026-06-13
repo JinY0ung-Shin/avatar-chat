@@ -6,6 +6,8 @@ import logger from "./logger.js";
 import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError } from "./marketplace.js";
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
+import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
+import { git, currentBranch, dirtyPaths as coreDirtyPaths } from "./repoGitCore.js";
 import fsSync from "node:fs";
 import type { AppConfig, KnowledgeRepoStatus, KnowledgeRepoTreeEntry } from "./types.js";
 import type { Store } from "./store.js";
@@ -129,10 +131,6 @@ function realpathContained(repoRoot: string, abs: string, mustExist: boolean): s
   return null;
 }
 
-function git(repoRoot: string, args: string[], timeout = 120_000) {
-  return execFileAsync("git", ["-C", repoRoot, ...args], { timeout });
-}
-
 /** Configure local commit identity on the clone (no global git config touched). */
 async function setIdentity(repoRoot: string, name: string, email: string): Promise<void> {
   await git(repoRoot, ["config", "user.name", name]);
@@ -251,16 +249,6 @@ async function aheadOfRemote(repoRoot: string, branch: string): Promise<number |
     return Number.isFinite(n) ? n : 0;
   } catch {
     return 0;
-  }
-}
-
-async function currentBranch(repoRoot: string): Promise<string | null> {
-  try {
-    const { stdout } = await git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
-    const name = stdout.trim();
-    return name && name !== "HEAD" ? name : null;
-  } catch {
-    return null;
   }
 }
 
@@ -480,11 +468,7 @@ function repoTemplateReadme(name: string): string {
 
 /** Relative paths with uncommitted changes (porcelain), excluding nothing. */
 export async function dirtyPaths(repoRoot: string): Promise<string[]> {
-  const { stdout } = await git(repoRoot, ["status", "--porcelain"]);
-  return stdout
-    .split("\n")
-    .map((line) => line.slice(3).trim())
-    .filter(Boolean);
+  return coreDirtyPaths(repoRoot);
 }
 
 /** Working-tree status (cloned?, branch, dirty paths). */
@@ -553,8 +537,7 @@ async function commitAndPushLocked(
   }
   // Guard against identity values git would read as options (passed positionally
   // after the config key). Fall back to a safe default rather than failing.
-  const name = identity.name.startsWith("-") ? "noah-almighty" : identity.name;
-  const email = identity.email.startsWith("-") ? "avatar@noah-almighty.local" : identity.email;
+  const { name, email } = safeIdentity(identity);
   await setIdentity(repoRoot, name, email);
   // Undo any in-place `.mcp.json` strip we did at load time (removing the
   // app-managed `hex-ssh` server so it can't shadow our keyed registration —
@@ -574,8 +557,7 @@ async function commitAndPushLocked(
 
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
   const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
-  const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
-  const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;
+  const branch = safePushBranch(ctx.branch || (await currentBranch(repoRoot)) || "HEAD");
   await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
   logger.info({ userId: ctx.userId, repo: ctx.repo, branch }, "knowledge repo pushed");
   return true;

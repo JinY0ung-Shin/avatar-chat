@@ -13,6 +13,8 @@ import {
 } from "./marketplace.js";
 import { tokenForGitUrl } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
+import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
+import { git, currentBranch, dirtyPaths } from "./repoGitCore.js";
 import logger from "./logger.js";
 import {
   deleteFile,
@@ -43,10 +45,6 @@ export interface GitRepoStatus {
   dirty: string[];
   ahead: number | null;
   behind: number | null;
-}
-
-function git(repoRoot: string, args: string[], timeout = 120_000) {
-  return execFileAsync("git", ["-C", repoRoot, ...args], { timeout });
 }
 
 // `scheme::` remote-helper syntax (e.g. `ext::sh -c …`, `fd::`) makes git run an
@@ -126,24 +124,6 @@ async function remoteUrl(repoRoot: string): Promise<string | null> {
   } catch {
     return null;
   }
-}
-
-async function currentBranch(repoRoot: string): Promise<string | null> {
-  try {
-    const { stdout } = await git(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]);
-    const branch = stdout.trim();
-    return branch && branch !== "HEAD" ? branch : null;
-  } catch {
-    return null;
-  }
-}
-
-async function dirtyGitRepoPaths(repoRoot: string): Promise<string[]> {
-  const { stdout } = await git(repoRoot, ["status", "--porcelain", "-uall"]);
-  return stdout
-    .split("\n")
-    .map((line) => line.slice(3).trim())
-    .filter(Boolean);
 }
 
 async function checkoutBranch(repoRoot: string, branch: string): Promise<void> {
@@ -300,7 +280,7 @@ export async function gitRepoStatus(ctx: GitRepoContext): Promise<GitRepoStatus>
     branch: await currentBranch(repoRoot),
     cloned: true,
     head,
-    dirty: await dirtyGitRepoPaths(repoRoot),
+    dirty: await dirtyPaths(repoRoot, ["-uall"]),
     ahead,
     behind,
   };
@@ -374,8 +354,7 @@ export async function commitGitRepo(
   return withRepoLock(repoRoot, async () => {
     await ensureGitRepoCloneLocked(ctx, repoRoot);
     const pathArgs = normalizeRepoPaths(repoRoot, paths);
-    const name = identity.name.startsWith("-") ? "noah-almighty" : identity.name;
-    const email = identity.email.startsWith("-") ? "avatar@noah-almighty.local" : identity.email;
+    const { name, email } = safeIdentity(identity);
     await git(repoRoot, ["config", "user.name", name]);
     await git(repoRoot, ["config", "user.email", email]);
     await git(repoRoot, pathArgs.length ? ["add", "-A", "--", ...pathArgs] : ["add", "-A"]);
@@ -394,8 +373,7 @@ export async function pushGitRepo(ctx: GitRepoContext): Promise<string> {
     await ensureGitRepoCloneLocked(ctx, repoRoot);
     const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
     const auth = gitAuthArgs(url, ctx.token ?? undefined);
-    const rawBranch = ctx.branch || (await currentBranch(repoRoot)) || "HEAD";
-    const branch = rawBranch.startsWith("-") ? "HEAD" : rawBranch;
+    const branch = safePushBranch(ctx.branch || (await currentBranch(repoRoot)) || "HEAD");
     await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
     return branch;
   });
