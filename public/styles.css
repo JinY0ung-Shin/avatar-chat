@@ -2978,38 +2978,56 @@ textarea::placeholder {
 }
 
 /* ---- Routines view ---- */
+/* The routines tab fills the viewport: the page itself does NOT scroll —
+   the routine list (left) and the result transcript (right) each scroll
+   independently so neither one ever pushes the whole layout taller. */
 .routines-body {
   padding: var(--s-4);
+  overflow: hidden;
+  display: flex;
 }
 .routine-workspace {
+  flex: 1;
   width: min(1280px, 100%);
   margin: 0 auto;
+  height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-columns: minmax(300px, 400px) minmax(0, 1fr);
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
   gap: var(--s-4);
-  align-items: start;
+  align-items: stretch;
 }
 .routine-side {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: var(--s-4);
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 2px;
 }
 .routine-card {
   margin: 0;
 }
+.routine-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.routine-add-btn svg {
+  width: 15px;
+  height: 15px;
+}
 .notification-list,
-.routine-run-list {
+.routine-manage-list {
   display: grid;
   gap: var(--s-2);
 }
-.notification-row,
-.routine-run-row {
+.notification-row {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--panel);
   padding: var(--s-3);
-}
-.notification-row {
   display: grid;
   gap: var(--s-2);
 }
@@ -3022,48 +3040,161 @@ textarea::placeholder {
   color: var(--text);
   white-space: pre-wrap;
 }
-.routine-run-row {
+
+/* Routine management rows — the whole card selects (shows results); the
+   toggle/편집/지금 실행 controls stopPropagation so they don't change selection. */
+.routine-manage-row {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--s-3);
   display: grid;
-  gap: 4px;
+  gap: var(--s-2);
   text-align: left;
   color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
 }
-.routine-run-row:hover,
-.routine-run-row.active {
+.routine-manage-row:hover {
+  border-color: var(--accent-soft-strong);
+}
+.routine-manage-row.active {
   border-color: var(--accent-soft-strong);
   background: var(--panel-strong);
 }
-.routine-run-row strong,
-.routine-run-row span {
+.routine-manage-row.paused {
+  opacity: 0.66;
+}
+.routine-manage-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.routine-manage-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.routine-manage-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-base);
   overflow-wrap: anywhere;
 }
-.routine-run-row span {
+/* Prompt shown inline on every card (clamped); the selected card reveals it in
+   full so the instruction is readable without opening the edit modal. */
+.routine-manage-prompt {
+  margin: 0;
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  overflow: hidden;
+}
+.routine-manage-row.active .routine-manage-prompt {
+  -webkit-line-clamp: unset;
+  overflow: visible;
+}
+.routine-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.routine-dot.on {
+  background: var(--ok);
+}
+.routine-dot.err {
+  background: var(--danger);
+}
+.routine-dot.off {
+  background: var(--line);
+}
+.routine-manage-meta {
   color: var(--muted);
   font-size: var(--t-sm);
+  overflow-wrap: anywhere;
+}
+.routine-manage-actions {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: 2px;
+}
+.routine-manage-actions .ghost-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.routine-manage-actions .ghost-sm svg {
+  width: 13px;
+  height: 13px;
 }
 .routine-result-card {
-  min-height: min(720px, calc(100dvh - 140px));
+  height: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   margin: 0;
 }
+/* The routine's instruction, pinned above the transcript with its own scroll so
+   a long prompt never pushes the results out of view. */
+.routine-result-prompt {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--s-2) var(--s-3);
+  display: grid;
+  gap: 4px;
+}
+.routine-result-prompt-label {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.routine-result-prompt-body {
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 22vh;
+  overflow-y: auto;
+}
 .routine-result-card .routine-result-transcript {
   flex: 1;
-  min-height: 420px;
+  min-height: 0;
+  overflow-y: auto;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg);
 }
 
 @media (max-width: 980px) {
+  /* Stack the columns and let the page scroll again on narrow screens. */
+  .routines-body {
+    overflow-y: auto;
+    display: block;
+  }
   .routine-workspace {
     grid-template-columns: 1fr;
+    height: auto;
+  }
+  .routine-side {
+    overflow: visible;
   }
   .routine-result-card {
-    min-height: 0;
+    height: auto;
+    min-height: 420px;
   }
   .routine-result-card .routine-result-transcript {
-    min-height: 360px;
+    min-height: 320px;
   }
 }
 .chat-pane.compact .transcript {
@@ -4224,26 +4355,6 @@ textarea::placeholder {
 }
 .routine-modal-actions .ghost-sm.danger {
   color: var(--danger);
-}
-/* Clickable routine title used in both the settings card and the runs list. */
-.routine-title-link {
-  align-self: flex-start;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--text);
-  font-size: var(--t-sm);
-  font-weight: 700;
-  text-align: left;
-  cursor: pointer;
-  overflow-wrap: anywhere;
-}
-.routine-title-link:hover {
-  color: var(--accent);
-  text-decoration: underline;
-}
-.routine-run-row {
-  cursor: pointer;
 }
 
 .onboard-card .login-mark {

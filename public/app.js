@@ -1618,8 +1618,8 @@ function openRoutineModal(routine) {
 }
 
 async function renderRoutinesView() {
-  const header = viewHeader("루틴", "예약 실행 결과와 아바타 알림을 확인하세요");
-  const body = el("div", { class: "view-body scroll-thin routines-body" }, [
+  const header = viewHeader("루틴", "아바타가 스스로 실행하는 예약 작업과 그 결과·알림을 한곳에서 관리하세요");
+  const body = el("div", { class: "view-body routines-body" }, [
     el("div", { class: "muted pad", text: "불러오는 중…" }),
   ]);
   dom.main.append(header, body);
@@ -1652,9 +1652,9 @@ async function renderRoutinesView() {
 
   body.replaceChildren(
     el("div", { class: "routine-workspace" }, [
-      el("div", { class: "routine-side" }, [
+      el("div", { class: "routine-side scroll-thin" }, [
+        buildRoutineManagePanel(),
         buildNotificationsPanel(),
-        buildRoutineRunsPanel(),
       ]),
       buildRoutineResultPanel(),
     ]),
@@ -1726,59 +1726,112 @@ function renderNotificationRows(list) {
   }
 }
 
-function buildRoutineRunsPanel() {
-  const list = el("div", { class: "routine-run-list" });
+// The routines tab is now the single home for routines: this panel both MANAGES
+// them (add/edit/toggle/run/delete) and selects which result transcript shows on
+// the right. The old settings ▸ 루틴 tab is gone — this replaces it.
+function buildRoutineManagePanel() {
+  const list = el("div", { class: "routine-manage-list" });
+  const addBtn = el("button", { class: "primary small routine-add-btn", type: "button", onclick: () => openRoutineModal(null) });
+  addBtn.append(icon("plus"), el("span", { text: "루틴 추가" }));
   const card = el("section", { class: "settings-card routine-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
-        el("h3", { text: "실행 기록" }),
-        el("p", { class: "muted", text: "각 루틴의 전용 기록을 선택해 확인합니다." }),
+        el("h3", { text: "내 루틴" }),
+        el("p", { class: "muted", text: "매일·매주 또는 일정 간격(KST)으로 아바타가 스스로 실행합니다. 카드를 누르면 결과가 오른쪽에 표시돼요." }),
       ]),
-      el("button", { class: "linkish small", type: "button", text: "루틴 설정", onclick: openRoutineSettings }),
+      addBtn,
     ]),
     list,
   ]);
-  renderRoutineRunRows(list);
+  renderRoutineManageRows(list);
   return card;
 }
 
-function renderRoutineRunRows(list) {
+function renderRoutineManageRows(list) {
   list.replaceChildren();
   if (!state.routines.length) {
-    list.append(el("div", { class: "empty-note", text: "등록한 루틴이 없습니다." }));
+    list.append(el("div", { class: "empty-note", text: "아직 등록한 루틴이 없습니다. ‘루틴 추가’로 첫 루틴을 만들어 보세요." }));
     return;
   }
   for (const r of state.routines) {
-    const conv = state.routineConversations.find((c) => c.id === r.conversationId);
     const active = state.routineConversationId === r.conversationId;
-    const statusBits = [formatRoutineSchedule(r)];
-    if (r.lastRunAt) statusBits.push(`최근 ${timeLabel(r.lastRunAt)} · ${r.lastStatus === "error" ? "실패" : "완료"}`);
-    else statusBits.push("아직 실행되지 않음");
-    const titleBtn = el("button", {
-      class: "routine-title-link",
-      type: "button",
-      text: routineTitle(r),
-      onclick: (e) => {
-        e.stopPropagation();
-        openRoutineModal(r);
-      },
+    const errored = r.lastStatus === "error";
+
+    // Status dot: green=enabled+ok, red=enabled+last error, grey=disabled.
+    const dotClass = !r.enabled ? "off" : errored ? "err" : "on";
+    const dot = el("span", { class: `routine-dot ${dotClass}`, "aria-hidden": "true" });
+
+    const toggle = buildToggle(r.enabled, async (val) => {
+      try {
+        await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
+        r.enabled = val;
+        await loadRoutines();
+        renderRoutineManageRows(list);
+      } catch (e) {
+        notify(`변경 실패: ${e.message}`);
+        throw e;
+      }
+    }, `루틴 사용: ${routineTitle(r)}`);
+    // Don't let the toggle's click bubble to the row (which would change selection).
+    toggle.addEventListener("click", (e) => e.stopPropagation());
+
+    const meta = [formatRoutineSchedule(r)];
+    if (r.lastRunAt) meta.push(`최근 실행 ${timeLabel(r.lastRunAt)} · ${errored ? "실패" : "완료"}`);
+    else meta.push("아직 실행되지 않음");
+
+    const editBtn = el("button", { class: "ghost-sm", type: "button" });
+    editBtn.append(icon("edit"), el("span", { text: "편집" }));
+    editBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openRoutineModal(r);
     });
+
+    const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행" });
+    runBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      runBtn.disabled = true;
+      const saved = runBtn.textContent;
+      runBtn.textContent = "실행 중…";
+      try {
+        const res = await api(`/api/me/routines/${encodeURIComponent(r.id)}/run`, { method: "POST" });
+        await Promise.all([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
+        updateNotificationBadge();
+        if (res && res.ok === false) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
+        // Jump straight to the result this run just produced.
+        openRoutineResult(r.conversationId);
+      } catch (err) {
+        notify(`루틴 실행 실패: ${err.message}`);
+        runBtn.disabled = false;
+        runBtn.textContent = saved;
+      }
+    });
+
     const row = el("div", {
-      class: `routine-run-row ${active ? "active" : ""}`,
+      class: `routine-manage-row ${active ? "active" : ""} ${r.enabled ? "" : "paused"}`,
       role: "button",
       tabindex: "0",
+      "aria-pressed": active ? "true" : "false",
       onclick: () => openRoutineResult(r.conversationId),
       onkeydown: (e) => {
+        // Only act on keys aimed at the row itself, not its inner buttons.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           openRoutineResult(r.conversationId);
         }
       },
     }, [
-      titleBtn,
-      el("span", { text: statusBits.join(" · ") }),
-      r.lastStatus === "error" && r.lastError ? el("span", { class: "error-note", text: r.lastError }) : null,
-      conv ? el("span", { class: "muted", text: `기록 업데이트 ${timeLabel(conv.updatedAt)}` }) : null,
+      el("div", { class: "routine-manage-head" }, [
+        dot,
+        el("strong", { class: "routine-manage-title", text: (r.name || "").trim() || "루틴 작업" }),
+        toggle,
+      ]),
+      // The prompt is the routine's substance — show it inline (clamped) so it's
+      // readable without opening the edit modal. The selected card un-clamps it.
+      el("p", { class: "routine-manage-prompt", text: (r.prompt || "").trim() || "(프롬프트 없음)" }),
+      el("div", { class: "routine-manage-meta", text: meta.join(" · ") }),
+      errored && r.lastError ? el("div", { class: "error-note", text: r.lastError }) : null,
+      el("div", { class: "routine-manage-actions" }, [editBtn, runBtn]),
     ]);
     list.append(row);
   }
@@ -1786,9 +1839,18 @@ function renderRoutineRunRows(list) {
 
 function buildRoutineResultPanel() {
   const conv = state.routineConversations.find((c) => c.id === state.routineConversationId);
+  const routine = conv ? state.routines.find((r) => r.conversationId === conv.id) : null;
   const transcript = el("div", { class: "routine-result-transcript transcript scroll-thin" });
   const inner = el("div", { class: "transcript-inner" });
   transcript.append(inner);
+  // Standing prompt block: the instruction this routine runs, always in view above
+  // the results (own scroll so a long prompt can't crowd out the transcript).
+  const promptBlock = routine
+    ? el("div", { class: "routine-result-prompt" }, [
+        el("div", { class: "routine-result-prompt-label muted", text: "지시 프롬프트" }),
+        el("div", { class: "routine-result-prompt-body scroll-thin", text: (routine.prompt || "").trim() || "(프롬프트 없음)" }),
+      ])
+    : null;
   const card = el("section", { class: "settings-card routine-result-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
@@ -1797,6 +1859,7 @@ function buildRoutineResultPanel() {
       ]),
       conv ? el("button", { class: "ghost-sm", type: "button", text: "일반 대화로 열기", onclick: () => selectConversation(conv) }) : null,
     ]),
+    promptBlock,
     transcript,
   ]);
   if (!conv) {
@@ -1838,11 +1901,6 @@ function openRoutineResult(conversationId) {
   state.view = "routines";
   syncHash();
   renderView();
-}
-
-function openRoutineSettings() {
-  state.settingsTab = "routines";
-  goView("settings");
 }
 
 /* ============================================================ Slash commands */
@@ -3896,7 +3954,7 @@ async function renderSettings() {
   body.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
   // One failed loader must NOT render every card as its empty state ("플러그인이
   // 없습니다" 등) — that reads as data loss and invites duplicate re-adds.
-  const results = await Promise.allSettled([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines()]);
+  const results = await Promise.allSettled([refreshMe(), loadPlugins(), loadKnowledge()]);
   if (sessionExpired) return;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
@@ -4083,7 +4141,6 @@ async function renderSettings() {
     { id: "access", label: "권한·연결", icon: "shield", cards: () => [buildGitCredentialsCard(), buildSecretsCard()] },
     { id: "knowledge", label: "지식·플러그인", icon: "book", cards: () => [buildKnowledgeRepoCard(), buildPluginsCard(), buildKnowledgeCard()] },
     { id: "groups", label: "그룹", icon: "users", cards: () => [buildGroupsCard()] },
-    { id: "routines", label: "루틴", icon: "clock", cards: () => [buildRoutinesCard()] },
   ];
   if (!tabs.some((t) => t.id === state.settingsTab)) state.settingsTab = "profile";
 
@@ -5429,98 +5486,6 @@ function renderGroupRepoContents(container, info, g) {
     }
   } });
   container.append(el("div", { class: "pc-actions" }, [save]));
-}
-
-function buildRoutinesCard() {
-  const card = el("section", { class: "settings-card" });
-  card.append(
-    el("div", { class: "panel-section-head" }, [
-      el("div", {}, [
-        el("h3", { text: "루틴" }),
-        el("p", { class: "muted", text: "내 아바타가 매일·매주 또는 일정 간격(한국 시간, KST)으로 스스로 실행할 작업. 결과는 전용 대화에 쌓입니다." }),
-      ]),
-      el("button", { class: "linkish small", type: "button", text: "루틴 추가", onclick: () => openRoutineModal(null) }),
-    ]),
-  );
-  const list = el("div", { class: "plugin-rows" });
-  card.append(list);
-  renderRoutineRows(list);
-  return card;
-}
-
-function renderRoutineRows(list) {
-  list.replaceChildren();
-  if (!state.routines.length) {
-    list.append(el("div", { class: "empty-note", text: "등록한 루틴이 없습니다." }));
-    return;
-  }
-  for (const r of state.routines) {
-    const statusBits = [formatRoutineSchedule(r)];
-    if (r.lastRunAt) {
-      const mark = r.lastStatus === "error" ? "실패" : "완료";
-      statusBits.push(`최근 실행: ${timeLabel(r.lastRunAt)} (${mark})`);
-    } else {
-      statusBits.push("아직 실행되지 않음");
-    }
-
-    const row = el("div", { class: "plugin-row" }, [
-      el("div", { class: "pr-main" }, [
-        el("button", { class: "routine-title-link", type: "button", text: routineTitle(r), onclick: () => openRoutineModal(r) }),
-        el("div", { class: "pr-sub", text: statusBits.join(" · ") }),
-        r.lastStatus === "error" && r.lastError
-          ? el("div", { class: "pr-sub", text: `실행 오류 — ${r.lastError}` })
-          : null,
-      ]),
-      buildToggle(r.enabled, async (val) => {
-        try {
-          await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "PATCH", body: JSON.stringify({ enabled: val }) });
-          r.enabled = val;
-          await loadRoutines();
-          renderRoutineRows(list);
-        } catch (e) {
-          notify(`변경 실패: ${e.message}`);
-          throw e;
-        }
-      }, `루틴 사용: ${r.prompt}`),
-    ]);
-
-    const actions = el("div", { class: "kr-actions" });
-    const runBtn = el("button", { class: "ghost-sm", type: "button", text: "지금 실행", onclick: async () => {
-      runBtn.disabled = true;
-      runBtn.textContent = "실행 중…";
-      try {
-        const res = await api(`/api/me/routines/${encodeURIComponent(r.id)}/run`, { method: "POST" });
-        await loadRoutines();
-        await loadRoutineConversations();
-        await loadNotifications();
-        updateNotificationBadge();
-        renderRoutineRows(list);
-        if (!res.ok) notify(`루틴 실행 실패: ${res.error || "알 수 없는 오류"}`);
-      } catch (e) {
-        notify(`루틴 실행 실패: ${e.message}`);
-        runBtn.disabled = false;
-        runBtn.textContent = "지금 실행";
-      }
-    } });
-    actions.append(runBtn);
-    actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(r.conversationId) }));
-    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": "루틴 삭제", title: "삭제", onclick: async () => {
-      if (!window.confirm("이 루틴을 삭제할까요? (쌓인 결과 대화는 그대로 남습니다)")) return;
-      try {
-        await api(`/api/me/routines/${encodeURIComponent(r.id)}`, { method: "DELETE" });
-        state.routines = state.routines.filter((x) => x.id !== r.id);
-        state.routineConversations = state.routineConversations.filter((x) => x.routineId !== r.id);
-        if (state.routineConversationId === r.conversationId) state.routineConversationId = "";
-        renderRoutineRows(list);
-      } catch (e) {
-        notify(`삭제 실패: ${e.message}`);
-      }
-    } });
-    del.append(icon("trash"));
-    actions.append(del);
-    row.append(actions);
-    list.append(row);
-  }
 }
 
 function buildKnowledgeCard() {
