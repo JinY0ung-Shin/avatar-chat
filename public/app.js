@@ -7788,7 +7788,7 @@ function openAdminPasswordResetModal(u, triggerBtn, reload) {
 
 function buildUserActions(u, isAdmin, isMe, reload) {
   const wrap = el("div", { class: "ud-actions" });
-  const run = async (btn, fn, errLabel) => {
+  const run = async (btn, fn, errLabel, successLabel = "") => {
     const saved = btn.textContent;
     setFormBusy(wrap, true);
     btn.textContent = "처리 중…";
@@ -7802,6 +7802,7 @@ function buildUserActions(u, isAdmin, isMe, reload) {
     }
     try {
       await reload();
+      if (successLabel) notify(successLabel, "ok");
     } catch (e) {
       btn.textContent = saved;
       setFormBusy(wrap, false);
@@ -7815,7 +7816,12 @@ function buildUserActions(u, isAdmin, isMe, reload) {
   roleBtn.addEventListener("click", () => {
     const verb = isAdmin ? "해제" : "부여";
     if (!window.confirm(`${u.displayName}(@${u.username})님의 관리자 권한을 ${verb}할까요?`)) return;
-    run(roleBtn, () => api(`/api/admin/users/${uid}/roles`, { method: "POST", body: JSON.stringify({ role: "admin", grant: !isAdmin }) }), "권한 변경 실패");
+    run(
+      roleBtn,
+      () => api(`/api/admin/users/${uid}/roles`, { method: "POST", body: JSON.stringify({ role: "admin", grant: !isAdmin }) }),
+      "권한 변경 실패",
+      `${u.displayName}님의 관리자 권한을 ${verb}했습니다.`,
+    );
   });
 
   // Moderation: hide an avatar from discovery (force private) or restore it to
@@ -7823,14 +7829,24 @@ function buildUserActions(u, isAdmin, isMe, reload) {
   const willHide = u.visibility !== "private";
   const pubBtn = el("button", { class: "ghost-sm", type: "button", text: willHide ? "비공개로 전환" : "공개로 전환" });
   pubBtn.addEventListener("click", () => {
-    run(pubBtn, () => api(`/api/admin/users/${uid}/visibility`, { method: "PUT", body: JSON.stringify({ visibility: willHide ? "private" : "public" }) }), "공개 설정 실패");
+    run(
+      pubBtn,
+      () => api(`/api/admin/users/${uid}/visibility`, { method: "PUT", body: JSON.stringify({ visibility: willHide ? "private" : "public" }) }),
+      "공개 설정 실패",
+      `${u.displayName}님의 공개 범위를 ${willHide ? "비공개" : "공개"}로 전환했습니다.`,
+    );
   });
 
   const susBtn = el("button", { class: "ghost-sm" + (u.suspended ? "" : " danger"), type: "button", text: u.suspended ? "활성화" : "정지" });
   if (isMe) susBtn.disabled = true;
   susBtn.addEventListener("click", () => {
     if (!u.suspended && !window.confirm(`${u.displayName} 계정을 정지할까요?\n로그인과 활성 세션이 즉시 차단됩니다.`)) return;
-    run(susBtn, () => api(`/api/admin/users/${uid}/suspend`, { method: "POST", body: JSON.stringify({ suspended: !u.suspended }) }), "상태 변경 실패");
+    run(
+      susBtn,
+      () => api(`/api/admin/users/${uid}/suspend`, { method: "POST", body: JSON.stringify({ suspended: !u.suspended }) }),
+      "상태 변경 실패",
+      `${u.displayName} 계정을 ${u.suspended ? "활성화" : "정지"}했습니다.`,
+    );
   });
 
   const pwBtn = el("button", { class: "ghost-sm", type: "button", text: "비밀번호 재설정" });
@@ -7854,7 +7870,7 @@ function buildUserActions(u, isAdmin, isMe, reload) {
   if (isMe) delBtn.disabled = true;
   delBtn.addEventListener("click", () => {
     if (!window.confirm(`${u.displayName}(@${u.username}) 계정을 삭제할까요?\n이 사용자의 아바타·대화·설정이 모두 영구 삭제되며 되돌릴 수 없습니다.`)) return;
-    run(delBtn, () => api(`/api/admin/users/${uid}`, { method: "DELETE" }), "삭제 실패");
+    run(delBtn, () => api(`/api/admin/users/${uid}`, { method: "DELETE" }), "삭제 실패", `${u.displayName} 계정을 삭제했습니다.`);
   });
 
   wrap.append(roleBtn, pubBtn, susBtn, pwBtn, outBtn, delBtn);
