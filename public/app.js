@@ -4917,6 +4917,7 @@ function attachUserSearch(input, opts = {}) {
   let timer = null;
   let activeIndex = -1;
 
+  input.setAttribute("role", "combobox");
   input.setAttribute("aria-autocomplete", "list");
   input.setAttribute("aria-controls", resultsId);
   input.setAttribute("aria-expanded", "false");
