@@ -8575,6 +8575,22 @@ function buildHexSshPolicyCard(sys) {
     write: "수정·전송",
     session: "세션",
   };
+  const children = [
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "SSH 도구 정책" }),
+        el("p", { class: "muted", text: "역할별로 hex-ssh MCP 도구 노출과 실행을 제한합니다." }),
+      ]),
+    ]),
+  ];
+  if (!tools.length) {
+    children.push(
+      el("div", { class: "empty-note" }, [
+        "현재 설정할 SSH 도구가 없습니다. hex-ssh 도구 목록이 서버에서 제공되면 역할별 정책 표가 여기에 표시됩니다.",
+      ]),
+    );
+    return el("section", { class: "settings-card" }, children);
+  }
   const form = el("form", {
     class: "hex-policy-form",
     onsubmit: async (e) => {
@@ -8635,15 +8651,8 @@ function buildHexSshPolicyCard(sys) {
     ]),
   );
 
-  return el("section", { class: "settings-card" }, [
-    el("div", { class: "panel-section-head" }, [
-      el("div", {}, [
-        el("h3", { text: "SSH 도구 정책" }),
-        el("p", { class: "muted", text: "역할별로 hex-ssh MCP 도구 노출과 실행을 제한합니다." }),
-      ]),
-    ]),
-    form,
-  ]);
+  children.push(form);
+  return el("section", { class: "settings-card" }, children);
 }
 
 function sysRow(label, valueNode) {
