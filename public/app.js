@@ -1585,8 +1585,9 @@ function renderSplitControls() {
   const selectedAvatarId = avatars.some((av) => av.id === state.splitAvatarId) ? state.splitAvatarId : activeAvatarId;
   const avatarSelect = el("select", {
     class: "split-avatar-select",
-    title: "분할로 추가할 아바타",
-    "aria-label": "분할로 추가할 아바타",
+    title: canAdd ? "분할로 추가할 아바타" : "분할 대화는 최대 4개까지 가능합니다",
+    "aria-label": canAdd ? "분할로 추가할 아바타" : "분할 대화 최대 개수 도달",
+    disabled: canAdd ? null : "",
     onchange: (event) => { state.splitAvatarId = event.currentTarget.value; },
   }, avatars.map((av) => el("option", { value: av.id, text: av.alias || av.displayName || av.username || "아바타" })));
   avatarSelect.value = selectedAvatarId;
@@ -1595,8 +1596,8 @@ function renderSplitControls() {
   const addBtn = el("button", {
     class: "split-add",
     type: "button",
-    title: "대화 추가 (분할)",
-    "aria-label": "대화 추가 (분할)",
+    title: canAdd ? "대화 추가 (분할)" : "분할 대화는 최대 4개까지 가능합니다",
+    "aria-label": canAdd ? "대화 추가 (분할)" : "분할 대화 최대 개수 도달",
     disabled: canAdd ? null : "",
     onclick: () => addChatPane(avatarSelect.value),
   });
