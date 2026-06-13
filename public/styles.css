@@ -3036,6 +3036,17 @@ textarea::placeholder {
   border-color: var(--accent-soft-strong);
   background: var(--accent-soft);
 }
+.notification-row.clickable {
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.notification-row.clickable:hover {
+  border-color: var(--accent-soft-strong);
+}
+.notification-row.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .notification-row p {
   margin: var(--s-2) 0 0;
   color: var(--text);

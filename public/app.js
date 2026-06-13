@@ -195,6 +195,7 @@ function icon(name) {
     book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
     clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
     inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/>',
+    bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
     "arrow-down": '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
     columns: '<rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/>',
     rows: '<rect x="4" y="3" width="16" height="7" rx="1"/><rect x="4" y="14" width="16" height="7" rx="1"/>',
@@ -504,7 +505,7 @@ function mountShell() {
   };
   navItem("explore", "탐색", "compass");
   navItem("chat", "대화", "chat");
-  navItem("inbox", "받은함", "inbox");
+  navItem("inbox", "알림", "bell");
   navItem("routines", "루틴", "clock");
   navItem("settings", "내 아바타", "user");
   if (admin) navItem("admin", "관리자", "shield");
@@ -720,7 +721,7 @@ function syncNav() {
   }
 }
 
-const VIEW_TITLES = { explore: "탐색", chat: "대화", inbox: "받은함", routines: "루틴", settings: "내 아바타", admin: "관리자" };
+const VIEW_TITLES = { explore: "탐색", chat: "대화", inbox: "알림", routines: "루틴", settings: "내 아바타", admin: "관리자" };
 
 function syncDocumentTitle() {
   if (state.streaming) {
@@ -1665,7 +1666,25 @@ async function renderRoutinesView() {
 // One notification row (avatar → owner). `refresh` re-renders the inbox in place
 // after a read/read-all so we don't blow away the whole view.
 function buildNotificationRow(n, refresh) {
-  const row = el("div", { class: `notification-row ${n.readAt ? "" : "unread"}` }, [
+  // Messenger-style: the whole card is clickable — it opens a fresh chat with my
+  // own avatar seeded with this notification's topic (and marks it read). A delete
+  // (X) dismisses it; the routine ones keep a "결과 보기" shortcut.
+  const row = el("div", {
+    class: `notification-row clickable ${n.readAt ? "" : "unread"}`,
+    role: "button",
+    tabindex: "0",
+    onclick: (e) => {
+      if (e.target.closest("button")) return; // inner actions handle themselves
+      openNotificationChat(n);
+    },
+    onkeydown: (e) => {
+      if (e.target !== e.currentTarget) return;
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openNotificationChat(n);
+      }
+    },
+  }, [
     el("div", { class: "pr-main" }, [
       el("div", { class: "inbox-row-head" }, [
         el("span", { class: "inbox-chip note", text: "알림" }),
@@ -1679,19 +1698,59 @@ function buildNotificationRow(n, refresh) {
   if (n.conversationId && state.routineConversations.some((c) => c.id === n.conversationId)) {
     actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(n.conversationId) }));
   }
-  if (!n.readAt) {
-    actions.append(el("button", {
-      class: "ghost-sm",
-      type: "button",
-      text: "읽음",
-      onclick: async () => {
-        await api(`/api/me/notifications/${encodeURIComponent(n.id)}/read`, { method: "PATCH" });
-        await refresh?.();
-      },
-    }));
-  }
-  if (actions.children.length) row.append(actions);
+  const delBtn = el("button", { class: "msg-act", type: "button", "aria-label": "알림 삭제", title: "삭제" });
+  delBtn.append(icon("close"));
+  delBtn.addEventListener("click", async () => {
+    delBtn.disabled = true;
+    try {
+      await api(`/api/me/notifications/${encodeURIComponent(n.id)}`, { method: "DELETE" });
+      await refresh?.();
+    } catch (e) {
+      delBtn.disabled = false;
+      notify(`삭제 실패: ${e.message}`);
+    }
+  });
+  actions.append(delBtn);
+  row.append(actions);
   return row;
+}
+
+// Open a new chat with my own avatar, composer pre-filled with the notification's
+// topic (the owner can edit before sending). Marks the notification read in passing.
+function openNotificationChat(n) {
+  if (!n.readAt) {
+    n.readAt = new Date().toISOString();
+    updateInboxBadge();
+    // Fire-and-forget; we're navigating away from the inbox anyway.
+    api(`/api/me/notifications/${encodeURIComponent(n.id)}/read`, { method: "PATCH" }).catch(() => {});
+  }
+  const seed = `다음은 네가 남긴 알림이야. 이 주제로 이어서 이야기하자.\n\n[${n.title}]\n${n.message}`;
+  chatAboutTopic(seed);
+}
+
+// Spin up a fresh conversation with the owner's own avatar and drop `seedText`
+// into the composer (not sent — the owner reviews/edits first).
+function chatAboutTopic(seedText) {
+  const me = state.user;
+  if (!me) return;
+  if (streamingPane() && !guardChatReplacement()) return;
+  state.currentAvatar = me;
+  const pane = makeChatPane(me);
+  pane.greetingStarted = true; // skip the auto-greeting; we already have a topic
+  state.chatPanes = [pane];
+  state.activePaneId = pane.id;
+  syncLegacyChatState(pane);
+  state.view = "chat";
+  syncHash();
+  renderView();
+  const ta = pane.dom?.textarea;
+  if (ta) {
+    ta.value = seedText;
+    ta.dispatchEvent(new Event("input"));
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }
+  refreshConversations();
 }
 
 // The routines tab is now the single home for routines: this panel both MANAGES
@@ -1924,25 +1983,26 @@ function openRoutineResult(conversationId) {
   renderView();
 }
 
-/* ============================================================ Inbox (받은함) */
-// Unified inbox: colleague info-requests + avatar notifications in one chronological
-// list. Two backends (knowledge_requests / avatar_notifications) kept distinct —
-// this only merges the presentation, with each item's own actions.
+/* ============================================================ Inbox (알림) */
+// Notification hub: avatar notifications + colleague info-requests in one
+// chronological list. Notifications are messenger-style (click → chat about the
+// topic, X → delete); info-requests keep their answer/dismiss flow. Two backends
+// (avatar_notifications / knowledge_requests) stay distinct — this merges only the UI.
 async function renderInboxView() {
-  const header = viewHeader("받은함", "동료의 정보 요청과 아바타가 남긴 알림을 한곳에서 확인하세요");
+  const header = viewHeader("알림", "아바타가 남긴 알림과 동료의 정보 요청을 한곳에서 확인하세요");
   const body = el("div", { class: "view-body scroll-thin inbox-body" }, [
     el("div", { class: "muted pad", text: "불러오는 중…" }),
   ]);
   dom.main.append(header, body);
 
   // routineConversations only gates the notification "결과 보기" link — its failure
-  // shouldn't blank the whole inbox, so it's tolerated separately.
+  // shouldn't blank the whole list, so it's tolerated separately.
   const results = await Promise.allSettled([loadKnowledge(), loadNotifications(), loadRoutineConversations()]);
   if (sessionExpired) return;
   if (results[0].status === "rejected" && results[1].status === "rejected") {
     body.replaceChildren(
       el("div", { class: "warn-box" }, [
-        `받은함을 불러오지 못했습니다: ${results[0].reason?.message || "네트워크 오류"} `,
+        `알림을 불러오지 못했습니다: ${results[0].reason?.message || "네트워크 오류"} `,
         el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
       ]),
     );
@@ -1956,8 +2016,8 @@ async function renderInboxView() {
   const card = el("section", { class: "settings-card" }, [
     el("div", { class: "panel-section-head" }, [
       el("div", {}, [
-        el("h3", { text: "받은 항목" }),
-        el("p", { class: "muted", text: "‘정보 요청’은 답을 적어 보내면 아바타가 지식 저장소에 기록하고, ‘알림’은 확인 후 읽음 처리하세요." }),
+        el("h3", { text: "알림" }),
+        el("p", { class: "muted", text: "알림을 누르면 그 주제로 내 아바타와 대화할 수 있고, X로 삭제합니다. ‘정보 요청’은 답을 적어 보내면 아바타가 지식 저장소에 기록합니다." }),
       ]),
       headerActions,
     ]),
@@ -2014,7 +2074,7 @@ function renderInboxItems(list, refresh) {
   ].sort((a, b) => (b.at || "").localeCompare(a.at || ""));
 
   if (!items.length) {
-    list.append(el("div", { class: "empty-note", text: "받은 항목이 없습니다." }));
+    list.append(el("div", { class: "empty-note", text: "새 알림이 없습니다." }));
     return;
   }
   for (const item of items) {

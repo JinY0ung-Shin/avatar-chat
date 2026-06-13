@@ -1248,6 +1248,15 @@ export function createApp(services = createServices()) {
     res.json({ ok: true });
   });
 
+  app.delete("/api/me/notifications/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const ok = store.deleteAvatarNotification(req.user!.id, req.params.id);
+    if (!ok) {
+      apiError(res, 404, "알림을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ ok: true });
+  });
+
   // ---- Routine jobs (owner-scheduled recurring runs) -------------------
 
   app.get("/api/me/routines", requireAuth(store), (req: AuthenticatedRequest, res) => {
