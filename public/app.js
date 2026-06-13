@@ -2169,7 +2169,12 @@ function buildRoutineManagePanel() {
 function renderRoutineManageRows(list, searchInput = null) {
   list.replaceChildren();
   if (!state.routines.length) {
-    list.append(el("div", { class: "empty-note", text: "아직 등록한 루틴이 없습니다. ‘루틴 추가’로 첫 루틴을 만들어 보세요." }));
+    list.append(
+      el("div", { class: "empty-note" }, [
+        "아직 등록한 루틴이 없습니다.\n",
+        el("button", { class: "linkish small", type: "button", text: "첫 루틴 추가", onclick: () => openRoutineModal(null) }),
+      ]),
+    );
     return;
   }
   const q = state.routineSearch.trim().toLowerCase();
@@ -2312,7 +2317,14 @@ function buildRoutineResultPanel(messageLoadError = "") {
     transcript,
   ]);
   if (!conv) {
-    inner.append(el("div", { class: "empty-note", text: "아직 확인할 루틴 결과가 없습니다." }));
+    inner.append(
+      state.routines.length
+        ? el("div", { class: "empty-note", text: "아직 확인할 실행 결과가 없습니다. 왼쪽에서 루틴을 지금 실행하거나 다음 예약 실행 후 결과가 표시됩니다." })
+        : el("div", { class: "empty-note" }, [
+            "아직 확인할 루틴 결과가 없습니다.\n",
+            el("button", { class: "linkish small", type: "button", text: "첫 루틴 추가", onclick: () => openRoutineModal(null) }),
+          ]),
+    );
     return card;
   }
   if (messageLoadError) {
