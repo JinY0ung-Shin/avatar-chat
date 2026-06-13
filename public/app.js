@@ -9193,9 +9193,9 @@ function openOnboarding() {
         ]),
         form,
       );
-      // Autofocusing the token field pops the keyboard over the explanation on
-      // phones — focus the card itself there instead.
-      return { focusTarget: tokenInput };
+      // Keep the opening focus on the guide itself; jumping straight to the
+      // token field skips the explanation and can scroll the modal past it.
+      return { focusTarget: card };
     },
   });
 }
