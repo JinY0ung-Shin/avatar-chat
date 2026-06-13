@@ -945,6 +945,7 @@ function makeChatPane(avatar, { conversationId = newId(), messages = [], groupKn
     // Group ids whose shared knowledge is OFF for this conversation (owner-only
     // toggle). Empty = all groups ON. Loaded from /api/messages.
     groupKnowledgeOff,
+    draft: "",
     streaming: false,
     abortController: null,
     dom: {},
@@ -2645,6 +2646,7 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
     placeholder: `${av.displayName}에게 메시지…`,
     "aria-label": "메시지 입력",
   });
+  pdom.textarea.value = pane.draft || "";
   pdom.sendButton = el("button", { class: "send-button", type: "submit", "aria-label": "보내기", title: "보내기" });
   pdom.sendButton.append(icon("send"));
   pdom.composerBox = el("div", { class: "composer-box" }, [pdom.textarea, pdom.sendButton]);
@@ -3009,6 +3011,7 @@ function wireComposer(pane) {
     ta.style.height = `${Math.min(ta.scrollHeight, cap)}px`;
   };
   ta.addEventListener("input", () => {
+    pane.draft = ta.value;
     autoGrow();
     updateSendState(pane);
     renderSlashMenu(pane);
@@ -3359,6 +3362,7 @@ async function submitMessage(pane = activePane()) {
   syncLegacyChatState(pane);
   pdom.transcriptInner.append(buildMessageNode(pane, userMsg, false));
   pdom.textarea.value = "";
+  pane.draft = "";
   pdom.textarea.style.height = "auto";
   scrollToBottom(pane, true);
   await streamChat(pane, message, { isNewConversation: pane.messages.length === 1 });
