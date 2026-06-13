@@ -6838,13 +6838,22 @@ function buildGroupMemberAddForm({
         }
       }
       for (const key of successes) selected.delete(key);
+      let reloadError = null;
       if (successes.length) {
         adminCb.checked = false;
         input.value = "";
-        await reload?.();
+        try {
+          await reload?.();
+        } catch (e) {
+          reloadError = e;
+        }
       }
       if (failures.length) {
-        notify(`일부 멤버를 추가하지 못했습니다. ${failures.join(" / ")}`, "warn");
+        const added = successes.length ? `${successes.length}명은 추가했습니다. ` : "";
+        const refresh = reloadError ? ` 목록 새로고침 실패: ${reloadError.message}` : "";
+        notify(`${added}일부 멤버를 추가하지 못했습니다. ${failures.join(" / ")}${refresh}`, "warn");
+      } else if (reloadError) {
+        notify(`${successes.length}명은 그룹에 추가했지만 목록 새로고침에 실패했습니다: ${reloadError.message}`, "warn");
       } else {
         notify(`${successes.length}명을 그룹에 추가했습니다.`, "ok");
       }
