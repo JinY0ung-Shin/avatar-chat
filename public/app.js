@@ -47,7 +47,7 @@ const state = {
   adminUsers: [],
   adminUserDetail: {}, // id -> AdminUserDetail (lazy, cached per expand)
   adminUserSearch: "",
-  adminUserFilter: "all", // all | admins | suspended | public
+  adminUserFilter: "all", // all | admins | suspended | public | sessions
   adminSystem: null,
   adminStats: null,
   audit: [],
@@ -7222,7 +7222,7 @@ async function adminOverviewCards() {
     stat("메시지", s.messages),
     stat("활성 루틴", s.activeRoutines),
     stat("미응답 질문", s.openRequests),
-    stat("활성 세션", s.activeSessions, null, "users"),
+    stat("활성 세션", s.activeSessions, null, "users", "sessions"),
     stat("그룹", s.groups, null, "groups"),
   ]);
   return [
@@ -7255,6 +7255,7 @@ async function adminUsersCards() {
     { id: "admins", label: "관리자", match: (u) => u.roles?.includes("admin") },
     { id: "suspended", label: "정지", match: (u) => u.suspended },
     { id: "public", label: "공개", match: (u) => u.visibility === "public" },
+    { id: "sessions", label: "활성 세션", match: (u) => (u.activeSessions || 0) > 0 },
   ];
   const filterLabel = (id) => filterDefs.find((f) => f.id === id)?.label || "전체";
   const currentFilter = () => filterDefs.find((f) => f.id === state.adminUserFilter) || filterDefs[0];
@@ -7361,6 +7362,7 @@ function adminUserRow(u, reload) {
     u.visibility === "group" ? el("span", { class: "tag", text: "그룹 공개" }) : null,
     u.visibility === "private" ? el("span", { class: "tag", text: "비공개" }) : null,
     u.suspended ? el("span", { class: "tag danger", text: "정지" }) : null,
+    u.activeSessions ? el("span", { class: "tag read", text: `세션 ${u.activeSessions}` }) : null,
     isMe ? el("span", { class: "tag", text: "나" }) : null,
   ]);
 

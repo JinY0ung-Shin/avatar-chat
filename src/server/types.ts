@@ -316,6 +316,7 @@ export interface AdminUserSummary {
   hasImage: boolean;
   createdAt: string;
   lastSeenAt: string | null;
+  activeSessions: number;
 }
 
 /** How new self-service signups are handled. Always allows the very first

@@ -2252,6 +2252,7 @@ export class Store {
   // ---- Admin ------------------------------------------------------------
 
   private toAdminSummary(row: UserRow): AdminUserSummary {
+    const current = now();
     return {
       id: row.id,
       username: row.username,
@@ -2262,6 +2263,11 @@ export class Store {
       hasImage: Boolean(row.avatar_ext),
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at,
+      activeSessions: this.count(
+        "SELECT COUNT(*) AS c FROM sessions WHERE user_id = ? AND expires_at > ?",
+        row.id,
+        current,
+      ),
     };
   }
 

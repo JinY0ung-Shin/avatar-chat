@@ -525,6 +525,7 @@ describe("noah-almighty platform", () => {
     const res = await admin.get("/api/admin/users").expect(200);
     expect(res.body.users.length).toBe(1);
     expect(res.body.users[0].username).toBe("boss");
+    expect(res.body.users[0].activeSessions).toBe(1);
   });
 
   it("stores/clears a subscription token and reflects it in system status", async () => {
