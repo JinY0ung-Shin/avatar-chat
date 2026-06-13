@@ -2,9 +2,15 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError, syncGitRepo } from "./marketplace.js";
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
-import { ensureClone, knowledgeRepoContextFor, type KnowledgeRepoContext } from "./knowledgeRepo.js";
+import {
+  ensureClone,
+  knowledgeClonePath,
+  knowledgeRepoContextFor,
+  type KnowledgeRepoContext,
+} from "./knowledgeRepo.js";
 import {
   ensureGroupClone,
+  groupKnowledgeClonePath,
   groupKnowledgeRepoContextsForUser,
   type GroupKnowledgeRepoContext,
 } from "./groupKnowledgeRepo.js";
@@ -467,10 +473,18 @@ export async function loadAgentPluginRoots(
   avatarId: string,
   config: AppConfig,
   onWarn?: (message: string) => void,
+  opts?: { disabledGroupIds?: Set<string> },
 ): Promise<PluginRoot[]> {
   if (config.agentRuntime === "local") {
     return [];
   }
+  // Per-conversation group-knowledge toggle (owner-only): skip the skill roots of
+  // any group the owner turned OFF for this conversation. The scheduler and
+  // intro/hashtag paths pass no opts, so they always load every group.
+  const disabled = opts?.disabledGroupIds;
+  const groupContexts = groupKnowledgeRepoContextsForUser(store, avatarId, config).filter(
+    (ctx) => !disabled?.has(ctx.groupId),
+  );
   return [
     ...(await loadDefaultPluginRoots(config, onWarn)),
     ...(await loadAvatarPluginRoots(
@@ -483,8 +497,74 @@ export async function loadAgentPluginRoots(
     ...(await loadKnowledgeRepoRoots(knowledgeRepoContextFor(store, avatarId, config), onWarn)),
     // Shared knowledge repos of every group the avatar's owner belongs to — so
     // group skills load for all members' chats and routines alike.
-    ...(await loadGroupKnowledgeRepoRoots(groupKnowledgeRepoContextsForUser(store, avatarId, config), onWarn)),
+    ...(await loadGroupKnowledgeRepoRoots(groupContexts, onWarn)),
   ];
+}
+
+/** Per-group/total caps on injected CLAUDE.md so standing memory can't bloat every turn. */
+const PERSONAL_CLAUDE_MD_CAP = 6_000;
+const GROUP_CLAUDE_MD_CAP = 4_000;
+const TOTAL_GROUP_CLAUDE_MD_CAP = 8_000;
+
+/** Standing CLAUDE.md memory read from the avatar's knowledge repos (push, every turn). */
+export interface KnowledgeRepoMemory {
+  /** Root CLAUDE.md of the personal knowledge repo, or null when absent/empty. */
+  personal: string | null;
+  /** Root CLAUDE.md of each enabled group repo that has one. */
+  groups: { name: string; content: string }[];
+}
+
+/** Read a repo-root CLAUDE.md (trimmed, capped). Returns null when missing/empty. */
+async function readRepoClaudeMd(repoRoot: string, cap: number): Promise<string | null> {
+  try {
+    const raw = (await fs.readFile(path.join(repoRoot, "CLAUDE.md"), "utf8")).trim();
+    if (!raw) {
+      return null;
+    }
+    return raw.length > cap ? `${raw.slice(0, cap)}\n…(truncated)` : raw;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Load the standing CLAUDE.md memory from the avatar's personal knowledge repo
+ * and each enabled group repo. Reads the working-tree clones directly (which
+ * `loadAgentPluginRoots` already ensured for the same turn); a missing repo, a
+ * missing CLAUDE.md, or a not-yet-cloned repo simply contributes nothing.
+ *
+ * Group filtering mirrors `loadAgentPluginRoots`: `disabledGroupIds` (the
+ * owner's per-conversation toggle) are skipped; colleague turns pass none.
+ * Unlike skills (pulled on demand), this is injected into the prompt every turn,
+ * so it is capped. Personal memory is always included; the group toggle controls
+ * only group memory.
+ */
+export async function loadKnowledgeRepoMemory(
+  store: Store,
+  avatarId: string,
+  config: AppConfig,
+  opts?: { disabledGroupIds?: Set<string> },
+): Promise<KnowledgeRepoMemory> {
+  if (config.agentRuntime === "local") {
+    return { personal: null, groups: [] };
+  }
+  const personal = store.getKnowledgeRepo(avatarId).repo
+    ? await readRepoClaudeMd(knowledgeClonePath(avatarId, config), PERSONAL_CLAUDE_MD_CAP)
+    : null;
+  const disabled = opts?.disabledGroupIds;
+  const groups: { name: string; content: string }[] = [];
+  let totalGroupChars = 0;
+  for (const g of store.listGroupKnowledgeReposForUser(avatarId)) {
+    if (disabled?.has(g.groupId) || totalGroupChars >= TOTAL_GROUP_CLAUDE_MD_CAP) {
+      continue;
+    }
+    const content = await readRepoClaudeMd(groupKnowledgeClonePath(g.groupId, config), GROUP_CLAUDE_MD_CAP);
+    if (content) {
+      groups.push({ name: g.groupName, content });
+      totalGroupChars += content.length;
+    }
+  }
+  return { personal, groups };
 }
 
 /** Like `loadGroupKnowledgeRepoRoots` but returns `{path, source}` for the skills/intro paths. */

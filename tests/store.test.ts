@@ -379,6 +379,26 @@ describe("store agent session resume", () => {
     expect(store.getConversationAvatarId(ownerId, "conv-4")).toBe(avatar.id);
     expect(store.getConversationAvatarId(other.id, "conv-4")).toBeNull();
   });
+
+  it("tracks the per-conversation group-knowledge OFF set (default all-on), owner-scoped", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-gk", ownerId, "hi");
+    // Default: nothing disabled → every group on.
+    expect(store.getConversationGroupKnowledgeOff(ownerId, "conv-gk")).toEqual([]);
+    // Replace the OFF set (dedupes, drops falsy); empty clears it.
+    store.setConversationGroupKnowledgeOff(ownerId, "conv-gk", ["g1", "g2", "g1", ""]);
+    expect(new Set(store.getConversationGroupKnowledgeOff(ownerId, "conv-gk"))).toEqual(new Set(["g1", "g2"]));
+    store.setConversationGroupKnowledgeOff(ownerId, "conv-gk", ["g2"]);
+    expect(store.getConversationGroupKnowledgeOff(ownerId, "conv-gk")).toEqual(["g2"]);
+    store.setConversationGroupKnowledgeOff(ownerId, "conv-gk", []);
+    expect(store.getConversationGroupKnowledgeOff(ownerId, "conv-gk")).toEqual([]);
+    // Another owner can't read or mutate this conversation's setting.
+    store.setConversationGroupKnowledgeOff(ownerId, "conv-gk", ["g2"]);
+    const other = store.createUser({ username: "gkother", displayName: "Other", password: "password123" });
+    expect(store.getConversationGroupKnowledgeOff(other.id, "conv-gk")).toEqual([]);
+    store.setConversationGroupKnowledgeOff(other.id, "conv-gk", ["g3"]);
+    expect(store.getConversationGroupKnowledgeOff(ownerId, "conv-gk")).toEqual(["g2"]);
+  });
 });
 
 

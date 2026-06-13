@@ -1264,6 +1264,36 @@ describe("buildPrompt", () => {
     expect(p).toContain("load starting from the next conversation");
   });
 
+  it("injects personal + group CLAUDE.md standing memory with an injection guard", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        knowledgeMemory: {
+          personal: "항상 존댓말을 쓰세요.",
+          groups: [{ name: "보안팀", content: "비밀번호는 절대 평문으로 다루지 마세요." }],
+        },
+      }),
+      0,
+    );
+    expect(p).toContain("Standing guidance from your knowledge repositories");
+    expect(p).toContain("always take precedence");
+    expect(p).toContain("Personal knowledge repository — CLAUDE.md");
+    expect(p).toContain("항상 존댓말을 쓰세요.");
+    expect(p).toContain('Group knowledge repository "보안팀" — CLAUDE.md');
+    expect(p).toContain("비밀번호는 절대 평문으로 다루지 마세요.");
+  });
+
+  it("omits the standing-memory section when there is no knowledge memory", () => {
+    const none = buildPrompt(req({ viewerIsOwner: true }), 0);
+    expect(none).not.toContain("Standing guidance from your knowledge repositories");
+    // Empty/whitespace content contributes nothing either.
+    const empty = buildPrompt(
+      req({ viewerIsOwner: true, knowledgeMemory: { personal: "  ", groups: [] } }),
+      0,
+    );
+    expect(empty).not.toContain("Standing guidance from your knowledge repositories");
+  });
+
   it("offers to create the knowledge repo via the repo tool on a greeting when GIT_TOKEN is set", () => {
     const p = buildPrompt(
       req({

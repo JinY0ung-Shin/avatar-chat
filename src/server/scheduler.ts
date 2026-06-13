@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { loadAgentPluginRoots } from "./plugins.js";
+import { loadAgentPluginRoots, loadKnowledgeRepoMemory } from "./plugins.js";
 import { runAgentStream } from "./agent/index.js";
 import type { AppServices } from "./app.js";
 import logger from "./logger.js";
@@ -57,6 +57,10 @@ async function runRoutineJobNow(
       schedLogger.warn({ jobId: job.id, warnings: pluginWarnings }, "routine plugin warnings");
     }
 
+    // Standing CLAUDE.md memory, same as an owner chat. Routines have no
+    // per-conversation toggle UI, so every group is included (no disabled set).
+    const knowledgeMemory = await loadKnowledgeRepoMemory(store, avatar.id, config);
+
     const workspaceDir = workspaceDirFor(config, avatar.id, job.conversationId);
     fs.mkdirSync(workspaceDir, { recursive: true });
 
@@ -72,6 +76,7 @@ async function runRoutineJobNow(
         headless: true,
         allowHeadlessTools: true,
         autoApprove: true,
+        knowledgeMemory,
       },
       pluginRoots,
       config,

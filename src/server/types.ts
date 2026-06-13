@@ -477,6 +477,18 @@ export interface AgentRequest {
    * owner, for directly-trusted viewers, and for plain colleagues.
    */
   trustedViaGroups?: string[];
+  /**
+   * Standing CLAUDE.md memory read from the avatar's knowledge repos and injected
+   * into the prompt every turn (push, unlike on-demand skills). `personal` is the
+   * owner's personal repo root CLAUDE.md; `groups` are the enabled group repos'.
+   * The server (chat route / scheduler) loads + caps it; intro/hashtag generation
+   * leaves it unset. Group filtering reflects the owner-only per-conversation
+   * group-knowledge toggle.
+   */
+  knowledgeMemory?: {
+    personal?: string | null;
+    groups?: { name: string; content: string }[];
+  };
 }
 
 /**

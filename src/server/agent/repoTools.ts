@@ -432,7 +432,7 @@ export function buildRepoTools(
         const kind = result.isPrivate ? "private" : "public";
         return text(
           seeded
-            ? `Created the ${kind} knowledge repository \`${result.fullName}\` and initialized it with the default template (Claude plugin marketplace: \`.claude-plugin/marketplace.json\` + README). Now add your first skill with \`scaffold_skill\` and push with \`commit\`.`
+            ? `Created the ${kind} knowledge repository \`${result.fullName}\` and initialized it with the default template (Claude plugin marketplace: \`.claude-plugin/marketplace.json\` + README + a root \`CLAUDE.md\` that is injected as standing guidance every conversation). Edit \`CLAUDE.md\` for always-apply rules, add your first skill with \`scaffold_skill\`, and push with \`commit\`.`
             : `Created and connected the ${kind} knowledge repository \`${result.fullName}\`.${seedNote} Create your first skill with \`scaffold_skill\`, then push with \`commit\`.`,
         );
       } catch (error) {

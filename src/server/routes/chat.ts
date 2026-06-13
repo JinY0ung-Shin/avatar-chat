@@ -3,7 +3,7 @@ import fs from "node:fs";
 import { Router, type Response } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
-import { listSkillsInRoots, loadAgentPluginRoots } from "../plugins.js";
+import { listSkillsInRoots, loadAgentPluginRoots, loadKnowledgeRepoMemory } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import type { AgentConversationMessage, AgentResponse, StoredMessage } from "../types.js";
 import { runAgentStream } from "../agent/index.js";
@@ -169,7 +169,12 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       res.json({ messages: [] });
       return;
     }
-    res.json({ messages: store.listMessages(req.user!.id, conversationId) });
+    res.json({
+      messages: store.listMessages(req.user!.id, conversationId),
+      // Owner-only group-knowledge toggle state for this conversation (group ids
+      // turned OFF). The client shows the toggle only for the owner's own avatar.
+      groupKnowledgeOff: store.getConversationGroupKnowledgeOff(req.user!.id, conversationId),
+    });
   });
 
   router.patch("/api/conversations/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
@@ -243,6 +248,17 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       apiError(res, 403, "이 명령은 내 아바타와의 대화에서만 사용할 수 있습니다.");
       return;
     }
+    const viewerIsOwner = req.user!.id === avatar.id;
+    // Owner-only per-conversation group-knowledge selection, chosen in the UI and
+    // sent with the turn: the group ids turned OFF (skills + CLAUDE.md). The client
+    // owns this state from the moment a chat starts, so no separate persist step is
+    // needed; the server applies it this turn and stores it on the conversation.
+    // Colleague turns ignore it (always all-on); null = client sent nothing → keep
+    // whatever is already stored.
+    const requestedGroupKnowledgeOff =
+      viewerIsOwner && Array.isArray(req.body?.groupKnowledgeOff)
+        ? (req.body.groupKnowledgeOff as unknown[]).filter((x): x is string => typeof x === "string")
+        : null;
 
     const suppliedConversationId = safeString(req.body?.conversationId);
     // Reject a supplied id that already belongs to ANOTHER user before any DB
@@ -308,6 +324,11 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     }
     if (!greeting) {
       store.touchConversation(req.user!.id, conversationId, avatar.id, displayMessage);
+      // Persist the owner's group-knowledge selection now that the row exists, so
+      // it survives reload and applies to later turns until changed again.
+      if (requestedGroupKnowledgeOff) {
+        store.setConversationGroupKnowledgeOff(req.user!.id, conversationId, requestedGroupKnowledgeOff);
+      }
       if (!regenerate) {
         store.addMessage(conversationId, { role: "user", content: displayMessage });
       }
@@ -339,9 +360,25 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       // scheduler via `loadAgentPluginRoots` so the two can't drift. Tolerate
       // clone/resolve fails.
       const pluginWarnings: string[] = [];
-      const pluginRoots = await loadAgentPluginRoots(store, avatar.id, config, (warn) =>
-        pluginWarnings.push(warn),
+      // Owner-only per-conversation group-knowledge toggle: skip the OFF groups'
+      // skills AND their CLAUDE.md. Use this turn's selection when the client sent
+      // one (incl. a greeting before any row exists), else the stored set. Colleague
+      // turns ignore the toggle (always ON).
+      const disabledGroupIds = viewerIsOwner
+        ? new Set(requestedGroupKnowledgeOff ?? store.getConversationGroupKnowledgeOff(req.user!.id, conversationId))
+        : new Set<string>();
+      const pluginRoots = await loadAgentPluginRoots(
+        store,
+        avatar.id,
+        config,
+        (warn) => pluginWarnings.push(warn),
+        { disabledGroupIds },
       );
+      // Standing CLAUDE.md memory (personal repo always; group repos gated by the
+      // toggle). Read after plugin roots ensured the clones for this turn.
+      const knowledgeMemory = await loadKnowledgeRepoMemory(store, avatar.id, config, {
+        disabledGroupIds,
+      });
 
       // Per-conversation workspace: each chat session gets an isolated cwd, scoped
       // under the avatar so sessions cannot mix files by accident.
@@ -361,10 +398,11 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           conversationHistory,
           viewerUserId: req.user!.id,
           viewerName: req.user!.displayName,
-          viewerIsOwner: req.user!.id === avatar.id,
+          viewerIsOwner,
+          knowledgeMemory,
           // Elevated tool permissions for the owner OR a trusted user. The tool
           // gate denies everyone else, so auto-approving the elevated path is safe.
-          elevated: req.user!.id === avatar.id || store.isTrustedFor(req.user!.id, avatar.id),
+          elevated: viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id),
           // WHY a non-owner viewer is elevated, when group co-membership is the
           // source: the shared group names surface in the prompt (META-COGNITION).
           trustedViaGroups:

@@ -466,6 +466,13 @@ export class Store {
     // their routine is deleted (which orphans the conversation). Tag the row itself
     // so classification doesn't depend on the routine_jobs link still existing.
     this.addColumnIfMissing("conversations", "is_routine", "INTEGER NOT NULL DEFAULT 0");
+    // Per-conversation, owner-only toggle for which of the owner's group
+    // knowledge repos are DISABLED in this conversation. A JSON array of group
+    // ids; NULL/[] means every group is enabled (the default). We store the OFF
+    // set (not the ON set) so a newly-joined group is enabled by default without
+    // touching existing rows. Only meaningful for the owner's own conversations;
+    // colleague conversations always load all groups (no toggle).
+    this.addColumnIfMissing("conversations", "group_knowledge_off", "TEXT");
     this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
@@ -2014,6 +2021,31 @@ export class Store {
     this.db
       .prepare("UPDATE conversations SET agent_session_id = ? WHERE id = ? AND owner_user_id = ?")
       .run(sessionId, conversationId, ownerId);
+  }
+
+  /**
+   * Group ids whose shared knowledge is toggled OFF for this conversation
+   * (owner-only). Empty array = every group enabled (the default). Owner-scoped
+   * so a guessed conversation id can't read another owner's setting.
+   */
+  getConversationGroupKnowledgeOff(ownerId: string, conversationId: string): string[] {
+    const row = this.db
+      .prepare("SELECT group_knowledge_off FROM conversations WHERE id = ? AND owner_user_id = ?")
+      .get(conversationId, ownerId) as { group_knowledge_off: string | null } | undefined;
+    return parseNameList(row?.group_knowledge_off ?? null) ?? [];
+  }
+
+  /**
+   * Replace the conversation's group-knowledge OFF set (the group ids whose shared
+   * knowledge is disabled). Empty array clears it (every group ON). Stores the OFF
+   * set so groups default ON. No-op when the conversation isn't the owner's.
+   */
+  setConversationGroupKnowledgeOff(ownerId: string, conversationId: string, offGroupIds: string[]): void {
+    const unique = [...new Set(offGroupIds.filter(Boolean))];
+    const next = unique.length > 0 ? JSON.stringify(unique) : null;
+    this.db
+      .prepare("UPDATE conversations SET group_knowledge_off = ? WHERE id = ? AND owner_user_id = ?")
+      .run(next, conversationId, ownerId);
   }
 
   /**

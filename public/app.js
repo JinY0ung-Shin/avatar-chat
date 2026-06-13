@@ -855,18 +855,96 @@ function viewHeader(title, sub, extra) {
 /* ============================================================ Chat panes */
 const MAX_CHAT_PANES = 4;
 
-function makeChatPane(avatar, { conversationId = newId(), messages = [] } = {}) {
+function makeChatPane(avatar, { conversationId = newId(), messages = [], groupKnowledgeOff = [] } = {}) {
   return {
     id: newId(),
     avatar,
     conversationId,
     messages,
+    // Group ids whose shared knowledge is OFF for this conversation (owner-only
+    // toggle). Empty = all groups ON. Loaded from /api/messages.
+    groupKnowledgeOff,
     streaming: false,
     abortController: null,
     dom: {},
     greetedConversationId: null,
     greetingStarted: false,
   };
+}
+
+// Owner-only, per-conversation toggle: which of the owner's group knowledge
+// repos (skills + standing CLAUDE.md) are active in THIS conversation. Shown from
+// the moment a chat starts when chatting with your OWN avatar and you belong to
+// >=1 group that has a shared repo. The selection lives in pane.groupKnowledgeOff
+// (group ids turned OFF) and is sent with each chat turn (see submitMessage); the
+// server applies + persists it. Colleague chats always load all groups (no control).
+function setupGroupKnowledgeToggle(pane, pdom) {
+  const btn = el("button", { type: "button", class: "composer-gk-btn", hidden: "" });
+  const panel = el("div", {
+    class: "composer-gk-panel",
+    hidden: "",
+    role: "group",
+    "aria-label": "이 대화에서 사용할 그룹 지식",
+  });
+  let open = false;
+  const eligibleGroups = () =>
+    pane.avatar?.id === state.user?.id
+      ? (state.user?.groups || []).filter((g) => g.knowledgeRepoConfigured)
+      : [];
+  const closePanel = () => {
+    open = false;
+    panel.hidden = true;
+    btn.setAttribute("aria-expanded", "false");
+  };
+  // Toggle is purely local: it's applied to the conversation when the next turn is
+  // sent. No request here, so it works on a brand-new chat with no row yet.
+  const setGroup = (groupId, enabled) => {
+    const off = new Set(pane.groupKnowledgeOff || []);
+    if (enabled) off.delete(groupId);
+    else off.add(groupId);
+    pane.groupKnowledgeOff = [...off];
+    renderBtn();
+  };
+  const renderPanel = () => {
+    const groups = eligibleGroups();
+    const off = new Set(pane.groupKnowledgeOff || []);
+    panel.replaceChildren(
+      el("div", { class: "composer-gk-title", text: "이 대화에서 사용할 그룹 지식" }),
+      ...groups.map((g) => {
+        const cb = el("input", { type: "checkbox" });
+        cb.checked = !off.has(g.id);
+        cb.addEventListener("change", () => setGroup(g.id, cb.checked));
+        return el("label", { class: "composer-gk-item" }, [cb, el("span", { text: g.name })]);
+      }),
+    );
+  };
+  const renderBtn = () => {
+    const groups = eligibleGroups();
+    const visible = groups.length > 0;
+    btn.hidden = !visible;
+    if (!visible) {
+      closePanel();
+      return;
+    }
+    const off = new Set(pane.groupKnowledgeOff || []);
+    const onCount = groups.filter((g) => !off.has(g.id)).length;
+    btn.textContent = `그룹 지식 ${onCount}/${groups.length}`;
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  };
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    open = !open;
+    panel.hidden = !open;
+    if (open) renderPanel();
+    btn.setAttribute("aria-expanded", open ? "true" : "false");
+  });
+  pdom.gkBtn = btn;
+  pdom.gkPanel = panel;
+  pdom.refreshGroupKnowledge = () => {
+    renderBtn();
+    if (open) renderPanel();
+  };
+  renderBtn();
 }
 
 function ensureChatPanes() {
@@ -2418,6 +2496,9 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
     pdom.composerBox,
     (pdom.composerHint = el("div", { class: "composer-hint" }, [])),
   ]);
+  // Owner-only group-knowledge toggle (button in the hint meta, dropdown panel
+  // anchored to composer-inner). Created before renderHint so the meta can host it.
+  setupGroupKnowledgeToggle(pane, pdom);
   // Rebuilt when a physical keyboard is detected mid-session (enterSends() flips).
   pdom.renderHint = () => {
     const lead = compact
@@ -2425,10 +2506,12 @@ function renderChatPane(pane, { compact = false, index = 0, header = null } = {}
       : enterSends()
         ? el("span", {}, [document.createTextNode("Enter 전송 · "), el("kbd", { text: "Shift+Enter" }), document.createTextNode(" 줄바꿈")])
         : el("span", { text: "보내기 버튼으로 전송" });
-    pdom.composerHint.replaceChildren(lead, el("span", { class: "composer-meta" }, [pdom.usageBadge, pdom.composerState]));
+    pdom.composerHint.replaceChildren(lead, el("span", { class: "composer-meta" }, [pdom.gkBtn, pdom.usageBadge, pdom.composerState]));
   };
   pdom.renderHint();
-  const composer = el("footer", { class: "composer" }, [el("div", { class: "composer-inner" }, [composerForm])]);
+  const composer = el("footer", { class: "composer" }, [
+    el("div", { class: "composer-inner" }, [composerForm, pdom.gkPanel]),
+  ]);
 
   const paneHeader = header || renderCompactPaneHeader(pane, index);
   const chatCol = el("div", {
@@ -3211,6 +3294,9 @@ async function streamChat(pane, message, { isNewConversation = false, regenerate
         regenerate,
         greeting,
         multiSession: state.chatPanes.length > 1,
+        // Owner-only group-knowledge selection for this conversation (group ids
+        // turned OFF). Server applies + persists it; ignored for colleague chats.
+        groupKnowledgeOff: pane.groupKnowledgeOff || [],
       }),
     });
     if (response.status === 401) {
@@ -3337,8 +3423,10 @@ async function refreshConversationMessages(pane) {
   try {
     const msgRes = await api(`/api/messages?conversationId=${encodeURIComponent(pane.conversationId)}`);
     pane.messages = msgRes.messages || [];
+    pane.groupKnowledgeOff = msgRes.groupKnowledgeOff || [];
     if (activePane()?.id === pane.id) syncLegacyChatState(pane);
     renderTranscript(pane);
+    pane.dom?.refreshGroupKnowledge?.();
   } catch {
     /* keep the current transcript if refresh fails */
   }
@@ -4250,7 +4338,11 @@ async function selectConversation(conv) {
       api(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`).catch(() => null),
     ]);
     const avatar = avRes?.avatar || { id: conv.avatarUserId, displayName: conv.avatarDisplayName, username: "", hasImage: true };
-    pane = makeChatPane(avatar, { conversationId: conv.id, messages: msgRes.messages || [] });
+    pane = makeChatPane(avatar, {
+      conversationId: conv.id,
+      messages: msgRes.messages || [],
+      groupKnowledgeOff: msgRes.groupKnowledgeOff || [],
+    });
     state.chatPanes = [pane];
     state.activePaneId = pane.id;
     syncLegacyChatState(pane);

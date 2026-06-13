@@ -499,7 +499,32 @@ export async function writeRepoTemplate(repoRoot: string, repoName: string): Pro
     `${JSON.stringify({ name: marketplaceName, plugins: [] }, null, 2)}\n`,
   );
   await writeFile(repoRoot, "README.md", repoTemplateReadme(shortName));
+  await writeFile(repoRoot, "CLAUDE.md", repoTemplateClaudeMd(shortName));
   return true;
+}
+
+/**
+ * Starter CLAUDE.md seeded at the repo root. Unlike skills (which the avatar
+ * pulls on demand), this file is injected into the avatar's prompt as standing
+ * guidance on EVERY conversation, so it's the place for always-apply rules,
+ * conventions, and long-term context. Kept short on purpose — the server caps
+ * what it injects.
+ */
+function repoTemplateClaudeMd(name: string): string {
+  return `# ${name} — 상시 지침 (CLAUDE.md)
+
+이 파일의 내용은 **매 대화마다** 아바타에게 상시 지침으로 주입됩니다(스킬은 필요할 때만
+불러오지만, 이 파일은 항상 적용됨). 늘 지켜야 할 규칙·말투·약속·장기 컨텍스트를 여기에
+적어 두세요. 시스템·안전 지침이 항상 우선하며, 길어지면 서버가 일부를 잘라낼 수 있습니다.
+
+## 예시
+
+- 응답 말투/형식에 대한 선호
+- 자주 쓰는 용어나 약어의 의미
+- 반복되는 작업의 기본 규칙
+
+(스킬 같은 구체적 절차는 \`skills/<name>/SKILL.md\`로, 이 파일은 상시 규칙 위주로.)
+`;
 }
 
 /** The starter README seeded alongside the marketplace manifest. */

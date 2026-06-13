@@ -1890,6 +1890,7 @@ tbody tr:hover td {
 .composer-inner {
   max-width: var(--transcript-max);
   margin: 0 auto;
+  position: relative;
 }
 
 .composer-form {
@@ -1989,6 +1990,58 @@ textarea::placeholder {
 }
 .composer-usage:not(:empty)::before {
   content: "🪙 ";
+}
+
+/* Owner-only per-conversation group-knowledge toggle (button + dropdown). */
+.composer-gk-btn {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  padding: 2px var(--s-2);
+  font-size: 0.8em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.composer-gk-btn[hidden] {
+  display: none;
+}
+.composer-gk-btn[aria-expanded="true"],
+.composer-gk-btn:hover {
+  color: var(--text);
+  border-color: var(--accent, var(--text));
+}
+.composer-gk-panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  z-index: 12;
+  display: grid;
+  gap: var(--s-1);
+  min-width: 200px;
+  max-height: 240px;
+  overflow-y: auto;
+  padding: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+.composer-gk-panel[hidden] {
+  display: none;
+}
+.composer-gk-title {
+  font-size: 0.78em;
+  color: var(--text-muted);
+  padding-bottom: var(--s-1);
+}
+.composer-gk-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: 0.85em;
+  cursor: pointer;
 }
 
 .slash-menu {
