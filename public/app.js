@@ -1354,7 +1354,20 @@ async function renderExplore() {
   if (banner) body.prepend(banner);
   if (!state.avatars.length) {
     searchBar.remove();
-    grid.append(el("div", { class: "empty-note", text: "공개된 아바타가 아직 없습니다.\n내 아바타 탭에서 아바타를 공개해 보세요." }));
+    grid.append(
+      el("div", { class: "empty-note" }, [
+        "공개된 아바타가 아직 없습니다.\n",
+        el("button", {
+          class: "linkish small",
+          type: "button",
+          text: "내 아바타 공개 설정",
+          onclick: () => {
+            state.settingsTab = "profile";
+            goView("settings");
+          },
+        }),
+      ]),
+    );
     return;
   }
   // Filter by the search query + (re)build cards. Reused on every keystroke.
@@ -6480,12 +6493,18 @@ function buildGroupsCard() {
   card.append(body);
   body.append(el("div", { class: "muted", text: "불러오는 중…" }));
 
-  (async () => {
+  const loadGroups = async () => {
+    body.replaceChildren(el("div", { class: "muted", text: "불러오는 중…" }));
     let groups;
     try {
       ({ groups } = await api("/api/me/groups"));
     } catch (e) {
-      body.replaceChildren(el("div", { class: "warn-box", text: `그룹을 불러오지 못했습니다: ${e.message}` }));
+      body.replaceChildren(
+        el("div", { class: "warn-box" }, [
+          `그룹을 불러오지 못했습니다: ${e.message} `,
+          el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => loadGroups() }),
+        ]),
+      );
       return;
     }
     const reload = async () => {
@@ -6506,7 +6525,8 @@ function buildGroupsCard() {
       body.replaceChildren(...gs.map((g) => buildGroupBlock(g, reload)));
     };
     render(groups);
-  })();
+  };
+  loadGroups();
   return card;
 }
 
@@ -7316,15 +7336,22 @@ function buildUserActions(u, isAdmin, isMe, reload) {
   const wrap = el("div", { class: "ud-actions" });
   const run = async (btn, fn, errLabel) => {
     const saved = btn.textContent;
-    btn.disabled = true;
+    setFormBusy(wrap, true);
     btn.textContent = "처리 중…";
     try {
       await fn();
+    } catch (e) {
+      btn.textContent = saved;
+      setFormBusy(wrap, false);
+      notify(`${errLabel}: ${e.message}`);
+      return;
+    }
+    try {
       await reload();
     } catch (e) {
       btn.textContent = saved;
-      btn.disabled = false;
-      notify(`${errLabel}: ${e.message}`);
+      setFormBusy(wrap, false);
+      notify(`작업은 완료됐지만 목록 새로고침에 실패했습니다: ${e.message}`, "warn");
     }
   };
   const uid = encodeURIComponent(u.id);
