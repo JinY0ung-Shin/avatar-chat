@@ -194,6 +194,7 @@ function icon(name) {
     back: '<path d="M19 12H5M12 19l-7-7 7-7"/>',
     book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/>',
     clock: '<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>',
+    inbox: '<path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/>',
     "arrow-down": '<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>',
     columns: '<rect x="3" y="4" width="7" height="16" rx="1"/><rect x="14" y="4" width="7" height="16" rx="1"/>',
     rows: '<rect x="4" y="3" width="16" height="7" rx="1"/><rect x="4" y="14" width="16" height="7" rx="1"/>',
@@ -503,6 +504,7 @@ function mountShell() {
   };
   navItem("explore", "탐색", "compass");
   navItem("chat", "대화", "chat");
+  navItem("inbox", "받은함", "inbox");
   navItem("routines", "루틴", "clock");
   navItem("settings", "내 아바타", "user");
   if (admin) navItem("admin", "관리자", "shield");
@@ -718,7 +720,7 @@ function syncNav() {
   }
 }
 
-const VIEW_TITLES = { explore: "탐색", chat: "대화", routines: "루틴", settings: "내 아바타", admin: "관리자" };
+const VIEW_TITLES = { explore: "탐색", chat: "대화", inbox: "받은함", routines: "루틴", settings: "내 아바타", admin: "관리자" };
 
 function syncDocumentTitle() {
   if (state.streaming) {
@@ -743,6 +745,7 @@ function renderView() {
   dom.main.replaceChildren();
   if (state.view === "explore") renderExplore();
   else if (state.view === "chat") renderChat();
+  else if (state.view === "inbox") renderInboxView();
   else if (state.view === "routines") renderRoutinesView();
   else if (state.view === "settings") renderSettings();
   else if (state.view === "admin") renderAdmin();
@@ -751,7 +754,7 @@ function renderView() {
 /* ---- Hash routing -------------------------------------------------------
    #/explore · #/chat · #/chat/<convId> · #/routines · #/routines/<convId> · #/settings/<tab> · #/admin
    Keeps Back/Forward inside the SPA and survives a reload. */
-const VIEW_ROUTES = ["explore", "chat", "routines", "settings", "admin"];
+const VIEW_ROUTES = ["explore", "chat", "inbox", "routines", "settings", "admin"];
 let applyingRoute = false;
 
 function routeFromHash() {
@@ -1618,13 +1621,13 @@ function openRoutineModal(routine) {
 }
 
 async function renderRoutinesView() {
-  const header = viewHeader("루틴", "아바타가 스스로 실행하는 예약 작업과 그 결과·알림을 한곳에서 관리하세요");
+  const header = viewHeader("루틴", "아바타가 스스로 실행하는 예약 작업과 그 결과를 관리하세요");
   const body = el("div", { class: "view-body routines-body" }, [
     el("div", { class: "muted pad", text: "불러오는 중…" }),
   ]);
   dom.main.append(header, body);
 
-  const results = await Promise.allSettled([loadRoutines(), loadRoutineConversations(), loadNotifications()]);
+  const results = await Promise.allSettled([loadRoutines(), loadRoutineConversations()]);
   if (sessionExpired) return;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
@@ -1636,7 +1639,6 @@ async function renderRoutinesView() {
     );
     return;
   }
-  updateNotificationBadge();
 
   if (state.routineConversationId && !state.routineConversations.some((c) => c.id === state.routineConversationId)) {
     state.routineConversationId = state.routineConversations[0]?.id || "";
@@ -1654,76 +1656,42 @@ async function renderRoutinesView() {
     el("div", { class: "routine-workspace" }, [
       el("div", { class: "routine-side scroll-thin" }, [
         buildRoutineManagePanel(),
-        buildNotificationsPanel(),
       ]),
       buildRoutineResultPanel(),
     ]),
   );
 }
 
-function buildNotificationsPanel() {
-  const unread = state.notifications.filter((n) => !n.readAt).length;
-  const list = el("div", { class: "notification-list" });
-  const card = el("section", { class: "settings-card routine-card" }, [
-    el("div", { class: "panel-section-head" }, [
-      el("div", {}, [
-        el("h3", { text: `아바타 알림${unread ? ` (${unread})` : ""}` }),
-        el("p", { class: "muted", text: "아바타가 루틴이나 대화 중 남긴 앱 내부 알림입니다." }),
-      ]),
-      unread
-        ? el("button", {
-            class: "linkish small",
-            type: "button",
-            text: "모두 읽음",
-            onclick: async () => {
-              await api("/api/me/notifications/read-all", { method: "POST" });
-              await loadNotifications();
-              updateNotificationBadge();
-              renderView();
-            },
-          })
-        : null,
-    ]),
-    list,
-  ]);
-  renderNotificationRows(list);
-  return card;
-}
-
-function renderNotificationRows(list) {
-  list.replaceChildren();
-  if (!state.notifications.length) {
-    list.append(el("div", { class: "empty-note", text: "아직 알림이 없습니다." }));
-    return;
-  }
-  for (const n of state.notifications.slice(0, 20)) {
-    const row = el("div", { class: `notification-row ${n.readAt ? "" : "unread"}` }, [
-      el("div", { class: "pr-main" }, [
+// One notification row (avatar → owner). `refresh` re-renders the inbox in place
+// after a read/read-all so we don't blow away the whole view.
+function buildNotificationRow(n, refresh) {
+  const row = el("div", { class: `notification-row ${n.readAt ? "" : "unread"}` }, [
+    el("div", { class: "pr-main" }, [
+      el("div", { class: "inbox-row-head" }, [
+        el("span", { class: "inbox-chip note", text: "알림" }),
         el("strong", { text: n.title }),
-        el("div", { class: "pr-sub", text: `${n.avatarDisplayName} · ${timeLabel(n.createdAt)}` }),
-        el("p", { text: n.message }),
       ]),
-    ]);
-    const actions = el("div", { class: "kr-actions" });
-    if (n.conversationId && state.routineConversations.some((c) => c.id === n.conversationId)) {
-      actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(n.conversationId) }));
-    }
-    if (!n.readAt) {
-      actions.append(el("button", {
-        class: "ghost-sm",
-        type: "button",
-        text: "읽음",
-        onclick: async () => {
-          await api(`/api/me/notifications/${encodeURIComponent(n.id)}/read`, { method: "PATCH" });
-          await loadNotifications();
-          updateNotificationBadge();
-          renderView();
-        },
-      }));
-    }
-    if (actions.children.length) row.append(actions);
-    list.append(row);
+      el("div", { class: "pr-sub", text: `${n.avatarDisplayName} · ${timeLabel(n.createdAt)}` }),
+      el("p", { text: n.message }),
+    ]),
+  ]);
+  const actions = el("div", { class: "kr-actions" });
+  if (n.conversationId && state.routineConversations.some((c) => c.id === n.conversationId)) {
+    actions.append(el("button", { class: "ghost-sm", type: "button", text: "결과 보기", onclick: () => openRoutineResult(n.conversationId) }));
   }
+  if (!n.readAt) {
+    actions.append(el("button", {
+      class: "ghost-sm",
+      type: "button",
+      text: "읽음",
+      onclick: async () => {
+        await api(`/api/me/notifications/${encodeURIComponent(n.id)}/read`, { method: "PATCH" });
+        await refresh?.();
+      },
+    }));
+  }
+  if (actions.children.length) row.append(actions);
+  return row;
 }
 
 // The routines tab is now the single home for routines: this panel both MANAGES
@@ -1954,6 +1922,108 @@ function openRoutineResult(conversationId) {
   state.view = "routines";
   syncHash();
   renderView();
+}
+
+/* ============================================================ Inbox (받은함) */
+// Unified inbox: colleague info-requests + avatar notifications in one chronological
+// list. Two backends (knowledge_requests / avatar_notifications) kept distinct —
+// this only merges the presentation, with each item's own actions.
+async function renderInboxView() {
+  const header = viewHeader("받은함", "동료의 정보 요청과 아바타가 남긴 알림을 한곳에서 확인하세요");
+  const body = el("div", { class: "view-body scroll-thin inbox-body" }, [
+    el("div", { class: "muted pad", text: "불러오는 중…" }),
+  ]);
+  dom.main.append(header, body);
+
+  // routineConversations only gates the notification "결과 보기" link — its failure
+  // shouldn't blank the whole inbox, so it's tolerated separately.
+  const results = await Promise.allSettled([loadKnowledge(), loadNotifications(), loadRoutineConversations()]);
+  if (sessionExpired) return;
+  if (results[0].status === "rejected" && results[1].status === "rejected") {
+    body.replaceChildren(
+      el("div", { class: "warn-box" }, [
+        `받은함을 불러오지 못했습니다: ${results[0].reason?.message || "네트워크 오류"} `,
+        el("button", { class: "linkish", type: "button", text: "다시 시도", onclick: () => renderView() }),
+      ]),
+    );
+    return;
+  }
+  updateKnowledgeBadge();
+  updateNotificationBadge();
+
+  const list = el("div", { class: "inbox-list" });
+  const headerActions = el("div", { class: "head-actions" });
+  const card = el("section", { class: "settings-card" }, [
+    el("div", { class: "panel-section-head" }, [
+      el("div", {}, [
+        el("h3", { text: "받은 항목" }),
+        el("p", { class: "muted", text: "‘정보 요청’은 답을 적어 보내면 아바타가 지식 저장소에 기록하고, ‘알림’은 확인 후 읽음 처리하세요." }),
+      ]),
+      headerActions,
+    ]),
+    list,
+  ]);
+
+  const refresh = async () => {
+    try {
+      await Promise.all([loadKnowledge(), loadNotifications()]);
+    } catch {
+      /* keep current state on transient failure */
+    }
+    updateKnowledgeBadge();
+    updateNotificationBadge();
+    renderInboxItems(list, refresh);
+    syncHeaderActions();
+  };
+
+  const syncHeaderActions = () => {
+    headerActions.replaceChildren();
+    const unread = state.notifications.filter((n) => !n.readAt).length;
+    if (unread) {
+      headerActions.append(
+        el("button", {
+          class: "linkish small",
+          type: "button",
+          text: "알림 모두 읽음",
+          onclick: async () => {
+            try {
+              await api("/api/me/notifications/read-all", { method: "POST" });
+            } catch (e) {
+              notify(`처리 실패: ${e.message}`);
+              return;
+            }
+            await refresh();
+          },
+        }),
+      );
+    }
+  };
+
+  renderInboxItems(list, refresh);
+  syncHeaderActions();
+  body.replaceChildren(el("div", { class: "inbox-wrap" }, [card]));
+}
+
+function renderInboxItems(list, refresh) {
+  list.replaceChildren();
+  const items = [
+    ...state.knowledgeRequests
+      .filter((r) => r.status === "open")
+      .map((r) => ({ kind: "request", at: r.createdAt || "", data: r })),
+    ...state.notifications.map((n) => ({ kind: "notification", at: n.createdAt || "", data: n })),
+  ].sort((a, b) => (b.at || "").localeCompare(a.at || ""));
+
+  if (!items.length) {
+    list.append(el("div", { class: "empty-note", text: "받은 항목이 없습니다." }));
+    return;
+  }
+  for (const item of items) {
+    list.append(
+      item.kind === "request"
+        ? buildKnowledgeRequestRow(item.data, refresh)
+        : buildNotificationRow(item.data, refresh),
+    );
+  }
 }
 
 /* ============================================================ Slash commands */
@@ -4192,7 +4262,7 @@ async function renderSettings() {
   const tabs = [
     { id: "profile", label: "프로필", icon: "user", cards: () => [profileCard, publishCard] },
     { id: "access", label: "권한·연결", icon: "shield", cards: () => [buildGitCredentialsCard(), buildSecretsCard()] },
-    { id: "knowledge", label: "지식·플러그인", icon: "book", cards: () => [buildKnowledgeRepoCard(), buildPluginsCard(), buildKnowledgeCard()] },
+    { id: "knowledge", label: "지식·플러그인", icon: "book", cards: () => [buildKnowledgeRepoCard(), buildPluginsCard()] },
     { id: "groups", label: "그룹", icon: "users", cards: () => [buildGroupsCard()] },
   ];
   if (!tabs.some((t) => t.id === state.settingsTab)) state.settingsTab = "profile";
@@ -5541,137 +5611,98 @@ function renderGroupRepoContents(container, info, g) {
   container.append(el("div", { class: "pc-actions" }, [save]));
 }
 
-function buildKnowledgeCard() {
-  const card = el("section", { class: "settings-card" });
-  const countLabel = () => {
-    const openCount = state.knowledgeRequests.filter((r) => r.status === "open").length;
-    return `지식·정보 요청${openCount ? ` (${openCount})` : ""}`;
-  };
-  const titleEl = el("h3", { text: countLabel() });
-  card.append(
-    el("div", { class: "panel-section-head" }, [
-      el("div", {}, [
-        titleEl,
-        el("p", { class: "muted", text: "동료가 모르는 것을 물으면 여기에 정보 요청으로 쌓입니다. ‘정보 추가’로 답을 적어 보내면 아바타가 지식 저장소에 기록해 영구히 학습하고, ‘무시’하면 알림만 지웁니다." }),
-      ]),
-    ]),
-  );
+// One info-request row (colleague → owner). `refresh` re-renders the inbox after
+// a record/ignore so the resolved row drops out in place.
+function buildKnowledgeRequestRow(r, refresh) {
+  // Inline "record" composer — hidden until the owner chooses to teach the
+  // avatar an answer. Keeping it in the row means the question stays in view
+  // while typing, and the whole flow happens without leaving the inbox.
+  const textarea = el("textarea", {
+    class: "kr-answer",
+    rows: "3",
+    placeholder: "이 질문에 대한 답·정보를 적어주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다.",
+  });
+  const sendBtn = el("button", { class: "primary small", type: "button", text: "기록 요청" });
+  const cancelBtn = el("button", { class: "ghost-sm", type: "button", text: "취소" });
+  const compose = el("div", { class: "kr-compose", hidden: "" }, [
+    textarea,
+    el("div", { class: "kr-compose-actions" }, [sendBtn, cancelBtn]),
+  ]);
 
-  const reqList = el("div", { class: "knowledge-rows" });
-  card.append(el("h4", { class: "knowledge-sub", text: "대기 중인 정보 요청" }), reqList);
+  // Two intents, made explicit: "정보 추가" teaches the avatar (records the
+  // answer into the knowledge repo); "무시" only clears the notification — the
+  // old DELETE resolve, which never taught the avatar anything.
+  const addBtn = el("button", { class: "primary small", type: "button", text: "정보 추가" });
+  const ignoreBtn = el("button", { class: "ghost-sm", type: "button", text: "무시" });
 
-  const refresh = async () => {
+  addBtn.addEventListener("click", () => {
+    const willShow = compose.hidden;
+    compose.hidden = !willShow;
+    addBtn.classList.toggle("active", willShow);
+    if (willShow) textarea.focus();
+  });
+  cancelBtn.addEventListener("click", () => {
+    compose.hidden = true;
+    addBtn.classList.remove("active");
+  });
+  ignoreBtn.addEventListener("click", async () => {
+    ignoreBtn.disabled = true;
     try {
-      await loadKnowledge();
+      await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
+      await refresh?.();
     } catch (e) {
-      /* keep current state */
+      ignoreBtn.disabled = false;
+      notify(`무시 처리 실패: ${e.message}`);
     }
-    titleEl.textContent = countLabel(); // header count must track resolves
-    updateKnowledgeBadge();
-    renderKnowledgeRequests(reqList);
-  };
-  renderKnowledgeRequests(reqList, refresh);
-  // wire refresh into the renderer via closure on next render
-  reqList._refresh = refresh;
-  return card;
-}
+  });
+  sendBtn.addEventListener("click", async () => {
+    const answer = textarea.value.trim();
+    if (!answer) {
+      textarea.focus();
+      return;
+    }
+    const controls = [textarea, sendBtn, cancelBtn, addBtn, ignoreBtn];
+    controls.forEach((c) => (c.disabled = true));
+    const sendLabel = sendBtn.textContent;
+    sendBtn.textContent = "기록 중…";
+    const result = await recordKnowledgeViaAvatar(r, answer);
+    if (!result.ok) {
+      controls.forEach((c) => (c.disabled = false));
+      sendBtn.textContent = sendLabel;
+      notify(`기록 요청 실패: ${result.error}`);
+      return;
+    }
+    // The avatar resolves the request itself after committing; a refresh then
+    // drops this row out (the list re-renders). If it's still open afterward
+    // the recording didn't complete — say so honestly instead of claiming success.
+    try {
+      await refresh?.();
+    } catch (e) {
+      controls.forEach((c) => (c.disabled = false));
+      sendBtn.textContent = sendLabel;
+      notify(`기록은 요청했지만 목록 새로고침에 실패했어요: ${e.message}`, "warn");
+      return;
+    }
+    const stillOpen = state.knowledgeRequests.some((x) => x.id === r.id && x.status === "open");
+    notify(
+      stillOpen
+        ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 스레드를 확인해 주세요."
+        : "아바타가 답을 지식 저장소에 기록했어요.",
+      stillOpen ? "warn" : "info",
+    );
+  });
 
-function renderKnowledgeRequests(list, refresh) {
-  refresh = refresh || list._refresh;
-  list.replaceChildren();
-  const open = state.knowledgeRequests.filter((r) => r.status === "open");
-  if (!open.length) {
-    list.append(el("div", { class: "empty-note", text: "대기 중인 정보 요청이 없습니다." }));
-    return;
-  }
-  for (const r of open) {
-    // Inline "record" composer — hidden until the owner chooses to teach the
-    // avatar an answer. Keeping it in the row means the question stays in view
-    // while typing, and the whole flow happens without leaving the settings tab.
-    const textarea = el("textarea", {
-      class: "kr-answer",
-      rows: "3",
-      placeholder: "이 질문에 대한 답·정보를 적어주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다.",
-    });
-    const sendBtn = el("button", { class: "primary small", type: "button", text: "기록 요청" });
-    const cancelBtn = el("button", { class: "ghost-sm", type: "button", text: "취소" });
-    const compose = el("div", { class: "kr-compose", hidden: "" }, [
-      textarea,
-      el("div", { class: "kr-compose-actions" }, [sendBtn, cancelBtn]),
-    ]);
-
-    // Two intents, made explicit: "정보 추가" teaches the avatar (records the
-    // answer into the knowledge repo); "무시" only clears the notification — the
-    // old DELETE resolve, which never taught the avatar anything.
-    const addBtn = el("button", { class: "primary small", type: "button", text: "정보 추가" });
-    const ignoreBtn = el("button", { class: "ghost-sm", type: "button", text: "무시" });
-
-    addBtn.addEventListener("click", () => {
-      const willShow = compose.hidden;
-      compose.hidden = !willShow;
-      addBtn.classList.toggle("active", willShow);
-      if (willShow) textarea.focus();
-    });
-    cancelBtn.addEventListener("click", () => {
-      compose.hidden = true;
-      addBtn.classList.remove("active");
-    });
-    ignoreBtn.addEventListener("click", async () => {
-      ignoreBtn.disabled = true;
-      try {
-        await api(`/api/me/knowledge/requests/${encodeURIComponent(r.id)}`, { method: "DELETE" });
-        await refresh?.();
-      } catch (e) {
-        ignoreBtn.disabled = false;
-        notify(`무시 처리 실패: ${e.message}`);
-      }
-    });
-    sendBtn.addEventListener("click", async () => {
-      const answer = textarea.value.trim();
-      if (!answer) {
-        textarea.focus();
-        return;
-      }
-      const controls = [textarea, sendBtn, cancelBtn, addBtn, ignoreBtn];
-      controls.forEach((c) => (c.disabled = true));
-      const sendLabel = sendBtn.textContent;
-      sendBtn.textContent = "기록 중…";
-      const result = await recordKnowledgeViaAvatar(r, answer);
-      if (!result.ok) {
-        controls.forEach((c) => (c.disabled = false));
-        sendBtn.textContent = sendLabel;
-        notify(`기록 요청 실패: ${result.error}`);
-        return;
-      }
-      // The avatar resolves the request itself after committing; a refresh then
-      // drops this row out (the list re-renders). If it's still open afterward
-      // the recording didn't complete — say so honestly instead of claiming success.
-      try {
-        await refresh?.();
-      } catch (e) {
-        // Recording was requested fine, but re-rendering the list failed — don't
-        // leave the row stuck on "기록 중…"; the gap clears on the next poll anyway.
-        controls.forEach((c) => (c.disabled = false));
-        sendBtn.textContent = sendLabel;
-        notify(`기록은 요청했지만 목록 새로고침에 실패했어요: ${e.message}`, "warn");
-        return;
-      }
-      const stillOpen = state.knowledgeRequests.some((x) => x.id === r.id && x.status === "open");
-      notify(
-        stillOpen
-          ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 스레드를 확인해 주세요."
-          : "아바타가 답을 지식 저장소에 기록했어요.",
-        stillOpen ? "warn" : "info",
-      );
-    });
-
-    list.append(el("div", { class: "knowledge-row" }, [
-      el("div", { class: "kr-q", text: r.question }),
-      r.askerName ? el("div", { class: "muted kr-meta", text: `질문자: ${r.askerName} · ${timeLabel(r.createdAt)}` }) : el("div", { class: "muted kr-meta", text: timeLabel(r.createdAt) }),
-      el("div", { class: "kr-actions" }, [addBtn, ignoreBtn]),
-      compose,
-    ]));
-  }
+  return el("div", { class: "knowledge-row" }, [
+    el("div", { class: "inbox-row-head" }, [
+      el("span", { class: "inbox-chip req", text: "정보 요청" }),
+    ]),
+    el("div", { class: "kr-q", text: r.question }),
+    r.askerName
+      ? el("div", { class: "muted kr-meta", text: `질문자: ${r.askerName} · ${timeLabel(r.createdAt)}` })
+      : el("div", { class: "muted kr-meta", text: timeLabel(r.createdAt) }),
+    el("div", { class: "kr-actions" }, [addBtn, ignoreBtn]),
+    compose,
+  ]);
 }
 
 // Per-user localStorage key for the reused "지식 기록" conversation (below).
@@ -6748,32 +6779,16 @@ async function loadKnowledge() {
 // Every badge update resyncs it to what's shown, so a resolve lowers the baseline
 // and a later re-ask announces again.
 let lastAnnouncedRequestCount = 0;
-// Pending info-request count on the 내 아바타 nav item — otherwise owners only
-// discover waiting questions by wandering into the right settings tab.
-function updateKnowledgeBadge() {
-  const btn = dom.navButtons?.settings;
-  if (!btn) return;
-  const count = state.knowledgeRequests.filter((r) => r.status === "open").length;
-  lastAnnouncedRequestCount = count;
-  let badge = btn.querySelector(".nav-badge");
-  if (!count) {
-    badge?.remove();
-    return;
-  }
-  if (!badge) {
-    badge = el("span", { class: "nav-badge" });
-    btn.append(badge);
-  }
-  badge.textContent = count > 9 ? "9+" : String(count);
-  btn.title = `대기 중인 정보 요청 ${count}건`;
-}
-
 let lastAnnouncedNotificationCount = 0;
-function updateNotificationBadge() {
-  const btn = dom.navButtons?.routines;
+
+// Single combined badge on the 받은함 nav item: open info-requests + unread
+// notifications. Both inboxes now live in one tab, so they share one count.
+function updateInboxBadge() {
+  const btn = dom.navButtons?.inbox;
   if (!btn) return;
-  const count = state.notifications.filter((n) => !n.readAt).length;
-  lastAnnouncedNotificationCount = count;
+  const requests = state.knowledgeRequests.filter((r) => r.status === "open").length;
+  const notifications = state.notifications.filter((n) => !n.readAt).length;
+  const count = requests + notifications;
   let badge = btn.querySelector(".nav-badge");
   if (!count) {
     badge?.remove();
@@ -6785,7 +6800,19 @@ function updateNotificationBadge() {
     btn.append(badge);
   }
   badge.textContent = count > 9 ? "9+" : String(count);
-  btn.title = `읽지 않은 아바타 알림 ${count}건`;
+  btn.title = `받은함: 정보 요청 ${requests}건 · 알림 ${notifications}건`;
+}
+
+// Kept as the names every caller already uses; each resyncs its own "announce"
+// baseline (so a resolve lowers it and a later re-ask announces again) and then
+// repaints the shared badge.
+function updateKnowledgeBadge() {
+  lastAnnouncedRequestCount = state.knowledgeRequests.filter((r) => r.status === "open").length;
+  updateInboxBadge();
+}
+function updateNotificationBadge() {
+  lastAnnouncedNotificationCount = state.notifications.filter((n) => !n.readAt).length;
+  updateInboxBadge();
 }
 
 async function refreshNotificationStatus({ announce = false } = {}) {
@@ -6797,8 +6824,8 @@ async function refreshNotificationStatus({ announce = false } = {}) {
   }
   const unread = state.notifications.filter((n) => !n.readAt).length;
   if (announce && unread > lastAnnouncedNotificationCount) {
-    notify(`새 아바타 알림이 ${unread}건 있습니다. ‘루틴’에서 확인해 주세요.`, "info", {
-      onClick: () => goView("routines"),
+    notify(`새 아바타 알림이 ${unread}건 있습니다. ‘받은함’에서 확인해 주세요.`, "info", {
+      onClick: () => goView("inbox"),
     });
   }
   updateNotificationBadge();
@@ -6816,22 +6843,20 @@ async function refreshKnowledgeStatus({ announce = false } = {}) {
   }
   const open = state.knowledgeRequests.filter((r) => r.status === "open").length;
   if (announce && open > lastAnnouncedRequestCount) {
-    notify(`아직 답하지 못한 정보 요청이 ${open}건 있어요. ‘내 아바타’에서 확인해 주세요.`, "info", {
+    notify(`아직 답하지 못한 정보 요청이 ${open}건 있어요. ‘받은함’에서 확인해 주세요.`, "info", {
       onClick: openKnowledgeRequests,
     });
   }
   updateKnowledgeBadge(); // resyncs lastAnnouncedRequestCount
 }
 
-// Jump straight to the gap inbox (knowledge tab), re-rendering even if the owner
-// is already on the settings view (goView no-ops on a same-view navigation).
+// Jump straight to the unified inbox, re-rendering even if the owner is already
+// on it (goView no-ops on a same-view navigation).
 function openKnowledgeRequests() {
-  state.settingsTab = "knowledge";
-  if (state.view === "settings") {
-    syncHash();
+  if (state.view === "inbox") {
     renderView();
   } else {
-    goView("settings");
+    goView("inbox");
   }
 }
 

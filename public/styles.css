@@ -3019,7 +3019,6 @@ textarea::placeholder {
   width: 15px;
   height: 15px;
 }
-.notification-list,
 .routine-manage-list {
   display: grid;
   gap: var(--s-2);
@@ -3041,6 +3040,44 @@ textarea::placeholder {
   margin: var(--s-2) 0 0;
   color: var(--text);
   white-space: pre-wrap;
+}
+
+/* Unified inbox (받은함): one centered card, one chronological list mixing
+   info-request rows (.knowledge-row) and notification rows (.notification-row),
+   each tagged with a small kind chip. */
+.inbox-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  width: 100%;
+}
+.inbox-list {
+  display: grid;
+  gap: var(--s-2);
+}
+.inbox-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.inbox-chip {
+  flex: none;
+  font-size: var(--t-xs);
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--panel-strong);
+}
+.inbox-chip.req {
+  color: var(--accent);
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
+.inbox-chip.note {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
 }
 
 /* Routine management rows — the whole card selects (shows results); the
