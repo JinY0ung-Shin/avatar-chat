@@ -85,11 +85,28 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   that check, so any in-process MCP server MUST self-gate in its handlers (owner/
   elevated checks) — don't rely on the hook.
 - **Per-user settings pattern:** add a column to the `users` table + an additive
-  `addColumnIfMissing` migration, then mirror the `published` toggle end-to-end
-  (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→`buildToggle` in app.js).
+  `addColumnIfMissing` migration, then mirror it end-to-end
+  (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→app.js control).
   A NEW table just goes in the always-run schema `db.exec()` block (`CREATE TABLE IF
   NOT EXISTS` covers existing DBs too) — `addColumnIfMissing` is ONLY for adding a
   column to an existing table.
+- **Avatar visibility is a 3-state enum, NOT a boolean.** `users.visibility` =
+  `public` (everyone discovers/chats) | `group` (only group teammates) | `private`
+  (owner only); `AvatarVisibility` type in types.ts, default `group` for new avatars.
+  The legacy `published` INTEGER column is migration-only: `migrateVisibility()`
+  backfills `1→public / 0→group` on startup, then nothing reads `published` again
+  (`rowVisibility()` is the accessor, with a published fallback for un-backfilled rows).
+  The discovery SQL predicate (`listPublishedAvatars`/`searchAvatars`) and
+  `isVisibleTo` (used by `getAvatar`/`resolveChatAvatar`) all gate on `visibility`.
+  Owner-self always bypasses the check. UI: `buildVisibilitySelect` (segmented control,
+  `PATCH /api/me {visibility}`); admin moderation = `PUT /api/admin/users/:id/visibility`.
+- **Trust/elevation is GROUP-ONLY now — no per-avatar trust list.** `isTrustedFor`
+  is exactly `shareAnyGroup` (symmetric group co-membership); the old directional
+  `avatar_trusted_users` table + its store fns (`listTrustedUsers`/`addTrustedUser`/
+  `removeTrustedUser`) + `/api/me/trusted*` routes + the 신뢰하는 사용자 settings card are all
+  GONE (table is `DROP`ped in migrate()). To grant someone elevated tool access, add
+  them to a shared group. `searchUsers`/`GET /api/me/users/search` survive only to power
+  the group member-add typeahead (`attachUserSearch` in app.js).
 - **Capability hashtags (역량 해시태그) + cross-avatar discovery.** `users.hashtags` is a JSON
   array of bare tags (`normalizeHashtags`/`parseHashtags` in store.ts) wired through the
   per-user settings pattern, surfaced on BOTH `User` and `AvatarSummary` (so discovery cards
@@ -99,8 +116,9 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   Searchable in 탐색 (client-side filter in `renderExplore`/`matchesAvatarQuery`, via a search box;
   cards/panel show tags as display chips) AND by the **all-viewer, read-only** `mcp__avatars__search_avatars`
   MCP (`agent/avatarDirectoryTools.ts`, backed by `store.searchAvatars`, registered like the
-  other in-process servers in `claudeAgent.ts`). NOT owner-only (only published avatars — same
-  scope the viewer browses) and excludes the current avatar from its own results. STANDING
+  other in-process servers in `claudeAgent.ts`). NOT owner-only (only avatars VISIBLE to the
+  viewer — public ones + their group teammates' — same scope the viewer browses) and excludes
+  the current avatar from its own results. STANDING
   `buildPrompt` guidance (every turn, all viewer classes) tells the avatar to use it and redirect
   the user to a better-suited teammate avatar — per the META-COGNITION direction.
 - **Knowledge repo = one per user, agent-managed.** The personal repo (`knowledge_repo`
@@ -142,18 +160,19 @@ See README.md for features, setup, env vars, and verification (`npm run lint`/`t
   `groups` + `group_members(role admin|member)` tables (always-run schema). System admin
   creates/deletes groups + assigns group admins (`/api/admin/groups*`); group admins self-serve
   their group's members + repo (`/api/me/groups*`, gated by `canManageGroup` = system admin OR
-  group admin). **`store.shareAnyGroup` is OR'd into `isTrustedFor`** → group co-members are
-  mutually + SYMMETRICALLY elevated (unlike the directional `avatar_trusted_users`) and reach each
-  other's UNPUBLISHED avatars. `isTrustedFor` is THE single choke point every elevated/trust check
-  flows through (`getAvatar`/`resolveChatAvatar`/`app.ts` chat `elevated`) — add new trust sources
-  THERE, not at call sites. Each group has ONE shared **knowledge repo** (`groupKnowledgeRepo.ts`
+  group admin). **`isTrustedFor` IS `shareAnyGroup`** (group co-membership is now the ONLY
+  trust source) → group co-members are mutually + SYMMETRICALLY elevated and reach each
+  other's `group`-visible avatars (but NOT each other's `private` ones — visibility is a
+  separate axis; see the visibility bullet above). `isTrustedFor` is THE single choke point
+  every elevated/trust check flows through (`getAvatar`/`resolveChatAvatar`/`app.ts` chat
+  `elevated`) — add new trust sources THERE, not at call sites. Each group has ONE shared **knowledge repo** (`groupKnowledgeRepo.ts`
   mirrors `knowledgeRepo.ts`: full clone at `dataDir/group-knowledge/<groupId>`, REUSES its
   repo-relative file ops `listTree/readFile/writeFile/scaffoldSkill/writeRepoTemplate`; `token` =
   acting user's `getGitToken`, applied per git-call via `tokenForGitUrl`). Members' avatars auto-load
   its skills (`loadGroupKnowledgeRepoRoots`, wired in app.ts chat + intro/hashtag gen); only group
   admins edit via the OWNER-ONLY `mcp__group_repo__*` server (per-tool role check: member reads,
   admin writes/commits/`create_repo`). `buildPrompt` injects group self-state (META-COGNITION).
-  Discovery: `listPublishedAvatars` also returns unpublished group teammates flagged `sharesGroup`.
+  Discovery: `listPublishedAvatars` also returns `group`-visible group teammates flagged `sharesGroup`.
 - Secret-at-rest tiers: passwords → scrypt (`auth.ts`), session tokens → sha256,
   **reversible** secrets (e.g. per-user git tokens) → AES-256-GCM in `crypto.ts`
   (keyed from `SESSION_SECRET`). Never serialize secrets through `toUser`. Git tokens

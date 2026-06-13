@@ -99,7 +99,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
   return [
     tool(
       "describe_system",
-      "Summarizes the current avatar system's structure and the settings this avatar can manage. For the owner, it includes the current state (profile published status, intro, hashtags; knowledge repository; general git repos; groups and roles; secret names; whether SSH is enabled; trusted users; plugins; routines; pending information requests). When asked about your own settings or state, call this tool first instead of guessing.",
+      "Summarizes the current avatar system's structure and the settings this avatar can manage. For the owner, it includes the current state (profile visibility, intro, hashtags; knowledge repository; general git repos; groups and roles; secret names; whether SSH is enabled; plugins; routines; pending information requests). When asked about your own settings or state, call this tool first instead of guessing.",
       {},
       async () => {
         const user = store.getUserById(ctx.avatarUserId);
@@ -123,7 +123,6 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         const gitRepos = store.listGitRepos(ctx.avatarUserId);
         const secretNames = store.listUserSecretNames(ctx.avatarUserId);
         const groups = user?.groups ?? store.listUserGroups(ctx.avatarUserId);
-        const trustedUsers = store.listTrustedUsers(ctx.avatarUserId);
         const openRequests = store.countOpenKnowledgeRequests(ctx.avatarUserId);
         // Mirrors the runtime's model resolution (claudeAgent: env pin > admin
         // override > SDK default) so the avatar reports the model it ACTUALLY
@@ -135,12 +134,18 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
             ? `${adminModel} (admin setting)`
             : "(SDK default)";
         const hashtags = user?.hashtags ?? [];
+        const visibilityLabel =
+          user?.visibility === "public"
+            ? "public (discoverable by everyone)"
+            : user?.visibility === "private"
+              ? "private (owner only)"
+              : "group (discoverable by group teammates only)";
         const lines = [
           ...publicGuide,
           "",
           "Current avatar state:",
           `- Name: ${user?.alias || user?.displayName || ctx.owner.displayName}`,
-          `- Profile: ${user?.published ? "published (visible in discovery)" : "unpublished (hidden from discovery)"}, intro ${user?.intro?.trim() ? "set" : "(none)"}, capability hashtags ${hashtags.length ? hashtags.map((t) => `#${t}`).join(" ") : "(none)"}`,
+          `- Profile visibility: ${visibilityLabel}; intro ${user?.intro?.trim() ? "set" : "(none)"}, capability hashtags ${hashtags.length ? hashtags.map((t) => `#${t}`).join(" ") : "(none)"}`,
           `- runtime: ${ctx.config.agentRuntime}`,
           `- Model in use: ${modelLine}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
@@ -151,8 +156,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Internal Git token (GIT_TOKEN): ${store.getGitToken(ctx.avatarUserId) ? "set" : "not set"}`,
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(none)"}`,
           `- Remote SSH tools: ${secretNames.includes("SSH_PRIVATE_KEY") ? "enabled (SSH_PRIVATE_KEY set)" : "disabled (no SSH_PRIVATE_KEY secret)"}`,
-          `- Groups: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`).join(", ") : "(none)"} — members of the same group automatically trust each other mutually.`,
-          `- Directly trusted users: ${trustedUsers.length ? trustedUsers.map((t) => `${t.displayName}(@${t.username})`).join(", ") : "(none)"}`,
+          `- Groups: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`).join(", ") : "(none)"} — members of the same group automatically trust each other mutually (this is the ONLY source of elevated access; manage trust by managing group membership).`,
           `- Plugins: ${plugins.length} (${plugins.filter((p) => p.enabled).length} enabled)`,
           `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)`,
           `- Pending information requests: ${openRequests}${openRequests > 0 ? " (use pending_requests to view the details)" : ""}`,

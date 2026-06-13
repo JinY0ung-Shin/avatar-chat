@@ -3238,6 +3238,45 @@ textarea::placeholder {
   font-size: var(--t-sm);
 }
 
+/* Avatar visibility selector (모두 공개 / 그룹 공개 / 비공개) */
+.visibility-row {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.visibility-row p {
+  margin: 0;
+  font-size: var(--t-sm);
+}
+.seg-control {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: 3px;
+  gap: 2px;
+  background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
+}
+.seg-btn {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--t-sm);
+  font-weight: 600;
+  padding: 6px 14px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.seg-btn:hover {
+  color: var(--text);
+}
+.seg-btn.active {
+  background: var(--accent);
+  color: #fff;
+}
+
 /* Toggle switch */
 .toggle {
   width: 46px;

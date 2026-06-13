@@ -36,7 +36,7 @@ import {
   groupKnowledgeRepoContextsForUser,
 } from "./groupKnowledgeRepo.js";
 import { Store, CLAUDE_OAUTH_TOKEN_KEY, normalizeHashtags } from "./store.js";
-import type { AgentConversationMessage, AgentResponse, AppConfig, PluginRoot, StoredMessage } from "./types.js";
+import type { AgentConversationMessage, AgentResponse, AppConfig, AvatarVisibility, PluginRoot, StoredMessage } from "./types.js";
 import { runAgentStream } from "./agent/index.js";
 import { generateSshKeyPair } from "./sshIdentity.js";
 import { createRateLimiter } from "./rateLimit.js";
@@ -78,6 +78,10 @@ const MIN_PASSWORD_LENGTH = 8;
 
 function safeString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
+}
+
+function isAvatarVisibility(value: unknown): value is AvatarVisibility {
+  return value === "public" || value === "group" || value === "private";
 }
 
 function apiError(res: Response, status: number, message: string): void {
@@ -418,7 +422,7 @@ export function createApp(services = createServices()) {
       persona?: string;
       intro?: string;
       hashtags?: string[];
-      published?: boolean;
+      visibility?: AvatarVisibility;
     } = {};
     if (typeof req.body?.displayName === "string") patch.displayName = req.body.displayName;
     if (typeof req.body?.alias === "string") patch.alias = req.body.alias;
@@ -429,45 +433,17 @@ export function createApp(services = createServices()) {
     if (Array.isArray(req.body?.hashtags)) {
       patch.hashtags = req.body.hashtags.filter((t: unknown): t is string => typeof t === "string");
     }
-    if (typeof req.body?.published === "boolean") patch.published = req.body.published;
+    if (isAvatarVisibility(req.body?.visibility)) patch.visibility = req.body.visibility;
     const user = store.updateProfile(req.user!.id, patch);
     res.json({ user });
   });
 
-  // ---- Trusted users ---------------------------------------------------
-  // The owner designates users who may chat with their avatar at the owner's
-  // tool-permission level (write/Bash run, not just read-only). Trust does NOT
-  // grant the owner-only knowledge inbox or greeting (see AgentRequest.elevated).
-
-  app.get("/api/me/trusted", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    res.json({ trusted: store.listTrustedUsers(req.user!.id) });
-  });
-
-  // Typeahead for the trusted-user picker: match by username OR display name.
-  // Excludes self; flags users already trusted. (Exact path before /:id below;
-  // GET /:id isn't a route, but keep this above the DELETE for readability.)
-  app.get("/api/me/trusted/search", requireAuth(store), (req: AuthenticatedRequest, res) => {
+  // Typeahead for the group member-add picker: match by username OR display name.
+  // Excludes self. Used by the group management UIs (managing group membership is
+  // how trust/elevation is granted — see Store.isTrustedFor).
+  app.get("/api/me/users/search", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const q = safeString(req.query?.q);
     res.json({ users: q ? store.searchUsers(q, req.user!.id) : [] });
-  });
-
-  app.post("/api/me/trusted", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    const username = safeString(req.body?.username);
-    if (!username) {
-      apiError(res, 400, "사용자 이름을 입력해 주세요.");
-      return;
-    }
-    const added = store.addTrustedUser(req.user!.id, username);
-    if (!added) {
-      apiError(res, 404, "해당 사용자를 찾을 수 없거나 자기 자신은 추가할 수 없습니다.");
-      return;
-    }
-    res.json({ trusted: store.listTrustedUsers(req.user!.id), added });
-  });
-
-  app.delete("/api/me/trusted/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    store.removeTrustedUser(req.user!.id, req.params.id);
-    res.json({ trusted: store.listTrustedUsers(req.user!.id) });
   });
 
   // Generate a first-person self-introduction for the owner's avatar. The
@@ -1385,7 +1361,7 @@ export function createApp(services = createServices()) {
   // List the skills an avatar can use, for the chat-screen capabilities panel.
   // Lazily resolves plugin roots (may clone), so it's a separate endpoint hit
   // only when the panel opens — not bundled into the avatar detail above.
-  // Visibility mirrors getAvatar: must be a published avatar or the viewer's own.
+  // Visibility mirrors getAvatar: must be an avatar visible to the viewer (or their own).
   app.get("/api/avatars/:id/skills", requireAuth(store), async (req: AuthenticatedRequest, res) => {
     const avatar = store.getAvatar(req.user!.id, req.params.id);
     if (!avatar) {
@@ -2171,14 +2147,19 @@ export function createApp(services = createServices()) {
     },
   );
 
-  // Admin override of an avatar's published visibility (content moderation).
-  app.post(
-    "/api/admin/users/:id/published",
+  // Admin override of an avatar's visibility (content moderation): force it to
+  // public / group / private regardless of the owner's own setting.
+  app.put(
+    "/api/admin/users/:id/visibility",
     requireAuth(store),
     requireAdmin,
     (req: AuthenticatedRequest, res) => {
-      const published = req.body?.published === true;
-      const user = store.setPublishedByAdmin(req.params.id, published);
+      if (!isAvatarVisibility(req.body?.visibility)) {
+        apiError(res, 400, "공개 범위 값이 올바르지 않습니다.");
+        return;
+      }
+      const visibility = req.body.visibility;
+      const user = store.setVisibilityByAdmin(req.params.id, visibility);
       if (!user) {
         apiError(res, 404, "사용자를 찾을 수 없습니다.");
         return;
@@ -2186,11 +2167,11 @@ export function createApp(services = createServices()) {
       store.audit({
         actorUserId: req.user!.id,
         actorName: req.user!.username,
-        action: published ? "publish_avatar" : "unpublish_avatar",
+        action: "set_avatar_visibility",
         status: "success",
-        detail: `${published ? "published" : "unpublished"} avatar ${req.params.id}`,
+        detail: `set avatar ${req.params.id} visibility=${visibility}`,
       });
-      logger.warn({ actorId: req.user!.id, targetId: req.params.id, published }, "admin set published");
+      logger.warn({ actorId: req.user!.id, targetId: req.params.id, visibility }, "admin set visibility");
       res.json({ user });
     },
   );

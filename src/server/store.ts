@@ -30,6 +30,7 @@ import type {
   AvatarDetail,
   AvatarNotification,
   AvatarSummary,
+  AvatarVisibility,
   ConversationSummary,
   GitRepository,
   Group,
@@ -159,6 +160,7 @@ interface UserRow {
   intro: string;
   avatar_ext: string | null;
   published: number;
+  visibility: string | null;
   auto_approve: number;
   suspended: number;
   created_at: string;
@@ -270,6 +272,7 @@ export class Store {
         persona TEXT DEFAULT '',
         avatar_ext TEXT,
         published INTEGER DEFAULT 1,
+        visibility TEXT NOT NULL DEFAULT 'group',
         auto_approve INTEGER DEFAULT 0,
         ssh_public_key TEXT,
         created_at TEXT,
@@ -346,12 +349,6 @@ export class Store {
         read_at TEXT,
         created_at TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS avatar_trusted_users (
-        avatar_user_id TEXT NOT NULL,
-        viewer_user_id TEXT NOT NULL,
-        created_at TEXT,
-        PRIMARY KEY (avatar_user_id, viewer_user_id)
-      );
       CREATE TABLE IF NOT EXISTS user_secrets (
         user_id TEXT NOT NULL,
         name TEXT NOT NULL,
@@ -411,8 +408,6 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_avatar_notifications_owner ON avatar_notifications(owner_user_id, read_at, created_at);
       CREATE INDEX IF NOT EXISTS idx_routine_jobs_avatar ON routine_jobs(avatar_user_id);
       CREATE INDEX IF NOT EXISTS idx_routine_jobs_due ON routine_jobs(enabled, next_run_at);
-      CREATE INDEX IF NOT EXISTS idx_trusted_avatar ON avatar_trusted_users(avatar_user_id);
-      CREATE INDEX IF NOT EXISTS idx_trusted_viewer ON avatar_trusted_users(viewer_user_id);
       CREATE INDEX IF NOT EXISTS idx_user_secrets_user ON user_secrets(user_id);
       CREATE INDEX IF NOT EXISTS idx_git_repositories_user ON git_repositories(user_id);
       CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
@@ -452,7 +447,27 @@ export class Store {
     // avatar generates from its skills/persona, shown in discovery (탐색) and queried
     // by the cross-avatar `mcp__avatars__search_avatars` tool. Null/[] = none.
     this.addColumnIfMissing("users", "hashtags", "TEXT");
+    // Three-state avatar visibility (public / group / private) replacing the
+    // binary `published` flag. Added nullable on existing DBs, then backfilled
+    // from `published` below (1→public, 0→group). The `published` column is kept
+    // for migration only and is no longer read by any visibility decision.
+    this.addColumnIfMissing("users", "visibility", "TEXT");
     this.migrateGitTokenSecrets();
+    this.migrateVisibility();
+    // Trust is now derived purely from group co-membership; the old per-(avatar,
+    // viewer) trust table is dropped (its grants don't survive the migration).
+    this.db.exec("DROP TABLE IF EXISTS avatar_trusted_users");
+  }
+
+  /** Backfill the visibility enum from the legacy `published` flag. Idempotent:
+   *  only touches rows where visibility hasn't been set yet. */
+  private migrateVisibility(): void {
+    this.db
+      .prepare(
+        "UPDATE users SET visibility = CASE WHEN published = 1 THEN 'public' ELSE 'group' END " +
+          "WHERE visibility IS NULL OR visibility = ''",
+      )
+      .run();
   }
 
   private migrateGitTokenSecrets(): void {
@@ -482,6 +497,17 @@ export class Store {
 
   // ---- Users ------------------------------------------------------------
 
+  /** Resolve a row's avatar visibility, falling back to the legacy `published`
+   *  flag for any row that predates the backfill (defensive — migrate() backfills
+   *  all rows on startup, so this normally just reads the column). */
+  private rowVisibility(row: { visibility?: string | null; published?: number }): AvatarVisibility {
+    const v = row.visibility;
+    if (v === "public" || v === "group" || v === "private") {
+      return v;
+    }
+    return row.published === 1 ? "public" : "group";
+  }
+
   private toUser(row: UserRow): User {
     const roles = this.rolesFor(row.id);
     const secretNames = this.listUserSecretNames(row.id);
@@ -500,7 +526,7 @@ export class Store {
       intro: row.intro ?? "",
       hashtags: parseHashtags(row.hashtags),
       hasImage: Boolean(row.avatar_ext),
-      published: row.published === 1,
+      visibility: this.rowVisibility(row),
       roles,
       pluginCount,
       // Never expose the token itself — only whether one is set.
@@ -545,8 +571,8 @@ export class Store {
       (this.db.prepare("SELECT COUNT(*) AS c FROM users").get() as { c: number }).c === 0;
 
     const insertUser = this.db.prepare(`
-      INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, published, created_at, last_seen_at)
-      VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 1, @created_at, @created_at)
+      INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, published, visibility, created_at, last_seen_at)
+      VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 1, 'group', @created_at, @created_at)
     `);
     const grantRole = this.db.prepare(
       "INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",
@@ -696,7 +722,7 @@ export class Store {
       persona?: string;
       intro?: string;
       hashtags?: string[];
-      published?: boolean;
+      visibility?: AvatarVisibility;
     },
   ): User {
     const row = this.userRowById(userId);
@@ -713,13 +739,13 @@ export class Store {
     // read back through parseHashtags, which tolerates null/legacy values).
     const hashtags =
       patch.hashtags !== undefined ? JSON.stringify(normalizeHashtags(patch.hashtags)) : row.hashtags;
-    const published =
-      patch.published !== undefined ? (patch.published ? 1 : 0) : row.published;
+    const visibility =
+      patch.visibility !== undefined ? patch.visibility : this.rowVisibility(row);
     this.db
       .prepare(
-        "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, hashtags = ?, published = ? WHERE id = ?",
+        "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, hashtags = ?, visibility = ? WHERE id = ?",
       )
-      .run(displayName, alias, bio, persona, intro, hashtags, published, userId);
+      .run(displayName, alias, bio, persona, intro, hashtags, visibility, userId);
     return this.toUser(this.userRowById(userId)!);
   }
 
@@ -1449,19 +1475,20 @@ export class Store {
   }
 
   listPublishedAvatars(viewerId: string): AvatarSummary[] {
-    // Published avatars + the viewer's own + group teammates (incl. their
-    // unpublished avatars — group co-members auto-trust each other, so they
-    // can find and chat with each other regardless of publication).
+    // Visibility model: `public` avatars are visible to everyone; `group`
+    // avatars only to group teammates; `private` only to the owner. The viewer's
+    // own avatar always shows regardless of visibility. (Group co-membership is
+    // also what makes teammates mutually elevated — see isTrustedFor.)
     const rows = this.db
       .prepare(
         `SELECT * FROM users
-         WHERE (published = 1 OR id = ?
-            OR id IN (
+         WHERE suspended = 0
+           AND (visibility = 'public' OR id = ?
+            OR (visibility = 'group' AND id IN (
               SELECT m2.user_id FROM group_members m1
               JOIN group_members m2 ON m1.group_id = m2.group_id
               WHERE m1.user_id = ?
-            ))
-            AND suspended = 0
+            )))
          ORDER BY display_name COLLATE NOCASE ASC`,
       )
       .all(viewerId, viewerId) as UserRow[];
@@ -1487,13 +1514,13 @@ export class Store {
       hashtags: parseHashtags(row.hashtags),
       hasImage: Boolean(row.avatar_ext),
       pluginCount,
-      published: row.published === 1,
+      visibility: this.rowVisibility(row),
       updatedAt: this.avatarUpdatedAt(row.id),
     };
   }
 
   /**
-   * Find published avatars (plus the viewer's own) whose capabilities match a
+   * Find avatars visible to the viewer (public + own + group teammates') whose capabilities match a
    * free-text query, ranked. Matches across hashtags, bio, intro, name, alias,
    * and username; a hashtag hit outranks a body hit. An empty query lists all
    * (capped). Backs the cross-avatar `mcp__avatars__search_avatars` tool, so an
@@ -1506,21 +1533,21 @@ export class Store {
     opts: { excludeId?: string; limit?: number } = {},
   ): AvatarSummary[] {
     const limit = Math.min(Math.max(opts.limit ?? DEFAULT_SEARCH_LIMIT, 1), 50);
-    // Visibility mirrors listPublishedAvatars: published avatars, the viewer's
-    // own, and group teammates (incl. their UNPUBLISHED avatars — co-members
-    // auto-trust each other). Suspended users are never discoverable. Keeping
-    // this in sync with listPublishedAvatars is what the avatar-directory MCP
-    // tool relies on to surface the same teammates the viewer can browse.
+    // Visibility mirrors listPublishedAvatars: `public` avatars, the viewer's
+    // own, and `group` avatars of group teammates (`private` ones stay
+    // owner-only). Suspended users are never discoverable. Keeping this in sync
+    // with listPublishedAvatars is what the avatar-directory MCP tool relies on
+    // to surface the same teammates the viewer can browse.
     const rows = this.db
       .prepare(
         `SELECT * FROM users
-         WHERE (published = 1 OR id = ?
-            OR id IN (
+         WHERE suspended = 0
+           AND (visibility = 'public' OR id = ?
+            OR (visibility = 'group' AND id IN (
               SELECT m2.user_id FROM group_members m1
               JOIN group_members m2 ON m1.group_id = m2.group_id
               WHERE m1.user_id = ?
-            ))
-            AND suspended = 0`,
+            )))`,
       )
       .all(viewerId, viewerId) as UserRow[];
     const teammates = this.groupTeammateIds(viewerId);
@@ -1569,7 +1596,7 @@ export class Store {
     }
     const isOwn = id === viewerId;
     const trusted = !isOwn && this.isTrustedFor(viewerId, id);
-    if (row.published !== 1 && !isOwn && !trusted) {
+    if (!isOwn && !this.isVisibleTo(row, viewerId)) {
       return null;
     }
     const plugins = (
@@ -1590,9 +1617,9 @@ export class Store {
   }
 
   /**
-   * Resolve a chat target avatar: reachable if it's published, the viewer's own,
-   * or the viewer is a trusted user of it (trusted users may reach an UNPUBLISHED
-   * avatar — that's the point of trust).
+   * Resolve a chat target avatar: reachable if it's the viewer's own, or visible
+   * to the viewer per its visibility — `public` (anyone), `group` (group
+   * teammates), or `private` (owner only). See `isVisibleTo`.
    */
   resolveChatAvatar(
     viewerId: string,
@@ -1608,38 +1635,47 @@ export class Store {
     if (row.suspended === 1 && id !== viewerId) {
       return null;
     }
-    if (row.published !== 1 && id !== viewerId && !this.isTrustedFor(viewerId, id)) {
+    if (id !== viewerId && !this.isVisibleTo(row, viewerId)) {
       return null;
     }
     return { id: row.id, displayName: row.display_name, alias: row.alias ?? "", persona: row.persona ?? "" };
   }
 
-  // ---- Trusted users ----------------------------------------------------
-  // A trusted user chats with someone else's avatar at the OWNER's tool-permission
-  // level (write/Bash run, not just read-only). Trust is a per-(avatar, viewer)
-  // relationship — it does NOT grant the owner-only knowledge inbox or greeting.
+  // ---- Trust & visibility ----------------------------------------------
+  // Trust (elevated tool access) is derived PURELY from group co-membership:
+  // members of the same group are mutually + symmetrically elevated. A trusted
+  // viewer chats with someone else's avatar at the OWNER's tool-permission level
+  // (write/Bash run, not just read-only) — but it does NOT grant the owner-only
+  // knowledge inbox or greeting.
 
   /**
-   * True when `viewerId` is a designated trusted user of `avatarId`'s avatar.
-   * Trust comes from two sources, OR'd together: an explicit per-(avatar, viewer)
-   * row in `avatar_trusted_users`, OR sharing at least one group (group members
-   * automatically trust each other — see `shareAnyGroup`). This is THE single
-   * point every trust/elevated check flows through, so adding the group source
-   * here propagates auto-trust to chat access, tool permissions, and discovery.
+   * True when `viewerId` may use tools at the owner's level on `avatarId`'s
+   * avatar. The ONLY source is sharing at least one group (see `shareAnyGroup`).
+   * This is THE single point every trust/elevated check flows through, so all
+   * elevation derives from group membership — manage trust by managing groups.
    */
   isTrustedFor(viewerId: string, avatarId: string): boolean {
     if (!viewerId || !avatarId || viewerId === avatarId) {
       return false;
     }
-    const row = this.db
-      .prepare(
-        "SELECT 1 FROM avatar_trusted_users WHERE avatar_user_id = ? AND viewer_user_id = ?",
-      )
-      .get(avatarId, viewerId);
-    if (row) {
+    return this.shareAnyGroup(viewerId, avatarId);
+  }
+
+  /**
+   * Whether an avatar row is discoverable/reachable by `viewerId` (NOT counting
+   * the self-exception, which callers handle). `public` → everyone; `group` →
+   * group teammates only; `private` → no one. Suspended owners are filtered by
+   * the callers before this is consulted.
+   */
+  private isVisibleTo(row: UserRow, viewerId: string): boolean {
+    const visibility = this.rowVisibility(row);
+    if (visibility === "public") {
       return true;
     }
-    return this.shareAnyGroup(viewerId, avatarId);
+    if (visibility === "group") {
+      return this.shareAnyGroup(viewerId, row.id);
+    }
+    return false; // private
   }
 
   /**
@@ -1681,55 +1717,17 @@ export class Store {
     return rows.map((r) => r.name);
   }
 
-  /** The users `avatarId` has trusted, for the owner's management UI. */
-  listTrustedUsers(avatarId: string): { id: string; username: string; displayName: string; createdAt: string | null }[] {
-    const rows = this.db
-      .prepare(
-        `SELECT u.id AS id, u.username AS username, u.display_name AS display_name, t.created_at AS created_at
-         FROM avatar_trusted_users t JOIN users u ON u.id = t.viewer_user_id
-         WHERE t.avatar_user_id = ? ORDER BY u.display_name COLLATE NOCASE ASC`,
-      )
-      .all(avatarId) as { id: string; username: string; display_name: string; created_at: string | null }[];
-    return rows.map((r) => ({ id: r.id, username: r.username, displayName: r.display_name, createdAt: r.created_at }));
-  }
-
-  /**
-   * Grant trust to a user by username. Returns the trusted user's public shape,
-   * or null if no such user / attempting to trust oneself. Idempotent.
-   */
-  addTrustedUser(avatarId: string, username: string): { id: string; username: string; displayName: string } | null {
-    const target = this.userRowByUsername(username.trim());
-    if (!target || target.id === avatarId) {
-      return null;
-    }
-    this.db
-      .prepare(
-        "INSERT OR IGNORE INTO avatar_trusted_users (avatar_user_id, viewer_user_id, created_at) VALUES (?, ?, ?)",
-      )
-      .run(avatarId, target.id, now());
-    return { id: target.id, username: target.username, displayName: target.display_name };
-  }
-
-  /** Revoke trust. Returns true if a row was removed. */
-  removeTrustedUser(avatarId: string, viewerId: string): boolean {
-    const res = this.db
-      .prepare("DELETE FROM avatar_trusted_users WHERE avatar_user_id = ? AND viewer_user_id = ?")
-      .run(avatarId, viewerId);
-    return res.changes > 0;
-  }
-
   /**
    * Search users by username OR display name (case-insensitive substring) to
-   * populate the trusted-user picker. `searcherId` is excluded (you can't trust
-   * yourself) and each result is flagged `trusted` if already trusted by the
-   * searcher so the UI can show them as added. Prefix matches sort first, then
-   * by display name. Returns [] for a blank query. Capped at `limit`.
+   * populate the group member-add picker. `searcherId` is excluded. Prefix
+   * matches sort first, then by display name. Returns [] for a blank query.
+   * Capped at `limit`.
    */
   searchUsers(
     query: string,
     searcherId: string,
     limit = 8,
-  ): { id: string; username: string; displayName: string; trusted: boolean }[] {
+  ): { id: string; username: string; displayName: string }[] {
     const q = query.trim();
     if (!q) {
       return [];
@@ -1740,9 +1738,7 @@ export class Store {
     const prefix = `${esc}%`;
     const rows = this.db
       .prepare(
-        `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
-                EXISTS(SELECT 1 FROM avatar_trusted_users t
-                       WHERE t.avatar_user_id = ? AND t.viewer_user_id = u.id) AS trusted
+        `SELECT u.id AS id, u.username AS username, u.display_name AS display_name
          FROM users u
          WHERE u.id != ?
            AND (u.username LIKE ? ESCAPE '\\' OR u.display_name LIKE ? ESCAPE '\\')
@@ -1751,17 +1747,15 @@ export class Store {
            u.display_name COLLATE NOCASE ASC
          LIMIT ?`,
       )
-      .all(searcherId, searcherId, like, like, prefix, prefix, limit) as {
+      .all(searcherId, like, like, prefix, prefix, limit) as {
       id: string;
       username: string;
       display_name: string;
-      trusted: number;
     }[];
     return rows.map((r) => ({
       id: r.id,
       username: r.username,
       displayName: r.display_name,
-      trusted: r.trusted === 1,
     }));
   }
 
@@ -2059,7 +2053,7 @@ export class Store {
       username: row.username,
       displayName: row.display_name,
       roles: this.rolesFor(row.id),
-      published: row.published === 1,
+      visibility: this.rowVisibility(row),
       suspended: row.suspended === 1,
       hasImage: Boolean(row.avatar_ext),
       createdAt: row.created_at,
@@ -2093,7 +2087,7 @@ export class Store {
       users: this.count("SELECT COUNT(*) AS c FROM users"),
       admins: this.countAdmins(),
       suspended: this.count("SELECT COUNT(*) AS c FROM users WHERE suspended = 1"),
-      published: this.count("SELECT COUNT(*) AS c FROM users WHERE published = 1"),
+      publicAvatars: this.count("SELECT COUNT(*) AS c FROM users WHERE visibility = 'public'"),
       conversations: this.count("SELECT COUNT(*) AS c FROM conversations"),
       messages: this.count("SELECT COUNT(*) AS c FROM messages"),
       openRequests: this.count("SELECT COUNT(*) AS c FROM knowledge_requests WHERE status = 'open'"),
@@ -2172,12 +2166,12 @@ export class Store {
     return this.toAdminSummary(this.userRowById(userId)!);
   }
 
-  /** Admin override of an avatar's published visibility. Null if not found. */
-  setPublishedByAdmin(userId: string, published: boolean): AdminUserSummary | null {
+  /** Admin override of an avatar's visibility (content moderation). Null if not found. */
+  setVisibilityByAdmin(userId: string, visibility: AvatarVisibility): AdminUserSummary | null {
     if (!this.userRowById(userId)) {
       return null;
     }
-    this.db.prepare("UPDATE users SET published = ? WHERE id = ?").run(published ? 1 : 0, userId);
+    this.db.prepare("UPDATE users SET visibility = ? WHERE id = ?").run(visibility, userId);
     return this.toAdminSummary(this.userRowById(userId)!);
   }
 
@@ -2237,10 +2231,6 @@ export class Store {
       // honour the UI's "permanently deleted" promise, leaving nothing behind.
       this.db.prepare("DELETE FROM user_secrets WHERE user_id = ?").run(id);
       this.db.prepare("DELETE FROM knowledge_requests WHERE avatar_user_id = ?").run(id);
-      // Trust relationships in either direction (as avatar or as trusted viewer).
-      this.db
-        .prepare("DELETE FROM avatar_trusted_users WHERE avatar_user_id = ? OR viewer_user_id = ?")
-        .run(id, id);
       // Group memberships (the group itself survives; created_by may dangle).
       this.db.prepare("DELETE FROM group_members WHERE user_id = ?").run(id);
       // Registered work repos + notifications in either direction — otherwise
@@ -2349,6 +2339,7 @@ export class Store {
     username: string;
     display_name: string;
     avatar_ext: string | null;
+    visibility: string | null;
     published: number;
     role: string;
     created_at: string | null;
@@ -2359,7 +2350,7 @@ export class Store {
       displayName: row.display_name,
       hasImage: Boolean(row.avatar_ext),
       role: this.normalizeRole(row.role),
-      published: row.published === 1,
+      visibility: this.rowVisibility(row),
       joinedAt: row.created_at,
     };
   }
@@ -2417,7 +2408,7 @@ export class Store {
     const row = this.db
       .prepare(
         `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
-                u.avatar_ext AS avatar_ext, u.published AS published,
+                u.avatar_ext AS avatar_ext, u.visibility AS visibility, u.published AS published,
                 m.role AS role, m.created_at AS created_at
          FROM group_members m JOIN users u ON u.id = m.user_id
          WHERE m.group_id = ? AND m.user_id = ?`,
@@ -2431,7 +2422,7 @@ export class Store {
     const rows = this.db
       .prepare(
         `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
-                u.avatar_ext AS avatar_ext, u.published AS published,
+                u.avatar_ext AS avatar_ext, u.visibility AS visibility, u.published AS published,
                 m.role AS role, m.created_at AS created_at
          FROM group_members m JOIN users u ON u.id = m.user_id
          WHERE m.group_id = ?

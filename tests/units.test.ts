@@ -2509,18 +2509,12 @@ describe("system tools (avatar system management)", () => {
     expect(res.content[0].text).toContain("Remote SSH tools: enabled");
   });
 
-  it("reports the effective model, groups, trust, profile state and pending requests", async () => {
+  it("reports the effective model, groups, profile visibility and pending requests", async () => {
     const s = setup("st-describe-full");
     // No env model pin in tests → the admin override is the effective model.
     s.store.setModelOverride("claude-test-model");
     const group = s.store.createGroup({ name: "플랫폼팀" });
     s.store.addGroupMember(group.id, s.owner.id, "admin");
-    const colleague = s.store.createUser({
-      username: "colleague",
-      displayName: "동료",
-      password: "password123",
-    });
-    s.store.addTrustedUser(s.owner.id, colleague.username);
     s.store.addKnowledgeRequest(s.owner.id, { question: "다음 출시일은?", askerName: "동료" });
 
     const res = await call(toolsFor(s), "describe_system", {});
@@ -2528,8 +2522,8 @@ describe("system tools (avatar system management)", () => {
     const body = res.content[0].text;
     expect(body).toContain("claude-test-model (admin setting)");
     expect(body).toContain("플랫폼팀(admin, shared repository none)");
-    expect(body).toContain("동료(@colleague)");
-    expect(body).toContain("published (visible in discovery)");
+    // New avatars default to group visibility.
+    expect(body).toContain("group (discoverable by group teammates only)");
     expect(body).toContain("Remote SSH tools: disabled");
     expect(body).toContain("Pending information requests: 1");
   });
@@ -2781,7 +2775,7 @@ describe("routine jobs", () => {
   });
 });
 
-describe("trusted users", () => {
+describe("group trust & visibility", () => {
   function makeStore(dir: string) {
     const { store } = createServices({
       dataDir: path.join(tempDir, dir),
@@ -2794,70 +2788,76 @@ describe("trusted users", () => {
     return { store, ownerId: owner.id, friendId: friend.id, strangerId: stranger.id };
   }
 
-  it("grants and revokes trust by username; isTrustedFor reflects it", () => {
-    const { store, ownerId, friendId } = makeStore("tu1");
+  it("derives trust from group co-membership, symmetrically", () => {
+    const { store, ownerId, friendId } = makeStore("gt1");
     expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
-    const added = store.addTrustedUser(ownerId, "friend");
-    expect(added?.id).toBe(friendId);
+    const group = store.createGroup({ name: "Platform" });
+    store.addGroupMember(group.id, ownerId, "member");
+    store.addGroupMember(group.id, friendId, "member");
+    // Co-membership trusts both directions (unlike the old directional grant).
     expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
-    expect(store.listTrustedUsers(ownerId).map((t) => t.id)).toEqual([friendId]);
-    // Idempotent: adding again doesn't duplicate.
-    store.addTrustedUser(ownerId, "friend");
-    expect(store.listTrustedUsers(ownerId)).toHaveLength(1);
-    expect(store.removeTrustedUser(ownerId, friendId)).toBe(true);
+    expect(store.isTrustedFor(ownerId, friendId)).toBe(true);
+    // Leaving the group revokes it.
+    store.removeGroupMember(group.id, friendId);
     expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
   });
 
-  it("rejects trusting a nonexistent user or oneself", () => {
-    const { store, ownerId } = makeStore("tu2");
-    expect(store.addTrustedUser(ownerId, "nobody")).toBeNull();
-    expect(store.addTrustedUser(ownerId, "owner")).toBeNull();
-    expect(store.listTrustedUsers(ownerId)).toHaveLength(0);
+  it("new avatars default to group visibility; updateProfile changes it", () => {
+    const { store, ownerId } = makeStore("gt2");
+    expect(store.getUserById(ownerId)?.visibility).toBe("group");
+    expect(store.updateProfile(ownerId, { visibility: "public" }).visibility).toBe("public");
+    expect(store.updateProfile(ownerId, { visibility: "private" }).visibility).toBe("private");
   });
 
-  it("searchUsers matches name or @id (case-insensitive), excludes self, flags trusted", () => {
-    const { store, ownerId } = makeStore("tu-search");
+  it("searchUsers matches name or @id (case-insensitive), excludes self", () => {
+    const { store, ownerId } = makeStore("gt-search");
     // Substring match on display name AND username, case-insensitive.
     expect(store.searchUsers("frie", ownerId).map((u) => u.username)).toEqual(["friend"]);
     expect(store.searchUsers("STRANGER", ownerId).map((u) => u.username)).toEqual(["stranger"]);
     expect(store.searchUsers("r", ownerId).map((u) => u.username).sort()).toEqual(["friend", "stranger"]);
-    // The searcher is never a candidate for their own trust list.
+    // The searcher is never a candidate for their own results.
     expect(store.searchUsers("owner", ownerId)).toEqual([]);
     // Blank query short-circuits.
     expect(store.searchUsers("   ", ownerId)).toEqual([]);
-    // `trusted` reflects current state.
-    expect(store.searchUsers("friend", ownerId)[0].trusted).toBe(false);
-    store.addTrustedUser(ownerId, "friend");
-    expect(store.searchUsers("friend", ownerId)[0].trusted).toBe(true);
     // A literal % isn't treated as a wildcard (escaped).
     expect(store.searchUsers("%", ownerId)).toEqual([]);
   });
 
-  it("trust is directional: trusting A doesn't let A's avatar be reached by the owner", () => {
-    const { store, ownerId, friendId } = makeStore("tu3");
-    store.addTrustedUser(ownerId, "friend");
-    // friend is trusted FOR owner's avatar, not the reverse.
-    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
-    expect(store.isTrustedFor(ownerId, friendId)).toBe(false);
-  });
-
-  it("a trusted user can resolve/see an UNPUBLISHED avatar; a stranger cannot", () => {
-    const { store, ownerId, friendId, strangerId } = makeStore("tu4");
-    store.updateProfile(ownerId, { published: false });
+  it("a group co-member resolves/sees a group-visible avatar; a stranger cannot", () => {
+    const { store, ownerId, friendId, strangerId } = makeStore("gt3");
+    // Owner keeps the default `group` visibility.
     expect(store.resolveChatAvatar(strangerId, ownerId)).toBeNull();
     expect(store.getAvatar(strangerId, ownerId)).toBeNull();
-    store.addTrustedUser(ownerId, "friend");
+    const group = store.createGroup({ name: "Platform" });
+    store.addGroupMember(group.id, ownerId, "member");
+    store.addGroupMember(group.id, friendId, "member");
     expect(store.resolveChatAvatar(friendId, ownerId)?.id).toBe(ownerId);
     const detail = store.getAvatar(friendId, ownerId);
     expect(detail?.elevated).toBe(true);
     expect(detail?.isOwn).toBe(false);
   });
 
-  it("deleting a user clears trust rows in both directions", () => {
-    const { store, ownerId, friendId } = makeStore("tu5");
-    store.addTrustedUser(ownerId, "friend");
+  it("a private avatar is reachable only by its owner, even by a group co-member", () => {
+    const { store, ownerId, friendId } = makeStore("gt4");
+    store.updateProfile(ownerId, { visibility: "private" });
+    const group = store.createGroup({ name: "Platform" });
+    store.addGroupMember(group.id, ownerId, "member");
+    store.addGroupMember(group.id, friendId, "member");
+    // Group co-membership still grants elevation, but `private` blocks reach.
+    expect(store.resolveChatAvatar(friendId, ownerId)).toBeNull();
+    expect(store.getAvatar(friendId, ownerId)).toBeNull();
+    // The owner always reaches their own avatar.
+    expect(store.resolveChatAvatar(ownerId, ownerId)?.id).toBe(ownerId);
+  });
+
+  it("deleting a user clears their group memberships (and thus trust)", () => {
+    const { store, ownerId, friendId } = makeStore("gt5");
+    const group = store.createGroup({ name: "Platform" });
+    store.addGroupMember(group.id, ownerId, "member");
+    store.addGroupMember(group.id, friendId, "member");
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
     expect(store.deleteUser(friendId)).toBe(true);
-    expect(store.listTrustedUsers(ownerId)).toHaveLength(0);
+    expect(store.listGroupMembers(group.id).map((m) => m.userId)).toEqual([ownerId]);
   });
 });
 
@@ -3435,8 +3435,9 @@ describe("searchAvatars (cross-avatar discovery)", () => {
     const reviewer = store.createUser({ username: "reviewer", displayName: "리뷰어", password: "password123" });
     const analyst = store.createUser({ username: "analyst", displayName: "분석가", password: "password123" });
     const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
-    store.updateProfile(reviewer.id, { hashtags: ["코드리뷰", "파이썬"] });
-    store.updateProfile(analyst.id, { hashtags: ["데이터분석"], bio: "코드리뷰도 가끔 합니다" });
+    // Public so `me` (sharing no group) can discover them cross-avatar.
+    store.updateProfile(reviewer.id, { hashtags: ["코드리뷰", "파이썬"], visibility: "public" });
+    store.updateProfile(analyst.id, { hashtags: ["데이터분석"], bio: "코드리뷰도 가끔 합니다", visibility: "public" });
 
     const hits = store.searchAvatars(me.id, "코드리뷰", { excludeId: me.id });
     expect(hits.map((a) => a.username)).toEqual(["reviewer", "analyst"]);
@@ -3444,21 +3445,23 @@ describe("searchAvatars (cross-avatar discovery)", () => {
     expect(hits[0].hashtags).toContain("코드리뷰");
   });
 
-  it("only surfaces published avatars (plus the viewer's own)", () => {
+  it("only surfaces avatars visible to the viewer (plus the viewer's own)", () => {
     const store = makeStore();
     const a = store.createUser({ username: "a", displayName: "A", password: "password123" });
     const hidden = store.createUser({ username: "hidden", displayName: "H", password: "password123" });
-    store.updateProfile(hidden.id, { hashtags: ["쿠버네티스"], published: false });
+    store.updateProfile(hidden.id, { hashtags: ["쿠버네티스"], visibility: "private" });
 
     expect(store.searchAvatars(a.id, "쿠버네티스")).toHaveLength(0);
-    // The owner still finds their OWN unpublished avatar.
+    // The owner still finds their OWN non-visible avatar.
     expect(store.searchAvatars(hidden.id, "쿠버네티스").map((x) => x.username)).toContain("hidden");
   });
 
   it("lists candidates for an empty query, excluding self", () => {
     const store = makeStore();
     const a = store.createUser({ username: "a", displayName: "A", password: "password123" });
-    store.createUser({ username: "b", displayName: "B", password: "password123" });
+    const b = store.createUser({ username: "b", displayName: "B", password: "password123" });
+    // b must be public to be discoverable by a (who shares no group with b).
+    store.updateProfile(b.id, { visibility: "public" });
     expect(store.searchAvatars(a.id, "", { excludeId: a.id }).map((x) => x.username)).toEqual(["b"]);
   });
 });
@@ -3482,7 +3485,8 @@ describe("avatar directory tools (cross-avatar search)", () => {
     });
     const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
     const k8s = store.createUser({ username: "kuber", displayName: "쿠버박사", password: "password123" });
-    store.updateProfile(k8s.id, { hashtags: ["쿠버네티스", "데브옵스"], bio: "클러스터 운영" });
+    // Public so `me` (sharing no group) can discover it cross-avatar.
+    store.updateProfile(k8s.id, { hashtags: ["쿠버네티스", "데브옵스"], bio: "클러스터 운영", visibility: "public" });
     return { store, meId: me.id };
   }
 
@@ -3508,7 +3512,7 @@ describe("avatar directory tools (cross-avatar search)", () => {
     const { store, meId } = setup();
     const tools = buildAvatarDirectoryTools(store, { avatarUserId: meId, viewerUserId: meId });
     const res = await call(tools, "search_avatars", { query: "존재하지않는역량xyz" });
-    expect(res.content[0].text).toContain("Could not find any published avatar matching");
+    expect(res.content[0].text).toContain("Could not find any visible avatar matching");
   });
 });
 
@@ -3555,17 +3559,17 @@ describe("store groups", () => {
     expect(store.addGroupMemberByUsername(g.id, "nobody")).toBeNull();
   });
 
-  it("group co-membership grants mutual, symmetric trust + unpublished-avatar access", () => {
+  it("group co-membership grants mutual, symmetric trust + group-visible-avatar access", () => {
     const { store, aliceId, bobId, carolId } = makeStore("g-trust");
     const g = store.createGroup({ name: "T", createdBy: null });
     store.addGroupMember(g.id, aliceId, "member");
     store.addGroupMember(g.id, bobId, "member");
-    // Unlike explicit trust, group trust is symmetric.
+    // Group trust is symmetric.
     expect(store.isTrustedFor(aliceId, bobId)).toBe(true);
     expect(store.isTrustedFor(bobId, aliceId)).toBe(true);
     expect(store.isTrustedFor(carolId, aliceId)).toBe(false);
-    // bob reaches alice's UNPUBLISHED avatar at elevated level; carol cannot.
-    store.updateProfile(aliceId, { published: false });
+    // alice keeps the default `group` visibility — bob (co-member) reaches her
+    // avatar at elevated level; carol (not a teammate) cannot.
     expect(store.getAvatar(bobId, aliceId)?.elevated).toBe(true);
     expect(store.getAvatar(carolId, aliceId)).toBeNull();
     expect(store.resolveChatAvatar(bobId, aliceId)?.id).toBe(aliceId);
@@ -3616,17 +3620,18 @@ describe("store groups", () => {
     expect(store.listGroupKnowledgeReposForUser(bobId)).toEqual([]);
   });
 
-  it("listPublishedAvatars surfaces unpublished group teammates with sharesGroup", () => {
+  it("listPublishedAvatars surfaces group-visible teammates with sharesGroup", () => {
     const { store, aliceId, bobId, carolId } = makeStore("g-explore");
-    store.updateProfile(bobId, { published: false });
+    // bob keeps default `group` visibility; carol is public, in no shared group.
+    store.updateProfile(carolId, { visibility: "public" });
     const g = store.createGroup({ name: "T", createdBy: null });
     store.addGroupMember(g.id, aliceId);
     store.addGroupMember(g.id, bobId);
     const forAlice = store.listPublishedAvatars(aliceId);
     const bobCard = forAlice.find((a) => a.id === bobId);
-    // bob is unpublished but a teammate → visible + flagged.
+    // bob is group-visible AND a teammate → visible + flagged.
     expect(bobCard?.sharesGroup).toBe(true);
-    // carol (published, no shared group) is visible but not flagged.
+    // carol (public, no shared group) is visible but not flagged.
     expect(forAlice.find((a) => a.id === carolId)?.sharesGroup).toBe(false);
   });
 });

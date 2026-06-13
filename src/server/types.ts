@@ -51,6 +51,16 @@ export interface AppConfig {
 }
 
 /**
+ * Who can discover and chat with an avatar:
+ * - `public`  — everyone (visible in 탐색 to all users)
+ * - `group`   — only the owner's group teammates (also mutually elevated)
+ * - `private` — only the owner
+ * Trust/elevation is a SEPARATE axis derived purely from group co-membership
+ * (see `Store.isTrustedFor`); visibility only controls reach/discovery.
+ */
+export type AvatarVisibility = "public" | "group" | "private";
+
+/**
  * Public user shape returned to clients. NEVER includes password_hash or secret
  * values — the internal git token is exposed only as the `gitTokenSet` flag.
  */
@@ -67,7 +77,8 @@ export interface User {
   /** Capability hashtags (bare, no "#") the avatar declares for discovery/search. */
   hashtags: string[];
   hasImage: boolean;
-  published: boolean;
+  /** Who can discover and chat with this avatar — see {@link AvatarVisibility}. */
+  visibility: AvatarVisibility;
   roles: string[];
   pluginCount: number;
   /** True when the internal GIT_TOKEN secret is stored (the token itself is never sent). */
@@ -154,8 +165,8 @@ export interface GroupMember {
   displayName: string;
   hasImage: boolean;
   role: GroupRole;
-  /** Whether this member's avatar is published (drives the roster's chat link). */
-  published: boolean;
+  /** This member's avatar visibility (the roster chat link is shown unless `private`). */
+  visibility: AvatarVisibility;
   joinedAt: string | null;
 }
 
@@ -214,7 +225,8 @@ export interface AvatarSummary {
   hashtags: string[];
   hasImage: boolean;
   pluginCount: number;
-  published: boolean;
+  /** Who can discover and chat with this avatar — see {@link AvatarVisibility}. */
+  visibility: AvatarVisibility;
   updatedAt: string | null;
   /**
    * True when the viewer shares a group with this avatar's owner (so they
@@ -277,7 +289,7 @@ export interface AdminUserSummary {
   username: string;
   displayName: string;
   roles: string[];
-  published: boolean;
+  visibility: AvatarVisibility;
   /** True when the account is suspended (blocked from logging in / pending approval). */
   suspended: boolean;
   hasImage: boolean;
@@ -294,7 +306,8 @@ export interface AdminStats {
   users: number;
   admins: number;
   suspended: number;
-  published: number;
+  /** Count of avatars with `public` visibility (discoverable by everyone). */
+  publicAvatars: number;
   conversations: number;
   messages: number;
   openRequests: number;

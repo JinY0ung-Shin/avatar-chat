@@ -1130,7 +1130,8 @@ function buildAvatarCard(av) {
         el("strong", { text: av.displayName }),
         isMe ? el("span", { class: "tag accent", text: "나" }) : null,
         !isMe && av.sharesGroup ? el("span", { class: "tag write", text: "같은 그룹" }) : null,
-        av.published ? null : el("span", { class: "tag", text: "비공개" }),
+        av.visibility === "group" ? el("span", { class: "tag", text: "그룹 공개" }) : null,
+        av.visibility === "private" ? el("span", { class: "tag", text: "비공개" }) : null,
       ]),
       el("div", { class: "ac-handle", text: `@${av.username}` }),
       av.alias ? el("div", { class: "ac-alias", text: `"${av.alias}"` }) : null,
@@ -3573,7 +3574,7 @@ async function renderSettings() {
   body.append(el("div", { class: "muted pad", text: "불러오는 중…" }));
   // One failed loader must NOT render every card as its empty state ("플러그인이
   // 없습니다" 등) — that reads as data loss and invites duplicate re-adds.
-  const results = await Promise.allSettled([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines(), loadTrusted()]);
+  const results = await Promise.allSettled([refreshMe(), loadPlugins(), loadKnowledge(), loadRoutines()]);
   if (sessionExpired) return;
   const failed = results.find((r) => r.status === "rejected");
   if (failed) {
@@ -3739,24 +3740,13 @@ async function renderSettings() {
     el("button", { class: "primary", type: "submit", text: "프로필 저장" }),
   );
 
-  // Publish toggle — updates in place: a full renderView here would wipe
-  // whatever the user typed (but hasn't saved) in the profile form above.
-  const publishStrong = el("strong", { text: u.published ? "공개됨" : "비공개" });
-  const publishDesc = el("p", { class: "muted", text: u.published ? "다른 사용자가 탐색에서 찾아 대화할 수 있어요." : "나만 볼 수 있어요. 공개하면 탐색 목록에 표시돼요." });
-  const publishRow = el("div", { class: "publish-row" }, [
-    el("div", {}, [publishStrong, publishDesc]),
-    buildToggle(u.published, async (val) => {
-      try {
-        const res = await api("/api/me", { method: "PATCH", body: JSON.stringify({ published: val }) });
-        state.user = res.user;
-        publishStrong.textContent = res.user.published ? "공개됨" : "비공개";
-        publishDesc.textContent = res.user.published ? "다른 사용자가 탐색에서 찾아 대화할 수 있어요." : "나만 볼 수 있어요. 공개하면 탐색 목록에 표시돼요.";
-      } catch (e) {
-        notify(`공개 설정 변경 실패: ${e.message}`);
-        throw e;
-      }
-    }, "아바타 공개"),
-  ]);
+  // Visibility selector (모두 공개 / 그룹 공개 / 비공개) — updates in place: a full
+  // renderView here would wipe whatever the user typed (but hasn't saved) above.
+  const publishRow = buildVisibilitySelect(u.visibility || "group", async (val) => {
+    const res = await api("/api/me", { method: "PATCH", body: JSON.stringify({ visibility: val }) });
+    state.user = res.user;
+    return res.user.visibility;
+  });
 
   // Group the (many) settings cards into tabs so a single screen no longer
   // dumps everything into one long scroll. Each tab lazily builds its cards.
@@ -3768,7 +3758,7 @@ async function renderSettings() {
 
   const tabs = [
     { id: "profile", label: "프로필", icon: "user", cards: () => [profileCard, publishCard] },
-    { id: "access", label: "권한·연결", icon: "shield", cards: () => [buildTrustedUsersCard(), buildGitCredentialsCard(), buildSecretsCard()] },
+    { id: "access", label: "권한·연결", icon: "shield", cards: () => [buildGitCredentialsCard(), buildSecretsCard()] },
     { id: "knowledge", label: "지식·플러그인", icon: "book", cards: () => [buildKnowledgeRepoCard(), buildPluginsCard(), buildKnowledgeCard()] },
     { id: "groups", label: "그룹", icon: "users", cards: () => [buildGroupsCard()] },
     { id: "routines", label: "루틴", icon: "clock", cards: () => [buildRoutinesCard()] },
@@ -3837,54 +3827,66 @@ function renderRailUser() {
   if (oldAvatar) oldAvatar.replaceWith(avatarNode(state.user, 34, { alt: "" }));
 }
 
-/**
- * Settings card: designate trusted users who may chat with MY avatar at my own
- * tool-permission level (file edits / command execution run instead of being
- * read-only). Backed by GET/POST/DELETE /api/me/trusted. Trust does NOT expose
- * the owner-only knowledge inbox or greeting — only the elevated tool path.
- */
-function buildTrustedUsersCard() {
-  const card = el("section", { class: "settings-card" });
-  card.append(
-    el("div", { class: "panel-section-head" }, [
-      el("div", {}, [
-        el("h3", { text: "신뢰하는 사용자" }),
-        el("p", { class: "muted", text: "추가한 사용자는 내 아바타와 대화할 때 소유자와 동일하게 파일 수정·명령 실행 도구를 사용할 수 있습니다(비공개 아바타 포함). 신뢰하는 사람만 추가하세요." }),
-      ]),
-    ]),
-  );
-  const list = el("div", { class: "plugin-rows" });
-  card.append(list);
-  renderTrustedRows(list);
+// The three avatar-visibility choices, in display order. `value` matches the
+// server's AvatarVisibility enum; `desc` is the explanatory line under the picker.
+const VISIBILITY_OPTIONS = [
+  { value: "public", label: "모두 공개", desc: "모든 사용자가 탐색에서 찾아 대화할 수 있어요." },
+  { value: "group", label: "그룹 공개", desc: "같은 그룹 멤버만 탐색에서 찾아 대화할 수 있어요." },
+  { value: "private", label: "비공개", desc: "나만 볼 수 있어요." },
+];
 
-  // Search-and-add: find users by display name OR @id and click to trust them.
-  // Replaces the old "type the exact username" form, which required knowing the
-  // username verbatim.
-  const search = el("input", {
-    type: "search",
-    class: "trusted-search-input",
-    placeholder: "이름 또는 아이디로 검색",
-    "aria-label": "신뢰할 사용자 검색 (이름 또는 아이디)",
-    autocomplete: "off",
-  });
-  const results = el("div", { class: "trusted-results", hidden: "" });
-  const searchWrap = el("div", { class: "trusted-search" }, [search, results]);
-  card.append(searchWrap);
-
-  const addTrusted = async (user) => {
+// Segmented radio control for avatar visibility. `onChange(value)` should
+// persist and resolve to the saved value (the server is authoritative); on
+// rejection the selection reverts and a toast shows. Optimistically highlights
+// the chosen option while the save is in flight.
+function buildVisibilitySelect(current, onChange) {
+  let value = VISIBILITY_OPTIONS.some((o) => o.value === current) ? current : "group";
+  const desc = el("p", { class: "muted" });
+  const seg = el("div", { class: "seg-control", role: "radiogroup", "aria-label": "아바타 공개 범위" });
+  const buttons = new Map();
+  const sync = () => {
+    for (const [val, btn] of buttons) {
+      const active = val === value;
+      btn.classList.toggle("active", active);
+      btn.setAttribute("aria-checked", active ? "true" : "false");
+      btn.tabIndex = active ? 0 : -1;
+    }
+    desc.textContent = VISIBILITY_OPTIONS.find((o) => o.value === value)?.desc || "";
+  };
+  const choose = async (val) => {
+    if (val === value) return;
+    const prev = value;
+    value = val;
+    sync();
     try {
-      const { trusted } = await api("/api/me/trusted", { method: "POST", body: JSON.stringify({ username: user.username }) });
-      state.trusted = trusted;
-      renderTrustedRows(list);
-      search.value = "";
-      results.replaceChildren();
-      results.hidden = true;
-    } catch (err) {
-      notify(`추가 실패: ${err.message}`);
+      const saved = await onChange(val);
+      if (saved && saved !== value) { value = saved; sync(); }
+    } catch (e) {
+      value = prev;
+      sync();
+      notify(`공개 범위 변경 실패: ${e.message}`);
     }
   };
+  for (const opt of VISIBILITY_OPTIONS) {
+    const btn = el("button", { type: "button", class: "seg-btn", role: "radio", text: opt.label, onclick: () => choose(opt.value) });
+    buttons.set(opt.value, btn);
+    seg.append(btn);
+  }
+  sync();
+  return el("div", { class: "visibility-row" }, [seg, desc]);
+}
 
-  const renderResults = (users) => {
+// Turn a text input into a user typeahead: searches /api/me/users/search and
+// shows a dropdown of matches; picking one fills the input with that @username.
+// Returns a wrapper element (input + results) to place in the layout. Used by
+// the group member-add forms — group membership is how trust/elevation is
+// granted, so finding people by name (not just exact username) matters.
+function attachUserSearch(input) {
+  const results = el("div", { class: "trusted-results", hidden: "" });
+  const wrap = el("div", { class: "trusted-search" }, [input, results]);
+  let seq = 0;
+  let timer = null;
+  const render = (users) => {
     results.replaceChildren();
     if (!users.length) {
       results.append(el("div", { class: "empty-note", text: "일치하는 사용자가 없습니다." }));
@@ -3894,90 +3896,37 @@ function buildTrustedUsersCard() {
           el("button", {
             type: "button",
             class: "trusted-result",
-            disabled: u.trusted ? "" : null,
-            title: u.trusted ? "이미 신뢰함" : `${u.displayName} 신뢰에 추가`,
-            onclick: () => addTrusted(u),
+            onclick: () => { input.value = u.username; results.hidden = true; input.focus(); },
           }, [
             el("div", { class: "pr-main" }, [
               el("strong", { text: u.displayName }),
               el("div", { class: "pr-sub", text: `@${u.username}` }),
             ]),
-            el("span", { class: "trusted-result-cta", text: u.trusted ? "추가됨" : "추가" }),
           ]),
         );
       }
     }
     results.hidden = false;
   };
-
-  // A monotonically increasing sequence guards against out-of-order responses:
-  // a slow earlier query must not overwrite a faster later one.
-  let searchSeq = 0;
-  let searchTimer = null;
-  const runSearch = async (q) => {
-    const seq = ++searchSeq;
+  const run = async (q) => {
+    const s = ++seq;
     try {
-      const { users } = await api(`/api/me/trusted/search?q=${encodeURIComponent(q)}`);
-      if (seq !== searchSeq) return;
-      renderResults(users);
-    } catch (err) {
-      if (seq !== searchSeq) return;
-      results.replaceChildren(el("div", { class: "empty-note", text: `검색 실패: ${err.message}` }));
-      results.hidden = false;
+      const { users } = await api(`/api/me/users/search?q=${encodeURIComponent(q)}`);
+      if (s === seq) render(users);
+    } catch {
+      /* typeahead is best-effort; the add button still validates server-side */
     }
   };
-
-  search.addEventListener("input", () => {
-    const q = search.value.trim();
-    clearTimeout(searchTimer);
-    if (!q) {
-      searchSeq++; // cancel any in-flight query
-      results.replaceChildren();
-      results.hidden = true;
-      return;
-    }
-    searchTimer = setTimeout(() => runSearch(q), 200);
+  input.addEventListener("input", () => {
+    const q = input.value.trim().replace(/^@/, "");
+    clearTimeout(timer);
+    if (!q) { seq++; results.replaceChildren(); results.hidden = true; return; }
+    timer = setTimeout(() => run(q), 200);
   });
-  // Hide the dropdown when focus leaves the search area (delayed so a click on a
-  // result registers first — clicking a result moves focus inside searchWrap).
-  search.addEventListener("blur", () => {
-    setTimeout(() => { if (!searchWrap.contains(document.activeElement)) results.hidden = true; }, 150);
+  input.addEventListener("blur", () => {
+    setTimeout(() => { if (!wrap.contains(document.activeElement)) results.hidden = true; }, 150);
   });
-  search.addEventListener("focus", () => {
-    if (results.children.length) results.hidden = false;
-  });
-  return card;
-}
-
-function renderTrustedRows(list) {
-  list.replaceChildren();
-  const trusted = state.trusted || [];
-  if (!trusted.length) {
-    list.append(el("div", { class: "empty-note", text: "신뢰하는 사용자가 없습니다." }));
-    return;
-  }
-  for (const t of trusted) {
-    const del = el("button", { class: "msg-act danger", type: "button", "aria-label": `${t.displayName} 신뢰 해제`, title: "신뢰 해제", onclick: async () => {
-      if (!window.confirm(`${t.displayName}님의 신뢰 권한을 해제할까요?`)) return;
-      try {
-        const { trusted: next } = await api(`/api/me/trusted/${encodeURIComponent(t.id)}`, { method: "DELETE" });
-        state.trusted = next;
-        renderTrustedRows(list);
-      } catch (e) {
-        notify(`신뢰 해제 실패: ${e.message}`);
-      }
-    } });
-    del.append(icon("trash"));
-    list.append(
-      el("div", { class: "plugin-row" }, [
-        el("div", { class: "pr-main" }, [
-          el("strong", { text: t.displayName }),
-          el("div", { class: "pr-sub", text: `@${t.username}` }),
-        ]),
-        del,
-      ]),
-    );
-  }
+  return wrap;
 }
 
 // Accessible switch. `label` names it for screen readers (a bare "switch"
@@ -4934,7 +4883,7 @@ function buildGroupBlock(g, reload) {
     addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
     block.append(
       el("div", { class: "group-add" }, [
-        addInput,
+        attachUserSearch(addInput),
         el("label", { class: "group-add-admin" }, [adminCb, el("span", { text: "그룹 관리자로" })]),
         addBtn,
       ]),
@@ -4965,7 +4914,7 @@ function buildGroupRosterRow(g, m, amAdmin, reload) {
           username: m.username,
           displayName: m.displayName,
           hasImage: m.hasImage,
-          published: m.published,
+          visibility: m.visibility,
           alias: "",
           bio: "",
           hashtags: [],
@@ -5604,7 +5553,7 @@ async function adminOverviewCards() {
   const grid = el("div", { class: "stat-grid" }, [
     stat("전체 사용자", s.users, s.suspended ? `정지 ${s.suspended}명 포함` : null),
     stat("관리자", s.admins),
-    stat("공개 아바타", s.published),
+    stat("공개 아바타", s.publicAvatars),
     stat("대화", s.conversations),
     stat("메시지", s.messages),
     stat("활성 루틴", s.activeRoutines),
@@ -5673,7 +5622,9 @@ function adminUserRow(u, reload) {
   const isAdmin = u.roles?.includes("admin");
   const tags = el("div", { class: "ar-tags" }, [
     el("span", { class: `tag ${isAdmin ? "write" : "read"}`, text: isAdmin ? "관리자" : "멤버" }),
-    u.published ? el("span", { class: "tag accent", text: "공개" }) : null,
+    u.visibility === "public" ? el("span", { class: "tag accent", text: "공개" }) : null,
+    u.visibility === "group" ? el("span", { class: "tag", text: "그룹 공개" }) : null,
+    u.visibility === "private" ? el("span", { class: "tag", text: "비공개" }) : null,
     u.suspended ? el("span", { class: "tag danger", text: "정지" }) : null,
     isMe ? el("span", { class: "tag", text: "나" }) : null,
   ]);
@@ -5756,9 +5707,12 @@ function buildUserActions(u, isAdmin, isMe, reload) {
     run(roleBtn, () => api(`/api/admin/users/${uid}/roles`, { method: "POST", body: JSON.stringify({ role: "admin", grant: !isAdmin }) }), "권한 변경 실패");
   });
 
-  const pubBtn = el("button", { class: "ghost-sm", type: "button", text: u.published ? "비공개로 전환" : "공개로 전환" });
+  // Moderation: hide an avatar from discovery (force private) or restore it to
+  // public. The owner can still re-set their own visibility afterward.
+  const willHide = u.visibility !== "private";
+  const pubBtn = el("button", { class: "ghost-sm", type: "button", text: willHide ? "비공개로 전환" : "공개로 전환" });
   pubBtn.addEventListener("click", () => {
-    run(pubBtn, () => api(`/api/admin/users/${uid}/published`, { method: "POST", body: JSON.stringify({ published: !u.published }) }), "공개 설정 실패");
+    run(pubBtn, () => api(`/api/admin/users/${uid}/visibility`, { method: "PUT", body: JSON.stringify({ visibility: willHide ? "private" : "public" }) }), "공개 설정 실패");
   });
 
   const susBtn = el("button", { class: "ghost-sm" + (u.suspended ? "" : " danger"), type: "button", text: u.suspended ? "활성화" : "정지" });
@@ -5837,17 +5791,20 @@ async function adminGroupsCards() {
     class: "plugin-add rows-2",
     onsubmit: async (e) => {
       e.preventDefault();
-      const fd = new FormData(e.currentTarget);
+      // Capture the form node now: event.currentTarget is nulled after the
+      // handler's first await, so referencing it later (reset) would throw.
+      const formEl = e.currentTarget;
+      const fd = new FormData(formEl);
       const name = (fd.get("name") || "").toString().trim();
       if (!name) { notify("그룹 이름을 입력하세요.", "warn"); return; }
-      const btn = e.currentTarget.querySelector("button[type=submit]");
+      const btn = formEl.querySelector("button[type=submit]");
       btn.disabled = true;
       try {
         await api("/api/admin/groups", {
           method: "POST",
           body: JSON.stringify({ name, description: (fd.get("description") || "").toString().trim() }),
         });
-        e.currentTarget.reset();
+        formEl.reset();
         await reload();
       } catch (err) {
         notify(`그룹 생성 실패: ${err.message}`);
@@ -5986,7 +5943,7 @@ function buildAdminGroupDetail(g, members, reload) {
   addBtn.addEventListener("click", doAdd);
   addInput.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); doAdd(); } });
   const addRow = el("div", { class: "group-add" }, [
-    addInput,
+    attachUserSearch(addInput),
     el("label", { class: "group-add-admin" }, [adminCb, el("span", { text: "그룹 관리자로" })]),
     addBtn,
   ]);
@@ -6609,10 +6566,6 @@ async function loadRoutineConversations() {
 async function loadNotifications() {
   const r = await api("/api/me/notifications");
   state.notifications = r.notifications || [];
-}
-async function loadTrusted() {
-  const r = await api("/api/me/trusted");
-  state.trusted = r.trusted || [];
 }
 async function loadAdminUsers() {
   const r = await api("/api/admin/users");

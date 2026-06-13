@@ -984,7 +984,7 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       const adminNoRepo = groups.filter((g) => g.role === "admin" && !g.knowledgeRepoConfigured);
       const groupLines = [
         `The owner belongs to the following groups: ${groups.map(describe).join(", ")}. ` +
-          "Members of the same group **automatically trust each other (elevated)**, so when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and even unpublished avatars can find and talk to each other.",
+          "Members of the same group **automatically trust each other (elevated)** — group co-membership is the ONLY source of elevated (owner-level tool) access. So when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and group-visible avatars can find and talk to each other.",
         "Each group may have a **shared knowledge repository**, handled with the `mcp__group_repo__*` tools: use `list_groups` to check groups/roles; all group members can `list_files`/`read_file`, while only **group admins** can `write_file`/`scaffold_skill`/`commit`. Skills organized in a group's shared repository are used by every group member's avatar starting from the next conversation.",
       ];
       if (adminNoRepo.length > 0) {
@@ -1224,7 +1224,7 @@ export async function runClaudeAgent(
     viewerIsOwner: ownerToolAccess,
     config,
   });
-  // Cross-avatar discovery (read-only): lets the avatar look up OTHER published
+  // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
   // avatars by capability so it can point the user at a teammate avatar for
   // things outside its own expertise. Visibility is from the VIEWER's POV (the
   // person chatting), and the current avatar is excluded from its own results.

@@ -7,7 +7,7 @@ import type { AvatarSummary } from "../types.js";
 export interface AvatarDirectoryContext {
   /** The avatar being chatted with — excluded from its own search results. */
   avatarUserId: string;
-  /** The viewer currently chatting; published-avatar visibility is from their POV. */
+  /** The viewer currently chatting; avatar visibility is evaluated from their POV. */
   viewerUserId: string;
 }
 
@@ -38,22 +38,22 @@ function formatAvatar(av: AvatarSummary): string {
 /**
  * Build the avatar-directory tool definitions. Exposed separately from the
  * server so the handler can be exercised directly in tests. NOT owner-only:
- * this only surfaces PUBLISHED avatars (plus the viewer's own), which the
- * viewer can already browse in 탐색 — it just lets the avatar do the lookup
- * for the user mid-conversation.
+ * this only surfaces avatars VISIBLE to the viewer (public ones + their group
+ * teammates' + their own), which the viewer can already browse in 탐색 — it
+ * just lets the avatar do the lookup for the user mid-conversation.
  */
 export function buildAvatarDirectoryTools(store: Store, ctx: AvatarDirectoryContext) {
   return [
     tool(
       "search_avatars",
-      "Searches what other avatars (colleagues' published avatars) can do, by capability hashtags, intro, and name. " +
+      "Searches what other avatars (colleagues' avatars visible to this user) can do, by capability hashtags, intro, and name. " +
         "Use this when the task the user requested is outside your capabilities, or when there is likely another avatar better suited to that topic. " +
         "If an avatar in the search results is a better fit, guide the user to chat with that avatar (@username). " +
-        "Only published avatars are searched (= the scope the user can see in discovery), and you yourself are excluded from the results.",
+        "Only avatars visible to the user are searched (= the scope they can see in discovery: public avatars plus their group teammates'), and you yourself are excluded from the results.",
       {
         query: z
           .string()
-          .describe("Capability/topic keywords you want to find. e.g.: 'code review', 'data analysis', 'kubernetes'. If empty, lists published avatars broadly."),
+          .describe("Capability/topic keywords you want to find. e.g.: 'code review', 'data analysis', 'kubernetes'. If empty, lists visible avatars broadly."),
       },
       async (args) => {
         const results = store.searchAvatars(ctx.viewerUserId, args.query ?? "", {
@@ -63,13 +63,13 @@ export function buildAvatarDirectoryTools(store: Store, ctx: AvatarDirectoryCont
         if (results.length === 0) {
           return text(
             args.query?.trim()
-              ? `Could not find any published avatar matching "${args.query.trim()}".`
-              : "There are no other published avatars available to search.",
+              ? `Could not find any visible avatar matching "${args.query.trim()}".`
+              : "There are no other visible avatars available to search.",
           );
         }
         const header = args.query?.trim()
-          ? `${results.length} published avatar(s) related to "${args.query.trim()}":`
-          : `${results.length} published avatar(s):`;
+          ? `${results.length} visible avatar(s) related to "${args.query.trim()}":`
+          : `${results.length} visible avatar(s):`;
         return text(`${header}\n${results.map(formatAvatar).join("\n")}`);
       },
     ),

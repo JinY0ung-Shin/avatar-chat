@@ -124,13 +124,14 @@ describe("noah-almighty platform", () => {
     const first = request.agent(app);
     const firstRes = await signup(first, "alice").expect(201);
     expect(firstRes.body.user.username).toBe("alice");
-    expect(firstRes.body.user.published).toBe(true);
+    // New avatars default to group visibility.
+    expect(firstRes.body.user.visibility).toBe("group");
     expect(firstRes.body.user.roles).toContain("admin");
     expect(firstRes.body.user.roles).toContain("member");
 
     const second = request.agent(app);
     const secondRes = await signup(second, "bob").expect(201);
-    expect(secondRes.body.user.published).toBe(true);
+    expect(secondRes.body.user.visibility).toBe("group");
     expect(secondRes.body.user.roles).toContain("member");
     expect(secondRes.body.user.roles).not.toContain("admin");
   });
@@ -159,15 +160,15 @@ describe("noah-almighty platform", () => {
     await signup(agent, "erin").expect(201);
     const res = await agent
       .patch("/api/me")
-      .send({ displayName: "Erin K", alias: "  Aria  ", published: true })
+      .send({ displayName: "Erin K", alias: "  Aria  ", visibility: "public" })
       .expect(200);
     expect(res.body.user.displayName).toBe("Erin K");
     // alias is trimmed and persisted.
     expect(res.body.user.alias).toBe("Aria");
-    expect(res.body.user.published).toBe(true);
-    // published persists: a fresh read reflects the stored value.
+    expect(res.body.user.visibility).toBe("public");
+    // visibility persists: a fresh read reflects the stored value.
     const me = await agent.get("/api/me").expect(200);
-    expect(me.body.user.published).toBe(true);
+    expect(me.body.user.visibility).toBe("public");
   });
 
   it("supports plugin add / list / delete", async () => {
@@ -270,15 +271,21 @@ describe("noah-almighty platform", () => {
     expect(list.body.routines).toHaveLength(0);
   });
 
-  it("shows published avatars and hides unpublished ones from other users", async () => {
+  it("shows public avatars to everyone but hides group/private ones from outsiders", async () => {
     const app = testApp();
     const publisher = request.agent(app);
     const pubRes = await signup(publisher, "gina").expect(201);
-    await publisher.patch("/api/me").send({ published: true }).expect(200);
+    await publisher.patch("/api/me").send({ visibility: "public" }).expect(200);
 
-    const hidden = request.agent(app);
-    const hiddenRes = await signup(hidden, "henry").expect(201);
-    await hidden.patch("/api/me").send({ published: false }).expect(200);
+    // A group-visible avatar is hidden from a viewer who shares no group.
+    const grouped = request.agent(app);
+    const groupedRes = await signup(grouped, "henry").expect(201);
+    await grouped.patch("/api/me").send({ visibility: "group" }).expect(200);
+
+    // A private avatar is hidden from everyone but its owner.
+    const secret = request.agent(app);
+    const secretRes = await signup(secret, "iris").expect(201);
+    await secret.patch("/api/me").send({ visibility: "private" }).expect(200);
 
     const viewer = request.agent(app);
     await signup(viewer, "ivy").expect(201);
@@ -286,39 +293,42 @@ describe("noah-almighty platform", () => {
     const avatars = await viewer.get("/api/avatars").expect(200);
     const ids = avatars.body.avatars.map((a: { id: string }) => a.id);
     expect(ids).toContain(pubRes.body.user.id);
-    expect(ids).not.toContain(hiddenRes.body.user.id);
+    expect(ids).not.toContain(groupedRes.body.user.id);
+    expect(ids).not.toContain(secretRes.body.user.id);
 
-    // Direct fetch of an unpublished, non-own avatar → 404.
-    await viewer.get(`/api/avatars/${hiddenRes.body.user.id}`).expect(404);
-    // Published avatar is visible.
+    // Direct fetch of a non-visible, non-own avatar → 404; public → 200.
+    await viewer.get(`/api/avatars/${groupedRes.body.user.id}`).expect(404);
+    await viewer.get(`/api/avatars/${secretRes.body.user.id}`).expect(404);
     await viewer.get(`/api/avatars/${pubRes.body.user.id}`).expect(200);
   });
 
-  it("lets the owner manage trusted users, who can then reach an unpublished avatar", async () => {
+  it("grants group co-members reach + elevation to a group-visible avatar", async () => {
     const app = testApp();
+    // First signup is the system admin who creates groups + assigns members.
+    const admin = request.agent(app);
+    await signup(admin, "adam").expect(201);
+
     const owner = request.agent(app);
     const ownerRes = await signup(owner, "olga").expect(201);
-    await owner.patch("/api/me").send({ published: false }).expect(200);
+    await owner.patch("/api/me").send({ visibility: "group" }).expect(200);
 
     const friend = request.agent(app);
     const friendRes = await signup(friend, "fred").expect(201);
-    const friendId = friendRes.body.user.id;
 
-    // Before trust: a non-owner can't see the unpublished avatar or chat with it.
+    // Before sharing a group: the friend can't see or chat the group-visible avatar.
     await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(404);
     await friend
       .post("/api/chat/stream")
       .send({ avatarId: ownerRes.body.user.id, message: "안녕" })
       .expect(403);
 
-    // Owner grants trust by username.
-    const added = await owner.post("/api/me/trusted").send({ username: "fred" }).expect(200);
-    expect(added.body.trusted.map((t: { username: string }) => t.username)).toEqual(["fred"]);
-    // Unknown user / self → error, no row added.
-    await owner.post("/api/me/trusted").send({ username: "nobody" }).expect(404);
-    await owner.post("/api/me/trusted").send({ username: "olga" }).expect(404);
+    // Admin creates a group and adds both as members → they become co-members.
+    const grp = await admin.post("/api/admin/groups").send({ name: "Platform" }).expect(200);
+    const groupId = grp.body.group.id;
+    await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "olga" }).expect(200);
+    await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "fred" }).expect(200);
 
-    // After trust: the friend sees the (still unpublished) avatar as elevated and can chat.
+    // Now the friend sees the avatar as elevated (group co-membership) and can chat.
     const detail = await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(200);
     expect(detail.body.avatar.elevated).toBe(true);
     expect(detail.body.avatar.isOwn).toBe(false);
@@ -328,13 +338,12 @@ describe("noah-almighty platform", () => {
       .expect(200);
     expect(parseSse(chat.text).find((f) => f.event === "done")).toBeTruthy();
 
-    // Revoke: the friend loses access again.
-    const after = await owner.delete(`/api/me/trusted/${friendId}`).expect(200);
-    expect(after.body.trusted).toHaveLength(0);
+    // Removing the friend from the group revokes both reach and elevation.
+    await admin.delete(`/api/admin/groups/${groupId}/members/${friendRes.body.user.id}`).expect(200);
     await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(404);
   });
 
-  it("searches users for the trusted-user picker (by name/@id, self excluded, trusted flagged)", async () => {
+  it("searches users for the group member-add picker (by name/@id, self excluded)", async () => {
     const app = testApp();
     const owner = request.agent(app);
     await signup(owner, "olga").expect(201);
@@ -342,25 +351,19 @@ describe("noah-almighty platform", () => {
     await signup(friend, "fred").expect(201);
 
     // Match by substring; the searcher (olga) is never in their own results.
-    const hit = await owner.get("/api/me/trusted/search?q=fre").expect(200);
+    const hit = await owner.get("/api/me/users/search?q=fre").expect(200);
     expect(hit.body.users.map((u: { username: string }) => u.username)).toEqual(["fred"]);
-    expect(hit.body.users[0].trusted).toBe(false);
-    const self = await owner.get("/api/me/trusted/search?q=olga").expect(200);
+    const self = await owner.get("/api/me/users/search?q=olga").expect(200);
     expect(self.body.users).toEqual([]);
     // Blank query → no results, no error.
-    expect((await owner.get("/api/me/trusted/search?q=").expect(200)).body.users).toEqual([]);
-
-    // After trusting, the same user comes back flagged.
-    await owner.post("/api/me/trusted").send({ username: "fred" }).expect(200);
-    const flagged = await owner.get("/api/me/trusted/search?q=fred").expect(200);
-    expect(flagged.body.users[0].trusted).toBe(true);
+    expect((await owner.get("/api/me/users/search?q=").expect(200)).body.users).toEqual([]);
   });
 
   it("streams a local-runtime chat and persists conversation + messages", async () => {
     const app = testApp();
     const owner = request.agent(app);
     const ownerRes = await signup(owner, "judy").expect(201);
-    await owner.patch("/api/me").send({ published: true }).expect(200);
+    await owner.patch("/api/me").send({ visibility: "public" }).expect(200);
 
     const res = await owner
       .post("/api/chat/stream")
@@ -414,7 +417,7 @@ describe("noah-almighty platform", () => {
     );
     const owner = request.agent(app);
     const ownerRes = await signup(owner, "skilluser").expect(201);
-    await owner.patch("/api/me").send({ published: true }).expect(200);
+    await owner.patch("/api/me").send({ visibility: "public" }).expect(200);
 
     const res = await owner.get(`/api/avatars/${ownerRes.body.user.id}/skills`).expect(200);
     expect(res.body.skills).toEqual([
@@ -430,11 +433,11 @@ describe("noah-almighty platform", () => {
     expect(res.body.skills).toEqual([]);
   });
 
-  it("hides skills of an unpublished, non-own avatar (404)", async () => {
+  it("hides skills of a private, non-own avatar (404)", async () => {
     const app = testApp();
     const hidden = request.agent(app);
     const hiddenRes = await signup(hidden, "kevin").expect(201);
-    await hidden.patch("/api/me").send({ published: false }).expect(200);
+    await hidden.patch("/api/me").send({ visibility: "private" }).expect(200);
 
     const viewer = request.agent(app);
     await signup(viewer, "laura").expect(201);
@@ -594,7 +597,7 @@ describe("noah-almighty platform", () => {
   it("stores bio/persona and exposes persona + plugins on the owner's avatar detail", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "mira");
-    await agent.patch("/api/me").send({ bio: "도우미", persona: "간결하게", alias: "미라봇", published: true }).expect(200);
+    await agent.patch("/api/me").send({ bio: "도우미", persona: "간결하게", alias: "미라봇", visibility: "public" }).expect(200);
     await agent.post("/api/me/plugins").send({ repo: "owner/tool", label: "Tool" }).expect(200);
 
     const detail = await agent.get(`/api/avatars/${user.id}`).expect(200);
@@ -610,7 +613,7 @@ describe("noah-almighty platform", () => {
   it("stores and exposes the avatar self-introduction, and generates one on demand", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "intro");
-    await agent.patch("/api/me").send({ alias: "소개봇", intro: "안녕하세요, 저는 도와드립니다.", published: true }).expect(200);
+    await agent.patch("/api/me").send({ alias: "소개봇", intro: "안녕하세요, 저는 도와드립니다.", visibility: "public" }).expect(200);
 
     const me = await agent.get("/api/me").expect(200);
     expect(me.body.user.intro).toBe("안녕하세요, 저는 도와드립니다.");
@@ -670,26 +673,26 @@ describe("noah-almighty platform", () => {
 
   // ---- Chat validation + authorization ----------------------------------
 
-  it("validates chat input and forbids chatting with an unpublished avatar", async () => {
+  it("validates chat input and forbids chatting with a private avatar", async () => {
     const app = testApp();
     const { agent: ownerAgent, user: owner } = await newUser(app, "quinn");
-    await ownerAgent.patch("/api/me").send({ published: false }).expect(200);
+    await ownerAgent.patch("/api/me").send({ visibility: "private" }).expect(200);
     const viewer = (await newUser(app, "rex")).agent;
 
     await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "" }).expect(400);
     await viewer.post("/api/chat/stream").send({ message: "hi" }).expect(400);
-    // owner avatar is not published and not the viewer's own → 403.
+    // owner avatar is private and not the viewer's own → 403.
     await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "hi" }).expect(403);
   });
 
   it("allows mixed-avatar split sessions and refuses cross-avatar conversation reuse", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "split-owner");
-    await agent.patch("/api/me").send({ published: true }).expect(200);
+    await agent.patch("/api/me").send({ visibility: "public" }).expect(200);
 
     const other = request.agent(app);
     const otherRes = await signup(other, "split-other").expect(201);
-    await other.patch("/api/me").send({ published: true }).expect(200);
+    await other.patch("/api/me").send({ visibility: "public" }).expect(200);
 
     await agent
       .post("/api/chat/stream")
@@ -711,7 +714,7 @@ describe("noah-almighty platform", () => {
   it("regenerate replaces the last reply instead of duplicating the turn", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "sam");
-    await agent.patch("/api/me").send({ published: true }).expect(200);
+    await agent.patch("/api/me").send({ visibility: "public" }).expect(200);
 
     const first = await agent.post("/api/chat/stream").send({ avatarId: user.id, message: "처음" }).expect(200);
     const convId = (parseSse(first.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
@@ -767,7 +770,7 @@ describe("noah-almighty platform", () => {
   it("exposes a runId on the chat stream and guards the respond endpoint", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "ivy");
-    await agent.patch("/api/me").send({ published: true }).expect(200);
+    await agent.patch("/api/me").send({ visibility: "public" }).expect(200);
 
     const chat = await agent.post("/api/chat/stream").send({ avatarId: user.id, message: "hi" }).expect(200);
     const open = parseSse(chat.text).find((f) => f.event === "open")!.data as { runId?: string };
@@ -788,7 +791,7 @@ describe("noah-almighty platform", () => {
   it("renames and deletes conversations, and isolates them between users", async () => {
     const app = testApp();
     const { agent: a, user: ua } = await newUser(app, "tina");
-    await a.patch("/api/me").send({ published: true }).expect(200);
+    await a.patch("/api/me").send({ visibility: "public" }).expect(200);
     const chat = await a.post("/api/chat/stream").send({ avatarId: ua.id, message: "hi" }).expect(200);
     const convId = (parseSse(chat.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
 
@@ -990,12 +993,12 @@ describe("groups", () => {
     expect(list.body.groups[0].memberCount).toBe(2);
     expect(list.body.groups[0].adminCount).toBe(1);
 
-    // bob unpublishes; carol (same group) still reaches his avatar at elevated level.
-    await agentB.patch("/api/me").send({ published: false }).expect(200);
+    // bob sets group visibility; carol (same group) still reaches his avatar at elevated level.
+    await agentB.patch("/api/me").send({ visibility: "group" }).expect(200);
     const seen = await agentC.get(`/api/avatars/${bob.id}`).expect(200);
     expect(seen.body.avatar.elevated).toBe(true);
 
-    // A stranger outside the group gets 404 on the unpublished avatar.
+    // A stranger outside the group gets 404 on the group-only avatar.
     const { agent: agentD } = await newUser(app, "dave");
     await agentD.get(`/api/avatars/${bob.id}`).expect(404);
 
