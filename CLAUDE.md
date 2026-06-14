@@ -8,30 +8,67 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
 - **Agent:** `claudeAgent.ts` re-exports `buildPrompt` (now in `agent/promptBuilder.ts`), the SDK-message handlers (`agent/sdkMessageHandlers.ts`), and the PreToolUse hook (`agent/preToolUseHook.ts`). Shared self-state in `agent/ownerState.ts`; MCP helpers in `agent/mcpTools.ts`; repo-tool skeleton in `agent/repoToolKit.ts`.
 - **Repo git:** low-level plumbing shared via `repoGitCore.ts` + `repoGitGuards.ts`.
 - **Tests:** `units.test.ts` split into `agent-core`/`agent-tools`/`store`/`infra` (+ `tests/helpers.ts`).
-- Module-level cautions: [`src/server/CLAUDE.md`](src/server/CLAUDE.md), [`src/server/agent/CLAUDE.md`](src/server/agent/CLAUDE.md), [`public/CLAUDE.md`](public/CLAUDE.md). Deferred/riskier work: [`docs/REFACTORING-BACKLOG.md`](docs/REFACTORING-BACKLOG.md).
+- Module-level cautions: [`src/server/CLAUDE.md`](src/server/CLAUDE.md), [`src/server/agent/CLAUDE.md`](src/server/agent/CLAUDE.md), [`src/client/CLAUDE.md`](src/client/CLAUDE.md). Deferred/riskier work: [`docs/REFACTORING-BACKLOG.md`](docs/REFACTORING-BACKLOG.md).
 
 ## Commands
-- `npm run dev` — local dev server on port 48787.
-- `npm run lint && npm test && npm run build` — standard verification gate.
+- `npm run dev` — `concurrently` runs `dev:server` (tsx watch, port 48787) + `dev:client`
+  (vite, port 5173, proxies `/api`,`/users`,`/fonts` → 48787).
+- `npm run lint && npm test && npm run build` — standard verification gate. `lint` =
+  `tsc --noEmit` (server) **+ `svelte-check`** (client); `build` = server tsc + `vite build`
+  (→ `dist/client`); `pretest` runs `vite build --mode test`, so a client compile break fails
+  the test gate.
+- **Client checks (run these directly):** `npx tsc --noEmit` and
+  `npx svelte-check --tsconfig ./tsconfig.client.json`. ⚠️ The rtk hook misrewrites
+  `npm run lint` to eslint and fails — don't rely on it; run the two commands above. `npm run
+  build:client` (vite) / `npm run lint:client` (svelte-check) also work. `tsconfig.client.json`
+  pulls in `src/server/types.ts` + `routineSchedule.ts` so the client shares server types via
+  the `src/client/src/lib/types.ts` re-export barrel — import server types through it.
 - `rtk proxy npx vitest run tests/<file>.test.ts` — run ONE test file (full suite is ~16s); the
   suites are split agent-core/agent-tools/store/infra/app/chat-history.
 - `docker compose config` — validate compose/env wiring before Docker changes.
 - `CA_CERT_FILE=docker/tls-fullchain.crt docker compose build` — build with a local on-prem CA file.
 
-## Frontend (public/)
-- Vanilla JS, no framework, no bundler. **Split into ES modules (2026-06):** `public/app.js` is a thin ~12-line entry; feature code lives in `public/js/*.js` with `public/js/core.js` as the leaf primitives module (state, `el(tag, props, children)` DOM helper, `api`, `notify` — others import it, it imports no feature module). See [`public/CLAUDE.md`](public/CLAUDE.md) for the module map + the core-stays-a-leaf rule.
-- Stylesheet split into `public/styles/*.css` (`00-tokens` → `70-modals-groups`, ordered `<link>` tags in `index.html`; cascade order = filename order). CSS variables for spacing `--s-*`, colors, radii live in `00-tokens.css`.
-  **Design language / token system → [`docs/DESIGN.md`](docs/DESIGN.md)** (4px-base scale, per-screen density, no hardcoded hex/px).
-- Markdown rendered with `marked` + sanitized with `DOMPurify` (`renderMarkdown`).
+## Frontend (src/client/ — Svelte + Vite)
+See [`src/client/CLAUDE.md`](src/client/CLAUDE.md) for the client module map, theme system, CSS
+gotchas, and client↔server mirrored validators.
+- **The frontend is Svelte + Vite under `src/client/`, NOT vanilla `public/`** (migrated 2026-06,
+  commit `b8505fb`). `public/` now holds only static assets (favicons, manifest, PWA icons).
+  Entry `src/client/index.html` → `src/client/src/main.ts` → `App.svelte`; views in
+  `src/client/src/views/*.svelte`, shared components in `src/client/src/components/*.svelte`,
+  non-UI logic/stores in `src/client/src/lib/*.ts`. `lib/state.ts` is the central writable store
+  (`appState` + `updateState`/`readState`/`replaceState`/`notify`); other lib: `chat`, `loaders`,
+  `api`, `nav`, `slash`, `format`, `dom`, `knowledge`, `onboarding`, `theme`, `sse`. Built by
+  `vite build` → `dist/client`, which `app.ts` serves (falling back to `public/` static assets).
+- **The old vanilla frontend is preserved in git at commit `f0a6128`** — the canonical behavior
+  reference for parity work. Read it with `git show f0a6128:public/js/<file>`.
+- **Stylesheets were carried over VERBATIM** from `public/styles/*.css` to `src/client/styles/*.css`
+  (same filenames `00-tokens`→`70-modals-groups`, same class names), loaded via `@import` in
+  `src/client/src/styles.css` (cascade = import order), NOT `<link>` tags. **So porting/restoring a
+  feature = reproducing the SAME DOM structure + class names the old vanilla JS emitted — don't
+  invent new class names** (e.g. tabs use `.settings-tabs`/`.settings-tab` for BOTH Settings AND
+  Admin; a custom `.tabbar` has NO CSS and renders unstyled). Spacing `--s-*`/color/radii tokens
+  live in `00-tokens.css`. **Design language → [`docs/DESIGN.md`](docs/DESIGN.md)** (4px-base
+  scale, per-screen density, no hardcoded hex/px).
+- Markdown rendered with `marked` + sanitized with `DOMPurify` (`renderMarkdown` in `lib/format.ts`,
+  bundled by Vite — not the old `/vendor` ESM routes).
 - **`app.ts` serves a strict same-origin CSP** (`script-src`/`connect-src` `'self'`, `img-src
   'self' data:`). So remote `<img>` in rendered markdown is BLOCKED and the browser can't fetch
-  cross-origin — widen the relevant directive in `app.ts` if a feature needs it. There's no
-  inline `<script>`, so `script-src 'self'` is safe.
-- `npm run lint` (`tsc --noEmit`) covers only server TS; `public/*.js` is plain JS
-  and unchecked — sanity-check frontend edits with `node --check public/app.js`.
+  cross-origin — widen the relevant directive in `app.ts` if a feature needs it. The Svelte build
+  emits no inline `<script>`, so `script-src 'self'` is safe.
+- **Svelte client pitfalls (svelte-check catches these):** `<svelte:window>` cannot live inside
+  `{#if}`/blocks — must be top-level. A `use:action` taking a parameter must declare a 2nd arg
+  `(node, param?)` or svelte-check errors "Expected 1 arguments, but got 2". `role="dialog"`/
+  `"tablist"` on a `<nav>`/`<div>` trips an a11y warning — put the role on the right element.
+  `AgentResponse.runtime` is only `"local"|"claude"` (errors/blocked surface via `summary`, NOT
+  runtime — don't compare runtime to `"error"`).
+- **Split chat:** avatar pool = all visible avatars, duplicates allowed (multiple parallel
+  conversations with the same avatar incl. your own); the only gate is the 4-pane max. User message
+  bubbles render text directly in `.bubble` (which has `white-space: pre-wrap`), NOT wrapped in
+  `<p>` (that adds stray top/bottom margins). `GET /api/avatars` (`listPublishedAvatars`) includes
+  the viewer's OWN avatar plus public + group-teammate avatars.
 - Owner sees pending `request_info` gaps in-app via a "내 아바타" nav badge + a
-  poll/visibility watcher that toasts on new gaps (`updateKnowledgeBadge`/
-  `refreshKnowledgeStatus`, app.js) — the UI end of the knowledge-backfill loop.
+  poll/visibility watcher that toasts on new gaps (`refreshKnowledgeStatus`/`startKnowledgeWatch`
+  in `lib/loaders.ts`) — the UI end of the knowledge-backfill loop.
 - **Chat is SSE, and an owner turn can be driven from anywhere in the client.**
   `POST /api/chat/stream {avatarId, message, conversationId?}` streams events
   `open`(→conversationId,runId)/`delta`/`status`/`tool*`/`done`/`error`; omit
@@ -97,7 +134,7 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   elevated checks) — don't rely on the hook.
 - **Per-user settings pattern:** add a column to the `users` table + an additive
   `addColumnIfMissing` migration, then mirror it end-to-end
-  (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→app.js control).
+  (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→Svelte settings control in `src/client/src/views/SettingsView.svelte`).
   A NEW table just goes in the always-run schema `db.exec()` block (`CREATE TABLE IF
   NOT EXISTS` covers existing DBs too) — `addColumnIfMissing` is ONLY for adding a
   column to an existing table.
@@ -117,11 +154,11 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   `removeTrustedUser`) + `/api/me/trusted*` routes + the 신뢰하는 사용자 settings card are all
   GONE (table is `DROP`ped in migrate()). To grant someone elevated tool access, add
   them to a shared group. `searchUsers`/`GET /api/me/users/search` survive only to power
-  the group member-add typeahead (`attachUserSearch` in app.js).
+  the group member-add typeahead (inlined in the Svelte settings/admin group components).
 - **Capability hashtags (역량 해시태그) + cross-avatar discovery.** `users.hashtags` is a JSON
   array of bare tags (`normalizeHashtags`/`parseHashtags` in store.ts) wired through the
   per-user settings pattern, surfaced on BOTH `User` and `AvatarSummary` (so discovery cards
-  carry them), edited via a chip editor (`buildHashtagEditor` in app.js). **Auto-generated like
+  carry them), edited via a chip editor (`HashtagChipEditor.svelte`). **Auto-generated like
   the intro:** `POST /api/me/hashtags/generate` mirrors `/api/me/intro/generate` (headless,
   read-only, NOT persisted — parses `#tags` out of the agent reply, then `normalizeHashtags`).
   Searchable in 탐색 (client-side filter in `renderExplore`/`matchesAvatarQuery`, via a search box;
@@ -272,14 +309,14 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
   `buildPrompt` (claudeAgent.ts), `GIT_MCP_ONLY_GUIDANCE`, the `PreToolUse` **`hookDeny(...)` reasons**,
   and every `agent/*Tools.ts` tool `description`/`.describe()`/`text()` result; the headless
   intro/hashtag-generation prompts in `routes/profile.ts` are English too but explicitly instruct **Korean
-  OUTPUT**. Korean (a human sees it): `public/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
+  OUTPUT**. Korean (a human sees it): `src/client/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
   labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks, **client-expanded**
   slash-command expansions (rendered as the user's OWN message bubble), conversation titles/`[루틴]`/`(중지됨)`.
-  EXCEPTION: a slash command flagged `serverExpand` in `public/app.js` (currently **`/learn`**) sends the
+  EXCEPTION: a slash command flagged `serverExpand` in `src/client/src/lib/slash.ts` (currently **`/learn`**) sends the
   literal `/command` as the bubble + persisted turn and the SERVER swaps in the expanded prompt for the
   model — so that prompt (`LEARN_SLASH_PROMPT` in `routes/chat.ts`) is **agent-facing English** (the avatar still
-  REPLIES in the user's language). Such a command carries NO client-side `prompt()` copy; the
-  `expandChatSlashCommand`↔`app.js` drift test excludes it. The chat handler stores `displayMessage` (raw)
+  REPLIES in the user's language). Such a command carries NO client-side expansion copy; the server-side
+  `expandChatSlashCommand` (the stale-client/API fallback, tested in `agent-core.test.ts`) excludes it. The chat handler stores `displayMessage` (raw)
   but feeds `agentMessage` (expanded) to `runAgentStream`.
   A string used on BOTH channels is split (hex-ssh block ~claudeAgent.ts:795 = Korean `onBlocked`
   reason + English `hookDeny`). Response language is anchored in `buildPrompt`'s 2nd line ("respond
