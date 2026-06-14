@@ -1190,7 +1190,10 @@ function buildSetupBanner() {
     /* storage unavailable — just show it */
   }
   const banner = el("div", { class: "setup-banner" }, [
-    el("span", { text: "아바타가 아직 지식 저장소와 연결되지 않았습니다. 연결하면 대화로 지식을 쌓을 수 있어요." }),
+    el("div", { class: "sb-copy" }, [
+      el("strong", { text: "지식 저장소를 연결하면 대화가 누적됩니다" }),
+      el("span", { text: "아바타가 배운 내용과 스킬을 파일로 정리해 다음 대화에서 다시 사용할 수 있어요." }),
+    ]),
     el("div", { class: "sb-actions" }, [
       el("button", { class: "primary small", type: "button", text: "설정하기", onclick: () => openOnboarding() }),
       el("button", {
@@ -5551,6 +5554,8 @@ async function renderSettings() {
   const panel = el("div", { class: "settings-panel", role: "tabpanel", id: "settings-panel" });
   const renderTab = () => {
     const active = tabs.find((t) => t.id === state.settingsTab) || tabs[0];
+    body.classList.toggle("settings-body-access", active.id === "access");
+    panel.classList.toggle("settings-panel-access", active.id === "access");
     panel.setAttribute("aria-labelledby", `settings-tab-${active.id}`);
     panel.replaceChildren(...active.cards());
   };
@@ -9239,51 +9244,36 @@ function markOnboardingDone(userId) {
 
 const ONBOARDING_FEATURES = [
   {
-    title: "내 아바타 만들기",
-    desc: "이름, 별칭, 프로필, 페르소나, 자기소개를 설정하고 공개하면 탐색 목록에서 다른 사용자가 대화할 수 있습니다.",
+    title: "아바타 찾기",
+    desc: "탐색에서 공개 아바타를 검색하고 바로 대화를 시작합니다.",
   },
   {
-    title: "나의 업무 아바타로 키우기",
-    desc: "반복 업무, 프로젝트 규칙, 운영 절차를 지식 저장소·스킬·루틴으로 쌓아 두고 점점 더 많은 일을 맡길 수 있습니다.",
+    title: "내 아바타 키우기",
+    desc: "프로필, 페르소나, 자기소개, 역량 태그를 설정해 업무 맥락을 드러냅니다.",
   },
   {
-    title: "아바타와 대화하기",
-    desc: "탐색에서 공개 아바타를 고르거나 내 아바타와 바로 대화합니다. 응답은 스트리밍되고, 복사·재생성·편집 후 재전송을 지원합니다.",
+    title: "지식 저장소 연결",
+    desc: "반복 업무와 프로젝트 규칙을 저장소와 스킬로 쌓아 다음 대화에 재사용합니다.",
   },
   {
-    title: "동료 아바타에게 질문·요청하기",
-    desc: "동료가 공개한 아바타를 찾아 그 사람이 쌓아 둔 지식과 스킬에 업무 질문을 하거나 조사·검토·정리 같은 작업을 요청할 수 있습니다.",
-  },
-  {
-    title: "지식 저장소로 학습시키기",
-    desc: "전용 GitHub 저장소를 연결하면 아바타가 대화 중 얻은 지식과 스킬을 파일로 정리하고 다음 대화에서 다시 사용합니다.",
-  },
-  {
-    title: "플러그인과 스킬 확장",
-    desc: "GitHub 플러그인 저장소를 추가해 읽기 도구, 업무 규칙, MCP 도구 설명을 아바타에 붙일 수 있습니다.",
-  },
-  {
-    title: "SSH 서버 작업 맡기기",
-    desc: "SSH 키와 신뢰 호스트를 설정하면 이 앱이 실행되는 호스트에서 접근 가능한 서버에 접속해 로그 확인, 파일 점검, 명령 실행 같은 원격 작업을 시킬 수 있습니다.",
+    title: "동료에게 요청",
+    desc: "동료가 공개한 지식과 스킬을 바탕으로 조사, 검토, 정리를 요청합니다.",
   },
   {
     title: "루틴 자동 실행",
-    desc: "매일 정해진 시각에 내 아바타가 스스로 작업하게 하고, 결과를 전용 대화에 계속 쌓을 수 있습니다.",
+    desc: "매일·매주 반복되는 확인 작업을 예약하고 결과를 대화에 쌓습니다.",
   },
   {
-    title: "보안 설정 관리",
-    desc: "사내·외부 Git 토큰, 커밋 정보, 시크릿, SSH 키를 설정해 비공개 저장소와 원격 작업에 필요한 권한을 안전하게 제공합니다.",
+    title: "도구 확장",
+    desc: "Git 토큰, 플러그인, SSH, Confluence 연결로 작업 범위를 넓힙니다.",
   },
 ];
 
 const ONBOARDING_EXAMPLES = [
   "내가 자주 맡기는 배포 점검 절차를 스킬로 정리하고 다음부터 그대로 수행해줘.",
   "민수님의 아바타에게 이번 장애 원인과 재발 방지 체크리스트를 물어봐.",
-  "데이터팀 아바타에게 이 쿼리 결과를 검토하고 요약해 달라고 요청해줘.",
   "내 지식 저장소에 이 프로젝트 운영 절차를 스킬로 정리해줘.",
-  "이 저장소에서 로그인 흐름을 읽고 개선할 부분을 찾아줘.",
   "접근 가능한 서버에 SSH로 접속해서 서비스 로그와 디스크 사용량을 점검해줘.",
-  "매일 09시에 어제 쌓인 정보 요청을 요약해줘.",
 ];
 
 function buildOnboardingGuide() {
@@ -9393,6 +9383,15 @@ function openOnboarding() {
   confluenceInput.addEventListener("input", updateSaveButtonLabel);
   updateSaveButtonLabel();
 
+  const setupItem = (title, summary, children) =>
+    el("details", { class: "onboard-setup-item" }, [
+      el("summary", {}, [
+        el("strong", { text: title }),
+        el("span", { text: summary }),
+      ]),
+      el("div", { class: "onboard-setup-body" }, children),
+    ]);
+
   openModal({
     cardClass: "onboard-card",
     ariaLabelledby: "onboarding-title",
@@ -9433,52 +9432,40 @@ function openOnboarding() {
           }
         },
       }, [
-        el("label", { class: "field" }, [
-          el("span", {}, [
-            "사내 Git 토큰 (GIT_TOKEN, 선택) ",
-            el("a", {
-              class: "linkish",
-              href: `https://${(state.githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "")}/settings/tokens`,
-              target: "_blank",
-              rel: "noopener noreferrer",
-              text: "토큰 만들러 가기 ↗",
-            }),
-          ]),
-          gitTokenField.wrap,
-        ]),
-        el("div", { class: "onboard-connect" }, [
-          el("h3", { text: "SSH 키" }),
-          el("div", { class: "onboard-highlight" }, [
-            el("strong", { text: "왜 SSH를 설정하면 좋나요?" }),
-            el("p", {
-              text: "SSH 키를 등록하면 아바타가 이 앱이 접근할 수 있는 원격 서버에 직접 접속해 일할 수 있습니다. 예를 들어 서비스 로그·디스크·프로세스 상태 점검, 설정 파일 확인, 배포·재시작 같은 명령 실행, 파일 송수신을 대화만으로 맡길 수 있어 매번 직접 터미널에 접속하는 수고를 덜어 줍니다.",
-            }),
-            el("p", {
-              class: "onboard-highlight-note",
-              text: "개인키는 암호화되어 저장되고 도구 실행 시에만 주입됩니다 — 아바타도 값 자체는 볼 수 없습니다. 공개키만 접속 대상 서버에 등록하면 됩니다.",
-            }),
-          ]),
-          el("p", {
-            class: "muted",
-            text: "지금 생성하면 개인키는 SSH_PRIVATE_KEY 시크릿으로 저장되고 다시 표시되지 않습니다. 공개키는 생성 후에도 설정에서 다시 확인할 수 있습니다.",
-          }),
-          sshStatus,
-          el("div", { class: "git-token-actions" }, [generateSshBtn]),
-          sshPublicKeyBox,
-        ]),
-        state.confluenceConfigured
-          ? el("div", { class: "onboard-connect" }, [
-              el("h3", { text: "Confluence 연결" }),
-              el("p", {
-                class: "muted",
-                text: "Confluence PAT를 저장해 두면 아바타가 사내 Confluence에서 문서를 검색·조회하고 페이지를 작성·수정할 수 있습니다. 값은 암호화되어 저장되고 다시 표시되지 않습니다.",
-              }),
-              el("label", { class: "field" }, [
-                el("span", { text: "Confluence PAT (CONFLUENCE_PAT, 선택)" }),
-                confluenceField.wrap,
+        el("div", { class: "onboard-setup-list" }, [
+          setupItem("Git 토큰", "비공개 저장소 읽기와 지식 저장소 커밋·푸시에 사용합니다.", [
+            el("label", { class: "field" }, [
+              el("span", {}, [
+                "사내 Git 토큰 (GIT_TOKEN, 선택) ",
+                el("a", {
+                  class: "linkish",
+                  href: `https://${(state.githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "")}/settings/tokens`,
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                  text: "토큰 만들러 가기 ↗",
+                }),
               ]),
-            ])
-          : null,
+              gitTokenField.wrap,
+            ]),
+          ]),
+          setupItem("SSH 키", "서버 로그 확인, 파일 점검, 원격 명령 같은 작업에 사용합니다.", [
+            el("p", {
+              class: "muted",
+              text: "개인키는 암호화되어 저장되고 도구 실행 시에만 주입됩니다. 공개키만 접속 대상 서버에 등록하면 됩니다.",
+            }),
+            sshStatus,
+            el("div", { class: "git-token-actions" }, [generateSshBtn]),
+            sshPublicKeyBox,
+          ]),
+          state.confluenceConfigured
+            ? setupItem("Confluence 연결", "문서를 검색·조회하고 페이지 작성·수정 작업을 맡길 수 있습니다.", [
+                el("label", { class: "field" }, [
+                  el("span", { text: "Confluence PAT (CONFLUENCE_PAT, 선택)" }),
+                  confluenceField.wrap,
+                ]),
+              ])
+            : null,
+        ]),
         errorBox,
         el("div", { class: "onboard-actions" }, [
           skipBtn,
@@ -9492,14 +9479,14 @@ function openOnboarding() {
         el("h2", { id: "onboarding-title", text: "아바타 사용 준비하기" }),
         el("p", {
           class: "muted",
-          text: "Noah Almighty는 내 업무 방식을 아바타에 축적하고, 동료들의 아바타에게도 업무를 질문·요청하는 앱입니다. GitHub 지식 저장소와 플러그인, 루틴, SSH 도구를 붙여 대화로 일하게 할 수 있습니다.",
+          text: "업무 방식과 반복 절차를 아바타에 쌓고, 동료 아바타에게도 질문·요청할 수 있습니다.",
         }),
         buildOnboardingGuide(),
         el("div", { class: "onboard-connect" }, [
-          el("h3", { text: "처음 설정하면 좋은 권한" }),
+          el("h3", { text: "선택 설정" }),
           el("p", {
             class: "muted",
-            text: "GIT_TOKEN을 저장해 두면 아바타가 사내 비공개 저장소를 읽고, 대화 중 지식 저장소에 파일을 추가한 뒤 커밋·푸시할 수 있습니다. SSH 키와 Confluence 연결도 지금 함께 설정해 두면 첫 대화부터 더 많은 일을 맡길 수 있습니다.",
+            text: "지금 건너뛰어도 됩니다. 필요한 연결은 내 아바타 설정에서 언제든 다시 추가할 수 있습니다.",
           }),
         ]),
         form,
