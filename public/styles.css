@@ -37,6 +37,10 @@
   --bg-elevated: var(--n-0);
   --panel: var(--n-0);
   --panel-strong: var(--n-100);
+  /* Subtle theme-neutral fills (seg-control track, faint surfaces). Were
+     undefined tokens relying on inline fallbacks — now canonical. */
+  --bg-subtle: rgba(127, 127, 127, 0.08);
+  --surface-2: rgba(127, 127, 127, 0.04);
   --rail: #0c1f1d;
   --rail-text: #d9e6e3;
   --rail-muted: #7f9893;
@@ -63,9 +67,14 @@
   --info-soft: #f2f8fb;
   --info-line: #c7dde9;
 
-  /* Spacing scale (8px base) */
+  /* Spacing scale (4px base — see docs/DESIGN.md §2.2).
+     Half-steps --s-0-5/--s-1-5/--s-2-5 legitimize the 2/6/10px values that
+     dominated real usage; the rest is value-preserving. */
+  --s-0-5: 2px;
   --s-1: 4px;
+  --s-1-5: 6px;
   --s-2: 8px;
+  --s-2-5: 10px;
   --s-3: 12px;
   --s-4: 16px;
   --s-5: 24px;
@@ -87,7 +96,9 @@
   --shadow-lg: 0 16px 40px rgba(16, 24, 40, 0.14);
   --shadow-drawer: -24px 0 60px rgba(16, 24, 40, 0.22);
 
-  /* Type scale */
+  /* Type scale (see docs/DESIGN.md §2.4). --t-2xs is the readability floor for
+     dense meta/badges; do not go below it. */
+  --t-2xs: 11px;
   --t-xs: 12px;
   --t-sm: 13px;
   --t-base: 14px;
@@ -98,6 +109,29 @@
 
   --transcript-max: 800px;
   --list-scroll-max: clamp(220px, 42dvh, 420px);
+
+  /* Per-screen density (see docs/DESIGN.md §3). Cards/rows consume these;
+     view roots override them. Baseline = comfortable (settings). */
+  --pad-card: var(--s-4);
+  --gap-stack: var(--s-4);
+
+  /* Z-index scale (see docs/DESIGN.md §4.4) — overlays use these, never ad-hoc numbers. */
+  --z-rail: 30;
+  --z-popover: 40;
+  --z-toast: 90;
+  --z-modal: 100;
+
+  /* Code-block surface — deliberately FIXED in both themes (never rides the
+     neutral ramp, which would flash a bright block in dark mode). */
+  --code-bg: #0d1117;
+  --code-fg: #e6edf3;
+  --code-fg-muted: #cdd6e0;
+  --code-overlay: rgba(255, 255, 255, 0.08);
+  --code-overlay-strong: rgba(255, 255, 255, 0.16);
+  --code-ok: #4ade80;
+  --code-danger: #f87171;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }
@@ -265,7 +299,7 @@ input[type="radio"] {
   top: var(--s-2);
   left: var(--s-2);
   z-index: 100;
-  padding: 8px 14px;
+  padding: var(--s-2) var(--s-4);
   border-radius: var(--r-md);
   background: var(--accent);
   color: var(--on-accent);
@@ -294,7 +328,7 @@ input[type="radio"] {
 .toast {
   pointer-events: auto;
   max-width: 100%;
-  padding: 10px 14px;
+  padding: var(--s-2-5) var(--s-4);
   border-radius: var(--r-md);
   border: 1px solid var(--line);
   background: var(--bg-elevated);
@@ -346,7 +380,7 @@ input[type="radio"] {
   background: var(--accent);
   color: var(--on-accent);
   border-radius: var(--r-md);
-  padding: 10px 16px;
+  padding: var(--s-2-5) var(--s-4);
   font-weight: 700;
   white-space: nowrap;
   box-shadow: var(--shadow-sm);
@@ -417,17 +451,21 @@ input[type="radio"] {
 }
 
 .field input,
-.field select {
+.field select,
+.secret-preset-row > .password-field input,
+.secret-preset-row textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 10px 12px;
+  padding: var(--s-2-5) var(--s-3);
   transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
 }
 
 .field input:focus,
-.field select:focus {
+.field select:focus,
+.secret-preset-row > .password-field input:focus,
+.secret-preset-row textarea:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
@@ -468,7 +506,7 @@ input[type="radio"] {
   background: var(--danger-soft);
   color: var(--danger);
   border-radius: var(--r-md);
-  padding: 10px 13px;
+  padding: var(--s-2-5) var(--s-3);
   font-size: var(--t-base);
   line-height: 1.45;
 }
@@ -534,13 +572,13 @@ input[type="radio"] {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: var(--s-2);
   width: 100%;
   border: 1px solid var(--rail-line);
   background: rgba(255, 255, 255, 0.06);
   color: var(--rail-text);
   border-radius: var(--r-md);
-  padding: 10px;
+  padding: var(--s-2-5);
   font-weight: 600;
   font-size: var(--t-sm);
 }
@@ -555,7 +593,7 @@ input[type="radio"] {
 }
 
 .rail-section-label {
-  font-size: 11px;
+  font-size: var(--t-2xs);
   text-transform: uppercase;
   letter-spacing: 0.07em;
   color: var(--rail-muted);
@@ -577,8 +615,8 @@ input[type="radio"] {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding-right: 2px;
+  gap: var(--s-0-5);
+  padding-right: var(--s-0-5);
 }
 
 .conv-empty {
@@ -613,7 +651,7 @@ input[type="radio"] {
   border: 0;
   color: var(--rail-text);
   text-align: left;
-  padding: 8px 10px;
+  padding: var(--s-2) var(--s-2-5);
   border-radius: var(--r-md);
 }
 
@@ -626,7 +664,7 @@ input[type="radio"] {
 }
 
 .conv-time {
-  font-size: 10px;
+  font-size: var(--t-2xs);
   color: var(--rail-muted);
   max-width: 100%;
   overflow: hidden;
@@ -636,8 +674,8 @@ input[type="radio"] {
 
 .conv-acts {
   display: none;
-  gap: 2px;
-  padding-right: 4px;
+  gap: var(--s-0-5);
+  padding-right: var(--s-1);
 }
 .conv-item:hover .conv-acts,
 .conv-item:focus-within .conv-acts,
@@ -659,7 +697,7 @@ input[type="radio"] {
   border: 0;
   background: transparent;
   color: var(--rail-muted);
-  border-radius: 6px;
+  border-radius: var(--r-xs);
 }
 .conv-act:hover {
   background: rgba(255, 255, 255, 0.14);
@@ -680,9 +718,9 @@ input[type="radio"] {
   flex: 1;
   min-width: 0;
   width: auto;
-  margin: 4px;
-  padding: 6px 8px;
-  border-radius: 6px;
+  margin: var(--s-1);
+  padding: var(--s-1-5) var(--s-2);
+  border-radius: var(--r-xs);
   border: 1px solid var(--accent);
   background: rgba(255, 255, 255, 0.08);
   color: var(--rail-text);
@@ -922,7 +960,7 @@ body.col-resizing {
 
 .cap-skill-caret {
   flex: none;
-  font-size: 10px;
+  font-size: var(--t-2xs);
   color: var(--muted);
   transition: transform 0.15s var(--ease);
 }
@@ -940,7 +978,7 @@ body.col-resizing {
 
 .cap-skill-src {
   flex: none;
-  font-size: 11px;
+  font-size: var(--t-2xs);
   color: var(--muted);
   background: var(--panel-strong);
   border-radius: var(--r-pill);
@@ -1052,7 +1090,7 @@ body.col-resizing {
 .starter-prompts {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: var(--s-2);
   max-width: 68ch;
 }
 .starter-prompt {
@@ -1060,7 +1098,7 @@ body.col-resizing {
   border-radius: var(--r-md);
   background: var(--bg-elevated);
   color: var(--text);
-  padding: 8px 10px;
+  padding: var(--s-2) var(--s-2-5);
   font-size: var(--t-sm);
   line-height: 1.35;
   text-align: left;
@@ -1103,11 +1141,11 @@ body.col-resizing {
 .msg-role {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--s-2);
   font-size: var(--t-xs);
   color: var(--muted);
   font-weight: 600;
-  padding: 0 2px;
+  padding: 0 var(--s-0-5);
 }
 
 .msg-role .role-dot {
@@ -1157,7 +1195,7 @@ body.col-resizing {
 .response-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--s-1-5);
   margin-bottom: var(--s-3);
 }
 
@@ -1166,8 +1204,8 @@ body.col-resizing {
   align-items: center;
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
-  padding: 2px 9px;
-  font-size: 11px;
+  padding: var(--s-0-5) var(--s-2-5);
+  font-size: var(--t-2xs);
   color: var(--muted);
   background: var(--bg);
   font-weight: 600;
@@ -1196,7 +1234,7 @@ body.col-resizing {
   margin-left: 1px;
   vertical-align: -2px;
   background: var(--accent);
-  border-radius: 2px;
+  border-radius: var(--r-xs);
   animation: caret-blink 1s steps(2, start) infinite;
 }
 
@@ -1209,7 +1247,7 @@ body.col-resizing {
 .stream-status {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-2);
   margin-top: var(--s-3);
   font-size: var(--t-xs);
   color: var(--muted);
@@ -1242,18 +1280,18 @@ body.col-resizing {
 .plugin-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--s-1-5);
   margin-top: var(--s-2);
 }
 
 .plugin-chip {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
-  padding: 2px 9px;
-  font-size: 11px;
+  padding: var(--s-0-5) var(--s-2-5);
+  font-size: var(--t-2xs);
   color: var(--text-soft);
   background: var(--bg);
 }
@@ -1292,7 +1330,7 @@ body.col-resizing {
   cursor: default;
 }
 .btn-sm {
-  padding: 6px 12px;
+  padding: var(--s-1-5) var(--s-3);
   font-size: var(--t-xs);
 }
 .btn-ghost:hover:not(:disabled) {
@@ -1312,7 +1350,7 @@ body.col-resizing {
 .agent-activity {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--s-1);
   margin-top: var(--s-3);
 }
 .agent-activity:empty {
@@ -1350,12 +1388,12 @@ body.col-resizing {
 .activity-live > summary {
   cursor: pointer;
   list-style: none;
-  padding: 6px 10px;
+  padding: var(--s-1-5) var(--s-2-5);
   font-size: var(--t-xs);
   color: var(--muted);
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   user-select: none;
 }
 .activity-done > summary::-webkit-details-marker,
@@ -1365,7 +1403,7 @@ body.col-resizing {
 .activity-done > summary::before,
 .activity-live > summary::before {
   content: "▸";
-  font-size: 10px;
+  font-size: var(--t-2xs);
   transition: transform 0.15s var(--ease);
 }
 .activity-done[open] > summary::before,
@@ -1378,13 +1416,13 @@ body.col-resizing {
 }
 .activity-done > .agent-activity {
   margin: 0;
-  padding: 0 10px 10px;
+  padding: 0 var(--s-2-5) var(--s-2-5);
 }
 /* While streaming, cap the tree's height and scroll within it so a burst of
    tool calls can't grow the bubble unbounded; the newest rows stay in view. */
 .activity-live > .agent-activity {
   margin: 0;
-  padding: 0 10px 10px;
+  padding: 0 var(--s-2-5) var(--s-2-5);
   max-height: 220px;
   overflow-y: auto;
 }
@@ -1399,7 +1437,7 @@ body.col-resizing {
 .agent-node {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--s-1);
 }
 /* A subagent renders as a distinct "workspace" card — set apart from the flat
    tool rows so it reads as an agent doing its own delegated work, not one more
@@ -1409,8 +1447,8 @@ body.col-resizing {
   border-left: 3px solid var(--accent);
   border-radius: var(--r-sm);
   background: var(--accent-soft);
-  padding: 7px 10px;
-  margin-left: 4px;
+  padding: var(--s-2) var(--s-2-5);
+  margin-left: var(--s-1);
 }
 .agent-node.sub[data-status="running"] {
   border-color: var(--accent);
@@ -1430,32 +1468,32 @@ body.col-resizing {
 .agent-children {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--s-1);
 }
 
 .agent-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--s-2);
   font-size: var(--t-xs);
   color: var(--text-soft);
 }
 .agent-badge {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  font-size: 10px;
+  gap: var(--s-1);
+  font-size: var(--t-2xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--accent);
   background: var(--accent-soft-strong);
   border-radius: var(--r-pill);
-  padding: 1px 7px;
+  padding: 1px var(--s-2);
 }
 .agent-badge::before {
   content: "◆";
-  font-size: 9px;
+  font-size: var(--t-2xs);
   line-height: 1;
 }
 .agent-label {
@@ -1468,14 +1506,14 @@ body.col-resizing {
 .agent-tools {
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: var(--s-1);
 }
 
 /* A single tool call row. */
 .tool-row {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--s-2);
   font-size: var(--t-xs);
   color: var(--text-soft);
   min-width: 0;
@@ -1528,13 +1566,13 @@ body.col-resizing {
 .tool-row[data-status="done"] .tool-spinner::after {
   content: "✓";
   color: var(--ok);
-  font-size: 12px;
+  font-size: var(--t-xs);
   line-height: 11px;
 }
 .tool-row[data-status="failed"] .tool-spinner::after {
   content: "✕";
   color: var(--warn);
-  font-size: 11px;
+  font-size: var(--t-2xs);
   line-height: 11px;
 }
 .tool-row[data-status="blocked"] .tool-spinner {
@@ -1544,7 +1582,7 @@ body.col-resizing {
 .tool-row[data-status="blocked"] .tool-spinner::after {
   content: "⊘";
   color: var(--warn);
-  font-size: 12px;
+  font-size: var(--t-xs);
   line-height: 11px;
 }
 .agent-node[data-status="done"] .agent-spinner,
@@ -1555,12 +1593,12 @@ body.col-resizing {
 .agent-node[data-status="done"] .agent-spinner::after {
   content: "✓";
   color: var(--ok);
-  font-size: 12px;
+  font-size: var(--t-xs);
 }
 .agent-node[data-status="failed"] .agent-spinner::after {
   content: "✕";
   color: var(--warn);
-  font-size: 11px;
+  font-size: var(--t-2xs);
 }
 
 /* ---- Permission modal (standalone, centered overlay) ----
@@ -1601,7 +1639,7 @@ body.col-resizing {
   padding: var(--s-3) var(--s-4);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: var(--s-2);
   box-shadow: var(--shadow-sm);
 }
 .prompt-card.permission {
@@ -1615,7 +1653,7 @@ body.col-resizing {
 .prompt-head {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: var(--s-2);
   font-size: var(--t-xs);
   font-weight: 700;
   color: var(--text-soft);
@@ -1647,7 +1685,7 @@ body.col-resizing {
 .prompt-tool {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--s-2);
   font-size: var(--t-sm);
   min-width: 0;
 }
@@ -1655,7 +1693,7 @@ body.col-resizing {
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   background: var(--panel-strong);
   border-radius: var(--r-sm);
-  padding: 1px 6px;
+  padding: 1px var(--s-1-5);
   flex: none;
 }
 .prompt-arg {
@@ -1672,7 +1710,7 @@ body.col-resizing {
   font-size: var(--t-xs);
   background: var(--panel-strong);
   border-radius: var(--r-sm);
-  padding: 8px 10px;
+  padding: var(--s-2) var(--s-2-5);
   margin: 0;
   max-height: 180px;
   overflow: auto;
@@ -1682,7 +1720,7 @@ body.col-resizing {
 .prompt-actions {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-2);
   justify-content: flex-end;
 }
 
@@ -1690,11 +1728,11 @@ body.col-resizing {
 .q-block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--s-1-5);
 }
 .q-chip {
   align-self: flex-start;
-  font-size: 10px;
+  font-size: var(--t-2xs);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.04em;
@@ -1702,7 +1740,7 @@ body.col-resizing {
   background: var(--bg-elevated);
   border: 1px solid var(--info-line);
   border-radius: var(--r-pill);
-  padding: 1px 8px;
+  padding: 1px var(--s-2);
 }
 .q-text {
   font-size: var(--t-base);
@@ -1712,17 +1750,17 @@ body.col-resizing {
 .q-options {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--s-1-5);
 }
 .q-option {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--s-0-5);
   text-align: left;
   border: 1px solid var(--line);
   background: var(--bg-elevated);
   border-radius: var(--r-sm);
-  padding: 8px 11px;
+  padding: var(--s-2) var(--s-3);
   cursor: pointer;
 }
 .q-option:hover {
@@ -1745,14 +1783,14 @@ body.col-resizing {
   border-style: dashed;
 }
 .q-custom-input {
-  margin-top: 6px;
+  margin-top: var(--s-1-5);
   width: 100%;
   box-sizing: border-box;
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--bg-elevated);
   color: var(--text);
-  padding: 8px 11px;
+  padding: var(--s-2) var(--s-3);
   font: inherit;
   font-size: var(--t-sm);
   resize: vertical;
@@ -1825,8 +1863,8 @@ body.col-resizing {
   font-size: 0.88em;
   background: var(--panel-strong);
   border: 1px solid var(--line-soft);
-  border-radius: 5px;
-  padding: 1px 5px;
+  border-radius: var(--r-xs);
+  padding: 1px var(--s-1-5);
 }
 /* Code blocks: the copy button anchors to a non-scrolling wrapper so it stays
    pinned to the corner even when the <pre> scrolls horizontally. */
@@ -1838,8 +1876,8 @@ body.col-resizing {
   margin: 0;
   /* Fixed dark surface in BOTH themes — must not ride the neutral ramp, which
      inverts in dark mode and would flash a bright code block. */
-  background: #0d1117;
-  color: #e6edf3;
+  background: var(--code-bg);
+  color: var(--code-fg);
   border-radius: var(--r-md);
   padding: var(--s-3) var(--s-4);
   overflow-x: auto;
@@ -1853,10 +1891,10 @@ body.col-resizing {
   height: 28px;
   display: grid;
   place-items: center;
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  background: rgba(255, 255, 255, 0.08);
-  color: #cdd6e0;
-  border-radius: 6px;
+  border: 1px solid var(--code-overlay-strong);
+  background: var(--code-overlay);
+  color: var(--code-fg-muted);
+  border-radius: var(--r-xs);
   opacity: 0;
   transition: opacity 0.15s var(--ease), background 0.15s var(--ease);
 }
@@ -1865,15 +1903,15 @@ body.col-resizing {
   opacity: 1;
 }
 .code-block .code-copy:hover {
-  background: rgba(255, 255, 255, 0.16);
-  color: #fff;
+  background: var(--code-overlay-strong);
+  color: var(--code-fg);
 }
 .code-block .code-copy.copied {
-  color: #4ade80;
+  color: var(--code-ok);
   opacity: 1;
 }
 .code-block .code-copy.copy-failed {
-  color: #f87171;
+  color: var(--code-danger);
   opacity: 1;
 }
 .code-block .code-copy svg {
@@ -1889,7 +1927,7 @@ body.col-resizing {
 }
 .md blockquote {
   margin: 0.8em 0;
-  padding: 4px 0 4px 14px;
+  padding: var(--s-1) 0 var(--s-1) var(--s-4);
   border-left: 3px solid var(--accent-soft-strong);
   color: var(--text-soft);
 }
@@ -1934,7 +1972,7 @@ body.col-resizing {
 }
 th,
 td {
-  padding: 9px 12px;
+  padding: var(--s-2-5) var(--s-3);
   border-bottom: 1px solid var(--line-soft);
   text-align: left;
   vertical-align: top;
@@ -2001,7 +2039,7 @@ tbody tr:hover td {
   outline: none;
   background: transparent;
   resize: none;
-  padding: 9px 10px;
+  padding: var(--s-2-5) var(--s-2-5);
   min-height: 24px;
   /* Never let a long draft eat the whole transcript on short viewports. */
   max-height: min(200px, 30dvh);
@@ -2043,8 +2081,8 @@ textarea::placeholder {
 }
 
 .composer-hint {
-  margin: 7px 4px 0;
-  font-size: 11px;
+  margin: var(--s-2) var(--s-1) 0;
+  font-size: var(--t-2xs);
   color: var(--muted);
   display: flex;
   justify-content: space-between;
@@ -2054,9 +2092,9 @@ textarea::placeholder {
   font-family: inherit;
   background: var(--panel-strong);
   border: 1px solid var(--line);
-  border-radius: 4px;
-  padding: 0 5px;
-  font-size: 10px;
+  border-radius: var(--r-xs);
+  padding: 0 var(--s-1-5);
+  font-size: var(--t-2xs);
 }
 .composer-meta {
   display: inline-flex;
@@ -2079,7 +2117,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  color: var(--text-muted);
+  color: var(--muted);
   padding: 2px var(--s-2);
   font-size: 0.8em;
   cursor: pointer;
@@ -2114,7 +2152,7 @@ textarea::placeholder {
 }
 .composer-gk-title {
   font-size: 0.78em;
-  color: var(--text-muted);
+  color: var(--muted);
   padding-bottom: var(--s-1);
 }
 .composer-gk-item {
@@ -2132,7 +2170,7 @@ textarea::placeholder {
   bottom: calc(100% + 8px);
   z-index: 12;
   display: grid;
-  gap: 2px;
+  gap: var(--s-0-5);
   max-height: min(340px, 45dvh);
   overflow-y: auto;
   border: 1px solid var(--line);
@@ -2145,9 +2183,9 @@ textarea::placeholder {
   display: none;
 }
 .slash-menu-head {
-  padding: 4px 8px 6px;
+  padding: var(--s-1) var(--s-2) var(--s-1-5);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--t-2xs);
   font-weight: 700;
 }
 .slash-option {
@@ -2161,7 +2199,7 @@ textarea::placeholder {
   border-radius: var(--r-sm);
   background: transparent;
   color: var(--text);
-  padding: 8px 10px;
+  padding: var(--s-2) var(--s-2-5);
   text-align: left;
 }
 .slash-option:hover,
@@ -2179,7 +2217,7 @@ textarea::placeholder {
 .slash-option-main {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .slash-option-main strong {
   font-size: var(--t-sm);
@@ -2215,7 +2253,7 @@ textarea::placeholder {
   flex-shrink: 0;
 }
 .panel-section-head p {
-  margin: 2px 0 0;
+  margin: var(--s-0-5) 0 0;
   font-size: var(--t-xs);
   color: var(--muted);
 }
@@ -2229,9 +2267,9 @@ textarea::placeholder {
   align-items: center;
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
-  padding: 2px 9px;
+  padding: var(--s-0-5) var(--s-2-5);
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--t-2xs);
   background: var(--bg);
   white-space: nowrap;
 }
@@ -2259,7 +2297,7 @@ textarea::placeholder {
   background: var(--warn-soft);
   color: var(--warn);
   border-radius: var(--r-md);
-  padding: 10px 13px;
+  padding: var(--s-2-5) var(--s-3);
   font-size: var(--t-sm);
   line-height: 1.5;
 }
@@ -2310,8 +2348,8 @@ textarea::placeholder {
 }
 .msg-actions {
   display: flex;
-  gap: 2px;
-  padding: 0 2px;
+  gap: var(--s-0-5);
+  padding: 0 var(--s-0-5);
   opacity: 0;
   transition: opacity 0.15s var(--ease);
 }
@@ -2359,7 +2397,7 @@ textarea::placeholder {
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
 }
 .msg-act:hover {
   background: var(--panel-strong);
@@ -2455,7 +2493,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   background: var(--panel);
   border-radius: var(--r-sm);
-  padding: 6px 12px;
+  padding: var(--s-1-5) var(--s-3);
   font-size: var(--t-xs);
   font-weight: 600;
   flex: none;
@@ -2554,7 +2592,7 @@ textarea::placeholder {
     display: flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
+    gap: var(--s-1-5);
     height: 42px;
     padding-bottom: env(safe-area-inset-bottom, 0px);
   }
@@ -2656,7 +2694,7 @@ textarea::placeholder {
 .auth-panel .primary {
   margin-top: var(--s-2);
   width: 100%;
-  padding: 12px;
+  padding: var(--s-3);
 }
 .auth-switch {
   margin-top: var(--s-4);
@@ -2696,7 +2734,7 @@ textarea::placeholder {
 .setup-badge {
   display: inline-block;
   margin-bottom: var(--s-3);
-  padding: 4px 10px;
+  padding: var(--s-1) var(--s-2-5);
   border-radius: var(--r-pill);
   background: var(--accent-soft);
   color: var(--accent-strong);
@@ -2708,7 +2746,7 @@ textarea::placeholder {
 /* Rail nav + me row */
 .rail-nav {
   display: grid;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .nav-item {
   display: flex;
@@ -2720,7 +2758,7 @@ textarea::placeholder {
   background: transparent;
   color: var(--rail-text);
   border-radius: var(--r-md);
-  padding: 9px 11px;
+  padding: var(--s-2-5) var(--s-3);
   font-weight: 600;
   font-size: var(--t-sm);
 }
@@ -2746,13 +2784,13 @@ textarea::placeholder {
   margin-left: auto;
   min-width: 18px;
   height: 18px;
-  padding: 0 5px;
+  padding: 0 var(--s-1-5);
   display: inline-grid;
   place-items: center;
   border-radius: var(--r-pill);
   background: var(--accent);
   color: var(--on-accent);
-  font-size: 11px;
+  font-size: var(--t-2xs);
   font-weight: 700;
 }
 .nav-item.active .nav-badge {
@@ -2769,7 +2807,7 @@ textarea::placeholder {
   background: transparent;
   color: var(--rail-text);
   text-align: left;
-  padding: 4px;
+  padding: var(--s-1);
   border-radius: var(--r-md);
 }
 .rail-me:hover {
@@ -2786,7 +2824,7 @@ textarea::placeholder {
   white-space: nowrap;
 }
 .rail-me .meta span {
-  font-size: 11px;
+  font-size: var(--t-2xs);
   color: var(--rail-muted);
 }
 .rail .icon-button {
@@ -2838,7 +2876,7 @@ textarea::placeholder {
   white-space: nowrap;
 }
 .view-header .title p {
-  margin: 2px 0 0;
+  margin: var(--s-0-5) 0 0;
   font-size: var(--t-sm);
   color: var(--muted);
 }
@@ -2910,7 +2948,7 @@ textarea::placeholder {
 .ac-name {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   flex-wrap: wrap;
 }
 .ac-name strong {
@@ -2924,7 +2962,7 @@ textarea::placeholder {
 .ac-alias {
   font-size: var(--t-xs);
   color: var(--accent);
-  margin-top: 2px;
+  margin-top: var(--s-0-5);
 }
 .ac-bio {
   margin: var(--s-2) 0 var(--s-2);
@@ -2938,7 +2976,7 @@ textarea::placeholder {
 }
 .ac-tags {
   display: flex;
-  gap: 6px;
+  gap: var(--s-1-5);
   flex-wrap: wrap;
 }
 /* Explore directory search bar (above the avatar grid). */
@@ -2966,7 +3004,7 @@ textarea::placeholder {
   background: transparent;
   color: inherit;
   font-size: var(--t-sm);
-  padding: 10px 0;
+  padding: var(--s-2-5) 0;
   outline: none;
 }
 .explore-search::placeholder {
@@ -2977,7 +3015,7 @@ textarea::placeholder {
 .cap-tags {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--s-1-5);
   margin: var(--s-1) 0 var(--s-3);
 }
 
@@ -2986,11 +3024,11 @@ textarea::placeholder {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 7px 9px;
+  padding: var(--s-2) var(--s-2-5);
   cursor: text;
 }
 .hashtag-editor:focus-within {
@@ -3004,17 +3042,17 @@ textarea::placeholder {
 .hashtag-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding-right: 4px;
+  gap: var(--s-1);
+  padding-right: var(--s-1);
 }
 .hashtag-editor .chip-x {
   border: 0;
   background: transparent;
   color: inherit;
   cursor: pointer;
-  font-size: 13px;
+  font-size: var(--t-sm);
   line-height: 1;
-  padding: 0 2px;
+  padding: 0 var(--s-0-5);
   opacity: 0.7;
 }
 .hashtag-editor .chip-x:hover {
@@ -3029,7 +3067,7 @@ textarea::placeholder {
   background: transparent;
   color: inherit;
   font-size: var(--t-sm);
-  padding: 2px 0;
+  padding: var(--s-0-5) 0;
   box-shadow: none;
   outline: none;
 }
@@ -3071,8 +3109,8 @@ textarea::placeholder {
 .split-controls {
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 3px;
+  gap: var(--s-0-5);
+  padding: var(--s-1);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--panel);
@@ -3087,7 +3125,7 @@ textarea::placeholder {
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
 }
 .split-btn:hover:not(:disabled),
 .split-add:hover:not(:disabled) {
@@ -3112,11 +3150,11 @@ textarea::placeholder {
   min-width: 118px;
   max-width: 180px;
   border: 1px solid var(--line);
-  border-radius: 7px;
+  border-radius: var(--r-sm);
   background: var(--bg);
   color: var(--text-soft);
   font-size: var(--t-xs);
-  padding: 0 8px;
+  padding: 0 var(--s-2);
 }
 .split-avatar-select:disabled {
   opacity: 0.55;
@@ -3192,13 +3230,13 @@ textarea::placeholder {
   font-size: var(--t-sm);
 }
 .pane-title span {
-  font-size: 11px;
+  font-size: var(--t-2xs);
   color: var(--muted);
 }
 .pane-actions {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: var(--s-0-5);
   flex: none;
 }
 
@@ -3228,7 +3266,7 @@ textarea::placeholder {
   gap: var(--s-4);
   min-height: 0;
   overflow-y: auto;
-  padding-right: 2px;
+  padding-right: var(--s-0-5);
 }
 .routine-card {
   margin: 0;
@@ -3236,7 +3274,7 @@ textarea::placeholder {
 .routine-add-btn {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   flex: none;
   white-space: nowrap;
 }
@@ -3251,7 +3289,7 @@ textarea::placeholder {
   background: var(--bg-elevated);
   color: inherit;
   font-size: var(--t-sm);
-  padding: 9px 12px;
+  padding: var(--s-2-5) var(--s-3);
 }
 .routine-search:focus {
   outline: none;
@@ -3346,8 +3384,8 @@ textarea::placeholder {
   flex: none;
   font-size: var(--t-xs);
   font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 999px;
+  padding: var(--s-0-5) var(--s-2);
+  border-radius: var(--r-pill);
   border: 1px solid var(--line);
   color: var(--muted);
   background: var(--panel-strong);
@@ -3427,12 +3465,12 @@ textarea::placeholder {
 .routine-manage-actions {
   display: flex;
   gap: var(--s-2);
-  margin-top: 2px;
+  margin-top: var(--s-0-5);
 }
 .routine-manage-actions .ghost-sm {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--s-1-5);
 }
 .routine-manage-actions .ghost-sm svg {
   width: 13px;
@@ -3454,7 +3492,7 @@ textarea::placeholder {
   background: var(--panel);
   padding: var(--s-2) var(--s-3);
   display: grid;
-  gap: 4px;
+  gap: var(--s-1);
 }
 .routine-result-prompt-label {
   font-size: var(--t-xs);
@@ -3628,7 +3666,7 @@ textarea::placeholder {
   overscroll-behavior-x: contain;
   scrollbar-width: thin;
   border-bottom: 1px solid var(--line);
-  padding-top: 4px;
+  padding-top: var(--s-1);
   padding-bottom: var(--s-3);
   margin-bottom: var(--s-1);
 }
@@ -3636,10 +3674,10 @@ textarea::placeholder {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   flex: 0 0 auto;
   min-height: 34px;
-  padding: 8px 14px;
+  padding: var(--s-2) var(--s-4);
   border: 1px solid transparent;
   border-radius: var(--r-md);
   background: transparent;
@@ -3674,7 +3712,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--panel);
-  padding: var(--s-4);
+  padding: var(--pad-card);
   box-shadow: var(--shadow-sm);
   min-width: 0;
 }
@@ -3699,7 +3737,7 @@ textarea::placeholder {
   position: relative;
   display: grid;
   justify-items: center;
-  gap: 4px;
+  gap: var(--s-1);
 }
 .pic-cam {
   position: absolute;
@@ -3728,7 +3766,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 10px 12px;
+  padding: var(--s-2-5) var(--s-3);
   resize: vertical;
 }
 .settings-form .field input:focus,
@@ -3755,8 +3793,8 @@ textarea::placeholder {
   align-self: flex-start;
   border: 1px solid var(--line);
   border-radius: var(--r-pill);
-  padding: 3px;
-  gap: 2px;
+  padding: var(--s-1);
+  gap: var(--s-0-5);
   background: var(--bg-subtle, rgba(127, 127, 127, 0.08));
 }
 .seg-btn {
@@ -3766,7 +3804,7 @@ textarea::placeholder {
   color: var(--muted);
   font-size: var(--t-sm);
   font-weight: 600;
-  padding: 6px 14px;
+  padding: var(--s-1-5) var(--s-4);
   border-radius: var(--r-pill);
   cursor: pointer;
   white-space: nowrap;
@@ -3790,7 +3828,7 @@ textarea::placeholder {
   border-radius: var(--r-pill);
   border: 1px solid var(--line);
   background: var(--panel-strong);
-  padding: 2px;
+  padding: var(--s-0-5);
   flex: none;
   transition: background 0.18s var(--ease), border-color 0.18s var(--ease);
 }
@@ -3820,7 +3858,7 @@ textarea::placeholder {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 2px;
+  padding-right: var(--s-0-5);
 }
 .plugin-row {
   display: flex;
@@ -3849,7 +3887,7 @@ textarea::placeholder {
 }
 .pr-meta {
   font-size: var(--t-xs);
-  margin-top: 2px;
+  margin-top: var(--s-0-5);
 }
 /* Expandable repo-contents / plugin-selection area under a plugin row. */
 .plugin-contents {
@@ -3878,7 +3916,7 @@ textarea::placeholder {
   cursor: not-allowed;
 }
 .pc-item.disabled {
-  color: var(--text-muted);
+  color: var(--muted);
   cursor: not-allowed;
 }
 .pc-summary {
@@ -3889,7 +3927,7 @@ textarea::placeholder {
   justify-content: flex-end;
 }
 .primary.small {
-  padding: 6px 12px;
+  padding: var(--s-1-5) var(--s-3);
   font-size: var(--t-xs);
 }
 .error-note {
@@ -3910,7 +3948,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 10px 12px;
+  padding: var(--s-2-5) var(--s-3);
   min-width: 0;
 }
 .plugin-add input:focus {
@@ -4031,6 +4069,9 @@ textarea::placeholder {
 
 /* Admin */
 .admin-list {
+  /* Admin = compact density (see docs/DESIGN.md §3). */
+  --pad-card: var(--s-3);
+  --gap-stack: var(--s-3);
   max-width: 960px;
   margin: 0 auto;
   display: grid;
@@ -4041,11 +4082,11 @@ textarea::placeholder {
 .admin-row {
   display: flex;
   align-items: center;
-  gap: var(--s-3);
+  gap: var(--gap-stack);
   flex-wrap: wrap;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  padding: var(--s-3);
+  padding: var(--pad-card);
   background: var(--panel);
 }
 .ar-main {
@@ -4061,7 +4102,7 @@ textarea::placeholder {
 }
 .ar-tags {
   display: flex;
-  gap: 6px;
+  gap: var(--s-1-5);
   flex-wrap: wrap;
   justify-content: flex-end;
 }
@@ -4126,7 +4167,7 @@ textarea::placeholder {
 }
 .hex-policy-tool {
   display: grid;
-  gap: 3px;
+  gap: var(--s-1);
   min-width: 220px;
   padding: var(--s-2);
 }
@@ -4170,7 +4211,7 @@ textarea::placeholder {
   background: var(--bg);
   padding: var(--s-3);
   display: grid;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .stat-card.stat-clickable {
   color: inherit;
@@ -4184,7 +4225,7 @@ textarea::placeholder {
   background: var(--accent-soft);
 }
 .stat-card.stat-clickable:focus-visible {
-  outline: 2px solid var(--focus);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 .stat-value {
@@ -4236,7 +4277,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   background: var(--panel);
-  padding: 8px 12px;
+  padding: var(--s-2) var(--s-3);
   font-size: var(--t-sm);
   color: inherit;
 }
@@ -4250,7 +4291,7 @@ textarea::placeholder {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 2px;
+  padding-right: var(--s-0-5);
 }
 .admin-user {
   border: 1px solid var(--line);
@@ -4326,7 +4367,7 @@ textarea::placeholder {
   background: var(--accent-soft);
 }
 .radio-card input {
-  margin-top: 3px;
+  margin-top: var(--s-1);
   accent-color: var(--accent);
 }
 .radio-card-body strong {
@@ -4439,15 +4480,17 @@ textarea::placeholder {
   overflow-wrap: anywhere;
 }
 .secret-preset-row textarea {
-  width: 100%;
   min-width: 0;
   min-height: 74px;
+  resize: vertical;
 }
 .secret-preset-row > .password-field {
   min-width: 0;
 }
 .secret-preset-row > .password-field input {
   min-height: 42px;
+  /* clear the reveal toggle, matching .field .password-field input */
+  padding-right: 44px;
 }
 .secret-preset-actions {
   display: flex;
@@ -4465,7 +4508,7 @@ textarea::placeholder {
   align-items: center;
   justify-content: center;
   margin-top: 0;
-  padding: 0 10px;
+  padding: 0 var(--s-2-5);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   color: var(--muted);
@@ -4506,13 +4549,13 @@ textarea::placeholder {
 }
 .settings-panel-access .secret-preset-title code,
 .settings-panel-access .secret-preset-title .muted {
-  font-size: 11px;
+  font-size: var(--t-2xs);
   color: var(--muted);
 }
 .settings-panel-access .secret-preset-title code {
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
-  padding: 1px 6px;
+  padding: 1px var(--s-1-5);
   background: var(--bg);
 }
 .settings-panel-access .secret-preset-title .token-set {
@@ -4521,7 +4564,7 @@ textarea::placeholder {
 .settings-panel-access .git-token-status {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: var(--s-1-5);
   margin: calc(-1 * var(--s-1)) 0 var(--s-3);
   line-height: 1.4;
 }
@@ -4539,20 +4582,6 @@ textarea::placeholder {
 .settings-panel-access .secret-preset-actions .linkish.small {
   min-width: 72px;
   min-height: 38px;
-}
-.settings-panel-access .secret-preset-actions .primary {
-  border-color: color-mix(in srgb, var(--accent) 42%, var(--line));
-  background: color-mix(in srgb, var(--accent) 16%, var(--panel));
-  color: var(--accent);
-}
-.settings-panel-access .secret-preset-actions .primary:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--accent) 24%, var(--panel));
-  box-shadow: none;
-}
-.settings-panel-access .secret-preset-row > .password-field input,
-.settings-panel-access .secret-preset-row textarea {
-  background: var(--bg-elevated);
-  border-color: var(--line);
 }
 .settings-panel-access .settings-form {
   max-width: none;
@@ -4575,7 +4604,7 @@ textarea::placeholder {
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding-right: 2px;
+  padding-right: var(--s-0-5);
 }
 .secret-row {
   display: flex;
@@ -4646,14 +4675,14 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 10px 12px;
+  padding: var(--s-2-5) var(--s-3);
   color: var(--text);
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: var(--t-xs);
   resize: vertical;
 }
 .ssh-public-key-row .msg-act {
-  margin-top: 5px;
+  margin-top: var(--s-1-5);
 }
 
 @media (max-width: 860px) {
@@ -4671,10 +4700,10 @@ textarea::placeholder {
     min-width: 88px;
     max-width: 120px;
     /* ≥16px text — anything smaller triggers iOS zoom-on-focus. */
-    font-size: 16px;
+    font-size: var(--t-md);
   }
   .chat-pane.compact .composer textarea {
-    font-size: 16px;
+    font-size: var(--t-md);
   }
   .chat-workbench.vertical,
   .chat-workbench.horizontal,
@@ -4814,7 +4843,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 10px 12px;
+  padding: var(--s-2-5) var(--s-3);
   font: inherit;
   line-height: 1.5;
   transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
@@ -4870,7 +4899,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 8px 10px;
+  padding: var(--s-2) var(--s-2-5);
 }
 .schedule-row select:focus,
 .schedule-row input:focus {
@@ -4917,7 +4946,7 @@ textarea::placeholder {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
-  padding: 8px 10px;
+  padding: var(--s-2) var(--s-2-5);
 }
 .interval-inputs input[aria-invalid="true"] {
   border-color: var(--danger-line);
@@ -5109,7 +5138,7 @@ textarea::placeholder {
 .kr-link {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--s-2);
   margin-top: var(--s-2);
   word-break: break-all;
 }
@@ -5176,7 +5205,7 @@ textarea::placeholder {
 .group-add-admin {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   white-space: nowrap;
   color: var(--text-soft);
   font-size: var(--t-sm);
@@ -5192,13 +5221,13 @@ textarea::placeholder {
 .group-add-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--s-1);
   max-width: 100%;
   border: 1px solid var(--line);
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   background: var(--panel);
   color: var(--text);
-  padding: 4px 4px 4px 10px;
+  padding: var(--s-1) var(--s-1) var(--s-1) var(--s-2-5);
   font-size: var(--t-xs);
   font-weight: 600;
 }
@@ -5224,7 +5253,7 @@ textarea::placeholder {
 .pr-actions {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--s-1-5);
   flex-wrap: wrap;
   margin-left: auto;
 }
@@ -5238,7 +5267,7 @@ textarea::placeholder {
 .conv-search {
   width: 100%;
   margin: 0 0 var(--s-2);
-  padding: 7px 10px;
+  padding: var(--s-2) var(--s-2-5);
   border: 1px solid var(--rail-line);
   border-radius: var(--r-md);
   background: rgba(255, 255, 255, 0.06);
@@ -5277,7 +5306,7 @@ textarea::placeholder {
 .setup-banner .sb-copy {
   min-width: 240px;
   display: grid;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .setup-banner .sb-copy strong {
   color: var(--text);

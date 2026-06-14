@@ -2,6 +2,8 @@
 
 Frontend cautions. Vanilla JS, **no framework, no build step, no bundler**. Read with the root `CLAUDE.md` Frontend + CSP sections.
 
+**Design language → [`docs/DESIGN.md`](../docs/DESIGN.md).** Calm productivity tool (neutral base, teal as accent only); 4px-base spacing scale; per-screen density (chat compact / settings comfortable / admin compact). All color/spacing/radius/type goes through `:root` tokens — no hardcoded hex/px. When adding or fixing UI, follow that doc and converge drift toward it (don't introduce ad-hoc values).
+
 ## Verification is weak here — be conservative
 - **`node --check public/app.js` is the ONLY automated check** for `app.js` (the `pretest` hook runs it; `tsc` is server-only). It validates **syntax, not behavior** — there are NO frontend tests, and the app **cannot be runtime-verified in this environment** (corporate `HTTP_PROXY` intercepts `localhost`, no browser engine installed). So any `app.js` change rides on careful reading + `node --check` + a human browser smoke-test. Treat frontend edits as higher-risk than server edits and keep them mechanical/behavior-preserving unless you can have someone load it in a browser.
 
