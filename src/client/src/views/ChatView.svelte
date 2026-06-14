@@ -24,7 +24,7 @@
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
   import { commandsForPane, type SlashCommand } from "../lib/slash";
-  import type { ChatPane, StoredMessage } from "../lib/types";
+  import type { AvatarSummary, ChatPane, StoredMessage } from "../lib/types";
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
   let splitAvatarId = "";
@@ -64,11 +64,19 @@
   $: panes = $appState.chatPanes;
   $: pane = panes.find((item) => item.id === $appState.activePaneId) ?? panes[0] ?? null;
   $: splitClass = panes.length <= 1 ? "single" : $appState.chatLayout;
-  $: openAvatarIds = new Set(panes.map((item) => item.avatar.id));
-  $: addableAvatars = $appState.avatars.filter((avatar) => !openAvatarIds.has(avatar.id));
-  $: if (addableAvatars.length && !addableAvatars.some((avatar) => avatar.id === splitAvatarId)) {
-    splitAvatarId = addableAvatars[0].id;
-  } else if (!addableAvatars.length && splitAvatarId) {
+  // Split-add options: ALL visible avatars (duplicates allowed — you can run
+  // several parallel conversations with the same avatar, incl. your own), with
+  // the open panes' avatars unioned in as a fallback so your own avatar is always
+  // selectable even before discovery loads.
+  $: splitOptions = (() => {
+    const byId = new Map<string, { id: string; alias?: string; displayName?: string; username?: string }>();
+    for (const item of panes) if (item.avatar?.id) byId.set(item.avatar.id, item.avatar);
+    for (const avatar of $appState.avatars) if (avatar?.id) byId.set(avatar.id, avatar);
+    return [...byId.values()];
+  })();
+  $: if (splitOptions.length && !splitOptions.some((avatar) => avatar.id === splitAvatarId)) {
+    splitAvatarId = splitOptions[0].id;
+  } else if (!splitOptions.length && splitAvatarId) {
     splitAvatarId = "";
   }
 
@@ -233,13 +241,13 @@
   }
 
   async function addSplitPane() {
-    const avatar = addableAvatars.find((item) => item.id === splitAvatarId);
+    const avatar = splitOptions.find((item) => item.id === splitAvatarId);
     if (!avatar) return;
     if (panes.length >= 4) {
       notify("분할 대화는 최대 4개까지 가능합니다.", "warn");
       return;
     }
-    await startChatWith(avatar, true);
+    await startChatWith(avatar as AvatarSummary, true);
   }
 
   async function setGroupKnowledge(item: ChatPane, groupId: string, on: boolean) {
@@ -322,7 +330,7 @@
                 {/if}
                 <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
               {:else}
-                <p>{message.content}</p>
+                {message.content}
               {/if}
             </div>
             <div class="msg-actions">
@@ -487,16 +495,16 @@
         </button>
       {/each}
     {/if}
-    <select class="split-avatar-select" bind:value={splitAvatarId} disabled={!addableAvatars.length || panes.length >= 4} aria-label="분할로 추가할 아바타">
-      {#if addableAvatars.length}
-        {#each addableAvatars as av}
+    <select class="split-avatar-select" bind:value={splitAvatarId} disabled={!splitOptions.length || panes.length >= 4} aria-label="분할로 추가할 아바타">
+      {#if splitOptions.length}
+        {#each splitOptions as av}
           <option value={av.id}>{av.alias || av.displayName || av.username}</option>
         {/each}
       {:else}
         <option value="">추가할 아바타 없음</option>
       {/if}
     </select>
-    <button class="split-add" type="button" title="대화 추가 (분할)" aria-label="대화 추가 (분할)" disabled={!addableAvatars.length || panes.length >= 4} on:click={addSplitPane}>
+    <button class="split-add" type="button" title="대화 추가 (분할)" aria-label="대화 추가 (분할)" disabled={!splitOptions.length || panes.length >= 4} on:click={addSplitPane}>
       <Icon name="plus" />
     </button>
   </div>
