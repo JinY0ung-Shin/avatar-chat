@@ -134,7 +134,7 @@ gotchas, and client↔server mirrored validators.
   elevated checks) — don't rely on the hook.
 - **Per-user settings pattern:** add a column to the `users` table + an additive
   `addColumnIfMissing` migration, then mirror it end-to-end
-  (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→Svelte settings control in `src/client/src/views/SettingsView.svelte`).
+  (`UserRow`→`toUser`→`updateProfile`→`User` type→`PATCH /api/me`→Svelte settings control in the matching per-tab component (`src/client/src/components/Settings{Profile,Access,Knowledge}Tab.svelte`; `SettingsView.svelte` is just the tab shell)).
   A NEW table just goes in the always-run schema `db.exec()` block (`CREATE TABLE IF
   NOT EXISTS` covers existing DBs too) — `addColumnIfMissing` is ONLY for adding a
   column to an existing table.
@@ -146,7 +146,7 @@ gotchas, and client↔server mirrored validators.
   (`rowVisibility()` is the accessor, with a published fallback for un-backfilled rows).
   The discovery SQL predicate (`listPublishedAvatars`/`searchAvatars`) and
   `isVisibleTo` (used by `getAvatar`/`resolveChatAvatar`) all gate on `visibility`.
-  Owner-self always bypasses the check. UI: `buildVisibilitySelect` (segmented control,
+  Owner-self always bypasses the check. UI: a `seg-control` segmented radiogroup in `SettingsProfileTab.svelte` (
   `PATCH /api/me {visibility}`); admin moderation = `PUT /api/admin/users/:id/visibility`.
 - **Trust/elevation is GROUP-ONLY now — no per-avatar trust list.** `isTrustedFor`
   is exactly `shareAnyGroup` (symmetric group co-membership); the old directional
@@ -318,7 +318,7 @@ gotchas, and client↔server mirrored validators.
   REPLIES in the user's language). Such a command carries NO client-side expansion copy; the server-side
   `expandChatSlashCommand` (the stale-client/API fallback, tested in `agent-core.test.ts`) excludes it. The chat handler stores `displayMessage` (raw)
   but feeds `agentMessage` (expanded) to `runAgentStream`.
-  A string used on BOTH channels is split (hex-ssh block ~claudeAgent.ts:795 = Korean `onBlocked`
+  A string used on BOTH channels is split (hex-ssh block in `preToolUseHook.ts` = Korean `onBlocked`
   reason + English `hookDeny`). Response language is anchored in `buildPrompt`'s 2nd line ("respond
   in the user's language; default Korean"). **`units.test.ts` asserts the English agent-facing
   strings** — update them when prompt/tool text changes; `app.test.ts`/`chat-history.test.ts`

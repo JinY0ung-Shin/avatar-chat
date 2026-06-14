@@ -71,6 +71,17 @@ validators. Update these in lockstep:
   on failure. Don't "fix" this into an await-and-sync.
 - Some settings cards (profile/visibility/secrets) save WITHOUT a full reload to avoid wiping unsaved form
   text — preserve in-place updates there.
+- **Splitting a multi-tab view into per-tab components: ALWAYS-MOUNT + `active` prop, never `{#if tab}`
+  around the child.** In a monolithic tab view, `{#if settingsTab===…}` only swaps the *template* branch
+  while the single `<script>`'s `let` form vars (typed-but-unsaved fields) persist across tab switches.
+  Rendering each new child *inside* `{#if}` unmounts it on every switch and silently loses that state.
+  Faithful split: render all tab components UNCONDITIONALLY (always mounted) and pass
+  `active={settingsTab === "…"}`; each child gates only its own template (`{#if active && user}`) and
+  initializes form state ONCE at script-init from `readState().user` (safe — tabs only mount inside the
+  parent's post-`load()` `{:else if user}` branch). Same unsaved-form concern as the bullet above, now
+  spanning a component boundary. `SettingsView.svelte` is the worked example (1,013→130 lines; tabs in
+  `components/Settings{Profile,Access,Knowledge}Tab.svelte`); the groups tab stays inline (delegates to
+  `SettingsGroupCard`, holds no cross-tab form state).
 
 ## Verification
 - **`npx svelte-check --tsconfig ./tsconfig.client.json`** is the real client type/template check
