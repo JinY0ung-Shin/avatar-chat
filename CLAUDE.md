@@ -21,6 +21,7 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** â
 ## Frontend (public/)
 - Vanilla JS, no framework. `public/app.js` builds DOM manually via an `el(tag, props, children)` helper.
 - Single global stylesheet `public/styles.css` (CSS variables for spacing `--s-*`, colors, radii).
+  **Design language / token system â†’ [`docs/DESIGN.md`](docs/DESIGN.md)** (4px-base scale, per-screen density, no hardcoded hex/px).
 - Markdown rendered with `marked` + sanitized with `DOMPurify` (`renderMarkdown`).
 - **`app.ts` serves a strict same-origin CSP** (`script-src`/`connect-src` `'self'`, `img-src
   'self' data:`). So remote `<img>` in rendered markdown is BLOCKED and the browser can't fetch
