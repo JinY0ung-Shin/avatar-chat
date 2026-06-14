@@ -1,0 +1,211 @@
+@import url("/fonts/noto-sans-kr/index.css");
+
+/* ============================================================
+   Design tokens
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  /* Neutral ramp */
+  --n-0: #ffffff;
+  --n-25: #fbfcfd;
+  --n-50: #f6f8fa;
+  --n-100: #eef1f4;
+  --n-150: #e3e8ed;
+  --n-200: #d6dde4;
+  --n-300: #bcc6cf;
+  --n-400: #94a2ad;
+  --n-500: #6b7884;
+  --n-600: #505b66;
+  --n-700: #3a434d;
+  --n-800: #262d35;
+  --n-900: #161b21;
+
+  /* Accent (teal) */
+  --accent: #0f766e;
+  --accent-strong: #0b5f59;
+  --accent-soft: #e6f4f1;
+  --accent-soft-strong: #cfe9e4;
+  --accent-ring: rgba(15, 118, 110, 0.35);
+  /* Text/icon color on accent-filled surfaces. Dark mode swaps --accent to a
+     light mint, so plain #fff next to it becomes unreadable — always pair an
+     accent background with this token instead. */
+  --on-accent: #ffffff;
+
+  /* Semantic */
+  --bg: var(--n-50);
+  --bg-elevated: var(--n-0);
+  --panel: var(--n-0);
+  --panel-strong: var(--n-100);
+  /* Subtle theme-neutral fills (seg-control track, faint surfaces). Were
+     undefined tokens relying on inline fallbacks — now canonical. */
+  --bg-subtle: rgba(127, 127, 127, 0.08);
+  --surface-2: rgba(127, 127, 127, 0.04);
+  --rail: #0c1f1d;
+  --rail-text: #d9e6e3;
+  --rail-muted: #7f9893;
+  --rail-line: rgba(255, 255, 255, 0.08);
+  --rail-active: rgba(255, 255, 255, 0.1);
+  --rail-danger: #fca5a5;
+  --scrim: rgba(16, 24, 40, 0.45);
+
+  --text: var(--n-900);
+  --text-soft: var(--n-700);
+  --muted: var(--n-500);
+  --line: var(--n-200);
+  --line-soft: var(--n-150);
+
+  --warn: #b45309;
+  --warn-soft: #fff8ed;
+  --warn-line: #f3c57f;
+  --danger: #b42318;
+  --on-danger: #ffffff;
+  --danger-soft: #fff3f2;
+  --danger-line: #f4b4af;
+  --ok: #15803d;
+  --info: #315467;
+  --info-soft: #f2f8fb;
+  --info-line: #c7dde9;
+
+  /* Spacing scale (4px base — see docs/DESIGN.md §2.2).
+     Half-steps --s-0-5/--s-1-5/--s-2-5 legitimize the 2/6/10px values that
+     dominated real usage; the rest is value-preserving. */
+  --s-0-5: 2px;
+  --s-1: 4px;
+  --s-1-5: 6px;
+  --s-2: 8px;
+  --s-2-5: 10px;
+  --s-3: 12px;
+  --s-4: 16px;
+  --s-5: 24px;
+  --s-6: 32px;
+  --s-7: 48px;
+  --s-8: 64px;
+
+  /* Radii */
+  --r-xs: 6px;
+  --r-sm: 8px;
+  --r-md: 8px;
+  --r-lg: 8px;
+  --r-xl: 14px;
+  --r-pill: 999px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
+  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08), 0 2px 4px rgba(16, 24, 40, 0.04);
+  --shadow-lg: 0 16px 40px rgba(16, 24, 40, 0.14);
+  --shadow-drawer: -24px 0 60px rgba(16, 24, 40, 0.22);
+
+  /* Type scale (see docs/DESIGN.md §2.4). --t-2xs is the readability floor for
+     dense meta/badges; do not go below it. */
+  --t-2xs: 11px;
+  --t-xs: 12px;
+  --t-sm: 13px;
+  --t-base: 14px;
+  --t-md: 15px;
+  --t-lg: 18px;
+  --t-xl: 22px;
+  --t-2xl: 28px;
+
+  --transcript-max: 800px;
+  --list-scroll-max: clamp(220px, 42dvh, 420px);
+
+  /* Per-screen density (see docs/DESIGN.md §3). Cards/rows consume these;
+     view roots override them. Baseline = comfortable (settings). */
+  --pad-card: var(--s-4);
+  --gap-stack: var(--s-4);
+
+  /* Z-index scale (see docs/DESIGN.md §4.4) — overlays use these, never ad-hoc numbers. */
+  --z-rail: 30;
+  --z-popover: 40;
+  --z-toast: 90;
+  --z-modal: 100;
+
+  /* Code-block surface — deliberately FIXED in both themes (never rides the
+     neutral ramp, which would flash a bright block in dark mode). */
+  --code-bg: #0d1117;
+  --code-fg: #e6edf3;
+  --code-fg-muted: #cdd6e0;
+  --code-overlay: rgba(255, 255, 255, 0.08);
+  --code-overlay-strong: rgba(255, 255, 255, 0.16);
+  --code-ok: #4ade80;
+  --code-danger: #f87171;
+
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Dark theme — applied when JS resolves the user's preference to dark (system +
+   OS-dark, or an explicit dark pick). app.js sets <html data-theme="dark">; see
+   public/js/core.js applyTheme(). SINGLE SOURCE — there is no duplicate dark block,
+   so the system fallback below intentionally sets only --bg, not the full ramp. */
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --n-0: #161b21;
+  --n-25: #1a2027;
+  --n-50: #12161b;
+  --n-100: #1d242c;
+  --n-150: #252e37;
+  --n-200: #2e3842;
+  --n-300: #3c4854;
+  --n-400: #5a6874;
+  --n-500: #8997a3;
+  --n-600: #aab6c0;
+  --n-700: #c6d0d8;
+  --n-800: #e1e7ec;
+  --n-900: #f3f6f8;
+
+  --accent: #2dd4bf;
+  --accent-strong: #5eead4;
+  --accent-soft: #11332f;
+  --accent-soft-strong: #154a44;
+  --accent-ring: rgba(45, 212, 191, 0.4);
+  --on-accent: #06211d;
+
+  --bg: #0c1014;
+  --bg-elevated: var(--n-25);
+  --panel: var(--n-25);
+  --panel-strong: var(--n-100);
+  --rail: #0a1413;
+  --rail-text: #cfe0dd;
+  --rail-muted: #6f8682;
+  --rail-line: rgba(255, 255, 255, 0.07);
+  --rail-active: rgba(255, 255, 255, 0.08);
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  --text: var(--n-900);
+  --text-soft: var(--n-700);
+  --muted: var(--n-500);
+  --line: var(--n-200);
+  --line-soft: var(--n-150);
+
+  --warn: #f0b563;
+  --warn-soft: #2a2113;
+  --warn-line: #5c4a26;
+  --danger: #f3a39c;
+  --on-danger: #2e1715;
+  --danger-soft: #2e1715;
+  --danger-line: #5c2b27;
+  --ok: #4ade80;
+  --info: #9ec5da;
+  --info-soft: #13242c;
+  --info-line: #2a4452;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.6);
+  --shadow-drawer: -24px 0 60px rgba(0, 0, 0, 0.6);
+}
+
+/* Pre-JS fallback: a system-dark user gets the dark page background on first
+   paint (before app.js sets [data-theme]) so there's no light flash. The page is
+   empty until JS renders, so only --bg + color-scheme matter; once JS sets
+   :root[data-theme] this stops matching and the block above takes over. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: #0c1014;
+  }
+}
+

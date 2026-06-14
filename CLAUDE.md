@@ -19,8 +19,8 @@ After a 2026-06 cleanup, the big files were split behind **unchanged exports** �
 - `CA_CERT_FILE=docker/tls-fullchain.crt docker compose build` — build with a local on-prem CA file.
 
 ## Frontend (public/)
-- Vanilla JS, no framework. `public/app.js` builds DOM manually via an `el(tag, props, children)` helper.
-- Single global stylesheet `public/styles.css` (CSS variables for spacing `--s-*`, colors, radii).
+- Vanilla JS, no framework, no bundler. **Split into ES modules (2026-06):** `public/app.js` is a thin ~12-line entry; feature code lives in `public/js/*.js` with `public/js/core.js` as the leaf primitives module (state, `el(tag, props, children)` DOM helper, `api`, `notify` — others import it, it imports no feature module). See [`public/CLAUDE.md`](public/CLAUDE.md) for the module map + the core-stays-a-leaf rule.
+- Stylesheet split into `public/styles/*.css` (`00-tokens` → `70-modals-groups`, ordered `<link>` tags in `index.html`; cascade order = filename order). CSS variables for spacing `--s-*`, colors, radii live in `00-tokens.css`.
   **Design language / token system → [`docs/DESIGN.md`](docs/DESIGN.md)** (4px-base scale, per-screen density, no hardcoded hex/px).
 - Markdown rendered with `marked` + sanitized with `DOMPurify` (`renderMarkdown`).
 - **`app.ts` serves a strict same-origin CSP** (`script-src`/`connect-src` `'self'`, `img-src

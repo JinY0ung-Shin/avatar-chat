@@ -138,8 +138,8 @@ npm test
 npm run build
 ```
 
-`npm test` runs `node --check public/app.js` first (via `pretest`) to syntax-check the
-vanilla-JS frontend before running the Vitest suite.
+`npm test` runs `node --check` over `public/app.js` and every `public/js/*.js` module
+first (via `pretest`) to syntax-check the vanilla-JS frontend before running the Vitest suite.
 
 Smoke test: sign up (first user = admin) → open **내 아바타**, set a name/picture/bio,
 click **아바타가 자동 생성** under 역량 해시태그, add a plugin, toggle **공개** → from

@@ -10,7 +10,7 @@
     "dev": "tsx watch src/server/index.ts",
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/server/index.js",
-    "pretest": "node --check public/app.js",
+    "pretest": "for f in public/app.js public/js/*.js; do node --check \"$f\" || exit 1; done",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "lint": "tsc --noEmit"

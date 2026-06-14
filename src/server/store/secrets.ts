@@ -1,0 +1,226 @@
+import { decryptSecret, encryptSecret } from "../crypto.js";
+import {
+  EXTERNAL_GIT_TOKEN_SECRET_NAME,
+  INTERNAL_GIT_TOKEN_SECRET_NAME,
+  type GitTokenSet,
+} from "../gitCredentials.js";
+import {
+  HEX_SSH_POLICY_CONFIG_KEY,
+  normalizeHexSshToolPolicy,
+  type HexSshToolPolicy,
+} from "../hexSshPolicy.js";
+import type { User } from "../types.js";
+import { type Constructor, type StoreBase } from "./internal.js";
+
+export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
+  return class Secrets extends Base {
+    // ---- Git credentials / personal knowledge repo -----------------------
+
+    /** Store (encrypted) or clear the user's internal GitHub token as GIT_TOKEN. */
+    setGitToken(userId: string, token: string | null): User {
+      if (!this.userRowById(userId)) {
+        throw new Error("USER_NOT_FOUND");
+      }
+      if (token) {
+        this.setUserSecret(userId, INTERNAL_GIT_TOKEN_SECRET_NAME, token);
+      } else {
+        this.deleteUserSecret(userId, INTERNAL_GIT_TOKEN_SECRET_NAME);
+      }
+      // Legacy column retained for old DB compatibility; new writes use user_secrets.
+      this.db.prepare("UPDATE users SET git_token_enc = NULL WHERE id = ?").run(userId);
+      return this.toUser(this.userRowById(userId)!);
+    }
+
+    private getUserSecretValue(userId: string, name: string): string | null {
+      const row = this.db
+        .prepare("SELECT value_enc FROM user_secrets WHERE user_id = ? AND name = ?")
+        .get(userId, name) as { value_enc: string } | undefined;
+      if (!row?.value_enc) {
+        return null;
+      }
+      return decryptSecret(row.value_enc, this.secret);
+    }
+
+    /**
+     * Decrypt and return the user's internal GitHub token for server-side git auth.
+     * Returns null if unset or undecryptable (e.g. SESSION_SECRET changed). This
+     * is the ONLY path the plaintext token leaves the DB — never via `toUser`.
+     */
+    getGitToken(userId: string): string | null {
+      const secretToken = this.getUserSecretValue(userId, INTERNAL_GIT_TOKEN_SECRET_NAME);
+      if (secretToken !== null) {
+        return secretToken;
+      }
+      const row = this.userRowById(userId);
+      if (!row?.git_token_enc) {
+        return null;
+      }
+      return decryptSecret(row.git_token_enc, this.secret);
+    }
+
+    getExternalGitToken(userId: string): string | null {
+      return this.getUserSecretValue(userId, EXTERNAL_GIT_TOKEN_SECRET_NAME);
+    }
+
+    getGitTokens(userId: string): GitTokenSet {
+      return {
+        internal: this.getGitToken(userId),
+        external: this.getExternalGitToken(userId),
+      };
+    }
+
+    // ---- Per-user secrets (encrypted env injected into avatar MCP tools) --
+
+    /**
+     * Store (encrypted) a named secret for the user. Values are AES-256-GCM
+     * encrypted at rest like git tokens; they're only ever decrypted into the
+     * env of an avatar's MCP subprocess (e.g. hex-ssh's SSH_PRIVATE_KEY), never
+     * exposed to the agent or serialized via `toUser`.
+     */
+    setUserSecret(userId: string, name: string, value: string): void {
+      if (!this.userRowById(userId)) {
+        throw new Error("USER_NOT_FOUND");
+      }
+      const enc = encryptSecret(value, this.secret);
+      this.db
+        .prepare(
+          "INSERT INTO user_secrets (user_id, name, value_enc, created_at) VALUES (?, ?, ?, ?) " +
+            "ON CONFLICT(user_id, name) DO UPDATE SET value_enc = excluded.value_enc",
+        )
+        .run(userId, name, enc, new Date().toISOString());
+      if (name === "SSH_PRIVATE_KEY") {
+        this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
+      }
+    }
+
+    /** Store a generated SSH keypair: private key encrypted, public key visible. */
+    setSshKeyPair(userId: string, privateKey: string, publicKey: string): User {
+      if (!this.userRowById(userId)) {
+        throw new Error("USER_NOT_FOUND");
+      }
+      const enc = encryptSecret(privateKey, this.secret);
+      const createdAt = new Date().toISOString();
+      const tx = this.db.transaction(() => {
+        this.db
+          .prepare(
+            "INSERT INTO user_secrets (user_id, name, value_enc, created_at) VALUES (?, 'SSH_PRIVATE_KEY', ?, ?) " +
+              "ON CONFLICT(user_id, name) DO UPDATE SET value_enc = excluded.value_enc",
+          )
+          .run(userId, enc, createdAt);
+        this.db.prepare("UPDATE users SET ssh_public_key = ? WHERE id = ?").run(publicKey, userId);
+      });
+      tx();
+      return this.toUser(this.userRowById(userId)!);
+    }
+
+    /**
+     * Set (or clear) the stored SSH public key without touching the private-key
+     * secret. Used to keep the public half queryable when the owner pastes their
+     * own `SSH_PRIVATE_KEY` (the route derives the public key and stores it here).
+     */
+    setSshPublicKey(userId: string, publicKey: string | null): void {
+      this.db.prepare("UPDATE users SET ssh_public_key = ? WHERE id = ?").run(publicKey, userId);
+    }
+
+    /** Remove a named secret. No-op if it doesn't exist. */
+    deleteUserSecret(userId: string, name: string): void {
+      this.db.prepare("DELETE FROM user_secrets WHERE user_id = ? AND name = ?").run(userId, name);
+      if (name === "SSH_PRIVATE_KEY") {
+        this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
+      }
+    }
+
+    /** Names of the user's stored secrets (for the settings UI; values omitted). */
+    listUserSecretNames(userId: string): string[] {
+      const rows = this.db
+        .prepare("SELECT name FROM user_secrets WHERE user_id = ? ORDER BY name")
+        .all(userId) as { name: string }[];
+      return rows.map((r) => r.name);
+    }
+
+    /**
+     * Decrypt all of the user's secrets into a name→value map for server-side use
+     * (injected as MCP subprocess env). Undecryptable entries (e.g. after a
+     * SESSION_SECRET change) are skipped. This is the ONLY path the plaintext
+     * values leave the DB — never via `toUser`.
+     */
+    getUserSecrets(userId: string): Record<string, string> {
+      const rows = this.db
+        .prepare("SELECT name, value_enc FROM user_secrets WHERE user_id = ?")
+        .all(userId) as { name: string; value_enc: string }[];
+      const out: Record<string, string> = {};
+      for (const r of rows) {
+        const value = decryptSecret(r.value_enc, this.secret);
+        if (value !== null) {
+          out[r.name] = value;
+        }
+      }
+      return out;
+    }
+
+    // ---- App-wide config (encrypted, not user-scoped) --------------------
+
+    /**
+     * Store (encrypted) an app-wide secret keyed by name. Unlike user_secrets
+     * this is global to the deployment — e.g. the Claude subscription OAuth token
+     * (`claude setup-token`) the admin pastes in, injected as CLAUDE_CODE_OAUTH_TOKEN
+     * into the agent subprocess. AES-256-GCM at rest like every other secret; only
+     * decrypted server-side (`getAppSecret`), never returned to clients.
+     */
+    setAppSecret(key: string, value: string): void {
+      const enc = encryptSecret(value, this.secret);
+      this.db
+        .prepare(
+          "INSERT INTO app_config (key, value_enc, updated_at) VALUES (?, ?, ?) " +
+            "ON CONFLICT(key) DO UPDATE SET value_enc = excluded.value_enc, updated_at = excluded.updated_at",
+        )
+        .run(key, enc, new Date().toISOString());
+    }
+
+    /** Decrypt an app-wide secret. Null if unset or undecryptable (e.g. SESSION_SECRET changed). */
+    getAppSecret(key: string): string | null {
+      const row = this.db.prepare("SELECT value_enc FROM app_config WHERE key = ?").get(key) as
+        | { value_enc: string }
+        | undefined;
+      if (!row) {
+        return null;
+      }
+      return decryptSecret(row.value_enc, this.secret);
+    }
+
+    /** Remove an app-wide secret. No-op if it doesn't exist. */
+    deleteAppSecret(key: string): void {
+      this.db.prepare("DELETE FROM app_config WHERE key = ?").run(key);
+    }
+
+    /** Deployment-wide hex-ssh tool allowlist, grouped by viewer class. */
+    getHexSshToolPolicy(): HexSshToolPolicy {
+      const raw = this.getAppSecret(HEX_SSH_POLICY_CONFIG_KEY);
+      if (!raw) {
+        return normalizeHexSshToolPolicy(null);
+      }
+      try {
+        return normalizeHexSshToolPolicy(JSON.parse(raw));
+      } catch {
+        return normalizeHexSshToolPolicy(null);
+      }
+    }
+
+    setHexSshToolPolicy(policy: HexSshToolPolicy): HexSshToolPolicy {
+      const normalized = normalizeHexSshToolPolicy(policy);
+      this.setAppSecret(HEX_SSH_POLICY_CONFIG_KEY, JSON.stringify(normalized));
+      return normalized;
+    }
+
+    /** Set the commit author identity used for knowledge-repo commits. */
+    setGitIdentity(userId: string, name: string | null, email: string | null): User {
+      if (!this.userRowById(userId)) {
+        throw new Error("USER_NOT_FOUND");
+      }
+      this.db
+        .prepare("UPDATE users SET git_identity_name = ?, git_identity_email = ? WHERE id = ?")
+        .run(name?.trim() || null, email?.trim() || null, userId);
+      return this.toUser(this.userRowById(userId)!);
+    }
+  };
+}

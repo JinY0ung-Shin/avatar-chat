@@ -8,22 +8,15 @@ Each item lists: files · why · risk · effort · breaking.
 
 ## Deferred from Tier 2
 
-### T2.6 — Split `public/app.js` (~7.3k lines) into ES modules
-- **Files:** `public/app.js`, `public/index.html`
-- **Why:** Single monolithic file. Splitting is feasible with **no bundler** — `<script type="module">` + same-origin `/vendor` ESM import + CSP `script-src 'self'` all permit relative `./x.js` imports.
-- **Why deferred:** It has **no automated test coverage** and **cannot be runtime-verified in this environment** (corporate proxy intercepts `localhost`, no browser engine). A first automated attempt timed out mid-edit and was reverted. This is purely organizational, so the risk/reward favors doing it deliberately with a human browser smoke-test.
-- **How to do it safely:** Keep ALL shared mutable state + core primitives (`state`, `dom`, `abortController`, `sessionExpired`, `promptQueue`, `el()`, `notify`, `api`/fetch wrappers, `goView`/`renderView`) in ONE core module the others import — forking them silently forks state. `app.js` becomes the thin entry. Prefer a FEW larger modules (core / api / views / components / chat) over many small ones. Validate the import graph statically (`node --check` each file; confirm every `import {X} from './y.js'` resolves to a real export) and **load it in a real browser** before merging.
-- **risk:** med · **effort:** L · **breaking:** no (if done correctly)
+### T2.6 — Split `public/app.js` into ES modules — ✅ DONE (2026-06)
+- **Done:** `public/app.js` is now a thin entry; feature code lives in `public/js/*.js` with `core.js` as the leaf primitives module (and `public/styles.css` split into `public/styles/*.css`). `pretest` now `node --check`s every module; import graph validated statically. Module map + the core-stays-a-leaf rule are documented in [`public/CLAUDE.md`](../public/CLAUDE.md). **Still needs a human browser smoke-test before relying on it** (no runtime verification in this env).
 
 ---
 
 ## Tier 3 — larger / riskier (behavior-preserving but needs care)
 
-### T3.1 — Split the `Store` god-class
-- **Files:** `src/server/store.ts` (~2600L, ~110 methods, ~110 call sites, 11 domains)
-- **How:** Keep the SINGLE `Store` facade + shared primitives (`db`, `secret`, `now()`, `count()`, `addColumnIfMissing`, `migrate`/`seedRoles`). Move per-domain method groups + their `*Row` interfaces into composed/mixin sub-stores sharing the same `db`. **Do NOT** hard-split into classes callers must choose between (breaks ~110 call sites + `createServices`).
-- **Why deferred:** Mechanical but touches the entire data layer; warrants a dedicated review pass + a full test run, never batched with other work.
-- **risk:** med · **effort:** L · **breaking:** no
+### T3.1 — Split the `Store` god-class — ✅ DONE (2026-06)
+- **Done:** `src/server/store.ts` is now a barrel re-exporting an UNCHANGED public surface. The single `Store` facade is preserved via mixin composition (`store/index.ts` `Store extends ComposedStore`); shared base + schema/migrations live in `store/internal.ts` (`StoreBase`); per-domain method groups + `*Row` interfaces moved into `store/{users,avatars,conversations,groups,routines,knowledgeRepo,secrets,admin}.ts`. All ~110 call sites + `createServices` keep `new Store(config)` + `store.foo()`. Verified by full lint/test/build.
 
 ### T3.2 — Centralize the avatar-visibility SQL predicate
 - **Files:** `src/server/store.ts`

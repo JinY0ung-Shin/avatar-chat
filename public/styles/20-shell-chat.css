@@ -1,0 +1,939 @@
+/* ============================================================
+   Buttons
+   ============================================================ */
+.primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+  border-radius: var(--r-md);
+  padding: var(--s-2-5) var(--s-4);
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: var(--shadow-sm);
+}
+.primary:hover:not(:disabled) {
+  background: var(--accent-strong);
+  border-color: var(--accent-strong);
+}
+
+.icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: var(--r-md);
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--rail-muted);
+}
+.icon-button:hover:not(:disabled) {
+  background: var(--rail-active);
+  color: var(--rail-text);
+}
+.icon-button svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* ============================================================
+   Login / onboarding mark
+   ============================================================ */
+.login-mark {
+  width: 48px;
+  height: 48px;
+  border-radius: var(--r-md);
+  object-fit: cover;
+  margin-bottom: var(--s-4);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-stack {
+  display: grid;
+  gap: var(--s-3);
+}
+
+.field {
+  display: grid;
+  gap: var(--s-1);
+}
+
+.field span {
+  color: var(--text-soft);
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+
+/* A field label that carries an inline action button on the right (e.g. the
+   "자동 생성" button beside the self-introduction). */
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.field-row > span {
+  min-width: 0;
+}
+
+.field input,
+.field select,
+.secret-preset-row > .password-field input,
+.secret-preset-row textarea {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: var(--s-2-5) var(--s-3);
+  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+.field input:focus,
+.field select:focus,
+.secret-preset-row > .password-field input:focus,
+.secret-preset-row textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.password-field {
+  position: relative;
+  display: grid;
+}
+.field .password-field input {
+  padding-right: 44px;
+}
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+}
+.password-toggle:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.password-toggle svg {
+  width: 17px;
+  height: 17px;
+}
+
+.error {
+  border: 1px solid var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+  border-radius: var(--r-md);
+  padding: var(--s-2-5) var(--s-3);
+  font-size: var(--t-base);
+  line-height: 1.45;
+}
+
+/* ============================================================
+   Workspace shell — chat-first layout
+   ============================================================ */
+.workspace {
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  height: 100vh;
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Left rail — conversation sidebar */
+.rail {
+  background: var(--rail);
+  color: var(--rail-text);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: var(--s-3);
+  padding: var(--s-4) var(--s-3);
+  border-right: 1px solid var(--rail-line);
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.rail-head {
+  display: grid;
+  gap: var(--s-3);
+}
+
+.rail-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  padding: var(--s-1) var(--s-2);
+}
+
+.rail-brand .mark {
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-sm);
+  object-fit: cover;
+  flex: none;
+}
+
+.rail-brand .name {
+  font-weight: 700;
+  font-size: var(--t-md);
+  letter-spacing: -0.01em;
+}
+
+.rail-brand .sub {
+  font-size: var(--t-xs);
+  color: var(--rail-muted);
+}
+
+.new-chat {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-2);
+  width: 100%;
+  border: 1px solid var(--rail-line);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--rail-text);
+  border-radius: var(--r-md);
+  padding: var(--s-2-5);
+  font-weight: 600;
+  font-size: var(--t-sm);
+}
+.new-chat:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.new-chat svg {
+  width: 16px;
+  height: 16px;
+}
+
+.rail-section-label {
+  font-size: var(--t-2xs);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--rail-muted);
+  padding: 0 var(--s-2) var(--s-1);
+  font-weight: 700;
+}
+
+/* Conversation history */
+.rail-history {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--s-1);
+  overflow: hidden;
+}
+
+.conv-list {
+  overflow-y: auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-0-5);
+  padding-right: var(--s-0-5);
+}
+
+.conv-empty {
+  color: var(--rail-muted);
+  font-size: var(--t-xs);
+  padding: var(--s-3);
+  white-space: pre-line;
+  line-height: 1.5;
+}
+
+.conv-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  border-radius: var(--r-md);
+}
+.conv-item:hover {
+  background: var(--rail-active);
+}
+.conv-item.active {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.conv-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  background: transparent;
+  border: 0;
+  color: var(--rail-text);
+  text-align: left;
+  padding: var(--s-2) var(--s-2-5);
+  border-radius: var(--r-md);
+}
+
+.conv-name {
+  font-size: var(--t-sm);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-time {
+  font-size: var(--t-2xs);
+  color: var(--rail-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.conv-acts {
+  display: none;
+  gap: var(--s-0-5);
+  padding-right: var(--s-1);
+}
+.conv-item:hover .conv-acts,
+.conv-item:focus-within .conv-acts,
+.conv-item.active .conv-acts {
+  display: flex;
+}
+/* No hover on touch devices — keep row actions always visible there. */
+@media (hover: none) {
+  .conv-acts {
+    display: flex;
+  }
+}
+
+.conv-act {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  background: transparent;
+  color: var(--rail-muted);
+  border-radius: var(--r-xs);
+}
+.conv-act:hover {
+  background: rgba(255, 255, 255, 0.14);
+  color: var(--rail-text);
+}
+.conv-act.danger:hover {
+  color: var(--rail-danger);
+}
+.conv-act svg {
+  width: 15px;
+  height: 15px;
+}
+
+.conv-item.editing .conv-acts {
+  display: none;
+}
+.conv-rename {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+  margin: var(--s-1);
+  padding: var(--s-1-5) var(--s-2);
+  border-radius: var(--r-xs);
+  border: 1px solid var(--accent);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--rail-text);
+  font-size: var(--t-sm);
+  outline: none;
+}
+
+/* Footer: mode segmented + user */
+.rail-footer {
+  display: grid;
+  gap: var(--s-3);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--rail-line);
+}
+
+.rail-user-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+
+/* Mobile rail toggle (hamburger) — hidden on desktop */
+.rail-toggle {
+  display: none;
+}
+.rail-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.28s var(--ease);
+  z-index: 30;
+}
+/* The `.open` visible state is scoped to the mobile breakpoint (below) so a
+   stale `.open` class can never cover the desktop layout after a resize. */
+
+/* ============================================================
+   Main chat column
+   ============================================================ */
+/* Row filling `.main`: chat column on the left, capabilities panel on the right. */
+.chat-layout {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+}
+
+.chat-col {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  background: var(--bg);
+}
+
+/* Capabilities panel: what the avatar can do (skills + plugins). Resizable via
+   the left-edge handle, collapsible to a slim strip via the chevron buttons. */
+.cap-panel {
+  flex: none;
+  width: 480px; /* fallback only — JS sets the (clamped) inline width */
+  position: relative;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+/* On narrow desktops/tablets the panel must never squeeze the chat column out:
+   leave room for the rail (248px) plus a readable transcript (~380px). */
+@media (min-width: 861px) {
+  .cap-panel {
+    max-width: calc(100vw - 628px);
+  }
+}
+
+/* Scrolling content; hidden when the panel is collapsed. */
+.cap-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-5) var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+/* Drag handle pinned to the left edge. */
+.cap-resize {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+  /* Without this, touch drags become pan gestures and the resize never starts. */
+  touch-action: none;
+}
+.cap-resize:hover {
+  background: linear-gradient(to right, transparent, var(--accent-soft));
+}
+body.col-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Collapse button (top-right of the expanded panel). */
+.cap-collapse {
+  position: absolute;
+  top: var(--s-3);
+  right: var(--s-3);
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: var(--t-base);
+  line-height: 1;
+  cursor: pointer;
+}
+.cap-collapse:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* Expand button: only shown (and only usable) when collapsed. */
+.cap-expand {
+  display: none;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--t-base);
+  cursor: pointer;
+}
+/* Text label inside the expand button: hidden on the slim desktop strip,
+   shown when the panel is a stacked mobile bar. */
+.cap-expand .cap-expand-label {
+  display: none;
+}
+.cap-expand:hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+
+/* Collapsed state: panel shrinks to a slim strip with only the expand button. */
+.cap-panel.collapsed {
+  width: 28px !important;
+}
+.cap-panel.collapsed .cap-body,
+.cap-panel.collapsed .cap-collapse,
+.cap-panel.collapsed .cap-resize {
+  display: none;
+}
+.cap-panel.collapsed .cap-expand {
+  display: block;
+}
+
+.cap-head h3 {
+  margin: 0;
+  font-size: var(--t-md);
+  font-weight: 700;
+  color: var(--text);
+}
+
+.cap-sub {
+  margin: var(--s-1) 0 0;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+/* The avatar's self-introduction blurb at the top of the panel. */
+.cap-intro {
+  padding: var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+}
+.cap-intro-text {
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  color: var(--text-soft);
+}
+
+.cap-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+
+.cap-section-title {
+  font-size: var(--t-xs);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.cap-section-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+
+.cap-skill {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg-elevated);
+  overflow: hidden;
+}
+
+/* The head is a full-width toggle button (name + optional source badge). */
+.cap-skill-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  padding: var(--s-2) var(--s-3);
+  border: 0;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+}
+.cap-skill-head[disabled] {
+  cursor: default;
+}
+.cap-skill-head:not([disabled]):hover {
+  background: var(--panel);
+}
+
+.cap-skill-caret {
+  flex: none;
+  font-size: var(--t-2xs);
+  color: var(--muted);
+  transition: transform 0.15s var(--ease);
+}
+.cap-skill.open .cap-skill-caret {
+  transform: rotate(90deg);
+}
+
+.cap-skill-name {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-sm);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cap-skill-src {
+  flex: none;
+  font-size: var(--t-2xs);
+  color: var(--muted);
+  background: var(--panel-strong);
+  border-radius: var(--r-pill);
+  padding: 1px var(--s-2);
+}
+
+/* Description is hidden until the skill is expanded. */
+.cap-skill-desc {
+  display: none;
+  margin: 0;
+  padding: 0 var(--s-3) var(--s-3);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+  color: var(--text-soft);
+}
+.cap-skill.open .cap-skill-desc {
+  display: block;
+}
+
+.cap-plugin {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--s-1) 0;
+}
+
+.cap-plugin-name {
+  font-size: var(--t-sm);
+  color: var(--text);
+}
+
+.cap-plugin-repo {
+  font-size: var(--t-xs);
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.cap-empty,
+.cap-loading {
+  margin: 0;
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+.cap-empty-action {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-1);
+}
+.cap-empty-action .linkish.small {
+  padding: 0;
+}
+.cap-error {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.cap-error .linkish.small {
+  margin-top: 0;
+  padding: 0;
+}
+
+/* Middle region: holds the scrolling transcript + the scroll-to-bottom FAB. */
+.chat-body {
+  position: relative;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Transcript */
+.transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: var(--s-5) var(--s-5) var(--s-6);
+}
+
+.transcript-inner {
+  max-width: var(--transcript-max);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-5);
+}
+
+/* Empty state */
+.empty-state {
+  margin: clamp(24px, 9vh, 96px) auto 0;
+  max-width: var(--transcript-max);
+  display: grid;
+  gap: var(--s-5);
+}
+
+.empty-state .hero h3 {
+  margin: 0 0 var(--s-2);
+  font-size: var(--t-2xl);
+  letter-spacing: -0.02em;
+}
+
+.empty-state .hero p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.55;
+  max-width: 60ch;
+}
+.starter-prompts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  max-width: 68ch;
+}
+.starter-prompt {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: var(--text);
+  padding: var(--s-2) var(--s-2-5);
+  font-size: var(--t-sm);
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+.starter-prompt:hover,
+.starter-prompt:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.empty-state > .primary {
+  justify-self: start;
+}
+
+/* ============================================================
+   Messages
+   ============================================================ */
+.message {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  animation: bubble-in 0.28s var(--ease) both;
+}
+
+@keyframes bubble-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.message.user {
+  align-items: flex-end;
+}
+
+.msg-role {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--muted);
+  font-weight: 600;
+  padding: 0 var(--s-0-5);
+}
+
+.msg-role .role-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+
+.bubble {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: var(--s-4) var(--s-4);
+  background: var(--panel);
+  font-size: var(--t-md); /* user bubbles match assistant .md sizing */
+  line-height: 1.6;
+  box-shadow: var(--shadow-sm);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.message.user .bubble {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+  border-bottom-right-radius: var(--r-sm);
+  white-space: pre-wrap;
+  max-width: min(560px, 88%);
+}
+
+.message.assistant .bubble {
+  border-bottom-left-radius: var(--r-sm);
+}
+
+.message.assistant .bubble.blocked {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+
+.message.assistant .bubble.errored {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
+/* Response meta badges */
+.response-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1-5);
+  margin-bottom: var(--s-3);
+}
+
+.meta-badge {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: var(--s-0-5) var(--s-2-5);
+  font-size: var(--t-2xs);
+  color: var(--muted);
+  background: var(--bg);
+  font-weight: 600;
+}
+.meta-badge.runtime-blocked {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+.meta-badge.runtime-local {
+  color: var(--info);
+  border-color: var(--info-line);
+  background: var(--info-soft);
+}
+.meta-badge.runtime-error {
+  color: var(--danger);
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+}
+
+/* Streaming caret + status */
+.stream-caret {
+  display: inline-block;
+  width: 8px;
+  height: 1.05em;
+  margin-left: 1px;
+  vertical-align: -2px;
+  background: var(--accent);
+  border-radius: var(--r-xs);
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+
+@keyframes caret-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+.stream-status {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  margin-top: var(--s-3);
+  font-size: var(--t-xs);
+  color: var(--muted);
+  min-width: 0;
+}
+
+.stream-status .label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.stream-status .spinner {
+  width: 13px;
+  height: 13px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex: none;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.plugin-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1-5);
+  margin-top: var(--s-2);
+}
+
+.plugin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  padding: var(--s-0-5) var(--s-2-5);
+  font-size: var(--t-2xs);
+  color: var(--text-soft);
+  background: var(--bg);
+}
+.plugin-chip[data-status="installed"],
+.plugin-chip[data-status="completed"] {
+  color: var(--ok);
+  border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
+}
+.plugin-chip[data-status="failed"] {
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+.plugin-chip .pc-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+

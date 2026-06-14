@@ -1,0 +1,583 @@
+import fs from "node:fs";
+import Database from "better-sqlite3";
+import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
+import logger from "../logger.js";
+import type { AppConfig, AvatarVisibility, GroupRole, User, UserGroupMembership } from "../types.js";
+
+const SESSION_DAYS = 14;
+
+function now(): string {
+  return new Date().toISOString();
+}
+
+/**
+ * Parse a stored JSON array of plugin-name strings (used for both a plugin's
+ * `selected` subset and a user's `knowledge_selected`). Returns null — meaning
+ * "load all" — for null/blank/malformed values.
+ */
+function parseNameList(raw: string | null): string[] | null {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter((s): s is string => typeof s === "string");
+    }
+  } catch {
+    /* fall through to null */
+  }
+  return null;
+}
+
+/** Max capability hashtags stored per avatar, and max length of each tag. */
+export const MAX_HASHTAGS = 12;
+const MAX_HASHTAG_LEN = 30;
+/** Default number of avatars a capability search returns when no limit is given. */
+const DEFAULT_SEARCH_LIMIT = 12;
+
+/**
+ * Normalize capability hashtags ("역량 해시태그") to a clean, deduped, capped list
+ * of BARE tags (no leading "#" — the UI renders that). Shared by the PATCH save
+ * path and the auto-generate endpoint so a hand-edited chip list and a parsed
+ * agent response produce identical storage. Accepts either an array (chip
+ * editor) or a raw string (agent text, split on whitespace/commas).
+ */
+export function normalizeHashtags(input: unknown): string[] {
+  const raw: string[] = Array.isArray(input)
+    ? input.filter((s): s is string => typeof s === "string")
+    : typeof input === "string"
+      ? input.split(/[\s,，、]+/)
+      : [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    // Strip leading list/bullet markers and "#", collapse inner whitespace to a
+    // hyphen (a hashtag carries no spaces), and trim trailing punctuation. Only
+    // the LEADING "#" is removed, so "C#"/"C++" survive intact.
+    let tag = item
+      .trim()
+      .replace(/^[#*\-•·\s]+/u, "")
+      .replace(/\s+/g, "-")
+      .replace(/[.,!?。·…、，]+$/u, "")
+      .trim();
+    if (!tag) continue;
+    if (tag.length > MAX_HASHTAG_LEN) tag = tag.slice(0, MAX_HASHTAG_LEN);
+    const key = tag.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tag);
+    if (out.length >= MAX_HASHTAGS) break;
+  }
+  return out;
+}
+
+/** Parse the stored hashtags JSON array, defaulting to an empty list. */
+function parseHashtags(raw: string | null): string[] {
+  return parseNameList(raw) ?? [];
+}
+
+export { now, parseNameList, parseHashtags, MAX_HASHTAG_LEN, DEFAULT_SEARCH_LIMIT, SESSION_DAYS };
+
+export interface UserRow {
+  id: string;
+  username: string;
+  password_hash: string;
+  display_name: string;
+  alias: string;
+  bio: string;
+  persona: string;
+  intro: string;
+  avatar_ext: string | null;
+  published: number;
+  visibility: string | null;
+  auto_approve: number;
+  suspended: number;
+  created_at: string;
+  last_seen_at: string | null;
+  git_token_enc: string | null;
+  git_identity_name: string | null;
+  git_identity_email: string | null;
+  knowledge_repo: string | null;
+  knowledge_branch: string | null;
+  knowledge_selected: string | null;
+  ssh_public_key: string | null;
+  hashtags: string | null;
+  group_knowledge_off_default: string | null;
+}
+
+export interface PluginRow {
+  id: string;
+  repo: string;
+  ref: string | null;
+  label: string | null;
+  enabled: number;
+  selected: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+}
+
+export interface KnowledgeRequestRow {
+  id: string;
+  avatar_user_id: string;
+  asker_user_id: string | null;
+  asker_name: string | null;
+  question: string;
+  status: string;
+  created_at: string;
+}
+
+export interface AvatarNotificationRow {
+  id: string;
+  owner_user_id: string;
+  avatar_user_id: string;
+  title: string;
+  message: string;
+  conversation_id: string | null;
+  read_at: string | null;
+  created_at: string;
+  avatar_display_name?: string | null;
+}
+
+export interface GitRepositoryRow {
+  user_id: string;
+  name: string;
+  repo: string;
+  branch: string | null;
+  last_synced_at: string | null;
+  created_at: string;
+}
+
+export interface GroupRow {
+  id: string;
+  name: string;
+  description: string | null;
+  knowledge_repo: string | null;
+  knowledge_branch: string | null;
+  knowledge_selected: string | null;
+  created_by: string | null;
+  created_at: string;
+}
+
+export interface GroupMemberRow {
+  id: string;
+  username: string;
+  display_name: string;
+  avatar_ext: string | null;
+  visibility: string | null;
+  published: number;
+  role: string;
+  created_at: string | null;
+}
+
+export interface RoutineJobRow {
+  id: string;
+  avatar_user_id: string;
+  conversation_id: string;
+  name: string | null;
+  prompt: string;
+  minute_of_day: number;
+  schedule_kind: string | null;
+  days_of_week: string | null;
+  interval_minutes: number | null;
+  enabled: number;
+  next_run_at: string | null;
+  last_run_at: string | null;
+  last_status: string | null;
+  last_error: string | null;
+  created_at: string;
+}
+
+/**
+ * app_config key under which the Claude subscription OAuth token (from
+ * `claude setup-token`) is stored. Injected as CLAUDE_CODE_OAUTH_TOKEN into the
+ * agent subprocess when no ANTHROPIC_API_KEY is configured (see claudeAgent.ts).
+ */
+export const CLAUDE_OAUTH_TOKEN_KEY = "claude_oauth_token";
+
+/** app_config key: how self-service signups are gated ("open" | "closed" | "approval"). */
+export const SIGNUP_MODE_KEY = "signup_mode";
+/** app_config key: admin-selected agent model, overriding nothing when an env
+ *  ANTHROPIC_MODEL is set (env wins, mirroring the API-key/subscription rule). */
+export const MODEL_OVERRIDE_KEY = "agent_model_override";
+
+/**
+ * Generic constructor type used to compose the per-domain mixins back onto a
+ * single Store facade (see store/index.ts). Each domain module is a
+ * `(Base) => class extends Base { ... }` factory; they all share `this.db`/
+ * `this.secret` and the cross-cutting helpers below via StoreBase.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export type Constructor<T = object> = new (...args: any[]) => T;
+
+/**
+ * Shared base for every Store domain mixin. Owns the single better-sqlite3
+ * handle, the at-rest encryption secret, the DB lifecycle (schema/migrations,
+ * seedRoles, close), and the cross-cutting row-fetch/count helpers every domain
+ * needs. Mixins extend this (via store/index.ts) and access these members as
+ * `protected` so cross-mixin calls resolve on the composed prototype.
+ */
+export class StoreBase {
+  protected readonly db: Database.Database;
+  /** Key secret for at-rest token encryption (from config.sessionSecret). */
+  protected readonly secret: string;
+
+  constructor(config: AppConfig) {
+    this.secret = config.sessionSecret;
+    fs.mkdirSync(config.dataDir, { recursive: true });
+    this.db = new Database(config.dbPath);
+    this.db.pragma("journal_mode = WAL");
+    this.db.pragma("foreign_keys = ON");
+    this.migrate();
+    this.seedRoles();
+    logger.info({ dbPath: config.dbPath }, "database opened");
+  }
+
+  protected migrate(): void {
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        alias TEXT DEFAULT '',
+        bio TEXT DEFAULT '',
+        persona TEXT DEFAULT '',
+        avatar_ext TEXT,
+        published INTEGER DEFAULT 1,
+        visibility TEXT NOT NULL DEFAULT 'group',
+        auto_approve INTEGER DEFAULT 0,
+        ssh_public_key TEXT,
+        created_at TEXT,
+        last_seen_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS roles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_roles (
+        user_id TEXT,
+        role_id INTEGER,
+        PRIMARY KEY (user_id, role_id)
+      );
+      CREATE TABLE IF NOT EXISTS sessions (
+        id TEXT PRIMARY KEY,
+        token_hash TEXT UNIQUE NOT NULL,
+        user_id TEXT NOT NULL,
+        created_at TEXT,
+        expires_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS avatar_plugins (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        ref TEXT,
+        label TEXT,
+        enabled INTEGER DEFAULT 1,
+        selected TEXT,
+        last_synced_at TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS conversations (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        avatar_user_id TEXT NOT NULL,
+        title TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT,
+        response_json TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS audit (
+        id TEXT PRIMARY KEY,
+        actor_user_id TEXT,
+        actor_name TEXT,
+        action TEXT,
+        status TEXT,
+        detail TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS knowledge_requests (
+        id TEXT PRIMARY KEY,
+        avatar_user_id TEXT NOT NULL,
+        asker_user_id TEXT,
+        asker_name TEXT,
+        question TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS avatar_notifications (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        avatar_user_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        message TEXT NOT NULL,
+        conversation_id TEXT,
+        read_at TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS user_secrets (
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        value_enc TEXT NOT NULL,
+        created_at TEXT,
+        PRIMARY KEY (user_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS git_repositories (
+        user_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        branch TEXT,
+        last_synced_at TEXT,
+        created_at TEXT,
+        PRIMARY KEY (user_id, name)
+      );
+      CREATE TABLE IF NOT EXISTS groups (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        knowledge_repo TEXT,
+        knowledge_branch TEXT,
+        knowledge_selected TEXT,
+        created_by TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS group_members (
+        group_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'member',
+        created_at TEXT,
+        PRIMARY KEY (group_id, user_id)
+      );
+      CREATE TABLE IF NOT EXISTS routine_jobs (
+        id TEXT PRIMARY KEY,
+        avatar_user_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        minute_of_day INTEGER NOT NULL,
+        enabled INTEGER DEFAULT 1,
+        next_run_at TEXT,
+        last_run_at TEXT,
+        last_status TEXT,
+        last_error TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS app_config (
+        key TEXT PRIMARY KEY,
+        value_enc TEXT NOT NULL,
+        updated_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
+      CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
+      CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
+      CREATE INDEX IF NOT EXISTS idx_avatar_plugins_user ON avatar_plugins(user_id);
+      CREATE INDEX IF NOT EXISTS idx_knowledge_requests_avatar ON knowledge_requests(avatar_user_id, status);
+      CREATE INDEX IF NOT EXISTS idx_avatar_notifications_owner ON avatar_notifications(owner_user_id, read_at, created_at);
+      CREATE INDEX IF NOT EXISTS idx_routine_jobs_avatar ON routine_jobs(avatar_user_id);
+      CREATE INDEX IF NOT EXISTS idx_routine_jobs_due ON routine_jobs(enabled, next_run_at);
+      CREATE INDEX IF NOT EXISTS idx_user_secrets_user ON user_secrets(user_id);
+      CREATE INDEX IF NOT EXISTS idx_git_repositories_user ON git_repositories(user_id);
+      CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
+      CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id);
+    `);
+    // Additive column migrations for pre-existing DBs (CREATE TABLE above only
+    // applies to fresh installs). Each is a no-op once the column exists.
+    this.addColumnIfMissing("avatar_plugins", "selected", "TEXT");
+    this.addColumnIfMissing("avatar_plugins", "last_synced_at", "TEXT");
+    this.addColumnIfMissing("users", "auto_approve", "INTEGER DEFAULT 0");
+    // Account suspension: blocks login and kills active sessions. Also the
+    // "pending approval" state for signups created while signup mode = approval.
+    this.addColumnIfMissing("users", "suspended", "INTEGER DEFAULT 0");
+    // Avatar self-name (별칭): how the avatar refers to ITSELF in chat, distinct
+    // from display_name (how humans see it in lists). Injected into the system prompt.
+    this.addColumnIfMissing("users", "alias", "TEXT DEFAULT ''");
+    // Avatar self-introduction: a longer first-person blurb the avatar writes
+    // about what it can do, shown atop the chat capabilities panel. Distinct
+    // from bio (one-liner in lists) and persona (system-prompt behavior).
+    this.addColumnIfMissing("users", "intro", "TEXT DEFAULT ''");
+    // Per-user git credentials/identity + personal knowledge-repo location. The
+    // token is stored AES-256-GCM-encrypted (see crypto.ts), never plaintext.
+    this.addColumnIfMissing("users", "git_token_enc", "TEXT");
+    this.addColumnIfMissing("users", "git_identity_name", "TEXT");
+    this.addColumnIfMissing("users", "git_identity_email", "TEXT");
+    this.addColumnIfMissing("users", "knowledge_repo", "TEXT");
+    this.addColumnIfMissing("users", "knowledge_branch", "TEXT");
+    // JSON array of plugin names to load from the knowledge repo; null = all.
+    this.addColumnIfMissing("users", "knowledge_selected", "TEXT");
+    // The owner's DEFAULT group-knowledge OFF-set, seeding every NEW conversation
+    // (including the auto-greeting, which fires before any toggle interaction).
+    // JSON array of group ids; NULL/[] = every group on by default. Mirrors the
+    // per-conversation `conversations.group_knowledge_off`, but at the user level:
+    // the composer toggle writes here so the choice persists across conversations.
+    this.addColumnIfMissing("users", "group_knowledge_off_default", "TEXT");
+    // Public half of an app-generated SSH keypair. The private half is stored
+    // only as the encrypted SSH_PRIVATE_KEY user secret.
+    this.addColumnIfMissing("users", "ssh_public_key", "TEXT");
+    // SDK session id of the conversation's last turn, used to resume context on
+    // the next turn (see claudeAgent resume). Null until the first turn completes.
+    this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");
+    // Capability hashtags (역량 해시태그): a JSON array of short searchable tags the
+    // avatar generates from its skills/persona, shown in discovery (탐색) and queried
+    // by the cross-avatar `mcp__avatars__search_avatars` tool. Null/[] = none.
+    this.addColumnIfMissing("users", "hashtags", "TEXT");
+    // Three-state avatar visibility (public / group / private) replacing the
+    // binary `published` flag. Added nullable on existing DBs, then backfilled
+    // from `published` below (1→public, 0→group). The `published` column is kept
+    // for migration only and is no longer read by any visibility decision.
+    this.addColumnIfMissing("users", "visibility", "TEXT");
+    // Flexible routine scheduling: an optional human label plus the schedule
+    // shape. schedule_kind defaults to "daily" (legacy rows have it NULL → read
+    // as "daily"); days_of_week is a JSON array string (weekly only); and
+    // interval_minutes drives interval schedules. The legacy minute_of_day stays
+    // the daily/weekly time-of-day.
+    this.addColumnIfMissing("routine_jobs", "name", "TEXT");
+    this.addColumnIfMissing("routine_jobs", "schedule_kind", "TEXT");
+    this.addColumnIfMissing("routine_jobs", "days_of_week", "TEXT");
+    this.addColumnIfMissing("routine_jobs", "interval_minutes", "INTEGER");
+    // Routine conversations must never show in the normal chat history, even after
+    // their routine is deleted (which orphans the conversation). Tag the row itself
+    // so classification doesn't depend on the routine_jobs link still existing.
+    this.addColumnIfMissing("conversations", "is_routine", "INTEGER NOT NULL DEFAULT 0");
+    // Per-conversation, owner-only toggle for which of the owner's group
+    // knowledge repos are DISABLED in this conversation. A JSON array of group
+    // ids; NULL/[] means every group is enabled (the default). We store the OFF
+    // set (not the ON set) so a newly-joined group is enabled by default without
+    // touching existing rows. Only meaningful for the owner's own conversations;
+    // colleague conversations always load all groups (no toggle).
+    this.addColumnIfMissing("conversations", "group_knowledge_off", "TEXT");
+    this.migrateRoutineConversations();
+    this.migrateGitTokenSecrets();
+    this.migrateVisibility();
+    // Trust is now derived purely from group co-membership; the old per-(avatar,
+    // viewer) trust table is dropped (its grants don't survive the migration).
+    this.db.exec("DROP TABLE IF EXISTS avatar_trusted_users");
+  }
+
+  /** Backfill is_routine on existing conversations. Linked ones come from the
+   *  routine_jobs join; already-orphaned ones (routine since deleted) are matched
+   *  by the "[루틴] " title prefix createRoutineJob writes. Idempotent. */
+  private migrateRoutineConversations(): void {
+    this.db
+      .prepare(
+        "UPDATE conversations SET is_routine = 1 WHERE is_routine = 0 AND " +
+          "(id IN (SELECT conversation_id FROM routine_jobs WHERE conversation_id IS NOT NULL) " +
+          "OR title LIKE '[루틴] %')",
+      )
+      .run();
+  }
+
+  /** Backfill the visibility enum from the legacy `published` flag. Idempotent:
+   *  only touches rows where visibility hasn't been set yet. */
+  private migrateVisibility(): void {
+    this.db
+      .prepare(
+        "UPDATE users SET visibility = CASE WHEN published = 1 THEN 'public' ELSE 'group' END " +
+          "WHERE visibility IS NULL OR visibility = ''",
+      )
+      .run();
+  }
+
+  private migrateGitTokenSecrets(): void {
+    const createdAt = now();
+    this.db
+      .prepare(
+        "INSERT OR IGNORE INTO user_secrets (user_id, name, value_enc, created_at) " +
+          "SELECT id, ?, git_token_enc, ? FROM users WHERE git_token_enc IS NOT NULL",
+      )
+      .run(INTERNAL_GIT_TOKEN_SECRET_NAME, createdAt);
+    this.db.prepare("UPDATE users SET git_token_enc = NULL WHERE git_token_enc IS NOT NULL").run();
+  }
+
+  /** Add a column to a table if it isn't already present (idempotent). */
+  protected addColumnIfMissing(table: string, column: string, type: string): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+    if (!cols.some((c) => c.name === column)) {
+      this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
+  }
+
+  protected seedRoles(): void {
+    const insert = this.db.prepare("INSERT OR IGNORE INTO roles (name) VALUES (?)");
+    insert.run("admin");
+    insert.run("member");
+  }
+
+  /** Run a `SELECT COUNT(*) AS c ...` query and return the scalar count. */
+  protected count(sql: string, ...params: unknown[]): number {
+    return (this.db.prepare(sql).get(...params) as { c: number }).c;
+  }
+
+  /** Resolve a row's avatar visibility, falling back to the legacy `published`
+   *  flag for any row that predates the backfill (defensive — migrate() backfills
+   *  all rows on startup, so this normally just reads the column). */
+  protected rowVisibility(row: { visibility?: string | null; published?: number }): AvatarVisibility {
+    const v = row.visibility;
+    if (v === "public" || v === "group" || v === "private") {
+      return v;
+    }
+    return row.published === 1 ? "public" : "group";
+  }
+
+  protected getRoleId(name: string): number | null {
+    const row = this.db.prepare("SELECT id FROM roles WHERE name = ?").get(name) as
+      | { id: number }
+      | undefined;
+    return row?.id ?? null;
+  }
+
+  protected userRowById(id: string): UserRow | undefined {
+    return this.db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
+  }
+
+  protected userRowByUsername(username: string): UserRow | undefined {
+    return this.db.prepare("SELECT * FROM users WHERE username = ?").get(username) as
+      | UserRow
+      | undefined;
+  }
+
+  protected groupRowById(id: string): GroupRow | undefined {
+    return this.db.prepare("SELECT * FROM groups WHERE id = ?").get(id) as GroupRow | undefined;
+  }
+
+  protected normalizeRole(role: string | null | undefined): GroupRole {
+    return role === "admin" ? "admin" : "member";
+  }
+
+  /** Close the underlying SQLite handle. Called on graceful shutdown. */
+  close(): void {
+    this.db.close();
+  }
+
+}
+
+/**
+ * Cross-domain method contract. These methods are implemented by sibling mixins
+ * (users/secrets/groups/conversations/knowledgeRepo) but are CALLED from
+ * base-level and other mixins through `this`. Declaration-merging them onto the
+ * StoreBase TYPE (no runtime emit, no implementation requirement, no method-
+ * override clash) lets those calls type-check on the composed prototype, where
+ * every method exists at runtime.
+ */
+export interface StoreBase {
+  toUser(row: UserRow): User;
+  rolesFor(userId: string): string[];
+  listUserSecretNames(userId: string): string[];
+  listUserGroups(userId: string): UserGroupMembership[];
+  touchConversation(
+    ownerId: string,
+    conversationId: string,
+    avatarUserId: string,
+    firstUserText: string,
+    opts?: { isRoutine?: boolean },
+  ): void;
+  countOpenKnowledgeRequests(avatarUserId: string): number;
+  getAppSecret(key: string): string | null;
+  setAppSecret(key: string, value: string): void;
+  deleteAppSecret(key: string): void;
+}

@@ -1,0 +1,137 @@
+/* ============================================================
+   Responsive
+   ============================================================ */
+@media (max-width: 860px) {
+  .workspace {
+    grid-template-columns: 1fr;
+  }
+
+  /* The rail becomes an off-canvas conversation drawer, toggled by the
+     hamburger in the chat header. While closed it's also visibility:hidden so
+     its buttons drop out of the tab order. */
+  .rail {
+    position: fixed;
+    top: 0;
+    left: 0;
+    height: 100dvh;
+    width: min(300px, 85%);
+    transform: translateX(-100%);
+    visibility: hidden;
+    transition: transform 0.3s var(--ease), visibility 0s 0.3s;
+    z-index: 31;
+    box-shadow: var(--shadow-drawer);
+    padding-top: calc(var(--s-4) + env(safe-area-inset-top, 0px));
+    padding-left: max(var(--s-3), env(safe-area-inset-left, 0px));
+  }
+  .rail.open {
+    transform: translateX(0);
+    visibility: visible;
+    transition: transform 0.3s var(--ease);
+  }
+  .rail-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .rail-toggle {
+    display: grid;
+  }
+
+  .chat-col {
+    /* Fill the bounded `minmax(0,1fr)` workspace row (not content height) so the
+       transcript scrolls internally and the composer stays reachable. */
+    height: 100%;
+    min-height: 0;
+  }
+
+  /* Stack the capabilities panel below the chat on narrow screens so it never
+     squeezes the conversation; cap its height and let it scroll internally. */
+  .chat-layout {
+    flex-direction: column;
+  }
+  .chat-layout > .chat-col {
+    /* In the stacked column the chat grows; height:100% above would leave no
+       room for the panel below it. */
+    height: auto;
+    flex: 1;
+  }
+  .cap-panel,
+  .cap-panel.collapsed {
+    width: auto !important; /* override the inline resize width / collapsed strip when stacked */
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .cap-panel {
+    max-height: 40%;
+  }
+  /* Stacked mode: drag-resize is meaningless, but collapse stays usable — the
+     panel folds to a slim "역량 보기" bar so it stops eating the transcript. */
+  .cap-resize {
+    display: none;
+  }
+  .cap-panel.collapsed {
+    max-height: none;
+  }
+  .cap-panel.collapsed .cap-body,
+  .cap-panel.collapsed .cap-collapse {
+    display: none;
+  }
+  .cap-panel.collapsed .cap-expand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-1-5);
+    height: 42px;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .cap-expand .cap-expand-label {
+    display: inline;
+    font-size: var(--t-sm);
+    font-weight: 600;
+  }
+  .cap-body {
+    padding-bottom: calc(var(--s-4) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .view-header {
+    padding: var(--s-3) var(--s-4);
+    flex-wrap: wrap;
+  }
+  .view-body {
+    padding: var(--s-4);
+    padding-bottom: calc(var(--s-4) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .transcript,
+  .composer {
+    padding-left: var(--s-4);
+    padding-right: var(--s-4);
+  }
+
+  .message.user .bubble {
+    max-width: 92%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+  .stream-caret {
+    animation: none;
+    opacity: 0.7;
+  }
+  /* Loading spinners signal "in progress" — they must keep rotating even with
+     reduced motion (the global rule above would otherwise freeze them). Re-enable
+     the spin only while actually running, so the settled check/✕ glyphs stay
+     static. */
+  .stream-status .spinner,
+  .tool-row[data-status="running"] .tool-spinner,
+  .agent-node[data-status="running"] .agent-spinner {
+    animation: spin 0.7s linear infinite !important;
+  }
+}
+

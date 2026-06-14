@@ -1,0 +1,994 @@
+/* ============================================================
+   Platform v3 — auth, views, explore, settings, admin
+   ============================================================ */
+
+/* Main view container (replaces .chat-col) */
+.main {
+  min-width: 0;
+  min-height: 0;
+  height: 100vh;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  overflow: hidden;
+}
+
+/* Auth */
+.auth-view {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: grid;
+  place-items: center;
+  padding: var(--s-5);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--accent-soft) 42%, var(--bg)) 0%, var(--bg) 52%, color-mix(in srgb, var(--info-soft) 34%, var(--bg)) 100%);
+}
+.auth-panel {
+  width: min(420px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  box-shadow: var(--shadow-lg);
+  padding: var(--s-6);
+}
+.auth-panel h1 {
+  margin: var(--s-4) 0 var(--s-1);
+  font-size: var(--t-xl);
+  letter-spacing: -0.01em;
+}
+.auth-panel > p {
+  margin: 0 0 var(--s-5);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.auth-panel .primary {
+  margin-top: var(--s-2);
+  width: 100%;
+  padding: var(--s-3);
+}
+.auth-switch {
+  margin-top: var(--s-4);
+  text-align: center;
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+.linkish {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.linkish:hover {
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+.linkish:disabled {
+  color: var(--muted);
+  cursor: default;
+  text-decoration: none;
+  opacity: 0.65;
+}
+.linkish.small {
+  font-size: var(--t-xs);
+  margin-top: var(--s-1);
+}
+.linkish.danger {
+  color: var(--danger);
+}
+.linkish.danger:hover {
+  color: var(--danger);
+}
+.setup-badge {
+  display: inline-block;
+  margin-bottom: var(--s-3);
+  padding: var(--s-1) var(--s-2-5);
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  border: 1px solid var(--accent-soft-strong);
+  font-size: var(--t-xs);
+  font-weight: 700;
+}
+
+/* Rail nav + me row */
+.rail-nav {
+  display: grid;
+  gap: var(--s-0-5);
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  width: 100%;
+  text-align: left;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--rail-text);
+  border-radius: var(--r-md);
+  padding: var(--s-2-5) var(--s-3);
+  font-weight: 600;
+  font-size: var(--t-sm);
+}
+.nav-item svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  color: var(--rail-muted);
+}
+.nav-item:hover:not(.active) {
+  background: var(--rail-active);
+}
+.nav-item.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+.nav-item.active svg {
+  color: var(--on-accent);
+}
+/* Count badge on a nav item (e.g. pending knowledge requests). */
+.nav-badge {
+  margin-left: auto;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 var(--s-1-5);
+  display: inline-grid;
+  place-items: center;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+}
+.nav-item.active .nav-badge {
+  background: var(--on-accent);
+  color: var(--accent);
+}
+.rail-me {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rail-text);
+  text-align: left;
+  padding: var(--s-1);
+  border-radius: var(--r-md);
+}
+.rail-me:hover {
+  background: var(--rail-active);
+}
+.rail-me .meta {
+  min-width: 0;
+}
+.rail-me .meta b {
+  display: block;
+  font-size: var(--t-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-me .meta span {
+  font-size: var(--t-2xs);
+  color: var(--rail-muted);
+}
+.rail .icon-button {
+  flex: none;
+}
+
+/* Avatar image (img or generated). Sized via the --av-size custom property
+   (set inline by avatarNode) so contexts can override without !important. */
+.avatar-img {
+  width: var(--av-size, 40px);
+  height: var(--av-size, 40px);
+  font-size: calc(var(--av-size, 40px) * 0.42);
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  flex: none;
+  font-weight: 700;
+  user-select: none;
+}
+.avatar-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* View header / body */
+.view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-4);
+  padding: var(--s-3) var(--s-5);
+  border-bottom: 1px solid var(--line);
+  background: color-mix(in srgb, var(--bg) 82%, transparent);
+  backdrop-filter: saturate(160%) blur(8px);
+  flex: none;
+}
+.view-header .title {
+  min-width: 0;
+}
+.view-header .title h1 {
+  margin: 0;
+  font-size: var(--t-lg);
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.view-header .title p {
+  margin: var(--s-0-5) 0 0;
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+.view-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: clamp(var(--s-4), 3vw, var(--s-6));
+}
+.pad {
+  padding: var(--s-5);
+}
+
+/* Explore grid */
+.avatar-grid {
+  max-width: 1100px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: var(--s-4);
+  align-items: stretch;
+}
+.avatar-card {
+  position: relative;
+  display: flex;
+  gap: var(--s-3);
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--s-4);
+  box-shadow: var(--shadow-sm);
+  align-items: flex-start;
+  min-height: 116px;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease),
+    box-shadow 0.15s var(--ease), transform 0.08s ease;
+}
+.avatar-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.avatar-card::after {
+  content: "→";
+  position: absolute;
+  right: var(--s-4);
+  bottom: var(--s-4);
+  color: var(--muted);
+  font-size: var(--t-lg);
+  line-height: 1;
+  opacity: 0;
+  transform: translateX(-4px);
+  transition: opacity 0.15s var(--ease), transform 0.15s var(--ease), color 0.15s var(--ease);
+}
+.avatar-card:hover:not(:disabled)::after,
+.avatar-card:focus-visible::after {
+  color: var(--accent-strong);
+  opacity: 1;
+  transform: translateX(0);
+}
+.avatar-card:disabled {
+  cursor: progress;
+  opacity: 0.72;
+}
+.ac-body {
+  min-width: 0;
+  flex: 1;
+}
+.ac-name {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  flex-wrap: wrap;
+}
+.ac-name strong {
+  font-size: var(--t-base);
+}
+.ac-handle {
+  font-size: var(--t-xs);
+  color: var(--muted);
+  margin-top: 1px;
+}
+.ac-alias {
+  font-size: var(--t-xs);
+  color: var(--accent);
+  margin-top: var(--s-0-5);
+}
+.ac-bio {
+  margin: var(--s-2) 0 var(--s-2);
+  color: var(--text-soft);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.ac-tags {
+  display: flex;
+  gap: var(--s-1-5);
+  flex-wrap: wrap;
+}
+/* Explore directory search bar (above the avatar grid). */
+.explore-search-bar {
+  max-width: 1100px;
+  margin: 0 auto var(--s-4);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: 2px var(--s-3);
+  box-shadow: var(--shadow-sm);
+}
+.explore-search-bar svg {
+  width: 16px;
+  height: 16px;
+  color: var(--muted);
+  flex: none;
+}
+.explore-search {
+  flex: 1;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--t-sm);
+  padding: var(--s-2-5) 0;
+  outline: none;
+}
+.explore-search::placeholder {
+  color: var(--muted);
+}
+
+/* Capability hashtags in the chat capabilities panel. */
+.cap-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1-5);
+  margin: var(--s-1) 0 var(--s-3);
+}
+
+/* Capability-hashtag chip editor in the profile settings form. */
+.hashtag-editor {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s-1-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  padding: var(--s-2) var(--s-2-5);
+  cursor: text;
+}
+.hashtag-editor:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+/* The chip list flows inline with the input within the editor. */
+.tag-chips {
+  display: contents;
+}
+.hashtag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  padding-right: var(--s-1);
+}
+.hashtag-editor .chip-x {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-size: var(--t-sm);
+  line-height: 1;
+  padding: 0 var(--s-0-5);
+  opacity: 0.7;
+}
+.hashtag-editor .chip-x:hover {
+  opacity: 1;
+}
+/* High specificity to override the generic .settings-form .field input rules. */
+.settings-form .field .hashtag-editor .tag-input {
+  flex: 1;
+  width: auto;
+  min-width: 120px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--t-sm);
+  padding: var(--s-0-5) 0;
+  box-shadow: none;
+  outline: none;
+}
+.settings-form .field .hashtag-editor .tag-input::placeholder {
+  color: var(--muted);
+}
+
+/* Chat header avatar */
+.chat-head {
+  padding-top: var(--s-2);
+  padding-bottom: var(--s-2);
+}
+.chat-avatar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+}
+.ca-name {
+  margin: 0;
+  font-weight: 700;
+  font-size: var(--t-md);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ca-handle {
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+
+.chat-head-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex: none;
+}
+
+.split-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-0-5);
+  padding: var(--s-1);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm);
+}
+.split-btn,
+.split-add {
+  width: 32px;
+  height: 32px;
+  display: grid;
+  place-items: center;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  border-radius: var(--r-sm);
+}
+.split-btn:hover:not(:disabled),
+.split-add:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.split-btn.active {
+  background: var(--accent-soft);
+  border-color: var(--accent-soft-strong);
+  color: var(--accent-strong);
+}
+.split-btn svg,
+.split-add svg {
+  width: 17px;
+  height: 17px;
+}
+.split-add {
+  border-left-color: var(--line);
+}
+.split-avatar-select {
+  height: 32px;
+  min-width: 118px;
+  max-width: 180px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--bg);
+  color: var(--text-soft);
+  font-size: var(--t-xs);
+  padding: 0 var(--s-2);
+}
+.split-avatar-select:disabled {
+  opacity: 0.55;
+}
+
+.chat-workbench {
+  flex: 1;
+  min-height: 0;
+  padding: var(--s-3);
+  gap: var(--s-3);
+  background: var(--bg);
+}
+.chat-workbench.vertical {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  /* Cap the single implicit row at the workbench height (like .grid /
+     .horizontal). Without this the row defaults to `auto` on desktop, so a pane
+     with a long transcript grows to content height, overflows the workbench and
+     gets clipped by `.main { overflow:hidden }` — the existing history looks cut
+     off and the composer is pushed off-screen. 1fr forces the transcript to
+     scroll internally instead. (Mobile/tablet already set this in media queries.) */
+  grid-auto-rows: minmax(0, 1fr);
+}
+.chat-workbench.horizontal {
+  display: grid;
+  grid-template-rows: repeat(auto-fit, minmax(0, 1fr));
+}
+.chat-workbench.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: minmax(0, 1fr);
+}
+
+.chat-pane.compact {
+  min-height: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+.chat-pane.compact.active {
+  border-color: var(--accent-soft-strong);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  min-width: 0;
+}
+.pane-title {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.pane-title > div {
+  min-width: 0;
+}
+.pane-title strong,
+.pane-title span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-title strong {
+  font-size: var(--t-sm);
+}
+.pane-title span {
+  font-size: var(--t-2xs);
+  color: var(--muted);
+}
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-0-5);
+  flex: none;
+}
+
+/* ---- Routines view ---- */
+/* The routines tab fills the viewport: the page itself does NOT scroll —
+   the routine list (left) and the result transcript (right) each scroll
+   independently so neither one ever pushes the whole layout taller. */
+.routines-body {
+  padding: var(--s-4);
+  overflow: hidden;
+  display: flex;
+}
+.routine-workspace {
+  flex: 1;
+  width: min(1280px, 100%);
+  margin: 0 auto;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+  gap: var(--s-4);
+  align-items: stretch;
+}
+.routine-side {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-4);
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: var(--s-0-5);
+}
+.routine-card {
+  margin: 0;
+}
+.routine-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  flex: none;
+  white-space: nowrap;
+}
+.routine-add-btn svg {
+  width: 15px;
+  height: 15px;
+}
+.routine-search {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: inherit;
+  font-size: var(--t-sm);
+  padding: var(--s-2-5) var(--s-3);
+}
+.routine-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-ring);
+}
+.routine-search:disabled {
+  opacity: 0.6;
+}
+.routine-tools {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.routine-tools .routine-search {
+  min-width: 0;
+  flex: 1;
+}
+.routine-filter {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.routine-filter .seg-btn {
+  flex: 0 0 auto;
+}
+.routine-manage-list {
+  display: grid;
+  gap: var(--s-2);
+}
+.notification-row {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--s-3);
+  display: grid;
+  gap: var(--s-2);
+}
+.notification-row.unread {
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
+.notification-row.clickable {
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.notification-row.clickable:hover {
+  border-color: var(--accent-soft-strong);
+}
+.notification-row.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.notification-row p {
+  margin: var(--s-2) 0 0;
+  color: var(--text);
+  white-space: pre-wrap;
+}
+
+/* Unified inbox (받은함): one centered card, one chronological list mixing
+   info-request rows (.knowledge-row) and notification rows (.notification-row),
+   each tagged with a small kind chip. */
+.inbox-wrap {
+  max-width: 760px;
+  margin: 0 auto;
+  width: 100%;
+}
+.inbox-list {
+  display: grid;
+  gap: var(--s-2);
+}
+.inbox-filter {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+  margin-bottom: var(--s-3);
+}
+.inbox-filter .seg-btn {
+  flex: 0 0 auto;
+}
+.inbox-row-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.inbox-chip {
+  flex: none;
+  font-size: var(--t-xs);
+  font-weight: 700;
+  padding: var(--s-0-5) var(--s-2);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  background: var(--panel-strong);
+}
+.inbox-chip.req {
+  color: var(--accent);
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
+.inbox-chip.note {
+  color: var(--warn);
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+
+/* Routine management rows — the whole card selects (shows results); the
+   toggle/편집/지금 실행 controls stopPropagation so they don't change selection. */
+.routine-manage-row {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--s-3);
+  display: grid;
+  gap: var(--s-2);
+  text-align: left;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+.routine-manage-row:hover {
+  border-color: var(--accent-soft-strong);
+}
+.routine-manage-row.active {
+  border-color: var(--accent-soft-strong);
+  background: var(--panel-strong);
+}
+.routine-manage-row.paused {
+  opacity: 0.66;
+}
+.routine-manage-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.routine-manage-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.routine-manage-title {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--t-base);
+  overflow-wrap: anywhere;
+}
+.routine-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+.routine-dot.on {
+  background: var(--ok);
+}
+.routine-dot.err {
+  background: var(--danger);
+}
+.routine-dot.off {
+  background: var(--line);
+}
+.routine-manage-meta {
+  color: var(--muted);
+  font-size: var(--t-sm);
+  overflow-wrap: anywhere;
+}
+.routine-manage-actions {
+  display: flex;
+  gap: var(--s-2);
+  margin-top: var(--s-0-5);
+}
+.routine-manage-actions .ghost-sm {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1-5);
+}
+.routine-manage-actions .ghost-sm svg {
+  width: 13px;
+  height: 13px;
+}
+.routine-result-card {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+}
+/* The routine's instruction, pinned above the transcript with its own scroll so
+   a long prompt never pushes the results out of view. */
+.routine-result-prompt {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  padding: var(--s-2) var(--s-3);
+  display: grid;
+  gap: var(--s-1);
+}
+.routine-result-prompt-label {
+  font-size: var(--t-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.routine-result-prompt-body {
+  color: var(--text);
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  max-height: 22vh;
+  overflow-y: auto;
+}
+
+/* Per-run collapsible blocks inside the routine transcript: newest expanded,
+   older runs fold to a one-line header so the thread stays scannable. */
+.routine-run-block {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  overflow: hidden;
+}
+.routine-run-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-2) var(--s-3);
+  cursor: pointer;
+  user-select: none;
+  font-size: var(--t-sm);
+  list-style: none;
+}
+.routine-run-summary::-webkit-details-marker {
+  display: none;
+}
+.routine-run-summary:hover {
+  background: var(--panel-strong);
+}
+.routine-run-chevron {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--muted);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s ease;
+}
+.routine-run-block[open] .routine-run-chevron {
+  transform: rotate(90deg);
+}
+.routine-run-num {
+  font-weight: 700;
+  color: var(--text);
+}
+.routine-run-time {
+  margin-left: auto;
+  font-size: var(--t-xs);
+}
+.routine-run-body {
+  padding: var(--s-3);
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: var(--s-2);
+}
+.routine-run-prompt-label {
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.routine-run-prompt {
+  font-size: var(--t-sm);
+  color: var(--muted);
+  border-left: 2px solid var(--line);
+  padding-left: var(--s-2);
+}
+.routine-result-card .routine-result-transcript {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg);
+}
+
+@media (max-width: 980px) {
+  /* Stack the columns and let the page scroll again on narrow screens. */
+  .routines-body {
+    overflow-y: auto;
+    display: block;
+  }
+  .routine-workspace {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+  .routine-side {
+    overflow: visible;
+  }
+  .routine-result-card {
+    height: auto;
+    min-height: 420px;
+  }
+  .routine-result-card .routine-result-transcript {
+    min-height: 320px;
+  }
+}
+.chat-pane.compact .transcript {
+  padding: var(--s-3);
+}
+.chat-pane.compact .transcript-inner {
+  max-width: none;
+  gap: var(--s-3);
+}
+.chat-pane.compact .composer {
+  padding: var(--s-2) var(--s-3) var(--s-3);
+}
+.chat-pane.compact .composer-inner {
+  max-width: none;
+}
+.chat-pane.compact .composer-box {
+  border-radius: var(--r-md);
+}
+.chat-pane.compact .composer textarea {
+  max-height: 112px;
+  font-size: var(--t-sm);
+}
+.chat-pane.compact .empty-state {
+  margin-top: var(--s-5);
+  gap: var(--s-3);
+  text-align: center;
+  justify-items: center;
+}
+.chat-pane.compact .empty-state .avatar-img {
+  --av-size: 48px;
+}
+.chat-pane.compact .empty-state .hero h3 {
+  font-size: var(--t-lg);
+}
+.chat-pane.compact .empty-state .hero p {
+  font-size: var(--t-sm);
+}
+.chat-pane.compact .starter-prompts {
+  display: none;
+}
+.chat-pane.compact .md {
+  font-size: var(--t-base);
+}
+
