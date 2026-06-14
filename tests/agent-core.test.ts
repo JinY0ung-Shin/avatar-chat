@@ -225,10 +225,17 @@ describe("chat slash commands", () => {
   // `/learn` is EXCLUDED: it is server-expanded (serverExpand: true), so the client
   // sends the literal "/learn" and intentionally carries no copy of the prompt.
   it("client frontend carries the same slash prompts as the server", () => {
-    const jsDir = path.join(process.cwd(), "public", "js");
+    // Walk public/js recursively (it now has a chat/ subdir) and read every .js
+    // module, so the guard survives future relocation of SLASH_COMMANDS.
+    const readJsRecursive = (dir: string): string[] =>
+      fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) return readJsRecursive(full);
+        return entry.name.endsWith(".js") ? [fs.readFileSync(full, "utf8")] : [];
+      });
     const clientJs = [
       fs.readFileSync(path.join(process.cwd(), "public", "app.js"), "utf8"),
-      ...fs.readdirSync(jsDir).map((f) => fs.readFileSync(path.join(jsDir, f), "utf8")),
+      ...readJsRecursive(path.join(process.cwd(), "public", "js")),
     ].join("\n");
     const cases = ["/summarize", "/remember 내용", "/routine 작업", "/find 요청"];
     for (const input of cases) {
