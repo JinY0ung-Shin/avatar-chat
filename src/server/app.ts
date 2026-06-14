@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import express from "express";
 import { type AuthenticatedRequest } from "./auth.js";
@@ -105,7 +106,11 @@ export function createApp(services = createServices()) {
     res.sendFile(path.join(process.cwd(), "node_modules", "dompurify", "dist", "purify.es.mjs"));
   });
 
-  app.use(express.static(path.join(process.cwd(), "public")));
+  const builtClientRoot = path.join(process.cwd(), "dist", "client");
+  const clientRoot = fs.existsSync(path.join(builtClientRoot, "index.html"))
+    ? builtClientRoot
+    : path.join(process.cwd(), "public");
+  app.use(express.static(clientRoot));
 
   // ---- Request logging ----------------------------------------------------
   app.use((req, res, next) => {
@@ -152,7 +157,14 @@ export function createApp(services = createServices()) {
   // ---- SPA catch-all ---------------------------------------------------
 
   app.get("*", (_req, res) => {
-    res.sendFile(path.join(process.cwd(), "public", "index.html"));
+    const indexPath = path.join(clientRoot, "index.html");
+    if (fs.existsSync(indexPath)) {
+      res.sendFile(indexPath);
+      return;
+    }
+    res.status(404).type("text/plain").send(
+      "Frontend bundle not found. Run npm run dev and open the Vite dev server, or run npm run build first.",
+    );
   });
 
   return app;

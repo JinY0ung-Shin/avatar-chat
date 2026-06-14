@@ -1,0 +1,93 @@
+@import "../styles/00-tokens.css";
+@import "../styles/10-base.css";
+@import "../styles/20-shell-chat.css";
+@import "../styles/30-agent-md-composer.css";
+@import "../styles/40-responsive-core.css";
+@import "../styles/50-platform-views.css";
+@import "../styles/60-settings-admin.css";
+@import "../styles/70-modals-groups.css";
+
+.avatar-img {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  font-weight: 700;
+}
+
+.avatar-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.toast-close {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  line-height: 1;
+}
+
+.svelte-fallback-pad {
+  padding: 24px;
+}
+
+.svelte-rail-toggle {
+  position: fixed;
+  top: calc(var(--s-3) + env(safe-area-inset-top, 0px));
+  left: calc(var(--s-3) + env(safe-area-inset-left, 0px));
+  z-index: 29;
+  background: var(--bg-elevated);
+  color: var(--text);
+  border-color: var(--line);
+  box-shadow: var(--shadow-sm);
+}
+
+.rail button.conv-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--rail-text);
+  padding: 0;
+  text-align: left;
+}
+
+.svelte-rail-streaming {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  color: var(--rail-muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  padding: 0 var(--s-1);
+}
+
+.view-header > div:first-child:not(.header-left):not(.title) {
+  min-width: 0;
+}
+
+.view-header > div:first-child:not(.header-left):not(.title) h1 {
+  margin: 0;
+  font-size: var(--t-lg);
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.view-header > div:first-child:not(.header-left):not(.title) p {
+  margin: var(--s-0-5) 0 0;
+  font-size: var(--t-sm);
+  color: var(--muted);
+}
+
+@media (max-width: 860px) {
+  .main > .view-header {
+    padding-left: calc(var(--s-4) + 46px + env(safe-area-inset-left, 0px));
+  }
+}

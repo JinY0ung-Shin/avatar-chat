@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "types": ["svelte", "vite/client"],
+    "noEmit": true,
+    "rootDir": ".",
+    "isolatedModules": true
+  },
+  "include": ["src/client/src/**/*.ts", "src/client/src/**/*.svelte", "src/server/types.ts", "src/server/routineSchedule.ts"],
+  "exclude": ["node_modules", "dist"]
+}

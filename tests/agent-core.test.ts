@@ -217,26 +217,19 @@ describe("chat slash commands", () => {
 
   // Client-expanded commands carry their (user-facing, Korean) prompt in BOTH the
   // server (expandChatSlashCommand, the fallback for stale clients/API callers) and
-  // the client (SLASH_COMMANDS, now in public/js/chat.js, which expands before sending
-  // so the bubble shows the prompt). The frontend is served raw — no bundler — so they
-  // can't share a constant; this guards against the two copies drifting apart. We scan
-  // the whole frontend (app.js + every public/js/*.js module) so the guard survives
-  // future relocation of SLASH_COMMANDS across modules.
+  // the client (SLASH_COMMANDS, in the Svelte/Vite client, which expands before sending
+  // so the bubble shows the prompt). The server and browser bundle still carry separate
+  // copies, so this guards against the two copies drifting apart.
   // `/learn` is EXCLUDED: it is server-expanded (serverExpand: true), so the client
   // sends the literal "/learn" and intentionally carries no copy of the prompt.
   it("client frontend carries the same slash prompts as the server", () => {
-    // Walk public/js recursively (it now has a chat/ subdir) and read every .js
-    // module, so the guard survives future relocation of SLASH_COMMANDS.
-    const readJsRecursive = (dir: string): string[] =>
+    const readClientRecursive = (dir: string): string[] =>
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const full = path.join(dir, entry.name);
-        if (entry.isDirectory()) return readJsRecursive(full);
-        return entry.name.endsWith(".js") ? [fs.readFileSync(full, "utf8")] : [];
+        if (entry.isDirectory()) return readClientRecursive(full);
+        return /\.(ts|svelte)$/.test(entry.name) ? [fs.readFileSync(full, "utf8")] : [];
       });
-    const clientJs = [
-      fs.readFileSync(path.join(process.cwd(), "public", "app.js"), "utf8"),
-      ...readJsRecursive(path.join(process.cwd(), "public", "js")),
-    ].join("\n");
+    const clientJs = readClientRecursive(path.join(process.cwd(), "src", "client", "src")).join("\n");
     const cases = ["/summarize", "/remember 내용", "/routine 작업", "/find 요청"];
     for (const input of cases) {
       const { message } = expandChatSlashCommand(input);
