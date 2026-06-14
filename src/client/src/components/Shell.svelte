@@ -3,9 +3,9 @@
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
-  import { selectConversation } from "../lib/chat";
+  import { newChat, selectConversation } from "../lib/chat";
   import { formatDate } from "../lib/format";
-  import { loadConversations } from "../lib/loaders";
+  import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { goView } from "../lib/nav";
   import { appState, notify, replaceState, updateState } from "../lib/state";
   import { setThemePref } from "../lib/theme";
@@ -22,6 +22,8 @@
   let conversationQuery = "";
   let conversationsLoading = false;
   let conversationsError = "";
+  let renamingId = "";
+  let renameValue = "";
 
   const nav = [
     { view: "explore", label: "탐색", icon: "compass" },
@@ -61,6 +63,7 @@
   });
 
   async function logout() {
+    stopKnowledgeWatch();
     try {
       await api("/api/auth/logout", { method: "POST" });
     } catch {
@@ -74,8 +77,67 @@
       state.conversations = [];
       state.notifications = [];
       state.knowledgeRequests = [];
+      state.routineConversations = [];
+      state.routineConversationId = "";
+      state.routineMessages = [];
+      state.promptQueue = [];
     });
     history.replaceState(null, "", location.pathname);
+  }
+
+  function startRename(conversation: ConversationSummary, event: MouseEvent) {
+    event.stopPropagation();
+    renamingId = conversation.id;
+    renameValue = conversation.title || "";
+  }
+
+  function cancelRename() {
+    renamingId = "";
+    renameValue = "";
+  }
+
+  async function commitRename(conversation: ConversationSummary) {
+    const title = renameValue.trim();
+    if (!title || title === conversation.title) {
+      cancelRename();
+      return;
+    }
+    cancelRename();
+    try {
+      const { conversation: updated } = await api<{ conversation: ConversationSummary }>(`/api/conversations/${encodeURIComponent(conversation.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ title }),
+      });
+      updateState((state) => {
+        const target = state.conversations.find((c) => c.id === conversation.id);
+        if (target) target.title = updated?.title || title;
+      });
+      notify("대화 이름을 변경했습니다.", "ok");
+    } catch (err) {
+      notify(`이름 변경 실패: ${(err as Error).message}`, "warn");
+    }
+  }
+
+  async function deleteConversation(conversation: ConversationSummary, event: MouseEvent) {
+    event.stopPropagation();
+    if ($appState.chatPanes.some((pane) => pane.conversationId === conversation.id && pane.streaming)) {
+      notify("응답 중인 대화는 삭제할 수 없습니다. 먼저 응답을 중지해 주세요.", "warn");
+      return;
+    }
+    const title = conversation.title || "새 대화";
+    if (!window.confirm(`"${title}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
+    try {
+      await api(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: "DELETE" });
+    } catch (err) {
+      notify(`삭제 실패: ${(err as Error).message}`, "warn");
+      return;
+    }
+    const openPane = $appState.chatPanes.find((pane) => pane.conversationId === conversation.id);
+    updateState((state) => {
+      state.conversations = state.conversations.filter((c) => c.id !== conversation.id);
+    });
+    if (openPane) newChat(openPane.id);
+    notify(`"${title}" 대화를 삭제했습니다.`, "ok");
   }
 
   function closeRail() {
@@ -187,17 +249,44 @@
           <div class="conv-empty">{conversationQuery ? "검색 결과가 없습니다." : "아직 저장된 대화가 없습니다."}</div>
         {:else}
           {#each railConversations as conversation (conversation.id)}
-            <button
-              class="conv-item"
-              class:active={conversation.id === activeConversationId}
-              type="button"
-              on:click={() => openConversation(conversation)}
-            >
-              <span class="conv-open">
-                <span class="conv-name">{conversationTitle(conversation)}</span>
-                <span class="conv-time">{conversation.avatarDisplayName} · {formatDate(conversation.updatedAt)}</span>
-              </span>
-            </button>
+            <div class="conv-item" class:active={conversation.id === activeConversationId} class:editing={renamingId === conversation.id}>
+              {#if renamingId === conversation.id}
+                <!-- svelte-ignore a11y-autofocus -->
+                <input
+                  class="conv-rename"
+                  bind:value={renameValue}
+                  placeholder="대화 이름"
+                  aria-label="대화 이름"
+                  title="Enter 저장 · Esc 취소"
+                  autofocus
+                  on:click|stopPropagation
+                  on:keydown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      void commitRename(conversation);
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      cancelRename();
+                    }
+                  }}
+                  on:blur={() => commitRename(conversation)}
+                />
+              {:else}
+                <button class="conv-open" type="button" title={`대화 열기: ${conversationTitle(conversation)}`} aria-label={`대화 열기: ${conversationTitle(conversation)}`} on:click={() => openConversation(conversation)}>
+                  <span class="conv-name">{conversationTitle(conversation)}</span>
+                  <span class="conv-time">{conversation.avatarDisplayName} · {formatDate(conversation.updatedAt)}</span>
+                </button>
+                <div class="conv-acts">
+                  <button class="conv-act" type="button" aria-label="대화 이름 바꾸기" title="이름 바꾸기" on:click={(event) => startRename(conversation, event)}>
+                    <Icon name="edit" size={15} />
+                  </button>
+                  <button class="conv-act danger" type="button" aria-label="대화 삭제" title="삭제" on:click={(event) => deleteConversation(conversation, event)}>
+                    <Icon name="trash" size={15} />
+                  </button>
+                </div>
+              {/if}
+            </div>
           {/each}
         {/if}
       </div>

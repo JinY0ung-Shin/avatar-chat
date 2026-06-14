@@ -1,5 +1,6 @@
 import { api, refreshMe } from "./api";
-import { replaceState, updateState } from "./state";
+import { goView } from "./nav";
+import { notify, readState, replaceState, updateState } from "./state";
 import type {
   AdminGroupSummary,
   AdminStats,
@@ -55,7 +56,15 @@ export async function loadSettingsData(): Promise<void> {
   replaceState({ plugins: plugins.plugins, knowledgeRequests: requests.requests });
 }
 
-export async function loadInboxData(): Promise<void> {
+export interface InboxLoadResult {
+  requestsError: string | null;
+  notificationsError: string | null;
+  routinesError: string | null;
+}
+
+// Best-effort: render whatever loaded and report per-backend failures instead of
+// throwing, so one failing backend doesn't blank the whole inbox.
+export async function loadInboxData(): Promise<InboxLoadResult> {
   const [requests, notifications, routines] = await Promise.allSettled([
     api<{ requests: KnowledgeRequest[] }>("/api/me/knowledge/requests"),
     api<{ notifications: AvatarNotification[] }>("/api/me/notifications"),
@@ -63,9 +72,92 @@ export async function loadInboxData(): Promise<void> {
   ]);
   if (requests.status === "fulfilled") replaceState({ knowledgeRequests: requests.value.requests });
   if (notifications.status === "fulfilled") replaceState({ notifications: notifications.value.notifications });
-  if (routines.status === "rejected") throw routines.reason;
-  if (requests.status === "rejected") throw requests.reason;
-  if (notifications.status === "rejected") throw notifications.reason;
+  syncInboxBaseline();
+  return {
+    requestsError: requests.status === "rejected" ? (requests.reason as Error).message : null,
+    notificationsError: notifications.status === "rejected" ? (notifications.reason as Error).message : null,
+    routinesError: routines.status === "rejected" ? (routines.reason as Error).message : null,
+  };
+}
+
+// Open-request / unread-notification counts we've already nudged about, so the
+// toast fires only on genuinely NEW items — not on every poll. Mirrors the old
+// loaders.js announce baselines.
+let lastAnnouncedRequestCount = 0;
+let lastAnnouncedNotificationCount = 0;
+
+function openRequestCount(): number {
+  return readState().knowledgeRequests.filter((r) => r.status === "open").length;
+}
+function unreadNotificationCount(): number {
+  return readState().notifications.filter((n) => !n.readAt).length;
+}
+function syncInboxBaseline(): void {
+  lastAnnouncedRequestCount = openRequestCount();
+  lastAnnouncedNotificationCount = unreadNotificationCount();
+}
+
+// Reload open requests + toast when the count grew since we last nudged — the
+// in-app "alarm" for gaps the avatar logged via request_info while the owner was
+// elsewhere. Keeps the current state on transient failure.
+export async function refreshKnowledgeStatus({ announce = false } = {}): Promise<void> {
+  if (!readState().user) return;
+  try {
+    const { requests } = await api<{ requests: KnowledgeRequest[] }>("/api/me/knowledge/requests");
+    replaceState({ knowledgeRequests: requests });
+  } catch {
+    return;
+  }
+  const open = openRequestCount();
+  if (announce && open > lastAnnouncedRequestCount) {
+    notify(`아직 답하지 못한 정보 요청이 ${open}건 있어요. ‘알림’에서 확인해 주세요.`, "info", {
+      actionLabel: "알림 열기",
+      action: () => goView("inbox"),
+    });
+  }
+  lastAnnouncedRequestCount = open;
+}
+
+export async function refreshNotificationStatus({ announce = false } = {}): Promise<void> {
+  if (!readState().user) return;
+  try {
+    const { notifications } = await api<{ notifications: AvatarNotification[] }>("/api/me/notifications");
+    replaceState({ notifications });
+  } catch {
+    return;
+  }
+  const unread = unreadNotificationCount();
+  if (announce && unread > lastAnnouncedNotificationCount) {
+    notify(`새 아바타 알림이 ${unread}건 있습니다. ‘알림’에서 확인해 주세요.`, "info", {
+      actionLabel: "알림 열기",
+      action: () => goView("inbox"),
+    });
+  }
+  lastAnnouncedNotificationCount = unread;
+}
+
+// Poll while the tab is visible (cheap once/min) and refresh the moment the owner
+// returns to the tab, so a colleague's new question surfaces without a reload.
+let knowledgeWatchTimer: number | null = null;
+function onKnowledgeVisible(): void {
+  if (!document.hidden) {
+    void refreshKnowledgeStatus({ announce: true });
+    void refreshNotificationStatus({ announce: true });
+  }
+}
+export function startKnowledgeWatch(): void {
+  stopKnowledgeWatch();
+  knowledgeWatchTimer = window.setInterval(onKnowledgeVisible, 60000);
+  document.addEventListener("visibilitychange", onKnowledgeVisible);
+}
+export function stopKnowledgeWatch(): void {
+  if (knowledgeWatchTimer != null) {
+    window.clearInterval(knowledgeWatchTimer);
+    knowledgeWatchTimer = null;
+  }
+  document.removeEventListener("visibilitychange", onKnowledgeVisible);
+  lastAnnouncedRequestCount = 0;
+  lastAnnouncedNotificationCount = 0;
 }
 
 export async function loadRoutinesData(): Promise<void> {

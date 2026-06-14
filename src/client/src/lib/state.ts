@@ -14,6 +14,7 @@ import type {
   ConversationSummary,
   KnowledgeRequest,
   Plugin,
+  PromptRequest,
   RoutineJob,
   SettingsTab,
   Toast,
@@ -41,7 +42,7 @@ export interface ClientState {
   plugins: Plugin[];
   knowledgeRequests: KnowledgeRequest[];
   notifications: AvatarNotification[];
-  inboxFilter: "all" | "unread" | "requests";
+  inboxFilter: "all" | "unread" | "requests" | "notifications";
   routines: RoutineJob[];
   routineConversations: ConversationSummary[];
   routineConversationId: string;
@@ -50,9 +51,15 @@ export interface ClientState {
   routineFilter: "all" | "enabled" | "paused" | "error";
   adminUsers: AdminUserSummary[];
   adminGroups: AdminGroupSummary[];
+  adminUserFilter: "all" | "admins" | "suspended" | "public" | "sessions";
+  adminUserSearch: string;
+  adminGroupSearch: string;
   adminStats: AdminStats | null;
   adminSystem: Record<string, unknown> | null;
   audit: AuditEvent[];
+  /** Interactive permission/question prompts awaiting the owner (one shown at a time). */
+  promptQueue: PromptRequest[];
+  splitAvatarId: string;
   streaming: boolean;
   themePref: "system" | "light" | "dark";
 }
@@ -86,9 +93,14 @@ export const appState = writable<ClientState>({
   routineFilter: "all",
   adminUsers: [],
   adminGroups: [],
+  adminUserFilter: "all",
+  adminUserSearch: "",
+  adminGroupSearch: "",
   adminStats: null,
   adminSystem: null,
   audit: [],
+  promptQueue: [],
+  splitAvatarId: "",
   streaming: false,
   themePref: "system",
 });

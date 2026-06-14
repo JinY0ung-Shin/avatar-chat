@@ -7,13 +7,18 @@
   import ChatView from "./views/ChatView.svelte";
   import ExploreView from "./views/ExploreView.svelte";
   import InboxView from "./views/InboxView.svelte";
+  import OnboardingModal from "./components/OnboardingModal.svelte";
   import RoutinesView from "./views/RoutinesView.svelte";
   import SettingsView from "./views/SettingsView.svelte";
   import { api, setSessionExpiredHandler } from "./lib/api";
+  import { loadInboxData, startKnowledgeWatch, stopKnowledgeWatch } from "./lib/loaders";
   import { applyInitialRoute, installRouteListener, syncHash } from "./lib/nav";
+  import { markOnboardingDone, onboardingDone } from "./lib/onboarding";
   import { appState, notify, replaceState, updateState } from "./lib/state";
   import { applyTheme, getThemePref, watchSystemTheme } from "./lib/theme";
   import type { BootstrapInfo, User } from "./lib/types";
+
+  let showOnboarding = false;
 
   async function boot() {
     try {
@@ -21,17 +26,32 @@
       watchSystemTheme();
       const bootstrap = await api<BootstrapInfo>("/api/bootstrap");
       const { user } = await api<{ user: User | null }>("/api/me");
-      replaceState({ bootstrap, user, booted: true, themePref, view: user ? "explore" : "explore" });
-      if (user) {
-        applyInitialRoute();
-        if (!location.hash) syncHash(true);
-      }
+      replaceState({ bootstrap, user, booted: true, themePref, view: "explore" });
+      // enterApp() runs via the reactive init guard below once user is set.
     } catch (err) {
       replaceState({ booted: true, bootError: (err as Error).message, themePref: getThemePref() });
     }
   }
 
+  // Full post-login initialization: restore route, load the inbox (badges +
+  // pending requests), start the knowledge/notification watcher, and show
+  // first-run onboarding. Shared by boot() and post-login (Shell remount).
+  function enterApp(user: User) {
+    applyInitialRoute();
+    if (!location.hash) syncHash(true);
+    void loadInboxData();
+    startKnowledgeWatch();
+    if (!onboardingDone(user.id)) showOnboarding = true;
+  }
+
+  function dismissOnboarding() {
+    const id = $appState.user?.id;
+    if (id) markOnboardingDone(id);
+    showOnboarding = false;
+  }
+
   function handleSessionExpired() {
+    stopKnowledgeWatch();
     updateState((state) => {
       state.user = null;
       state.currentAvatar = null;
@@ -40,16 +60,33 @@
       state.conversations = [];
       state.notifications = [];
       state.knowledgeRequests = [];
+      state.routineConversations = [];
+      state.routineConversationId = "";
+      state.routineMessages = [];
+      state.promptQueue = [];
     });
+    showOnboarding = false;
     notify("세션이 만료되었습니다. 다시 로그인해 주세요.", "warn");
     history.replaceState(null, "", location.pathname);
   }
+
+  // When a user logs in from the auth screen (AuthView sets state.user), run the
+  // same post-login initialization once.
+  let initializedFor: string | null = null;
+  $: if ($appState.booted && $appState.user && initializedFor !== $appState.user.id) {
+    initializedFor = $appState.user.id;
+    enterApp($appState.user);
+  }
+  $: if (!$appState.user) initializedFor = null;
 
   onMount(() => {
     setSessionExpiredHandler(handleSessionExpired);
     const cleanup = installRouteListener();
     void boot();
-    return cleanup;
+    return () => {
+      cleanup();
+      stopKnowledgeWatch();
+    };
   });
 
   $: unreadCount =
@@ -82,6 +119,15 @@
       {/if}
     </main>
   </section>
+{/if}
+
+{#if showOnboarding && $appState.user}
+  <OnboardingModal
+    user={$appState.user}
+    confluenceConfigured={$appState.bootstrap?.confluenceConfigured ?? false}
+    githubHost={$appState.bootstrap?.githubHost ?? "github.com"}
+    on:close={dismissOnboarding}
+  />
 {/if}
 
 <Toasts />

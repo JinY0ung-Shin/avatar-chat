@@ -12,6 +12,59 @@
   let skills: SkillInfo[] = [];
   let openSkills = new Set<string>();
 
+  const CAP_WIDTH_MIN = 220;
+  const CAP_WIDTH_MAX = 720;
+  const CAP_WIDTH_DEFAULT = 480;
+  let panelWidth = CAP_WIDTH_DEFAULT;
+
+  function capPref(key: string, fallback: string): string {
+    try {
+      return localStorage.getItem(key) ?? fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  function setCapPref(key: string, value: string): void {
+    try {
+      localStorage.setItem(key, value);
+    } catch {
+      /* private mode: prefs just won't persist */
+    }
+  }
+  // Clamp so the panel can never squeeze the chat column out (rail 248 + ~380 readable).
+  function clampWidth(width: number): number {
+    const available = Math.max(CAP_WIDTH_MIN, window.innerWidth - 248 - 380);
+    return Math.min(Math.min(CAP_WIDTH_MAX, available), Math.max(CAP_WIDTH_MIN, width));
+  }
+
+  function startResize(event: PointerEvent) {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startW = panelWidth;
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    document.body.classList.add("col-resizing");
+    const onMove = (ev: PointerEvent) => {
+      // Panel sits at the right edge → dragging left (smaller clientX) widens it.
+      panelWidth = clampWidth(startW + (startX - ev.clientX));
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      document.body.classList.remove("col-resizing");
+      setCapPref("capPanelWidth", String(Math.round(panelWidth)));
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }
+
+  function setCollapsed(value: boolean) {
+    collapsed = value;
+    setCapPref("capPanelCollapsed", value ? "1" : "0");
+  }
+
   $: if (avatar?.id) void loadSkills(avatar.id);
 
   let loadedFor = "";
@@ -31,7 +84,9 @@
   }
 
   onMount(() => {
-    collapsed = window.matchMedia?.("(max-width: 860px)").matches ?? false;
+    const mobile = window.matchMedia?.("(max-width: 860px)").matches ?? false;
+    collapsed = capPref("capPanelCollapsed", mobile ? "1" : "0") === "1";
+    panelWidth = clampWidth(Number(capPref("capPanelWidth", String(CAP_WIDTH_DEFAULT))) || CAP_WIDTH_DEFAULT);
     if (avatar?.id) void loadSkills(avatar.id);
   });
 
@@ -43,9 +98,9 @@
   }
 </script>
 
-<aside class="cap-panel" class:collapsed aria-label="아바타 역량">
-  <div class="cap-resize" aria-hidden="true"></div>
-  <button class="cap-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} on:click={() => (collapsed = true)}>›</button>
+<aside class="cap-panel" class:collapsed aria-label="아바타 역량" style={collapsed ? undefined : `width:${panelWidth}px`}>
+  <div class="cap-resize" role="separator" aria-orientation="vertical" aria-label="패널 너비 조절" on:pointerdown={startResize}></div>
+  <button class="cap-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} on:click={() => setCollapsed(true)}>›</button>
 
   <div class="cap-body scroll-thin">
     <div class="cap-head">
@@ -111,7 +166,7 @@
     </div>
   </div>
 
-  <button class="cap-expand" type="button" aria-label="역량 패널 펼치기" title="역량 패널 펼치기" aria-expanded={!collapsed} on:click={() => (collapsed = false)}>
+  <button class="cap-expand" type="button" aria-label="역량 패널 펼치기" title="역량 패널 펼치기" aria-expanded={!collapsed} on:click={() => setCollapsed(false)}>
     <span aria-hidden="true">‹</span>
     <span class="cap-expand-label">아바타 역량 보기</span>
   </button>

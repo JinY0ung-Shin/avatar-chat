@@ -10,6 +10,8 @@
 
   let loading = true;
   let error = "";
+  let loadingAvatarId: string | null = null;
+  let searchInput: HTMLInputElement | null = null;
 
   onMount(async () => {
     loading = true;
@@ -62,11 +64,19 @@
     })();
 
   async function openChat(av: AvatarSummary) {
+    loadingAvatarId = av.id;
     try {
       await startChatWith(av);
     } catch (err) {
       notify(`대화를 시작하지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      loadingAvatarId = null;
     }
+  }
+
+  function clearSearch() {
+    updateState((state) => (state.exploreQuery = ""));
+    searchInput?.focus();
   }
 </script>
 
@@ -98,6 +108,7 @@
       type="search"
       placeholder="이름·해시태그로 검색 (예: #코드리뷰)"
       aria-label="아바타 검색"
+      bind:this={searchInput}
       value={$appState.exploreQuery}
       on:input={(event) => updateState((state) => (state.exploreQuery = event.currentTarget.value))}
     />
@@ -118,31 +129,47 @@
   {:else if !avatars.length}
     <div class="empty-note">
       "{query}"에 맞는 아바타가 없습니다.
-      <button class="linkish small" type="button" on:click={() => updateState((state) => (state.exploreQuery = ""))}>검색어 지우기</button>
+      <button class="linkish small" type="button" on:click={clearSearch}>검색어 지우기</button>
     </div>
   {:else}
     <div class="avatar-grid">
       {#each avatars as av (av.id)}
-        <button class="avatar-card" type="button" aria-label={`${av.alias || av.displayName} 아바타와 대화`} on:click={() => openChat(av)}>
-          <AvatarImage user={av} size={56} />
+        <button
+          class="avatar-card"
+          type="button"
+          aria-label={`${av.alias || av.displayName} 아바타와 대화`}
+          title={`${av.alias || av.displayName} 아바타와 대화`}
+          aria-busy={loadingAvatarId === av.id}
+          disabled={loadingAvatarId === av.id}
+          on:click={() => openChat(av)}
+        >
+          <AvatarImage user={av} size={56} alt="" />
           <div class="ac-body">
             <div class="ac-name">
               <strong>{av.displayName}</strong>
               {#if av.id === $appState.user?.id}
-                <span class="tag">내 아바타</span>
+                <span class="tag accent">나</span>
               {:else if av.sharesGroup}
-                <span class="tag accent">같은 그룹</span>
+                <span class="tag write">같은 그룹</span>
+              {/if}
+              {#if av.visibility === "group"}
+                <span class="tag">그룹 공개</span>
+              {/if}
+              {#if av.visibility === "private"}
+                <span class="tag">비공개</span>
               {/if}
             </div>
-            <div class="muted">@{av.username}</div>
-            {#if av.bio}<p>{av.bio}</p>{/if}
-            {#if av.hashtags?.length}
-              <div class="tag-list">
-                {#each av.hashtags.slice(0, 6) as tag}
-                  <span class="tag accent">#{tag}</span>
-                {/each}
-              </div>
-            {/if}
+            <div class="ac-handle">{loadingAvatarId === av.id ? "대화 여는 중…" : `@${av.username}`}</div>
+            {#if av.alias}<div class="ac-alias">"{av.alias}"</div>{/if}
+            {#if av.bio}<p class="ac-bio">{av.bio}</p>{/if}
+            <div class="ac-tags">
+              {#each (av.hashtags || []).slice(0, 6) as tag}
+                <span class="tag accent">#{tag}</span>
+              {/each}
+              {#if av.pluginCount != null}
+                <span class="tag">플러그인 {av.pluginCount}개</span>
+              {/if}
+            </div>
           </div>
         </button>
       {/each}

@@ -4,6 +4,7 @@ export type {
   AdminUserDetail,
   AdminUserSummary,
   AgentResponse,
+  AgentUsage,
   AuditEvent,
   AvatarDetail,
   AvatarNotification,
@@ -38,30 +39,55 @@ export interface ChatPane {
   liveText: string;
   liveStatus: string;
   liveRunId: string | null;
-  liveEvents: LiveActivity[];
+  /** Multi-agent activity tree (root "main" + sub-agents) for the live bubble. */
+  liveAgents: LiveAgentNode[];
+  /** Tool / task / blocked rows, each owned by an agent in liveAgents. */
+  liveTools: LiveToolRow[];
+  /** Plugin-load chips (name + status). */
+  livePlugins: LivePluginChip[];
+  /** ms timestamp until which a sticky status label resists a generic overwrite. */
+  liveStatusStickyUntil?: number;
   groupKnowledgeOff: string[];
   greetingStarted?: boolean;
+  greetedConversationId?: string | null;
+  /** Whether the viewer is pinned to the transcript bottom (intent-based follow). */
+  stickBottom?: boolean;
+  /** Last assistant turn's token usage, for the composer badge. */
+  usage?: import("../../../server/types.js").AgentUsage | null;
   abortController?: AbortController | null;
 }
 
-export interface LiveActivity {
+/** One agent in the live activity tree; "main" is the root, others nest under parentId. */
+export interface LiveAgentNode {
   id: string;
-  kind:
-    | "status"
-    | "plugin"
-    | "agent"
-    | "tool"
-    | "task"
-    | "blocked"
-    | "permission"
-    | "question"
-    | "error";
+  parentId: string;
+  label: string;
+  status: "running" | "done" | "failed";
+  isMain: boolean;
+}
+
+/** A tool/task/blocked row in the activity tree, owned by an agent. */
+export interface LiveToolRow {
+  id: string;
+  agentId: string;
+  kind: "tool" | "task" | "blocked";
   label: string;
   detail?: string;
-  status?: string;
-  runId?: string;
-  requestId?: string;
-  payload?: unknown;
+  status: "running" | "done" | "failed" | "blocked";
+}
+
+export interface LivePluginChip {
+  name: string;
+  status: string;
+}
+
+/** An interactive prompt (permission / AskUserQuestion) awaiting the owner. */
+export interface PromptRequest {
+  id: string;
+  runId: string;
+  paneId: string;
+  kind: "permission" | "question";
+  data: any;
 }
 
 export interface BootstrapInfo {

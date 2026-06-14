@@ -1,14 +1,77 @@
 import { tick } from "svelte";
-import { get } from "svelte/store";
 import { api } from "./api";
 import { loadConversations, loadMessages } from "./loaders";
 import { syncHash } from "./nav";
 import { consumeSse, type SseFrame } from "./sse";
-import { appState, newId, notify, readState, updateState } from "./state";
+import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
-import type { AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveActivity, StoredMessage } from "./types";
+import type { AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveToolRow, StoredMessage } from "./types";
 
 const MAX_CHAT_PANES = 4;
+
+// Internal orchestration tools the viewer shouldn't see as activity rows.
+const HIDDEN_TOOLS = new Set(["ToolSearch", "TodoWrite", "SlashCommand"]);
+
+// Friendly, human-readable labels for tools shown in the activity tree. Raw
+// names (e.g. `mcp__knowledge__request_info`) are an implementation detail.
+const TOOL_LABELS: Record<string, string> = {
+  mcp__knowledge__request_info: "정보 요청 기록",
+  mcp__knowledge__pending_requests: "대기 요청 확인",
+  mcp__knowledge__resolve_request: "요청 처리 완료",
+  mcp__confluence__describe_config: "Confluence 설정 확인",
+  mcp__confluence__list_spaces: "Confluence 스페이스 조회",
+  mcp__confluence__search: "Confluence 검색",
+  mcp__confluence__get_page: "Confluence 페이지 조회",
+  mcp__confluence__list_attachments: "Confluence 첨부 조회",
+  mcp__confluence__get_attachment: "Confluence 첨부 가져오기",
+  mcp__confluence__extract_page_assets: "Confluence 자산 추출",
+  mcp__confluence__create_page: "Confluence 페이지 생성",
+  mcp__confluence__update_page: "Confluence 페이지 수정",
+  mcp__system__notify_user: "사용자 알림",
+  Read: "파일 읽기",
+  Glob: "파일 찾기",
+  Grep: "내용 검색",
+  Bash: "명령 실행",
+  Write: "파일 쓰기",
+  Edit: "파일 편집",
+  WebFetch: "웹 페이지 읽기",
+  WebSearch: "웹 검색",
+  Skill: "스킬 실행",
+};
+
+export const PLUGIN_STATUS_LABELS: Record<string, string> = {
+  started: "불러오는 중",
+  installed: "설치됨",
+  completed: "사용 준비됨",
+  failed: "불러오기 실패",
+};
+
+export function humanTool(name: string | undefined): string {
+  if (!name) return "도구";
+  if (TOOL_LABELS[name]) return TOOL_LABELS[name];
+  const mcp = /^mcp__[^_]+__(.+)$/.exec(name);
+  return (mcp ? mcp[1] : name).replace(/_/g, " ");
+}
+
+// Intelligent one-line summary of a tool's input: prefer a recognizable key
+// (command/file_path/path/pattern/url/query/…) over dumping JSON. Mirrors the
+// old summarizeInputForCard().
+export function summarizeInput(input: unknown): string {
+  if (input == null) return "";
+  if (typeof input === "string") return truncate(input);
+  if (typeof input !== "object") return truncate(String(input));
+  const obj = input as Record<string, unknown>;
+  const keys = ["command", "file_path", "path", "pattern", "url", "query", "prompt", "description", "repo", "name"];
+  for (const key of keys) {
+    if (typeof obj[key] === "string" && obj[key]) return truncate(obj[key] as string);
+  }
+  const firstStr = Object.values(obj).find((v) => typeof v === "string" && v);
+  return typeof firstStr === "string" ? truncate(firstStr) : truncate(JSON.stringify(obj));
+}
+
+function truncate(text: string, max = 180): string {
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
 
 function makePane(avatar: AvatarDetail, conversationId = newId(), messages: StoredMessage[] = []): ChatPane {
   return {
@@ -21,8 +84,14 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
     liveText: "",
     liveStatus: "",
     liveRunId: null,
-    liveEvents: [],
+    liveAgents: [],
+    liveTools: [],
+    livePlugins: [],
+    liveStatusStickyUntil: 0,
     groupKnowledgeOff: avatar.isOwn ? [...(readState().user?.groupKnowledgeOffDefault || [])] : [],
+    greetedConversationId: null,
+    stickBottom: true,
+    usage: null,
     abortController: null,
   };
 }
@@ -30,6 +99,16 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
 export async function startChatWith(summary: AvatarSummary, split = false): Promise<void> {
   if (readState().chatPanes.some((pane) => pane.streaming) && !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")) {
     return;
+  }
+  // Resume the most recent existing conversation with this avatar instead of
+  // spawning a duplicate thread (matches the old explore behavior). Only for a
+  // single, non-split open.
+  if (!split && readState().chatPanes.length <= 1) {
+    const existing = readState().conversations.find((c) => c.avatarUserId === summary.id && !c.isRoutine);
+    if (existing) {
+      await selectConversation(existing.id);
+      return;
+    }
   }
   const { avatar } = await api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(summary.id)}`);
   const pane = makePane(avatar);
@@ -44,6 +123,28 @@ export async function startChatWith(summary: AvatarSummary, split = false): Prom
   void loadConversations();
   await tick();
   await maybeGreet(pane.id);
+}
+
+// Open a fresh chat with the owner's own avatar and seed the composer with text
+// (not sent — the owner reviews first). Used by the inbox notification handoff
+// and "ask my avatar" actions. Mirrors the old chatAboutTopic().
+export async function openSeededChat(seedText: string): Promise<void> {
+  const me = readState().user;
+  if (!me) return;
+  if (readState().chatPanes.some((pane) => pane.streaming) && !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")) return;
+  const { avatar } = await api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(me.id)}`);
+  const pane = makePane(avatar);
+  pane.greetingStarted = true; // we already have a topic — skip the auto-greeting
+  pane.draft = seedText;
+  updateState((state) => {
+    state.currentAvatar = avatar;
+    state.chatPanes = [pane];
+    state.activePaneId = pane.id;
+    state.view = "chat";
+  });
+  syncHash();
+  void loadConversations();
+  notify("입력창에 주제를 채웠습니다. 검토 후 보내기를 누르세요.", "info");
 }
 
 export async function selectConversation(conversationId: string): Promise<void> {
@@ -68,6 +169,7 @@ export async function selectConversation(conversationId: string): Promise<void> 
   ]);
   const pane = makePane(avatarRes.avatar, conversationId, messages);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
+  pane.usage = lastUsage(messages);
   updateState((s) => {
     s.currentAvatar = avatarRes.avatar;
     s.chatPanes = [pane];
@@ -89,6 +191,18 @@ export function newChat(paneId?: string): void {
   });
   syncHash();
   void maybeGreet(next.id);
+}
+
+export function regenerate(paneId: string): void {
+  const pane = readState().chatPanes.find((item) => item.id === paneId);
+  if (!pane || pane.streaming) return;
+  const lastUserIndex = [...pane.messages].map((m) => m.role).lastIndexOf("user");
+  if (lastUserIndex < 0) return;
+  const text = pane.messages[lastUserIndex].content;
+  updatePane(paneId, (target) => {
+    target.messages = target.messages.slice(0, lastUserIndex + 1);
+  });
+  void sendMessage(paneId, text, { regenerate: true });
 }
 
 export async function sendMessage(paneId: string, rawMessage: string, opts: { regenerate?: boolean; greeting?: boolean } = {}): Promise<void> {
@@ -132,11 +246,9 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
     }
     if (userMessage && !opts.regenerate) target.messages.push(userMessage);
     target.draft = "";
+    resetLive(target);
     target.streaming = true;
-    target.liveText = "";
     target.liveStatus = "응답 준비 중…";
-    target.liveRunId = null;
-    target.liveEvents = [];
     target.abortController = controller;
   });
 
@@ -169,25 +281,21 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
     if (error.name === "AbortError") {
       finalizePane(paneId, "중지됨", true);
     } else {
-      updatePane(paneId, (target) => {
-        if (!target.liveText && userMessage) {
+      const current = readState().chatPanes.find((item) => item.id === paneId);
+      if (!current?.liveText && userMessage) {
+        // Nothing arrived for a normal send — undo it cleanly and restore the draft.
+        updatePane(paneId, (target) => {
           const last = target.messages[target.messages.length - 1];
           if (last?.id === userMessage.id) target.messages.pop();
           target.draft = rawMessage;
-        } else {
-          target.messages.push({
-            id: newId(),
-            conversationId: target.conversationId,
-            role: "assistant",
-            content: target.liveText ? `${target.liveText}\n\n${error.message}` : error.message,
-            response: null,
-            createdAt: new Date().toISOString(),
-          });
-        }
-      });
-      notify(`메시지를 보내지 못했습니다: ${error.message}`);
+        });
+        notify(`메시지를 보내지 못했습니다: ${error.message}`);
+      } else {
+        finalizeError(paneId, error.message);
+      }
     }
   } finally {
+    dropRunPrompts(paneId);
     updatePane(paneId, (target) => {
       target.streaming = false;
       target.abortController = null;
@@ -202,8 +310,10 @@ export async function maybeGreet(paneId: string): Promise<void> {
   const state = readState();
   if (!pane || pane.streaming || pane.greetingStarted || state.chatPanes.length > 1) return;
   if (!state.user || pane.avatar.id !== state.user.id || pane.messages.length) return;
+  if (pane.greetedConversationId === pane.conversationId) return;
   updatePane(paneId, (target) => {
     target.greetingStarted = true;
+    target.greetedConversationId = target.conversationId;
   });
   await sendMessage(paneId, "", { greeting: true });
   updatePane(paneId, (target) => {
@@ -225,6 +335,7 @@ export async function attachActiveRun(paneId: string): Promise<void> {
       updatePane(paneId, (target) => {
         target.messages = messages;
         target.groupKnowledgeOff = groupKnowledgeOff || [];
+        target.usage = lastUsage(messages);
       });
     }
   } catch {
@@ -235,8 +346,8 @@ export async function attachActiveRun(paneId: string): Promise<void> {
 export async function attachRun(paneId: string, runId: string): Promise<void> {
   const controller = new AbortController();
   updatePane(paneId, (target) => {
+    resetLive(target);
     target.streaming = true;
-    target.liveText = "";
     target.liveRunId = runId;
     target.liveStatus = "진행 중인 응답에 다시 연결 중…";
     target.abortController = controller;
@@ -254,6 +365,7 @@ export async function attachRun(paneId: string, runId: string): Promise<void> {
         updatePane(paneId, (target) => {
           target.messages = messages;
           target.groupKnowledgeOff = groupKnowledgeOff || [];
+          target.usage = lastUsage(messages);
         });
       }
       return;
@@ -263,6 +375,7 @@ export async function attachRun(paneId: string, runId: string): Promise<void> {
   } catch (err) {
     if ((err as Error).name !== "AbortError") notify("진행 중인 응답에 다시 연결하지 못했습니다.", "warn");
   } finally {
+    dropRunPrompts(paneId);
     updatePane(paneId, (target) => {
       target.streaming = false;
       target.abortController = null;
@@ -294,79 +407,195 @@ export function closePane(paneId: string): void {
   });
 }
 
+/* ---------- SSE handling ---------- */
+
 function handleSseEvent(paneId: string, frame: SseFrame): void {
   const { event, data } = frame;
-  if (event === "delta" && typeof data?.text === "string") {
-    updatePane(paneId, (pane) => {
-      pane.liveText += data.text;
-    });
-    return;
+  switch (event) {
+    case "delta":
+      if (typeof data?.text === "string") updatePane(paneId, (pane) => (pane.liveText += data.text));
+      return;
+    case "open":
+      updatePane(paneId, (pane) => {
+        if (data?.conversationId) pane.conversationId = data.conversationId;
+        if (data?.runId) pane.liveRunId = data.runId;
+        pane.liveStatus = "응답 준비 중…";
+      });
+      syncHash(true);
+      return;
+    case "status":
+      if (data?.label) setStatus(paneId, data.label, false);
+      return;
+    case "plugin":
+      if (data?.name) {
+        updatePane(paneId, (pane) => {
+          const chip = pane.livePlugins.find((p) => p.name === data.name);
+          if (chip) chip.status = data.status || chip.status;
+          else pane.livePlugins.push({ name: data.name, status: data.status || "started" });
+        });
+      }
+      return;
+    case "agent":
+      if (data?.agentId) {
+        const label = [data.subagentType, data.description].filter(Boolean).join(" · ") || "하위 작업";
+        ensureAgent(paneId, data.agentId, data.parentId || "main", label, "running");
+        setStatus(paneId, `에이전트 작업 중: ${label}`, true);
+      }
+      return;
+    case "agent_end":
+      if (data?.agentId) {
+        updatePane(paneId, (pane) => {
+          const node = pane.liveAgents.find((a) => a.id === data.agentId);
+          if (node) node.status = data.ok === false ? "failed" : "done";
+        });
+      }
+      return;
+    case "tool": {
+      if (!data?.toolUseId || !data?.name || HIDDEN_TOOLS.has(data.name)) return;
+      ensureAgent(paneId, data.agentId || "main");
+      const label = humanTool(data.name);
+      const detail = data.inputSummary || summarizeInput(data.input) || undefined;
+      upsertTool(paneId, { id: data.toolUseId, agentId: data.agentId || "main", kind: "tool", label, detail, status: "running" });
+      setStatus(paneId, `${label}${detail ? ` · ${detail}` : ""}`, true);
+      return;
+    }
+    case "tool_end":
+      if (data?.toolUseId) {
+        updatePane(paneId, (pane) => {
+          const row = pane.liveTools.find((t) => t.id === data.toolUseId);
+          if (!row || row.status === "blocked") return;
+          row.status = data.ok === false ? "failed" : "done";
+          const detail = data.error || data.inputSummary || (data.output ? summarizeInput(data.output) : "");
+          if (detail) row.detail = detail;
+        });
+      }
+      return;
+    case "task":
+    case "task_update":
+    case "task_end": {
+      if (!data?.taskId) return;
+      const label = taskLabel(data);
+      const detail = taskDetail(data) || undefined;
+      const status = event === "task_end" ? (data.ok === false ? "failed" : "done") : "running";
+      upsertTool(paneId, { id: data.taskId, agentId: "main", kind: "task", label, detail, status });
+      if (event !== "task_end") setStatus(paneId, `${label}${detail ? ` · ${detail}` : ""}`, true);
+      else setStatus(paneId, data.ok === false ? "태스크가 완료되지 못했습니다." : "태스크 완료", true);
+      return;
+    }
+    case "blocked":
+      if (data?.toolName) handleBlocked(paneId, data);
+      return;
+    case "permission":
+      enqueuePrompt(paneId, "permission", data);
+      return;
+    case "question":
+      enqueuePrompt(paneId, "question", data);
+      return;
+    case "prompt_resolved":
+      if (data?.requestId) resolvePrompt(data.requestId);
+      return;
+    case "done":
+      finalizeDone(paneId, data);
+      return;
+    case "cancelled":
+      finalizePane(paneId, "중지됨", true);
+      return;
+    case "error":
+      finalizeError(paneId, data?.error || "오류가 발생했습니다.");
+      return;
+    default:
+      return;
   }
-  if (event === "open") {
-    updatePane(paneId, (pane) => {
-      if (data?.conversationId) pane.conversationId = data.conversationId;
-      if (data?.runId) pane.liveRunId = data.runId;
-      pane.liveStatus = "응답 준비 중…";
-    });
-    syncHash(true);
-    return;
-  }
-  if (event === "status" && data?.label) {
-    addActivity(paneId, { kind: "status", label: data.label });
-    updatePane(paneId, (pane) => {
-      pane.liveStatus = data.label;
-    });
-    return;
-  }
-  if (event === "done") {
-    finalizeDone(paneId, data);
-    return;
-  }
-  if (event === "cancelled") {
-    finalizePane(paneId, "중지됨", true);
-    return;
-  }
-  if (event === "error") {
-    finalizePane(paneId, data?.error || "오류가 발생했습니다.", false);
-    return;
-  }
-  if (event === "permission") {
-    addActivity(paneId, {
-      kind: "permission",
-      label: "권한 확인",
-      detail: data?.toolName || data?.description || "도구 실행 요청",
-      runId: data?.runId,
-      requestId: data?.requestId,
-      payload: data,
-    });
-    void answerPermission(data);
-    return;
-  }
-  if (event === "question") {
-    addActivity(paneId, {
-      kind: "question",
-      label: "추가 질문",
-      detail: questionLabel(data),
-      runId: data?.runId,
-      requestId: data?.requestId,
-      payload: data,
-    });
-    void answerQuestion(data);
-    return;
-  }
-  if (event === "prompt_resolved") {
-    addActivity(paneId, { kind: "status", label: "요청 응답 처리됨", status: "done" });
-    return;
-  }
-  const label = activityLabel(event, data);
-  if (label) addActivity(paneId, label);
 }
+
+function handleBlocked(paneId: string, data: any): void {
+  const reason = data.reason ? `차단됨 · ${data.reason}` : "읽기 전용이라 차단됨";
+  updatePane(paneId, (pane) => {
+    const existing = data.toolUseId ? pane.liveTools.find((t) => t.id === data.toolUseId) : null;
+    if (existing) {
+      existing.status = "blocked";
+      existing.detail = reason;
+      return;
+    }
+    pane.liveTools.push({
+      id: data.toolUseId || newId(),
+      agentId: data.agentId || "main",
+      kind: "blocked",
+      label: humanTool(data.toolName),
+      detail: reason,
+      status: "blocked",
+    });
+  });
+}
+
+function taskLabel(data: any): string {
+  if (data?.workflowName) return `워크플로 ${data.workflowName}`;
+  if (data?.subagentType) return data.subagentType;
+  if (data?.taskType) return String(data.taskType).replace(/_/g, " ");
+  return "태스크";
+}
+function taskDetail(data: any): string {
+  return data?.summary || data?.description || data?.prompt || data?.lastToolName || data?.error || data?.status || "";
+}
+
+/* ---------- activity-tree mutation helpers ---------- */
+
+function ensureAgent(paneId: string, agentId: string, parentId = "main", label?: string, status?: "running" | "done" | "failed"): void {
+  updatePane(paneId, (pane) => {
+    if (!pane.liveAgents.some((a) => a.id === "main")) {
+      pane.liveAgents.push({ id: "main", parentId: "", label: "", status: "running", isMain: true });
+    }
+    if (agentId === "main") return;
+    const existing = pane.liveAgents.find((a) => a.id === agentId);
+    if (existing) {
+      if (label) existing.label = label;
+      if (status) existing.status = status;
+      return;
+    }
+    pane.liveAgents.push({ id: agentId, parentId: parentId || "main", label: label || "하위 작업", status: status || "running", isMain: false });
+  });
+}
+
+function upsertTool(paneId: string, row: LiveToolRow): void {
+  updatePane(paneId, (pane) => {
+    const existing = pane.liveTools.find((t) => t.id === row.id);
+    if (existing) {
+      existing.label = row.label;
+      if (row.detail !== undefined) existing.detail = row.detail;
+      existing.status = row.status;
+      existing.kind = row.kind;
+    } else {
+      pane.liveTools.push(row);
+    }
+  });
+}
+
+function setStatus(paneId: string, label: string, sticky: boolean): void {
+  updatePane(paneId, (pane) => {
+    const now = Date.now();
+    if (!sticky && pane.liveStatusStickyUntil && now < pane.liveStatusStickyUntil) return;
+    pane.liveStatus = label;
+    pane.liveStatusStickyUntil = sticky ? now + 1500 : 0;
+  });
+}
+
+function resetLive(pane: ChatPane): void {
+  pane.liveText = "";
+  pane.liveStatus = "";
+  pane.liveAgents = [];
+  pane.liveTools = [];
+  pane.livePlugins = [];
+  pane.liveStatusStickyUntil = 0;
+}
+
+/* ---------- finalizers ---------- */
 
 function finalizeDone(paneId: string, data: any): void {
   updatePane(paneId, (pane) => {
     const message = data?.message as StoredMessage | undefined;
     if (message?.role === "assistant") {
       pane.messages.push(message);
+      pane.usage = message.response?.usage ?? pane.usage;
     } else if (pane.liveText || data?.response) {
       const response = data?.response as AgentResponse | undefined;
       pane.messages.push({
@@ -377,10 +606,9 @@ function finalizeDone(paneId: string, data: any): void {
         response: response || null,
         createdAt: new Date().toISOString(),
       });
+      pane.usage = response?.usage ?? pane.usage;
     }
-    pane.liveText = "";
-    pane.liveStatus = "";
-    pane.streaming = false;
+    clearLive(pane);
   });
 }
 
@@ -392,110 +620,92 @@ function finalizePane(paneId: string, message: string, stopped: boolean): void {
       conversationId: pane.conversationId,
       role: "assistant",
       content,
-      response: null,
+      response: { kind: "text", runtime: "claude", summary: stopped ? "중지됨" : "오류", text: pane.liveText },
       createdAt: new Date().toISOString(),
     });
-    pane.liveText = "";
-    pane.liveStatus = "";
-    pane.streaming = false;
+    clearLive(pane);
   });
 }
 
-function addActivity(paneId: string, activity: Omit<LiveActivity, "id">): void {
+function finalizeError(paneId: string, message: string): void {
   updatePane(paneId, (pane) => {
-    pane.liveEvents = [...pane.liveEvents.slice(-40), { id: newId(), ...activity }];
+    pane.messages.push({
+      id: newId(),
+      conversationId: pane.conversationId,
+      role: "assistant",
+      content: pane.liveText ? `${pane.liveText}\n\n${message}` : message,
+      response: { kind: "text", runtime: "claude", summary: "오류", text: pane.liveText || message },
+      createdAt: new Date().toISOString(),
+    });
+    clearLive(pane);
+  });
+  notify(`메시지를 보내지 못했습니다: ${message}`);
+}
+
+function clearLive(pane: ChatPane): void {
+  pane.liveText = "";
+  pane.liveStatus = "";
+  pane.liveAgents = [];
+  pane.liveTools = [];
+  pane.livePlugins = [];
+  pane.streaming = false;
+}
+
+/* ---------- interactive prompts (permission / question) ---------- */
+
+// requestIds already resolved server-side (replay/prompt_resolved) — skip showing.
+const resolvedRequestIds = new Set<string>();
+
+function enqueuePrompt(paneId: string, kind: "permission" | "question", data: any): void {
+  const requestId = data?.requestId;
+  if (!requestId || resolvedRequestIds.has(requestId)) return;
+  updateState((state) => {
+    if (state.promptQueue.some((p) => p.id === requestId)) return;
+    state.promptQueue.push({ id: requestId, runId: data.runId || "", paneId, kind, data });
   });
 }
 
-function activityLabel(event: string, data: any): Omit<LiveActivity, "id"> | null {
-  switch (event) {
-    case "plugin":
-      return { kind: "plugin", label: data?.name || "플러그인", status: data?.status };
-    case "agent":
-      return { kind: "agent", label: [data?.subagentType, data?.description].filter(Boolean).join(" · ") || "하위 작업", status: "running" };
-    case "agent_end":
-      return { kind: "agent", label: "하위 작업 완료", status: data?.ok === false ? "failed" : "done" };
-    case "tool":
-      return { kind: "tool", label: humanTool(data?.name), detail: data?.input ? summarizeValue(data.input) : undefined, status: "running" };
-    case "tool_end":
-      return { kind: "tool", label: humanTool(data?.name), detail: data?.error || summarizeValue(data?.output), status: data?.ok === false ? "failed" : "done" };
-    case "task":
-      return { kind: "task", label: data?.title || data?.description || "작업 시작", status: "running" };
-    case "task_update":
-      return { kind: "task", label: data?.title || data?.status || "작업 업데이트", detail: data?.description, status: data?.status };
-    case "task_end":
-      return { kind: "task", label: data?.title || "작업 완료", status: data?.ok === false ? "failed" : "done" };
-    case "blocked":
-      return { kind: "blocked", label: "진행 차단", detail: data?.reason || data?.message, status: "blocked" };
-    default:
-      return null;
+function resolvePrompt(requestId: string): void {
+  resolvedRequestIds.add(requestId);
+  updateState((state) => {
+    state.promptQueue = state.promptQueue.filter((p) => p.id !== requestId);
+  });
+}
+
+function dropRunPrompts(paneId: string): void {
+  updateState((state) => {
+    state.promptQueue = state.promptQueue.filter((p) => p.paneId !== paneId);
+  });
+}
+
+// Submit the owner's response to a prompt. Removes it from the queue on success;
+// on failure, surfaces a toast (the run may have already ended).
+export async function answerPrompt(requestId: string, value: unknown): Promise<void> {
+  const request = readState().promptQueue.find((p) => p.id === requestId);
+  if (!request) return;
+  try {
+    await api("/api/chat/respond", {
+      method: "POST",
+      body: JSON.stringify({ runId: request.runId, requestId: request.id, value }),
+    });
+    resolvedRequestIds.add(requestId);
+    updateState((state) => {
+      state.promptQueue = state.promptQueue.filter((p) => p.id !== requestId);
+    });
+  } catch (err) {
+    notify(`응답을 전송하지 못했습니다: ${(err as Error).message}`, "warn");
+    throw err;
   }
 }
 
-function humanTool(name: string | undefined): string {
-  if (!name) return "도구";
-  const map: Record<string, string> = {
-    Read: "파일 읽기",
-    Glob: "파일 찾기",
-    Grep: "내용 검색",
-    Bash: "명령 실행",
-    Write: "파일 쓰기",
-    Edit: "파일 편집",
-    WebFetch: "웹 페이지 읽기",
-    WebSearch: "웹 검색",
-  };
-  if (map[name]) return map[name];
-  const mcp = /^mcp__[^_]+__(.+)$/.exec(name);
-  return (mcp ? mcp[1] : name).replace(/_/g, " ");
-}
+/* ---------- helpers ---------- */
 
-function summarizeValue(value: unknown): string | undefined {
-  if (value == null) return undefined;
-  const text = typeof value === "string" ? value : JSON.stringify(value);
-  return text.length > 180 ? `${text.slice(0, 180)}…` : text;
-}
-
-function questionLabel(data: any): string {
-  const payload = data?.payload;
-  if (payload?.questions?.[0]?.question) return payload.questions[0].question;
-  if (payload?.message) return payload.message;
-  return "응답이 필요합니다";
-}
-
-async function answerPermission(data: any): Promise<void> {
-  const allowed = window.confirm(`${data?.toolName || "도구"} 실행을 허용할까요?`);
-  await api("/api/chat/respond", {
-    method: "POST",
-    body: JSON.stringify({ runId: data.runId, requestId: data.requestId, value: { behavior: allowed ? "allow" : "deny" } }),
-  }).catch((err) => notify(`권한 응답 실패: ${(err as Error).message}`, "warn"));
-}
-
-async function answerQuestion(data: any): Promise<void> {
-  const payload = data?.payload;
-  let result: unknown = null;
-  if (payload?.questions?.length) {
-    const answers: Record<string, string> = {};
-    for (const question of payload.questions) {
-      const answer = window.prompt(question.question || question.header || "응답을 입력하세요", "");
-      if (answer == null) {
-        await api("/api/chat/respond", {
-          method: "POST",
-          body: JSON.stringify({ runId: data.runId, requestId: data.requestId, value: { cancelled: true } }),
-        });
-        return;
-      }
-      answers[question.id || question.header || "answer"] = answer;
-    }
-    result = { answers };
-  } else {
-    const answer = window.prompt(payload?.message || "응답을 입력하세요", "");
-    if (answer == null) result = { cancelled: true };
-    else result = { result: answer };
+function lastUsage(messages: StoredMessage[]): ChatPane["usage"] {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const usage = messages[i]?.response?.usage;
+    if (usage && (Number(usage.inputTokens) || Number(usage.outputTokens))) return usage;
   }
-  await api("/api/chat/respond", {
-    method: "POST",
-    body: JSON.stringify({ runId: data.runId, requestId: data.requestId, value: result }),
-  }).catch((err) => notify(`응답 전송 실패: ${(err as Error).message}`, "warn"));
+  return null;
 }
 
 function updatePane(paneId: string, mutator: (pane: ChatPane) => void): void {

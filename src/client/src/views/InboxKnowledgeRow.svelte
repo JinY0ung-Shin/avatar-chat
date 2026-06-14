@@ -1,0 +1,127 @@
+<script lang="ts">
+  import { timeLabel } from "../lib/format";
+  import { api } from "../lib/api";
+  import { notify, readState } from "../lib/state";
+  import { recordKnowledgeViaAvatar } from "../lib/knowledge";
+  import type { KnowledgeRequest } from "../lib/types";
+
+  export let request: KnowledgeRequest;
+  // Re-render the inbox after a record/ignore so the resolved row drops out.
+  export let refresh: () => Promise<void>;
+
+  let showCompose = false;
+  let answer = "";
+  let busy = false; // record in flight
+  let ignoring = false;
+  let textarea: HTMLTextAreaElement | undefined;
+
+  $: disabled = busy || ignoring;
+
+  function toggleCompose() {
+    showCompose = !showCompose;
+    if (showCompose) {
+      // focus once the textarea is rendered
+      queueMicrotask(() => textarea?.focus());
+    }
+  }
+
+  function cancelCompose() {
+    showCompose = false;
+  }
+
+  async function ignore() {
+    if (disabled) return;
+    ignoring = true;
+    try {
+      await api(`/api/me/knowledge/requests/${encodeURIComponent(request.id)}`, { method: "DELETE" });
+    } catch (e) {
+      ignoring = false;
+      notify(`무시 처리 실패: ${(e as Error).message}`);
+      return;
+    }
+    try {
+      await refresh();
+      notify("정보 요청을 무시했습니다.", "ok");
+    } catch (e) {
+      ignoring = false;
+      notify(`정보 요청은 무시했지만 목록 새로고침에 실패했습니다: ${(e as Error).message}`, "warn");
+    }
+  }
+
+  async function submit() {
+    const text = answer.trim();
+    if (!text) {
+      textarea?.focus();
+      notify("기록할 답변을 입력해 주세요.", "warn");
+      return;
+    }
+    if (disabled) return;
+    busy = true;
+    const result = await recordKnowledgeViaAvatar(request, text);
+    if (!result.ok) {
+      busy = false;
+      notify(`기록 요청 실패: ${result.error}`);
+      return;
+    }
+    // The avatar resolves the request itself after committing; a refresh then
+    // drops this row out. If it's still open afterward the recording didn't
+    // complete — say so honestly instead of claiming success.
+    try {
+      await refresh();
+    } catch (e) {
+      busy = false;
+      notify(`기록은 요청했지만 목록 새로고침에 실패했어요: ${(e as Error).message}`, "warn");
+      return;
+    }
+    const stillOpen = readState().knowledgeRequests.some((x) => x.id === request.id && x.status === "open");
+    notify(
+      stillOpen
+        ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 스레드를 확인해 주세요."
+        : "아바타가 답을 지식 저장소에 기록했어요.",
+      stillOpen ? "warn" : "info",
+    );
+  }
+</script>
+
+<div class="knowledge-row" aria-busy={disabled ? "true" : "false"}>
+  <div class="inbox-row-head">
+    <span class="inbox-chip req">정보 요청</span>
+  </div>
+  <div class="kr-q">{request.question}</div>
+  <div class="muted kr-meta">
+    {#if request.askerName}질문자: {request.askerName} · {timeLabel(request.createdAt)}{:else}{timeLabel(request.createdAt)}{/if}
+  </div>
+  <div class="kr-actions">
+    <button
+      class="primary small"
+      class:active={showCompose}
+      type="button"
+      aria-expanded={showCompose ? "true" : "false"}
+      title="답변 입력창 열기"
+      disabled={disabled}
+      on:click={toggleCompose}
+    >정보 추가</button>
+    <button class="ghost-sm" type="button" disabled={disabled} on:click={ignore}>
+      {ignoring ? "무시 중…" : "무시"}
+    </button>
+  </div>
+  {#if showCompose}
+    <div class="kr-compose">
+      <textarea
+        class="kr-answer"
+        rows="3"
+        bind:this={textarea}
+        bind:value={answer}
+        disabled={disabled}
+        placeholder="이 질문에 대한 답·정보를 적어주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다."
+        aria-label="정보 요청 답변"
+      ></textarea>
+      <div class="kr-compose-actions">
+        <button class="primary small" type="button" disabled={disabled} on:click={submit}>
+          {busy ? "기록 중…" : "기록 요청"}
+        </button>
+        <button class="ghost-sm" type="button" disabled={disabled} on:click={cancelCompose}>취소</button>
+      </div>
+    </div>
+  {/if}
+</div>
