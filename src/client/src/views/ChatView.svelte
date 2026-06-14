@@ -8,6 +8,7 @@
   import { activePane, appState, notify, updateState } from "../lib/state";
   import {
     PLUGIN_STATUS_LABELS,
+    addConversationToSplit,
     attachActiveRun,
     closePane,
     maybeGreet,
@@ -248,6 +249,37 @@
       return;
     }
     await startChatWith(avatar as AvatarSummary, true);
+  }
+
+  // Drop target for a conversation dragged from the rail's "내 대화" list.
+  // Mirrors the MIME set in Shell.svelte's onConvDragStart.
+  const CONV_DND_MIME = "application/x-noah-conversation";
+  let dropActive = false;
+
+  function isConvDrag(event: DragEvent): boolean {
+    return Boolean(event.dataTransfer?.types?.includes(CONV_DND_MIME));
+  }
+  function onWorkbenchDragOver(event: DragEvent) {
+    if (!isConvDrag(event)) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    dropActive = true;
+  }
+  function onWorkbenchDragLeave(event: DragEvent) {
+    // Only clear when leaving the workbench itself, not when crossing children.
+    if (event.currentTarget === event.target) dropActive = false;
+  }
+  async function onWorkbenchDrop(event: DragEvent) {
+    if (!isConvDrag(event)) return;
+    event.preventDefault();
+    dropActive = false;
+    const conversationId = event.dataTransfer?.getData(CONV_DND_MIME);
+    if (!conversationId) return;
+    try {
+      await addConversationToSplit(conversationId);
+    } catch (err) {
+      notify(`분할에 추가하지 못했습니다: ${(err as Error).message}`, "warn");
+    }
   }
 
   async function setGroupKnowledge(item: ChatPane, groupId: string, on: boolean) {
@@ -517,11 +549,12 @@
       <p>탐색에서 아바타를 골라 대화를 시작하세요</p>
     </div>
   </header>
-  <div class="view-body">
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <div class="view-body" class:drop-active={dropActive} on:dragover={onWorkbenchDragOver} on:dragleave={onWorkbenchDragLeave} on:drop={onWorkbenchDrop}>
     <div class="empty-state">
       <div class="hero">
         <h3>아직 선택한 아바타가 없어요</h3>
-        <p>탐색 탭에서 대화할 아바타를 골라 보세요.</p>
+        <p>탐색 탭에서 대화할 아바타를 골라 보세요. 왼쪽 대화 목록에서 대화를 끌어와 열 수도 있어요.</p>
       </div>
     </div>
   </div>
@@ -539,7 +572,14 @@
     </div>
   </header>
 
-  <div class={`chat-workbench ${splitClass}`}>
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <div
+    class={`chat-workbench ${splitClass}`}
+    class:drop-active={dropActive}
+    on:dragover={onWorkbenchDragOver}
+    on:dragleave={onWorkbenchDragLeave}
+    on:drop={onWorkbenchDrop}
+  >
     {#each panes as item, index (item.id)}
       <section
         class="chat-col chat-pane compact"
@@ -573,7 +613,8 @@
     {/each}
   </div>
 {:else}
-  <div class="chat-layout">
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <div class="chat-layout" class:drop-active={dropActive} on:dragover={onWorkbenchDragOver} on:dragleave={onWorkbenchDragLeave} on:drop={onWorkbenchDrop}>
     <section class="chat-col chat-pane active" data-pane={pane.id}>
       <header class="view-header chat-head">
         <div class="header-left">

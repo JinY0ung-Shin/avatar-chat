@@ -180,6 +180,50 @@ export async function selectConversation(conversationId: string): Promise<void> 
   await attachActiveRun(pane.id);
 }
 
+// Add an EXISTING conversation as an extra split pane (drag-from-list / "분할에
+// 추가" button). If that conversation is already open in a pane, just focus it
+// instead of duplicating. Reuses selectConversation's load path but PUSHES the
+// pane rather than replacing the whole split.
+export async function addConversationToSplit(conversationId: string): Promise<void> {
+  const state = readState();
+  const existingPane = state.chatPanes.find((pane) => pane.conversationId === conversationId);
+  if (existingPane) {
+    updateState((s) => {
+      s.activePaneId = existingPane.id;
+      s.currentAvatar = existingPane.avatar;
+      s.view = "chat";
+    });
+    syncHash(true);
+    return;
+  }
+  if (state.chatPanes.length >= MAX_CHAT_PANES) {
+    notify("분할 대화는 최대 4개까지 가능합니다.", "warn");
+    return;
+  }
+  const conv = state.conversations.find((item) => item.id === conversationId) ?? (await loadConversations()).find((item) => item.id === conversationId);
+  if (!conv) {
+    notify("대화를 찾을 수 없습니다.", "warn");
+    return;
+  }
+  const [{ messages, groupKnowledgeOff }, avatarRes] = await Promise.all([
+    loadMessages(conversationId),
+    api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
+  ]);
+  const pane = makePane(avatarRes.avatar, conversationId, messages);
+  pane.groupKnowledgeOff = groupKnowledgeOff || [];
+  pane.greetedConversationId = conversationId; // an existing thread — never auto-greet
+  pane.usage = lastUsage(messages);
+  updateState((s) => {
+    if (s.chatPanes.length >= MAX_CHAT_PANES) return;
+    s.chatPanes.push(pane);
+    s.activePaneId = pane.id;
+    s.currentAvatar = pane.avatar;
+    s.view = "chat";
+  });
+  syncHash(true);
+  await attachActiveRun(pane.id);
+}
+
 export function newChat(paneId?: string): void {
   const pane = paneId ? readState().chatPanes.find((item) => item.id === paneId) : readState().chatPanes.find((item) => item.id === readState().activePaneId);
   if (!pane || pane.streaming) return;

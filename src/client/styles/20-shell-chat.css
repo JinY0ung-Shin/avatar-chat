@@ -259,6 +259,12 @@
   align-items: center;
   border-radius: var(--r-md);
 }
+.conv-item[draggable="true"] {
+  cursor: grab;
+}
+.conv-item[draggable="true"]:active {
+  cursor: grabbing;
+}
 .conv-item:hover {
   background: var(--rail-active);
 }

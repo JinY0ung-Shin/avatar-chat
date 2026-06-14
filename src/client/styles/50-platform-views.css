@@ -539,6 +539,15 @@
   grid-auto-rows: minmax(0, 1fr);
 }
 
+/* Dropping a conversation from the rail onto the chat area to add a split pane. */
+.chat-workbench.drop-active,
+.chat-layout.drop-active,
+.view-body.drop-active {
+  outline: 2px dashed var(--accent);
+  outline-offset: -6px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg));
+}
+
 .chat-pane.compact {
   min-height: 0;
   border: 1px solid var(--line);

@@ -3,7 +3,7 @@
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
-  import { newChat, selectConversation } from "../lib/chat";
+  import { addConversationToSplit, newChat, selectConversation } from "../lib/chat";
   import { formatDate } from "../lib/format";
   import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { goView } from "../lib/nav";
@@ -166,6 +166,29 @@
     return conversation.title || conversation.avatarDisplayName || "제목 없는 대화";
   }
 
+  // Drag a conversation onto the chat workbench to add it as a split pane. The
+  // chat-id MIME lets the drop zone (ChatView) accept only our payload.
+  const CONV_DND_MIME = "application/x-noah-conversation";
+  function onConvDragStart(event: DragEvent, conversation: ConversationSummary) {
+    if (!event.dataTransfer) return;
+    event.dataTransfer.setData(CONV_DND_MIME, conversation.id);
+    event.dataTransfer.setData("text/plain", conversationTitle(conversation));
+    event.dataTransfer.effectAllowed = "copy";
+  }
+
+  // Touch/keyboard-friendly alternative to dragging: add directly to the split.
+  async function addToSplit(conversation: ConversationSummary, event: Event) {
+    event.stopPropagation();
+    try {
+      await addConversationToSplit(conversation.id);
+      closeRail();
+    } catch (err) {
+      notify(`분할에 추가하지 못했습니다: ${(err as Error).message}`, "warn");
+    }
+  }
+
+  $: paneCount = $appState.chatPanes.length;
+
   function pickTheme(value: ThemePref) {
     setThemePref(value);
     replaceState({ themePref: value });
@@ -249,7 +272,14 @@
           <div class="conv-empty">{conversationQuery ? "검색 결과가 없습니다." : "아직 저장된 대화가 없습니다."}</div>
         {:else}
           {#each railConversations as conversation (conversation.id)}
-            <div class="conv-item" class:active={conversation.id === activeConversationId} class:editing={renamingId === conversation.id}>
+            <!-- svelte-ignore a11y-no-static-element-interactions -->
+            <div
+              class="conv-item"
+              class:active={conversation.id === activeConversationId}
+              class:editing={renamingId === conversation.id}
+              draggable={renamingId !== conversation.id}
+              on:dragstart={(event) => onConvDragStart(event, conversation)}
+            >
               {#if renamingId === conversation.id}
                 <!-- svelte-ignore a11y-autofocus -->
                 <input
@@ -278,6 +308,16 @@
                   <span class="conv-time">{conversation.avatarDisplayName} · {formatDate(conversation.updatedAt)}</span>
                 </button>
                 <div class="conv-acts">
+                  <button
+                    class="conv-act"
+                    type="button"
+                    aria-label="분할 대화에 추가"
+                    title={paneCount >= 4 ? "분할 대화는 최대 4개" : "분할 대화에 추가"}
+                    disabled={paneCount >= 4}
+                    on:click={(event) => addToSplit(conversation, event)}
+                  >
+                    <Icon name="columns" size={15} />
+                  </button>
                   <button class="conv-act" type="button" aria-label="대화 이름 바꾸기" title="이름 바꾸기" on:click={(event) => startRename(conversation, event)}>
                     <Icon name="edit" size={15} />
                   </button>
