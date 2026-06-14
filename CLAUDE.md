@@ -276,6 +276,35 @@ gotchas, and client↔server mirrored validators.
   state; `mcp__system__describe_system` is the runtime mirror of the same info (effective model =
   env pin > admin override > SDK default, profile publish state, groups/roles, direct-trust list,
   SSH on/off, pending request count) — keep BOTH in sync when adding capability state.
+- **Experimental features = per-user beta toggles (`canvas` is the first).** Registry in
+  `experimentalFeatures.ts` (`{key,name,description}`; name/description KOREAN, shared with the client
+  via `tsconfig.client.json` include like `routineSchedule.ts`). Wired through the per-user-setting
+  pattern: `users.experimental_features` JSON column → `toUser`/`getExperimentalFeatures` →
+  `updateProfile` (normalizes to KNOWN keys) → `User.experimentalFeatures` → `PATCH /api/me
+  {experimentalFeatures}` → "실험 기능" card in `SettingsAccessTab.svelte`. Self-state in BOTH
+  `buildPrompt` (owner/routine `experimentalFeaturesSection`) AND `describe_system` (via
+  `OwnerState.experimentalFeatures`). Gate a feature on `ownerState.experimentalFeatures.includes(key)`.
+- **Visual canvas (`mcp__canvas__show`, experimental `canvas` feature).** CSP-SAFE port of Superpowers'
+  visual companion: the avatar DECLARES content (`markdown`/`svg`/`html`/`mermaid`) + optional
+  `controls` (buttons/text); the CLIENT renders sanitized content (DOMPurify; mermaid `securityLevel:
+  strict`, lazy-loaded, code-block fallback) + real form controls — **no avatar JS runs, CSP unchanged**.
+  `canvasTools.ts` (intentionally NOT self-gated — registration is the boundary) registered in
+  `claudeAgent.ts` ONLY when the avatar OWNER enabled `canvas` AND `events.onCanvas` exists (so all
+  viewer classes incl. colleagues get it; routines/headless don't). Controls park the run via the SAME
+  `awaitResponse`/`/api/chat/respond` path as `onQuestion` (`routes/chat.ts` `onCanvas`); display-only
+  returns immediately. Artifacts persist on `AgentResponse.canvases` (success/cancel/error paths) and
+  rebuild on reload (`canvasesFromMessages`); live via SSE `canvas` event → `CanvasPanel.svelte`.
+- **Active repo workspace (`activeRepo` chat-body param).** Owner/trusted viewer opens a registered
+  `mcp__git_repo__*` repo as the SDK **cwd** so the avatar edits/tests with native Read/Edit/Bash; the
+  per-conversation scratch dir rides along as an `additionalDirectories`. **Security boundary is
+  unchanged** — git tokens are still stripped from the shell, so commit/push/sync stay MCP-only. A
+  per-clone-path lock (`activeRepoLock.ts`) serializes concurrent active opens (409); it does NOT block
+  another conversation's MCP sync (worktree isolation is the eventual fix). `preToolUseHook`'s
+  `activeRepoMode` is an INTEGRITY (not security) guard: it denies state-changing/remote Bash git
+  (commit/reset/checkout/push/…) and allows read-only git (status/diff/log) — denylist is advisory/leaky
+  by design. Metacognition: `promptBuilder` `activeRepoSection` (relaxes the GIT_MCP_ONLY last line for
+  read-only git) + the hook deny reason + the git-tool errors. UI picker (own single-pane only) +
+  `GET /api/me/git-repos`. The clone path is NEVER returned to the client.
 - **Routines = owner-scheduled headless runs, flexible KST schedule.** A routine
   (`routine_jobs` table, `get/list/create/update/deleteRoutineJob`, `markRoutineRun`) runs its
   `prompt` headlessly with owner-level tools and appends results to a dedicated conversation

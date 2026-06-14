@@ -5,7 +5,7 @@ import { syncHash } from "./nav";
 import { consumeSse, type SseFrame } from "./sse";
 import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
-import type { AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveToolRow, StoredMessage } from "./types";
+import type { AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveToolRow, PaneCanvas, StoredMessage } from "./types";
 
 const MAX_CHAT_PANES = 4;
 
@@ -74,6 +74,7 @@ function truncate(text: string, max = 180): string {
 }
 
 function makePane(avatar: AvatarDetail, conversationId = newId(), messages: StoredMessage[] = []): ChatPane {
+  const canvases = canvasesFromMessages(messages);
   return {
     id: newId(),
     avatar,
@@ -89,6 +90,9 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
     livePlugins: [],
     liveStatusStickyUntil: 0,
     groupKnowledgeOff: avatar.isOwn ? [...(readState().user?.groupKnowledgeOffDefault || [])] : [],
+    canvases,
+    activeCanvasId: canvases.length ? canvases[canvases.length - 1].id : null,
+    activeRepo: "",
     greetedConversationId: null,
     stickBottom: true,
     usage: null,
@@ -310,6 +314,7 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         greeting: opts.greeting === true,
         multiSession: readState().chatPanes.length > 1,
         groupKnowledgeOff: pane.groupKnowledgeOff || [],
+        activeRepo: pane.activeRepo || undefined,
       }),
     });
     if (response.status === 401) {
@@ -379,6 +384,7 @@ export async function attachActiveRun(paneId: string): Promise<void> {
       updatePane(paneId, (target) => {
         target.messages = messages;
         target.groupKnowledgeOff = groupKnowledgeOff || [];
+        target.canvases = canvasesFromMessages(messages);
         target.usage = lastUsage(messages);
       });
     }
@@ -535,8 +541,19 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "question":
       enqueuePrompt(paneId, "question", data);
       return;
+    case "canvas":
+      if (data?.artifactId) handleCanvas(paneId, data);
+      return;
     case "prompt_resolved":
-      if (data?.requestId) resolvePrompt(data.requestId);
+      if (data?.requestId) {
+        resolvePrompt(data.requestId);
+        // A canvas awaiting input is resolved server-side (timeout/cancel/reconnect):
+        // lock its form so it can't be re-submitted to a 404.
+        updatePane(paneId, (pane) => {
+          const canvas = pane.canvases.find((c) => c.requestId === data.requestId);
+          if (canvas) canvas.pending = false;
+        });
+      }
       return;
     case "done":
       finalizeDone(paneId, data);
@@ -695,6 +712,85 @@ function clearLive(pane: ChatPane): void {
   pane.streaming = false;
 }
 
+/* ---------- visual canvas (experimental, #50) ---------- */
+
+// A canvas artifact arrived over SSE: upsert by artifact id and bring it to the
+// front. `controls` present (non-null) means the run is waiting on the user.
+function handleCanvas(paneId: string, data: any): void {
+  const controls = Array.isArray(data.controls) ? data.controls : undefined;
+  updatePane(paneId, (pane) => {
+    const entry: PaneCanvas = {
+      id: data.artifactId,
+      title: data.title || "캔버스",
+      content: typeof data.content === "string" ? data.content : "",
+      contentType: data.contentType || "markdown",
+      controls,
+      runId: data.runId || pane.liveRunId || undefined,
+      requestId: data.requestId || undefined,
+      pending: Boolean(controls && controls.length),
+    };
+    const idx = pane.canvases.findIndex((c) => c.id === entry.id);
+    if (idx >= 0) pane.canvases[idx] = entry;
+    else pane.canvases.push(entry);
+    pane.activeCanvasId = entry.id;
+  });
+}
+
+export function setActiveCanvas(paneId: string, canvasId: string): void {
+  updatePane(paneId, (pane) => {
+    pane.activeCanvasId = canvasId;
+  });
+}
+
+// Submit the user's response to a canvas's controls. Mirrors answerPrompt but
+// the value shape is `{ values }`; locks the form and records the submission.
+export async function submitCanvas(paneId: string, canvasId: string, values: Record<string, unknown>): Promise<void> {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  const canvas = pane?.canvases.find((c) => c.id === canvasId);
+  if (!canvas || !canvas.requestId || !canvas.runId) return;
+  updatePane(paneId, (p) => {
+    const c = p.canvases.find((x) => x.id === canvasId);
+    if (c) c.submitting = true;
+  });
+  try {
+    await api("/api/chat/respond", {
+      method: "POST",
+      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { values } }),
+    });
+    updatePane(paneId, (p) => {
+      const c = p.canvases.find((x) => x.id === canvasId);
+      if (c) {
+        c.pending = false;
+        c.submitting = false;
+        c.submittedValues = values;
+      }
+    });
+  } catch (err) {
+    updatePane(paneId, (p) => {
+      const c = p.canvases.find((x) => x.id === canvasId);
+      if (c) c.submitting = false;
+    });
+    notify(`캔버스 응답을 전송하지 못했습니다: ${(err as Error).message}`, "warn");
+  }
+}
+
+// Dismiss a canvas's prompt without answering (sends a cancellation so the run
+// can proceed). For a display-only canvas this just hides the panel locally.
+export async function dismissCanvas(paneId: string, canvasId: string): Promise<void> {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  const canvas = pane?.canvases.find((c) => c.id === canvasId);
+  if (canvas?.pending && canvas.requestId && canvas.runId) {
+    api("/api/chat/respond", {
+      method: "POST",
+      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { cancelled: true } }),
+    }).catch(() => {});
+  }
+  updatePane(paneId, (p) => {
+    const c = p.canvases.find((x) => x.id === canvasId);
+    if (c) c.pending = false;
+  });
+}
+
 /* ---------- interactive prompts (permission / question) ---------- */
 
 // requestIds already resolved server-side (replay/prompt_resolved) — skip showing.
@@ -743,6 +839,21 @@ export async function answerPrompt(requestId: string, value: unknown): Promise<v
 }
 
 /* ---------- helpers ---------- */
+
+/** Rebuild the pane's canvas list from persisted assistant-message responses. */
+function canvasesFromMessages(messages: StoredMessage[]): PaneCanvas[] {
+  const out: PaneCanvas[] = [];
+  for (const message of messages) {
+    for (const canvas of message.response?.canvases || []) {
+      // De-dupe by id so a re-fetch never doubles a canvas.
+      const existing = out.findIndex((c) => c.id === canvas.id);
+      const entry: PaneCanvas = { ...canvas, pending: false };
+      if (existing >= 0) out[existing] = entry;
+      else out.push(entry);
+    }
+  }
+  return out;
+}
 
 function lastUsage(messages: StoredMessage[]): ChatPane["usage"] {
   for (let i = messages.length - 1; i >= 0; i--) {

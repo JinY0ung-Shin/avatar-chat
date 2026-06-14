@@ -4,6 +4,7 @@
   import { api } from "../lib/api";
   import { appState, notify, readState, replaceState } from "../lib/state";
   import { copyText } from "../lib/dom";
+  import { EXPERIMENTAL_FEATURES } from "../../../server/experimentalFeatures";
   import type { User } from "../lib/types";
 
   export let active = false;
@@ -52,7 +53,30 @@
 
   let sshBusy = false;
 
+  // experimental features (#50)
+  let experimentalBusy = "";
+
   $: user = $appState.user;
+  $: enabledExperimental = new Set(user?.experimentalFeatures || []);
+
+  async function toggleExperimental(key: string, on: boolean): Promise<void> {
+    const current = new Set(readState().user?.experimentalFeatures || []);
+    if (on) current.add(key);
+    else current.delete(key);
+    experimentalBusy = key;
+    try {
+      const { user: next } = await api<{ user: User }>("/api/me", {
+        method: "PATCH",
+        body: JSON.stringify({ experimentalFeatures: [...current] }),
+      });
+      replaceState({ user: next });
+      notify(`실험 기능을 ${on ? "켰습니다" : "껐습니다"}. 다음 대화부터 적용됩니다.`, "ok");
+    } catch (err) {
+      notify(`저장 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      experimentalBusy = "";
+    }
+  }
   $: internalSet = Boolean(user?.gitTokenSet);
   $: externalSet = Boolean(user?.secretNames.includes(EXTERNAL_GIT_TOKEN));
   $: githubHost = $appState.bootstrap?.githubHost || "github.com";
@@ -221,6 +245,32 @@
 </script>
 
 {#if active && user}
+  <!-- 실험 기능 (#50) -->
+  <section class="settings-card">
+    <div class="panel-section-head">
+      <div>
+        <h3>실험 기능</h3>
+        <p class="muted">아직 다듬는 중인 베타 기능입니다. 기능마다 켜고 끌 수 있으며, 동작이 바뀔 수 있어요. 아바타도 어떤 실험 기능이 켜져 있는지 인지합니다.</p>
+      </div>
+    </div>
+    <div class="experimental-list">
+      {#each EXPERIMENTAL_FEATURES as feature (feature.key)}
+        <label class="experimental-item">
+          <input
+            type="checkbox"
+            checked={enabledExperimental.has(feature.key)}
+            disabled={experimentalBusy === feature.key}
+            on:change={(event) => toggleExperimental(feature.key, event.currentTarget.checked)}
+          />
+          <span class="experimental-meta">
+            <strong>{feature.name} <span class="experimental-badge">실험</span></strong>
+            <span class="muted">{feature.description}</span>
+          </span>
+        </label>
+      {/each}
+    </div>
+  </section>
+
   <!-- Git 자격증명 -->
   <section class="settings-card">
     <div class="panel-section-head">
@@ -344,3 +394,33 @@
     </form>
   </section>
 {/if}
+
+<style>
+  .experimental-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3, 12px);
+  }
+  .experimental-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2, 8px);
+    cursor: pointer;
+  }
+  .experimental-item input {
+    margin-top: 3px;
+  }
+  .experimental-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .experimental-badge {
+    font-size: 0.65rem;
+    padding: 1px 6px;
+    border-radius: 999px;
+    background: var(--surface-2, #eee);
+    font-weight: 600;
+    vertical-align: middle;
+  }
+</style>

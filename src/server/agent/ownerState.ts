@@ -47,6 +47,8 @@ export interface OwnerState {
   anthropicModel?: string;
   /** Admin-selected model override; used when no env pin is set. */
   modelOverride: string | null;
+  /** Experimental (beta) feature keys the owner enabled for this avatar (#50). */
+  experimentalFeatures: string[];
 }
 
 /**
@@ -69,5 +71,6 @@ export function summarizeOwnerState(
     openRequestCount: store.countOpenKnowledgeRequests(avatarUserId),
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
+    experimentalFeatures: store.getExperimentalFeatures(avatarUserId),
   };
 }

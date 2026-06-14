@@ -131,6 +131,12 @@ export interface User {
    * share the group's knowledge repo; `role` is the user's role within each.
    */
   groups: UserGroupMembership[];
+  /**
+   * Keys of the experimental (beta) features the owner has enabled for their
+   * avatar (e.g. `["canvas"]`). Validated against the server registry
+   * (`experimentalFeatures.ts`); unknown keys are dropped. `[]` = none enabled.
+   */
+  experimentalFeatures: string[];
 }
 
 export interface Plugin {
@@ -364,6 +370,54 @@ export interface AgentUsage {
   contextWindow?: number;
 }
 
+/**
+ * One interactive control the avatar declares on a visual-canvas artifact. The
+ * AVATAR only DECLARES these (it never emits executable JS — CSP-safe); the
+ * client renders real form controls and posts the submitted value back through
+ * the existing `/api/chat/respond` interactive-prompt path. Part of the
+ * `canvas` experimental feature (#50).
+ */
+export interface CanvasControl {
+  /** "buttons" → single/multi choice; "text" → a one-line or multiline input. */
+  type: "buttons" | "text";
+  /** Stable id used as the key in the submitted-values object. */
+  id: string;
+  /** Optional label shown above the control. */
+  label?: string;
+  /** buttons: the selectable options. */
+  options?: { label: string; value?: string; description?: string }[];
+  /** buttons: allow selecting more than one option. */
+  multiSelect?: boolean;
+  /** text: placeholder shown in the empty input. */
+  placeholder?: string;
+  /** text: render a multi-line textarea instead of a single-line input. */
+  multiline?: boolean;
+}
+
+/**
+ * Supported visual-canvas content kinds. All are rendered client-side WITHOUT
+ * executing avatar-authored JS: markdown/svg/html are sanitized (DOMPurify) and
+ * mermaid is rendered from text by the bundled mermaid library — so the strict
+ * same-origin CSP stays unchanged (#50).
+ */
+export type CanvasContentType = "markdown" | "svg" | "html" | "mermaid";
+
+/**
+ * A visual-canvas artifact the avatar showed in the side panel during a turn,
+ * persisted on the assistant message's {@link AgentResponse} so the panel can be
+ * rebuilt on reload and the conversation continued from it (#50).
+ */
+export interface CanvasArtifact {
+  id: string;
+  title: string;
+  content: string;
+  contentType: CanvasContentType;
+  /** Declared interactive controls, if the avatar requested input. */
+  controls?: CanvasControl[];
+  /** The values the user submitted for `controls` (when they did). */
+  submittedValues?: Record<string, unknown>;
+}
+
 export interface AgentResponse {
   kind: "text";
   runtime: "local" | "claude";
@@ -371,6 +425,8 @@ export interface AgentResponse {
   text: string;
   /** Per-turn token usage (Claude runtime only; omitted for local runs). */
   usage?: AgentUsage;
+  /** Visual-canvas artifacts shown this turn (experimental `canvas` feature). */
+  canvases?: CanvasArtifact[];
   raw?: unknown;
 }
 
@@ -497,6 +553,34 @@ export interface AgentRequest {
     personal?: string | null;
     groups?: { name: string; content: string }[];
   };
+  /**
+   * Whether the avatar owner enabled the experimental `canvas` feature AND this
+   * is an interactive (non-headless) turn where the canvas tool is registered.
+   * Drives standing prompt guidance telling the avatar it can show visual
+   * canvases via `mcp__canvas__show` (#50). Set for ALL viewer classes of such a
+   * turn — colleagues see canvases too; it grants no elevation.
+   */
+  canvasEnabled?: boolean;
+  /**
+   * Experimental (beta) feature keys enabled for the avatar owner. Surfaced in
+   * the owner/routine self-state (META-COGNITION) so the avatar knows which beta
+   * behaviors are active. Set only for owner-driven turns. (#50)
+   */
+  experimentalFeatures?: string[];
+  /**
+   * When the owner/trusted viewer opened a registered git repo as an **active
+   * repo workspace** (#47): the repo's registered name. Its clone is the SDK
+   * cwd, so the avatar edits/tests locally with native tools while git lifecycle
+   * (commit/push/sync) still flows through `mcp__git_repo__*`. Drives the
+   * active-workspace prompt guidance + the Bash-git integrity policy.
+   */
+  activeRepoName?: string;
+  /**
+   * Extra writable directories to expose to the SDK beyond the plugin roots —
+   * e.g. the per-conversation scratch workspace when the cwd has been repointed
+   * at an active repo clone (#47).
+   */
+  additionalDirs?: string[];
 }
 
 /**

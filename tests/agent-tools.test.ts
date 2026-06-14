@@ -106,6 +106,8 @@ import {
   GIT_REPO_TOOL_NAMES,
 } from "../src/server/agent/gitRepoTools.js";
 import { gitRepoClonePath, gitRepoContextFromRecord } from "../src/server/gitRepos.js";
+import { buildCanvasTools, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES } from "../src/server/agent/canvasTools.js";
+import type { CanvasRequest, CanvasResult } from "../src/server/agent/events.js";
 import {
   buildSystemTools,
   SYSTEM_SERVER_NAME,
@@ -1642,5 +1644,55 @@ describe("group repo tools (mcp__group_repo__*)", () => {
     const res = await callTool(tools(s), "list_files", { group: "Nope" });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain("Could not find a group with that name/ID");
+  });
+});
+
+describe("canvas tools (experimental, #50)", () => {
+  it("exposes the documented server + tool names", () => {
+    expect(CANVAS_SERVER_NAME).toBe("canvas");
+    expect(CANVAS_TOOL_NAMES).toContain("mcp__canvas__show");
+  });
+
+  it("does not await input for a display-only canvas", async () => {
+    let captured: CanvasRequest | null = null;
+    const tools = buildCanvasTools({
+      emitCanvas: async (req): Promise<CanvasResult> => {
+        captured = req;
+        return { behavior: "shown" };
+      },
+    });
+    const res = await callTool(tools, "show", { title: "다이어그램", content: "graph TD; A-->B", contentType: "mermaid" });
+    expect(res.isError).toBeFalsy();
+    expect(captured!.awaitInput).toBe(false);
+    expect(captured!.controls).toBeUndefined();
+    expect(res.content[0].text).toContain("shown");
+  });
+
+  it("awaits input and reports the submission when controls are declared", async () => {
+    const tools = buildCanvasTools({
+      emitCanvas: async (req): Promise<CanvasResult> => {
+        expect(req.awaitInput).toBe(true);
+        return { behavior: "submitted", values: { pick: "A" } };
+      },
+    });
+    const res = await callTool(tools, "show", {
+      title: "선택",
+      content: "고르세요",
+      contentType: "markdown",
+      controls: [{ type: "buttons", id: "pick", options: [{ label: "A" }, { label: "B" }] }],
+    });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("pick: A");
+  });
+
+  it("reports a cancellation", async () => {
+    const tools = buildCanvasTools({ emitCanvas: async (): Promise<CanvasResult> => ({ behavior: "cancelled" }) });
+    const res = await callTool(tools, "show", {
+      title: "선택",
+      content: "고르세요",
+      contentType: "markdown",
+      controls: [{ type: "text", id: "note" }],
+    });
+    expect(res.content[0].text).toContain("dismissed");
   });
 });

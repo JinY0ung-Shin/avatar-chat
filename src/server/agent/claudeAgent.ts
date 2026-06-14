@@ -210,6 +210,7 @@ export async function runClaudeAgent(
   const { buildGroupRepoServer, GROUP_REPO_SERVER_NAME, GROUP_REPO_TOOL_NAMES } = await import(
     "./groupRepoTools.js"
   );
+  const { buildCanvasServer, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES } = await import("./canvasTools.js");
 
   const streaming = Boolean(events);
   // Tool-access derivation lives in deriveAgentToolAccess (a pure, unit-tested
@@ -338,6 +339,14 @@ export async function runClaudeAgent(
     config,
   });
 
+  // Visual canvas (experimental `canvas` feature, #50): registered only when the
+  // avatar OWNER enabled it AND this is an interactive turn with a canvas sink
+  // (events.onCanvas). Gating on the owner's setting — not the viewer's — means
+  // colleagues chatting with that avatar also get canvases (the feature grants no
+  // elevation; the handler self-gates nothing because showing UI is harmless).
+  const canvasActive = Boolean(events?.onCanvas) && ownerState.experimentalFeatures.includes("canvas");
+  const canvasServer = canvasActive ? buildCanvasServer({ emitCanvas: events!.onCanvas! }) : null;
+
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
   // NOT owner-only: host fingerprints are public, and a viewer who can drive
   // hex-ssh can manage its trust. The trust file is keyed to the owner
@@ -403,6 +412,7 @@ export async function runClaudeAgent(
       ...SSH_IDENTITY_TOOL_NAMES,
       ...GIT_REPO_TOOL_NAMES,
       ...(groupRepoActive ? GROUP_REPO_TOOL_NAMES : []),
+      ...(canvasActive ? CANVAS_TOOL_NAMES : []),
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
       "TodoWrite",
@@ -422,6 +432,7 @@ export async function runClaudeAgent(
       [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
       [GIT_REPO_SERVER_NAME]: gitRepoServer,
       ...(groupRepoActive ? { [GROUP_REPO_SERVER_NAME]: groupRepoServer } : {}),
+      ...(canvasServer ? { [CANVAS_SERVER_NAME]: canvasServer } : {}),
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
     },
@@ -471,8 +482,15 @@ export async function runClaudeAgent(
   if (request.cwd) {
     options.cwd = request.cwd;
   }
-  if (pluginRoots.length > 0) {
-    options.additionalDirectories = pluginRoots.map((root) => root.path);
+  // Plugin roots are always exposed as additional readable/writable dirs; an
+  // active repo workspace (#47) also adds the per-conversation scratch dir here
+  // (its clone became the cwd, so the scratch must stay reachable).
+  const additionalDirectories = [
+    ...pluginRoots.map((root) => root.path),
+    ...(request.additionalDirs ?? []),
+  ];
+  if (additionalDirectories.length > 0) {
+    options.additionalDirectories = additionalDirectories;
   }
 
   // PreToolUse hook: enforcement + interactivity. Runs in-process, so it can call
@@ -492,6 +510,9 @@ export async function runClaudeAgent(
               hexSshViewerClass,
               hexSshPolicy,
               config.rtkCommand,
+              // Active repo workspace (#47): block state-changing/remote Bash git
+              // (integrity guard, not security) so the avatar uses mcp__git_repo__*.
+              Boolean(request.activeRepoName),
             ),
           ],
         },
@@ -524,6 +545,11 @@ export async function runClaudeAgent(
     confluenceUrlConfigured: Boolean(config.confluenceUrl),
     confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
     groupMemberships: ownerToolAccess ? ownerGroups : [],
+    // Canvas standing guidance fires for ALL viewer classes of a canvas-enabled
+    // turn (colleagues see canvases too). Experimental-feature self-state is
+    // owner-driven only (META-COGNITION), matching describe_system's gating.
+    canvasEnabled: canvasActive,
+    experimentalFeatures: ownerToolAccess ? ownerState.experimentalFeatures : [],
   };
 
   for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {

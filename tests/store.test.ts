@@ -993,6 +993,19 @@ describe("group trust & visibility", () => {
     expect(store.deleteUser(friendId)).toBe(true);
     expect(store.listGroupMembers(group.id).map((m) => m.userId)).toEqual([ownerId]);
   });
+
+  // ---- experimental features (#50) ----
+  it("stores experimental features as a normalized key list (drops unknown)", () => {
+    const { store, ownerId } = makeStore("ef1");
+    expect(store.getUserById(ownerId)?.experimentalFeatures).toEqual([]);
+    expect(store.getExperimentalFeatures(ownerId)).toEqual([]);
+    // Unknown keys are dropped, known ones kept + deduped.
+    const updated = store.updateProfile(ownerId, { experimentalFeatures: ["canvas", "canvas", "bogus"] });
+    expect(updated.experimentalFeatures).toEqual(["canvas"]);
+    expect(store.getExperimentalFeatures(ownerId)).toEqual(["canvas"]);
+    // Clearing works.
+    expect(store.updateProfile(ownerId, { experimentalFeatures: [] }).experimentalFeatures).toEqual([]);
+  });
 });
 
 

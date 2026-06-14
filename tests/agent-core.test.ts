@@ -1570,6 +1570,46 @@ describe("buildPrompt", () => {
     expect(direct).toContain("a user the owner trusts");
     expect(direct).not.toContain("automatically trusted");
   });
+
+  // ---- experimental canvas feature (#50) ----
+  it("injects canvas guidance only when canvasEnabled", () => {
+    const off = buildPrompt(req({ viewerIsOwner: true }), 0);
+    expect(off).not.toContain("mcp__canvas__show");
+    const on = buildPrompt(req({ viewerIsOwner: true, canvasEnabled: true }), 0);
+    expect(on).toContain("mcp__canvas__show");
+    expect(on).toContain("Visual canvas");
+  });
+
+  it("gives a colleague the canvas guidance too when the feature is enabled", () => {
+    const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수", canvasEnabled: true }), 0);
+    expect(p).toContain("Visual canvas");
+  });
+
+  it("lists enabled experimental features only for owner-driven turns", () => {
+    const owner = buildPrompt(req({ viewerIsOwner: true, experimentalFeatures: ["canvas"] }), 0);
+    expect(owner).toContain("experimental");
+    expect(owner).toContain("`canvas`");
+  });
+
+  // ---- active repo workspace (#47) ----
+  it("injects active repo workspace guidance for the owner when activeRepoName is set", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, activeRepoName: "myrepo" }), 0);
+    expect(p).toContain("Active repo workspace");
+    expect(p).toContain("myrepo");
+    expect(p).toContain("mcp__git_repo__commit");
+    // read-only git is explicitly allowed in this mode
+    expect(p).toContain("read-only");
+  });
+
+  it("injects active repo workspace guidance for a trusted user too", () => {
+    const p = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수", activeRepoName: "myrepo" }), 0);
+    expect(p).toContain("Active repo workspace");
+  });
+
+  it("omits active repo workspace guidance when no active repo is set", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true }), 0);
+    expect(p).not.toContain("Active repo workspace");
+  });
 });
 
 
@@ -1756,6 +1796,33 @@ exit 1
 
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(prompted).toBe(false);
+  });
+
+  // ---- active repo workspace Bash-git integrity policy (#47) ----
+  // rtkCommand "/nonexistent-rtk" makes the rtk rewrite a no-op (spawn fails),
+  // so the command reaches the git policy verbatim. activeRepoMode is the 10th arg.
+  const NO_RTK = "/nonexistent-rtk-xyz";
+  const activeRepoHook = (activeRepoMode: boolean) =>
+    buildPreToolUseHook({}, true, READONLY, false, false, true, "owner", DEFAULT_HEX_SSH_TOOL_POLICY, NO_RTK, activeRepoMode);
+
+  it("blocks state-changing Bash git in an active repo workspace", async () => {
+    for (const command of ["git commit -m wip", "git push origin HEAD", "git checkout -b x", "git reset --hard"]) {
+      const out = await activeRepoHook(true)({ tool_name: "Bash", tool_input: { command }, tool_use_id: "g" }, "g");
+      expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+      expect(out.hookSpecificOutput.permissionDecisionReason).toContain("mcp__git_repo__");
+    }
+  });
+
+  it("allows read-only Bash git in an active repo workspace", async () => {
+    for (const command of ["git status", "git diff", "git log --oneline -5"]) {
+      const out = await activeRepoHook(true)({ tool_name: "Bash", tool_input: { command }, tool_use_id: "r" }, "r");
+      expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    }
+  });
+
+  it("does not block Bash git when NOT in an active repo workspace", async () => {
+    const out = await activeRepoHook(false)({ tool_name: "Bash", tool_input: { command: "git commit -m wip" }, tool_use_id: "n" }, "n");
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
 });
 

@@ -212,6 +212,63 @@ function knowledgeMemorySection(request: AgentRequest): string | null {
   ].join("\n\n");
 }
 
+/**
+ * Standing canvas guidance (experimental `canvas` feature, #50). Injected on any
+ * non-headless turn whose avatar owner enabled canvas — for ALL viewer classes,
+ * since colleagues see canvases too (it grants no elevation). Returns null when
+ * the feature is off for this turn.
+ */
+function canvasSection(request: AgentRequest): string | null {
+  if (!request.canvasEnabled) {
+    return null;
+  }
+  return (
+    "**Visual canvas (experimental)**: you can show a visual artifact to the user in a side panel with `mcp__canvas__show` — pass `title`, `content`, and `contentType` (`markdown` | `svg` | `html` | `mermaid`). " +
+    "Use it to share diagrams, mockups, layouts, or side-by-side option comparisons while you work them out WITH the user, not just to dump text the chat could already show. " +
+    "To collect a decision, add `controls`: `buttons` (single- or multi-select options) and/or `text` inputs. When you pass controls the tool BLOCKS until the user submits and returns their answer; with no controls it just displays and returns immediately. " +
+    "The client renders real, sanitized form controls — put NO scripts/JS in the content (it will be stripped). For mermaid, output only the diagram source as `content`. " +
+    "This is an experimental feature and its behavior may change."
+  );
+}
+
+/**
+ * Active repo workspace guidance (#47). When the cwd is a registered repo's
+ * clone, the avatar may edit/test locally with NATIVE tools and run read-only
+ * git, but every state-changing and remote git operation still flows through
+ * `mcp__git_repo__*` — the shell has no git credentials and the MCP lifecycle
+ * owns the working-tree state. This deliberately RELAXES the last line of
+ * GIT_MCP_ONLY_GUIDANCE (which forbids any in-clone git) for read-only git, so
+ * it is pushed AFTER that guidance for the more-specific instruction to win.
+ */
+function activeRepoSection(request: AgentRequest): string | null {
+  const name = request.activeRepoName?.trim();
+  if (!name) {
+    return null;
+  }
+  return (
+    `**Active repo workspace**: your current working directory IS the local clone of the registered git repository '${name}'. ` +
+    "Work on its files directly with the native tools — `Read`/`Edit`/`Write`, run tests and `rg`/search, and **read-only** git via Bash is allowed for inspection (`git status`/`diff`/`log`/`show`/`rev-parse`/`ls-files`/`grep`/`blame`). " +
+    "But every git operation that CHANGES repository state — `add`/`commit`/`reset`/`checkout`/`switch`/`merge`/`rebase` — and ALL remote operations — `clone`/`fetch`/`pull`/`push` — MUST go through the `mcp__git_repo__*` tools, NOT Bash: your shell has no git credentials (so remote git fails) and the app's commit/push lifecycle depends on staging it controls, so a shell mutation would break it (such Bash git is blocked). " +
+    `After you finish editing, persist with \`mcp__git_repo__commit\` (name='${name}') and then \`mcp__git_repo__push\`. The per-conversation scratch workspace is still available as an additional writable directory for throwaway files.`
+  );
+}
+
+/**
+ * Experimental-feature self-state (#50, META-COGNITION). Lists the beta features
+ * the owner enabled so the avatar knows which experimental behaviors are active.
+ * Owner-driven turns only (the field is set there). Returns null when none.
+ */
+function experimentalFeaturesSection(request: AgentRequest): string | null {
+  const features = (request.experimentalFeatures ?? []).filter(Boolean);
+  if (features.length === 0) {
+    return null;
+  }
+  return (
+    `Enabled experimental (beta) features for this avatar: ${features.map((f) => `\`${f}\``).join(", ")}. ` +
+    "These are experimental — their behavior and availability may change. The owner toggles them in Settings."
+  );
+}
+
 export function buildPrompt(request: AgentRequest, openRequestCount: number): string {
   const alias = request.avatar.alias?.trim();
   const secretNames = Array.from(new Set((request.secretNames ?? []).filter(Boolean))).sort();
@@ -256,6 +313,12 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     "Finding other avatars: if you judge that the user's request falls outside your capabilities (skills, knowledge, capability hashtags), first try to help directly, then use `mcp__avatars__search_avatars` to find other public avatars suited to that topic. " +
       "If a better-suited avatar exists, suggest that the user try talking to that avatar (@username).",
   );
+  // Standing canvas guidance for any non-headless turn where the owner enabled
+  // the experimental canvas feature (visible to all viewer classes).
+  const canvasBlock = canvasSection(request);
+  if (canvasBlock) {
+    lines.push(canvasBlock);
+  }
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
   // A headless run has NO ONE on the other side: never claim the owner is
@@ -297,6 +360,12 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
           `Configured secret names: ${secretNames.map((name) => `\`${name}\``).join(", ")} (the values are not exposed; do not output them).`,
         );
       }
+      const routineExperimental = (request.experimentalFeatures ?? []).filter(Boolean);
+      if (routineExperimental.length > 0) {
+        routineState.push(
+          `Enabled experimental (beta) features: ${routineExperimental.map((f) => `\`${f}\``).join(", ")} (behavior may change).`,
+        );
+      }
       routineState.push("If you need any other current configuration or state, call `mcp__system__describe_system`.");
       lines.push(`Current self-state: ${routineState.join(" ")}`);
       lines.push(GIT_MCP_ONLY_GUIDANCE);
@@ -335,6 +404,16 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     if (sshBlock) {
       lines.push(sshBlock);
     }
+    // Active repo workspace (#47): the SDK cwd is a registered repo's clone.
+    const activeRepoBlock = activeRepoSection(request);
+    if (activeRepoBlock) {
+      lines.push(activeRepoBlock);
+    }
+    // Experimental-feature self-state (META-COGNITION): which beta features are on.
+    const experimentalBlock = experimentalFeaturesSection(request);
+    if (experimentalBlock) {
+      lines.push(experimentalBlock);
+    }
     const greetingBlock = greetingSection(request, knowledgeRepoConfigured, openRequestCount, githubHost);
     if (greetingBlock) {
       lines.push(greetingBlock);
@@ -366,6 +445,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         "You can check the general git repos the owner has pre-registered with `mcp__git_repo__list_repos` and work on them with `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`. public repo sync is attempted without a token, and configuration changes such as registering/removing repos are owner-only.",
       );
       lines.push(GIT_MCP_ONLY_GUIDANCE);
+      const trustedActiveRepoBlock = activeRepoSection(request);
+      if (trustedActiveRepoBlock) {
+        lines.push(trustedActiveRepoBlock);
+      }
     }
     lines.push(
       "Changing avatar system settings such as plugins, routines, and the knowledge repository is owner-only. If a colleague requests a change, guide them to ask the owner, or leave the needed context via request_info.",

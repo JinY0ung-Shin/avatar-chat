@@ -104,6 +104,7 @@ export interface UserRow {
   ssh_public_key: string | null;
   hashtags: string | null;
   group_knowledge_off_default: string | null;
+  experimental_features: string | null;
 }
 
 export interface PluginRow {
@@ -419,6 +420,10 @@ export class StoreBase {
     // Public half of an app-generated SSH keypair. The private half is stored
     // only as the encrypted SSH_PRIVATE_KEY user secret.
     this.addColumnIfMissing("users", "ssh_public_key", "TEXT");
+    // Experimental (beta) feature keys the owner enabled for their avatar, a JSON
+    // array of registry keys (experimentalFeatures.ts); NULL/[] = none. Mirrors
+    // the hashtags JSON-array pattern; unknown keys are dropped on read/write.
+    this.addColumnIfMissing("users", "experimental_features", "TEXT");
     // SDK session id of the conversation's last turn, used to resume context on
     // the next turn (see claudeAgent resume). Null until the first turn completes.
     this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");

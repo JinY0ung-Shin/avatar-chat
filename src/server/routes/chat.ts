@@ -5,7 +5,9 @@ import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
 import { listSkillsInRoots, loadAgentPluginRoots, loadKnowledgeRepoMemory } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
-import type { AgentConversationMessage, AgentResponse, StoredMessage } from "../types.js";
+import { ensureGitRepoClone, gitRepoContextFor, gitRepoClonePath } from "../gitRepos.js";
+import { acquireActiveRepo, releaseActiveRepo } from "../activeRepoLock.js";
+import type { AgentConversationMessage, AgentResponse, CanvasArtifact, StoredMessage } from "../types.js";
 import { runAgentStream } from "../agent/index.js";
 import {
   attachRunClient,
@@ -154,6 +156,14 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     res.json({ skills: await listSkillsInRoots(sourced) });
   });
 
+  // The owner's registered general git repos, for the active-repo-workspace
+  // picker (#47). Returns name/repo/branch only — never the local clone path.
+  router.get("/api/me/git-repos", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({
+      repos: store.listGitRepos(req.user!.id).map((r) => ({ name: r.name, repo: r.repo, branch: r.branch })),
+    });
+  });
+
   // ---- Conversations & messages ---------------------------------------
 
   router.get("/api/conversations", requireAuth(store), (req: AuthenticatedRequest, res) => {
@@ -289,6 +299,40 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       return;
     }
 
+    // Active repo workspace (#47): owner/trusted viewers may open one registered
+    // git repo as the SDK cwd so the avatar edits/tests it with native tools.
+    // Resolve + clone + take the per-clone serialization lock BEFORE switching to
+    // SSE, so validation/contention failures stay plain JSON. The clone path is
+    // server-side only and never returned to the client (only the repo name).
+    const elevatedViewer = viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id);
+    const requestedActiveRepo = elevatedViewer ? safeString(req.body?.activeRepo) : "";
+    let activeRepoCwd: string | null = null;
+    let activeRepoName: string | null = null;
+    let activeRepoLockPath: string | null = null;
+    if (requestedActiveRepo) {
+      const repoCtx = gitRepoContextFor(store, avatar.id, requestedActiveRepo, config);
+      if (!repoCtx) {
+        apiError(res, 400, "등록된 저장소를 찾을 수 없습니다. 먼저 저장소를 등록해 주세요.");
+        return;
+      }
+      const clonePath = gitRepoClonePath(avatar.id, repoCtx.name, config);
+      if (!acquireActiveRepo(clonePath, conversationId)) {
+        apiError(res, 409, "이 저장소는 다른 대화에서 작업 중입니다. 잠시 후 다시 시도해 주세요.");
+        return;
+      }
+      activeRepoLockPath = clonePath;
+      try {
+        // Ensure the clone exists WITHOUT syncing — a fetch/checkout here could
+        // clobber native edits; sync stays an explicit mcp__git_repo__sync_repo.
+        activeRepoCwd = await ensureGitRepoClone(repoCtx);
+        activeRepoName = repoCtx.name;
+      } catch (error) {
+        releaseActiveRepo(clonePath, conversationId);
+        apiError(res, 502, `저장소 작업공간을 열지 못했습니다: ${scrubGitError(error)}`);
+        return;
+      }
+    }
+
     const runId = crypto.randomUUID();
     const regenerate = req.body?.regenerate === true;
     const chatStart = Date.now();
@@ -339,6 +383,9 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     // Accumulate the main-agent text as it streams, so the cancel/error paths can
     // persist the partial the user already watched (not an empty "(중지됨)" stub).
     let streamedText = "";
+    // Visual-canvas artifacts shown this turn (experimental `canvas` feature, #50),
+    // persisted on the assistant message's response so the panel rebuilds on reload.
+    const canvasArtifacts: CanvasArtifact[] = [];
     logger.info(
       { userId: req.user!.id, avatarId: avatar.id, conversationId, greeting, regenerate },
       "chat stream started",
@@ -350,6 +397,9 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     if (!attachRunClient(runId, req.user!.id, res)) {
       res.end();
       closeRun(runId);
+      if (activeRepoLockPath) {
+        releaseActiveRepo(activeRepoLockPath, conversationId);
+      }
       return;
     }
     emitRunEvent(runId, "open", { conversationId, avatarId: avatar.id, runId });
@@ -393,7 +443,11 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         {
           message: agentMessage,
           avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
-          cwd: workspaceDir,
+          // Active repo workspace (#47): the repo clone becomes the cwd and the
+          // per-conversation scratch dir is exposed as an additional writable dir.
+          cwd: activeRepoCwd ?? workspaceDir,
+          additionalDirs: activeRepoCwd ? [workspaceDir] : undefined,
+          activeRepoName: activeRepoName ?? undefined,
           resumeSessionId,
           conversationHistory,
           viewerUserId: req.user!.id,
@@ -402,7 +456,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           knowledgeMemory,
           // Elevated tool permissions for the owner OR a trusted user. The tool
           // gate denies everyone else, so auto-approving the elevated path is safe.
-          elevated: viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id),
+          elevated: elevatedViewer,
           // WHY a non-owner viewer is elevated, when group co-membership is the
           // source: the shared group names surface in the prompt (META-COGNITION).
           trustedViaGroups:
@@ -485,9 +539,52 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
             }
             return { behavior: "completed", result: reply?.result };
           },
+          // Visual canvas (experimental `canvas` feature, #50). Mirror the
+          // question wiring: emit the artifact over SSE, and when controls were
+          // declared (awaitInput) park the run until the user submits via
+          // /api/chat/respond. Always record the artifact so it persists.
+          onCanvas: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            const { artifactId, title, content, contentType, controls } = requestData;
+            emitRunEvent(runId, "canvas", {
+              runId,
+              requestId,
+              artifactId,
+              title,
+              content,
+              contentType,
+              controls: controls ?? null,
+            });
+            const record = (submittedValues?: Record<string, unknown>) => {
+              canvasArtifacts.push({ id: artifactId, title, content, contentType, controls, submittedValues });
+            };
+            if (!requestData.awaitInput) {
+              record();
+              return { behavior: "shown" };
+            }
+            const answer = await awaitResponse(runId, requestId);
+            if (answer === CANCELLED) {
+              record();
+              return { behavior: "cancelled" };
+            }
+            const reply = answer as { cancelled?: boolean; values?: Record<string, unknown> };
+            if (reply?.cancelled) {
+              record();
+              return { behavior: "cancelled" };
+            }
+            record(reply?.values ?? {});
+            return { behavior: "submitted", values: reply?.values ?? {} };
+          },
         },
         abortController,
       );
+
+      // Carry any canvases shown this turn on the response so they persist with
+      // the assistant message and rebuild on reload (and ride the greeting's
+      // ephemeral done event for the live panel). (#50)
+      if (canvasArtifacts.length) {
+        response.canvases = canvasArtifacts;
+      }
 
       // A greeting is ephemeral: it streams to the screen but is NOT persisted,
       // so opening a fresh chat doesn't litter the history with greeting-only
@@ -543,6 +640,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
             runtime: config.agentRuntime,
             summary: "중지됨",
             text: streamedText,
+            ...(canvasArtifacts.length ? { canvases: canvasArtifacts } : {}),
           };
           // Skip the insert if the conversation was deleted mid-run (FK would reject).
           const stopped =
@@ -573,10 +671,23 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         // alongside the error so a reload shows what the live view showed.
         store.setAgentSessionId(req.user!.id, conversationId, null);
         const content = streamedText ? `${streamedText}\n\n${detail}` : detail;
-        store.addMessage(conversationId, { role: "assistant", content });
+        // If the turn showed canvases before erroring, persist them so they
+        // survive reload (mirrors the cancel path). text=content keeps the error
+        // bubble identical to before; a response is only attached when there's a
+        // canvas to carry, so plain errors keep their existing (null-response) shape.
+        store.addMessage(conversationId, {
+          role: "assistant",
+          content,
+          response: canvasArtifacts.length
+            ? { kind: "text", runtime: config.agentRuntime, summary: "오류", text: content, canvases: canvasArtifacts }
+            : undefined,
+        });
       }
       emitRunEvent(runId, "error", { error: detail });
     } finally {
+      if (activeRepoLockPath) {
+        releaseActiveRepo(activeRepoLockPath, conversationId);
+      }
       closeRun(runId);
     }
   });

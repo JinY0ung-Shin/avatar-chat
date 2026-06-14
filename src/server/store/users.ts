@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { hashPassword, hashToken, verifyPassword } from "../auth.js";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
+import { normalizeExperimentalFeatures } from "../experimentalFeatures.js";
 import type { AvatarVisibility, User } from "../types.js";
 import {
   type Constructor,
@@ -50,7 +51,14 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         secretNames,
         sshPublicKey: row.ssh_public_key ?? null,
         groups: this.listUserGroups(row.id),
+        experimentalFeatures: normalizeExperimentalFeatures(parseNameList(row.experimental_features)),
       };
+    }
+
+    /** The KNOWN experimental-feature keys the owner has enabled (drops stale). */
+    getExperimentalFeatures(userId: string): string[] {
+      const row = this.userRowById(userId);
+      return row ? normalizeExperimentalFeatures(parseNameList(row.experimental_features)) : [];
     }
 
     createUser(input: { username: string; displayName: string; password: string }): User {
@@ -215,6 +223,7 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         intro?: string;
         hashtags?: string[];
         visibility?: AvatarVisibility;
+        experimentalFeatures?: string[];
       },
     ): User {
       const row = this.userRowById(userId);
@@ -233,11 +242,16 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         patch.hashtags !== undefined ? JSON.stringify(normalizeHashtags(patch.hashtags)) : row.hashtags;
       const visibility =
         patch.visibility !== undefined ? patch.visibility : this.rowVisibility(row);
+      // Normalize on write to known keys only (same discipline as hashtags).
+      const experimentalFeatures =
+        patch.experimentalFeatures !== undefined
+          ? JSON.stringify(normalizeExperimentalFeatures(patch.experimentalFeatures))
+          : row.experimental_features;
       this.db
         .prepare(
-          "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, hashtags = ?, visibility = ? WHERE id = ?",
+          "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, hashtags = ?, visibility = ?, experimental_features = ? WHERE id = ?",
         )
-        .run(displayName, alias, bio, persona, intro, hashtags, visibility, userId);
+        .run(displayName, alias, bio, persona, intro, hashtags, visibility, experimentalFeatures, userId);
       return this.toUser(this.userRowById(userId)!);
     }
 

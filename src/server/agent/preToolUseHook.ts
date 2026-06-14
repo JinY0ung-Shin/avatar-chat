@@ -116,6 +116,37 @@ const hookDeny = (reason: string): HookOutput => ({
  * can block, and can await the user. See the runClaudeAgent doc comment for why
  * this replaces canUseTool/onUserDialog.
  */
+/**
+ * Git subcommands that change repository/working-tree state or touch the remote.
+ * In an active repo workspace (#47) these are blocked in Bash — NOT for security
+ * (the shell has no git credentials, so remote ops fail anyway) but for
+ * INTEGRITY: the app's `mcp__git_repo__*` commit/push lifecycle owns the staging
+ * it controls, and a shell mutation would break it. This denylist is advisory
+ * and deliberately leaky (`git -C`, aliases, `.git/` writes can evade it) — the
+ * real boundary is token-stripping, so we don't over-invest in a perfect parser.
+ */
+// Only unambiguously tree/state-mutating or remote subcommands. Subcommands with
+// a common read-only form (`git branch`/`tag` list, `git remote -v`,
+// `git stash list`, `git config --get`) are deliberately omitted so inspection
+// isn't over-blocked — the prompt's allow-list steers the avatar, and this
+// denylist is an advisory integrity guard, not a security boundary.
+const STATE_CHANGING_GIT_SUBCOMMANDS = [
+  "add", "commit", "reset", "checkout", "switch", "merge", "rebase", "cherry-pick",
+  "revert", "restore", "clean", "rm", "mv",
+  "push", "pull", "fetch", "clone", "am", "apply",
+];
+// Matches a `git <subcommand>` invocation (optionally wrapped by rtk and/or
+// `-C <dir>`) anywhere in the command string, capturing the subcommand.
+const GIT_SUBCOMMAND_RE = new RegExp(
+  String.raw`(?:^|[\s;&|(])(?:rtk\s+(?:proxy\s+)?)?git(?:\s+-C\s+\S+)*\s+(${STATE_CHANGING_GIT_SUBCOMMANDS.join("|")})\b`,
+  "i",
+);
+
+function stateChangingGitInBash(command: string): string | null {
+  const match = GIT_SUBCOMMAND_RE.exec(command);
+  return match ? match[1].toLowerCase() : null;
+}
+
 export function buildPreToolUseHook(
   events: AgentEvents,
   elevated: boolean,
@@ -126,6 +157,7 @@ export function buildPreToolUseHook(
   hexSshViewerClass: HexSshViewerClass = "colleague",
   hexSshPolicy: HexSshToolPolicy = DEFAULT_HEX_SSH_TOOL_POLICY,
   rtkCommand = "rtk",
+  activeRepoMode = false,
 ) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
@@ -160,6 +192,22 @@ export function buildPreToolUseHook(
       if (rewrittenCommand) {
         updatedToolInput = { ...toolInput, command: rewrittenCommand };
         toolInput = updatedToolInput;
+      }
+      // Active repo workspace (#47): block state-changing/remote Bash git so the
+      // avatar persists through mcp__git_repo__* (integrity, not security). Read-
+      // only git (status/diff/log/…) is intentionally allowed and falls through.
+      if (activeRepoMode) {
+        const gitSub = stateChangingGitInBash(asString(toolInput.command));
+        if (gitSub) {
+          const reason = `'git ${gitSub}'은(는) 활성 저장소 작업공간에서 셸로 실행할 수 없습니다. mcp__git_repo__* 도구를 사용하세요.`;
+          events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+          agentLogger.info({ toolName, agentId, gitSub }, "active-repo bash git blocked");
+          return hookDeny(
+            `Running 'git ${gitSub}' via Bash is not allowed in the active repo workspace. ` +
+              "State-changing and remote git must go through the mcp__git_repo__* tools (commit/push/sync_repo) — the shell has no git credentials and would break the commit/push lifecycle. " +
+              "Read-only git (status/diff/log/show/rev-parse/ls-files/grep) is allowed for inspection.",
+          );
+        }
       }
     }
 

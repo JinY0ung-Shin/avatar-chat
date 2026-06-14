@@ -31,6 +31,7 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
       intro?: string;
       hashtags?: string[];
       visibility?: AvatarVisibility;
+      experimentalFeatures?: string[];
     } = {};
     if (typeof req.body?.displayName === "string") patch.displayName = req.body.displayName;
     if (typeof req.body?.alias === "string") patch.alias = req.body.alias;
@@ -42,6 +43,13 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
       patch.hashtags = req.body.hashtags.filter((t: unknown): t is string => typeof t === "string");
     }
     if (isAvatarVisibility(req.body?.visibility)) patch.visibility = req.body.visibility;
+    // Experimental-feature toggles: an array of registry keys; updateProfile
+    // normalizes to known keys only. (#50)
+    if (Array.isArray(req.body?.experimentalFeatures)) {
+      patch.experimentalFeatures = req.body.experimentalFeatures.filter(
+        (k: unknown): k is string => typeof k === "string",
+      );
+    }
     const user = store.updateProfile(req.user!.id, patch);
     res.json({ user });
   });

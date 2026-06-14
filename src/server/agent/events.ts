@@ -41,6 +41,28 @@ export interface QuestionRequest {
 }
 export type QuestionAnswer = { behavior: "completed"; result: unknown } | { behavior: "cancelled" };
 
+/**
+ * The avatar called `mcp__canvas__show` (experimental `canvas` feature, #50).
+ * The host forwards the artifact to the client to render in a side panel. When
+ * `awaitInput` is true (the avatar declared controls) the runner BLOCKS for the
+ * user's submission via the same out-of-band `/api/chat/respond` path used by
+ * permission/question prompts; otherwise it returns immediately (display-only).
+ */
+export interface CanvasRequest {
+  /** Stable artifact id, so the client can upsert (live event + persisted copy). */
+  artifactId: string;
+  title: string;
+  content: string;
+  contentType: import("../types.js").CanvasContentType;
+  controls?: import("../types.js").CanvasControl[];
+  /** True when controls were declared → park the run until the user submits. */
+  awaitInput: boolean;
+}
+export type CanvasResult =
+  | { behavior: "submitted"; values: Record<string, unknown> }
+  | { behavior: "cancelled" }
+  | { behavior: "shown" };
+
 /** A concrete tool call (NOT a subagent spawn — those use AgentSpawnEvent). */
 export interface ToolEvent {
   toolUseId: string;
@@ -140,4 +162,10 @@ export interface AgentEvents {
    * user's answer. If omitted, the dialog is cancelled (SDK default applies).
    */
   onQuestion?: (request: QuestionRequest) => Promise<QuestionAnswer>;
+  /**
+   * The avatar showed a visual canvas (experimental `canvas` feature). Resolve
+   * with the user's submission when controls were declared (`awaitInput`), or
+   * immediately for display-only. If omitted, the canvas tool is not registered.
+   */
+  onCanvas?: (request: CanvasRequest) => Promise<CanvasResult>;
 }
