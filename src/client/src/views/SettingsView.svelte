@@ -43,10 +43,10 @@
   ];
 
   const tabs = [
-    { id: "profile", label: "프로필" },
-    { id: "access", label: "권한·연결" },
-    { id: "knowledge", label: "지식·플러그인" },
-    { id: "groups", label: "그룹" },
+    { id: "profile", label: "프로필", icon: "user" },
+    { id: "access", label: "권한·연결", icon: "shield" },
+    { id: "knowledge", label: "지식·플러그인", icon: "book" },
+    { id: "groups", label: "그룹", icon: "users" },
   ] as const;
 
   let loading = true;
@@ -655,16 +655,19 @@
       <button class="linkish" type="button" on:click={load}>다시 시도</button>
     </div>
   {:else if user}
-    <div class="tabbar" role="tablist">
+    <div class="settings-tabs" role="tablist" aria-label="설정 분류">
       {#each tabs as tab}
         <button
+          class="settings-tab"
           type="button"
           role="tab"
           class:active={settingsTab === tab.id}
           aria-selected={settingsTab === tab.id}
+          tabindex={settingsTab === tab.id ? 0 : -1}
           on:click={() => updateState((state) => (state.settingsTab = tab.id))}
         >
-          {tab.label}
+          <Icon name={tab.icon} />
+          <span>{tab.label}</span>
         </button>
       {/each}
     </div>

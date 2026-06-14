@@ -326,16 +326,18 @@
       <button class="linkish" type="button" on:click={load}>다시 시도</button>
     </div>
   {:else}
-    <div class="tabbar seg-control" role="tablist" aria-label="관리자 분류">
+    <div class="settings-tabs" role="tablist" aria-label="관리자 분류">
       {#each tabs as tab}
         <button
+          class="settings-tab"
           type="button"
           class:active={$appState.adminTab === tab.id}
           role="tab"
           aria-selected={$appState.adminTab === tab.id}
+          tabindex={$appState.adminTab === tab.id ? 0 : -1}
           on:click={() => setTab(tab.id)}
         >
-          <Icon name={tab.icon} size={16} />
+          <Icon name={tab.icon} />
           <span>{tab.label}</span>
         </button>
       {/each}
