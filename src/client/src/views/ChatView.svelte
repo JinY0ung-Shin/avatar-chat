@@ -613,7 +613,7 @@
                 {#if message.response?.plan}
                   <details class="plan-card" open>
                     <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
-                    <div class="md plan-card-body">{@html renderMarkdown(message.response.plan)}</div>
+                    <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdown(message.response.plan)}</div>
                   </details>
                 {/if}
                 <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
@@ -659,7 +659,7 @@
               {#if item.livePlan}
                 <details class="plan-card" open>
                   <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
-                  <div class="md plan-card-body">{@html renderMarkdown(item.livePlan)}</div>
+                  <div class="md plan-card-body" use:enhanceMarkdown={item.livePlan}>{@html renderMarkdown(item.livePlan)}</div>
                 </details>
               {/if}
               {#if item.liveText}
@@ -984,10 +984,10 @@
      assistant bubble that surfaces the proposed plan — shown live while the turn
      streams and persisted on the finished message (response.plan). */
   .plan-card {
-    border: 1px solid var(--border);
-    border-left: 3px solid var(--accent, #6366f1);
-    border-radius: var(--radius, 10px);
-    background: var(--surface-2, var(--surface));
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
     margin: var(--s-2) 0;
     overflow: hidden;
   }
@@ -1009,12 +1009,12 @@
     font-weight: 700;
     padding: 1px 8px;
     border-radius: 999px;
-    background: var(--accent, #6366f1);
-    color: #fff;
+    background: var(--accent);
+    color: var(--on-accent);
     letter-spacing: 0.02em;
   }
   .plan-card-hint {
-    color: var(--text-muted, var(--text));
+    color: var(--muted);
     font-size: 0.75rem;
   }
   .plan-card-body {
