@@ -261,9 +261,12 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
   let pane = readState().chatPanes.find((item) => item.id === paneId);
   if (!pane || pane.streaming || !pane.avatar) return;
   let message = rawMessage.trim();
-  if (!message && !opts.greeting) return;
+  // Snapshot staged images early so a text-empty, image-only turn can be sent.
+  // Greetings/regenerates carry no freshly staged images.
+  const pendingImages = opts.greeting || opts.regenerate ? [] : [...(pane.pendingImages || [])];
+  if (!message && !opts.greeting && pendingImages.length === 0) return;
 
-  const slash = resolveTypedSlashCommand(pane, message);
+  const slash = message ? resolveTypedSlashCommand(pane, message) : null;
   if (slash && !opts.greeting) {
     if (slash.command.action === "new") {
       newChat(pane.id);
@@ -277,12 +280,11 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
       return;
     }
     message = slash.command.serverExpand ? `/${slash.command.name}${slash.args ? ` ${slash.args}` : ""}` : slashPrompt(slash.command, slash.args).trim();
-    if (!message) return;
+    if (!message && pendingImages.length === 0) return;
   }
 
-  // Snapshot staged images so they ride this turn (and can be restored if the
-  // send fails before anything streamed). Greetings/regenerates carry none.
-  const pendingImages = opts.greeting || opts.regenerate ? [] : [...(pane.pendingImages || [])];
+  // Staged images ride this turn and can be restored if the send fails before
+  // anything streamed.
   const userMessage: StoredMessage | null = opts.greeting
     ? null
     : {

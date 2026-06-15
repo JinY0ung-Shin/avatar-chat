@@ -130,6 +130,26 @@ describe("chat image attachments", () => {
     await stranger.get(`/api/conversations/${conversationId}/images/shot-1`).expect(404);
   });
 
+  it("rejects an unsafe supplied conversation id before image persistence", async () => {
+    const services = createServices({ dataDir: tempDir, agentRuntime: "claude", sessionSecret: "test" });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "pathcheck").expect(201);
+    const ownerId = ownerRes.body.user.id as string;
+
+    await owner
+      .post("/api/chat/stream")
+      .send({
+        avatarId: ownerId,
+        conversationId: "../../outside",
+        message: "hi",
+        images: [{ id: "shot-1", data: PNG_URL }],
+      })
+      .expect(400);
+
+    expect(capturedRequests).toHaveLength(0);
+  });
+
   it("rejects an oversized image before streaming", async () => {
     const services = createServices({ dataDir: tempDir, agentRuntime: "claude", sessionSecret: "test" });
     const app = createApp(services);

@@ -78,6 +78,20 @@ describe("chatImages", () => {
     expect(resolved && fs.existsSync(resolved.path)).toBe(true);
   });
 
+  it("keeps unsafe conversation ids inside the chat-images root", () => {
+    const decoded = decodeChatImages([{ id: "img-unsafe", data: PNG_URL }]);
+    if (!("images" in decoded)) throw new Error("expected images");
+    const { attachments } = saveChatImages(config(), "../../outside", decoded.images);
+    expect(attachments[0].id).toBe("img-unsafe");
+
+    const root = path.join(config().dataDir, "chat-images");
+    const resolved = resolveStoredImage(config(), "../../outside", "img-unsafe");
+    expect(resolved).toBeTruthy();
+    expect(resolved!.path.startsWith(root + path.sep)).toBe(true);
+    expect(resolved!.path).not.toContain(`..${path.sep}`);
+    expect(fs.existsSync(path.join(config().dataDir, "outside", "img-unsafe.png"))).toBe(false);
+  });
+
   it("rejects a traversal id at resolve time", () => {
     expect(resolveStoredImage(config(), "conv-1", "../../secret")).toBeNull();
     expect(resolveStoredImage(config(), "conv-1", "missing")).toBeNull();

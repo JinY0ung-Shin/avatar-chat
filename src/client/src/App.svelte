@@ -11,10 +11,11 @@
   import RoutinesView from "./views/RoutinesView.svelte";
   import SettingsView from "./views/SettingsView.svelte";
   import { api, setSessionExpiredHandler } from "./lib/api";
+  import { selectConversation } from "./lib/chat";
   import { loadInboxData, startKnowledgeWatch, stopKnowledgeWatch } from "./lib/loaders";
   import { applyInitialRoute, installRouteListener, syncHash } from "./lib/nav";
   import { markOnboardingDone, onboardingDone } from "./lib/onboarding";
-  import { appState, notify, replaceState, updateState } from "./lib/state";
+  import { appState, notify, readState, replaceState, updateState } from "./lib/state";
   import { applyTheme, getThemePref, watchSystemTheme } from "./lib/theme";
   import type { BootstrapInfo, User } from "./lib/types";
 
@@ -81,7 +82,15 @@
 
   onMount(() => {
     setSessionExpiredHandler(handleSessionExpired);
-    const cleanup = installRouteListener();
+    const cleanup = installRouteListener((conversationId) => {
+      const state = readState();
+      const activeConversationId =
+        state.chatPanes.find((pane) => pane.id === state.activePaneId)?.conversationId ?? state.chatPanes[0]?.conversationId;
+      if (activeConversationId === conversationId) return;
+      void selectConversation(conversationId).catch((err) =>
+        notify(`대화를 열지 못했습니다: ${(err as Error).message}`, "warn"),
+      );
+    });
     void boot();
     return () => {
       cleanup();

@@ -32,7 +32,7 @@ import {
   CANCELLED,
 } from "../agent/runRegistry.js";
 import { workspaceDirFor } from "../workspace.js";
-import { apiError, resolveAvatarSkillSources, safeString, type RouterDeps } from "./_shared.js";
+import { apiError, isSafePathId, resolveAvatarSkillSources, safeString, type RouterDeps } from "./_shared.js";
 
 interface ChatSlashExpansion {
   message: string;
@@ -389,6 +389,10 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           : ""; // sent but not a known tier (incl. empty) → clear to default
 
     const suppliedConversationId = safeString(req.body?.conversationId);
+    if (suppliedConversationId && !isSafePathId(suppliedConversationId)) {
+      apiError(res, 400, "대화 ID가 올바르지 않습니다.");
+      return;
+    }
     // Reject a supplied id that already belongs to ANOTHER user before any DB
     // write: otherwise touchConversation falls through to an INSERT that hits the
     // conversations PRIMARY KEY and throws (an unhandled rejection on Express 4).

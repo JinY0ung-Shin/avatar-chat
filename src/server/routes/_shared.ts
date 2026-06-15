@@ -65,6 +65,12 @@ export function safeString(value: unknown, fallback = ""): string {
   return typeof value === "string" ? value.trim() : fallback;
 }
 
+const SAFE_PATH_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+export function isSafePathId(value: string): boolean {
+  return SAFE_PATH_ID.test(value);
+}
+
 export function isAvatarVisibility(value: unknown): value is AvatarVisibility {
   return value === "public" || value === "group" || value === "private";
 }
