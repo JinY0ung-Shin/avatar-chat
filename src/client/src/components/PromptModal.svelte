@@ -86,25 +86,10 @@
     if (request.kind === "permission") void respond({ behavior: "deny" });
     else void respond({ cancelled: true });
   }
-
-  function onKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") {
-      event.stopPropagation();
-      cancel();
-    }
-  }
 </script>
 
-<svelte:window on:keydown={onKeydown} />
-
 {#if request}
-  <div
-    class="prompt-modal-backdrop"
-    role="presentation"
-    on:mousedown={(event) => {
-      if (event.target === event.currentTarget) cancel();
-    }}
-  >
+  <div class="prompt-modal-backdrop" role="presentation">
     {#if request.kind === "permission"}
       <div class="prompt-card permission" role="dialog" aria-modal="true" aria-label="권한 요청">
         <div class="prompt-head">
