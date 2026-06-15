@@ -6,7 +6,7 @@ import { consumeSse, type SseFrame } from "./sse";
 import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
-import type { AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveToolRow, PaneCanvas, StoredMessage } from "./types";
+import type { AgentActivity, AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveToolRow, PaneCanvas, StoredMessage } from "./types";
 
 const MAX_CHAT_PANES = 4;
 
@@ -681,14 +681,40 @@ function resetLive(pane: ChatPane): void {
 
 /* ---------- finalizers ---------- */
 
+// Snapshot the live activity tree so the COMPLETED bubble keeps showing what ran
+// (otherwise the tree vanishes the instant the run finishes). Normalize any still
+// "running" node to "done" so it doesn't render a perpetual spinner.
+function snapshotActivity(pane: ChatPane): AgentActivity | undefined {
+  if (!pane.liveTools.length) return undefined;
+  return {
+    agents: pane.liveAgents.map((a) => ({ ...a, status: a.status === "running" ? "done" : a.status })),
+    tools: pane.liveTools.map((t) => ({ ...t, status: t.status === "running" ? "done" : t.status })),
+  };
+}
+
+function attachActivity(response: AgentResponse | null, activity: AgentActivity | undefined): void {
+  if (response && activity) response.activity = activity;
+}
+
 function finalizeDone(paneId: string, data: any): void {
+  // A persisted (non-greeting) server message id + its activity → persist the
+  // snapshot so the completed tool/agent tree survives reload.
+  let persistMessageId: string | null = null;
+  let persistActivity: AgentActivity | undefined;
   updatePane(paneId, (pane) => {
+    const activity = snapshotActivity(pane);
     const message = data?.message as StoredMessage | undefined;
     if (message?.role === "assistant") {
+      attachActivity(message.response, activity);
       pane.messages.push(message);
       pane.usage = message.response?.usage ?? pane.usage;
+      if (message.id && activity) {
+        persistMessageId = message.id;
+        persistActivity = activity;
+      }
     } else if (pane.liveText || data?.response) {
       const response = data?.response as AgentResponse | undefined;
+      attachActivity(response ?? null, activity);
       pane.messages.push({
         id: newId(),
         conversationId: pane.conversationId,
@@ -701,17 +727,27 @@ function finalizeDone(paneId: string, data: any): void {
     }
     clearLive(pane);
   });
+  if (persistMessageId && persistActivity) {
+    // Best effort: the in-session display already works without this; it only adds
+    // reload durability.
+    api(`/api/messages/${encodeURIComponent(persistMessageId)}/activity`, {
+      method: "PUT",
+      body: JSON.stringify({ activity: persistActivity }),
+    }).catch(() => {});
+  }
 }
 
 function finalizePane(paneId: string, message: string, stopped: boolean): void {
   updatePane(paneId, (pane) => {
     const content = pane.liveText || (stopped ? "(중지됨)" : message);
+    const response: AgentResponse = { kind: "text", runtime: "claude", summary: stopped ? "중지됨" : "오류", text: pane.liveText };
+    attachActivity(response, snapshotActivity(pane));
     pane.messages.push({
       id: newId(),
       conversationId: pane.conversationId,
       role: "assistant",
       content,
-      response: { kind: "text", runtime: "claude", summary: stopped ? "중지됨" : "오류", text: pane.liveText },
+      response,
       createdAt: new Date().toISOString(),
     });
     clearLive(pane);
@@ -720,12 +756,14 @@ function finalizePane(paneId: string, message: string, stopped: boolean): void {
 
 function finalizeError(paneId: string, message: string): void {
   updatePane(paneId, (pane) => {
+    const response: AgentResponse = { kind: "text", runtime: "claude", summary: "오류", text: pane.liveText || message };
+    attachActivity(response, snapshotActivity(pane));
     pane.messages.push({
       id: newId(),
       conversationId: pane.conversationId,
       role: "assistant",
       content: pane.liveText ? `${pane.liveText}\n\n${message}` : message,
-      response: { kind: "text", runtime: "claude", summary: "오류", text: pane.liveText || message },
+      response,
       createdAt: new Date().toISOString(),
     });
     clearLive(pane);

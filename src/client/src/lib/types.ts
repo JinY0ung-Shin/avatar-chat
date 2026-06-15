@@ -3,6 +3,7 @@ export type {
   AdminStats,
   AdminUserDetail,
   AdminUserSummary,
+  AgentActivity,
   AgentResponse,
   AgentUsage,
   AuditEvent,

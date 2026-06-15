@@ -421,6 +421,27 @@ describe("store agent session resume", () => {
     expect(store.getConversationModel(ownerId, "conv-model")).toBe("haiku");
   });
 
+  it("attaches an activity snapshot to a stored message, owner-scoped, clearing when empty", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-act", ownerId, "hi");
+    const msg = store.addMessage("conv-act", { role: "assistant", content: "done", response: { kind: "text", runtime: "claude", summary: "", text: "done" } });
+    const activity = {
+      agents: [{ id: "main", parentId: "", label: "", status: "done" as const, isMain: true }],
+      tools: [{ id: "t1", agentId: "main", kind: "tool" as const, label: "파일 읽기", detail: "a.ts", status: "done" as const }],
+    };
+    expect(store.setMessageActivity(ownerId, msg.id, activity)).toBe(true);
+    expect(store.listMessages(ownerId, "conv-act")[0].response?.activity).toEqual(activity);
+    // Empty tools clears it back off the response.
+    expect(store.setMessageActivity(ownerId, msg.id, { agents: [], tools: [] })).toBe(true);
+    expect(store.listMessages(ownerId, "conv-act")[0].response?.activity).toBeUndefined();
+    // A different owner can't attach to someone else's message.
+    const other = store.createUser({ username: "actother", displayName: "Other", password: "password123" });
+    expect(store.setMessageActivity(other.id, msg.id, activity)).toBe(false);
+    // A message with no stored response can't carry activity.
+    const bare = store.addMessage("conv-act", { role: "user", content: "hi" });
+    expect(store.setMessageActivity(ownerId, bare.id, activity)).toBe(false);
+  });
+
   it("round-trips the per-user default group-knowledge OFF set (seeds new conversations)", () => {
     const { store, ownerId } = makeStore();
     // Default on a fresh user: every group on.

@@ -35,7 +35,14 @@
   function answeredFor(qi: number): boolean {
     return selections[qi]?.length > 0 || (customOn[qi] && customText[qi].trim().length > 0);
   }
-  $: canSubmit = !questions || questions.every((_: unknown, qi: number) => answeredFor(qi));
+  // Reference selections/customOn/customText directly so Svelte tracks them — a
+  // call to answeredFor() alone hides those deps and leaves the submit button
+  // stuck in its initial (disabled) state no matter what the user selects/types.
+  $: canSubmit =
+    !questions ||
+    questions.every(
+      (_: unknown, qi: number) => selections[qi]?.length > 0 || (customOn[qi] && customText[qi].trim().length > 0),
+    );
 
   function toggleOption(qi: number, q: any, label: string) {
     if (q.multiSelect) {

@@ -61,11 +61,26 @@
     }
   });
 
+  // Panes currently being scrolled programmatically. A programmatic `scrollTop`
+  // write fires an async `scroll` event; during fast streaming that event can land
+  // AFTER new content grew `scrollHeight`, so `onTranscriptScroll` would wrongly
+  // read "not near bottom" and flip `stickBottom` off — permanently killing
+  // auto-scroll. We mark the pane while auto-scrolling and ignore its scroll events
+  // until the next frame, so only genuine user scrolls update `stickBottom`.
+  let autoScrolling: Record<string, boolean> = {};
+
+  function stickToBottom(item: ChatPane) {
+    const el = transcriptEls[item.id];
+    if (!el || item.stickBottom === false) return;
+    autoScrolling[item.id] = true;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      autoScrolling[item.id] = false;
+    });
+  }
+
   afterUpdate(() => {
-    for (const item of panes) {
-      const el = transcriptEls[item.id];
-      if (el && item.stickBottom !== false) el.scrollTop = el.scrollHeight;
-    }
+    for (const item of panes) stickToBottom(item);
   });
 
   $: panes = $appState.chatPanes;
@@ -252,6 +267,7 @@
   }
 
   function onTranscriptScroll(event: Event, item: ChatPane) {
+    if (autoScrolling[item.id]) return; // ignore our own programmatic scroll
     const el = event.currentTarget as HTMLDivElement;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
     updateState((state) => {
@@ -261,12 +277,18 @@
   }
 
   function scrollToBottom(item: ChatPane) {
-    const el = transcriptEls[item.id];
-    if (el) el.scrollTop = el.scrollHeight;
     updateState((state) => {
       const target = state.chatPanes.find((p) => p.id === item.id);
       if (target) target.stickBottom = true;
     });
+    const el = transcriptEls[item.id];
+    if (el) {
+      autoScrolling[item.id] = true;
+      el.scrollTop = el.scrollHeight;
+      requestAnimationFrame(() => {
+        autoScrolling[item.id] = false;
+      });
+    }
   }
 
   async function addSplitPane() {
@@ -359,6 +381,23 @@
     if (agentCount) parts.push(`에이전트 ${agentCount}개`);
     return parts.length ? `${parts.join(" · ")} 진행 중` : "작업 중…";
   }
+
+  // Activity-tree snapshot kept on a COMPLETED assistant message, so the tool/agent
+  // runs stay visible after the response finishes (collapsed by default).
+  function completedActivity(message: StoredMessage) {
+    const activity = message.response?.activity;
+    return activity && activity.tools.length ? activity : null;
+  }
+  function completedActivityLabel(activity: { tools: { kind: string }[]; agents: { isMain: boolean }[] }): string {
+    const toolCount = activity.tools.filter((t) => t.kind === "tool").length;
+    const taskCount = activity.tools.filter((t) => t.kind === "task").length;
+    const agentCount = activity.agents.filter((a) => !a.isMain).length;
+    const parts: string[] = [];
+    if (toolCount) parts.push(`도구 ${toolCount}개`);
+    if (taskCount) parts.push(`태스크 ${taskCount}개`);
+    if (agentCount) parts.push(`에이전트 ${agentCount}개`);
+    return parts.length ? `${parts.join(" · ")} 사용함` : "작업 내역";
+  }
 </script>
 
 {#snippet transcript(item: ChatPane)}
@@ -398,8 +437,17 @@
             </div>
             <div class={`bubble ${message.response?.summary === "오류" ? "errored" : ""}`}>
               {#if message.role === "assistant"}
+                {@const activity = completedActivity(message)}
                 {#if runtimeBadge(message)}
                   <div class="response-meta"><span class="meta-badge">{runtimeBadge(message)}</span></div>
+                {/if}
+                {#if activity}
+                  <details class="activity-live activity-done">
+                    <summary><span class="activity-summary-text">{completedActivityLabel(activity)}</span></summary>
+                    <div class="agent-activity">
+                      <ActivityTree agentId="main" agents={activity.agents} tools={activity.tools} />
+                    </div>
+                  </details>
                 {/if}
                 <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
               {:else}

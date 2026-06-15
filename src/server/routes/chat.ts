@@ -32,6 +32,41 @@ interface ChatSlashExpansion {
   ownerOnly?: boolean;
 }
 
+// Validate + size-cap a client-sent activity-tree snapshot before persisting it on
+// a message (the client owns the humanized labels; we only sanitize/bound it so a
+// bad/huge payload can't bloat the stored response JSON). Returns null when empty.
+function sanitizeActivity(raw: unknown): AgentResponse["activity"] | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as { agents?: unknown; tools?: unknown };
+  const cap = (s: unknown, max: number): string => (typeof s === "string" ? s.slice(0, max) : "");
+  const agents = (Array.isArray(obj.agents) ? obj.agents : []).slice(0, 60).map((a) => {
+    const node = a as Record<string, unknown>;
+    const status = cap(node.status, 16);
+    return {
+      id: cap(node.id, 80),
+      parentId: cap(node.parentId, 80),
+      label: cap(node.label, 300),
+      status: (status === "done" || status === "failed" ? status : "done") as "running" | "done" | "failed",
+      isMain: node.isMain === true,
+    };
+  });
+  const tools = (Array.isArray(obj.tools) ? obj.tools : []).slice(0, 300).map((t) => {
+    const row = t as Record<string, unknown>;
+    const kind = cap(row.kind, 16);
+    const status = cap(row.status, 16);
+    return {
+      id: cap(row.id, 80),
+      agentId: cap(row.agentId, 80) || "main",
+      kind: (kind === "task" || kind === "blocked" ? kind : "tool") as "tool" | "task" | "blocked",
+      label: cap(row.label, 300),
+      detail: row.detail ? cap(row.detail, 400) : undefined,
+      status: (["done", "failed", "blocked"].includes(status) ? status : "done") as "running" | "done" | "failed" | "blocked",
+    };
+  });
+  if (!tools.length) return null;
+  return { agents, tools };
+}
+
 // Agent-facing (the user only ever sees the literal "/learn" in their bubble;
 // this expanded instruction goes to the model), so it is written in English.
 // The avatar still REPLIES in the user's language per buildPrompt.
@@ -189,6 +224,18 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       // so the composer picker restores on reload.
       selectedModel: store.getConversationModel(req.user!.id, conversationId),
     });
+  });
+
+  // Persist the activity-tree snapshot (tools/agents the avatar ran) onto a stored
+  // assistant message so the completed bubble keeps showing it after reload. The
+  // client posts its already-humanized snapshot once the turn finishes.
+  router.put("/api/messages/:id/activity", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const ok = store.setMessageActivity(req.user!.id, req.params.id, sanitizeActivity(req.body?.activity));
+    if (!ok) {
+      apiError(res, 404, "메시지를 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ ok: true });
   });
 
   router.patch("/api/conversations/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {

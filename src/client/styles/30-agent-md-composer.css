@@ -301,7 +301,9 @@
   justify-content: center;
   padding: var(--s-4);
   background: var(--scrim);
-  backdrop-filter: blur(2px);
+  /* No backdrop-filter: blurring the full viewport while the streaming spinner
+     keeps animating behind the modal forces a re-blur every frame, which makes
+     typing in the prompt's text field laggy. The scrim alone dims the chat. */
 }
 .prompt-modal-backdrop[hidden] {
   display: none;

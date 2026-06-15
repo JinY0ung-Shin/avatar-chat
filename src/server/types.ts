@@ -426,6 +426,30 @@ export interface CanvasArtifact {
   submittedValues?: Record<string, unknown>;
 }
 
+/**
+ * A snapshot of the activity tree (sub-agents + tool/task/blocked rows) that ran
+ * during a turn, kept on the assistant message so the COMPLETED bubble still shows
+ * what the avatar did — otherwise the live activity tree vanishes the instant the
+ * run finishes. Structurally mirrors the client's `LiveAgentNode`/`LiveToolRow`.
+ */
+export interface AgentActivity {
+  agents: {
+    id: string;
+    parentId: string;
+    label: string;
+    status: "running" | "done" | "failed";
+    isMain: boolean;
+  }[];
+  tools: {
+    id: string;
+    agentId: string;
+    kind: "tool" | "task" | "blocked";
+    label: string;
+    detail?: string;
+    status: "running" | "done" | "failed" | "blocked";
+  }[];
+}
+
 export interface AgentResponse {
   kind: "text";
   runtime: "local" | "claude";
@@ -435,6 +459,8 @@ export interface AgentResponse {
   usage?: AgentUsage;
   /** Visual-canvas artifacts shown this turn (experimental `canvas` feature). */
   canvases?: CanvasArtifact[];
+  /** Activity-tree snapshot so the completed bubble keeps showing tool/agent runs. */
+  activity?: AgentActivity;
   raw?: unknown;
 }
 

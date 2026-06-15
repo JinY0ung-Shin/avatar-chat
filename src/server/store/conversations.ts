@@ -252,6 +252,32 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       };
     }
 
+    /**
+     * Attach (or clear) an activity-tree snapshot on a persisted assistant message
+     * so the completed bubble keeps showing the tool/agent runs after reload. The
+     * client owns the humanized labels, so we just merge the given activity into the
+     * stored response JSON. Returns false if the message isn't owned / has no response.
+     */
+    setMessageActivity(ownerId: string, messageId: string, activity: AgentResponse["activity"] | null): boolean {
+      const row = this.db
+        .prepare("SELECT conversation_id as cid, response_json as rj FROM messages WHERE id = ?")
+        .get(messageId) as { cid: string; rj: string | null } | undefined;
+      if (!row || !this.ownsConversation(ownerId, row.cid)) {
+        return false;
+      }
+      const response = this.parseResponseJson(row.rj);
+      if (!response) {
+        return false;
+      }
+      if (activity && activity.tools.length) {
+        response.activity = activity;
+      } else {
+        delete response.activity;
+      }
+      this.db.prepare("UPDATE messages SET response_json = ? WHERE id = ?").run(JSON.stringify(response), messageId);
+      return true;
+    }
+
     renameConversation(ownerId: string, id: string, title: string): ConversationSummary | null {
       if (!this.ownsConversation(ownerId, id)) {
         return null;
