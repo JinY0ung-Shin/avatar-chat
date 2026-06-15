@@ -42,6 +42,8 @@ export interface ChatPane {
   draft: string;
   streaming: boolean;
   liveText: string;
+  /** Set when tool/agent activity interrupts the text stream; the next delta inserts a paragraph break so resumed text doesn't run onto the previous line. */
+  liveTextBreakPending?: boolean;
   liveStatus: string;
   liveRunId: string | null;
   /** Multi-agent activity tree (root "main" + sub-agents) for the live bubble. */

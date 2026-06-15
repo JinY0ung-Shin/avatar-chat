@@ -84,6 +84,7 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
     draft: "",
     streaming: false,
     liveText: "",
+    liveTextBreakPending: false,
     liveStatus: "",
     liveRunId: null,
     liveAgents: [],
@@ -470,7 +471,16 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
   const { event, data } = frame;
   switch (event) {
     case "delta":
-      if (typeof data?.text === "string") updatePane(paneId, (pane) => (pane.liveText += data.text));
+      if (typeof data?.text === "string") {
+        const text = data.text;
+        updatePane(paneId, (pane) => {
+          if (pane.liveTextBreakPending) {
+            pane.liveTextBreakPending = false;
+            if (pane.liveText && !pane.liveText.endsWith("\n") && !text.startsWith("\n")) pane.liveText += "\n\n";
+          }
+          pane.liveText += text;
+        });
+      }
       return;
     case "open":
       updatePane(paneId, (pane) => {
@@ -494,6 +504,7 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       return;
     case "agent":
       if (data?.agentId) {
+        markTextBreak(paneId);
         const label = [data.subagentType, data.description].filter(Boolean).join(" · ") || "하위 작업";
         ensureAgent(paneId, data.agentId, data.parentId || "main", label, "running");
         setStatus(paneId, `에이전트 작업 중: ${label}`, true);
@@ -509,6 +520,7 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       return;
     case "tool": {
       if (!data?.toolUseId || !data?.name || HIDDEN_TOOLS.has(data.name)) return;
+      markTextBreak(paneId);
       ensureAgent(paneId, data.agentId || "main");
       const label = humanTool(data.name);
       const detail = data.inputSummary || summarizeInput(data.input) || undefined;
@@ -531,6 +543,7 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "task_update":
     case "task_end": {
       if (!data?.taskId) return;
+      if (event === "task") markTextBreak(paneId);
       const label = taskLabel(data);
       const detail = taskDetail(data) || undefined;
       const status = event === "task_end" ? (data.ok === false ? "failed" : "done") : "running";
@@ -638,6 +651,15 @@ function upsertTool(paneId: string, row: LiveToolRow): void {
   });
 }
 
+/** Mark that activity (a tool/agent/task) interrupted the text stream, so the
+ *  next text delta starts a fresh paragraph instead of running onto the line
+ *  before the activity. Mirrors the server's `\n\n` join between assistant chunks. */
+function markTextBreak(paneId: string): void {
+  updatePane(paneId, (pane) => {
+    if (pane.liveText && !pane.liveText.endsWith("\n")) pane.liveTextBreakPending = true;
+  });
+}
+
 function setStatus(paneId: string, label: string, sticky: boolean): void {
   updatePane(paneId, (pane) => {
     const now = Date.now();
@@ -649,6 +671,7 @@ function setStatus(paneId: string, label: string, sticky: boolean): void {
 
 function resetLive(pane: ChatPane): void {
   pane.liveText = "";
+  pane.liveTextBreakPending = false;
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];
@@ -712,6 +735,7 @@ function finalizeError(paneId: string, message: string): void {
 
 function clearLive(pane: ChatPane): void {
   pane.liveText = "";
+  pane.liveTextBreakPending = false;
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];
