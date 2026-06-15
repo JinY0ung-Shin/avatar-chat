@@ -272,17 +272,23 @@
   font-size: var(--t-xs);
   line-height: 11px;
 }
-.agent-node[data-status="done"] .agent-spinner,
-.agent-node[data-status="failed"] .agent-spinner {
+/* Scope each agent's spinner state to its OWN head spinner with a direct-child
+   chain. `.agent-node` nests recursively (sub-agents under the running "main"),
+   so a plain descendant selector (`.agent-node[data-status] .agent-spinner`)
+   would also match nested agents' spinners — e.g. freezing a running child under
+   a done parent, or (with the reduced-motion re-enable rule) spinning a DONE
+   child's ✓ because it sits under the still-running main node. */
+.agent-node[data-status="done"] > .agent-head > .agent-spinner,
+.agent-node[data-status="failed"] > .agent-head > .agent-spinner {
   border: none;
   animation: none;
 }
-.agent-node[data-status="done"] .agent-spinner::after {
+.agent-node[data-status="done"] > .agent-head > .agent-spinner::after {
   content: "✓";
   color: var(--ok);
   font-size: var(--t-xs);
 }
-.agent-node[data-status="failed"] .agent-spinner::after {
+.agent-node[data-status="failed"] > .agent-head > .agent-spinner::after {
   content: "✕";
   color: var(--warn);
   font-size: var(--t-2xs);

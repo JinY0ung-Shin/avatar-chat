@@ -127,10 +127,13 @@
   /* Loading spinners signal "in progress" — they must keep rotating even with
      reduced motion (the global rule above would otherwise freeze them). Re-enable
      the spin only while actually running, so the settled check/✕ glyphs stay
-     static. */
+     static. The agent selector uses a direct-child chain (`> .agent-head >`):
+     `.agent-node` nests, and the "main" node stays "running" through the whole
+     stream, so a plain descendant selector would force-spin every DONE
+     sub-agent's ✓ checkmark nested under it. */
   .stream-status .spinner,
   .tool-row[data-status="running"] .tool-spinner,
-  .agent-node[data-status="running"] .agent-spinner {
+  .agent-node[data-status="running"] > .agent-head > .agent-spinner {
     animation: spin 0.7s linear infinite !important;
   }
 }
