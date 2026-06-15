@@ -140,7 +140,12 @@
   async function submit(item: ChatPane) {
     closeSlash();
     const message = item.draft;
-    await sendMessage(item.id, message);
+    // Kick off the send, then immediately restore focus to the composer. The
+    // send button (or a touch tap) moves focus off the textarea; the textarea
+    // stays enabled while streaming, so refocusing lets the user keep typing.
+    const pending = sendMessage(item.id, message);
+    focusComposer(item.id);
+    await pending;
     await tick();
   }
 
@@ -322,8 +327,11 @@
     }
     if (!enterSends) return;
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+      // While a response is streaming we can't send yet — let Enter insert a
+      // newline so the user can compose the next message instead of swallowing it.
+      if (item.streaming) return;
       event.preventDefault();
-      if (!item.streaming) void submit(item);
+      void submit(item);
     }
   }
 
@@ -685,11 +693,15 @@
               on:change={(event) => onPickImages(event, item)}
             />
           </label>
+          <!-- Intentionally NOT disabled while streaming: disabling blurs the
+               textarea (focus loss after every send) and blocks composing the
+               next message. Sending mid-stream is already prevented (Enter is
+               gated below; the button is a Stop button), so leaving it editable
+               only lets the user keep focus + draft the follow-up. -->
           <textarea
             rows="1"
-            placeholder={item.streaming ? "응답을 기다리는 중…" : `${item.avatar.displayName}에게 메시지…`}
+            placeholder={item.streaming ? "응답을 기다리는 중… (다음 메시지를 미리 작성할 수 있어요)" : `${item.avatar.displayName}에게 메시지…`}
             value={item.draft}
-            disabled={item.streaming}
             use:autosize
             on:input={(event) => onComposerInput(event, item)}
             on:keydown={(event) => onComposerKeydown(event, item)}
