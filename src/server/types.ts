@@ -441,11 +441,14 @@ export interface CanvasControl {
 
 /**
  * Supported visual-canvas content kinds. All are rendered client-side WITHOUT
- * executing avatar-authored JS: markdown/svg/html are sanitized (DOMPurify) and
- * mermaid is rendered from text by the bundled mermaid library — so the strict
- * same-origin CSP stays unchanged (#50).
+ * executing avatar-authored JS: markdown/svg/html are sanitized (DOMPurify),
+ * mermaid is rendered from text by the bundled mermaid library, and `vega` is a
+ * compact Vega-Lite JSON spec rendered to SVG via the CSP-safe Vega expression
+ * interpreter (no `Function` constructor) — so the strict same-origin CSP stays
+ * unchanged (#50). `vega` lets the avatar declare a chart in a tiny spec instead
+ * of hand-authoring verbose SVG, which is far cheaper in tokens.
  */
-export type CanvasContentType = "markdown" | "svg" | "html" | "mermaid";
+export type CanvasContentType = "markdown" | "svg" | "html" | "mermaid" | "vega";
 
 /**
  * A visual-canvas artifact the avatar showed in the side panel during a turn,

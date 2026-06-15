@@ -1698,6 +1698,21 @@ describe("canvas tools (experimental, #50)", () => {
     expect(res.content[0].text).toContain("shown");
   });
 
+  it("passes a vega (Vega-Lite) chart spec through to the canvas sink", async () => {
+    let captured: CanvasRequest | null = null;
+    const tools = buildCanvasTools({
+      emitCanvas: async (req): Promise<CanvasResult> => {
+        captured = req;
+        return { behavior: "shown" };
+      },
+    });
+    const spec = '{"mark":"bar","data":{"values":[{"a":"A","b":3}]},"encoding":{"x":{"field":"a"},"y":{"field":"b"}}}';
+    const res = await callTool(tools, "show", { title: "차트", content: spec, contentType: "vega" });
+    expect(res.isError).toBeFalsy();
+    expect(captured!.contentType).toBe("vega");
+    expect(captured!.content).toBe(spec);
+  });
+
   it("awaits input and reports the submission when controls are declared", async () => {
     const tools = buildCanvasTools({
       emitCanvas: async (req): Promise<CanvasResult> => {

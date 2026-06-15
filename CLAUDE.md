@@ -304,9 +304,12 @@ gotchas, and client↔server mirrored validators.
   `buildPrompt` (owner/routine `experimentalFeaturesSection`) AND `describe_system` (via
   `OwnerState.experimentalFeatures`). Gate a feature on `ownerState.experimentalFeatures.includes(key)`.
 - **Visual canvas (`mcp__canvas__show`, experimental `canvas` feature).** CSP-SAFE port of Superpowers'
-  visual companion: the avatar DECLARES content (`markdown`/`svg`/`html`/`mermaid`) + optional
+  visual companion: the avatar DECLARES content (`markdown`/`vega`/`mermaid`/`svg`/`html`) + optional
   `controls` (buttons/text); the CLIENT renders sanitized content (DOMPurify; mermaid `securityLevel:
-  strict`, lazy-loaded, code-block fallback) + real form controls — **no avatar JS runs, CSP unchanged**.
+  strict`; **`vega` = a compact Vega-Lite spec compiled+rendered to an SVG STRING via the CSP-safe
+  `vega-interpreter` AST evaluator — no `Function` ctor, so `script-src 'self'` is untouched — far
+  cheaper in tokens than hand-drawn SVG**; all lazy-loaded as own chunks with a source-`<pre>` fallback)
+  + real form controls — **no avatar JS runs, CSP unchanged**.
   `canvasTools.ts` (intentionally NOT self-gated — registration is the boundary) registered in
   `claudeAgent.ts` ONLY when the avatar OWNER enabled `canvas` AND `events.onCanvas` exists (so all
   viewer classes incl. colleagues get it; routines/headless don't). Controls park the run via the SAME

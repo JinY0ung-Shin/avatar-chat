@@ -223,10 +223,11 @@ function canvasSection(request: AgentRequest): string | null {
     return null;
   }
   return (
-    "**Visual canvas (experimental)**: you can show a visual artifact to the user in a side panel with `mcp__canvas__show` — pass `title`, `content`, and `contentType` (`markdown` | `svg` | `html` | `mermaid`). " +
-    "Use it to share diagrams, mockups, layouts, or side-by-side option comparisons while you work them out WITH the user, not just to dump text the chat could already show. " +
+    "**Visual canvas (experimental)**: you can show a visual artifact to the user in a side panel with `mcp__canvas__show` — pass `title`, `content`, and `contentType` (`markdown` | `vega` | `mermaid` | `svg` | `html`). " +
+    "Use it to share charts, diagrams, mockups, layouts, or side-by-side option comparisons while you work them out WITH the user, not just to dump text the chat could already show. " +
+    "For DATA CHARTS prefer `vega`: pass a compact Vega-Lite JSON spec as `content` (inline the data, keep it small) — it renders a rich chart from a tiny spec and is far cheaper in tokens than hand-writing SVG. For flow/sequence/graph DIAGRAMS use `mermaid` (diagram source only). Reserve `svg`/`html` for bespoke visuals the others can't express. " +
     "To collect a decision, add `controls`: `buttons` (single- or multi-select options) and/or `text` inputs. When you pass controls the tool BLOCKS until the user submits and returns their answer; with no controls it just displays and returns immediately. " +
-    "The client renders real, sanitized form controls — put NO scripts/JS in the content (it will be stripped). For mermaid, output only the diagram source as `content`. " +
+    "The client renders real, sanitized form controls — put NO scripts/JS in the content (it will be stripped). " +
     "This is an experimental feature and its behavior may change."
   );
 }
