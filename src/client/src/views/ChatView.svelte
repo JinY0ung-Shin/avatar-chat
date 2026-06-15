@@ -27,6 +27,7 @@
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
   import { commandsForPane, type SlashCommand } from "../lib/slash";
   import type { AvatarSummary, ChatPane, StoredMessage } from "../lib/types";
+  import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
   let splitAvatarId = "";
@@ -328,19 +329,15 @@
 
   // Per-conversation model tier picked in the composer. Like the group-knowledge
   // toggle it lives on the pane and rides the next chat POST (which persists it),
-  // so it works from a brand-new chat. "" = back to the server default.
+  // so it works from a brand-new chat. The picker has no "default" option — every
+  // value is a real tier (the default is Opus, applied server-side when unset).
   function setModelTier(item: ChatPane, tier: string) {
     updateState((state) => {
       const target = state.chatPanes.find((p) => p.id === item.id);
-      if (target) target.modelTier = tier || undefined;
+      if (target) target.modelTier = tier;
     });
     const label = $appState.bootstrap?.modelSelection?.tiers.find((t) => t.id === tier)?.label;
-    notify(
-      tier
-        ? `모델을 ${label ?? tier}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`
-        : "모델을 기본값으로 되돌렸어요. 다음 메시지부터 적용됩니다.",
-      "info",
-    );
+    notify(`모델을 ${label ?? tier}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
   }
 
   function messageText(message: StoredMessage) {
@@ -524,10 +521,9 @@
                 class="composer-model-select"
                 aria-label="이 대화에 사용할 모델"
                 title="이 대화에서 다음 메시지부터 사용할 모델을 고릅니다"
-                value={item.modelTier ?? ""}
+                value={item.modelTier ?? DEFAULT_MODEL_TIER}
                 on:change={(event) => setModelTier(item, event.currentTarget.value)}
               >
-                <option value="">기본 모델</option>
                 {#each $appState.bootstrap.modelSelection.tiers as tier (tier.id)}
                   <option value={tier.id} title={tier.model ? `${tier.description}\n(${tier.model})` : tier.description}>
                     {tier.label}{tier.model ? ` · ${tier.model}` : ""}

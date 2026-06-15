@@ -5,6 +5,7 @@ import { syncHash } from "./nav";
 import { consumeSse, type SseFrame } from "./sse";
 import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
+import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 import type { AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveToolRow, PaneCanvas, StoredMessage } from "./types";
 
 const MAX_CHAT_PANES = 4;
@@ -317,8 +318,8 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         multiSession: readState().chatPanes.length > 1,
         groupKnowledgeOff: pane.groupKnowledgeOff || [],
         activeRepo: pane.activeRepo || undefined,
-        // Per-conversation model tier; "" lets the server fall back to the default.
-        model: pane.modelTier || "",
+        // Per-conversation model tier; unset → the default tier (Opus).
+        model: pane.modelTier || DEFAULT_MODEL_TIER,
       }),
     });
     if (response.status === 401) {

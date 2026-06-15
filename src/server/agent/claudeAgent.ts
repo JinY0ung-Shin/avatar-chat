@@ -17,7 +17,7 @@ import {
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
 import { isRecord, asString } from "./agentUtils.js";
-import { isModelTier } from "../modelTiers.js";
+import { isModelTier, DEFAULT_MODEL_TIER } from "../modelTiers.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import { buildPrompt } from "./promptBuilder.js";
 import {
@@ -234,10 +234,11 @@ export async function runClaudeAgent(
   // subscription rule) and is a HARD lock; otherwise the user's per-conversation
   // tier pick (a Claude alias, resolved to a concrete model by the operator's
   // ANTHROPIC_DEFAULT_*_MODEL env), otherwise the admin-selected override,
-  // otherwise the SDK default. Unknown tiers are ignored so a stale/garbage value
-  // can never reach the SDK as a model id.
+  // otherwise the DEFAULT tier (opus). Unknown tiers are ignored so a stale/garbage
+  // value can never reach the SDK as a model id.
   const userModelTier = isModelTier(request.modelTier) ? request.modelTier : undefined;
-  const effectiveModel = config.anthropicModel ?? userModelTier ?? store.getModelOverride() ?? undefined;
+  const effectiveModel =
+    config.anthropicModel ?? userModelTier ?? store.getModelOverride() ?? DEFAULT_MODEL_TIER;
   const agentStart = Date.now();
 
   agentLogger.info(

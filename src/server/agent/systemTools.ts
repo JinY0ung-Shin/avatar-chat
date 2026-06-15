@@ -4,6 +4,7 @@ import { parseRoutineSchedule, type ScheduleError } from "../routineSchedule.js"
 import type { Store } from "../store.js";
 import type { AgentOwner, AppConfig, Plugin, RoutineJob, RoutineSchedulePatch } from "../types.js";
 import { text } from "./mcpTools.js";
+import { DEFAULT_MODEL_TIER } from "../modelTiers.js";
 import { summarizeOwnerState } from "./ownerState.js";
 
 /**
@@ -163,13 +164,15 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         // pinned one via ANTHROPIC_DEFAULT_<TIER>_MODEL (else just the alias — the
         // SDK resolves it to the account default the app can't name).
         const tierModel = userTier ? ctx.config.defaultTierModels[userTier] : undefined;
+        // No env pin, no tier, no admin override → the default tier (opus).
+        const defaultModel = ctx.config.defaultTierModels[DEFAULT_MODEL_TIER];
         const modelLine = state.anthropicModel
           ? `${state.anthropicModel} (pinned via environment variable)`
           : userTier
             ? `${tierModel ? `${tierModel} (${userTier})` : userTier} (chosen for this conversation in the composer)`
             : adminModel
               ? `${adminModel} (admin setting)`
-              : "(SDK default)";
+              : `${defaultModel ? `${defaultModel} (${DEFAULT_MODEL_TIER})` : DEFAULT_MODEL_TIER} (default)`;
         const hashtags = user?.hashtags ?? [];
         const visibilityLabel =
           user?.visibility === "public"

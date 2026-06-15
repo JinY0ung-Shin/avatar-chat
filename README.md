@@ -66,9 +66,9 @@ plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
   better-suited teammate when a request is outside its own expertise.
 - **Per-conversation model picker**: the chat composer lets any user choose a model
   tier (Opus / Sonnet / Haiku) per conversation; the choice persists on the conversation
-  and rides each turn. Operators map each tier to a concrete model id via
-  `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` (the picker shows the mapped id). An
-  env-pinned `ANTHROPIC_MODEL` hard-locks the model and hides the picker.
+  and rides each turn. **Opus is the default** when nothing is picked. Operators map each
+  tier to a concrete model id via `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` (the picker
+  shows the mapped id). An env-pinned `ANTHROPIC_MODEL` hard-locks the model and hides the picker.
 - **Tiered chat permissions**: the Claude Agent SDK runs with `permissionMode: "default"`.
   A `PreToolUse` hook is the single gate for all tool calls:
   - **Owner** (chatting with own avatar): all tools auto-approved with no prompt, including
@@ -114,8 +114,8 @@ uploaded avatar images persist under `APP_DATA_DIR`. The container runs as the n
 | `SECURE_COOKIES` | `true` to mark the session cookie `Secure` (HTTPS-only). Leave unset for plain-HTTP deployments (e.g. local docker-compose) or the cookie is never sent back and login fails. |
 | `AGENT_RUNTIME` | `claude` (default) or `local` (offline stub, no plugin execution). |
 | `ANTHROPIC_API_KEY` | Optional; absent → SDK uses subscription token (admin UI) or local Claude Code auth. |
-| `ANTHROPIC_MODEL` | Optional. Pin the Claude model (e.g. `claude-opus-4-8`). Absent → SDK default. When set it's a **hard lock**: the per-conversation model picker is hidden. |
-| `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` | Optional. Map each composer model TIER (Opus/Sonnet/Haiku) to a concrete model id; the picker shows the mapped id. Unset tier → SDK resolves the alias to the account default (shown as just the tier label). Precedence: `ANTHROPIC_MODEL` > user's per-conversation tier > admin override > SDK default. |
+| `ANTHROPIC_MODEL` | Optional. Pin the Claude model (e.g. `claude-opus-4-8`). When set it's a **hard lock**: the per-conversation model picker is hidden. Absent → the resolution chain below (defaulting to Opus). |
+| `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` | Optional. Map each composer model TIER (Opus/Sonnet/Haiku) to a concrete model id; the picker shows the mapped id. Unset tier → SDK resolves the alias to the account default (shown as just the tier label). Precedence: `ANTHROPIC_MODEL` > user's per-conversation tier > admin override > **Opus** (default). |
 | `PORT` / `APP_DATA_DIR` | Server port (default `48787`) / data directory (SQLite DB + avatar images). |
 | `READONLY_TOOLS` | Tool allowlist for unelevated colleague chat sessions (default `Read,Glob,Grep`). |
 | `GITHUB_HOST` | Internal/default GitHub host for shorthand repo values like `owner/repo` (default `github.com`). Knowledge repos must use this host; full github.com URLs can use `GITHUB_TOKEN`. |

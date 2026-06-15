@@ -49,6 +49,13 @@ export const MODEL_TIERS: ModelTier[] = [
 /** All registered tier ids (aliases), for validation + membership checks. */
 export const MODEL_TIER_IDS: string[] = MODEL_TIERS.map((t) => t.id);
 
+/**
+ * The tier used when no more-specific choice applies (env pin / user pick / admin
+ * override all absent). The composer has no "default" option — every conversation
+ * resolves to a concrete tier, and this is the floor.
+ */
+export const DEFAULT_MODEL_TIER = "opus";
+
 /** Type guard: a non-empty string that names a known tier alias. */
 export function isModelTier(value: unknown): value is string {
   return typeof value === "string" && MODEL_TIER_IDS.includes(value);
