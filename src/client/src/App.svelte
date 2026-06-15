@@ -8,6 +8,7 @@
   import ExploreView from "./views/ExploreView.svelte";
   import InboxView from "./views/InboxView.svelte";
   import OnboardingModal from "./components/OnboardingModal.svelte";
+  import PromptModal from "./components/PromptModal.svelte";
   import RoutinesView from "./views/RoutinesView.svelte";
   import SettingsView from "./views/SettingsView.svelte";
   import { api, setSessionExpiredHandler } from "./lib/api";
@@ -137,6 +138,13 @@
     githubHost={$appState.bootstrap?.githubHost ?? "github.com"}
     on:close={dismissOnboarding}
   />
+{/if}
+
+<!-- Mounted at the app root (not inside ChatView) so input-needed prompts surface
+     on ANY view — otherwise a question raised while the owner is on explore/inbox/
+     settings would queue invisibly. -->
+{#if $appState.user}
+  <PromptModal />
 {/if}
 
 <Toasts />

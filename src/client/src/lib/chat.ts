@@ -3,6 +3,7 @@ import { api } from "./api";
 import { loadConversations, loadMessages } from "./loaders";
 import { syncHash } from "./nav";
 import { consumeSse, type SseFrame } from "./sse";
+import { ensureNotificationPermission, osNotify } from "./notifications";
 import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
@@ -331,6 +332,10 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         response: null,
         createdAt: new Date().toISOString(),
       };
+  // A real send is a user gesture — the right moment to (idempotently) ask for OS
+  // notification permission so answer-complete / input-needed alerts can fire later.
+  if (!opts.greeting) void ensureNotificationPermission();
+
   const controller = new AbortController();
   updatePane(pane.id, (target) => {
     if (opts.regenerate) {
@@ -832,6 +837,19 @@ function finalizeDone(paneId: string, data: any): void {
       body: JSON.stringify({ activity: persistActivity }),
     }).catch(() => {});
   }
+  notifyTurnComplete(paneId);
+}
+
+// OS notification when a turn finishes — only fires while the app is backgrounded
+// (osNotify gates on document visibility), so it never interrupts active reading.
+function notifyTurnComplete(paneId: string): void {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  if (!pane) return;
+  const last = pane.messages[pane.messages.length - 1];
+  if (!last || last.role !== "assistant") return;
+  const text = (last.content || "").replace(/\s+/g, " ").trim();
+  const body = text ? (text.length > 140 ? `${text.slice(0, 140)}…` : text) : "응답이 완료되었습니다.";
+  osNotify(`${pane.avatar?.name || "아바타"} · 답변 완료`, body, `done-${paneId}`);
 }
 
 function finalizePane(paneId: string, message: string, stopped: boolean): void {
@@ -969,10 +987,28 @@ const resolvedRequestIds = new Set<string>();
 function enqueuePrompt(paneId: string, kind: "permission" | "question", data: any): void {
   const requestId = data?.requestId;
   if (!requestId || resolvedRequestIds.has(requestId)) return;
+  if (readState().promptQueue.some((p) => p.id === requestId)) return;
   updateState((state) => {
     if (state.promptQueue.some((p) => p.id === requestId)) return;
     state.promptQueue.push({ id: requestId, runId: data.runId || "", paneId, kind, data });
   });
+  notifyPrompt(paneId, kind, data);
+}
+
+// OS notification when the avatar needs the owner's input (an AskUserQuestion-style
+// question or a permission request). Like answer-complete, this only fires while the
+// app is backgrounded; in the foreground the prompt modal itself is visible.
+function notifyPrompt(paneId: string, kind: "permission" | "question", data: any): void {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  const who = pane?.avatar?.name || "아바타";
+  if (kind === "question") {
+    const questions = Array.isArray(data?.payload?.questions) ? data.payload.questions : null;
+    const first = questions?.[0]?.question || questions?.[0]?.header || "확인이 필요한 질문이 있습니다.";
+    osNotify(`${who} · 질문`, String(first), `prompt-${data.requestId}`);
+  } else {
+    const tool = humanTool(data?.toolName);
+    osNotify(`${who} · 확인 필요`, `"${tool}" 실행을 승인해 주세요.`, `prompt-${data.requestId}`);
+  }
 }
 
 function resolvePrompt(requestId: string): void {

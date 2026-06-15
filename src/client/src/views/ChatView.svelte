@@ -5,7 +5,6 @@
   import CapabilitiesPanel from "../components/CapabilitiesPanel.svelte";
   import CanvasPanel from "../components/CanvasPanel.svelte";
   import Icon from "../components/Icon.svelte";
-  import PromptModal from "../components/PromptModal.svelte";
   import { activePane, appState, newId, notify, readState, updateState } from "../lib/state";
   import {
     PLUGIN_STATUS_LABELS,
@@ -976,8 +975,6 @@
     <CapabilitiesPanel avatar={pane.avatar} />
   </div>
 {/if}
-
-<PromptModal />
 
 <style>
   /* Plan-mode plan card (ExitPlanMode). A distinct, collapsible card inside the
