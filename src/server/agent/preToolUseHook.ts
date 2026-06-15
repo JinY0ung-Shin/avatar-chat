@@ -10,26 +10,17 @@ import {
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
 import { asString, isRecord, truncate } from "./agentUtils.js";
+import {
+  SDK_INTERNAL_HIDDEN_TOOLS,
+  SDK_ORCHESTRATION_TOOLS,
+} from "../../shared/sdkToolPresentation.js";
 
 const agentLogger = logger.child({ module: "agent" });
 const RTK_REWRITE_TIMEOUT_MS = 1_000;
 
 /** SDK orchestration tools that should never trigger the user permission modal. */
-export const TASK_ORCHESTRATION_TOOLS = new Set([
-  "Task",
-  "Agent",
-  "TaskCreate",
-  "TaskCreated",
-  "TaskStarted",
-  "TaskUpdate",
-  "TaskComplete",
-  "TaskCompleted",
-  "TaskProgress",
-  "TaskStatus",
-  "TaskList",
-  "TaskRead",
-  "TaskStop",
-]);
+export const TASK_ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(SDK_ORCHESTRATION_TOOLS);
+const AUTO_ALLOWED_META_TOOLS: ReadonlySet<string> = new Set(["Skill", ...SDK_INTERNAL_HIDDEN_TOOLS]);
 
 export function rewriteBashCommandWithRtk(command: string, rtkCommand = "rtk"): string | null {
   const trimmedCommand = command.trim();
@@ -62,7 +53,7 @@ export function rewriteBashCommandWithRtk(command: string, rtkCommand = "rtk"): 
 function isAutoAllowed(toolName: string, readOnlyTools: string[]): boolean {
   if (readOnlyTools.includes(toolName)) return true;
   if (toolName.startsWith("mcp__")) return true;
-  return ["Skill", "TodoWrite", "ToolSearch", "SlashCommand"].includes(toolName) || TASK_ORCHESTRATION_TOOLS.has(toolName);
+  return AUTO_ALLOWED_META_TOOLS.has(toolName) || TASK_ORCHESTRATION_TOOLS.has(toolName);
 }
 
 /** Render a question answer (from the client) into text the model can read. */

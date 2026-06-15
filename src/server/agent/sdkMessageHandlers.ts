@@ -2,12 +2,26 @@ import type { AgentEvents } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
 import type { AgentUsage } from "../types.js";
 import { asNumber, asString, isRecord, truncate } from "./agentUtils.js";
+import {
+  SDK_PLAN_TOOLS,
+  SDK_SUBAGENT_TOOLS,
+  SDK_TASK_CREATE_TOOLS,
+  SDK_TASK_END_TOOLS,
+  SDK_TASK_INSPECTION_TOOLS,
+  SDK_TASK_UPDATE_TOOLS,
+  SDK_UI_HANDLED_TOOLS,
+} from "../../shared/sdkToolPresentation.js";
 
 /** Tools that spawn a subagent (shown as an agent node, not a tool row). */
-const SUBAGENT_TOOLS = new Set(["Task", "Agent"]);
+const SUBAGENT_TOOLS: ReadonlySet<string> = new Set(SDK_SUBAGENT_TOOLS);
 
 /** Tools handled by a dedicated UI (not shown as a generic tool row). */
-const UI_HANDLED_TOOLS = new Set(["AskUserQuestion"]);
+const UI_HANDLED_TOOLS: ReadonlySet<string> = new Set(SDK_UI_HANDLED_TOOLS);
+const PLAN_TOOLS: ReadonlySet<string> = new Set(SDK_PLAN_TOOLS);
+const TASK_CREATE_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_CREATE_TOOLS);
+const TASK_UPDATE_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_UPDATE_TOOLS);
+const TASK_END_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_END_TOOLS);
+const TASK_INSPECTION_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_INSPECTION_TOOLS);
 
 /** One-line, human-readable summary of a tool's input for the activity UI. */
 export function summarizeToolInput(name: string, input: Record<string, unknown>): string {
@@ -76,15 +90,23 @@ function taskIdFromInput(input: Record<string, unknown>, fallback: string): stri
 }
 
 function isTaskCreateTool(name: string): boolean {
-  return name === "TaskCreate" || name === "TaskCreated" || name === "TaskStarted";
+  return TASK_CREATE_TOOLS.has(name);
 }
 
 function isTaskUpdateTool(name: string): boolean {
-  return name === "TaskUpdate" || name === "TaskProgress" || name === "TaskStatus";
+  return TASK_UPDATE_TOOLS.has(name);
 }
 
 function isTaskEndTool(name: string): boolean {
-  return name === "TaskComplete" || name === "TaskCompleted" || name === "TaskStop";
+  return TASK_END_TOOLS.has(name);
+}
+
+function isTaskInspectionTool(name: string): boolean {
+  return TASK_INSPECTION_TOOLS.has(name);
+}
+
+function isPlanTool(name: string): boolean {
+  return PLAN_TOOLS.has(name);
 }
 
 function statusIsTerminal(status: string): boolean {
@@ -136,6 +158,13 @@ function handleTaskToolUse(
   events: AgentEvents,
   state: LoopState,
 ): boolean {
+  if (isPlanTool(name)) {
+    events.onStatus?.(name === "ExitPlanMode" ? "계획을 확인하는 중…" : "계획 모드로 전환 중…");
+    return true;
+  }
+  if (isTaskInspectionTool(name)) {
+    return true;
+  }
   if (!isTaskCreateTool(name) && !isTaskUpdateTool(name) && !isTaskEndTool(name)) {
     return false;
   }

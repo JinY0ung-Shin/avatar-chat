@@ -6,6 +6,10 @@ import { consumeSse, type SseFrame } from "./sse";
 import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
+import {
+  SDK_HIDDEN_ACTIVITY_TOOLS,
+  SDK_TOOL_LABELS,
+} from "../../../shared/sdkToolPresentation";
 import type {
   AgentActivity,
   AgentResponse,
@@ -21,29 +25,16 @@ import type {
 const MAX_CHAT_PANES = 4;
 
 // Internal orchestration tools the viewer shouldn't see as activity rows.
-const HIDDEN_TOOLS = new Set([
-  "ToolSearch",
-  "TodoWrite",
-  "SlashCommand",
-  "Task",
-  "Agent",
-  "TaskCreate",
-  "TaskCreated",
-  "TaskStarted",
-  "TaskUpdate",
-  "TaskProgress",
-  "TaskStatus",
-  "TaskComplete",
-  "TaskCompleted",
-  "TaskStop",
-]);
+const HIDDEN_TOOLS = new Set(SDK_HIDDEN_ACTIVITY_TOOLS);
 
 // Friendly, human-readable labels for tools shown in the activity tree. Raw
 // names (e.g. `mcp__knowledge__request_info`) are an implementation detail.
 const TOOL_LABELS: Record<string, string> = {
+  ...SDK_TOOL_LABELS,
   mcp__knowledge__request_info: "정보 요청 기록",
   mcp__knowledge__pending_requests: "대기 요청 확인",
   mcp__knowledge__resolve_request: "요청 처리 완료",
+  mcp__canvas__show: "캔버스 표시",
   mcp__confluence__describe_config: "Confluence 설정 확인",
   mcp__confluence__list_spaces: "Confluence 스페이스 조회",
   mcp__confluence__search: "Confluence 검색",
@@ -54,15 +45,6 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__confluence__create_page: "Confluence 페이지 생성",
   mcp__confluence__update_page: "Confluence 페이지 수정",
   mcp__system__notify_user: "사용자 알림",
-  Read: "파일 읽기",
-  Glob: "파일 찾기",
-  Grep: "내용 검색",
-  Bash: "명령 실행",
-  Write: "파일 쓰기",
-  Edit: "파일 편집",
-  WebFetch: "웹 페이지 읽기",
-  WebSearch: "웹 검색",
-  Skill: "스킬 실행",
 };
 
 export const PLUGIN_STATUS_LABELS: Record<string, string> = {

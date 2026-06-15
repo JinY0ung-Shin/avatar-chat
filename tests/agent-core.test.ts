@@ -79,6 +79,11 @@ import {
   mainAssistantContextTokens,
   summarizeToolInput,
 } from "../src/server/agent/sdkMessageHandlers.js";
+import {
+  SDK_HIDDEN_ACTIVITY_TOOLS,
+  SDK_TOOL_LABELS,
+  SDK_UI_HANDLED_TOOLS,
+} from "../src/shared/sdkToolPresentation.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
 import {
   formatMinuteOfDay,
@@ -977,6 +982,19 @@ describe("sdk message handlers", () => {
     expect(summarizeToolInput("Ask", { prompt: "x".repeat(200) })).toHaveLength(161);
   });
 
+  it("keeps SDK built-in tool presentation coverage in sync", () => {
+    const sdkToolsPath = path.join(process.cwd(), "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk-tools.d.ts");
+    const sdkTools = fs.readFileSync(sdkToolsPath, "utf8");
+    const sdkInputToolNames = Array.from(sdkTools.matchAll(/^\s*\|\s+([A-Za-z0-9]+)Input$/gm), (match) => match[1]);
+    const handled = new Set([
+      ...Object.keys(SDK_TOOL_LABELS),
+      ...SDK_HIDDEN_ACTIVITY_TOOLS,
+      ...SDK_UI_HANDLED_TOOLS,
+    ]);
+
+    expect(sdkInputToolNames.filter((name) => !handled.has(name))).toEqual([]);
+  });
+
   it("turns assistant tool_use blocks into tool, task, and subagent events", () => {
     const sink = events();
     const state = createLoopState();
@@ -1032,6 +1050,33 @@ describe("sdk message handlers", () => {
       description: "Ship it",
       prompt: "do the work",
     });
+  });
+
+  it("keeps plan and task inspection tools out of generic activity rows", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleAssistantMessage(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            { type: "tool_use", id: "plan-in", name: "EnterPlanMode", input: {} },
+            { type: "tool_use", id: "plan-out", name: "ExitPlanMode", input: { allowedPrompts: [] } },
+            { type: "tool_use", id: "task-get", name: "TaskGet", input: { taskId: "task-1" } },
+            { type: "tool_use", id: "task-output", name: "TaskOutput", input: { task_id: "task-1", block: false, timeout: 0 } },
+            { type: "tool_use", id: "task-list", name: "TaskList", input: {} },
+          ],
+        },
+      },
+      sink,
+      state,
+    );
+
+    expect(sink.onToolStart).not.toHaveBeenCalled();
+    expect(sink.onTaskStart).not.toHaveBeenCalled();
+    expect(sink.onStatus).toHaveBeenCalledWith("계획 모드로 전환 중…");
+    expect(sink.onStatus).toHaveBeenCalledWith("계획을 확인하는 중…");
   });
 
   it("routes tool results back to tools or spawned agents", () => {
@@ -1813,7 +1858,7 @@ exit 1
     expect(ownerExec.hookSpecificOutput.permissionDecision).toBe("allow");
   });
 
-  it("auto-allows TaskCreate orchestration without prompting", async () => {
+  it("auto-allows SDK orchestration tools without prompting", async () => {
     let prompted = false;
     const hook = buildPreToolUseHook(
       { onPermission: async () => { prompted = true; return { behavior: "deny" }; } },
@@ -1823,12 +1868,19 @@ exit 1
       false,
       false,
     );
-    const out = await hook(
-      { tool_name: "TaskCreate", tool_input: { task_subject: "검증", task_description: "테스트 실행" }, tool_use_id: "task-1" },
-      "task-1",
-    );
+    const tools = [
+      { tool_name: "TaskCreate", tool_input: { task_subject: "검증", task_description: "테스트 실행" } },
+      { tool_name: "TaskGet", tool_input: { taskId: "task-1" } },
+      { tool_name: "TaskOutput", tool_input: { task_id: "task-1", block: false, timeout: 0 } },
+      { tool_name: "TaskList", tool_input: {} },
+      { tool_name: "EnterPlanMode", tool_input: {} },
+      { tool_name: "ExitPlanMode", tool_input: { allowedPrompts: [] } },
+    ];
 
-    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    for (const [idx, tool] of tools.entries()) {
+      const out = await hook({ ...tool, tool_use_id: `task-${idx}` }, `task-${idx}`);
+      expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    }
     expect(prompted).toBe(false);
   });
 
