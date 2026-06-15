@@ -375,6 +375,9 @@ export async function runClaudeAgent(
       avatarUserId: request.avatar.id,
       owner,
       viewerIsOwner: ownerToolAccess,
+      // Trusted same-group teammates may READ (list_files/read_file) the owner's
+      // personal repo; write/commit stay owner-only (see repoTools.ts).
+      elevated: elevatedToolAccess,
       config,
     },
     { allowCreate: allowRepoCreate },

@@ -587,6 +587,36 @@ describe("repo tools (knowledge-repo management)", () => {
     }
   });
 
+  it("lets an elevated teammate READ but not modify the repo", async () => {
+    const s = setup("rt1b");
+    // Seed a file as the owner so there is something to read.
+    await callTool(ownerTools(s), "write_file", { path: "notes/shared.md", content: "# 공유 지식" });
+    await callTool(ownerTools(s), "commit", { message: "seed" });
+
+    // A trusted same-group teammate: not the owner, but elevated.
+    const teammate = buildRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: false,
+      elevated: true,
+      config: s.config,
+    });
+
+    const ls = await callTool(teammate, "list_files", {});
+    expect(ls.isError).toBeFalsy();
+    expect(ls.content[0].text).toContain("notes/shared.md");
+    const rd = await callTool(teammate, "read_file", { path: "notes/shared.md" });
+    expect(rd.isError).toBeFalsy();
+    expect(rd.content[0].text).toContain("# 공유 지식");
+
+    // Write/commit stay owner-only for the elevated teammate.
+    for (const name of ["write_file", "delete_file", "move_file", "scaffold_skill", "commit"]) {
+      const res = await callTool(teammate, name, { path: "x", content: "y", name: "x", message: "m", from: "x", to: "z" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("can only be used by the avatar owner");
+    }
+  });
+
   it("errors clearly when no knowledge repo is configured", async () => {
     const dataDir = path.join(tempDir, "rt2");
     const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });

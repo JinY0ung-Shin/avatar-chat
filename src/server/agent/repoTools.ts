@@ -37,8 +37,13 @@ const execFileAsync = promisify(execFile);
 /**
  * Per-conversation context the knowledge-repo management tools act within. These
  * tools let the avatar manage its OWNER's personal knowledge repo (the repo the
- * avatar accumulates work knowledge/skills into) directly from chat. They are
- * OWNER-ONLY: a colleague, a trusted user, or a headless routine gets a refusal.
+ * avatar accumulates work knowledge/skills into) directly from chat.
+ *
+ * Access is split: the WRITE tools (write/delete/move/scaffold/commit/create) are
+ * OWNER-ONLY — a colleague, a trusted user, or a headless routine gets a refusal.
+ * The READ tools (`list_files`/`read_file`) additionally allow an `elevated`
+ * viewer (a trusted same-group teammate), so a teammate's chat can read the
+ * owner's accumulated knowledge without being able to modify it.
  */
 export interface RepoToolsContext {
   /** The avatar (== owner) whose knowledge repo these tools manage. */
@@ -47,9 +52,16 @@ export interface RepoToolsContext {
   owner: AgentOwner;
   /**
    * True only when the present viewer IS the owner and the run is interactive.
-   * The caller computes `viewerIsOwner && !headless`; every tool refuses otherwise.
+   * The caller computes `viewerIsOwner && !headless`; every WRITE tool refuses
+   * otherwise.
    */
   viewerIsOwner: boolean;
+  /**
+   * True for the owner OR a trusted same-group teammate (interactive turn). Gates
+   * the READ tools (`list_files`/`read_file`) so teammates can read — but not
+   * modify — the personal repo. Defaults to `viewerIsOwner` when omitted.
+   */
+  elevated?: boolean;
   config: AppConfig;
 }
 
@@ -222,12 +234,13 @@ export function buildRepoTools(
   // conversation is picked up. Returns null when no repo is configured.
   const repoCtx = () => knowledgeRepoContextFor(store, ctx.avatarUserId, ctx.config);
 
-  // Shared guard chain for the file-CRUD tools: owner gate → repo configured.
-  // The personal repo has no group resolution or role gate, so read and write
-  // share the same resolution.
+  // Guard chains for the file-CRUD tools: <gate> → repo configured. WRITE tools
+  // gate on owner; READ tools gate on `elevated` (owner OR trusted teammate), so
+  // a teammate can read — but not modify — the owner's personal repo.
   type RepoCtx = NonNullable<ReturnType<typeof repoCtx>>;
-  const resolve = (): Resolved<RepoCtx> => {
-    if (!ctx.viewerIsOwner) {
+  const canRead = ctx.elevated ?? ctx.viewerIsOwner;
+  const resolveGated = (allowed: boolean): Resolved<RepoCtx> => {
+    if (!allowed) {
       return { ok: false, result: text(OWNER_ONLY, true) };
     }
     const c = repoCtx();
@@ -236,23 +249,25 @@ export function buildRepoTools(
     }
     return { ok: true, repo: c };
   };
+  const resolve = (): Resolved<RepoCtx> => resolveGated(ctx.viewerIsOwner);
+  const resolveRead = (): Resolved<RepoCtx> => resolveGated(canRead);
 
   const manageTools = [
     tool(
       "list_files",
-      "Get the file list of my knowledge repository (personal repo). (owner only)",
+      "Get the file list of my knowledge repository (personal repo). (owner or trusted same-group teammates; read-only)",
       {},
       () =>
-        runListFiles(resolve(), ensureClone, listTree, {
+        runListFiles(resolveRead(), ensureClone, listTree, {
           empty: "(The repository is empty.)",
           onBody: (body) => `Knowledge repository file list:\n${body}`,
         }),
     ),
     tool(
       "read_file",
-      "Read the content of a file in my knowledge repository. (owner only)",
+      "Read the content of a file in my knowledge repository. (owner or trusted same-group teammates; read-only)",
       { path: z.string().describe("Path relative to the repository root (e.g. skills/foo/SKILL.md)") },
-      (args) => runReadFile(resolve(), ensureClone, readRepoFile, args.path),
+      (args) => runReadFile(resolveRead(), ensureClone, readRepoFile, args.path),
     ),
     tool(
       "write_file",

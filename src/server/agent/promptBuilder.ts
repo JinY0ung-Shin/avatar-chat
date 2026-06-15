@@ -444,6 +444,11 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       lines.push(
         "You can check the general git repos the owner has pre-registered with `mcp__git_repo__list_repos` and work on them with `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`. public repo sync is attempted without a token, and configuration changes such as registering/removing repos are owner-only.",
       );
+      if (request.knowledgeRepoConfigured !== false) {
+        lines.push(
+          "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
+        );
+      }
       lines.push(GIT_MCP_ONLY_GUIDANCE);
       const trustedActiveRepoBlock = activeRepoSection(request);
       if (trustedActiveRepoBlock) {
