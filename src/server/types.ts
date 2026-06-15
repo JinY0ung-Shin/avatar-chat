@@ -675,9 +675,9 @@ export interface AgentRequest {
   /**
    * When the owner/trusted viewer opened a registered git repo as an **active
    * repo workspace** (#47): the repo's registered name. Its clone is the SDK
-   * cwd, so the avatar edits/tests locally with native tools while git lifecycle
-   * (commit/push/sync) still flows through `mcp__git_repo__*`. Drives the
-   * active-workspace prompt guidance + the Bash-git integrity policy.
+   * cwd, so the avatar edits/tests and commits locally with native tools while
+   * remote git lifecycle (push/sync) still flows through `mcp__git_repo__*`.
+   * Drives the active-workspace prompt guidance + the Bash-git integrity policy.
    */
   activeRepoName?: string;
   /**

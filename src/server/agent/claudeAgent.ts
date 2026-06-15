@@ -595,8 +595,8 @@ export async function runClaudeAgent(
               hexSshViewerClass,
               hexSshPolicy,
               config.rtkCommand,
-              // Active repo workspace (#47): block state-changing/remote Bash git
-              // (integrity guard, not security) so the avatar uses mcp__git_repo__*.
+              // Active repo workspace (#47): block remote/branch/destructive Bash
+              // git so sync/push stay app-managed; local add/commit is allowed.
               Boolean(request.activeRepoName),
             ),
           ],

@@ -314,6 +314,23 @@ export async function writeGitRepoFile(ctx: GitRepoContext, relPath: string, con
   await writeFile(repoRoot, relPath, content);
 }
 
+export async function configureGitRepoIdentity(
+  ctx: GitRepoContext,
+  identity: { name: string; email: string },
+): Promise<void> {
+  const repoRoot = await ensureGitRepoClone(ctx);
+  await configureGitRepoIdentityInClone(repoRoot, identity);
+}
+
+async function configureGitRepoIdentityInClone(
+  repoRoot: string,
+  identity: { name: string; email: string },
+): Promise<void> {
+  const { name, email } = safeIdentity(identity);
+  await git(repoRoot, ["config", "user.name", name]);
+  await git(repoRoot, ["config", "user.email", email]);
+}
+
 export async function deleteGitRepoFile(ctx: GitRepoContext, relPath: string): Promise<void> {
   const repoRoot = await ensureGitRepoClone(ctx);
   await deleteFile(repoRoot, relPath);
@@ -354,9 +371,7 @@ export async function commitGitRepo(
   return withRepoLock(repoRoot, async () => {
     await ensureGitRepoCloneLocked(ctx, repoRoot);
     const pathArgs = normalizeRepoPaths(repoRoot, paths);
-    const { name, email } = safeIdentity(identity);
-    await git(repoRoot, ["config", "user.name", name]);
-    await git(repoRoot, ["config", "user.email", email]);
+    await configureGitRepoIdentityInClone(repoRoot, identity);
     await git(repoRoot, pathArgs.length ? ["add", "-A", "--", ...pathArgs] : ["add", "-A"]);
     if (!(await hasStagedChanges(repoRoot))) {
       return false;

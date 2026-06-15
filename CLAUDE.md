@@ -324,13 +324,14 @@ gotchas, and client↔server mirrored validators.
 - **Active repo workspace (`activeRepo` chat-body param).** Owner/trusted viewer opens a registered
   `mcp__git_repo__*` repo as the SDK **cwd** so the avatar edits/tests with native Read/Edit/Bash; the
   per-conversation scratch dir rides along as an `additionalDirectories`. **Security boundary is
-  unchanged** — git tokens are still stripped from the shell, so commit/push/sync stay MCP-only. A
+  unchanged** — git tokens are still stripped from the shell, so push/sync stay MCP-only; local
+  `git add`/`git commit` are allowed in the active repo cwd. A
   per-clone-path lock (`activeRepoLock.ts`) serializes concurrent active opens (409); it does NOT block
   another conversation's MCP sync (worktree isolation is the eventual fix). `preToolUseHook`'s
-  `activeRepoMode` is an INTEGRITY (not security) guard: it denies state-changing/remote Bash git
-  (commit/reset/checkout/push/…) and allows read-only git (status/diff/log) — denylist is advisory/leaky
-  by design. Metacognition: `promptBuilder` `activeRepoSection` (relaxes the GIT_MCP_ONLY last line for
-  read-only git) + the hook deny reason + the git-tool errors. UI picker (own single-pane only) +
+  `activeRepoMode` is an INTEGRITY (not security) guard: it denies remote/branch/history-rewriting/
+  destructive Bash git (push/fetch/pull/reset/checkout/commit --amend/…) and allows read-only git plus
+  local staging/normal commit — denylist is advisory/leaky by design. Metacognition: `promptBuilder`
+  `activeRepoSection` (relaxes GIT_MCP_ONLY_GUIDANCE for local git) + the hook deny reason + the git-tool errors. UI picker (own single-pane only) +
   `GET /api/me/git-repos`. The clone path is NEVER returned to the client.
 - **Routines = owner-scheduled headless runs, flexible KST schedule.** A routine
   (`routine_jobs` table, `get/list/create/update/deleteRoutineJob`, `markRoutineRun`) runs its

@@ -49,8 +49,8 @@ export function conversationHistoryBlock(history: AgentRequest["conversationHist
 export const GIT_MCP_ONLY_GUIDANCE =
   "**Remote git work goes through MCP tools ONLY**: remote git operations such as clone/pull/push/fetch MUST be performed exclusively via the dedicated MCP tools (`mcp__repo__*` for the personal knowledge repository, `mcp__git_repo__*` for general repos, `mcp__group_repo__*` for group repositories). " +
   "Git credentials are injected by the server into those tools only and are NOT present in your shell — running `git clone`/`git push`/`gh` via Bash cannot authenticate. " +
-  "If an MCP tool fails, do NOT work around it or retry with Bash git; instead resolve the cause shown in the failure message (token/permission/branch/URL) or report it to the user. " +
-  "Running git commands directly inside the app-managed local clone directories is also forbidden.";
+  "If an MCP remote-git tool fails, do NOT work around it or retry with Bash git; instead resolve the cause shown in the failure message (token/permission/branch/URL) or report it to the user. " +
+  "When a registered repo is opened as the active repo workspace, local inspection, staging, and commit may use native Bash git there; remote operations still stay MCP-only.";
 
 /**
  * Personal knowledge-repository section of the owner prompt: either how to
@@ -235,12 +235,9 @@ function canvasSection(request: AgentRequest): string | null {
 
 /**
  * Active repo workspace guidance (#47). When the cwd is a registered repo's
- * clone, the avatar may edit/test locally with NATIVE tools and run read-only
- * git, but every state-changing and remote git operation still flows through
- * `mcp__git_repo__*` — the shell has no git credentials and the MCP lifecycle
- * owns the working-tree state. This deliberately RELAXES the last line of
- * GIT_MCP_ONLY_GUIDANCE (which forbids any in-clone git) for read-only git, so
- * it is pushed AFTER that guidance for the more-specific instruction to win.
+ * clone, the avatar may edit/test locally with NATIVE tools and use local git
+ * for inspection, staging, and commit. Remote/sync work still flows through
+ * `mcp__git_repo__*` because the shell has no git credentials.
  */
 function activeRepoSection(request: AgentRequest): string | null {
   const name = request.activeRepoName?.trim();
@@ -249,9 +246,9 @@ function activeRepoSection(request: AgentRequest): string | null {
   }
   return (
     `**Active repo workspace**: your current working directory IS the local clone of the registered git repository '${name}'. ` +
-    "Work on its files directly with the native tools — `Read`/`Edit`/`Write`, run tests and `rg`/search, and **read-only** git via Bash is allowed for inspection (`git status`/`diff`/`log`/`show`/`rev-parse`/`ls-files`/`grep`/`blame`). " +
-    "But every git operation that CHANGES repository state — `add`/`commit`/`reset`/`checkout`/`switch`/`merge`/`rebase` — and ALL remote operations — `clone`/`fetch`/`pull`/`push` — MUST go through the `mcp__git_repo__*` tools, NOT Bash: your shell has no git credentials (so remote git fails) and the app's commit/push lifecycle depends on staging it controls, so a shell mutation would break it (such Bash git is blocked). " +
-    `After you finish editing, persist with \`mcp__git_repo__commit\` (name='${name}') and then \`mcp__git_repo__push\`. The per-conversation scratch workspace is still available as an additional writable directory for throwaway files.`
+    "Work on its files directly with the native tools — `Read`/`Edit`/`Write`, run tests and `rg`/search, and use local git via Bash for inspection and commit workflow (`git status`/`diff`/`log`/`show`/`rev-parse`/`ls-files`/`grep`/`blame`, plus `git add` and `git commit`). " +
+    "Remote/sync operations — `clone`/`fetch`/`pull`/`push` — MUST go through the `mcp__git_repo__*` tools, NOT Bash: your shell has no git credentials. Branch-changing, history-rewriting, or destructive operations such as `reset`/`checkout`/`switch`/`merge`/`rebase`/`commit --amend` are blocked in Bash to protect the active working tree. " +
+    `After you finish local edits, stage and commit with native git, then persist remotely with \`mcp__git_repo__push\` (name='${name}'). The per-conversation scratch workspace is still available as an additional writable directory for throwaway files.`
   );
 }
 

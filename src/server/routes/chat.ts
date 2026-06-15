@@ -5,7 +5,8 @@ import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
 import { listSkillsInRoots, loadAgentPluginRoots, loadKnowledgeRepoMemory } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
-import { ensureGitRepoClone, gitRepoContextFor, gitRepoClonePath } from "../gitRepos.js";
+import { configureGitRepoIdentity, ensureGitRepoClone, gitRepoContextFor, gitRepoClonePath } from "../gitRepos.js";
+import { commitIdentityFor } from "../knowledgeRepo.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../activeRepoLock.js";
 import type { AgentConversationMessage, AgentImageInput, AgentResponse, CanvasArtifact, StoredMessage } from "../types.js";
 import {
@@ -476,6 +477,13 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         // Ensure the clone exists WITHOUT syncing — a fetch/checkout here could
         // clobber native edits; sync stays an explicit mcp__git_repo__sync_repo.
         activeRepoCwd = await ensureGitRepoClone(repoCtx);
+        const owner = store.getUserById(avatar.id);
+        await configureGitRepoIdentity(repoCtx, commitIdentityFor(store, {
+          id: avatar.id,
+          username: owner?.username ?? avatar.id,
+          displayName: avatar.displayName,
+          alias: avatar.alias,
+        }));
         activeRepoName = repoCtx.name;
       } catch (error) {
         releaseActiveRepo(clonePath, conversationId);

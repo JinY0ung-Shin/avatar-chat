@@ -1675,9 +1675,11 @@ describe("buildPrompt", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, activeRepoName: "myrepo" }), 0);
     expect(p).toContain("Active repo workspace");
     expect(p).toContain("myrepo");
-    expect(p).toContain("mcp__git_repo__commit");
-    // read-only git is explicitly allowed in this mode
-    expect(p).toContain("read-only");
+    expect(p).toContain("git add");
+    expect(p).toContain("git commit");
+    expect(p).not.toContain("mcp__git_repo__commit");
+    // local git is explicitly allowed in this mode; remote git remains MCP-only.
+    expect(p).toContain("mcp__git_repo__push");
   });
 
   it("injects active repo workspace guidance for a trusted user too", () => {
@@ -1891,16 +1893,16 @@ exit 1
   const activeRepoHook = (activeRepoMode: boolean) =>
     buildPreToolUseHook({}, true, READONLY, false, false, true, "owner", DEFAULT_HEX_SSH_TOOL_POLICY, NO_RTK, activeRepoMode);
 
-  it("blocks state-changing Bash git in an active repo workspace", async () => {
-    for (const command of ["git commit -m wip", "git push origin HEAD", "git checkout -b x", "git reset --hard"]) {
+  it("blocks remote, branch-changing, and destructive Bash git in an active repo workspace", async () => {
+    for (const command of ["git push origin HEAD", "git pull", "git checkout -b x", "git reset --hard", "git commit --amend"]) {
       const out = await activeRepoHook(true)({ tool_name: "Bash", tool_input: { command }, tool_use_id: "g" }, "g");
       expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
       expect(out.hookSpecificOutput.permissionDecisionReason).toContain("mcp__git_repo__");
     }
   });
 
-  it("allows read-only Bash git in an active repo workspace", async () => {
-    for (const command of ["git status", "git diff", "git log --oneline -5"]) {
+  it("allows read-only and local commit Bash git in an active repo workspace", async () => {
+    for (const command of ["git status", "git diff", "git log --oneline -5", "git add docs/runbook.md", "git commit -m wip"]) {
       const out = await activeRepoHook(true)({ tool_name: "Bash", tool_input: { command }, tool_use_id: "r" }, "r");
       expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     }
