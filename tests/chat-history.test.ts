@@ -130,6 +130,42 @@ describe("chat image attachments", () => {
     await stranger.get(`/api/conversations/${conversationId}/images/shot-1`).expect(404);
   });
 
+  it("does not resume the SDK session on an image turn, preserving images with restored text history", async () => {
+    const services = createServices({ dataDir: tempDir, agentRuntime: "claude", sessionSecret: "test" });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "visual-followup").expect(201);
+    const ownerId = ownerRes.body.user.id as string;
+    const conversationId = "conv-image-followup";
+
+    services.store.touchConversation(ownerId, conversationId, ownerId, "이전 요청");
+    services.store.addMessage(conversationId, { role: "user", content: "이전 요청" });
+    services.store.addMessage(conversationId, {
+      role: "assistant",
+      content: "이전 답변",
+      response: { kind: "text", runtime: "claude", summary: "", text: "이전 답변" },
+    });
+    services.store.setAgentSessionId(ownerId, conversationId, "sess-existing-image");
+
+    await owner
+      .post("/api/chat/stream")
+      .send({
+        avatarId: ownerId,
+        conversationId,
+        message: "이번 이미지를 봐줘",
+        images: [{ id: "followup-shot", data: PNG_URL }],
+      })
+      .expect(200);
+
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0].resumeSessionId).toBeUndefined();
+    expect(capturedRequests[0].conversationHistory).toEqual([
+      { role: "user", content: "이전 요청" },
+      { role: "assistant", content: "이전 답변" },
+    ]);
+    expect(capturedRequests[0].images).toEqual([{ mediaType: "image/png", data: PNG_B64 }]);
+  });
+
   it("rejects an unsafe supplied conversation id before image persistence", async () => {
     const services = createServices({ dataDir: tempDir, agentRuntime: "claude", sessionSecret: "test" });
     const app = createApp(services);

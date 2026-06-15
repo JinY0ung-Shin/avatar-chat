@@ -490,12 +490,15 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     if (regenerate) {
       store.dropLastAssistant(req.user!.id, conversationId);
     }
+    const imageTurn = !greeting && !regenerate && decodedImages.length > 0;
     // Resume the conversation's prior SDK session so the model keeps its context
     // across turns. A greeting is ephemeral (never persisted), and a regenerate
     // re-runs the same turn — both start a fresh session to avoid duplicating
-    // history in the transcript.
+    // history in the transcript. Image turns also start fresh: the SDK receives
+    // images through streaming input, and combining that with `resume` can drop
+    // the structured image blocks before they reach the model.
     const resumeSessionId =
-      greeting || regenerate
+      greeting || regenerate || imageTurn
         ? undefined
         : store.getAgentSessionId(req.user!.id, conversationId) ?? undefined;
     // Inject prior context whenever there's no SDK session to resume. A greeting
