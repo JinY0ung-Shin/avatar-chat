@@ -602,6 +602,10 @@
    ============================================================ */
 .md {
   font-size: var(--t-md);
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .md > :first-child {
   margin-top: 0;
@@ -632,6 +636,7 @@
 }
 .md p {
   margin: 0.6em 0;
+  overflow-wrap: anywhere;
 }
 .md ul,
 .md ol {
@@ -640,6 +645,7 @@
 }
 .md li {
   margin: 0.25em 0;
+  overflow-wrap: anywhere;
 }
 .md li > ul,
 .md li > ol {
@@ -665,6 +671,8 @@
 .code-block {
   position: relative;
   margin: 0.8em 0;
+  min-width: 0;
+  max-width: 100%;
 }
 .md pre {
   margin: 0;
@@ -674,6 +682,7 @@
   color: var(--code-fg);
   border-radius: var(--r-md);
   padding: var(--s-3) var(--s-4);
+  max-width: 100%;
   overflow-x: auto;
   line-height: 1.5;
 }
@@ -742,6 +751,8 @@
    .table-wrap by enhanceCodeBlocks so they scroll horizontally on narrow
    screens instead of letter-breaking every cell. */
 .table-wrap {
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
@@ -804,10 +815,12 @@ tbody tr:hover td {
   max-width: var(--transcript-max);
   margin: 0 auto;
   position: relative;
+  min-width: 0;
 }
 
 .composer-form {
   position: relative;
+  min-width: 0;
 }
 
 .composer-box {
@@ -947,6 +960,8 @@ textarea::placeholder {
   display: flex;
   justify-content: space-between;
   gap: var(--s-3);
+  min-width: 0;
+  max-width: 100%;
 }
 .composer-hint kbd {
   font-family: inherit;
@@ -961,6 +976,7 @@ textarea::placeholder {
   align-items: center;
   gap: var(--s-3);
   min-width: 0;
+  max-width: 100%;
 }
 .composer-usage {
   font-variant-numeric: tabular-nums;
@@ -976,6 +992,7 @@ textarea::placeholder {
    `.field` ancestor (see src/client/CLAUDE.md). */
 .composer-model-select {
   flex: none;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
@@ -985,6 +1002,7 @@ textarea::placeholder {
   cursor: pointer;
   white-space: nowrap;
   max-width: 16em;
+  overflow: hidden;
   text-overflow: ellipsis;
 }
 .composer-model-select:hover,
@@ -996,6 +1014,7 @@ textarea::placeholder {
 /* Owner-only per-conversation group-knowledge toggle (button + dropdown). */
 .composer-gk-btn {
   flex: none;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg-elevated);
@@ -1004,6 +1023,8 @@ textarea::placeholder {
   font-size: 0.8em;
   cursor: pointer;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .composer-gk-btn[hidden] {
   display: none;

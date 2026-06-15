@@ -1108,14 +1108,14 @@
     gap: var(--s-1);
   }
   .composer-model-select {
-    flex: 0 1 172px;
+    flex: 1 1 132px;
     min-width: 0;
     max-width: min(100%, 172px);
     font-size: var(--t-md);
   }
   .composer-gk-btn {
-    flex: 0 0 auto;
-    max-width: 100%;
+    flex: 0 1 auto;
+    max-width: min(100%, 132px);
     font-size: var(--t-md);
   }
   .composer-usage {

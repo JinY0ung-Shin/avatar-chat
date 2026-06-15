@@ -970,12 +970,11 @@ describe("routine jobs", () => {
   it("lists only enabled, due jobs and rolls them forward after a run", () => {
     const { store, ownerId } = makeStore("rj5");
     const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 0 });
-    // Nothing is due yet (next run is in the future).
-    const future = new Date(Date.now() + 60_000).toISOString();
-    expect(store.listDueRoutineJobs(future)).toHaveLength(0);
-    // A timestamp well past the scheduled run makes it due.
-    const past = new Date(Date.now() + 1000 * 60 * 60 * 48).toISOString();
-    const due = store.listDueRoutineJobs(past);
+    const nextRunMs = new Date(job.nextRunAt!).getTime();
+    // Just before the scheduled instant, nothing is due.
+    expect(store.listDueRoutineJobs(new Date(nextRunMs - 1000).toISOString())).toHaveLength(0);
+    // Just after the scheduled instant, the job is due.
+    const due = store.listDueRoutineJobs(new Date(nextRunMs + 1000).toISOString());
     expect(due.map((j) => j.id)).toContain(job.id);
     // Recording a run advances next_run_at into the future again.
     store.markRoutineRun(job.id, { status: "success" });

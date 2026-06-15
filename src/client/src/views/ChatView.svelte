@@ -984,6 +984,8 @@
      assistant bubble that surfaces the proposed plan — shown live while the turn
      streams and persisted on the finished message (response.plan). */
   .plan-card {
+    min-width: 0;
+    max-width: 100%;
     border: 1px solid var(--line);
     border-left: 3px solid var(--accent);
     border-radius: var(--r-md);
@@ -1000,6 +1002,7 @@
     list-style: none;
     user-select: none;
     font-size: 0.85rem;
+    min-width: 0;
   }
   .plan-card-head::-webkit-details-marker {
     display: none;
@@ -1014,10 +1017,16 @@
     letter-spacing: 0.02em;
   }
   .plan-card-hint {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
     color: var(--muted);
     font-size: 0.75rem;
   }
   .plan-card-body {
     padding: 0 var(--s-3) var(--s-2);
+    min-width: 0;
+    max-width: 100%;
   }
 </style>
