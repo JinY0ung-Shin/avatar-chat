@@ -142,7 +142,19 @@
     }
   }
 
-  function resizeImage(file: File, max: number): Promise<string> {
+  function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function resizeImage(file: File, max: number): Promise<string> {
+    // Load via a `data:` URL, NOT `URL.createObjectURL`: a `blob:` URL is blocked
+    // by the production CSP (`img-src 'self' data:`), which would fail the load.
+    const sourceDataUrl = await readFileAsDataUrl(file);
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
@@ -154,7 +166,7 @@
         resolve(canvas.toDataURL(file.type === "image/jpeg" ? "image/jpeg" : file.type === "image/webp" ? "image/webp" : "image/png", 0.9));
       };
       img.onerror = reject;
-      img.src = URL.createObjectURL(file);
+      img.src = sourceDataUrl;
     });
   }
 </script>

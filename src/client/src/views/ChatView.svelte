@@ -166,38 +166,37 @@
 
   // Downscale to IMAGE_MAX_DIM via canvas (re-encoding to the same family). GIFs
   // are kept verbatim so animation survives (still size-capped server-side).
+  // The Image is loaded from a `data:` URL (FileReader), NOT `URL.createObjectURL`:
+  // a `blob:` URL is blocked by the production CSP (`img-src 'self' data:`), which
+  // would make the load fail and silently drop every attachment.
   async function resizeImageForChat(file: File): Promise<{ dataUrl: string; mediaType: ImageMediaType }> {
     const type: ImageMediaType = (ACCEPTED_IMAGE_TYPES as string[]).includes(file.type) ? (file.type as ImageMediaType) : "image/png";
+    const sourceDataUrl = await readFileAsDataUrl(file);
     if (type === "image/gif") {
-      return { dataUrl: await readFileAsDataUrl(file), mediaType: "image/gif" };
+      return { dataUrl: sourceDataUrl, mediaType: "image/gif" };
     }
-    const url = URL.createObjectURL(file);
-    try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const img = new Image();
-        img.onload = () => {
-          const scale = Math.min(1, IMAGE_MAX_DIM / Math.max(img.width, img.height));
-          const canvas = document.createElement("canvas");
-          canvas.width = Math.max(1, Math.round(img.width * scale));
-          canvas.height = Math.max(1, Math.round(img.height * scale));
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            reject(new Error("no 2d context"));
-            return;
-          }
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          const out = type === "image/jpeg" ? "image/jpeg" : type === "image/webp" ? "image/webp" : "image/png";
-          resolve(canvas.toDataURL(out, 0.9));
-        };
-        img.onerror = () => reject(new Error("image load failed"));
-        img.src = url;
-      });
-      // The browser may emit PNG if it can't encode the requested type — trust the prefix.
-      const mediaType = (/^data:(image\/[a-z+]+);/.exec(dataUrl)?.[1] as ImageMediaType) || "image/png";
-      return { dataUrl, mediaType };
-    } finally {
-      URL.revokeObjectURL(url);
-    }
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        const scale = Math.min(1, IMAGE_MAX_DIM / Math.max(img.width, img.height));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("no 2d context"));
+          return;
+        }
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const out = type === "image/jpeg" ? "image/jpeg" : type === "image/webp" ? "image/webp" : "image/png";
+        resolve(canvas.toDataURL(out, 0.9));
+      };
+      img.onerror = () => reject(new Error("image load failed"));
+      img.src = sourceDataUrl;
+    });
+    // The browser may emit PNG if it can't encode the requested type — trust the prefix.
+    const mediaType = (/^data:(image\/[a-z+]+);/.exec(dataUrl)?.[1] as ImageMediaType) || "image/png";
+    return { dataUrl, mediaType };
   }
 
   async function addImages(item: ChatPane, files: FileList | File[] | null | undefined) {
@@ -234,10 +233,18 @@
   }
 
   function onComposerPaste(event: ClipboardEvent, item: ChatPane) {
-    const files = Array.from(event.clipboardData?.items || [])
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+    // Prefer items (covers screenshots/copied images), fall back to files (some
+    // browsers only populate one of the two for a pasted image).
+    const fromItems = Array.from(clipboard.items || [])
       .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
       .map((it) => it.getAsFile())
       .filter((f): f is File => Boolean(f));
+    const fromFiles = Array.from(clipboard.files || []).filter((f) => f.type.startsWith("image/"));
+    const files = (fromItems.length ? fromItems : fromFiles).filter(
+      (f, i, arr) => arr.findIndex((g) => g.name === f.name && g.size === f.size) === i,
+    );
     if (files.length) {
       event.preventDefault();
       void addImages(item, files);

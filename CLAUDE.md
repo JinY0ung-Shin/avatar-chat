@@ -117,7 +117,11 @@ gotchas, and client↔server mirrored validators.
   `messages.attachments_json` column), and feeds the model `AgentRequest.images` THIS turn. Served by
   owner-scoped `GET /api/conversations/:id/images/:imageId` (`resolveStoredImage` guards traversal);
   same-origin so the strict CSP `img-src 'self' data:` needs no change. Bubbles render from the pane's
-  `localImages` (data URL, instant) then fall back to that serving URL on reload. **Non-obvious: feeding
+  `localImages` (data URL, instant) then fall back to that serving URL on reload. **Client canvas
+  resize loads the source via a `data:` URL (FileReader), NOT `URL.createObjectURL` — a `blob:` URL is
+  blocked by the prod CSP (`img-src 'self' data:`), so blob would fail the `<img>` load and silently
+  drop every attachment (works in `vite` dev, which sets no CSP — a prod-only trap). Same fix applies to
+  the avatar-image resize in `SettingsProfileTab`.** **Non-obvious: feeding
   images REQUIRES switching `sdk.query`'s `prompt` from a string to an `AsyncIterable<SDKUserMessage>`
   (text block + image blocks) — `claudeAgent.ts` `buildImageQueryPrompt`, taken ONLY when
   `request.images?.length`; text-only turns keep the unchanged string path (zero regression). `resume`
