@@ -29,6 +29,9 @@
     "marked": "^18.0.5",
     "mermaid": "^11.15.0",
     "pino": "^10.3.1",
+    "vega": "^6.2.0",
+    "vega-interpreter": "^2.2.1",
+    "vega-lite": "^6.4.3",
     "zod": "^4.0.0"
   },
   "devDependencies": {

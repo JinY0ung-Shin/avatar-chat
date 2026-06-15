@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import { renderMarkdown } from "../lib/format";
   import { dismissCanvas, setActiveCanvas, submitCanvas } from "../lib/chat";
+  import { assertInlineOnlyVegaSpec, createInlineOnlyVegaLoader } from "../lib/vegaCanvas";
   import type { ChatPane, PaneCanvas } from "../lib/types";
 
   // Visual canvas side panel (experimental `canvas` feature, #50). Renders the
@@ -33,8 +34,20 @@
   // ---- content rendering (CSP-safe: no avatar-authored JS ever runs) ----
   let renderedHtml = "";
   let renderError = "";
-  // Token guards async (mermaid) renders so a stale result can't overwrite a newer one.
+  // Token guards async (mermaid/vega) renders so a stale result can't overwrite a newer one.
   let renderToken = 0;
+
+  // Vega-Lite theming: transparent background so the chart sits on the card, with
+  // axis/label/legend colors that read on the active theme. Used as the Vega-Lite
+  // compile `config` (see the `vega` branch below).
+  const VEGA_BASE_CONFIG = { background: "transparent", view: { stroke: "transparent" } };
+  const VEGA_DARK_CONFIG = {
+    ...VEGA_BASE_CONFIG,
+    title: { color: "#e5e7eb", subtitleColor: "#cbd5e1" },
+    axis: { domainColor: "#475569", gridColor: "#334155", tickColor: "#475569", labelColor: "#cbd5e1", titleColor: "#e5e7eb" },
+    legend: { labelColor: "#cbd5e1", titleColor: "#e5e7eb" },
+    style: { "guide-label": { fill: "#cbd5e1" }, "guide-title": { fill: "#e5e7eb" } },
+  };
 
   $: void renderActive(active);
 
@@ -55,6 +68,42 @@
     }
     if (canvas.contentType === "html") {
       renderedHtml = DOMPurify.sanitize(canvas.content);
+      return;
+    }
+    if (canvas.contentType === "vega") {
+      try {
+        // Lazy-load vega only when a chart is shown (separate chunk). Render the
+        // Vega-Lite spec to an SVG STRING via the CSP-safe expression interpreter
+        // (AST evaluation — no `Function` constructor, so `script-src 'self'`
+        // stays intact), with a loader that rejects avatar-controlled URL fetches,
+        // then sanitize like any other SVG.
+        const [vega, vegaLite, interp] = await Promise.all([
+          import("vega"),
+          import("vega-lite"),
+          import("vega-interpreter"),
+        ]);
+        const spec = JSON.parse(canvas.content);
+        assertInlineOnlyVegaSpec(spec);
+        const dark = document.documentElement.getAttribute("data-theme") === "dark";
+        const config = dark ? VEGA_DARK_CONFIG : VEGA_BASE_CONFIG;
+        const vgSpec = vegaLite.compile(spec, { config } as any).spec;
+        const runtime = vega.parse(vgSpec as any, null as any, { ast: true } as any);
+        const view = new vega.View(runtime, {
+          expr: interp.expressionInterpreter,
+          renderer: "svg",
+          loader: createInlineOnlyVegaLoader(vega),
+        } as any);
+        const svg = await view.toSVG();
+        view.finalize();
+        if (token !== renderToken) return; // a newer render won
+        renderedHtml = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
+      } catch (err) {
+        if (token !== renderToken) return;
+        // Fall back to the spec source so nothing is lost on a bad spec/parse error.
+        renderError = (err as Error).message || "Vega 차트 렌더링에 실패했습니다.";
+        const escaped = canvas.content.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
+        renderedHtml = DOMPurify.sanitize(`<pre>${escaped}</pre>`);
+      }
       return;
     }
     if (canvas.contentType === "mermaid") {
@@ -140,7 +189,7 @@
           <div class="canvas-title">{active.title}</div>
           <div class="canvas-content md">{@html renderedHtml}</div>
           {#if renderError}
-            <p class="canvas-render-error">다이어그램 렌더링 실패: {renderError}</p>
+            <p class="canvas-render-error">렌더링 실패: {renderError}</p>
           {/if}
 
           {#if active.controls?.length}

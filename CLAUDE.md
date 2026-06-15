@@ -304,15 +304,23 @@ gotchas, and client↔server mirrored validators.
   `buildPrompt` (owner/routine `experimentalFeaturesSection`) AND `describe_system` (via
   `OwnerState.experimentalFeatures`). Gate a feature on `ownerState.experimentalFeatures.includes(key)`.
 - **Visual canvas (`mcp__canvas__show`, experimental `canvas` feature).** CSP-SAFE port of Superpowers'
-  visual companion: the avatar DECLARES content (`markdown`/`svg`/`html`/`mermaid`) + optional
+  visual companion: the avatar DECLARES content (`markdown`/`vega`/`mermaid`/`svg`/`html`) + optional
   `controls` (buttons/text); the CLIENT renders sanitized content (DOMPurify; mermaid `securityLevel:
-  strict`, lazy-loaded, code-block fallback) + real form controls — **no avatar JS runs, CSP unchanged**.
+  strict`; **`vega` = a compact Vega-Lite spec compiled+rendered to an SVG STRING via the CSP-safe
+  `vega-interpreter` AST evaluator — no `Function` ctor, so `script-src 'self'` is untouched — far
+  cheaper in tokens than hand-drawn SVG**; all lazy-loaded as own chunks with a source-`<pre>` fallback)
+  + real form controls — **no avatar JS runs, CSP unchanged**.
   `canvasTools.ts` (intentionally NOT self-gated — registration is the boundary) registered in
   `claudeAgent.ts` ONLY when the avatar OWNER enabled `canvas` AND `events.onCanvas` exists (so all
   viewer classes incl. colleagues get it; routines/headless don't). Controls park the run via the SAME
   `awaitResponse`/`/api/chat/respond` path as `onQuestion` (`routes/chat.ts` `onCanvas`); display-only
   returns immediately. Artifacts persist on `AgentResponse.canvases` (success/cancel/error paths) and
   rebuild on reload (`canvasesFromMessages`); live via SSE `canvas` event → `CanvasPanel.svelte`.
+  **Refine-in-place:** `show` takes an optional `canvasId`; reusing it UPDATES that artifact instead of
+  stacking a tab (client `handleCanvas` + `canvasesFromMessages` AND server `record()` all upsert by id,
+  latest-wins) — the tool echoes the id back so the model can target it. **Size-cap:** `canvasTools.ts`
+  rejects over-`MAX_CANVAS_CONTENT_CHARS` content / long titles / too many controls with an actionable
+  agent-facing error (the content rides every `resume` turn's transcript, so a blob taxes all later turns).
 - **Active repo workspace (`activeRepo` chat-body param).** Owner/trusted viewer opens a registered
   `mcp__git_repo__*` repo as the SDK **cwd** so the avatar edits/tests with native Read/Edit/Bash; the
   per-conversation scratch dir rides along as an `additionalDirectories`. **Security boundary is

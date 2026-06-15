@@ -12,6 +12,17 @@ export const CANVAS_SERVER_NAME = "canvas";
 export const CANVAS_TOOL_NAMES = ["mcp__canvas__show"] as const;
 
 /**
+ * Caps on a single canvas artifact. The content rides the SDK session transcript,
+ * which is replayed on every `resume` turn, AND the chat SSE/persistence payload —
+ * so an oversized artifact silently inflates the token cost of EVERY later turn.
+ * Over-limit is rejected with an actionable (agent-facing) error so the model can
+ * compact or split and retry, rather than being silently truncated.
+ */
+export const MAX_CANVAS_CONTENT_CHARS = 20000;
+export const MAX_CANVAS_TITLE_CHARS = 200;
+export const MAX_CANVAS_CONTROLS = 12;
+
+/**
  * Context for the canvas tool: a single callback that emits the artifact to the
  * client (over SSE) and resolves with the user's submission. The chat route owns
  * the SSE/`awaitResponse` plumbing; this tool just shapes the request/result.
@@ -66,36 +77,56 @@ export function buildCanvasTools(ctx: CanvasToolsContext) {
   return [
     tool(
       "show",
-      "Show a visual canvas to the user in the chat side panel (experimental). Use it to share a diagram, mockup, layout, or option comparison and refine it together — not to repeat text the chat could already render. " +
-        "Set contentType to one of: 'markdown' (rich text), 'svg' (an inline <svg> diagram), 'html' (static HTML, sanitized), or 'mermaid' (a Mermaid diagram — pass ONLY the diagram source as content). " +
+      "Show a visual canvas to the user in the chat side panel (experimental). Use it to share a diagram, mockup, layout, chart, or option comparison and refine it together — not to repeat text the chat could already render. " +
+        "Set contentType to one of: 'markdown' (rich text), 'vega' (a chart — pass ONLY a compact Vega-Lite JSON spec as content; PREFER this for any data chart over hand-drawn SVG, it is far cheaper in tokens — inline the data, keep it small, no remote data URLs), 'mermaid' (a flow/sequence/graph diagram — pass ONLY the diagram source as content), 'svg' (an inline <svg> for bespoke diagrams Vega/mermaid can't express), or 'html' (static HTML, sanitized). " +
         "Never include scripts or executable JS in content; it is sanitized away. " +
-        "To collect a decision, pass `controls` (buttons and/or text inputs): the tool then WAITS and returns the user's submission. With no controls it just displays and returns immediately. The client renders real form controls, so do not ask the user to type their choice into chat when controls can capture it.",
+        "To collect a decision, pass `controls` (buttons and/or text inputs): the tool then WAITS and returns the user's submission. With no controls it just displays and returns immediately. The client renders real form controls, so do not ask the user to type their choice into chat when controls can capture it. " +
+        "To REFINE an artifact together with the user, call show again with the SAME `canvasId` (returned to you when you first showed it): it UPDATES that canvas in place instead of stacking a new one — don't re-show a slightly changed copy under a new id.",
       {
         title: z.string().describe("Short title shown atop the canvas panel."),
         content: z.string().describe("The artifact body, interpreted per contentType."),
         contentType: z
-          .enum(["markdown", "svg", "html", "mermaid"])
-          .describe("How to render content."),
+          .enum(["markdown", "vega", "mermaid", "svg", "html"])
+          .describe("How to render content. Prefer 'vega' (Vega-Lite spec) for charts and 'mermaid' for diagrams — both render rich visuals from a tiny token-cheap source."),
         controls: z.array(controlSchema).optional().describe("Optional interactive controls to collect a response."),
+        canvasId: z
+          .string()
+          .optional()
+          .describe("Reuse a previous canvas's id (returned when you showed it) to UPDATE that canvas in place — for refining an artifact with the user — instead of opening a new panel/tab. Omit to create a new canvas."),
       },
       async (args) => {
+        if (args.content.length > MAX_CANVAS_CONTENT_CHARS) {
+          return text(
+            `Canvas content is too large (${args.content.length} chars; limit ${MAX_CANVAS_CONTENT_CHARS}). ` +
+              "Compact it: for a chart prefer a 'vega' Vega-Lite spec over hand-written SVG, drop inline data you don't need, or split it across smaller canvases — then call show again.",
+            true,
+          );
+        }
+        if (args.title.length > MAX_CANVAS_TITLE_CHARS) {
+          return text(`Canvas title is too long (limit ${MAX_CANVAS_TITLE_CHARS} chars). Use a short title.`, true);
+        }
         const controls = (args.controls ?? []) as CanvasControl[];
+        if (controls.length > MAX_CANVAS_CONTROLS) {
+          return text(`Too many controls (${controls.length}; limit ${MAX_CANVAS_CONTROLS}). Show fewer at once.`, true);
+        }
         const awaitInput = controls.length > 0;
+        const artifactId = args.canvasId?.trim() || crypto.randomUUID();
         const result = await ctx.emitCanvas({
-          artifactId: crypto.randomUUID(),
+          artifactId,
           title: args.title,
           content: args.content,
           contentType: args.contentType,
           controls: awaitInput ? controls : undefined,
           awaitInput,
         });
+        const idNote = ` (canvas id: ${artifactId} — pass as canvasId to refine this canvas in place)`;
         if (result.behavior === "submitted") {
-          return text(formatSubmission(result.values));
+          return text(formatSubmission(result.values) + `\n${idNote.trim()}`);
         }
         if (result.behavior === "cancelled") {
-          return text("The user dismissed the canvas without responding. Proceed without a selection.");
+          return text(`The user dismissed the canvas without responding. Proceed without a selection.${idNote}`);
         }
-        return text("The canvas was shown to the user.");
+        return text(`The canvas was shown to the user.${idNote}`);
       },
     ),
   ];
