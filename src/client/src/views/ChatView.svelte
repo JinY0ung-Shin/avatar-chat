@@ -82,6 +82,32 @@
     for (const item of panes) stickToBottom(item);
   });
 
+  // `afterUpdate` only re-pins at the instant the store changes — but the
+  // streaming bubble keeps GROWING afterward: the activity tree (skills/tools
+  // loading), plugin chips, status spinner, lazy images and markdown all settle
+  // their height asynchronously, below that instant. A ResizeObserver re-pins on
+  // every content-size change (and on viewport shrink when the composer grows),
+  // so auto-scroll tracks that late growth instead of leaving the new rows just
+  // out of view — which is what made it feel like it "doesn't scroll" at all.
+  // Re-pinning only moves scrollTop down, so the direction-based handler above
+  // never mistakes it for a user scroll, and it never disturbs a user who has
+  // scrolled up (stickToBottom bails when stickBottom === false).
+  function autostick(node: HTMLElement, item: ChatPane) {
+    let current = item;
+    const inner = node.querySelector<HTMLElement>(".transcript-inner");
+    const ro = new ResizeObserver(() => stickToBottom(current));
+    ro.observe(node);
+    if (inner) ro.observe(inner);
+    return {
+      update(next: ChatPane) {
+        current = next;
+      },
+      destroy() {
+        ro.disconnect();
+      },
+    };
+  }
+
   $: panes = $appState.chatPanes;
   $: pane = panes.find((item) => item.id === $appState.activePaneId) ?? panes[0] ?? null;
   $: splitClass = panes.length <= 1 ? "single" : $appState.chatLayout;
@@ -539,6 +565,7 @@
     <div
       class="transcript scroll-thin"
       bind:this={transcriptEls[item.id]}
+      use:autostick={item}
       role="log"
       aria-live="polite"
       aria-relevant="additions"
