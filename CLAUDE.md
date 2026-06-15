@@ -316,6 +316,11 @@ gotchas, and client↔server mirrored validators.
   `awaitResponse`/`/api/chat/respond` path as `onQuestion` (`routes/chat.ts` `onCanvas`); display-only
   returns immediately. Artifacts persist on `AgentResponse.canvases` (success/cancel/error paths) and
   rebuild on reload (`canvasesFromMessages`); live via SSE `canvas` event → `CanvasPanel.svelte`.
+  **Refine-in-place:** `show` takes an optional `canvasId`; reusing it UPDATES that artifact instead of
+  stacking a tab (client `handleCanvas` + `canvasesFromMessages` AND server `record()` all upsert by id,
+  latest-wins) — the tool echoes the id back so the model can target it. **Size-cap:** `canvasTools.ts`
+  rejects over-`MAX_CANVAS_CONTENT_CHARS` content / long titles / too many controls with an actionable
+  agent-facing error (the content rides every `resume` turn's transcript, so a blob taxes all later turns).
 - **Active repo workspace (`activeRepo` chat-body param).** Owner/trusted viewer opens a registered
   `mcp__git_repo__*` repo as the SDK **cwd** so the avatar edits/tests with native Read/Edit/Bash; the
   per-conversation scratch dir rides along as an `additionalDirectories`. **Security boundary is

@@ -106,7 +106,7 @@ import {
   GIT_REPO_TOOL_NAMES,
 } from "../src/server/agent/gitRepoTools.js";
 import { gitRepoClonePath, gitRepoContextFromRecord } from "../src/server/gitRepos.js";
-import { buildCanvasTools, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES } from "../src/server/agent/canvasTools.js";
+import { buildCanvasTools, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES, MAX_CANVAS_CONTENT_CHARS } from "../src/server/agent/canvasTools.js";
 import type { CanvasRequest, CanvasResult } from "../src/server/agent/events.js";
 import {
   buildSystemTools,
@@ -1711,6 +1711,48 @@ describe("canvas tools (experimental, #50)", () => {
     expect(res.isError).toBeFalsy();
     expect(captured!.contentType).toBe("vega");
     expect(captured!.content).toBe(spec);
+  });
+
+  it("reuses a provided canvasId so the artifact can be refined in place", async () => {
+    let captured: CanvasRequest | null = null;
+    const tools = buildCanvasTools({
+      emitCanvas: async (req): Promise<CanvasResult> => {
+        captured = req;
+        return { behavior: "shown" };
+      },
+    });
+    const res = await callTool(tools, "show", { title: "차트", content: "x", contentType: "markdown", canvasId: "chart-1" });
+    expect(res.isError).toBeFalsy();
+    expect(captured!.artifactId).toBe("chart-1");
+    // The id is echoed back so the model can target it on a later refine.
+    expect(res.content[0].text).toContain("chart-1");
+  });
+
+  it("mints a fresh id when canvasId is omitted", async () => {
+    let captured: CanvasRequest | null = null;
+    const tools = buildCanvasTools({
+      emitCanvas: async (req): Promise<CanvasResult> => {
+        captured = req;
+        return { behavior: "shown" };
+      },
+    });
+    await callTool(tools, "show", { title: "t", content: "x", contentType: "markdown" });
+    expect(captured!.artifactId).toMatch(/[0-9a-f-]{36}/);
+  });
+
+  it("rejects oversized canvas content with an actionable error", async () => {
+    let called = false;
+    const tools = buildCanvasTools({
+      emitCanvas: async (): Promise<CanvasResult> => {
+        called = true;
+        return { behavior: "shown" };
+      },
+    });
+    const big = "x".repeat(MAX_CANVAS_CONTENT_CHARS + 1);
+    const res = await callTool(tools, "show", { title: "t", content: big, contentType: "html" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("too large");
+    expect(called).toBe(false); // never reaches the sink
   });
 
   it("awaits input and reports the submission when controls are declared", async () => {

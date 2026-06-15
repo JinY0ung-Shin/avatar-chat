@@ -227,6 +227,7 @@ function canvasSection(request: AgentRequest): string | null {
     "Use it to share charts, diagrams, mockups, layouts, or side-by-side option comparisons while you work them out WITH the user, not just to dump text the chat could already show. " +
     "For DATA CHARTS prefer `vega`: pass a compact Vega-Lite JSON spec as `content` (inline the data, keep it small) — it renders a rich chart from a tiny spec and is far cheaper in tokens than hand-writing SVG. For flow/sequence/graph DIAGRAMS use `mermaid` (diagram source only). Reserve `svg`/`html` for bespoke visuals the others can't express. " +
     "To collect a decision, add `controls`: `buttons` (single- or multi-select options) and/or `text` inputs. When you pass controls the tool BLOCKS until the user submits and returns their answer; with no controls it just displays and returns immediately. " +
+    "To REFINE an artifact, call show again with the SAME `canvasId` (returned when you showed it) so it updates in place instead of stacking a new tab — don't re-emit a near-duplicate under a new id. Keep each artifact compact (oversized content is rejected). " +
     "The client renders real, sanitized form controls — put NO scripts/JS in the content (it will be stripped). " +
     "This is an experimental feature and its behavior may change."
   );

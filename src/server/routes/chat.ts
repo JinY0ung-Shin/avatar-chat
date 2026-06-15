@@ -740,7 +740,13 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
               controls: controls ?? null,
             });
             const record = (submittedValues?: Record<string, unknown>) => {
-              canvasArtifacts.push({ id: artifactId, title, content, contentType, controls, submittedValues });
+              // Upsert by id: a same-`canvasId` update within this turn replaces the
+              // earlier version so the persisted artifact reflects its final state
+              // (mirrors the client's upsert-by-id in handleCanvas/canvasesFromMessages).
+              const entry: CanvasArtifact = { id: artifactId, title, content, contentType, controls, submittedValues };
+              const idx = canvasArtifacts.findIndex((c) => c.id === artifactId);
+              if (idx >= 0) canvasArtifacts[idx] = entry;
+              else canvasArtifacts.push(entry);
             };
             if (!requestData.awaitInput) {
               record();
