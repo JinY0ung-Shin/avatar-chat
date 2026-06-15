@@ -622,7 +622,7 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       const status = event === "task_end" ? (data.ok === false ? "failed" : "done") : "running";
       ensureAgent(paneId, data.agentId || "main");
       upsertTask(paneId, { id: data.taskId, agentId: data.agentId || "main", label, detail, status });
-      if (event !== "task_end") setStatus(paneId, `${label}${detail ? ` · ${detail}` : ""}`, true);
+      if (event !== "task_end") setStatus(paneId, [label, detail].filter(Boolean).join(" · ") || "태스크 진행 중", true);
       else setStatus(paneId, data.ok === false ? "태스크가 완료되지 못했습니다." : "태스크 완료", true);
       return;
     }
@@ -687,7 +687,9 @@ function taskLabel(data: any): string {
   if (data?.workflowName) return `워크플로 ${data.workflowName}`;
   if (data?.subagentType) return data.subagentType;
   if (data?.taskType) return String(data.taskType).replace(/_/g, " ");
-  return "태스크";
+  // No distinguishing name → leave empty; the row's "태스크" badge already labels
+  // it, so a "태스크" fallback here would render redundantly next to the badge.
+  return "";
 }
 function taskDetail(data: any): string {
   return data?.summary || data?.description || data?.prompt || data?.lastToolName || data?.error || data?.status || "";

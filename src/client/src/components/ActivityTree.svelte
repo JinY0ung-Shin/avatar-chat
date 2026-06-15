@@ -39,7 +39,7 @@
           <div class="task-row" data-status={row.status}>
             <span class="task-spinner"></span>
             <span class="task-badge">태스크</span>
-            <span class="task-name">{row.label}</span>
+            {#if row.label}<span class="task-name">{row.label}</span>{/if}
             {#if row.detail}<span class="task-detail">{row.detail}</span>{/if}
           </div>
         {/each}
