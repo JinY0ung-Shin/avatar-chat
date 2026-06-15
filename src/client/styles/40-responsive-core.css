@@ -47,6 +47,8 @@
      squeezes the conversation; cap its height and let it scroll internally. */
   .chat-layout {
     flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
   }
   .chat-layout > .chat-col {
     /* In the stacked column the chat grows; height:100% above would leave no
@@ -96,6 +98,7 @@
   .view-header {
     padding: var(--s-3) var(--s-4);
     flex-wrap: wrap;
+    min-width: 0;
   }
   .view-body {
     padding: var(--s-4);
@@ -106,10 +109,28 @@
   .composer {
     padding-left: var(--s-4);
     padding-right: var(--s-4);
+    min-width: 0;
   }
 
   .message.user .bubble {
     max-width: 92%;
+  }
+
+  .bubble {
+    min-width: 0;
+  }
+
+  .msg-images {
+    max-width: 100%;
+  }
+
+  .msg-image-link {
+    max-width: 100%;
+  }
+
+  .msg-image {
+    max-width: min(240px, 100%);
+    height: auto;
   }
 }
 
@@ -133,8 +154,8 @@
      sub-agent's ✓ checkmark nested under it. */
   .stream-status .spinner,
   .tool-row[data-status="running"] .tool-spinner,
+  .task-row[data-status="running"] .task-spinner,
   .agent-node[data-status="running"] > .agent-head > .agent-spinner {
     animation: spin 0.7s linear infinite !important;
   }
 }
-

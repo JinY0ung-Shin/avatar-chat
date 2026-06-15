@@ -6,12 +6,37 @@ import { consumeSse, type SseFrame } from "./sse";
 import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
-import type { AgentActivity, AgentResponse, AvatarDetail, AvatarSummary, ChatPane, LiveToolRow, PaneCanvas, StoredMessage } from "./types";
+import type {
+  AgentActivity,
+  AgentResponse,
+  AvatarDetail,
+  AvatarSummary,
+  ChatPane,
+  LiveTaskRow,
+  LiveToolRow,
+  PaneCanvas,
+  StoredMessage,
+} from "./types";
 
 const MAX_CHAT_PANES = 4;
 
 // Internal orchestration tools the viewer shouldn't see as activity rows.
-const HIDDEN_TOOLS = new Set(["ToolSearch", "TodoWrite", "SlashCommand"]);
+const HIDDEN_TOOLS = new Set([
+  "ToolSearch",
+  "TodoWrite",
+  "SlashCommand",
+  "Task",
+  "Agent",
+  "TaskCreate",
+  "TaskCreated",
+  "TaskStarted",
+  "TaskUpdate",
+  "TaskProgress",
+  "TaskStatus",
+  "TaskComplete",
+  "TaskCompleted",
+  "TaskStop",
+]);
 
 // Friendly, human-readable labels for tools shown in the activity tree. Raw
 // names (e.g. `mcp__knowledge__request_info`) are an implementation detail.
@@ -89,6 +114,7 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
     liveRunId: null,
     liveAgents: [],
     liveTools: [],
+    liveTasks: [],
     livePlugins: [],
     liveStatusStickyUntil: 0,
     groupKnowledgeOff: avatar.isOwn ? [...(readState().user?.groupKnowledgeOffDefault || [])] : [],
@@ -243,6 +269,30 @@ export function newChat(paneId?: string): void {
   });
   syncHash();
   void maybeGreet(next.id);
+}
+
+export async function clearChatHistory(): Promise<number> {
+  const result = await api<{ deleted: number; conversationIds: string[] }>("/api/conversations", { method: "DELETE" });
+  const ids = new Set(result.conversationIds || []);
+  if (!ids.size) {
+    return 0;
+  }
+  for (const pane of readState().chatPanes) {
+    if (ids.has(pane.conversationId)) {
+      pane.abortController?.abort();
+    }
+  }
+  updateState((state) => {
+    state.conversations = state.conversations.filter((conversation) => !ids.has(conversation.id));
+    state.chatPanes = state.chatPanes.map((pane) => (ids.has(pane.conversationId) ? makePane(pane.avatar) : pane));
+    if (!state.chatPanes.some((pane) => pane.id === state.activePaneId)) {
+      state.activePaneId = state.chatPanes[0]?.id ?? null;
+    }
+    const activePane = state.chatPanes.find((pane) => pane.id === state.activePaneId);
+    state.currentAvatar = activePane?.avatar ?? state.currentAvatar;
+  });
+  syncHash(true);
+  return result.deleted || ids.size;
 }
 
 export function regenerate(paneId: string): void {
@@ -570,7 +620,8 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       const label = taskLabel(data);
       const detail = taskDetail(data) || undefined;
       const status = event === "task_end" ? (data.ok === false ? "failed" : "done") : "running";
-      upsertTool(paneId, { id: data.taskId, agentId: "main", kind: "task", label, detail, status });
+      ensureAgent(paneId, data.agentId || "main");
+      upsertTask(paneId, { id: data.taskId, agentId: data.agentId || "main", label, detail, status });
       if (event !== "task_end") setStatus(paneId, `${label}${detail ? ` · ${detail}` : ""}`, true);
       else setStatus(paneId, data.ok === false ? "태스크가 완료되지 못했습니다." : "태스크 완료", true);
       return;
@@ -674,6 +725,20 @@ function upsertTool(paneId: string, row: LiveToolRow): void {
   });
 }
 
+function upsertTask(paneId: string, row: LiveTaskRow): void {
+  updatePane(paneId, (pane) => {
+    const existing = pane.liveTasks.find((t) => t.id === row.id);
+    if (existing) {
+      existing.label = row.label;
+      if (row.detail !== undefined) existing.detail = row.detail;
+      existing.status = row.status;
+      existing.agentId = row.agentId;
+    } else {
+      pane.liveTasks.push(row);
+    }
+  });
+}
+
 /** Mark that activity (a tool/agent/task) interrupted the text stream, so the
  *  next text delta starts a fresh paragraph instead of running onto the line
  *  before the activity. Mirrors the server's `\n\n` join between assistant chunks. */
@@ -698,6 +763,7 @@ function resetLive(pane: ChatPane): void {
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];
+  pane.liveTasks = [];
   pane.livePlugins = [];
   pane.liveStatusStickyUntil = 0;
 }
@@ -708,10 +774,11 @@ function resetLive(pane: ChatPane): void {
 // (otherwise the tree vanishes the instant the run finishes). Normalize any still
 // "running" node to "done" so it doesn't render a perpetual spinner.
 function snapshotActivity(pane: ChatPane): AgentActivity | undefined {
-  if (!pane.liveTools.length) return undefined;
+  if (!pane.liveTools.length && !pane.liveTasks.length) return undefined;
   return {
     agents: pane.liveAgents.map((a) => ({ ...a, status: a.status === "running" ? "done" : a.status })),
     tools: pane.liveTools.map((t) => ({ ...t, status: t.status === "running" ? "done" : t.status })),
+    tasks: pane.liveTasks.map((t) => ({ ...t, status: t.status === "running" ? "done" : t.status })),
   };
 }
 
@@ -800,6 +867,7 @@ function clearLive(pane: ChatPane): void {
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];
+  pane.liveTasks = [];
   pane.livePlugins = [];
   pane.streaming = false;
 }

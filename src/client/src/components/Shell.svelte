@@ -3,7 +3,7 @@
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
-  import { addConversationToSplit, newChat, selectConversation } from "../lib/chat";
+  import { addConversationToSplit, clearChatHistory, newChat, selectConversation } from "../lib/chat";
   import { formatDate } from "../lib/format";
   import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { goView } from "../lib/nav";
@@ -24,6 +24,7 @@
   let conversationsError = "";
   let renamingId = "";
   let renameValue = "";
+  let clearingConversations = false;
 
   const nav = [
     { view: "explore", label: "탐색", icon: "compass" },
@@ -49,6 +50,7 @@
       const hay = [conversation.title, conversation.avatarDisplayName].filter(Boolean).join(" ").toLowerCase();
       return conversationTokens.every((token) => hay.includes(token));
     });
+  $: chatConversationCount = $appState.conversations.filter((conversation) => !conversation.isRoutine).length;
 
   onMount(async () => {
     conversationsLoading = true;
@@ -138,6 +140,24 @@
     });
     if (openPane) newChat(openPane.id);
     notify(`"${title}" 대화를 삭제했습니다.`, "ok");
+  }
+
+  async function clearConversations() {
+    if (clearingConversations || !chatConversationCount) return;
+    if ($appState.chatPanes.some((pane) => pane.streaming)) {
+      notify("응답 중인 대화가 있습니다. 먼저 응답을 중지해 주세요.", "warn");
+      return;
+    }
+    if (!window.confirm("저장된 모든 일반 대화 기록을 삭제할까요? 삭제하면 되돌릴 수 없습니다.")) return;
+    clearingConversations = true;
+    try {
+      const deleted = await clearChatHistory();
+      notify(deleted ? `${deleted}개의 대화를 삭제했습니다.` : "삭제할 대화가 없습니다.", "ok");
+    } catch (err) {
+      notify(`전체 삭제 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      clearingConversations = false;
+    }
   }
 
   function closeRail() {
@@ -253,7 +273,20 @@
   </div>
 
   <div class="rail-history">
-    <div class="rail-section-label">내 대화</div>
+    <div class="rail-section-row">
+      <div class="rail-section-label">내 대화</div>
+      <button
+        class="rail-clear-history"
+        type="button"
+        aria-label="모든 일반 대화 삭제"
+        title="모든 일반 대화 삭제"
+        disabled={conversationsLoading || clearingConversations || chatConversationCount === 0}
+        on:click={clearConversations}
+      >
+        <Icon name="trash" size={13} />
+        <span>{clearingConversations ? "삭제 중" : "비우기"}</span>
+      </button>
+    </div>
     <div class="conv-list-wrap">
       <input
         class="conv-search"

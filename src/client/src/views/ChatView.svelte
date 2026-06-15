@@ -26,7 +26,7 @@
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
   import { commandsForPane, type SlashCommand } from "../lib/slash";
-  import type { AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, StoredMessage } from "../lib/types";
+  import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
@@ -499,7 +499,7 @@
   }
   function activitySummary(item: ChatPane): string {
     const toolCount = item.liveTools.filter((t) => t.kind === "tool").length;
-    const taskCount = item.liveTools.filter((t) => t.kind === "task").length;
+    const taskCount = item.liveTasks.length;
     const agentCount = item.liveAgents.filter((a) => !a.isMain).length;
     const parts: string[] = [];
     if (toolCount) parts.push(`도구 ${toolCount}개`);
@@ -512,11 +512,11 @@
   // runs stay visible after the response finishes (collapsed by default).
   function completedActivity(message: StoredMessage) {
     const activity = message.response?.activity;
-    return activity && activity.tools.length ? activity : null;
+    return activity && (activity.tools.length || activity.tasks?.length) ? activity : null;
   }
-  function completedActivityLabel(activity: { tools: { kind: string }[]; agents: { isMain: boolean }[] }): string {
+  function completedActivityLabel(activity: AgentActivity): string {
     const toolCount = activity.tools.filter((t) => t.kind === "tool").length;
-    const taskCount = activity.tools.filter((t) => t.kind === "task").length;
+    const taskCount = (activity.tasks?.length || 0) + activity.tools.filter((t) => t.kind === "task").length;
     const agentCount = activity.agents.filter((a) => !a.isMain).length;
     const parts: string[] = [];
     if (toolCount) parts.push(`도구 ${toolCount}개`);
@@ -571,7 +571,7 @@
                   <details class="activity-live activity-done">
                     <summary><span class="activity-summary-text">{completedActivityLabel(activity)}</span></summary>
                     <div class="agent-activity">
-                      <ActivityTree agentId="main" agents={activity.agents} tools={activity.tools} />
+                      <ActivityTree agentId="main" agents={activity.agents} tools={activity.tools} tasks={activity.tasks || []} />
                     </div>
                   </details>
                 {/if}
@@ -611,7 +611,7 @@
                 <details class="activity-live" open>
                   <summary><span class="activity-summary-text">{activitySummary(item)}</span></summary>
                   <div class="agent-activity">
-                    <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} />
+                    <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
                   </div>
                 </details>
               {/if}

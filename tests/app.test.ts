@@ -869,6 +869,31 @@ describe("noah-almighty platform", () => {
     expect(convs.body.conversations.some((c: { id: string }) => c.id === convId)).toBe(false);
   });
 
+  it("bulk deletes only the caller's regular chat conversations", async () => {
+    const app = testApp();
+    const { agent: a, user: ua } = await newUser(app, "bulk-owner");
+    const first = await a.post("/api/chat/stream").send({ avatarId: ua.id, message: "one" }).expect(200);
+    const second = await a.post("/api/chat/stream").send({ avatarId: ua.id, message: "two" }).expect(200);
+    const firstId = (parseSse(first.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+    const secondId = (parseSse(second.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+    const routine = await a.post("/api/me/routines").send({ prompt: "매일 정리", time: "09:00" }).expect(200);
+
+    const { agent: b, user: ub } = await newUser(app, "bulk-other");
+    const otherChat = await b.post("/api/chat/stream").send({ avatarId: ub.id, message: "other" }).expect(200);
+    const otherId = (parseSse(otherChat.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+
+    const cleared = await a.delete("/api/conversations").expect(200);
+    expect(new Set(cleared.body.conversationIds)).toEqual(new Set([firstId, secondId]));
+    expect(cleared.body.deleted).toBe(2);
+
+    const ownerChats = await a.get("/api/conversations").expect(200);
+    expect(ownerChats.body.conversations).toHaveLength(0);
+    const routines = await a.get("/api/conversations?kind=routine").expect(200);
+    expect(routines.body.conversations.map((c: { id: string }) => c.id)).toContain(routine.body.routine.conversationId);
+    const otherChats = await b.get("/api/conversations").expect(200);
+    expect(otherChats.body.conversations.map((c: { id: string }) => c.id)).toEqual([otherId]);
+  });
+
   // ---- Admin role management -------------------------------------------
 
   it("lets an admin grant/revoke the admin role and blocks self-deletion", async () => {

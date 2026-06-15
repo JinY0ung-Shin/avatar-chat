@@ -59,6 +59,7 @@ import {
 } from "../src/server/agent/runRegistry.js";
 import {
   agentSubprocessEnv,
+  buildImageQueryPrompt,
   buildPreToolUseHook,
   buildPrompt,
   deriveAgentToolAccess,
@@ -137,7 +138,7 @@ import {
 } from "../src/server/agent/confluenceTools.js";
 import { generateSshKeyPair } from "../src/server/sshIdentity.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
-import type { AppConfig, Plugin } from "../src/server/types.js";
+import type { AgentImageInput, AppConfig, Plugin } from "../src/server/types.js";
 import {
   DEFAULT_HEX_SSH_TOOL_POLICY,
   normalizeHexSshToolPolicy,
@@ -442,6 +443,33 @@ describe("store agent session resume", () => {
     expect(store.setMessageActivity(ownerId, bare.id, activity)).toBe(false);
   });
 
+  it("persists task-only activity snapshots and deletes only regular chats in bulk", () => {
+    const { store, ownerId } = makeStore();
+    const avatar = store.createUser({ username: "taskavatar", displayName: "Task Avatar", password: "password123" });
+    store.touchConversation(ownerId, "conv-task-only", avatar.id, "hi");
+    const msg = store.addMessage("conv-task-only", {
+      role: "assistant",
+      content: "done",
+      response: { kind: "text", runtime: "claude", summary: "", text: "done" },
+    });
+    const activity = {
+      agents: [{ id: "main", parentId: "", label: "", status: "done" as const, isMain: true }],
+      tools: [],
+      tasks: [{ id: "task-1", agentId: "main", label: "리서치", detail: "자료 확인", status: "done" as const }],
+    };
+    expect(store.setMessageActivity(ownerId, msg.id, activity)).toBe(true);
+    expect(store.listMessages(ownerId, "conv-task-only")[0].response?.activity).toEqual(activity);
+
+    store.touchConversation(ownerId, "conv-routine", avatar.id, "routine", { isRoutine: true });
+    const other = store.createUser({ username: "bulkother", displayName: "Other", password: "password123" });
+    store.touchConversation(other.id, "conv-other", other.id, "other");
+
+    expect(new Set(store.deleteChatConversations(ownerId))).toEqual(new Set(["conv-task-only"]));
+    expect(store.listConversations(ownerId)).toHaveLength(0);
+    expect(store.listConversations(ownerId, undefined, "routine").map((c) => c.id)).toEqual(["conv-routine"]);
+    expect(store.listConversations(other.id).map((c) => c.id)).toEqual(["conv-other"]);
+  });
+
   it("round-trips the per-user default group-knowledge OFF set (seeds new conversations)", () => {
     const { store, ownerId } = makeStore();
     // Default on a fresh user: every group on.
@@ -451,6 +479,32 @@ describe("store agent session resume", () => {
     expect(store.getUserById(ownerId)?.groupKnowledgeOffDefault).toEqual(["g1", "g2"]);
     expect(store.setGroupKnowledgeOffDefault(ownerId, []).groupKnowledgeOffDefault).toEqual([]);
     expect(store.getUserById(ownerId)?.groupKnowledgeOffDefault).toEqual([]);
+  });
+});
+
+describe("agent image prompt", () => {
+  it("builds a single SDK user message with text and image content blocks", async () => {
+    const image: AgentImageInput = { mediaType: "image/png", data: "iVBORw0KGgo=" };
+    const messages: Record<string, any>[] = [];
+    for await (const message of buildImageQueryPrompt("이 이미지 봐줘", [image])) {
+      messages.push(message);
+    }
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0].type).toBe("user");
+    expect(messages[0].parent_tool_use_id).toBeNull();
+    expect(messages[0].shouldQuery).toBe(true);
+    expect(messages[0].uuid).toEqual(expect.any(String));
+    expect(messages[0].message).toEqual({
+      role: "user",
+      content: [
+        { type: "text", text: "이 이미지 봐줘" },
+        {
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" },
+        },
+      ],
+    });
   });
 });
 

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { AppConfig, AgentRequest, AgentResponse, AgentUsage, AgentOwner, AgentImageInput, PluginRoot } from "../types.js";
@@ -164,13 +165,15 @@ export function deriveAgentToolAccess(request: AgentRequest): AgentToolAccess {
  * SDK's `query` is typed loosely here (`input: unknown`), so the SDKUserMessage
  * shape is constructed inline; `parent_tool_use_id: null` marks a top-level turn.
  */
-async function* buildImageQueryPrompt(
+export async function* buildImageQueryPrompt(
   promptText: string,
   images: AgentImageInput[],
 ): AsyncGenerator<Record<string, unknown>> {
   yield {
     type: "user",
     parent_tool_use_id: null,
+    uuid: randomUUID(),
+    shouldQuery: true,
     message: {
       role: "user",
       content: [

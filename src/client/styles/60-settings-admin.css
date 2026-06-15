@@ -1046,18 +1046,113 @@
   .main {
     height: 100%;
   }
+  .chat-head {
+    align-items: stretch;
+    gap: var(--s-2);
+  }
+  .chat-head .header-left,
+  .chat-head .title,
+  .chat-head .chat-avatar,
+  .chat-head .chat-avatar > div {
+    min-width: 0;
+    max-width: 100%;
+  }
+  .chat-head .ca-name,
+  .chat-head .ca-handle,
+  .chat-head .title h1,
+  .chat-head .title p {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
   .chat-head-actions {
+    width: 100%;
+    min-width: 0;
     gap: var(--s-1);
+    flex-wrap: wrap;
+    justify-content: flex-start;
+  }
+  .chat-head-actions > .ghost-sm {
+    flex: 1 1 92px;
+    min-width: 0;
+    text-align: center;
   }
   .split-controls {
+    flex: 1 1 100%;
+    min-width: 0;
     max-width: 100%;
     flex-wrap: wrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
   }
   .split-avatar-select {
-    min-width: 88px;
-    max-width: 120px;
+    flex: 1 1 128px;
+    min-width: 0;
+    max-width: none;
     /* ≥16px text — anything smaller triggers iOS zoom-on-focus. */
     font-size: var(--t-md);
+  }
+  .composer-hint {
+    align-items: stretch;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  .composer-meta {
+    width: 100%;
+    flex-wrap: wrap;
+    gap: var(--s-1);
+  }
+  .composer-model-select,
+  .composer-gk-btn {
+    flex: 1 1 100%;
+    min-width: 0;
+    max-width: 100%;
+    font-size: var(--t-md);
+  }
+  .composer-gk-panel {
+    left: 0;
+    right: 0;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .activity-done,
+  .activity-live,
+  .activity-live > .agent-activity {
+    max-width: 100%;
+  }
+  .activity-live > .agent-activity {
+    max-height: min(220px, 32dvh);
+  }
+  .agent-node,
+  .agent-head,
+  .agent-tools,
+  .agent-tasks,
+  .tool-row,
+  .task-row {
+    min-width: 0;
+  }
+  .agent-label,
+  .tool-name,
+  .tool-arg,
+  .task-name,
+  .task-detail {
+    min-width: 0;
+  }
+  .tool-name {
+    max-width: 42%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .task-name {
+    max-width: 34%;
+  }
+  .task-badge {
+    padding-left: var(--s-1);
+    padding-right: var(--s-1);
+  }
+  .md pre {
+    max-width: 100%;
   }
   .chat-pane.compact .composer textarea {
     font-size: var(--t-md);
@@ -1148,4 +1243,3 @@
     flex: 1 1 140px;
   }
 }
-

@@ -195,6 +195,11 @@
   flex-direction: column;
   gap: var(--s-1);
 }
+.agent-tasks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
 
 /* A single tool call row. */
 .tool-row {
@@ -226,9 +231,60 @@
   color: var(--warn);
 }
 
+/* SDK task rows are tracked separately from tool calls. */
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  padding: var(--s-1-5) var(--s-2);
+  font-size: var(--t-xs);
+  color: var(--text-soft);
+}
+.task-badge {
+  flex: none;
+  border: 1px solid var(--accent-soft-strong);
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 0 var(--s-1-5);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+}
+.task-name {
+  flex: none;
+  max-width: 38%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+  color: var(--text);
+}
+.task-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+}
+.task-row[data-status="done"] .task-name {
+  color: var(--text-soft);
+}
+.task-row[data-status="failed"] {
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
+}
+.task-row[data-status="failed"] .task-name {
+  color: var(--warn);
+}
+
 /* Spinner shown while a tool/agent is running; replaced by a glyph when settled. */
 .tool-spinner,
-.agent-spinner {
+.agent-spinner,
+.task-spinner {
   width: 11px;
   height: 11px;
   border: 2px solid var(--line);
@@ -270,6 +326,24 @@
   content: "⊘";
   color: var(--warn);
   font-size: var(--t-xs);
+  line-height: 11px;
+}
+.task-row[data-status="done"] .task-spinner,
+.task-row[data-status="failed"] .task-spinner {
+  border: none;
+  animation: none;
+  position: relative;
+}
+.task-row[data-status="done"] .task-spinner::after {
+  content: "✓";
+  color: var(--ok);
+  font-size: var(--t-xs);
+  line-height: 11px;
+}
+.task-row[data-status="failed"] .task-spinner::after {
+  content: "✕";
+  color: var(--warn);
+  font-size: var(--t-2xs);
   line-height: 11px;
 }
 /* Scope each agent's spinner state to its OWN head spinner with a direct-child
@@ -1292,4 +1366,3 @@ textarea::placeholder {
 .ghost-sm.danger:hover {
   background: var(--danger-soft);
 }
-

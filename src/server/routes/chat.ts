@@ -45,7 +45,7 @@ interface ChatSlashExpansion {
 // bad/huge payload can't bloat the stored response JSON). Returns null when empty.
 function sanitizeActivity(raw: unknown): AgentResponse["activity"] | null {
   if (!raw || typeof raw !== "object") return null;
-  const obj = raw as { agents?: unknown; tools?: unknown };
+  const obj = raw as { agents?: unknown; tools?: unknown; tasks?: unknown };
   const cap = (s: unknown, max: number): string => (typeof s === "string" ? s.slice(0, max) : "");
   const agents = (Array.isArray(obj.agents) ? obj.agents : []).slice(0, 60).map((a) => {
     const node = a as Record<string, unknown>;
@@ -58,21 +58,34 @@ function sanitizeActivity(raw: unknown): AgentResponse["activity"] | null {
       isMain: node.isMain === true,
     };
   });
-  const tools = (Array.isArray(obj.tools) ? obj.tools : []).slice(0, 300).map((t) => {
+  const rawTools = (Array.isArray(obj.tools) ? obj.tools : []).slice(0, 300);
+  const legacyTaskRows = rawTools.filter((t) => cap((t as Record<string, unknown>).kind, 16) === "task");
+  const tools = rawTools.filter((t) => cap((t as Record<string, unknown>).kind, 16) !== "task").map((t) => {
     const row = t as Record<string, unknown>;
     const kind = cap(row.kind, 16);
     const status = cap(row.status, 16);
     return {
       id: cap(row.id, 80),
       agentId: cap(row.agentId, 80) || "main",
-      kind: (kind === "task" || kind === "blocked" ? kind : "tool") as "tool" | "task" | "blocked",
+      kind: (kind === "blocked" ? kind : "tool") as "tool" | "blocked",
       label: cap(row.label, 300),
       detail: row.detail ? cap(row.detail, 400) : undefined,
       status: (["done", "failed", "blocked"].includes(status) ? status : "done") as "running" | "done" | "failed" | "blocked",
     };
   });
-  if (!tools.length) return null;
-  return { agents, tools };
+  const tasks = [...(Array.isArray(obj.tasks) ? obj.tasks : []), ...legacyTaskRows].slice(0, 200).map((t) => {
+    const row = t as Record<string, unknown>;
+    const status = cap(row.status, 16);
+    return {
+      id: cap(row.id, 80),
+      agentId: cap(row.agentId, 80) || "main",
+      label: cap(row.label, 300),
+      detail: row.detail ? cap(row.detail, 400) : undefined,
+      status: (status === "failed" ? "failed" : status === "running" ? "running" : "done") as "running" | "done" | "failed",
+    };
+  });
+  if (!tools.length && !tasks.length) return null;
+  return { agents, tools, tasks };
 }
 
 // Agent-facing (the user only ever sees the literal "/learn" in their bubble;
@@ -263,6 +276,22 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       return;
     }
     res.json({ conversation });
+  });
+
+  router.delete("/api/conversations", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const ownerId = req.user!.id;
+    const ids = store.listConversations(ownerId, undefined, "chat").map((conversation) => conversation.id);
+    for (const id of ids) {
+      const active = getActiveRunForConversation(ownerId, id);
+      if (active) {
+        cancelRun(active.runId, ownerId);
+      }
+    }
+    const deletedIds = store.deleteChatConversations(ownerId);
+    for (const id of deletedIds) {
+      deleteConversationImages(config, id);
+    }
+    res.json({ ok: true, deleted: deletedIds.length, conversationIds: deletedIds });
   });
 
   router.delete("/api/conversations/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {

@@ -293,7 +293,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       if (!response) {
         return false;
       }
-      if (activity && activity.tools.length) {
+      if (activity && (activity.tools.length || activity.tasks?.length)) {
         response.activity = activity;
       } else {
         delete response.activity;
@@ -324,6 +324,26 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       });
       tx();
       return true;
+    }
+
+    deleteChatConversations(ownerId: string): string[] {
+      const rows = this.db
+        .prepare("SELECT id FROM conversations WHERE owner_user_id = ? AND is_routine = 0")
+        .all(ownerId) as { id: string }[];
+      const ids = rows.map((row) => row.id);
+      if (!ids.length) {
+        return [];
+      }
+      const tx = this.db.transaction((conversationIds: string[]) => {
+        const deleteMessages = this.db.prepare("DELETE FROM messages WHERE conversation_id = ?");
+        const deleteConversation = this.db.prepare("DELETE FROM conversations WHERE id = ? AND owner_user_id = ? AND is_routine = 0");
+        for (const conversationId of conversationIds) {
+          deleteMessages.run(conversationId);
+          deleteConversation.run(conversationId, ownerId);
+        }
+      });
+      tx(ids);
+      return ids;
     }
 
     /** Remove the trailing assistant reply so a regenerate can replace it. */

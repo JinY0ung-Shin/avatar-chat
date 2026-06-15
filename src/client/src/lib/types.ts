@@ -62,8 +62,10 @@ export interface ChatPane {
   liveRunId: string | null;
   /** Multi-agent activity tree (root "main" + sub-agents) for the live bubble. */
   liveAgents: LiveAgentNode[];
-  /** Tool / task / blocked rows, each owned by an agent in liveAgents. */
+  /** Tool / blocked rows, each owned by an agent in liveAgents. */
   liveTools: LiveToolRow[];
+  /** SDK task rows, tracked separately from normal tool calls. */
+  liveTasks: LiveTaskRow[];
   /** Plugin-load chips (name + status). */
   livePlugins: LivePluginChip[];
   /** ms timestamp until which a sticky status label resists a generic overwrite. */
@@ -119,7 +121,7 @@ export interface LiveAgentNode {
   isMain: boolean;
 }
 
-/** A tool/task/blocked row in the activity tree, owned by an agent. */
+/** A tool/blocked row in the activity tree, owned by an agent. */
 export interface LiveToolRow {
   id: string;
   agentId: string;
@@ -127,6 +129,15 @@ export interface LiveToolRow {
   label: string;
   detail?: string;
   status: "running" | "done" | "failed" | "blocked";
+}
+
+/** A non-subagent SDK task row in the activity tree. */
+export interface LiveTaskRow {
+  id: string;
+  agentId: string;
+  label: string;
+  detail?: string;
+  status: "running" | "done" | "failed";
 }
 
 export interface LivePluginChip {
