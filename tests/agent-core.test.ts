@@ -76,6 +76,7 @@ import {
   handleStreamEvent,
   handleSystemEvent,
   handleUserMessage,
+  mainAssistantContextTokens,
   summarizeToolInput,
 } from "../src/server/agent/sdkMessageHandlers.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
@@ -915,6 +916,37 @@ describe("interpretResult", () => {
     const msg = resultErrorMessage("error_max_turns");
     expect(msg).toContain("최대 처리 단계");
     expect(msg).not.toContain("maximum number of turns");
+  });
+});
+
+describe("mainAssistantContextTokens", () => {
+  it("sums the final request's prompt tokens (input + cache) as a context snapshot", () => {
+    const tokens = mainAssistantContextTokens({
+      type: "assistant",
+      parent_tool_use_id: null,
+      message: {
+        usage: {
+          input_tokens: 5000,
+          output_tokens: 300,
+          cache_read_input_tokens: 80000,
+          cache_creation_input_tokens: 0,
+        },
+      },
+    });
+    expect(tokens).toBe(85000);
+  });
+
+  it("ignores subagent messages (separate context) and non-assistant / usage-less ones", () => {
+    expect(
+      mainAssistantContextTokens({
+        type: "assistant",
+        parent_tool_use_id: "toolu_123",
+        message: { usage: { input_tokens: 5000 } },
+      }),
+    ).toBeUndefined();
+    expect(mainAssistantContextTokens({ type: "assistant", message: {} })).toBeUndefined();
+    expect(mainAssistantContextTokens({ type: "result" })).toBeUndefined();
+    expect(mainAssistantContextTokens(null)).toBeUndefined();
   });
 });
 

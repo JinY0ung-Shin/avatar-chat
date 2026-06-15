@@ -407,9 +407,15 @@ export interface AdminUserDetail extends AdminUserSummary {
 
 /** Token usage for a single chat turn, surfaced to the client for display. */
 export interface AgentUsage {
-  /** Prompt tokens fed in this turn (input + cache read + cache creation). */
+  /**
+   * Prompt tokens of the turn's FINAL model request (input + cache read + cache
+   * creation) ≈ live context-window occupancy at the end of the turn. A
+   * snapshot, NOT the cumulative sum across the turn's requests — so
+   * `inputTokens / contextWindow` is a meaningful fill % (see
+   * `mainAssistantContextTokens`).
+   */
   inputTokens: number;
-  /** Tokens the model generated this turn. */
+  /** Tokens the model generated this turn (cumulative across all requests). */
   outputTokens: number;
   /** The model's context-window size, if the SDK reported it. */
   contextWindow?: number;

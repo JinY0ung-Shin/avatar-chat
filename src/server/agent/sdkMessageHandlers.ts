@@ -282,6 +282,16 @@ export function interpretResult(message: unknown): { text?: string; errorSubtype
  * `usage` (snake_case) carries the input/output/cache counts; `modelUsage`
  * (camelCase, keyed by model) carries the `contextWindow` size. Returns
  * undefined when the message has no usable counts (e.g. error results).
+ *
+ * IMPORTANT: the result `usage` is CUMULATIVE across every model request the
+ * turn made (one per tool round, each re-sending the resumed transcript), NOT
+ * a snapshot — so `inputTokens` here sums many overlapping prompts and dividing
+ * it by `contextWindow` overstates context fill (the % runs past 100% on
+ * tool-heavy turns). `runClaudeAgent` therefore OVERRIDES `inputTokens` with
+ * `mainAssistantContextTokens` (the final request's prompt size ≈ live context
+ * occupancy) for display; `outputTokens` stays cumulative (total generated this
+ * turn). The cumulative value is kept here so the unit test / fallback path
+ * still works when no assistant snapshot is available.
  */
 function extractUsage(message: Record<string, unknown>): AgentUsage | undefined {
   const usage = isRecord(message.usage) ? message.usage : undefined;
@@ -301,6 +311,36 @@ function extractUsage(message: Record<string, unknown>): AgentUsage | undefined 
     return undefined;
   }
   return { inputTokens, outputTokens, ...(contextWindow ? { contextWindow } : {}) };
+}
+
+/**
+ * Prompt-token count of a MAIN-agent assistant message — `input_tokens` +
+ * cache reads + cache creation, i.e. the size of the prompt sent on THAT model
+ * request. The LAST main-agent assistant message of a turn was prompted with
+ * the full transcript so far, so its prompt size ≈ the live context-window
+ * occupancy at the end of the turn — a true snapshot, unlike the CUMULATIVE
+ * `result` usage (see extractUsage). Returns undefined for subagent messages
+ * (`parent_tool_use_id` set — their context is separate) or when the message
+ * carries no usage. `runClaudeAgent` tracks the latest value across the turn
+ * and feeds it into the usage badge's context %.
+ */
+export function mainAssistantContextTokens(message: unknown): number | undefined {
+  if (!isRecord(message) || message.type !== "assistant") {
+    return undefined;
+  }
+  if (asString(message.parent_tool_use_id)) {
+    return undefined;
+  }
+  const inner = isRecord(message.message) ? message.message : undefined;
+  const usage = inner && isRecord(inner.usage) ? inner.usage : undefined;
+  if (!usage) {
+    return undefined;
+  }
+  const tokens =
+    asNumber(usage.input_tokens) +
+    asNumber(usage.cache_read_input_tokens) +
+    asNumber(usage.cache_creation_input_tokens);
+  return tokens > 0 ? tokens : undefined;
 }
 
 /** Human-facing fallback when the run ended on an error with no usable text. */

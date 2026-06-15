@@ -34,6 +34,7 @@ import {
   handleSystemEvent,
   handleUserMessage,
   interpretResult,
+  mainAssistantContextTokens,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
 
@@ -614,6 +615,9 @@ export async function runClaudeAgent(
   let resultText = "";
   let resultErrorSubtype = "";
   let runUsage: AgentUsage | undefined;
+  // Snapshot of the latest main-agent prompt size (≈ live context occupancy),
+  // used to override the result usage's CUMULATIVE inputTokens for the badge.
+  let contextTokens: number | undefined;
   let usedModel = effectiveModel;
 
   // Owner self-state (secret names, group memberships) flows to every
@@ -662,6 +666,7 @@ export async function runClaudeAgent(
     resultText = "";
     resultErrorSubtype = "";
     runUsage = undefined;
+    contextTokens = undefined;
     // Build the prompt fresh each attempt: the image path is a single-use async
     // generator, so a retry needs a new one (the string path is reused as-is).
     const queryPrompt =
@@ -704,6 +709,12 @@ export async function runClaudeAgent(
             : extractMainAssistantText(message);
           if (assistantText) {
             assistantChunks.push(assistantText);
+          }
+          // Track the final main-agent prompt size as the context-occupancy
+          // snapshot (overrides the cumulative result usage below).
+          const ctxTokens = mainAssistantContextTokens(message);
+          if (ctxTokens !== undefined) {
+            contextTokens = ctxTokens;
           }
           continue;
         }
@@ -751,6 +762,15 @@ export async function runClaudeAgent(
   // tool calls) the instant the run completed — and kept it gone on reload, since
   // this value is what gets stored. resultText is only a fallback for the rare
   // case nothing streamed; the error fallback applies when neither produced text.
+  // The result usage's inputTokens is cumulative across all of the turn's model
+  // requests, so dividing it by the context window made the badge's % balloon
+  // past 100% on tool-heavy turns. Swap in the final request's prompt size — a
+  // true context-occupancy snapshot — while keeping outputTokens cumulative
+  // (total generated this turn) and contextWindow from the result's modelUsage.
+  if (runUsage && contextTokens !== undefined) {
+    runUsage = { ...runUsage, inputTokens: contextTokens };
+  }
+
   const partialText = assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();
   const text =
     partialText ||
