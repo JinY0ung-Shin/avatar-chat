@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig, AgentRequest, AgentResponse, AgentUsage, AgentOwner, PluginRoot } from "../types.js";
+import type { AppConfig, AgentRequest, AgentResponse, AgentUsage, AgentOwner, AgentImageInput, PluginRoot } from "../types.js";
 import type { Store } from "../store.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import type { AgentEvents } from "./events.js";
@@ -153,6 +153,34 @@ export function deriveAgentToolAccess(request: AgentRequest): AgentToolAccess {
     elevated,
     autoApprove,
     hexSshViewerClass,
+  };
+}
+
+/**
+ * Build the "streaming input" prompt for a turn that carries images: a single
+ * SDK user message whose content is the full prompt text followed by one image
+ * block per attachment. Yielding exactly one message and returning closes the
+ * input stream, so the SDK runs a single turn (same as a string prompt). The
+ * SDK's `query` is typed loosely here (`input: unknown`), so the SDKUserMessage
+ * shape is constructed inline; `parent_tool_use_id: null` marks a top-level turn.
+ */
+async function* buildImageQueryPrompt(
+  promptText: string,
+  images: AgentImageInput[],
+): AsyncGenerator<Record<string, unknown>> {
+  yield {
+    type: "user",
+    parent_tool_use_id: null,
+    message: {
+      role: "user",
+      content: [
+        { type: "text", text: promptText },
+        ...images.map((image) => ({
+          type: "image",
+          source: { type: "base64", media_type: image.mediaType, data: image.data },
+        })),
+      ],
+    },
   };
 }
 
@@ -560,7 +588,18 @@ export async function runClaudeAgent(
     experimentalFeatures: ownerToolAccess ? ownerState.experimentalFeatures : [],
   };
 
-  for await (const message of sdk.query({ prompt: buildPrompt(promptRequest, openRequestCount), options })) {
+  // The prompt is normally a plain string. When the turn carries image
+  // attachments we instead pass a single-message async-iterable ("streaming
+  // input" mode) whose content is the prompt text + image blocks — the only way
+  // to feed the model images. All `options` (resume/hooks/mcpServers/model) work
+  // identically in both modes, so text-only turns keep the unchanged string path.
+  const promptText = buildPrompt(promptRequest, openRequestCount);
+  const queryPrompt =
+    request.images && request.images.length > 0
+      ? buildImageQueryPrompt(promptText, request.images)
+      : promptText;
+
+  for await (const message of sdk.query({ prompt: queryPrompt, options })) {
     if (!isRecord(message)) {
       continue;
     }

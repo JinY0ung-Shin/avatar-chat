@@ -295,13 +295,50 @@ export interface ConversationSummary {
   routinePrompt: string | null;
 }
 
+/**
+ * Supported chat image-attachment media types. Mirrors what the Claude API
+ * accepts as an `ImageBlockParam` base64 source, intersected with the formats a
+ * browser can produce/preview. GIF is allowed in (the model reads it) but the
+ * client downsizes to PNG/JPEG/WEBP, so it mostly appears on pasted/dropped GIFs.
+ */
+export type ImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+
+/**
+ * An image a user attached to a chat message. The bytes live on disk under
+ * `dataDir/chat-images/<conversationId>/<id>.<ext>` (see `chatImages.ts`); this
+ * is the metadata persisted on the message so the bubble can render the image
+ * (`GET /api/conversations/:id/images/:imageId`) after reload. The model is fed
+ * the bytes as an image content block on the turn — see {@link AgentImageInput}.
+ */
+export interface MessageAttachment {
+  /** Stable id; also the on-disk filename stem and the serving-URL segment. */
+  id: string;
+  kind: "image";
+  mediaType: ImageMediaType;
+  /** Original filename, for the alt text / download name (optional). */
+  name?: string;
+}
+
 export interface StoredMessage {
   id: string;
   conversationId: string;
   role: "user" | "assistant" | "system";
   content: string;
+  /** Images the user attached to this (user) message; absent/[] when none. */
+  attachments?: MessageAttachment[];
   response: AgentResponse | null;
   createdAt: string;
+}
+
+/**
+ * One image fed to the model as an `ImageBlockParam` on a chat turn (base64,
+ * no `data:` prefix). The server decodes the uploaded data URL / reads the
+ * stored file into this shape; {@link runClaudeAgent} turns it into a
+ * structured SDK user message (text + image blocks) instead of a plain string.
+ */
+export interface AgentImageInput {
+  mediaType: ImageMediaType;
+  data: string;
 }
 
 export interface AgentConversationMessage {
@@ -623,6 +660,14 @@ export interface AgentRequest {
    * at an active repo clone (#47).
    */
   additionalDirs?: string[];
+  /**
+   * Images attached to THIS turn's user message, fed to the model as image
+   * content blocks. When present (and non-empty), `runClaudeAgent` sends a
+   * structured SDK user message (the prompt text + these image blocks) instead
+   * of a plain string prompt; empty/unset keeps the plain-string path unchanged.
+   * Unused for greeting/headless turns.
+   */
+  images?: AgentImageInput[];
 }
 
 /**

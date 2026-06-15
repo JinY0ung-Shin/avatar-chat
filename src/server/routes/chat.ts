@@ -7,7 +7,15 @@ import { listSkillsInRoots, loadAgentPluginRoots, loadKnowledgeRepoMemory } from
 import { scrubGitError } from "../marketplace.js";
 import { ensureGitRepoClone, gitRepoContextFor, gitRepoClonePath } from "../gitRepos.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../activeRepoLock.js";
-import type { AgentConversationMessage, AgentResponse, CanvasArtifact, StoredMessage } from "../types.js";
+import type { AgentConversationMessage, AgentImageInput, AgentResponse, CanvasArtifact, StoredMessage } from "../types.js";
+import {
+  decodeChatImages,
+  deleteConversationImages,
+  readChatImages,
+  resolveStoredImage,
+  saveChatImages,
+  MAX_CHAT_IMAGES_PER_MESSAGE,
+} from "../chatImages.js";
 import { runAgentStream } from "../agent/index.js";
 import { isModelTier } from "../modelTiers.js";
 import {
@@ -124,6 +132,15 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
       return { message };
   }
 }
+
+// User-facing (Korean) messages for image-upload validation failures.
+const CHAT_IMAGE_ERROR: Record<string, string> = {
+  TOO_MANY: `이미지는 한 번에 최대 ${MAX_CHAT_IMAGES_PER_MESSAGE}장까지 첨부할 수 있습니다.`,
+  BAD_FORMAT: "지원하는 이미지 형식은 png/jpeg/webp/gif 입니다.",
+  DECODE_FAILED: "이미지를 디코드할 수 없습니다.",
+  EMPTY: "빈 이미지는 첨부할 수 없습니다.",
+  TOO_LARGE: "이미지 한 장의 크기는 5MB 이하여야 합니다.",
+};
 
 function prepareSse(res: Response): void {
   res.status(200);
@@ -261,8 +278,33 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       apiError(res, 404, "대화를 찾을 수 없습니다.");
       return;
     }
+    // Sweep the conversation's uploaded chat images (best effort).
+    deleteConversationImages(config, req.params.id);
     res.json({ ok: true });
   });
+
+  // Serve a chat-message image attachment. Owner-scoped: only the conversation's
+  // owner may read its images (matches listMessages' ownership gate). The id is
+  // validated against path traversal inside resolveStoredImage.
+  router.get(
+    "/api/conversations/:conversationId/images/:imageId",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const { conversationId, imageId } = req.params;
+      if (store.conversationOwner(conversationId) !== req.user!.id) {
+        apiError(res, 404, "이미지를 찾을 수 없습니다.");
+        return;
+      }
+      const resolved = resolveStoredImage(config, conversationId, imageId);
+      if (!resolved) {
+        apiError(res, 404, "이미지를 찾을 수 없습니다.");
+        return;
+      }
+      res.type(resolved.mediaType);
+      res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+      res.sendFile(resolved.path);
+    },
+  );
 
   // ---- Chat (SSE) ------------------------------------------------------
 
@@ -284,8 +326,20 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     // nothing — the avatar speaks first (and reports pending info requests).
     const greeting = req.body?.greeting === true && req.user!.id === avatarId;
 
-    // Validate BEFORE switching to SSE so failures stay plain JSON.
-    if (!displayMessage && !greeting) {
+    // Image attachments on this turn (data URLs from the composer). Validate +
+    // decode up front so a bad/oversized upload stays plain JSON (before SSE).
+    // Ignored for a greeting (no user message). Bytes are written to disk in the
+    // persist block below; the model is fed `requestImages` this turn.
+    const decodedImagesResult = greeting ? { images: [] as never[] } : decodeChatImages(req.body?.images);
+    if ("error" in decodedImagesResult) {
+      apiError(res, 400, CHAT_IMAGE_ERROR[decodedImagesResult.error]);
+      return;
+    }
+    const decodedImages = decodedImagesResult.images;
+
+    // Validate BEFORE switching to SSE so failures stay plain JSON. A turn with
+    // image attachments but no text is allowed (the images are the message).
+    if (!displayMessage && !greeting && decodedImages.length === 0) {
       apiError(res, 400, "메시지를 입력해 주세요.");
       return;
     }
@@ -430,6 +484,11 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     ) {
       conversationHistory.pop();
     }
+    // Images fed to the model THIS turn. For a fresh send we save the uploads to
+    // disk + record them on the user message; on regenerate the client doesn't
+    // re-send images (it re-runs from a fresh SDK session), so re-read the prior
+    // user turn's stored attachments so the re-run still sees them.
+    let requestImages: AgentImageInput[] = [];
     if (!greeting) {
       store.touchConversation(req.user!.id, conversationId, avatar.id, displayMessage);
       // Persist the owner's group-knowledge selection now that the row exists, so
@@ -443,7 +502,17 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         store.setConversationModel(req.user!.id, conversationId, requestedModel || null);
       }
       if (!regenerate) {
-        store.addMessage(conversationId, { role: "user", content: displayMessage });
+        const saved = saveChatImages(config, conversationId, decodedImages);
+        requestImages = saved.images;
+        store.addMessage(conversationId, {
+          role: "user",
+          content: displayMessage,
+          attachments: saved.attachments,
+        });
+      } else {
+        const priorMessages = store.listMessages(req.user!.id, conversationId);
+        const lastUser = [...priorMessages].reverse().find((m) => m.role === "user");
+        requestImages = readChatImages(config, conversationId, lastUser?.attachments);
       }
     }
     // The SDK session id this run reports (init event); persisted on success so
@@ -527,6 +596,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           activeRepoName: activeRepoName ?? undefined,
           resumeSessionId,
           conversationHistory,
+          images: requestImages.length ? requestImages : undefined,
           modelTier: conversationModelTier ?? undefined,
           viewerUserId: req.user!.id,
           viewerName: req.user!.displayName,

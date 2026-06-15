@@ -109,6 +109,21 @@ gotchas, and client↔server mirrored validators.
   hunks, note `git add -p` is unavailable here: diff → filter hunks by
   `@@ -<oldstart>` → `git apply --cached`, then commit with **NO pathspec**
   (`git commit -- <file>` commits the WORKTREE, ignoring the index).
+- **Image attachments: the user message can carry images.** The composer stages images
+  (`ChatPane.pendingImages`, downscaled to ≤1568px + base64 in `ChatView.svelte`), POSTs them on
+  `images: [{id, data}]`. `routes/chat.ts` validates/decodes up front (`chatImages.ts` →
+  `decodeChatImages`, before SSE), writes bytes to `dataDir/chat-images/<conversationId>/<id>.<ext>`
+  (NOT in SQLite — only `MessageAttachment` metadata persists on the message via the new
+  `messages.attachments_json` column), and feeds the model `AgentRequest.images` THIS turn. Served by
+  owner-scoped `GET /api/conversations/:id/images/:imageId` (`resolveStoredImage` guards traversal);
+  same-origin so the strict CSP `img-src 'self' data:` needs no change. Bubbles render from the pane's
+  `localImages` (data URL, instant) then fall back to that serving URL on reload. **Non-obvious: feeding
+  images REQUIRES switching `sdk.query`'s `prompt` from a string to an `AsyncIterable<SDKUserMessage>`
+  (text block + image blocks) — `claudeAgent.ts` `buildImageQueryPrompt`, taken ONLY when
+  `request.images?.length`; text-only turns keep the unchanged string path (zero regression). `resume`
+  works in both modes.** Regenerate re-reads the prior user turn's stored attachments from disk
+  (`readChatImages`) since the client doesn't re-send them. `express.json` limit was bumped 3mb→40mb for
+  the base64 payloads. Conversation delete sweeps the image dir (`deleteConversationImages`).
 - **Chat keeps context across turns via SDK session *resume*, not history re-injection.**
   Each `sdk.query()` is stateless: `runClaudeAgent` passes `resume: <sessionId>` and the
   `init` event's `session_id` is persisted to `conversations.agent_session_id`

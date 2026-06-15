@@ -60,7 +60,9 @@ export function createApp(services = createServices()) {
   const deps: RouterDeps = { services, config, store, observedModel, auditAs };
 
   const app = express();
-  app.use(express.json({ limit: "3mb" }));
+  // Limit bumped from 3mb to accommodate chat image attachments (base64-inflated,
+  // up to MAX_CHAT_IMAGES_PER_MESSAGE × ~5MB; the client downscales before send).
+  app.use(express.json({ limit: "40mb" }));
 
   // ---- Security headers ---------------------------------------------------
   // CSP locks scripts/connections/images to same-origin. The avatar renders

@@ -6,7 +6,7 @@
   import CanvasPanel from "../components/CanvasPanel.svelte";
   import Icon from "../components/Icon.svelte";
   import PromptModal from "../components/PromptModal.svelte";
-  import { activePane, appState, notify, updateState } from "../lib/state";
+  import { activePane, appState, newId, notify, readState, updateState } from "../lib/state";
   import {
     PLUGIN_STATUS_LABELS,
     addConversationToSplit,
@@ -26,7 +26,7 @@
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
   import { commandsForPane, type SlashCommand } from "../lib/slash";
-  import type { AvatarSummary, ChatPane, StoredMessage } from "../lib/types";
+  import type { AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
@@ -142,6 +142,117 @@
     const message = item.draft;
     await sendMessage(item.id, message);
     await tick();
+  }
+
+  /* ---- image attachments ---- */
+  const MAX_COMPOSER_IMAGES = 6;
+  // Long-edge cap before upload (Claude's recommended max; also keeps payloads small).
+  const IMAGE_MAX_DIM = 1568;
+  const ACCEPTED_IMAGE_TYPES: ImageMediaType[] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
+
+  function readFileAsDataUrl(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsDataURL(file);
+    });
+  }
+
+  // Downscale to IMAGE_MAX_DIM via canvas (re-encoding to the same family). GIFs
+  // are kept verbatim so animation survives (still size-capped server-side).
+  async function resizeImageForChat(file: File): Promise<{ dataUrl: string; mediaType: ImageMediaType }> {
+    const type: ImageMediaType = (ACCEPTED_IMAGE_TYPES as string[]).includes(file.type) ? (file.type as ImageMediaType) : "image/png";
+    if (type === "image/gif") {
+      return { dataUrl: await readFileAsDataUrl(file), mediaType: "image/gif" };
+    }
+    const url = URL.createObjectURL(file);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => {
+          const scale = Math.min(1, IMAGE_MAX_DIM / Math.max(img.width, img.height));
+          const canvas = document.createElement("canvas");
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("no 2d context"));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const out = type === "image/jpeg" ? "image/jpeg" : type === "image/webp" ? "image/webp" : "image/png";
+          resolve(canvas.toDataURL(out, 0.9));
+        };
+        img.onerror = () => reject(new Error("image load failed"));
+        img.src = url;
+      });
+      // The browser may emit PNG if it can't encode the requested type — trust the prefix.
+      const mediaType = (/^data:(image\/[a-z+]+);/.exec(dataUrl)?.[1] as ImageMediaType) || "image/png";
+      return { dataUrl, mediaType };
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  async function addImages(item: ChatPane, files: FileList | File[] | null | undefined) {
+    if (!files) return;
+    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    if (!list.length) return;
+    const current = readState().chatPanes.find((p) => p.id === item.id);
+    const room = MAX_COMPOSER_IMAGES - (current?.pendingImages?.length || 0);
+    if (room <= 0) {
+      notify(`이미지는 최대 ${MAX_COMPOSER_IMAGES}장까지 첨부할 수 있습니다.`, "warn");
+      return;
+    }
+    const accepted: PendingImage[] = [];
+    for (const file of list.slice(0, room)) {
+      try {
+        const { dataUrl, mediaType } = await resizeImageForChat(file);
+        accepted.push({ id: newId(), dataUrl, name: file.name || "image", mediaType });
+      } catch {
+        notify(`'${file.name || "이미지"}'를 불러오지 못했습니다.`, "warn");
+      }
+    }
+    if (list.length > room) notify(`이미지는 최대 ${MAX_COMPOSER_IMAGES}장까지 첨부할 수 있습니다.`, "warn");
+    if (!accepted.length) return;
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.pendingImages = [...(target.pendingImages || []), ...accepted];
+    });
+  }
+
+  async function onPickImages(event: Event, item: ChatPane) {
+    const input = event.currentTarget as HTMLInputElement;
+    await addImages(item, input.files);
+    input.value = ""; // allow re-picking the same file
+  }
+
+  function onComposerPaste(event: ClipboardEvent, item: ChatPane) {
+    const files = Array.from(event.clipboardData?.items || [])
+      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => Boolean(f));
+    if (files.length) {
+      event.preventDefault();
+      void addImages(item, files);
+    }
+  }
+
+  function removePendingImage(item: ChatPane, id: string) {
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.pendingImages = (target.pendingImages || []).filter((img) => img.id !== id);
+    });
+  }
+
+  // Live (just-sent) bubbles render from the locally-held data URL; on reload it
+  // falls back to the owner-scoped serving endpoint.
+  function imageSrc(message: StoredMessage, att: MessageAttachment, item: ChatPane): string {
+    return (
+      item.localImages?.[att.id] ||
+      `/api/conversations/${encodeURIComponent(message.conversationId)}/images/${encodeURIComponent(att.id)}`
+    );
   }
 
   /* ---- slash autocomplete ---- */
@@ -451,7 +562,16 @@
                 {/if}
                 <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
               {:else}
-                {message.content}
+                {#if message.attachments?.length}
+                  <div class="msg-images">
+                    {#each message.attachments as att (att.id)}
+                      <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
+                        <img class="msg-image" src={imageSrc(message, att, item)} alt={att.name || "첨부 이미지"} loading="lazy" />
+                      </a>
+                    {/each}
+                  </div>
+                {/if}
+                {#if message.content}{message.content}{/if}
               {/if}
             </div>
             <div class="msg-actions">
@@ -534,7 +654,37 @@
             </div>
           {/if}
         {/if}
+        {#if item.pendingImages?.length}
+          <div class="composer-attachments" aria-label="첨부한 이미지">
+            {#each item.pendingImages as img (img.id)}
+              <div class="composer-thumb">
+                <img src={img.dataUrl} alt={img.name} />
+                <button
+                  class="composer-thumb-remove"
+                  type="button"
+                  aria-label="이미지 제거"
+                  title="제거"
+                  disabled={item.streaming}
+                  on:click={() => removePendingImage(item, img.id)}
+                >
+                  <Icon name="close" />
+                </button>
+              </div>
+            {/each}
+          </div>
+        {/if}
         <div class="composer-box">
+          <label class="composer-attach" class:disabled={item.streaming} title="이미지 첨부" aria-label="이미지 첨부">
+            <Icon name="image" />
+            <input
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              multiple
+              hidden
+              disabled={item.streaming}
+              on:change={(event) => onPickImages(event, item)}
+            />
+          </label>
           <textarea
             rows="1"
             placeholder={item.streaming ? "응답을 기다리는 중…" : `${item.avatar.displayName}에게 메시지…`}
@@ -543,6 +693,7 @@
             use:autosize
             on:input={(event) => onComposerInput(event, item)}
             on:keydown={(event) => onComposerKeydown(event, item)}
+            on:paste={(event) => onComposerPaste(event, item)}
           ></textarea>
           <button
             class="send-button"

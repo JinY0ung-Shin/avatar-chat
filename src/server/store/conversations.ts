@@ -1,6 +1,6 @@
 import crypto from "node:crypto";
 import logger from "../logger.js";
-import type { AgentResponse, AuditEvent, ConversationSummary, StoredMessage } from "../types.js";
+import type { AgentResponse, AuditEvent, ConversationSummary, MessageAttachment, StoredMessage } from "../types.js";
 import { type Constructor, type StoreBase, now, parseNameList } from "./internal.js";
 
 export function withConversations<TBase extends Constructor<StoreBase>>(Base: TBase) {
@@ -197,6 +197,20 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       }
     }
 
+    /** Parse the message attachments column, tolerating corruption (see above). */
+    private parseAttachmentsJson(json: string | null): MessageAttachment[] | undefined {
+      if (!json) {
+        return undefined;
+      }
+      try {
+        const parsed = JSON.parse(json) as MessageAttachment[];
+        return Array.isArray(parsed) && parsed.length ? parsed : undefined;
+      } catch {
+        logger.warn("skipping corrupt attachments_json on a stored message");
+        return undefined;
+      }
+    }
+
     listMessages(ownerId: string, conversationId: string): StoredMessage[] {
       if (!this.ownsConversation(ownerId, conversationId)) {
         return [];
@@ -211,6 +225,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         role: string;
         content: string;
         response_json: string | null;
+        attachments_json: string | null;
         created_at: string;
       }[];
       return rows.map((r) => ({
@@ -218,6 +233,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         conversationId: r.conversation_id,
         role: r.role as StoredMessage["role"],
         content: r.content,
+        attachments: this.parseAttachmentsJson(r.attachments_json),
         response: this.parseResponseJson(r.response_json),
         createdAt: r.created_at,
       }));
@@ -225,14 +241,20 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
 
     addMessage(
       conversationId: string,
-      input: { role: "user" | "assistant" | "system"; content: string; response?: AgentResponse | null },
+      input: {
+        role: "user" | "assistant" | "system";
+        content: string;
+        response?: AgentResponse | null;
+        attachments?: MessageAttachment[];
+      },
     ): StoredMessage {
       const id = crypto.randomUUID();
       const createdAt = now();
+      const attachments = input.attachments?.length ? input.attachments : undefined;
       this.db
         .prepare(
-          `INSERT INTO messages (id, conversation_id, role, content, response_json, created_at)
-           VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO messages (id, conversation_id, role, content, response_json, attachments_json, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -240,6 +262,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
           input.role,
           input.content,
           input.response ? JSON.stringify(input.response) : null,
+          attachments ? JSON.stringify(attachments) : null,
           createdAt,
         );
       return {
@@ -247,6 +270,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         conversationId,
         role: input.role,
         content: input.content,
+        attachments,
         response: input.response ?? null,
         createdAt,
       };

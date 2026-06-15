@@ -17,8 +17,10 @@ export type {
   ConversationSummary,
   Group,
   GroupMember,
+  ImageMediaType,
   KnowledgeRepoStatus,
   KnowledgeRequest,
+  MessageAttachment,
   Plugin,
   RepoPluginContents,
   RoutineJob,
@@ -34,6 +36,17 @@ export type ViewName = "explore" | "chat" | "inbox" | "routines" | "settings" | 
 export type SettingsTab = "profile" | "access" | "knowledge" | "groups";
 export type AdminTab = "overview" | "users" | "groups" | "access" | "system" | "audit";
 export type ChatLayout = "vertical" | "horizontal" | "grid";
+
+/** An image staged in the composer before sending. */
+export interface PendingImage {
+  /** Client-generated id; reused as the server-side attachment id + filename stem. */
+  id: string;
+  /** Resized image as a base64 data URL — used for preview AND upload. */
+  dataUrl: string;
+  /** Original filename for alt text / display. */
+  name: string;
+  mediaType: import("../../../server/types.js").ImageMediaType;
+}
 
 export interface ChatPane {
   id: string;
@@ -56,6 +69,15 @@ export interface ChatPane {
   /** ms timestamp until which a sticky status label resists a generic overwrite. */
   liveStatusStickyUntil?: number;
   groupKnowledgeOff: string[];
+  /** Images staged in the composer, not yet sent (data URLs for preview + upload). */
+  pendingImages?: PendingImage[];
+  /**
+   * Locally-held image data URLs keyed by attachment id, so a just-sent user
+   * message renders its images instantly (before the bytes are fetchable from
+   * the server). On reload this is empty and the bubble falls back to the
+   * serving URL (`/api/conversations/:id/images/:imageId`).
+   */
+  localImages?: Record<string, string>;
   /** User-chosen model tier (alias) for this conversation; "" / undefined = server default. */
   modelTier?: string;
   /** Visual-canvas artifacts shown in this conversation (experimental, #50). */

@@ -809,6 +809,30 @@ body.col-resizing {
   max-width: min(560px, 88%);
 }
 
+/* Attached images inside a user bubble. `white-space: pre-wrap` on the bubble
+   would otherwise add stray whitespace around the block, so the strip is a flex
+   row; a margin separates it from any caption text below. */
+.msg-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  white-space: normal;
+}
+.msg-images:not(:last-child) {
+  margin-bottom: var(--s-2);
+}
+.msg-image-link {
+  display: block;
+  line-height: 0;
+}
+.msg-image {
+  max-width: 240px;
+  max-height: 240px;
+  border-radius: var(--r-md);
+  object-fit: cover;
+  border: 1px solid var(--accent-ring, rgba(255, 255, 255, 0.25));
+}
+
 .message.assistant .bubble {
   border-bottom-left-radius: var(--r-sm);
 }

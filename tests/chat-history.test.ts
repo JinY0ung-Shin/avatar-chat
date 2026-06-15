@@ -86,3 +86,62 @@ describe("chat history fallback", () => {
     expect(capturedRequests[0].conversationHistory).toEqual([]);
   });
 });
+
+describe("chat image attachments", () => {
+  const PNG_B64 =
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+  const PNG_URL = `data:image/png;base64,${PNG_B64}`;
+
+  it("stores an attachment, feeds the model image blocks, and serves it owner-scoped", async () => {
+    const services = createServices({ dataDir: tempDir, agentRuntime: "claude", sessionSecret: "test" });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "shutterbug").expect(201);
+    const ownerId = ownerRes.body.user.id as string;
+    const conversationId = "conv-with-image";
+
+    await owner
+      .post("/api/chat/stream")
+      .send({
+        avatarId: ownerId,
+        conversationId,
+        message: "이 이미지 봐줘",
+        images: [{ id: "shot-1", name: "shot.png", data: PNG_URL }],
+      })
+      .expect(200);
+
+    // The model received the image as a structured block this turn.
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0].images).toEqual([{ mediaType: "image/png", data: PNG_B64 }]);
+
+    // The user message persisted with the attachment metadata.
+    const msgsRes = await owner.get(`/api/messages?conversationId=${conversationId}`).expect(200);
+    const userMsg = (msgsRes.body.messages as { role: string; attachments?: unknown[] }[]).find((m) => m.role === "user");
+    expect(userMsg?.attachments).toEqual([{ id: "shot-1", kind: "image", mediaType: "image/png", name: "shot.png" }]);
+
+    // The serving endpoint returns the image to the owner…
+    const imgRes = await owner.get(`/api/conversations/${conversationId}/images/shot-1`).expect(200);
+    expect(imgRes.headers["content-type"]).toContain("image/png");
+    expect(imgRes.body.length).toBeGreaterThan(0);
+
+    // …but not to a different user.
+    const stranger = request.agent(app);
+    await signup(stranger, "stranger").expect(201);
+    await stranger.get(`/api/conversations/${conversationId}/images/shot-1`).expect(404);
+  });
+
+  it("rejects an oversized image before streaming", async () => {
+    const services = createServices({ dataDir: tempDir, agentRuntime: "claude", sessionSecret: "test" });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "bigpic").expect(201);
+    const ownerId = ownerRes.body.user.id as string;
+
+    const big = Buffer.alloc(5 * 1024 * 1024 + 1).toString("base64");
+    await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-big", message: "hi", images: [`data:image/png;base64,${big}`] })
+      .expect(400);
+    expect(capturedRequests).toHaveLength(0);
+  });
+});

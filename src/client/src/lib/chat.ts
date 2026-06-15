@@ -280,6 +280,9 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
     if (!message) return;
   }
 
+  // Snapshot staged images so they ride this turn (and can be restored if the
+  // send fails before anything streamed). Greetings/regenerates carry none.
+  const pendingImages = opts.greeting || opts.regenerate ? [] : [...(pane.pendingImages || [])];
   const userMessage: StoredMessage | null = opts.greeting
     ? null
     : {
@@ -287,6 +290,9 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         conversationId: pane.conversationId,
         role: "user",
         content: message,
+        attachments: pendingImages.length
+          ? pendingImages.map((img) => ({ id: img.id, kind: "image" as const, mediaType: img.mediaType, name: img.name }))
+          : undefined,
         response: null,
         createdAt: new Date().toISOString(),
       };
@@ -297,6 +303,13 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
       if (last?.role === "assistant") target.messages.pop();
     }
     if (userMessage && !opts.regenerate) target.messages.push(userMessage);
+    // Hold the data URLs locally so the just-sent bubble renders images before
+    // they're fetchable from the server, and clear the composer's staged images.
+    if (pendingImages.length) {
+      target.localImages = { ...(target.localImages || {}) };
+      for (const img of pendingImages) target.localImages[img.id] = img.dataUrl;
+    }
+    target.pendingImages = [];
     target.draft = "";
     resetLive(target);
     target.streaming = true;
@@ -321,6 +334,9 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         activeRepo: pane.activeRepo || undefined,
         // Per-conversation model tier; unset → the default tier (Opus).
         model: pane.modelTier || DEFAULT_MODEL_TIER,
+        // Staged image attachments (data URLs). The server reuses our id as the
+        // stored attachment id + filename. Omit when none.
+        images: pendingImages.length ? pendingImages.map((img) => ({ id: img.id, data: img.dataUrl })) : undefined,
       }),
     });
     if (response.status === 401) {
@@ -338,11 +354,16 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
     } else {
       const current = readState().chatPanes.find((item) => item.id === paneId);
       if (!current?.liveText && userMessage) {
-        // Nothing arrived for a normal send — undo it cleanly and restore the draft.
+        // Nothing arrived for a normal send — undo it cleanly and restore the
+        // draft + the staged images so the user can retry without re-attaching.
         updatePane(paneId, (target) => {
           const last = target.messages[target.messages.length - 1];
           if (last?.id === userMessage.id) target.messages.pop();
           target.draft = rawMessage;
+          if (pendingImages.length) {
+            target.pendingImages = pendingImages;
+            for (const img of pendingImages) delete target.localImages?.[img.id];
+          }
         });
         notify(`메시지를 보내지 못했습니다: ${error.message}`);
       } else {

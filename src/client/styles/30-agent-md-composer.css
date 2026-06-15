@@ -707,7 +707,7 @@ tbody tr:hover td {
 
 .composer-box {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: end;
   gap: var(--s-2);
   border: 1px solid var(--line);
@@ -716,6 +716,72 @@ tbody tr:hover td {
   padding: var(--s-2);
   box-shadow: var(--shadow-sm);
   transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+}
+
+/* Image-attach button (left of the textarea). A label wrapping a hidden file
+   input, so clicking it opens the picker with no per-pane ref. */
+.composer-attach {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-md);
+  display: grid;
+  place-items: center;
+  flex: none;
+  cursor: pointer;
+  color: var(--n-500);
+  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+}
+.composer-attach:hover {
+  background: var(--n-100);
+  color: var(--fg);
+}
+.composer-attach.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+.composer-attach svg {
+  width: 20px;
+  height: 20px;
+}
+
+/* Staged-image thumbnail strip above the input box. */
+.composer-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-2);
+  margin-bottom: var(--s-2);
+}
+.composer-thumb {
+  position: relative;
+  width: 64px;
+  height: 64px;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+}
+.composer-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.composer-thumb-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  border: none;
+}
+.composer-thumb-remove svg {
+  width: 12px;
+  height: 12px;
 }
 .composer-box.focused {
   border-color: var(--accent);

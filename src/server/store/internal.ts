@@ -293,6 +293,7 @@ export class StoreBase {
         role TEXT NOT NULL,
         content TEXT,
         response_json TEXT,
+        attachments_json TEXT,
         created_at TEXT
       );
       CREATE TABLE IF NOT EXISTS audit (
@@ -391,6 +392,9 @@ export class StoreBase {
     // applies to fresh installs). Each is a no-op once the column exists.
     this.addColumnIfMissing("avatar_plugins", "selected", "TEXT");
     this.addColumnIfMissing("avatar_plugins", "last_synced_at", "TEXT");
+    // User-message image attachments (metadata only; the bytes live on disk
+    // under dataDir/chat-images — see chatImages.ts).
+    this.addColumnIfMissing("messages", "attachments_json", "TEXT");
     this.addColumnIfMissing("users", "auto_approve", "INTEGER DEFAULT 0");
     // Account suspension: blocks login and kills active sessions. Also the
     // "pending approval" state for signups created while signup mode = approval.
