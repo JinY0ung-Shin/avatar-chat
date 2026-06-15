@@ -17,6 +17,7 @@ import {
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
 import { isRecord, asString } from "./agentUtils.js";
+import { isModelTier } from "../modelTiers.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import { buildPrompt } from "./promptBuilder.js";
 import {
@@ -230,8 +231,13 @@ export async function runClaudeAgent(
   const hexSshPolicy = store.getHexSshToolPolicy();
   const hexSshAllowedTools = allowedHexSshToolsForViewer(hexSshPolicy, hexSshViewerClass);
   // Effective model: an env-pinned ANTHROPIC_MODEL wins (mirrors the API-key vs.
-  // subscription rule), otherwise the admin-selected override, otherwise the SDK default.
-  const effectiveModel = config.anthropicModel ?? store.getModelOverride() ?? undefined;
+  // subscription rule) and is a HARD lock; otherwise the user's per-conversation
+  // tier pick (a Claude alias, resolved to a concrete model by the operator's
+  // ANTHROPIC_DEFAULT_*_MODEL env), otherwise the admin-selected override,
+  // otherwise the SDK default. Unknown tiers are ignored so a stale/garbage value
+  // can never reach the SDK as a model id.
+  const userModelTier = isModelTier(request.modelTier) ? request.modelTier : undefined;
+  const effectiveModel = config.anthropicModel ?? userModelTier ?? store.getModelOverride() ?? undefined;
   const agentStart = Date.now();
 
   agentLogger.info(
@@ -304,6 +310,7 @@ export async function runClaudeAgent(
     owner,
     viewerIsOwner: ownerToolAccess,
     config,
+    selectedModelTier: userModelTier,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
   // avatars by capability so it can point the user at a teammate avatar for

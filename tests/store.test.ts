@@ -400,6 +400,27 @@ describe("store agent session resume", () => {
     expect(store.getConversationGroupKnowledgeOff(ownerId, "conv-gk")).toEqual(["g2"]);
   });
 
+  it("round-trips the per-conversation model tier (null default), owner-scoped", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-model", ownerId, "hi");
+    // Default: no tier chosen → null (server default resolution).
+    expect(store.getConversationModel(ownerId, "conv-model")).toBeNull();
+    store.setConversationModel(ownerId, "conv-model", "opus");
+    expect(store.getConversationModel(ownerId, "conv-model")).toBe("opus");
+    // Empty / null clears back to the default.
+    store.setConversationModel(ownerId, "conv-model", "");
+    expect(store.getConversationModel(ownerId, "conv-model")).toBeNull();
+    store.setConversationModel(ownerId, "conv-model", "sonnet");
+    store.setConversationModel(ownerId, "conv-model", null);
+    expect(store.getConversationModel(ownerId, "conv-model")).toBeNull();
+    // Another owner can't read or mutate this conversation's tier.
+    store.setConversationModel(ownerId, "conv-model", "haiku");
+    const other = store.createUser({ username: "modelother", displayName: "Other", password: "password123" });
+    expect(store.getConversationModel(other.id, "conv-model")).toBeNull();
+    store.setConversationModel(other.id, "conv-model", "opus");
+    expect(store.getConversationModel(ownerId, "conv-model")).toBe("haiku");
+  });
+
   it("round-trips the per-user default group-knowledge OFF set (seeds new conversations)", () => {
     const { store, ownerId } = makeStore();
     // Default on a fresh user: every group on.

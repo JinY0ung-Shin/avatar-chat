@@ -326,6 +326,23 @@
     );
   }
 
+  // Per-conversation model tier picked in the composer. Like the group-knowledge
+  // toggle it lives on the pane and rides the next chat POST (which persists it),
+  // so it works from a brand-new chat. "" = back to the server default.
+  function setModelTier(item: ChatPane, tier: string) {
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.modelTier = tier || undefined;
+    });
+    const label = $appState.bootstrap?.modelSelection?.tiers.find((t) => t.id === tier)?.label;
+    notify(
+      tier
+        ? `모델을 ${label ?? tier}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`
+        : "모델을 기본값으로 되돌렸어요. 다음 메시지부터 적용됩니다.",
+      "info",
+    );
+  }
+
   function messageText(message: StoredMessage) {
     return message.response?.text || message.response?.summary || message.content;
   }
@@ -502,6 +519,22 @@
             <span>보내기 버튼으로 전송</span>
           {/if}
           <span class="composer-meta">
+            {#if $appState.bootstrap?.modelSelection && !$appState.bootstrap.modelSelection.locked}
+              <select
+                class="composer-model-select"
+                aria-label="이 대화에 사용할 모델"
+                title="이 대화에서 다음 메시지부터 사용할 모델을 고릅니다"
+                value={item.modelTier ?? ""}
+                on:change={(event) => setModelTier(item, event.currentTarget.value)}
+              >
+                <option value="">기본 모델</option>
+                {#each $appState.bootstrap.modelSelection.tiers as tier (tier.id)}
+                  <option value={tier.id} title={tier.model ? `${tier.description}\n(${tier.model})` : tier.description}>
+                    {tier.label}{tier.model ? ` · ${tier.model}` : ""}
+                  </option>
+                {/each}
+              </select>
+            {/if}
             {#if eligibleGroups(item).length}
               {@const groups = eligibleGroups(item)}
               {@const onCount = groups.filter((g) => !(item.groupKnowledgeOff || []).includes(g.id)).length}

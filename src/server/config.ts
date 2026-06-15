@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { AgentRuntime, AppConfig } from "./types.js";
 import { DEFAULT_GITHUB_HOST, normalizeGithubHost } from "./marketplace.js";
+import { MODEL_TIER_IDS } from "./modelTiers.js";
 
 function env(name: string, fallback = ""): string {
   return process.env[name]?.trim() || fallback;
@@ -26,6 +27,17 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     .map((tool) => tool.trim())
     .filter(Boolean);
 
+  // Concrete model id each composer TIER maps to, from the operator's
+  // ANTHROPIC_DEFAULT_<TIER>_MODEL env (e.g. ANTHROPIC_DEFAULT_OPUS_MODEL). Keyed
+  // by the modelTiers alias so it stays in sync with the registry. A tier with no
+  // env mapping is omitted — the SDK then resolves the alias to the account/tier
+  // default, which the app can't know, so we surface only what's explicitly pinned.
+  const defaultTierModels: Record<string, string> = {};
+  for (const id of MODEL_TIER_IDS) {
+    const value = env(`ANTHROPIC_DEFAULT_${id.toUpperCase()}_MODEL`);
+    if (value) defaultTierModels[id] = value;
+  }
+
   return {
     port: Number(env("PORT", "48787")),
     dataDir,
@@ -34,6 +46,7 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     agentRuntime: parseRuntime(env("AGENT_RUNTIME", "claude")),
     anthropicApiKey: env("ANTHROPIC_API_KEY") || undefined,
     anthropicModel: env("ANTHROPIC_MODEL") || undefined,
+    defaultTierModels,
     readOnlyTools,
     githubHost,
     confluenceUrl: env("CONFLUENCE_URL") || undefined,

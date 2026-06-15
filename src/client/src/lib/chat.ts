@@ -167,12 +167,13 @@ export async function selectConversation(conversationId: string): Promise<void> 
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff }, avatarRes] = await Promise.all([
+  const [{ messages, groupKnowledgeOff, selectedModel }, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
   ]);
   const pane = makePane(avatarRes.avatar, conversationId, messages);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
+  pane.modelTier = selectedModel || undefined;
   pane.usage = lastUsage(messages);
   updateState((s) => {
     s.currentAvatar = avatarRes.avatar;
@@ -209,12 +210,13 @@ export async function addConversationToSplit(conversationId: string): Promise<vo
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff }, avatarRes] = await Promise.all([
+  const [{ messages, groupKnowledgeOff, selectedModel }, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
   ]);
   const pane = makePane(avatarRes.avatar, conversationId, messages);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
+  pane.modelTier = selectedModel || undefined;
   pane.greetedConversationId = conversationId; // an existing thread — never auto-greet
   pane.usage = lastUsage(messages);
   updateState((s) => {
@@ -315,6 +317,8 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         multiSession: readState().chatPanes.length > 1,
         groupKnowledgeOff: pane.groupKnowledgeOff || [],
         activeRepo: pane.activeRepo || undefined,
+        // Per-conversation model tier; "" lets the server fall back to the default.
+        model: pane.modelTier || "",
       }),
     });
     if (response.status === 401) {
@@ -380,10 +384,11 @@ export async function attachActiveRun(paneId: string): Promise<void> {
       return;
     }
     if (pane.messages[pane.messages.length - 1]?.role === "user") {
-      const { messages, groupKnowledgeOff } = await loadMessages(pane.conversationId);
+      const { messages, groupKnowledgeOff, selectedModel } = await loadMessages(pane.conversationId);
       updatePane(paneId, (target) => {
         target.messages = messages;
         target.groupKnowledgeOff = groupKnowledgeOff || [];
+        target.modelTier = selectedModel || undefined;
         target.canvases = canvasesFromMessages(messages);
         target.usage = lastUsage(messages);
       });
@@ -411,10 +416,11 @@ export async function attachRun(paneId: string, runId: string): Promise<void> {
     if (response.status === 404) {
       const pane = readState().chatPanes.find((item) => item.id === paneId);
       if (pane) {
-        const { messages, groupKnowledgeOff } = await loadMessages(pane.conversationId);
+        const { messages, groupKnowledgeOff, selectedModel } = await loadMessages(pane.conversationId);
         updatePane(paneId, (target) => {
           target.messages = messages;
           target.groupKnowledgeOff = groupKnowledgeOff || [];
+          target.modelTier = selectedModel || undefined;
           target.usage = lastUsage(messages);
         });
       }

@@ -17,6 +17,7 @@ import {
   type KnowledgeToolsContext,
 } from "../src/server/agent/knowledgeTools.js";
 import { normalizeHashtags } from "../src/server/store.js";
+import { MODEL_TIERS, MODEL_TIER_IDS, isModelTier } from "../src/server/modelTiers.js";
 import {
   buildAvatarDirectoryTools,
   AVATAR_DIRECTORY_SERVER_NAME,
@@ -161,6 +162,52 @@ afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
 
+
+describe("model tiers", () => {
+  it("registers the opus/sonnet/haiku aliases with user-facing labels", () => {
+    expect(MODEL_TIER_IDS).toEqual(["opus", "sonnet", "haiku"]);
+    for (const tier of MODEL_TIERS) {
+      expect(tier.label.trim()).not.toBe("");
+      expect(tier.description.trim()).not.toBe("");
+    }
+  });
+
+  it("maps each tier to its ANTHROPIC_DEFAULT_<TIER>_MODEL env (omits unset)", () => {
+    const keys = ["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"];
+    const saved = keys.map((k) => process.env[k]);
+    try {
+      process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = "claude-opus-4-8";
+      process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-4-6";
+      delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
+      const config = loadConfig({ dataDir: tempDir, sessionSecret: "test" });
+      expect(config.defaultTierModels).toEqual({
+        opus: "claude-opus-4-8",
+        sonnet: "claude-sonnet-4-6",
+      });
+      // Unset tier (haiku) is omitted — the app can't name the SDK's account default.
+      expect(config.defaultTierModels.haiku).toBeUndefined();
+    } finally {
+      keys.forEach((k, i) => {
+        if (saved[i] === undefined) delete process.env[k];
+        else process.env[k] = saved[i];
+      });
+    }
+  });
+
+  it("isModelTier accepts only known aliases", () => {
+    expect(isModelTier("opus")).toBe(true);
+    expect(isModelTier("sonnet")).toBe(true);
+    expect(isModelTier("haiku")).toBe(true);
+    // Full model ids, empty, garbage, and non-strings are rejected — the chat
+    // route falls those back to the server default so they never reach the SDK.
+    expect(isModelTier("claude-opus-4-8")).toBe(false);
+    expect(isModelTier("")).toBe(false);
+    expect(isModelTier("gpt-4")).toBe(false);
+    expect(isModelTier(undefined)).toBe(false);
+    expect(isModelTier(null)).toBe(false);
+    expect(isModelTier(42)).toBe(false);
+  });
+});
 
 describe("rate limiter", () => {
   function makeResponse() {

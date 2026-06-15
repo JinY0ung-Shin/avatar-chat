@@ -23,6 +23,14 @@ export interface AppConfig {
   anthropicApiKey?: string;
   /** Pins the Claude model the agent runs (SDK `model` option). Unset → SDK default. */
   anthropicModel?: string;
+  /**
+   * Concrete model id each composer TIER alias maps to, from the operator's
+   * `ANTHROPIC_DEFAULT_<TIER>_MODEL` env, keyed by the modelTiers alias
+   * (`opus`/`sonnet`/`haiku`). A tier with no env mapping is omitted (the SDK then
+   * resolves the alias to the account default, which the app can't know). Surfaced
+   * to the chat composer + describe_system so the user/avatar sees the real model.
+   */
+  defaultTierModels: Record<string, string>;
   readOnlyTools: string[];
   /** Default host used when a repo is entered as owner/repo. */
   githubHost: string;
@@ -497,6 +505,14 @@ export interface AgentRequest {
    * colleague chat stays read-only regardless.
    */
   autoApprove?: boolean;
+  /**
+   * User-chosen model TIER (alias `opus`/`sonnet`/`haiku`) for this conversation,
+   * from the chat composer. Resolved against env pin / admin override in
+   * claudeAgent (env pin wins, then this tier, then the admin override). The alias
+   * is passed straight to the SDK; the concrete model is the operator's call via
+   * ANTHROPIC_DEFAULT_*_MODEL. Unset → server default resolution. (See modelTiers.ts.)
+   */
+  modelTier?: string;
   /**
    * Names of the avatar owner's configured secret-tab environment variables.
    * Values are never included. Set only for owner-driven turns: owner chats

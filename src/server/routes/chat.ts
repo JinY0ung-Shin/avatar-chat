@@ -9,6 +9,7 @@ import { ensureGitRepoClone, gitRepoContextFor, gitRepoClonePath } from "../gitR
 import { acquireActiveRepo, releaseActiveRepo } from "../activeRepoLock.js";
 import type { AgentConversationMessage, AgentResponse, CanvasArtifact, StoredMessage } from "../types.js";
 import { runAgentStream } from "../agent/index.js";
+import { isModelTier } from "../modelTiers.js";
 import {
   attachRunClient,
   awaitResponse,
@@ -184,6 +185,9 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       // Owner-only group-knowledge toggle state for this conversation (group ids
       // turned OFF). The client shows the toggle only for the owner's own avatar.
       groupKnowledgeOff: store.getConversationGroupKnowledgeOff(req.user!.id, conversationId),
+      // The user's chosen model tier for this conversation (null = server default),
+      // so the composer picker restores on reload.
+      selectedModel: store.getConversationModel(req.user!.id, conversationId),
     });
   });
 
@@ -269,6 +273,19 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       viewerIsOwner && Array.isArray(req.body?.groupKnowledgeOff)
         ? (req.body.groupKnowledgeOff as unknown[]).filter((x): x is string => typeof x === "string")
         : null;
+
+    // Per-conversation model tier chosen in the composer (all viewers, not just
+    // the owner). A known tier alias applies; "" clears back to the server default;
+    // anything else (incl. nothing sent) → null = keep whatever is already stored.
+    // Like groupKnowledgeOff, the client owns this and sends it on each turn, so it
+    // works from a brand-new chat (incl. the greeting) with no row yet.
+    const rawModel = safeString(req.body?.model);
+    const requestedModel: string | null =
+      req.body?.model === undefined || req.body?.model === null
+        ? null
+        : isModelTier(rawModel)
+          ? rawModel
+          : ""; // sent but not a known tier (incl. empty) → clear to default
 
     const suppliedConversationId = safeString(req.body?.conversationId);
     // Reject a supplied id that already belongs to ANOTHER user before any DB
@@ -373,6 +390,11 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       if (requestedGroupKnowledgeOff) {
         store.setConversationGroupKnowledgeOff(req.user!.id, conversationId, requestedGroupKnowledgeOff);
       }
+      // Persist the chosen model tier so it survives reload and applies to later
+      // turns until changed. null = client sent nothing → leave the stored value.
+      if (requestedModel !== null) {
+        store.setConversationModel(req.user!.id, conversationId, requestedModel || null);
+      }
       if (!regenerate) {
         store.addMessage(conversationId, { role: "user", content: displayMessage });
       }
@@ -417,6 +439,14 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       const disabledGroupIds = viewerIsOwner
         ? new Set(requestedGroupKnowledgeOff ?? store.getConversationGroupKnowledgeOff(req.user!.id, conversationId))
         : new Set<string>();
+      // Model tier for this turn: this turn's pick if the client sent one ("" =
+      // explicit reset to default), else the stored value. Greetings carry no row,
+      // so read from `requestedModel` directly when sent. Ignored downstream when
+      // ANTHROPIC_MODEL pins a model (env pin is a hard lock).
+      const conversationModelTier =
+        requestedModel === null
+          ? store.getConversationModel(req.user!.id, conversationId)
+          : requestedModel || null;
       const pluginRoots = await loadAgentPluginRoots(
         store,
         avatar.id,
@@ -450,6 +480,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           activeRepoName: activeRepoName ?? undefined,
           resumeSessionId,
           conversationHistory,
+          modelTier: conversationModelTier ?? undefined,
           viewerUserId: req.user!.id,
           viewerName: req.user!.displayName,
           viewerIsOwner,

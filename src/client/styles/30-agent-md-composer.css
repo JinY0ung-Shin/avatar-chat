@@ -798,6 +798,28 @@ textarea::placeholder {
   content: "🪙 ";
 }
 
+/* Per-conversation model tier picker (all viewers). Styled to match the
+   group-knowledge button since the global input chrome only applies inside a
+   `.field` ancestor (see src/client/CLAUDE.md). */
+.composer-model-select {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  padding: 2px var(--s-2);
+  font-size: 0.8em;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 16em;
+  text-overflow: ellipsis;
+}
+.composer-model-select:hover,
+.composer-model-select:focus {
+  color: var(--text);
+  border-color: var(--accent, var(--text));
+}
+
 /* Owner-only per-conversation group-knowledge toggle (button + dropdown). */
 .composer-gk-btn {
   flex: none;

@@ -8,6 +8,6 @@
     "rootDir": ".",
     "isolatedModules": true
   },
-  "include": ["src/client/src/**/*.ts", "src/client/src/**/*.svelte", "src/server/types.ts", "src/server/routineSchedule.ts", "src/server/experimentalFeatures.ts"],
+  "include": ["src/client/src/**/*.ts", "src/client/src/**/*.svelte", "src/server/types.ts", "src/server/routineSchedule.ts", "src/server/experimentalFeatures.ts", "src/server/modelTiers.ts"],
   "exclude": ["node_modules", "dist"]
 }

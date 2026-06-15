@@ -53,6 +53,8 @@ export interface ChatPane {
   /** ms timestamp until which a sticky status label resists a generic overwrite. */
   liveStatusStickyUntil?: number;
   groupKnowledgeOff: string[];
+  /** User-chosen model tier (alias) for this conversation; "" / undefined = server default. */
+  modelTier?: string;
   /** Visual-canvas artifacts shown in this conversation (experimental, #50). */
   canvases: PaneCanvas[];
   /** Which canvas is currently shown in the side panel (artifact id). */
@@ -121,6 +123,16 @@ export interface BootstrapInfo {
   githubHost: string;
   signupMode: "open" | "closed" | "approval";
   confluenceConfigured: boolean;
+  /**
+   * Per-conversation model picker config: selectable tiers + whether an env-pinned
+   * ANTHROPIC_MODEL locks the choice (then the composer hides the picker). Optional
+   * for forward-compat with an older server that omits it.
+   */
+  modelSelection?: {
+    /** Each tier + the concrete model id it resolves to (null when not env-pinned). */
+    tiers: (import("../../../server/modelTiers").ModelTier & { model: string | null })[];
+    locked: boolean;
+  };
 }
 
 export interface Toast {

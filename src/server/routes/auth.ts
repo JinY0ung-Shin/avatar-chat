@@ -7,6 +7,7 @@ import {
 import logger from "../logger.js";
 import { createRateLimiter } from "../rateLimit.js";
 import { apiError, safeString, MIN_PASSWORD_LENGTH, type RouterDeps } from "./_shared.js";
+import { MODEL_TIERS } from "../modelTiers.js";
 
 // ---- Auth ------------------------------------------------------------
 export function createAuthRouter({ config, store }: RouterDeps): Router {
@@ -133,6 +134,20 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
       // Lets onboarding show the Confluence PAT field only when the deployment
       // has a Confluence host configured (the PAT is useless otherwise).
       confluenceConfigured: Boolean(config.confluenceUrl),
+      // Per-conversation model picker: the selectable tiers + whether the choice
+      // is locked by an env-pinned ANTHROPIC_MODEL (then the composer hides the
+      // picker). The concrete model each tier maps to is the operator's call via
+      // ANTHROPIC_DEFAULT_*_MODEL (see modelTiers.ts).
+      modelSelection: {
+        // Each tier carries the concrete model id it resolves to when the operator
+        // pinned one via ANTHROPIC_DEFAULT_<TIER>_MODEL (null otherwise — the SDK
+        // then uses the account default, which the app can't name).
+        tiers: MODEL_TIERS.map((tier) => ({
+          ...tier,
+          model: config.defaultTierModels[tier.id] ?? null,
+        })),
+        locked: Boolean(config.anthropicModel),
+      },
     });
   });
 

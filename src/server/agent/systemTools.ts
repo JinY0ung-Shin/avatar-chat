@@ -20,6 +20,13 @@ export interface SystemToolsContext {
   /** True only when the present viewer IS the owner and the run is interactive. */
   viewerIsOwner: boolean;
   config: AppConfig;
+  /**
+   * The user's per-conversation model tier (alias) for THIS run, if one was chosen
+   * in the composer. Reported by describe_system so the avatar names the model it
+   * actually runs with. Undefined → no per-conversation pick. Ignored when an env
+   * pin is set (the pin wins). See modelTiers.ts / claudeAgent effectiveModel.
+   */
+  selectedModelTier?: string;
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -147,15 +154,22 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         const secretNames = state.secretNames;
         const groups = state.groups;
         const openRequests = state.openRequestCount;
-        // Mirrors the runtime's model resolution (claudeAgent: env pin > admin
-        // override > SDK default) so the avatar reports the model it ACTUALLY
-        // runs with, not just the env value.
+        // Mirrors the runtime's model resolution (claudeAgent: env pin > user
+        // per-conversation tier > admin override > SDK default) so the avatar
+        // reports the model it ACTUALLY runs with, not just the env value.
         const adminModel = state.modelOverride;
+        const userTier = ctx.selectedModelTier;
+        // When a tier is chosen, name the concrete model it maps to if the operator
+        // pinned one via ANTHROPIC_DEFAULT_<TIER>_MODEL (else just the alias — the
+        // SDK resolves it to the account default the app can't name).
+        const tierModel = userTier ? ctx.config.defaultTierModels[userTier] : undefined;
         const modelLine = state.anthropicModel
           ? `${state.anthropicModel} (pinned via environment variable)`
-          : adminModel
-            ? `${adminModel} (admin setting)`
-            : "(SDK default)";
+          : userTier
+            ? `${tierModel ? `${tierModel} (${userTier})` : userTier} (chosen for this conversation in the composer)`
+            : adminModel
+              ? `${adminModel} (admin setting)`
+              : "(SDK default)";
         const hashtags = user?.hashtags ?? [];
         const visibilityLabel =
           user?.visibility === "public"

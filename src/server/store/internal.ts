@@ -456,6 +456,12 @@ export class StoreBase {
     // touching existing rows. Only meaningful for the owner's own conversations;
     // colleague conversations always load all groups (no toggle).
     this.addColumnIfMissing("conversations", "group_knowledge_off", "TEXT");
+    // Per-conversation model TIER chosen by the user in the chat composer: a Claude
+    // model alias (`opus`/`sonnet`/`haiku`) or NULL = use the server default
+    // resolution. The alias resolves to a concrete model via the operator's
+    // ANTHROPIC_DEFAULT_*_MODEL env (see modelTiers.ts). Ignored when ANTHROPIC_MODEL
+    // pins a model (the env pin is a hard lock).
+    this.addColumnIfMissing("conversations", "selected_model", "TEXT");
     this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
