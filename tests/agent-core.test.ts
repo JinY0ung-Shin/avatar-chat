@@ -873,6 +873,22 @@ describe("listSkillsInRoots", () => {
     const skills = await listSkillsInRoots([{ path: root, source: "s" }]);
     expect(skills[0]).toMatchObject({ name: "Ruled", description: "has a rule below" });
   });
+
+  it("reads a root that IS a single skill (SKILL.md at the root, no skills/ subdir)", async () => {
+    // The layout a knowledge-repo marketplace produces: each plugin source
+    // points directly at `./skills/<name>`, so the resolved root has SKILL.md
+    // at its own root rather than under a nested `skills/` directory.
+    const root = path.join(tempDir, "self-skill");
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "SKILL.md"),
+      "---\nname: noah-deploy\ndescription: deploy procedure\n---\n# body",
+    );
+    const skills = await listSkillsInRoots([{ path: root, source: "지식 저장소" }]);
+    expect(skills).toEqual([
+      { name: "noah-deploy", description: "deploy procedure", source: "지식 저장소" },
+    ]);
+  });
 });
 
 

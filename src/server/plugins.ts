@@ -223,6 +223,16 @@ export async function listSkillsInRoots(
 ): Promise<SkillInfo[]> {
   const byName = new Map<string, SkillInfo>();
   for (const root of roots) {
+    // A resolved root may ITSELF be a single skill (SKILL.md at its root) — the
+    // layout a knowledge-repo marketplace produces, where each plugin source
+    // points directly at `./skills/<name>`. readSkill returns null when there's
+    // no SKILL.md at the root, so this is a no-op for default/owner plugin roots
+    // (whose skills live one level down under `skills/`, handled below).
+    const selfSkill = await readSkill(root.path, root.source);
+    if (selfSkill && !byName.has(selfSkill.name)) {
+      byName.set(selfSkill.name, selfSkill);
+    }
+    // The common plugin layout: skills live in `<root>/skills/<name>/SKILL.md`.
     const skillsDir = path.join(root.path, "skills");
     let entries: import("node:fs").Dirent[];
     try {
