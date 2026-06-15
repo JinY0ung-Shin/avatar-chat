@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import { renderMarkdown } from "../lib/format";
   import { dismissCanvas, setActiveCanvas, submitCanvas } from "../lib/chat";
+  import { assertInlineOnlyVegaSpec, createInlineOnlyVegaLoader } from "../lib/vegaCanvas";
   import type { ChatPane, PaneCanvas } from "../lib/types";
 
   // Visual canvas side panel (experimental `canvas` feature, #50). Renders the
@@ -74,18 +75,24 @@
         // Lazy-load vega only when a chart is shown (separate chunk). Render the
         // Vega-Lite spec to an SVG STRING via the CSP-safe expression interpreter
         // (AST evaluation — no `Function` constructor, so `script-src 'self'`
-        // stays intact), then sanitize like any other SVG.
+        // stays intact), with a loader that rejects avatar-controlled URL fetches,
+        // then sanitize like any other SVG.
         const [vega, vegaLite, interp] = await Promise.all([
           import("vega"),
           import("vega-lite"),
           import("vega-interpreter"),
         ]);
         const spec = JSON.parse(canvas.content);
+        assertInlineOnlyVegaSpec(spec);
         const dark = document.documentElement.getAttribute("data-theme") === "dark";
         const config = dark ? VEGA_DARK_CONFIG : VEGA_BASE_CONFIG;
         const vgSpec = vegaLite.compile(spec, { config } as any).spec;
         const runtime = vega.parse(vgSpec as any, null as any, { ast: true } as any);
-        const view = new vega.View(runtime, { expr: interp.expressionInterpreter, renderer: "svg" } as any);
+        const view = new vega.View(runtime, {
+          expr: interp.expressionInterpreter,
+          renderer: "svg",
+          loader: createInlineOnlyVegaLoader(vega),
+        } as any);
         const svg = await view.toSVG();
         view.finalize();
         if (token !== renderToken) return; // a newer render won
