@@ -1049,6 +1049,7 @@
   .chat-head {
     align-items: stretch;
     gap: var(--s-2);
+    padding-left: calc(var(--s-4) + 46px + env(safe-area-inset-left, 0px));
   }
   .chat-head .header-left,
   .chat-head .title,
@@ -1073,41 +1074,52 @@
     justify-content: flex-start;
   }
   .chat-head-actions > .ghost-sm {
-    flex: 1 1 92px;
+    flex: 0 1 auto;
     min-width: 0;
     text-align: center;
   }
   .split-controls {
-    flex: 1 1 100%;
+    flex: 0 1 auto;
     min-width: 0;
     max-width: 100%;
     flex-wrap: wrap;
-    overflow-x: auto;
-    overscroll-behavior-x: contain;
+    overflow: visible;
   }
   .split-avatar-select {
-    flex: 1 1 128px;
+    flex: 0 1 128px;
     min-width: 0;
-    max-width: none;
+    max-width: min(100%, 156px);
     /* ≥16px text — anything smaller triggers iOS zoom-on-focus. */
     font-size: var(--t-md);
   }
   .composer-hint {
-    align-items: stretch;
-    flex-direction: column;
+    align-items: center;
+    flex-direction: row;
+    flex-wrap: wrap;
     gap: var(--s-1);
+  }
+  .composer-hint > span:first-child {
+    display: none;
   }
   .composer-meta {
     width: 100%;
     flex-wrap: wrap;
+    justify-content: flex-start;
     gap: var(--s-1);
   }
-  .composer-model-select,
-  .composer-gk-btn {
-    flex: 1 1 100%;
+  .composer-model-select {
+    flex: 0 1 172px;
     min-width: 0;
+    max-width: min(100%, 172px);
+    font-size: var(--t-md);
+  }
+  .composer-gk-btn {
+    flex: 0 0 auto;
     max-width: 100%;
     font-size: var(--t-md);
+  }
+  .composer-usage {
+    flex: 0 0 auto;
   }
   .composer-gk-panel {
     left: 0;
