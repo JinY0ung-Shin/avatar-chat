@@ -602,6 +602,14 @@ export interface AgentRequest {
    */
   modelTier?: string;
   /**
+   * User-chosen reasoning EFFORT level (`low`/`medium`/`high`/`xhigh`/`max`) for
+   * this conversation, from the chat composer. Passed straight to the SDK as
+   * `options.effort`; the SDK silently downgrades levels the selected model does
+   * not support. Independent of the model pin. Unknown/unset → SDK default
+   * (`high`). (See effortLevels.ts.)
+   */
+  effort?: string;
+  /**
    * Opt into model fallback: when the run fails on a transient model/server-side
    * error (overload/5xx/429/network), retry on the next-lower tier down the chain
    * (resolved model → … → haiku). Set ONLY for scheduled routines — headless runs

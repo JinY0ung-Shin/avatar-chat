@@ -8,6 +8,7 @@ import logger from "../logger.js";
 import { createRateLimiter } from "../rateLimit.js";
 import { apiError, safeString, MIN_PASSWORD_LENGTH, type RouterDeps } from "./_shared.js";
 import { MODEL_TIERS } from "../modelTiers.js";
+import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
 
 // ---- Auth ------------------------------------------------------------
 export function createAuthRouter({ config, store }: RouterDeps): Router {
@@ -147,6 +148,13 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
           model: config.defaultTierModels[tier.id] ?? null,
         })),
         locked: Boolean(config.anthropicModel),
+      },
+      // Per-conversation reasoning effort picker. Independent of the model pin
+      // (effort still applies when ANTHROPIC_MODEL locks the model), so there is
+      // no `locked` flag here. The SDK downgrades unsupported levels per model.
+      effortSelection: {
+        levels: EFFORT_LEVELS,
+        default: DEFAULT_EFFORT_LEVEL,
       },
     });
   });

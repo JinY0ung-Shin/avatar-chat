@@ -19,6 +19,7 @@ import {
 } from "../chatImages.js";
 import { runAgentStream } from "../agent/index.js";
 import { isModelTier } from "../modelTiers.js";
+import { isEffortLevel } from "../effortLevels.js";
 import {
   attachRunClient,
   awaitResponse,
@@ -256,6 +257,9 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       // The user's chosen model tier for this conversation (null = server default),
       // so the composer picker restores on reload.
       selectedModel: store.getConversationModel(req.user!.id, conversationId),
+      // The user's chosen effort level for this conversation (null = SDK default),
+      // so the composer picker restores on reload.
+      selectedEffort: store.getConversationEffort(req.user!.id, conversationId),
     });
   });
 
@@ -420,6 +424,17 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           ? rawModel
           : ""; // sent but not a known tier (incl. empty) → clear to default
 
+    // Per-conversation reasoning effort, same client-owned model as the tier above:
+    // a known level applies; "" clears back to the SDK default; nothing sent → null
+    // = keep whatever is already stored.
+    const rawEffort = safeString(req.body?.effort);
+    const requestedEffort: string | null =
+      req.body?.effort === undefined || req.body?.effort === null
+        ? null
+        : isEffortLevel(rawEffort)
+          ? rawEffort
+          : ""; // sent but not a known level (incl. empty) → clear to default
+
     const suppliedConversationId = safeString(req.body?.conversationId);
     if (suppliedConversationId && !isSafePathId(suppliedConversationId)) {
       apiError(res, 400, "대화 ID가 올바르지 않습니다.");
@@ -547,6 +562,10 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       if (requestedModel !== null) {
         store.setConversationModel(req.user!.id, conversationId, requestedModel || null);
       }
+      // Persist the chosen effort level (same semantics as the model tier above).
+      if (requestedEffort !== null) {
+        store.setConversationEffort(req.user!.id, conversationId, requestedEffort || null);
+      }
       if (!regenerate) {
         const saved = saveChatImages(config, conversationId, decodedImages);
         requestImages = saved.images;
@@ -613,6 +632,12 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         requestedModel === null
           ? store.getConversationModel(req.user!.id, conversationId)
           : requestedModel || null;
+      // Effort for this turn: this turn's pick if sent ("" = reset to default),
+      // else the stored value. Mirrors the model tier resolution above.
+      const conversationEffort =
+        requestedEffort === null
+          ? store.getConversationEffort(req.user!.id, conversationId)
+          : requestedEffort || null;
       const pluginRoots = await loadAgentPluginRoots(
         store,
         avatar.id,
@@ -648,6 +673,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           conversationHistory,
           images: requestImages.length ? requestImages : undefined,
           modelTier: conversationModelTier ?? undefined,
+          effort: conversationEffort ?? undefined,
           viewerUserId: req.user!.id,
           viewerName: req.user!.displayName,
           viewerIsOwner,

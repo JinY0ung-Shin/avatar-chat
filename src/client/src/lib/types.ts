@@ -88,6 +88,8 @@ export interface ChatPane {
   localImages?: Record<string, string>;
   /** User-chosen model tier (alias) for this conversation; "" / undefined = server default. */
   modelTier?: string;
+  /** User-chosen reasoning effort level for this conversation; "" / undefined = SDK default (high). */
+  effort?: string;
   /** Visual-canvas artifacts shown in this conversation (experimental, #50). */
   canvases: PaneCanvas[];
   /** Which canvas is currently shown in the side panel (artifact id). */
@@ -174,6 +176,15 @@ export interface BootstrapInfo {
     /** Each tier + the concrete model id it resolves to (null when not env-pinned). */
     tiers: (import("../../../server/modelTiers").ModelTier & { model: string | null })[];
     locked: boolean;
+  };
+  /**
+   * Per-conversation reasoning effort picker config: selectable levels + the
+   * default level applied when unset. Independent of the model pin (no lock).
+   * Optional for forward-compat with an older server that omits it.
+   */
+  effortSelection?: {
+    levels: import("../../../server/effortLevels").EffortLevel[];
+    default: string;
   };
 }
 

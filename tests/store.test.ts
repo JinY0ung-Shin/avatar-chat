@@ -422,6 +422,27 @@ describe("store agent session resume", () => {
     expect(store.getConversationModel(ownerId, "conv-model")).toBe("haiku");
   });
 
+  it("round-trips the per-conversation effort level (null default), owner-scoped", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-effort", ownerId, "hi");
+    // Default: no effort chosen → null (SDK default resolution).
+    expect(store.getConversationEffort(ownerId, "conv-effort")).toBeNull();
+    store.setConversationEffort(ownerId, "conv-effort", "max");
+    expect(store.getConversationEffort(ownerId, "conv-effort")).toBe("max");
+    // Empty / null clears back to the default.
+    store.setConversationEffort(ownerId, "conv-effort", "");
+    expect(store.getConversationEffort(ownerId, "conv-effort")).toBeNull();
+    store.setConversationEffort(ownerId, "conv-effort", "low");
+    store.setConversationEffort(ownerId, "conv-effort", null);
+    expect(store.getConversationEffort(ownerId, "conv-effort")).toBeNull();
+    // Another owner can't read or mutate this conversation's effort.
+    store.setConversationEffort(ownerId, "conv-effort", "xhigh");
+    const other = store.createUser({ username: "effortother", displayName: "Other", password: "password123" });
+    expect(store.getConversationEffort(other.id, "conv-effort")).toBeNull();
+    store.setConversationEffort(other.id, "conv-effort", "high");
+    expect(store.getConversationEffort(ownerId, "conv-effort")).toBe("xhigh");
+  });
+
   it("attaches an activity snapshot to a stored message, owner-scoped, clearing when empty", () => {
     const { store, ownerId } = makeStore();
     store.touchConversation(ownerId, "conv-act", ownerId, "hi");

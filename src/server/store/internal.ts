@@ -466,6 +466,11 @@ export class StoreBase {
     // ANTHROPIC_DEFAULT_*_MODEL env (see modelTiers.ts). Ignored when ANTHROPIC_MODEL
     // pins a model (the env pin is a hard lock).
     this.addColumnIfMissing("conversations", "selected_model", "TEXT");
+    // Per-conversation reasoning EFFORT level chosen in the composer
+    // (`low`/`medium`/`high`/`xhigh`/`max`) or NULL = SDK default (`high`). Passed
+    // to the SDK as `options.effort`; independent of the model pin (see
+    // effortLevels.ts).
+    this.addColumnIfMissing("conversations", "selected_effort", "TEXT");
     this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();

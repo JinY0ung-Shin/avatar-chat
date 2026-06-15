@@ -44,7 +44,12 @@ export async function loadConversations(kind: "chat" | "routine" | "all" = "chat
 
 export async function loadMessages(
   conversationId: string,
-): Promise<{ messages: StoredMessage[]; groupKnowledgeOff: string[]; selectedModel?: string | null }> {
+): Promise<{
+  messages: StoredMessage[];
+  groupKnowledgeOff: string[];
+  selectedModel?: string | null;
+  selectedEffort?: string | null;
+}> {
   return api(`/api/messages?conversationId=${encodeURIComponent(conversationId)}`);
 }
 

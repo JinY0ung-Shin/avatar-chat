@@ -182,6 +182,31 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
     }
 
     /**
+     * The user-chosen reasoning EFFORT level for this conversation, or null when
+     * none was picked (use the SDK default). Owner-scoped, mirroring the model
+     * tier above.
+     */
+    getConversationEffort(ownerId: string, conversationId: string): string | null {
+      const row = this.db
+        .prepare("SELECT selected_effort FROM conversations WHERE id = ? AND owner_user_id = ?")
+        .get(conversationId, ownerId) as { selected_effort: string | null } | undefined;
+      const value = row?.selected_effort?.trim();
+      return value ? value : null;
+    }
+
+    /**
+     * Set (or clear, when null/empty) the conversation's chosen effort level.
+     * No-op when the conversation isn't the owner's. Callers validate the level
+     * against the registry (`isEffortLevel`) before persisting.
+     */
+    setConversationEffort(ownerId: string, conversationId: string, effort: string | null): void {
+      const next = effort && effort.trim() ? effort.trim() : null;
+      this.db
+        .prepare("UPDATE conversations SET selected_effort = ? WHERE id = ? AND owner_user_id = ?")
+        .run(next, conversationId, ownerId);
+    }
+
+    /**
      * Parse a persisted response_json column, tolerating corruption: a single bad
      * row must not throw and brick listMessages for an entire conversation.
      */

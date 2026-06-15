@@ -27,6 +27,7 @@
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
   import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
+  import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
   let splitAvatarId = "";
@@ -572,6 +573,18 @@
     notify(`모델을 ${label ?? tier}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
   }
 
+  // Per-conversation reasoning effort, mirroring setModelTier: lives on the pane
+  // and rides the next chat POST (which persists it). Every value is a real level
+  // (the default is "높음"/high, applied SDK-side when unset).
+  function setEffort(item: ChatPane, effort: string) {
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.effort = effort;
+    });
+    const label = $appState.bootstrap?.effortSelection?.levels.find((e) => e.id === effort)?.label;
+    notify(`사고 강도를 ${label ?? effort}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
+  }
+
   function messageText(message: StoredMessage) {
     return message.response?.text || message.response?.summary || message.content;
   }
@@ -846,6 +859,19 @@
                   <option value={tier.id} title={tier.model ? `${tier.description}\n(${tier.model})` : tier.description}>
                     {tier.label}{tier.model ? ` · ${tier.model}` : ""}
                   </option>
+                {/each}
+              </select>
+            {/if}
+            {#if $appState.bootstrap?.effortSelection}
+              <select
+                class="composer-model-select"
+                aria-label="이 대화에 사용할 사고 강도(effort)"
+                title="이 대화에서 다음 메시지부터 모델이 들이는 사고/추론 강도를 고릅니다"
+                value={item.effort ?? $appState.bootstrap.effortSelection.default ?? DEFAULT_EFFORT_LEVEL}
+                on:change={(event) => setEffort(item, event.currentTarget.value)}
+              >
+                {#each $appState.bootstrap.effortSelection.levels as level (level.id)}
+                  <option value={level.id} title={level.description}>강도: {level.label}</option>
                 {/each}
               </select>
             {/if}

@@ -7,6 +7,7 @@ import { ensureNotificationPermission, osNotify } from "./notifications";
 import { newId, notify, readState, updateState } from "./state";
 import { resolveTypedSlashCommand, slashPrompt } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
+import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
 import {
   SDK_HIDDEN_ACTIVITY_TOOLS,
   SDK_TOOL_LABELS,
@@ -179,13 +180,14 @@ export async function selectConversation(conversationId: string): Promise<void> 
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff, selectedModel }, avatarRes] = await Promise.all([
+  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort }, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
   ]);
   const pane = makePane(avatarRes.avatar, conversationId, messages);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
   pane.modelTier = selectedModel || undefined;
+  pane.effort = selectedEffort || undefined;
   pane.usage = lastUsage(messages);
   updateState((s) => {
     s.currentAvatar = avatarRes.avatar;
@@ -222,13 +224,14 @@ export async function addConversationToSplit(conversationId: string): Promise<vo
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff, selectedModel }, avatarRes] = await Promise.all([
+  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort }, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
   ]);
   const pane = makePane(avatarRes.avatar, conversationId, messages);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
   pane.modelTier = selectedModel || undefined;
+  pane.effort = selectedEffort || undefined;
   pane.greetedConversationId = conversationId; // an existing thread — never auto-greet
   pane.usage = lastUsage(messages);
   updateState((s) => {
@@ -374,6 +377,8 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         activeRepo: pane.activeRepo || undefined,
         // Per-conversation model tier; unset → the default tier (Opus).
         model: pane.modelTier || DEFAULT_MODEL_TIER,
+        // Per-conversation reasoning effort; unset → the SDK default (high).
+        effort: pane.effort || DEFAULT_EFFORT_LEVEL,
         // Staged image attachments (data URLs). The server reuses our id as the
         // stored attachment id + filename. Omit when none.
         images: pendingImages.length ? pendingImages.map((img) => ({ id: img.id, data: img.dataUrl })) : undefined,
@@ -447,11 +452,12 @@ export async function attachActiveRun(paneId: string): Promise<void> {
       return;
     }
     if (pane.messages[pane.messages.length - 1]?.role === "user") {
-      const { messages, groupKnowledgeOff, selectedModel } = await loadMessages(pane.conversationId);
+      const { messages, groupKnowledgeOff, selectedModel, selectedEffort } = await loadMessages(pane.conversationId);
       updatePane(paneId, (target) => {
         target.messages = messages;
         target.groupKnowledgeOff = groupKnowledgeOff || [];
         target.modelTier = selectedModel || undefined;
+        target.effort = selectedEffort || undefined;
         target.canvases = canvasesFromMessages(messages);
         target.usage = lastUsage(messages);
       });
@@ -479,11 +485,12 @@ export async function attachRun(paneId: string, runId: string): Promise<void> {
     if (response.status === 404) {
       const pane = readState().chatPanes.find((item) => item.id === paneId);
       if (pane) {
-        const { messages, groupKnowledgeOff, selectedModel } = await loadMessages(pane.conversationId);
+        const { messages, groupKnowledgeOff, selectedModel, selectedEffort } = await loadMessages(pane.conversationId);
         updatePane(paneId, (target) => {
           target.messages = messages;
           target.groupKnowledgeOff = groupKnowledgeOff || [];
           target.modelTier = selectedModel || undefined;
+        target.effort = selectedEffort || undefined;
           target.usage = lastUsage(messages);
         });
       }

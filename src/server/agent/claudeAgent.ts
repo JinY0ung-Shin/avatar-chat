@@ -19,6 +19,7 @@ import {
 } from "../hexSshPolicy.js";
 import { isRecord, asString } from "./agentUtils.js";
 import { isModelTier, DEFAULT_MODEL_TIER, MODEL_TIER_IDS } from "../modelTiers.js";
+import { isEffortLevel } from "../effortLevels.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import { buildPrompt } from "./promptBuilder.js";
 import {
@@ -305,6 +306,10 @@ export async function runClaudeAgent(
   // otherwise the DEFAULT tier (opus). Unknown tiers are ignored so a stale/garbage
   // value can never reach the SDK as a model id.
   const userModelTier = isModelTier(request.modelTier) ? request.modelTier : undefined;
+  // User-chosen reasoning effort for this conversation. Unknown/unset → leave
+  // `options.effort` off so the SDK applies its own default (`high`). Independent
+  // of the model pin: effort still applies when ANTHROPIC_MODEL locks the model.
+  const userEffort = isEffortLevel(request.effort) ? request.effort : undefined;
   const effectiveModel =
     config.anthropicModel ?? userModelTier ?? store.getModelOverride() ?? DEFAULT_MODEL_TIER;
   // Model fallback chain (scheduled routines only — `request.modelFallback`): on a
@@ -556,6 +561,11 @@ export async function runClaudeAgent(
   // Pin the model when configured (env or admin override); otherwise the SDK default.
   if (effectiveModel) {
     options.model = effectiveModel;
+  }
+  // Apply the user's reasoning effort when they picked one; otherwise omit it so
+  // the SDK uses its default. The SDK downgrades unsupported levels per model.
+  if (userEffort) {
+    options.effort = userEffort;
   }
   if (streaming) {
     options.includePartialMessages = true;
