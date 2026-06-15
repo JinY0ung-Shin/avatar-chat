@@ -61,22 +61,21 @@
     }
   });
 
-  // Panes currently being scrolled programmatically. A programmatic `scrollTop`
-  // write fires an async `scroll` event; during fast streaming that event can land
-  // AFTER new content grew `scrollHeight`, so `onTranscriptScroll` would wrongly
-  // read "not near bottom" and flip `stickBottom` off — permanently killing
-  // auto-scroll. We mark the pane while auto-scrolling and ignore its scroll events
-  // until the next frame, so only genuine user scrolls update `stickBottom`.
-  let autoScrolling: Record<string, boolean> = {};
+  // Auto-scroll uses scroll DIRECTION, not a programmatic-scroll flag, to tell a
+  // genuine user scroll-up from our own auto-scroll. Only a user can DECREASE
+  // `scrollTop`; `stickToBottom` and streamed content growth never do. The old
+  // flag+rAF guard relied on the programmatic scroll's `scroll` event landing
+  // before the next frame — but under fast streaming the browser coalesces/defers
+  // scroll events, so a late one would read a stale "not near bottom" and flip
+  // `stickBottom` off for good, permanently killing auto-scroll. Tracking the last
+  // scrollTop per pane and only disengaging on a real upward move is race-free.
+  let lastScrollTop: Record<string, number> = {};
 
   function stickToBottom(item: ChatPane) {
     const el = transcriptEls[item.id];
     if (!el || item.stickBottom === false) return;
-    autoScrolling[item.id] = true;
     el.scrollTop = el.scrollHeight;
-    requestAnimationFrame(() => {
-      autoScrolling[item.id] = false;
-    });
+    lastScrollTop[item.id] = el.scrollTop;
   }
 
   afterUpdate(() => {
@@ -393,13 +392,25 @@
   }
 
   function onTranscriptScroll(event: Event, item: ChatPane) {
-    if (autoScrolling[item.id]) return; // ignore our own programmatic scroll
     const el = event.currentTarget as HTMLDivElement;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-    updateState((state) => {
-      const target = state.chatPanes.find((p) => p.id === item.id);
-      if (target) target.stickBottom = nearBottom;
-    });
+    const prev = lastScrollTop[item.id];
+    const top = el.scrollTop;
+    lastScrollTop[item.id] = top;
+    const nearBottom = el.scrollHeight - top - el.clientHeight < 120;
+    // Only a genuine user gesture moves the viewport UP; auto-scroll/content
+    // growth never decrease scrollTop. A meaningful upward move hands control to
+    // the user (keep sticking only if they're still at the bottom); any downward
+    // move or arrival at the bottom re-engages sticking. The 2px deadzone ignores
+    // sub-pixel jitter from fractional scrollTop. Skip no-op store writes — scroll
+    // fires rapidly while streaming and updateState recomputes + notifies.
+    const scrolledUp = prev !== undefined && top < prev - 2;
+    const next = scrolledUp ? nearBottom : nearBottom ? true : item.stickBottom;
+    if (next !== item.stickBottom) {
+      updateState((state) => {
+        const target = state.chatPanes.find((p) => p.id === item.id);
+        if (target) target.stickBottom = next;
+      });
+    }
   }
 
   function scrollToBottom(item: ChatPane) {
@@ -409,11 +420,8 @@
     });
     const el = transcriptEls[item.id];
     if (el) {
-      autoScrolling[item.id] = true;
       el.scrollTop = el.scrollHeight;
-      requestAnimationFrame(() => {
-        autoScrolling[item.id] = false;
-      });
+      lastScrollTop[item.id] = el.scrollTop;
     }
   }
 
