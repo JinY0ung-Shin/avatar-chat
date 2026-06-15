@@ -17,7 +17,7 @@ import {
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
 import { isRecord, asString } from "./agentUtils.js";
-import { isModelTier, DEFAULT_MODEL_TIER } from "../modelTiers.js";
+import { isModelTier, DEFAULT_MODEL_TIER, MODEL_TIER_IDS } from "../modelTiers.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import { buildPrompt } from "./promptBuilder.js";
 import {
@@ -184,6 +184,42 @@ async function* buildImageQueryPrompt(
   };
 }
 
+// HTTP statuses that indicate a transient model/server-side condition worth
+// retrying on a different model (overload/rate-limit/5xx/timeout).
+const RETRYABLE_MODEL_STATUS = new Set([408, 429, 500, 502, 503, 504, 529]);
+
+/**
+ * Whether an SDK/query failure looks like a transient MODEL or SERVER-side
+ * problem (overloaded, rate-limited, 5xx, network) — as opposed to a genuine
+ * error (bad request, auth, a tool failure). Used to decide model fallback.
+ * Inspects an `Anthropic`-style numeric `status` first, then the message text.
+ */
+export function isRetryableModelError(error: unknown): boolean {
+  const status = isRecord(error) && typeof error.status === "number" ? error.status : undefined;
+  if (status && RETRYABLE_MODEL_STATUS.has(status)) {
+    return true;
+  }
+  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  return /overloaded|rate.?limit|too many requests|\b408\b|\b429\b|\b500\b|\b502\b|\b503\b|\b504\b|\b529\b|internal server error|service unavailable|bad gateway|gateway timeout|timed?\s?out|etimedout|econnreset|econnrefused|enotfound|socket hang up|fetch failed|connection error|network error|server_error|api_error/.test(
+    message,
+  );
+}
+
+/**
+ * The ordered list of models to try for a run. Walks DOWN the tier order
+ * (opus→sonnet→haiku) starting from the resolved model, so a transient failure
+ * on the primary falls back to a lighter tier. A concrete (non-tier) primary —
+ * e.g. an admin override pinned to a specific model id — is tried first, then
+ * the lower tiers. Callers gate this on `modelFallback` + no env pin.
+ */
+export function buildModelFallbackChain(primary: string): string[] {
+  const idx = MODEL_TIER_IDS.indexOf(primary);
+  if (idx >= 0) {
+    return MODEL_TIER_IDS.slice(idx);
+  }
+  return [primary, "sonnet", "haiku"].filter((model, i, arr) => arr.indexOf(model) === i);
+}
+
 /**
  * Run the Claude Agent SDK against the avatar's plugin roots.
  *
@@ -267,6 +303,12 @@ export async function runClaudeAgent(
   const userModelTier = isModelTier(request.modelTier) ? request.modelTier : undefined;
   const effectiveModel =
     config.anthropicModel ?? userModelTier ?? store.getModelOverride() ?? DEFAULT_MODEL_TIER;
+  // Model fallback chain (scheduled routines only — `request.modelFallback`): on a
+  // transient model/server error, retry down the tier order from the resolved
+  // model. An env-pinned ANTHROPIC_MODEL is a HARD lock, so it never falls back.
+  // Otherwise the chain is just the single resolved model (chat behavior).
+  const modelChain =
+    request.modelFallback && !config.anthropicModel ? buildModelFallbackChain(effectiveModel) : [effectiveModel];
   const agentStart = Date.now();
 
   agentLogger.info(
@@ -560,12 +602,13 @@ export async function runClaudeAgent(
     events.onStatus?.("응답 생성 중…");
   }
 
-  const state = createLoopState();
-  const assistantChunks: string[] = [];
-  const deltaChunks: string[] = [];
+  let state = createLoopState();
+  let assistantChunks: string[] = [];
+  let deltaChunks: string[] = [];
   let resultText = "";
   let resultErrorSubtype = "";
   let runUsage: AgentUsage | undefined;
+  let usedModel = effectiveModel;
 
   // Owner self-state (secret names, group memberships) flows to every
   // OWNER-DRIVEN turn: interactive owner chats AND owner-scheduled routines
@@ -594,58 +637,103 @@ export async function runClaudeAgent(
   // to feed the model images. All `options` (resume/hooks/mcpServers/model) work
   // identically in both modes, so text-only turns keep the unchanged string path.
   const promptText = buildPrompt(promptRequest, openRequestCount);
-  const queryPrompt =
-    request.images && request.images.length > 0
-      ? buildImageQueryPrompt(promptText, request.images)
-      : promptText;
 
-  for await (const message of sdk.query({ prompt: queryPrompt, options })) {
-    if (!isRecord(message)) {
-      continue;
+  // Run the SDK query, walking the model fallback chain (single-element unless a
+  // routine opted in). A retry re-runs from scratch on a fresh attempt, so it is
+  // only safe for headless routines (no live stream consuming partial output);
+  // chat always has a single-element chain.
+  for (let attempt = 0; attempt < modelChain.length; attempt += 1) {
+    const model = modelChain[attempt];
+    if (model) {
+      options.model = model;
+      usedModel = model;
     }
-    if (events) {
-      if (message.type === "stream_event") {
-        const delta = handleStreamEvent(message, events);
-        if (delta) {
-          deltaChunks.push(delta);
+    // Reset per-attempt accumulators so a retry never inherits a failed
+    // attempt's partial text / usage.
+    state = createLoopState();
+    assistantChunks = [];
+    deltaChunks = [];
+    resultText = "";
+    resultErrorSubtype = "";
+    runUsage = undefined;
+    // Build the prompt fresh each attempt: the image path is a single-use async
+    // generator, so a retry needs a new one (the string path is reused as-is).
+    const queryPrompt =
+      request.images && request.images.length > 0
+        ? buildImageQueryPrompt(promptText, request.images)
+        : promptText;
+
+    try {
+      for await (const message of sdk.query({ prompt: queryPrompt, options })) {
+        if (!isRecord(message)) {
+          continue;
         }
-        continue;
-      }
-      if (message.type === "system") {
-        handleSystemEvent(message, events, state);
-        continue;
-      }
-      if (message.type === "user") {
-        handleUserMessage(message, events, state);
-        continue;
-      }
-      if (message.type === "tool_progress") {
-        const toolName = asString(message.tool_name) || asString(message.toolName);
-        events.onStatus?.(toolName ? `실행 중: ${toolName}` : "실행 중…");
-        continue;
-      }
-    }
+        if (events) {
+          if (message.type === "stream_event") {
+            const delta = handleStreamEvent(message, events);
+            if (delta) {
+              deltaChunks.push(delta);
+            }
+            continue;
+          }
+          if (message.type === "system") {
+            handleSystemEvent(message, events, state);
+            continue;
+          }
+          if (message.type === "user") {
+            handleUserMessage(message, events, state);
+            continue;
+          }
+          if (message.type === "tool_progress") {
+            const toolName = asString(message.tool_name) || asString(message.toolName);
+            events.onStatus?.(toolName ? `실행 중: ${toolName}` : "실행 중…");
+            continue;
+          }
+        }
 
-    if (message.type === "assistant") {
-      // With an events sink this also emits tool/agent start events.
-      const assistantText = events
-        ? handleAssistantMessage(message, events, state)
-        : extractMainAssistantText(message);
-      if (assistantText) {
-        assistantChunks.push(assistantText);
-      }
-      continue;
-    }
+        if (message.type === "assistant") {
+          // With an events sink this also emits tool/agent start events.
+          const assistantText = events
+            ? handleAssistantMessage(message, events, state)
+            : extractMainAssistantText(message);
+          if (assistantText) {
+            assistantChunks.push(assistantText);
+          }
+          continue;
+        }
 
-    const { text: extractedResult, errorSubtype, usage } = interpretResult(message);
-    if (extractedResult) {
-      resultText = extractedResult;
-    }
-    if (errorSubtype) {
-      resultErrorSubtype = errorSubtype;
-    }
-    if (usage) {
-      runUsage = usage;
+        const { text: extractedResult, errorSubtype, usage } = interpretResult(message);
+        if (extractedResult) {
+          resultText = extractedResult;
+        }
+        if (errorSubtype) {
+          resultErrorSubtype = errorSubtype;
+        }
+        if (usage) {
+          runUsage = usage;
+        }
+      }
+      // Attempt finished (success or an in-band error result, e.g. max_turns) —
+      // those are not transient model-server failures, so don't fall back.
+      break;
+    } catch (error) {
+      const nextModel = modelChain[attempt + 1];
+      const canFallback =
+        Boolean(nextModel) && !abortController?.signal.aborted && isRetryableModelError(error);
+      if (!canFallback) {
+        throw error;
+      }
+      agentLogger.warn(
+        {
+          avatarId: request.avatar.id,
+          from: model,
+          to: nextModel,
+          detail: error instanceof Error ? error.message : String(error),
+        },
+        "model fallback after transient error",
+      );
+      // No live viewer on a routine, but keep the channel consistent.
+      events?.onStatus?.(`모델을 ${nextModel}(으)로 전환해 다시 시도합니다…`);
     }
   }
 
@@ -665,7 +753,14 @@ export async function runClaudeAgent(
       ? resultErrorMessage(resultErrorSubtype)
       : "Claude Agent SDK 응답이 비어 있습니다.");
   agentLogger.info(
-    { avatarId: request.avatar.id, runtime: "claude", textLength: text.length, durationMs: Date.now() - agentStart },
+    {
+      avatarId: request.avatar.id,
+      runtime: "claude",
+      model: usedModel,
+      modelFellBack: usedModel !== effectiveModel,
+      textLength: text.length,
+      durationMs: Date.now() - agentStart,
+    },
     "agent run completed",
   );
   return {

@@ -577,6 +577,14 @@ export interface AgentRequest {
    */
   modelTier?: string;
   /**
+   * Opt into model fallback: when the run fails on a transient model/server-side
+   * error (overload/5xx/429/network), retry on the next-lower tier down the chain
+   * (resolved model → … → haiku). Set ONLY for scheduled routines — headless runs
+   * have no live stream, so re-running is clean. An env-pinned `ANTHROPIC_MODEL`
+   * is a hard lock and disables fallback. Unset → single attempt (chat behavior).
+   */
+  modelFallback?: boolean;
+  /**
    * Names of the avatar owner's configured secret-tab environment variables.
    * Values are never included. Set only for owner-driven turns: owner chats
    * AND owner-scheduled routines running with owner tool access.

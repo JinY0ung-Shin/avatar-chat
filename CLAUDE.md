@@ -340,6 +340,16 @@ gotchas, and client↔server mirrored validators.
   default + avatar plugins + personal & group knowledge-repo roots. Both the chat endpoint (`routes/chat.ts`)
   and the scheduler (`scheduler.ts`) call it, so they can't drift; `local` runtime returns `[]`.
   (Routines once loaded only default+avatar plugins and silently missed knowledge-repo skills.)
+- **Routines fall back down the model tier chain on transient failures.** The scheduler sets
+  `AgentRequest.modelFallback: true` (routines ONLY — headless, no live stream, so a clean re-run is
+  safe; chat never sets it). `runClaudeAgent` then builds a chain from the resolved model DOWN the tier
+  order (`buildModelFallbackChain`: opus→sonnet→haiku; a concrete admin-override id → [id, sonnet,
+  haiku]) and retries the next model when the attempt THROWS a transient model/server error
+  (`isRetryableModelError`: overload/429/5xx/network — NOT `error_max_turns`/auth/bad-request, and NOT
+  on abort). An env-pinned `ANTHROPIC_MODEL` is a hard lock → no fallback (single-element chain).
+  In-band error *results* (e.g. max_turns) don't fall back. The completed-run log carries `model` +
+  `modelFellBack`. Per-attempt accumulators reset each try; the image prompt is rebuilt per attempt
+  (single-use generator) — though routines never carry images.
 - **Knowledge-repo `CLAUDE.md` IS now injected as standing memory** (extends the old "settingSources
   `[]` → no CLAUDE.md" understanding). The repo-root `CLAUDE.md` of the personal repo (ALWAYS) + each
   ENABLED group repo is read DIRECTLY from the clone (NOT via settingSources, which stays `[]`),

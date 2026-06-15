@@ -76,6 +76,10 @@ async function runRoutineJobNow(
         headless: true,
         allowHeadlessTools: true,
         autoApprove: true,
+        // Routines run unattended on a schedule: if the chosen model is
+        // overloaded/erroring server-side, fall back down the tier chain
+        // (opus→sonnet→haiku) rather than failing the whole run.
+        modelFallback: true,
         knowledgeMemory,
       },
       pluginRoots,

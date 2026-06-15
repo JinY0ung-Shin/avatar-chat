@@ -59,10 +59,12 @@ import {
 } from "../src/server/agent/runRegistry.js";
 import {
   agentSubprocessEnv,
+  buildModelFallbackChain,
   buildPreToolUseHook,
   buildPrompt,
   deriveAgentToolAccess,
   interpretResult,
+  isRetryableModelError,
   resultErrorMessage,
   rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
@@ -1893,5 +1895,33 @@ process.stdin.on("data", (chunk) => {
     } finally {
       proxy.kill();
     }
+  });
+});
+
+describe("model fallback (routines)", () => {
+  it("walks DOWN the tier order from the resolved model", () => {
+    expect(buildModelFallbackChain("opus")).toEqual(["opus", "sonnet", "haiku"]);
+    expect(buildModelFallbackChain("sonnet")).toEqual(["sonnet", "haiku"]);
+    expect(buildModelFallbackChain("haiku")).toEqual(["haiku"]);
+  });
+
+  it("tries a concrete (non-tier) primary first, then the lower tiers", () => {
+    expect(buildModelFallbackChain("claude-opus-4-8")).toEqual(["claude-opus-4-8", "sonnet", "haiku"]);
+  });
+
+  it("treats overload / 5xx / rate-limit / network errors as retryable", () => {
+    expect(isRetryableModelError(new Error("Overloaded"))).toBe(true);
+    expect(isRetryableModelError(new Error("API error 529"))).toBe(true);
+    expect(isRetryableModelError(new Error("rate limit exceeded"))).toBe(true);
+    expect(isRetryableModelError(new Error("503 Service Unavailable"))).toBe(true);
+    expect(isRetryableModelError(new Error("fetch failed"))).toBe(true);
+    expect(isRetryableModelError({ status: 500, message: "boom" })).toBe(true);
+  });
+
+  it("does NOT retry on genuine (non-transient) errors", () => {
+    expect(isRetryableModelError(new Error("Reached maximum number of turns"))).toBe(false);
+    expect(isRetryableModelError(new Error("invalid_request_error: bad model"))).toBe(false);
+    expect(isRetryableModelError(new Error("401 unauthorized"))).toBe(false);
+    expect(isRetryableModelError({ status: 400, message: "bad request" })).toBe(false);
   });
 });
