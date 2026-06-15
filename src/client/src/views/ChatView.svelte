@@ -24,8 +24,8 @@
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
-  import { commandsForPane, type SlashCommand } from "../lib/slash";
-  import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, StoredMessage } from "../lib/types";
+  import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
+  import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
@@ -164,13 +164,24 @@
   async function submit(item: ChatPane) {
     closeSlash();
     const message = item.draft;
-    // Kick off the send, then immediately restore focus to the composer. The
-    // send button (or a touch tap) moves focus off the textarea; the textarea
-    // stays enabled while streaming, so refocusing lets the user keep typing.
+    // On desktop, restore focus to the composer so the user can keep typing while
+    // the response streams (the send button / touch tap moves focus off it). On
+    // mobile, do the opposite: blur the textarea so the soft keyboard drops away
+    // after sending instead of staying up over the conversation.
     const pending = sendMessage(item.id, message);
-    focusComposer(item.id);
+    if (isMobileViewport()) blurComposer(item.id);
+    else focusComposer(item.id);
     await pending;
     await tick();
+  }
+
+  function isMobileViewport(): boolean {
+    return window.matchMedia?.("(max-width: 860px)").matches ?? false;
+  }
+
+  function blurComposer(paneId: string) {
+    const el = document.querySelector<HTMLTextAreaElement>(`[data-pane="${paneId}"] textarea`);
+    el?.blur();
   }
 
   /* ---- image attachments ---- */
@@ -300,10 +311,35 @@
   function slashMatches(item: ChatPane): SlashCommand[] {
     const query = slashQuery(item.draft);
     if (query === null || item.streaming) return [];
-    return commandsForPane(item).filter((cmd) => {
-      if (!query) return true;
-      return [cmd.name, cmd.title, cmd.description, cmd.argsLabel || ""].some((v) => v.toLowerCase().includes(query));
-    });
+    return filterSlashCommands(menuCommandsForPane(item), query);
+  }
+
+  // Skill entries in the slash menu are populated from the avatar's installed
+  // skills, fetched once (lazily) the first time the menu opens for a pane. The
+  // result is stored on the pane so slashMatches stays reactive via the store.
+  const skillsInFlight = new Set<string>();
+  async function ensureSkills(item: ChatPane) {
+    if (item.skillsLoaded || skillsInFlight.has(item.id) || !item.avatar?.id) return;
+    skillsInFlight.add(item.id);
+    try {
+      const result = await api<{ skills: SkillInfo[] }>(`/api/avatars/${encodeURIComponent(item.avatar.id)}/skills`);
+      updateState((state) => {
+        const target = state.chatPanes.find((p) => p.id === item.id);
+        if (target) {
+          target.skills = result.skills || [];
+          target.skillsLoaded = true;
+        }
+      });
+    } catch {
+      // Soft-fail: the menu still shows built-in commands. Mark loaded so we don't
+      // retry on every keystroke; a fresh pane (e.g. reload) gets another chance.
+      updateState((state) => {
+        const target = state.chatPanes.find((p) => p.id === item.id);
+        if (target) target.skillsLoaded = true;
+      });
+    } finally {
+      skillsInFlight.delete(item.id);
+    }
   }
   function closeSlash() {
     slashPaneId = "";
@@ -316,6 +352,13 @@
       newChat(item.id);
       return;
     }
+    // Skill entries aren't typeable as a raw "/command" (names can contain ":"),
+    // so we send the expanded instruction that names the skill instead.
+    if (cmd.kind === "skill") {
+      setDraft(item.id, cmd.prompt ? cmd.prompt("") : "");
+      void submit(item);
+      return;
+    }
     if (cmd.requiresArgs) {
       setDraft(item.id, `/${cmd.name} `);
       focusComposer(item.id);
@@ -325,6 +368,13 @@
     void submit(item);
   }
   function completeSlash(item: ChatPane, cmd: SlashCommand) {
+    // Tab on a skill drops its instruction into the composer (editable) instead of
+    // sending, so the user can append details before pressing Enter.
+    if (cmd.kind === "skill") {
+      setDraft(item.id, cmd.prompt ? `${cmd.prompt("")} ` : "");
+      focusComposer(item.id);
+      return;
+    }
     setDraft(item.id, `/${cmd.name}${cmd.requiresArgs ? " " : ""}`);
     focusComposer(item.id);
   }
@@ -372,6 +422,7 @@
     if (slashQuery(value) !== null && !item.streaming) {
       slashPaneId = item.id;
       slashIndex = 0;
+      void ensureSkills(item);
     } else if (slashPaneId === item.id) {
       closeSlash();
     }
@@ -708,7 +759,10 @@
                   on:mousedown|preventDefault={() => {}}
                   on:click={() => applySlash(item, cmd)}
                 >
-                  <span class="slash-option-command">/{cmd.name}{cmd.argsLabel ? ` ${cmd.argsLabel}` : ""}</span>
+                  <span class="slash-option-command">
+                    /{cmd.name}{cmd.argsLabel ? ` ${cmd.argsLabel}` : ""}
+                    {#if cmd.kind === "skill"}<span class="slash-option-tag">스킬{cmd.source && cmd.source !== "default" ? ` · ${cmd.source}` : ""}</span>{/if}
+                  </span>
                   <span class="slash-option-main"><strong>{cmd.title}</strong><span>{cmd.description}</span></span>
                 </button>
               {/each}

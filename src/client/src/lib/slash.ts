@@ -1,4 +1,4 @@
-import type { ChatPane } from "./types";
+import type { ChatPane, SkillInfo } from "./types";
 import { readState } from "./state";
 
 export interface SlashCommand {
@@ -11,6 +11,10 @@ export interface SlashCommand {
   serverExpand?: boolean;
   prompt?: (args: string) => string;
   action?: "new";
+  /** "skill" entries are built from the avatar's installed skills (not the static list above). */
+  kind?: "skill";
+  /** For skill entries: where the skill came from ("default" or a plugin slug). */
+  source?: string;
 }
 
 export const SLASH_COMMANDS: SlashCommand[] = [
@@ -29,7 +33,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   {
     name: "learn",
     title: "세션 학습",
-    description: "이번 대화에서 재사용할 지식을 추려 저장하게 합니다.",
+    description: "이번 대화에서 재사용할 지식을 추려, 저장 전에 먼저 확인을 받습니다.",
     ownerOnly: true,
     serverExpand: true,
   },
@@ -78,4 +82,43 @@ export function resolveTypedSlashCommand(pane: ChatPane | null, message: string)
 
 export function slashPrompt(command: SlashCommand, args = ""): string {
   return command.prompt ? command.prompt(args) : "";
+}
+
+/**
+ * Build a slash-menu entry from one of the avatar's installed skills. Unlike the
+ * static commands above, selecting a skill sends a natural-language instruction
+ * that names the skill, so the agent loads and runs it (and asks for any missing
+ * input). Skill names may contain characters like ":" that aren't typeable as a
+ * raw "/command", so these are reachable through the menu (and free-text search),
+ * not the typed-slash path.
+ */
+export function skillToSlashCommand(skill: SkillInfo): SlashCommand {
+  const name = skill.name;
+  return {
+    name,
+    title: name,
+    description: skill.description || "이 스킬을 실행합니다.",
+    kind: "skill",
+    source: skill.source,
+    prompt: (args) => {
+      const base = `"${name}" 스킬을 사용해서 진행해줘. 필요한 정보가 부족하면 먼저 물어봐줘.`;
+      return args ? `${base}\n\n${args}` : base;
+    },
+  };
+}
+
+/** Built-in commands for the pane plus any installed skills, all searchable together. */
+export function menuCommandsForPane(pane: ChatPane | null): SlashCommand[] {
+  const skills = (pane?.skills || []).map(skillToSlashCommand);
+  return [...commandsForPane(pane), ...skills];
+}
+
+/** Filter a command list by a slash query (matches name/title/description/source). */
+export function filterSlashCommands(commands: SlashCommand[], query: string): SlashCommand[] {
+  if (!query) return commands;
+  return commands.filter((cmd) =>
+    [cmd.name, cmd.title, cmd.description, cmd.argsLabel || "", cmd.source || ""].some((v) =>
+      v.toLowerCase().includes(query),
+    ),
+  );
 }

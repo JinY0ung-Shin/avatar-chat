@@ -93,11 +93,13 @@ function sanitizeActivity(raw: unknown): AgentResponse["activity"] | null {
 // this expanded instruction goes to the model), so it is written in English.
 // The avatar still REPLIES in the user's language per buildPrompt.
 const LEARN_SLASH_PROMPT = [
-  "Review this conversation session and update my knowledge repository with only the knowledge that is worth reusing later.",
+  "Review this conversation session and identify the knowledge that is worth reusing later, so my knowledge repository can be updated.",
   "",
-  "If there are important facts, decisions, repeatable procedures, project rules, or ways the user said they prefer to work, capture them in the appropriate file or skill and commit them.",
-  "Also record clearly and explicitly what you (this avatar) CAN and CANNOT do right now — your current capabilities, the tools/repositories/skills you have connected, and any known limitations or things you were unable to do this session — so future sessions act on an accurate self-picture instead of guessing.",
-  "Do not save small talk, anything already stored, or anything not useful long-term. Then briefly tell me what you saved and what you deliberately skipped and why.",
+  "Look for important facts, decisions, repeatable procedures, project rules, or ways the user said they prefer to work, plus a clear and explicit record of what you (this avatar) CAN and CANNOT do right now — your current capabilities, the tools/repositories/skills you have connected, and any known limitations or things you were unable to do this session — so future sessions act on an accurate self-picture instead of guessing.",
+  "Do not include small talk, anything already stored, or anything not useful long-term.",
+  "",
+  "IMPORTANT — ask before writing: do NOT write to or commit anything to the knowledge repository yet. First show me a concise summary of exactly what you propose to save (which file or skill each entry goes to, and the gist of each entry) and what you will deliberately skip and why, then ask me to confirm.",
+  "Only after I approve should you write the entries and commit. If I ask for changes, adjust the proposal and confirm again before writing.",
 ].join("\n");
 
 export function expandChatSlashCommand(message: string): ChatSlashExpansion {

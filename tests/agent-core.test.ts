@@ -186,8 +186,10 @@ describe("chat slash commands", () => {
     expect(result.ownerOnly).toBe(true);
     // Agent-facing (the user only sees the literal "/learn"), so it's English and
     // includes the capability/limitation self-record instruction.
-    expect(result.message).toContain("update my knowledge repository");
+    expect(result.message).toContain("knowledge repository");
     expect(result.message).toContain("CAN and CANNOT do");
+    // Must ask for confirmation before writing/committing anything.
+    expect(result.message).toContain("ask me to confirm");
   });
 
   it("forwards text after /learn as an extra focus hint", () => {
@@ -196,7 +198,7 @@ describe("chat slash commands", () => {
     expect(result.error).toBeUndefined();
     expect(result.ownerOnly).toBe(true);
     // The standing instruction is kept AND the user's trailing text is appended.
-    expect(result.message).toContain("update my knowledge repository");
+    expect(result.message).toContain("knowledge repository");
     expect(result.message).toContain("보안 설정 위주로");
   });
 

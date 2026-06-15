@@ -73,6 +73,10 @@ export interface ChatPane {
   /** ms timestamp until which a sticky status label resists a generic overwrite. */
   liveStatusStickyUntil?: number;
   groupKnowledgeOff: string[];
+  /** Installed skills for this pane's avatar, lazily fetched the first time the slash menu opens (#slash-skills). Drives skill entries in the "/" menu. */
+  skills?: import("../../../server/types.js").SkillInfo[];
+  /** Guards the one-shot skills fetch (set once the request settles, success or fail). */
+  skillsLoaded?: boolean;
   /** Images staged in the composer, not yet sent (data URLs for preview + upload). */
   pendingImages?: PendingImage[];
   /**
