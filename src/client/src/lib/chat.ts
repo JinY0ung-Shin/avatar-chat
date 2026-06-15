@@ -92,6 +92,7 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
     streaming: false,
     liveText: "",
     liveTextBreakPending: false,
+    livePlan: "",
     liveStatus: "",
     liveRunId: null,
     liveAgents: [],
@@ -620,6 +621,17 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "canvas":
       if (data?.artifactId) handleCanvas(paneId, data);
       return;
+    case "plan":
+      // Plan mode: the avatar submitted a plan via ExitPlanMode. Show it live as a
+      // plan card; the persisted `response.plan` takes over once the turn finishes.
+      if (typeof data?.plan === "string" && data.plan) {
+        markTextBreak(paneId);
+        updatePane(paneId, (pane) => {
+          pane.livePlan = data.plan;
+        });
+        setStatus(paneId, "계획을 제출했습니다.", true);
+      }
+      return;
     case "prompt_resolved":
       if (data?.requestId) {
         resolvePrompt(data.requestId);
@@ -744,6 +756,7 @@ function setStatus(paneId: string, label: string, sticky: boolean): void {
 function resetLive(pane: ChatPane): void {
   pane.liveText = "";
   pane.liveTextBreakPending = false;
+  pane.livePlan = "";
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];
@@ -770,6 +783,14 @@ function attachActivity(response: AgentResponse | null, activity: AgentActivity 
   if (response && activity) response.activity = activity;
 }
 
+// Keep the plan card on the finished bubble: the server already sets
+// `response.plan` on persisted/greeting responses, but a client-built response
+// (stop/error, or a fallback done without `response`) wouldn't carry it — so
+// graft the live plan on when the response is missing one.
+function attachPlan(response: AgentResponse | null, plan: string | undefined): void {
+  if (response && plan && !response.plan) response.plan = plan;
+}
+
 function finalizeDone(paneId: string, data: any): void {
   // A persisted (non-greeting) server message id + its activity → persist the
   // snapshot so the completed tool/agent tree survives reload.
@@ -780,6 +801,7 @@ function finalizeDone(paneId: string, data: any): void {
     const message = data?.message as StoredMessage | undefined;
     if (message?.role === "assistant") {
       attachActivity(message.response, activity);
+      attachPlan(message.response, pane.livePlan);
       pane.messages.push(message);
       pane.usage = message.response?.usage ?? pane.usage;
       if (message.id && activity) {
@@ -789,6 +811,7 @@ function finalizeDone(paneId: string, data: any): void {
     } else if (pane.liveText || data?.response) {
       const response = data?.response as AgentResponse | undefined;
       attachActivity(response ?? null, activity);
+      attachPlan(response ?? null, pane.livePlan);
       pane.messages.push({
         id: newId(),
         conversationId: pane.conversationId,
@@ -816,6 +839,7 @@ function finalizePane(paneId: string, message: string, stopped: boolean): void {
     const content = pane.liveText || (stopped ? "(중지됨)" : message);
     const response: AgentResponse = { kind: "text", runtime: "claude", summary: stopped ? "중지됨" : "오류", text: pane.liveText };
     attachActivity(response, snapshotActivity(pane));
+    attachPlan(response, pane.livePlan);
     pane.messages.push({
       id: newId(),
       conversationId: pane.conversationId,
@@ -832,6 +856,7 @@ function finalizeError(paneId: string, message: string): void {
   updatePane(paneId, (pane) => {
     const response: AgentResponse = { kind: "text", runtime: "claude", summary: "오류", text: pane.liveText || message };
     attachActivity(response, snapshotActivity(pane));
+    attachPlan(response, pane.livePlan);
     pane.messages.push({
       id: newId(),
       conversationId: pane.conversationId,
@@ -848,6 +873,7 @@ function finalizeError(paneId: string, message: string): void {
 function clearLive(pane: ChatPane): void {
   pane.liveText = "";
   pane.liveTextBreakPending = false;
+  pane.livePlan = "";
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];

@@ -159,6 +159,15 @@ function handleTaskToolUse(
   state: LoopState,
 ): boolean {
   if (isPlanTool(name)) {
+    // ExitPlanMode carries the proposed plan markdown in `input.plan`. Surface it
+    // as a dedicated plan card (display-only — autoApprove turns just continue);
+    // without this the plan content was discarded and only a status line showed.
+    if (name === "ExitPlanMode") {
+      const plan = asString(input.plan);
+      if (plan) {
+        events.onPlan?.({ plan });
+      }
+    }
     events.onStatus?.(name === "ExitPlanMode" ? "계획을 확인하는 중…" : "계획 모드로 전환 중…");
     return true;
   }
