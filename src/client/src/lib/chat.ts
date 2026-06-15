@@ -129,7 +129,7 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
 }
 
 export async function startChatWith(summary: AvatarSummary, split = false): Promise<void> {
-  if (readState().chatPanes.some((pane) => pane.streaming) && !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")) {
+  if (!split && readState().chatPanes.some((pane) => pane.streaming) && !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")) {
     return;
   }
   // Resume the most recent existing conversation with this avatar instead of
