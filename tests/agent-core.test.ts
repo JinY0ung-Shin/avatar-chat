@@ -972,6 +972,7 @@ describe("sdk message handlers", () => {
       onAgentStart: vi.fn(),
       onAgentEnd: vi.fn(),
       onBlocked: vi.fn(),
+      onPlan: vi.fn(),
     };
   }
 
@@ -1076,6 +1077,33 @@ describe("sdk message handlers", () => {
     expect(sink.onToolStart).not.toHaveBeenCalled();
     expect(sink.onTaskStart).not.toHaveBeenCalled();
     expect(sink.onStatus).toHaveBeenCalledWith("계획 모드로 전환 중…");
+    expect(sink.onStatus).toHaveBeenCalledWith("계획을 확인하는 중…");
+  });
+
+  it("surfaces ExitPlanMode plan text through the plan event", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleAssistantMessage(
+      {
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "tool_use",
+              id: "plan-out",
+              name: "ExitPlanMode",
+              input: { plan: "1. 확인\n2. 수정\n3. 검증", allowedPrompts: [] },
+            },
+          ],
+        },
+      },
+      sink,
+      state,
+    );
+
+    expect(sink.onToolStart).not.toHaveBeenCalled();
+    expect(sink.onPlan).toHaveBeenCalledWith({ plan: "1. 확인\n2. 수정\n3. 검증" });
     expect(sink.onStatus).toHaveBeenCalledWith("계획을 확인하는 중…");
   });
 

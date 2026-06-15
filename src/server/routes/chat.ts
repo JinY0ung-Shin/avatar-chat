@@ -568,6 +568,10 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     // Visual-canvas artifacts shown this turn (experimental `canvas` feature, #50),
     // persisted on the assistant message's response so the panel rebuilds on reload.
     const canvasArtifacts: CanvasArtifact[] = [];
+    // The latest plan the avatar submitted via ExitPlanMode this turn (plan mode).
+    // Persisted on the assistant response so the plan card rebuilds on reload, and
+    // mirrored on the cancel/error paths like canvases. Latest plan of the turn wins.
+    let latestPlan: string | null = null;
     logger.info(
       { userId: req.user!.id, avatarId: avatar.id, conversationId, greeting, regenerate },
       "chat stream started",
@@ -700,6 +704,13 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           onBlocked: (event) => {
             emitRunEvent(runId, "blocked", event);
           },
+          // Plan mode: the avatar submitted a plan via ExitPlanMode. Surface it as
+          // a dedicated plan card (display-only) and keep the latest one to persist
+          // on the assistant response so it rebuilds on reload.
+          onPlan: (event) => {
+            latestPlan = event.plan;
+            emitRunEvent(runId, "plan", { plan: event.plan });
+          },
           // Interactive permission prompt (owner only — see claudeAgent).
           onPermission: async (requestData) => {
             const requestId = crypto.randomUUID();
@@ -783,6 +794,11 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       if (canvasArtifacts.length) {
         response.canvases = canvasArtifacts;
       }
+      // Carry the plan submitted this turn (plan mode) so the plan card persists
+      // and rebuilds on reload, and rides the greeting's ephemeral done event.
+      if (latestPlan) {
+        response.plan = latestPlan;
+      }
 
       // A greeting is ephemeral: it streams to the screen but is NOT persisted,
       // so opening a fresh chat doesn't litter the history with greeting-only
@@ -839,6 +855,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
             summary: "중지됨",
             text: streamedText,
             ...(canvasArtifacts.length ? { canvases: canvasArtifacts } : {}),
+            ...(latestPlan ? { plan: latestPlan } : {}),
           };
           // Skip the insert if the conversation was deleted mid-run (FK would reject).
           const stopped =
@@ -869,16 +886,25 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         // alongside the error so a reload shows what the live view showed.
         store.setAgentSessionId(req.user!.id, conversationId, null);
         const content = streamedText ? `${streamedText}\n\n${detail}` : detail;
-        // If the turn showed canvases before erroring, persist them so they
-        // survive reload (mirrors the cancel path). text=content keeps the error
-        // bubble identical to before; a response is only attached when there's a
-        // canvas to carry, so plain errors keep their existing (null-response) shape.
+        // If the turn showed canvases or a plan before erroring, persist them so
+        // they survive reload (mirrors the cancel path). text=content keeps the
+        // error bubble identical to before; a response is only attached when
+        // there's a canvas/plan to carry, so plain errors keep their existing
+        // (null-response) shape.
         store.addMessage(conversationId, {
           role: "assistant",
           content,
-          response: canvasArtifacts.length
-            ? { kind: "text", runtime: config.agentRuntime, summary: "오류", text: content, canvases: canvasArtifacts }
-            : undefined,
+          response:
+            canvasArtifacts.length || latestPlan
+              ? {
+                  kind: "text",
+                  runtime: config.agentRuntime,
+                  summary: "오류",
+                  text: content,
+                  ...(canvasArtifacts.length ? { canvases: canvasArtifacts } : {}),
+                  ...(latestPlan ? { plan: latestPlan } : {}),
+                }
+              : undefined,
         });
       }
       emitRunEvent(runId, "error", { error: detail });

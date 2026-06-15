@@ -113,6 +113,16 @@ export interface BlockedEvent {
 }
 
 /**
+ * The model submitted a plan via ExitPlanMode (plan mode). The host forwards the
+ * plan markdown to the client to render as a dedicated plan card (not an
+ * interactive prompt — autoApprove turns continue automatically). Display-only.
+ */
+export interface PlanEvent {
+  /** The plan markdown the model proposed. */
+  plan: string;
+}
+
+/**
  * Streaming sink passed into the agent runners. Every callback is optional so a
  * caller can subscribe to only the events it cares about. When NO events sink
  * is supplied, the runners must behave exactly like the original non-streaming
@@ -151,6 +161,8 @@ export interface AgentEvents {
   onAgentEnd?: (event: { agentId: string; ok: boolean }) => void;
   /** A tool was auto-denied (no interactive prompt). */
   onBlocked?: (event: BlockedEvent) => void;
+  /** The model submitted a plan via ExitPlanMode (plan mode) — display-only card. */
+  onPlan?: (event: PlanEvent) => void;
 
   /**
    * BLOCKING: the model wants a non-pre-approved tool. Resolve with the user's

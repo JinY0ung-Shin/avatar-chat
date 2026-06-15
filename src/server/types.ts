@@ -514,6 +514,13 @@ export interface AgentResponse {
   usage?: AgentUsage;
   /** Visual-canvas artifacts shown this turn (experimental `canvas` feature). */
   canvases?: CanvasArtifact[];
+  /**
+   * The plan the avatar submitted via ExitPlanMode this turn (plan mode), kept on
+   * the assistant message so the dedicated plan card rebuilds on reload. The
+   * latest plan of the turn wins. Display-only — autoApprove turns continue
+   * automatically, so there is no accept/reject state to persist.
+   */
+  plan?: string;
   /** Activity-tree snapshot so the completed bubble keeps showing tool/agent runs. */
   activity?: AgentActivity;
   raw?: unknown;

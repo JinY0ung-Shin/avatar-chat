@@ -610,6 +610,12 @@
                     </div>
                   </details>
                 {/if}
+                {#if message.response?.plan}
+                  <details class="plan-card" open>
+                    <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
+                    <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdown(message.response.plan)}</div>
+                  </details>
+                {/if}
                 <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
               {:else}
                 {#if message.attachments?.length}
@@ -648,6 +654,12 @@
                   <div class="agent-activity">
                     <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
                   </div>
+                </details>
+              {/if}
+              {#if item.livePlan}
+                <details class="plan-card" open>
+                  <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
+                  <div class="md plan-card-body" use:enhanceMarkdown={item.livePlan}>{@html renderMarkdown(item.livePlan)}</div>
                 </details>
               {/if}
               {#if item.liveText}
@@ -966,3 +978,46 @@
 {/if}
 
 <PromptModal />
+
+<style>
+  /* Plan-mode plan card (ExitPlanMode). A distinct, collapsible card inside the
+     assistant bubble that surfaces the proposed plan — shown live while the turn
+     streams and persisted on the finished message (response.plan). */
+  .plan-card {
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    margin: var(--s-2) 0;
+    overflow: hidden;
+  }
+  .plan-card-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    font-size: 0.85rem;
+  }
+  .plan-card-head::-webkit-details-marker {
+    display: none;
+  }
+  .plan-card-badge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--accent);
+    color: var(--on-accent);
+    letter-spacing: 0.02em;
+  }
+  .plan-card-hint {
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  .plan-card-body {
+    padding: 0 var(--s-3) var(--s-2);
+  }
+</style>
