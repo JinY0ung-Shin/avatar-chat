@@ -70,6 +70,9 @@
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--bg);
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 .activity-done > summary,
 .activity-live > summary {
@@ -82,6 +85,7 @@
   align-items: center;
   gap: var(--s-1-5);
   user-select: none;
+  min-width: 0;
 }
 .activity-done > summary::-webkit-details-marker,
 .activity-live > summary::-webkit-details-marker {
@@ -101,9 +105,16 @@
 .activity-live > summary:hover {
   color: var(--text-soft);
 }
+.activity-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .activity-done > .agent-activity {
   margin: 0;
   padding: 0 var(--s-2-5) var(--s-2-5);
+  overflow-x: hidden;
 }
 /* While streaming, cap the tree's height and scroll within it so a burst of
    tool calls can't grow the bubble unbounded; the newest rows stay in view. */
@@ -112,6 +123,7 @@
   padding: 0 var(--s-2-5) var(--s-2-5);
   max-height: 220px;
   overflow-y: auto;
+  overflow-x: hidden;
 }
 /* Answer text sits below the collapsed activity in the final bubble. */
 .bubble > .activity-done + .response-meta,
@@ -125,6 +137,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
+  min-width: 0;
+  max-width: 100%;
 }
 /* A subagent renders as a distinct "workspace" card — set apart from the flat
    tool rows so it reads as an agent doing its own delegated work, not one more
@@ -156,6 +170,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
+  min-width: 0;
+  max-width: 100%;
 }
 
 .agent-head {
@@ -164,6 +180,7 @@
   gap: var(--s-2);
   font-size: var(--t-xs);
   color: var(--text-soft);
+  min-width: 0;
 }
 .agent-badge {
   display: inline-flex;
@@ -194,11 +211,15 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
+  min-width: 0;
+  max-width: 100%;
 }
 .agent-tasks {
   display: flex;
   flex-direction: column;
   gap: var(--s-1);
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* A single tool call row. */
@@ -209,6 +230,7 @@
   font-size: var(--t-xs);
   color: var(--text-soft);
   min-width: 0;
+  max-width: 100%;
 }
 .tool-name {
   font-weight: 600;
@@ -217,11 +239,14 @@
   flex: none;
 }
 .tool-arg {
+  display: block;
+  flex: 1 1 auto;
   color: var(--muted);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  max-width: 100%;
 }
 .tool-row[data-status="done"] .tool-name {
   color: var(--text-soft);
