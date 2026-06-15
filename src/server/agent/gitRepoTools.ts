@@ -121,11 +121,11 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
   return [
     tool(
       "register_repo",
-      "Register a general git repository in this avatar owner's repo list and create a local working clone. repo accepts owner/repo, an https URL, a git URL, or a local bare repo path. If branch is specified, subsequent sync/commit/push target that branch; if left empty, the repository's default branch is used. Public repo clone/sync is attempted without a token, and a token is only used if one exists for the configured internal host or github.com. (owner only)",
+      "Register a general git repository in this avatar owner's repo list and create a local working clone. repo accepts owner/repo, an https URL, a git URL, or a local bare repo path. If branch is specified, subsequent sync/commit/push target that branch; if left empty, the repository's default branch is used. NEW-BRANCH NOTE: a branch that does NOT yet exist on origin cannot be cloned/checked out here, so this call ERRORS (e.g. \"'origin/<branch>' is not a commit\") — but creating a remote branch is the job of `push`, not this tool. The branch you pass is still saved on an ALREADY-registered repo even when this checkout step errors (only a brand-new registration is rolled back on failure), so the normal flow to start a new branch is: set the new branch name here, ignore the checkout error, then `commit` your local HEAD and `push` — push creates the branch on origin. (Alternatively, create the branch on the remote first, then register.) Public repo clone/sync is attempted without a token, and a token is only used if one exists for the configured internal host or github.com. (owner only)",
       {
         repo: z.string().describe("The git repository to register. e.g. owner/repo, https://github.com/owner/repo.git, /path/to/repo.git"),
         name: z.string().optional().describe("A short name to use in the conversation. If empty, it is auto-generated from the repo name."),
-        branch: z.string().optional().describe("The branch to use. Not limited to main; if empty, the repository's default branch is used."),
+        branch: z.string().optional().describe("The branch to use. Not limited to main; if empty, the repository's default branch is used. A branch that does not exist on origin yet cannot be checked out here (this call errors), but `push` will create it on origin — so for a new branch, set the name here and then commit + push."),
       },
       async (args) => {
         const denied = ownerGuard();
@@ -133,7 +133,10 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
         const name = normalizeGitRepoName(args.name || defaultGitRepoName(args.repo));
         // Track whether this name was already registered: on a failed clone we roll
         // back a NEWLY-created row (so a typo'd repo doesn't linger in list_repos),
-        // but must leave a pre-existing registration intact.
+        // but must leave a pre-existing registration intact. NOTE: this is also what
+        // lets a re-register with a not-yet-existing branch "stick" — the branch is
+        // upserted before the clone, and an already-existing registration is NOT
+        // rolled back on the checkout error, so a later push can create that branch.
         const existed = Boolean(store.getGitRepo(ctx.avatarUserId, name));
         try {
           const record = store.upsertGitRepo(ctx.avatarUserId, name, args.repo, args.branch || null);
@@ -144,7 +147,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
         } catch (error) {
           if (!existed) store.deleteGitRepo(ctx.avatarUserId, name);
           return text(
-            `Failed to register/sync git repo: ${errorMessage(error)}\nCheck the repo address, branch name, and access permissions. A private repo requires the token under Settings → Git credentials. Do not work around this with Bash \`git clone\` — the shell has no git credentials.`,
+            `Failed to register/sync git repo: ${errorMessage(error)}\nCheck the repo address, branch name, and access permissions. If you named a branch that does not exist on origin yet, that is expected — the branch setting is still saved for an already-registered repo, so you can now commit and push (push creates the new branch on origin). A private repo requires the token under Settings → Git credentials. Do not work around this with Bash \`git clone\` — the shell has no git credentials.`,
             true,
           );
         }
@@ -328,7 +331,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "push",
-      "Push the registered git repository's current HEAD to the target branch on origin. The target is the branch saved in register_repo; if branch is empty, it's the current/default branch. Not limited to main. (owner / trusted user only)",
+      "Push the registered git repository's current HEAD to the target branch on origin. The target is the branch saved in register_repo; if branch is empty, it's the current/default branch. Not limited to main, AND if the target branch does not exist on origin yet, push CREATES it (this — not register_repo — is how a new remote branch is made). To push to a branch other than the one currently registered, set that name via register_repo's `branch` first (the setting persists even if register's checkout step errors on a not-yet-existing branch), then push. (owner / trusted user only)",
       { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
