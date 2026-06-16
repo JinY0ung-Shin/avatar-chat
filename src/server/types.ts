@@ -837,6 +837,14 @@ export interface KnowledgeGraph {
   noVault?: boolean;
 }
 
+/** A single vault note's raw markdown, served to the graph view's content panel. */
+export interface KnowledgeNote {
+  /** Repo-relative path (a graph node id for a real note). */
+  path: string;
+  /** Raw markdown body (frontmatter included); the client renders + sanitizes it. */
+  content: string;
+}
+
 /** Working-tree state of a user's knowledge-repo clone. */
 export interface KnowledgeRepoStatus {
   /** The configured repo (`owner/repo` or URL), or null if none set. */

@@ -4,7 +4,8 @@ import { inspectRepoContents } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import { isInternalGitSource } from "../gitCredentials.js";
 import { ensureGroupClone, groupKnowledgeRepoContextFor } from "../groupKnowledgeRepo.js";
-import { buildKnowledgeGraph } from "../knowledgeGraph.js";
+import { readFile } from "../knowledgeRepo.js";
+import { buildKnowledgeGraph, isVaultNotePath } from "../knowledgeGraph.js";
 import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
 
 // ---- Groups (membership roster + group-admin self-service) -----------
@@ -193,6 +194,46 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
         res.json({ graph: await buildKnowledgeGraph(repoRoot) });
       } catch (error) {
         apiError(res, 502, `지식 그래프를 만들지 못했습니다: ${scrubGitError(error)}`);
+      }
+    },
+  );
+
+  // Read one note from the group brain's vault for the graph view's content
+  // panel (any member may view). Mirrors the personal note endpoint.
+  router.get(
+    "/api/me/groups/:id/knowledge-repo/note",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const groupId = req.params.id;
+      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        return;
+      }
+      const path = req.query.path;
+      if (!isVaultNotePath(path)) {
+        apiError(res, 400, "유효한 노트 경로가 아닙니다.");
+        return;
+      }
+      const ctx = groupKnowledgeRepoContextFor(store, groupId, req.user!.id, config);
+      if (!ctx) {
+        apiError(res, 404, "연결된 그룹 지식 저장소가 없습니다.");
+        return;
+      }
+      try {
+        const repoRoot = await ensureGroupClone(ctx);
+        const content = await readFile(repoRoot, path);
+        res.json({ note: { path, content } });
+      } catch (error) {
+        const err = error as NodeJS.ErrnoException;
+        if (err.code === "ENOENT" || err.message === "INVALID_PATH" || err.message === "NOT_A_FILE") {
+          apiError(res, 404, "노트를 찾을 수 없습니다.");
+          return;
+        }
+        if (err.message === "FILE_TOO_LARGE") {
+          apiError(res, 413, "노트가 너무 커서 표시할 수 없습니다.");
+          return;
+        }
+        apiError(res, 502, `노트를 불러오지 못했습니다: ${scrubGitError(error)}`);
       }
     },
   );

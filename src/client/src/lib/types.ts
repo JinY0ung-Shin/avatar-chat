@@ -20,6 +20,7 @@ export type {
   ImageMediaType,
   KnowledgeGraph,
   KnowledgeGraphNode,
+  KnowledgeNote,
   KnowledgeRepoStatus,
   KnowledgeRequest,
   MessageAttachment,
@@ -34,7 +35,7 @@ export type {
 
 import type { CanvasArtifact } from "../../../server/types.js";
 
-export type ViewName = "explore" | "chat" | "inbox" | "routines" | "settings" | "admin";
+export type ViewName = "explore" | "chat" | "brain" | "inbox" | "routines" | "settings" | "admin";
 export type SettingsTab = "profile" | "access" | "knowledge" | "groups";
 export type AdminTab = "overview" | "users" | "groups" | "access" | "system" | "audit";
 export type ChatLayout = "vertical" | "horizontal" | "grid";

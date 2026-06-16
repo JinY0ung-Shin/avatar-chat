@@ -30,6 +30,8 @@ export interface ClientState {
   view: ViewName;
   settingsTab: SettingsTab;
   adminTab: AdminTab;
+  /** Active source on the brain (knowledge-graph) view: "personal" or "group:<id>". */
+  brainSource: string;
   avatars: AvatarSummary[];
   avatarsLoaded: boolean;
   avatarsLoading: boolean;
@@ -72,6 +74,7 @@ export const appState = writable<ClientState>({
   view: "explore",
   settingsTab: "profile",
   adminTab: "overview",
+  brainSource: "personal",
   avatars: [],
   avatarsLoaded: false,
   avatarsLoading: false,
@@ -162,6 +165,7 @@ export function setDocumentTitle(): void {
   const titles: Record<ViewName, string> = {
     explore: "탐색",
     chat: activePane()?.avatar.alias || activePane()?.avatar.displayName || "대화",
+    brain: "지식 그래프",
     inbox: "알림",
     routines: "루틴",
     settings: "내 아바타",

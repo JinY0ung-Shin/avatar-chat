@@ -29,6 +29,7 @@
   const nav = [
     { view: "explore", label: "탐색", icon: "compass" },
     { view: "chat", label: "대화", icon: "chat" },
+    { view: "brain", label: "지식 그래프", icon: "network" },
     { view: "inbox", label: "알림", icon: "bell" },
     { view: "routines", label: "루틴", icon: "clock" },
     { view: "settings", label: "내 아바타", icon: "user" },

@@ -2,7 +2,7 @@ import { get } from "svelte/store";
 import { appState, updateState } from "./state";
 import type { AdminTab, SettingsTab, ViewName } from "./types";
 
-const VIEW_ROUTES: ViewName[] = ["explore", "chat", "inbox", "routines", "settings", "admin"];
+const VIEW_ROUTES: ViewName[] = ["explore", "chat", "brain", "inbox", "routines", "settings", "admin"];
 const SETTINGS_TABS: SettingsTab[] = ["profile", "access", "knowledge", "groups"];
 const ADMIN_TABS: AdminTab[] = ["overview", "users", "groups", "access", "system", "audit"];
 
@@ -30,6 +30,11 @@ export function currentRoute(): string {
   if (state.view === "routines") {
     return state.routineConversationId ? `#/routines/${encodeURIComponent(state.routineConversationId)}` : "#/routines";
   }
+  if (state.view === "brain") {
+    return state.brainSource && state.brainSource !== "personal"
+      ? `#/brain/${encodeURIComponent(state.brainSource)}`
+      : "#/brain";
+  }
   return `#/${state.view}`;
 }
 
@@ -49,6 +54,7 @@ export function goView(view: ViewName, arg?: string): void {
     if (view === "settings" && isSettingsTab(arg)) state.settingsTab = arg;
     if (view === "admin" && isAdminTab(arg)) state.adminTab = arg;
     if (view === "routines" && arg) state.routineConversationId = arg;
+    if (view === "brain") state.brainSource = arg || "personal";
   });
   syncHash();
 }
@@ -65,6 +71,7 @@ export function applyInitialRoute(): void {
     if (view === "settings" && isSettingsTab(arg)) state.settingsTab = arg;
     if (view === "admin" && isAdminTab(arg)) state.adminTab = arg;
     if (view === "routines" && arg) state.routineConversationId = arg;
+    if (view === "brain") state.brainSource = arg || "personal";
   });
 }
 
@@ -82,6 +89,7 @@ export function installRouteListener(onChatRoute?: (conversationId: string) => v
       if (view === "settings" && isSettingsTab(arg)) state.settingsTab = arg;
       if (view === "admin" && isAdminTab(arg)) state.adminTab = arg;
       if (view === "routines" && arg) state.routineConversationId = arg;
+      if (view === "brain") state.brainSource = arg || "personal";
     });
     applyingRoute = false;
     if (view === "chat" && arg) onChatRoute?.(arg);

@@ -4,8 +4,8 @@ import logger from "../logger.js";
 import { inspectRepoContents } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import { isInternalGitSource } from "../gitCredentials.js";
-import { ensureClone, knowledgeRepoContextFor } from "../knowledgeRepo.js";
-import { buildKnowledgeGraph } from "../knowledgeGraph.js";
+import { ensureClone, knowledgeRepoContextFor, readFile } from "../knowledgeRepo.js";
+import { buildKnowledgeGraph, isVaultNotePath } from "../knowledgeGraph.js";
 import { generateSshKeyPair, deriveSshPublicKey } from "../sshIdentity.js";
 import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
 
@@ -171,6 +171,39 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       res.json({ graph });
     } catch (error) {
       apiError(res, 502, `지식 그래프를 만들지 못했습니다: ${scrubGitError(error)}`);
+    }
+  });
+
+  // Read one vault note's markdown for the graph view's content panel. A graph
+  // node id IS the repo-relative path, so the client passes it straight through;
+  // we only serve vault markdown and lean on readFile's traversal guard. Pure
+  // read over the same clone the graph endpoint uses.
+  router.get("/api/me/knowledge-repo/note", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const path = req.query.path;
+    if (!isVaultNotePath(path)) {
+      apiError(res, 400, "유효한 노트 경로가 아닙니다.");
+      return;
+    }
+    const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+    if (!ctx) {
+      apiError(res, 404, "연결된 지식 저장소가 없습니다.");
+      return;
+    }
+    try {
+      const repoRoot = await ensureClone(ctx);
+      const content = await readFile(repoRoot, path);
+      res.json({ note: { path, content } });
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err.code === "ENOENT" || err.message === "INVALID_PATH" || err.message === "NOT_A_FILE") {
+        apiError(res, 404, "노트를 찾을 수 없습니다.");
+        return;
+      }
+      if (err.message === "FILE_TOO_LARGE") {
+        apiError(res, 413, "노트가 너무 커서 표시할 수 없습니다.");
+        return;
+      }
+      apiError(res, 502, `노트를 불러오지 못했습니다: ${scrubGitError(error)}`);
     }
   });
 

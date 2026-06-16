@@ -19,6 +19,21 @@ const SCAN_CAP = 1000;
 // Captures the raw inside; we strip the alias/anchor parts when resolving.
 const WIKILINK_RE = /\[\[([^\]\[\n]+?)\]\]/g;
 
+/**
+ * A repo-relative path the graph view may read as a note: a markdown file inside
+ * the second-brain vault (`wiki/` or `raw/`), never a `_template.md`. Mirrors the
+ * filter `buildKnowledgeGraph` uses to pick note files, so every real node id
+ * (which IS a repo-relative path) passes — the content endpoint can trust it.
+ */
+export function isVaultNotePath(relPath: unknown): relPath is string {
+  return (
+    typeof relPath === "string" &&
+    relPath.endsWith(".md") &&
+    !relPath.endsWith("_template.md") &&
+    (relPath.startsWith("wiki/") || relPath.startsWith("raw/"))
+  );
+}
+
 /** Section bucket for node coloring, derived from the note's vault path. */
 function sectionOf(relPath: string): string {
   if (relPath.startsWith("raw/")) return "raw";

@@ -531,6 +531,7 @@
     <GraphViewModal
       endpoint={`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo/graph`}
       title={`지식 그래프 · ${group.name}`}
+      sourceKey={`group:${group.id}`}
       on:close={() => (graphOpen = false)}
     />
   {/if}

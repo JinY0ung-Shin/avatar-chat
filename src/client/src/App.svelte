@@ -4,6 +4,7 @@
   import Shell from "./components/Shell.svelte";
   import Toasts from "./components/Toasts.svelte";
   import AdminView from "./views/AdminView.svelte";
+  import BrainView from "./views/BrainView.svelte";
   import ChatView from "./views/ChatView.svelte";
   import ExploreView from "./views/ExploreView.svelte";
   import InboxView from "./views/InboxView.svelte";
@@ -118,6 +119,8 @@
         <ExploreView />
       {:else if $appState.view === "chat"}
         <ChatView />
+      {:else if $appState.view === "brain"}
+        <BrainView />
       {:else if $appState.view === "inbox"}
         <InboxView />
       {:else if $appState.view === "routines"}

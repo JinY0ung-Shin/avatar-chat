@@ -90,7 +90,7 @@ import {
   writeFile as writeKnowledgeFile,
   writeRepoTemplate,
 } from "../src/server/knowledgeRepo.js";
-import { buildKnowledgeGraph } from "../src/server/knowledgeGraph.js";
+import { buildKnowledgeGraph, isVaultNotePath } from "../src/server/knowledgeGraph.js";
 import {
   buildRepoTools,
   createRemoteRepo,
@@ -768,6 +768,20 @@ describe("knowledge graph (wikilink extraction)", () => {
     const edges = g.edges.filter((e) => e.source === "wiki/concepts/a.md");
     // Both [[B|...]] and [[B#...]] resolve to b.md and de-dupe to ONE edge; self-link dropped.
     expect(edges).toEqual([{ source: "wiki/concepts/a.md", target: "wiki/concepts/b.md" }]);
+  });
+
+  it("isVaultNotePath gates the note-content endpoint to vault markdown", () => {
+    // Accepts the same files buildKnowledgeGraph turns into real nodes.
+    expect(isVaultNotePath("wiki/concepts/deploy.md")).toBe(true);
+    expect(isVaultNotePath("raw/2026-06-16-note.md")).toBe(true);
+    // Rejects: templates, non-markdown, outside-vault, traversal, non-strings.
+    expect(isVaultNotePath("wiki/_template.md")).toBe(false);
+    expect(isVaultNotePath("wiki/concepts/deploy.txt")).toBe(false);
+    expect(isVaultNotePath("README.md")).toBe(false);
+    expect(isVaultNotePath("skills/foo/SKILL.md")).toBe(false);
+    expect(isVaultNotePath("wiki/../secret.md")).toBe(true); // prefix ok; readFile's realpath guard rejects it
+    expect(isVaultNotePath(["wiki/a.md"])).toBe(false);
+    expect(isVaultNotePath(undefined)).toBe(false);
   });
 });
 
