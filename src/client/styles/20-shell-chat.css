@@ -745,6 +745,16 @@ body.col-resizing {
   width: min(100%, var(--transcript-max));
   max-width: var(--transcript-max);
   margin: 0 auto;
+  /* Kill the browser's default scroll anchoring on the streaming subtree. With
+     `overflow-anchor: auto`, the browser silently re-positions `.transcript`'s
+     scrollTop to keep an anchor node visually fixed when content height changes
+     above/below it — which it does constantly while a reply streams in
+     (incremental markdown re-parse, lazy <img> loads, table reflow). That clamp
+     runs in the layout phase AFTER our JS `scrollTop = scrollHeight` returns, so
+     it de-anchors the programmatic pin in the same frame the script can't see —
+     the invisible opponent that defeated every prior JS-only auto-scroll rewrite.
+     `none` disables it so scrollTop assignments stick. */
+  overflow-anchor: none;
   display: flex;
   flex-direction: column;
   gap: var(--s-5);

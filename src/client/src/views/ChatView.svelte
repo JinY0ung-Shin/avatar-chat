@@ -69,6 +69,13 @@
 
   function stickToBottom(item: ChatPane) {
     const el = transcriptEls[item.id];
+    // Bail once the user has scrolled up (stickBottom===false) — even mid-stream,
+    // so a reader who scrolls back to re-read isn't yanked to the bottom by the
+    // next delta. This bail no longer risks "locking auto-scroll off for good":
+    // the false-disengage it used to guard against is gone now that the scroll
+    // container has `overflow-anchor:none` (the browser no longer repositions
+    // scrollTop behind our back) and onTranscriptScroll only disengages on a
+    // genuine upward gesture (never on a coalesced/intermediate read while sticky).
     if (!el || item.stickBottom === false) return;
     el.scrollTop = el.scrollHeight;
     lastScrollTop[item.id] = el.scrollTop;
@@ -448,20 +455,37 @@
     const prev = lastScrollTop[item.id];
     const top = el.scrollTop;
     lastScrollTop[item.id] = top;
-    const nearBottom = el.scrollHeight - top - el.clientHeight < 120;
-    // Only a genuine user gesture moves the viewport UP; auto-scroll/content
-    // growth never decrease scrollTop. A meaningful upward move hands control to
-    // the user (keep sticking only if they're still at the bottom); any downward
-    // move or arrival at the bottom re-engages sticking. The 2px deadzone ignores
-    // sub-pixel jitter from fractional scrollTop. Skip no-op store writes — scroll
+    // Disengage ONLY on a genuine user scroll-UP. Only a real gesture decreases
+    // scrollTop; our `stickToBottom` pin and streamed content-growth never do.
+    // The handler used to ALSO re-engage on any downward move / arrival at the
+    // bottom via a ternary — but that read `nearBottom` every event, and under
+    // fast SSE deltas the browser coalesces scroll events so a late one fired
+    // with a stale scrollHeight, computed `nearBottom === false`, and flipped
+    // `stickBottom` off for good. Splitting the two intents removes that race:
+    // an upward move (and ONLY that) hands control to the user; we never touch
+    // `stickBottom` on the down/grow path while still sticky, so no stale read
+    // can disengage us. A 5px deadzone (was 2px) absorbs sub-pixel jitter and
+    // any residual scroll-anchor micro-shift. Skip no-op store writes — scroll
     // fires rapidly while streaming and updateState recomputes + notifies.
-    const scrolledUp = prev !== undefined && top < prev - 2;
-    const next = scrolledUp ? nearBottom : nearBottom ? true : item.stickBottom;
-    if (next !== item.stickBottom) {
-      updateState((state) => {
-        const target = state.chatPanes.find((p) => p.id === item.id);
-        if (target) target.stickBottom = next;
-      });
+    const scrolledUp = prev !== undefined && top < prev - 5;
+    if (scrolledUp) {
+      if (item.stickBottom) {
+        updateState((state) => {
+          const target = state.chatPanes.find((p) => p.id === item.id);
+          if (target) target.stickBottom = false;
+        });
+      }
+    } else if (item.stickBottom === false) {
+      // Already disengaged and the user is scrolling back DOWN toward the
+      // bottom — re-engage once they reach it (this is also the path the FAB's
+      // `scrollToBottom` relies on settling into).
+      const nearBottom = el.scrollHeight - top - el.clientHeight < 120;
+      if (nearBottom) {
+        updateState((state) => {
+          const target = state.chatPanes.find((p) => p.id === item.id);
+          if (target) target.stickBottom = true;
+        });
+      }
     }
   }
 
