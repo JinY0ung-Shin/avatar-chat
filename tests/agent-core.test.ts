@@ -35,6 +35,7 @@ import {
   INTERNAL_GIT_TOKEN_SECRET_NAME,
   tokenForGitUrl,
 } from "../src/server/gitCredentials.js";
+import { parseNoteFrontmatter, rankBrainNotes } from "../src/server/agent/brainSearch.js";
 import {
   APP_MANAGED_MCP_SERVERS,
   inspectRepoContents,
@@ -650,6 +651,18 @@ describe("loadDefaultPluginRoots", () => {
     const { config } = createServices({ dataDir: path.join(tempDir, "d"), agentRuntime: "local", sessionSecret: "t" });
     const roots = await loadDefaultPluginRoots({ ...config, defaultPluginsDir: path.join(tempDir, "nope") });
     expect(roots).toEqual([]);
+  });
+
+  it("bundles the brain-* second-brain skills for every avatar", async () => {
+    // The brain skills are default-bundled (not per-repo seeded), so they load for
+    // ALL avatars — including those with no knowledge repo — in chat and routines.
+    const skills = await listSkillsInRoots([
+      { path: path.join(process.cwd(), "default-skills"), source: "default" },
+    ]);
+    const names = skills.map((s) => s.name);
+    for (const n of ["brain-ingest", "brain-reflect", "brain-lint", "brain-migrate"]) {
+      expect(names).toContain(n);
+    }
   });
 });
 
@@ -1357,6 +1370,46 @@ describe("sdk message handlers", () => {
 });
 
 
+describe("second brain search (rankBrainNotes / parseNoteFrontmatter)", () => {
+  it("parses inline + block frontmatter and tolerates missing/garbage blocks", () => {
+    const inline = parseNoteFrontmatter('---\ntitle: Deploy\ntags: [ops, ci]\naliases: ["배포"]\n---\nbody here');
+    expect(inline.fm.title).toBe("Deploy");
+    expect(inline.fm.tags).toEqual(["ops", "ci"]);
+    expect(inline.fm.aliases).toEqual(["배포"]);
+    expect(inline.body.trim()).toBe("body here");
+    const block = parseNoteFrontmatter("---\ntitle: X\ntags:\n  - a\n  - b\n---\nB");
+    expect(block.fm.tags).toEqual(["a", "b"]);
+    // No frontmatter → empty fields, whole content is body (never throws).
+    const none = parseNoteFrontmatter("just text, no frontmatter");
+    expect(none.fm.title).toBe("");
+    expect(none.body).toBe("just text, no frontmatter");
+  });
+
+  it("ranks title/tag hits above body, skips _template, and flags NO_VAULT", async () => {
+    const dir = path.join(tempDir, "brain-vault");
+    const write = (rel: string, content: string) => {
+      fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
+      fs.writeFileSync(path.join(dir, rel), content);
+    };
+    write("wiki/concepts/deploy.md", "---\ntitle: Deploy runbook\ntags: [ops]\n---\nSteps to ship.");
+    write("wiki/entities/alice.md", "---\ntitle: Alice\n---\nAlice mentioned deploy once in passing.");
+    write("wiki/_template.md", "---\ntitle: deploy deploy deploy\n---\ntemplate must be excluded");
+    write("wiki/index.md", "# Index\ndeploy");
+    const res = await rankBrainNotes(dir, "deploy");
+    expect(res.kind).toBe("ok");
+    if (res.kind !== "ok") return;
+    expect(res.hits[0].path).toBe("wiki/concepts/deploy.md"); // title hit outranks body hit
+    expect(res.hits.map((h) => h.path)).not.toContain("wiki/_template.md");
+    expect(res.hits.map((h) => h.path)).not.toContain("wiki/index.md");
+
+    // A repo with neither wiki/ nor raw/ → NO_VAULT (predates the vault layout).
+    const bare = path.join(tempDir, "brain-bare");
+    fs.mkdirSync(bare, { recursive: true });
+    fs.writeFileSync(path.join(bare, "CLAUDE.md"), "old stub");
+    expect((await rankBrainNotes(bare, "deploy")).kind).toBe("no_vault");
+  });
+});
+
 describe("buildPrompt", () => {
   const avatar = (over = {}) => ({ id: "a1", displayName: "도우미", alias: "", persona: "", ...over });
   const req = (over = {}) => ({ message: "안녕", avatar: avatar(), ...over });
@@ -1393,6 +1446,47 @@ describe("buildPrompt", () => {
     expect(p).toContain("mcp__system__create_routine");
     expect(p).toContain("mcp__system__add_plugin");
     expect(p).toContain("load starting from the next conversation");
+  });
+
+  it("injects the second-brain trigger for the owner when a repo is connected", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, knowledgeRepoConfigured: true }), 0);
+    expect(p).toContain("Second brain");
+    expect(p).toContain("mcp__brain__search");
+    expect(p).toContain("brain-ingest");
+    expect(p).toContain("brain-migrate");
+  });
+
+  it("omits the second-brain trigger when no knowledge repo is connected", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true, knowledgeRepoConfigured: false }), 0);
+    expect(p).not.toContain("mcp__brain__search");
+  });
+
+  it("does NOT give a plain (non-elevated) colleague the brain trigger", () => {
+    const p = buildPrompt(req({ viewerIsOwner: false, knowledgeRepoConfigured: true }), 0);
+    expect(p).not.toContain("mcp__brain__search");
+  });
+
+  it("lets a trusted (elevated) teammate search the owner's brain (read-only)", () => {
+    const p = buildPrompt(
+      req({ viewerIsOwner: false, elevated: true, knowledgeRepoConfigured: true }),
+      0,
+    );
+    expect(p).toContain("mcp__brain__search");
+    expect(p).toContain("owner-only"); // capture/edit stays owner-only
+  });
+
+  it("surfaces the group team-brain trigger when a group has a shared repo", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        knowledgeRepoConfigured: true,
+        groupMemberships: [
+          { id: "g1", name: "플랫폼팀", role: "member", knowledgeRepoConfigured: true },
+        ],
+      }),
+      0,
+    );
+    expect(p).toContain("mcp__group_brain__search");
   });
 
   it("injects personal + group CLAUDE.md standing memory with an injection guard", () => {
@@ -1633,6 +1727,10 @@ describe("buildPrompt", () => {
     expect(p).toContain("`GIT_TOKEN`");
     expect(p).toContain("mcp__system__describe_system");
     expect(p).toContain("Remote git work goes through MCP tools ONLY");
+    // Second-brain self-state: the routine has the personal brain trigger AND,
+    // since its group has a shared repo, knows about the team brain it can search.
+    expect(p).toContain("mcp__brain__search");
+    expect(p).toContain("mcp__group_brain__search");
   });
 
   it("points a routine without a knowledge repo at create_repo instead of letting it guess", () => {

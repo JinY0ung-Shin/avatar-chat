@@ -37,6 +37,8 @@ export const SYSTEM_SERVER_NAME = "system";
 export const SYSTEM_TOOL_NAMES = [
   "mcp__system__describe_system",
   "mcp__system__notify_user",
+  "mcp__system__list_recent_conversations",
+  "mcp__system__read_conversation",
   "mcp__system__list_routines",
   "mcp__system__create_routine",
   "mcp__system__update_routine",
@@ -192,6 +194,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
           `- Knowledge repository: ${knowledgeRepo.repo || "(none)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
+          `- Second brain (personal): ${state.knowledgeRepoConfigured ? "active — `mcp__brain__search` recall over wiki/, plus the brain-ingest/brain-reflect/brain-lint skills (run brain-migrate once if the wiki/ vault is missing)" : "inactive (connect a knowledge repository to enable brain recall/ingest/reflect)"}`,
+          `- Team second brain: ${groups.filter((g) => g.knowledgeRepoConfigured).length > 0 ? `${groups.filter((g) => g.knowledgeRepoConfigured).length} group(s) expose \`mcp__group_brain__search\` (members search; admins consolidate)` : "none (no group has a connected shared repository)"}`,
           `- General git repos: ${state.gitRepoCount}`,
           `- Internal Git token (GIT_TOKEN): ${state.gitTokenSet ? "set" : "not set"}`,
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(none)"}`,
@@ -238,6 +242,80 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
             : "Failed to save the notification.";
           return text(message, true);
         }
+      },
+    ),
+    tool(
+      "list_recent_conversations",
+      "Lists the avatar owner's recent conversations so a routine (or the owner) can review what happened — e.g. the nightly second-brain consolidation reviewing the last day. Returns id, title, the other avatar's name, and last-updated time — NOT the full transcript (use read_conversation for that). `sinceHours` bounds the window (default 24). By default only normal chat conversations are returned (routine logs are excluded); pass `kind: 'all'` to include them. Read-only and scoped to the owner — you can never see other users' conversations. (owner / owner routine only)",
+      {
+        sinceHours: z.number().int().optional().describe("Only conversations updated within the last N hours (default 24)."),
+        kind: z.enum(["chat", "routine", "all"]).optional().describe("Which conversations to include (default 'chat')."),
+        limit: z.number().int().optional().describe("Max conversations to return (default 50, max 200)."),
+      },
+      async (args) => {
+        if (!ctx.viewerIsOwner) {
+          return text(OWNER_ONLY, true);
+        }
+        const kind = args.kind ?? "chat";
+        const sinceHours = Math.max(1, args.sinceHours ?? 24);
+        const limit = Math.min(Math.max(1, args.limit ?? 50), 200);
+        const cutoffMs = Date.now() - sinceHours * 3_600_000;
+        const recent = store
+          .listConversations(ctx.avatarUserId, undefined, kind)
+          .filter((c) => {
+            const t = Date.parse(c.updatedAt);
+            return Number.isNaN(t) || t >= cutoffMs;
+          })
+          .slice(0, limit);
+        if (recent.length === 0) {
+          return text(`No conversations updated in the last ${sinceHours}h (kind=${kind}).`);
+        }
+        const body = recent
+          .map(
+            (c) =>
+              `- ${c.id} | ${c.title} | with ${c.avatarDisplayName} | ${c.updatedAt}${c.isRoutine ? " [routine]" : ""}`,
+          )
+          .join("\n");
+        return text(
+          `Recent conversations (last ${sinceHours}h, kind=${kind}, ${recent.length} shown):\n${body}\n\nRead one with read_conversation.`,
+        );
+      },
+    ),
+    tool(
+      "read_conversation",
+      "Reads the message transcript of one of the owner's conversations by id (get ids from list_recent_conversations). Returns the ordered user/assistant messages as plain text; tool activity, attachments, and model metadata are omitted, and long messages are truncated to keep the transcript compact. Only the owner's own conversations are accessible — an unknown or foreign id returns nothing. Process conversations one at a time and commit between batches so the transcript does not accumulate. (owner / owner routine only)",
+      {
+        conversationId: z.string().describe("The conversation id (from list_recent_conversations)."),
+        maxChars: z.number().int().optional().describe("Per-message truncation length (default 4000, max 8000)."),
+      },
+      async (args) => {
+        if (!ctx.viewerIsOwner) {
+          return text(OWNER_ONLY, true);
+        }
+        // listMessages is owner-gated: it returns [] for any conversation the
+        // owner does not own, so a guessed/foreign id can never leak another
+        // user's transcript. ctx.avatarUserId is the bound owner — never an arg.
+        const messages = store.listMessages(ctx.avatarUserId, args.conversationId);
+        if (messages.length === 0) {
+          return text("Conversation not found, or it is not yours.", true);
+        }
+        const perMsg = Math.min(Math.max(200, args.maxChars ?? 4000), 8000);
+        const GLOBAL_CAP = 60_000;
+        const out: string[] = [];
+        let total = 0;
+        for (const m of messages) {
+          if (m.role === "system") continue;
+          let content = m.content ?? "";
+          if (content.length > perMsg) content = `${content.slice(0, perMsg)}…`;
+          const line = `[${m.role}] ${content}`;
+          if (total + line.length > GLOBAL_CAP) {
+            out.push("…(transcript truncated)");
+            break;
+          }
+          out.push(line);
+          total += line.length;
+        }
+        return text(out.join("\n\n") || "(no readable messages)");
       },
     ),
     tool(

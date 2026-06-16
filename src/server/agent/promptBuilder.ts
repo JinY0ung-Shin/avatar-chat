@@ -86,6 +86,35 @@ function gitRepoSection(): string {
 }
 
 /**
+ * Second-brain section: standing per-turn guidance to SEARCH the vault before
+ * answering, and (owner/routine) capture/consolidate via the brain-* skills.
+ * Returns null when no knowledge repo is connected. `mode` tailors it per viewer:
+ * owner/routine can capture; a trusted teammate may only search (writes are
+ * owner-only). Tool registration (claudeAgent `brainActive` = connected repo +
+ * elevated access) matches exactly the branches that call this, so the trigger
+ * never names a tool the avatar can't call.
+ */
+function brainSection(request: AgentRequest, mode: "owner" | "teammate" | "routine"): string | null {
+  if (request.knowledgeRepoConfigured === false) {
+    return null;
+  }
+  const base =
+    "**Second brain**: your knowledge repository is a vault — `wiki/` holds curated, durable notes and `raw/` holds unprocessed captures. Use `mcp__brain__search` to recall what you already know BEFORE answering from memory or asking the user to repeat themselves; `mcp__brain__get_note` reads one note in full.";
+  const migrate =
+    " If `mcp__brain__search` reports the vault is missing (NO_VAULT), the repository predates the vault layout — run the `brain-migrate` skill ONCE (it never overwrites existing files), then retry.";
+  if (mode === "teammate") {
+    return `${base} (You can search the owner's second brain; capturing or editing notes is owner-only.)${migrate}`;
+  }
+  const capture =
+    " To capture a durable fact or decision use the **brain-ingest** skill; to consolidate `raw/` into clean `wiki/` notes use **brain-reflect**; to audit the vault use **brain-lint**. Brain edits are not pushed until you commit.";
+  const conv =
+    mode === "routine"
+      ? " For a consolidation task you may review the owner's OWN recent conversations with `mcp__system__list_recent_conversations`/`read_conversation` (owner-scoped) to find durable facts to capture; never read anyone else's conversations."
+      : "";
+  return `${base}${capture}${migrate}${conv}`;
+}
+
+/**
  * Group meta-cognition section (owner prompt): which groups the owner is in,
  * their role, the shared group knowledge repo, plus a nudge for admin groups
  * that have no shared repo yet. Returns null when the owner is in no groups.
@@ -106,6 +135,11 @@ function groupsSection(request: AgentRequest): string | null {
   if (adminNoRepo.length > 0) {
     groupLines.push(
       `Among the groups where you are an admin, ${adminNoRepo.map((g) => `'${g.name}'`).join(", ")} do not have a shared knowledge repository yet. If the owner wants, you can create a new internal GitHub repository with \`mcp__group_repo__create_repo\` and connect it to that group (you can also connect an existing repository via Group management in Settings).`,
+    );
+  }
+  if (groups.some((g) => g.knowledgeRepoConfigured)) {
+    groupLines.push(
+      "When a group has a shared knowledge repository, you can also SEARCH its **team brain** with `mcp__group_brain__search`/`mcp__group_brain__get_note` (scoped to one group; any group member may read) to surface team-shared rules, decisions, and context any member captured. To ADD to a team brain, ingest a note with `mcp__group_repo__write_file` then `commit` — writes are group-admin only, so a member who wants to contribute should ask an admin.",
     );
   }
   return groupLines.join(" ");
@@ -345,13 +379,16 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       ];
       const routineGroups = request.groupMemberships ?? [];
       if (routineGroups.length > 0) {
+        const teamBrainNote = routineGroups.some((g) => g.knowledgeRepoConfigured)
+          ? " You can also SEARCH a group's team brain with `mcp__group_brain__search`/`get_note` (scoped to one group; members read)."
+          : "";
         routineState.push(
           `Owner's groups: ${routineGroups
             .map(
               (g) =>
                 `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`,
             )
-            .join(", ")} — you can use the \`mcp__group_repo__*\` tools (members read, only admins write/commit).`,
+            .join(", ")} — you can use the \`mcp__group_repo__*\` tools (members read, only admins write/commit).${teamBrainNote}`,
         );
       }
       if (secretNames.length > 0) {
@@ -367,6 +404,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       }
       routineState.push("If you need any other current configuration or state, call `mcp__system__describe_system`.");
       lines.push(`Current self-state: ${routineState.join(" ")}`);
+      const routineBrainBlock = brainSection(request, "routine");
+      if (routineBrainBlock) {
+        lines.push(routineBrainBlock);
+      }
       lines.push(GIT_MCP_ONLY_GUIDANCE);
     } else {
       lines.push(
@@ -386,6 +427,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     );
     const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
     lines.push(knowledgeRepoSection(request, knowledgeRepoConfigured, githubHost));
+    const ownerBrainBlock = brainSection(request, "owner");
+    if (ownerBrainBlock) {
+      lines.push(ownerBrainBlock);
+    }
     lines.push(gitRepoSection());
     lines.push(GIT_MCP_ONLY_GUIDANCE);
     // Group meta-cognition: which groups the owner is in, their role, and the
@@ -447,6 +492,10 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         lines.push(
           "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
         );
+        const teammateBrainBlock = brainSection(request, "teammate");
+        if (teammateBrainBlock) {
+          lines.push(teammateBrainBlock);
+        }
       }
       lines.push(GIT_MCP_ONLY_GUIDANCE);
       const trustedActiveRepoBlock = activeRepoSection(request);

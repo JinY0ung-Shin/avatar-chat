@@ -340,7 +340,7 @@ export function buildGroupRepoTools(
             const c = repoCtx(group.id, group.name);
             if (c) {
               const repoRoot = await ensureGroupClone(c);
-              if (await writeRepoTemplate(repoRoot, result.fullName)) {
+              if (await writeRepoTemplate(repoRoot, result.fullName, "group")) {
                 await groupCommitAndPush(c, "Initialize group knowledge repo", commitIdentityFor(store, ctx.owner));
                 seeded = true;
               }
@@ -351,7 +351,7 @@ export function buildGroupRepoTools(
           const kind = result.isPrivate ? "private" : "public";
           return text(
             seeded
-              ? `Created the ${kind} shared knowledge repository \`${result.fullName}\` for the '${group.name}' group and initialized it with the default template. Now add your first skill with scaffold_skill and push with commit.`
+              ? `Created the ${kind} shared knowledge repository \`${result.fullName}\` for the '${group.name}' group and initialized its second-brain vault (\`raw/\` for captures, \`wiki/\` for consolidated notes). Members capture with brain-ingest; group admins consolidate with brain-reflect over raw/+wiki only. Commit to persist.`
               : `Created and connected the ${kind} shared knowledge repository \`${result.fullName}\` for the '${group.name}' group.${seedNote}`,
           );
         } catch (error) {

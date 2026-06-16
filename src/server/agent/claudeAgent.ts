@@ -281,6 +281,10 @@ export async function runClaudeAgent(
     "./groupRepoTools.js"
   );
   const { buildCanvasServer, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES } = await import("./canvasTools.js");
+  const { buildBrainServer, BRAIN_SERVER_NAME, BRAIN_TOOL_NAMES } = await import("./brainTools.js");
+  const { buildGroupBrainServer, GROUP_BRAIN_SERVER_NAME, GROUP_BRAIN_TOOL_NAMES } = await import(
+    "./groupBrainTools.js"
+  );
 
   const streaming = Boolean(events);
   // Tool-access derivation lives in deriveAgentToolAccess (a pure, unit-tested
@@ -388,6 +392,19 @@ export async function runClaudeAgent(
     },
     { allowCreate: allowRepoCreate },
   );
+  // Personal second brain (#second-brain): read-only `wiki/` recall over the
+  // owner's knowledge repo. Always-on (no feature flag) — gated on a connected
+  // repo + read access (owner OR trusted teammate, like `mcp__repo__read_file`).
+  // The repo is resolved from the OWNER (avatar.id) inside the tools, never the
+  // viewer, so a teammate's search hits the owner's vault. brainActive is the
+  // SINGLE boolean used byte-identically in allowedTools + mcpServers below.
+  const brainActive = knowledgeRepoConfigured && elevatedToolAccess;
+  const brainServer = buildBrainServer(store, {
+    avatarUserId: request.avatar.id,
+    viewerIsOwner: ownerToolAccess,
+    elevated: elevatedToolAccess,
+    config,
+  });
   const systemServer = buildSystemServer(store, {
     avatarUserId: request.avatar.id,
     owner,
@@ -425,6 +442,17 @@ export async function runClaudeAgent(
   const groupRepoServer = buildGroupRepoServer(store, {
     avatarUserId: request.avatar.id,
     owner,
+    viewerIsOwner: ownerToolAccess,
+    config,
+  });
+  // Group (team) second brain: read-only `wiki/` recall over a group's shared
+  // repo, scoped per-group to the OWNER's memberships inside the tools. Owner-only
+  // at registration (like the group repo tools), active when the owner is in ≥1
+  // group with a connected shared repo. groupBrainActive is the SINGLE boolean
+  // used byte-identically in allowedTools + mcpServers below.
+  const groupBrainActive = ownerToolAccess && ownerGroups.some((g) => g.knowledgeRepoConfigured);
+  const groupBrainServer = buildGroupBrainServer(store, {
+    avatarUserId: request.avatar.id,
     viewerIsOwner: ownerToolAccess,
     config,
   });
@@ -502,6 +530,8 @@ export async function runClaudeAgent(
       ...SSH_IDENTITY_TOOL_NAMES,
       ...GIT_REPO_TOOL_NAMES,
       ...(groupRepoActive ? GROUP_REPO_TOOL_NAMES : []),
+      ...(brainActive ? BRAIN_TOOL_NAMES : []),
+      ...(groupBrainActive ? GROUP_BRAIN_TOOL_NAMES : []),
       ...(canvasActive ? CANVAS_TOOL_NAMES : []),
       ...SSH_TRUST_TOOL_NAMES,
       "Skill",
@@ -522,6 +552,8 @@ export async function runClaudeAgent(
       [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
       [GIT_REPO_SERVER_NAME]: gitRepoServer,
       ...(groupRepoActive ? { [GROUP_REPO_SERVER_NAME]: groupRepoServer } : {}),
+      ...(brainActive ? { [BRAIN_SERVER_NAME]: brainServer } : {}),
+      ...(groupBrainActive ? { [GROUP_BRAIN_SERVER_NAME]: groupBrainServer } : {}),
       ...(canvasServer ? { [CANVAS_SERVER_NAME]: canvasServer } : {}),
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),

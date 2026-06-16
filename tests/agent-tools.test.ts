@@ -114,6 +114,12 @@ import {
   SYSTEM_TOOL_NAMES,
   type SystemToolsContext,
 } from "../src/server/agent/systemTools.js";
+import { buildBrainTools, BRAIN_SERVER_NAME, BRAIN_TOOL_NAMES } from "../src/server/agent/brainTools.js";
+import {
+  buildGroupBrainTools,
+  GROUP_BRAIN_SERVER_NAME,
+  GROUP_BRAIN_TOOL_NAMES,
+} from "../src/server/agent/groupBrainTools.js";
 import {
   knownHostsPath,
   parseKnownHosts,
@@ -1019,15 +1025,46 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(s.store.getKnowledgeRepo(s.ownerId).repo).toBeNull();
   });
 
-  it("writeRepoTemplate seeds a valid Claude marketplace + README, idempotently", async () => {
+  it("writeRepoTemplate seeds a valid marketplace + README + vault skeleton, idempotently", async () => {
     const dir = path.join(tempDir, "rt-template");
     fs.mkdirSync(dir, { recursive: true });
     expect(await writeRepoTemplate(dir, "owner/my-knowledge")).toBe(true);
     const mp = JSON.parse(fs.readFileSync(path.join(dir, ".claude-plugin/marketplace.json"), "utf8"));
+    // Brain skills are default-bundled, NOT seeded per-repo — manifest stays empty.
     expect(mp).toMatchObject({ name: "my-knowledge", plugins: [] });
     expect(fs.existsSync(path.join(dir, "README.md"))).toBe(true);
+    // Second-brain vault skeleton (raw/ inbox + wiki/ consolidated layer).
+    for (const rel of [
+      "raw/.gitkeep",
+      "wiki/sources/.gitkeep",
+      "wiki/entities/.gitkeep",
+      "wiki/concepts/.gitkeep",
+      "wiki/synthesis/.gitkeep",
+      "wiki/index.md",
+      "wiki/log.md",
+      "wiki/_template.md",
+    ]) {
+      expect(fs.existsSync(path.join(dir, rel))).toBe(true);
+    }
+    // Personal CLAUDE.md is the bilingual second-brain manual, within the personal cap.
+    const personalClaude = fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf8");
+    expect(personalClaude).toContain("second brain");
+    expect(Buffer.byteLength(personalClaude, "utf8")).toBeLessThanOrEqual(6000);
     // No-op once a manifest exists — never clobbers an established repo.
     expect(await writeRepoTemplate(dir, "owner/my-knowledge")).toBe(false);
+  });
+
+  it("writeRepoTemplate 'group' variant seeds a team-framed CLAUDE.md under the group cap", async () => {
+    const dir = path.join(tempDir, "rt-template-group");
+    fs.mkdirSync(dir, { recursive: true });
+    expect(await writeRepoTemplate(dir, "g/team", "group")).toBe(true);
+    const claude = fs.readFileSync(path.join(dir, "CLAUDE.md"), "utf8");
+    expect(claude).toContain("팀 공유 브레인");
+    // Group CLAUDE.md rides the smaller GROUP_CLAUDE_MD_CAP (4000) injection cap.
+    expect(Buffer.byteLength(claude, "utf8")).toBeLessThanOrEqual(4000);
+    // Same vault skeleton as personal.
+    expect(fs.existsSync(path.join(dir, "wiki/index.md"))).toBe(true);
+    expect(fs.existsSync(path.join(dir, "raw/.gitkeep"))).toBe(true);
   });
 
   it("create_repo seeds the marketplace template as the repo's initial content", async () => {
@@ -1302,6 +1339,8 @@ describe("system tools (avatar system management)", () => {
     expect(toolsFor(s).map((t) => t.name)).toEqual([
       "describe_system",
       "notify_user",
+      "list_recent_conversations",
+      "read_conversation",
       "list_routines",
       "create_routine",
       "update_routine",
@@ -1781,5 +1820,147 @@ describe("canvas tools (experimental, #50)", () => {
       controls: [{ type: "text", id: "note" }],
     });
     expect(res.content[0].text).toContain("dismissed");
+  });
+});
+
+describe("brain tools (personal second brain search)", () => {
+  function setup(dir: string) {
+    const { store, config } = createServices({ dataDir: path.join(tempDir, dir), agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, config, owner };
+  }
+  const tools = (s: ReturnType<typeof setup>, over: { viewerIsOwner?: boolean; elevated?: boolean } = {}) =>
+    buildBrainTools(s.store, { avatarUserId: s.owner.id, viewerIsOwner: true, elevated: true, config: s.config, ...over });
+
+  it("exposes the documented server + tool names", () => {
+    const s = setup("brain-names");
+    expect(BRAIN_SERVER_NAME).toBe("brain");
+    expect(BRAIN_TOOL_NAMES).toEqual(["mcp__brain__search", "mcp__brain__get_note"]);
+    expect(tools(s).map((t) => t.name)).toEqual(["search", "get_note"]);
+  });
+
+  it("refuses search for a non-elevated viewer (read-parity with read_file)", async () => {
+    const s = setup("brain-gate");
+    const res = await callTool(tools(s, { viewerIsOwner: false, elevated: false }), "search", { query: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("avatar owner");
+  });
+
+  it("returns NO_REPO when no knowledge repo is connected", async () => {
+    const s = setup("brain-norepo");
+    const res = await callTool(tools(s), "search", { query: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("create_repo");
+  });
+
+  it("get_note rejects paths outside wiki/", async () => {
+    const s = setup("brain-getnote");
+    s.store.setKnowledgeRepo(s.owner.id, "/tmp/whatever", "main");
+    const res = await callTool(tools(s), "get_note", { path: "../CLAUDE.md" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("wiki/");
+  });
+});
+
+describe("group brain tools (team second brain search)", () => {
+  function setup(dir: string) {
+    const { store, config } = createServices({ dataDir: path.join(tempDir, dir), agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, config, owner };
+  }
+  const tools = (s: ReturnType<typeof setup>, viewerIsOwner = true) =>
+    buildGroupBrainTools(s.store, { avatarUserId: s.owner.id, viewerIsOwner, config: s.config });
+
+  it("exposes the documented server + tool names", () => {
+    const s = setup("gb-names");
+    expect(GROUP_BRAIN_SERVER_NAME).toBe("group_brain");
+    expect(GROUP_BRAIN_TOOL_NAMES).toEqual(["mcp__group_brain__search", "mcp__group_brain__get_note"]);
+    expect(tools(s).map((t) => t.name)).toEqual(["search", "get_note"]);
+  });
+
+  it("refuses for a non-owner viewer", async () => {
+    const s = setup("gb-owner");
+    const res = await callTool(tools(s, false), "search", { group: "x", query: "q" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("avatar owner");
+  });
+
+  it("blocks searching a group the owner is NOT a member of (cross-tenant gate)", async () => {
+    const s = setup("gb-cross");
+    const a = s.store.createGroup({ name: "A", createdBy: null });
+    s.store.addGroupMember(a.id, s.owner.id, "member");
+    s.store.setGroupKnowledgeRepo(a.id, "/tmp/a-repo", "main");
+    // Group B has a connected repo but the owner is NOT a member — must be unreachable
+    // BY NAME and BY ID (resolveGroup only searches the owner's own memberships).
+    const b = s.store.createGroup({ name: "B", createdBy: null });
+    s.store.setGroupKnowledgeRepo(b.id, "/tmp/b-repo", "main");
+    const byName = await callTool(tools(s), "search", { group: "B", query: "q" });
+    expect(byName.isError).toBe(true);
+    expect(byName.content[0].text).toContain("Could not find a group");
+    const byId = await callTool(tools(s), "search", { group: b.id, query: "q" });
+    expect(byId.content[0].text).toContain("Could not find a group");
+  });
+
+  it("returns NO_REPO for an owner's group that has no shared repo", async () => {
+    const s = setup("gb-norepo");
+    const g = s.store.createGroup({ name: "NoRepo", createdBy: null });
+    s.store.addGroupMember(g.id, s.owner.id, "member");
+    const res = await callTool(tools(s), "search", { group: "NoRepo", query: "q" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("does not have a shared knowledge repository");
+  });
+});
+
+describe("system conversation-read tools + brain self-state", () => {
+  function setup(dir: string) {
+    const { store, config } = createServices({ dataDir: path.join(tempDir, dir), agentRuntime: "local", sessionSecret: "t" });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const other = store.createUser({ username: "other", displayName: "Other", password: "password123" });
+    const ctx = {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: owner.username, displayName: owner.displayName },
+      config,
+    };
+    return { store, config, owner, other, ctx };
+  }
+  const ownerTools = (s: ReturnType<typeof setup>) => buildSystemTools(s.store, { ...s.ctx, viewerIsOwner: true });
+
+  it("lists and reads only the owner's own conversations (privacy boundary)", async () => {
+    const s = setup("conv-read");
+    s.store.touchConversation(s.owner.id, "c1", s.owner.id, "안녕 배포 일정");
+    s.store.addMessage("c1", { role: "user", content: "배포 언제 하지?" });
+    s.store.addMessage("c1", { role: "assistant", content: "다음 주 화요일입니다." });
+    // A DIFFERENT user's conversation must never surface.
+    s.store.touchConversation(s.other.id, "c2", s.other.id, "남의 대화");
+    s.store.addMessage("c2", { role: "user", content: "비밀 정보" });
+
+    const list = await callTool(ownerTools(s), "list_recent_conversations", {});
+    expect(list.content[0].text).toContain("c1");
+    expect(list.content[0].text).not.toContain("c2");
+
+    const read = await callTool(ownerTools(s), "read_conversation", { conversationId: "c1" });
+    expect(read.content[0].text).toContain("배포 언제 하지?");
+    expect(read.content[0].text).toContain("다음 주 화요일");
+
+    const foreign = await callTool(ownerTools(s), "read_conversation", { conversationId: "c2" });
+    expect(foreign.isError).toBe(true);
+    expect(foreign.content[0].text).toContain("not yours");
+  });
+
+  it("refuses conversation reads for a non-owner", async () => {
+    const s = setup("conv-gate");
+    const tools = buildSystemTools(s.store, { ...s.ctx, viewerIsOwner: false });
+    const res = await callTool(tools, "list_recent_conversations", {});
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("avatar owner");
+  });
+
+  it("describe_system reports personal second-brain state", async () => {
+    const s = setup("brain-self");
+    const off = await callTool(ownerTools(s), "describe_system", {});
+    expect(off.content[0].text).toContain("Second brain (personal): inactive");
+    s.store.setKnowledgeRepo(s.owner.id, "/tmp/repo", "main");
+    const on = await callTool(ownerTools(s), "describe_system", {});
+    expect(on.content[0].text).toContain("Second brain (personal): active");
   });
 });
