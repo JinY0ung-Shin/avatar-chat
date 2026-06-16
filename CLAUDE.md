@@ -442,9 +442,11 @@ gotchas, and client↔server mirrored validators.
   fill the viewport. Use a scoped name (`is-main`, `agent-root`).
 - For visual/layout bugs, inspect the *rendered* state (screenshot + DevTools computed styles),
   don't reason from CSS source alone — collisions/inherited rules aren't visible in the source.
-- Verifying the local server: a corporate `HTTP_PROXY` intercepts `localhost`
-  (returns "Access Denied"), and no browser engine is installed. Hit the dev
-  server with `curl --noproxy '*' localhost:<port>/...` (can't screenshot the UI).
+- Verifying the local server: WHEN a corporate `HTTP_PROXY` is set it intercepts
+  `localhost` (returns "Access Denied") — hit the dev server with
+  `curl --noproxy '*' localhost:<port>/...`. But the proxy is NOT always present
+  (check `env | grep -i proxy`); with no proxy you CAN install a browser engine and
+  runtime-verify isolated UI (Playwright fixture — see `src/client/CLAUDE.md` Verification).
 - Verifying Docker changes: `docker build` and `docker run` DO work here. Smoke-test:
   `docker run -d -e SESSION_SECRET=x <img>` then `docker exec <c> curl -fsS --noproxy '*'
   localhost:48787/api/bootstrap` (the unauth health probe + HEALTHCHECK). `SESSION_SECRET`

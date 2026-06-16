@@ -52,6 +52,20 @@ build commands, SSE chat protocol, language split). This file adds client-specif
   (`.main { height: 100dvh }` once stretched the box). Svelte component `<style>` is scoped, but the
   carried-over global CSS and `{@html}` output are not.
 
+## Svelte 5 runtime gotchas (svelte-check does NOT catch these)
+- **A green svelte-check does NOT mean the behavior is correct — for interaction/layout/timing
+  changes, runtime-verify (Playwright fixture, see Verification).** This session's first `autosize`
+  fix (passing `item.draft` as the action param + a 2nd-arg signature) compiled AND passed
+  svelte-check yet was a pure no-op at runtime; only a real-DOM measurement caught it.
+- **A `use:action={param}`'s `update()` runs BEFORE Svelte flushes the bound `value` to the DOM node.**
+  So reading layout (`scrollHeight`) synchronously inside `update()` measures the OLD content. This bit
+  the composer `autosize` (`lib/dom.ts`): on send, `ChatView` sets `draft=""`; the action's `update()`
+  fired but `node.value` was still the old multi-line text at that instant, so `grow()` re-pinned the
+  tall height, then Svelte set `value=""` without re-measuring → the textarea never shrank back. Fix:
+  defer the param-driven grow with `queueMicrotask(grow)` so it reads the post-flush value; keep the
+  `input`-listener path synchronous (the browser updates `value` before the `input` event). General
+  rule: when an action must react to a programmatic value change, defer any layout read to a microtask.
+
 ## Client ↔ server contracts mirrored by hand
 No shared module across the TS/Svelte ↔ server boundary, so the client re-implements several server
 validators. Update these in lockstep:
@@ -91,6 +105,16 @@ validators. Update these in lockstep:
   (also `npm run lint:client`); `npx tsc --noEmit` covers shared server types. `vite build` (`npm run
   build:client`) is the production compile; `pretest` runs `vite build --mode test` so a client compile
   break fails the test gate. ⚠️ Don't trust `npm run lint` — the rtk hook misrewrites it to eslint.
-- **The UI cannot be runtime-verified here** — corporate `HTTP_PROXY` intercepts `localhost`, no browser
-  engine is installed, and the app talks to a separate deployment (no local DB). So changes ride on
-  svelte-check + careful reading + the `f0a6128` parity reference + a human browser smoke test.
+- **Running the FULL app here is impractical** (it talks to a separate deployment, no local DB) — so
+  feature-level changes ride on svelte-check + careful reading + the `f0a6128` parity reference + a human
+  browser smoke test.
+- **BUT isolated UI/layout/interaction behavior CAN be runtime-verified** when no `HTTP_PROXY` is set
+  (check `env | grep -i proxy` — the old "corporate proxy intercepts localhost / no browser" claim was
+  environment-specific, not permanent). Install Playwright on demand (`npm i -D playwright && npx
+  playwright install chromium`), build a MINIMAL Svelte fixture **inside the project dir** (a `/tmp`
+  fixture can't resolve `vite`/`@sveltejs/vite-plugin-svelte` from `node_modules`) that imports the REAL
+  action/component under test, serve it (`node_modules/.bin/vite --config <fixture>/vite.config.mjs`,
+  `configFile:false`, `plugins:[svelte()]`), and drive it headless to measure real DOM/layout. Clean up
+  after: `rm -rf` the fixture and `npm uninstall` the playwright devDeps so `package.json`/lock stay
+  clean. This caught the `autosize` shrink-after-send fix PASSING svelte-check yet FAILING at runtime
+  (see the "Svelte 5 runtime gotchas" section above) — svelte-check alone would have shipped a no-op fix.
