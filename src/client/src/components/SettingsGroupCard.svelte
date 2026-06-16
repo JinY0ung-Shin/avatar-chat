@@ -28,6 +28,9 @@
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import SettingsPluginSelect from "./SettingsPluginSelect.svelte";
+  import GraphViewModal from "./GraphViewModal.svelte";
+
+  let graphOpen = false;
 
   export let group: SettingsGroup;
   export let githubHost = "github.com";
@@ -467,6 +470,7 @@
       <h4 class="knowledge-sub">공용 지식 저장소</h4>
       {#if group.knowledgeRepo}
         <div class="head-actions">
+          <button class="linkish small" type="button" title="노트 사이의 [[링크]] 연결을 그래프로 봅니다" on:click={() => (graphOpen = true)}>그래프 보기</button>
           <button class="linkish small" type="button" disabled={repoBusy} on:click={refreshRepo}>{repoRefreshed ? "새로고침됨 ✓" : "새로고침"}</button>
           <button class="linkish small danger" type="button" disabled={repoBusy} title="이 그룹의 공용 저장소 연결을 해제합니다 (GitHub의 저장소 자체는 삭제되지 않습니다)" on:click={disconnectRepo}>연결 해제</button>
         </div>
@@ -517,6 +521,17 @@
   {:else}
     <p class="muted small">
       {group.knowledgeRepo ? "이 그룹에는 공용 지식 저장소가 연결되어 동료들의 아바타와 공유됩니다." : "이 그룹에는 아직 공용 지식 저장소가 없습니다."}
+      {#if group.knowledgeRepo}
+        <button class="linkish small" type="button" title="노트 사이의 [[링크]] 연결을 그래프로 봅니다" on:click={() => (graphOpen = true)}>그래프 보기</button>
+      {/if}
     </p>
+  {/if}
+
+  {#if graphOpen}
+    <GraphViewModal
+      endpoint={`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo/graph`}
+      title={`지식 그래프 · ${group.name}`}
+      on:close={() => (graphOpen = false)}
+    />
   {/if}
 </div>

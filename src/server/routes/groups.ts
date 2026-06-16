@@ -4,6 +4,7 @@ import { inspectRepoContents } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import { isInternalGitSource } from "../gitCredentials.js";
 import { ensureGroupClone, groupKnowledgeRepoContextFor } from "../groupKnowledgeRepo.js";
+import { buildKnowledgeGraph } from "../knowledgeGraph.js";
 import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
 
 // ---- Groups (membership roster + group-admin self-service) -----------
@@ -168,6 +169,30 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
         res.json({ contents: await inspectRepoContents(repoRoot) });
       } catch (error) {
         apiError(res, 502, `저장소를 가져오지 못했습니다: ${scrubGitError(error)}`);
+      }
+    },
+  );
+
+  // Build the group brain's `[[wikilink]]` graph (any member may view).
+  router.get(
+    "/api/me/groups/:id/knowledge-repo/graph",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const groupId = req.params.id;
+      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        return;
+      }
+      const ctx = groupKnowledgeRepoContextFor(store, groupId, req.user!.id, config);
+      if (!ctx) {
+        apiError(res, 404, "연결된 그룹 지식 저장소가 없습니다.");
+        return;
+      }
+      try {
+        const repoRoot = await ensureGroupClone(ctx);
+        res.json({ graph: await buildKnowledgeGraph(repoRoot) });
+      } catch (error) {
+        apiError(res, 502, `지식 그래프를 만들지 못했습니다: ${scrubGitError(error)}`);
       }
     },
   );
