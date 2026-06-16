@@ -135,13 +135,18 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl -f --noproxy '*' http://localhost:48787/api/bootstrap || exit 1
 
 # Drop root privileges: the node:22 base image ships a `node` user (uid 1000).
-# /app and the data dir are owned by root at this point; chown them so the
-# `node` user can write the SQLite DB, avatar images, agent-session transcripts,
-# and any cloned repos under APP_DATA_DIR.
-RUN chown -R node:node /app
-# APP_DATA_DIR defaults to /app/data (set above) and is typically a named volume
-# mounted at runtime. The directory is created here so the volume mount point
-# has the right owner even before a volume is attached.
+# The `node` user only ever WRITES under APP_DATA_DIR (default /app/data): the
+# SQLite DB, avatar images, agent-session transcripts, per-conversation
+# workspaces, ssh known_hosts, and any cloned repos. The rest of /app (dist,
+# node_modules, public, default-skills) is read-only at runtime, so we only
+# chown the data dir — `chown -R /app` would needlessly re-stamp tens of
+# thousands of node_modules files and duplicate them into a new image layer.
+# HOME-based tool caches (gh/git/python, SDK MCP logs) land under /home/node,
+# which the base image already owns as node:node.
+#
+# APP_DATA_DIR is typically a named volume mounted at runtime. The directory is
+# created here so the volume mount point has the right owner even before a
+# volume is attached.
 RUN mkdir -p /app/data && chown node:node /app/data
 
 USER node
