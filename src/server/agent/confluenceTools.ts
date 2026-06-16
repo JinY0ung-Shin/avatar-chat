@@ -23,7 +23,12 @@ export interface ConfluenceToolsContext {
   config: AppConfig;
   /** Avatar owner's decrypted secret map; values are never returned. */
   ownerSecrets: Record<string, string>;
-  /** True for owner/trusted-user interactive chats. Gates write tools. */
+  /**
+   * True for owner/trusted-user interactive chats. Gates BOTH read and write
+   * tools: every Confluence call uses the OWNER's PAT, so a non-elevated
+   * colleague must not read (or write) the owner's Confluence — mirroring how
+   * `mcp__repo__read_file` and the personal second brain gate reads on `elevated`.
+   */
   elevated: boolean;
 }
 
@@ -35,6 +40,8 @@ const DEFAULT_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT_CHARS = 40_000;
 const WRITE_DENIED = "Confluence write tools can only be used in avatar owner or trusted user conversations.";
+const READ_DENIED =
+  "Confluence tools can only be used in avatar owner or trusted user conversations. They read the owner's Confluence using the owner's Personal Access Token, so a non-trusted colleague cannot use them.";
 const SUPPORTED_IMAGE_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 const TEXT_ATTACHMENT_MEDIA_TYPES = new Set([
   "application/json",
@@ -547,6 +554,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
       "Check the configuration status of the shared Confluence tools. Does not return the URL/PAT values themselves.",
       {},
       async () => {
+        if (!ctx.elevated) return text(READ_DENIED, true);
         const baseUrl = ctx.config.confluenceUrl?.trim();
         const hasPat = Boolean(
           ctx.ownerSecrets[CONFLUENCE_PAT_SECRET_NAME]?.trim() ||
@@ -569,6 +577,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
         start: z.number().int().min(0).optional().describe("Pagination start offset, default 0"),
       },
       async (args) => {
+        if (!ctx.elevated) return text(READ_DENIED, true);
         const res = await requestJson(ctx, "/space", {
           query: { limit: args.limit ?? 25, start: args.start ?? 0 },
         });
@@ -598,6 +607,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
         start: z.number().int().min(0).optional().describe("Pagination start offset, default 0"),
       },
       async (args) => {
+        if (!ctx.elevated) return text(READ_DENIED, true);
         const cql = buildCql(args);
         if (!cql) {
           return text("Provide cql or at least one of space/title/text/label.", true);
@@ -628,6 +638,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
         max_body_chars: z.number().int().min(0).max(100_000).optional().describe("Maximum number of body characters, default 20000"),
       },
       async (args) => {
+        if (!ctx.elevated) return text(READ_DENIED, true);
         const res = await requestJson(ctx, `/content/${encodeURIComponent(args.page_id)}`, {
           query: { expand: "body.storage,version,space,ancestors,metadata.labels" },
         });
@@ -657,6 +668,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
         start: z.number().int().min(0).optional().describe("Pagination start offset, default 0"),
       },
       async (args) => {
+        if (!ctx.elevated) return text(READ_DENIED, true);
         const res = await fetchPageAttachments(ctx, args.page_id, { limit: args.limit, start: args.start });
         if (!res.ok) return text(res.message, true);
         const attachments = res.attachments
@@ -698,6 +710,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
           .describe(`Maximum text/XML characters to return for non-image text attachments, default ${MAX_ATTACHMENT_TEXT_CHARS}`),
       },
       async (args) => {
+        if (!ctx.elevated) return text(READ_DENIED, true);
         const resolved = await resolveAttachment(ctx, args);
         if (!resolved.ok) return text(resolved.message, true);
 
@@ -766,6 +779,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
           .describe(`Maximum bytes per downloaded image, default ${DEFAULT_ATTACHMENT_BYTES}`),
       },
       async (args) => {
+        if (!ctx.elevated) return text(READ_DENIED, true);
         const page = await requestJson(ctx, `/content/${encodeURIComponent(args.page_id)}`, {
           query: { expand: "body.storage,version,space,ancestors,metadata.labels" },
         });

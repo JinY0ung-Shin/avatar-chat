@@ -258,8 +258,8 @@
     flex-direction: column;
     width: 440px;
     flex: 0 0 auto;
-    border-left: 1px solid var(--border);
-    background: var(--surface);
+    border-left: 1px solid var(--line);
+    background: var(--panel);
     overflow: hidden;
   }
   .canvas-panel.collapsed {
@@ -284,17 +284,17 @@
   }
   .canvas-head h3 {
     margin: 0;
-    font-size: 0.95rem;
+    font-size: var(--t-md);
     display: flex;
     align-items: center;
     gap: var(--s-2);
   }
   .canvas-beta {
-    font-size: 0.65rem;
+    font-size: var(--t-2xs);
     padding: 1px 6px;
-    border-radius: 999px;
-    background: var(--accent-soft, var(--surface-2));
-    color: var(--accent, var(--text));
+    border-radius: var(--r-pill);
+    background: var(--accent-soft);
+    color: var(--accent);
     font-weight: 600;
   }
   .canvas-tabs {
@@ -303,12 +303,12 @@
     gap: var(--s-1);
   }
   .canvas-tab {
-    font-size: 0.75rem;
+    font-size: var(--t-xs);
     padding: 2px 8px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
+    border-radius: var(--r-xs);
+    border: 1px solid var(--line);
     background: transparent;
-    color: var(--text-muted, var(--text));
+    color: var(--muted);
     cursor: pointer;
     max-width: 160px;
     overflow: hidden;
@@ -318,11 +318,11 @@
   .canvas-tab.active {
     background: var(--surface-2);
     color: var(--text);
-    border-color: var(--accent, var(--border));
+    border-color: var(--accent);
   }
   .canvas-card {
-    border: 1px solid var(--border);
-    border-radius: var(--radius, 10px);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xl);
     background: var(--bg);
     padding: var(--s-3);
     display: flex;
@@ -331,7 +331,7 @@
   }
   .canvas-title {
     font-weight: 600;
-    font-size: 0.9rem;
+    font-size: var(--t-base);
   }
   .canvas-content {
     overflow-x: auto;
@@ -341,8 +341,8 @@
     height: auto;
   }
   .canvas-render-error {
-    color: var(--danger, #c0392b);
-    font-size: 0.78rem;
+    color: var(--danger);
+    font-size: var(--t-xs);
     margin: 0;
   }
   .canvas-controls,
@@ -353,14 +353,14 @@
     gap: var(--s-2);
   }
   .canvas-control-label {
-    font-size: 0.82rem;
+    font-size: var(--t-sm);
     font-weight: 600;
   }
   .canvas-opt {
     text-align: left;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--panel);
     padding: var(--s-2) var(--s-3);
     cursor: pointer;
     display: flex;
@@ -368,15 +368,15 @@
     gap: 2px;
   }
   .canvas-opt.selected {
-    border-color: var(--accent, var(--text));
+    border-color: var(--accent);
     background: var(--surface-2);
   }
   .canvas-opt-label {
     font-weight: 500;
   }
   .canvas-opt-desc {
-    font-size: 0.75rem;
-    color: var(--text-muted, var(--text));
+    font-size: var(--t-xs);
+    color: var(--muted);
   }
   .canvas-actions {
     display: flex;
@@ -384,16 +384,16 @@
     gap: var(--s-2);
   }
   .canvas-answered {
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
     padding: var(--s-2) var(--s-3);
-    font-size: 0.82rem;
+    font-size: var(--t-sm);
   }
   .canvas-answered-badge {
     display: inline-block;
-    font-size: 0.7rem;
+    font-size: var(--t-2xs);
     font-weight: 600;
-    color: var(--ok, #2e7d32);
+    color: var(--ok);
     margin-bottom: var(--s-1);
   }
   .canvas-answered ul {
@@ -407,7 +407,7 @@
     z-index: 2;
     border: none;
     background: transparent;
-    color: var(--text-muted, var(--text));
+    color: var(--muted);
     cursor: pointer;
     font-size: 1rem;
     line-height: 1;
@@ -425,12 +425,12 @@
     writing-mode: vertical-rl;
     height: 100%;
     border: none;
-    border-left: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text-muted, var(--text));
+    border-left: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--muted);
     cursor: pointer;
     padding: var(--s-3) var(--s-1);
-    font-size: 0.8rem;
+    font-size: var(--t-sm);
   }
   .canvas-expand-label {
     writing-mode: vertical-rl;

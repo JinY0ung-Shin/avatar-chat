@@ -373,9 +373,13 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         greeting: opts.greeting === true,
         multiSession: readState().chatPanes.length > 1,
         groupKnowledgeOff: pane.groupKnowledgeOff || [],
-        // Per-conversation model tier; unset → the default tier (Opus).
+        // Model tier + reasoning effort are INTENTIONALLY per-conversation only:
+        // unlike groupKnowledgeOff (which seeds new panes from a remembered per-user
+        // default), these have NO per-user memory. A new pane starts unset, so we
+        // fall back to the hardcoded defaults here every time — the picker does not
+        // remember the user's last choice across conversations by design (a per-turn
+        // knob, not a profile preference).
         model: pane.modelTier || DEFAULT_MODEL_TIER,
-        // Per-conversation reasoning effort; unset → the SDK default (high).
         effort: pane.effort || DEFAULT_EFFORT_LEVEL,
         // Staged image attachments (data URLs). The server reuses our id as the
         // stored attachment id + filename. Omit when none.

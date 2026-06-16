@@ -5,6 +5,7 @@ import type { Store } from "../store.js";
 import type { AgentOwner, AppConfig, Plugin, RoutineJob, RoutineSchedulePatch } from "../types.js";
 import { text } from "./mcpTools.js";
 import { DEFAULT_MODEL_TIER } from "../modelTiers.js";
+import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
 import { summarizeOwnerState } from "./ownerState.js";
 
 /**
@@ -28,6 +29,22 @@ export interface SystemToolsContext {
    * pin is set (the pin wins). See modelTiers.ts / claudeAgent effectiveModel.
    */
   selectedModelTier?: string;
+  /**
+   * The user's per-conversation reasoning effort level for THIS run, if one was
+   * chosen in the composer. Reported by describe_system alongside the model so the
+   * avatar knows how much thinking it applies this turn. Undefined → no pick (the
+   * SDK applies its `high` default). Independent of the model pin. See
+   * effortLevels.ts / claudeAgent userEffort.
+   */
+  selectedEffort?: string;
+  /**
+   * The working repository (by NAME) opened for THIS conversation via
+   * `mcp__git_repo__open_repo`, if any. Reported by describe_system, mirroring
+   * buildPrompt's activeRepoSection. Undefined → no repo open. The server-side
+   * clone path is NEVER carried here — only the repo name. See repoWorkspace.ts /
+   * claudeAgent request.activeRepoName.
+   */
+  activeRepoName?: string;
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -175,6 +192,15 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
             : adminModel
               ? `${adminModel} (admin setting)`
               : `${defaultModel ? `${defaultModel} (${DEFAULT_MODEL_TIER})` : DEFAULT_MODEL_TIER} (default)`;
+        // Per-conversation reasoning effort, mirroring the model-tier wiring above:
+        // when the composer picked a level, name it (with its Korean label) as the
+        // effort chosen for THIS conversation; otherwise the SDK's `high` default.
+        // The SDK may silently downgrade an unsupported level for the active model.
+        const userEffort = ctx.selectedEffort;
+        const effortLabel = (id: string) => EFFORT_LEVELS.find((e) => e.id === id)?.label;
+        const effortLine = userEffort
+          ? `${effortLabel(userEffort) ? `${userEffort} (${effortLabel(userEffort)})` : userEffort} (chosen for this conversation)`
+          : `${effortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${effortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;
         const hashtags = user?.hashtags ?? [];
         const visibilityLabel =
           user?.visibility === "public"
@@ -190,6 +216,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Profile visibility: ${visibilityLabel}; intro ${user?.intro?.trim() ? "set" : "(none)"}, capability hashtags ${hashtags.length ? hashtags.map((t) => `#${t}`).join(" ") : "(none)"}`,
           `- runtime: ${ctx.config.agentRuntime}`,
           `- Model in use: ${modelLine}`,
+          `- Reasoning effort: ${effortLine}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
           `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
@@ -197,6 +224,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Second brain (personal): ${state.knowledgeRepoConfigured ? "active — `mcp__brain__search` recall over wiki/, plus the brain-search/brain-ingest/brain-reflect/brain-lint skills (run brain-migrate once if the wiki/ vault is missing)" : "inactive (connect a knowledge repository to enable brain recall/ingest/reflect)"}`,
           `- Team second brain: ${groups.filter((g) => g.knowledgeRepoConfigured).length > 0 ? `${groups.filter((g) => g.knowledgeRepoConfigured).length} group(s) expose \`mcp__group_brain__search\` (members search; admins consolidate)` : "none (no group has a connected shared repository)"}`,
           `- General git repos: ${state.gitRepoCount}`,
+          `- Working repository: ${ctx.activeRepoName ? `${ctx.activeRepoName} (opened via open_repo; local edits/commit native, push via mcp__git_repo__push)` : "(none open)"}`,
           `- Internal Git token (GIT_TOKEN): ${state.gitTokenSet ? "set" : "not set"}`,
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") : "(none)"}`,
           `- Remote SSH tools: ${secretNames.includes("SSH_PRIVATE_KEY") ? "enabled (SSH_PRIVATE_KEY set)" : "disabled (no SSH_PRIVATE_KEY secret)"}`,

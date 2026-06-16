@@ -74,7 +74,7 @@ export function buildGroupBrainTools(store: Store, ctx: GroupBrainToolsContext) 
   return [
     tool(
       "search",
-      "Search a group's shared TEAM BRAIN — the curated notes under `wiki/` in the named group's shared knowledge repository — and return the most relevant notes ranked by title/aliases, tags, then body. Use this to recall team-shared rules, prompts, decisions, and context any group member captured, scoped to ONE group. Call `mcp__group_repo__list_groups` first to confirm the group name and that a shared repository is connected. To ADD to the team brain, group admins ingest with `mcp__group_repo__write_file` then `commit`. (group member only — any member of the group may read)",
+      "Search a group's shared TEAM BRAIN — the curated notes under `wiki/` in the named group's shared knowledge repository — and return the most relevant notes ranked by title/aliases, tags, then body. Use this to recall team-shared rules, prompts, decisions, and context any group member captured, scoped to ONE group. Call `mcp__group_repo__list_groups` first to confirm the group name and that a shared repository is connected. To ADD to the team brain, group admins ingest with `mcp__group_repo__write_file` then `commit`. (group member only — read access needs no admin role, only that you belong to the group)",
       {
         group: z.string().describe("Group name or ID (confirm with list_groups)"),
         query: z.string().describe("What to look for, in natural language or keywords."),

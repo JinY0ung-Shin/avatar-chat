@@ -415,8 +415,13 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     // Per-conversation model tier chosen in the composer (all viewers, not just
     // the owner). A known tier alias applies; "" clears back to the server default;
     // anything else (incl. nothing sent) → null = keep whatever is already stored.
-    // Like groupKnowledgeOff, the client owns this and sends it on each turn, so it
-    // works from a brand-new chat (incl. the greeting) with no row yet.
+    // The client owns this and sends it on each turn, so it works from a brand-new
+    // chat (incl. the greeting) with no row yet. INTENTIONALLY per-conversation
+    // ONLY — unlike groupKnowledgeOff there is NO per-user default column, so the
+    // picker resets to the hardcoded server default for every new conversation
+    // (the client seeds new panes from DEFAULT_MODEL_TIER, not a remembered choice).
+    // This divergence is deliberate: model/effort is a per-turn knob, not a profile
+    // preference, so we don't persist a per-user memory for it.
     const rawModel = safeString(req.body?.model);
     const requestedModel: string | null =
       req.body?.model === undefined || req.body?.model === null
@@ -425,9 +430,12 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           ? rawModel
           : ""; // sent but not a known tier (incl. empty) → clear to default
 
-    // Per-conversation reasoning effort, same client-owned model as the tier above:
-    // a known level applies; "" clears back to the SDK default; nothing sent → null
-    // = keep whatever is already stored.
+    // Per-conversation reasoning effort, same client-owned, per-conversation-only
+    // model as the tier above: a known level applies; "" clears back to the SDK
+    // default; nothing sent → null = keep whatever is already stored. Like the tier,
+    // there is NO per-user default — each new conversation resets to the SDK default
+    // (the client seeds new panes from DEFAULT_EFFORT_LEVEL); this is intentional,
+    // not a missing groupKnowledgeOff-style per-user memory.
     const rawEffort = safeString(req.body?.effort);
     const requestedEffort: string | null =
       req.body?.effort === undefined || req.body?.effort === null

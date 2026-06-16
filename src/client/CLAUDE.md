@@ -69,6 +69,9 @@ validators. Update these in lockstep:
   `/api/me/group-knowledge-default` in the background; it deliberately does NOT sync `state.user` from the
   response (rapid toggles resolve out of order; the optimistic value is the latest pick) and only toasts
   on failure. Don't "fix" this into an await-and-sync.
+- **The model/effort picker is per-conversation-ONLY — no per-user default**, unlike the group-knowledge
+  toggle above (which DOES persist a per-user default via `groupKnowledgeOffDefault`). The model/effort
+  choice is made per chat and does not seed new conversations; don't add a per-user default for it.
 - Some settings cards (profile/visibility/secrets) save WITHOUT a full reload to avoid wiping unsaved form
   text — preserve in-place updates there.
 - **Splitting a multi-tab view into per-tab components: ALWAYS-MOUNT + `active` prop, never `{#if tab}`

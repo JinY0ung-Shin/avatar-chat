@@ -76,13 +76,66 @@ function knowledgeRepoSection(request: AgentRequest, knowledgeRepoConfigured: bo
     : "You do not have a knowledge repository yet, and `GIT_TOKEN` is not set either. If the owner wants to create a repository, first guide them to register an internal Git token (the `GIT_TOKEN` secret) under Settings → **Git credentials** (once registered, you can create one directly with `mcp__repo__create_repo`). `scaffold_skill`/`write_file`/`commit` fail before a repository is connected.";
 }
 
+/**
+ * SINGLE SOURCE OF TRUTH for general `mcp__git_repo__*` working-surface guidance.
+ *
+ * After the "single working-surface" refactor (commit 233f958) the general
+ * git-repo tools are: owner-only `register_repo`/`remove_repo`; owner-OR-trusted
+ * `list_repos`/`sync_repo`/`open_repo`/`close_repo`/`push`. There are NO MCP
+ * file-CRUD tools — editing is done by opening a repo as the conversation's cwd
+ * and using NATIVE Read/Edit/Bash + LOCAL git, then `push`/`sync_repo` for remote.
+ *
+ * Both the owner branch (`gitRepoSection`) AND the trusted-teammate branch call
+ * this — keep it as the only hand-written copy so the two can't drift again (they
+ * did once: the teammate copy kept advertising deleted file-CRUD tools). The
+ * routine branch reuses the `"routine"` mode (no `open_repo` — the scheduler does
+ * not thread `conversationId`, so the working surface is unavailable headlessly).
+ *
+ * `mode` tailors permission scope and which tools are named:
+ *  - `owner`    — full surface incl. register_repo/remove_repo + the open_repo flow.
+ *  - `teammate` — elevated trusted user: list_repos/sync_repo/open_repo/close_repo/push,
+ *                 NO register_repo/remove_repo (registration/removal is owner-only).
+ *  - `routine`  — headless owner run: register_repo/list_repos/sync_repo/push, NO
+ *                 open_repo/close_repo (no conversation → no working surface).
+ */
+function gitRepoWorkflowSection(mode: "owner" | "teammate" | "routine"): string {
+  const intro =
+    mode === "owner"
+      ? "General **git repo work** is separate from the knowledge-repository tools. When the owner asks you to manage a work/code repository, register it with `mcp__git_repo__register_repo`, then "
+      : mode === "teammate"
+        ? "General **git repo work** (the owner's pre-registered work/code repositories) is separate from the knowledge-repository tools. List them with `mcp__git_repo__list_repos`, then "
+        : "General **git repo work** (`mcp__git_repo__*`, separate from the knowledge-repository tools) is available. Inspect the owner's registered repos with `mcp__git_repo__list_repos`, and register a new work/code repository with `mcp__git_repo__register_repo` when a task needs one. ";
+
+  // The open_repo working-surface flow — only when there IS a conversation to
+  // hold the selection (owner/teammate); a headless routine has none.
+  const workingSurface =
+    mode === "routine"
+      ? ""
+      : "**open it as your working directory with `mcp__git_repo__open_repo`** to read, edit, and test it. Opening takes effect from the NEXT message (the working directory is fixed when a turn starts), so after opening, tell the user it is ready and continue from their next message; from then on read/edit files and run tests and LOCAL git (`git status`/`diff`/`log`/`add`/`commit`) natively in the working directory. `close_repo` returns to the scratch workspace. ";
+
+  // Remote git (sync_repo/push) always stays MCP — the shell has no credentials.
+  const remote =
+    "Only remote git stays in MCP: `sync_repo` pulls updates and `push` pushes your local commits (these need the server-side credentials your shell does not have). `push` is not main-only — it pushes `HEAD` to the registered branch (or, if branch was left empty, the clone's current/default branch); " +
+    (mode === "owner"
+      ? "if the owner names a specific branch, set that name as `register_repo`'s `branch`. "
+      : mode === "routine"
+        ? "to push to a specific branch, set that name as `register_repo`'s `branch` first. "
+        : "if a specific branch is needed, the owner sets it as `register_repo`'s `branch`. ");
+
+  // Closing scope note: which tools are owner-only vs available to this viewer.
+  const scope =
+    mode === "owner"
+      ? "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. Registration/removal is owner-only; opening/syncing/pushing an already-registered repo is possible in owner or trusted-user conversations. These are pure git tools and do not cover GitHub issue/PR/release management."
+      : mode === "teammate"
+        ? "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. You may open/sync/push the owner's already-registered repos, but **registering or removing** a repository is owner-only — if a new repo needs registering, ask the owner. These are pure git tools and do not cover GitHub issue/PR/release management."
+        : "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. NOTE: you cannot open a working directory in a routine (`open_repo` needs an interactive conversation), so for code edits operate on the local clone via the personal/group knowledge-repo tools where possible, or limit yourself to register/sync/push of already-staged work. These are pure git tools and do not cover GitHub issue/PR/release management.";
+
+  return `${intro}${workingSurface}${remote}${scope}`;
+}
+
 /** General work/code git-repo tooling guidance (owner prompt). */
 function gitRepoSection(): string {
-  return (
-    "General **git repo work** is separate from the knowledge-repository tools. When the owner asks you to manage a work/code repository, register it with `mcp__git_repo__register_repo`, then **open it as your working directory with `mcp__git_repo__open_repo`** to read, edit, and test it. Opening takes effect from the NEXT message (the working directory is fixed when a turn starts), so after opening, tell the user it is ready and continue from their next message; from then on read/edit files and run tests and LOCAL git (`git status`/`diff`/`log`/`add`/`commit`) natively in the working directory. `close_repo` returns to the scratch workspace. " +
-    "Only remote git stays in MCP: `sync_repo` pulls updates and `push` pushes your local commits (these need the server-side credentials your shell does not have). `push` is not main-only — it pushes `HEAD` to the registered branch (or, if branch was left empty, the clone's current/default branch); if the owner names a specific branch, set that name as `register_repo`'s `branch`. " +
-    "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. Registration/removal is owner-only; opening/syncing/pushing an already-registered repo is possible in owner or trusted-user conversations. These are pure git tools and do not cover GitHub issue/PR/release management."
-  );
+  return gitRepoWorkflowSection("owner");
 }
 
 /**
@@ -383,13 +436,22 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         const teamBrainNote = routineGroups.some((g) => g.knowledgeRepoConfigured)
           ? " You can also SEARCH a group's team brain with `mcp__group_brain__search`/`get_note` (scoped to one group; members read)."
           : "";
+        // Mirror groupsSection()'s admin-with-no-repo nudge so a routine knows it
+        // can stand up a group's shared repo with mcp__group_repo__create_repo.
+        const routineAdminNoRepo = routineGroups.filter((g) => g.role === "admin" && !g.knowledgeRepoConfigured);
+        const createRepoNote =
+          routineAdminNoRepo.length > 0
+            ? ` For the group(s) you administer that have no shared repository yet (${routineAdminNoRepo
+                .map((g) => `'${g.name}'`)
+                .join(", ")}), you can create and connect one with \`mcp__group_repo__create_repo\`.`
+            : "";
         routineState.push(
           `Owner's groups: ${routineGroups
             .map(
               (g) =>
                 `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`,
             )
-            .join(", ")} — you can use the \`mcp__group_repo__*\` tools (members read, only admins write/commit).${teamBrainNote}`,
+            .join(", ")} — you can use the \`mcp__group_repo__*\` tools (members read, only admins write/commit).${createRepoNote}${teamBrainNote}`,
         );
       }
       if (secretNames.length > 0) {
@@ -409,6 +471,12 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       if (routineBrainBlock) {
         lines.push(routineBrainBlock);
       }
+      // General git-repo guidance for the routine: the SAME tools the owner chat
+      // gets are registered & callable here EXCEPT open_repo/close_repo (those need
+      // request.conversationId, which the scheduler does not thread — so the
+      // "routine" mode of the shared helper drops the working-surface flow). Reusing
+      // gitRepoWorkflowSection keeps this from drifting from the owner branch.
+      lines.push(gitRepoWorkflowSection("routine"));
       lines.push(GIT_MCP_ONLY_GUIDANCE);
     } else {
       lines.push(
@@ -486,9 +554,11 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
           ? `This person belongs to the same group(s) as the owner (${viaGroups.map((g) => `'${g}'`).join(", ")}), so they are an **automatically trusted (elevated)** user and can use file-editing and command-execution tools. They may share skills from the group's shared knowledge repository. Use remote SSH tools only within the scope the admin has permitted.`
           : "This person is a user the owner trusts and can use file-editing and command-execution tools. Use remote SSH tools only within the scope the admin has permitted.",
       );
-      lines.push(
-        "You can check the general git repos the owner has pre-registered with `mcp__git_repo__list_repos` and work on them with `sync_repo`/`status`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`. public repo sync is attempted without a token, and configuration changes such as registering/removing repos are owner-only.",
-      );
+      // Trusted teammate: the SAME working-surface flow the owner gets, scoped to
+      // elevated permissions (open/sync/push, but NOT register/remove). Shares the
+      // single helper with gitRepoSection() so the two branches can't drift — this
+      // copy previously advertised deleted MCP file-CRUD tools.
+      lines.push(gitRepoWorkflowSection("teammate"));
       if (request.knowledgeRepoConfigured !== false) {
         lines.push(
           "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",

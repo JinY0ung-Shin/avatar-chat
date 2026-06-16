@@ -411,6 +411,10 @@ export async function runClaudeAgent(
     viewerIsOwner: ownerToolAccess,
     config,
     selectedModelTier: userModelTier,
+    selectedEffort: userEffort,
+    // The working repo opened for this conversation (NAME only — the clone path is
+    // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
+    activeRepoName: request.activeRepoName,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
   // avatars by capability so it can point the user at a teammate avatar for

@@ -157,6 +157,10 @@ gotchas, and client↔server mirrored validators.
   A NEW table just goes in the always-run schema `db.exec()` block (`CREATE TABLE IF
   NOT EXISTS` covers existing DBs too) — `addColumnIfMissing` is ONLY for adding a
   column to an existing table.
+  **Not every setting is per-user, though:** the per-conversation model/effort picker is
+  INTENTIONALLY per-conversation-only — there is NO per-user default that seeds it (you pick per
+  chat each time). Contrast `group_knowledge_off`, which DOES have a per-user default
+  (`group_knowledge_off_default`) that seeds new conversations. Don't "add a default" for model/effort.
 - **Avatar visibility is a 3-state enum, NOT a boolean.** `users.visibility` =
   `public` (everyone discovers/chats) | `group` (only group teammates) | `private`
   (owner only); `AvatarVisibility` type in types.ts, default `group` for new avatars.
@@ -385,12 +389,25 @@ gotchas, and client↔server mirrored validators.
   from on-demand skills, with an injection guard (system/safety instructions win). Wired in chat +
   scheduler (routines = all groups, no toggle); intro/hashtag gen leaves it unset. `writeRepoTemplate`
   seeds a starter root `CLAUDE.md`.
+- **Second brain (#53) = a CONVENTION over the SAME knowledge repo, NOT a new store.** `wiki/`
+  (curated/durable notes) + `raw/` (unprocessed capture) are just directories inside the existing
+  personal/group knowledge repo — there is no separate brain database. **Recall** is read-only search:
+  `mcp__brain__*` (personal, `search`/`get_note`, gated `elevated` = owner OR trusted same-group
+  teammate) and `mcp__group_brain__*` (one group, read gated on group-MEMBERship). **Capture/consolidate**
+  is the `brain-ingest` / `brain-reflect` default-skills, which WRITE through the existing
+  `mcp__repo__write_file` (personal) / `mcp__group_repo__write_file` (group) + `commit` — there is NO
+  separate "brain write" tool, so a capture is a repo write plus a commit (uncommitted = not persisted).
+  It composes with the request_info backfill loop: `request_info` ESCALATES a true unknown to the owner,
+  `brain-ingest` RETAINS the owner-supplied answer/fact so brain-search finds it next time instead of
+  re-asking (see `default-skills/skills/{brain-*,knowledge-backfill}/SKILL.md`).
 - **Language split: agent-facing text is English, user-facing text is Korean.** Classify a new
   string by *"does the model read it as INPUT?"* → English; else Korean. English (model reads it):
   `buildPrompt` (claudeAgent.ts), `GIT_MCP_ONLY_GUIDANCE`, the `PreToolUse` **`hookDeny(...)` reasons**,
-  and every `agent/*Tools.ts` tool `description`/`.describe()`/`text()` result; the headless
-  intro/hashtag-generation prompts in `routes/profile.ts` are English too but explicitly instruct **Korean
-  OUTPUT**. Korean (a human sees it): `src/client/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
+  every `agent/*Tools.ts` tool `description`/`.describe()`/`text()` result, and **every bundled
+  `default-skills/**/SKILL.md` — both the body AND the `description:` frontmatter** (loaded as plugin
+  roots and read by the model as INPUT, so they are ENGLISH; the avatar still REPLIES in the user's
+  language); the headless intro/hashtag-generation prompts in `routes/profile.ts` are English too but
+  explicitly instruct **Korean OUTPUT**. Korean (a human sees it): `src/client/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
   labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks, **client-expanded**
   slash-command expansions (rendered as the user's OWN message bubble), conversation titles/`[루틴]`/`(중지됨)`.
   EXCEPTION: a slash command flagged `serverExpand` in `src/client/src/lib/slash.ts` (currently **`/learn`**) sends the

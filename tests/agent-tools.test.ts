@@ -295,7 +295,7 @@ describe("confluence tools", () => {
 
   it("reports missing URL/PAT without exposing secret values", async () => {
     const missingUrl = await callTool(
-      buildConfluenceTools({ config: makeConfig(), ownerSecrets: { CONFLUENCE_PAT: "pat" }, elevated: false }),
+      buildConfluenceTools({ config: makeConfig(), ownerSecrets: { CONFLUENCE_PAT: "pat" }, elevated: true }),
       "search",
       { text: "auth" },
     );
@@ -303,7 +303,7 @@ describe("confluence tools", () => {
     expect(missingUrl.content[0].text).toContain("CONFLUENCE_URL");
 
     const missingPat = await callTool(
-      buildConfluenceTools({ config: makeConfig("https://confluence.internal"), ownerSecrets: {}, elevated: false }),
+      buildConfluenceTools({ config: makeConfig("https://confluence.internal"), ownerSecrets: {}, elevated: true }),
       "search",
       { text: "auth" },
     );
@@ -337,7 +337,7 @@ describe("confluence tools", () => {
       buildConfluenceTools({
         config: makeConfig("https://confluence.internal/confluence"),
         ownerSecrets: { CONFLUENCE_PAT: "super-secret-pat" },
-        elevated: false,
+        elevated: true,
       }),
       "search",
       { space: "DEV", text: "auth", limit: 5 },
@@ -378,7 +378,7 @@ describe("confluence tools", () => {
       buildConfluenceTools({
         config: makeConfig("https://confluence.internal/confluence"),
         ownerSecrets: { CONFLUENCE_PAT: "pat" },
-        elevated: false,
+        elevated: true,
       }),
       "list_attachments",
       { page_id: "123", media_type: "image/png" },
@@ -427,7 +427,7 @@ describe("confluence tools", () => {
       buildConfluenceTools({
         config: makeConfig("https://confluence.internal/confluence"),
         ownerSecrets: { CONFLUENCE_PAT: "pat" },
-        elevated: false,
+        elevated: true,
       }),
       "get_attachment",
       { attachment_id: "att-1" },
@@ -508,7 +508,7 @@ describe("confluence tools", () => {
       buildConfluenceTools({
         config: makeConfig("https://confluence.internal/confluence"),
         ownerSecrets: { CONFLUENCE_PAT: "pat" },
-        elevated: false,
+        elevated: true,
       }),
       "extract_page_assets",
       { page_id: "page-1" },
@@ -523,6 +523,20 @@ describe("confluence tools", () => {
       "flow.drawio",
       "flow.png",
     ]);
+  });
+
+  it("blocks read tools when the viewer is not elevated", async () => {
+    const result = await callTool(
+      buildConfluenceTools({
+        config: makeConfig("https://confluence.internal"),
+        ownerSecrets: { CONFLUENCE_PAT: "pat" },
+        elevated: false,
+      }),
+      "search",
+      { text: "auth" },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("avatar owner or trusted user conversations");
   });
 
   it("blocks write tools when the viewer is not elevated", async () => {
