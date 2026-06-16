@@ -692,6 +692,36 @@
   padding: var(--s-3);
   display: grid;
   gap: var(--s-2);
+  position: relative;
+}
+/* Per-notification ✕ dismiss button, pinned to the row's top-right corner. */
+.notification-row .pr-main {
+  padding-right: var(--s-6);
+}
+.notification-dismiss {
+  position: absolute;
+  top: var(--s-2);
+  right: var(--s-2);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease, border-color 0.12s ease;
+}
+.notification-dismiss:hover {
+  color: var(--danger);
+  background: var(--panel-strong);
+  border-color: var(--line);
+}
+.notification-dismiss:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 .notification-row.unread {
   border-color: var(--accent-soft-strong);

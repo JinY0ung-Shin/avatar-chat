@@ -306,6 +306,16 @@
                   on:click={(e) => onRowClick(e, n)}
                   on:keydown={(e) => onRowKeydown(e, n)}
                 >
+                  <button
+                    class="notification-dismiss"
+                    type="button"
+                    aria-label="알림 삭제"
+                    title="알림 삭제"
+                    disabled={busyIds.has(n.id)}
+                    on:click={() => deleteNotification(n)}
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
                   <div class="pr-main">
                     <div class="inbox-row-head">
                       <span class="inbox-chip note">알림</span>
@@ -314,21 +324,11 @@
                     <div class="pr-sub">{n.avatarDisplayName} · {timeLabel(n.createdAt)}</div>
                     <p>{n.message}</p>
                   </div>
-                  <div class="kr-actions">
-                    {#if isRoutineConversation(n.conversationId)}
+                  {#if isRoutineConversation(n.conversationId)}
+                    <div class="kr-actions">
                       <button class="ghost-sm" type="button" on:click={() => openResult(n)}>결과 보기</button>
-                    {/if}
-                    <button
-                      class="msg-act danger"
-                      type="button"
-                      aria-label="알림 삭제"
-                      title="알림 삭제"
-                      disabled={busyIds.has(n.id)}
-                      on:click={() => deleteNotification(n)}
-                    >
-                      <Icon name="trash" size={16} />
-                    </button>
-                  </div>
+                    </div>
+                  {/if}
                 </div>
               {/if}
             {/each}
