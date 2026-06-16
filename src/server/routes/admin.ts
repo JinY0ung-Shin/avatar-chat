@@ -368,7 +368,7 @@ export function createAdminRouter({ config, store, observedModel, auditAs }: Rou
       const role = req.body?.role === "admin" ? "admin" : "member";
       const member = store.setGroupMemberRole(req.params.id, req.params.userId, role);
       if (!member) {
-        apiError(res, 404, "멤버를 찾을 수 없습니다.");
+        apiError(res, 404, "그룹원을 찾을 수 없습니다.");
         return;
       }
       auditAs(req, "group_member_role", `group=${req.params.id} ${req.params.userId} -> ${role}`);

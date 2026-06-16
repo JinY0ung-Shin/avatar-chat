@@ -141,7 +141,7 @@
       <div class="muted">@{user.username} · 가입 {timeLabel(user.createdAt)} · 최근 {user.lastSeenAt ? timeLabel(user.lastSeenAt) : "기록 없음"}</div>
     </div>
     <div class="ar-tags">
-      <span class="tag {isAdmin ? 'write' : 'read'}">{isAdmin ? "관리자" : "멤버"}</span>
+      <span class="tag {isAdmin ? 'write' : 'read'}">{isAdmin ? "관리자" : "일반 사용자"}</span>
       {#if user.visibility === "public"}<span class="tag accent">공개</span>{/if}
       {#if user.visibility === "group"}<span class="tag">그룹 공개</span>{/if}
       {#if user.visibility === "private"}<span class="tag">비공개</span>{/if}

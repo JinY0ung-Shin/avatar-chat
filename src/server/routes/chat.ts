@@ -142,7 +142,7 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
         : { message, error: "/routine 뒤에 작업 내용을 입력해 주세요.", ownerOnly: true };
     case "find":
       return args
-        ? { message: `이 요청에 더 적합한 팀원 아바타가 있는지 찾아보고 추천해줘.\n\n${args}` }
+        ? { message: `이 요청에 더 적합한 동료 아바타가 있는지 찾아보고 추천해줘.\n\n${args}` }
         : { message, error: "/find 뒤에 요청 내용을 입력해 주세요." };
     case "new":
       return { message, error: "/new는 입력창의 슬래시 메뉴에서 새 대화로 실행해 주세요." };

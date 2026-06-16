@@ -45,7 +45,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
       return;
     }
     if (!canManageGroup(req.user!.id, groupId)) {
-      apiError(res, 403, "이 그룹의 멤버를 관리할 권한이 없습니다. (그룹 관리자 전용)");
+      apiError(res, 403, "이 그룹의 그룹원을 관리할 권한이 없습니다. (그룹 관리자 전용)");
       return;
     }
     const username = safeString(req.body?.username);
@@ -67,13 +67,13 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
   router.patch("/api/me/groups/:id/members/:userId", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const groupId = req.params.id;
     if (!canManageGroup(req.user!.id, groupId)) {
-      apiError(res, 403, "이 그룹의 멤버를 관리할 권한이 없습니다.");
+      apiError(res, 403, "이 그룹의 그룹원을 관리할 권한이 없습니다.");
       return;
     }
     const role = req.body?.role === "admin" ? "admin" : "member";
     const member = store.setGroupMemberRole(groupId, req.params.userId, role);
     if (!member) {
-      apiError(res, 404, "멤버를 찾을 수 없습니다.");
+      apiError(res, 404, "그룹원을 찾을 수 없습니다.");
       return;
     }
     auditAs(req, "group_member_role", `group=${groupId} ${req.params.userId} -> ${role}`);
@@ -84,7 +84,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
   router.delete("/api/me/groups/:id/members/:userId", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const groupId = req.params.id;
     if (!canManageGroup(req.user!.id, groupId)) {
-      apiError(res, 403, "이 그룹의 멤버를 관리할 권한이 없습니다.");
+      apiError(res, 403, "이 그룹의 그룹원을 관리할 권한이 없습니다.");
       return;
     }
     const removed = store.removeGroupMember(groupId, req.params.userId);
@@ -157,7 +157,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
       if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
-        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
       const ctx = groupKnowledgeRepoContextFor(store, groupId, req.user!.id, config);
@@ -181,7 +181,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
       if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
-        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
       const ctx = groupKnowledgeRepoContextFor(store, groupId, req.user!.id, config);
@@ -206,7 +206,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
       if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
-        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
       const path = req.query.path;
@@ -244,7 +244,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
       if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
-        apiError(res, 403, "이 그룹의 멤버가 아닙니다.");
+        apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
       const ctx = groupKnowledgeRepoContextFor(store, groupId, req.user!.id, config);

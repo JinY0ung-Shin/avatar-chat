@@ -33,7 +33,7 @@
     const q = memberSearch.trim().toLowerCase();
     if (!q) return members;
     return members.filter((m) =>
-      [m.displayName || "", m.username || "", m.role === "admin" ? "관리자" : "멤버"].join(" ").toLowerCase().includes(q),
+      [m.displayName || "", m.username || "", m.role === "admin" ? "관리자" : "그룹원"].join(" ").toLowerCase().includes(q),
     );
   })();
 
@@ -133,7 +133,7 @@
       await reloadMembers();
       notify(`${clean}님을 그룹에 추가했습니다.`, "ok");
     } catch (err) {
-      notify(`멤버 추가 실패: @${clean}: ${(err as Error).message}`, "warn");
+      notify(`그룹원 추가 실패: @${clean}: ${(err as Error).message}`, "warn");
     } finally {
       adding = false;
     }
@@ -170,12 +170,12 @@
       await reloadMembers();
       notify(`${m.displayName}님을 그룹에서 제거했습니다.`, "ok");
     } catch (err) {
-      notify(`멤버는 제거됐지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+      notify(`그룹원은 제거됐지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     }
   }
 
   async function deleteGroup() {
-    if (!window.confirm(`'${group.name}' 그룹을 삭제할까요?\n멤버십이 모두 해제되고 멤버 간 자동 신뢰가 사라집니다. (공용 저장소 자체는 GitHub에 남습니다.)`)) return;
+    if (!window.confirm(`'${group.name}' 그룹을 삭제할까요?\n그룹 소속이 모두 해제되고 그룹원 간 자동 신뢰가 사라집니다. (공용 저장소 자체는 GitHub에 남습니다.)`)) return;
     busy = true;
     try {
       await api(`/api/admin/groups/${encodeURIComponent(group.id)}`, { method: "DELETE" });
@@ -201,7 +201,7 @@
       <div class="muted">{group.description || "(설명 없음)"}</div>
     </div>
     <div class="ar-tags">
-      <span class="tag">멤버 {group.memberCount}</span>
+      <span class="tag">그룹원 {group.memberCount}</span>
       <span class="tag write">관리자 {group.adminCount}</span>
       {#if group.knowledgeRepo}<span class="tag accent">공용 저장소</span>{/if}
     </div>
@@ -235,26 +235,26 @@
             <button class="ghost-sm" type="submit" disabled={busy}>수정</button>
           </form>
 
-          <h4 class="knowledge-sub">멤버</h4>
+          <h4 class="knowledge-sub">그룹원</h4>
           <div class="admin-users-head">
             <input
               type="search"
               class="admin-search"
-              placeholder="멤버 이름·아이디 검색"
-              aria-label="그룹 멤버 검색"
+              placeholder="그룹원 이름·아이디 검색"
+              aria-label="그룹원 검색"
               bind:value={memberSearch}
               disabled={!members.length}
             />
             <span class="muted nowrap">
-              {#if shownMembers.length === members.length}멤버 {members.length}명{:else}표시 {shownMembers.length}명 / 전체 {members.length}명{/if}
+              {#if shownMembers.length === members.length}그룹원 {members.length}명{:else}표시 {shownMembers.length}명 / 전체 {members.length}명{/if}
             </span>
           </div>
           <div class="plugin-rows">
             {#if !members.length}
-              <div class="empty-note">멤버가 없습니다.</div>
+              <div class="empty-note">그룹원이 없습니다.</div>
             {:else if !shownMembers.length}
               <div class="empty-note">
-                "{memberSearch.trim()}"에 맞는 멤버가 없습니다.
+                "{memberSearch.trim()}"에 맞는 그룹원이 없습니다.
                 <button class="linkish small" type="button" on:click={() => (memberSearch = "")}>검색어 지우기</button>
               </div>
             {:else}
@@ -265,12 +265,12 @@
                     <strong>{m.displayName}</strong>
                     <div class="pr-sub">@{m.username}</div>
                   </div>
-                  {#if m.role === "admin"}<span class="tag write">관리자</span>{:else}<span class="tag read">멤버</span>{/if}
+                  {#if m.role === "admin"}<span class="tag write">관리자</span>{:else}<span class="tag read">그룹원</span>{/if}
                   <div class="pr-actions">
                     <button class="ghost-sm" type="button" title={m.role === "admin" ? "그룹 관리자 해제" : "그룹 관리자 지정"} on:click={() => toggleMemberRole(m)}>
                       {m.role === "admin" ? "관리자 해제" : "관리자 지정"}
                     </button>
-                    <button class="msg-act danger" type="button" title="멤버 제거" aria-label={`${m.displayName} 제거`} on:click={() => removeMember(m)}>
+                    <button class="msg-act danger" type="button" title="그룹원 제거" aria-label={`${m.displayName} 제거`} on:click={() => removeMember(m)}>
                       <Icon name="trash" />
                     </button>
                   </div>
@@ -285,7 +285,7 @@
                 <input
                   type="search"
                   placeholder="추가할 사용자 아이디(@) 또는 이름"
-                  aria-label="멤버 추가"
+                  aria-label="그룹원 추가"
                   bind:value={addQuery}
                   on:input={runSearch}
                   on:keydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addMember(addQuery); } }}

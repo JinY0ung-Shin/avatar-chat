@@ -60,9 +60,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     name: "find",
     title: "아바타 찾기",
     argsLabel: "요청",
-    description: "요청에 맞는 팀원 아바타를 찾아 추천하게 합니다.",
+    description: "요청에 맞는 동료 아바타를 찾아 추천하게 합니다.",
     requiresArgs: true,
-    prompt: (args) => `이 요청에 더 적합한 팀원 아바타가 있는지 찾아보고 추천해줘.\n\n${args}`,
+    prompt: (args) => `이 요청에 더 적합한 동료 아바타가 있는지 찾아보고 추천해줘.\n\n${args}`,
   },
 ];
 

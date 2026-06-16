@@ -44,7 +44,7 @@
   let rosterQuery = "";
   $: shownMembers = rosterQuery.trim()
     ? group.members.filter((m) =>
-        [m.displayName || "", m.username || "", m.role === "admin" ? "관리자" : "멤버"]
+        [m.displayName || "", m.username || "", m.role === "admin" ? "관리자" : "그룹원"]
           .join(" ")
           .toLowerCase()
           .includes(rosterQuery.trim().toLowerCase()),
@@ -52,7 +52,7 @@
     : group.members;
   $: memberCountLabel =
     shownMembers.length === group.members.length
-      ? `멤버 ${group.members.length}명`
+      ? `그룹원 ${group.members.length}명`
       : `표시 ${shownMembers.length}명 / 전체 ${group.members.length}명`;
 
   let rowBusy: Record<string, boolean> = {};
@@ -247,7 +247,7 @@
       }
       if (failures.length) {
         const added = successes ? `${successes}명은 추가했습니다. ` : "";
-        notify(`${added}일부 멤버를 추가하지 못했습니다. ${failures.join(" / ")}`, "warn");
+        notify(`${added}일부 그룹원을 추가하지 못했습니다. ${failures.join(" / ")}`, "warn");
       } else {
         notify(`${successes}명을 그룹에 추가했습니다.`, "ok");
       }
@@ -314,7 +314,7 @@
   }
 
   async function disconnectRepo(): Promise<void> {
-    if (!window.confirm("이 그룹의 공용 지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 멤버 아바타들이 더 이상 그 스킬을 불러오지 않습니다.")) return;
+    if (!window.confirm("이 그룹의 공용 지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 그룹원 아바타들이 더 이상 그 스킬을 불러오지 않습니다.")) return;
     repoBusy = true;
     try {
       await api(`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo`, { method: "PUT", body: JSON.stringify({ repo: null }) });
@@ -328,7 +328,7 @@
   }
 
   function requestGroupRepo(): void {
-    void openSeededChat(`"${group.name}" 그룹의 공용 지식 저장소를 만들어서 연결해줘. 그룹 멤버들이 함께 사용할 기본 지식/스킬 구조까지 준비해줘.`);
+    void openSeededChat(`"${group.name}" 그룹의 공용 지식 저장소를 만들어서 연결해줘. 그룹원들이 함께 사용할 기본 지식/스킬 구조까지 준비해줘.`);
   }
 
   // plugin selection (expandable)
@@ -368,23 +368,23 @@
     {#if amAdmin}
       <span class="tag write">내가 관리자</span>
     {:else}
-      <span class="tag read">멤버</span>
+      <span class="tag read">그룹원</span>
     {/if}
   </div>
 
   {#if group.members.length}
     <div class="admin-users-head group-roster-head">
-      <input type="search" class="admin-search" placeholder="멤버 이름·아이디 검색" aria-label={`${group.name} 멤버 검색`} bind:value={rosterQuery} />
+      <input type="search" class="admin-search" placeholder="그룹원 이름·아이디 검색" aria-label={`${group.name} 그룹원 검색`} bind:value={rosterQuery} />
       <span class="muted nowrap">{memberCountLabel}</span>
     </div>
   {/if}
 
   <div class="plugin-rows">
     {#if !group.members.length}
-      <div class="empty-note">멤버가 없습니다.</div>
+      <div class="empty-note">그룹원이 없습니다.</div>
     {:else if !shownMembers.length}
       <div class="empty-note">
-        "{rosterQuery.trim()}"에 맞는 멤버가 없습니다.
+        "{rosterQuery.trim()}"에 맞는 그룹원이 없습니다.
         <button class="linkish small" type="button" on:click={() => (rosterQuery = "")}>검색어 지우기</button>
       </div>
     {:else}
@@ -421,8 +421,8 @@
             aria-autocomplete="list"
             aria-controls={listboxId}
             aria-expanded={showResults}
-            placeholder="추가할 동료 아이디(@) 또는 이름"
-            aria-label="멤버 추가"
+            placeholder="추가할 그룹원 아이디(@) 또는 이름"
+            aria-label="그룹원 추가"
             disabled={adding}
             bind:value={addQuery}
             on:input={onAddInput}
@@ -449,7 +449,7 @@
         </button>
         <label class="group-add-admin"><input type="checkbox" bind:checked={addAsAdmin} disabled={adding} /><span>그룹 관리자로</span></label>
         <button class="primary small" type="button" disabled={adding} on:click={submitMembers}>
-          {adding ? "추가 중…" : selectedArr.length ? `${selectedArr.length}명 추가` : "선택한 멤버 추가"}
+          {adding ? "추가 중…" : selectedArr.length ? `${selectedArr.length}명 추가` : "선택한 그룹원 추가"}
         </button>
       </div>
       {#if selectedArr.length}
@@ -482,7 +482,7 @@
       </form>
       {#if !group.knowledgeRepo}
         <div class="empty-note">
-          공용 저장소를 연결하면 그룹 멤버 전원의 아바타가 그 저장소의 스킬을 사용합니다.
+          공용 저장소를 연결하면 그룹원 전원의 아바타가 그 저장소의 스킬을 사용합니다.
           <button class="linkish small" type="button" on:click={requestGroupRepo}>아바타에게 공용 저장소 만들기 요청</button>
         </div>
       {:else}
@@ -510,7 +510,7 @@
               <SettingsPluginSelect
                 info={contents}
                 selected={group.knowledgeSelected}
-                headText="그룹 멤버 아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다."
+                headText="그룹원 아바타가 사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다."
                 onSave={saveSelection}
               />
             {/if}
@@ -520,7 +520,7 @@
     </div>
   {:else}
     <p class="muted small">
-      {group.knowledgeRepo ? "이 그룹에는 공용 지식 저장소가 연결되어 동료들의 아바타와 공유됩니다." : "이 그룹에는 아직 공용 지식 저장소가 없습니다."}
+      {group.knowledgeRepo ? "이 그룹에는 공용 지식 저장소가 연결되어 그룹원들의 아바타와 공유됩니다." : "이 그룹에는 아직 공용 지식 저장소가 없습니다."}
       {#if group.knowledgeRepo}
         <button class="linkish small" type="button" title="노트 사이의 [[링크]] 연결을 그래프로 봅니다" on:click={() => (graphOpen = true)}>그래프 보기</button>
       {/if}

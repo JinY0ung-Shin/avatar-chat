@@ -663,8 +663,9 @@ export interface AgentRequest {
    * Group names the (non-owner) viewer shares with the avatar owner — i.e. the
    * REASON this viewer is auto-trusted, when group co-membership is the source.
    * Lets the prompt explain why the current colleague is elevated
-   * (META-COGNITION) instead of presenting trust as unexplained. Empty for the
-   * owner, for directly-trusted viewers, and for plain colleagues.
+   * (META-COGNITION) instead of presenting trust as unexplained. Group
+   * co-membership is the ONLY trust source, so this is empty for the owner and
+   * for plain colleagues (a non-owner sharing no group).
    */
   trustedViaGroups?: string[];
   /**

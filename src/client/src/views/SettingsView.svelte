@@ -105,7 +105,7 @@
             <div>
               <h3>그룹</h3>
               <p class="muted">
-                내가 속한 그룹과 동료입니다. 같은 그룹 동료끼리는 자동으로 서로 신뢰해 아바타에 권한이 부여됩니다. 그룹 관리자는 멤버와 공용 지식 저장소를 관리할 수
+                내가 속한 그룹과 그룹원입니다. 같은 그룹원끼리는 자동으로 서로 신뢰해 아바타에 권한이 부여됩니다. 그룹 관리자는 그룹원과 공용 지식 저장소를 관리할 수
                 있어요. 그룹 생성·삭제는 시스템 관리자가 합니다.
               </p>
             </div>
@@ -116,7 +116,7 @@
             {:else if groupsError}
               <div class="warn-box">그룹을 불러오지 못했습니다: {groupsError} <button class="linkish" type="button" on:click={loadGroups}>다시 시도</button></div>
             {:else if !groups.length}
-              <div class="empty-note">아직 속한 그룹이 없습니다. 그룹은 시스템 관리자가 만들고 멤버를 추가합니다.</div>
+              <div class="empty-note">아직 속한 그룹이 없습니다. 그룹은 시스템 관리자가 만들고 그룹원을 추가합니다.</div>
             {:else}
               {#each groups as group (group.id)}
                 <SettingsGroupCard {group} {githubHost} reload={loadGroups} />

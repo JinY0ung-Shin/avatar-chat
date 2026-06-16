@@ -50,7 +50,7 @@
 
   const roleDefs = [
     { key: "owner", label: "소유자" },
-    { key: "trusted", label: "신뢰 동료" },
+    { key: "trusted", label: "같은 그룹원" },
     { key: "colleague", label: "일반 동료" },
   ];
   const categoryLabels: Record<string, string> = { read: "조회", execute: "실행", write: "수정·전송", session: "세션" };
@@ -85,7 +85,7 @@
   $: groupQuery = $appState.adminGroupSearch.trim().toLowerCase();
   $: shownGroups = groupQuery
     ? $appState.adminGroups.filter((g) =>
-        [g.name, g.description || "", g.knowledgeRepo ? "공용 저장소" : "", `멤버 ${g.memberCount}`, `관리자 ${g.adminCount}`]
+        [g.name, g.description || "", g.knowledgeRepo ? "공용 저장소" : "", `그룹원 ${g.memberCount}`, `관리자 ${g.adminCount}`]
           .join(" ")
           .toLowerCase()
           .includes(groupQuery),
@@ -428,7 +428,7 @@
             <div class="panel-section-head">
               <div>
                 <h3>그룹</h3>
-                <p class="muted">같은 그룹 멤버끼리는 자동으로 서로 신뢰해 권한을 얻고, 그룹 공용 지식 저장소를 공유합니다. 그룹 생성·삭제와 그룹 관리자 지정은 시스템 관리자만 합니다. 공용 저장소 편집은 각 그룹 관리자가 ‘내 아바타 ▸ 그룹’에서 합니다.</p>
+                <p class="muted">같은 그룹원끼리는 자동으로 서로 신뢰해 권한을 얻고, 그룹 공용 지식 저장소를 공유합니다. 그룹 생성·삭제와 그룹 관리자 지정은 시스템 관리자만 합니다. 공용 저장소 편집은 각 그룹 관리자가 ‘내 아바타 ▸ 그룹’에서 합니다.</p>
               </div>
             </div>
             <form class="plugin-add rows-2" on:submit|preventDefault={createGroup}>
