@@ -856,7 +856,7 @@ function notifyTurnComplete(paneId: string): void {
   if (!last || last.role !== "assistant") return;
   const text = (last.content || "").replace(/\s+/g, " ").trim();
   const body = text ? (text.length > 140 ? `${text.slice(0, 140)}…` : text) : "응답이 완료되었습니다.";
-  osNotify(`${pane.avatar?.name || "아바타"} · 답변 완료`, body, `done-${paneId}`);
+  osNotify(`${pane.avatar?.alias || pane.avatar?.displayName || "아바타"} · 답변 완료`, body, `done-${paneId}`);
 }
 
 function finalizePane(paneId: string, message: string, stopped: boolean): void {
@@ -1007,7 +1007,7 @@ function enqueuePrompt(paneId: string, kind: "permission" | "question", data: an
 // app is backgrounded; in the foreground the prompt modal itself is visible.
 function notifyPrompt(paneId: string, kind: "permission" | "question", data: any): void {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
-  const who = pane?.avatar?.name || "아바타";
+  const who = pane?.avatar?.alias || pane?.avatar?.displayName || "아바타";
   if (kind === "question") {
     const questions = Array.isArray(data?.payload?.questions) ? data.payload.questions : null;
     const first = questions?.[0]?.question || questions?.[0]?.header || "확인이 필요한 질문이 있습니다.";
