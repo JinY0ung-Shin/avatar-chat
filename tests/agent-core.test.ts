@@ -660,7 +660,7 @@ describe("loadDefaultPluginRoots", () => {
       { path: path.join(process.cwd(), "default-skills"), source: "default" },
     ]);
     const names = skills.map((s) => s.name);
-    for (const n of ["brain-ingest", "brain-reflect", "brain-lint", "brain-migrate"]) {
+    for (const n of ["brain-ingest", "brain-reflect", "brain-lint", "brain-migrate", "brain-search"]) {
       expect(names).toContain(n);
     }
   });
