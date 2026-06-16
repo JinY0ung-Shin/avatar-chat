@@ -33,9 +33,15 @@ members' individual conversations would violate their privacy.
 2. Synthesize into `wiki/` using `wiki/_template.md`, filing under `sources/` (links/docs),
    `entities/` (people/projects/systems), `concepts/` (definitions/decisions), `synthesis/`
    (cross-cutting connections — the highest-value notes).
-3. **Append-or-update, never mass-rewrite.** One fact, one home: UPDATE the existing note instead
+3. **Link related notes inline with `[[Note Title]]`.** When a note mentions an entity, concept, or
+   source that has (or should have) its own note, reference it by its exact `title` (or a known
+   `alias`) inside double brackets — e.g. "deployed via [[Deploy Pipeline]]". These links are what
+   make the knowledge graph connect; a note with no `[[links]]` is an isolated dot. Prefer linking
+   to an existing note; if the target does not exist yet but clearly should, the link is fine (it
+   shows as a pending/dangling node until you create that note).
+4. **Append-or-update, never mass-rewrite.** One fact, one home: UPDATE the existing note instead
    of forking a near-duplicate. Remove notes superseded by a newer decision.
-4. Update `wiki/index.md` and APPEND a dated entry to `wiki/log.md` summarizing adds/updates/deletes.
-5. Optionally archive raw notes you fully consolidated.
-6. **Commit once.** For group scope, if a write is denied (member, not admin), report findings —
+5. Update `wiki/index.md` and APPEND a dated entry to `wiki/log.md` summarizing adds/updates/deletes.
+6. Optionally archive raw notes you fully consolidated.
+7. **Commit once.** For group scope, if a write is denied (member, not admin), report findings —
    do not retry via Bash.

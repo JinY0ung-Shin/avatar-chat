@@ -90,6 +90,7 @@ import {
   writeFile as writeKnowledgeFile,
   writeRepoTemplate,
 } from "../src/server/knowledgeRepo.js";
+import { buildKnowledgeGraph } from "../src/server/knowledgeGraph.js";
 import {
   buildRepoTools,
   createRemoteRepo,
@@ -696,6 +697,77 @@ describe("knowledge repo file ops", () => {
     expect(manifest2.plugins).toHaveLength(2);
     // Re-scaffolding an existing skill fails.
     await expect(scaffoldSkill(root, "Deploy Runbook", "")).rejects.toThrow("SKILL_EXISTS");
+  });
+});
+
+describe("knowledge graph (wikilink extraction)", () => {
+  async function seed(root: string, files: Record<string, string>): Promise<void> {
+    for (const [rel, content] of Object.entries(files)) {
+      await writeKnowledgeFile(root, rel, content);
+    }
+  }
+
+  it("flags a repo with no vault layout", async () => {
+    const root = path.join(tempDir, "graph-novault");
+    fs.mkdirSync(root, { recursive: true });
+    await seed(root, { "README.md": "# hi" });
+    const g = await buildKnowledgeGraph(root);
+    expect(g.noVault).toBe(true);
+    expect(g.nodes).toEqual([]);
+    expect(g.edges).toEqual([]);
+  });
+
+  it("builds nodes per note and resolves [[links]] by title, alias, and stem", async () => {
+    const root = path.join(tempDir, "graph-links");
+    fs.mkdirSync(root, { recursive: true });
+    await seed(root, {
+      // links by title, by alias, and by filename stem
+      "wiki/concepts/deploy.md":
+        "---\ntitle: Deploy Pipeline\naliases: [CD]\ntags: [ops]\n---\nUses [[Prod Cluster]] and [[k8s-notes]].",
+      "wiki/entities/cluster.md": "---\ntitle: Prod Cluster\n---\nManaged by [[CD]].",
+      "wiki/entities/k8s-notes.md": "---\ntitle: Kubernetes\n---\nNo links here.",
+      "wiki/_template.md": "---\ntitle:\n---\n[[ignored]]",
+      "raw/2026-06-16-note.md": "raw capture mentioning [[Deploy Pipeline]] and [[Ghost Note]].",
+    });
+    const g = await buildKnowledgeGraph(root);
+    expect(g.noVault).toBeUndefined();
+
+    const byId = new Map(g.nodes.map((n) => [n.id, n]));
+    // Template is excluded; three real notes + one raw note = 4 real nodes.
+    expect(byId.has("wiki/concepts/deploy.md")).toBe(true);
+    expect(byId.has("wiki/_template.md")).toBe(false);
+    expect(byId.get("wiki/concepts/deploy.md")?.label).toBe("Deploy Pipeline");
+    expect(byId.get("wiki/concepts/deploy.md")?.section).toBe("concepts");
+    expect(byId.get("raw/2026-06-16-note.md")?.section).toBe("raw");
+
+    const edgeSet = new Set(g.edges.map((e) => `${e.source}->${e.target}`));
+    // title link
+    expect(edgeSet.has("wiki/concepts/deploy.md->wiki/entities/cluster.md")).toBe(true);
+    // stem link ([[k8s-notes]] → the file whose stem is k8s-notes, title "Kubernetes")
+    expect(edgeSet.has("wiki/concepts/deploy.md->wiki/entities/k8s-notes.md")).toBe(true);
+    // alias link ([[CD]] → Deploy Pipeline's alias)
+    expect(edgeSet.has("wiki/entities/cluster.md->wiki/concepts/deploy.md")).toBe(true);
+    // raw note resolves a title link too
+    expect(edgeSet.has("raw/2026-06-16-note.md->wiki/concepts/deploy.md")).toBe(true);
+
+    // [[Ghost Note]] has no backing file → a dangling node + edge to it.
+    const ghost = g.nodes.find((n) => n.dangling && n.label === "Ghost Note");
+    expect(ghost).toBeTruthy();
+    expect(ghost?.section).toBe("unresolved");
+    expect(edgeSet.has(`raw/2026-06-16-note.md->${ghost!.id}`)).toBe(true);
+  });
+
+  it("strips alias/anchor suffixes and ignores self-links", async () => {
+    const root = path.join(tempDir, "graph-anchors");
+    fs.mkdirSync(root, { recursive: true });
+    await seed(root, {
+      "wiki/concepts/a.md": "---\ntitle: A\n---\nSee [[B|the b note]] and [[B#section]]. Also [[A]] (self).",
+      "wiki/concepts/b.md": "---\ntitle: B\n---\nplain",
+    });
+    const g = await buildKnowledgeGraph(root);
+    const edges = g.edges.filter((e) => e.source === "wiki/concepts/a.md");
+    // Both [[B|...]] and [[B#...]] resolve to b.md and de-dupe to ONE edge; self-link dropped.
+    expect(edges).toEqual([{ source: "wiki/concepts/a.md", target: "wiki/concepts/b.md" }]);
   });
 });
 

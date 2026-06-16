@@ -25,6 +25,8 @@ not actually say. Never invent facts.
 ## Procedure
 1. Write to `raw/YYYY-MM-DD-<short-slug>.md`: a one-line title, the date, the source/speaker, and
    the captured content in the speaker's intent.
-2. One idea per file when practical, so brain-reflect can consolidate cleanly.
+2. One idea per file when practical, so brain-reflect can consolidate cleanly. When the capture
+   names an entity/concept that likely has a `wiki/` note, reference it inline as `[[Note Title]]`
+   so brain-reflect (and the knowledge graph) can connect it later.
 3. **Always commit** after writing — an uncommitted write is not persisted.
 4. Confirm briefly what you captured and where.

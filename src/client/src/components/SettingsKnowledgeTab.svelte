@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import Toggle from "./Toggle.svelte";
   import SettingsPluginSelect from "./SettingsPluginSelect.svelte";
+  import GraphViewModal from "./GraphViewModal.svelte";
   import { api } from "../lib/api";
   import { openSeededChat } from "../lib/chat";
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
@@ -21,6 +22,7 @@
   let krContents: RepoPluginContents | null = null;
   let krContentsErr = "";
   let krContentsLoading = false;
+  let graphOpen = false;
 
   // plugin add form
   let pluginRepo = "";
@@ -227,6 +229,7 @@
       </div>
       {#if user.knowledgeRepo}
         <div class="head-actions">
+          <button class="linkish small" type="button" title="노트 사이의 [[링크]] 연결을 그래프로 봅니다" on:click={() => (graphOpen = true)}>그래프 보기</button>
           <button class="linkish small" type="button" title="저장소를 원격에서 다시 가져옵니다" disabled={krBusy} on:click={refreshKnowledge}>{krRefreshed ? "새로고침됨 ✓" : "새로고침"}</button>
           <button class="linkish small danger" type="button" title="이 저장소 연결을 해제합니다 (GitHub의 저장소 자체는 삭제되지 않습니다)" disabled={krBusy} on:click={disconnectKnowledge}>연결 해제</button>
         </div>
@@ -337,4 +340,8 @@
       <button class="primary" type="submit" disabled={pluginAddBusy || !pluginRepo.trim()}>{pluginAddBusy ? "추가 중…" : "추가"}</button>
     </form>
   </section>
+
+  {#if graphOpen}
+    <GraphViewModal on:close={() => (graphOpen = false)} />
+  {/if}
 {/if}

@@ -805,6 +805,38 @@ export interface KnowledgeRepoTreeEntry {
   type: "file" | "dir";
 }
 
+/**
+ * A node in the second-brain knowledge graph: one markdown note in the vault,
+ * or a `[[dangling]]` link target with no matching note file.
+ */
+export interface KnowledgeGraphNode {
+  /** Repo-relative path for a real note (e.g. "wiki/concepts/deploy.md"); `unresolved:<target>` for a dangling link. */
+  id: string;
+  /** Display label — the note's frontmatter `title`, its filename stem, or the raw link target when dangling. */
+  label: string;
+  /** Vault section for coloring: raw | sources | entities | concepts | synthesis | wiki | other | unresolved. */
+  section: string;
+  tags: string[];
+  /** True when this node is only a `[[link]]` target with no backing note file. */
+  dangling?: boolean;
+}
+
+/** A directed `[[wikilink]]` from one note to another (or to a dangling target). */
+export interface KnowledgeGraphEdge {
+  /** Source node id (the linking note's path). */
+  source: string;
+  /** Target node id (the linked note's path, or `unresolved:<target>`). */
+  target: string;
+}
+
+/** The `[[wikilink]]` graph over a knowledge repo's `raw/`+`wiki/` notes. */
+export interface KnowledgeGraph {
+  nodes: KnowledgeGraphNode[];
+  edges: KnowledgeGraphEdge[];
+  /** True when the repo predates the vault layout (no `wiki/`/`raw/`) — client points at brain-migrate. */
+  noVault?: boolean;
+}
+
 /** Working-tree state of a user's knowledge-repo clone. */
 export interface KnowledgeRepoStatus {
   /** The configured repo (`owner/repo` or URL), or null if none set. */

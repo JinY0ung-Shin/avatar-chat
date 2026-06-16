@@ -33,6 +33,14 @@
   margin: 0;
   line-height: 1.5;
 }
+/* ---- Knowledge graph modal (large, fills most of the viewport) ---- */
+.graph-modal-card {
+  width: min(960px, 100%);
+  height: min(80dvh, 760px);
+  max-height: calc(100dvh - 2 * var(--s-4));
+  overflow: hidden;
+}
+
 /* ---- Routine create/edit modal ---- */
 .routine-modal-card {
   width: min(560px, 100%);

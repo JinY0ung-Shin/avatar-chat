@@ -540,6 +540,7 @@ function repoTemplateClaudeMd(name: string, kind: "personal" | "group" = "person
 ## 구조 (vault)
 - \`wiki/<section>/<slug>.md\` — 정제된 팀 노트. frontmatter: \`title\`, \`tags\`, \`aliases\`.
   팀 브레인 검색(\`mcp__group_brain__search\`)이 우선 검색합니다.
+- 관련 노트는 본문에서 \`[[노트 제목]]\`으로 연결하세요 — 이 링크가 지식 그래프를 잇습니다.
 - \`raw/\` — 아직 정리되지 않은 원본 캡처. 나중에 reflect로 wiki에 정리.
 
 ## 운영 원칙
@@ -573,6 +574,7 @@ caps the injected length — keep it tight.
   repeat themselves.
 - Capture durable facts with the **brain-ingest** skill; consolidate \`raw/\` → \`wiki/\` with
   **brain-reflect**; keep it healthy with **brain-lint**.
+- Link related notes inline as \`[[Note Title]]\` — these links connect the knowledge graph view.
 - If the \`wiki/\` vault is missing (an older repo), run **brain-migrate** once — it never
   overwrites existing files.
 - An edit is not persisted until you commit.
@@ -652,7 +654,8 @@ aliases: []
 ---
 
 <!-- One durable note. \`title\` is how other notes link to it; keep it factual and
-self-contained. \`tags\`/\`aliases\` improve brain search recall. -->
+self-contained. \`tags\`/\`aliases\` improve brain search recall. Reference related
+notes inline as \`[[Note Title]]\` — these links connect the knowledge graph. -->
 `;
 }
 

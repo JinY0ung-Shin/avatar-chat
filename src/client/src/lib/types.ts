@@ -18,6 +18,8 @@ export type {
   Group,
   GroupMember,
   ImageMediaType,
+  KnowledgeGraph,
+  KnowledgeGraphNode,
   KnowledgeRepoStatus,
   KnowledgeRequest,
   MessageAttachment,

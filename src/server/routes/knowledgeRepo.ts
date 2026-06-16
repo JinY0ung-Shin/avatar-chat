@@ -5,6 +5,7 @@ import { inspectRepoContents } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import { isInternalGitSource } from "../gitCredentials.js";
 import { ensureClone, knowledgeRepoContextFor } from "../knowledgeRepo.js";
+import { buildKnowledgeGraph } from "../knowledgeGraph.js";
 import { generateSshKeyPair, deriveSshPublicKey } from "../sshIdentity.js";
 import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
 
@@ -153,6 +154,23 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       res.json({ contents });
     } catch (error) {
       apiError(res, 502, `저장소를 가져오지 못했습니다: ${scrubGitError(error)}`);
+    }
+  });
+
+  // Build the second-brain `[[wikilink]]` graph for the interactive graph view.
+  // Same clone the agent's repo tools use; pure read, returns {nodes, edges}.
+  router.get("/api/me/knowledge-repo/graph", requireAuth(store), async (req: AuthenticatedRequest, res) => {
+    const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+    if (!ctx) {
+      apiError(res, 404, "연결된 지식 저장소가 없습니다.");
+      return;
+    }
+    try {
+      const repoRoot = await ensureClone(ctx);
+      const graph = await buildKnowledgeGraph(repoRoot);
+      res.json({ graph });
+    } catch (error) {
+      apiError(res, 502, `지식 그래프를 만들지 못했습니다: ${scrubGitError(error)}`);
     }
   });
 
