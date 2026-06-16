@@ -55,7 +55,15 @@ function flashCopyFailed(btn?: HTMLButtonElement | null): void {
 
 // Auto-grow a textarea with its content, capped at min(200px, 30% viewport) —
 // mirrors the old composer autoGrow().
-export function autosize(node: HTMLTextAreaElement) {
+// The `_value` param mirrors the textarea's bound value so Svelte calls
+// `update()` on programmatic value changes too — e.g. clearing the draft to ""
+// after a send must shrink the box back, and no `input` event fires for a
+// programmatic value change. CAUTION: Svelte runs an action's `update()` BEFORE
+// it flushes the new `value` to the DOM node, so reading `scrollHeight` here
+// synchronously sees the OLD content and re-pins the old height. Defer the
+// param-driven grow to a microtask so it measures the post-flush value. The
+// `input` path stays synchronous (the browser updates `value` before `input`).
+export function autosize(node: HTMLTextAreaElement, _value?: string) {
   const grow = () => {
     node.style.height = "auto";
     const cap = Math.min(200, Math.round(window.innerHeight * 0.3));
@@ -64,7 +72,9 @@ export function autosize(node: HTMLTextAreaElement) {
   grow();
   node.addEventListener("input", grow);
   return {
-    update: grow,
+    update() {
+      queueMicrotask(grow);
+    },
     destroy() {
       node.removeEventListener("input", grow);
     },

@@ -37,6 +37,8 @@
   let physicalKeyboard = false;
   // Per-pane group-knowledge dropdown open state.
   let gkOpenPaneId = "";
+  // Per-pane mobile composer settings disclosure state.
+  let composerSettingsOpenPaneId = "";
 
   onMount(async () => {
     try {
@@ -139,9 +141,52 @@
     return Boolean(item.avatar.isOwn || item.avatar.id === user?.id);
   }
 
-
   function eligibleGroups(item: ChatPane) {
     return isOwnPane(item) ? (user?.groups || []).filter((g) => g.knowledgeRepoConfigured) : [];
+  }
+
+  function hasModelPicker(): boolean {
+    return Boolean($appState.bootstrap?.modelSelection && !$appState.bootstrap.modelSelection.locked);
+  }
+
+  function hasEffortPicker(): boolean {
+    return Boolean($appState.bootstrap?.effortSelection);
+  }
+
+  function hasComposerControls(item: ChatPane): boolean {
+    return hasModelPicker() || hasEffortPicker() || eligibleGroups(item).length > 0;
+  }
+
+  function modelTierLabel(item: ChatPane): string {
+    const tierId = item.modelTier ?? DEFAULT_MODEL_TIER;
+    return $appState.bootstrap?.modelSelection?.tiers.find((tier) => tier.id === tierId)?.label ?? tierId;
+  }
+
+  function effortLabel(item: ChatPane): string {
+    const levelId = item.effort ?? $appState.bootstrap?.effortSelection?.default ?? DEFAULT_EFFORT_LEVEL;
+    return $appState.bootstrap?.effortSelection?.levels.find((level) => level.id === levelId)?.label ?? levelId;
+  }
+
+  function groupKnowledgeLabel(item: ChatPane): string {
+    const groups = eligibleGroups(item);
+    if (!groups.length) return "";
+    const onCount = groups.filter((g) => !(item.groupKnowledgeOff || []).includes(g.id)).length;
+    return `그룹 ${onCount}/${groups.length}`;
+  }
+
+  function composerSettingsSummary(item: ChatPane): string {
+    const parts: string[] = [];
+    if (hasModelPicker()) parts.push(modelTierLabel(item));
+    if (hasEffortPicker()) parts.push(`강도 ${effortLabel(item)}`);
+    const groupLabel = groupKnowledgeLabel(item);
+    if (groupLabel) parts.push(groupLabel);
+    return parts.join(" · ");
+  }
+
+  function toggleComposerSettings(item: ChatPane) {
+    const closing = composerSettingsOpenPaneId === item.id;
+    composerSettingsOpenPaneId = closing ? "" : item.id;
+    if (closing && gkOpenPaneId === item.id) gkOpenPaneId = "";
   }
 
   async function submit(item: ChatPane) {
@@ -821,7 +866,7 @@
             rows="1"
             placeholder={item.streaming ? "응답을 기다리는 중… (다음 메시지를 미리 작성할 수 있어요)" : `${item.avatar.displayName}에게 메시지…`}
             value={item.draft}
-            use:autosize
+            use:autosize={item.draft}
             on:input={(event) => onComposerInput(event, item)}
             on:keydown={(event) => onComposerKeydown(event, item)}
             on:paste={(event) => onComposerPaste(event, item)}
@@ -845,50 +890,67 @@
           {:else}
             <span>보내기 버튼으로 전송</span>
           {/if}
-          <span class="composer-meta">
-            {#if $appState.bootstrap?.modelSelection && !$appState.bootstrap.modelSelection.locked}
-              <select
-                class="composer-model-select"
-                aria-label="이 대화에 사용할 모델"
-                title="이 대화에서 다음 메시지부터 사용할 모델을 고릅니다"
-                value={item.modelTier ?? DEFAULT_MODEL_TIER}
-                on:change={(event) => setModelTier(item, event.currentTarget.value)}
-              >
-                {#each $appState.bootstrap.modelSelection.tiers as tier (tier.id)}
-                  <option value={tier.id} title={tier.model ? `${tier.description}\n(${tier.model})` : tier.description}>
-                    {tier.label}{tier.model ? ` · ${tier.model}` : ""}
-                  </option>
-                {/each}
-              </select>
-            {/if}
-            {#if $appState.bootstrap?.effortSelection}
-              <select
-                class="composer-model-select"
-                aria-label="이 대화에 사용할 사고 강도(effort)"
-                title="이 대화에서 다음 메시지부터 모델이 들이는 사고/추론 강도를 고릅니다"
-                value={item.effort ?? $appState.bootstrap.effortSelection.default ?? DEFAULT_EFFORT_LEVEL}
-                on:change={(event) => setEffort(item, event.currentTarget.value)}
-              >
-                {#each $appState.bootstrap.effortSelection.levels as level (level.id)}
-                  <option value={level.id} title={level.description}>강도: {level.label}</option>
-                {/each}
-              </select>
-            {/if}
-            {#if eligibleGroups(item).length}
-              {@const groups = eligibleGroups(item)}
-              {@const onCount = groups.filter((g) => !(item.groupKnowledgeOff || []).includes(g.id)).length}
-              <button
-                class="composer-gk-btn"
-                type="button"
-                aria-expanded={gkOpenPaneId === item.id ? "true" : "false"}
-                title="이 대화에서 다음 메시지부터 사용할 그룹 지식을 고릅니다"
-                on:click={() => (gkOpenPaneId = gkOpenPaneId === item.id ? "" : item.id)}
-              >그룹 지식 {onCount}/{groups.length}</button>
-            {/if}
-            {#if formatUsageLabel(item.usage)}
-              <span class="composer-usage">{formatUsageLabel(item.usage)}</span>
-            {/if}
-          </span>
+          {#if hasComposerControls(item) || formatUsageLabel(item.usage)}
+            <span class="composer-meta">
+              {#if hasComposerControls(item)}
+                <button
+                  class="composer-settings-btn"
+                  type="button"
+                  aria-expanded={composerSettingsOpenPaneId === item.id ? "true" : "false"}
+                  title="이 대화의 모델, 사고 강도, 그룹 지식을 설정합니다"
+                  on:click={() => toggleComposerSettings(item)}
+                >
+                  <Icon name="gear" size={16} />
+                  <span class="composer-settings-label">설정</span>
+                  <span class="composer-settings-summary">{composerSettingsSummary(item)}</span>
+                </button>
+                <span class="composer-controls" class:open={composerSettingsOpenPaneId === item.id}>
+                  {#if $appState.bootstrap?.modelSelection && !$appState.bootstrap.modelSelection.locked}
+                    <select
+                      class="composer-model-select"
+                      aria-label="이 대화에 사용할 모델"
+                      title="이 대화에서 다음 메시지부터 사용할 모델을 고릅니다"
+                      value={item.modelTier ?? DEFAULT_MODEL_TIER}
+                      on:change={(event) => setModelTier(item, event.currentTarget.value)}
+                    >
+                      {#each $appState.bootstrap.modelSelection.tiers as tier (tier.id)}
+                        <option value={tier.id} title={tier.model ? `${tier.description}\n(${tier.model})` : tier.description}>
+                          {tier.label}{tier.model ? ` · ${tier.model}` : ""}
+                        </option>
+                      {/each}
+                    </select>
+                  {/if}
+                  {#if $appState.bootstrap?.effortSelection}
+                    <select
+                      class="composer-model-select"
+                      aria-label="이 대화에 사용할 사고 강도(effort)"
+                      title="이 대화에서 다음 메시지부터 모델이 들이는 사고/추론 강도를 고릅니다"
+                      value={item.effort ?? $appState.bootstrap.effortSelection.default ?? DEFAULT_EFFORT_LEVEL}
+                      on:change={(event) => setEffort(item, event.currentTarget.value)}
+                    >
+                      {#each $appState.bootstrap.effortSelection.levels as level (level.id)}
+                        <option value={level.id} title={level.description}>강도: {level.label}</option>
+                      {/each}
+                    </select>
+                  {/if}
+                  {#if eligibleGroups(item).length}
+                    {@const groups = eligibleGroups(item)}
+                    {@const onCount = groups.filter((g) => !(item.groupKnowledgeOff || []).includes(g.id)).length}
+                    <button
+                      class="composer-gk-btn"
+                      type="button"
+                      aria-expanded={gkOpenPaneId === item.id ? "true" : "false"}
+                      title="이 대화에서 다음 메시지부터 사용할 그룹 지식을 고릅니다"
+                      on:click={() => (gkOpenPaneId = gkOpenPaneId === item.id ? "" : item.id)}
+                    >그룹 지식 {onCount}/{groups.length}</button>
+                  {/if}
+                </span>
+              {/if}
+              {#if formatUsageLabel(item.usage)}
+                <span class="composer-usage">{formatUsageLabel(item.usage)}</span>
+              {/if}
+            </span>
+          {/if}
         </div>
       </form>
       {#if gkOpenPaneId === item.id && eligibleGroups(item).length}
