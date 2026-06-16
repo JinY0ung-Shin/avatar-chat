@@ -342,7 +342,7 @@
                       onChange={(next) => toggleRoutine(routine, next)} />
                   </div>
                   <div class="routine-manage-meta">
-                    {formatRoutineSchedule(routine)} · {routine.lastRunAt
+                    {formatRoutineSchedule(routine)}{#if routine.enabled && routine.nextRunAt} · <span class="routine-next">다음 실행 {timeLabel(routine.nextRunAt)}</span>{/if} · {routine.lastRunAt
                       ? `최근 실행 ${timeLabel(routine.lastRunAt)} · ${errored ? "실패" : "완료"}`
                       : "아직 실행되지 않음"}
                   </div>

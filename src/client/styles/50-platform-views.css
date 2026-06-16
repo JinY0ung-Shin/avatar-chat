@@ -824,6 +824,10 @@
   font-size: var(--t-sm);
   overflow-wrap: anywhere;
 }
+.routine-manage-meta .routine-next {
+  color: var(--text);
+  font-weight: 500;
+}
 .routine-manage-actions {
   display: flex;
   gap: var(--s-2);
