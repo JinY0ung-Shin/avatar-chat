@@ -1150,11 +1150,10 @@
   .task-detail {
     min-width: 0;
   }
+  /* Base .tool-name/.task-name now truncate at all widths (see
+     30-agent-md-composer.css); on narrow viewports only tighten the caps. */
   .tool-name {
     max-width: 42%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
   .task-name {
     max-width: 34%;

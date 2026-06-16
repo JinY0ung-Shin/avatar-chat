@@ -731,6 +731,12 @@ body.col-resizing {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  /* overflow-y:auto alone makes overflow-x COMPUTE to auto, so any descendant
+     that widens the layout grows a horizontal scrollbar / runs off the right.
+     Pin overflow-x:hidden as the outermost backstop — the activity tree (or any
+     future wide content) is clipped at the transcript instead of scrolling.
+     Vertical auto-scroll is unaffected once both axes are explicit. */
+  overflow-x: hidden;
   overscroll-behavior: contain;
   padding: var(--s-5) var(--s-5) var(--s-6);
 }

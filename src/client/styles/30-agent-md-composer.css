@@ -202,6 +202,11 @@
 }
 .agent-label {
   font-weight: 600;
+  /* min-width:0 so the automatic content-based flex minimum doesn't keep an
+     unbreakable subagent label at full width inside .agent-head (which has no
+     overflow of its own). */
+  flex: 0 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -231,12 +236,27 @@
   color: var(--text-soft);
   min-width: 0;
   max-width: 100%;
+  /* Final per-row clip: even if a child's min-content briefly exceeds the row,
+     hide the spill here so it never reaches .transcript's scroll axis. */
+  overflow: hidden;
 }
 .tool-name {
   font-weight: 600;
   font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
   color: var(--text);
-  flex: none;
+  /* Was `flex: none` (flex-shrink:0) with no overflow handling on desktop — a
+     long/unbreakable label then locked the row to its max-content width and
+     pushed past .tool-row's max-width:100%, escaping the overflow:hidden box
+     and scrolling .transcript. Make it shrinkable + truncating at ALL widths
+     (this used to live only in the <=860px media query). max-width keeps a
+     giant label from starving .tool-arg; it never collapses to 0 because the
+     content sets the natural width up to the cap. */
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .tool-arg {
   display: block;
@@ -246,6 +266,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+  /* `flex-basis:auto` + a long detail makes this item's flex-basis = its
+     max-content; with flex-shrink:1 it shrinks, but pin flex-basis:0 so the
+     row never even momentarily prefers the content width. Belt-and-suspenders. */
+  flex-basis: 0;
   max-width: 100%;
 }
 .tool-row[data-status="done"] .tool-name {
@@ -262,6 +286,9 @@
   align-items: center;
   gap: var(--s-2);
   min-width: 0;
+  /* Match .tool-row: clip any residual intrinsic overflow inside the row. */
+  max-width: 100%;
+  overflow: hidden;
   border: 1px solid var(--line-soft);
   border-radius: var(--r-sm);
   background: var(--panel);
@@ -280,7 +307,10 @@
   font-weight: 700;
 }
 .task-name {
-  flex: none;
+  /* Was flex:none — non-shrinkable, so a long task label still drove .task-row
+     past its container even with the 38% cap. Make it shrinkable like .tool-name. */
+  flex: 0 1 auto;
+  min-width: 0;
   max-width: 38%;
   overflow: hidden;
   text-overflow: ellipsis;
