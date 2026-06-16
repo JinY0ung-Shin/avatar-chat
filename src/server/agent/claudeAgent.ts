@@ -431,6 +431,7 @@ export async function runClaudeAgent(
     viewerIsOwner: ownerToolAccess,
     elevated: elevatedToolAccess,
     config,
+    conversationId: request.conversationId,
   });
   // Group knowledge-repo tools (per group the OWNER belongs to). OWNER-ONLY like
   // the personal repo tools — a group admin edits their group repo through their

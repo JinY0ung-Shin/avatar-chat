@@ -537,6 +537,12 @@ export interface AgentAvatar {
 export interface AgentRequest {
   message: string;
   avatar: AgentAvatar;
+  /**
+   * The conversation this turn belongs to. Lets in-process MCP tools key
+   * per-conversation state — e.g. `mcp__git_repo__open_repo` records the working
+   * repo selection (repoWorkspace.ts) the chat route reads on the next turn.
+   */
+  conversationId?: string;
   /** Per-avatar working directory the SDK runs in (filesystem isolation). */
   cwd?: string;
   /**
@@ -688,17 +694,18 @@ export interface AgentRequest {
    */
   experimentalFeatures?: string[];
   /**
-   * When the owner/trusted viewer opened a registered git repo as an **active
-   * repo workspace** (#47): the repo's registered name. Its clone is the SDK
-   * cwd, so the avatar edits/tests and commits locally with native tools while
-   * remote git lifecycle (push/sync) still flows through `mcp__git_repo__*`.
-   * Drives the active-workspace prompt guidance + the Bash-git integrity policy.
+   * The registered git repo the avatar opened as this conversation's **working
+   * repository** (`mcp__git_repo__open_repo`): the repo's registered name. Its
+   * clone is the SDK cwd, so the avatar edits/tests and commits locally with
+   * native tools while remote git (push/sync) still flows through
+   * `mcp__git_repo__*`. Drives the working-repo prompt guidance + the Bash-git
+   * integrity policy.
    */
   activeRepoName?: string;
   /**
    * Extra writable directories to expose to the SDK beyond the plugin roots —
    * e.g. the per-conversation scratch workspace when the cwd has been repointed
-   * at an active repo clone (#47).
+   * at the opened working-repo clone.
    */
   additionalDirs?: string[];
   /**

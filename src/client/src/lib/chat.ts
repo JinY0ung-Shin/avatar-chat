@@ -105,7 +105,6 @@ function makePane(avatar: AvatarDetail, conversationId = newId(), messages: Stor
     groupKnowledgeOff: avatar.isOwn ? [...(readState().user?.groupKnowledgeOffDefault || [])] : [],
     canvases,
     activeCanvasId: canvases.length ? canvases[canvases.length - 1].id : null,
-    activeRepo: "",
     greetedConversationId: null,
     stickBottom: true,
     usage: null,
@@ -374,7 +373,6 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         greeting: opts.greeting === true,
         multiSession: readState().chatPanes.length > 1,
         groupKnowledgeOff: pane.groupKnowledgeOff || [],
-        activeRepo: pane.activeRepo || undefined,
         // Per-conversation model tier; unset → the default tier (Opus).
         model: pane.modelTier || DEFAULT_MODEL_TIER,
         // Per-conversation reasoning effort; unset → the SDK default (high).

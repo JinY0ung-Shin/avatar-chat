@@ -214,15 +214,20 @@ gotchas, and client↔server mirrored validators.
 - **General git repos (`mcp__git_repo__*`) ≠ the knowledge repo.** A user can register
   arbitrary work/code repos: `git_repositories` table (`get/list/upsert/delete/
   markGitRepoSynced`), plumbing in `gitRepos.ts`, MCP server in `agent/gitRepoTools.ts`.
-  Owner-only `register_repo`/`remove_repo`; owner OR **trusted** users may `sync_repo`/
-  `status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`.
-  Each tool self-gates (`ownerGuard`/`elevatedGuard`, both `&& !headless`); the owner's
-  git token is used server-side only (`gitAuthArgs`, never in the agent shell), with
-  arg-injection (`assertSafeGitValue`) and path-traversal (`resolveInRepo`) guards. Public
-  repos on internal hosts, github.com, or other HTTPS/git hosts must clone/sync without a token;
-  tokens are opportunistic, not a prerequisite for read access.
-  Unlike the owner-only knowledge repo, write/commit/push EXTEND to trusted users.
-  Offline-tested against a local bare remote (same as the knowledge-repo tools).
+  **Single working-surface model (NOT MCP file CRUD):** the MCP server is intentionally
+  minimal — owner-only `register_repo`/`remove_repo`; owner OR **trusted** users may
+  `sync_repo`/`push` (remote git, needs server-side creds) and `open_repo`/`close_repo`.
+  There are **NO `status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`
+  MCP tools** — the avatar instead OPENS one repo as the conversation's **working directory**
+  (`open_repo`) and edits/tests/commits it with NATIVE tools (Read/Edit/Bash local git). See
+  the working-repository bullet below. Each tool self-gates (`ownerGuard`/`elevatedGuard`,
+  both `&& !headless`); the owner's git token is used server-side only (`gitAuthArgs`, never in
+  the agent shell), with arg-injection (`assertSafeGitValue`) and path-traversal
+  (`resolveInRepo`) guards. Public repos on internal hosts, github.com, or other HTTPS/git
+  hosts must clone/sync without a token; tokens are opportunistic. Unlike the owner-only
+  knowledge repo, push EXTENDS to trusted users. Offline-tested against a local bare remote.
+  (`gitRepos.ts` still exports the old file/diff/commit/status helpers — now unused by the
+  tools, kept for potential reuse; safe to prune later.)
 - **Groups = system-admin-created teams; co-membership auto-trusts (symmetrically).**
   `groups` + `group_members(role admin|member)` tables (always-run schema). System admin
   creates/deletes groups + assigns group admins (`/api/admin/groups*`); group admins self-serve
@@ -321,18 +326,27 @@ gotchas, and client↔server mirrored validators.
   latest-wins) — the tool echoes the id back so the model can target it. **Size-cap:** `canvasTools.ts`
   rejects over-`MAX_CANVAS_CONTENT_CHARS` content / long titles / too many controls with an actionable
   agent-facing error (the content rides every `resume` turn's transcript, so a blob taxes all later turns).
-- **Active repo workspace (`activeRepo` chat-body param).** Owner/trusted viewer opens a registered
-  `mcp__git_repo__*` repo as the SDK **cwd** so the avatar edits/tests with native Read/Edit/Bash; the
-  per-conversation scratch dir rides along as an `additionalDirectories`. **Security boundary is
-  unchanged** — git tokens are still stripped from the shell, so push/sync stay MCP-only; local
-  `git add`/`git commit` are allowed in the active repo cwd. A
-  per-clone-path lock (`activeRepoLock.ts`) serializes concurrent active opens (409); it does NOT block
-  another conversation's MCP sync (worktree isolation is the eventual fix). `preToolUseHook`'s
-  `activeRepoMode` is an INTEGRITY (not security) guard: it denies remote/branch/history-rewriting/
-  destructive Bash git (push/fetch/pull/reset/checkout/commit --amend/…) and allows read-only git plus
-  local staging/normal commit — denylist is advisory/leaky by design. Metacognition: `promptBuilder`
-  `activeRepoSection` (relaxes GIT_MCP_ONLY_GUIDANCE for local git) + the hook deny reason + the git-tool errors. UI picker (own single-pane only) +
-  `GET /api/me/git-repos`. The clone path is NEVER returned to the client.
+- **Working repository (avatar-opened, NOT a UI picker).** The avatar opens ONE registered
+  `mcp__git_repo__*` repo as this conversation's working directory with `mcp__git_repo__open_repo`
+  (elevated: owner/trusted); `close_repo` clears it. The selection is held per-conversation,
+  **in-memory** (`repoWorkspace.ts` `get/setWorkspaceRepo`, same single-process model as
+  `activeRepoLock.ts` — a restart clears it, the avatar re-opens). **The SDK cwd is fixed when a turn
+  starts and can't be repointed mid-turn**, so `open_repo` takes effect **from the NEXT message**: the
+  chat route reads `getWorkspaceRepo(conversationId)` at turn start → sets the repo's clone as the SDK
+  **cwd** (the per-conversation scratch dir rides along as an `additionalDirectories`). From then the
+  avatar edits/tests with native Read/Edit/Bash and LOCAL git (`add`/`commit`); only `push`/`sync_repo`
+  stay MCP. `open_repo` needs `request.conversationId` (threaded into `GitRepoToolsContext`); a run with
+  no conversation (e.g. intro gen) can't open one. **There is NO UI picker** — removing the dual
+  "edit via MCP vs edit via cwd" surface (formerly "active repo workspace #47") was the whole point.
+  **Security boundary unchanged** — git tokens are stripped from the shell, so push/sync stay MCP-only.
+  A per-clone-path lock (`activeRepoLock.ts`) serializes concurrent opens (409, per-turn acquire/release);
+  it does NOT block another conversation's MCP sync (worktree isolation is the eventual fix).
+  `preToolUseHook`'s `activeRepoMode` (= `Boolean(request.activeRepoName)`) is an INTEGRITY (not security)
+  guard: denies remote/branch/history-rewriting/destructive Bash git (push/fetch/pull/reset/checkout/
+  commit --amend/…), allows read-only git + local staging/normal commit — advisory/leaky by design.
+  Metacognition: `promptBuilder` `gitRepoSection` (open_repo flow) + `activeRepoSection` (relaxes
+  GIT_MCP_ONLY_GUIDANCE for local git once a repo is open) + the hook deny reason + git-tool errors.
+  The clone path is NEVER returned to the client.
 - **Routines = owner-scheduled headless runs, flexible KST schedule.** A routine
   (`routine_jobs` table, `get/list/create/update/deleteRoutineJob`, `markRoutineRun`) runs its
   `prompt` headlessly with owner-level tools and appends results to a dedicated conversation

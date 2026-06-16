@@ -106,6 +106,7 @@ import {
   GIT_REPO_TOOL_NAMES,
 } from "../src/server/agent/gitRepoTools.js";
 import { gitRepoClonePath, gitRepoContextFromRecord } from "../src/server/gitRepos.js";
+import { getWorkspaceRepo } from "../src/server/repoWorkspace.js";
 import { buildCanvasTools, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES, MAX_CANVAS_CONTENT_CHARS } from "../src/server/agent/canvasTools.js";
 import type { CanvasRequest, CanvasResult } from "../src/server/agent/events.js";
 import {
@@ -1117,14 +1118,33 @@ describe("git repo tools (general git repository management)", () => {
     return { store, config, ownerId: owner.id, owner: ownerShape, remote };
   }
 
-  function tools(s: ReturnType<typeof setup>, opts: { viewerIsOwner?: boolean; elevated?: boolean } = {}) {
+  function tools(
+    s: ReturnType<typeof setup>,
+    opts: { viewerIsOwner?: boolean; elevated?: boolean; conversationId?: string } = {},
+  ) {
     return buildGitRepoTools(s.store, {
       avatarUserId: s.ownerId,
       owner: s.owner,
       viewerIsOwner: opts.viewerIsOwner ?? true,
       elevated: opts.elevated ?? true,
       config: s.config,
+      conversationId: opts.conversationId ?? "conv-1",
     });
+  }
+
+  // Under the single-surface model the avatar edits an OPENED working repo with
+  // NATIVE tools (Read/Edit/Bash), not MCP file tools. Tests mimic that by
+  // writing + committing directly in the server-side clone — exactly what the
+  // avatar's local Bash git does in the cwd before an MCP push.
+  function nativeCommit(clonePath: string, relPath: string, content: string, message: string) {
+    const abs = path.join(clonePath, relPath);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+    const g = (...a: string[]) => execFileSync("git", ["-C", clonePath, ...a], { stdio: "pipe" });
+    g("config", "user.name", "Avatar");
+    g("config", "user.email", "avatar@example.com");
+    g("add", "-A");
+    g("commit", "-q", "-m", message);
   }
 
   it("exposes the documented server + tool names", () => {
@@ -1135,59 +1155,49 @@ describe("git repo tools (general git repository management)", () => {
       "list_repos",
       "sync_repo",
       "remove_repo",
-      "status",
-      "list_files",
-      "read_file",
-      "write_file",
-      "delete_file",
-      "diff",
-      "commit",
+      "open_repo",
+      "close_repo",
       "push",
     ]);
   });
 
-  it("keeps registration/removal owner-only but allows trusted users to work registered repos", async () => {
+  it("keeps registration/removal owner-only but allows trusted users to sync/open registered repos", async () => {
     const s = setup("gr-auth");
-    const trustedTools = tools(s, { viewerIsOwner: false, elevated: true });
+    const trustedTools = tools(s, { viewerIsOwner: false, elevated: true, conversationId: "conv-auth" });
 
     const deniedRegister = await callTool(trustedTools, "register_repo", { repo: s.remote, name: "app", branch: "main" });
     expect(deniedRegister.isError).toBe(true);
     expect(deniedRegister.content[0].text).toContain("avatar owner is taking part in");
 
     await callTool(tools(s), "register_repo", { repo: s.remote, name: "app", branch: "main" });
-    const status = await callTool(trustedTools, "status", { name: "app" });
-    expect(status.isError).toBeFalsy();
-    expect(status.content[0].text).toContain("branch=main");
+    const sync = await callTool(trustedTools, "sync_repo", { name: "app" });
+    expect(sync.isError).toBeFalsy();
+    const open = await callTool(trustedTools, "open_repo", { name: "app" });
+    expect(open.isError).toBeFalsy();
+    expect(open.content[0].text).toContain("working directory");
 
     const deniedRemove = await callTool(trustedTools, "remove_repo", { name: "app" });
     expect(deniedRemove.isError).toBe(true);
   });
 
-  it("registers, edits, commits, pushes, and removes a general git repo", async () => {
+  it("registers, opens, pushes a native commit, and removes a general git repo", async () => {
     const s = setup("gr-flow");
-    const ownerTools = tools(s);
+    const ownerTools = tools(s, { conversationId: "conv-flow" });
 
     const register = await callTool(ownerTools, "register_repo", { repo: s.remote, name: "work", branch: "main" });
     expect(register.isError).toBeFalsy();
     expect(register.content[0].text).toContain("work");
     expect(s.store.listGitRepos(s.ownerId)).toHaveLength(1);
 
-    const list = await callTool(ownerTools, "list_files", { name: "work" });
-    expect(list.content[0].text).toContain("README.md");
+    // Open the repo as the conversation's working directory (the avatar's entry point).
+    const open = await callTool(ownerTools, "open_repo", { name: "work" });
+    expect(open.isError).toBeFalsy();
+    expect(open.content[0].text).toContain("working directory");
+    expect(getWorkspaceRepo("conv-flow")).toBe("work");
 
-    const write = await callTool(ownerTools, "write_file", {
-      name: "work",
-      path: "docs/runbook.md",
-      content: "# Runbook\n",
-    });
-    expect(write.isError).toBeFalsy();
-
-    const status = await callTool(ownerTools, "status", { name: "work" });
-    expect(status.content[0].text).toContain("docs/runbook.md");
-
-    const commit = await callTool(ownerTools, "commit", { name: "work", message: "add runbook" });
-    expect(commit.isError).toBeFalsy();
-    expect(commit.content[0].text).toContain("Committed the changes");
+    // The avatar edits + commits natively in the opened working directory; push is MCP.
+    const clonePath = gitRepoClonePath(s.ownerId, "work", s.config);
+    nativeCommit(clonePath, "docs/runbook.md", "# Runbook\n", "add runbook");
 
     const push = await callTool(ownerTools, "push", { name: "work" });
     expect(push.isError).toBeFalsy();
@@ -1197,7 +1207,11 @@ describe("git repo tools (general git repository management)", () => {
     execFileSync("git", ["clone", "-q", s.remote, verify], { stdio: "pipe" });
     expect(fs.existsSync(path.join(verify, "docs/runbook.md"))).toBe(true);
 
-    const clonePath = gitRepoClonePath(s.ownerId, "work", s.config);
+    // close_repo clears the working-repo selection for the conversation.
+    const close = await callTool(ownerTools, "close_repo", {});
+    expect(close.isError).toBeFalsy();
+    expect(getWorkspaceRepo("conv-flow")).toBeNull();
+
     expect(fs.existsSync(clonePath)).toBe(true);
     const remove = await callTool(ownerTools, "remove_repo", { name: "work" });
     expect(remove.isError).toBeFalsy();
@@ -1219,13 +1233,8 @@ describe("git repo tools (general git repository management)", () => {
     const register = await callTool(ownerTools, "register_repo", { repo: s.remote, name: "work", branch });
     expect(register.isError).toBeFalsy();
 
-    await callTool(ownerTools, "write_file", {
-      name: "work",
-      path: "docs/branch.md",
-      content: "# Branch\n",
-    });
-    const commit = await callTool(ownerTools, "commit", { name: "work", message: "add branch doc" });
-    expect(commit.isError).toBeFalsy();
+    const clonePath = gitRepoClonePath(s.ownerId, "work", s.config);
+    nativeCommit(clonePath, "docs/branch.md", "# Branch\n", "add branch doc");
 
     const push = await callTool(ownerTools, "push", { name: "work" });
     expect(push.isError).toBeFalsy();
@@ -1257,9 +1266,9 @@ describe("git repo tools (general git repository management)", () => {
 
     const sync = await callTool(ownerTools, "sync_repo", { name: "public" });
     expect(sync.isError).toBeFalsy();
-    const read = await callTool(ownerTools, "read_file", { name: "public", path: "docs/public.md" });
-    expect(read.isError).toBeFalsy();
-    expect(read.content[0].text).toContain("# Public");
+    // After sync the file is present in the local working clone (read natively in the cwd).
+    const clonePath = gitRepoClonePath(s.ownerId, "public", s.config);
+    expect(fs.readFileSync(path.join(clonePath, "docs/public.md"), "utf8")).toContain("# Public");
   });
 
   it("does not require tokens for public HTTPS git repo contexts", () => {

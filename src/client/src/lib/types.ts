@@ -94,8 +94,6 @@ export interface ChatPane {
   canvases: PaneCanvas[];
   /** Which canvas is currently shown in the side panel (artifact id). */
   activeCanvasId?: string | null;
-  /** Active repo workspace (#47): registered repo name the avatar edits natively, or "". */
-  activeRepo?: string;
   greetingStarted?: boolean;
   greetedConversationId?: string | null;
   /** Whether the viewer is pinned to the transcript bottom (intent-based follow). */

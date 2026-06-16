@@ -8,6 +8,7 @@ import { scrubGitError } from "../marketplace.js";
 import { configureGitRepoIdentity, ensureGitRepoClone, gitRepoContextFor, gitRepoClonePath } from "../gitRepos.js";
 import { commitIdentityFor } from "../knowledgeRepo.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../activeRepoLock.js";
+import { getWorkspaceRepo } from "../repoWorkspace.js";
 import type { AgentConversationMessage, AgentImageInput, AgentResponse, CanvasArtifact, StoredMessage } from "../types.js";
 import {
   decodeChatImages,
@@ -468,13 +469,16 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       return;
     }
 
-    // Active repo workspace (#47): owner/trusted viewers may open one registered
-    // git repo as the SDK cwd so the avatar edits/tests it with native tools.
-    // Resolve + clone + take the per-clone serialization lock BEFORE switching to
-    // SSE, so validation/contention failures stay plain JSON. The clone path is
-    // server-side only and never returned to the client (only the repo name).
+    // Working repository: the avatar opens one registered git repo (via
+    // `mcp__git_repo__open_repo`) as the SDK cwd so it edits/tests with native
+    // tools. The selection is held per conversation (repoWorkspace.ts) and read
+    // here at turn start. Resolve + clone + take the per-clone serialization lock
+    // BEFORE switching to SSE, so validation/contention failures stay plain JSON.
+    // The clone path is server-side only and never returned to the client (only
+    // the repo name). The elevated gate is belt-and-suspenders — open_repo is
+    // itself elevated-only — in case trust changed since the repo was opened.
     const elevatedViewer = viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id);
-    const requestedActiveRepo = elevatedViewer ? safeString(req.body?.activeRepo) : "";
+    const requestedActiveRepo = elevatedViewer ? getWorkspaceRepo(conversationId) ?? "" : "";
     let activeRepoCwd: string | null = null;
     let activeRepoName: string | null = null;
     let activeRepoLockPath: string | null = null;
@@ -664,7 +668,10 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         {
           message: agentMessage,
           avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
-          // Active repo workspace (#47): the repo clone becomes the cwd and the
+          // Lets in-process tools (open_repo/close_repo) key the working-repo
+          // selection to this conversation.
+          conversationId,
+          // Working repository: the opened repo's clone becomes the cwd and the
           // per-conversation scratch dir is exposed as an additional writable dir.
           cwd: activeRepoCwd ?? workspaceDir,
           additionalDirs: activeRepoCwd ? [workspaceDir] : undefined,

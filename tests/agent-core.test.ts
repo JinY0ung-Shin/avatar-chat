@@ -1829,26 +1829,36 @@ describe("buildPrompt", () => {
     expect(owner).toContain("`canvas`");
   });
 
-  // ---- active repo workspace (#47) ----
-  it("injects active repo workspace guidance for the owner when activeRepoName is set", () => {
+  // ---- working repository (opened via open_repo) ----
+  it("injects working-repository guidance for the owner when activeRepoName is set", () => {
     const p = buildPrompt(req({ viewerIsOwner: true, activeRepoName: "myrepo" }), 0);
-    expect(p).toContain("Active repo workspace");
+    expect(p).toContain("Working repository");
     expect(p).toContain("myrepo");
     expect(p).toContain("git add");
     expect(p).toContain("git commit");
+    // file CRUD is native, not an MCP tool; only remote git remains MCP.
     expect(p).not.toContain("mcp__git_repo__commit");
-    // local git is explicitly allowed in this mode; remote git remains MCP-only.
+    expect(p).not.toContain("mcp__git_repo__write_file");
     expect(p).toContain("mcp__git_repo__push");
   });
 
-  it("injects active repo workspace guidance for a trusted user too", () => {
+  it("injects working-repository guidance for a trusted user too", () => {
     const p = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수", activeRepoName: "myrepo" }), 0);
-    expect(p).toContain("Active repo workspace");
+    expect(p).toContain("Working repository");
   });
 
-  it("omits active repo workspace guidance when no active repo is set", () => {
+  it("omits working-repository guidance when no repo is open", () => {
     const p = buildPrompt(req({ viewerIsOwner: true }), 0);
-    expect(p).not.toContain("Active repo workspace");
+    expect(p).not.toContain("Working repository");
+  });
+
+  it("tells the owner to open a repo as the working directory and keeps git-repo file CRUD native", () => {
+    const p = buildPrompt(req({ viewerIsOwner: true }), 0);
+    expect(p).toContain("mcp__git_repo__open_repo");
+    // The general git-repo file-CRUD MCP tools were removed in favor of native
+    // editing in the cwd (the personal knowledge repo's mcp__repo__* tools stay).
+    expect(p).not.toContain("mcp__git_repo__write_file");
+    expect(p).not.toContain("mcp__git_repo__read_file");
   });
 });
 

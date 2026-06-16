@@ -37,10 +37,6 @@
   let physicalKeyboard = false;
   // Per-pane group-knowledge dropdown open state.
   let gkOpenPaneId = "";
-  // Active repo workspace (#47): the owner's registered git repos, loaded lazily
-  // for the picker shown on the owner's own single-pane chat.
-  let myRepos: { name: string; repo: string; branch: string | null }[] = [];
-  let myReposLoaded = false;
 
   onMount(async () => {
     try {
@@ -136,27 +132,6 @@
     return Boolean(item.avatar.isOwn || item.avatar.id === user?.id);
   }
 
-  // Load the owner's registered git repos once, when an own single-pane chat is
-  // open (the only place the active-repo picker is offered for now).
-  $: if (pane && panes.length === 1 && isOwnPane(pane) && !myReposLoaded) {
-    myReposLoaded = true;
-    void loadMyRepos();
-  }
-  async function loadMyRepos(): Promise<void> {
-    try {
-      const { repos } = await api<{ repos: typeof myRepos }>("/api/me/git-repos");
-      myRepos = repos || [];
-    } catch {
-      myRepos = [];
-    }
-  }
-  function setActiveRepo(paneId: string, name: string): void {
-    updateState((state) => {
-      const target = state.chatPanes.find((p) => p.id === paneId);
-      if (target) target.activeRepo = name;
-    });
-    if (name) notify(`'${name}' 저장소를 활성 작업공간으로 열었습니다. 다음 메시지부터 적용됩니다.`, "info");
-  }
 
   function eligibleGroups(item: ChatPane) {
     return isOwnPane(item) ? (user?.groups || []).filter((g) => g.knowledgeRepoConfigured) : [];
@@ -1027,21 +1002,6 @@
           </div>
         </div>
         <div class="chat-head-actions">
-          {#if isOwnPane(pane) && myRepos.length}
-            <select
-              class="split-avatar-select"
-              aria-label="활성 저장소 작업공간"
-              title="등록된 저장소를 활성 작업공간으로 열면 아바타가 로컬에서 직접 편집·테스트합니다 (커밋·푸시는 MCP)"
-              value={pane.activeRepo || ""}
-              disabled={pane.streaming}
-              on:change={(event) => setActiveRepo(pane.id, event.currentTarget.value)}
-            >
-              <option value="">저장소 작업공간 없음</option>
-              {#each myRepos as repo (repo.name)}
-                <option value={repo.name}>📂 {repo.name}</option>
-              {/each}
-            </select>
-          {/if}
           {@render splitControls()}
           <button class="ghost-sm" type="button" disabled={pane.streaming} on:click={() => newChat(pane.id)}>새 대화</button>
         </div>

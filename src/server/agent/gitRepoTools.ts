@@ -2,23 +2,16 @@ import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
 import type { AgentOwner, AppConfig } from "../types.js";
-import { commitIdentityFor } from "../knowledgeRepo.js";
 import { decodeExecError, text } from "./mcpTools.js";
+import { setWorkspaceRepo } from "../repoWorkspace.js";
 import {
-  commitGitRepo,
   defaultGitRepoName,
-  deleteGitRepoFile,
   ensureGitRepoClone,
   gitRepoContextFor,
   gitRepoContextFromRecord,
-  gitRepoDiff,
-  gitRepoStatus,
-  listGitRepoTree,
   normalizeGitRepoName,
   pushGitRepo,
-  readGitRepoFile,
   removeGitRepoClone,
-  writeGitRepoFile,
 } from "../gitRepos.js";
 
 export interface GitRepoToolsContext {
@@ -30,6 +23,13 @@ export interface GitRepoToolsContext {
   /** True for owner/trusted-user interactive chats. */
   elevated: boolean;
   config: AppConfig;
+  /**
+   * The conversation this run belongs to. Needed by `open_repo`/`close_repo` to
+   * record the working-repo selection the chat route reads next turn. Unset for
+   * runs with no conversation (e.g. headless intro generation) — open_repo then
+   * reports it cannot open a working repo.
+   */
+  conversationId?: string;
 }
 
 /** MCP server name; tools surface to the model as `mcp__git_repo__<tool>`. */
@@ -41,13 +41,8 @@ export const GIT_REPO_TOOL_NAMES = [
   "mcp__git_repo__list_repos",
   "mcp__git_repo__sync_repo",
   "mcp__git_repo__remove_repo",
-  "mcp__git_repo__status",
-  "mcp__git_repo__list_files",
-  "mcp__git_repo__read_file",
-  "mcp__git_repo__write_file",
-  "mcp__git_repo__delete_file",
-  "mcp__git_repo__diff",
-  "mcp__git_repo__commit",
+  "mcp__git_repo__open_repo",
+  "mcp__git_repo__close_repo",
   "mcp__git_repo__push",
 ] as const;
 
@@ -64,31 +59,6 @@ function renderRepo(repo: ReturnType<Store["listGitRepos"]>[number]): string {
     `repo=${repo.repo}`,
     repo.branch ? `branch=${repo.branch}` : "branch=(default)",
     repo.lastSyncedAt ? `lastSyncedAt=${repo.lastSyncedAt}` : "lastSyncedAt=null",
-  ].join(" | ");
-}
-
-function renderStatus(status: Awaited<ReturnType<typeof gitRepoStatus>>): string {
-  if (!status.cloned) {
-    return [
-      `name=${status.name}`,
-      `repo=${status.repo}`,
-      status.branch ? `branch=${status.branch}` : "branch=(default)",
-      "cloned=false",
-      "Run clone/sync first with sync_repo.",
-    ].join(" | ");
-  }
-  const aheadBehind =
-    status.ahead === null || status.behind === null
-      ? "upstream=(unknown)"
-      : `ahead=${status.ahead} behind=${status.behind}`;
-  const dirty = status.dirty.length ? status.dirty.join(", ") : "(clean)";
-  return [
-    `name=${status.name}`,
-    `repo=${status.repo}`,
-    `branch=${status.branch ?? "(detached)"}`,
-    `head=${status.head ?? "(unknown)"}`,
-    aheadBehind,
-    `dirty=${dirty}`,
   ].join(" | ");
 }
 
@@ -205,128 +175,43 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
       },
     ),
     tool(
-      "status",
-      "Show a registered git repository's current branch, HEAD, ahead/behind, and uncommitted changed files. (owner / trusted user only)",
+      "open_repo",
+      "Open a registered git repository as THIS conversation's working directory so you can read, edit, and test it with native tools (Read/Edit/Write/Bash). The change takes effect from the NEXT message — the working directory is fixed when a turn starts and cannot be repointed mid-turn — so after calling this, tell the user it is ready and continue on their next message. From then on, work the repo natively in the working directory: read/edit files, run tests, and use local git (`git status`/`diff`/`log`/`add`/`commit`); then `push` the result and `sync_repo` to pull updates (those need server-side credentials, so they stay MCP-only). Only one repo is open at a time per conversation — opening another replaces it. (owner / trusted user only)",
       { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
         if (denied) return denied;
-        try {
-          return text(renderStatus(await gitRepoStatus(ownerRepoContext(args.name))));
-        } catch (error) {
-          return text(`status failed: ${errorMessage(error)}`, true);
+        if (!ctx.conversationId) {
+          return text("Cannot open a working repository in this run (no conversation context).", true);
         }
-      },
-    ),
-    tool(
-      "list_files",
-      "List the file tree of a registered git repository. `.git` is excluded. (owner / trusted user only)",
-      { name: z.string().describe("Registered repo name") },
-      async (args) => {
-        const denied = elevatedGuard();
-        if (denied) return denied;
-        try {
-          const entries = await listGitRepoTree(ownerRepoContext(args.name));
-          if (entries.length === 0) return text("The repository is empty.");
-          return text(entries.map((e) => `${e.type === "dir" ? "dir " : "file"} ${e.path}`).join("\n"));
-        } catch (error) {
-          return text(`Failed to list files: ${errorMessage(error)}`, true);
-        }
-      },
-    ),
-    tool(
-      "read_file",
-      "Read a text file from a registered git repository. (owner / trusted user only)",
-      {
-        name: z.string().describe("Registered repo name"),
-        path: z.string().describe("Path relative to the repo root"),
-      },
-      async (args) => {
-        const denied = elevatedGuard();
-        if (denied) return denied;
-        try {
-          return text(await readGitRepoFile(ownerRepoContext(args.name), args.path));
-        } catch (error) {
-          return text(`Failed to read file: ${errorMessage(error)}`, true);
-        }
-      },
-    ),
-    tool(
-      "write_file",
-      "Create/modify a text file in a registered git repository. Changes apply only to the local working tree and are not reflected on the remote until commit/push. (owner / trusted user only)",
-      {
-        name: z.string().describe("Registered repo name"),
-        path: z.string().describe("Path relative to the repo root"),
-        content: z.string().describe("The full file content"),
-      },
-      async (args) => {
-        const denied = elevatedGuard();
-        if (denied) return denied;
-        try {
-          await writeGitRepoFile(ownerRepoContext(args.name), args.path, args.content);
-          return text(`Saved the file: ${args.path}\nNot committed/pushed yet. If needed, run diff and then commit/push.`);
-        } catch (error) {
-          return text(`Failed to write file: ${errorMessage(error)}`, true);
-        }
-      },
-    ),
-    tool(
-      "delete_file",
-      "Delete a file or a whole directory (recursively) from a registered git repository. The deletion applies only to the local working tree. (owner / trusted user only)",
-      {
-        name: z.string().describe("Registered repo name"),
-        path: z.string().describe("Path relative to the repo root"),
-      },
-      async (args) => {
-        const denied = elevatedGuard();
-        if (denied) return denied;
-        try {
-          await deleteGitRepoFile(ownerRepoContext(args.name), args.path);
-          return text(`Deleted the file: ${args.path}\nNot committed/pushed yet.`);
-        } catch (error) {
-          return text(`Failed to delete file: ${errorMessage(error)}`, true);
-        }
-      },
-    ),
-    tool(
-      "diff",
-      "Show the unstaged diff of a registered git repository. If paths are given, the diff is limited to those paths. (owner / trusted user only)",
-      {
-        name: z.string().describe("Registered repo name"),
-        paths: z.array(z.string()).optional().describe("Optional list of paths"),
-      },
-      async (args) => {
-        const denied = elevatedGuard();
-        if (denied) return denied;
-        try {
-          const diff = await gitRepoDiff(ownerRepoContext(args.name), args.paths);
-          return text(diff.trim() ? diff : "There is no changed diff. Check new untracked files with status before commit.");
-        } catch (error) {
-          return text(`diff failed: ${errorMessage(error)}`, true);
-        }
-      },
-    ),
-    tool(
-      "commit",
-      "Commit the changes in a registered git repository. If paths are given, only those paths are staged. Pushing is done with the separate push tool. (owner / trusted user only)",
-      {
-        name: z.string().describe("Registered repo name"),
-        message: z.string().describe("Commit message"),
-        paths: z.array(z.string()).optional().describe("Optional list of paths"),
-      },
-      async (args) => {
-        const denied = elevatedGuard();
-        if (denied) return denied;
         try {
           const repoCtx = ownerRepoContext(args.name);
-          const committed = await commitGitRepo(repoCtx, args.message, commitIdentityFor(store, ctx.owner), args.paths);
-          return text(committed ? `Committed the changes: ${repoCtx.name}` : "There are no changes to commit.");
+          // Make sure the clone exists now so a bad-repo/access error surfaces
+          // immediately — WITHOUT syncing (a fetch/checkout could clobber edits).
+          await ensureGitRepoClone(repoCtx);
+          setWorkspaceRepo(ctx.conversationId, repoCtx.name);
+          return text(
+            `Opened '${repoCtx.name}' as this conversation's working directory. It becomes your working directory from the NEXT message, so let the user know it is ready and continue from their next message — then edit/test it with native tools and use \`push\`/\`sync_repo\` for remote git. (Use \`close_repo\` to close it.)`,
+          );
         } catch (error) {
           return text(
-            `commit failed: ${errorMessage(error)}\nCheck the working tree state with status/diff. Do not work around this with Bash git.`,
+            `Failed to open the working repository: ${errorMessage(error)}\nCheck the repo is registered (list_repos) and reachable. Do not work around this with Bash git — the shell has no git credentials.`,
             true,
           );
         }
+      },
+    ),
+    tool(
+      "close_repo",
+      "Close the working repository opened for this conversation so later turns run in the default scratch workspace again. Takes effect from the next message. (owner / trusted user only)",
+      {},
+      async () => {
+        const denied = elevatedGuard();
+        if (denied) return denied;
+        if (ctx.conversationId) setWorkspaceRepo(ctx.conversationId, null);
+        return text(
+          "Closed the working repository. From the next message this conversation runs in the default scratch workspace.",
+        );
       },
     ),
     tool(

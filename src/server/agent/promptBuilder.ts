@@ -50,7 +50,7 @@ export const GIT_MCP_ONLY_GUIDANCE =
   "**Remote git work goes through MCP tools ONLY**: remote git operations such as clone/pull/push/fetch MUST be performed exclusively via the dedicated MCP tools (`mcp__repo__*` for the personal knowledge repository, `mcp__git_repo__*` for general repos, `mcp__group_repo__*` for group repositories). " +
   "Git credentials are injected by the server into those tools only and are NOT present in your shell — running `git clone`/`git push`/`gh` via Bash cannot authenticate. " +
   "If an MCP remote-git tool fails, do NOT work around it or retry with Bash git; instead resolve the cause shown in the failure message (token/permission/branch/URL) or report it to the user. " +
-  "When a registered repo is opened as the active repo workspace, local inspection, staging, and commit may use native Bash git there; remote operations still stay MCP-only.";
+  "When you have opened a registered repo as this conversation's working directory, local inspection, staging, and commit may use native git there; remote operations still stay MCP-only.";
 
 /**
  * Personal knowledge-repository section of the owner prompt: either how to
@@ -79,9 +79,9 @@ function knowledgeRepoSection(request: AgentRequest, knowledgeRepoConfigured: bo
 /** General work/code git-repo tooling guidance (owner prompt). */
 function gitRepoSection(): string {
   return (
-    "General **git repo work** is separate from the knowledge-repository tools. When the owner asks you to manage a work/code repository, register it with `mcp__git_repo__register_repo`, then use `sync_repo`/`status`/`list_files`/`read_file`/`write_file`/`delete_file`/`diff`/`commit`/`push`. " +
-    "`push` is not main-only — it pushes `HEAD` to the registered branch (or, if branch was left empty, the clone's current/default branch). If the owner names a specific branch, set that name as `register_repo`'s `branch`. " +
-    "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. Registration/removal is owner-only, and work on an already-registered repo is possible only in owner or trusted-user conversations. These are pure git tools and do not cover GitHub issue/PR/release management."
+    "General **git repo work** is separate from the knowledge-repository tools. When the owner asks you to manage a work/code repository, register it with `mcp__git_repo__register_repo`, then **open it as your working directory with `mcp__git_repo__open_repo`** to read, edit, and test it. Opening takes effect from the NEXT message (the working directory is fixed when a turn starts), so after opening, tell the user it is ready and continue from their next message; from then on read/edit files and run tests and LOCAL git (`git status`/`diff`/`log`/`add`/`commit`) natively in the working directory. `close_repo` returns to the scratch workspace. " +
+    "Only remote git stays in MCP: `sync_repo` pulls updates and `push` pushes your local commits (these need the server-side credentials your shell does not have). `push` is not main-only — it pushes `HEAD` to the registered branch (or, if branch was left empty, the clone's current/default branch); if the owner names a specific branch, set that name as `register_repo`'s `branch`. " +
+    "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. Registration/removal is owner-only; opening/syncing/pushing an already-registered repo is possible in owner or trusted-user conversations. These are pure git tools and do not cover GitHub issue/PR/release management."
   );
 }
 
@@ -268,10 +268,11 @@ function canvasSection(request: AgentRequest): string | null {
 }
 
 /**
- * Active repo workspace guidance (#47). When the cwd is a registered repo's
- * clone, the avatar may edit/test locally with NATIVE tools and use local git
- * for inspection, staging, and commit. Remote/sync work still flows through
- * `mcp__git_repo__*` because the shell has no git credentials.
+ * Working-repository guidance. When the cwd is a registered repo's clone (the
+ * avatar opened it with `open_repo`), the avatar may edit/test locally with
+ * NATIVE tools and use local git for inspection, staging, and commit.
+ * Remote/sync work still flows through `mcp__git_repo__*` because the shell has
+ * no git credentials.
  */
 function activeRepoSection(request: AgentRequest): string | null {
   const name = request.activeRepoName?.trim();
@@ -279,10 +280,10 @@ function activeRepoSection(request: AgentRequest): string | null {
     return null;
   }
   return (
-    `**Active repo workspace**: your current working directory IS the local clone of the registered git repository '${name}'. ` +
+    `**Working repository**: your current working directory IS the local clone of the registered git repository '${name}' (you opened it with \`open_repo\`). ` +
     "Work on its files directly with the native tools — `Read`/`Edit`/`Write`, run tests and `rg`/search, and use local git via Bash for inspection and commit workflow (`git status`/`diff`/`log`/`show`/`rev-parse`/`ls-files`/`grep`/`blame`, plus `git add` and `git commit`). " +
-    "Remote/sync operations — `clone`/`fetch`/`pull`/`push` — MUST go through the `mcp__git_repo__*` tools, NOT Bash: your shell has no git credentials. Branch-changing, history-rewriting, or destructive operations such as `reset`/`checkout`/`switch`/`merge`/`rebase`/`commit --amend` are blocked in Bash to protect the active working tree. " +
-    `After you finish local edits, stage and commit with native git, then persist remotely with \`mcp__git_repo__push\` (name='${name}'). The per-conversation scratch workspace is still available as an additional writable directory for throwaway files.`
+    "Remote/sync operations — `clone`/`fetch`/`pull`/`push` — MUST go through the `mcp__git_repo__*` tools, NOT Bash: your shell has no git credentials. Branch-changing, history-rewriting, or destructive operations such as `reset`/`checkout`/`switch`/`merge`/`rebase`/`commit --amend` are blocked in Bash to protect the working tree. " +
+    `After you finish local edits, stage and commit with native git, then persist remotely with \`mcp__git_repo__push\` (name='${name}'). Use \`close_repo\` when done to return to the scratch workspace, which also remains available as an additional writable directory for throwaway files.`
   );
 }
 
