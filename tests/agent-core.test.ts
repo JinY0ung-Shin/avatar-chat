@@ -664,6 +664,21 @@ describe("loadDefaultPluginRoots", () => {
       expect(names).toContain(n);
     }
   });
+
+  it("keeps brain skill scope/privacy guidance aligned with runtime tool registration", () => {
+    const skill = (name: string) =>
+      fs.readFileSync(path.join(process.cwd(), "default-skills", "skills", name, "SKILL.md"), "utf8");
+    const migrate = skill("brain-migrate");
+    expect(migrate).toContain("Decide the target from the user's requested repo");
+    expect(migrate).toContain("BOTH personal `mcp__repo__*` tools and group");
+    expect(migrate).toContain("Group / team brain requested");
+    expect(migrate).not.toContain("If only `mcp__group_repo__*` tools are available");
+
+    const reflect = skill("brain-reflect");
+    expect(reflect).toContain("Personal scope reads raw/ + wiki/ and may optionally review");
+    expect(reflect).toContain("group scope reads ONLY the group's raw/ + wiki/ and never conversations");
+    expect(reflect).not.toContain("It reads ONLY raw/ and wiki/ — never conversations");
+  });
 });
 
 

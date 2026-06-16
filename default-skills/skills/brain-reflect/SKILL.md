@@ -1,6 +1,6 @@
 ---
 name: brain-reflect
-description: Consolidation pass over a knowledge repo — read raw/ + wiki/, synthesize durable notes into wiki/{sources,entities,concepts,synthesis}/, update wiki/index.md and append wiki/log.md, then commit. Works on the personal repo (mcp__repo__*) or a group's shared repo (mcp__group_repo__*). It reads ONLY raw/ and wiki/ — never conversations.
+description: Consolidation pass over a knowledge repo — synthesize durable notes into wiki/{sources,entities,concepts,synthesis}/, update wiki/index.md and append wiki/log.md, then commit. Personal scope reads raw/ + wiki/ and may optionally review the owner's own recent conversations; group scope reads ONLY the group's raw/ + wiki/ and never conversations.
 ---
 
 # brain-reflect — consolidate the second brain
@@ -9,9 +9,10 @@ Move durable knowledge from `raw/` capture into the consolidated `wiki/`. Run on
 asked to "tidy up / consolidate my notes".
 
 ## Privacy boundary (read this first)
-- This skill reads ONLY the repo's `raw/` and `wiki/`. It does NOT read any conversations.
+- **Personal repo:** read `raw/` and `wiki/`; optionally review the owner's OWN recent
+  conversations with the owner-scoped system tools described below.
 - For a GROUP repo there is no shared group conversation stream, and reading members' individual
-  conversations would violate their privacy — never attempt it.
+  conversations would violate their privacy — read ONLY the group repo's `raw/` and `wiki/`.
 
 ## Scope
 - **Personal repo:** `mcp__repo__list_files`/`read_file`/`write_file`/`commit`.

@@ -11,13 +11,20 @@ whose repo only has a short `CLAUDE.md` stub and no `wiki/`) needs a one-time up
 skill performs that upgrade **idempotently** — running it twice changes nothing the second time.
 
 ## Scope detection
-- If `mcp__repo__*` tools are available, operate on the **personal** repo
-  (`mcp__repo__list_files`/`read_file`/`write_file`/`commit`).
-- If only `mcp__group_repo__*` tools are available (a group conversation), operate on a
-  **group** shared repo. Writes are admin-only; if a write is denied, report which files are
-  missing and tell the user a group admin must run this.
+Decide the target from the user's requested repo, not from which tool families happen to be
+visible. Owner conversations can expose BOTH personal `mcp__repo__*` tools and group
+`mcp__group_repo__*` tools at the same time, so "personal tools exist" does NOT mean the
+personal repo is the right target.
 
-Decide scope once, up front. Never mix the two.
+- **Personal brain requested / no group named:** operate on the personal repo with
+  `mcp__repo__list_files`/`read_file`/`write_file`/`commit`.
+- **Group / team brain requested:** first call `mcp__group_repo__list_groups`, choose the named
+  group (or ask which group if ambiguous), then operate ONLY on that group's shared repo with
+  `mcp__group_repo__list_files`/`read_file`/`write_file`/`commit`.
+- Group writes are admin-only; if a write is denied, report which files are missing and tell the
+  user a group admin must run this.
+
+Decide scope once, up front. Never mix personal and group tools in the same migration.
 
 ## Procedure (create-if-absent only — NEVER overwrite)
 1. **List the current tree** with `list_files`. Do not assume.
