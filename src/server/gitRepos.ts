@@ -135,15 +135,32 @@ async function checkoutBranch(repoRoot: string, branch: string): Promise<void> {
   }
 }
 
-async function pullFastForward(ctx: GitRepoContext, repoRoot: string, url: string): Promise<void> {
+async function pullRebase(ctx: GitRepoContext, repoRoot: string, url: string): Promise<void> {
   const auth = gitAuthArgs(url, ctx.token ?? undefined);
   await git(repoRoot, [...auth, "fetch", "--prune", "--tags", "origin"]);
-  if (ctx.branch) {
-    await checkoutBranch(repoRoot, ctx.branch);
-    await git(repoRoot, ["merge", "--ff-only", `origin/${ctx.branch}`]);
-    return;
+  try {
+    if (ctx.branch) {
+      await checkoutBranch(repoRoot, ctx.branch);
+      await git(repoRoot, ["rebase", "--autostash", `origin/${ctx.branch}`]);
+    } else {
+      await git(repoRoot, [...auth, "pull", "--rebase", "--autostash"]);
+    }
+  } catch (error) {
+    // NEVER leave the clone mid-rebase: the activeRepoMode PreToolUse guard blocks
+    // the native `git rebase`/`reset` the avatar would need to finish or abort it,
+    // so a stuck rebase is unrecoverable from chat. Roll back to the pre-sync state
+    // and surface an actionable error instead.
+    await git(repoRoot, ["rebase", "--abort"]).catch(() => {});
+    const detail =
+      (error as { stderr?: string; stdout?: string })?.stderr?.trim() ||
+      (error as { stdout?: string })?.stdout?.trim() ||
+      (error instanceof Error ? error.message : String(error));
+    throw new Error(
+      scrubGitError(
+        `rebase onto the upstream failed (the local clone was restored to its previous state). The local commits conflict with the remote, so they could not be replayed automatically. Reconcile the conflicting changes (re-create them on top of the latest remote, or discard the local work) and sync again. Original error: ${detail}`,
+      ),
+    );
   }
-  await git(repoRoot, [...auth, "pull", "--ff-only"]);
 }
 
 /**
@@ -166,7 +183,8 @@ async function hasUnpushedCommits(repoRoot: string, branch: string | null): Prom
 
 /**
  * Ensure the user-registered repo has a local full clone under dataDir. When
- * `sync` is true, fetch and fast-forward; otherwise preserve local work.
+ * `sync` is true, fetch and rebase local work onto the upstream (--autostash;
+ * aborts cleanly on conflict, see pullRebase); otherwise preserve local work.
  * Serialized per clone path so concurrent turns/tools can't interleave
  * clone/fetch/checkout on one working tree (git-02).
  */
@@ -233,7 +251,7 @@ async function ensureGitRepoCloneLocked(
   }
 
   if (options.sync) {
-    await pullFastForward(ctx, repoRoot, url);
+    await pullRebase(ctx, repoRoot, url);
   }
   return repoRoot;
 }

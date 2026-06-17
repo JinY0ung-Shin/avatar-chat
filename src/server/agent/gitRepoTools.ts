@@ -139,7 +139,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "sync_repo",
-      "Fetch a registered git repository and update it via fast-forward. A public repo attempts fetch/pull without a token; this fails if there are uncommitted changes or conflicts. (owner / trusted user only)",
+      "Fetch a registered git repository and update it by rebasing local commits onto the upstream (uncommitted changes are auto-stashed and restored). A public repo attempts this without a token. If the local commits genuinely conflict with the remote the rebase is rolled back (the clone is left untouched) and this errors — reconcile and sync again. (owner / trusted user only)",
       { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
@@ -151,7 +151,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           return text(`Synced the git repo: ${repoCtx.name}`);
         } catch (error) {
           return text(
-            `Sync failed: ${errorMessage(error)}\nThis fails if there are uncommitted changes or conflicts — check the working tree with status. Do not work around this with Bash git.`,
+            `Sync failed: ${errorMessage(error)}\nIf the rebase conflicted, the clone was rolled back to its previous state — reconcile the conflicting changes (re-apply them on top of the latest remote, or discard local work) and sync again. Do not work around this with Bash git.`,
             true,
           );
         }

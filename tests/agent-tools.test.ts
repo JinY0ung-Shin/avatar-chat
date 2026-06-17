@@ -1285,6 +1285,65 @@ describe("git repo tools (general git repository management)", () => {
     expect(fs.readFileSync(path.join(clonePath, "docs/public.md"), "utf8")).toContain("# Public");
   });
 
+  // Advance origin/main with one external commit touching `file` (clone → edit → push).
+  function advanceRemote(dir: string, remote: string, file: string, content: string, message: string) {
+    const updater = path.join(tempDir, dir, "updater");
+    execFileSync("git", ["clone", "-q", remote, updater], { stdio: "pipe" });
+    const g = (...a: string[]) => execFileSync("git", ["-C", updater, ...a], { stdio: "pipe" });
+    g("config", "user.name", "Updater");
+    g("config", "user.email", "updater@example.com");
+    fs.mkdirSync(path.dirname(path.join(updater, file)), { recursive: true });
+    fs.writeFileSync(path.join(updater, file), content);
+    g("add", "-A");
+    g("commit", "-q", "-m", message);
+    g("push", "-q", "origin", "main");
+  }
+
+  it("rebases local commits onto a diverged remote when they do not conflict", async () => {
+    const s = setup("gr-rebase-sync");
+    const ownerTools = tools(s);
+    await callTool(ownerTools, "register_repo", { repo: s.remote, name: "div", branch: "main" });
+    const clonePath = gitRepoClonePath(s.ownerId, "div", s.config);
+
+    // Local-only commit on a fresh file, plus a remote commit on a DIFFERENT file →
+    // the histories diverge, which an --ff-only sync would refuse outright.
+    nativeCommit(clonePath, "local.md", "# Local\n", "local commit");
+    advanceRemote("gr-rebase-sync", s.remote, "remote.md", "# Remote\n", "remote commit");
+
+    const sync = await callTool(ownerTools, "sync_repo", { name: "div" });
+    expect(sync.isError).toBeFalsy();
+
+    // The remote change is now present AND the local commit was replayed on top.
+    expect(fs.existsSync(path.join(clonePath, "remote.md"))).toBe(true);
+    expect(fs.existsSync(path.join(clonePath, "local.md"))).toBe(true);
+    const log = execFileSync("git", ["-C", clonePath, "log", "--oneline"], { stdio: "pipe" }).toString();
+    expect(log).toContain("local commit");
+    expect(log).toContain("remote commit");
+  });
+
+  it("rolls back a conflicting rebase and leaves the clone usable", async () => {
+    const s = setup("gr-rebase-conflict");
+    const ownerTools = tools(s);
+    await callTool(ownerTools, "register_repo", { repo: s.remote, name: "conf", branch: "main" });
+    const clonePath = gitRepoClonePath(s.ownerId, "conf", s.config);
+
+    // Local and remote edit the SAME file → the rebase replay conflicts.
+    nativeCommit(clonePath, "README.md", "LOCAL VERSION\n", "local edit");
+    advanceRemote("gr-rebase-conflict", s.remote, "README.md", "REMOTE VERSION\n", "remote edit");
+
+    const sync = await callTool(ownerTools, "sync_repo", { name: "conf" });
+    expect(sync.isError).toBe(true);
+    expect(sync.content[0].text).toContain("rebase");
+
+    // The clone is NOT left mid-rebase (abort cleaned it up) and the local commit is
+    // intact, so the avatar can keep working in the cwd and reconcile manually.
+    expect(fs.existsSync(path.join(clonePath, ".git", "rebase-merge"))).toBe(false);
+    expect(fs.existsSync(path.join(clonePath, ".git", "rebase-apply"))).toBe(false);
+    expect(fs.readFileSync(path.join(clonePath, "README.md"), "utf8")).toBe("LOCAL VERSION\n");
+    const log = execFileSync("git", ["-C", clonePath, "log", "--oneline"], { stdio: "pipe" }).toString();
+    expect(log).toContain("local edit");
+  });
+
   it("does not require tokens for public HTTPS git repo contexts", () => {
     const { store, config } = createServices({
       dataDir: path.join(tempDir, "gr-public-token-context"),
