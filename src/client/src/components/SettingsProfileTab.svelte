@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import HashtagChipEditor from "./HashtagChipEditor.svelte";
   import { api, refreshMe } from "../lib/api";
+  import { normalizeTags } from "../lib/format";
   import { appState, notify, readState, replaceState } from "../lib/state";
   import type { AvatarVisibility, User } from "../lib/types";
 
@@ -27,6 +28,8 @@
   let profileSaving = false;
   let introGenBusy = false;
   let tagGenBusy = false;
+  let tagAddBusy = false;
+  let allGenBusy = false;
   let picBusy = false;
   let fileInput: HTMLInputElement;
 
@@ -81,6 +84,68 @@
       notify(`해시태그 생성 실패: ${(err as Error).message}`, "warn");
     } finally {
       tagGenBusy = false;
+    }
+  }
+
+  // Generate MORE hashtags without discarding the current ones: send the
+  // existing tags so the avatar proposes only new, distinct ones, then merge
+  // (normalizeTags dedupes + caps at 12). For when the current set feels thin.
+  async function addTags(): Promise<void> {
+    if (tagAddBusy || tagGenBusy || allGenBusy) return;
+    tagAddBusy = true;
+    try {
+      const { hashtags: next } = await api<{ hashtags: string[] }>("/api/me/hashtags/generate", {
+        method: "POST",
+        body: JSON.stringify({ existing: hashtags }),
+      });
+      if (next?.length) {
+        const before = hashtags.length;
+        hashtags = normalizeTags([...hashtags, ...next]);
+        const added = hashtags.length - before;
+        notify(
+          added > 0
+            ? `해시태그 ${added}개를 추가했습니다. 저장하려면 프로필 저장을 누르세요.`
+            : "추가할 새 해시태그가 없습니다. 이미 충분히 채워져 있어요.",
+          "info",
+        );
+      } else {
+        notify("추가할 새 해시태그가 없습니다. 페르소나나 스킬을 먼저 보강해 보세요.", "info");
+      }
+    } catch (err) {
+      notify(`해시태그 추가 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      tagAddBusy = false;
+    }
+  }
+
+  // Generate the self-introduction AND capability hashtags in one click. Fires
+  // both headless endpoints in parallel; a partial success still fills what it
+  // can (allSettled). Like the individual buttons, neither result is persisted —
+  // the owner reviews then saves.
+  async function generateAll(): Promise<void> {
+    if (allGenBusy || introGenBusy || tagGenBusy) return;
+    allGenBusy = true;
+    try {
+      const [introRes, tagsRes] = await Promise.allSettled([
+        api<{ intro: string }>("/api/me/intro/generate", { method: "POST" }),
+        api<{ hashtags: string[] }>("/api/me/hashtags/generate", { method: "POST" }),
+      ]);
+      if (introRes.status === "fulfilled" && introRes.value.intro) intro = introRes.value.intro;
+      if (tagsRes.status === "fulfilled" && tagsRes.value.hashtags?.length) hashtags = [...tagsRes.value.hashtags];
+
+      const okIntro = introRes.status === "fulfilled" && !!introRes.value.intro;
+      const okTags = tagsRes.status === "fulfilled" && !!tagsRes.value.hashtags?.length;
+      if (okIntro && okTags) {
+        notify("자기소개와 해시태그 초안이 채워졌습니다. 저장하려면 프로필 저장을 누르세요.", "info");
+      } else if (okIntro || okTags) {
+        notify(`${okIntro ? "자기소개" : "해시태그"} 초안만 채워졌습니다. 나머지는 다시 시도해 주세요. 저장하려면 프로필 저장을 누르세요.`, "warn");
+      } else {
+        const reason =
+          introRes.status === "rejected" ? (introRes.reason as Error).message : "결과가 비어 있습니다.";
+        notify(`자동 생성 실패: ${reason}`, "warn");
+      }
+    } finally {
+      allGenBusy = false;
     }
   }
 
@@ -191,20 +256,31 @@
     </div>
 
     <form class="settings-form" on:submit|preventDefault={saveProfile}>
+      <div class="field gen-all-row">
+        <button class="ghost-sm" type="button" disabled={allGenBusy || introGenBusy || tagGenBusy} on:click={generateAll}>
+          {allGenBusy ? "생성 중…" : "자기소개·해시태그 한 번에 생성"}
+        </button>
+        <span class="muted">페르소나와 스킬을 바탕으로 아바타가 자기소개와 역량 해시태그를 함께 만들어 줍니다.</span>
+      </div>
       <label class="field"><span>표시 이름</span><input bind:value={displayName} required /></label>
       <label class="field"><span>별칭 (아바타가 스스로를 부르는 이름)</span><input bind:value={alias} placeholder="비우면 표시 이름을 사용합니다" /></label>
       <label class="field"><span>소개 (한 줄)</span><input bind:value={bio} placeholder="어떤 아바타인지 소개하세요" /></label>
       <div class="field">
         <div class="field-row">
           <span>자기소개 (대화 패널 상단에 표시)</span>
-          <button class="ghost-sm" type="button" disabled={introGenBusy} on:click={generateIntro}>{introGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
+          <button class="ghost-sm" type="button" disabled={introGenBusy || allGenBusy} on:click={generateIntro}>{introGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
         </div>
         <textarea rows="4" bind:value={intro} placeholder="대화 상대에게 보여줄 자기소개. 직접 쓰거나 위의 '아바타가 자동 생성' 버튼으로 만들 수 있어요."></textarea>
       </div>
       <div class="field">
         <div class="field-row">
           <span>역량 해시태그 (탐색에서 검색됨)</span>
-          <button class="ghost-sm" type="button" disabled={tagGenBusy} on:click={generateTags}>{tagGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
+          <div class="field-row-actions">
+            {#if hashtags.length > 0}
+              <button class="ghost-sm" type="button" disabled={tagAddBusy || tagGenBusy || allGenBusy} on:click={addTags}>{tagAddBusy ? "추가 중…" : "더 추가"}</button>
+            {/if}
+            <button class="ghost-sm" type="button" disabled={tagGenBusy || tagAddBusy || allGenBusy} on:click={generateTags}>{tagGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
+          </div>
         </div>
         <HashtagChipEditor bind:tags={hashtags} />
       </div>

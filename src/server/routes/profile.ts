@@ -159,10 +159,19 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
       return;
     }
 
+    // Optional: tags the owner already has. When present the avatar proposes
+    // ADDITIONAL tags not already in the list (the "더 추가" button), and we
+    // filter any overlap server-side so only genuinely new tags come back.
+    const existing = normalizeHashtags(req.body?.existing);
+    const existingKeys = new Set(existing.map((t) => t.toLowerCase()));
+
     // The local runtime can't introspect skills; return a deterministic
     // placeholder so the feature still works offline/in tests.
     if (config.agentRuntime === "local") {
-      res.json({ hashtags: ["업무지원", "질문답변"] });
+      const placeholder = ["업무지원", "질문답변", "일정관리", "문서작성"].filter(
+        (t) => !existingKeys.has(t.toLowerCase()),
+      );
+      res.json({ hashtags: placeholder.length ? placeholder : ["업무지원", "질문답변"] });
       return;
     }
 
@@ -185,10 +194,18 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     const personaLine = avatar.persona?.trim()
       ? `\n\nReference persona/instructions:\n${avatar.persona.trim()}`
       : "";
+    // When adding to an existing set, tell the avatar what it already has and ask
+    // for DISTINCT new tags only; otherwise generate a fresh set.
+    const addingMore = existing.length > 0;
+    const taskLine = addingMore
+      ? `You already have these hashtags: ${existing.map((t) => `#${t}`).join(" ")}\n\n` +
+        "Based on the information below, propose 3–8 ADDITIONAL capability hashtags that are NOT already in the list above and cover capabilities, domains, or tools not yet represented. " +
+        "Do not repeat or merely rephrase existing tags. Ground them in the skills, plugins, and persona you have, and do not invent capabilities you lack.\n\n"
+      : "Based on the information below, create 5–12 hashtags representing the core capabilities, domains, and tools you can actually help with. " +
+        "Ground them in the skills, plugins, and persona you have, and do not invent capabilities you lack.\n\n";
     const message =
       "You are creating 'capability hashtags' for searching and categorizing yourself. These tags help colleagues find what you can do by keyword on the discovery screen.\n\n" +
-      "Based on the information below, create 5–12 hashtags representing the core capabilities, domains, and tools you can actually help with. " +
-      "Ground them in the skills, plugins, and persona you have, and do not invent capabilities you lack.\n\n" +
+      taskLine +
       "Output format: output only the hashtags on a single line separated by spaces. Each tag starts with `#` and contains no spaces (join multiple words together or connect them with hyphens). " +
       "Default to Korean, but widely used technical terms may be written in English. Output only the hashtag line — no explanatory sentences, lists, or code blocks.\n" +
       "Example: #코드리뷰 #파이썬 #데이터분석 #기술문서작성\n\n" +
@@ -211,9 +228,19 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     // Prefer explicit "#tag" tokens; fall back to splitting the whole reply.
     const raw = result.raw;
     const tagged = [...raw.matchAll(/#([^\s#,，、]+)/g)].map((m) => m[1]);
-    const hashtags = normalizeHashtags(tagged.length ? tagged : raw);
+    // Drop any the owner already has so "더 추가" only returns genuinely new tags
+    // (the model can still echo existing ones despite the prompt).
+    const hashtags = normalizeHashtags(tagged.length ? tagged : raw).filter(
+      (t) => !existingKeys.has(t.toLowerCase()),
+    );
     if (hashtags.length === 0) {
-      apiError(res, 502, "해시태그를 생성하지 못했습니다. 다시 시도해 주세요.");
+      apiError(
+        res,
+        502,
+        addingMore
+          ? "추가할 새 해시태그를 찾지 못했습니다. 페르소나나 스킬을 보강해 보세요."
+          : "해시태그를 생성하지 못했습니다. 다시 시도해 주세요.",
+      );
       return;
     }
     res.json({ hashtags });

@@ -1056,6 +1056,20 @@ describe("noah-almighty platform", () => {
     const me = await agent.get("/api/me").expect(200);
     expect(me.body.user.hashtags).toEqual([]);
   });
+
+  it("adds MORE hashtags excluding the ones already present", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "taggenmore");
+    const res = await agent
+      .post("/api/me/hashtags/generate")
+      .send({ existing: ["업무지원", "질문답변"] })
+      .expect(200);
+    expect(Array.isArray(res.body.hashtags)).toBe(true);
+    expect(res.body.hashtags.length).toBeGreaterThan(0);
+    // None of the returned tags may duplicate an existing one (case-insensitive).
+    const existingKeys = new Set(["업무지원", "질문답변"]);
+    for (const tag of res.body.hashtags) expect(existingKeys.has(tag)).toBe(false);
+  });
 });
 
 describe("groups", () => {

@@ -789,6 +789,26 @@
 .git-token-actions {
   margin: var(--s-2) 0 var(--s-4);
 }
+/* One-click "generate intro + hashtags together" row: button on top, a small
+   hint below it. Sits at the top of the profile form. */
+.gen-all-row {
+  gap: var(--s-1-5);
+}
+.gen-all-row > .ghost-sm {
+  align-self: flex-start;
+}
+.gen-all-row > .muted {
+  font-size: var(--t-sm);
+}
+
+/* Two inline actions on the right of a .field-row label (해시태그 "더 추가" + "자동 생성"). */
+.field-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
 /* Two side-by-side fields (commit name/email). NOT .field-row — that one is a
    flex label-with-action row and the two used to collide. */
 .field-row-2col {
