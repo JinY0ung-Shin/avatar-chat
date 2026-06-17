@@ -1124,22 +1124,69 @@
   .composer-meta {
     width: 100%;
     flex-wrap: wrap;
+    align-items: center;
     justify-content: flex-start;
     gap: var(--s-1);
   }
-  .composer-model-select {
-    flex: 1 1 132px;
+  .composer-settings-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1-5);
+    flex: 1 1 auto;
     min-width: 0;
-    max-width: min(100%, 172px);
+    min-height: 34px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--bg-elevated);
+    color: var(--muted);
+    padding: var(--s-1) var(--s-2);
+    text-align: left;
+  }
+  .composer-settings-btn[aria-expanded="true"],
+  .composer-settings-btn:hover {
+    color: var(--text);
+    border-color: var(--accent, var(--text));
+  }
+  .composer-settings-btn svg {
+    flex: 0 0 auto;
+  }
+  .composer-settings-label {
+    flex: 0 0 auto;
+    font-weight: 700;
+  }
+  .composer-settings-summary {
+    color: var(--muted);
+    font-size: var(--t-xs);
+  }
+  .composer-controls {
+    display: none;
+  }
+  .composer-controls.open {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: var(--s-1);
+    flex: 1 0 100%;
+    width: 100%;
+    padding: var(--s-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+  }
+  .composer-controls.open .composer-model-select,
+  .composer-controls.open .composer-gk-btn {
+    width: 100%;
+    max-width: none;
+    min-height: 36px;
     font-size: var(--t-md);
   }
-  .composer-gk-btn {
-    flex: 0 1 auto;
-    max-width: min(100%, 132px);
-    font-size: var(--t-md);
+  .composer-model-select {
+    min-width: 0;
   }
   .composer-usage {
     flex: 0 0 auto;
+    max-width: 45%;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .composer-gk-panel {
     left: 0;

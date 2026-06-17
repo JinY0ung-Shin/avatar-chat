@@ -1021,6 +1021,22 @@ textarea::placeholder {
   min-width: 0;
   max-width: 100%;
 }
+.composer-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-3);
+  min-width: 0;
+  max-width: 100%;
+}
+.composer-settings-btn {
+  display: none;
+}
+.composer-settings-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .composer-usage {
   font-variant-numeric: tabular-nums;
   cursor: default;
