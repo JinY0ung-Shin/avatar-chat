@@ -124,25 +124,33 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
           : LEARN_SLASH_PROMPT,
         ownerOnly: true,
       };
+    // The expansions below are agent-facing: the user only ever sees the literal
+    // "/command" in the bubble (the client sends the literal; the server swaps in
+    // these prompts for the model), so per the language split they are English.
+    // The avatar still REPLIES in the user's language per buildPrompt. Only the
+    // user-facing `error` strings stay Korean.
     case "summarize":
-      return { message: "지금까지의 대화를 핵심 결정사항, 해야 할 일, 열린 질문으로 나눠 요약해줘." };
+      return {
+        message:
+          "Summarize the conversation so far, grouped into key decisions, action items, and open questions.",
+      };
     case "remember":
       return args
         ? {
-            message: `다음 내용을 내 지식 저장소에 기록해서 앞으로 같은 질문에 답할 수 있게 해줘.\n\n${args}`,
+            message: `Record the following into my knowledge repository so you can answer the same question in the future.\n\n${args}`,
             ownerOnly: true,
           }
         : { message, error: "/remember 뒤에 저장할 내용을 입력해 주세요.", ownerOnly: true };
     case "routine":
       return args
         ? {
-            message: `다음 작업을 정기적으로 실행하는 루틴을 만들어줘. 실행 시각(KST 기준)이 아래에 적혀 있으면 그대로 쓰고, 없으면 먼저 물어봐줘.\n\n${args}`,
+            message: `Create a routine that runs the following task on a recurring schedule. If an execution time (KST) is written below, use it as-is; otherwise ask me for it first.\n\n${args}`,
             ownerOnly: true,
           }
         : { message, error: "/routine 뒤에 작업 내용을 입력해 주세요.", ownerOnly: true };
     case "find":
       return args
-        ? { message: `이 요청에 더 적합한 동료 아바타가 있는지 찾아보고 추천해줘.\n\n${args}` }
+        ? { message: `Find and recommend a colleague avatar better suited to this request.\n\n${args}` }
         : { message, error: "/find 뒤에 요청 내용을 입력해 주세요." };
     case "new":
       return { message, error: "/new는 입력창의 슬래시 메뉴에서 새 대화로 실행해 주세요." };

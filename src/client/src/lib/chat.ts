@@ -5,7 +5,7 @@ import { syncHash } from "./nav";
 import { consumeSse, type SseFrame } from "./sse";
 import { ensureNotificationPermission, osNotify } from "./notifications";
 import { newId, notify, readState, updateState } from "./state";
-import { resolveTypedSlashCommand, slashPrompt } from "./slash";
+import { resolveTypedSlashCommand } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
 import {
@@ -315,7 +315,9 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
       notify(`/${slash.command.name} 뒤에 ${slash.command.argsLabel || "내용"}을 입력해 주세요.`, "warn");
       return;
     }
-    message = slash.command.serverExpand ? `/${slash.command.name}${slash.args ? ` ${slash.args}` : ""}` : slashPrompt(slash.command, slash.args).trim();
+    // Send the literal "/command [args]"; the server swaps in the expanded
+    // (agent-facing) prompt so the bubble + persisted turn stay the literal.
+    message = `/${slash.command.name}${slash.args ? ` ${slash.args}` : ""}`;
     if (!message && pendingImages.length === 0) return;
   }
 

@@ -208,7 +208,8 @@ describe("chat slash commands", () => {
 
     expect(result.error).toBeUndefined();
     expect(result.ownerOnly).toBe(true);
-    expect(result.message).toContain("내 지식 저장소에 기록");
+    // Agent-facing now (the user sees only the literal "/remember"), so English.
+    expect(result.message).toContain("knowledge repository");
     expect(result.message).toContain("프로젝트 기본 포트는 48787");
   });
 
@@ -226,14 +227,12 @@ describe("chat slash commands", () => {
     expect(result.message).toBe("/not-a-command");
   });
 
-  // Client-expanded commands carry their (user-facing, Korean) prompt in BOTH the
-  // server (expandChatSlashCommand, the fallback for stale clients/API callers) and
-  // the client (SLASH_COMMANDS, in the Svelte/Vite client, which expands before sending
-  // so the bubble shows the prompt). The server and browser bundle still carry separate
-  // copies, so this guards against the two copies drifting apart.
-  // `/learn` is EXCLUDED: it is server-expanded (serverExpand: true), so the client
-  // sends the literal "/learn" and intentionally carries no copy of the prompt.
-  it("client frontend carries the same slash prompts as the server", () => {
+  // ALL built-in slash commands are now server-expanded (like /learn): the client
+  // sends the literal "/command" and the server swaps in the agent-facing prompt.
+  // So the client bundle must carry NO copy of any expanded prompt — otherwise the
+  // command would expand twice (client + server) or leak the agent-facing text into
+  // the user's own bubble. This guards against a prompt being re-added client-side.
+  it("client frontend carries no copy of the server slash prompts", () => {
     const readClientRecursive = (dir: string): string[] =>
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const full = path.join(dir, entry.name);
@@ -241,15 +240,13 @@ describe("chat slash commands", () => {
         return /\.(ts|svelte)$/.test(entry.name) ? [fs.readFileSync(full, "utf8")] : [];
       });
     const clientJs = readClientRecursive(path.join(process.cwd(), "src", "client", "src")).join("\n");
-    const cases = ["/summarize", "/remember 내용", "/routine 작업", "/find 요청"];
+    const cases = ["/summarize", "/remember 내용", "/routine 작업", "/find 요청", "/learn"];
     for (const input of cases) {
       const { message } = expandChatSlashCommand(input);
-      // Compare the static template, dropping any trailing "\n\n<args>" we injected.
+      // The static template, dropping any trailing "\n\n<args>" the server injected.
       const staticPart = message.split("\n\n")[0];
-      expect(clientJs, `slash prompt for "${input}" drifted between server and client`).toContain(staticPart);
+      expect(clientJs, `slash prompt for "${input}" must not be duplicated in the client`).not.toContain(staticPart);
     }
-    // /learn is server-only: its expanded text must NOT be duplicated in the client.
-    expect(clientJs).not.toContain(expandChatSlashCommand("/learn").message.split("\n\n")[0]);
   });
 });
 

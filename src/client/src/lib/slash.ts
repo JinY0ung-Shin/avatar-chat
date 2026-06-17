@@ -8,7 +8,6 @@ export interface SlashCommand {
   argsLabel?: string;
   ownerOnly?: boolean;
   requiresArgs?: boolean;
-  serverExpand?: boolean;
   prompt?: (args: string) => string;
   action?: "new";
   /** "skill" entries are built from the avatar's installed skills (not the static list above). */
@@ -28,14 +27,12 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     name: "summarize",
     title: "요약",
     description: "지금까지의 대화를 요약합니다.",
-    prompt: () => "지금까지의 대화를 핵심 결정사항, 해야 할 일, 열린 질문으로 나눠 요약해줘.",
   },
   {
     name: "learn",
     title: "세션 학습",
     description: "이번 대화에서 재사용할 지식을 추려, 저장 전에 먼저 확인을 받습니다.",
     ownerOnly: true,
-    serverExpand: true,
   },
   {
     name: "remember",
@@ -44,7 +41,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "뒤에 쓴 내용을 내 지식 저장소에 기록하게 합니다.",
     ownerOnly: true,
     requiresArgs: true,
-    prompt: (args) => `다음 내용을 내 지식 저장소에 기록해서 앞으로 같은 질문에 답할 수 있게 해줘.\n\n${args}`,
   },
   {
     name: "routine",
@@ -53,8 +49,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "작업 내용을 받아 매일 실행할 루틴 생성을 요청합니다.",
     ownerOnly: true,
     requiresArgs: true,
-    prompt: (args) =>
-      `다음 작업을 정기적으로 실행하는 루틴을 만들어줘. 실행 시각(KST 기준)이 아래에 적혀 있으면 그대로 쓰고, 없으면 먼저 물어봐줘.\n\n${args}`,
   },
   {
     name: "find",
@@ -62,7 +56,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     argsLabel: "요청",
     description: "요청에 맞는 동료 아바타를 찾아 추천하게 합니다.",
     requiresArgs: true,
-    prompt: (args) => `이 요청에 더 적합한 동료 아바타가 있는지 찾아보고 추천해줘.\n\n${args}`,
   },
 ];
 
@@ -80,17 +73,14 @@ export function resolveTypedSlashCommand(pane: ChatPane | null, message: string)
   return { command, args: (match[2] || "").trim() };
 }
 
-export function slashPrompt(command: SlashCommand, args = ""): string {
-  return command.prompt ? command.prompt(args) : "";
-}
-
 /**
- * Build a slash-menu entry from one of the avatar's installed skills. Unlike the
- * static commands above, selecting a skill sends a natural-language instruction
- * that names the skill, so the agent loads and runs it (and asks for any missing
- * input). Skill names may contain characters like ":" that aren't typeable as a
- * raw "/command", so these are reachable through the menu (and free-text search),
- * not the typed-slash path.
+ * Build a slash-menu entry from one of the avatar's installed skills. Built-in
+ * commands above send only the literal "/command" and let the SERVER swap in the
+ * expanded (agent-facing) prompt; a skill instead sends a natural-language
+ * instruction that names the skill, so the agent loads and runs it (and asks for
+ * any missing input). Skill names may contain characters like ":" that aren't
+ * typeable as a raw "/command", so these are reachable through the menu (and
+ * free-text search), not the typed-slash path.
  */
 export function skillToSlashCommand(skill: SkillInfo): SlashCommand {
   const name = skill.name;

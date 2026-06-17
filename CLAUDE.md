@@ -408,14 +408,18 @@ gotchas, and client↔server mirrored validators.
   roots and read by the model as INPUT, so they are ENGLISH; the avatar still REPLIES in the user's
   language); the headless intro/hashtag-generation prompts in `routes/profile.ts` are English too but
   explicitly instruct **Korean OUTPUT**. Korean (a human sees it): `src/client/` UI, `apiError(...)`, **`onStatus`/`onBlocked` event
-  labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks, **client-expanded**
-  slash-command expansions (rendered as the user's OWN message bubble), conversation titles/`[루틴]`/`(중지됨)`.
-  EXCEPTION: a slash command flagged `serverExpand` in `src/client/src/lib/slash.ts` (currently **`/learn`**) sends the
-  literal `/command` as the bubble + persisted turn and the SERVER swaps in the expanded prompt for the
-  model — so that prompt (`LEARN_SLASH_PROMPT` in `routes/chat.ts`) is **agent-facing English** (the avatar still
-  REPLIES in the user's language). Such a command carries NO client-side expansion copy; the server-side
-  `expandChatSlashCommand` (the stale-client/API fallback, tested in `agent-core.test.ts`) excludes it. The chat handler stores `displayMessage` (raw)
-  but feeds `agentMessage` (expanded) to `runAgentStream`.
+  labels** (status + activity tree), `resultErrorMessage`, SDK empty/summary fallbacks,
+  conversation titles/`[루틴]`/`(중지됨)`.
+  **ALL built-in slash commands are now server-expanded** (`/learn`/`/summarize`/`/remember`/`/routine`/`/find`):
+  `src/client/src/lib/slash.ts` carries only metadata (name/title/description/argsLabel/ownerOnly/requiresArgs)
+  — **no client-side `prompt` and no `serverExpand` flag** (both removed). The client always sends the literal
+  `/command [args]` (chat.ts `submit`); the SERVER `expandChatSlashCommand` (`routes/chat.ts`) swaps in the
+  expanded prompt for the model, so **those expansions are agent-facing English** (the avatar still REPLIES in
+  the user's language). The literal stays the bubble + persisted turn; only the user-facing `error` strings in
+  `expandChatSlashCommand` stay Korean. The chat handler stores `displayMessage` (raw literal) but feeds
+  `agentMessage` (expanded) to `runAgentStream`. `agent-core.test.ts` asserts the client bundle carries NO copy
+  of any server expansion. (Skill entries are NOT slash commands — the menu sends a Korean natural-language
+  instruction naming the skill, built by `skillToSlashCommand`, since skill names aren't typeable literals.)
   A string used on BOTH channels is split (hex-ssh block in `preToolUseHook.ts` = Korean `onBlocked`
   reason + English `hookDeny`). Response language is anchored in `buildPrompt`'s 2nd line ("respond
   in the user's language; default Korean"). **`units.test.ts` asserts the English agent-facing
