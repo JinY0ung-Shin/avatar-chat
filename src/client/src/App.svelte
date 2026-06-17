@@ -16,7 +16,6 @@
   import { selectConversation } from "./lib/chat";
   import { loadInboxData, startKnowledgeWatch, stopKnowledgeWatch } from "./lib/loaders";
   import { applyInitialRoute, installRouteListener, syncHash } from "./lib/nav";
-  import { markOnboardingDone, onboardingDone } from "./lib/onboarding";
   import { appState, notify, readState, replaceState, updateState } from "./lib/state";
   import { applyTheme, getThemePref, watchSystemTheme } from "./lib/theme";
   import type { BootstrapInfo, User } from "./lib/types";
@@ -44,13 +43,19 @@
     if (!location.hash) syncHash(true);
     void loadInboxData();
     startKnowledgeWatch();
-    if (!onboardingDone(user.id)) showOnboarding = true;
+    // First-run welcome shows only while the account has never been onboarded
+    // (server-persisted onboardedAt). Set once on signup, so a returning login
+    // — even on a new browser — never re-fires it.
+    if (!user.onboardedAt) showOnboarding = true;
   }
 
   function dismissOnboarding() {
-    const id = $appState.user?.id;
-    if (id) markOnboardingDone(id);
     showOnboarding = false;
+    // Persist server-side so it never re-appears; optimistically reflect it in
+    // state. Fire-and-forget — a failed mark just means it may show once more.
+    api<{ user: User }>("/api/me/onboarded", { method: "POST" })
+      .then(({ user }) => replaceState({ user }))
+      .catch(() => {});
   }
 
   function handleSessionExpired() {

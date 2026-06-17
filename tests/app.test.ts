@@ -1070,6 +1070,24 @@ describe("noah-almighty platform", () => {
     const existingKeys = new Set(["업무지원", "질문답변"]);
     for (const tag of res.body.hashtags) expect(existingKeys.has(tag)).toBe(false);
   });
+
+  it("marks onboarding once: a fresh signup is un-onboarded, then stays onboarded", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "onbo");
+    // A brand-new account created after boot has never been onboarded.
+    const before = await agent.get("/api/me").expect(200);
+    expect(before.body.user.onboardedAt).toBeNull();
+    // Dismissing the welcome modal persists a timestamp server-side.
+    const marked = await agent.post("/api/me/onboarded").expect(200);
+    expect(marked.body.user.onboardedAt).not.toBeNull();
+    const stamp = marked.body.user.onboardedAt;
+    // Idempotent: re-posting keeps the ORIGINAL timestamp (no re-stamp).
+    const again = await agent.post("/api/me/onboarded").expect(200);
+    expect(again.body.user.onboardedAt).toBe(stamp);
+    // A later fetch (≈ a returning login) still reports onboarded → no modal.
+    const after = await agent.get("/api/me").expect(200);
+    expect(after.body.user.onboardedAt).toBe(stamp);
+  });
 });
 
 describe("groups", () => {

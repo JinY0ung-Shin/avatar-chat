@@ -52,7 +52,19 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         sshPublicKey: row.ssh_public_key ?? null,
         groups: this.listUserGroups(row.id),
         experimentalFeatures: normalizeExperimentalFeatures(parseNameList(row.experimental_features)),
+        onboardedAt: row.onboarded_at ?? null,
       };
+    }
+
+    /** Mark first-run onboarding as completed (idempotent — only sets it once, so
+     *  re-dismissing keeps the original timestamp). Returns the refreshed user. */
+    markOnboarded(userId: string): User {
+      this.db
+        .prepare("UPDATE users SET onboarded_at = ? WHERE id = ? AND onboarded_at IS NULL")
+        .run(now(), userId);
+      const row = this.userRowById(userId);
+      if (!row) throw new Error("USER_NOT_FOUND");
+      return this.toUser(row);
     }
 
     /** The KNOWN experimental-feature keys the owner has enabled (drops stale). */

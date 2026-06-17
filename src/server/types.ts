@@ -145,6 +145,12 @@ export interface User {
    * (`experimentalFeatures.ts`); unknown keys are dropped. `[]` = none enabled.
    */
   experimentalFeatures: string[];
+  /**
+   * When the user dismissed first-run onboarding (ISO timestamp), or null if they
+   * haven't yet. Server-persisted so the welcome modal shows ONCE per account —
+   * across devices and surviving a localStorage clear — instead of every login.
+   */
+  onboardedAt: string | null;
 }
 
 export interface Plugin {

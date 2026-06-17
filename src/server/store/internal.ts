@@ -105,6 +105,7 @@ export interface UserRow {
   hashtags: string | null;
   group_knowledge_off_default: string | null;
   experimental_features: string | null;
+  onboarded_at: string | null;
 }
 
 export interface PluginRow {
@@ -428,6 +429,11 @@ export class StoreBase {
     // array of registry keys (experimentalFeatures.ts); NULL/[] = none. Mirrors
     // the hashtags JSON-array pattern; unknown keys are dropped on read/write.
     this.addColumnIfMissing("users", "experimental_features", "TEXT");
+    // When the user dismissed first-run onboarding (ISO timestamp); NULL = not yet.
+    // Server-persisted so the welcome modal shows ONCE per account instead of every
+    // login (the old localStorage flag re-fired on each new browser / cleared store).
+    // Existing accounts are backfilled to created_at below so only NEW signups see it.
+    this.addColumnIfMissing("users", "onboarded_at", "TEXT");
     // SDK session id of the conversation's last turn, used to resume context on
     // the next turn (see claudeAgent resume). Null until the first turn completes.
     this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");
@@ -474,9 +480,18 @@ export class StoreBase {
     this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
+    this.migrateOnboarded();
     // Trust is now derived purely from group co-membership; the old per-(avatar,
     // viewer) trust table is dropped (its grants don't survive the migration).
     this.db.exec("DROP TABLE IF EXISTS avatar_trusted_users");
+  }
+
+  /** One-time backfill: treat every EXISTING account as already onboarded (set
+   *  onboarded_at = created_at) so the new server-backed welcome modal doesn't
+   *  re-fire for current users — only NEW signups (onboarded_at NULL) see it.
+   *  Idempotent: only touches rows still NULL, and createUser leaves new rows NULL. */
+  private migrateOnboarded(): void {
+    this.db.exec("UPDATE users SET onboarded_at = created_at WHERE onboarded_at IS NULL");
   }
 
   /** Backfill is_routine on existing conversations. Linked ones come from the

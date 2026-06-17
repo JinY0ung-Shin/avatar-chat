@@ -54,6 +54,14 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     res.json({ user });
   });
 
+  // Mark first-run onboarding as seen. Server-persisted (not localStorage) so the
+  // welcome modal shows ONCE per account — across devices, surviving a cleared
+  // browser store. Idempotent: re-posting keeps the original timestamp.
+  router.post("/api/me/onboarded", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const user = store.markOnboarded(req.user!.id);
+    res.json({ user });
+  });
+
   // Owner's DEFAULT group-knowledge OFF-set (group ids turned off). The composer
   // toggle writes here so the choice seeds every NEW conversation/greeting — the
   // per-conversation value (chat POST `groupKnowledgeOff`) still overrides it for
