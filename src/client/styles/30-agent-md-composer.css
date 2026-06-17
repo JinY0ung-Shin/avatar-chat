@@ -443,6 +443,19 @@
 .prompt-modal-backdrop[hidden] {
   display: none;
 }
+/* Scoped to a single chat pane (PromptModal paneId=…): absolutely fill that
+   pane instead of the whole viewport, so in split chat the prompt visibly
+   belongs to the session that raised it. The pane is position:relative and
+   clips overflow, so the card stays inside its own column. */
+.prompt-modal-backdrop.in-pane {
+  position: absolute;
+  z-index: 40;
+  padding: var(--s-3);
+}
+.prompt-modal-backdrop.in-pane .prompt-card {
+  width: min(420px, 100%);
+  max-height: calc(100% - 2 * var(--s-3));
+}
 .prompt-modal-backdrop .prompt-card {
   width: min(440px, 100%);
   max-height: calc(100dvh - 2 * var(--s-4));

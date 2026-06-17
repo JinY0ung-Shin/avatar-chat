@@ -5,6 +5,7 @@
   import CapabilitiesPanel from "../components/CapabilitiesPanel.svelte";
   import CanvasPanel from "../components/CanvasPanel.svelte";
   import Icon from "../components/Icon.svelte";
+  import PromptModal from "../components/PromptModal.svelte";
   import { activePane, appState, newId, notify, readState, updateState } from "../lib/state";
   import {
     PLUGIN_STATUS_LABELS,
@@ -1070,6 +1071,7 @@
         </div>
         {@render transcript(item)}
         {@render composer(item, true, index)}
+        <PromptModal paneId={item.id} />
       </section>
     {/each}
   </div>
@@ -1094,6 +1096,7 @@
       </header>
       {@render transcript(pane)}
       {@render composer(pane, false, 0)}
+      <PromptModal paneId={pane.id} />
     </section>
     {#if pane.canvases?.length}
       <CanvasPanel {pane} />

@@ -549,6 +549,11 @@
   background: color-mix(in srgb, var(--accent) 8%, var(--bg));
 }
 
+/* position:relative anchors the per-pane prompt modal (.prompt-modal-backdrop.in-pane)
+   so it centers within its own session rather than the whole viewport. */
+.chat-pane {
+  position: relative;
+}
 .chat-pane.compact {
   min-width: 0;
   min-height: 0;

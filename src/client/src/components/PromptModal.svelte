@@ -4,7 +4,19 @@
   import { appState } from "../lib/state";
   import type { PromptRequest } from "../lib/types";
 
-  $: request = $appState.promptQueue[0] ?? null;
+  // When `paneId` is set the modal is scoped to one chat pane (rendered inside it
+  // by ChatView): it shows only that pane's pending prompt and is positioned over
+  // the pane, so in split chat the owner can see which session is asking. When it
+  // is null the modal is the app-root fallback: it surfaces prompts whose pane is
+  // NOT currently rendered as a chat pane (e.g. raised while the owner is on
+  // explore/inbox/settings) so they never queue invisibly.
+  export let paneId: string | null = null;
+
+  $: visiblePaneIds =
+    $appState.view === "chat" ? new Set($appState.chatPanes.map((p) => p.id)) : new Set<string>();
+  $: request = paneId
+    ? ($appState.promptQueue.find((p) => p.paneId === paneId) ?? null)
+    : ($appState.promptQueue.find((p) => !visiblePaneIds.has(p.paneId)) ?? null);
 
   // Per-question answer state for the AskUserQuestion card, rebuilt whenever the
   // active request changes.
@@ -96,9 +108,12 @@
 </script>
 
 {#if request}
-  <div class="prompt-modal-backdrop" role="presentation">
+  <div class="prompt-modal-backdrop" class:in-pane={!!paneId} role="presentation">
     {#if request.kind === "permission"}
-      <div class="prompt-card permission" role="dialog" aria-modal="true" aria-label="권한 요청">
+      <!-- aria-modal only on the app-root fallback (paneId=null): an in-pane modal
+           doesn't make the rest of the page inert, and several aria-modal="true"
+           dialogs on screen at once (one per split pane) is invalid ARIA. -->
+      <div class="prompt-card permission" role="dialog" aria-modal={paneId ? undefined : "true"} aria-label="권한 요청">
         <div class="prompt-head">
           <span class="prompt-icon"><Icon name="lock" /></span>
           <span class="prompt-head-label">권한 요청</span>
@@ -117,7 +132,7 @@
         </div>
       </div>
     {:else}
-      <div class="prompt-card question" role="dialog" aria-modal="true" aria-label="질문">
+      <div class="prompt-card question" role="dialog" aria-modal={paneId ? undefined : "true"} aria-label="질문">
         <div class="prompt-head">
           <span class="prompt-icon"><Icon name="chat" /></span>
           <span class="prompt-head-label">질문</span>
