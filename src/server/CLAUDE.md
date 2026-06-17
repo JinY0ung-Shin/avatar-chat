@@ -1,30 +1,25 @@
 # src/server — Claude notes
 
-Server module-level cautions. Read alongside the **root `CLAUDE.md`** (architecture, env, language-split, deploy topology) — this file only adds things NOT covered there. Agent/MCP specifics live in [`agent/CLAUDE.md`](agent/CLAUDE.md).
+Server-area direction. Read with the **root [`CLAUDE.md`](../../CLAUDE.md)** (architecture, env,
+language-split, deploy topology) and agent specifics in [`agent/CLAUDE.md`](agent/CLAUDE.md). The
+detailed, change-prone mechanics (route homes, store mixins, schedule decode, repo plumbing, secret
+vault, CA wiring) live in **[`../../docs/ARCHITECTURE-NOTES.md`](../../docs/ARCHITECTURE-NOTES.md) §Server**.
 
-## Layout after the Tier-1/2 refactor
-- **`app.ts` is now thin glue.** `createApp` builds middleware + mounts per-domain routers from `routes/`. The HTTP handlers themselves live in `routes/{auth,profile,plugins,knowledgeRepo,groups,routines,chat,admin}.ts`, each a `(deps) => Router` factory. Shared route helpers (`apiError`, `safeString`, `looksLikeRepo`, `avatarDir`, MIME/size/password consts, `AppServices`) live in `routes/_shared.ts`. **`createApp`/`createServices`/`expandChatSlashCommand`/`conversationHistoryForPrompt`/`AppServices`/`AgentResponse` are still imported from `app.ts`** (re-exported) — don't change those import paths.
-  - Non-obvious route homes: git-token/secrets/ssh-key/git-identity/**knowledge gap-inbox** (`/api/me/knowledge/requests`)/**notifications** all live in `routes/knowledgeRepo.ts`; **discovery** (`/api/avatars*`) + **conversations** + the **chat SSE** endpoint live in `routes/chat.ts`; `/api/audit` lives in `routes/admin.ts`.
-  - **Router mount order reproduces the original relative route order** (auth→profile→plugins→knowledgeRepo→groups→routines→chat→admin). The error middleware + SPA catch-all must stay LAST. Don't reorder mounts.
-  - The only shared mutable state across routers is the effective model: it's threaded as an `ObservedModelHolder {get,set}` through `deps` (chat router writes via the `onModel` callback; `/api/admin/system` reads it). Don't reintroduce a module-level `let`.
+Durable principles for this layer:
 
-## Store (`store.ts` barrel → `store/*.ts`)
-- **Per-conversation group-knowledge toggle (owner-only):** `conversations.group_knowledge_off` (JSON OFF-set; NULL/`[]` = every group ON) + `get/setConversationGroupKnowledgeOff`. The CLIENT owns the selection and sends it on each chat POST (`groupKnowledgeOff`) — there is NO per-conversation PATCH endpoint, so it works from a brand-new chat with no row. The chat route turns it into ONE `disabledGroupIds` set that filters BOTH `loadAgentPluginRoots` group skill roots AND `loadKnowledgeRepoMemory` group CLAUDE.md, and persists it on the row. Colleague turns ignore it (always all-on); routines pass no filter.
-- **Per-USER default group-knowledge OFF-set:** `users.group_knowledge_off_default` (JSON OFF-set, `[]`=all on) + `setGroupKnowledgeOffDefault`, surfaced on `User.groupKnowledgeOffDefault`, written by `PUT /api/me/group-knowledge-default`. The composer toggle saves here so the choice SEEDS every NEW conversation — crucially the **auto-greeting**, which fires before any toggle interaction (the per-conversation value alone couldn't reach it). Client seeds new panes via `defaultGroupKnowledgeOff(avatar)` (own avatar only) → rides the greeting POST → the existing `requestedGroupKnowledgeOff` path applies it. Existing conversations still load their persisted per-conversation value, which overrides the default for that chat.
-- **`store.ts` is now a thin barrel; the `Store` facade is COMPOSED from per-domain mixins** (split done 2026-06, T3.1). `store/index.ts` builds `const ComposedStore = withGroups(withAdmin(…withUsers(StoreBase)))` and `export class Store extends ComposedStore`; the shared base + schema/migrations + cross-cutting helpers (`db`, `secret`, `count`, `addColumnIfMissing`) live in `store/internal.ts` (`StoreBase`), and each domain is a `(Base) => class extends Base {…}` mixin in `store/{users,avatars,conversations,groups,routines,knowledgeRepo,secrets,admin}.ts`. The PUBLIC surface is UNCHANGED — every caller still does `new Store(config)` + `store.foo()`, and `./store` still re-exports `normalizeHashtags`/`MAX_HASHTAGS`/the `*_KEY` consts. Compose order is irrelevant (method names are disjoint), and there's ONE shared `this.db`/`this.secret` — **never** force callers to pick a sub-store class. New methods go in the matching domain mixin (or `StoreBase` if cross-cutting).
-- **The `count(sql, …)` helper is the only count path** now (moved above the Users section). Use it; don't hand-roll `(… .get() as {c:number}).c`.
-- **Row mappers each have a named `*Row` interface** (`UserRow`/`GroupRow`/`PluginRow`/`GroupMemberRow`/`RoutineJobRow`). New mappers follow that — don't use reflective `Parameters<Store["toX"]>[0]`.
-- **The avatar-visibility SQL predicate (`public` OR self OR group-teammate subquery) is still hand-duplicated** in `listPublishedAvatars` and `searchAvatars` (both now in `store/avatars.ts`) and MUST stay in sync — the `search_avatars` MCP scope depends on matching the browse scope. No shared constant enforces it yet (deferred, T3.2).
-- **Schedule decode lives in ONE place:** `scheduleFromRow` (via `parseDaysOfWeek`, which try/catches the `JSON.parse` so a corrupt `days_of_week` row can't abort a scheduler tick). `toRoutineJob` reuses it. `create/updateRoutineJob` accept either the legacy flat fields OR a full `RoutineSchedule` object (additive, backward-compatible with `{prompt, minuteOfDay}` + NULL `schedule_kind`). When you add a schedule field, touch `routineSchedule.ts` + `RoutineJobRow` + this decode together.
-- **`deleteUser` does cascade-delete MANUALLY** (no `ON DELETE CASCADE` despite `foreign_keys=ON`). A new user-scoped table needs a matching `DELETE` added there or it orphans rows past "permanent deletion."
-- **`SESSION_SECRET` keys EVERY at-rest reversible secret** (`user_secrets`, the legacy `git_token_enc` fallback, `app_config`). Rotating it makes `decryptSecret` return `null` (treated as "no secret") — **silent data loss, not a crash.** Deploy-migration concern (deployment is a separate corporate box — see root memory).
-
-## Repo plumbing (`knowledgeRepo.ts` / `groupKnowledgeRepo.ts` / `gitRepos.ts` / `repoGitCore.ts` / `repoGitGuards.ts`)
-- **Low-level git is now shared in `repoGitCore.ts`** (exec wrapper, `currentBranch`, dirty-status) and arg guards in `repoGitGuards.ts`. `knowledgeRepo.ts` + `groupKnowledgeRepo.ts` are thin context-resolvers over it; `gitRepos.ts` uses it too. **They were line-for-line mirrors before** — keep the shared core the single edit point for git-safety.
-- **`dirtyPaths` flag difference is PRESERVED, not unified:** knowledge/group repos use `--porcelain`, `gitRepos` uses `--porcelain -uall`, threaded via the `extraStatusArgs` param. The knowledge-repo variant misses files inside otherwise-untracked dirs — this is a **latent bug flagged for a deliberate decision** (T3.7), NOT something to "fix" incidentally.
-- **`ext::sh`/remote-helper arg-injection guard exists ONLY in `gitRepos.assertSafeGitValue`** — the knowledge-repo clone paths still only check leading dashes. This asymmetry is a **security item pending review** (T3.8); consolidate arg-safety into one validator, don't paper over it.
-- **`withRepoLock` (`gitMutex.ts`) is NOT reentrant by key** — a fn running under `withRepoLock(key,…)` must never call it again for the same key (deadlock). Outer ops call the `*Locked` internals directly. This is self-documented in `gitMutex.ts`; respect it.
-- **`stripManagedMcpServers` mutates `.mcp.json` in place.** Committable-repo write paths MUST `restoreTrackedMcpJson` (from HEAD) before `git add -A`, or the strip gets pushed to the user's repo. Preserve that ordering.
-
-## Secrets / SSH (`crypto.ts` / `gitCredentials.ts` / `sshIdentity.ts` / `sshTrust.ts` / `pythonExec.ts`)
-- **`sshIdentity`/`sshTrust` shell out to python3** (`pythonExec.ts` centralizes the spawn + timeout). They silently depend on the **image carrying python3 + `cryptography` + `paramiko`** (there is no `ssh-keygen`/`ssh-keyscan`). A base-image change breaks them at RUNTIME, not build. A unit test now asserts the TS `fingerprintOf` and the python SHA256 format agree — keep it green if you touch either.
+- **`app.ts` is thin glue.** Per-domain `(deps) => Router` factories in `routes/*`, shared helpers in
+  `routes/_shared.ts`. Re-exported symbols (`createApp`/`createServices`/`expandChatSlashCommand`/…) keep
+  their `app.ts` import paths — don't move them. No module-level mutable state; thread it through `deps`.
+- **`store.ts` is a thin barrel composed from per-domain mixins** (`store/*.ts`); the PUBLIC surface is
+  unchanged (`new Store(config)` + `store.foo()`). New methods go in the matching domain mixin (or the
+  shared `StoreBase` if cross-cutting). Use the shared `count()` helper; never force callers to pick a
+  sub-store class.
+- **Schedule math lives in ONE place** (`routineSchedule.ts`) — validation + next-run + decode. Add a
+  schedule field there + `RoutineJobRow` + the decode together; don't re-derive it elsewhere.
+- **Low-level git is shared** (`repoGitCore.ts` + `repoGitGuards.ts`) — the single edit point for
+  git-safety. `knowledgeRepo.ts`/`groupKnowledgeRepo.ts`/`gitRepos.ts` are thin resolvers over it; keep
+  them from drifting back into line-for-line mirrors.
+- **`SESSION_SECRET` keys EVERY at-rest reversible secret.** Rotating it is SILENT data loss
+  (`decryptSecret`→`null`, treated as "no secret"), not a crash — a deploy-migration concern.
+- **`deleteUser` cascades MANUALLY** (no `ON DELETE CASCADE`). A new user-scoped table needs a matching
+  `DELETE` or it orphans rows past "permanent deletion."

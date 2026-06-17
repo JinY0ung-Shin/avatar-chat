@@ -1,26 +1,25 @@
 # src/server/agent — Claude notes
 
-Agent orchestration + in-process MCP tool servers. Read with the **root `CLAUDE.md`** (language split, permission gate, MCP-only git, self-state/meta-cognition) and [`../CLAUDE.md`](../CLAUDE.md). This file adds module-structure cautions.
+Agent orchestration + in-process MCP tool servers. Read with the **root [`CLAUDE.md`](../../../CLAUDE.md)**
+(meta-cognition, language split, permission gate, MCP-only git) and [`../CLAUDE.md`](../CLAUDE.md). The
+detailed mechanics (the prompt-section helpers, SSE/session resume, image-attachment query mode, canvas,
+hex-ssh, offline test setup) live in
+**[`../../../docs/ARCHITECTURE-NOTES.md`](../../../docs/ARCHITECTURE-NOTES.md) §Agent**.
 
-## claudeAgent.ts is split (behind unchanged exports)
-`claudeAgent.ts` is now the orchestrator (`runClaudeAgent` + subprocess-env helpers) and **re-exports** the moved symbols so importers (app.ts/routes, tests) keep their paths:
-- `promptBuilder.ts` — `buildPrompt` + `compactConversationHistory`/`conversationHistoryBlock` + `GIT_MCP_ONLY_GUIDANCE`. `buildPrompt` assembles per-section helpers (knowledgeRepo/gitRepo/groups/secrets/sshEnablement/**knowledgeMemory**/greeting). **`agent-core.test.ts` checks the prompt with `toContain`/`not.toContain` substrings, NOT byte-for-byte** — ADDING a section is safe; only changing an EXISTING string (or its presence per viewer class) breaks a test.
-- `sdkMessageHandlers.ts` — SDK-message→`AgentEvents` translation (`handle*` + Task helpers + `LoopState` + `interpretResult`/`resultErrorMessage`).
-- `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput` + `rewriteBashCommandWithRtk`.
-- `agentUtils.ts` — small shared helpers.
-Internal helpers (`LoopState`, etc.) are exported from the new siblings but were never public from `claudeAgent.ts`, so no importer path changed. Keep the re-export set in `claudeAgent.ts` minimal to the original public surface.
+Durable principles for this layer:
 
-## Adding / changing an MCP tool server
-- **One template per `*Tools.ts`:** `buildXTools` (handler-level owner/elevated guards) + `buildXServer` + a `SERVER_NAME`/`TOOL_NAMES` const pair.
-- **A new tool means updating BOTH `mcpServers` AND `allowedTools` in `claudeAgent.ts`** — they are two hand-synced lists keyed on the same servers. Add to one but not the other and the model either sees a tool it can't call or can call a tool it can't see. (Making this data-driven is deferred, T3.5.)
-- **Guard convention differs per file BY DESIGN:** groupRepo/system/sshIdentity/knowledge-write gate on `ctx.viewerIsOwner` (= `ownerToolAccess` = owner chat OR owner routine); `repoTools` (personal knowledge repo) splits READ (`list_files`/`read_file`, gated on `ctx.elevated` = owner OR trusted same-group teammate) vs WRITE/commit/create (owner-only) — so teammates can read but not modify the owner's repo; `gitRepoTools` splits owner vs elevated; `confluenceTools` gates BOTH reads AND writes on `ctx.elevated` (reads match the knowledge-repo and second-brain read level — elevated, not owner-only; writes are also `elevated`); `sshTrustTools`/`avatarDirectoryTools` are intentionally UNGATED (fingerprints aren't secrets; directory search is all-viewer read-only). Don't "normalize" these.
-- **Second-brain read tools (`brainTools` / `groupBrainTools`):** these are read-only RECALL servers (`search`/`get_note`) over the same knowledge-repo clones. **`brainTools` (personal) gates reads on `ctx.elevated`** (owner OR trusted same-group teammate — same level as `repoTools` READ); **`groupBrainTools` gates reads on group-MEMBERship** (mirrors the `groupRepoTools` member-read level — any member of that group may read). There is NO brain WRITE tool — capture/consolidate (`brain-ingest`/`brain-reflect` skills) writes through `mcp__repo__write_file` / `mcp__group_repo__write_file` + `commit`, so the existing repo-write guards (owner-only personal; admin-only group write) apply to the write path. Don't add a brain write tool; route writes through the repo servers.
-- **The `mcp__`-prefix auto-allow in the PreToolUse hook fires BEFORE the owner check**, so every tool MUST self-gate in its handler. Don't rely on the hook.
-
-## Shared helpers (don't re-copy)
-- **`mcpTools.ts`** — `text(message, isError?)` (the MCP result wrapper, was copy-pasted in all 9 servers), plus `decodeRepoFsError` (INVALID_PATH/FILE_TOO_LARGE/NOT_A_FILE/SKILL_EXISTS sentinels) and `decodeExecError(err, {redactToken?, fallback?})` (git/gh stderr+`scrubGitError`). Use these; don't reintroduce a local `text()`.
-- **`repoToolKit.ts`** — the shared guard→resolve→ensureClone→decode skeleton for skill/file CRUD used by `repoTools` (owner-only) and `groupRepoTools` (owner + group + admin-role write gate). `commit` handlers and `create_repo` are intentionally NOT folded in (they keep their own token gate/audit/no-ensureClone optimization). `OWNER_ONLY` here = `'This tool can only be used by the avatar owner.'`; **`systemTools` has a DIFFERENT `OWNER_ONLY` string** (`…in a conversation the avatar owner is participating in.`) — they are not the same constant.
-- **`ownerState.ts`** — `summarizeOwnerState(store, config, avatarUserId): OwnerState` returns UNFORMATTED self-state DATA shared by `buildPrompt` (English prompt paragraphs) and `systemTools.describe_system` (tool text). The root CLAUDE.md mandates these two stay in sync — this module is the structural sync point. **It returns ungated facts; gating + formatting stay at each call site** (e.g. `buildPrompt` blanks secrets/groups to `[]` unless `ownerToolAccess`; Confluence presence is computed differently in each and intentionally NOT shared). When you add a self-state fact to one consumer, add it to `OwnerState` and the other.
-
-## Owner identity
-The `AgentOwner` type (`{id, username, displayName, alias?}`) lives in `../types.ts` and the descriptor is built ONCE in `runClaudeAgent` and passed to all tool servers. Don't re-declare the shape or rebuild the literal per server.
+- **`claudeAgent.ts` is the orchestrator and re-exports the split-out symbols** (`promptBuilder.ts`,
+  `sdkMessageHandlers.ts`, `preToolUseHook.ts`, `agentUtils.ts`) so importer paths stay stable. Keep the
+  re-export set minimal to the original public surface.
+- **`ownerState.ts` is the metacognition sync point.** `summarizeOwnerState` returns UNFORMATTED self-state
+  DATA consumed by BOTH `buildPrompt` (English prompt) and `describe_system` (tool text); gating +
+  formatting stay at each call site. Add a self-state fact to `OwnerState` and BOTH consumers together.
+- **Every MCP tool MUST self-gate in its handler** — the `mcp__`-prefix auto-allow in the PreToolUse hook
+  fires BEFORE any owner check. **Guard conventions differ per file BY DESIGN** (owner-only vs elevated vs
+  group-member vs intentionally ungated); don't "normalize" them.
+- **A new tool means updating BOTH `mcpServers` AND `allowedTools`** in `claudeAgent.ts` — two hand-synced
+  lists. Miss one and the model either sees a tool it can't call or calls one it can't see.
+- **Don't re-copy shared helpers.** `mcpTools.ts` (`text()`, `decodeRepoFsError`, `decodeExecError`) and
+  `repoToolKit.ts` (the guard→resolve→ensureClone→decode skeleton) exist so the ~9 servers don't drift.
+- **`agent-core.test.ts` checks the prompt with `toContain`/`not.toContain` substrings**, not byte-for-byte
+  — adding a section is safe; changing an existing string (or its per-viewer presence) breaks a test.
