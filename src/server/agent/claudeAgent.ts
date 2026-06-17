@@ -36,6 +36,7 @@ import {
   handleUserMessage,
   interpretResult,
   mainAssistantContextTokens,
+  correctContextWindow,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
 
@@ -813,9 +814,18 @@ export async function runClaudeAgent(
   // requests, so dividing it by the context window made the badge's % balloon
   // past 100% on tool-heavy turns. Swap in the final request's prompt size — a
   // true context-occupancy snapshot — while keeping outputTokens cumulative
-  // (total generated this turn) and contextWindow from the result's modelUsage.
+  // (total generated this turn). Also correct contextWindow: the SDK's reported
+  // window is a static model-table figure that can read a stale base (200000) for
+  // a model whose true window is 1M (Opus 4.8), so a long-conversation snapshot
+  // overflowed it and the % still ran past 100% — lift the denominator to the 1M
+  // tier when the snapshot exceeds the reported window (correctContextWindow).
   if (runUsage && contextTokens !== undefined) {
-    runUsage = { ...runUsage, inputTokens: contextTokens };
+    const contextWindow = correctContextWindow(runUsage.contextWindow ?? 0, contextTokens);
+    runUsage = {
+      ...runUsage,
+      inputTokens: contextTokens,
+      ...(contextWindow ? { contextWindow } : {}),
+    };
   }
 
   const partialText = assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();

@@ -78,6 +78,7 @@ import {
   handleSystemEvent,
   handleUserMessage,
   mainAssistantContextTokens,
+  correctContextWindow,
   summarizeToolInput,
 } from "../src/server/agent/sdkMessageHandlers.js";
 import {
@@ -995,6 +996,27 @@ describe("mainAssistantContextTokens", () => {
     expect(mainAssistantContextTokens({ type: "assistant", message: {} })).toBeUndefined();
     expect(mainAssistantContextTokens({ type: "result" })).toBeUndefined();
     expect(mainAssistantContextTokens(null)).toBeUndefined();
+  });
+});
+
+describe("correctContextWindow", () => {
+  it("keeps the reported window when it accommodates the snapshot", () => {
+    expect(correctContextWindow(200000, 150000)).toBe(200000);
+    expect(correctContextWindow(1000000, 350000)).toBe(1000000);
+  });
+
+  it("lifts a stale under-reported window to the 1M tier when the snapshot overflows it", () => {
+    // Opus 4.8 is natively 1M but the SDK can report the legacy 200000 base; a
+    // 350K resumed-conversation snapshot must not yield a >100% badge.
+    expect(correctContextWindow(200000, 350000)).toBe(1000000);
+  });
+
+  it("never reports a window below the snapshot, even past the 1M tier", () => {
+    expect(correctContextWindow(200000, 1200000)).toBe(1200000);
+  });
+
+  it("returns 0 (no window) unchanged so the badge falls back to the input-only label", () => {
+    expect(correctContextWindow(0, 350000)).toBe(0);
   });
 });
 

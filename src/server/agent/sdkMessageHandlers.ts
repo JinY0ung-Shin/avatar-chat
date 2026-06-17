@@ -381,6 +381,27 @@ export function mainAssistantContextTokens(message: unknown): number | undefined
   return tokens > 0 ? tokens : undefined;
 }
 
+/** Largest standard Claude input window — Opus 4.8 / Sonnet 4.x are natively 1M. */
+export const MAX_CONTEXT_WINDOW_TOKENS = 1_000_000;
+
+/**
+ * The SDK's `modelUsage.contextWindow` is a STATIC model-table figure that can
+ * read a stale base (e.g. 200000) for a model whose true window is larger — Opus
+ * 4.8 is natively 1M, not beta-gated. On long/resumed turns the real prompt
+ * snapshot (`mainAssistantContextTokens`) then overflows the reported window and
+ * the context-occupancy badge % ran PAST 100% on every long turn. Current Claude
+ * windows are the 200K or 1M tier, so when the snapshot overflows the reported
+ * window the true window must be the 1M tier — lift the denominator there (never
+ * below the snapshot itself). Returns the reported window unchanged when it
+ * already accommodates the snapshot, or 0 when no window was reported.
+ */
+export function correctContextWindow(reportedWindow: number, snapshotTokens: number): number {
+  if (reportedWindow && snapshotTokens > reportedWindow) {
+    return Math.max(MAX_CONTEXT_WINDOW_TOKENS, snapshotTokens);
+  }
+  return reportedWindow;
+}
+
 /** Human-facing fallback when the run ended on an error with no usable text. */
 export function resultErrorMessage(subtype: string): string {
   if (subtype === "error_max_turns") {
