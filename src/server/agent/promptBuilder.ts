@@ -579,7 +579,16 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       "Changing avatar system settings such as plugins, routines, and the knowledge repository is owner-only. If a colleague requests a change, guide them to ask the owner, or leave the needed context via request_info.",
     );
   }
-  const historyBlock = request.greeting ? null : conversationHistoryBlock(request.conversationHistory);
+  // Stored history is the fallback for context the SDK session would otherwise
+  // carry. Inject it ONLY when there's no session to resume: a resume turn gets
+  // its context from the SDK transcript, so replaying the history here too would
+  // duplicate it. The history still rides along on the request (resume turns
+  // included) so claudeAgent can self-heal a stale/missing resume by re-running
+  // without `resume` — then resumeSessionId is cleared and this block injects it.
+  const historyBlock =
+    request.greeting || request.resumeSessionId
+      ? null
+      : conversationHistoryBlock(request.conversationHistory);
   if (historyBlock) {
     lines.push(historyBlock);
   }

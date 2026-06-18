@@ -201,6 +201,18 @@ const RETRYABLE_MODEL_STATUS = new Set([408, 429, 500, 502, 503, 504, 529]);
  * error (bad request, auth, a tool failure). Used to decide model fallback.
  * Inspects an `Anthropic`-style numeric `status` first, then the message text.
  */
+/**
+ * True when the SDK failed because a resumed session id has no transcript on
+ * disk — e.g. the agent-sessions dir wasn't preserved across a redeploy, or the
+ * transcript was cleaned up while the DB still holds the id. The CLI surfaces
+ * this as "No conversation found with session ID …". We self-heal by re-running
+ * the turn WITHOUT `resume`, rebuilding context from the stored history instead.
+ */
+export function isMissingResumeSessionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /no conversation found with session/i.test(message);
+}
+
 export function isRetryableModelError(error: unknown): boolean {
   const status = isRecord(error) && typeof error.status === "number" ? error.status : undefined;
   if (status && RETRYABLE_MODEL_STATUS.has(status)) {
@@ -695,7 +707,14 @@ export async function runClaudeAgent(
   // input" mode) whose content is the prompt text + image blocks — the only way
   // to feed the model images. All `options` (resume/hooks/mcpServers/model) work
   // identically in both modes, so text-only turns keep the unchanged string path.
-  const promptText = buildPrompt(promptRequest, openRequestCount);
+  let promptText = buildPrompt(promptRequest, openRequestCount);
+
+  // One-shot guard for the stale-resume self-heal below: if the SDK can't find
+  // the session we asked it to resume, we drop `resume`, rebuild the prompt with
+  // the stored history, and retry the SAME model once. This fires BEFORE any
+  // assistant text streams (resume loads at query start), so it's safe even for
+  // a live chat — nothing the viewer saw gets discarded.
+  let resumeFallbackTried = false;
 
   // Run the SDK query, walking the model fallback chain (single-element unless a
   // routine opted in). A retry re-runs from scratch on a fresh attempt, so it is
@@ -791,6 +810,28 @@ export async function runClaudeAgent(
       // those are not transient model-server failures, so don't fall back.
       break;
     } catch (error) {
+      // Self-heal a stale/missing resume target: re-run this same attempt with
+      // `resume` dropped so the stored history (now injected by buildPrompt once
+      // resumeSessionId is unset) rebuilds the context. The viewer never sees the
+      // error. On success the run reports a FRESH session id, which the chat route
+      // persists in place of the dangling one — so the next turn resumes cleanly.
+      if (
+        !resumeFallbackTried &&
+        options.resume &&
+        !abortController?.signal.aborted &&
+        isMissingResumeSessionError(error)
+      ) {
+        resumeFallbackTried = true;
+        delete options.resume;
+        promptRequest.resumeSessionId = undefined;
+        promptText = buildPrompt(promptRequest, openRequestCount);
+        agentLogger.warn(
+          { avatarId: request.avatar.id, conversationId: request.conversationId },
+          "resume session missing; retrying with stored history",
+        );
+        attempt -= 1; // re-run the SAME model (don't consume a fallback step)
+        continue;
+      }
       const nextModel = modelChain[attempt + 1];
       const canFallback =
         Boolean(nextModel) && !abortController?.signal.aborted && isRetryableModelError(error);

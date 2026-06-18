@@ -636,16 +636,17 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       greeting || regenerate || imageTurn
         ? undefined
         : store.getAgentSessionId(req.user!.id, conversationId) ?? undefined;
-    // Inject prior context whenever there's no SDK session to resume. A greeting
-    // has none. A regenerate deliberately starts a FRESH session (so the re-run
-    // turn isn't duplicated in the transcript) but must STILL carry the
-    // conversation so far — otherwise the model answers the regenerated turn
-    // blind, AND the fresh session id is then persisted, so every later turn
-    // would resume a context-less session too. (chat-01 / lifecycle-02)
-    const conversationHistory =
-      !greeting && !resumeSessionId
-        ? conversationHistoryForPrompt(store.listMessages(req.user!.id, conversationId))
-        : [];
+    // Carry prior context on every non-greeting turn. It is INJECTED into the
+    // prompt only when there's no SDK session to resume (buildPrompt guards on
+    // resumeSessionId) — a regenerate/image turn starts fresh and needs it, and
+    // a resume turn keeps it latent so claudeAgent can self-heal a stale/missing
+    // SDK transcript by re-running without `resume` (then this history is what
+    // rebuilds the context). A regenerate also persists its fresh session id, so
+    // without this every later turn would resume a context-less session.
+    // (chat-01 / lifecycle-02)
+    const conversationHistory = greeting
+      ? []
+      : conversationHistoryForPrompt(store.listMessages(req.user!.id, conversationId));
     // On regenerate the trailing history entry is the user turn being re-run,
     // which is ALSO re-sent as `message` — drop it so it isn't duplicated.
     if (

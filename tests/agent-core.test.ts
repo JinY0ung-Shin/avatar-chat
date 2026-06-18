@@ -65,6 +65,7 @@ import {
   buildPrompt,
   deriveAgentToolAccess,
   interpretResult,
+  isMissingResumeSessionError,
   isRetryableModelError,
   resultErrorMessage,
   rewriteBashCommandWithRtk,
@@ -1822,6 +1823,25 @@ describe("buildPrompt", () => {
     );
   });
 
+  it("does NOT inject history while resuming an SDK session (avoids duplicating context)", () => {
+    const p = buildPrompt(
+      req({
+        message: "이어서 처리해줘",
+        resumeSessionId: "sess-existing",
+        conversationHistory: [
+          { role: "user", content: "첫 요청: 배포 체크리스트를 만들어줘" },
+          { role: "assistant", content: "초안 작성 중이었습니다." },
+        ],
+      }),
+      0,
+    );
+    // The SDK transcript carries this context on a resume turn; replaying it in
+    // the prompt would duplicate it. The history still travels on the request so
+    // claudeAgent can self-heal a missing transcript by re-running without resume.
+    expect(p).not.toContain("Earlier conversation history");
+    expect(p).not.toContain("첫 요청: 배포 체크리스트를 만들어줘");
+  });
+
   it("gives an owner-scheduled routine its self-state and the git-MCP-only rule", () => {
     const p = buildPrompt(
       req({
@@ -2279,5 +2299,16 @@ describe("model fallback (routines)", () => {
     expect(isRetryableModelError(new Error("invalid_request_error: bad model"))).toBe(false);
     expect(isRetryableModelError(new Error("401 unauthorized"))).toBe(false);
     expect(isRetryableModelError({ status: 400, message: "bad request" })).toBe(false);
+  });
+
+  it("detects a missing-resume-session error so the turn can self-heal without resume", () => {
+    expect(
+      isMissingResumeSessionError(new Error("No conversation found with session ID abc-123")),
+    ).toBe(true);
+    // Case-insensitive, and works on a non-Error thrown value.
+    expect(isMissingResumeSessionError("no conversation found with session id xyz")).toBe(true);
+    // A missing session is NOT a transient model error (don't downgrade the model).
+    expect(isRetryableModelError(new Error("No conversation found with session ID abc"))).toBe(false);
+    expect(isMissingResumeSessionError(new Error("Overloaded"))).toBe(false);
   });
 });

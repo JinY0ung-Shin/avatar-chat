@@ -60,7 +60,7 @@ describe("chat history fallback", () => {
     ]);
   });
 
-  it("uses SDK resume instead of replaying stored messages when a session exists", async () => {
+  it("resumes the SDK session while still carrying history as a self-heal fallback", async () => {
     const services = createServices({
       dataDir: tempDir,
       agentRuntime: "claude",
@@ -83,7 +83,10 @@ describe("chat history fallback", () => {
 
     expect(capturedRequests).toHaveLength(1);
     expect(capturedRequests[0].resumeSessionId).toBe("sess-existing");
-    expect(capturedRequests[0].conversationHistory).toEqual([]);
+    // History rides along even on a resume turn: buildPrompt does NOT inject it
+    // while resuming (guarded on resumeSessionId), but claudeAgent needs it to
+    // self-heal a missing SDK transcript by re-running without `resume`.
+    expect(capturedRequests[0].conversationHistory).toEqual([{ role: "user", content: "첫 요청" }]);
   });
 });
 
