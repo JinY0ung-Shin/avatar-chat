@@ -100,6 +100,11 @@ const LEARN_SLASH_PROMPT = [
   "Look for important facts, decisions, repeatable procedures, project rules, or ways the user said they prefer to work, plus a clear and explicit record of what you (this avatar) CAN and CANNOT do right now — your current capabilities, the tools/repositories/skills you have connected, and any known limitations or things you were unable to do this session — so future sessions act on an accurate self-picture instead of guessing.",
   "Do not include small talk, anything already stored, or anything not useful long-term.",
   "",
+  "The goal is NOT to file a reflection essay in some corner of the repo — it is to change what actually happens next time. So make every entry actionable and retrievable:",
+  "- For any mistake, dead end, or thing that went wrong this session, do not just record what happened. Record it as a reusable recipe: the SYMPTOM (how it shows up), the ROOT CAUSE, and the CORRECTION (what to do instead next time) — so the same mistake is not repeated when this kind of work comes up again.",
+  "- State the TRIGGER for each entry: which task, workflow, or situation should bring this knowledge back to mind in a future session. Phrase it with the words a future search would actually use (recall here is read-only search, so an entry that is not findable at the right moment is useless).",
+  "- Prefer durable rules and 'do X instead of Y' guidance over one-off facts. If an entry cannot influence a future decision or action, it is probably not worth saving.",
+  "",
   "IMPORTANT — ask before writing: do NOT write to or commit anything to the knowledge repository yet. First show me a concise summary of exactly what you propose to save (which file or skill each entry goes to, and the gist of each entry) and what you will deliberately skip and why, then ask me to confirm.",
   "Only after I approve should you write the entries and commit. If I ask for changes, adjust the proposal and confirm again before writing.",
 ].join("\n");
