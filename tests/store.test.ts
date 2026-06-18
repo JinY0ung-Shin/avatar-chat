@@ -1392,6 +1392,71 @@ describe("store canvas artifacts (#50)", () => {
     expect(store.listCanvasVersions(ownerId, "a1")).toHaveLength(0);
   });
 
+  it("refuses to upsert an existing artifact id across owner or conversation boundaries", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", {
+      artifactId: "a1",
+      title: "Owner",
+      content: "owner-v1",
+      contentType: "markdown",
+    });
+
+    const other = store.createUser({ username: "cvshijack", displayName: "Other", password: "password123" });
+    store.touchConversation(other.id, "conv-other-cvs", other.id, "hi");
+    expect(
+      store.upsertCanvasArtifact(other.id, "conv-other-cvs", {
+        artifactId: "a1",
+        title: "Other",
+        content: "other-v1",
+        contentType: "markdown",
+      }),
+    ).toBeNull();
+
+    store.touchConversation(ownerId, "conv-cvs-2", ownerId, "second");
+    expect(
+      store.upsertCanvasArtifact(ownerId, "conv-cvs-2", {
+        artifactId: "a1",
+        title: "Same owner, other conversation",
+        content: "other-conv",
+        contentType: "markdown",
+      }),
+    ).toBeNull();
+
+    expect(store.getCanvasArtifact(ownerId, "a1")?.content).toBe("owner-v1");
+    expect(store.listCanvasArtifacts(ownerId, "conv-cvs-2")).toHaveLength(0);
+  });
+
+  it("cascades canvas artifacts when deleting a conversation", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v1", contentType: "markdown" });
+    expect(store.deleteConversation(ownerId, "conv-cvs")).toBe(true);
+
+    store.touchConversation(ownerId, "conv-cvs-new", ownerId, "new");
+    const re = store.upsertCanvasArtifact(ownerId, "conv-cvs-new", {
+      artifactId: "a1",
+      title: "T2",
+      content: "fresh",
+      contentType: "markdown",
+    });
+    expect(re?.currentVersion).toBe(1);
+    expect(re?.content).toBe("fresh");
+  });
+
+  it("cascades canvas artifacts when bulk-deleting chat conversations", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "bulk-a1", title: "T", content: "v1", contentType: "markdown" });
+    expect(store.deleteChatConversations(ownerId)).toContain("conv-cvs");
+
+    store.touchConversation(ownerId, "conv-cvs-bulk-new", ownerId, "new");
+    const re = store.upsertCanvasArtifact(ownerId, "conv-cvs-bulk-new", {
+      artifactId: "bulk-a1",
+      title: "T2",
+      content: "fresh",
+      contentType: "markdown",
+    });
+    expect(re?.currentVersion).toBe(1);
+  });
+
   it("cascades canvas artifacts on deleteUser", () => {
     const { store, ownerId } = makeStore();
     store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v1", contentType: "markdown" });
@@ -1400,6 +1465,28 @@ describe("store canvas artifacts (#50)", () => {
     const fresh = store.createUser({ username: "cvsfresh", displayName: "Fresh", password: "password123" });
     store.touchConversation(fresh.id, "conv-fresh", fresh.id, "hi");
     const re = store.upsertCanvasArtifact(fresh.id, "conv-fresh", { artifactId: "a1", title: "T2", content: "n", contentType: "markdown" });
+    expect(re?.currentVersion).toBe(1);
+  });
+
+  it("cascades canvas artifacts when deleting the avatar targeted by a conversation", () => {
+    const { store, ownerId } = makeStore();
+    const avatar = store.createUser({ username: "cvsdeletedavatar", displayName: "Avatar", password: "password123" });
+    store.touchConversation(ownerId, "conv-target-avatar", avatar.id, "hi");
+    store.upsertCanvasArtifact(ownerId, "conv-target-avatar", {
+      artifactId: "target-a1",
+      title: "Target",
+      content: "v1",
+      contentType: "markdown",
+    });
+
+    expect(store.deleteUser(avatar.id)).toBe(true);
+    store.touchConversation(ownerId, "conv-target-new", ownerId, "new");
+    const re = store.upsertCanvasArtifact(ownerId, "conv-target-new", {
+      artifactId: "target-a1",
+      title: "T2",
+      content: "fresh",
+      contentType: "markdown",
+    });
     expect(re?.currentVersion).toBe(1);
   });
 });

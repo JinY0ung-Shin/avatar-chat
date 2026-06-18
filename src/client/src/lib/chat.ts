@@ -1048,6 +1048,10 @@ export async function dismissCanvas(paneId: string, canvasId: string): Promise<v
   });
 }
 
+function isMissingCanvasError(err: unknown): boolean {
+  return (err as Error)?.message?.includes("캔버스를 찾을 수 없습니다.") ?? false;
+}
+
 // Close a canvas tab. A still-pending BLOCKING canvas must cancel its parked run
 // FIRST (else the run hangs on awaitResponse); a persisted canvas is hard-deleted
 // server-side; then it's removed locally and the active tab recomputed.
@@ -1059,14 +1063,15 @@ export async function closeCanvas(paneId: string, canvasId: string): Promise<voi
   if (canvas.pending && canvas.requestId && canvas.runId) {
     await api("/api/chat/respond", {
       method: "POST",
-      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { cancelled: true } }),
+      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { cancelled: true, deleteCanvas: true } }),
     }).catch(() => {});
   }
-  // Persisted canvas (rebuilt from the store on reload → no live runId): hard-delete.
-  if (!canvas.runId) {
-    try {
-      await api(`/api/chat/canvases/${encodeURIComponent(canvasId)}`, { method: "DELETE" });
-    } catch (err) {
+  // Hard-delete if it has been persisted. Greeting-only ephemeral canvases were
+  // never stored, so a 404 here is expected and should still close locally.
+  try {
+    await api(`/api/chat/canvases/${encodeURIComponent(canvasId)}`, { method: "DELETE" });
+  } catch (err) {
+    if (!isMissingCanvasError(err)) {
       notify(`캔버스를 삭제하지 못했습니다: ${(err as Error).message}`, "warn");
       return;
     }

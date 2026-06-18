@@ -929,7 +929,11 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
               record();
               return { behavior: "cancelled" };
             }
-            const reply = answer as { cancelled?: boolean; values?: Record<string, unknown> };
+            const reply = answer as { cancelled?: boolean; deleteCanvas?: boolean; values?: Record<string, unknown> };
+            if (reply?.deleteCanvas) {
+              store.deleteCanvasArtifact(req.user!.id, artifactId);
+              return { behavior: "cancelled" };
+            }
             if (reply?.cancelled) {
               record();
               return { behavior: "cancelled" };

@@ -406,6 +406,14 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       return r.n;
     }
 
+    /** Delete every version + artifact row for one conversation (manual cascade). */
+    private deleteCanvasArtifactsForConversation(conversationId: string): void {
+      this.db
+        .prepare("DELETE FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE conversation_id = ?)")
+        .run(conversationId);
+      this.db.prepare("DELETE FROM canvas_artifacts WHERE conversation_id = ?").run(conversationId);
+    }
+
     /** Drop the oldest versions beyond MAX_CANVAS_VERSIONS so heavy refinement can't grow unbounded. */
     private pruneCanvasVersions(artifactId: string): void {
       this.db
@@ -448,6 +456,19 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       const existing = this.db
         .prepare("SELECT * FROM canvas_artifacts WHERE id = ?")
         .get(artifact.artifactId) as CanvasArtifactRow | undefined;
+      if (existing && (existing.owner_user_id !== ownerId || existing.conversation_id !== conversationId)) {
+        logger.warn(
+          {
+            artifactId: artifact.artifactId,
+            ownerId,
+            conversationId,
+            existingOwnerId: existing.owner_user_id,
+            existingConversationId: existing.conversation_id,
+          },
+          "refusing canvas artifact upsert across owner/conversation boundary",
+        );
+        return null;
+      }
 
       const tx = this.db.transaction(() => {
         if (!existing) {
@@ -613,6 +634,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         return false;
       }
       const tx = this.db.transaction(() => {
+        this.deleteCanvasArtifactsForConversation(id);
         this.db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
         this.db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
       });
@@ -632,6 +654,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         const deleteMessages = this.db.prepare("DELETE FROM messages WHERE conversation_id = ?");
         const deleteConversation = this.db.prepare("DELETE FROM conversations WHERE id = ? AND owner_user_id = ? AND is_routine = 0");
         for (const conversationId of conversationIds) {
+          this.deleteCanvasArtifactsForConversation(conversationId);
           deleteMessages.run(conversationId);
           deleteConversation.run(conversationId, ownerId);
         }
