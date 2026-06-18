@@ -959,8 +959,12 @@ function handleCanvas(paneId: string, data: any): void {
       requestId: data.requestId || undefined,
       // Blocking only: an async canvas shows controls but the run isn't parked.
       pending: Boolean(controls && controls.length && interaction !== "async"),
-      // Refining in place bumps the version client-side too (server is authoritative on reload).
+      // Refining in place bumps the version client-side too so the version-history
+      // button (gated on versionCount > 1) appears WITHOUT a reload. The server is
+      // authoritative on reload and may dedup an unchanged re-show, so this can
+      // briefly over-count; loadMessages re-hydrates the exact numbers.
       currentVersion: prev ? (prev.currentVersion || 1) + 1 : 1,
+      versionCount: prev ? (prev.versionCount || 1) + 1 : 1,
     };
     const idx = pane.canvases.findIndex((c) => c.id === entry.id);
     if (idx >= 0) pane.canvases[idx] = entry;

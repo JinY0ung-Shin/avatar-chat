@@ -2,9 +2,12 @@
 // DOMPurify-sanitized rendered SVG (for svg/vega/mermaid) or the source text (for
 // markdown/html). No avatar-authored JS ever runs: we serialize an existing <svg>
 // element, draw it through an <img> with a `data:` URL (allowed by `img-src 'self'
-// data:` in app.ts), and read the pixels back via canvas.toDataURL — no `Function`
-// constructor, no `eval`, no remote/`blob:` fetch. The strict same-origin CSP
-// (`script-src 'self'`/`connect-src 'self'`) stays intact.
+// data:` in app.ts), and read the pixels back off a 2D canvas — no `Function`
+// constructor, no `eval`, no `fetch`/remote/`blob:` load. The strict same-origin CSP
+// (`script-src 'self'`/`connect-src 'self'`) stays intact: downloads use an
+// `<a href="data:">` (not governed by connect-src) and clipboard copy reads the
+// Blob straight off the canvas via `toBlob` (no `fetch('data:…')`, which
+// `connect-src 'self'` could otherwise block — `data:` is an opaque origin).
 
 import { notify } from "./state";
 
@@ -79,8 +82,11 @@ export async function copyPng(svg: SVGSVGElement): Promise<boolean> {
     if (!navigator.clipboard?.write || !ClipboardItemCtor) {
       return false;
     }
-    const pngUrl = await svgToPngDataUrl(svg);
-    const blob = await (await fetch(pngUrl)).blob(); // fetch of a same-origin data: URL is CSP-safe
+    // Read the Blob straight off the canvas — no `fetch('data:…')`, which a strict
+    // `connect-src 'self'` could block (data: is an opaque origin, not same-origin).
+    const canvas = await svgToPngCanvas(svg);
+    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob((b) => resolve(b), "image/png"));
+    if (!blob) return false;
     await navigator.clipboard.write([new ClipboardItemCtor({ "image/png": blob })]);
     return true;
   } catch {
@@ -88,8 +94,13 @@ export async function copyPng(svg: SVGSVGElement): Promise<boolean> {
   }
 }
 
-/** Core rasterizer: SVG element → PNG data URL via an <img> + 2D canvas. */
+/** SVG element → PNG data URL (download path; `<a href="data:">` is CSP-irrelevant). */
 async function svgToPngDataUrl(svg: SVGSVGElement): Promise<string> {
+  return (await svgToPngCanvas(svg)).toDataURL("image/png");
+}
+
+/** Core rasterizer: SVG element → a painted 2D <canvas> via an <img> + `data:` URL. */
+async function svgToPngCanvas(svg: SVGSVGElement): Promise<HTMLCanvasElement> {
   const { width, height } = svgPixelSize(svg);
   const scale = Math.min(window.devicePixelRatio || 1, 3);
   const svgUrl = toDataUrl(serializeSvg(svg), "image/svg+xml");
@@ -112,5 +123,5 @@ async function svgToPngDataUrl(svg: SVGSVGElement): Promise<string> {
   ctx.fillRect(0, 0, canvas.width, canvas.height);
   ctx.scale(scale, scale);
   ctx.drawImage(img, 0, 0, width, height);
-  return canvas.toDataURL("image/png");
+  return canvas;
 }
