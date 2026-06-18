@@ -644,11 +644,22 @@
   opacity: 0.7;
 }
 .admin-users > .admin-list {
+  /* Flex column (not the base grid): a grid with a definite max-height
+     compresses its auto rows to fit, so cells never overflow/scroll and
+     their wrapped content gets clipped by .admin-user{overflow:hidden}. */
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
   max-height: clamp(220px, calc(100dvh - 240px), 560px);
   min-height: 0;
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: var(--s-0-5);
+  padding-bottom: var(--s-1);
+}
+.admin-users > .admin-list > .admin-user {
+  /* Keep natural (content) height — flex children default to shrink. */
+  flex: none;
 }
 .admin-user {
   border: 1px solid var(--line);
