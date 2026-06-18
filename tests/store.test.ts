@@ -1492,6 +1492,11 @@ describe("store canvas artifacts (#50)", () => {
 });
 
 describe("store canvas backfill migration (#50)", () => {
+  // Reach the underlying SQLite handle to read/poke PRAGMA user_version (the
+  // backfill guard), simulating a pre-feature DB that predates the migration.
+  type WithDb = { db: { pragma(stmt: string, opts?: { simple?: boolean }): unknown } };
+  const dbOf = (store: unknown): WithDb["db"] => (store as unknown as WithDb).db;
+
   it("backfills legacy response_json canvases into the tables on (re)open, idempotently", () => {
     const dataDir = path.join(tempDir, "canvas-backfill");
     const first = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
@@ -1514,6 +1519,9 @@ describe("store canvas backfill migration (#50)", () => {
     });
     // No table row yet (legacy data only lives in response_json).
     expect(first.listCanvasArtifacts(owner.id, "conv-bf")).toHaveLength(0);
+    // The first open already marked the backfill done (user_version=1). Reset it to
+    // 0 to mimic a real pre-feature DB: legacy canvases present, migration not yet run.
+    dbOf(first).pragma("user_version = 0");
 
     // Reopen the same DB → migrate() runs migrateCanvasArtifacts() and backfills.
     const second = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
@@ -1521,9 +1529,37 @@ describe("store canvas backfill migration (#50)", () => {
     expect(list).toHaveLength(1);
     expect(list[0].id).toBe("legacy-1");
     expect(list[0].content).toBe("# old");
+    // The guard advanced user_version so later boots skip the scan.
+    expect(dbOf(second).pragma("user_version", { simple: true })).toBe(1);
 
     // Re-running migrate (a third open) must not duplicate.
     const third = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
     expect(third.listCanvasArtifacts(owner.id, "conv-bf")).toHaveLength(1);
+  });
+
+  it("skips the scan on later boots — legacy data added after migration is not rescanned", () => {
+    const dataDir = path.join(tempDir, "canvas-backfill-guard");
+    const first = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
+    const owner = first.createUser({ username: "bfgowner", displayName: "Owner", password: "password123" });
+    const avatar = first.createUser({ username: "bfgavatar", displayName: "Avatar", password: "password123" });
+    first.touchConversation(owner.id, "conv-bfg", avatar.id, "hi");
+    // First open already ran the backfill (nothing to do) and set user_version=1.
+    expect(dbOf(first).pragma("user_version", { simple: true })).toBe(1);
+    // Inject a legacy-shaped canvas AFTER the marker is set.
+    first.addMessage("conv-bfg", {
+      role: "assistant",
+      content: "done",
+      response: {
+        kind: "text",
+        runtime: "claude",
+        summary: "",
+        text: "done",
+        canvases: [{ id: "post-marker", title: "Late", content: "# late", contentType: "markdown" }],
+      },
+    });
+
+    // Reopen: the guard short-circuits, so the post-marker legacy canvas is NOT backfilled.
+    const second = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
+    expect(second.listCanvasArtifacts(owner.id, "conv-bfg")).toHaveLength(0);
   });
 });

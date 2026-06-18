@@ -9,6 +9,13 @@ const SESSION_DAYS = 14;
 /** Loosely-typed shape of a legacy persisted canvas, for the one-time backfill. */
 type CanvasArtifactBackfill = Partial<CanvasArtifact> & { id?: unknown };
 
+/** PRAGMA user_version reached once the one-time canvas backfill (#50) has run.
+ *  SQLite's user_version is 0 on every pre-existing/fresh DB, so gating the
+ *  backfill behind it makes its O(messages) LIKE-scan run ONCE per DB, not on
+ *  every boot. Bump (and gate the next migration on) this when a future one-time
+ *  backfill is added. */
+const CANVAS_BACKFILL_VERSION = 1;
+
 function now(): string {
   return new Date().toISOString();
 }
@@ -526,8 +533,14 @@ export class StoreBase {
    *  v1 row. Later messages win (a refined canvas's latest copy), since we iterate
    *  messages in chronological (rowid) order and the per-id INSERT keeps the last.
    *  Idempotent: INSERT OR IGNORE on canvas_artifacts.id makes a re-run (and any
-   *  artifact already persisted live through the new path) a no-op. */
+   *  artifact already persisted live through the new path) a no-op.
+   *  Guarded by PRAGMA user_version so the expensive LIKE-scan + JSON parse runs
+   *  ONCE per DB, not on every boot (see CANVAS_BACKFILL_VERSION). */
   private migrateCanvasArtifacts(): void {
+    const schemaVersion = Number(this.db.pragma("user_version", { simple: true })) || 0;
+    if (schemaVersion >= CANVAS_BACKFILL_VERSION) {
+      return;
+    }
     const rows = this.db
       .prepare(
         "SELECT m.response_json AS rj, c.id AS cid, c.owner_user_id AS owner, m.created_at AS createdAt " +
@@ -557,34 +570,38 @@ export class StoreBase {
         });
       }
     }
-    if (latest.size === 0) return;
-    const insArtifact = this.db.prepare(
-      "INSERT OR IGNORE INTO canvas_artifacts (id, conversation_id, owner_user_id, title, content_type, current_version, created_at, updated_at) " +
-        "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
-    );
-    const insVersion = this.db.prepare(
-      "INSERT OR IGNORE INTO canvas_versions (artifact_id, version, title, content, content_type, controls_json, submitted_values_json, interaction, editable, created_at) " +
-        "VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
-    );
-    const tx = this.db.transaction(() => {
-      for (const [id, e] of latest) {
-        const ct = typeof e.canvas.contentType === "string" ? e.canvas.contentType : "markdown";
-        const info = insArtifact.run(id, e.conversationId, e.owner, e.canvas.title ?? "", ct, e.createdAt, e.createdAt);
-        if (info.changes === 0) continue; // already present (re-run or live-persisted)
-        insVersion.run(
-          id,
-          e.canvas.title ?? "",
-          e.canvas.content ?? "",
-          ct,
-          e.canvas.controls ? JSON.stringify(e.canvas.controls) : null,
-          e.canvas.submittedValues ? JSON.stringify(e.canvas.submittedValues) : null,
-          e.canvas.interaction ?? null,
-          e.canvas.editable ? 1 : 0,
-          e.createdAt,
-        );
-      }
-    });
-    tx();
+    if (latest.size > 0) {
+      const insArtifact = this.db.prepare(
+        "INSERT OR IGNORE INTO canvas_artifacts (id, conversation_id, owner_user_id, title, content_type, current_version, created_at, updated_at) " +
+          "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+      );
+      const insVersion = this.db.prepare(
+        "INSERT OR IGNORE INTO canvas_versions (artifact_id, version, title, content, content_type, controls_json, submitted_values_json, interaction, editable, created_at) " +
+          "VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
+      );
+      const tx = this.db.transaction(() => {
+        for (const [id, e] of latest) {
+          const ct = typeof e.canvas.contentType === "string" ? e.canvas.contentType : "markdown";
+          const info = insArtifact.run(id, e.conversationId, e.owner, e.canvas.title ?? "", ct, e.createdAt, e.createdAt);
+          if (info.changes === 0) continue; // already present (re-run or live-persisted)
+          insVersion.run(
+            id,
+            e.canvas.title ?? "",
+            e.canvas.content ?? "",
+            ct,
+            e.canvas.controls ? JSON.stringify(e.canvas.controls) : null,
+            e.canvas.submittedValues ? JSON.stringify(e.canvas.submittedValues) : null,
+            e.canvas.interaction ?? null,
+            e.canvas.editable ? 1 : 0,
+            e.createdAt,
+          );
+        }
+      });
+      tx();
+    }
+    // Mark the backfill done — even with nothing to migrate — so a fresh or
+    // already-migrated DB never repeats the scan on later boots.
+    this.db.pragma(`user_version = ${CANVAS_BACKFILL_VERSION}`);
   }
 
   /** One-time backfill: treat every EXISTING account as already onboarded (set
