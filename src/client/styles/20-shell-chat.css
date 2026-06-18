@@ -558,6 +558,374 @@ body.col-resizing {
   display: block;
 }
 
+/* ===== Visual canvas panel (#50). Mirrors the cap-panel structure: resizable via
+   the left-edge handle, collapsible to a slim strip, stacked on mobile. ===== */
+.canvas-panel {
+  flex: none;
+  width: 440px; /* fallback only — JS sets the clamped inline width */
+  position: relative;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+@media (min-width: 861px) {
+  .canvas-panel {
+    max-width: calc(100vw - 628px);
+  }
+}
+.canvas-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--s-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.canvas-resize {
+  position: absolute;
+  top: 0;
+  left: -3px;
+  width: 7px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 2;
+  touch-action: none;
+}
+.canvas-resize:hover {
+  background: linear-gradient(to right, transparent, var(--accent-soft));
+}
+.canvas-collapse {
+  position: absolute;
+  top: var(--s-3);
+  right: var(--s-3);
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: var(--t-base);
+  line-height: 1;
+  cursor: pointer;
+}
+.canvas-collapse:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.canvas-expand {
+  display: none;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: var(--t-base);
+  cursor: pointer;
+}
+.canvas-expand .canvas-expand-label {
+  display: none;
+}
+.canvas-expand:hover {
+  color: var(--text);
+  background: var(--bg-elevated);
+}
+.canvas-panel.collapsed {
+  width: 28px !important;
+}
+.canvas-panel.collapsed .canvas-body,
+.canvas-panel.collapsed .canvas-collapse,
+.canvas-panel.collapsed .canvas-resize {
+  display: none;
+}
+.canvas-panel.collapsed .canvas-expand {
+  display: block;
+  writing-mode: vertical-rl;
+}
+.canvas-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+  padding-right: 26px; /* clear the collapse button */
+}
+.canvas-head h3 {
+  margin: 0;
+  font-size: var(--t-md);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.canvas-beta {
+  font-size: var(--t-2xs);
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+.canvas-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1);
+}
+.canvas-tab-wrap {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  overflow: hidden;
+  max-width: 180px;
+}
+.canvas-tab-wrap.active {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.canvas-tab {
+  font-size: var(--t-xs);
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-tab-wrap.active .canvas-tab {
+  color: var(--text);
+}
+.canvas-tab-close {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 0 6px;
+  font-size: var(--t-sm);
+  line-height: 1;
+}
+.canvas-tab-close:hover {
+  color: var(--danger);
+}
+.canvas-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-xl);
+  background: var(--bg);
+  padding: var(--s-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+}
+.canvas-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+}
+.canvas-title {
+  font-weight: 600;
+  font-size: var(--t-base);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+  flex: none;
+}
+.canvas-tool-btn {
+  font-size: var(--t-2xs);
+  padding: 2px 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-xs);
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  line-height: 1.4;
+}
+.canvas-tool-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+.canvas-versions {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s-1);
+  max-height: 180px;
+  overflow-y: auto;
+}
+.canvas-version-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--r-xs);
+  font-size: var(--t-xs);
+  text-align: left;
+}
+.canvas-version-row:hover {
+  background: var(--surface-2);
+}
+.canvas-version-row.current {
+  color: var(--accent);
+  cursor: default;
+}
+.canvas-version-time {
+  color: var(--muted);
+  flex: 1;
+}
+.canvas-version-action {
+  color: var(--accent);
+}
+.canvas-content {
+  overflow-x: auto;
+}
+.canvas-content svg {
+  max-width: 100%;
+  height: auto;
+}
+.canvas-render-error {
+  color: var(--danger);
+  font-size: var(--t-xs);
+  margin: 0;
+}
+.canvas-edit,
+.canvas-controls,
+.canvas-control,
+.canvas-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.canvas-control-label {
+  font-size: var(--t-sm);
+  font-weight: 600;
+}
+.canvas-optional {
+  font-weight: 400;
+  color: var(--muted);
+}
+.canvas-slider {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.canvas-slider input[type="range"] {
+  flex: 1;
+}
+.canvas-slider-val {
+  min-width: 2.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-sm);
+}
+.canvas-opt {
+  text-align: left;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel);
+  padding: var(--s-2) var(--s-3);
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.canvas-opt.selected {
+  border-color: var(--accent);
+  background: var(--surface-2);
+}
+.canvas-opt-label {
+  font-weight: 500;
+}
+.canvas-opt-desc {
+  font-size: var(--t-xs);
+  color: var(--muted);
+}
+.canvas-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s-2);
+}
+.canvas-answered {
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: var(--s-2) var(--s-3);
+  font-size: var(--t-sm);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1);
+}
+.canvas-answered-badge {
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  color: var(--ok);
+}
+.canvas-answered ul {
+  margin: 0;
+  padding-left: 1.1em;
+}
+/* Fullscreen overlay: re-renders the same sanitized content, CSS-zoomed. */
+.canvas-fs {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--bg) 92%, transparent);
+}
+.canvas-fs-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  padding: var(--s-2) var(--s-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+  z-index: 2;
+}
+.canvas-fs-title {
+  font-weight: 600;
+}
+.canvas-fs-zoom {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.canvas-fs-backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: transparent;
+  cursor: zoom-out;
+}
+.canvas-fs-stage {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--s-5);
+  z-index: 1;
+}
+.canvas-fs-content {
+  transform-origin: top center;
+}
+.canvas-fs-content svg {
+  max-width: none;
+}
+
 .cap-head h3 {
   margin: 0;
   font-size: var(--t-md);

@@ -115,10 +115,12 @@ export interface PaneCanvas extends CanvasArtifact {
   /** Run + request ids for submitting declared controls (live turns only). */
   runId?: string;
   requestId?: string;
-  /** Controls are shown and awaiting the user's submission. */
+  /** Controls are shown and awaiting the user's submission (blocking canvases only). */
   pending?: boolean;
   /** A submit POST is in flight. */
   submitting?: boolean;
+  /** In-panel editor buffer for an `editable` canvas (not persisted; UI-local). */
+  editDraft?: string;
 }
 
 /** One agent in the live activity tree; "main" is the root, others nest under parentId. */

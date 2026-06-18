@@ -34,26 +34,42 @@ export interface CanvasToolsContext {
 }
 
 const controlSchema = z.object({
-  type: z.enum(["buttons", "text"]).describe("'buttons' for selectable options, 'text' for a freeform input."),
+  type: z
+    .enum(["buttons", "text", "select", "slider", "number", "date"])
+    .describe(
+      "'buttons' = option cards (single/multi); 'select' = dropdown for many options; 'text' = freeform input; " +
+        "'slider' = numeric range; 'number' = precise numeric input; 'date' = calendar date (returns 'YYYY-MM-DD').",
+    ),
   id: z.string().describe("Stable identifier; becomes the key in the returned submitted-values object."),
   label: z.string().optional().describe("Label shown above the control."),
   options: z
     .array(
       z.object({
-        label: z.string().describe("Button text shown to the user."),
+        label: z.string().describe("Option text shown to the user."),
         value: z.string().optional().describe("Value reported on submit; defaults to the label."),
         description: z.string().optional().describe("Optional helper text under the option."),
       }),
     )
     .optional()
-    .describe("For type='buttons': the selectable options."),
+    .describe("For type='buttons' or 'select': the selectable options."),
   multiSelect: z.boolean().optional().describe("For type='buttons': allow selecting more than one option."),
   placeholder: z.string().optional().describe("For type='text': placeholder text."),
   multiline: z.boolean().optional().describe("For type='text': render a multi-line textarea."),
+  min: z.number().optional().describe("For type='slider' or 'number': lower numeric bound."),
+  max: z.number().optional().describe("For type='slider' or 'number': upper numeric bound."),
+  step: z.number().optional().describe("For type='slider' or 'number': increment step."),
+  required: z
+    .boolean()
+    .optional()
+    .describe("Whether the user must fill this control before submitting. Defaults to true; set false to allow skipping it."),
+  defaultValue: z
+    .union([z.string(), z.number()])
+    .optional()
+    .describe("Initial value: slider/number start, select preselection, or date initial."),
 });
 
 /** Render the user's submitted values back into text the model can read. */
-function formatSubmission(values: Record<string, unknown>): string {
+export function formatSubmission(values: Record<string, unknown>): string {
   const entries = Object.entries(values);
   if (entries.length === 0) {
     return "The user submitted the canvas with no values.";
@@ -80,8 +96,10 @@ export function buildCanvasTools(ctx: CanvasToolsContext) {
       "Show a visual canvas to the user in the chat side panel (experimental). Use it to share a diagram, mockup, layout, chart, or option comparison and refine it together — not to repeat text the chat could already render. " +
         "Set contentType to one of: 'markdown' (rich text), 'vega' (a chart — pass ONLY a compact Vega-Lite JSON spec as content; PREFER this for any data chart over hand-drawn SVG, it is far cheaper in tokens — inline the data, keep it small, no remote data URLs), 'mermaid' (a flow/sequence/graph diagram — pass ONLY the diagram source as content), 'svg' (an inline <svg> for bespoke diagrams Vega/mermaid can't express), or 'html' (static HTML, sanitized). " +
         "Never include scripts or executable JS in content; it is sanitized away. " +
-        "To collect a decision, pass `controls` (buttons and/or text inputs): the tool then WAITS and returns the user's submission. With no controls it just displays and returns immediately. The client renders real form controls, so do not ask the user to type their choice into chat when controls can capture it. " +
-        "To REFINE an artifact together with the user, call show again with the SAME `canvasId` (returned to you when you first showed it): it UPDATES that canvas in place instead of stacking a new one — don't re-show a slightly changed copy under a new id.",
+        "To collect a decision, pass `controls`: 'buttons' (a few choices as cards, single or multiSelect), 'select' (a dropdown when there are many options), 'slider'/'number' (a numeric value, with min/max/step), 'date' (a calendar date), and/or 'text' inputs. Each control is required by default — set `required:false` to make it optional. " +
+        "By default (wait=true) the tool WAITS and returns the user's submission; with `wait:false` it shows the controls but returns immediately and the user's later answer arrives as a NEW user message referencing this canvas. With no controls it just displays and returns immediately. The client renders real form controls, so do not ask the user to type their choice into chat when controls can capture it. " +
+        "Set `editable:true` (best with markdown) to let the user edit or annotate the content and send the edited version back as a new message. " +
+        "To REFINE an artifact together with the user, call show again with the SAME `canvasId` (returned to you when you first showed it): it UPDATES that canvas in place (keeping a version the user can roll back to) instead of stacking a new one — don't re-show a slightly changed copy under a new id.",
       {
         title: z.string().describe("Short title shown atop the canvas panel."),
         content: z.string().describe("The artifact body, interpreted per contentType."),
@@ -93,6 +111,18 @@ export function buildCanvasTools(ctx: CanvasToolsContext) {
           .string()
           .optional()
           .describe("Reuse a previous canvas's id (returned when you showed it) to UPDATE that canvas in place — for refining an artifact with the user — instead of opening a new panel/tab. Omit to create a new canvas."),
+        wait: z
+          .boolean()
+          .optional()
+          .describe(
+            "When true (default) and controls are present, BLOCK and return the user's submission. When false, show the controls but return immediately; the user's later submission arrives as a new user message referencing this canvas.",
+          ),
+        editable: z
+          .boolean()
+          .optional()
+          .describe(
+            "Allow the user to edit/annotate the content and send the edited version back as a new message. Best with contentType 'markdown'.",
+          ),
       },
       async (args) => {
         if (args.content.length > MAX_CANVAS_CONTENT_CHARS) {
@@ -109,15 +139,44 @@ export function buildCanvasTools(ctx: CanvasToolsContext) {
         if (controls.length > MAX_CANVAS_CONTROLS) {
           return text(`Too many controls (${controls.length}; limit ${MAX_CANVAS_CONTROLS}). Show fewer at once.`, true);
         }
-        const awaitInput = controls.length > 0;
+        // Per-control semantic validation, returned as actionable agent-facing
+        // errors so the model can fix the spec and call show again.
+        const seenIds = new Set<string>();
+        for (const c of controls) {
+          if (seenIds.has(c.id)) {
+            return text(`Duplicate control id '${c.id}'. Each control needs a unique id (it is the submitted-values key).`, true);
+          }
+          seenIds.add(c.id);
+          if ((c.type === "buttons" || c.type === "select") && !(c.options && c.options.length > 0)) {
+            return text(`Control '${c.id}' (type '${c.type}') needs a non-empty 'options' array.`, true);
+          }
+          if (
+            (c.type === "slider" || c.type === "number") &&
+            typeof c.min === "number" &&
+            typeof c.max === "number" &&
+            c.min > c.max
+          ) {
+            return text(`Control '${c.id}' has min (${c.min}) greater than max (${c.max}).`, true);
+          }
+        }
+        // BLOCKING only when controls exist AND wait isn't disabled. Async/editable
+        // canvases (wait:false) display and return immediately; the user's answer
+        // arrives later as a new chat turn.
+        const awaitInput = controls.length > 0 && (args.wait ?? true);
+        const interaction: "blocking" | "async" | undefined =
+          controls.length > 0 ? (awaitInput ? "blocking" : "async") : undefined;
+        const editable = Boolean(args.editable);
         const artifactId = args.canvasId?.trim() || crypto.randomUUID();
         const result = await ctx.emitCanvas({
           artifactId,
           title: args.title,
           content: args.content,
           contentType: args.contentType,
-          controls: awaitInput ? controls : undefined,
+          // Pass controls WHENEVER present so async forms render too (not just blocking).
+          controls: controls.length > 0 ? controls : undefined,
           awaitInput,
+          interaction,
+          editable,
         });
         const idNote = ` (canvas id: ${artifactId} — pass as canvasId to refine this canvas in place)`;
         if (result.behavior === "submitted") {
@@ -125,6 +184,13 @@ export function buildCanvasTools(ctx: CanvasToolsContext) {
         }
         if (result.behavior === "cancelled") {
           return text(`The user dismissed the canvas without responding. Proceed without a selection.${idNote}`);
+        }
+        // Display-only OR async/editable: nothing blocked. Tell the model how the
+        // user's later response will arrive so it doesn't wait on this call.
+        if (interaction === "async" || editable) {
+          return text(
+            `The canvas was shown with interactive elements but is NOT blocking. The user may submit or edit later; their response will arrive as a new user message referencing this canvas.${idNote}`,
+          );
         }
         return text(`The canvas was shown to the user.${idNote}`);
       },

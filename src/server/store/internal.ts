@@ -2,9 +2,12 @@ import fs from "node:fs";
 import Database from "better-sqlite3";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
 import logger from "../logger.js";
-import type { AppConfig, AvatarVisibility, GroupRole, User, UserGroupMembership } from "../types.js";
+import type { AppConfig, AvatarVisibility, CanvasArtifact, GroupRole, User, UserGroupMembership } from "../types.js";
 
 const SESSION_DAYS = 14;
+
+/** Loosely-typed shape of a legacy persisted canvas, for the one-time backfill. */
+type CanvasArtifactBackfill = Partial<CanvasArtifact> & { id?: unknown };
 
 function now(): string {
   return new Date().toISOString();
@@ -376,6 +379,35 @@ export class StoreBase {
         value_enc TEXT NOT NULL,
         updated_at TEXT
       );
+      -- Visual-canvas artifacts (#50) with version history. The CURRENT state of an
+      -- artifact lives here; every shown/refined revision is a row in canvas_versions
+      -- (refine-in-place appends a version instead of overwriting). owner_user_id is
+      -- denormalized (mirrors routine_jobs.avatar_user_id) so deleteUser can cascade
+      -- without a join. A brand-new table: CREATE TABLE IF NOT EXISTS IS the
+      -- existing-deployment migration (no ALTER needed, unlike columns).
+      CREATE TABLE IF NOT EXISTS canvas_artifacts (
+        id TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        title TEXT,
+        content_type TEXT NOT NULL,
+        current_version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT,
+        updated_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS canvas_versions (
+        artifact_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        title TEXT,
+        content TEXT,
+        content_type TEXT NOT NULL,
+        controls_json TEXT,
+        submitted_values_json TEXT,
+        interaction TEXT,
+        editable INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT,
+        PRIMARY KEY (artifact_id, version)
+      );
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -388,6 +420,8 @@ export class StoreBase {
       CREATE INDEX IF NOT EXISTS idx_git_repositories_user ON git_repositories(user_id);
       CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(user_id);
       CREATE INDEX IF NOT EXISTS idx_group_members_group ON group_members(group_id);
+      CREATE INDEX IF NOT EXISTS idx_canvas_artifacts_conversation ON canvas_artifacts(conversation_id);
+      CREATE INDEX IF NOT EXISTS idx_canvas_artifacts_owner ON canvas_artifacts(owner_user_id);
     `);
     // Additive column migrations for pre-existing DBs (CREATE TABLE above only
     // applies to fresh installs). Each is a no-op once the column exists.
@@ -481,9 +515,76 @@ export class StoreBase {
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateOnboarded();
+    this.migrateCanvasArtifacts();
     // Trust is now derived purely from group co-membership; the old per-(avatar,
     // viewer) trust table is dropped (its grants don't survive the migration).
     this.db.exec("DROP TABLE IF EXISTS avatar_trusted_users");
+  }
+
+  /** One-time backfill of canvas artifacts that pre-date the dedicated tables:
+   *  scan stored assistant messages for `response.canvases[]` and seed each as a
+   *  v1 row. Later messages win (a refined canvas's latest copy), since we iterate
+   *  messages in chronological (rowid) order and the per-id INSERT keeps the last.
+   *  Idempotent: INSERT OR IGNORE on canvas_artifacts.id makes a re-run (and any
+   *  artifact already persisted live through the new path) a no-op. */
+  private migrateCanvasArtifacts(): void {
+    const rows = this.db
+      .prepare(
+        "SELECT m.response_json AS rj, c.id AS cid, c.owner_user_id AS owner, m.created_at AS createdAt " +
+          "FROM messages m JOIN conversations c ON c.id = m.conversation_id " +
+          "WHERE m.role = 'assistant' AND m.response_json LIKE '%\"canvases\"%' ORDER BY m.rowid ASC",
+      )
+      .all() as { rj: string | null; cid: string; owner: string; createdAt: string | null }[];
+    // Collect the LATEST artifact per id (later rows overwrite earlier ones).
+    const latest = new Map<string, { conversationId: string; owner: string; createdAt: string; canvas: CanvasArtifactBackfill }>();
+    for (const row of rows) {
+      if (!row.rj) continue;
+      let parsed: { canvases?: CanvasArtifactBackfill[] } | null = null;
+      try {
+        parsed = JSON.parse(row.rj);
+      } catch {
+        continue;
+      }
+      const canvases = parsed?.canvases;
+      if (!Array.isArray(canvases)) continue;
+      for (const canvas of canvases) {
+        if (!canvas || typeof canvas.id !== "string") continue;
+        latest.set(canvas.id, {
+          conversationId: row.cid,
+          owner: row.owner,
+          createdAt: row.createdAt ?? now(),
+          canvas,
+        });
+      }
+    }
+    if (latest.size === 0) return;
+    const insArtifact = this.db.prepare(
+      "INSERT OR IGNORE INTO canvas_artifacts (id, conversation_id, owner_user_id, title, content_type, current_version, created_at, updated_at) " +
+        "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+    );
+    const insVersion = this.db.prepare(
+      "INSERT OR IGNORE INTO canvas_versions (artifact_id, version, title, content, content_type, controls_json, submitted_values_json, interaction, editable, created_at) " +
+        "VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
+    );
+    const tx = this.db.transaction(() => {
+      for (const [id, e] of latest) {
+        const ct = typeof e.canvas.contentType === "string" ? e.canvas.contentType : "markdown";
+        const info = insArtifact.run(id, e.conversationId, e.owner, e.canvas.title ?? "", ct, e.createdAt, e.createdAt);
+        if (info.changes === 0) continue; // already present (re-run or live-persisted)
+        insVersion.run(
+          id,
+          e.canvas.title ?? "",
+          e.canvas.content ?? "",
+          ct,
+          e.canvas.controls ? JSON.stringify(e.canvas.controls) : null,
+          e.canvas.submittedValues ? JSON.stringify(e.canvas.submittedValues) : null,
+          e.canvas.interaction ?? null,
+          e.canvas.editable ? 1 : 0,
+          e.createdAt,
+        );
+      }
+    });
+    tx();
   }
 
   /** One-time backfill: treat every EXISTING account as already onboarded (set

@@ -8,6 +8,7 @@ import type {
   AuditEvent,
   AvatarNotification,
   AvatarSummary,
+  CanvasArtifact,
   ConversationSummary,
   KnowledgeRequest,
   Plugin,
@@ -49,6 +50,7 @@ export async function loadMessages(
   groupKnowledgeOff: string[];
   selectedModel?: string | null;
   selectedEffort?: string | null;
+  canvases?: CanvasArtifact[];
 }> {
   return api(`/api/messages?conversationId=${encodeURIComponent(conversationId)}`);
 }

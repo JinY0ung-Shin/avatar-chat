@@ -1316,3 +1316,214 @@ describe("store groups", () => {
     expect(forAlice.find((a) => a.id === carolId)?.sharesGroup).toBe(false);
   });
 });
+
+describe("store canvas artifacts (#50)", () => {
+  function makeStore() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "canvas-" + Math.random().toString(36).slice(2)),
+      agentRuntime: "local",
+      sessionSecret: "cvs",
+    });
+    const owner = store.createUser({ username: "cvsowner", displayName: "Owner", password: "password123" });
+    const avatar = store.createUser({ username: "cvsavatar", displayName: "Avatar", password: "password123" });
+    store.touchConversation(owner.id, "conv-cvs", avatar.id, "hi");
+    return { store, ownerId: owner.id };
+  }
+
+  it("creates v1, lists current state, and is owner-scoped", () => {
+    const { store, ownerId } = makeStore();
+    const art = store.upsertCanvasArtifact(ownerId, "conv-cvs", {
+      artifactId: "a1",
+      title: "Chart",
+      content: "# hi",
+      contentType: "markdown",
+      controls: [{ type: "select", id: "p", options: [{ label: "High" }] }],
+      interaction: "blocking",
+    });
+    expect(art?.currentVersion).toBe(1);
+    expect(art?.versionCount).toBe(1);
+    expect(art?.controls?.[0].type).toBe("select");
+    const list = store.listCanvasArtifacts(ownerId, "conv-cvs");
+    expect(list).toHaveLength(1);
+    expect(list[0].title).toBe("Chart");
+    // Another owner sees nothing.
+    const other = store.createUser({ username: "cvsother", displayName: "Other", password: "password123" });
+    expect(store.listCanvasArtifacts(other.id, "conv-cvs")).toHaveLength(0);
+    expect(store.getCanvasArtifact(other.id, "a1")).toBeNull();
+  });
+
+  it("appends a version on content change but dedups an unchanged re-show", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v1", contentType: "markdown" });
+    // Identical re-show with a submission → no new version, values attach.
+    const same = store.upsertCanvasArtifact(ownerId, "conv-cvs", {
+      artifactId: "a1",
+      title: "T",
+      content: "v1",
+      contentType: "markdown",
+      submittedValues: { p: "x" },
+    });
+    expect(same?.currentVersion).toBe(1);
+    expect(same?.submittedValues).toEqual({ p: "x" });
+    // Changed content → version 2.
+    const next = store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v2", contentType: "markdown" });
+    expect(next?.currentVersion).toBe(2);
+    expect(next?.versionCount).toBe(2);
+    expect(next?.content).toBe("v2");
+  });
+
+  it("rolls back non-destructively to an earlier version", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v1", contentType: "markdown" });
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v2", contentType: "markdown" });
+    const rolled = store.rollbackCanvasArtifact(ownerId, "a1", 1);
+    expect(rolled?.content).toBe("v1");
+    expect(rolled?.currentVersion).toBe(3); // appended, not destructive
+    expect(store.listCanvasVersions(ownerId, "a1").map((v) => v.version)).toEqual([3, 2, 1]);
+  });
+
+  it("hard-deletes an artifact and its versions, owner-scoped", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v1", contentType: "markdown" });
+    const other = store.createUser({ username: "cvsdel", displayName: "Other", password: "password123" });
+    expect(store.deleteCanvasArtifact(other.id, "a1")).toBe(false);
+    expect(store.deleteCanvasArtifact(ownerId, "a1")).toBe(true);
+    expect(store.getCanvasArtifact(ownerId, "a1")).toBeNull();
+    expect(store.listCanvasVersions(ownerId, "a1")).toHaveLength(0);
+  });
+
+  it("refuses to upsert an existing artifact id across owner or conversation boundaries", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", {
+      artifactId: "a1",
+      title: "Owner",
+      content: "owner-v1",
+      contentType: "markdown",
+    });
+
+    const other = store.createUser({ username: "cvshijack", displayName: "Other", password: "password123" });
+    store.touchConversation(other.id, "conv-other-cvs", other.id, "hi");
+    expect(
+      store.upsertCanvasArtifact(other.id, "conv-other-cvs", {
+        artifactId: "a1",
+        title: "Other",
+        content: "other-v1",
+        contentType: "markdown",
+      }),
+    ).toBeNull();
+
+    store.touchConversation(ownerId, "conv-cvs-2", ownerId, "second");
+    expect(
+      store.upsertCanvasArtifact(ownerId, "conv-cvs-2", {
+        artifactId: "a1",
+        title: "Same owner, other conversation",
+        content: "other-conv",
+        contentType: "markdown",
+      }),
+    ).toBeNull();
+
+    expect(store.getCanvasArtifact(ownerId, "a1")?.content).toBe("owner-v1");
+    expect(store.listCanvasArtifacts(ownerId, "conv-cvs-2")).toHaveLength(0);
+  });
+
+  it("cascades canvas artifacts when deleting a conversation", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v1", contentType: "markdown" });
+    expect(store.deleteConversation(ownerId, "conv-cvs")).toBe(true);
+
+    store.touchConversation(ownerId, "conv-cvs-new", ownerId, "new");
+    const re = store.upsertCanvasArtifact(ownerId, "conv-cvs-new", {
+      artifactId: "a1",
+      title: "T2",
+      content: "fresh",
+      contentType: "markdown",
+    });
+    expect(re?.currentVersion).toBe(1);
+    expect(re?.content).toBe("fresh");
+  });
+
+  it("cascades canvas artifacts when bulk-deleting chat conversations", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "bulk-a1", title: "T", content: "v1", contentType: "markdown" });
+    expect(store.deleteChatConversations(ownerId)).toContain("conv-cvs");
+
+    store.touchConversation(ownerId, "conv-cvs-bulk-new", ownerId, "new");
+    const re = store.upsertCanvasArtifact(ownerId, "conv-cvs-bulk-new", {
+      artifactId: "bulk-a1",
+      title: "T2",
+      content: "fresh",
+      contentType: "markdown",
+    });
+    expect(re?.currentVersion).toBe(1);
+  });
+
+  it("cascades canvas artifacts on deleteUser", () => {
+    const { store, ownerId } = makeStore();
+    store.upsertCanvasArtifact(ownerId, "conv-cvs", { artifactId: "a1", title: "T", content: "v1", contentType: "markdown" });
+    expect(store.deleteUser(ownerId)).toBe(true);
+    // Re-create same id under a fresh owner to confirm the old rows are gone (no PK clash).
+    const fresh = store.createUser({ username: "cvsfresh", displayName: "Fresh", password: "password123" });
+    store.touchConversation(fresh.id, "conv-fresh", fresh.id, "hi");
+    const re = store.upsertCanvasArtifact(fresh.id, "conv-fresh", { artifactId: "a1", title: "T2", content: "n", contentType: "markdown" });
+    expect(re?.currentVersion).toBe(1);
+  });
+
+  it("cascades canvas artifacts when deleting the avatar targeted by a conversation", () => {
+    const { store, ownerId } = makeStore();
+    const avatar = store.createUser({ username: "cvsdeletedavatar", displayName: "Avatar", password: "password123" });
+    store.touchConversation(ownerId, "conv-target-avatar", avatar.id, "hi");
+    store.upsertCanvasArtifact(ownerId, "conv-target-avatar", {
+      artifactId: "target-a1",
+      title: "Target",
+      content: "v1",
+      contentType: "markdown",
+    });
+
+    expect(store.deleteUser(avatar.id)).toBe(true);
+    store.touchConversation(ownerId, "conv-target-new", ownerId, "new");
+    const re = store.upsertCanvasArtifact(ownerId, "conv-target-new", {
+      artifactId: "target-a1",
+      title: "T2",
+      content: "fresh",
+      contentType: "markdown",
+    });
+    expect(re?.currentVersion).toBe(1);
+  });
+});
+
+describe("store canvas backfill migration (#50)", () => {
+  it("backfills legacy response_json canvases into the tables on (re)open, idempotently", () => {
+    const dataDir = path.join(tempDir, "canvas-backfill");
+    const first = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
+    const owner = first.createUser({ username: "bfowner", displayName: "Owner", password: "password123" });
+    const avatar = first.createUser({ username: "bfavatar", displayName: "Avatar", password: "password123" });
+    first.touchConversation(owner.id, "conv-bf", avatar.id, "hi");
+    // A legacy assistant message that carried canvases on its response JSON.
+    first.addMessage("conv-bf", {
+      role: "assistant",
+      content: "done",
+      response: {
+        kind: "text",
+        runtime: "claude",
+        summary: "",
+        text: "done",
+        canvases: [
+          { id: "legacy-1", title: "Legacy", content: "# old", contentType: "markdown" },
+        ],
+      },
+    });
+    // No table row yet (legacy data only lives in response_json).
+    expect(first.listCanvasArtifacts(owner.id, "conv-bf")).toHaveLength(0);
+
+    // Reopen the same DB → migrate() runs migrateCanvasArtifacts() and backfills.
+    const second = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
+    const list = second.listCanvasArtifacts(owner.id, "conv-bf");
+    expect(list).toHaveLength(1);
+    expect(list[0].id).toBe("legacy-1");
+    expect(list[0].content).toBe("# old");
+
+    // Re-running migrate (a third open) must not duplicate.
+    const third = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
+    expect(third.listCanvasArtifacts(owner.id, "conv-bf")).toHaveLength(1);
+  });
+});

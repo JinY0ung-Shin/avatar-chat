@@ -187,7 +187,13 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
           )
           .all(id, id) as { id: string }[];
         const delMsgs = this.db.prepare("DELETE FROM messages WHERE conversation_id = ?");
+        const delCanvasVersions = this.db.prepare(
+          "DELETE FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE conversation_id = ?)",
+        );
+        const delCanvasArtifacts = this.db.prepare("DELETE FROM canvas_artifacts WHERE conversation_id = ?");
         for (const c of convRows) {
+          delCanvasVersions.run(c.id);
+          delCanvasArtifacts.run(c.id);
           delMsgs.run(c.id);
         }
         this.db
@@ -209,6 +215,12 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         this.db
           .prepare("DELETE FROM avatar_notifications WHERE owner_user_id = ? OR avatar_user_id = ?")
           .run(id, id);
+        // Canvas artifacts + their version history (owner-scoped; no ON DELETE
+        // CASCADE in this DB, so cascade manually — versions first, then artifacts).
+        this.db
+          .prepare("DELETE FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE owner_user_id = ?)")
+          .run(id);
+        this.db.prepare("DELETE FROM canvas_artifacts WHERE owner_user_id = ?").run(id);
         this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
       });
       tx();

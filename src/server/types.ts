@@ -435,13 +435,21 @@ export interface AgentUsage {
  * `canvas` experimental feature (#50).
  */
 export interface CanvasControl {
-  /** "buttons" → single/multi choice; "text" → a one-line or multiline input. */
-  type: "buttons" | "text";
+  /**
+   * The control kind. All render as native HTML form elements (CSP-safe):
+   * - "buttons" → single/multi choice shown as option cards
+   * - "text"    → a one-line or multiline freeform input
+   * - "select"  → a dropdown (for many options where buttons get unwieldy)
+   * - "slider"  → a numeric range (<input type=range>) with min/max/step
+   * - "number"  → a precise numeric input (<input type=number>)
+   * - "date"    → a calendar date picker, submitted as a "YYYY-MM-DD" string
+   */
+  type: "buttons" | "text" | "select" | "slider" | "number" | "date";
   /** Stable id used as the key in the submitted-values object. */
   id: string;
   /** Optional label shown above the control. */
   label?: string;
-  /** buttons: the selectable options. */
+  /** buttons | select: the selectable options. */
   options?: { label: string; value?: string; description?: string }[];
   /** buttons: allow selecting more than one option. */
   multiSelect?: boolean;
@@ -449,6 +457,20 @@ export interface CanvasControl {
   placeholder?: string;
   /** text: render a multi-line textarea instead of a single-line input. */
   multiline?: boolean;
+  /** slider | number: lower numeric bound. */
+  min?: number;
+  /** slider | number: upper numeric bound. */
+  max?: number;
+  /** slider | number: increment step. */
+  step?: number;
+  /**
+   * Whether the user must provide a value before submitting. Defaults to TRUE
+   * (preserving the original block-until-filled behavior); set false to let the
+   * user skip this control.
+   */
+  required?: boolean;
+  /** Initial value: slider/number start, select preselection, date initial. */
+  defaultValue?: string | number;
 }
 
 /**
@@ -476,6 +498,26 @@ export interface CanvasArtifact {
   controls?: CanvasControl[];
   /** The values the user submitted for `controls` (when they did). */
   submittedValues?: Record<string, unknown>;
+  /**
+   * How this canvas collects input (experimental interaction model):
+   * - "blocking" → the run parks until the user submits (via /api/chat/respond)
+   * - "async"    → the run completes; the user's later submission arrives as a NEW
+   *   chat turn (via /api/chat/stream)
+   * undefined = display-only (no controls).
+   */
+  interaction?: "blocking" | "async";
+  /** The user may edit/annotate the content and send the edited version back as a new turn. */
+  editable?: boolean;
+  /** Current version number of this artifact (1-based; canvas version history). */
+  currentVersion?: number;
+  /** Total number of stored versions for this artifact. */
+  versionCount?: number;
+}
+
+/** One entry in a canvas artifact's version history (canvas version history). */
+export interface CanvasVersion {
+  version: number;
+  createdAt: string;
 }
 
 /**
@@ -518,7 +560,12 @@ export interface AgentResponse {
   text: string;
   /** Per-turn token usage (Claude runtime only; omitted for local runs). */
   usage?: AgentUsage;
-  /** Visual-canvas artifacts shown this turn (experimental `canvas` feature). */
+  /**
+   * LEGACY: visual-canvas artifacts shown this turn. Canvas artifacts now persist
+   * in the dedicated `canvas_artifacts`/`canvas_versions` tables (see store), so
+   * new turns no longer write this field. Kept ONLY so pre-migration stored
+   * `response_json` still parses and the one-time backfill can read it.
+   */
   canvases?: CanvasArtifact[];
   /**
    * The plan the avatar submitted via ExitPlanMode this turn (plan mode), kept on
