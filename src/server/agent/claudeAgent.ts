@@ -36,6 +36,7 @@ import {
   handleUserMessage,
   interpretResult,
   mainAssistantContextTokens,
+  streamStartContextTokens,
   finalizeTurnUsage,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
@@ -732,6 +733,14 @@ export async function runClaudeAgent(
             const delta = handleStreamEvent(message, events);
             if (delta) {
               deltaChunks.push(delta);
+            }
+            // Capture the context-occupancy snapshot HERE: while streaming, the
+            // prompt-size counts live on the message_start event, not on the
+            // final assistant message's usage (which carries only output). The
+            // last main-agent message_start of the turn = final request's size.
+            const startCtx = streamStartContextTokens(message);
+            if (startCtx !== undefined) {
+              contextTokens = startCtx;
             }
             continue;
           }

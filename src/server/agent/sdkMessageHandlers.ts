@@ -381,6 +381,43 @@ export function mainAssistantContextTokens(message: unknown): number | undefined
   return tokens > 0 ? tokens : undefined;
 }
 
+/**
+ * Context-occupancy snapshot from a streaming `message_start` event. In
+ * streaming mode (`includePartialMessages`) the prompt-size counts
+ * (`input_tokens` + cache reads/creation) ride on the `message_start` event's
+ * `message.usage`; the FINAL assembled `assistant` message's usage carries only
+ * the `message_delta` counts (output, with `input_tokens` null), so
+ * `mainAssistantContextTokens` reads 0 there and the occupancy snapshot is
+ * never captured during streaming. Reading it here is the streaming counterpart
+ * of `mainAssistantContextTokens`: same sum, same MAIN-agent-only gate
+ * (`parent_tool_use_id` unset), but off the `stream_event`/`message_start`
+ * envelope. The LAST main-agent `message_start` of a turn = the final request's
+ * prompt size ≈ live context occupancy. Returns undefined for subagent streams,
+ * non-`message_start` events, or a usage-less/zero start.
+ */
+export function streamStartContextTokens(message: unknown): number | undefined {
+  if (!isRecord(message) || message.type !== "stream_event") {
+    return undefined;
+  }
+  if (asString(message.parent_tool_use_id)) {
+    return undefined;
+  }
+  const event = isRecord(message.event) ? message.event : undefined;
+  if (!event || event.type !== "message_start") {
+    return undefined;
+  }
+  const inner = isRecord(event.message) ? event.message : undefined;
+  const usage = inner && isRecord(inner.usage) ? inner.usage : undefined;
+  if (!usage) {
+    return undefined;
+  }
+  const tokens =
+    asNumber(usage.input_tokens) +
+    asNumber(usage.cache_read_input_tokens) +
+    asNumber(usage.cache_creation_input_tokens);
+  return tokens > 0 ? tokens : undefined;
+}
+
 /** Largest standard Claude input window — Opus 4.8 / Sonnet 4.x are natively 1M. */
 export const MAX_CONTEXT_WINDOW_TOKENS = 1_000_000;
 

@@ -78,6 +78,7 @@ import {
   handleSystemEvent,
   handleUserMessage,
   mainAssistantContextTokens,
+  streamStartContextTokens,
   correctContextWindow,
   finalizeTurnUsage,
   summarizeToolInput,
@@ -997,6 +998,45 @@ describe("mainAssistantContextTokens", () => {
     expect(mainAssistantContextTokens({ type: "assistant", message: {} })).toBeUndefined();
     expect(mainAssistantContextTokens({ type: "result" })).toBeUndefined();
     expect(mainAssistantContextTokens(null)).toBeUndefined();
+  });
+});
+
+describe("streamStartContextTokens", () => {
+  const startEvent = (usage: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+    type: "stream_event",
+    parent_tool_use_id: null,
+    event: { type: "message_start", message: { usage } },
+    ...extra,
+  });
+
+  it("sums input + cache read + cache creation from a main-agent message_start", () => {
+    expect(
+      streamStartContextTokens(
+        startEvent({ input_tokens: 8_000, cache_read_input_tokens: 340_000, cache_creation_input_tokens: 2_000 }),
+      ),
+    ).toBe(350_000);
+  });
+
+  it("ignores subagent streams", () => {
+    expect(
+      streamStartContextTokens(startEvent({ input_tokens: 5_000 }, { parent_tool_use_id: "agent-1" })),
+    ).toBeUndefined();
+  });
+
+  it("ignores non-message_start stream events (deltas carry no prompt size)", () => {
+    expect(
+      streamStartContextTokens({
+        type: "stream_event",
+        parent_tool_use_id: null,
+        event: { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } },
+      }),
+    ).toBeUndefined();
+  });
+
+  it("returns undefined for a zero/usage-less start and for non-stream messages", () => {
+    expect(streamStartContextTokens(startEvent({ input_tokens: 0 }))).toBeUndefined();
+    expect(streamStartContextTokens({ type: "assistant", message: {} })).toBeUndefined();
+    expect(streamStartContextTokens(null)).toBeUndefined();
   });
 });
 
