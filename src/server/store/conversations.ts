@@ -1,7 +1,43 @@
 import crypto from "node:crypto";
 import logger from "../logger.js";
-import type { AgentResponse, AuditEvent, ConversationSummary, MessageAttachment, StoredMessage } from "../types.js";
+import type {
+  AgentResponse,
+  AuditEvent,
+  CanvasArtifact,
+  CanvasControl,
+  CanvasVersion,
+  ConversationSummary,
+  MessageAttachment,
+  StoredMessage,
+} from "../types.js";
 import { type Constructor, type StoreBase, now, parseNameList } from "./internal.js";
+
+/** Keep at most this many versions per canvas artifact (oldest pruned on overflow). */
+const MAX_CANVAS_VERSIONS = 20;
+
+interface CanvasArtifactRow {
+  id: string;
+  conversation_id: string;
+  owner_user_id: string;
+  title: string | null;
+  content_type: string;
+  current_version: number;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+interface CanvasVersionRow {
+  artifact_id: string;
+  version: number;
+  title: string | null;
+  content: string | null;
+  content_type: string;
+  controls_json: string | null;
+  submitted_values_json: string | null;
+  interaction: string | null;
+  editable: number;
+  created_at: string | null;
+}
 
 export function withConversations<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class Conversations extends Base {
@@ -324,6 +360,239 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         delete response.activity;
       }
       this.db.prepare("UPDATE messages SET response_json = ? WHERE id = ?").run(JSON.stringify(response), messageId);
+      return true;
+    }
+
+    // ---- Visual-canvas artifacts + version history (#50) ------------------
+
+    /** Build a CanvasArtifact (current state) from an artifact row + its current version row. */
+    private buildCanvasArtifact(row: CanvasArtifactRow, version: CanvasVersionRow, versionCount: number): CanvasArtifact {
+      return {
+        id: row.id,
+        title: version.title ?? "",
+        content: version.content ?? "",
+        contentType: (version.content_type as CanvasArtifact["contentType"]) ?? "markdown",
+        controls: version.controls_json ? (this.parseCanvasJson<CanvasControl[]>(version.controls_json) ?? undefined) : undefined,
+        submittedValues: version.submitted_values_json
+          ? (this.parseCanvasJson<Record<string, unknown>>(version.submitted_values_json) ?? undefined)
+          : undefined,
+        interaction: (version.interaction as CanvasArtifact["interaction"]) ?? undefined,
+        editable: Boolean(version.editable),
+        currentVersion: row.current_version,
+        versionCount,
+      };
+    }
+
+    /** Parse-tolerant JSON read for canvas columns (a bad row must not throw). */
+    private parseCanvasJson<T>(json: string): T | null {
+      try {
+        return JSON.parse(json) as T;
+      } catch {
+        logger.warn("skipping corrupt canvas JSON column");
+        return null;
+      }
+    }
+
+    private currentCanvasVersion(artifactId: string, version: number): CanvasVersionRow | undefined {
+      return this.db
+        .prepare("SELECT * FROM canvas_versions WHERE artifact_id = ? AND version = ?")
+        .get(artifactId, version) as CanvasVersionRow | undefined;
+    }
+
+    private canvasVersionCount(artifactId: string): number {
+      const r = this.db
+        .prepare("SELECT COUNT(*) AS n FROM canvas_versions WHERE artifact_id = ?")
+        .get(artifactId) as { n: number };
+      return r.n;
+    }
+
+    /** Drop the oldest versions beyond MAX_CANVAS_VERSIONS so heavy refinement can't grow unbounded. */
+    private pruneCanvasVersions(artifactId: string): void {
+      this.db
+        .prepare(
+          "DELETE FROM canvas_versions WHERE artifact_id = ? AND version NOT IN " +
+            "(SELECT version FROM canvas_versions WHERE artifact_id = ? ORDER BY version DESC LIMIT ?)",
+        )
+        .run(artifactId, artifactId, MAX_CANVAS_VERSIONS);
+    }
+
+    /**
+     * Persist a shown/refined canvas artifact. New id → version 1. Existing id with
+     * CHANGED content/title/type/controls → append a new version (refine-in-place
+     * history). Existing id with IDENTICAL body → just update the current version's
+     * submitted values / interaction / editable (so a blocking submit or a no-op
+     * re-show doesn't create a phantom version). Owner-gated via the conversation.
+     */
+    upsertCanvasArtifact(
+      ownerId: string,
+      conversationId: string,
+      artifact: {
+        artifactId: string;
+        title: string;
+        content: string;
+        contentType: string;
+        controls?: CanvasControl[];
+        submittedValues?: Record<string, unknown>;
+        interaction?: "blocking" | "async";
+        editable?: boolean;
+      },
+    ): CanvasArtifact | null {
+      if (!this.ownsConversation(ownerId, conversationId)) {
+        return null;
+      }
+      const ts = now();
+      const controlsJson = artifact.controls ? JSON.stringify(artifact.controls) : null;
+      const valuesJson = artifact.submittedValues ? JSON.stringify(artifact.submittedValues) : null;
+      const interaction = artifact.interaction ?? null;
+      const editable = artifact.editable ? 1 : 0;
+      const existing = this.db
+        .prepare("SELECT * FROM canvas_artifacts WHERE id = ?")
+        .get(artifact.artifactId) as CanvasArtifactRow | undefined;
+
+      const tx = this.db.transaction(() => {
+        if (!existing) {
+          this.db
+            .prepare(
+              "INSERT INTO canvas_artifacts (id, conversation_id, owner_user_id, title, content_type, current_version, created_at, updated_at) " +
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?)",
+            )
+            .run(artifact.artifactId, conversationId, ownerId, artifact.title, artifact.contentType, ts, ts);
+          this.db
+            .prepare(
+              "INSERT INTO canvas_versions (artifact_id, version, title, content, content_type, controls_json, submitted_values_json, interaction, editable, created_at) " +
+                "VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .run(artifact.artifactId, artifact.title, artifact.content, artifact.contentType, controlsJson, valuesJson, interaction, editable, ts);
+          return;
+        }
+        const cur = this.currentCanvasVersion(artifact.artifactId, existing.current_version);
+        const bodyUnchanged =
+          cur &&
+          cur.title === artifact.title &&
+          cur.content === artifact.content &&
+          cur.content_type === artifact.contentType &&
+          (cur.controls_json ?? null) === controlsJson;
+        if (bodyUnchanged) {
+          // No content change — just refresh submission/interaction/editable on the current version.
+          this.db
+            .prepare(
+              "UPDATE canvas_versions SET submitted_values_json = ?, interaction = ?, editable = ? WHERE artifact_id = ? AND version = ?",
+            )
+            .run(valuesJson, interaction, editable, artifact.artifactId, existing.current_version);
+          this.db.prepare("UPDATE canvas_artifacts SET updated_at = ? WHERE id = ?").run(ts, artifact.artifactId);
+          return;
+        }
+        const nextVersion = existing.current_version + 1;
+        this.db
+          .prepare(
+            "INSERT INTO canvas_versions (artifact_id, version, title, content, content_type, controls_json, submitted_values_json, interaction, editable, created_at) " +
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(artifact.artifactId, nextVersion, artifact.title, artifact.content, artifact.contentType, controlsJson, valuesJson, interaction, editable, ts);
+        this.db
+          .prepare("UPDATE canvas_artifacts SET title = ?, content_type = ?, current_version = ?, updated_at = ? WHERE id = ?")
+          .run(artifact.title, artifact.contentType, nextVersion, ts, artifact.artifactId);
+        this.pruneCanvasVersions(artifact.artifactId);
+      });
+      tx();
+      return this.getCanvasArtifact(ownerId, artifact.artifactId);
+    }
+
+    /** The current state of one artifact (owner-gated). */
+    getCanvasArtifact(ownerId: string, artifactId: string): CanvasArtifact | null {
+      const row = this.db
+        .prepare("SELECT * FROM canvas_artifacts WHERE id = ? AND owner_user_id = ?")
+        .get(artifactId, ownerId) as CanvasArtifactRow | undefined;
+      if (!row) return null;
+      const version = this.currentCanvasVersion(artifactId, row.current_version);
+      if (!version) return null;
+      return this.buildCanvasArtifact(row, version, this.canvasVersionCount(artifactId));
+    }
+
+    /** All artifacts for a conversation, in show order — for rebuilding the panel on reload. */
+    listCanvasArtifacts(ownerId: string, conversationId: string): CanvasArtifact[] {
+      if (!this.ownsConversation(ownerId, conversationId)) {
+        return [];
+      }
+      const rows = this.db
+        .prepare("SELECT * FROM canvas_artifacts WHERE conversation_id = ? ORDER BY created_at ASC, rowid ASC")
+        .all(conversationId) as CanvasArtifactRow[];
+      const out: CanvasArtifact[] = [];
+      for (const row of rows) {
+        const version = this.currentCanvasVersion(row.id, row.current_version);
+        if (version) out.push(this.buildCanvasArtifact(row, version, this.canvasVersionCount(row.id)));
+      }
+      return out;
+    }
+
+    /** Version history (newest first) for the rollback UI (owner-gated). */
+    listCanvasVersions(ownerId: string, artifactId: string): CanvasVersion[] {
+      const row = this.db
+        .prepare("SELECT owner_user_id FROM canvas_artifacts WHERE id = ?")
+        .get(artifactId) as { owner_user_id: string } | undefined;
+      if (!row || row.owner_user_id !== ownerId) {
+        return [];
+      }
+      const versions = this.db
+        .prepare("SELECT version, created_at FROM canvas_versions WHERE artifact_id = ? ORDER BY version DESC")
+        .all(artifactId) as { version: number; created_at: string | null }[];
+      return versions.map((v) => ({ version: v.version, createdAt: v.created_at ?? "" }));
+    }
+
+    /**
+     * Roll back to an earlier version by APPENDING its body as a new current
+     * version (non-destructive). Returns the updated artifact, or null if not
+     * owned / version missing.
+     */
+    rollbackCanvasArtifact(ownerId: string, artifactId: string, version: number): CanvasArtifact | null {
+      const row = this.db
+        .prepare("SELECT * FROM canvas_artifacts WHERE id = ? AND owner_user_id = ?")
+        .get(artifactId, ownerId) as CanvasArtifactRow | undefined;
+      if (!row) return null;
+      const target = this.currentCanvasVersion(artifactId, version);
+      if (!target) return null;
+      const ts = now();
+      const nextVersion = row.current_version + 1;
+      const tx = this.db.transaction(() => {
+        this.db
+          .prepare(
+            "INSERT INTO canvas_versions (artifact_id, version, title, content, content_type, controls_json, submitted_values_json, interaction, editable, created_at) " +
+              "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run(
+            artifactId,
+            nextVersion,
+            target.title,
+            target.content,
+            target.content_type,
+            target.controls_json,
+            target.submitted_values_json,
+            target.interaction,
+            target.editable,
+            ts,
+          );
+        this.db
+          .prepare("UPDATE canvas_artifacts SET title = ?, content_type = ?, current_version = ?, updated_at = ? WHERE id = ?")
+          .run(target.title, target.content_type, nextVersion, ts, artifactId);
+        this.pruneCanvasVersions(artifactId);
+      });
+      tx();
+      return this.getCanvasArtifact(ownerId, artifactId);
+    }
+
+    /** Hard-delete an artifact and all its versions (owner-gated). */
+    deleteCanvasArtifact(ownerId: string, artifactId: string): boolean {
+      const row = this.db
+        .prepare("SELECT owner_user_id FROM canvas_artifacts WHERE id = ?")
+        .get(artifactId) as { owner_user_id: string } | undefined;
+      if (!row || row.owner_user_id !== ownerId) {
+        return false;
+      }
+      const tx = this.db.transaction(() => {
+        this.db.prepare("DELETE FROM canvas_versions WHERE artifact_id = ?").run(artifactId);
+        this.db.prepare("DELETE FROM canvas_artifacts WHERE id = ?").run(artifactId);
+      });
+      tx();
       return true;
     }
 

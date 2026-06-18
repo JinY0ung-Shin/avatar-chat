@@ -209,6 +209,12 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         this.db
           .prepare("DELETE FROM avatar_notifications WHERE owner_user_id = ? OR avatar_user_id = ?")
           .run(id, id);
+        // Canvas artifacts + their version history (owner-scoped; no ON DELETE
+        // CASCADE in this DB, so cascade manually — versions first, then artifacts).
+        this.db
+          .prepare("DELETE FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE owner_user_id = ?)")
+          .run(id);
+        this.db.prepare("DELETE FROM canvas_artifacts WHERE owner_user_id = ?").run(id);
         this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
       });
       tx();

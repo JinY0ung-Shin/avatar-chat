@@ -17,6 +17,7 @@ import type {
   AgentResponse,
   AvatarDetail,
   AvatarSummary,
+  CanvasArtifact,
   ChatPane,
   LiveTaskRow,
   LiveToolRow,
@@ -83,8 +84,13 @@ function truncate(text: string, max = 180): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
-function makePane(avatar: AvatarDetail, conversationId = newId(), messages: StoredMessage[] = []): ChatPane {
-  const canvases = canvasesFromMessages(messages);
+function makePane(
+  avatar: AvatarDetail,
+  conversationId = newId(),
+  messages: StoredMessage[] = [],
+  canvasArtifacts: CanvasArtifact[] = [],
+): ChatPane {
+  const canvases = paneCanvasesFromArtifacts(canvasArtifacts);
   return {
     id: newId(),
     avatar,
@@ -179,11 +185,11 @@ export async function selectConversation(conversationId: string): Promise<void> 
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort }, avatarRes] = await Promise.all([
+  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort, canvases }, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
   ]);
-  const pane = makePane(avatarRes.avatar, conversationId, messages);
+  const pane = makePane(avatarRes.avatar, conversationId, messages, canvases);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
   pane.modelTier = selectedModel || undefined;
   pane.effort = selectedEffort || undefined;
@@ -223,11 +229,11 @@ export async function addConversationToSplit(conversationId: string): Promise<vo
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort }, avatarRes] = await Promise.all([
+  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort, canvases }, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
   ]);
-  const pane = makePane(avatarRes.avatar, conversationId, messages);
+  const pane = makePane(avatarRes.avatar, conversationId, messages, canvases);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
   pane.modelTier = selectedModel || undefined;
   pane.effort = selectedEffort || undefined;
@@ -293,16 +299,33 @@ export function regenerate(paneId: string): void {
   void sendMessage(paneId, text, { regenerate: true });
 }
 
-export async function sendMessage(paneId: string, rawMessage: string, opts: { regenerate?: boolean; greeting?: boolean } = {}): Promise<void> {
+export async function sendMessage(
+  paneId: string,
+  rawMessage: string,
+  opts: {
+    regenerate?: boolean;
+    greeting?: boolean;
+    /**
+     * A non-blocking canvas submission/edit (#50). Delivered as a normal turn: the
+     * server formats the agent-facing message and persists a short Korean bubble.
+     */
+    canvasSubmission?: { canvasId: string; values?: Record<string, unknown>; editedContent?: string };
+  } = {},
+): Promise<void> {
   let pane = readState().chatPanes.find((item) => item.id === paneId);
   if (!pane || pane.streaming || !pane.avatar) return;
   let message = rawMessage.trim();
+  // A canvas submission carries no typed text — the visible bubble is a short
+  // Korean summary mirroring the server's displayMessage (hand-mirrored validator).
+  if (opts.canvasSubmission) {
+    message = opts.canvasSubmission.editedContent ? "캔버스를 수정해 보냈습니다." : "캔버스 응답을 보냈습니다.";
+  }
   // Snapshot staged images early so a text-empty, image-only turn can be sent.
   // Greetings/regenerates carry no freshly staged images.
   const pendingImages = opts.greeting || opts.regenerate ? [] : [...(pane.pendingImages || [])];
   if (!message && !opts.greeting && pendingImages.length === 0) return;
 
-  const slash = message ? resolveTypedSlashCommand(pane, message) : null;
+  const slash = message && !opts.canvasSubmission ? resolveTypedSlashCommand(pane, message) : null;
   if (slash && !opts.greeting) {
     if (slash.command.action === "new") {
       newChat(pane.id);
@@ -386,6 +409,9 @@ export async function sendMessage(paneId: string, rawMessage: string, opts: { re
         // Staged image attachments (data URLs). The server reuses our id as the
         // stored attachment id + filename. Omit when none.
         images: pendingImages.length ? pendingImages.map((img) => ({ id: img.id, data: img.dataUrl })) : undefined,
+        // Non-blocking canvas submission/edit (#50), when this turn was triggered
+        // from a canvas form rather than the composer.
+        canvasSubmission: opts.canvasSubmission,
       }),
     });
     if (response.status === 401) {
@@ -456,13 +482,13 @@ export async function attachActiveRun(paneId: string): Promise<void> {
       return;
     }
     if (pane.messages[pane.messages.length - 1]?.role === "user") {
-      const { messages, groupKnowledgeOff, selectedModel, selectedEffort } = await loadMessages(pane.conversationId);
+      const { messages, groupKnowledgeOff, selectedModel, selectedEffort, canvases } = await loadMessages(pane.conversationId);
       updatePane(paneId, (target) => {
         target.messages = messages;
         target.groupKnowledgeOff = groupKnowledgeOff || [];
         target.modelTier = selectedModel || undefined;
         target.effort = selectedEffort || undefined;
-        target.canvases = canvasesFromMessages(messages);
+        target.canvases = paneCanvasesFromArtifacts(canvases);
         target.usage = lastUsage(messages);
       });
     }
@@ -914,19 +940,27 @@ function clearLive(pane: ChatPane): void {
 /* ---------- visual canvas (experimental, #50) ---------- */
 
 // A canvas artifact arrived over SSE: upsert by artifact id and bring it to the
-// front. `controls` present (non-null) means the run is waiting on the user.
+// front. `pending` (the run is parked, awaiting the user) is true ONLY for a
+// BLOCKING canvas — an async canvas's controls render but don't park the run.
 function handleCanvas(paneId: string, data: any): void {
   const controls = Array.isArray(data.controls) ? data.controls : undefined;
+  const interaction = data.interaction === "blocking" || data.interaction === "async" ? data.interaction : undefined;
   updatePane(paneId, (pane) => {
+    const prev = pane.canvases.find((c) => c.id === data.artifactId);
     const entry: PaneCanvas = {
       id: data.artifactId,
       title: data.title || "캔버스",
       content: typeof data.content === "string" ? data.content : "",
       contentType: data.contentType || "markdown",
       controls,
+      interaction,
+      editable: Boolean(data.editable),
       runId: data.runId || pane.liveRunId || undefined,
       requestId: data.requestId || undefined,
-      pending: Boolean(controls && controls.length),
+      // Blocking only: an async canvas shows controls but the run isn't parked.
+      pending: Boolean(controls && controls.length && interaction !== "async"),
+      // Refining in place bumps the version client-side too (server is authoritative on reload).
+      currentVersion: prev ? (prev.currentVersion || 1) + 1 : 1,
     };
     const idx = pane.canvases.findIndex((c) => c.id === entry.id);
     if (idx >= 0) pane.canvases[idx] = entry;
@@ -941,40 +975,64 @@ export function setActiveCanvas(paneId: string, canvasId: string): void {
   });
 }
 
-// Submit the user's response to a canvas's controls. Mirrors answerPrompt but
-// the value shape is `{ values }`; locks the form and records the submission.
+// Submit the user's response to a canvas's controls. Two paths:
+// - BLOCKING (the run is parked, awaiting this answer): POST /api/chat/respond to
+//   unblock the parked run, exactly as before.
+// - ASYNC / re-submit / post-reload (no live parked run): deliver the answer as a
+//   NEW chat turn via sendMessage(canvasSubmission) — naturally double-submit safe.
 export async function submitCanvas(paneId: string, canvasId: string, values: Record<string, unknown>): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
-  if (!canvas || !canvas.requestId || !canvas.runId) return;
+  if (!canvas) return;
+  const blocking = Boolean(canvas.pending && canvas.requestId && canvas.runId);
+  if (blocking) {
+    updatePane(paneId, (p) => {
+      const c = p.canvases.find((x) => x.id === canvasId);
+      if (c) c.submitting = true;
+    });
+    try {
+      await api("/api/chat/respond", {
+        method: "POST",
+        body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { values } }),
+      });
+      updatePane(paneId, (p) => {
+        const c = p.canvases.find((x) => x.id === canvasId);
+        if (c) {
+          c.pending = false;
+          c.submitting = false;
+          c.submittedValues = values;
+        }
+      });
+    } catch (err) {
+      updatePane(paneId, (p) => {
+        const c = p.canvases.find((x) => x.id === canvasId);
+        if (c) c.submitting = false;
+      });
+      notify(`캔버스 응답을 전송하지 못했습니다: ${(err as Error).message}`, "warn");
+    }
+    return;
+  }
+  // Async / re-submit: a new turn. Record the answer optimistically so the panel
+  // shows "응답 완료"; sendMessage manages the streaming lifecycle.
+  if (pane?.streaming) return;
   updatePane(paneId, (p) => {
     const c = p.canvases.find((x) => x.id === canvasId);
-    if (c) c.submitting = true;
+    if (c) c.submittedValues = values;
   });
-  try {
-    await api("/api/chat/respond", {
-      method: "POST",
-      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { values } }),
-    });
-    updatePane(paneId, (p) => {
-      const c = p.canvases.find((x) => x.id === canvasId);
-      if (c) {
-        c.pending = false;
-        c.submitting = false;
-        c.submittedValues = values;
-      }
-    });
-  } catch (err) {
-    updatePane(paneId, (p) => {
-      const c = p.canvases.find((x) => x.id === canvasId);
-      if (c) c.submitting = false;
-    });
-    notify(`캔버스 응답을 전송하지 못했습니다: ${(err as Error).message}`, "warn");
-  }
+  await sendMessage(paneId, "", { canvasSubmission: { canvasId, values } });
 }
 
-// Dismiss a canvas's prompt without answering (sends a cancellation so the run
-// can proceed). For a display-only canvas this just hides the panel locally.
+// Send the user's edited canvas content back to the avatar as a new turn (#50).
+export async function submitCanvasEdit(paneId: string, canvasId: string, editedContent: string): Promise<void> {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  if (!pane || pane.streaming) return;
+  const canvas = pane.canvases.find((c) => c.id === canvasId);
+  if (!canvas || !editedContent.trim()) return;
+  await sendMessage(paneId, "", { canvasSubmission: { canvasId, editedContent } });
+}
+
+// Dismiss a canvas's prompt without answering (sends a cancellation so the parked
+// run can proceed). For a non-blocking/display-only canvas this just hides locally.
 export async function dismissCanvas(paneId: string, canvasId: string): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
@@ -988,6 +1046,68 @@ export async function dismissCanvas(paneId: string, canvasId: string): Promise<v
     const c = p.canvases.find((x) => x.id === canvasId);
     if (c) c.pending = false;
   });
+}
+
+// Close a canvas tab. A still-pending BLOCKING canvas must cancel its parked run
+// FIRST (else the run hangs on awaitResponse); a persisted canvas is hard-deleted
+// server-side; then it's removed locally and the active tab recomputed.
+export async function closeCanvas(paneId: string, canvasId: string): Promise<void> {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  const canvas = pane?.canvases.find((c) => c.id === canvasId);
+  if (!canvas) return;
+  // Cancel a parked blocking run before removal.
+  if (canvas.pending && canvas.requestId && canvas.runId) {
+    await api("/api/chat/respond", {
+      method: "POST",
+      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { cancelled: true } }),
+    }).catch(() => {});
+  }
+  // Persisted canvas (rebuilt from the store on reload → no live runId): hard-delete.
+  if (!canvas.runId) {
+    try {
+      await api(`/api/chat/canvases/${encodeURIComponent(canvasId)}`, { method: "DELETE" });
+    } catch (err) {
+      notify(`캔버스를 삭제하지 못했습니다: ${(err as Error).message}`, "warn");
+      return;
+    }
+  }
+  updatePane(paneId, (p) => {
+    const idx = p.canvases.findIndex((c) => c.id === canvasId);
+    if (idx < 0) return;
+    p.canvases.splice(idx, 1);
+    if (p.activeCanvasId === canvasId) {
+      const next = p.canvases[idx] || p.canvases[idx - 1] || p.canvases[p.canvases.length - 1];
+      p.activeCanvasId = next ? next.id : null;
+    }
+  });
+}
+
+// Fetch a canvas's version history for the rollback UI.
+export async function fetchCanvasVersions(canvasId: string): Promise<{ version: number; createdAt: string }[]> {
+  try {
+    const res = await api<{ versions: { version: number; createdAt: string }[] }>(
+      `/api/chat/canvases/${encodeURIComponent(canvasId)}/versions`,
+    );
+    return res.versions || [];
+  } catch {
+    return [];
+  }
+}
+
+// Roll back a canvas to an earlier version (non-destructive) and update the panel.
+export async function rollbackCanvas(paneId: string, canvasId: string, version: number): Promise<void> {
+  try {
+    const res = await api<{ canvas: PaneCanvas }>(`/api/chat/canvases/${encodeURIComponent(canvasId)}/rollback`, {
+      method: "POST",
+      body: JSON.stringify({ version }),
+    });
+    updatePane(paneId, (p) => {
+      const idx = p.canvases.findIndex((c) => c.id === canvasId);
+      if (idx >= 0) p.canvases[idx] = { ...p.canvases[idx], ...res.canvas };
+    });
+  } catch (err) {
+    notify(`캔버스를 되돌리지 못했습니다: ${(err as Error).message}`, "warn");
+  }
 }
 
 /* ---------- interactive prompts (permission / question) ---------- */
@@ -1058,16 +1178,17 @@ export async function answerPrompt(requestId: string, value: unknown): Promise<v
 /* ---------- helpers ---------- */
 
 /** Rebuild the pane's canvas list from persisted assistant-message responses. */
-function canvasesFromMessages(messages: StoredMessage[]): PaneCanvas[] {
+// Rebuild the panel from the server's canvas artifacts (current version of each),
+// the authoritative source on reload (the dedicated canvas tables). On reload there
+// is no live run, so pending/runId/requestId stay unset and the form re-enables for
+// async/editable canvases (which submit as a new turn, not via a parked run).
+function paneCanvasesFromArtifacts(canvases: CanvasArtifact[] | undefined): PaneCanvas[] {
   const out: PaneCanvas[] = [];
-  for (const message of messages) {
-    for (const canvas of message.response?.canvases || []) {
-      // De-dupe by id so a re-fetch never doubles a canvas.
-      const existing = out.findIndex((c) => c.id === canvas.id);
-      const entry: PaneCanvas = { ...canvas, pending: false };
-      if (existing >= 0) out[existing] = entry;
-      else out.push(entry);
-    }
+  for (const canvas of canvases || []) {
+    const existing = out.findIndex((c) => c.id === canvas.id);
+    const entry: PaneCanvas = { ...canvas, pending: false };
+    if (existing >= 0) out[existing] = entry;
+    else out.push(entry);
   }
   return out;
 }

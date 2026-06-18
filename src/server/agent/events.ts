@@ -54,9 +54,21 @@ export interface CanvasRequest {
   title: string;
   content: string;
   contentType: import("../types.js").CanvasContentType;
+  /**
+   * Declared controls, passed WHENEVER present — not only when blocking — so a
+   * non-blocking (async) canvas can still render its form on the client.
+   */
   controls?: import("../types.js").CanvasControl[];
-  /** True when controls were declared → park the run until the user submits. */
+  /**
+   * The SOLE run-parking signal: true only for a BLOCKING canvas (controls
+   * present AND `wait` not false). An async/display-only/editable canvas does
+   * NOT park; the user's later answer arrives as a new /api/chat/stream turn.
+   */
   awaitInput: boolean;
+  /** How input is collected: "blocking" parks the run, "async" does not. Undefined = display-only. */
+  interaction?: "blocking" | "async";
+  /** The user may edit/annotate the content and send it back as a new turn. */
+  editable?: boolean;
 }
 export type CanvasResult =
   | { behavior: "submitted"; values: Record<string, unknown> }

@@ -95,6 +95,45 @@
     padding-bottom: calc(var(--s-4) + env(safe-area-inset-bottom, 0px));
   }
 
+  /* Stack the canvas panel below the chat on narrow screens (mirrors cap-panel). */
+  .canvas-panel,
+  .canvas-panel.collapsed {
+    width: auto !important;
+    max-width: none;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .canvas-panel {
+    max-height: 45%;
+  }
+  .canvas-resize {
+    display: none;
+  }
+  .canvas-panel.collapsed {
+    max-height: none;
+  }
+  .canvas-panel.collapsed .canvas-body,
+  .canvas-panel.collapsed .canvas-collapse {
+    display: none;
+  }
+  .canvas-panel.collapsed .canvas-expand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-1-5);
+    height: 34px;
+    writing-mode: horizontal-tb;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .canvas-expand .canvas-expand-label {
+    display: inline;
+    font-size: var(--t-sm);
+    font-weight: 600;
+  }
+  .canvas-body {
+    padding-bottom: calc(var(--s-4) + env(safe-area-inset-bottom, 0px));
+  }
+
   .view-header {
     padding: var(--s-3) var(--s-4);
     flex-wrap: wrap;

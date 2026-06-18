@@ -9,7 +9,8 @@ import { configureGitRepoIdentity, ensureGitRepoClone, gitRepoContextFor, gitRep
 import { commitIdentityFor } from "../knowledgeRepo.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../activeRepoLock.js";
 import { getWorkspaceRepo } from "../repoWorkspace.js";
-import type { AgentConversationMessage, AgentImageInput, AgentResponse, CanvasArtifact, StoredMessage } from "../types.js";
+import type { AgentConversationMessage, AgentImageInput, AgentResponse, StoredMessage } from "../types.js";
+import { formatSubmission, MAX_CANVAS_CONTENT_CHARS } from "../agent/canvasTools.js";
 import {
   decodeChatImages,
   deleteConversationImages,
@@ -203,6 +204,37 @@ export function conversationHistoryForPrompt(messages: StoredMessage[]): AgentCo
   });
 }
 
+/** A non-blocking canvas submission/edit delivered as a normal /api/chat/stream turn. */
+interface CanvasSubmissionInput {
+  canvasId: string;
+  values?: Record<string, unknown>;
+  editedContent?: string;
+}
+
+/** Parse + validate the optional `canvasSubmission` body field (#50). Null when absent/invalid. */
+function parseCanvasSubmission(raw: unknown): CanvasSubmissionInput | null {
+  if (!raw || typeof raw !== "object") {
+    return null;
+  }
+  const obj = raw as Record<string, unknown>;
+  const canvasId = typeof obj.canvasId === "string" ? obj.canvasId.trim() : "";
+  if (!canvasId) {
+    return null;
+  }
+  const out: CanvasSubmissionInput = { canvasId };
+  if (obj.values && typeof obj.values === "object" && !Array.isArray(obj.values)) {
+    out.values = obj.values as Record<string, unknown>;
+  }
+  if (typeof obj.editedContent === "string" && obj.editedContent.trim()) {
+    out.editedContent = obj.editedContent.slice(0, MAX_CANVAS_CONTENT_CHARS);
+  }
+  // Must carry at least one of values/editedContent to be meaningful.
+  if (!out.values && !out.editedContent) {
+    return null;
+  }
+  return out;
+}
+
 export function createChatRouter({ config, store, observedModel, auditAs }: RouterDeps): Router {
   const router = Router();
 
@@ -274,7 +306,40 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
       // The user's chosen effort level for this conversation (null = SDK default),
       // so the composer picker restores on reload.
       selectedEffort: store.getConversationEffort(req.user!.id, conversationId),
+      // Visual-canvas artifacts (current version of each) so the side panel rebuilds
+      // on reload from the dedicated tables, not from message.response.canvases (#50).
+      canvases: store.listCanvasArtifacts(req.user!.id, conversationId),
     });
+  });
+
+  // Canvas version history + non-destructive rollback (#50). User-initiated UI,
+  // owner-gated in the store; not agent-facing.
+  router.get("/api/chat/canvases/:id/versions", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    res.json({ versions: store.listCanvasVersions(req.user!.id, req.params.id) });
+  });
+
+  router.post("/api/chat/canvases/:id/rollback", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const version = Number(req.body?.version);
+    if (!Number.isInteger(version) || version < 1) {
+      apiError(res, 400, "잘못된 버전입니다.");
+      return;
+    }
+    const artifact = store.rollbackCanvasArtifact(req.user!.id, req.params.id, version);
+    if (!artifact) {
+      apiError(res, 404, "캔버스 또는 버전을 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ canvas: artifact });
+  });
+
+  // Hard-delete a persisted canvas (closing its tab). Owner-gated in the store.
+  router.delete("/api/chat/canvases/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const ok = store.deleteCanvasArtifact(req.user!.id, req.params.id);
+    if (!ok) {
+      apiError(res, 404, "캔버스를 찾을 수 없습니다.");
+      return;
+    }
+    res.json({ ok: true });
   });
 
   // Persist the activity-tree snapshot (tools/agents the avatar ran) onto a stored
@@ -369,8 +434,28 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     // EXPANDED prompt to the agent. So the bubble + persisted turn stay "/learn"
     // while the model receives the full instruction. For a normal (non-slash)
     // message the two are identical.
-    const displayMessage = rawMessage;
-    const agentMessage = slashExpansion.message;
+    let displayMessage = rawMessage;
+    let agentMessage = slashExpansion.message;
+    // Non-blocking canvas interaction (#50): a submission or content edit arrives as
+    // a normal turn. The visible bubble is a short Korean summary; the agent gets a
+    // formatted English message describing what the user did, referencing the canvas
+    // id so the avatar can refine it in place with the same canvasId.
+    const canvasSubmission = parseCanvasSubmission(req.body?.canvasSubmission);
+    if (canvasSubmission) {
+      const title = store.getCanvasArtifact(req.user!.id, canvasSubmission.canvasId)?.title?.trim();
+      const ref = title
+        ? `the canvas "${title}" (id: ${canvasSubmission.canvasId})`
+        : `the canvas (id: ${canvasSubmission.canvasId})`;
+      const parts: string[] = [];
+      if (canvasSubmission.values) {
+        parts.push(`On ${ref}, ${formatSubmission(canvasSubmission.values)}`);
+      }
+      if (canvasSubmission.editedContent) {
+        parts.push(`The user edited ${ref} content to:\n${canvasSubmission.editedContent}`);
+      }
+      agentMessage = parts.join("\n\n") || `The user interacted with ${ref}.`;
+      displayMessage = canvasSubmission.editedContent ? "캔버스를 수정해 보냈습니다." : "캔버스 응답을 보냈습니다.";
+    }
     const avatarId = safeString(req.body?.avatarId);
     // Greeting: the owner opened a fresh chat with their own avatar and typed
     // nothing — the avatar speaks first (and reports pending info requests).
@@ -611,9 +696,9 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
     // Accumulate the main-agent text as it streams, so the cancel/error paths can
     // persist the partial the user already watched (not an empty "(중지됨)" stub).
     let streamedText = "";
-    // Visual-canvas artifacts shown this turn (experimental `canvas` feature, #50),
-    // persisted on the assistant message's response so the panel rebuilds on reload.
-    const canvasArtifacts: CanvasArtifact[] = [];
+    // Visual-canvas artifacts (#50) now persist to the dedicated canvas tables as
+    // they are shown (see the onCanvas handler), with version history — they no
+    // longer ride the assistant message's response JSON.
     // The latest plan the avatar submitted via ExitPlanMode this turn (plan mode).
     // Persisted on the assistant response so the plan card rebuilds on reload, and
     // mirrored on the cancel/error paths like canvases. Latest plan of the turn wins.
@@ -804,7 +889,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           // /api/chat/respond. Always record the artifact so it persists.
           onCanvas: async (requestData) => {
             const requestId = crypto.randomUUID();
-            const { artifactId, title, content, contentType, controls } = requestData;
+            const { artifactId, title, content, contentType, controls, interaction, editable } = requestData;
             emitRunEvent(runId, "canvas", {
               runId,
               requestId,
@@ -812,16 +897,28 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
               title,
               content,
               contentType,
+              // Pass controls WHENEVER present (not only when blocking) so an async
+              // canvas's form still renders client-side.
               controls: controls ?? null,
+              interaction: interaction ?? null,
+              editable: Boolean(editable),
             });
             const record = (submittedValues?: Record<string, unknown>) => {
-              // Upsert by id: a same-`canvasId` update within this turn replaces the
-              // earlier version so the persisted artifact reflects its final state
-              // (mirrors the client's upsert-by-id in handleCanvas/canvasesFromMessages).
-              const entry: CanvasArtifact = { id: artifactId, title, content, contentType, controls, submittedValues };
-              const idx = canvasArtifacts.findIndex((c) => c.id === artifactId);
-              if (idx >= 0) canvasArtifacts[idx] = entry;
-              else canvasArtifacts.push(entry);
+              // Persist to the dedicated canvas tables (version history). Refining
+              // the same id appends a version; an unchanged re-show just refreshes
+              // the submission. A greeting turn is ephemeral (never persisted), so
+              // its canvases live only in the SSE stream, not the store.
+              if (greeting) return;
+              store.upsertCanvasArtifact(req.user!.id, conversationId, {
+                artifactId,
+                title,
+                content,
+                contentType,
+                controls,
+                submittedValues,
+                interaction,
+                editable,
+              });
             };
             if (!requestData.awaitInput) {
               record();
@@ -844,12 +941,9 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         abortController,
       );
 
-      // Carry any canvases shown this turn on the response so they persist with
-      // the assistant message and rebuild on reload (and ride the greeting's
-      // ephemeral done event for the live panel). (#50)
-      if (canvasArtifacts.length) {
-        response.canvases = canvasArtifacts;
-      }
+      // Canvases shown this turn are already persisted to the dedicated tables by
+      // the onCanvas handler (with version history); they no longer ride the
+      // response JSON. The live panel is driven by the SSE "canvas" events. (#50)
       // Carry the plan submitted this turn (plan mode) so the plan card persists
       // and rebuilds on reload, and rides the greeting's ephemeral done event.
       if (latestPlan) {
@@ -910,7 +1004,6 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
             runtime: config.agentRuntime,
             summary: "중지됨",
             text: streamedText,
-            ...(canvasArtifacts.length ? { canvases: canvasArtifacts } : {}),
             ...(latestPlan ? { plan: latestPlan } : {}),
           };
           // Skip the insert if the conversation was deleted mid-run (FK would reject).
@@ -942,25 +1035,23 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         // alongside the error so a reload shows what the live view showed.
         store.setAgentSessionId(req.user!.id, conversationId, null);
         const content = streamedText ? `${streamedText}\n\n${detail}` : detail;
-        // If the turn showed canvases or a plan before erroring, persist them so
-        // they survive reload (mirrors the cancel path). text=content keeps the
-        // error bubble identical to before; a response is only attached when
-        // there's a canvas/plan to carry, so plain errors keep their existing
-        // (null-response) shape.
+        // Any canvas shown before the error is already persisted to the canvas
+        // tables by the onCanvas handler. If a plan was submitted, carry it so the
+        // plan card survives reload; text=content keeps the error bubble identical,
+        // and a response is attached only when there's a plan (plain errors keep
+        // their existing null-response shape).
         store.addMessage(conversationId, {
           role: "assistant",
           content,
-          response:
-            canvasArtifacts.length || latestPlan
-              ? {
-                  kind: "text",
-                  runtime: config.agentRuntime,
-                  summary: "오류",
-                  text: content,
-                  ...(canvasArtifacts.length ? { canvases: canvasArtifacts } : {}),
-                  ...(latestPlan ? { plan: latestPlan } : {}),
-                }
-              : undefined,
+          response: latestPlan
+            ? {
+                kind: "text",
+                runtime: config.agentRuntime,
+                summary: "오류",
+                text: content,
+                plan: latestPlan,
+              }
+            : undefined,
         });
       }
       emitRunEvent(runId, "error", { error: detail });
