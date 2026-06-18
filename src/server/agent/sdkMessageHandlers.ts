@@ -402,6 +402,36 @@ export function correctContextWindow(reportedWindow: number, snapshotTokens: num
   return reportedWindow;
 }
 
+/**
+ * Reconcile a turn's usage for display. `runUsage` carries `extractUsage`'s
+ * fields: `inputTokens` there is the CUMULATIVE sum across every tool-round
+ * request (each re-sends the resumed transcript), and `contextWindow` is the
+ * SDK's STATIC model-table figure (a stale 200K base for Opus 4.8's real 1M).
+ * `snapshotTokens` is the last MAIN-agent request's prompt size — true live
+ * context occupancy — or `undefined` when no such snapshot was seen this turn
+ * (an `error_max_turns` result, or a turn whose only assistant messages were
+ * subagents).
+ *
+ * With a snapshot: it becomes the occupancy numerator and the (possibly stale)
+ * window is lifted to fit it — so `inputTokens / contextWindow` is a real
+ * fraction in [0, 1]. WITHOUT one: the cumulative `inputTokens` has no meaning
+ * as "current fill", so we DON'T divide it by the window — zero out both
+ * context numbers (`inputTokens: 0`, `contextWindow: 0`) and let the badge fall
+ * back to its output-only label rather than show a fabricated ratio.
+ * `outputTokens` (cumulative total generated) is preserved either way.
+ */
+export function finalizeTurnUsage(runUsage: AgentUsage, snapshotTokens: number | undefined): AgentUsage {
+  if (snapshotTokens === undefined) {
+    return { ...runUsage, inputTokens: 0, contextWindow: 0 };
+  }
+  const contextWindow = correctContextWindow(runUsage.contextWindow ?? 0, snapshotTokens);
+  return {
+    ...runUsage,
+    inputTokens: snapshotTokens,
+    ...(contextWindow ? { contextWindow } : {}),
+  };
+}
+
 /** Human-facing fallback when the run ended on an error with no usable text. */
 export function resultErrorMessage(subtype: string): string {
   if (subtype === "error_max_turns") {

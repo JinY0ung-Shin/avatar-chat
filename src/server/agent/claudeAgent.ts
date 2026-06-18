@@ -36,7 +36,7 @@ import {
   handleUserMessage,
   interpretResult,
   mainAssistantContextTokens,
-  correctContextWindow,
+  finalizeTurnUsage,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
 
@@ -814,18 +814,14 @@ export async function runClaudeAgent(
   // requests, so dividing it by the context window made the badge's % balloon
   // past 100% on tool-heavy turns. Swap in the final request's prompt size — a
   // true context-occupancy snapshot — while keeping outputTokens cumulative
-  // (total generated this turn). Also correct contextWindow: the SDK's reported
-  // window is a static model-table figure that can read a stale base (200000) for
-  // a model whose true window is 1M (Opus 4.8), so a long-conversation snapshot
-  // overflowed it and the % still ran past 100% — lift the denominator to the 1M
-  // tier when the snapshot exceeds the reported window (correctContextWindow).
-  if (runUsage && contextTokens !== undefined) {
-    const contextWindow = correctContextWindow(runUsage.contextWindow ?? 0, contextTokens);
-    runUsage = {
-      ...runUsage,
-      inputTokens: contextTokens,
-      ...(contextWindow ? { contextWindow } : {}),
-    };
+  // (total generated this turn). finalizeTurnUsage also corrects contextWindow
+  // (the SDK reports a stale 200K base for Opus 4.8's real 1M) and — crucially —
+  // handles the no-snapshot turn: when contextTokens is undefined (error_max_turns
+  // result, or subagent-only assistant messages) it does NOT divide the cumulative
+  // inputTokens by the window (a meaningless ratio that ballooned past 100%); it
+  // zeroes the context numbers so the badge shows output-only instead.
+  if (runUsage) {
+    runUsage = finalizeTurnUsage(runUsage, contextTokens);
   }
 
   const partialText = assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();

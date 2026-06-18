@@ -79,6 +79,7 @@ import {
   handleUserMessage,
   mainAssistantContextTokens,
   correctContextWindow,
+  finalizeTurnUsage,
   summarizeToolInput,
 } from "../src/server/agent/sdkMessageHandlers.js";
 import {
@@ -1017,6 +1018,47 @@ describe("correctContextWindow", () => {
 
   it("returns 0 (no window) unchanged so the badge falls back to the input-only label", () => {
     expect(correctContextWindow(0, 350000)).toBe(0);
+  });
+});
+
+describe("finalizeTurnUsage", () => {
+  it("uses the snapshot as occupancy and lifts a stale window to fit it", () => {
+    // Cumulative inputTokens (1.038M, summed across tool rounds) over a stale
+    // 200K window is the "1038K/200K" bug — the snapshot replaces it.
+    const usage = finalizeTurnUsage(
+      { inputTokens: 1_038_000, outputTokens: 12_000, contextWindow: 200_000 },
+      350_000,
+    );
+    expect(usage.inputTokens).toBe(350_000);
+    expect(usage.contextWindow).toBe(1_000_000);
+    expect(usage.outputTokens).toBe(12_000);
+  });
+
+  it("keeps a window that already accommodates the snapshot", () => {
+    const usage = finalizeTurnUsage(
+      { inputTokens: 999_999, outputTokens: 5_000, contextWindow: 1_000_000 },
+      180_000,
+    );
+    expect(usage.inputTokens).toBe(180_000);
+    expect(usage.contextWindow).toBe(1_000_000);
+  });
+
+  it("zeroes context numbers (output-only) when there is no snapshot, NOT the cumulative sum", () => {
+    // error_max_turns / subagent-only turn: contextTokens is undefined. The
+    // cumulative inputTokens must NOT survive as a fake occupancy figure.
+    const usage = finalizeTurnUsage(
+      { inputTokens: 1_038_000, outputTokens: 9_000, contextWindow: 200_000 },
+      undefined,
+    );
+    expect(usage.inputTokens).toBe(0);
+    expect(usage.contextWindow).toBe(0);
+    expect(usage.outputTokens).toBe(9_000);
+  });
+
+  it("omits contextWindow when none was reported but a snapshot exists", () => {
+    const usage = finalizeTurnUsage({ inputTokens: 500, outputTokens: 100 }, 42_000);
+    expect(usage.inputTokens).toBe(42_000);
+    expect(usage.contextWindow).toBeUndefined();
   });
 });
 

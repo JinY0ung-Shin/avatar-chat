@@ -149,14 +149,16 @@ export function formatUsageLabel(usage: { inputTokens?: number; outputTokens?: n
   const ctx = Number(usage.contextWindow) || 0;
   if (!input && !output) return "";
   const parts: string[] = [];
-  if (ctx) {
+  if (ctx && input) {
     // Cap the display at 100%: the server corrects an under-reported window, but
     // clamp defensively so a stale/oversized snapshot can never show e.g. 175%.
     const pct = Math.min(100, Math.round((input / ctx) * 100));
     parts.push(`컨텍스트 ${formatTokenCount(input)}/${formatTokenCount(ctx)} (${pct}%)`);
-  } else {
+  } else if (input) {
     parts.push(`입력 ${formatTokenCount(input)}`);
   }
+  // input === 0 marks a turn with no honest occupancy snapshot (see
+  // finalizeTurnUsage); fall through to output-only rather than show "입력 0".
   parts.push(`출력 ${formatTokenCount(output)}`);
   return parts.join(" · ");
 }
