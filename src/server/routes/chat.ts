@@ -19,8 +19,8 @@ import {
   saveChatImages,
   MAX_CHAT_IMAGES_PER_MESSAGE,
 } from "../chatImages.js";
-import { runAgentStream } from "../agent/index.js";
-import { isModelTier } from "../modelTiers.js";
+import { runAgentStream, isRetryableModelError } from "../agent/index.js";
+import { isModelTier, modelTierLabel, MODEL_TIERS, DEFAULT_MODEL_TIER } from "../modelTiers.js";
 import { isEffortLevel } from "../effortLevels.js";
 import {
   attachRunClient,
@@ -1034,12 +1034,26 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
         "chat error",
       );
       auditAs(req, "chat", detail, "error");
+      // When a TRANSIENT model/server failure ends the turn (overload, rate-limit,
+      // 5xx, timeout) AND the model isn't env-pinned (so the picker is available),
+      // nudge the user to switch models instead of surfacing the raw English SDK
+      // error. Chat never auto-falls-back (a live viewer is watching the stream —
+      // only headless routines retry on a lower tier), so this is how a stuck model
+      // gets unblocked. The technical `detail` still goes to the logs/audit above.
+      const failedTier = store.getConversationModel(req.user!.id, conversationId) ?? DEFAULT_MODEL_TIER;
+      const alternatives = MODEL_TIERS.filter((t) => t.id !== failedTier)
+        .map((t) => t.label)
+        .join(", ");
+      const userFacing =
+        !config.anthropicModel && isRetryableModelError(error)
+          ? `지금 ${modelTierLabel(failedTier)} 모델이 일시적으로 응답하지 못했어요 (서버 과부하 또는 일시적 오류). 입력창의 모델 선택에서 다른 모델(${alternatives})로 바꿔 다시 시도해 보세요.`
+          : detail;
       if (!greeting && store.conversationOwner(conversationId) === req.user!.id) {
         // Clear the session for the same reason as the cancel path (chat-02), and
         // don't discard the partial the user already watched stream — keep it
         // alongside the error so a reload shows what the live view showed.
         store.setAgentSessionId(req.user!.id, conversationId, null);
-        const content = streamedText ? `${streamedText}\n\n${detail}` : detail;
+        const content = streamedText ? `${streamedText}\n\n${userFacing}` : userFacing;
         // Any canvas shown before the error is already persisted to the canvas
         // tables by the onCanvas handler. If a plan was submitted, carry it so the
         // plan card survives reload; text=content keeps the error bubble identical,
@@ -1059,7 +1073,7 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
             : undefined,
         });
       }
-      emitRunEvent(runId, "error", { error: detail });
+      emitRunEvent(runId, "error", { error: userFacing });
     } finally {
       if (activeRepoLockPath) {
         releaseActiveRepo(activeRepoLockPath, conversationId);
