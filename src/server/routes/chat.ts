@@ -850,8 +850,10 @@ export function createChatRouter({ config, store, observedModel, auditAs }: Rout
           // a dedicated plan card (display-only) and keep the latest one to persist
           // on the assistant response so it rebuilds on reload.
           onPlan: (event) => {
-            latestPlan = event.plan;
-            emitRunEvent(runId, "plan", { plan: event.plan });
+            // EnterPlanMode emits an empty-plan "planning" signal; only a real plan
+            // (ExitPlanMode) is worth persisting on the response.
+            if (event.plan) latestPlan = event.plan;
+            emitRunEvent(runId, "plan", { plan: event.plan, planning: event.planning ?? false });
           },
           // Interactive permission prompt (owner only — see claudeAgent).
           onPermission: async (requestData) => {

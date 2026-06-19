@@ -63,6 +63,8 @@ export interface ChatPane {
   liveTextBreakPending?: boolean;
   /** Plan submitted via ExitPlanMode this turn (plan mode); shown live as a plan card until the turn finishes and the persisted `response.plan` takes over. */
   livePlan?: string;
+  /** True between EnterPlanMode and ExitPlanMode: the avatar is composing a plan in the background. Drives a "writing plan…" placeholder card so the turn doesn't look stalled. Cleared once `livePlan` arrives. */
+  planPending?: boolean;
   liveStatus: string;
   liveRunId: string | null;
   /** Multi-agent activity tree (root "main" + sub-agents) for the live bubble. */

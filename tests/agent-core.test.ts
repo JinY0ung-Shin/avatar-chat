@@ -1228,6 +1228,26 @@ describe("sdk message handlers", () => {
     expect(sink.onStatus).toHaveBeenCalledWith("계획을 확인하는 중…");
   });
 
+  it("signals plan-mode entry through the plan event so the UI can show a placeholder", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleAssistantMessage(
+      {
+        type: "assistant",
+        message: {
+          content: [{ type: "tool_use", id: "plan-in", name: "EnterPlanMode", input: {} }],
+        },
+      },
+      sink,
+      state,
+    );
+
+    expect(sink.onToolStart).not.toHaveBeenCalled();
+    expect(sink.onPlan).toHaveBeenCalledWith({ plan: "", planning: true });
+    expect(sink.onStatus).toHaveBeenCalledWith("계획 모드로 전환 중…");
+  });
+
   it("surfaces ExitPlanMode plan text through the plan event", () => {
     const sink = events();
     const state = createLoopState();
