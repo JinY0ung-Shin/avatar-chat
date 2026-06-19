@@ -622,18 +622,55 @@
   margin: 0 auto;
   height: 100%;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
-  gap: var(--s-4);
+  /* Flexbox (not a fixed grid) so the divider can resize the two panels and
+     min-width:0 on both sides guarantees they shrink instead of ever overlapping. */
+  display: flex;
   align-items: stretch;
 }
 .routine-side {
+  /* Width driven by the draggable splitter via --routine-side-w; clamp is the
+     backstop so a stale localStorage value can never break the layout. */
+  flex-grow: 0;
+  flex-shrink: 0;
+  flex-basis: clamp(280px, var(--routine-side-w, 360px), 620px);
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--s-4);
   min-height: 0;
   overflow-y: auto;
   padding-right: var(--s-0-5);
+}
+/* Vertical drag handle between the two panels; its width preserves the old gap. */
+.routine-splitter {
+  flex: none;
+  align-self: stretch;
+  width: var(--s-4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: col-resize;
+  touch-action: none;
+  background: transparent;
+}
+.routine-splitter-grip {
+  width: 2px;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--line);
+  transition: background 0.12s ease;
+}
+.routine-splitter:hover .routine-splitter-grip,
+.routine-splitter:focus-visible .routine-splitter-grip {
+  background: var(--accent);
+}
+.routine-splitter:focus-visible {
+  outline: none;
+}
+/* While dragging, lock the cursor and kill text selection document-wide. */
+body.col-resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 .routine-card {
   margin: 0;
@@ -878,6 +915,8 @@
   height: 13px;
 }
 .routine-result-card {
+  flex: 1 1 0;
+  min-width: 0;
   height: 100%;
   min-height: 0;
   display: flex;
@@ -986,11 +1025,16 @@
     display: block;
   }
   .routine-workspace {
-    grid-template-columns: 1fr;
+    flex-direction: column;
     height: auto;
   }
   .routine-side {
+    /* Full width, natural height when stacked; the splitter is hidden below. */
+    flex-basis: auto;
     overflow: visible;
+  }
+  .routine-splitter {
+    display: none;
   }
   .routine-result-card {
     height: auto;

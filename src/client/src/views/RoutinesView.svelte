@@ -32,6 +32,72 @@
   let modalOpen = false;
   let busyRoutineId = "";
 
+  // Draggable split between the manage list (left) and the result panel (right).
+  // The width is a per-browser preference persisted to localStorage; CSS clamps it
+  // to [SIDE_MIN, SIDE_MAX] as a backstop so a stale value can never break layout.
+  const SIDE_MIN = 280;
+  const SIDE_MAX = 620;
+  const SIDE_DEFAULT = 360;
+  const SIDE_STORAGE_KEY = "noah.routineSideWidth";
+  let sideWidth = loadSideWidth();
+
+  function clampWidth(n: number): number {
+    return Math.max(SIDE_MIN, Math.min(SIDE_MAX, n));
+  }
+  function loadSideWidth(): number {
+    try {
+      const raw = window.localStorage.getItem(SIDE_STORAGE_KEY);
+      const n = raw ? Number(raw) : NaN;
+      if (Number.isFinite(n)) return clampWidth(n);
+    } catch {
+      /* localStorage may be unavailable (private mode) — fall back to default. */
+    }
+    return SIDE_DEFAULT;
+  }
+  function persistSideWidth(): void {
+    try {
+      window.localStorage.setItem(SIDE_STORAGE_KEY, String(Math.round(sideWidth)));
+    } catch {
+      /* ignore persistence failures */
+    }
+  }
+  function resetSideWidth(): void {
+    sideWidth = SIDE_DEFAULT;
+    persistSideWidth();
+  }
+  function onSplitterPointerDown(event: PointerEvent): void {
+    event.preventDefault();
+    const startX = event.clientX;
+    const startW = sideWidth;
+    const onMove = (ev: PointerEvent) => {
+      sideWidth = clampWidth(startW + (ev.clientX - startX));
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.classList.remove("col-resizing");
+      persistSideWidth();
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    document.body.classList.add("col-resizing");
+  }
+  function onSplitterKeydown(event: KeyboardEvent): void {
+    const step = event.shiftKey ? 48 : 16;
+    if (event.key === "ArrowLeft") {
+      sideWidth = clampWidth(sideWidth - step);
+      event.preventDefault();
+      persistSideWidth();
+    } else if (event.key === "ArrowRight") {
+      sideWidth = clampWidth(sideWidth + step);
+      event.preventDefault();
+      persistSideWidth();
+    } else if (event.key === "Home") {
+      resetSideWidth();
+      event.preventDefault();
+    }
+  }
+
   onMount(load);
 
   $: routines = $appState.routines;
@@ -254,7 +320,7 @@
       <button class="linkish" type="button" on:click={load}>다시 시도</button>
     </div>
   {:else}
-    <div class="routine-workspace">
+    <div class="routine-workspace" style={`--routine-side-w: ${sideWidth}px`}>
       <!-- ===== Left: manage panel ===== -->
       <div class="routine-side scroll-thin">
         <section class="settings-card routine-card">
@@ -366,6 +432,26 @@
             {/if}
           </div>
         </section>
+      </div>
+
+      <!-- Drag to resize the two panels; double-click (or Home) to reset.
+           role="separator" + tabindex + arrow keys IS the WAI-ARIA window-splitter
+           pattern, so the noninteractive-element a11y warnings are false positives. -->
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+      <div
+        class="routine-splitter"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="패널 너비 조절"
+        aria-valuenow={Math.round(sideWidth)}
+        aria-valuemin={SIDE_MIN}
+        aria-valuemax={SIDE_MAX}
+        tabindex="0"
+        title="드래그해서 너비 조절 · 더블클릭으로 초기화"
+        on:pointerdown={onSplitterPointerDown}
+        on:keydown={onSplitterKeydown}
+        on:dblclick={resetSideWidth}>
+        <span class="routine-splitter-grip" aria-hidden="true"></span>
       </div>
 
       <!-- ===== Right: result panel ===== -->
