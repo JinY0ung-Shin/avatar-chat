@@ -769,6 +769,10 @@
                   <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
                   <div class="md plan-card-body" use:enhanceMarkdown={item.livePlan}>{@html renderMarkdown(item.livePlan)}</div>
                 </details>
+              {:else if item.planPending}
+                <div class="plan-card plan-card-pending">
+                  <div class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획을 작성하는 중…</span><span class="plan-card-spin" aria-hidden="true"></span></div>
+                </div>
               {/if}
               {#if item.liveText}
                 <div class="md" use:enhanceMarkdown={item.liveText}>{@html renderMarkdown(item.liveText)}<span class="stream-caret" aria-hidden="true"></span></div>
@@ -1154,5 +1158,23 @@
     padding: 0 var(--s-3) var(--s-2);
     min-width: 0;
     max-width: 100%;
+  }
+  /* Placeholder shown between EnterPlanMode and ExitPlanMode: the avatar is
+     composing the plan in the background (tool rows are suppressed for plan
+     tools), so without this the turn looks stalled. */
+  .plan-card-pending .plan-card-head {
+    cursor: default;
+  }
+  /* Self-contained spinner: the base `.spinner` rule is scoped to `.stream-status`,
+     so this placeholder (outside it) must style its own. `spin` is a global keyframe. */
+  .plan-card-spin {
+    margin-left: auto;
+    flex: none;
+    width: 13px;
+    height: 13px;
+    border: 2px solid var(--line);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
   }
 </style>

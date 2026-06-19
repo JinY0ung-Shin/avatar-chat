@@ -5,6 +5,7 @@ import { runLocalAgent } from "./localRunner.js";
 import type { AgentEvents } from "./events.js";
 
 export type { AgentEvents, PluginEvent, PluginStatus } from "./events.js";
+export { isRetryableModelError } from "./claudeAgent.js";
 
 const LOCAL_CHUNK_SIZE = 40;
 

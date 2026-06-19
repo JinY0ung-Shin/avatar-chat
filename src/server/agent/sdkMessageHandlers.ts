@@ -167,6 +167,11 @@ function handleTaskToolUse(
       if (plan) {
         events.onPlan?.({ plan });
       }
+    } else {
+      // EnterPlanMode: no plan exists yet. Signal the UI to show a "writing plan…"
+      // placeholder so the planning phase (which suppresses tool rows) doesn't look
+      // like a stalled/disconnected turn.
+      events.onPlan?.({ plan: "", planning: true });
     }
     events.onStatus?.(name === "ExitPlanMode" ? "계획을 확인하는 중…" : "계획 모드로 전환 중…");
     return true;

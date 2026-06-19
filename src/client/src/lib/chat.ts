@@ -101,6 +101,7 @@ function makePane(
     liveText: "",
     liveTextBreakPending: false,
     livePlan: "",
+    planPending: false,
     liveStatus: "",
     liveRunId: null,
     liveAgents: [],
@@ -664,14 +665,24 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       if (data?.artifactId) handleCanvas(paneId, data);
       return;
     case "plan":
-      // Plan mode: the avatar submitted a plan via ExitPlanMode. Show it live as a
-      // plan card; the persisted `response.plan` takes over once the turn finishes.
+      // Plan mode. EnterPlanMode emits a `planning` signal with no plan yet — show a
+      // "writing plan…" placeholder so the (tool-row-suppressed) planning phase isn't
+      // mistaken for a stalled turn. ExitPlanMode then delivers the real plan, shown
+      // live as a plan card; the persisted `response.plan` takes over once the turn
+      // finishes.
       if (typeof data?.plan === "string" && data.plan) {
         markTextBreak(paneId);
         updatePane(paneId, (pane) => {
           pane.livePlan = data.plan;
+          pane.planPending = false;
         });
         setStatus(paneId, "계획을 제출했습니다.", true);
+      } else if (data?.planning) {
+        markTextBreak(paneId);
+        updatePane(paneId, (pane) => {
+          pane.planPending = true;
+        });
+        setStatus(paneId, "계획을 작성하는 중…", true);
       }
       return;
     case "prompt_resolved":
@@ -799,6 +810,7 @@ function resetLive(pane: ChatPane): void {
   pane.liveText = "";
   pane.liveTextBreakPending = false;
   pane.livePlan = "";
+  pane.planPending = false;
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];
@@ -929,6 +941,7 @@ function clearLive(pane: ChatPane): void {
   pane.liveText = "";
   pane.liveTextBreakPending = false;
   pane.livePlan = "";
+  pane.planPending = false;
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];

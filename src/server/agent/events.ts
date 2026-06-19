@@ -130,8 +130,15 @@ export interface BlockedEvent {
  * interactive prompt — autoApprove turns continue automatically). Display-only.
  */
 export interface PlanEvent {
-  /** The plan markdown the model proposed. */
+  /** The plan markdown the model proposed. Empty while still planning. */
   plan: string;
+  /**
+   * True the moment the model ENTERS plan mode (EnterPlanMode), before any plan
+   * exists. Lets the UI show a "writing plan…" placeholder so the turn doesn't
+   * look stalled during the (tool-row-suppressed) planning phase. The real plan
+   * arrives in a later event with `plan` set and this falsy.
+   */
+  planning?: boolean;
 }
 
 /**

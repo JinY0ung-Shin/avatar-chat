@@ -60,3 +60,8 @@ export const DEFAULT_MODEL_TIER = "opus";
 export function isModelTier(value: unknown): value is string {
   return typeof value === "string" && MODEL_TIER_IDS.includes(value);
 }
+
+/** User-facing tier label for an alias, or the raw id when it isn't a known tier. */
+export function modelTierLabel(id: string): string {
+  return MODEL_TIERS.find((t) => t.id === id)?.label ?? id;
+}
