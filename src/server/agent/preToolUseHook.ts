@@ -9,7 +9,7 @@ import {
   type HexSshToolPolicy,
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
-import { asString, isRecord, truncate } from "./agentUtils.js";
+import { asString, isRecord, truncate, TOOL_TRACE_ENABLED } from "./agentUtils.js";
 import {
   SDK_INTERNAL_HIDDEN_TOOLS,
   SDK_ORCHESTRATION_TOOLS,
@@ -167,22 +167,44 @@ export function buildPreToolUseHook(
     const toolUseId = toolUseID || asString(input.tool_use_id);
     const agentId = asString(input.agent_id) || MAIN_AGENT_ID;
 
+    // Opt-in (AGENT_TOOL_TRACE) lifecycle trace: log that the hook fired for this
+    // tool call, then pass every return through `trace()` so the decision is
+    // logged too. The pair answers "did the announced tool call reach dispatch,
+    // and what did the gate decide?" — the key question when a vLLM-style backend
+    // emits a tool_use that never executes. No-op unless the flag is set.
+    if (TOOL_TRACE_ENABLED) {
+      agentLogger.info({ trace: "tool", toolName, toolUseId, agentId }, "trace: PreToolUse hook entry");
+    }
+    const trace = (out: HookOutput): HookOutput => {
+      if (TOOL_TRACE_ENABLED) {
+        agentLogger.info(
+          { trace: "tool", toolName, toolUseId, agentId, decision: out.hookSpecificOutput.permissionDecision },
+          "trace: PreToolUse hook decision",
+        );
+      }
+      return out;
+    };
+
     // AskUserQuestion: surface the question, await the answer, inject it back.
     // (onUserDialog never fires headlessly, so we answer via a deny+reason that
     // the model reads as the user's response.)
     if (toolName === "AskUserQuestion") {
       if (headless || !events.onQuestion) {
-        return hookDeny(
-          headless
-            ? "During a scheduled automated run you cannot ask the user questions. Proceed with reasonable assumptions."
-            : "The question feature is unavailable.",
+        return trace(
+          hookDeny(
+            headless
+              ? "During a scheduled automated run you cannot ask the user questions. Proceed with reasonable assumptions."
+              : "The question feature is unavailable.",
+          ),
         );
       }
       const questions = Array.isArray(toolInput.questions) ? toolInput.questions : [];
       const answer = await events.onQuestion({ dialogKind: "AskUserQuestion", payload: { questions }, toolUseId });
-      return answer.behavior === "completed"
-        ? hookDeny(formatQuestionAnswer(answer.result))
-        : hookDeny("The user did not answer the question (cancelled). Proceed without an answer.");
+      return trace(
+        answer.behavior === "completed"
+          ? hookDeny(formatQuestionAnswer(answer.result))
+          : hookDeny("The user did not answer the question (cancelled). Proceed without an answer."),
+      );
     }
 
     let updatedToolInput: Record<string, unknown> | undefined;
@@ -200,12 +222,12 @@ export function buildPreToolUseHook(
           const reason = `'git ${gitSub}'은(는) 활성 저장소 작업공간에서 셸로 실행할 수 없습니다. 원격/동기화 작업은 mcp__git_repo__* 도구를 사용하고, 위험한 로컬 git 작업은 피하세요.`;
           events.onBlocked?.({ toolUseId, toolName, agentId, reason });
           agentLogger.info({ toolName, agentId, gitSub }, "active-repo bash git blocked");
-          return hookDeny(
+          return trace(hookDeny(
             `Running 'git ${gitSub}' via Bash is not allowed in the active repo workspace. ` +
               "Remote/sync git must go through the mcp__git_repo__* tools (push/sync_repo) because the shell has no git credentials. " +
               "Branch-changing, history-rewriting, or destructive git is blocked to protect the active working tree. " +
               "Read-only git (status/diff/log/show/rev-parse/ls-files/grep) and local staging/normal commit (add/commit) are allowed.",
-          );
+          ));
         }
       }
     }
@@ -213,17 +235,17 @@ export function buildPreToolUseHook(
     const hexSshTool = extractHexSshToolName(toolName);
     if (hexSshTool) {
       if (isHexSshToolAllowed(toolName, hexSshViewerClass, hexSshPolicy)) {
-        return hookAllow(updatedToolInput);
+        return trace(hookAllow(updatedToolInput));
       }
       const reason = `현재 권한에서는 hex-ssh 도구 '${hexSshTool}' 사용이 허용되지 않습니다.`;
       events.onBlocked?.({ toolUseId, toolName, agentId, reason });
       agentLogger.info({ toolName, agentId, viewerClass: hexSshViewerClass }, "hex-ssh tool blocked");
-      return hookDeny(`The hex-ssh tool '${hexSshTool}' is not permitted at your current permission level.`);
+      return trace(hookDeny(`The hex-ssh tool '${hexSshTool}' is not permitted at your current permission level.`));
     }
 
     // Read-only / knowledge / orchestration tools run without a prompt.
     if (isAutoAllowed(toolName, readOnlyTools)) {
-      return hookAllow(updatedToolInput);
+      return trace(hookAllow(updatedToolInput));
     }
 
     const canRunElevatedTools = elevated && (!headless || allowHeadlessTools);
@@ -233,7 +255,7 @@ export function buildPreToolUseHook(
     // owner-level headless tools. Plain headless runs and colleagues stay read-only.
     // Auto-approval opted in: run the tool without prompting.
     if (canRunElevatedTools && autoApprove) {
-      return hookAllow(updatedToolInput);
+      return trace(hookAllow(updatedToolInput));
     }
     if (!headless && elevated && events.onPermission) {
       const decision = await events.onPermission({
@@ -242,17 +264,21 @@ export function buildPreToolUseHook(
         input: safeToolInput(toolInput),
         agentId,
       });
-      return decision.behavior === "allow"
-        ? hookAllow(updatedToolInput)
-        : hookDeny("The user denied the use of this tool.");
+      return trace(
+        decision.behavior === "allow"
+          ? hookAllow(updatedToolInput)
+          : hookDeny("The user denied the use of this tool."),
+      );
     }
 
     events.onBlocked?.({ toolUseId, toolName, agentId, reason: "읽기 전용 대화에서는 쓸 수 없는 도구입니다." });
     agentLogger.info({ toolName, agentId, reason: "read-only" }, "tool blocked");
-    return hookDeny(
-      headless
-        ? "This run is an automated routine (read-only). File-editing/command-execution tools are unavailable, so use only Read/Glob/Grep."
-        : "This conversation is read-only. File-editing/command-execution tools are unavailable, so use only Read/Glob/Grep and the information-request tools.",
+    return trace(
+      hookDeny(
+        headless
+          ? "This run is an automated routine (read-only). File-editing/command-execution tools are unavailable, so use only Read/Glob/Grep."
+          : "This conversation is read-only. File-editing/command-execution tools are unavailable, so use only Read/Glob/Grep and the information-request tools.",
+      ),
     );
   };
 }

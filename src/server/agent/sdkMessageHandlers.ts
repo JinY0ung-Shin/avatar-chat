@@ -1,7 +1,8 @@
 import type { AgentEvents } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
 import type { AgentUsage } from "../types.js";
-import { asNumber, asString, isRecord, truncate } from "./agentUtils.js";
+import logger from "../logger.js";
+import { asNumber, asString, isRecord, truncate, TOOL_TRACE_ENABLED } from "./agentUtils.js";
 import {
   SDK_PLAN_TOOLS,
   SDK_SUBAGENT_TOOLS,
@@ -22,6 +23,88 @@ const TASK_CREATE_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_CREATE_TOOLS);
 const TASK_UPDATE_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_UPDATE_TOOLS);
 const TASK_END_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_END_TOOLS);
 const TASK_INSPECTION_TOOLS: ReadonlySet<string> = new Set(SDK_TASK_INSPECTION_TOOLS);
+
+const traceLogger = logger.child({ module: "agent", trace: "tool" });
+
+/**
+ * Verbose, opt-in trace of one raw SDK message (gated by `AGENT_TOOL_TRACE`, see
+ * agentUtils). Called once per message at the top of the run loop so it sees the
+ * WHOLE lifecycle in order: streaming `tool_use` block start/stop, the per-turn
+ * `stop_reason`, the assembled assistant tool calls, and every `tool_result`.
+ *
+ * The diagnostic signatures for a vLLM-style stall:
+ *  - "tool_use block start" with no matching "content_block stop" → the backend
+ *    opened a tool call but never closed its input JSON (the run then hangs).
+ *  - `stop_reason: "tool_use"` + an assistant tool call, but NO PreToolUse hook
+ *    entry (traced separately) and NO `tool_result` → the SDK never dispatched
+ *    the announced call.
+ * Wrapped in try/catch: tracing must never break a run.
+ */
+export function traceSdkMessage(message: Record<string, unknown>): void {
+  if (!TOOL_TRACE_ENABLED) {
+    return;
+  }
+  try {
+    const type = asString(message.type);
+    const agentId = asString(message.parent_tool_use_id) || MAIN_AGENT_ID;
+    if (type === "stream_event") {
+      const event = isRecord(message.event) ? message.event : undefined;
+      const eventType = asString(event?.type);
+      if (eventType === "content_block_start") {
+        const block = isRecord(event?.content_block) ? event?.content_block : undefined;
+        if (asString(block?.type) === "tool_use") {
+          traceLogger.info(
+            { agentId, index: asNumber(event?.index), toolName: asString(block?.name), toolUseId: asString(block?.id) },
+            "trace: tool_use block start",
+          );
+        }
+      } else if (eventType === "content_block_stop") {
+        traceLogger.info({ agentId, index: asNumber(event?.index) }, "trace: content_block stop");
+      } else if (eventType === "message_delta") {
+        const stopReason = asString(isRecord(event?.delta) ? event?.delta.stop_reason : undefined);
+        if (stopReason) {
+          traceLogger.info({ agentId, stopReason }, "trace: message_delta stop_reason");
+        }
+      } else if (eventType === "message_start" || eventType === "message_stop") {
+        traceLogger.info({ agentId, eventType }, "trace: stream lifecycle");
+      }
+      return;
+    }
+    if (type === "assistant") {
+      const inner = isRecord(message.message) ? message.message : undefined;
+      const content = Array.isArray(inner?.content) ? inner?.content : [];
+      const tools = content
+        .filter((b): b is Record<string, unknown> => isRecord(b) && b.type === "tool_use")
+        .map((b) => ({ name: asString(b.name), toolUseId: asString(b.id) }));
+      traceLogger.info(
+        {
+          agentId,
+          stopReason: asString(inner?.stop_reason) || null,
+          blockTypes: content.filter(isRecord).map((b) => asString(b.type)),
+          toolCalls: tools,
+        },
+        "trace: assistant message assembled",
+      );
+      return;
+    }
+    if (type === "user") {
+      const inner = isRecord(message.message) ? message.message : undefined;
+      const content = Array.isArray(inner?.content) ? inner?.content : [];
+      const results = content
+        .filter((b): b is Record<string, unknown> => isRecord(b) && b.type === "tool_result")
+        .map((b) => ({ toolUseId: asString(b.tool_use_id), isError: b.is_error === true }));
+      if (results.length) {
+        traceLogger.info({ agentId, results }, "trace: tool_result(s) returned");
+      }
+      return;
+    }
+    if (type === "result") {
+      traceLogger.info({ agentId, subtype: asString(message.subtype) }, "trace: result");
+    }
+  } catch {
+    // Tracing is best-effort diagnostics; never let it throw into the run loop.
+  }
+}
 
 /** One-line, human-readable summary of a tool's input for the activity UI. */
 export function summarizeToolInput(name: string, input: Record<string, unknown>): string {

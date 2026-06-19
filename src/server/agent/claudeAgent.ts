@@ -39,6 +39,7 @@ import {
   streamStartContextTokens,
   finalizeTurnUsage,
   resultErrorMessage,
+  traceSdkMessage,
 } from "./sdkMessageHandlers.js";
 
 // Re-export the symbols moved into sibling modules so existing import paths
@@ -747,6 +748,10 @@ export async function runClaudeAgent(
         if (!isRecord(message)) {
           continue;
         }
+        // Opt-in (AGENT_TOOL_TRACE) lifecycle trace of every raw SDK message, in
+        // order — pinpoints where a tool-calling run stalls (e.g. vLLM opens a
+        // tool_use block that never closes). No-op unless the flag is set.
+        traceSdkMessage(message);
         if (events) {
           if (message.type === "stream_event") {
             const delta = handleStreamEvent(message, events);
