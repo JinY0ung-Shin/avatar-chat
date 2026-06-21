@@ -17,14 +17,20 @@ import {
   parseNameList,
 } from "./internal.js";
 
-export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TBase) {
+export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(
+  Base: TBase,
+) {
   return class KnowledgeRepo extends Base {
     /**
      * Point the user at a personal knowledge repo (`null` repo clears it).
      * Clears any plugin selection too: the old subset names don't apply to a
      * different repo, and a fresh repo should default to "load all".
      */
-    setKnowledgeRepo(userId: string, repo: string | null, branch: string | null): User {
+    setKnowledgeRepo(
+      userId: string,
+      repo: string | null,
+      branch: string | null,
+    ): User {
       if (!this.userRowById(userId)) {
         throw new Error("USER_NOT_FOUND");
       }
@@ -49,14 +55,16 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
 
     /**
      * Set the owner's DEFAULT group-knowledge OFF-set (group ids turned off),
-     * which seeds every new conversation/greeting. `[]` (or null) re-enables all.
+     * which seeds every new conversation. `[]` (or null) re-enables all.
      */
     setGroupKnowledgeOffDefault(userId: string, off: string[]): User {
       if (!this.userRowById(userId)) {
         throw new Error("USER_NOT_FOUND");
       }
       this.db
-        .prepare("UPDATE users SET group_knowledge_off_default = ? WHERE id = ?")
+        .prepare(
+          "UPDATE users SET group_knowledge_off_default = ? WHERE id = ?",
+        )
         .run(off.length ? JSON.stringify(off) : null, userId);
       return this.toUser(this.userRowById(userId)!);
     }
@@ -89,7 +97,12 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
     }
 
     /** Register or update a user-scoped general git repo by short name. */
-    upsertGitRepo(userId: string, name: string, repo: string, branch: string | null): GitRepository {
+    upsertGitRepo(
+      userId: string,
+      name: string,
+      repo: string,
+      branch: string | null,
+    ): GitRepository {
       if (!this.userRowById(userId)) {
         throw new Error("USER_NOT_FOUND");
       }
@@ -110,14 +123,18 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
 
     listGitRepos(userId: string): GitRepository[] {
       const rows = this.db
-        .prepare("SELECT * FROM git_repositories WHERE user_id = ? ORDER BY name")
+        .prepare(
+          "SELECT * FROM git_repositories WHERE user_id = ? ORDER BY name",
+        )
         .all(userId) as GitRepositoryRow[];
       return rows.map((row) => this.toGitRepository(row));
     }
 
     getGitRepo(userId: string, name: string): GitRepository | null {
       const row = this.db
-        .prepare("SELECT * FROM git_repositories WHERE user_id = ? AND name = ?")
+        .prepare(
+          "SELECT * FROM git_repositories WHERE user_id = ? AND name = ?",
+        )
         .get(userId, name.trim()) as GitRepositoryRow | undefined;
       return row ? this.toGitRepository(row) : null;
     }
@@ -131,7 +148,9 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
 
     markGitRepoSynced(userId: string, name: string): GitRepository | null {
       this.db
-        .prepare("UPDATE git_repositories SET last_synced_at = ? WHERE user_id = ? AND name = ?")
+        .prepare(
+          "UPDATE git_repositories SET last_synced_at = ? WHERE user_id = ? AND name = ?",
+        )
         .run(new Date().toISOString(), userId, name.trim());
       return this.getGitRepo(userId, name);
     }
@@ -153,7 +172,9 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
 
     listPlugins(userId: string): Plugin[] {
       const rows = this.db
-        .prepare("SELECT * FROM avatar_plugins WHERE user_id = ? ORDER BY created_at ASC")
+        .prepare(
+          "SELECT * FROM avatar_plugins WHERE user_id = ? ORDER BY created_at ASC",
+        )
         .all(userId) as PluginRow[];
       return rows.map((r) => this.toPlugin(r));
     }
@@ -162,16 +183,28 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
       return this.listPlugins(userId).filter((p) => p.enabled);
     }
 
-    addPlugin(userId: string, input: { repo: string; ref?: string; label?: string }): Plugin {
+    addPlugin(
+      userId: string,
+      input: { repo: string; ref?: string; label?: string },
+    ): Plugin {
       const id = crypto.randomUUID();
       this.db
         .prepare(
           `INSERT INTO avatar_plugins (id, user_id, repo, ref, label, enabled, created_at)
            VALUES (?, ?, ?, ?, ?, 1, ?)`,
         )
-        .run(id, userId, input.repo.trim(), input.ref?.trim() || null, input.label?.trim() || null, now());
+        .run(
+          id,
+          userId,
+          input.repo.trim(),
+          input.ref?.trim() || null,
+          input.label?.trim() || null,
+          now(),
+        );
       return this.toPlugin(
-        this.db.prepare("SELECT * FROM avatar_plugins WHERE id = ?").get(id) as PluginRow,
+        this.db
+          .prepare("SELECT * FROM avatar_plugins WHERE id = ?")
+          .get(id) as PluginRow,
       );
     }
 
@@ -189,9 +222,15 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
       return row ? this.toPlugin(row) : null;
     }
 
-    setPluginEnabled(userId: string, id: string, enabled: boolean): Plugin | null {
+    setPluginEnabled(
+      userId: string,
+      id: string,
+      enabled: boolean,
+    ): Plugin | null {
       const result = this.db
-        .prepare("UPDATE avatar_plugins SET enabled = ? WHERE id = ? AND user_id = ?")
+        .prepare(
+          "UPDATE avatar_plugins SET enabled = ? WHERE id = ? AND user_id = ?",
+        )
         .run(enabled ? 1 : 0, id, userId);
       if (result.changes === 0) {
         return null;
@@ -200,9 +239,15 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
     }
 
     /** Update which marketplace plugins are loaded; `null` means "load all". */
-    setPluginSelected(userId: string, id: string, selected: string[] | null): Plugin | null {
+    setPluginSelected(
+      userId: string,
+      id: string,
+      selected: string[] | null,
+    ): Plugin | null {
       const result = this.db
-        .prepare("UPDATE avatar_plugins SET selected = ? WHERE id = ? AND user_id = ?")
+        .prepare(
+          "UPDATE avatar_plugins SET selected = ? WHERE id = ? AND user_id = ?",
+        )
         .run(selected ? JSON.stringify(selected) : null, id, userId);
       if (result.changes === 0) {
         return null;
@@ -211,9 +256,15 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
     }
 
     /** Update the ref (branch/tag/commit) a plugin tracks. */
-    setPluginRef(userId: string, id: string, ref: string | null): Plugin | null {
+    setPluginRef(
+      userId: string,
+      id: string,
+      ref: string | null,
+    ): Plugin | null {
       const result = this.db
-        .prepare("UPDATE avatar_plugins SET ref = ? WHERE id = ? AND user_id = ?")
+        .prepare(
+          "UPDATE avatar_plugins SET ref = ? WHERE id = ? AND user_id = ?",
+        )
         .run(ref, id, userId);
       if (result.changes === 0) {
         return null;
@@ -224,7 +275,9 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
     /** Stamp the last successful git sync time. */
     markPluginSynced(userId: string, id: string): Plugin | null {
       const result = this.db
-        .prepare("UPDATE avatar_plugins SET last_synced_at = ? WHERE id = ? AND user_id = ?")
+        .prepare(
+          "UPDATE avatar_plugins SET last_synced_at = ? WHERE id = ? AND user_id = ?",
+        )
         .run(now(), id, userId);
       if (result.changes === 0) {
         return null;
@@ -252,7 +305,11 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
      */
     addKnowledgeRequest(
       avatarUserId: string,
-      input: { question: string; askerUserId?: string | null; askerName?: string | null },
+      input: {
+        question: string;
+        askerUserId?: string | null;
+        askerName?: string | null;
+      },
     ): KnowledgeRequest {
       const question = input.question.trim();
       const existing = this.db
@@ -269,13 +326,25 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
           `INSERT INTO knowledge_requests (id, avatar_user_id, asker_user_id, asker_name, question, status, created_at)
            VALUES (?, ?, ?, ?, ?, 'open', ?)`,
         )
-        .run(id, avatarUserId, input.askerUserId ?? null, input.askerName ?? null, question, now());
+        .run(
+          id,
+          avatarUserId,
+          input.askerUserId ?? null,
+          input.askerName ?? null,
+          question,
+          now(),
+        );
       return this.toKnowledgeRequest(
-        this.db.prepare("SELECT * FROM knowledge_requests WHERE id = ?").get(id) as KnowledgeRequestRow,
+        this.db
+          .prepare("SELECT * FROM knowledge_requests WHERE id = ?")
+          .get(id) as KnowledgeRequestRow,
       );
     }
 
-    listKnowledgeRequests(avatarUserId: string, status?: KnowledgeRequest["status"]): KnowledgeRequest[] {
+    listKnowledgeRequests(
+      avatarUserId: string,
+      status?: KnowledgeRequest["status"],
+    ): KnowledgeRequest[] {
       const rows = (
         status
           ? this.db
@@ -284,7 +353,9 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
               )
               .all(avatarUserId, status)
           : this.db
-              .prepare("SELECT * FROM knowledge_requests WHERE avatar_user_id = ? ORDER BY created_at DESC")
+              .prepare(
+                "SELECT * FROM knowledge_requests WHERE avatar_user_id = ? ORDER BY created_at DESC",
+              )
               .all(avatarUserId)
       ) as KnowledgeRequestRow[];
       return rows.map((r) => this.toKnowledgeRequest(r));
@@ -314,7 +385,9 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
 
     // ---- Avatar notifications (in-app alarms for the owner) --------------
 
-    private toAvatarNotification(row: AvatarNotificationRow): AvatarNotification {
+    private toAvatarNotification(
+      row: AvatarNotificationRow,
+    ): AvatarNotification {
       return {
         id: row.id,
         ownerUserId: row.owner_user_id,
@@ -330,7 +403,12 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
 
     addAvatarNotification(
       ownerUserId: string,
-      input: { avatarUserId: string; title?: string | null; message: string; conversationId?: string | null },
+      input: {
+        avatarUserId: string;
+        title?: string | null;
+        message: string;
+        conversationId?: string | null;
+      },
     ): AvatarNotification {
       const message = input.message.trim();
       if (!message) {
@@ -343,11 +421,24 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
           `INSERT INTO avatar_notifications (id, owner_user_id, avatar_user_id, title, message, conversation_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(id, ownerUserId, input.avatarUserId, title, message.slice(0, 4000), input.conversationId ?? null, now());
-      return this.listAvatarNotifications(ownerUserId).find((n) => n.id === id)!;
+        .run(
+          id,
+          ownerUserId,
+          input.avatarUserId,
+          title,
+          message.slice(0, 4000),
+          input.conversationId ?? null,
+          now(),
+        );
+      return this.listAvatarNotifications(ownerUserId).find(
+        (n) => n.id === id,
+      )!;
     }
 
-    listAvatarNotifications(ownerUserId: string, unreadOnly = false): AvatarNotification[] {
+    listAvatarNotifications(
+      ownerUserId: string,
+      unreadOnly = false,
+    ): AvatarNotification[] {
       const rows = this.db
         .prepare(
           `SELECT n.*, u.display_name AS avatar_display_name
@@ -362,21 +453,27 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(Base: TB
 
     markAvatarNotificationRead(ownerUserId: string, id: string): boolean {
       const result = this.db
-        .prepare("UPDATE avatar_notifications SET read_at = COALESCE(read_at, ?) WHERE id = ? AND owner_user_id = ?")
+        .prepare(
+          "UPDATE avatar_notifications SET read_at = COALESCE(read_at, ?) WHERE id = ? AND owner_user_id = ?",
+        )
         .run(now(), id, ownerUserId);
       return result.changes > 0;
     }
 
     markAllAvatarNotificationsRead(ownerUserId: string): number {
       const result = this.db
-        .prepare("UPDATE avatar_notifications SET read_at = COALESCE(read_at, ?) WHERE owner_user_id = ? AND read_at IS NULL")
+        .prepare(
+          "UPDATE avatar_notifications SET read_at = COALESCE(read_at, ?) WHERE owner_user_id = ? AND read_at IS NULL",
+        )
         .run(now(), ownerUserId);
       return result.changes;
     }
 
     deleteAvatarNotification(ownerUserId: string, id: string): boolean {
       const result = this.db
-        .prepare("DELETE FROM avatar_notifications WHERE id = ? AND owner_user_id = ?")
+        .prepare(
+          "DELETE FROM avatar_notifications WHERE id = ? AND owner_user_id = ?",
+        )
         .run(id, ownerUserId);
       return result.changes > 0;
     }

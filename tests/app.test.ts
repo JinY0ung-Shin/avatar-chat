@@ -3,7 +3,10 @@ import path from "node:path";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
-import { loadDefaultPluginRoots, resolvePluginRoots } from "../src/server/plugins.js";
+import {
+  loadDefaultPluginRoots,
+  resolvePluginRoots,
+} from "../src/server/plugins.js";
 import { parseSse, signup, withTempDir } from "./helpers.js";
 
 let tempDir: string;
@@ -28,7 +31,10 @@ const PNG_DATA_URL =
 async function newUser(app: ReturnType<typeof createApp>, username: string) {
   const agent = request.agent(app);
   const res = await signup(agent, username).expect(201);
-  return { agent, user: res.body.user as { id: string; username: string; roles: string[] } };
+  return {
+    agent,
+    user: res.body.user as { id: string; username: string; roles: string[] },
+  };
 }
 
 describe("noah-almighty platform", () => {
@@ -66,16 +72,24 @@ describe("noah-almighty platform", () => {
     const app = createApp(services);
     const { agent } = await newUser(app, "internal-owner");
 
-    await agent.put("/api/me/knowledge-repo").send({ repo: "owner/knowledge", branch: "main" }).expect(200);
     await agent
       .put("/api/me/knowledge-repo")
-      .send({ repo: "https://github.enterprise.local/owner/knowledge.git", branch: "main" })
+      .send({ repo: "owner/knowledge", branch: "main" })
+      .expect(200);
+    await agent
+      .put("/api/me/knowledge-repo")
+      .send({
+        repo: "https://github.enterprise.local/owner/knowledge.git",
+        branch: "main",
+      })
       .expect(200);
     const rejected = await agent
       .put("/api/me/knowledge-repo")
       .send({ repo: "https://github.com/owner/knowledge.git", branch: "main" })
       .expect(400);
-    expect(rejected.body.error).toContain("사내 GitHub host(github.enterprise.local)");
+    expect(rejected.body.error).toContain(
+      "사내 GitHub host(github.enterprise.local)",
+    );
   });
 
   it("generates an SSH keypair through the owner settings API without returning the private key", async () => {
@@ -87,7 +101,9 @@ describe("noah-almighty platform", () => {
     expect(created.body.fingerprint).toMatch(/^SHA256:/);
     expect(created.body.user.secretNames).toContain("SSH_PRIVATE_KEY");
     expect(created.body.user.sshPublicKey).toBe(created.body.publicKey);
-    expect(JSON.stringify(created.body)).not.toContain("BEGIN OPENSSH PRIVATE KEY");
+    expect(JSON.stringify(created.body)).not.toContain(
+      "BEGIN OPENSSH PRIVATE KEY",
+    );
 
     await agent.post("/api/me/ssh-key").send({}).expect(409);
   });
@@ -119,7 +135,10 @@ describe("noah-almighty platform", () => {
     const app = testApp();
     const agent = request.agent(app);
     await signup(agent, "dave", "password123").expect(201);
-    await agent.post("/api/auth/login").send({ username: "dave", password: "wrong-pass" }).expect(401);
+    await agent
+      .post("/api/auth/login")
+      .send({ username: "dave", password: "wrong-pass" })
+      .expect(401);
     const ok = await agent
       .post("/api/auth/login")
       .send({ username: "dave", password: "password123" })
@@ -156,7 +175,10 @@ describe("noah-almighty platform", () => {
     expect(added.body.plugin.repo).toBe("owner/repo");
     expect(added.body.plugin.enabled).toBe(true);
 
-    await agent.post("/api/me/plugins").send({ repo: "not a repo!!" }).expect(400);
+    await agent
+      .post("/api/me/plugins")
+      .send({ repo: "not a repo!!" })
+      .expect(400);
 
     const list = await agent.get("/api/me/plugins").expect(200);
     expect(list.body.plugins).toHaveLength(1);
@@ -177,9 +199,18 @@ describe("noah-almighty platform", () => {
     await signup(agent, "rita").expect(201);
 
     // Bad input is rejected before anything is stored.
-    await agent.post("/api/me/routines").send({ prompt: "p", time: "25:00" }).expect(400);
-    await agent.post("/api/me/routines").send({ prompt: "", time: "09:00" }).expect(400);
-    await agent.post("/api/me/routines").send({ prompt: "p", time: "09:00", enabled: "true" }).expect(400);
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", time: "25:00" })
+      .expect(400);
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "", time: "09:00" })
+      .expect(400);
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", time: "09:00", enabled: "true" })
+      .expect(400);
 
     const created = await agent
       .post("/api/me/routines")
@@ -193,8 +224,14 @@ describe("noah-almighty platform", () => {
     // The dedicated conversation exists immediately, but is listed under the
     // routine view instead of the normal chat rail.
     const regularConvs = await agent.get("/api/conversations").expect(200);
-    expect(regularConvs.body.conversations.some((c: { id: string }) => c.id === routine.conversationId)).toBe(false);
-    const convs = await agent.get("/api/conversations?kind=routine").expect(200);
+    expect(
+      regularConvs.body.conversations.some(
+        (c: { id: string }) => c.id === routine.conversationId,
+      ),
+    ).toBe(false);
+    const convs = await agent
+      .get("/api/conversations?kind=routine")
+      .expect(200);
     const conv = convs.body.conversations.find(
       (c: { id: string }) => c.id === routine.conversationId,
     );
@@ -213,7 +250,9 @@ describe("noah-almighty platform", () => {
     expect(edited.body.routine.nextRunAt).toBeNull();
 
     // Run now (local runtime → deterministic) appends to the routine's conversation.
-    const ran = await agent.post(`/api/me/routines/${routine.id}/run`).expect(200);
+    const ran = await agent
+      .post(`/api/me/routines/${routine.id}/run`)
+      .expect(200);
     expect(ran.body.ok).toBe(true);
     expect(ran.body.routine.lastStatus).toBe("success");
     const msgs = await agent
@@ -222,19 +261,28 @@ describe("noah-almighty platform", () => {
     expect(msgs.body.messages.length).toBeGreaterThanOrEqual(2);
 
     // Avatar/system tools can leave user-facing in-app alerts.
-    const notification = await services.store.addAvatarNotification(routine.avatarUserId, {
-      avatarUserId: routine.avatarUserId,
-      title: "루틴 알림",
-      message: "확인할 결과가 있습니다.",
-      conversationId: routine.conversationId,
-    });
+    const notification = await services.store.addAvatarNotification(
+      routine.avatarUserId,
+      {
+        avatarUserId: routine.avatarUserId,
+        title: "루틴 알림",
+        message: "확인할 결과가 있습니다.",
+        conversationId: routine.conversationId,
+      },
+    );
     const notifications = await agent.get("/api/me/notifications").expect(200);
     expect(notifications.body.notifications[0].id).toBe(notification.id);
-    await agent.patch(`/api/me/notifications/${notification.id}/read`).expect(200);
-    const unread = await agent.get("/api/me/notifications?unread=1").expect(200);
+    await agent
+      .patch(`/api/me/notifications/${notification.id}/read`)
+      .expect(200);
+    const unread = await agent
+      .get("/api/me/notifications?unread=1")
+      .expect(200);
     expect(unread.body.notifications).toHaveLength(0);
     await agent.delete(`/api/me/notifications/${notification.id}`).expect(200);
-    const emptyNotifications = await agent.get("/api/me/notifications").expect(200);
+    const emptyNotifications = await agent
+      .get("/api/me/notifications")
+      .expect(200);
     expect(emptyNotifications.body.notifications).toHaveLength(0);
     services.store.addAvatarNotification(routine.avatarUserId, {
       avatarUserId: routine.avatarUserId,
@@ -255,7 +303,10 @@ describe("noah-almighty platform", () => {
 
     // Another user cannot touch it.
     const { agent: stranger } = await newUser(app, "sam");
-    await stranger.patch(`/api/me/routines/${routine.id}`).send({ prompt: "x" }).expect(404);
+    await stranger
+      .patch(`/api/me/routines/${routine.id}`)
+      .send({ prompt: "x" })
+      .expect(404);
     await stranger.delete(`/api/me/routines/${routine.id}`).expect(404);
 
     await agent.delete(`/api/me/routines/${routine.id}`).expect(200);
@@ -288,7 +339,11 @@ describe("noah-almighty platform", () => {
     // Interval persists.
     const interval = await agent
       .post("/api/me/routines")
-      .send({ prompt: "30분마다 점검", scheduleKind: "interval", intervalMinutes: 30 })
+      .send({
+        prompt: "30분마다 점검",
+        scheduleKind: "interval",
+        intervalMinutes: 30,
+      })
       .expect(200);
     expect(interval.body.routine.scheduleKind).toBe("interval");
     expect(interval.body.routine.intervalMinutes).toBe(30);
@@ -381,13 +436,24 @@ describe("noah-almighty platform", () => {
       .expect(403);
 
     // Admin creates a group and adds both as members → they become co-members.
-    const grp = await admin.post("/api/admin/groups").send({ name: "Platform" }).expect(200);
+    const grp = await admin
+      .post("/api/admin/groups")
+      .send({ name: "Platform" })
+      .expect(200);
     const groupId = grp.body.group.id;
-    await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "olga" }).expect(200);
-    await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "fred" }).expect(200);
+    await admin
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "olga" })
+      .expect(200);
+    await admin
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "fred" })
+      .expect(200);
 
     // Now the friend sees the avatar as elevated (group co-membership) and can chat.
-    const detail = await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(200);
+    const detail = await friend
+      .get(`/api/avatars/${ownerRes.body.user.id}`)
+      .expect(200);
     expect(detail.body.avatar.elevated).toBe(true);
     expect(detail.body.avatar.isOwn).toBe(false);
     const chat = await friend
@@ -397,7 +463,9 @@ describe("noah-almighty platform", () => {
     expect(parseSse(chat.text).find((f) => f.event === "done")).toBeTruthy();
 
     // Removing the friend from the group revokes both reach and elevation.
-    await admin.delete(`/api/admin/groups/${groupId}/members/${friendRes.body.user.id}`).expect(200);
+    await admin
+      .delete(`/api/admin/groups/${groupId}/members/${friendRes.body.user.id}`)
+      .expect(200);
     await friend.get(`/api/avatars/${ownerRes.body.user.id}`).expect(404);
   });
 
@@ -410,11 +478,15 @@ describe("noah-almighty platform", () => {
 
     // Match by substring; the searcher (olga) is never in their own results.
     const hit = await owner.get("/api/me/users/search?q=fre").expect(200);
-    expect(hit.body.users.map((u: { username: string }) => u.username)).toEqual(["fred"]);
+    expect(hit.body.users.map((u: { username: string }) => u.username)).toEqual(
+      ["fred"],
+    );
     const self = await owner.get("/api/me/users/search?q=olga").expect(200);
     expect(self.body.users).toEqual([]);
     // Blank query → no results, no error.
-    expect((await owner.get("/api/me/users/search?q=").expect(200)).body.users).toEqual([]);
+    expect(
+      (await owner.get("/api/me/users/search?q=").expect(200)).body.users,
+    ).toEqual([]);
   });
 
   it("streams a local-runtime chat and persists conversation + messages", async () => {
@@ -433,16 +505,23 @@ describe("noah-almighty platform", () => {
     expect(open).toBeTruthy();
     const done = frames.find((f) => f.event === "done");
     expect(done).toBeTruthy();
-    const donePayload = done!.data as { message: { content: string }; response: { text: string; runtime: string } };
+    const donePayload = done!.data as {
+      message: { content: string };
+      response: { text: string; runtime: string };
+    };
     expect(donePayload.response.runtime).toBe("local");
     expect(donePayload.response.text).toBe("[local] 안녕하세요");
     expect(donePayload.message.content).toBe("[local] 안녕하세요");
 
     const convId = (open!.data as { conversationId: string }).conversationId;
     const convs = await owner.get("/api/conversations").expect(200);
-    expect(convs.body.conversations.some((c: { id: string }) => c.id === convId)).toBe(true);
+    expect(
+      convs.body.conversations.some((c: { id: string }) => c.id === convId),
+    ).toBe(true);
 
-    const messages = await owner.get(`/api/messages?conversationId=${convId}`).expect(200);
+    const messages = await owner
+      .get(`/api/messages?conversationId=${convId}`)
+      .expect(200);
     expect(messages.body.messages).toHaveLength(2);
     expect(messages.body.messages[0].role).toBe("user");
     expect(messages.body.messages[1].role).toBe("assistant");
@@ -477,9 +556,15 @@ describe("noah-almighty platform", () => {
     const ownerRes = await signup(owner, "skilluser").expect(201);
     await owner.patch("/api/me").send({ visibility: "public" }).expect(200);
 
-    const res = await owner.get(`/api/avatars/${ownerRes.body.user.id}/skills`).expect(200);
+    const res = await owner
+      .get(`/api/avatars/${ownerRes.body.user.id}/skills`)
+      .expect(200);
     expect(res.body.skills).toEqual([
-      { name: "Greeter", description: "Greets colleagues warmly", source: "default" },
+      {
+        name: "Greeter",
+        description: "Greets colleagues warmly",
+        source: "default",
+      },
     ]);
   });
 
@@ -487,7 +572,9 @@ describe("noah-almighty platform", () => {
     const app = testApp(); // agentRuntime: "local"
     const owner = request.agent(app);
     const ownerRes = await signup(owner, "localskill").expect(201);
-    const res = await owner.get(`/api/avatars/${ownerRes.body.user.id}/skills`).expect(200);
+    const res = await owner
+      .get(`/api/avatars/${ownerRes.body.user.id}/skills`)
+      .expect(200);
     expect(res.body.skills).toEqual([]);
   });
 
@@ -499,7 +586,9 @@ describe("noah-almighty platform", () => {
 
     const viewer = request.agent(app);
     await signup(viewer, "laura").expect(201);
-    await viewer.get(`/api/avatars/${hiddenRes.body.user.id}/skills`).expect(404);
+    await viewer
+      .get(`/api/avatars/${hiddenRes.body.user.id}/skills`)
+      .expect(404);
   });
 
   it("returns 401 for unauthenticated requests", async () => {
@@ -539,11 +628,20 @@ describe("noah-almighty platform", () => {
     expect(sys.authMode).toBe("subscription");
 
     // Reject empty / malformed tokens.
-    await admin.put("/api/admin/claude-token").send({ token: "  " }).expect(400);
-    await admin.put("/api/admin/claude-token").send({ token: "nope" }).expect(400);
+    await admin
+      .put("/api/admin/claude-token")
+      .send({ token: "  " })
+      .expect(400);
+    await admin
+      .put("/api/admin/claude-token")
+      .send({ token: "nope" })
+      .expect(400);
 
     // Store a valid-looking token; it must never be echoed back.
-    const put = await admin.put("/api/admin/claude-token").send({ token: "sk-ant-oat01-secret" }).expect(200);
+    const put = await admin
+      .put("/api/admin/claude-token")
+      .send({ token: "sk-ant-oat01-secret" })
+      .expect(200);
     expect(put.body).toEqual({ ok: true });
     expect(JSON.stringify(put.body)).not.toContain("secret");
 
@@ -560,7 +658,10 @@ describe("noah-almighty platform", () => {
     const app = testApp();
     await newUser(app, "boss"); // first → admin
     const { agent: member } = await newUser(app, "peon");
-    await member.put("/api/admin/claude-token").send({ token: "sk-ant-oat01-x" }).expect(403);
+    await member
+      .put("/api/admin/claude-token")
+      .send({ token: "sk-ant-oat01-x" })
+      .expect(403);
     await member.delete("/api/admin/claude-token").expect(403);
   });
 
@@ -582,10 +683,16 @@ describe("noah-almighty platform", () => {
     expect(res.body.system.observedModel).toBeNull();
     expect(res.body.system.authMode).toBe("subscription");
     expect(Array.isArray(res.body.system.readOnlyTools)).toBe(true);
-    expect(res.body.system.hexSshTools.map((t: { name: string }) => t.name)).toContain("remote-ssh");
+    expect(
+      res.body.system.hexSshTools.map((t: { name: string }) => t.name),
+    ).toContain("remote-ssh");
     expect(res.body.system.hexSshToolPolicy.owner).toContain("remote-ssh");
-    expect(res.body.system.hexSshToolPolicy.trusted).toContain("ssh-read-lines");
-    expect(res.body.system.hexSshToolPolicy.trusted).not.toContain("remote-ssh");
+    expect(res.body.system.hexSshToolPolicy.trusted).toContain(
+      "ssh-read-lines",
+    );
+    expect(res.body.system.hexSshToolPolicy.trusted).not.toContain(
+      "remote-ssh",
+    );
 
     const member = request.agent(app);
     await signup(member, "peon").expect(201);
@@ -611,7 +718,10 @@ describe("noah-almighty platform", () => {
     const system = await admin.get("/api/admin/system").expect(200);
     expect(system.body.system.hexSshToolPolicy).toEqual(policy);
 
-    await admin.put("/api/admin/hex-ssh-policy").send({ policy: { owner: [] } }).expect(400);
+    await admin
+      .put("/api/admin/hex-ssh-policy")
+      .send({ policy: { owner: [] } })
+      .expect(400);
     await member.put("/api/admin/hex-ssh-policy").send({ policy }).expect(403);
   });
 
@@ -627,9 +737,22 @@ describe("noah-almighty platform", () => {
 
   it("rejects invalid signup input (short/invalid username, short password)", async () => {
     const app = testApp();
-    await request(app).post("/api/auth/signup").send({ username: "ab", displayName: "x", password: "password123" }).expect(400);
-    await request(app).post("/api/auth/signup").send({ username: "has space", displayName: "x", password: "password123" }).expect(400);
-    await request(app).post("/api/auth/signup").send({ username: "validname", displayName: "x", password: "short" }).expect(400);
+    await request(app)
+      .post("/api/auth/signup")
+      .send({ username: "ab", displayName: "x", password: "password123" })
+      .expect(400);
+    await request(app)
+      .post("/api/auth/signup")
+      .send({
+        username: "has space",
+        displayName: "x",
+        password: "password123",
+      })
+      .expect(400);
+    await request(app)
+      .post("/api/auth/signup")
+      .send({ username: "validname", displayName: "x", password: "short" })
+      .expect(400);
   });
 
   it("never returns the password hash to the client", async () => {
@@ -656,8 +779,19 @@ describe("noah-almighty platform", () => {
   it("stores bio/persona and exposes persona + plugins on the owner's avatar detail", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "mira");
-    await agent.patch("/api/me").send({ bio: "도우미", persona: "간결하게", alias: "미라봇", visibility: "public" }).expect(200);
-    await agent.post("/api/me/plugins").send({ repo: "owner/tool", label: "Tool" }).expect(200);
+    await agent
+      .patch("/api/me")
+      .send({
+        bio: "도우미",
+        persona: "간결하게",
+        alias: "미라봇",
+        visibility: "public",
+      })
+      .expect(200);
+    await agent
+      .post("/api/me/plugins")
+      .send({ repo: "owner/tool", label: "Tool" })
+      .expect(200);
 
     const detail = await agent.get(`/api/avatars/${user.id}`).expect(200);
     expect(detail.body.avatar.isOwn).toBe(true);
@@ -672,7 +806,14 @@ describe("noah-almighty platform", () => {
   it("stores and exposes the avatar self-introduction, and generates one on demand", async () => {
     const app = testApp();
     const { agent, user } = await newUser(app, "intro");
-    await agent.patch("/api/me").send({ alias: "소개봇", intro: "안녕하세요, 저는 도와드립니다.", visibility: "public" }).expect(200);
+    await agent
+      .patch("/api/me")
+      .send({
+        alias: "소개봇",
+        intro: "안녕하세요, 저는 도와드립니다.",
+        visibility: "public",
+      })
+      .expect(200);
 
     const me = await agent.get("/api/me").expect(200);
     expect(me.body.user.intro).toBe("안녕하세요, 저는 도와드립니다.");
@@ -696,10 +837,15 @@ describe("noah-almighty platform", () => {
 
     await request(app).get(`/api/users/${user.id}/avatar-image`).expect(404);
 
-    const up = await agent.put("/api/me/avatar-image").send({ image: PNG_DATA_URL }).expect(200);
+    const up = await agent
+      .put("/api/me/avatar-image")
+      .send({ image: PNG_DATA_URL })
+      .expect(200);
     expect(up.body.hasImage).toBe(true);
 
-    const img = await request(app).get(`/api/users/${user.id}/avatar-image`).expect(200);
+    const img = await request(app)
+      .get(`/api/users/${user.id}/avatar-image`)
+      .expect(200);
     expect(img.headers["content-type"]).toContain("image/png");
 
     await agent.delete("/api/me/avatar-image").expect(200);
@@ -709,10 +855,16 @@ describe("noah-almighty platform", () => {
   it("rejects a non-image avatar upload and oversized images", async () => {
     const app = testApp();
     const { agent } = await newUser(app, "olga");
-    await agent.put("/api/me/avatar-image").send({ image: "data:text/plain;base64,aGVsbG8=" }).expect(400);
+    await agent
+      .put("/api/me/avatar-image")
+      .send({ image: "data:text/plain;base64,aGVsbG8=" })
+      .expect(400);
     // > 2MB once base64-decoded, but kept under the 3MB body limit.
     const oversized = `data:image/png;base64,${"A".repeat(2_800_000)}`;
-    await agent.put("/api/me/avatar-image").send({ image: oversized }).expect(400);
+    await agent
+      .put("/api/me/avatar-image")
+      .send({ image: oversized })
+      .expect(400);
   });
 
   // ---- Plugins ----------------------------------------------------------
@@ -720,10 +872,16 @@ describe("noah-almighty platform", () => {
   it("toggles a plugin's enabled flag and 404s on unknown plugin", async () => {
     const app = testApp();
     const { agent } = await newUser(app, "pat");
-    const added = await agent.post("/api/me/plugins").send({ repo: "owner/repo" }).expect(200);
+    const added = await agent
+      .post("/api/me/plugins")
+      .send({ repo: "owner/repo" })
+      .expect(200);
     const id = added.body.plugin.id;
 
-    const off = await agent.patch(`/api/me/plugins/${id}`).send({ enabled: false }).expect(200);
+    const off = await agent
+      .patch(`/api/me/plugins/${id}`)
+      .send({ enabled: false })
+      .expect(200);
     expect(off.body.plugin.enabled).toBe(false);
 
     await agent.patch(`/api/me/plugins/${id}`).send({}).expect(400);
@@ -735,13 +893,22 @@ describe("noah-almighty platform", () => {
   it("validates chat input and forbids chatting with a private avatar", async () => {
     const app = testApp();
     const { agent: ownerAgent, user: owner } = await newUser(app, "quinn");
-    await ownerAgent.patch("/api/me").send({ visibility: "private" }).expect(200);
+    await ownerAgent
+      .patch("/api/me")
+      .send({ visibility: "private" })
+      .expect(200);
     const viewer = (await newUser(app, "rex")).agent;
 
-    await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "" }).expect(400);
+    await viewer
+      .post("/api/chat/stream")
+      .send({ avatarId: owner.id, message: "" })
+      .expect(400);
     await viewer.post("/api/chat/stream").send({ message: "hi" }).expect(400);
     // owner avatar is private and not the viewer's own → 403.
-    await viewer.post("/api/chat/stream").send({ avatarId: owner.id, message: "hi" }).expect(403);
+    await viewer
+      .post("/api/chat/stream")
+      .send({ avatarId: owner.id, message: "hi" })
+      .expect(403);
   });
 
   it("allows mixed-avatar split sessions and refuses cross-avatar conversation reuse", async () => {
@@ -755,18 +922,30 @@ describe("noah-almighty platform", () => {
 
     await agent
       .post("/api/chat/stream")
-      .send({ avatarId: otherRes.body.user.id, message: "hi", multiSession: true })
+      .send({
+        avatarId: otherRes.body.user.id,
+        message: "hi",
+        multiSession: true,
+      })
       .expect(200);
 
     const first = await agent
       .post("/api/chat/stream")
-      .send({ avatarId: user.id, conversationId: "split-conv-1", message: "내 작업" })
+      .send({
+        avatarId: user.id,
+        conversationId: "split-conv-1",
+        message: "내 작업",
+      })
       .expect(200);
     expect(parseSse(first.text).find((f) => f.event === "done")).toBeTruthy();
 
     await agent
       .post("/api/chat/stream")
-      .send({ avatarId: otherRes.body.user.id, conversationId: "split-conv-1", message: "섞기" })
+      .send({
+        avatarId: otherRes.body.user.id,
+        conversationId: "split-conv-1",
+        message: "섞기",
+      })
       .expect(409);
   });
 
@@ -775,55 +954,63 @@ describe("noah-almighty platform", () => {
     const { agent, user } = await newUser(app, "sam");
     await agent.patch("/api/me").send({ visibility: "public" }).expect(200);
 
-    const first = await agent.post("/api/chat/stream").send({ avatarId: user.id, message: "처음" }).expect(200);
-    const convId = (parseSse(first.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+    const first = await agent
+      .post("/api/chat/stream")
+      .send({ avatarId: user.id, message: "처음" })
+      .expect(200);
+    const convId = (
+      parseSse(first.text).find((f) => f.event === "open")!.data as {
+        conversationId: string;
+      }
+    ).conversationId;
 
     await agent
       .post("/api/chat/stream")
-      .send({ avatarId: user.id, message: "처음", conversationId: convId, regenerate: true })
+      .send({
+        avatarId: user.id,
+        message: "처음",
+        conversationId: convId,
+        regenerate: true,
+      })
       .expect(200);
 
-    const messages = await agent.get(`/api/messages?conversationId=${convId}`).expect(200);
+    const messages = await agent
+      .get(`/api/messages?conversationId=${convId}`)
+      .expect(200);
     expect(messages.body.messages).toHaveLength(2); // not 3 or 4
   });
 
-  it("greets first (owner only) and reports pending requests without persisting", async () => {
-    const services = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+  it("rejects an empty first turn even when a stale client sends greeting=true", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+    });
     const app = createApp(services);
     const owner = request.agent(app);
     const ownerRes = await signup(owner, "gwen").expect(201);
     const ownerId = ownerRes.body.user.id;
 
-    // A colleague's gap is waiting for the owner.
-    services.store.addKnowledgeRequest(ownerId, { question: "출시일?", askerName: "동료A" });
+    services.store.addKnowledgeRequest(ownerId, {
+      question: "출시일?",
+      askerName: "동료A",
+    });
 
-    // Owner greeting with their OWN avatar streams an assistant reply.
     const convId = "greet-conv-1";
-    const greet = await owner
+    await owner
       .post("/api/chat/stream")
       .send({ avatarId: ownerId, conversationId: convId, greeting: true })
-      .expect(200);
-    const done = parseSse(greet.text).find((f) => f.event === "done")!.data as {
-      message: { role: string; content: string };
-    };
-    expect(done.message.role).toBe("assistant");
+      .expect(400);
 
-    // Greeting is ephemeral: nothing was persisted to the conversation.
-    const after = await owner.get(`/api/messages?conversationId=${convId}`).expect(200);
+    const after = await owner
+      .get(`/api/messages?conversationId=${convId}`)
+      .expect(200);
     expect(after.body.messages).toHaveLength(0);
 
-    // The pending request is still open (greeting only reports it, never answers).
-    const stillOpen = await owner.get("/api/me/knowledge/requests?status=open").expect(200);
+    const stillOpen = await owner
+      .get("/api/me/knowledge/requests?status=open")
+      .expect(200);
     expect(stillOpen.body.requests).toHaveLength(1);
-
-    // greeting=true with no message falls back to the empty-message 400 when the
-    // viewer is NOT the avatar's owner (a colleague can't make the avatar greet).
-    const stranger = request.agent(app);
-    await signup(stranger, "hank").expect(201);
-    await stranger
-      .post("/api/chat/stream")
-      .send({ avatarId: ownerId, greeting: true })
-      .expect(400);
   });
 
   it("exposes a runId on the chat stream and guards the respond endpoint", async () => {
@@ -831,18 +1018,39 @@ describe("noah-almighty platform", () => {
     const { agent, user } = await newUser(app, "ivy");
     await agent.patch("/api/me").send({ visibility: "public" }).expect(200);
 
-    const chat = await agent.post("/api/chat/stream").send({ avatarId: user.id, message: "hi" }).expect(200);
-    const open = parseSse(chat.text).find((f) => f.event === "open")!.data as { runId?: string };
+    const chat = await agent
+      .post("/api/chat/stream")
+      .send({ avatarId: user.id, message: "hi" })
+      .expect(200);
+    const open = parseSse(chat.text).find((f) => f.event === "open")!.data as {
+      runId?: string;
+    };
     expect(typeof open.runId).toBe("string");
 
     // Auth required.
-    await request(app).post("/api/chat/respond").send({ runId: open.runId, requestId: "x" }).expect(401);
+    await request(app)
+      .post("/api/chat/respond")
+      .send({ runId: open.runId, requestId: "x" })
+      .expect(401);
     // Missing fields → 400.
-    await agent.post("/api/chat/respond").send({ runId: open.runId }).expect(400);
+    await agent
+      .post("/api/chat/respond")
+      .send({ runId: open.runId })
+      .expect(400);
     // Run already finished (local runtime resolves synchronously) → 404.
-    await agent.post("/api/chat/respond").send({ runId: open.runId, requestId: "nope", value: { behavior: "allow" } }).expect(404);
+    await agent
+      .post("/api/chat/respond")
+      .send({
+        runId: open.runId,
+        requestId: "nope",
+        value: { behavior: "allow" },
+      })
+      .expect(404);
     // Unknown run → 404.
-    await agent.post("/api/chat/respond").send({ runId: "ghost", requestId: "x", value: {} }).expect(404);
+    await agent
+      .post("/api/chat/respond")
+      .send({ runId: "ghost", requestId: "x", value: {} })
+      .expect(404);
   });
 
   // ---- Conversation ownership ------------------------------------------
@@ -851,47 +1059,94 @@ describe("noah-almighty platform", () => {
     const app = testApp();
     const { agent: a, user: ua } = await newUser(app, "tina");
     await a.patch("/api/me").send({ visibility: "public" }).expect(200);
-    const chat = await a.post("/api/chat/stream").send({ avatarId: ua.id, message: "hi" }).expect(200);
-    const convId = (parseSse(chat.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+    const chat = await a
+      .post("/api/chat/stream")
+      .send({ avatarId: ua.id, message: "hi" })
+      .expect(200);
+    const convId = (
+      parseSse(chat.text).find((f) => f.event === "open")!.data as {
+        conversationId: string;
+      }
+    ).conversationId;
 
-    const renamed = await a.patch(`/api/conversations/${convId}`).send({ title: "내 첫 대화" }).expect(200);
+    const renamed = await a
+      .patch(`/api/conversations/${convId}`)
+      .send({ title: "내 첫 대화" })
+      .expect(200);
     expect(renamed.body.conversation.title).toBe("내 첫 대화");
 
     // Another user cannot read or mutate someone else's conversation.
     const b = (await newUser(app, "uma")).agent;
-    const peek = await b.get(`/api/messages?conversationId=${convId}`).expect(200);
+    const peek = await b
+      .get(`/api/messages?conversationId=${convId}`)
+      .expect(200);
     expect(peek.body.messages).toHaveLength(0);
-    await b.patch(`/api/conversations/${convId}`).send({ title: "hijack" }).expect(404);
+    await b
+      .patch(`/api/conversations/${convId}`)
+      .send({ title: "hijack" })
+      .expect(404);
     await b.delete(`/api/conversations/${convId}`).expect(404);
 
     await a.delete(`/api/conversations/${convId}`).expect(200);
     const convs = await a.get("/api/conversations").expect(200);
-    expect(convs.body.conversations.some((c: { id: string }) => c.id === convId)).toBe(false);
+    expect(
+      convs.body.conversations.some((c: { id: string }) => c.id === convId),
+    ).toBe(false);
   });
 
   it("bulk deletes only the caller's regular chat conversations", async () => {
     const app = testApp();
     const { agent: a, user: ua } = await newUser(app, "bulk-owner");
-    const first = await a.post("/api/chat/stream").send({ avatarId: ua.id, message: "one" }).expect(200);
-    const second = await a.post("/api/chat/stream").send({ avatarId: ua.id, message: "two" }).expect(200);
-    const firstId = (parseSse(first.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
-    const secondId = (parseSse(second.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
-    const routine = await a.post("/api/me/routines").send({ prompt: "매일 정리", time: "09:00" }).expect(200);
+    const first = await a
+      .post("/api/chat/stream")
+      .send({ avatarId: ua.id, message: "one" })
+      .expect(200);
+    const second = await a
+      .post("/api/chat/stream")
+      .send({ avatarId: ua.id, message: "two" })
+      .expect(200);
+    const firstId = (
+      parseSse(first.text).find((f) => f.event === "open")!.data as {
+        conversationId: string;
+      }
+    ).conversationId;
+    const secondId = (
+      parseSse(second.text).find((f) => f.event === "open")!.data as {
+        conversationId: string;
+      }
+    ).conversationId;
+    const routine = await a
+      .post("/api/me/routines")
+      .send({ prompt: "매일 정리", time: "09:00" })
+      .expect(200);
 
     const { agent: b, user: ub } = await newUser(app, "bulk-other");
-    const otherChat = await b.post("/api/chat/stream").send({ avatarId: ub.id, message: "other" }).expect(200);
-    const otherId = (parseSse(otherChat.text).find((f) => f.event === "open")!.data as { conversationId: string }).conversationId;
+    const otherChat = await b
+      .post("/api/chat/stream")
+      .send({ avatarId: ub.id, message: "other" })
+      .expect(200);
+    const otherId = (
+      parseSse(otherChat.text).find((f) => f.event === "open")!.data as {
+        conversationId: string;
+      }
+    ).conversationId;
 
     const cleared = await a.delete("/api/conversations").expect(200);
-    expect(new Set(cleared.body.conversationIds)).toEqual(new Set([firstId, secondId]));
+    expect(new Set(cleared.body.conversationIds)).toEqual(
+      new Set([firstId, secondId]),
+    );
     expect(cleared.body.deleted).toBe(2);
 
     const ownerChats = await a.get("/api/conversations").expect(200);
     expect(ownerChats.body.conversations).toHaveLength(0);
     const routines = await a.get("/api/conversations?kind=routine").expect(200);
-    expect(routines.body.conversations.map((c: { id: string }) => c.id)).toContain(routine.body.routine.conversationId);
+    expect(
+      routines.body.conversations.map((c: { id: string }) => c.id),
+    ).toContain(routine.body.routine.conversationId);
     const otherChats = await b.get("/api/conversations").expect(200);
-    expect(otherChats.body.conversations.map((c: { id: string }) => c.id)).toEqual([otherId]);
+    expect(
+      otherChats.body.conversations.map((c: { id: string }) => c.id),
+    ).toEqual([otherId]);
   });
 
   // ---- Admin role management -------------------------------------------
@@ -916,7 +1171,9 @@ describe("noah-almighty platform", () => {
     await admin.delete(`/api/admin/users/${adminUser.id}`).expect(400); // can't delete self
     await admin.delete(`/api/admin/users/${member.id}`).expect(200);
     const users = await admin.get("/api/admin/users").expect(200);
-    expect(users.body.users.some((u: { id: string }) => u.id === member.id)).toBe(false);
+    expect(
+      users.body.users.some((u: { id: string }) => u.id === member.id),
+    ).toBe(false);
   });
 
   it("forbids members from admin user-management endpoints", async () => {
@@ -924,7 +1181,10 @@ describe("noah-almighty platform", () => {
     await newUser(app, "admin2"); // first → admin
     const { agent: member, user } = await newUser(app, "mem2");
     await member.delete(`/api/admin/users/${user.id}`).expect(403);
-    await member.post(`/api/admin/users/${user.id}/roles`).send({ role: "admin", grant: true }).expect(403);
+    await member
+      .post(`/api/admin/users/${user.id}/roles`)
+      .send({ role: "admin", grant: true })
+      .expect(403);
   });
 
   // ---- Audit ------------------------------------------------------------
@@ -932,7 +1192,10 @@ describe("noah-almighty platform", () => {
   it("resolves single-plugin, marketplace, and non-plugin repos correctly", async () => {
     const mkPlugin = (root: string) => {
       fs.mkdirSync(path.join(root, ".claude-plugin"), { recursive: true });
-      fs.writeFileSync(path.join(root, ".claude-plugin", "plugin.json"), JSON.stringify({ name: "p" }));
+      fs.writeFileSync(
+        path.join(root, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "p" }),
+      );
     };
 
     // Single-plugin repo → [root]
@@ -945,30 +1208,46 @@ describe("noah-almighty platform", () => {
     fs.mkdirSync(path.join(market, ".claude-plugin"), { recursive: true });
     fs.writeFileSync(
       path.join(market, ".claude-plugin", "marketplace.json"),
-      JSON.stringify({ name: "m", plugins: [{ name: "confluence", source: "./plugins/confluence" }] }),
+      JSON.stringify({
+        name: "m",
+        plugins: [{ name: "confluence", source: "./plugins/confluence" }],
+      }),
     );
     mkPlugin(path.join(market, "plugins", "confluence"));
-    expect(await resolvePluginRoots(market, "market")).toEqual([path.join(market, "plugins", "confluence")]);
+    expect(await resolvePluginRoots(market, "market")).toEqual([
+      path.join(market, "plugins", "confluence"),
+    ]);
 
     // Neither → empty + a warning
     const bare = path.join(tempDir, "bare");
     fs.mkdirSync(bare, { recursive: true });
     const warns: string[] = [];
-    expect(await resolvePluginRoots(bare, "bare", (m) => warns.push(m))).toEqual([]);
+    expect(
+      await resolvePluginRoots(bare, "bare", (m) => warns.push(m)),
+    ).toEqual([]);
     expect(warns.length).toBe(1);
   });
 
   it("backfills knowledge: a colleague's gap is queued and resolved (closed)", async () => {
-    const services = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+    });
     const app = createApp(services);
     const owner = request.agent(app);
     const ownerRes = await signup(owner, "olga").expect(201);
     const ownerId = ownerRes.body.user.id;
 
     // The agent's request_info tool records gaps via the store; simulate one.
-    services.store.addKnowledgeRequest(ownerId, { question: "다음 출시일은 언제인가요?", askerName: "동료A" });
+    services.store.addKnowledgeRequest(ownerId, {
+      question: "다음 출시일은 언제인가요?",
+      askerName: "동료A",
+    });
 
-    const open = await owner.get("/api/me/knowledge/requests?status=open").expect(200);
+    const open = await owner
+      .get("/api/me/knowledge/requests?status=open")
+      .expect(200);
     expect(open.body.requests).toHaveLength(1);
     const reqId = open.body.requests[0].id;
     expect(open.body.requests[0].askerName).toBe("동료A");
@@ -977,25 +1256,39 @@ describe("noah-almighty platform", () => {
     // avatar via plugins). Closing the request is the whole action.
     await owner.delete(`/api/me/knowledge/requests/${reqId}`).expect(200);
 
-    const stillOpen = await owner.get("/api/me/knowledge/requests?status=open").expect(200);
+    const stillOpen = await owner
+      .get("/api/me/knowledge/requests?status=open")
+      .expect(200);
     expect(stillOpen.body.requests).toHaveLength(0);
-    const resolved = await owner.get("/api/me/knowledge/requests?status=resolved").expect(200);
+    const resolved = await owner
+      .get("/api/me/knowledge/requests?status=resolved")
+      .expect(200);
     expect(resolved.body.requests).toHaveLength(1);
     expect(resolved.body.requests[0].status).toBe("resolved");
   });
 
   it("isolates knowledge between avatars and 404s on cross-owner access", async () => {
-    const services = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+    });
     const app = createApp(services);
     const ann = request.agent(app);
     const annRes = await signup(ann, "ann").expect(201);
     const bob = request.agent(app);
     await signup(bob, "bob").expect(201);
 
-    const req = services.store.addKnowledgeRequest(annRes.body.user.id, { question: "ann만의 질문" });
+    const req = services.store.addKnowledgeRequest(annRes.body.user.id, {
+      question: "ann만의 질문",
+    });
 
-    expect((await ann.get("/api/me/knowledge/requests").expect(200)).body.requests).toHaveLength(1);
-    expect((await bob.get("/api/me/knowledge/requests").expect(200)).body.requests).toHaveLength(0);
+    expect(
+      (await ann.get("/api/me/knowledge/requests").expect(200)).body.requests,
+    ).toHaveLength(1);
+    expect(
+      (await bob.get("/api/me/knowledge/requests").expect(200)).body.requests,
+    ).toHaveLength(0);
 
     // Bob cannot resolve Ann's request.
     await bob.delete(`/api/me/knowledge/requests/${req.id}`).expect(404);
@@ -1006,7 +1299,11 @@ describe("noah-almighty platform", () => {
   });
 
   it("loads the repo-bundled default plugin for every avatar", async () => {
-    const { config } = createServices({ dataDir: tempDir, agentRuntime: "local", sessionSecret: "test" });
+    const { config } = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+    });
     const roots = await loadDefaultPluginRoots(config);
     expect(roots).toHaveLength(1);
     expect(roots[0].path).toContain("default-skills");
@@ -1018,12 +1315,16 @@ describe("noah-almighty platform", () => {
     const { agent: member } = await newUser(app, "yuki");
 
     const adminAudit = await admin.get("/api/audit").expect(200);
-    const actors = new Set(adminAudit.body.audit.map((e: { actorName: string }) => e.actorName));
+    const actors = new Set(
+      adminAudit.body.audit.map((e: { actorName: string }) => e.actorName),
+    );
     expect(actors.has("xena")).toBe(true);
     expect(actors.has("yuki")).toBe(true); // admin sees others
 
     const memberAudit = await member.get("/api/audit").expect(200);
-    const memberActors = new Set(memberAudit.body.audit.map((e: { actorName: string }) => e.actorName));
+    const memberActors = new Set(
+      memberAudit.body.audit.map((e: { actorName: string }) => e.actorName),
+    );
     expect(memberActors.has("xena")).toBe(false); // member sees only own
     expect([...memberActors].every((a) => a === "yuki")).toBe(true);
   });
@@ -1036,13 +1337,23 @@ describe("noah-almighty platform", () => {
       .send({ hashtags: ["#코드리뷰", "코드리뷰", " 파이썬 ", "데이터 분석"] })
       .expect(200);
     // Normalized server-side: deduped, "#"/whitespace handled, spaces → hyphens.
-    expect(patched.body.user.hashtags).toEqual(["코드리뷰", "파이썬", "데이터-분석"]);
+    expect(patched.body.user.hashtags).toEqual([
+      "코드리뷰",
+      "파이썬",
+      "데이터-분석",
+    ]);
 
     const me = await agent.get("/api/me").expect(200);
-    expect(me.body.user.hashtags).toEqual(["코드리뷰", "파이썬", "데이터-분석"]);
+    expect(me.body.user.hashtags).toEqual([
+      "코드리뷰",
+      "파이썬",
+      "데이터-분석",
+    ]);
 
     const list = await agent.get("/api/avatars").expect(200);
-    const mine = list.body.avatars.find((a: { username: string }) => a.username === "tagowner");
+    const mine = list.body.avatars.find(
+      (a: { username: string }) => a.username === "tagowner",
+    );
     expect(mine.hashtags).toEqual(["코드리뷰", "파이썬", "데이터-분석"]);
   });
 
@@ -1068,7 +1379,8 @@ describe("noah-almighty platform", () => {
     expect(res.body.hashtags.length).toBeGreaterThan(0);
     // None of the returned tags may duplicate an existing one (case-insensitive).
     const existingKeys = new Set(["업무지원", "질문답변"]);
-    for (const tag of res.body.hashtags) expect(existingKeys.has(tag)).toBe(false);
+    for (const tag of res.body.hashtags)
+      expect(existingKeys.has(tag)).toBe(false);
   });
 
   it("marks onboarding once: a fresh signup is un-onboarded, then stays onboarded", async () => {
@@ -1100,10 +1412,19 @@ describe("groups", () => {
     // A non-admin cannot create a group.
     await agentB.post("/api/admin/groups").send({ name: "X" }).expect(403);
 
-    const created = await adminA.post("/api/admin/groups").send({ name: "Team", description: "d" }).expect(200);
+    const created = await adminA
+      .post("/api/admin/groups")
+      .send({ name: "Team", description: "d" })
+      .expect(200);
     const groupId = created.body.group.id;
-    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "bob", role: "admin" }).expect(200);
-    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "carol" }).expect(200);
+    await adminA
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "bob", role: "admin" })
+      .expect(200);
+    await adminA
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "carol" })
+      .expect(200);
 
     const list = await adminA.get("/api/admin/groups").expect(200);
     expect(list.body.groups[0].memberCount).toBe(2);
@@ -1121,12 +1442,22 @@ describe("groups", () => {
     // Roster: carol sees all teammates and her own role.
     const mine = await agentC.get("/api/me/groups").expect(200);
     // Creating a group doesn't auto-add the system admin; only explicit members appear.
-    expect(mine.body.groups[0].members.map((m: { username: string }) => m.username).sort()).toEqual(["bob", "carol"]);
+    expect(
+      mine.body.groups[0].members
+        .map((m: { username: string }) => m.username)
+        .sort(),
+    ).toEqual(["bob", "carol"]);
     expect(mine.body.groups[0].role).toBe("member");
 
     // bob (group admin) can self-serve member adds; carol (plain member) cannot.
-    await agentB.post(`/api/me/groups/${groupId}/members`).send({ username: "dave" }).expect(200);
-    await agentC.post(`/api/me/groups/${groupId}/members`).send({ username: "dave" }).expect(403);
+    await agentB
+      .post(`/api/me/groups/${groupId}/members`)
+      .send({ username: "dave" })
+      .expect(200);
+    await agentC
+      .post(`/api/me/groups/${groupId}/members`)
+      .send({ username: "dave" })
+      .expect(403);
   });
 
   it("group repo connect is group-admin-only and validated to the internal host", async () => {
@@ -1134,20 +1465,38 @@ describe("groups", () => {
     const { agent: adminA } = await newUser(app, "admin");
     const { agent: agentB } = await newUser(app, "bob");
     const { agent: agentC } = await newUser(app, "carol");
-    const created = await adminA.post("/api/admin/groups").send({ name: "Team" }).expect(200);
+    const created = await adminA
+      .post("/api/admin/groups")
+      .send({ name: "Team" })
+      .expect(200);
     const groupId = created.body.group.id;
-    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "bob", role: "admin" }).expect(200);
-    await adminA.post(`/api/admin/groups/${groupId}/members`).send({ username: "carol" }).expect(200);
+    await adminA
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "bob", role: "admin" })
+      .expect(200);
+    await adminA
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "carol" })
+      .expect(200);
 
     // bob (group admin) connects an internal repo (owner/repo shorthand).
-    await agentB.put(`/api/me/groups/${groupId}/knowledge-repo`).send({ repo: "org/team-knowledge", branch: "main" }).expect(200);
+    await agentB
+      .put(`/api/me/groups/${groupId}/knowledge-repo`)
+      .send({ repo: "org/team-knowledge", branch: "main" })
+      .expect(200);
     const mine = await agentB.get("/api/me/groups").expect(200);
     expect(mine.body.groups[0].knowledgeRepo).toBe("org/team-knowledge");
 
     // An external host is rejected.
-    await agentB.put(`/api/me/groups/${groupId}/knowledge-repo`).send({ repo: "https://gitlab.example.com/x/y.git" }).expect(400);
+    await agentB
+      .put(`/api/me/groups/${groupId}/knowledge-repo`)
+      .send({ repo: "https://gitlab.example.com/x/y.git" })
+      .expect(400);
 
     // A plain member cannot set the group repo.
-    await agentC.put(`/api/me/groups/${groupId}/knowledge-repo`).send({ repo: "org/x" }).expect(403);
+    await agentC
+      .put(`/api/me/groups/${groupId}/knowledge-repo`)
+      .send({ repo: "org/x" })
+      .expect(403);
   });
 });

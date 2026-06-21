@@ -34,10 +34,24 @@ export type {
 } from "../../../server/types.js";
 
 import type { CanvasArtifact } from "../../../server/types.js";
+import type { McpToolGroupId } from "../../../shared/mcpToolGroups";
 
-export type ViewName = "explore" | "chat" | "brain" | "inbox" | "routines" | "settings" | "admin";
+export type ViewName =
+  | "explore"
+  | "chat"
+  | "brain"
+  | "inbox"
+  | "routines"
+  | "settings"
+  | "admin";
 export type SettingsTab = "profile" | "access" | "knowledge" | "groups";
-export type AdminTab = "overview" | "users" | "groups" | "access" | "system" | "audit";
+export type AdminTab =
+  | "overview"
+  | "users"
+  | "groups"
+  | "access"
+  | "system"
+  | "audit";
 export type ChatLayout = "vertical" | "horizontal" | "grid";
 
 /** An image staged in the composer before sending. */
@@ -95,12 +109,12 @@ export interface ChatPane {
   modelTier?: string;
   /** User-chosen reasoning effort level for this conversation; "" / undefined = SDK default (high). */
   effort?: string;
+  /** MCP tool groups enabled for this conversation; defaults to every group. */
+  mcpToolGroups?: McpToolGroupId[];
   /** Visual-canvas artifacts shown in this conversation (experimental, #50). */
   canvases: PaneCanvas[];
   /** Which canvas is currently shown in the side panel (artifact id). */
   activeCanvasId?: string | null;
-  greetingStarted?: boolean;
-  greetedConversationId?: string | null;
   /** Whether the viewer is pinned to the transcript bottom (intent-based follow). */
   stickBottom?: boolean;
   /** Last assistant turn's token usage, for the composer badge. */
@@ -179,7 +193,9 @@ export interface BootstrapInfo {
    */
   modelSelection?: {
     /** Each tier + the concrete model id it resolves to (null when not env-pinned). */
-    tiers: (import("../../../server/modelTiers").ModelTier & { model: string | null })[];
+    tiers: (import("../../../server/modelTiers").ModelTier & {
+      model: string | null;
+    })[];
     locked: boolean;
   };
   /**

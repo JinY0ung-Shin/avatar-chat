@@ -1,4 +1,8 @@
-import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  execFileSync,
+  spawn,
+  type ChildProcessWithoutNullStreams,
+} from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -35,7 +39,10 @@ import {
   INTERNAL_GIT_TOKEN_SECRET_NAME,
   tokenForGitUrl,
 } from "../src/server/gitCredentials.js";
-import { parseNoteFrontmatter, rankBrainNotes } from "../src/server/agent/brainSearch.js";
+import {
+  parseNoteFrontmatter,
+  rankBrainNotes,
+} from "../src/server/agent/brainSearch.js";
 import {
   APP_MANAGED_MCP_SERVERS,
   inspectRepoContents,
@@ -127,7 +134,10 @@ import {
   GIT_REPO_SERVER_NAME,
   GIT_REPO_TOOL_NAMES,
 } from "../src/server/agent/gitRepoTools.js";
-import { gitRepoClonePath, gitRepoContextFromRecord } from "../src/server/gitRepos.js";
+import {
+  gitRepoClonePath,
+  gitRepoContextFromRecord,
+} from "../src/server/gitRepos.js";
 import {
   buildSystemTools,
   SYSTEM_SERVER_NAME,
@@ -166,7 +176,14 @@ import {
   type HexSshToolPolicy,
 } from "../src/server/hexSshPolicy.js";
 
-import { rpcClient, gitInit, makeBareRemote, makePluginRepo, makeMarketplaceRepo, makeSkill } from "./helpers.js";
+import {
+  rpcClient,
+  gitInit,
+  makeBareRemote,
+  makePluginRepo,
+  makeMarketplaceRepo,
+  makeSkill,
+} from "./helpers.js";
 
 let tempDir: string;
 
@@ -177,7 +194,6 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(tempDir, { recursive: true, force: true });
 });
-
 
 // ---------------------------------------------------------------------------
 // chat slash commands — server fallback for stale clients/API callers
@@ -208,7 +224,9 @@ describe("chat slash commands", () => {
   });
 
   it("expands slash commands with arguments", () => {
-    const result = expandChatSlashCommand("/remember 프로젝트 기본 포트는 48787");
+    const result = expandChatSlashCommand(
+      "/remember 프로젝트 기본 포트는 48787",
+    );
 
     expect(result.error).toBeUndefined();
     expect(result.ownerOnly).toBe(true);
@@ -241,19 +259,31 @@ describe("chat slash commands", () => {
       fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) return readClientRecursive(full);
-        return /\.(ts|svelte)$/.test(entry.name) ? [fs.readFileSync(full, "utf8")] : [];
+        return /\.(ts|svelte)$/.test(entry.name)
+          ? [fs.readFileSync(full, "utf8")]
+          : [];
       });
-    const clientJs = readClientRecursive(path.join(process.cwd(), "src", "client", "src")).join("\n");
-    const cases = ["/summarize", "/remember 내용", "/routine 작업", "/find 요청", "/learn"];
+    const clientJs = readClientRecursive(
+      path.join(process.cwd(), "src", "client", "src"),
+    ).join("\n");
+    const cases = [
+      "/summarize",
+      "/remember 내용",
+      "/routine 작업",
+      "/find 요청",
+      "/learn",
+    ];
     for (const input of cases) {
       const { message } = expandChatSlashCommand(input);
       // The static template, dropping any trailing "\n\n<args>" the server injected.
       const staticPart = message.split("\n\n")[0];
-      expect(clientJs, `slash prompt for "${input}" must not be duplicated in the client`).not.toContain(staticPart);
+      expect(
+        clientJs,
+        `slash prompt for "${input}" must not be duplicated in the client`,
+      ).not.toContain(staticPart);
     }
   });
 });
-
 
 // ---------------------------------------------------------------------------
 // runRegistry — in-memory parking of interactive-tool responses
@@ -288,7 +318,9 @@ describe("runRegistry", () => {
     openRun("run1", "user1");
     const parked = awaitResponse("run1", "req1");
 
-    expect(submitResponse("run1", "req1", "user1", { behavior: "allow" })).toBe(true);
+    expect(submitResponse("run1", "req1", "user1", { behavior: "allow" })).toBe(
+      true,
+    );
     await expect(parked).resolves.toEqual({ behavior: "allow" });
 
     closeRun("run1");
@@ -362,7 +394,6 @@ describe("runRegistry", () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // workspace dirs — per-conversation agent cwd isolation
 // ---------------------------------------------------------------------------
@@ -370,7 +401,11 @@ describe("runRegistry", () => {
 describe("workspace dirs", () => {
   it("isolates workspaces by avatar and conversation with safe path segments", () => {
     const dataDir = path.join(tempDir, "ws");
-    const { config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });
+    const { config } = createServices({
+      dataDir,
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
     const base = path.join(config.dataDir, "workspaces");
 
     const first = workspaceDirFor(config, "avatar/../x", "conv-1");
@@ -387,7 +422,6 @@ describe("workspace dirs", () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // marketplace — URL/name helpers and git sync
 // ---------------------------------------------------------------------------
@@ -400,26 +434,34 @@ describe("marketplace helpers", () => {
   });
 
   it("resolves clone URLs for shorthand and full URLs (token never in URL)", () => {
-    expect(marketplaceCloneUrl("owner/repo")).toBe("https://github.com/owner/repo.git");
+    expect(marketplaceCloneUrl("owner/repo")).toBe(
+      "https://github.com/owner/repo.git",
+    );
     expect(marketplaceCloneUrl("owner/repo", "github.enterprise.local")).toBe(
       "https://github.enterprise.local/owner/repo.git",
     );
-    expect(marketplaceCloneUrl("owner/repo", "https://github.enterprise.local/")).toBe(
-      "https://github.enterprise.local/owner/repo.git",
-    );
+    expect(
+      marketplaceCloneUrl("owner/repo", "https://github.enterprise.local/"),
+    ).toBe("https://github.enterprise.local/owner/repo.git");
     expect(marketplaceCloneUrl("https://github.com/owner/repo.git")).toBe(
       "https://github.com/owner/repo.git",
     );
     // ssh / arbitrary sources pass through untouched.
     const ssh = "git@github.com:owner/repo.git";
     expect(marketplaceCloneUrl(ssh)).toBe(ssh);
-    expect(marketplaceCloneUrl("https://example.com/x.git")).toBe("https://example.com/x.git");
+    expect(marketplaceCloneUrl("https://example.com/x.git")).toBe(
+      "https://example.com/x.git",
+    );
   });
 
   it("normalizes configured GitHub hosts", () => {
     expect(normalizeGithubHost("")).toBe("github.com");
-    expect(normalizeGithubHost("https://github.enterprise.local/")).toBe("github.enterprise.local");
-    expect(normalizeGithubHost("github.enterprise.local:8443")).toBe("github.enterprise.local:8443");
+    expect(normalizeGithubHost("https://github.enterprise.local/")).toBe(
+      "github.enterprise.local",
+    );
+    expect(normalizeGithubHost("github.enterprise.local:8443")).toBe(
+      "github.enterprise.local:8443",
+    );
   });
 
   it("supplies token auth via an http header arg, not the URL", () => {
@@ -429,16 +471,27 @@ describe("marketplace helpers", () => {
     // https + token → an Authorization: Basic header git uses but never persists.
     const args = gitAuthArgs("https://github.com/o/r.git", "tok");
     const basic = Buffer.from("x-access-token:tok").toString("base64");
-    expect(args).toEqual(["-c", `http.extraHeader=Authorization: Basic ${basic}`]);
+    expect(args).toEqual([
+      "-c",
+      `http.extraHeader=Authorization: Basic ${basic}`,
+    ]);
   });
 
   it("selects internal vs external git tokens by clone URL host", () => {
     const config = { githubHost: "github.enterprise.local" };
     const tokens = { internal: "internal-token", external: "external-token" };
-    expect(tokenForGitUrl("https://github.enterprise.local/o/r.git", config, tokens)).toBe("internal-token");
-    expect(tokenForGitUrl("https://github.com/o/r.git", config, tokens)).toBe("external-token");
-    expect(tokenForGitUrl("https://gitlab.example.com/o/r.git", config, tokens)).toBeUndefined();
-    expect(tokenForGitUrl("git@github.com:o/r.git", config, tokens)).toBeUndefined();
+    expect(
+      tokenForGitUrl("https://github.enterprise.local/o/r.git", config, tokens),
+    ).toBe("internal-token");
+    expect(tokenForGitUrl("https://github.com/o/r.git", config, tokens)).toBe(
+      "external-token",
+    );
+    expect(
+      tokenForGitUrl("https://gitlab.example.com/o/r.git", config, tokens),
+    ).toBeUndefined();
+    expect(
+      tokenForGitUrl("git@github.com:o/r.git", config, tokens),
+    ).toBeUndefined();
   });
 
   it("strips git credentials and SESSION_SECRET from the agent subprocess env", () => {
@@ -499,7 +552,10 @@ describe("marketplace helpers", () => {
   it("refuses to clone a repo value that git would read as an option", async () => {
     // `--upload-pack=…` would be an RCE if passed as a positional without `--`.
     await expect(
-      syncGitRepo("--upload-pack=touch /tmp/pwn", path.join(tempDir, "dest-inj")),
+      syncGitRepo(
+        "--upload-pack=touch /tmp/pwn",
+        path.join(tempDir, "dest-inj"),
+      ),
     ).rejects.toThrow(/must not start with/);
   });
 
@@ -549,7 +605,6 @@ describe("marketplace helpers", () => {
   });
 });
 
-
 // ---------------------------------------------------------------------------
 // plugins — cloning enabled avatar plugins, default plugin loading
 // ---------------------------------------------------------------------------
@@ -563,7 +618,11 @@ describe("deriveAgentToolAccess", () => {
   };
 
   it("owner, interactive chat → owner + elevated tools, auto-approve, owner ssh class", () => {
-    const a = deriveAgentToolAccess({ ...base, viewerIsOwner: true, autoApprove: true });
+    const a = deriveAgentToolAccess({
+      ...base,
+      viewerIsOwner: true,
+      autoApprove: true,
+    });
     expect(a.ownerToolAccess).toBe(true);
     expect(a.elevatedToolAccess).toBe(true);
     expect(a.elevated).toBe(true);
@@ -572,7 +631,11 @@ describe("deriveAgentToolAccess", () => {
   });
 
   it("owner, headless WITHOUT opt-in → no tool access (read-only)", () => {
-    const a = deriveAgentToolAccess({ ...base, viewerIsOwner: true, headless: true });
+    const a = deriveAgentToolAccess({
+      ...base,
+      viewerIsOwner: true,
+      headless: true,
+    });
     expect(a.ownerToolAccess).toBe(false);
     expect(a.elevatedToolAccess).toBe(false);
     expect(a.hexSshViewerClass).toBe("colleague");
@@ -591,7 +654,11 @@ describe("deriveAgentToolAccess", () => {
   });
 
   it("trusted (not owner), interactive → elevated tools but NOT owner tools", () => {
-    const a = deriveAgentToolAccess({ ...base, viewerIsOwner: false, elevated: true });
+    const a = deriveAgentToolAccess({
+      ...base,
+      viewerIsOwner: false,
+      elevated: true,
+    });
     expect(a.ownerToolAccess).toBe(false);
     expect(a.elevatedToolAccess).toBe(true);
     expect(a.elevated).toBe(true);
@@ -606,7 +673,6 @@ describe("deriveAgentToolAccess", () => {
     expect(a.hexSshViewerClass).toBe("colleague");
   });
 });
-
 
 describe("loadAvatarPluginRoots", () => {
   const plugin = (repo: string): Plugin => ({
@@ -623,34 +689,60 @@ describe("loadAvatarPluginRoots", () => {
   it("clones a single-plugin repo into the avatar's data dir", async () => {
     const src = path.join(tempDir, "plugin-src");
     makePluginRepo(src);
-    const { config } = createServices({ dataDir: path.join(tempDir, "data"), agentRuntime: "local", sessionSecret: "t" });
+    const { config } = createServices({
+      dataDir: path.join(tempDir, "data"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
 
     const warns: string[] = [];
-    const roots = await loadAvatarPluginRoots("user-1", [plugin(src)], config, (m) => warns.push(m));
+    const roots = await loadAvatarPluginRoots(
+      "user-1",
+      [plugin(src)],
+      config,
+      (m) => warns.push(m),
+    );
 
     expect(warns).toEqual([]);
     expect(roots).toHaveLength(1);
     expect(roots[0].type).toBe("local");
-    expect(fs.existsSync(path.join(roots[0].path, ".claude-plugin", "plugin.json"))).toBe(true);
+    expect(
+      fs.existsSync(path.join(roots[0].path, ".claude-plugin", "plugin.json")),
+    ).toBe(true);
   });
 
   it("tolerates a clone failure with a warning instead of throwing", async () => {
-    const { config } = createServices({ dataDir: path.join(tempDir, "data2"), agentRuntime: "local", sessionSecret: "t" });
+    const { config } = createServices({
+      dataDir: path.join(tempDir, "data2"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
     const warns: string[] = [];
     const missing = path.join(tempDir, "does-not-exist-repo");
 
-    const roots = await loadAvatarPluginRoots("user-2", [plugin(missing)], config, (m) => warns.push(m));
+    const roots = await loadAvatarPluginRoots(
+      "user-2",
+      [plugin(missing)],
+      config,
+      (m) => warns.push(m),
+    );
 
     expect(roots).toEqual([]);
     expect(warns.some((w) => w.includes("clone failed"))).toBe(true);
   });
 });
 
-
 describe("loadDefaultPluginRoots", () => {
   it("returns [] when the default plugins dir is missing", async () => {
-    const { config } = createServices({ dataDir: path.join(tempDir, "d"), agentRuntime: "local", sessionSecret: "t" });
-    const roots = await loadDefaultPluginRoots({ ...config, defaultPluginsDir: path.join(tempDir, "nope") });
+    const { config } = createServices({
+      dataDir: path.join(tempDir, "d"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const roots = await loadDefaultPluginRoots({
+      ...config,
+      defaultPluginsDir: path.join(tempDir, "nope"),
+    });
     expect(roots).toEqual([]);
   });
 
@@ -661,27 +753,45 @@ describe("loadDefaultPluginRoots", () => {
       { path: path.join(process.cwd(), "default-skills"), source: "default" },
     ]);
     const names = skills.map((s) => s.name);
-    for (const n of ["brain-ingest", "brain-reflect", "brain-lint", "brain-migrate", "brain-search"]) {
+    for (const n of [
+      "brain-ingest",
+      "brain-reflect",
+      "brain-lint",
+      "brain-migrate",
+      "brain-search",
+    ]) {
       expect(names).toContain(n);
     }
   });
 
   it("keeps brain skill scope/privacy guidance aligned with runtime tool registration", () => {
     const skill = (name: string) =>
-      fs.readFileSync(path.join(process.cwd(), "default-skills", "skills", name, "SKILL.md"), "utf8");
+      fs.readFileSync(
+        path.join(process.cwd(), "default-skills", "skills", name, "SKILL.md"),
+        "utf8",
+      );
     const migrate = skill("brain-migrate");
-    expect(migrate).toContain("Decide the target from the user's requested repo");
+    expect(migrate).toContain(
+      "Decide the target from the user's requested repo",
+    );
     expect(migrate).toContain("BOTH personal `mcp__repo__*` tools and group");
     expect(migrate).toContain("Group / team brain requested");
-    expect(migrate).not.toContain("If only `mcp__group_repo__*` tools are available");
+    expect(migrate).not.toContain(
+      "If only `mcp__group_repo__*` tools are available",
+    );
 
     const reflect = skill("brain-reflect");
-    expect(reflect).toContain("Personal scope reads raw/ + wiki/ and may optionally review");
-    expect(reflect).toContain("group scope reads ONLY the group's raw/ + wiki/ and never conversations");
-    expect(reflect).not.toContain("It reads ONLY raw/ and wiki/ — never conversations");
+    expect(reflect).toContain(
+      "Personal scope reads raw/ + wiki/ and may optionally review",
+    );
+    expect(reflect).toContain(
+      "group scope reads ONLY the group's raw/ + wiki/ and never conversations",
+    );
+    expect(reflect).not.toContain(
+      "It reads ONLY raw/ and wiki/ — never conversations",
+    );
   });
 });
-
 
 describe("loadAgentPluginRoots", () => {
   // Regression guard: the chat endpoint AND the routine scheduler both build
@@ -698,15 +808,24 @@ describe("loadAgentPluginRoots", () => {
       // Isolate the knowledge-repo assertion from any bundled default plugins.
       defaultPluginsDir: path.join(dataDir, "no-default-plugins"),
     });
-    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const owner = store.createUser({
+      username: "owner",
+      displayName: "Owner",
+      password: "password123",
+    });
     // A bare remote knowledge repo that is itself a valid plugin
     // (.claude-plugin/plugin.json) carrying one skill, pushed to `main` so
     // ensureClone has a branch to track.
     const remote = makeBareRemote(path.join(dataDir, "remote.git"));
     const seed = path.join(dataDir, "seed");
     makePluginRepo(seed, "knowledge"); // git init + commit with .claude-plugin/plugin.json
-    makeSkill(seed, "daily-summary", "---\nname: daily-summary\ndescription: Summarize the day\n---");
-    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    makeSkill(
+      seed,
+      "daily-summary",
+      "---\nname: daily-summary\ndescription: Summarize the day\n---",
+    );
+    const g = (...a: string[]) =>
+      execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
     g("add", "-A");
     g("commit", "-q", "-m", "add skill");
     g("branch", "-M", "main");
@@ -719,20 +838,28 @@ describe("loadAgentPluginRoots", () => {
   it("includes the connected knowledge repo's skill root (chat/routine parity)", async () => {
     const { store, config, ownerId } = setupKnowledgeRepo("lapr-kr");
     const warns: string[] = [];
-    const roots = await loadAgentPluginRoots(store, ownerId, config, (m) => warns.push(m));
+    const roots = await loadAgentPluginRoots(store, ownerId, config, (m) =>
+      warns.push(m),
+    );
 
     const clone = knowledgeClonePath(ownerId, config);
     expect(roots.map((r) => r.path)).toContain(clone);
-    expect(fs.existsSync(path.join(clone, "skills", "daily-summary", "SKILL.md"))).toBe(true);
+    expect(
+      fs.existsSync(path.join(clone, "skills", "daily-summary", "SKILL.md")),
+    ).toBe(true);
   });
 
   it("returns [] in local runtime even with a knowledge repo connected", async () => {
     const { store, config, ownerId } = setupKnowledgeRepo("lapr-local");
-    const roots = await loadAgentPluginRoots(store, ownerId, { ...config, agentRuntime: "local" }, () => {});
+    const roots = await loadAgentPluginRoots(
+      store,
+      ownerId,
+      { ...config, agentRuntime: "local" },
+      () => {},
+    );
     expect(roots).toEqual([]);
   });
 });
-
 
 describe("inspectRepoContents", () => {
   it("reports a single-plugin repo", async () => {
@@ -761,7 +888,6 @@ describe("inspectRepoContents", () => {
   });
 });
 
-
 describe("resolvePluginRoots selection", () => {
   it("loads all marketplace plugins when selected is null", async () => {
     const dir = path.join(tempDir, "mkt-all");
@@ -781,15 +907,17 @@ describe("resolvePluginRoots selection", () => {
   it("ignores selection for a single-plugin repo", async () => {
     const dir = path.join(tempDir, "single-sel");
     makePluginRepo(dir, "solo");
-    const roots = await resolvePluginRoots(dir, "solo", undefined, ["nonexistent"]);
+    const roots = await resolvePluginRoots(dir, "solo", undefined, [
+      "nonexistent",
+    ]);
     expect(roots).toEqual([dir]);
   });
 });
 
-
 describe("stripManagedMcpServers", () => {
   const mcpPath = (dir: string) => path.join(dir, ".mcp.json");
-  const readMcp = (dir: string) => JSON.parse(fs.readFileSync(mcpPath(dir), "utf8"));
+  const readMcp = (dir: string) =>
+    JSON.parse(fs.readFileSync(mcpPath(dir), "utf8"));
 
   it("removes an app-managed server (hex-ssh) but keeps others", async () => {
     const dir = path.join(tempDir, "strip1");
@@ -797,7 +925,10 @@ describe("stripManagedMcpServers", () => {
     fs.writeFileSync(
       mcpPath(dir),
       JSON.stringify({
-        "hex-ssh": { command: "npx", args: ["-y", "@levnikolaevich/hex-ssh-mcp"] },
+        "hex-ssh": {
+          command: "npx",
+          args: ["-y", "@levnikolaevich/hex-ssh-mcp"],
+        },
         other: { command: "x" },
       }),
     );
@@ -838,27 +969,43 @@ describe("stripManagedMcpServers", () => {
   });
 });
 
-
 describe("listSkillsInRoots", () => {
   it("parses name/description from SKILL.md frontmatter and tags the source", async () => {
     const root = path.join(tempDir, "skills-basic");
-    makeSkill(root, "alpha", "---\nname: Alpha\ndescription: Does alpha things\n---", "# body");
+    makeSkill(
+      root,
+      "alpha",
+      "---\nname: Alpha\ndescription: Does alpha things\n---",
+      "# body",
+    );
     const skills = await listSkillsInRoots([{ path: root, source: "default" }]);
-    expect(skills).toEqual([{ name: "Alpha", description: "Does alpha things", source: "default" }]);
+    expect(skills).toEqual([
+      { name: "Alpha", description: "Does alpha things", source: "default" },
+    ]);
   });
 
   it("strips surrounding quotes from frontmatter values", async () => {
     const root = path.join(tempDir, "skills-quoted");
-    makeSkill(root, "q", `---\nname: "Quoted"\ndescription: 'has: a colon'\n---`);
+    makeSkill(
+      root,
+      "q",
+      `---\nname: "Quoted"\ndescription: 'has: a colon'\n---`,
+    );
     const skills = await listSkillsInRoots([{ path: root, source: "s" }]);
-    expect(skills[0]).toMatchObject({ name: "Quoted", description: "has: a colon" });
+    expect(skills[0]).toMatchObject({
+      name: "Quoted",
+      description: "has: a colon",
+    });
   });
 
   it("falls back to the directory name when frontmatter omits name", async () => {
     const root = path.join(tempDir, "skills-noname");
     makeSkill(root, "from-dir", "---\ndescription: no name field\n---");
     const skills = await listSkillsInRoots([{ path: root, source: "s" }]);
-    expect(skills[0]).toMatchObject({ name: "from-dir", description: "no name field" });
+    expect(skills[0]).toMatchObject({
+      name: "from-dir",
+      description: "no name field",
+    });
   });
 
   it("tolerates a missing skills/ directory and a SKILL.md without frontmatter", async () => {
@@ -900,7 +1047,10 @@ describe("listSkillsInRoots", () => {
       "intro\n\n---\n\nmore\n\n----\n",
     );
     const skills = await listSkillsInRoots([{ path: root, source: "s" }]);
-    expect(skills[0]).toMatchObject({ name: "Ruled", description: "has a rule below" });
+    expect(skills[0]).toMatchObject({
+      name: "Ruled",
+      description: "has a rule below",
+    });
   });
 
   it("reads a root that IS a single skill (SKILL.md at the root, no skills/ subdir)", async () => {
@@ -913,17 +1063,24 @@ describe("listSkillsInRoots", () => {
       path.join(root, "SKILL.md"),
       "---\nname: noah-deploy\ndescription: deploy procedure\n---\n# body",
     );
-    const skills = await listSkillsInRoots([{ path: root, source: "지식 저장소" }]);
+    const skills = await listSkillsInRoots([
+      { path: root, source: "지식 저장소" },
+    ]);
     expect(skills).toEqual([
-      { name: "noah-deploy", description: "deploy procedure", source: "지식 저장소" },
+      {
+        name: "noah-deploy",
+        description: "deploy procedure",
+        source: "지식 저장소",
+      },
     ]);
   });
 });
 
-
 describe("interpretResult", () => {
   it("returns the text of a successful result", () => {
-    expect(interpretResult({ type: "result", subtype: "success", result: "hi" })).toEqual({
+    expect(
+      interpretResult({ type: "result", subtype: "success", result: "hi" }),
+    ).toEqual({
       text: "hi",
     });
   });
@@ -952,11 +1109,17 @@ describe("interpretResult", () => {
       modelUsage: { "claude-opus-4-8": { contextWindow: 200000 } },
     });
     expect(r.text).toBe("hi");
-    expect(r.usage).toEqual({ inputTokens: 1000, outputTokens: 40, contextWindow: 200000 });
+    expect(r.usage).toEqual({
+      inputTokens: 1000,
+      outputTokens: 40,
+      contextWindow: 200000,
+    });
   });
 
   it("omits usage when the result carries no counts", () => {
-    expect(interpretResult({ type: "result", subtype: "success", result: "hi" })).toEqual({ text: "hi" });
+    expect(
+      interpretResult({ type: "result", subtype: "success", result: "hi" }),
+    ).toEqual({ text: "hi" });
   });
 
   it("ignores non-result messages", () => {
@@ -996,14 +1159,19 @@ describe("mainAssistantContextTokens", () => {
         message: { usage: { input_tokens: 5000 } },
       }),
     ).toBeUndefined();
-    expect(mainAssistantContextTokens({ type: "assistant", message: {} })).toBeUndefined();
+    expect(
+      mainAssistantContextTokens({ type: "assistant", message: {} }),
+    ).toBeUndefined();
     expect(mainAssistantContextTokens({ type: "result" })).toBeUndefined();
     expect(mainAssistantContextTokens(null)).toBeUndefined();
   });
 });
 
 describe("streamStartContextTokens", () => {
-  const startEvent = (usage: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({
+  const startEvent = (
+    usage: Record<string, unknown>,
+    extra: Record<string, unknown> = {},
+  ) => ({
     type: "stream_event",
     parent_tool_use_id: null,
     event: { type: "message_start", message: { usage } },
@@ -1013,14 +1181,20 @@ describe("streamStartContextTokens", () => {
   it("sums input + cache read + cache creation from a main-agent message_start", () => {
     expect(
       streamStartContextTokens(
-        startEvent({ input_tokens: 8_000, cache_read_input_tokens: 340_000, cache_creation_input_tokens: 2_000 }),
+        startEvent({
+          input_tokens: 8_000,
+          cache_read_input_tokens: 340_000,
+          cache_creation_input_tokens: 2_000,
+        }),
       ),
     ).toBe(350_000);
   });
 
   it("ignores subagent streams", () => {
     expect(
-      streamStartContextTokens(startEvent({ input_tokens: 5_000 }, { parent_tool_use_id: "agent-1" })),
+      streamStartContextTokens(
+        startEvent({ input_tokens: 5_000 }, { parent_tool_use_id: "agent-1" }),
+      ),
     ).toBeUndefined();
   });
 
@@ -1029,14 +1203,21 @@ describe("streamStartContextTokens", () => {
       streamStartContextTokens({
         type: "stream_event",
         parent_tool_use_id: null,
-        event: { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } },
+        event: {
+          type: "content_block_delta",
+          delta: { type: "text_delta", text: "hi" },
+        },
       }),
     ).toBeUndefined();
   });
 
   it("returns undefined for a zero/usage-less start and for non-stream messages", () => {
-    expect(streamStartContextTokens(startEvent({ input_tokens: 0 }))).toBeUndefined();
-    expect(streamStartContextTokens({ type: "assistant", message: {} })).toBeUndefined();
+    expect(
+      streamStartContextTokens(startEvent({ input_tokens: 0 })),
+    ).toBeUndefined();
+    expect(
+      streamStartContextTokens({ type: "assistant", message: {} }),
+    ).toBeUndefined();
     expect(streamStartContextTokens(null)).toBeUndefined();
   });
 });
@@ -1097,12 +1278,14 @@ describe("finalizeTurnUsage", () => {
   });
 
   it("omits contextWindow when none was reported but a snapshot exists", () => {
-    const usage = finalizeTurnUsage({ inputTokens: 500, outputTokens: 100 }, 42_000);
+    const usage = finalizeTurnUsage(
+      { inputTokens: 500, outputTokens: 100 },
+      42_000,
+    );
     expect(usage.inputTokens).toBe(42_000);
     expect(usage.contextWindow).toBeUndefined();
   });
 });
-
 
 describe("sdk message handlers", () => {
   function events() {
@@ -1125,16 +1308,33 @@ describe("sdk message handlers", () => {
   }
 
   it("summarizes common tool inputs for activity rows", () => {
-    expect(summarizeToolInput("Bash", { command: "  npm   test\n-- --runInBand  " })).toBe("npm test -- --runInBand");
-    expect(summarizeToolInput("Grep", { pattern: "needle", path: "src" })).toBe("needle · src");
-    expect(summarizeToolInput("Fetch", { url: "https://example.com/page" })).toBe("https://example.com/page");
-    expect(summarizeToolInput("Ask", { prompt: "x".repeat(200) })).toHaveLength(161);
+    expect(
+      summarizeToolInput("Bash", { command: "  npm   test\n-- --runInBand  " }),
+    ).toBe("npm test -- --runInBand");
+    expect(summarizeToolInput("Grep", { pattern: "needle", path: "src" })).toBe(
+      "needle · src",
+    );
+    expect(
+      summarizeToolInput("Fetch", { url: "https://example.com/page" }),
+    ).toBe("https://example.com/page");
+    expect(summarizeToolInput("Ask", { prompt: "x".repeat(200) })).toHaveLength(
+      161,
+    );
   });
 
   it("keeps SDK built-in tool presentation coverage in sync", () => {
-    const sdkToolsPath = path.join(process.cwd(), "node_modules", "@anthropic-ai", "claude-agent-sdk", "sdk-tools.d.ts");
+    const sdkToolsPath = path.join(
+      process.cwd(),
+      "node_modules",
+      "@anthropic-ai",
+      "claude-agent-sdk",
+      "sdk-tools.d.ts",
+    );
     const sdkTools = fs.readFileSync(sdkToolsPath, "utf8");
-    const sdkInputToolNames = Array.from(sdkTools.matchAll(/^\s*\|\s+([A-Za-z0-9]+)Input$/gm), (match) => match[1]);
+    const sdkInputToolNames = Array.from(
+      sdkTools.matchAll(/^\s*\|\s+([A-Za-z0-9]+)Input$/gm),
+      (match) => match[1],
+    );
     const handled = new Set([
       ...Object.keys(SDK_TOOL_LABELS),
       ...SDK_HIDDEN_ACTIVITY_TOOLS,
@@ -1154,9 +1354,24 @@ describe("sdk message handlers", () => {
         message: {
           content: [
             { type: "text", text: "hello" },
-            { type: "tool_use", id: "read-1", name: "Read", input: { file_path: "src/app.ts" } },
-            { type: "tool_use", id: "ask-1", name: "AskUserQuestion", input: { question: "ok?" } },
-            { type: "tool_use", id: "agent-1", name: "Task", input: { subagent_type: "research", prompt: "find" } },
+            {
+              type: "tool_use",
+              id: "read-1",
+              name: "Read",
+              input: { file_path: "src/app.ts" },
+            },
+            {
+              type: "tool_use",
+              id: "ask-1",
+              name: "AskUserQuestion",
+              input: { question: "ok?" },
+            },
+            {
+              type: "tool_use",
+              id: "agent-1",
+              name: "Task",
+              input: { subagent_type: "research", prompt: "find" },
+            },
             {
               type: "tool_use",
               id: "task-tool",
@@ -1210,10 +1425,30 @@ describe("sdk message handlers", () => {
         type: "assistant",
         message: {
           content: [
-            { type: "tool_use", id: "plan-in", name: "EnterPlanMode", input: {} },
-            { type: "tool_use", id: "plan-out", name: "ExitPlanMode", input: { allowedPrompts: [] } },
-            { type: "tool_use", id: "task-get", name: "TaskGet", input: { taskId: "task-1" } },
-            { type: "tool_use", id: "task-output", name: "TaskOutput", input: { task_id: "task-1", block: false, timeout: 0 } },
+            {
+              type: "tool_use",
+              id: "plan-in",
+              name: "EnterPlanMode",
+              input: {},
+            },
+            {
+              type: "tool_use",
+              id: "plan-out",
+              name: "ExitPlanMode",
+              input: { allowedPrompts: [] },
+            },
+            {
+              type: "tool_use",
+              id: "task-get",
+              name: "TaskGet",
+              input: { taskId: "task-1" },
+            },
+            {
+              type: "tool_use",
+              id: "task-output",
+              name: "TaskOutput",
+              input: { task_id: "task-1", block: false, timeout: 0 },
+            },
             { type: "tool_use", id: "task-list", name: "TaskList", input: {} },
           ],
         },
@@ -1236,7 +1471,14 @@ describe("sdk message handlers", () => {
       {
         type: "assistant",
         message: {
-          content: [{ type: "tool_use", id: "plan-in", name: "EnterPlanMode", input: {} }],
+          content: [
+            {
+              type: "tool_use",
+              id: "plan-in",
+              name: "EnterPlanMode",
+              input: {},
+            },
+          ],
         },
       },
       sink,
@@ -1271,7 +1513,9 @@ describe("sdk message handlers", () => {
     );
 
     expect(sink.onToolStart).not.toHaveBeenCalled();
-    expect(sink.onPlan).toHaveBeenCalledWith({ plan: "1. 확인\n2. 수정\n3. 검증" });
+    expect(sink.onPlan).toHaveBeenCalledWith({
+      plan: "1. 확인\n2. 수정\n3. 검증",
+    });
     expect(sink.onStatus).toHaveBeenCalledWith("계획을 확인하는 중…");
   });
 
@@ -1282,8 +1526,18 @@ describe("sdk message handlers", () => {
       {
         message: {
           content: [
-            { type: "tool_use", id: "agent-1", name: "Task", input: { prompt: "subtask" } },
-            { type: "tool_use", id: "read-1", name: "Read", input: { path: "README.md" } },
+            {
+              type: "tool_use",
+              id: "agent-1",
+              name: "Task",
+              input: { prompt: "subtask" },
+            },
+            {
+              type: "tool_use",
+              id: "read-1",
+              name: "Read",
+              input: { path: "README.md" },
+            },
           ],
         },
       },
@@ -1306,8 +1560,14 @@ describe("sdk message handlers", () => {
       state,
     );
 
-    expect(sink.onAgentEnd).toHaveBeenCalledWith({ agentId: "agent-1", ok: false });
-    expect(sink.onToolEnd).toHaveBeenCalledWith({ toolUseId: "read-1", ok: true });
+    expect(sink.onAgentEnd).toHaveBeenCalledWith({
+      agentId: "agent-1",
+      ok: false,
+    });
+    expect(sink.onToolEnd).toHaveBeenCalledWith({
+      toolUseId: "read-1",
+      ok: true,
+    });
   });
 
   it("emits task progress and terminal task state from task tools", () => {
@@ -1317,7 +1577,14 @@ describe("sdk message handlers", () => {
     handleAssistantMessage(
       {
         message: {
-          content: [{ type: "tool_use", id: "create-1", name: "TaskCreate", input: { task_id: "task-1", title: "Plan" } }],
+          content: [
+            {
+              type: "tool_use",
+              id: "create-1",
+              name: "TaskCreate",
+              input: { task_id: "task-1", title: "Plan" },
+            },
+          ],
         },
       },
       sink,
@@ -1331,7 +1598,11 @@ describe("sdk message handlers", () => {
               type: "tool_use",
               id: "progress-1",
               name: "TaskProgress",
-              input: { task_id: "task-1", status: "running", description: "Halfway" },
+              input: {
+                task_id: "task-1",
+                status: "running",
+                description: "Halfway",
+              },
             },
           ],
         },
@@ -1342,7 +1613,14 @@ describe("sdk message handlers", () => {
     handleAssistantMessage(
       {
         message: {
-          content: [{ type: "tool_use", id: "done-1", name: "TaskComplete", input: { task_id: "task-1", description: "Done" } }],
+          content: [
+            {
+              type: "tool_use",
+              id: "done-1",
+              name: "TaskComplete",
+              input: { task_id: "task-1", description: "Done" },
+            },
+          ],
         },
       },
       sink,
@@ -1377,7 +1655,11 @@ describe("sdk message handlers", () => {
       sink,
       state,
     );
-    handleSystemEvent({ subtype: "plugin_install", name: "alpha", status: "installed" }, sink, state);
+    handleSystemEvent(
+      { subtype: "plugin_install", name: "alpha", status: "installed" },
+      sink,
+      state,
+    );
     handleSystemEvent(
       {
         subtype: "permission_denied",
@@ -1394,10 +1676,21 @@ describe("sdk message handlers", () => {
 
     expect(sink.onModel).toHaveBeenCalledWith("claude-sonnet");
     expect(sink.onSessionId).toHaveBeenCalledWith("sess-1");
-    expect(sink.onStatus).toHaveBeenCalledWith("Claude 준비 완료 (claude-sonnet)");
-    expect(sink.onPlugin).toHaveBeenCalledWith({ status: "completed", name: "alpha" });
-    expect(sink.onPlugin).toHaveBeenCalledWith({ status: "completed", name: "beta" });
-    expect(sink.onPlugin).toHaveBeenCalledWith({ status: "installed", name: "alpha" });
+    expect(sink.onStatus).toHaveBeenCalledWith(
+      "Claude 준비 완료 (claude-sonnet)",
+    );
+    expect(sink.onPlugin).toHaveBeenCalledWith({
+      status: "completed",
+      name: "alpha",
+    });
+    expect(sink.onPlugin).toHaveBeenCalledWith({
+      status: "completed",
+      name: "beta",
+    });
+    expect(sink.onPlugin).toHaveBeenCalledWith({
+      status: "installed",
+      name: "alpha",
+    });
     expect(sink.onBlocked).toHaveBeenCalledWith({
       toolUseId: "tool-1",
       toolName: "Bash",
@@ -1413,16 +1706,38 @@ describe("sdk message handlers", () => {
     const sink = events();
     const state = createLoopState();
 
-    handleSystemEvent({ subtype: "task_started", task_id: "hidden", skip_transcript: true }, sink, state);
-    handleSystemEvent({ subtype: "task_progress", task_id: "hidden", summary: "ignored" }, sink, state);
     handleSystemEvent(
-      { subtype: "task_started", task_id: "task-1", tool_use_id: "tool-1", task_type: "workflow", description: "Work" },
+      { subtype: "task_started", task_id: "hidden", skip_transcript: true },
       sink,
       state,
     );
-    handleSystemEvent({ subtype: "task_progress", task_id: "task-1", last_tool_name: "Read" }, sink, state);
     handleSystemEvent(
-      { subtype: "task_updated", task_id: "task-1", patch: { status: "failed", error: "bad", is_backgrounded: true } },
+      { subtype: "task_progress", task_id: "hidden", summary: "ignored" },
+      sink,
+      state,
+    );
+    handleSystemEvent(
+      {
+        subtype: "task_started",
+        task_id: "task-1",
+        tool_use_id: "tool-1",
+        task_type: "workflow",
+        description: "Work",
+      },
+      sink,
+      state,
+    );
+    handleSystemEvent(
+      { subtype: "task_progress", task_id: "task-1", last_tool_name: "Read" },
+      sink,
+      state,
+    );
+    handleSystemEvent(
+      {
+        subtype: "task_updated",
+        task_id: "task-1",
+        patch: { status: "failed", error: "bad", is_backgrounded: true },
+      },
       sink,
       state,
     );
@@ -1438,8 +1753,21 @@ describe("sdk message handlers", () => {
       sink,
       state,
     );
-    handleSystemEvent({ subtype: "task_progress", task_id: "agent-task", summary: "Reading" }, sink, state);
-    handleSystemEvent({ subtype: "task_notification", task_id: "agent-task", status: "completed", summary: "Done" }, sink, state);
+    handleSystemEvent(
+      { subtype: "task_progress", task_id: "agent-task", summary: "Reading" },
+      sink,
+      state,
+    );
+    handleSystemEvent(
+      {
+        subtype: "task_notification",
+        task_id: "agent-task",
+        status: "completed",
+        summary: "Done",
+      },
+      sink,
+      state,
+    );
 
     expect(sink.onTaskStart).toHaveBeenCalledTimes(1);
     expect(sink.onTaskStart).toHaveBeenCalledWith({
@@ -1451,7 +1779,10 @@ describe("sdk message handlers", () => {
       description: "Work",
       prompt: undefined,
     });
-    expect(sink.onTaskUpdate).toHaveBeenCalledWith({ taskId: "tool-1", lastToolName: "Read" });
+    expect(sink.onTaskUpdate).toHaveBeenCalledWith({
+      taskId: "tool-1",
+      lastToolName: "Read",
+    });
     expect(sink.onTaskEnd).toHaveBeenCalledWith({
       taskId: "tool-1",
       ok: false,
@@ -1465,7 +1796,10 @@ describe("sdk message handlers", () => {
       description: "Investigate",
     });
     expect(sink.onStatus).toHaveBeenCalledWith("에이전트 작업 중: Reading");
-    expect(sink.onAgentEnd).toHaveBeenCalledWith({ agentId: "agent-tool", ok: true });
+    expect(sink.onAgentEnd).toHaveBeenCalledWith({
+      agentId: "agent-tool",
+      ok: true,
+    });
   });
 
   it("streams only main-agent deltas and extracts main assistant text", () => {
@@ -1473,7 +1807,13 @@ describe("sdk message handlers", () => {
 
     expect(
       handleStreamEvent(
-        { type: "stream_event", event: { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } } },
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "hi" },
+          },
+        },
         sink,
       ),
     ).toBe("hi");
@@ -1483,12 +1823,20 @@ describe("sdk message handlers", () => {
         {
           type: "stream_event",
           parent_tool_use_id: "agent-1",
-          event: { type: "content_block_delta", delta: { type: "text_delta", text: "hidden" } },
+          event: {
+            type: "content_block_delta",
+            delta: { type: "text_delta", text: "hidden" },
+          },
         },
         sink,
       ),
     ).toBe("");
-    expect(handleStreamEvent({ type: "stream_event", event: { type: "other" } }, sink)).toBe("");
+    expect(
+      handleStreamEvent(
+        { type: "stream_event", event: { type: "other" } },
+        sink,
+      ),
+    ).toBe("");
 
     expect(
       extractMainAssistantText({
@@ -1501,20 +1849,28 @@ describe("sdk message handlers", () => {
         },
       }),
     ).toBe("A\nB");
-    expect(extractMainAssistantText({ parent_tool_use_id: "agent-1", message: { content: [{ type: "text", text: "C" }] } })).toBe("");
+    expect(
+      extractMainAssistantText({
+        parent_tool_use_id: "agent-1",
+        message: { content: [{ type: "text", text: "C" }] },
+      }),
+    ).toBe("");
     expect(extractMainAssistantText({ message: { content: null } })).toBe("");
   });
 });
 
-
 describe("second brain search (rankBrainNotes / parseNoteFrontmatter)", () => {
   it("parses inline + block frontmatter and tolerates missing/garbage blocks", () => {
-    const inline = parseNoteFrontmatter('---\ntitle: Deploy\ntags: [ops, ci]\naliases: ["배포"]\n---\nbody here');
+    const inline = parseNoteFrontmatter(
+      '---\ntitle: Deploy\ntags: [ops, ci]\naliases: ["배포"]\n---\nbody here',
+    );
     expect(inline.fm.title).toBe("Deploy");
     expect(inline.fm.tags).toEqual(["ops", "ci"]);
     expect(inline.fm.aliases).toEqual(["배포"]);
     expect(inline.body.trim()).toBe("body here");
-    const block = parseNoteFrontmatter("---\ntitle: X\ntags:\n  - a\n  - b\n---\nB");
+    const block = parseNoteFrontmatter(
+      "---\ntitle: X\ntags:\n  - a\n  - b\n---\nB",
+    );
     expect(block.fm.tags).toEqual(["a", "b"]);
     // No frontmatter → empty fields, whole content is body (never throws).
     const none = parseNoteFrontmatter("just text, no frontmatter");
@@ -1528,9 +1884,18 @@ describe("second brain search (rankBrainNotes / parseNoteFrontmatter)", () => {
       fs.mkdirSync(path.join(dir, path.dirname(rel)), { recursive: true });
       fs.writeFileSync(path.join(dir, rel), content);
     };
-    write("wiki/concepts/deploy.md", "---\ntitle: Deploy runbook\ntags: [ops]\n---\nSteps to ship.");
-    write("wiki/entities/alice.md", "---\ntitle: Alice\n---\nAlice mentioned deploy once in passing.");
-    write("wiki/_template.md", "---\ntitle: deploy deploy deploy\n---\ntemplate must be excluded");
+    write(
+      "wiki/concepts/deploy.md",
+      "---\ntitle: Deploy runbook\ntags: [ops]\n---\nSteps to ship.",
+    );
+    write(
+      "wiki/entities/alice.md",
+      "---\ntitle: Alice\n---\nAlice mentioned deploy once in passing.",
+    );
+    write(
+      "wiki/_template.md",
+      "---\ntitle: deploy deploy deploy\n---\ntemplate must be excluded",
+    );
     write("wiki/index.md", "# Index\ndeploy");
     const res = await rankBrainNotes(dir, "deploy");
     expect(res.kind).toBe("ok");
@@ -1548,7 +1913,13 @@ describe("second brain search (rankBrainNotes / parseNoteFrontmatter)", () => {
 });
 
 describe("buildPrompt", () => {
-  const avatar = (over = {}) => ({ id: "a1", displayName: "도우미", alias: "", persona: "", ...over });
+  const avatar = (over = {}) => ({
+    id: "a1",
+    displayName: "도우미",
+    alias: "",
+    persona: "",
+    ...over,
+  });
   const req = (over = {}) => ({ message: "안녕", avatar: avatar(), ...over });
 
   it("opens with displayName when no alias is set", () => {
@@ -1571,13 +1942,19 @@ describe("buildPrompt", () => {
   });
 
   it("names the owner in the prompt when the viewer is the owner", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영" }),
+      0,
+    );
     expect(p).toContain("**owner**");
     expect(p).toContain('"신진영"');
   });
 
   it("injects system awareness and owner system-management tool guidance", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영" }),
+      0,
+    );
     expect(p).toContain("Noah Almighty (avatar-chat)");
     expect(p).toContain("mcp__system__describe_system");
     expect(p).toContain("mcp__system__create_routine");
@@ -1585,8 +1962,28 @@ describe("buildPrompt", () => {
     expect(p).toContain("load starting from the next conversation");
   });
 
+  it("omits prompt guidance for disabled MCP tool groups", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        mcpToolGroups: ["git_repo"],
+      }),
+      0,
+    );
+    expect(p).toContain("disabled these MCP tool groups");
+    expect(p).toContain("mcp__git_repo__register_repo");
+    expect(p).not.toContain("mcp__system__describe_system");
+    expect(p).not.toContain("mcp__confluence__");
+    expect(p).not.toContain("mcp__brain__search");
+    expect(p).not.toContain("mcp__canvas__show");
+  });
+
   it("injects the second-brain trigger for the owner when a repo is connected", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, knowledgeRepoConfigured: true }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, knowledgeRepoConfigured: true }),
+      0,
+    );
     expect(p).toContain("Second brain");
     expect(p).toContain("mcp__brain__search");
     expect(p).toContain("brain-ingest");
@@ -1594,18 +1991,28 @@ describe("buildPrompt", () => {
   });
 
   it("omits the second-brain trigger when no knowledge repo is connected", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, knowledgeRepoConfigured: false }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, knowledgeRepoConfigured: false }),
+      0,
+    );
     expect(p).not.toContain("mcp__brain__search");
   });
 
   it("does NOT give a plain (non-elevated) colleague the brain trigger", () => {
-    const p = buildPrompt(req({ viewerIsOwner: false, knowledgeRepoConfigured: true }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: false, knowledgeRepoConfigured: true }),
+      0,
+    );
     expect(p).not.toContain("mcp__brain__search");
   });
 
   it("lets a trusted (elevated) teammate search the owner's brain (read-only)", () => {
     const p = buildPrompt(
-      req({ viewerIsOwner: false, elevated: true, knowledgeRepoConfigured: true }),
+      req({
+        viewerIsOwner: false,
+        elevated: true,
+        knowledgeRepoConfigured: true,
+      }),
       0,
     );
     expect(p).toContain("mcp__brain__search");
@@ -1618,7 +2025,12 @@ describe("buildPrompt", () => {
         viewerIsOwner: true,
         knowledgeRepoConfigured: true,
         groupMemberships: [
-          { id: "g1", name: "플랫폼팀", role: "member", knowledgeRepoConfigured: true },
+          {
+            id: "g1",
+            name: "플랫폼팀",
+            role: "member",
+            knowledgeRepoConfigured: true,
+          },
         ],
       }),
       0,
@@ -1632,7 +2044,12 @@ describe("buildPrompt", () => {
         viewerIsOwner: true,
         knowledgeMemory: {
           personal: "항상 존댓말을 쓰세요.",
-          groups: [{ name: "보안팀", content: "비밀번호는 절대 평문으로 다루지 마세요." }],
+          groups: [
+            {
+              name: "보안팀",
+              content: "비밀번호는 절대 평문으로 다루지 마세요.",
+            },
+          ],
         },
       }),
       0,
@@ -1647,48 +2064,20 @@ describe("buildPrompt", () => {
 
   it("omits the standing-memory section when there is no knowledge memory", () => {
     const none = buildPrompt(req({ viewerIsOwner: true }), 0);
-    expect(none).not.toContain("Standing guidance from your knowledge repositories");
+    expect(none).not.toContain(
+      "Standing guidance from your knowledge repositories",
+    );
     // Empty/whitespace content contributes nothing either.
     const empty = buildPrompt(
-      req({ viewerIsOwner: true, knowledgeMemory: { personal: "  ", groups: [] } }),
-      0,
-    );
-    expect(empty).not.toContain("Standing guidance from your knowledge repositories");
-  });
-
-  it("offers to create the knowledge repo via the repo tool on a greeting when GIT_TOKEN is set", () => {
-    const p = buildPrompt(
       req({
         viewerIsOwner: true,
-        viewerName: "신진영",
-        knowledgeRepoConfigured: false,
-        gitTokenSet: true,
-        greeting: true,
+        knowledgeMemory: { personal: "  ", groups: [] },
       }),
       0,
     );
-    expect(p).toContain("no knowledge repository is connected yet");
-    expect(p).toContain("mcp__repo__create_repo");
-    // The pending-requests nudge composes into the same greeting line.
-    expect(p).toContain("Then ask what you can help with");
-  });
-
-  it("guides the owner to set GIT_TOKEN first on a greeting when none is set", () => {
-    const p = buildPrompt(
-      req({
-        viewerIsOwner: true,
-        viewerName: "신진영",
-        knowledgeRepoConfigured: false,
-        gitTokenSet: false,
-        greeting: true,
-      }),
-      0,
+    expect(empty).not.toContain(
+      "Standing guidance from your knowledge repositories",
     );
-    expect(p).toContain("`GIT_TOKEN` is not set either");
-    expect(p).toContain("Git credentials");
-    // Falls back to the manual marketplace-format guidance when there's no token.
-    expect(p).toContain(".claude-plugin/marketplace.json");
-    expect(p).toContain("skills/<name>/SKILL.md");
   });
 
   it("gives standing create_repo guidance mid-conversation when no repo is connected", () => {
@@ -1702,20 +2091,26 @@ describe("buildPrompt", () => {
       }),
       0,
     );
-    // Standing (every owner turn, not just greeting): the avatar is told it HAS
+    // Standing guidance: the avatar is told it HAS
     // create_repo and to use it directly instead of manual setup / scaffold-first.
     expect(mid).toContain("mcp__repo__create_repo");
     expect(mid).toContain("github.enterprise.local");
     expect(mid).toContain("do not walk them through manual steps");
-    // The greeting-only proactive suggestion is NOT injected mid-conversation.
+    // The removed greeting-only proactive phrasing is not injected.
     expect(mid).not.toContain("no knowledge repository is connected yet");
     // The manage-capability blurb is withheld until a repo is connected.
-    expect(mid).not.toContain("directly manage your own **knowledge repository**");
+    expect(mid).not.toContain(
+      "directly manage your own **knowledge repository**",
+    );
   });
 
   it("guides the owner to set GIT_TOKEN mid-conversation when none is set and no repo exists", () => {
     const mid = buildPrompt(
-      req({ viewerIsOwner: true, knowledgeRepoConfigured: false, gitTokenSet: false }),
+      req({
+        viewerIsOwner: true,
+        knowledgeRepoConfigured: false,
+        gitTokenSet: false,
+      }),
       0,
     );
     expect(mid).toContain("`GIT_TOKEN` is not set either");
@@ -1724,22 +2119,34 @@ describe("buildPrompt", () => {
 
   it("shows the repo-management capability to the owner once a repo is connected", () => {
     const p = buildPrompt(
-      req({ viewerIsOwner: true, viewerName: "신진영", knowledgeRepoConfigured: true }),
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        knowledgeRepoConfigured: true,
+      }),
       0,
     );
-    expect(p).toContain("directly manage your own **knowledge repository** (an owner-only personal repo)");
+    expect(p).toContain(
+      "directly manage your own **knowledge repository** (an owner-only personal repo)",
+    );
     expect(p).not.toContain("no knowledge repository is connected yet");
   });
 
   it("tells the owner general git repo push is not main-only", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영" }),
+      0,
+    );
     expect(p).toContain("General **git repo work**");
     expect(p).toContain("`push` is not main-only");
     expect(p).toContain("set that name as `register_repo`'s `branch`");
   });
 
   it("tells the owner how to enable SSH tools when no SSH key is configured", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영" }),
+      0,
+    );
     expect(p).toContain("SSH tools are still disabled");
     expect(p).toContain("SSH_PRIVATE_KEY");
     expect(p).toContain("mcp__ssh_identity__generate_key");
@@ -1747,40 +2154,60 @@ describe("buildPrompt", () => {
   });
 
   it("omits the SSH enablement guidance once an SSH key is configured", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY"] }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY"] }),
+      0,
+    );
     expect(p).not.toContain("SSH tools are still disabled");
     // The key name still appears in the secret-names listing, not the nudge.
     expect(p).toContain("SSH_PRIVATE_KEY");
   });
 
   it("does not show SSH enablement guidance to colleagues", () => {
-    const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: false, viewerName: "김철수" }),
+      0,
+    );
     expect(p).not.toContain("SSH tools are still disabled");
   });
 
   it("does not show the missing knowledge repo guidance to colleagues or headless runs", () => {
     const colleague = buildPrompt(
-      req({ viewerIsOwner: false, viewerName: "김철수", knowledgeRepoConfigured: false }),
+      req({
+        viewerIsOwner: false,
+        viewerName: "김철수",
+        knowledgeRepoConfigured: false,
+      }),
       0,
     );
     expect(colleague).not.toContain("no knowledge repository is connected yet");
 
     const headless = buildPrompt(
-      req({ viewerIsOwner: true, headless: true, knowledgeRepoConfigured: false }),
+      req({
+        viewerIsOwner: true,
+        headless: true,
+        knowledgeRepoConfigured: false,
+      }),
       0,
     );
     expect(headless).not.toContain("no knowledge repository is connected yet");
   });
 
   it("names the colleague in the prompt for a non-owner viewer", () => {
-    const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: false, viewerName: "김철수" }),
+      0,
+    );
     expect(p).toContain("**colleague**");
     expect(p).toContain('"김철수"');
     expect(p).toContain("read-only");
   });
 
   it("does not mark the chat read-only for a trusted (elevated) non-owner viewer", () => {
-    const p = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }),
+      0,
+    );
     expect(p).toContain("**colleague**");
     expect(p).not.toContain("read-only");
     expect(p).toContain("a user the owner trusts");
@@ -1796,7 +2223,10 @@ describe("buildPrompt", () => {
 
   it("shows configured secret names only to the owner, never values", () => {
     const owner = buildPrompt(
-      req({ viewerIsOwner: true, secretNames: ["SSH_PRIVATE_KEY", "API_TOKEN"] }),
+      req({
+        viewerIsOwner: true,
+        secretNames: ["SSH_PRIVATE_KEY", "API_TOKEN"],
+      }),
       0,
     );
     expect(owner).toContain("Secrets");
@@ -1805,23 +2235,24 @@ describe("buildPrompt", () => {
     expect(owner).not.toContain("secret-value");
 
     const colleague = buildPrompt(
-      req({ viewerIsOwner: false, elevated: true, secretNames: ["SSH_PRIVATE_KEY"] }),
+      req({
+        viewerIsOwner: false,
+        elevated: true,
+        secretNames: ["SSH_PRIVATE_KEY"],
+      }),
       0,
     );
     expect(colleague).not.toContain("SSH_PRIVATE_KEY");
 
     const headless = buildPrompt(
-      req({ viewerIsOwner: true, headless: true, secretNames: ["SSH_PRIVATE_KEY"] }),
+      req({
+        viewerIsOwner: true,
+        headless: true,
+        secretNames: ["SSH_PRIVATE_KEY"],
+      }),
       0,
     );
     expect(headless).not.toContain("SSH_PRIVATE_KEY");
-  });
-
-  it("does not append the user message on a greeting turn", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영", greeting: true }), 2);
-    expect(p).not.toContain("User message:");
-    // The pending-request count is surfaced in the greeting.
-    expect(p).toContain("2");
   });
 
   it("injects restored conversation history before the current user message", () => {
@@ -1871,7 +2302,12 @@ describe("buildPrompt", () => {
         knowledgeRepoConfigured: true,
         secretNames: ["GIT_TOKEN", "SSH_PRIVATE_KEY"],
         groupMemberships: [
-          { id: "g1", name: "플랫폼팀", role: "admin", knowledgeRepoConfigured: true },
+          {
+            id: "g1",
+            name: "플랫폼팀",
+            role: "admin",
+            knowledgeRepoConfigured: true,
+          },
         ],
       }),
       0,
@@ -1923,13 +2359,24 @@ describe("buildPrompt", () => {
   });
 
   it("injects the git-MCP-only rule for owners and trusted users but not plain colleagues", () => {
-    const owner = buildPrompt(req({ viewerIsOwner: true, viewerName: "신진영" }), 0);
+    const owner = buildPrompt(
+      req({ viewerIsOwner: true, viewerName: "신진영" }),
+      0,
+    );
     expect(owner).toContain("Remote git work goes through MCP tools ONLY");
     expect(owner).toContain("do NOT work around it or retry with Bash git");
-    const trusted = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
+    const trusted = buildPrompt(
+      req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }),
+      0,
+    );
     expect(trusted).toContain("Remote git work goes through MCP tools ONLY");
-    const colleague = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수" }), 0);
-    expect(colleague).not.toContain("Remote git work goes through MCP tools ONLY");
+    const colleague = buildPrompt(
+      req({ viewerIsOwner: false, viewerName: "김철수" }),
+      0,
+    );
+    expect(colleague).not.toContain(
+      "Remote git work goes through MCP tools ONLY",
+    );
   });
 
   it("explains group-sourced trust when the elevated viewer shares a group with the owner", () => {
@@ -1945,7 +2392,10 @@ describe("buildPrompt", () => {
     expect(p).toContain("'플랫폼팀'");
     expect(p).toContain("automatically trusted");
     // Without a shared group the original direct-trust wording is kept.
-    const direct = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }), 0);
+    const direct = buildPrompt(
+      req({ viewerIsOwner: false, elevated: true, viewerName: "김철수" }),
+      0,
+    );
     expect(direct).toContain("a user the owner trusts");
     expect(direct).not.toContain("automatically trusted");
   });
@@ -1954,25 +2404,37 @@ describe("buildPrompt", () => {
   it("injects canvas guidance only when canvasEnabled", () => {
     const off = buildPrompt(req({ viewerIsOwner: true }), 0);
     expect(off).not.toContain("mcp__canvas__show");
-    const on = buildPrompt(req({ viewerIsOwner: true, canvasEnabled: true }), 0);
+    const on = buildPrompt(
+      req({ viewerIsOwner: true, canvasEnabled: true }),
+      0,
+    );
     expect(on).toContain("mcp__canvas__show");
     expect(on).toContain("Visual canvas");
   });
 
   it("gives a colleague the canvas guidance too when the feature is enabled", () => {
-    const p = buildPrompt(req({ viewerIsOwner: false, viewerName: "김철수", canvasEnabled: true }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: false, viewerName: "김철수", canvasEnabled: true }),
+      0,
+    );
     expect(p).toContain("Visual canvas");
   });
 
   it("lists enabled experimental features only for owner-driven turns", () => {
-    const owner = buildPrompt(req({ viewerIsOwner: true, experimentalFeatures: ["canvas"] }), 0);
+    const owner = buildPrompt(
+      req({ viewerIsOwner: true, experimentalFeatures: ["canvas"] }),
+      0,
+    );
     expect(owner).toContain("experimental");
     expect(owner).toContain("`canvas`");
   });
 
   // ---- working repository (opened via open_repo) ----
   it("injects working-repository guidance for the owner when activeRepoName is set", () => {
-    const p = buildPrompt(req({ viewerIsOwner: true, activeRepoName: "myrepo" }), 0);
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, activeRepoName: "myrepo" }),
+      0,
+    );
     expect(p).toContain("Working repository");
     expect(p).toContain("myrepo");
     expect(p).toContain("git add");
@@ -1984,7 +2446,15 @@ describe("buildPrompt", () => {
   });
 
   it("injects working-repository guidance for a trusted user too", () => {
-    const p = buildPrompt(req({ viewerIsOwner: false, elevated: true, viewerName: "김철수", activeRepoName: "myrepo" }), 0);
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: false,
+        elevated: true,
+        viewerName: "김철수",
+        activeRepoName: "myrepo",
+      }),
+      0,
+    );
     expect(p).toContain("Working repository");
   });
 
@@ -2002,7 +2472,6 @@ describe("buildPrompt", () => {
     expect(p).not.toContain("mcp__git_repo__read_file");
   });
 });
-
 
 describe("buildPreToolUseHook auto-approve safety contract", () => {
   const READONLY = ["Read", "Glob", "Grep"];
@@ -2038,7 +2507,12 @@ exit 1
   // Invoke the hook for a non-read-only tool and return the permission decision.
   // `elevated` = owner OR trusted user (the tool-permission level).
   const decide = (
-    opts: { elevated: boolean; headless: boolean; autoApprove: boolean; allowHeadlessTools?: boolean },
+    opts: {
+      elevated: boolean;
+      headless: boolean;
+      autoApprove: boolean;
+      allowHeadlessTools?: boolean;
+    },
     events: AgentEvents = {},
   ) => {
     const hook = buildPreToolUseHook(
@@ -2049,25 +2523,50 @@ exit 1
       opts.allowHeadlessTools === true,
       opts.autoApprove,
     );
-    return hook({ tool_name: "Bash", tool_input: { command: "rm -rf /" }, tool_use_id: "t1" }, "t1");
+    return hook(
+      {
+        tool_name: "Bash",
+        tool_input: { command: "rm -rf /" },
+        tool_use_id: "t1",
+      },
+      "t1",
+    );
   };
 
   it("auto-approves a write tool for a present elevated viewer who opted in (no prompt)", async () => {
     let prompted = false;
     const out = await decide(
       { elevated: true, headless: false, autoApprove: true },
-      { onPermission: async () => { prompted = true; return { behavior: "allow" }; } },
+      {
+        onPermission: async () => {
+          prompted = true;
+          return { behavior: "allow" };
+        },
+      },
     );
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(prompted).toBe(false); // auto-approve must short-circuit the prompt
   });
 
   it("rewrites supported Bash commands through rtk before allowing execution", async () => {
-    const hook = buildPreToolUseHook({}, true, READONLY, false, false, true, "owner", DEFAULT_HEX_SSH_TOOL_POLICY, fakeRtk());
+    const hook = buildPreToolUseHook(
+      {},
+      true,
+      READONLY,
+      false,
+      false,
+      true,
+      "owner",
+      DEFAULT_HEX_SSH_TOOL_POLICY,
+      fakeRtk(),
+    );
     const out = await hook(
       {
         tool_name: "Bash",
-        tool_input: { command: "git status && git diff", description: "Inspect local changes" },
+        tool_input: {
+          command: "git status && git diff",
+          description: "Inspect local changes",
+        },
         tool_use_id: "t-rtk",
       },
       "t-rtk",
@@ -2099,48 +2598,80 @@ exit 1
       fakeRtk(),
     );
     const out = await hook(
-      { tool_name: "Bash", tool_input: { command: "npm run build" }, tool_use_id: "t-rtk-prompt" },
+      {
+        tool_name: "Bash",
+        tool_input: { command: "npm run build" },
+        tool_use_id: "t-rtk-prompt",
+      },
       "t-rtk-prompt",
     );
 
     expect(promptedInput?.command).toBe("rtk npm run build");
-    expect(out.hookSpecificOutput.updatedInput).toEqual({ command: "rtk npm run build" });
+    expect(out.hookSpecificOutput.updatedInput).toEqual({
+      command: "rtk npm run build",
+    });
   });
 
   it("leaves Bash commands unchanged when rtk has no rewrite", () => {
     expect(rewriteBashCommandWithRtk("echo hi", fakeRtk())).toBeNull();
     expect(rewriteBashCommandWithRtk("rtk git status", fakeRtk())).toBeNull();
-    expect(rewriteBashCommandWithRtk("git status", path.join(tempDir, "missing-rtk"))).toBeNull();
+    expect(
+      rewriteBashCommandWithRtk(
+        "git status",
+        path.join(tempDir, "missing-rtk"),
+      ),
+    ).toBeNull();
   });
 
   it("still prompts an elevated viewer when auto-approve is off", async () => {
     let prompted = false;
     const out = await decide(
       { elevated: true, headless: false, autoApprove: false },
-      { onPermission: async () => { prompted = true; return { behavior: "deny" }; } },
+      {
+        onPermission: async () => {
+          prompted = true;
+          return { behavior: "deny" };
+        },
+      },
     );
     expect(prompted).toBe(true);
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
   it("NEVER auto-approves a headless run, even with autoApprove=true", async () => {
-    const out = await decide({ elevated: true, headless: true, autoApprove: true });
+    const out = await decide({
+      elevated: true,
+      headless: true,
+      autoApprove: true,
+    });
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
   it("auto-approves an elevated headless routine only when explicitly allowed", async () => {
-    const out = await decide({ elevated: true, headless: true, allowHeadlessTools: true, autoApprove: true });
+    const out = await decide({
+      elevated: true,
+      headless: true,
+      allowHeadlessTools: true,
+      autoApprove: true,
+    });
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
 
   it("NEVER auto-approves a non-elevated colleague, even with autoApprove=true", async () => {
-    const out = await decide({ elevated: false, headless: false, autoApprove: true });
+    const out = await decide({
+      elevated: false,
+      headless: false,
+      autoApprove: true,
+    });
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
   it("auto-allows a read-only tool regardless of autoApprove", async () => {
     const hook = buildPreToolUseHook({}, false, READONLY, false, false, false);
-    const out = await hook({ tool_name: "Read", tool_input: { file_path: "/x" }, tool_use_id: "t2" }, "t2");
+    const out = await hook(
+      { tool_name: "Read", tool_input: { file_path: "/x" }, tool_use_id: "t2" },
+      "t2",
+    );
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
 
@@ -2150,21 +2681,51 @@ exit 1
       trusted: ["ssh-read-lines"],
       colleague: [],
     });
-    const trustedHook = buildPreToolUseHook({}, true, READONLY, false, false, true, "trusted", policy);
+    const trustedHook = buildPreToolUseHook(
+      {},
+      true,
+      READONLY,
+      false,
+      false,
+      true,
+      "trusted",
+      policy,
+    );
     const read = await trustedHook(
-      { tool_name: "mcp__hex-ssh__ssh-read-lines", tool_input: { host: "prod", filePath: "/var/log/app.log" }, tool_use_id: "hex1" },
+      {
+        tool_name: "mcp__hex-ssh__ssh-read-lines",
+        tool_input: { host: "prod", filePath: "/var/log/app.log" },
+        tool_use_id: "hex1",
+      },
       "hex1",
     );
     const exec = await trustedHook(
-      { tool_name: "mcp__hex-ssh__remote-ssh", tool_input: { host: "prod", command: "id" }, tool_use_id: "hex2" },
+      {
+        tool_name: "mcp__hex-ssh__remote-ssh",
+        tool_input: { host: "prod", command: "id" },
+        tool_use_id: "hex2",
+      },
       "hex2",
     );
     expect(read.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(exec.hookSpecificOutput.permissionDecision).toBe("deny");
 
-    const ownerHook = buildPreToolUseHook({}, true, READONLY, false, false, true, "owner", policy);
+    const ownerHook = buildPreToolUseHook(
+      {},
+      true,
+      READONLY,
+      false,
+      false,
+      true,
+      "owner",
+      policy,
+    );
     const ownerExec = await ownerHook(
-      { tool_name: "mcp__hex-ssh__remote-ssh", tool_input: { host: "prod", command: "id" }, tool_use_id: "hex3" },
+      {
+        tool_name: "mcp__hex-ssh__remote-ssh",
+        tool_input: { host: "prod", command: "id" },
+        tool_use_id: "hex3",
+      },
       "hex3",
     );
     expect(ownerExec.hookSpecificOutput.permissionDecision).toBe("allow");
@@ -2173,7 +2734,12 @@ exit 1
   it("auto-allows SDK orchestration tools without prompting", async () => {
     let prompted = false;
     const hook = buildPreToolUseHook(
-      { onPermission: async () => { prompted = true; return { behavior: "deny" }; } },
+      {
+        onPermission: async () => {
+          prompted = true;
+          return { behavior: "deny" };
+        },
+      },
       false,
       READONLY,
       false,
@@ -2181,16 +2747,25 @@ exit 1
       false,
     );
     const tools = [
-      { tool_name: "TaskCreate", tool_input: { task_subject: "검증", task_description: "테스트 실행" } },
+      {
+        tool_name: "TaskCreate",
+        tool_input: { task_subject: "검증", task_description: "테스트 실행" },
+      },
       { tool_name: "TaskGet", tool_input: { taskId: "task-1" } },
-      { tool_name: "TaskOutput", tool_input: { task_id: "task-1", block: false, timeout: 0 } },
+      {
+        tool_name: "TaskOutput",
+        tool_input: { task_id: "task-1", block: false, timeout: 0 },
+      },
       { tool_name: "TaskList", tool_input: {} },
       { tool_name: "EnterPlanMode", tool_input: {} },
       { tool_name: "ExitPlanMode", tool_input: { allowedPrompts: [] } },
     ];
 
     for (const [idx, tool] of tools.entries()) {
-      const out = await hook({ ...tool, tool_use_id: `task-${idx}` }, `task-${idx}`);
+      const out = await hook(
+        { ...tool, tool_use_id: `task-${idx}` },
+        `task-${idx}`,
+      );
       expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     }
     expect(prompted).toBe(false);
@@ -2201,29 +2776,66 @@ exit 1
   // so the command reaches the git policy verbatim. activeRepoMode is the 10th arg.
   const NO_RTK = "/nonexistent-rtk-xyz";
   const activeRepoHook = (activeRepoMode: boolean) =>
-    buildPreToolUseHook({}, true, READONLY, false, false, true, "owner", DEFAULT_HEX_SSH_TOOL_POLICY, NO_RTK, activeRepoMode);
+    buildPreToolUseHook(
+      {},
+      true,
+      READONLY,
+      false,
+      false,
+      true,
+      "owner",
+      DEFAULT_HEX_SSH_TOOL_POLICY,
+      NO_RTK,
+      activeRepoMode,
+    );
 
   it("blocks remote, branch-changing, and destructive Bash git in an active repo workspace", async () => {
-    for (const command of ["git push origin HEAD", "git pull", "git checkout -b x", "git reset --hard", "git commit --amend"]) {
-      const out = await activeRepoHook(true)({ tool_name: "Bash", tool_input: { command }, tool_use_id: "g" }, "g");
+    for (const command of [
+      "git push origin HEAD",
+      "git pull",
+      "git checkout -b x",
+      "git reset --hard",
+      "git commit --amend",
+    ]) {
+      const out = await activeRepoHook(true)(
+        { tool_name: "Bash", tool_input: { command }, tool_use_id: "g" },
+        "g",
+      );
       expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
-      expect(out.hookSpecificOutput.permissionDecisionReason).toContain("mcp__git_repo__");
+      expect(out.hookSpecificOutput.permissionDecisionReason).toContain(
+        "mcp__git_repo__",
+      );
     }
   });
 
   it("allows read-only and local commit Bash git in an active repo workspace", async () => {
-    for (const command of ["git status", "git diff", "git log --oneline -5", "git add docs/runbook.md", "git commit -m wip"]) {
-      const out = await activeRepoHook(true)({ tool_name: "Bash", tool_input: { command }, tool_use_id: "r" }, "r");
+    for (const command of [
+      "git status",
+      "git diff",
+      "git log --oneline -5",
+      "git add docs/runbook.md",
+      "git commit -m wip",
+    ]) {
+      const out = await activeRepoHook(true)(
+        { tool_name: "Bash", tool_input: { command }, tool_use_id: "r" },
+        "r",
+      );
       expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     }
   });
 
   it("does not block Bash git when NOT in an active repo workspace", async () => {
-    const out = await activeRepoHook(false)({ tool_name: "Bash", tool_input: { command: "git commit -m wip" }, tool_use_id: "n" }, "n");
+    const out = await activeRepoHook(false)(
+      {
+        tool_name: "Bash",
+        tool_input: { command: "git commit -m wip" },
+        tool_use_id: "n",
+      },
+      "n",
+    );
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
   });
 });
-
 
 describe("hex-ssh policy proxy", () => {
   it("filters tools/list and blocks disallowed tools/call", async () => {
@@ -2266,7 +2878,11 @@ process.stdin.on("data", (chunk) => {
 });
 `,
     );
-    const proxyPath = path.join(process.cwd(), "scripts", "hex-ssh-policy-proxy.mjs");
+    const proxyPath = path.join(
+      process.cwd(),
+      "scripts",
+      "hex-ssh-policy-proxy.mjs",
+    );
     const proxy = spawn(process.execPath, [proxyPath], {
       env: {
         ...process.env,
@@ -2280,10 +2896,16 @@ process.stdin.on("data", (chunk) => {
       const result = listed.result as { tools: { name: string }[] };
       expect(result.tools.map((tool) => tool.name)).toEqual(["ssh-read-lines"]);
 
-      const allowed = await rpc.request("tools/call", { name: "ssh-read-lines", arguments: {} });
+      const allowed = await rpc.request("tools/call", {
+        name: "ssh-read-lines",
+        arguments: {},
+      });
       expect(JSON.stringify(allowed.result)).toContain("called ssh-read-lines");
 
-      const blocked = await rpc.request("tools/call", { name: "remote-ssh", arguments: {} });
+      const blocked = await rpc.request("tools/call", {
+        name: "remote-ssh",
+        arguments: {},
+      });
       expect(blocked.error).toMatchObject({
         code: -32603,
         message: "hex-ssh tool 'remote-ssh' is not allowed by policy",
@@ -2296,39 +2918,63 @@ process.stdin.on("data", (chunk) => {
 
 describe("model fallback (routines)", () => {
   it("walks DOWN the tier order from the resolved model", () => {
-    expect(buildModelFallbackChain("opus")).toEqual(["opus", "sonnet", "haiku"]);
+    expect(buildModelFallbackChain("opus")).toEqual([
+      "opus",
+      "sonnet",
+      "haiku",
+    ]);
     expect(buildModelFallbackChain("sonnet")).toEqual(["sonnet", "haiku"]);
     expect(buildModelFallbackChain("haiku")).toEqual(["haiku"]);
   });
 
   it("tries a concrete (non-tier) primary first, then the lower tiers", () => {
-    expect(buildModelFallbackChain("claude-opus-4-8")).toEqual(["claude-opus-4-8", "sonnet", "haiku"]);
+    expect(buildModelFallbackChain("claude-opus-4-8")).toEqual([
+      "claude-opus-4-8",
+      "sonnet",
+      "haiku",
+    ]);
   });
 
   it("treats overload / 5xx / rate-limit / network errors as retryable", () => {
     expect(isRetryableModelError(new Error("Overloaded"))).toBe(true);
     expect(isRetryableModelError(new Error("API error 529"))).toBe(true);
     expect(isRetryableModelError(new Error("rate limit exceeded"))).toBe(true);
-    expect(isRetryableModelError(new Error("503 Service Unavailable"))).toBe(true);
+    expect(isRetryableModelError(new Error("503 Service Unavailable"))).toBe(
+      true,
+    );
     expect(isRetryableModelError(new Error("fetch failed"))).toBe(true);
     expect(isRetryableModelError({ status: 500, message: "boom" })).toBe(true);
   });
 
   it("does NOT retry on genuine (non-transient) errors", () => {
-    expect(isRetryableModelError(new Error("Reached maximum number of turns"))).toBe(false);
-    expect(isRetryableModelError(new Error("invalid_request_error: bad model"))).toBe(false);
+    expect(
+      isRetryableModelError(new Error("Reached maximum number of turns")),
+    ).toBe(false);
+    expect(
+      isRetryableModelError(new Error("invalid_request_error: bad model")),
+    ).toBe(false);
     expect(isRetryableModelError(new Error("401 unauthorized"))).toBe(false);
-    expect(isRetryableModelError({ status: 400, message: "bad request" })).toBe(false);
+    expect(isRetryableModelError({ status: 400, message: "bad request" })).toBe(
+      false,
+    );
   });
 
   it("detects a missing-resume-session error so the turn can self-heal without resume", () => {
     expect(
-      isMissingResumeSessionError(new Error("No conversation found with session ID abc-123")),
+      isMissingResumeSessionError(
+        new Error("No conversation found with session ID abc-123"),
+      ),
     ).toBe(true);
     // Case-insensitive, and works on a non-Error thrown value.
-    expect(isMissingResumeSessionError("no conversation found with session id xyz")).toBe(true);
+    expect(
+      isMissingResumeSessionError("no conversation found with session id xyz"),
+    ).toBe(true);
     // A missing session is NOT a transient model error (don't downgrade the model).
-    expect(isRetryableModelError(new Error("No conversation found with session ID abc"))).toBe(false);
+    expect(
+      isRetryableModelError(
+        new Error("No conversation found with session ID abc"),
+      ),
+    ).toBe(false);
     expect(isMissingResumeSessionError(new Error("Overloaded"))).toBe(false);
   });
 });

@@ -11,6 +11,7 @@ import type {
   StoredMessage,
 } from "../types.js";
 import { type Constructor, type StoreBase, now, parseNameList } from "./internal.js";
+import { allMcpToolGroupsSelected, normalizeMcpToolGroups, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
 
 /** Keep at most this many versions per canvas artifact (oldest pruned on overflow). */
 const MAX_CANVAS_VERSIONS = 20;
@@ -239,6 +240,38 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       const next = effort && effort.trim() ? effort.trim() : null;
       this.db
         .prepare("UPDATE conversations SET selected_effort = ? WHERE id = ? AND owner_user_id = ?")
+        .run(next, conversationId, ownerId);
+    }
+
+    /**
+     * The MCP tool groups enabled for this conversation. null means the default
+     * "all groups" behavior; [] is a real explicit choice (no optional MCP
+     * groups). Owner-scoped like model/effort.
+     */
+    getConversationMcpToolGroups(ownerId: string, conversationId: string): McpToolGroupId[] | null {
+      const row = this.db
+        .prepare("SELECT selected_mcp_tool_groups FROM conversations WHERE id = ? AND owner_user_id = ?")
+        .get(conversationId, ownerId) as { selected_mcp_tool_groups: string | null } | undefined;
+      const parsed = parseNameList(row?.selected_mcp_tool_groups ?? null);
+      return parsed ? normalizeMcpToolGroups(parsed) : null;
+    }
+
+    /**
+     * Persist a conversation's MCP tool-group selection. null or the full default
+     * set clears the column back to default-all; an empty array stores "[]".
+     */
+    setConversationMcpToolGroups(
+      ownerId: string,
+      conversationId: string,
+      groups: readonly McpToolGroupId[] | null,
+    ): void {
+      const normalized = groups ? normalizeMcpToolGroups([...groups]) : null;
+      const next =
+        normalized && !allMcpToolGroupsSelected(normalized)
+          ? JSON.stringify(normalized)
+          : null;
+      this.db
+        .prepare("UPDATE conversations SET selected_mcp_tool_groups = ? WHERE id = ? AND owner_user_id = ?")
         .run(next, conversationId, ownerId);
     }
 

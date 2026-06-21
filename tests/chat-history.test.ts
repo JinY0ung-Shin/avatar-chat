@@ -88,6 +88,43 @@ describe("chat history fallback", () => {
     // self-heal a missing SDK transcript by re-running without `resume`.
     expect(capturedRequests[0].conversationHistory).toEqual([{ role: "user", content: "첫 요청" }]);
   });
+
+  it("persists and reuses the conversation MCP tool-group selection", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "claude",
+      sessionSecret: "test",
+    });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerRes = await signup(owner, "tool-picker").expect(201);
+    const ownerId = ownerRes.body.user.id as string;
+    const conversationId = "conv-mcp-tools";
+
+    await owner
+      .post("/api/chat/stream")
+      .send({
+        avatarId: ownerId,
+        conversationId,
+        message: "Confluence만 써줘",
+        mcpToolGroups: ["confluence"],
+      })
+      .expect(200);
+
+    expect(capturedRequests).toHaveLength(1);
+    expect(capturedRequests[0].mcpToolGroups).toEqual(["confluence"]);
+
+    const saved = await owner.get(`/api/messages?conversationId=${conversationId}`).expect(200);
+    expect(saved.body.selectedMcpToolGroups).toEqual(["confluence"]);
+
+    await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId, message: "이어서" })
+      .expect(200);
+
+    expect(capturedRequests).toHaveLength(2);
+    expect(capturedRequests[1].mcpToolGroups).toEqual(["confluence"]);
+  });
 });
 
 describe("chat image attachments", () => {

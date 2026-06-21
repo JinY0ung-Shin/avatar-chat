@@ -1,12 +1,58 @@
 import type { AgentRequest } from "../types.js";
 import { normalizeGithubHost } from "../marketplace.js";
+import {
+  DEFAULT_MCP_TOOL_GROUPS,
+  MCP_TOOL_GROUPS,
+  type McpToolGroupId,
+} from "../../shared/mcpToolGroups.js";
 
 const HISTORY_MESSAGE_LIMIT = 24;
 const HISTORY_CHAR_LIMIT = 12_000;
 
-export function compactConversationHistory(history: AgentRequest["conversationHistory"]): NonNullable<AgentRequest["conversationHistory"]> {
+function enabledMcpToolGroups(
+  request: AgentRequest,
+): readonly McpToolGroupId[] {
+  return request.mcpToolGroups ?? DEFAULT_MCP_TOOL_GROUPS;
+}
+
+function mcpToolGroupEnabled(
+  request: AgentRequest,
+  id: McpToolGroupId,
+): boolean {
+  return enabledMcpToolGroups(request).includes(id);
+}
+
+function anyMcpToolGroupEnabled(
+  request: AgentRequest,
+  ids: McpToolGroupId[],
+): boolean {
+  return ids.some((id) => mcpToolGroupEnabled(request, id));
+}
+
+function disabledMcpToolGroupsSection(request: AgentRequest): string | null {
+  const enabled = enabledMcpToolGroups(request);
+  const disabled = MCP_TOOL_GROUPS.filter(
+    (group) => !enabled.includes(group.id),
+  );
+  if (disabled.length === 0) {
+    return null;
+  }
+  return (
+    "For this conversation, the user disabled these MCP tool groups in the chat composer: " +
+    disabled.map((group) => group.labelEn).join(", ") +
+    ". Do not call or suggest MCP tools from disabled groups unless the user re-enables them."
+  );
+}
+
+export function compactConversationHistory(
+  history: AgentRequest["conversationHistory"],
+): NonNullable<AgentRequest["conversationHistory"]> {
   const recent = (history ?? [])
-    .filter((message) => (message.role === "user" || message.role === "assistant") && message.content.trim())
+    .filter(
+      (message) =>
+        (message.role === "user" || message.role === "assistant") &&
+        message.content.trim(),
+    )
     .slice(-HISTORY_MESSAGE_LIMIT);
   const compacted: NonNullable<AgentRequest["conversationHistory"]> = [];
   let remaining = HISTORY_CHAR_LIMIT;
@@ -24,7 +70,9 @@ export function compactConversationHistory(history: AgentRequest["conversationHi
   return compacted;
 }
 
-export function conversationHistoryBlock(history: AgentRequest["conversationHistory"]): string | null {
+export function conversationHistoryBlock(
+  history: AgentRequest["conversationHistory"],
+): string | null {
   const compacted = compactConversationHistory(history);
   if (compacted.length === 0) {
     return null;
@@ -57,7 +105,11 @@ export const GIT_MCP_ONLY_GUIDANCE =
  * manage a connected repo, or how to create one (`create_repo`) when none exists
  * yet. `githubHost` is already normalized by the caller.
  */
-function knowledgeRepoSection(request: AgentRequest, knowledgeRepoConfigured: boolean, githubHost: string): string {
+function knowledgeRepoSection(
+  request: AgentRequest,
+  knowledgeRepoConfigured: boolean,
+  githubHost: string,
+): string {
   if (knowledgeRepoConfigured) {
     // The owner can have the avatar manage its connected knowledge repo.
     return (
@@ -67,8 +119,8 @@ function knowledgeRepoSection(request: AgentRequest, knowledgeRepoConfigured: bo
     );
   }
   // No repo yet → the `create_repo` tool IS available (exposed only in this
-  // state). STANDING guidance on every owner turn — not just the greeting —
-  // so the avatar actually uses it when asked to "make a repo" instead of
+  // state). Standing guidance on every owner turn lets the avatar actually use
+  // it when asked to "make a repo" instead of
   // giving manual setup steps or calling scaffold_skill first (which fails
   // without a connected repo, and previously misled the avatar).
   return request.gitTokenSet
@@ -98,7 +150,9 @@ function knowledgeRepoSection(request: AgentRequest, knowledgeRepoConfigured: bo
  *  - `routine`  — headless owner run: register_repo/list_repos/sync_repo/push, NO
  *                 open_repo/close_repo (no conversation → no working surface).
  */
-function gitRepoWorkflowSection(mode: "owner" | "teammate" | "routine"): string {
+function gitRepoWorkflowSection(
+  mode: "owner" | "teammate" | "routine",
+): string {
   const intro =
     mode === "owner"
       ? "General **git repo work** is separate from the knowledge-repository tools. When the owner asks you to manage a work/code repository, register it with `mcp__git_repo__register_repo`, then "
@@ -147,7 +201,10 @@ function gitRepoSection(): string {
  * elevated access) matches exactly the branches that call this, so the trigger
  * never names a tool the avatar can't call.
  */
-function brainSection(request: AgentRequest, mode: "owner" | "teammate" | "routine"): string | null {
+function brainSection(
+  request: AgentRequest,
+  mode: "owner" | "teammate" | "routine",
+): string | null {
   if (request.knowledgeRepoConfigured === false) {
     return null;
   }
@@ -161,7 +218,7 @@ function brainSection(request: AgentRequest, mode: "owner" | "teammate" | "routi
   const capture =
     " To capture a durable fact or decision use the **brain-ingest** skill; to consolidate `raw/` into clean `wiki/` notes use **brain-reflect**; to audit the vault use **brain-lint**. Brain edits are not pushed until you commit.";
   const conv =
-    mode === "routine"
+    mode === "routine" && mcpToolGroupEnabled(request, "system")
       ? " For a consolidation task you may review the owner's OWN recent conversations with `mcp__system__list_recent_conversations`/`read_conversation` (owner-scoped) to find durable facts to capture; never read anyone else's conversations."
       : "";
   return `${base}${capture}${migrate}${conv}`;
@@ -179,7 +236,9 @@ function groupsSection(request: AgentRequest): string | null {
   }
   const describe = (g: (typeof groups)[number]) =>
     `${g.name}(${g.role === "admin" ? "admin" : "member"}${g.knowledgeRepoConfigured ? ", shared repository connected" : ", no shared repository"})`;
-  const adminNoRepo = groups.filter((g) => g.role === "admin" && !g.knowledgeRepoConfigured);
+  const adminNoRepo = groups.filter(
+    (g) => g.role === "admin" && !g.knowledgeRepoConfigured,
+  );
   const groupLines = [
     `The owner belongs to the following groups: ${groups.map(describe).join(", ")}. ` +
       "Members of the same group **automatically trust each other (elevated)** — group co-membership is the ONLY source of elevated (owner-level tool) access. So when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and group-visible avatars can find and talk to each other.",
@@ -231,43 +290,6 @@ function sshEnablementSection(secretNames: string[]): string | null {
 }
 
 /**
- * Greeting-only owner section: pending info requests + a one-time knowledge-repo
- * setup suggestion when none is connected. Returns null when not a greeting turn.
- * `githubHost` is already normalized by the caller.
- */
-function greetingSection(
-  request: AgentRequest,
-  knowledgeRepoConfigured: boolean,
-  openRequestCount: number,
-  githubHost: string,
-): string | null {
-  // Greeting-only nudges, surfaced ONLY when the owner opens a fresh chat so
-  // they aren't re-injected mid-conversation: pending info requests, plus a
-  // one-time suggestion to set up a knowledge repo when none is connected yet.
-  if (!request.greeting) {
-    return null;
-  }
-  const greetingParts = [
-    openRequestCount > 0
-      ? `You are starting a conversation. First greet the owner briefly, then **check the pending information requests with pending_requests (${openRequestCount} open)** and report them concisely, numbered.`
-      : "You are starting a conversation. Greet the owner briefly. (There are no pending information requests, so there is no need to mention them.)",
-  ];
-  if (!knowledgeRepoConfigured) {
-    greetingParts.push(
-      request.gitTokenSet
-        ? "Also, no knowledge repository is connected yet. A personal knowledge repository is needed to accumulate work knowledge, long-term memory, and skills. " +
-            `Since \`GIT_TOKEN\` is already set, let the owner know that, if they want, you can create a private repository on the currently configured internal GitHub host (\`${githubHost}\`) with \`mcp__repo__create_repo\` and connect it right away. ` +
-            "If the user wants, take a repository name, create it with create_repo, then fill it in the order `scaffold_skill`→`write_file`→`commit`. (If they already have a repo in use, they can connect it directly under the knowledge repository setting.)"
-        : "Also, no knowledge repository is connected yet, and `GIT_TOKEN` is not set either. " +
-            "First guide them to register an internal Git token (`GIT_TOKEN`, with repo-creation permission) under Settings → **Git credentials**. Once registered, you can create and connect a repository with `mcp__repo__create_repo`. " +
-            "If they want to create it themselves, they can make a personal repo on internal GitHub and connect it under the knowledge repository setting. This repository must be in Claude plugin marketplace format: place `.claude-plugin/marketplace.json` at the root, and each skill must have `skills/<name>/SKILL.md` and `skills/<name>/.claude-plugin/plugin.json`.",
-    );
-  }
-  greetingParts.push("Then ask what you can help with.");
-  return greetingParts.join(" ");
-}
-
-/**
  * Standing CLAUDE.md memory injected every turn (personal repo + each enabled
  * group repo). Unlike skills (pulled on demand), this is always-on context, so
  * the server caps it before it reaches here. Carries an explicit injection
@@ -280,12 +302,22 @@ function knowledgeMemorySection(request: AgentRequest): string | null {
     return null;
   }
   const blocks: string[] = [];
-  if (memory.personal && memory.personal.trim()) {
-    blocks.push(`### Personal knowledge repository — CLAUDE.md\n${memory.personal.trim()}`);
+  if (
+    mcpToolGroupEnabled(request, "personal_knowledge") &&
+    memory.personal &&
+    memory.personal.trim()
+  ) {
+    blocks.push(
+      `### Personal knowledge repository — CLAUDE.md\n${memory.personal.trim()}`,
+    );
   }
-  for (const group of memory.groups ?? []) {
-    if (group.content && group.content.trim()) {
-      blocks.push(`### Group knowledge repository "${group.name}" — CLAUDE.md\n${group.content.trim()}`);
+  if (mcpToolGroupEnabled(request, "group_knowledge")) {
+    for (const group of memory.groups ?? []) {
+      if (group.content && group.content.trim()) {
+        blocks.push(
+          `### Group knowledge repository "${group.name}" — CLAUDE.md\n${group.content.trim()}`,
+        );
+      }
     }
   }
   if (blocks.length === 0) {
@@ -306,7 +338,7 @@ function knowledgeMemorySection(request: AgentRequest): string | null {
  * the feature is off for this turn.
  */
 function canvasSection(request: AgentRequest): string | null {
-  if (!request.canvasEnabled) {
+  if (!request.canvasEnabled || !mcpToolGroupEnabled(request, "canvas")) {
     return null;
   }
   return (
@@ -329,6 +361,9 @@ function canvasSection(request: AgentRequest): string | null {
  * no git credentials.
  */
 function activeRepoSection(request: AgentRequest): string | null {
+  if (!mcpToolGroupEnabled(request, "git_repo")) {
+    return null;
+  }
   const name = request.activeRepoName?.trim();
   if (!name) {
     return null;
@@ -357,9 +392,14 @@ function experimentalFeaturesSection(request: AgentRequest): string | null {
   );
 }
 
-export function buildPrompt(request: AgentRequest, openRequestCount: number): string {
+export function buildPrompt(
+  request: AgentRequest,
+  _openRequestCount?: number,
+): string {
   const alias = request.avatar.alias?.trim();
-  const secretNames = Array.from(new Set((request.secretNames ?? []).filter(Boolean))).sort();
+  const secretNames = Array.from(
+    new Set((request.secretNames ?? []).filter(Boolean)),
+  ).sort();
   const githubHost = normalizeGithubHost(request.githubHost);
   const lines = [
     alias
@@ -377,30 +417,40 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     "System meta-cognition: this service is Noah Almighty (avatar-chat). An avatar operates from a combination of its profile/persona, default skills, owner plugins, a personal knowledge repository, scheduled routines, secret names, and trusted-user settings. " +
       "When you describe system state or what changes are possible, do not guess — base your answer on the provided tools and the current configuration.",
   );
+  const disabledToolGroupsBlock = disabledMcpToolGroupsSection(request);
+  if (disabledToolGroupsBlock) {
+    lines.push(disabledToolGroupsBlock);
+  }
   const knowledgeMemoryBlock = knowledgeMemorySection(request);
   if (knowledgeMemoryBlock) {
     lines.push(knowledgeMemoryBlock);
   }
-  if (request.confluenceUrlConfigured && request.confluencePatConfigured) {
-    lines.push(
-      "The shared Confluence tools are enabled. Use the `mcp__confluence__*` tools for Confluence search / page retrieval / space lookup / attachment and image asset retrieval, and only attempt page creation or updates when you have owner or trusted-user permission.",
-    );
-  } else {
-    const missing = [
-      request.confluenceUrlConfigured ? "" : "the `CONFLUENCE_URL` environment variable",
-      request.confluencePatConfigured ? "" : "the `CONFLUENCE_PAT` secret",
-    ].filter(Boolean);
-    lines.push(
-      `The shared Confluence tools are registered, but still need ${missing.join(" and ")} to be configured. When you receive a Confluence request, first check status with \`mcp__confluence__describe_config\`.`,
-    );
+  if (mcpToolGroupEnabled(request, "confluence")) {
+    if (request.confluenceUrlConfigured && request.confluencePatConfigured) {
+      lines.push(
+        "The shared Confluence tools are enabled. Use the `mcp__confluence__*` tools for Confluence search / page retrieval / space lookup / attachment and image asset retrieval, and only attempt page creation or updates when you have owner or trusted-user permission.",
+      );
+    } else {
+      const missing = [
+        request.confluenceUrlConfigured
+          ? ""
+          : "the `CONFLUENCE_URL` environment variable",
+        request.confluencePatConfigured ? "" : "the `CONFLUENCE_PAT` secret",
+      ].filter(Boolean);
+      lines.push(
+        `The shared Confluence tools are registered, but still need ${missing.join(" and ")} to be configured. When you receive a Confluence request, first check status with \`mcp__confluence__describe_config\`.`,
+      );
+    }
   }
   // Standing (every-turn) guidance: the avatar can recommend a better-suited
   // teammate avatar. Phrased for ANY viewer class — in a headless routine there's
   // no user to redirect, but the search tool stays useful for the work itself.
-  lines.push(
-    "Finding other avatars: if you judge that the user's request falls outside your capabilities (skills, knowledge, capability hashtags), first try to help directly, then use `mcp__avatars__search_avatars` to find other public avatars suited to that topic. " +
-      "If a better-suited avatar exists, suggest that the user try talking to that avatar (@username).",
-  );
+  if (mcpToolGroupEnabled(request, "avatars")) {
+    lines.push(
+      "Finding other avatars: if you judge that the user's request falls outside your capabilities (skills, knowledge, capability hashtags), first try to help directly, then use `mcp__avatars__search_avatars` to find other public avatars suited to that topic. " +
+        "If a better-suited avatar exists, suggest that the user try talking to that avatar (@username).",
+    );
+  }
   // Standing canvas guidance for any non-headless turn where the owner enabled
   // the experimental canvas feature (visible to all viewer classes).
   const canvasBlock = canvasSection(request);
@@ -419,32 +469,47 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     );
     if (request.allowHeadlessTools) {
       lines.push(
-        "This routine runs with the same tool permissions as the owner's normal conversation. Perform the file/remote/repository operations it needs, but since you cannot wait for confirmation questions or permission prompts, keep the scope of your work conservative. If there is an important result the user should be told about separately, leave an app notification with `mcp__system__notify_user`.",
+        "This routine runs with the same tool permissions as the owner's normal conversation. Perform the file/remote/repository operations it needs, but since you cannot wait for confirmation questions or permission prompts, keep the scope of your work conservative." +
+          (mcpToolGroupEnabled(request, "system")
+            ? " If there is an important result the user should be told about separately, leave an app notification with `mcp__system__notify_user`."
+            : ""),
       );
       // Routine self-state (META-COGNITION): owner-level tools ARE registered
       // for this run, so the routine needs the same state an owner chat gets —
       // otherwise it guesses (e.g. calls scaffold_skill with no repo connected,
       // or never realizes its group repo tools exist).
-      const routineState: string[] = [
-        request.knowledgeRepoConfigured !== false
-          ? "Personal knowledge repository: connected — `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit` are available (changes must be committed to be pushed)."
-          : request.gitTokenSet
-            ? "Personal knowledge repository: none — if a task needs a repository, create and connect one first with `mcp__repo__create_repo` (`scaffold_skill`/`write_file`/`commit` fail before one is connected)."
-            : "Personal knowledge repository: none, and `GIT_TOKEN` is also not set — you cannot do tasks that need a repository, so note in your result report that a token needs to be registered.",
-      ];
+      const routineState: string[] = [];
+      if (mcpToolGroupEnabled(request, "personal_knowledge")) {
+        routineState.push(
+          request.knowledgeRepoConfigured !== false
+            ? "Personal knowledge repository: connected — `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit` are available (changes must be committed to be pushed)."
+            : request.gitTokenSet
+              ? "Personal knowledge repository: none — if a task needs a repository, create and connect one first with `mcp__repo__create_repo` (`scaffold_skill`/`write_file`/`commit` fail before one is connected)."
+              : "Personal knowledge repository: none, and `GIT_TOKEN` is also not set — you cannot do tasks that need a repository, so note in your result report that a token needs to be registered.",
+        );
+      }
       const routineGroups = request.groupMemberships ?? [];
-      if (routineGroups.length > 0) {
-        const teamBrainNote = routineGroups.some((g) => g.knowledgeRepoConfigured)
+      if (
+        mcpToolGroupEnabled(request, "group_knowledge") &&
+        routineGroups.length > 0
+      ) {
+        const teamBrainNote = routineGroups.some(
+          (g) => g.knowledgeRepoConfigured,
+        )
           ? " You can also SEARCH a group's team brain with `mcp__group_brain__search`/`get_note` (scoped to one group; members read)."
           : "";
         // Mirror groupsSection()'s admin-with-no-repo nudge so a routine knows it
         // can stand up a group's shared repo with mcp__group_repo__create_repo.
-        const routineAdminNoRepo = routineGroups.filter((g) => g.role === "admin" && !g.knowledgeRepoConfigured);
+        const routineAdminNoRepo = routineGroups.filter(
+          (g) => g.role === "admin" && !g.knowledgeRepoConfigured,
+        );
         const createRepoNote =
           routineAdminNoRepo.length > 0
             ? ` For the group(s) you administer that have no shared repository yet (${routineAdminNoRepo
                 .map((g) => `'${g.name}'`)
-                .join(", ")}), you can create and connect one with \`mcp__group_repo__create_repo\`.`
+                .join(
+                  ", ",
+                )}), you can create and connect one with \`mcp__group_repo__create_repo\`.`
             : "";
         routineState.push(
           `Owner's groups: ${routineGroups
@@ -452,7 +517,9 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
               (g) =>
                 `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`,
             )
-            .join(", ")} — you can use the \`mcp__group_repo__*\` tools (members read, only admins write/commit).${createRepoNote}${teamBrainNote}`,
+            .join(
+              ", ",
+            )} — you can use the \`mcp__group_repo__*\` tools (members read, only admins write/commit).${createRepoNote}${teamBrainNote}`,
         );
       }
       if (secretNames.length > 0) {
@@ -460,15 +527,28 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
           `Configured secret names: ${secretNames.map((name) => `\`${name}\``).join(", ")} (the values are not exposed; do not output them).`,
         );
       }
-      const routineExperimental = (request.experimentalFeatures ?? []).filter(Boolean);
+      const routineExperimental = (request.experimentalFeatures ?? []).filter(
+        Boolean,
+      );
       if (routineExperimental.length > 0) {
         routineState.push(
           `Enabled experimental (beta) features: ${routineExperimental.map((f) => `\`${f}\``).join(", ")} (behavior may change).`,
         );
       }
-      routineState.push("If you need any other current configuration or state, call `mcp__system__describe_system`.");
-      lines.push(`Current self-state: ${routineState.join(" ")}`);
-      const routineBrainBlock = brainSection(request, "routine");
+      if (mcpToolGroupEnabled(request, "system")) {
+        routineState.push(
+          "If you need any other current configuration or state, call `mcp__system__describe_system`.",
+        );
+      }
+      if (routineState.length > 0) {
+        lines.push(`Current self-state: ${routineState.join(" ")}`);
+      }
+      const routineBrainBlock = mcpToolGroupEnabled(
+        request,
+        "personal_knowledge",
+      )
+        ? brainSection(request, "routine")
+        : null;
       if (routineBrainBlock) {
         lines.push(routineBrainBlock);
       }
@@ -477,8 +557,18 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       // request.conversationId, which the scheduler does not thread — so the
       // "routine" mode of the shared helper drops the working-surface flow). Reusing
       // gitRepoWorkflowSection keeps this from drifting from the owner branch.
-      lines.push(gitRepoWorkflowSection("routine"));
-      lines.push(GIT_MCP_ONLY_GUIDANCE);
+      if (mcpToolGroupEnabled(request, "git_repo")) {
+        lines.push(gitRepoWorkflowSection("routine"));
+      }
+      if (
+        anyMcpToolGroupEnabled(request, [
+          "personal_knowledge",
+          "group_knowledge",
+          "git_repo",
+        ])
+      ) {
+        lines.push(GIT_MCP_ONLY_GUIDANCE);
+      }
     } else {
       lines.push(
         "This run is read-only. Do not modify or create files; use only the read tools (Read/Glob/Grep).",
@@ -491,22 +581,40 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
         ? `The person you are talking to right now is this avatar's **owner**, "${name}".`
         : "The person you are talking to right now is this avatar's **owner**.",
     );
-    lines.push(
-      "When the owner asks about this system itself or requests configuration changes, check the current state with `mcp__system__describe_system`, then directly use `mcp__system__create_routine`/`update_routine`/`delete_routine` or `mcp__system__add_plugin`/`set_plugin_enabled` as appropriate. " +
-        "For an important result or required action the user should be told about separately, leave an app notification with `mcp__system__notify_user`. Routine times are based on KST `HH:MM`, and plugin add/enable changes usually load starting from the next conversation.",
-    );
-    const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
-    lines.push(knowledgeRepoSection(request, knowledgeRepoConfigured, githubHost));
-    const ownerBrainBlock = brainSection(request, "owner");
-    if (ownerBrainBlock) {
-      lines.push(ownerBrainBlock);
+    if (mcpToolGroupEnabled(request, "system")) {
+      lines.push(
+        "When the owner asks about this system itself or requests configuration changes, check the current state with `mcp__system__describe_system`, then directly use `mcp__system__create_routine`/`update_routine`/`delete_routine` or `mcp__system__add_plugin`/`set_plugin_enabled` as appropriate. " +
+          "For an important result or required action the user should be told about separately, leave an app notification with `mcp__system__notify_user`. Routine times are based on KST `HH:MM`, and plugin add/enable changes usually load starting from the next conversation.",
+      );
     }
-    lines.push(gitRepoSection());
-    lines.push(GIT_MCP_ONLY_GUIDANCE);
+    const knowledgeRepoConfigured = request.knowledgeRepoConfigured !== false;
+    if (mcpToolGroupEnabled(request, "personal_knowledge")) {
+      lines.push(
+        knowledgeRepoSection(request, knowledgeRepoConfigured, githubHost),
+      );
+      const ownerBrainBlock = brainSection(request, "owner");
+      if (ownerBrainBlock) {
+        lines.push(ownerBrainBlock);
+      }
+    }
+    if (mcpToolGroupEnabled(request, "git_repo")) {
+      lines.push(gitRepoSection());
+    }
+    if (
+      anyMcpToolGroupEnabled(request, [
+        "personal_knowledge",
+        "group_knowledge",
+        "git_repo",
+      ])
+    ) {
+      lines.push(GIT_MCP_ONLY_GUIDANCE);
+    }
     // Group meta-cognition: which groups the owner is in, their role, and the
     // shared group knowledge repo (managed via mcp__group_repo__*). Group members
     // auto-trust each other, so teammates' avatars are reachable at elevated level.
-    const groupBlock = groupsSection(request);
+    const groupBlock = mcpToolGroupEnabled(request, "group_knowledge")
+      ? groupsSection(request)
+      : null;
     if (groupBlock) {
       lines.push(groupBlock);
     }
@@ -514,7 +622,9 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     if (secretsBlock) {
       lines.push(secretsBlock);
     }
-    const sshBlock = sshEnablementSection(secretNames);
+    const sshBlock = mcpToolGroupEnabled(request, "ssh")
+      ? sshEnablementSection(secretNames)
+      : null;
     if (sshBlock) {
       lines.push(sshBlock);
     }
@@ -528,22 +638,30 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
     if (experimentalBlock) {
       lines.push(experimentalBlock);
     }
-    const greetingBlock = greetingSection(request, knowledgeRepoConfigured, openRequestCount, githubHost);
-    if (greetingBlock) {
-      lines.push(greetingBlock);
-    }
   } else {
     const name = request.viewerName?.trim();
+    const colleagueGapGuidance = mcpToolGroupEnabled(
+      request,
+      "personal_knowledge",
+    )
+      ? " If you do not know information that only the owner would know, do not guess — relay it to the owner via request_info, following the knowledge-backfill skill."
+      : " If you do not know information that only the owner would know, do not guess; explain that the personal-knowledge MCP group is disabled for this conversation.";
     lines.push(
       name
-        ? `The person you are talking to right now is a **colleague**, "${name}". If you do not know information that only the owner would know, do not guess — relay it to the owner via request_info, following the knowledge-backfill skill.`
-        : `The person you are talking to right now is a **colleague**. If you do not know information that only the owner would know, do not guess — relay it to the owner via request_info, following the knowledge-backfill skill.`,
+        ? `The person you are talking to right now is a **colleague**, "${name}".${colleagueGapGuidance}`
+        : `The person you are talking to right now is a **colleague**.${colleagueGapGuidance}`,
     );
     // A trusted user works at the owner's tool level — don't claim read-only.
     // A plain colleague stays read-only.
     if (!request.elevated) {
       lines.push(
-        "This conversation is read-only. Do not modify or create files; use only the read tools (Read/Glob/Grep), the permitted remote SSH lookup tools, and the provided information-request tools.",
+        "This conversation is read-only. Do not modify or create files; use only the read tools (Read/Glob/Grep)" +
+          (mcpToolGroupEnabled(request, "ssh")
+            ? ", the permitted remote SSH lookup tools"
+            : "") +
+          (mcpToolGroupEnabled(request, "personal_knowledge")
+            ? ", and the provided information-request tools."
+            : "."),
       );
     } else {
       // Tell the avatar WHY this viewer is elevated when the trust comes from
@@ -559,8 +677,13 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
       // elevated permissions (open/sync/push, but NOT register/remove). Shares the
       // single helper with gitRepoSection() so the two branches can't drift — this
       // copy previously advertised deleted MCP file-CRUD tools.
-      lines.push(gitRepoWorkflowSection("teammate"));
-      if (request.knowledgeRepoConfigured !== false) {
+      if (mcpToolGroupEnabled(request, "git_repo")) {
+        lines.push(gitRepoWorkflowSection("teammate"));
+      }
+      if (
+        mcpToolGroupEnabled(request, "personal_knowledge") &&
+        request.knowledgeRepoConfigured !== false
+      ) {
         lines.push(
           "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
         );
@@ -569,14 +692,25 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
           lines.push(teammateBrainBlock);
         }
       }
-      lines.push(GIT_MCP_ONLY_GUIDANCE);
+      if (
+        anyMcpToolGroupEnabled(request, [
+          "personal_knowledge",
+          "group_knowledge",
+          "git_repo",
+        ])
+      ) {
+        lines.push(GIT_MCP_ONLY_GUIDANCE);
+      }
       const trustedActiveRepoBlock = activeRepoSection(request);
       if (trustedActiveRepoBlock) {
         lines.push(trustedActiveRepoBlock);
       }
     }
     lines.push(
-      "Changing avatar system settings such as plugins, routines, and the knowledge repository is owner-only. If a colleague requests a change, guide them to ask the owner, or leave the needed context via request_info.",
+      "Changing avatar system settings such as plugins, routines, and the knowledge repository is owner-only. If a colleague requests a change, guide them to ask the owner" +
+        (mcpToolGroupEnabled(request, "personal_knowledge")
+          ? ", or leave the needed context via request_info."
+          : "."),
     );
   }
   // Stored history is the fallback for context the SDK session would otherwise
@@ -585,15 +719,11 @@ export function buildPrompt(request: AgentRequest, openRequestCount: number): st
   // duplicate it. The history still rides along on the request (resume turns
   // included) so claudeAgent can self-heal a stale/missing resume by re-running
   // without `resume` — then resumeSessionId is cleared and this block injects it.
-  const historyBlock =
-    request.greeting || request.resumeSessionId
-      ? null
-      : conversationHistoryBlock(request.conversationHistory);
+  const historyBlock = request.resumeSessionId
+    ? null
+    : conversationHistoryBlock(request.conversationHistory);
   if (historyBlock) {
     lines.push(historyBlock);
-  }
-  if (request.greeting) {
-    return lines.join("\n\n");
   }
   return `${lines.join("\n\n")}\n\n${request.headless ? "Task instruction" : "User message"}:\n${request.message}`;
 }

@@ -2,7 +2,14 @@ import fs from "node:fs";
 import Database from "better-sqlite3";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
 import logger from "../logger.js";
-import type { AppConfig, AvatarVisibility, CanvasArtifact, GroupRole, User, UserGroupMembership } from "../types.js";
+import type {
+  AppConfig,
+  AvatarVisibility,
+  CanvasArtifact,
+  GroupRole,
+  User,
+  UserGroupMembership,
+} from "../types.js";
 
 const SESSION_DAYS = 14;
 
@@ -87,7 +94,14 @@ function parseHashtags(raw: string | null): string[] {
   return parseNameList(raw) ?? [];
 }
 
-export { now, parseNameList, parseHashtags, MAX_HASHTAG_LEN, DEFAULT_SEARCH_LIMIT, SESSION_DAYS };
+export {
+  now,
+  parseNameList,
+  parseHashtags,
+  MAX_HASHTAG_LEN,
+  DEFAULT_SEARCH_LIMIT,
+  SESSION_DAYS,
+};
 
 export interface UserRow {
   id: string;
@@ -458,7 +472,7 @@ export class StoreBase {
     // JSON array of plugin names to load from the knowledge repo; null = all.
     this.addColumnIfMissing("users", "knowledge_selected", "TEXT");
     // The owner's DEFAULT group-knowledge OFF-set, seeding every NEW conversation
-    // (including the auto-greeting, which fires before any toggle interaction).
+    // (including a brand-new conversation before any toggle interaction).
     // JSON array of group ids; NULL/[] = every group on by default. Mirrors the
     // per-conversation `conversations.group_knowledge_off`, but at the user level:
     // the composer toggle writes here so the choice persists across conversations.
@@ -499,7 +513,11 @@ export class StoreBase {
     // Routine conversations must never show in the normal chat history, even after
     // their routine is deleted (which orphans the conversation). Tag the row itself
     // so classification doesn't depend on the routine_jobs link still existing.
-    this.addColumnIfMissing("conversations", "is_routine", "INTEGER NOT NULL DEFAULT 0");
+    this.addColumnIfMissing(
+      "conversations",
+      "is_routine",
+      "INTEGER NOT NULL DEFAULT 0",
+    );
     // Per-conversation, owner-only toggle for which of the owner's group
     // knowledge repos are DISABLED in this conversation. A JSON array of group
     // ids; NULL/[] means every group is enabled (the default). We store the OFF
@@ -518,6 +536,14 @@ export class StoreBase {
     // to the SDK as `options.effort`; independent of the model pin (see
     // effortLevels.ts).
     this.addColumnIfMissing("conversations", "selected_effort", "TEXT");
+    // Per-conversation MCP tool group selection from the chat composer. NULL means
+    // every default group is enabled; a JSON array (including []) is an explicit
+    // subset. The route validates IDs against src/shared/mcpToolGroups.ts.
+    this.addColumnIfMissing(
+      "conversations",
+      "selected_mcp_tool_groups",
+      "TEXT",
+    );
     this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
@@ -537,7 +563,8 @@ export class StoreBase {
    *  Guarded by PRAGMA user_version so the expensive LIKE-scan + JSON parse runs
    *  ONCE per DB, not on every boot (see CANVAS_BACKFILL_VERSION). */
   private migrateCanvasArtifacts(): void {
-    const schemaVersion = Number(this.db.pragma("user_version", { simple: true })) || 0;
+    const schemaVersion =
+      Number(this.db.pragma("user_version", { simple: true })) || 0;
     if (schemaVersion >= CANVAS_BACKFILL_VERSION) {
       return;
     }
@@ -547,9 +574,22 @@ export class StoreBase {
           "FROM messages m JOIN conversations c ON c.id = m.conversation_id " +
           "WHERE m.role = 'assistant' AND m.response_json LIKE '%\"canvases\"%' ORDER BY m.rowid ASC",
       )
-      .all() as { rj: string | null; cid: string; owner: string; createdAt: string | null }[];
+      .all() as {
+      rj: string | null;
+      cid: string;
+      owner: string;
+      createdAt: string | null;
+    }[];
     // Collect the LATEST artifact per id (later rows overwrite earlier ones).
-    const latest = new Map<string, { conversationId: string; owner: string; createdAt: string; canvas: CanvasArtifactBackfill }>();
+    const latest = new Map<
+      string,
+      {
+        conversationId: string;
+        owner: string;
+        createdAt: string;
+        canvas: CanvasArtifactBackfill;
+      }
+    >();
     for (const row of rows) {
       if (!row.rj) continue;
       let parsed: { canvases?: CanvasArtifactBackfill[] } | null = null;
@@ -581,8 +621,19 @@ export class StoreBase {
       );
       const tx = this.db.transaction(() => {
         for (const [id, e] of latest) {
-          const ct = typeof e.canvas.contentType === "string" ? e.canvas.contentType : "markdown";
-          const info = insArtifact.run(id, e.conversationId, e.owner, e.canvas.title ?? "", ct, e.createdAt, e.createdAt);
+          const ct =
+            typeof e.canvas.contentType === "string"
+              ? e.canvas.contentType
+              : "markdown";
+          const info = insArtifact.run(
+            id,
+            e.conversationId,
+            e.owner,
+            e.canvas.title ?? "",
+            ct,
+            e.createdAt,
+            e.createdAt,
+          );
           if (info.changes === 0) continue; // already present (re-run or live-persisted)
           insVersion.run(
             id,
@@ -590,7 +641,9 @@ export class StoreBase {
             e.canvas.content ?? "",
             ct,
             e.canvas.controls ? JSON.stringify(e.canvas.controls) : null,
-            e.canvas.submittedValues ? JSON.stringify(e.canvas.submittedValues) : null,
+            e.canvas.submittedValues
+              ? JSON.stringify(e.canvas.submittedValues)
+              : null,
             e.canvas.interaction ?? null,
             e.canvas.editable ? 1 : 0,
             e.createdAt,
@@ -609,7 +662,9 @@ export class StoreBase {
    *  re-fire for current users — only NEW signups (onboarded_at NULL) see it.
    *  Idempotent: only touches rows still NULL, and createUser leaves new rows NULL. */
   private migrateOnboarded(): void {
-    this.db.exec("UPDATE users SET onboarded_at = created_at WHERE onboarded_at IS NULL");
+    this.db.exec(
+      "UPDATE users SET onboarded_at = created_at WHERE onboarded_at IS NULL",
+    );
   }
 
   /** Backfill is_routine on existing conversations. Linked ones come from the
@@ -644,19 +699,31 @@ export class StoreBase {
           "SELECT id, ?, git_token_enc, ? FROM users WHERE git_token_enc IS NOT NULL",
       )
       .run(INTERNAL_GIT_TOKEN_SECRET_NAME, createdAt);
-    this.db.prepare("UPDATE users SET git_token_enc = NULL WHERE git_token_enc IS NOT NULL").run();
+    this.db
+      .prepare(
+        "UPDATE users SET git_token_enc = NULL WHERE git_token_enc IS NOT NULL",
+      )
+      .run();
   }
 
   /** Add a column to a table if it isn't already present (idempotent). */
-  protected addColumnIfMissing(table: string, column: string, type: string): void {
-    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  protected addColumnIfMissing(
+    table: string,
+    column: string,
+    type: string,
+  ): void {
+    const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as {
+      name: string;
+    }[];
     if (!cols.some((c) => c.name === column)) {
       this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
     }
   }
 
   protected seedRoles(): void {
-    const insert = this.db.prepare("INSERT OR IGNORE INTO roles (name) VALUES (?)");
+    const insert = this.db.prepare(
+      "INSERT OR IGNORE INTO roles (name) VALUES (?)",
+    );
     insert.run("admin");
     insert.run("member");
   }
@@ -669,7 +736,10 @@ export class StoreBase {
   /** Resolve a row's avatar visibility, falling back to the legacy `published`
    *  flag for any row that predates the backfill (defensive — migrate() backfills
    *  all rows on startup, so this normally just reads the column). */
-  protected rowVisibility(row: { visibility?: string | null; published?: number }): AvatarVisibility {
+  protected rowVisibility(row: {
+    visibility?: string | null;
+    published?: number;
+  }): AvatarVisibility {
     const v = row.visibility;
     if (v === "public" || v === "group" || v === "private") {
       return v;
@@ -678,24 +748,28 @@ export class StoreBase {
   }
 
   protected getRoleId(name: string): number | null {
-    const row = this.db.prepare("SELECT id FROM roles WHERE name = ?").get(name) as
-      | { id: number }
-      | undefined;
+    const row = this.db
+      .prepare("SELECT id FROM roles WHERE name = ?")
+      .get(name) as { id: number } | undefined;
     return row?.id ?? null;
   }
 
   protected userRowById(id: string): UserRow | undefined {
-    return this.db.prepare("SELECT * FROM users WHERE id = ?").get(id) as UserRow | undefined;
-  }
-
-  protected userRowByUsername(username: string): UserRow | undefined {
-    return this.db.prepare("SELECT * FROM users WHERE username = ?").get(username) as
+    return this.db.prepare("SELECT * FROM users WHERE id = ?").get(id) as
       | UserRow
       | undefined;
   }
 
+  protected userRowByUsername(username: string): UserRow | undefined {
+    return this.db
+      .prepare("SELECT * FROM users WHERE username = ?")
+      .get(username) as UserRow | undefined;
+  }
+
   protected groupRowById(id: string): GroupRow | undefined {
-    return this.db.prepare("SELECT * FROM groups WHERE id = ?").get(id) as GroupRow | undefined;
+    return this.db.prepare("SELECT * FROM groups WHERE id = ?").get(id) as
+      | GroupRow
+      | undefined;
   }
 
   protected normalizeRole(role: string | null | undefined): GroupRole {
@@ -706,7 +780,6 @@ export class StoreBase {
   close(): void {
     this.db.close();
   }
-
 }
 
 /**

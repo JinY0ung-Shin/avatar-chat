@@ -50,6 +50,7 @@ export async function loadMessages(
   groupKnowledgeOff: string[];
   selectedModel?: string | null;
   selectedEffort?: string | null;
+  selectedMcpToolGroups?: import("../../../shared/mcpToolGroups").McpToolGroupId[] | null;
   canvases?: CanvasArtifact[];
 }> {
   return api(`/api/messages?conversationId=${encodeURIComponent(conversationId)}`);

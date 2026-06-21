@@ -1,4 +1,5 @@
 import type { ScheduleKind } from "./routineSchedule.js";
+import type { McpToolGroupId } from "../shared/mcpToolGroups.js";
 
 export type AgentRuntime = "claude" | "local";
 
@@ -120,9 +121,8 @@ export interface User {
   knowledgeSelected: string[] | null;
   /**
    * The owner's DEFAULT group-knowledge OFF-set (group ids whose shared knowledge
-   * is off). Seeds every NEW conversation — including the auto-greeting, which
-   * fires before the composer toggle can be touched — so the toggle choice
-   * persists across conversations. `[]` = every group on (the default).
+   * is off). Seeds every NEW conversation so the toggle choice persists across
+   * conversations. `[]` = every group on (the default).
    */
   groupKnowledgeOffDefault: string[];
   /**
@@ -307,7 +307,11 @@ export interface ConversationSummary {
  * browser can produce/preview. GIF is allowed in (the model reads it) but the
  * client downsizes to PNG/JPEG/WEBP, so it mostly appears on pasted/dropped GIFs.
  */
-export type ImageMediaType = "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+export type ImageMediaType =
+  | "image/png"
+  | "image/jpeg"
+  | "image/webp"
+  | "image/gif";
 
 /**
  * An image a user attached to a chat message. The bytes live on disk under
@@ -482,7 +486,12 @@ export interface CanvasControl {
  * unchanged (#50). `vega` lets the avatar declare a chart in a tiny spec instead
  * of hand-authoring verbose SVG, which is far cheaper in tokens.
  */
-export type CanvasContentType = "markdown" | "svg" | "html" | "mermaid" | "vega";
+export type CanvasContentType =
+  | "markdown"
+  | "svg"
+  | "html"
+  | "mermaid"
+  | "vega";
 
 /**
  * A visual-canvas artifact the avatar showed in the side panel during a turn,
@@ -619,8 +628,8 @@ export interface AgentRequest {
    * True when the viewer may use tools at the OWNER's permission level — i.e. the
    * owner themselves OR a designated trusted user. Gates the tool hook (write/Bash
    * run instead of read-only). DISTINCT from viewerIsOwner: the owner-only knowledge
-   * inbox (pending_requests) and the opening greeting still key off viewerIsOwner,
-   * so a trusted user gets elevated tools WITHOUT the owner's gap inbox/greeting.
+   * inbox (pending_requests) still keys off viewerIsOwner, so a trusted user gets
+   * elevated tools WITHOUT the owner's gap inbox.
    * Headless runs normally stay read-only; owner-scheduled routines opt into
    * owner-level tools through `allowHeadlessTools`.
    */
@@ -631,12 +640,6 @@ export interface AgentRequest {
    * same owner tool permissions as a normal owner chat.
    */
   allowHeadlessTools?: boolean;
-  /**
-   * True when the owner just opened a fresh conversation with their own avatar
-   * and no message was typed yet: the avatar greets first and reports any
-   * pending info requests. Only meaningful together with viewerIsOwner.
-   */
-  greeting?: boolean;
   /**
    * True for unattended runs (scheduled routines): no human is present, so the
    * agent must not ask questions, interactive permission prompts are denied,
@@ -669,6 +672,12 @@ export interface AgentRequest {
    */
   effort?: string;
   /**
+   * MCP tool groups enabled for this conversation/run. Undefined means the
+   * server default (all groups) for backward compatibility with older clients.
+   * The chat route validates and persists these IDs per conversation.
+   */
+  mcpToolGroups?: McpToolGroupId[];
+  /**
    * Opt into model fallback: when the run fails on a transient model/server-side
    * error (overload/5xx/429/network), retry on the next-lower tier down the chain
    * (resolved model → … → haiku). Set ONLY for scheduled routines — headless runs
@@ -690,9 +699,8 @@ export interface AgentRequest {
   knowledgeRepoConfigured?: boolean;
   /**
    * Whether the avatar owner has stored the internal GIT_TOKEN. Lets the
-   * greeting offer to create the knowledge repo directly (via the repo tool)
-   * vs. asking the owner to set a token first. Set only for owner, non-headless
-   * chat prompts.
+   * prompt guide direct knowledge-repo creation (via the repo tool) vs. asking
+   * the owner to set a token first. Set only for owner, non-headless chat prompts.
    */
   gitTokenSet?: boolean;
   /**
@@ -767,7 +775,7 @@ export interface AgentRequest {
    * content blocks. When present (and non-empty), `runClaudeAgent` sends a
    * structured SDK user message (the prompt text + these image blocks) instead
    * of a plain string prompt; empty/unset keeps the plain-string path unchanged.
-   * Unused for greeting/headless turns.
+   * Unused for headless turns.
    */
   images?: AgentImageInput[];
 }

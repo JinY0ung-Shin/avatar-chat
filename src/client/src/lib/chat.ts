@@ -1,4 +1,3 @@
-import { tick } from "svelte";
 import { api } from "./api";
 import { loadConversations, loadMessages } from "./loaders";
 import { syncHash } from "./nav";
@@ -12,6 +11,7 @@ import {
   SDK_HIDDEN_ACTIVITY_TOOLS,
   SDK_TOOL_LABELS,
 } from "../../../shared/sdkToolPresentation";
+import { DEFAULT_MCP_TOOL_GROUPS } from "../../../shared/mcpToolGroups";
 import type {
   AgentActivity,
   AgentResponse,
@@ -72,12 +72,26 @@ export function summarizeInput(input: unknown): string {
   if (typeof input === "string") return truncate(input);
   if (typeof input !== "object") return truncate(String(input));
   const obj = input as Record<string, unknown>;
-  const keys = ["command", "file_path", "path", "pattern", "url", "query", "prompt", "description", "repo", "name"];
+  const keys = [
+    "command",
+    "file_path",
+    "path",
+    "pattern",
+    "url",
+    "query",
+    "prompt",
+    "description",
+    "repo",
+    "name",
+  ];
   for (const key of keys) {
-    if (typeof obj[key] === "string" && obj[key]) return truncate(obj[key] as string);
+    if (typeof obj[key] === "string" && obj[key])
+      return truncate(obj[key] as string);
   }
   const firstStr = Object.values(obj).find((v) => typeof v === "string" && v);
-  return typeof firstStr === "string" ? truncate(firstStr) : truncate(JSON.stringify(obj));
+  return typeof firstStr === "string"
+    ? truncate(firstStr)
+    : truncate(JSON.stringify(obj));
 }
 
 function truncate(text: string, max = 180): string {
@@ -109,43 +123,59 @@ function makePane(
     liveTasks: [],
     livePlugins: [],
     liveStatusStickyUntil: 0,
-    groupKnowledgeOff: avatar.isOwn ? [...(readState().user?.groupKnowledgeOffDefault || [])] : [],
+    groupKnowledgeOff: avatar.isOwn
+      ? [...(readState().user?.groupKnowledgeOffDefault || [])]
+      : [],
+    mcpToolGroups: [...DEFAULT_MCP_TOOL_GROUPS],
     canvases,
     activeCanvasId: canvases.length ? canvases[canvases.length - 1].id : null,
-    greetedConversationId: null,
     stickBottom: true,
     usage: null,
     abortController: null,
   };
 }
 
-export async function startChatWith(summary: AvatarSummary, split = false): Promise<void> {
-  if (!split && readState().chatPanes.some((pane) => pane.streaming) && !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")) {
+export async function startChatWith(
+  summary: AvatarSummary,
+  split = false,
+): Promise<void> {
+  if (
+    !split &&
+    readState().chatPanes.some((pane) => pane.streaming) &&
+    !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")
+  ) {
     return;
   }
   // Resume the most recent existing conversation with this avatar instead of
   // spawning a duplicate thread (matches the old explore behavior). Only for a
   // single, non-split open.
   if (!split && readState().chatPanes.length <= 1) {
-    const existing = readState().conversations.find((c) => c.avatarUserId === summary.id && !c.isRoutine);
+    const existing = readState().conversations.find(
+      (c) => c.avatarUserId === summary.id && !c.isRoutine,
+    );
     if (existing) {
       await selectConversation(existing.id);
       return;
     }
   }
-  const { avatar } = await api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(summary.id)}`);
+  const { avatar } = await api<{ avatar: AvatarDetail }>(
+    `/api/avatars/${encodeURIComponent(summary.id)}`,
+  );
   const pane = makePane(avatar);
   updateState((state) => {
     state.currentAvatar = avatar;
-    if (split && state.chatPanes.length && state.chatPanes.length < MAX_CHAT_PANES) state.chatPanes.push(pane);
+    if (
+      split &&
+      state.chatPanes.length &&
+      state.chatPanes.length < MAX_CHAT_PANES
+    )
+      state.chatPanes.push(pane);
     else state.chatPanes = [pane];
     state.activePaneId = pane.id;
     state.view = "chat";
   });
   syncHash();
   void loadConversations();
-  await tick();
-  await maybeGreet(pane.id);
 }
 
 // Open a fresh chat with the owner's own avatar and seed the composer with text
@@ -154,10 +184,15 @@ export async function startChatWith(summary: AvatarSummary, split = false): Prom
 export async function openSeededChat(seedText: string): Promise<void> {
   const me = readState().user;
   if (!me) return;
-  if (readState().chatPanes.some((pane) => pane.streaming) && !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")) return;
-  const { avatar } = await api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(me.id)}`);
+  if (
+    readState().chatPanes.some((pane) => pane.streaming) &&
+    !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")
+  )
+    return;
+  const { avatar } = await api<{ avatar: AvatarDetail }>(
+    `/api/avatars/${encodeURIComponent(me.id)}`,
+  );
   const pane = makePane(avatar);
-  pane.greetingStarted = true; // we already have a topic — skip the auto-greeting
   pane.draft = seedText;
   updateState((state) => {
     state.currentAvatar = avatar;
@@ -170,9 +205,13 @@ export async function openSeededChat(seedText: string): Promise<void> {
   notify("입력창에 주제를 채웠습니다. 검토 후 보내기를 누르세요.", "info");
 }
 
-export async function selectConversation(conversationId: string): Promise<void> {
+export async function selectConversation(
+  conversationId: string,
+): Promise<void> {
   const state = readState();
-  const existingPane = state.chatPanes.find((pane) => pane.conversationId === conversationId);
+  const existingPane = state.chatPanes.find(
+    (pane) => pane.conversationId === conversationId,
+  );
   if (existingPane?.streaming) {
     updateState((s) => {
       s.activePaneId = existingPane.id;
@@ -181,19 +220,34 @@ export async function selectConversation(conversationId: string): Promise<void> 
     syncHash();
     return;
   }
-  const conv = state.conversations.find((item) => item.id === conversationId) ?? (await loadConversations()).find((item) => item.id === conversationId);
+  const conv =
+    state.conversations.find((item) => item.id === conversationId) ??
+    (await loadConversations()).find((item) => item.id === conversationId);
   if (!conv) {
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort, canvases }, avatarRes] = await Promise.all([
+  const [
+    {
+      messages,
+      groupKnowledgeOff,
+      selectedModel,
+      selectedEffort,
+      selectedMcpToolGroups,
+      canvases,
+    },
+    avatarRes,
+  ] = await Promise.all([
     loadMessages(conversationId),
-    api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
+    api<{ avatar: AvatarDetail }>(
+      `/api/avatars/${encodeURIComponent(conv.avatarUserId)}`,
+    ),
   ]);
   const pane = makePane(avatarRes.avatar, conversationId, messages, canvases);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
   pane.modelTier = selectedModel || undefined;
   pane.effort = selectedEffort || undefined;
+  pane.mcpToolGroups = selectedMcpToolGroups ?? [...DEFAULT_MCP_TOOL_GROUPS];
   pane.usage = lastUsage(messages);
   updateState((s) => {
     s.currentAvatar = avatarRes.avatar;
@@ -209,9 +263,13 @@ export async function selectConversation(conversationId: string): Promise<void> 
 // 추가" button). If that conversation is already open in a pane, just focus it
 // instead of duplicating. Reuses selectConversation's load path but PUSHES the
 // pane rather than replacing the whole split.
-export async function addConversationToSplit(conversationId: string): Promise<void> {
+export async function addConversationToSplit(
+  conversationId: string,
+): Promise<void> {
   const state = readState();
-  const existingPane = state.chatPanes.find((pane) => pane.conversationId === conversationId);
+  const existingPane = state.chatPanes.find(
+    (pane) => pane.conversationId === conversationId,
+  );
   if (existingPane) {
     updateState((s) => {
       s.activePaneId = existingPane.id;
@@ -225,20 +283,34 @@ export async function addConversationToSplit(conversationId: string): Promise<vo
     notify("분할 대화는 최대 4개까지 가능합니다.", "warn");
     return;
   }
-  const conv = state.conversations.find((item) => item.id === conversationId) ?? (await loadConversations()).find((item) => item.id === conversationId);
+  const conv =
+    state.conversations.find((item) => item.id === conversationId) ??
+    (await loadConversations()).find((item) => item.id === conversationId);
   if (!conv) {
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [{ messages, groupKnowledgeOff, selectedModel, selectedEffort, canvases }, avatarRes] = await Promise.all([
+  const [
+    {
+      messages,
+      groupKnowledgeOff,
+      selectedModel,
+      selectedEffort,
+      selectedMcpToolGroups,
+      canvases,
+    },
+    avatarRes,
+  ] = await Promise.all([
     loadMessages(conversationId),
-    api<{ avatar: AvatarDetail }>(`/api/avatars/${encodeURIComponent(conv.avatarUserId)}`),
+    api<{ avatar: AvatarDetail }>(
+      `/api/avatars/${encodeURIComponent(conv.avatarUserId)}`,
+    ),
   ]);
   const pane = makePane(avatarRes.avatar, conversationId, messages, canvases);
   pane.groupKnowledgeOff = groupKnowledgeOff || [];
   pane.modelTier = selectedModel || undefined;
   pane.effort = selectedEffort || undefined;
-  pane.greetedConversationId = conversationId; // an existing thread — never auto-greet
+  pane.mcpToolGroups = selectedMcpToolGroups ?? [...DEFAULT_MCP_TOOL_GROUPS];
   pane.usage = lastUsage(messages);
   updateState((s) => {
     if (s.chatPanes.length >= MAX_CHAT_PANES) return;
@@ -252,20 +324,28 @@ export async function addConversationToSplit(conversationId: string): Promise<vo
 }
 
 export function newChat(paneId?: string): void {
-  const pane = paneId ? readState().chatPanes.find((item) => item.id === paneId) : readState().chatPanes.find((item) => item.id === readState().activePaneId);
+  const pane = paneId
+    ? readState().chatPanes.find((item) => item.id === paneId)
+    : readState().chatPanes.find(
+        (item) => item.id === readState().activePaneId,
+      );
   if (!pane || pane.streaming) return;
   const next = makePane(pane.avatar);
   updateState((state) => {
-    state.chatPanes = state.chatPanes.map((item) => (item.id === pane.id ? next : item));
+    state.chatPanes = state.chatPanes.map((item) =>
+      item.id === pane.id ? next : item,
+    );
     state.activePaneId = next.id;
     state.currentAvatar = next.avatar;
   });
   syncHash();
-  void maybeGreet(next.id);
 }
 
 export async function clearChatHistory(): Promise<number> {
-  const result = await api<{ deleted: number; conversationIds: string[] }>("/api/conversations", { method: "DELETE" });
+  const result = await api<{ deleted: number; conversationIds: string[] }>(
+    "/api/conversations",
+    { method: "DELETE" },
+  );
   const ids = new Set(result.conversationIds || []);
   if (!ids.size) {
     return 0;
@@ -276,12 +356,18 @@ export async function clearChatHistory(): Promise<number> {
     }
   }
   updateState((state) => {
-    state.conversations = state.conversations.filter((conversation) => !ids.has(conversation.id));
-    state.chatPanes = state.chatPanes.map((pane) => (ids.has(pane.conversationId) ? makePane(pane.avatar) : pane));
+    state.conversations = state.conversations.filter(
+      (conversation) => !ids.has(conversation.id),
+    );
+    state.chatPanes = state.chatPanes.map((pane) =>
+      ids.has(pane.conversationId) ? makePane(pane.avatar) : pane,
+    );
     if (!state.chatPanes.some((pane) => pane.id === state.activePaneId)) {
       state.activePaneId = state.chatPanes[0]?.id ?? null;
     }
-    const activePane = state.chatPanes.find((pane) => pane.id === state.activePaneId);
+    const activePane = state.chatPanes.find(
+      (pane) => pane.id === state.activePaneId,
+    );
     state.currentAvatar = activePane?.avatar ?? state.currentAvatar;
   });
   syncHash(true);
@@ -291,7 +377,9 @@ export async function clearChatHistory(): Promise<number> {
 export function regenerate(paneId: string): void {
   const pane = readState().chatPanes.find((item) => item.id === paneId);
   if (!pane || pane.streaming) return;
-  const lastUserIndex = [...pane.messages].map((m) => m.role).lastIndexOf("user");
+  const lastUserIndex = [...pane.messages]
+    .map((m) => m.role)
+    .lastIndexOf("user");
   if (lastUserIndex < 0) return;
   const text = pane.messages[lastUserIndex].content;
   updatePane(paneId, (target) => {
@@ -305,12 +393,15 @@ export async function sendMessage(
   rawMessage: string,
   opts: {
     regenerate?: boolean;
-    greeting?: boolean;
     /**
      * A non-blocking canvas submission/edit (#50). Delivered as a normal turn: the
      * server formats the agent-facing message and persists a short Korean bubble.
      */
-    canvasSubmission?: { canvasId: string; values?: Record<string, unknown>; editedContent?: string };
+    canvasSubmission?: {
+      canvasId: string;
+      values?: Record<string, unknown>;
+      editedContent?: string;
+    };
   } = {},
 ): Promise<void> {
   let pane = readState().chatPanes.find((item) => item.id === paneId);
@@ -319,15 +410,20 @@ export async function sendMessage(
   // A canvas submission carries no typed text — the visible bubble is a short
   // Korean summary mirroring the server's displayMessage (hand-mirrored validator).
   if (opts.canvasSubmission) {
-    message = opts.canvasSubmission.editedContent ? "캔버스를 수정해 보냈습니다." : "캔버스 응답을 보냈습니다.";
+    message = opts.canvasSubmission.editedContent
+      ? "캔버스를 수정해 보냈습니다."
+      : "캔버스 응답을 보냈습니다.";
   }
   // Snapshot staged images early so a text-empty, image-only turn can be sent.
-  // Greetings/regenerates carry no freshly staged images.
-  const pendingImages = opts.greeting || opts.regenerate ? [] : [...(pane.pendingImages || [])];
-  if (!message && !opts.greeting && pendingImages.length === 0) return;
+  // Regenerates carry no freshly staged images.
+  const pendingImages = opts.regenerate ? [] : [...(pane.pendingImages || [])];
+  if (!message && pendingImages.length === 0) return;
 
-  const slash = message && !opts.canvasSubmission ? resolveTypedSlashCommand(pane, message) : null;
-  if (slash && !opts.greeting) {
+  const slash =
+    message && !opts.canvasSubmission
+      ? resolveTypedSlashCommand(pane, message)
+      : null;
+  if (slash) {
     if (slash.command.action === "new") {
       newChat(pane.id);
       return;
@@ -336,7 +432,10 @@ export async function sendMessage(
       updatePane(pane.id, (target) => {
         target.draft = `/${slash.command.name} `;
       });
-      notify(`/${slash.command.name} 뒤에 ${slash.command.argsLabel || "내용"}을 입력해 주세요.`, "warn");
+      notify(
+        `/${slash.command.name} 뒤에 ${slash.command.argsLabel || "내용"}을 입력해 주세요.`,
+        "warn",
+      );
       return;
     }
     // Send the literal "/command [args]"; the server swaps in the expanded
@@ -347,22 +446,25 @@ export async function sendMessage(
 
   // Staged images ride this turn and can be restored if the send fails before
   // anything streamed.
-  const userMessage: StoredMessage | null = opts.greeting
-    ? null
-    : {
-        id: newId(),
-        conversationId: pane.conversationId,
-        role: "user",
-        content: message,
-        attachments: pendingImages.length
-          ? pendingImages.map((img) => ({ id: img.id, kind: "image" as const, mediaType: img.mediaType, name: img.name }))
-          : undefined,
-        response: null,
-        createdAt: new Date().toISOString(),
-      };
+  const userMessage: StoredMessage = {
+    id: newId(),
+    conversationId: pane.conversationId,
+    role: "user",
+    content: message,
+    attachments: pendingImages.length
+      ? pendingImages.map((img) => ({
+          id: img.id,
+          kind: "image" as const,
+          mediaType: img.mediaType,
+          name: img.name,
+        }))
+      : undefined,
+    response: null,
+    createdAt: new Date().toISOString(),
+  };
   // A real send is a user gesture — the right moment to (idempotently) ask for OS
   // notification permission so answer-complete / input-needed alerts can fire later.
-  if (!opts.greeting) void ensureNotificationPermission();
+  void ensureNotificationPermission();
 
   const controller = new AbortController();
   updatePane(pane.id, (target) => {
@@ -396,7 +498,6 @@ export async function sendMessage(
         message,
         conversationId: pane.conversationId,
         regenerate: opts.regenerate === true,
-        greeting: opts.greeting === true,
         multiSession: readState().chatPanes.length > 1,
         groupKnowledgeOff: pane.groupKnowledgeOff || [],
         // Model tier + reasoning effort are INTENTIONALLY per-conversation only:
@@ -407,9 +508,12 @@ export async function sendMessage(
         // knob, not a profile preference).
         model: pane.modelTier || DEFAULT_MODEL_TIER,
         effort: pane.effort || DEFAULT_EFFORT_LEVEL,
+        mcpToolGroups: pane.mcpToolGroups ?? DEFAULT_MCP_TOOL_GROUPS,
         // Staged image attachments (data URLs). The server reuses our id as the
         // stored attachment id + filename. Omit when none.
-        images: pendingImages.length ? pendingImages.map((img) => ({ id: img.id, data: img.dataUrl })) : undefined,
+        images: pendingImages.length
+          ? pendingImages.map((img) => ({ id: img.id, data: img.dataUrl }))
+          : undefined,
         // Non-blocking canvas submission/edit (#50), when this turn was triggered
         // from a canvas form rather than the composer.
         canvasSubmission: opts.canvasSubmission,
@@ -438,7 +542,8 @@ export async function sendMessage(
           target.draft = rawMessage;
           if (pendingImages.length) {
             target.pendingImages = pendingImages;
-            for (const img of pendingImages) delete target.localImages?.[img.id];
+            for (const img of pendingImages)
+              delete target.localImages?.[img.id];
           }
         });
         notify(`메시지를 보내지 못했습니다: ${error.message}`);
@@ -457,38 +562,34 @@ export async function sendMessage(
   }
 }
 
-export async function maybeGreet(paneId: string): Promise<void> {
-  const pane = readState().chatPanes.find((item) => item.id === paneId);
-  const state = readState();
-  if (!pane || pane.streaming || pane.greetingStarted || state.chatPanes.length > 1) return;
-  if (!state.user || pane.avatar.id !== state.user.id || pane.messages.length) return;
-  if (pane.greetedConversationId === pane.conversationId) return;
-  updatePane(paneId, (target) => {
-    target.greetingStarted = true;
-    target.greetedConversationId = target.conversationId;
-  });
-  await sendMessage(paneId, "", { greeting: true });
-  updatePane(paneId, (target) => {
-    target.greetingStarted = false;
-  });
-}
-
 export async function attachActiveRun(paneId: string): Promise<void> {
   const pane = readState().chatPanes.find((item) => item.id === paneId);
   if (!pane || pane.streaming || !pane.conversationId) return;
   try {
-    const result = await api<{ run: { runId: string } | null }>(`/api/chat/runs?conversationId=${encodeURIComponent(pane.conversationId)}`);
+    const result = await api<{ run: { runId: string } | null }>(
+      `/api/chat/runs?conversationId=${encodeURIComponent(pane.conversationId)}`,
+    );
     if (result.run?.runId) {
       await attachRun(paneId, result.run.runId);
       return;
     }
     if (pane.messages[pane.messages.length - 1]?.role === "user") {
-      const { messages, groupKnowledgeOff, selectedModel, selectedEffort, canvases } = await loadMessages(pane.conversationId);
+      const {
+        messages,
+        groupKnowledgeOff,
+        selectedModel,
+        selectedEffort,
+        selectedMcpToolGroups,
+        canvases,
+      } = await loadMessages(pane.conversationId);
       updatePane(paneId, (target) => {
         target.messages = messages;
         target.groupKnowledgeOff = groupKnowledgeOff || [];
         target.modelTier = selectedModel || undefined;
         target.effort = selectedEffort || undefined;
+        target.mcpToolGroups = selectedMcpToolGroups ?? [
+          ...DEFAULT_MCP_TOOL_GROUPS,
+        ];
         target.canvases = paneCanvasesFromArtifacts(canvases);
         target.usage = lastUsage(messages);
       });
@@ -508,29 +609,43 @@ export async function attachRun(paneId: string, runId: string): Promise<void> {
     target.abortController = controller;
   });
   try {
-    const response = await fetch(`/api/chat/runs/${encodeURIComponent(runId)}/events`, {
-      headers: { Accept: "text/event-stream" },
-      credentials: "same-origin",
-      signal: controller.signal,
-    });
+    const response = await fetch(
+      `/api/chat/runs/${encodeURIComponent(runId)}/events`,
+      {
+        headers: { Accept: "text/event-stream" },
+        credentials: "same-origin",
+        signal: controller.signal,
+      },
+    );
     if (response.status === 404) {
       const pane = readState().chatPanes.find((item) => item.id === paneId);
       if (pane) {
-        const { messages, groupKnowledgeOff, selectedModel, selectedEffort } = await loadMessages(pane.conversationId);
+        const {
+          messages,
+          groupKnowledgeOff,
+          selectedModel,
+          selectedEffort,
+          selectedMcpToolGroups,
+        } = await loadMessages(pane.conversationId);
         updatePane(paneId, (target) => {
           target.messages = messages;
           target.groupKnowledgeOff = groupKnowledgeOff || [];
           target.modelTier = selectedModel || undefined;
-        target.effort = selectedEffort || undefined;
+          target.effort = selectedEffort || undefined;
+          target.mcpToolGroups = selectedMcpToolGroups ?? [
+            ...DEFAULT_MCP_TOOL_GROUPS,
+          ];
           target.usage = lastUsage(messages);
         });
       }
       return;
     }
-    if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+    if (!response.ok || !response.body)
+      throw new Error(`HTTP ${response.status}`);
     await consumeSse(response.body, (frame) => handleSseEvent(paneId, frame));
   } catch (err) {
-    if ((err as Error).name !== "AbortError") notify("진행 중인 응답에 다시 연결하지 못했습니다.", "warn");
+    if ((err as Error).name !== "AbortError")
+      notify("진행 중인 응답에 다시 연결하지 못했습니다.", "warn");
   } finally {
     dropRunPrompts(paneId);
     updatePane(paneId, (target) => {
@@ -545,7 +660,9 @@ export async function stopPane(paneId: string): Promise<void> {
   const pane = readState().chatPanes.find((item) => item.id === paneId);
   if (!pane) return;
   if (pane.liveRunId) {
-    api(`/api/chat/runs/${encodeURIComponent(pane.liveRunId)}/cancel`, { method: "POST" }).catch(() => {});
+    api(`/api/chat/runs/${encodeURIComponent(pane.liveRunId)}/cancel`, {
+      method: "POST",
+    }).catch(() => {});
   }
   pane.abortController?.abort();
   updatePane(paneId, (target) => {
@@ -559,7 +676,8 @@ export function closePane(paneId: string): void {
   if (pane?.streaming) void stopPane(paneId);
   updateState((s) => {
     s.chatPanes = s.chatPanes.filter((item) => item.id !== paneId);
-    if (!s.chatPanes.length && s.currentAvatar) s.chatPanes = [makePane(s.currentAvatar)];
+    if (!s.chatPanes.length && s.currentAvatar)
+      s.chatPanes = [makePane(s.currentAvatar)];
     s.activePaneId = s.chatPanes[0]?.id || null;
   });
 }
@@ -575,7 +693,12 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         updatePane(paneId, (pane) => {
           if (pane.liveTextBreakPending) {
             pane.liveTextBreakPending = false;
-            if (pane.liveText && !pane.liveText.endsWith("\n") && !text.startsWith("\n")) pane.liveText += "\n\n";
+            if (
+              pane.liveText &&
+              !pane.liveText.endsWith("\n") &&
+              !text.startsWith("\n")
+            )
+              pane.liveText += "\n\n";
           }
           pane.liveText += text;
         });
@@ -597,15 +720,27 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         updatePane(paneId, (pane) => {
           const chip = pane.livePlugins.find((p) => p.name === data.name);
           if (chip) chip.status = data.status || chip.status;
-          else pane.livePlugins.push({ name: data.name, status: data.status || "started" });
+          else
+            pane.livePlugins.push({
+              name: data.name,
+              status: data.status || "started",
+            });
         });
       }
       return;
     case "agent":
       if (data?.agentId) {
         markTextBreak(paneId);
-        const label = [data.subagentType, data.description].filter(Boolean).join(" · ") || "하위 작업";
-        ensureAgent(paneId, data.agentId, data.parentId || "main", label, "running");
+        const label =
+          [data.subagentType, data.description].filter(Boolean).join(" · ") ||
+          "하위 작업";
+        ensureAgent(
+          paneId,
+          data.agentId,
+          data.parentId || "main",
+          label,
+          "running",
+        );
         setStatus(paneId, `에이전트 작업 중: ${label}`, true);
       }
       return;
@@ -618,12 +753,21 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       }
       return;
     case "tool": {
-      if (!data?.toolUseId || !data?.name || HIDDEN_TOOLS.has(data.name)) return;
+      if (!data?.toolUseId || !data?.name || HIDDEN_TOOLS.has(data.name))
+        return;
       markTextBreak(paneId);
       ensureAgent(paneId, data.agentId || "main");
       const label = humanTool(data.name);
-      const detail = data.inputSummary || summarizeInput(data.input) || undefined;
-      upsertTool(paneId, { id: data.toolUseId, agentId: data.agentId || "main", kind: "tool", label, detail, status: "running" });
+      const detail =
+        data.inputSummary || summarizeInput(data.input) || undefined;
+      upsertTool(paneId, {
+        id: data.toolUseId,
+        agentId: data.agentId || "main",
+        kind: "tool",
+        label,
+        detail,
+        status: "running",
+      });
       setStatus(paneId, `${label}${detail ? ` · ${detail}` : ""}`, true);
       return;
     }
@@ -633,7 +777,10 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
           const row = pane.liveTools.find((t) => t.id === data.toolUseId);
           if (!row || row.status === "blocked") return;
           row.status = data.ok === false ? "failed" : "done";
-          const detail = data.error || data.inputSummary || (data.output ? summarizeInput(data.output) : "");
+          const detail =
+            data.error ||
+            data.inputSummary ||
+            (data.output ? summarizeInput(data.output) : "");
           if (detail) row.detail = detail;
         });
       }
@@ -645,11 +792,32 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       if (event === "task") markTextBreak(paneId);
       const label = taskLabel(data);
       const detail = taskDetail(data) || undefined;
-      const status = event === "task_end" ? (data.ok === false ? "failed" : "done") : "running";
+      const status =
+        event === "task_end"
+          ? data.ok === false
+            ? "failed"
+            : "done"
+          : "running";
       ensureAgent(paneId, data.agentId || "main");
-      upsertTask(paneId, { id: data.taskId, agentId: data.agentId || "main", label, detail, status });
-      if (event !== "task_end") setStatus(paneId, [label, detail].filter(Boolean).join(" · ") || "태스크 진행 중", true);
-      else setStatus(paneId, data.ok === false ? "태스크가 완료되지 못했습니다." : "태스크 완료", true);
+      upsertTask(paneId, {
+        id: data.taskId,
+        agentId: data.agentId || "main",
+        label,
+        detail,
+        status,
+      });
+      if (event !== "task_end")
+        setStatus(
+          paneId,
+          [label, detail].filter(Boolean).join(" · ") || "태스크 진행 중",
+          true,
+        );
+      else
+        setStatus(
+          paneId,
+          data.ok === false ? "태스크가 완료되지 못했습니다." : "태스크 완료",
+          true,
+        );
       return;
     }
     case "blocked":
@@ -691,7 +859,9 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         // A canvas awaiting input is resolved server-side (timeout/cancel/reconnect):
         // lock its form so it can't be re-submitted to a 404.
         updatePane(paneId, (pane) => {
-          const canvas = pane.canvases.find((c) => c.requestId === data.requestId);
+          const canvas = pane.canvases.find(
+            (c) => c.requestId === data.requestId,
+          );
           if (canvas) canvas.pending = false;
         });
       }
@@ -711,9 +881,13 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
 }
 
 function handleBlocked(paneId: string, data: any): void {
-  const reason = data.reason ? `차단됨 · ${data.reason}` : "읽기 전용이라 차단됨";
+  const reason = data.reason
+    ? `차단됨 · ${data.reason}`
+    : "읽기 전용이라 차단됨";
   updatePane(paneId, (pane) => {
-    const existing = data.toolUseId ? pane.liveTools.find((t) => t.id === data.toolUseId) : null;
+    const existing = data.toolUseId
+      ? pane.liveTools.find((t) => t.id === data.toolUseId)
+      : null;
     if (existing) {
       existing.status = "blocked";
       existing.detail = reason;
@@ -739,15 +913,35 @@ function taskLabel(data: any): string {
   return "";
 }
 function taskDetail(data: any): string {
-  return data?.summary || data?.description || data?.prompt || data?.lastToolName || data?.error || data?.status || "";
+  return (
+    data?.summary ||
+    data?.description ||
+    data?.prompt ||
+    data?.lastToolName ||
+    data?.error ||
+    data?.status ||
+    ""
+  );
 }
 
 /* ---------- activity-tree mutation helpers ---------- */
 
-function ensureAgent(paneId: string, agentId: string, parentId = "main", label?: string, status?: "running" | "done" | "failed"): void {
+function ensureAgent(
+  paneId: string,
+  agentId: string,
+  parentId = "main",
+  label?: string,
+  status?: "running" | "done" | "failed",
+): void {
   updatePane(paneId, (pane) => {
     if (!pane.liveAgents.some((a) => a.id === "main")) {
-      pane.liveAgents.push({ id: "main", parentId: "", label: "", status: "running", isMain: true });
+      pane.liveAgents.push({
+        id: "main",
+        parentId: "",
+        label: "",
+        status: "running",
+        isMain: true,
+      });
     }
     if (agentId === "main") return;
     const existing = pane.liveAgents.find((a) => a.id === agentId);
@@ -756,7 +950,13 @@ function ensureAgent(paneId: string, agentId: string, parentId = "main", label?:
       if (status) existing.status = status;
       return;
     }
-    pane.liveAgents.push({ id: agentId, parentId: parentId || "main", label: label || "하위 작업", status: status || "running", isMain: false });
+    pane.liveAgents.push({
+      id: agentId,
+      parentId: parentId || "main",
+      label: label || "하위 작업",
+      status: status || "running",
+      isMain: false,
+    });
   });
 }
 
@@ -793,14 +993,20 @@ function upsertTask(paneId: string, row: LiveTaskRow): void {
  *  before the activity. Mirrors the server's `\n\n` join between assistant chunks. */
 function markTextBreak(paneId: string): void {
   updatePane(paneId, (pane) => {
-    if (pane.liveText && !pane.liveText.endsWith("\n")) pane.liveTextBreakPending = true;
+    if (pane.liveText && !pane.liveText.endsWith("\n"))
+      pane.liveTextBreakPending = true;
   });
 }
 
 function setStatus(paneId: string, label: string, sticky: boolean): void {
   updatePane(paneId, (pane) => {
     const now = Date.now();
-    if (!sticky && pane.liveStatusStickyUntil && now < pane.liveStatusStickyUntil) return;
+    if (
+      !sticky &&
+      pane.liveStatusStickyUntil &&
+      now < pane.liveStatusStickyUntil
+    )
+      return;
     pane.liveStatus = label;
     pane.liveStatusStickyUntil = sticky ? now + 1500 : 0;
   });
@@ -827,26 +1033,41 @@ function resetLive(pane: ChatPane): void {
 function snapshotActivity(pane: ChatPane): AgentActivity | undefined {
   if (!pane.liveTools.length && !pane.liveTasks.length) return undefined;
   return {
-    agents: pane.liveAgents.map((a) => ({ ...a, status: a.status === "running" ? "done" : a.status })),
-    tools: pane.liveTools.map((t) => ({ ...t, status: t.status === "running" ? "done" : t.status })),
-    tasks: pane.liveTasks.map((t) => ({ ...t, status: t.status === "running" ? "done" : t.status })),
+    agents: pane.liveAgents.map((a) => ({
+      ...a,
+      status: a.status === "running" ? "done" : a.status,
+    })),
+    tools: pane.liveTools.map((t) => ({
+      ...t,
+      status: t.status === "running" ? "done" : t.status,
+    })),
+    tasks: pane.liveTasks.map((t) => ({
+      ...t,
+      status: t.status === "running" ? "done" : t.status,
+    })),
   };
 }
 
-function attachActivity(response: AgentResponse | null, activity: AgentActivity | undefined): void {
+function attachActivity(
+  response: AgentResponse | null,
+  activity: AgentActivity | undefined,
+): void {
   if (response && activity) response.activity = activity;
 }
 
 // Keep the plan card on the finished bubble: the server already sets
-// `response.plan` on persisted/greeting responses, but a client-built response
+// `response.plan` on persisted responses, but a client-built response
 // (stop/error, or a fallback done without `response`) wouldn't carry it — so
 // graft the live plan on when the response is missing one.
-function attachPlan(response: AgentResponse | null, plan: string | undefined): void {
+function attachPlan(
+  response: AgentResponse | null,
+  plan: string | undefined,
+): void {
   if (response && plan && !response.plan) response.plan = plan;
 }
 
 function finalizeDone(paneId: string, data: any): void {
-  // A persisted (non-greeting) server message id + its activity → persist the
+  // A persisted server message id + its activity → persist the
   // snapshot so the completed tool/agent tree survives reload.
   let persistMessageId: string | null = null;
   let persistActivity: AgentActivity | undefined;
@@ -897,14 +1118,27 @@ function notifyTurnComplete(paneId: string): void {
   const last = pane.messages[pane.messages.length - 1];
   if (!last || last.role !== "assistant") return;
   const text = (last.content || "").replace(/\s+/g, " ").trim();
-  const body = text ? (text.length > 140 ? `${text.slice(0, 140)}…` : text) : "응답이 완료되었습니다.";
-  osNotify(`${pane.avatar?.alias || pane.avatar?.displayName || "아바타"} · 답변 완료`, body, `done-${paneId}`);
+  const body = text
+    ? text.length > 140
+      ? `${text.slice(0, 140)}…`
+      : text
+    : "응답이 완료되었습니다.";
+  osNotify(
+    `${pane.avatar?.alias || pane.avatar?.displayName || "아바타"} · 답변 완료`,
+    body,
+    `done-${paneId}`,
+  );
 }
 
 function finalizePane(paneId: string, message: string, stopped: boolean): void {
   updatePane(paneId, (pane) => {
     const content = pane.liveText || (stopped ? "(중지됨)" : message);
-    const response: AgentResponse = { kind: "text", runtime: "claude", summary: stopped ? "중지됨" : "오류", text: pane.liveText };
+    const response: AgentResponse = {
+      kind: "text",
+      runtime: "claude",
+      summary: stopped ? "중지됨" : "오류",
+      text: pane.liveText,
+    };
     attachActivity(response, snapshotActivity(pane));
     attachPlan(response, pane.livePlan);
     pane.messages.push({
@@ -921,7 +1155,12 @@ function finalizePane(paneId: string, message: string, stopped: boolean): void {
 
 function finalizeError(paneId: string, message: string): void {
   updatePane(paneId, (pane) => {
-    const response: AgentResponse = { kind: "text", runtime: "claude", summary: "오류", text: pane.liveText || message };
+    const response: AgentResponse = {
+      kind: "text",
+      runtime: "claude",
+      summary: "오류",
+      text: pane.liveText || message,
+    };
     attachActivity(response, snapshotActivity(pane));
     attachPlan(response, pane.livePlan);
     pane.messages.push({
@@ -957,7 +1196,10 @@ function clearLive(pane: ChatPane): void {
 // BLOCKING canvas — an async canvas's controls render but don't park the run.
 function handleCanvas(paneId: string, data: any): void {
   const controls = Array.isArray(data.controls) ? data.controls : undefined;
-  const interaction = data.interaction === "blocking" || data.interaction === "async" ? data.interaction : undefined;
+  const interaction =
+    data.interaction === "blocking" || data.interaction === "async"
+      ? data.interaction
+      : undefined;
   updatePane(paneId, (pane) => {
     const prev = pane.canvases.find((c) => c.id === data.artifactId);
     const entry: PaneCanvas = {
@@ -997,7 +1239,11 @@ export function setActiveCanvas(paneId: string, canvasId: string): void {
 //   unblock the parked run, exactly as before.
 // - ASYNC / re-submit / post-reload (no live parked run): deliver the answer as a
 //   NEW chat turn via sendMessage(canvasSubmission) — naturally double-submit safe.
-export async function submitCanvas(paneId: string, canvasId: string, values: Record<string, unknown>): Promise<void> {
+export async function submitCanvas(
+  paneId: string,
+  canvasId: string,
+  values: Record<string, unknown>,
+): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
   if (!canvas) return;
@@ -1010,7 +1256,11 @@ export async function submitCanvas(paneId: string, canvasId: string, values: Rec
     try {
       await api("/api/chat/respond", {
         method: "POST",
-        body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { values } }),
+        body: JSON.stringify({
+          runId: canvas.runId,
+          requestId: canvas.requestId,
+          value: { values },
+        }),
       });
       updatePane(paneId, (p) => {
         const c = p.canvases.find((x) => x.id === canvasId);
@@ -1025,7 +1275,10 @@ export async function submitCanvas(paneId: string, canvasId: string, values: Rec
         const c = p.canvases.find((x) => x.id === canvasId);
         if (c) c.submitting = false;
       });
-      notify(`캔버스 응답을 전송하지 못했습니다: ${(err as Error).message}`, "warn");
+      notify(
+        `캔버스 응답을 전송하지 못했습니다: ${(err as Error).message}`,
+        "warn",
+      );
     }
     return;
   }
@@ -1040,23 +1293,36 @@ export async function submitCanvas(paneId: string, canvasId: string, values: Rec
 }
 
 // Send the user's edited canvas content back to the avatar as a new turn (#50).
-export async function submitCanvasEdit(paneId: string, canvasId: string, editedContent: string): Promise<void> {
+export async function submitCanvasEdit(
+  paneId: string,
+  canvasId: string,
+  editedContent: string,
+): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   if (!pane || pane.streaming) return;
   const canvas = pane.canvases.find((c) => c.id === canvasId);
   if (!canvas || !editedContent.trim()) return;
-  await sendMessage(paneId, "", { canvasSubmission: { canvasId, editedContent } });
+  await sendMessage(paneId, "", {
+    canvasSubmission: { canvasId, editedContent },
+  });
 }
 
 // Dismiss a canvas's prompt without answering (sends a cancellation so the parked
 // run can proceed). For a non-blocking/display-only canvas this just hides locally.
-export async function dismissCanvas(paneId: string, canvasId: string): Promise<void> {
+export async function dismissCanvas(
+  paneId: string,
+  canvasId: string,
+): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
   if (canvas?.pending && canvas.requestId && canvas.runId) {
     api("/api/chat/respond", {
       method: "POST",
-      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { cancelled: true } }),
+      body: JSON.stringify({
+        runId: canvas.runId,
+        requestId: canvas.requestId,
+        value: { cancelled: true },
+      }),
     }).catch(() => {});
   }
   updatePane(paneId, (p) => {
@@ -1066,13 +1332,18 @@ export async function dismissCanvas(paneId: string, canvasId: string): Promise<v
 }
 
 function isMissingCanvasError(err: unknown): boolean {
-  return (err as Error)?.message?.includes("캔버스를 찾을 수 없습니다.") ?? false;
+  return (
+    (err as Error)?.message?.includes("캔버스를 찾을 수 없습니다.") ?? false
+  );
 }
 
 // Close a canvas tab. A still-pending BLOCKING canvas must cancel its parked run
 // FIRST (else the run hangs on awaitResponse); a persisted canvas is hard-deleted
 // server-side; then it's removed locally and the active tab recomputed.
-export async function closeCanvas(paneId: string, canvasId: string): Promise<void> {
+export async function closeCanvas(
+  paneId: string,
+  canvasId: string,
+): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
   if (!canvas) return;
@@ -1080,13 +1351,19 @@ export async function closeCanvas(paneId: string, canvasId: string): Promise<voi
   if (canvas.pending && canvas.requestId && canvas.runId) {
     await api("/api/chat/respond", {
       method: "POST",
-      body: JSON.stringify({ runId: canvas.runId, requestId: canvas.requestId, value: { cancelled: true, deleteCanvas: true } }),
+      body: JSON.stringify({
+        runId: canvas.runId,
+        requestId: canvas.requestId,
+        value: { cancelled: true, deleteCanvas: true },
+      }),
     }).catch(() => {});
   }
   // Hard-delete if it has been persisted. Greeting-only ephemeral canvases were
   // never stored, so a 404 here is expected and should still close locally.
   try {
-    await api(`/api/chat/canvases/${encodeURIComponent(canvasId)}`, { method: "DELETE" });
+    await api(`/api/chat/canvases/${encodeURIComponent(canvasId)}`, {
+      method: "DELETE",
+    });
   } catch (err) {
     if (!isMissingCanvasError(err)) {
       notify(`캔버스를 삭제하지 못했습니다: ${(err as Error).message}`, "warn");
@@ -1098,18 +1375,23 @@ export async function closeCanvas(paneId: string, canvasId: string): Promise<voi
     if (idx < 0) return;
     p.canvases.splice(idx, 1);
     if (p.activeCanvasId === canvasId) {
-      const next = p.canvases[idx] || p.canvases[idx - 1] || p.canvases[p.canvases.length - 1];
+      const next =
+        p.canvases[idx] ||
+        p.canvases[idx - 1] ||
+        p.canvases[p.canvases.length - 1];
       p.activeCanvasId = next ? next.id : null;
     }
   });
 }
 
 // Fetch a canvas's version history for the rollback UI.
-export async function fetchCanvasVersions(canvasId: string): Promise<{ version: number; createdAt: string }[]> {
+export async function fetchCanvasVersions(
+  canvasId: string,
+): Promise<{ version: number; createdAt: string }[]> {
   try {
-    const res = await api<{ versions: { version: number; createdAt: string }[] }>(
-      `/api/chat/canvases/${encodeURIComponent(canvasId)}/versions`,
-    );
+    const res = await api<{
+      versions: { version: number; createdAt: string }[];
+    }>(`/api/chat/canvases/${encodeURIComponent(canvasId)}/versions`);
     return res.versions || [];
   } catch {
     return [];
@@ -1117,12 +1399,19 @@ export async function fetchCanvasVersions(canvasId: string): Promise<{ version: 
 }
 
 // Roll back a canvas to an earlier version (non-destructive) and update the panel.
-export async function rollbackCanvas(paneId: string, canvasId: string, version: number): Promise<void> {
+export async function rollbackCanvas(
+  paneId: string,
+  canvasId: string,
+  version: number,
+): Promise<void> {
   try {
-    const res = await api<{ canvas: PaneCanvas }>(`/api/chat/canvases/${encodeURIComponent(canvasId)}/rollback`, {
-      method: "POST",
-      body: JSON.stringify({ version }),
-    });
+    const res = await api<{ canvas: PaneCanvas }>(
+      `/api/chat/canvases/${encodeURIComponent(canvasId)}/rollback`,
+      {
+        method: "POST",
+        body: JSON.stringify({ version }),
+      },
+    );
     updatePane(paneId, (p) => {
       const idx = p.canvases.findIndex((c) => c.id === canvasId);
       if (idx >= 0) p.canvases[idx] = { ...p.canvases[idx], ...res.canvas };
@@ -1137,13 +1426,23 @@ export async function rollbackCanvas(paneId: string, canvasId: string, version: 
 // requestIds already resolved server-side (replay/prompt_resolved) — skip showing.
 const resolvedRequestIds = new Set<string>();
 
-function enqueuePrompt(paneId: string, kind: "permission" | "question", data: any): void {
+function enqueuePrompt(
+  paneId: string,
+  kind: "permission" | "question",
+  data: any,
+): void {
   const requestId = data?.requestId;
   if (!requestId || resolvedRequestIds.has(requestId)) return;
   if (readState().promptQueue.some((p) => p.id === requestId)) return;
   updateState((state) => {
     if (state.promptQueue.some((p) => p.id === requestId)) return;
-    state.promptQueue.push({ id: requestId, runId: data.runId || "", paneId, kind, data });
+    state.promptQueue.push({
+      id: requestId,
+      runId: data.runId || "",
+      paneId,
+      kind,
+      data,
+    });
   });
   notifyPrompt(paneId, kind, data);
 }
@@ -1151,16 +1450,29 @@ function enqueuePrompt(paneId: string, kind: "permission" | "question", data: an
 // OS notification when the avatar needs the owner's input (an AskUserQuestion-style
 // question or a permission request). Like answer-complete, this only fires while the
 // app is backgrounded; in the foreground the prompt modal itself is visible.
-function notifyPrompt(paneId: string, kind: "permission" | "question", data: any): void {
+function notifyPrompt(
+  paneId: string,
+  kind: "permission" | "question",
+  data: any,
+): void {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const who = pane?.avatar?.alias || pane?.avatar?.displayName || "아바타";
   if (kind === "question") {
-    const questions = Array.isArray(data?.payload?.questions) ? data.payload.questions : null;
-    const first = questions?.[0]?.question || questions?.[0]?.header || "확인이 필요한 질문이 있습니다.";
+    const questions = Array.isArray(data?.payload?.questions)
+      ? data.payload.questions
+      : null;
+    const first =
+      questions?.[0]?.question ||
+      questions?.[0]?.header ||
+      "확인이 필요한 질문이 있습니다.";
     osNotify(`${who} · 질문`, String(first), `prompt-${data.requestId}`);
   } else {
     const tool = humanTool(data?.toolName);
-    osNotify(`${who} · 확인 필요`, `"${tool}" 실행을 승인해 주세요.`, `prompt-${data.requestId}`);
+    osNotify(
+      `${who} · 확인 필요`,
+      `"${tool}" 실행을 승인해 주세요.`,
+      `prompt-${data.requestId}`,
+    );
   }
 }
 
@@ -1179,13 +1491,20 @@ function dropRunPrompts(paneId: string): void {
 
 // Submit the owner's response to a prompt. Removes it from the queue on success;
 // on failure, surfaces a toast (the run may have already ended).
-export async function answerPrompt(requestId: string, value: unknown): Promise<void> {
+export async function answerPrompt(
+  requestId: string,
+  value: unknown,
+): Promise<void> {
   const request = readState().promptQueue.find((p) => p.id === requestId);
   if (!request) return;
   try {
     await api("/api/chat/respond", {
       method: "POST",
-      body: JSON.stringify({ runId: request.runId, requestId: request.id, value }),
+      body: JSON.stringify({
+        runId: request.runId,
+        requestId: request.id,
+        value,
+      }),
     });
     resolvedRequestIds.add(requestId);
     updateState((state) => {
@@ -1204,7 +1523,9 @@ export async function answerPrompt(requestId: string, value: unknown): Promise<v
 // the authoritative source on reload (the dedicated canvas tables). On reload there
 // is no live run, so pending/runId/requestId stay unset and the form re-enables for
 // async/editable canvases (which submit as a new turn, not via a parked run).
-function paneCanvasesFromArtifacts(canvases: CanvasArtifact[] | undefined): PaneCanvas[] {
+function paneCanvasesFromArtifacts(
+  canvases: CanvasArtifact[] | undefined,
+): PaneCanvas[] {
   const out: PaneCanvas[] = [];
   for (const canvas of canvases || []) {
     const existing = out.findIndex((c) => c.id === canvas.id);
@@ -1218,7 +1539,8 @@ function paneCanvasesFromArtifacts(canvases: CanvasArtifact[] | undefined): Pane
 function lastUsage(messages: StoredMessage[]): ChatPane["usage"] {
   for (let i = messages.length - 1; i >= 0; i--) {
     const usage = messages[i]?.response?.usage;
-    if (usage && (Number(usage.inputTokens) || Number(usage.outputTokens))) return usage;
+    if (usage && (Number(usage.inputTokens) || Number(usage.outputTokens)))
+      return usage;
   }
   return null;
 }

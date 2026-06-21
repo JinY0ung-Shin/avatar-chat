@@ -89,7 +89,10 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       query: string,
       opts: { excludeId?: string; limit?: number } = {},
     ): AvatarSummary[] {
-      const limit = Math.min(Math.max(opts.limit ?? DEFAULT_SEARCH_LIMIT, 1), 50);
+      const limit = Math.min(
+        Math.max(opts.limit ?? DEFAULT_SEARCH_LIMIT, 1),
+        50,
+      );
       // Visibility mirrors listPublishedAvatars: `public` avatars, the viewer's
       // own, and `group` avatars of group teammates (`private` ones stay
       // owner-only). Suspended users are never discoverable. Keeping this in sync
@@ -118,7 +121,13 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         .map((row) => {
           const tags = parseHashtags(row.hashtags);
           const tagHay = tags.join(" ").toLowerCase();
-          const bodyHay = [row.display_name, row.alias, row.username, row.bio, row.intro]
+          const bodyHay = [
+            row.display_name,
+            row.alias,
+            row.username,
+            row.bio,
+            row.intro,
+          ]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
@@ -131,14 +140,20 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
           }
           return { row, score };
         });
-      const matches = tokens.length ? scored.filter((s) => s.score > 0) : scored;
+      const matches = tokens.length
+        ? scored.filter((s) => s.score > 0)
+        : scored;
       matches.sort(
         (a, b) =>
-          b.score - a.score || a.row.display_name.localeCompare(b.row.display_name),
+          b.score - a.score ||
+          a.row.display_name.localeCompare(b.row.display_name),
       );
       return matches
         .slice(0, limit)
-        .map((s) => ({ ...this.toAvatarSummary(s.row), sharesGroup: teammates.has(s.row.id) }));
+        .map((s) => ({
+          ...this.toAvatarSummary(s.row),
+          sharesGroup: teammates.has(s.row.id),
+        }));
     }
 
     getAvatar(viewerId: string, id: string): AvatarDetail | null {
@@ -181,7 +196,12 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
     resolveChatAvatar(
       viewerId: string,
       id: string,
-    ): { id: string; displayName: string; alias: string; persona: string } | null {
+    ): {
+      id: string;
+      displayName: string;
+      alias: string;
+      persona: string;
+    } | null {
       const row = this.userRowById(id);
       if (!row) {
         return null;
@@ -195,7 +215,12 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       if (id !== viewerId && !this.isVisibleTo(row, viewerId)) {
         return null;
       }
-      return { id: row.id, displayName: row.display_name, alias: row.alias ?? "", persona: row.persona ?? "" };
+      return {
+        id: row.id,
+        displayName: row.display_name,
+        alias: row.alias ?? "",
+        persona: row.persona ?? "",
+      };
     }
 
     // ---- Trust & visibility ----------------------------------------------
@@ -203,7 +228,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
     // members of the same group are mutually + symmetrically elevated. A trusted
     // viewer chats with someone else's avatar at the OWNER's tool-permission level
     // (write/Bash run, not just read-only) — but it does NOT grant the owner-only
-    // knowledge inbox or greeting.
+    // knowledge inbox.
 
     /**
      * True when `viewerId` may use tools at the owner's level on `avatarId`'s

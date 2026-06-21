@@ -1071,7 +1071,8 @@ textarea::placeholder {
 }
 
 /* Owner-only per-conversation group-knowledge toggle (button + dropdown). */
-.composer-gk-btn {
+.composer-gk-btn,
+.composer-tools-btn {
   flex: none;
   min-width: 0;
   border: 1px solid var(--line);
@@ -1085,15 +1086,19 @@ textarea::placeholder {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.composer-gk-btn[hidden] {
+.composer-gk-btn[hidden],
+.composer-tools-btn[hidden] {
   display: none;
 }
 .composer-gk-btn[aria-expanded="true"],
-.composer-gk-btn:hover {
+.composer-gk-btn:hover,
+.composer-tools-btn[aria-expanded="true"],
+.composer-tools-btn:hover {
   color: var(--text);
   border-color: var(--accent, var(--text));
 }
-.composer-gk-panel {
+.composer-gk-panel,
+.composer-tools-panel {
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
@@ -1109,20 +1114,42 @@ textarea::placeholder {
   background: var(--bg-elevated);
   box-shadow: var(--shadow-sm);
 }
-.composer-gk-panel[hidden] {
+.composer-gk-panel[hidden],
+.composer-tools-panel[hidden] {
   display: none;
 }
-.composer-gk-title {
+.composer-gk-title,
+.composer-tools-title {
   font-size: 0.78em;
   color: var(--muted);
   padding-bottom: var(--s-1);
 }
-.composer-gk-item {
+.composer-gk-item,
+.composer-tools-item {
   display: flex;
   align-items: center;
   gap: var(--s-2);
   font-size: 0.85em;
   cursor: pointer;
+}
+.composer-tools-panel {
+  min-width: min(320px, 100%);
+}
+.composer-tools-item {
+  align-items: flex-start;
+}
+.composer-tools-item > span {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+.composer-tools-item strong {
+  font-size: 0.95em;
+  color: var(--text-soft);
+}
+.composer-tools-item small {
+  color: var(--muted);
+  line-height: 1.35;
 }
 
 .slash-menu {

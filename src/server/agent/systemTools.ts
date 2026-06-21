@@ -7,6 +7,7 @@ import { text } from "./mcpTools.js";
 import { DEFAULT_MODEL_TIER } from "../modelTiers.js";
 import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
 import { summarizeOwnerState } from "./ownerState.js";
+import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
 
 /**
  * Per-conversation context for avatar-system management tools. These tools let
@@ -37,6 +38,8 @@ export interface SystemToolsContext {
    * effortLevels.ts / claudeAgent userEffort.
    */
   selectedEffort?: string;
+  /** MCP tool groups enabled for THIS run, chosen in the chat composer. */
+  enabledMcpToolGroups?: McpToolGroupId[];
   /**
    * The working repository (by NAME) opened for THIS conversation via
    * `mcp__git_repo__open_repo`, if any. Reported by describe_system, mirroring
@@ -201,6 +204,10 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         const effortLine = userEffort
           ? `${effortLabel(userEffort) ? `${userEffort} (${effortLabel(userEffort)})` : userEffort} (chosen for this conversation)`
           : `${effortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${effortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;
+        const enabledMcpToolGroups = ctx.enabledMcpToolGroups ?? MCP_TOOL_GROUPS.map((group) => group.id);
+        const enabledMcpToolGroupLabels = MCP_TOOL_GROUPS
+          .filter((group) => enabledMcpToolGroups.includes(group.id))
+          .map((group) => group.labelEn);
         const hashtags = user?.hashtags ?? [];
         const visibilityLabel =
           user?.visibility === "public"
@@ -217,6 +224,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- runtime: ${ctx.config.agentRuntime}`,
           `- Model in use: ${modelLine}`,
           `- Reasoning effort: ${effortLine}`,
+          `- MCP tool groups enabled for this conversation: ${enabledMcpToolGroupLabels.length ? enabledMcpToolGroupLabels.join(", ") : "(none)"}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
           `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,

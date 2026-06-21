@@ -1,7 +1,15 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { AppConfig, AgentRequest, AgentResponse, AgentUsage, AgentOwner, AgentImageInput, PluginRoot } from "../types.js";
+import type {
+  AppConfig,
+  AgentRequest,
+  AgentResponse,
+  AgentUsage,
+  AgentOwner,
+  AgentImageInput,
+  PluginRoot,
+} from "../types.js";
 import type { Store } from "../store.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import type { AgentEvents } from "./events.js";
@@ -18,7 +26,11 @@ import {
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
 import { isRecord, asString } from "./agentUtils.js";
-import { isModelTier, DEFAULT_MODEL_TIER, MODEL_TIER_IDS } from "../modelTiers.js";
+import {
+  isModelTier,
+  DEFAULT_MODEL_TIER,
+  MODEL_TIER_IDS,
+} from "../modelTiers.js";
 import { isEffortLevel } from "../effortLevels.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import { buildPrompt } from "./promptBuilder.js";
@@ -41,12 +53,16 @@ import {
   resultErrorMessage,
   traceSdkMessage,
 } from "./sdkMessageHandlers.js";
+import { effectiveMcpToolGroups } from "../../shared/mcpToolGroups.js";
 
 // Re-export the symbols moved into sibling modules so existing import paths
 // (app.ts, index.ts, tests/units.test.ts, infra/agent-core/… tests) keep
 // resolving against this module unchanged.
 export { buildPrompt } from "./promptBuilder.js";
-export { buildPreToolUseHook, rewriteBashCommandWithRtk } from "./preToolUseHook.js";
+export {
+  buildPreToolUseHook,
+  rewriteBashCommandWithRtk,
+} from "./preToolUseHook.js";
 export { interpretResult, resultErrorMessage } from "./sdkMessageHandlers.js";
 
 const agentLogger = logger.child({ module: "agent" });
@@ -101,7 +117,9 @@ export function agentSubprocessEnv(
   };
 }
 
-export function sshMcpSecretEnv(ownerSecrets: Record<string, string>): Record<string, string> {
+export function sshMcpSecretEnv(
+  ownerSecrets: Record<string, string>,
+): Record<string, string> {
   const out: Record<string, string> = {};
   for (const name of SSH_MCP_SECRET_ENV_NAMES) {
     const value = ownerSecrets[name];
@@ -120,7 +138,7 @@ export interface AgentToolAccess {
   ownerToolAccess: boolean;
   /** Elevated (owner OR trusted) tool access, with the same headless gating. */
   elevatedToolAccess: boolean;
-  /** Owner OR trusted, IGNORING headless — gates the auto-approve path + greeting. */
+  /** Owner OR trusted, IGNORING headless — gates the auto-approve path. */
   elevated: boolean;
   autoApprove: boolean;
   hexSshViewerClass: HexSshViewerClass;
@@ -142,7 +160,8 @@ export function deriveAgentToolAccess(request: AgentRequest): AgentToolAccess {
   // owner routines do). `!headlessRestricted` === `(!headless || allowHeadlessTools)`.
   const headlessRestricted = headless && !allowHeadlessTools;
   const ownerToolAccess = viewerIsOwner && !headlessRestricted;
-  const elevatedToolAccess = (viewerIsOwner || Boolean(request.elevated)) && !headlessRestricted;
+  const elevatedToolAccess =
+    (viewerIsOwner || Boolean(request.elevated)) && !headlessRestricted;
   const elevated = viewerIsOwner || Boolean(request.elevated);
   const autoApprove = Boolean(request.autoApprove);
   const hexSshViewerClass = viewerClassForAgentRequest({
@@ -185,7 +204,11 @@ export async function* buildImageQueryPrompt(
         { type: "text", text: promptText },
         ...images.map((image) => ({
           type: "image",
-          source: { type: "base64", media_type: image.mediaType, data: image.data },
+          source: {
+            type: "base64",
+            media_type: image.mediaType,
+            data: image.data,
+          },
         })),
       ],
     },
@@ -215,11 +238,16 @@ export function isMissingResumeSessionError(error: unknown): boolean {
 }
 
 export function isRetryableModelError(error: unknown): boolean {
-  const status = isRecord(error) && typeof error.status === "number" ? error.status : undefined;
+  const status =
+    isRecord(error) && typeof error.status === "number"
+      ? error.status
+      : undefined;
   if (status && RETRYABLE_MODEL_STATUS.has(status)) {
     return true;
   }
-  const message = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  const message = (
+    error instanceof Error ? error.message : String(error)
+  ).toLowerCase();
   return /overloaded|rate.?limit|too many requests|\b408\b|\b429\b|\b500\b|\b502\b|\b503\b|\b504\b|\b529\b|internal server error|service unavailable|bad gateway|gateway timeout|timed?\s?out|etimedout|econnreset|econnrefused|enotfound|socket hang up|fetch failed|connection error|network error|server_error|api_error/.test(
     message,
   );
@@ -237,7 +265,9 @@ export function buildModelFallbackChain(primary: string): string[] {
   if (idx >= 0) {
     return MODEL_TIER_IDS.slice(idx);
   }
-  return [primary, "sonnet", "haiku"].filter((model, i, arr) => arr.indexOf(model) === i);
+  return [primary, "sonnet", "haiku"].filter(
+    (model, i, arr) => arr.indexOf(model) === i,
+  );
 }
 
 /**
@@ -269,37 +299,49 @@ export async function runClaudeAgent(
   const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as {
     query: (input: unknown) => AsyncIterable<unknown>;
   };
-  const { buildKnowledgeServer, KNOWLEDGE_SERVER_NAME, KNOWLEDGE_TOOL_NAMES } = await import(
-    "./knowledgeTools.js"
-  );
-  const { buildRepoServer, REPO_SERVER_NAME, REPO_TOOL_NAMES, REPO_CREATE_TOOL_NAME } = await import(
-    "./repoTools.js"
-  );
-  const { buildSshTrustServer, SSH_TRUST_SERVER_NAME, SSH_TRUST_TOOL_NAMES } = await import(
-    "./sshTrustTools.js"
-  );
-  const { buildSshIdentityServer, SSH_IDENTITY_SERVER_NAME, SSH_IDENTITY_TOOL_NAMES } = await import(
-    "./sshIdentityTools.js"
-  );
-  const { buildSystemServer, SYSTEM_SERVER_NAME, SYSTEM_TOOL_NAMES } = await import(
-    "./systemTools.js"
-  );
-  const { buildConfluenceServer, CONFLUENCE_SERVER_NAME, CONFLUENCE_TOOL_NAMES } = await import(
-    "./confluenceTools.js"
-  );
-  const { buildAvatarDirectoryServer, AVATAR_DIRECTORY_SERVER_NAME, AVATAR_DIRECTORY_TOOL_NAMES } =
-    await import("./avatarDirectoryTools.js");
-  const { buildGitRepoServer, GIT_REPO_SERVER_NAME, GIT_REPO_TOOL_NAMES } = await import(
-    "./gitRepoTools.js"
-  );
-  const { buildGroupRepoServer, GROUP_REPO_SERVER_NAME, GROUP_REPO_TOOL_NAMES } = await import(
-    "./groupRepoTools.js"
-  );
-  const { buildCanvasServer, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES } = await import("./canvasTools.js");
-  const { buildBrainServer, BRAIN_SERVER_NAME, BRAIN_TOOL_NAMES } = await import("./brainTools.js");
-  const { buildGroupBrainServer, GROUP_BRAIN_SERVER_NAME, GROUP_BRAIN_TOOL_NAMES } = await import(
-    "./groupBrainTools.js"
-  );
+  const { buildKnowledgeServer, KNOWLEDGE_SERVER_NAME, KNOWLEDGE_TOOL_NAMES } =
+    await import("./knowledgeTools.js");
+  const {
+    buildRepoServer,
+    REPO_SERVER_NAME,
+    REPO_TOOL_NAMES,
+    REPO_CREATE_TOOL_NAME,
+  } = await import("./repoTools.js");
+  const { buildSshTrustServer, SSH_TRUST_SERVER_NAME, SSH_TRUST_TOOL_NAMES } =
+    await import("./sshTrustTools.js");
+  const {
+    buildSshIdentityServer,
+    SSH_IDENTITY_SERVER_NAME,
+    SSH_IDENTITY_TOOL_NAMES,
+  } = await import("./sshIdentityTools.js");
+  const { buildSystemServer, SYSTEM_SERVER_NAME, SYSTEM_TOOL_NAMES } =
+    await import("./systemTools.js");
+  const {
+    buildConfluenceServer,
+    CONFLUENCE_SERVER_NAME,
+    CONFLUENCE_TOOL_NAMES,
+  } = await import("./confluenceTools.js");
+  const {
+    buildAvatarDirectoryServer,
+    AVATAR_DIRECTORY_SERVER_NAME,
+    AVATAR_DIRECTORY_TOOL_NAMES,
+  } = await import("./avatarDirectoryTools.js");
+  const { buildGitRepoServer, GIT_REPO_SERVER_NAME, GIT_REPO_TOOL_NAMES } =
+    await import("./gitRepoTools.js");
+  const {
+    buildGroupRepoServer,
+    GROUP_REPO_SERVER_NAME,
+    GROUP_REPO_TOOL_NAMES,
+  } = await import("./groupRepoTools.js");
+  const { buildCanvasServer, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES } =
+    await import("./canvasTools.js");
+  const { buildBrainServer, BRAIN_SERVER_NAME, BRAIN_TOOL_NAMES } =
+    await import("./brainTools.js");
+  const {
+    buildGroupBrainServer,
+    GROUP_BRAIN_SERVER_NAME,
+    GROUP_BRAIN_TOOL_NAMES,
+  } = await import("./groupBrainTools.js");
 
   const streaming = Boolean(events);
   // Tool-access derivation lives in deriveAgentToolAccess (a pure, unit-tested
@@ -317,26 +359,48 @@ export async function runClaudeAgent(
     hexSshViewerClass,
   } = deriveAgentToolAccess(request);
   const hexSshPolicy = store.getHexSshToolPolicy();
-  const hexSshAllowedTools = allowedHexSshToolsForViewer(hexSshPolicy, hexSshViewerClass);
+  const hexSshAllowedTools = allowedHexSshToolsForViewer(
+    hexSshPolicy,
+    hexSshViewerClass,
+  );
+  const enabledMcpToolGroups = effectiveMcpToolGroups(request.mcpToolGroups);
+  const mcpToolGroupEnabled = (id: (typeof enabledMcpToolGroups)[number]) =>
+    enabledMcpToolGroups.includes(id);
+  const personalKnowledgeToolsEnabled =
+    mcpToolGroupEnabled("personal_knowledge");
+  const groupKnowledgeToolsEnabled = mcpToolGroupEnabled("group_knowledge");
+  const gitRepoToolsEnabled = mcpToolGroupEnabled("git_repo");
+  const confluenceToolsEnabled = mcpToolGroupEnabled("confluence");
+  const sshToolsEnabled = mcpToolGroupEnabled("ssh");
+  const avatarDirectoryToolsEnabled = mcpToolGroupEnabled("avatars");
+  const canvasToolsEnabled = mcpToolGroupEnabled("canvas");
+  const systemToolsEnabled = mcpToolGroupEnabled("system");
   // Effective model: an env-pinned ANTHROPIC_MODEL wins (mirrors the API-key vs.
   // subscription rule) and is a HARD lock; otherwise the user's per-conversation
   // tier pick (a Claude alias, resolved to a concrete model by the operator's
   // ANTHROPIC_DEFAULT_*_MODEL env), otherwise the admin-selected override,
   // otherwise the DEFAULT tier (opus). Unknown tiers are ignored so a stale/garbage
   // value can never reach the SDK as a model id.
-  const userModelTier = isModelTier(request.modelTier) ? request.modelTier : undefined;
+  const userModelTier = isModelTier(request.modelTier)
+    ? request.modelTier
+    : undefined;
   // User-chosen reasoning effort for this conversation. Unknown/unset → leave
   // `options.effort` off so the SDK applies its own default (`high`). Independent
   // of the model pin: effort still applies when ANTHROPIC_MODEL locks the model.
   const userEffort = isEffortLevel(request.effort) ? request.effort : undefined;
   const effectiveModel =
-    config.anthropicModel ?? userModelTier ?? store.getModelOverride() ?? DEFAULT_MODEL_TIER;
+    config.anthropicModel ??
+    userModelTier ??
+    store.getModelOverride() ??
+    DEFAULT_MODEL_TIER;
   // Model fallback chain (scheduled routines only — `request.modelFallback`): on a
   // transient model/server error, retry down the tier order from the resolved
   // model. An env-pinned ANTHROPIC_MODEL is a HARD lock, so it never falls back.
   // Otherwise the chain is just the single resolved model (chat behavior).
   const modelChain =
-    request.modelFallback && !config.anthropicModel ? buildModelFallbackChain(effectiveModel) : [effectiveModel];
+    request.modelFallback && !config.anthropicModel
+      ? buildModelFallbackChain(effectiveModel)
+      : [effectiveModel];
   const agentStart = Date.now();
 
   agentLogger.info(
@@ -349,6 +413,7 @@ export async function runClaudeAgent(
       autoApprove,
       hexSshViewerClass,
       hexSshAllowedToolCount: hexSshAllowedTools.length,
+      enabledMcpToolGroups,
       model: effectiveModel,
     },
     "agent run started",
@@ -363,12 +428,6 @@ export async function runClaudeAgent(
     askerUserId: request.viewerUserId ?? null,
     askerName: request.viewerName ?? null,
   });
-  // Only needed for the owner's opening greeting — every other turn stays quiet.
-  const openRequestCount =
-    request.greeting && viewerIsOwner && !headless
-      ? store.countOpenKnowledgeRequests(request.avatar.id)
-      : 0;
-
   // Knowledge-repo management tools (list/read/write/scaffold/commit). OWNER-ONLY:
   // a colleague, a trusted user, or a generic headless run gets a refusal from
   // every tool. Scheduled owner routines use ownerToolAccess above. Registered
@@ -393,7 +452,10 @@ export async function runClaudeAgent(
   // exposed ONLY for an owner-driven, non-headless chat with NO repo yet — once
   // one is connected, hiding it keeps the unused tool out of every prompt.
   const knowledgeRepoConfigured = ownerState.knowledgeRepoConfigured;
-  const allowRepoCreate = ownerToolAccess && !knowledgeRepoConfigured;
+  const allowRepoCreate =
+    personalKnowledgeToolsEnabled &&
+    ownerToolAccess &&
+    !knowledgeRepoConfigured;
   const repoServer = buildRepoServer(
     store,
     {
@@ -413,7 +475,10 @@ export async function runClaudeAgent(
   // The repo is resolved from the OWNER (avatar.id) inside the tools, never the
   // viewer, so a teammate's search hits the owner's vault. brainActive is the
   // SINGLE boolean used byte-identically in allowedTools + mcpServers below.
-  const brainActive = knowledgeRepoConfigured && elevatedToolAccess;
+  const brainActive =
+    personalKnowledgeToolsEnabled &&
+    knowledgeRepoConfigured &&
+    elevatedToolAccess;
   const brainServer = buildBrainServer(store, {
     avatarUserId: request.avatar.id,
     viewerIsOwner: ownerToolAccess,
@@ -427,6 +492,7 @@ export async function runClaudeAgent(
     config,
     selectedModelTier: userModelTier,
     selectedEffort: userEffort,
+    enabledMcpToolGroups,
     // The working repo opened for this conversation (NAME only — the clone path is
     // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
     activeRepoName: request.activeRepoName,
@@ -458,7 +524,8 @@ export async function runClaudeAgent(
   // reads, admin writes). Registered only for an owner-driven turn where the
   // owner actually belongs to ≥1 group, to keep the tools out of other prompts.
   const ownerGroups = ownerState.groups;
-  const groupRepoActive = ownerToolAccess && ownerGroups.length > 0;
+  const groupRepoActive =
+    groupKnowledgeToolsEnabled && ownerToolAccess && ownerGroups.length > 0;
   const groupRepoServer = buildGroupRepoServer(store, {
     avatarUserId: request.avatar.id,
     owner,
@@ -470,7 +537,10 @@ export async function runClaudeAgent(
   // at registration (like the group repo tools), active when the owner is in ≥1
   // group with a connected shared repo. groupBrainActive is the SINGLE boolean
   // used byte-identically in allowedTools + mcpServers below.
-  const groupBrainActive = ownerToolAccess && ownerGroups.some((g) => g.knowledgeRepoConfigured);
+  const groupBrainActive =
+    groupKnowledgeToolsEnabled &&
+    ownerToolAccess &&
+    ownerGroups.some((g) => g.knowledgeRepoConfigured);
   const groupBrainServer = buildGroupBrainServer(store, {
     avatarUserId: request.avatar.id,
     viewerIsOwner: ownerToolAccess,
@@ -482,14 +552,22 @@ export async function runClaudeAgent(
   // (events.onCanvas). Gating on the owner's setting — not the viewer's — means
   // colleagues chatting with that avatar also get canvases (the feature grants no
   // elevation; the handler self-gates nothing because showing UI is harmless).
-  const canvasActive = Boolean(events?.onCanvas) && ownerState.experimentalFeatures.includes("canvas");
-  const canvasServer = canvasActive ? buildCanvasServer({ emitCanvas: events!.onCanvas! }) : null;
+  const canvasActive =
+    canvasToolsEnabled &&
+    Boolean(events?.onCanvas) &&
+    ownerState.experimentalFeatures.includes("canvas");
+  const canvasServer = canvasActive
+    ? buildCanvasServer({ emitCanvas: events!.onCanvas! })
+    : null;
 
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
   // NOT owner-only: host fingerprints are public, and a viewer who can drive
   // hex-ssh can manage its trust. The trust file is keyed to the owner
   // (avatar.id) and injected into hex-ssh below as KNOWN_HOSTS_PATH.
-  const sshTrustServer = buildSshTrustServer({ avatarUserId: request.avatar.id, config });
+  const sshTrustServer = buildSshTrustServer({
+    avatarUserId: request.avatar.id,
+    config,
+  });
 
   // The avatar acts on its OWNER's behalf, so it uses the OWNER's secrets
   // (avatar.id) regardless of who is chatting — a colleague talking to the
@@ -508,8 +586,14 @@ export async function runClaudeAgent(
   // owner's per-user SSH identity. The policy proxy filters tools/list before
   // the model sees it, and the PreToolUse hook below enforces the same allowlist
   // again on tools/call.
-  const hexSshProxyPath = path.join(process.cwd(), "scripts", "hex-ssh-policy-proxy.mjs");
-  const sshActive = Boolean(ownerSecrets.SSH_PRIVATE_KEY && hexSshAllowedTools.length > 0);
+  const hexSshProxyPath = path.join(
+    process.cwd(),
+    "scripts",
+    "hex-ssh-policy-proxy.mjs",
+  );
+  const sshActive =
+    sshToolsEnabled &&
+    Boolean(ownerSecrets.SSH_PRIVATE_KEY && hexSshAllowedTools.length > 0);
   const sshServers = sshActive
     ? {
         [HEX_SSH_SERVER_NAME]: {
@@ -541,19 +625,19 @@ export async function runClaudeAgent(
     // is only an auto-approve list, NOT a restriction — the hook does enforcement.
     allowedTools: [
       ...config.readOnlyTools,
-      ...KNOWLEDGE_TOOL_NAMES,
-      ...REPO_TOOL_NAMES,
+      ...(personalKnowledgeToolsEnabled ? KNOWLEDGE_TOOL_NAMES : []),
+      ...(personalKnowledgeToolsEnabled ? REPO_TOOL_NAMES : []),
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
-      ...SYSTEM_TOOL_NAMES,
-      ...CONFLUENCE_TOOL_NAMES,
-      ...AVATAR_DIRECTORY_TOOL_NAMES,
-      ...SSH_IDENTITY_TOOL_NAMES,
-      ...GIT_REPO_TOOL_NAMES,
+      ...(systemToolsEnabled ? SYSTEM_TOOL_NAMES : []),
+      ...(confluenceToolsEnabled ? CONFLUENCE_TOOL_NAMES : []),
+      ...(avatarDirectoryToolsEnabled ? AVATAR_DIRECTORY_TOOL_NAMES : []),
+      ...(sshToolsEnabled ? SSH_IDENTITY_TOOL_NAMES : []),
+      ...(gitRepoToolsEnabled ? GIT_REPO_TOOL_NAMES : []),
       ...(groupRepoActive ? GROUP_REPO_TOOL_NAMES : []),
       ...(brainActive ? BRAIN_TOOL_NAMES : []),
       ...(groupBrainActive ? GROUP_BRAIN_TOOL_NAMES : []),
       ...(canvasActive ? CANVAS_TOOL_NAMES : []),
-      ...SSH_TRUST_TOOL_NAMES,
+      ...(sshActive ? SSH_TRUST_TOOL_NAMES : []),
       "Skill",
       "TodoWrite",
       ...TASK_ORCHESTRATION_TOOLS,
@@ -564,16 +648,28 @@ export async function runClaudeAgent(
     // itself is active (the owner stored a key) — trust management is pointless
     // without a server to connect.
     mcpServers: {
-      [KNOWLEDGE_SERVER_NAME]: knowledgeServer,
-      [REPO_SERVER_NAME]: repoServer,
-      [SYSTEM_SERVER_NAME]: systemServer,
-      [CONFLUENCE_SERVER_NAME]: confluenceServer,
-      [AVATAR_DIRECTORY_SERVER_NAME]: avatarDirectoryServer,
-      [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer,
-      [GIT_REPO_SERVER_NAME]: gitRepoServer,
+      ...(personalKnowledgeToolsEnabled
+        ? { [KNOWLEDGE_SERVER_NAME]: knowledgeServer }
+        : {}),
+      ...(personalKnowledgeToolsEnabled
+        ? { [REPO_SERVER_NAME]: repoServer }
+        : {}),
+      ...(systemToolsEnabled ? { [SYSTEM_SERVER_NAME]: systemServer } : {}),
+      ...(confluenceToolsEnabled
+        ? { [CONFLUENCE_SERVER_NAME]: confluenceServer }
+        : {}),
+      ...(avatarDirectoryToolsEnabled
+        ? { [AVATAR_DIRECTORY_SERVER_NAME]: avatarDirectoryServer }
+        : {}),
+      ...(sshToolsEnabled
+        ? { [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer }
+        : {}),
+      ...(gitRepoToolsEnabled ? { [GIT_REPO_SERVER_NAME]: gitRepoServer } : {}),
       ...(groupRepoActive ? { [GROUP_REPO_SERVER_NAME]: groupRepoServer } : {}),
       ...(brainActive ? { [BRAIN_SERVER_NAME]: brainServer } : {}),
-      ...(groupBrainActive ? { [GROUP_BRAIN_SERVER_NAME]: groupBrainServer } : {}),
+      ...(groupBrainActive
+        ? { [GROUP_BRAIN_SERVER_NAME]: groupBrainServer }
+        : {}),
       ...(canvasServer ? { [CANVAS_SERVER_NAME]: canvasServer } : {}),
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
@@ -601,12 +697,14 @@ export async function runClaudeAgent(
   if (!config.anthropicApiKey) {
     const oauthToken = store.getAppSecret(CLAUDE_OAUTH_TOKEN_KEY);
     if (oauthToken) {
-      delete (options.env as Record<string, string | undefined>).ANTHROPIC_API_KEY;
-      (options.env as Record<string, string | undefined>).CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
+      delete (options.env as Record<string, string | undefined>)
+        .ANTHROPIC_API_KEY;
+      (
+        options.env as Record<string, string | undefined>
+      ).CLAUDE_CODE_OAUTH_TOKEN = oauthToken;
     }
   }
-  // Resume the conversation's prior session so the model keeps its context. Only
-  // a real follow-up turn passes one (greeting/regenerate start fresh — see app.ts).
+  // Resume the conversation's prior session so the model keeps its context.
   if (request.resumeSessionId) {
     options.resume = request.resumeSessionId;
   }
@@ -694,13 +792,19 @@ export async function runClaudeAgent(
     gitTokenSet: ownerState.gitTokenSet,
     githubHost: config.githubHost,
     confluenceUrlConfigured: Boolean(config.confluenceUrl),
-    confluencePatConfigured: Boolean(ownerSecrets.CONFLUENCE_PAT || ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN),
+    confluencePatConfigured: Boolean(
+      ownerSecrets.CONFLUENCE_PAT ||
+      ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN,
+    ),
     groupMemberships: ownerToolAccess ? ownerGroups : [],
+    mcpToolGroups: enabledMcpToolGroups,
     // Canvas standing guidance fires for ALL viewer classes of a canvas-enabled
     // turn (colleagues see canvases too). Experimental-feature self-state is
     // owner-driven only (META-COGNITION), matching describe_system's gating.
     canvasEnabled: canvasActive,
-    experimentalFeatures: ownerToolAccess ? ownerState.experimentalFeatures : [],
+    experimentalFeatures: ownerToolAccess
+      ? ownerState.experimentalFeatures
+      : [],
   };
 
   // The prompt is normally a plain string. When the turn carries image
@@ -708,7 +812,7 @@ export async function runClaudeAgent(
   // input" mode) whose content is the prompt text + image blocks — the only way
   // to feed the model images. All `options` (resume/hooks/mcpServers/model) work
   // identically in both modes, so text-only turns keep the unchanged string path.
-  let promptText = buildPrompt(promptRequest, openRequestCount);
+  let promptText = buildPrompt(promptRequest);
 
   // One-shot guard for the stale-resume self-heal below: if the SDK can't find
   // the session we asked it to resume, we drop `resume`, rebuild the prompt with
@@ -777,7 +881,8 @@ export async function runClaudeAgent(
             continue;
           }
           if (message.type === "tool_progress") {
-            const toolName = asString(message.tool_name) || asString(message.toolName);
+            const toolName =
+              asString(message.tool_name) || asString(message.toolName);
             events.onStatus?.(toolName ? `실행 중: ${toolName}` : "실행 중…");
             continue;
           }
@@ -800,7 +905,11 @@ export async function runClaudeAgent(
           continue;
         }
 
-        const { text: extractedResult, errorSubtype, usage } = interpretResult(message);
+        const {
+          text: extractedResult,
+          errorSubtype,
+          usage,
+        } = interpretResult(message);
         if (extractedResult) {
           resultText = extractedResult;
         }
@@ -829,9 +938,12 @@ export async function runClaudeAgent(
         resumeFallbackTried = true;
         delete options.resume;
         promptRequest.resumeSessionId = undefined;
-        promptText = buildPrompt(promptRequest, openRequestCount);
+        promptText = buildPrompt(promptRequest);
         agentLogger.warn(
-          { avatarId: request.avatar.id, conversationId: request.conversationId },
+          {
+            avatarId: request.avatar.id,
+            conversationId: request.conversationId,
+          },
           "resume session missing; retrying with stored history",
         );
         attempt -= 1; // re-run the SAME model (don't consume a fallback step)
@@ -839,7 +951,9 @@ export async function runClaudeAgent(
       }
       const nextModel = modelChain[attempt + 1];
       const canFallback =
-        Boolean(nextModel) && !abortController?.signal.aborted && isRetryableModelError(error);
+        Boolean(nextModel) &&
+        !abortController?.signal.aborted &&
+        isRetryableModelError(error);
       if (!canFallback) {
         throw error;
       }
@@ -879,7 +993,8 @@ export async function runClaudeAgent(
     runUsage = finalizeTurnUsage(runUsage, contextTokens);
   }
 
-  const partialText = assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();
+  const partialText =
+    assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();
   const text =
     partialText ||
     resultText ||

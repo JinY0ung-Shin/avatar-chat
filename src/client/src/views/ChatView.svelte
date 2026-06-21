@@ -12,7 +12,6 @@
     addConversationToSplit,
     attachActiveRun,
     closePane,
-    maybeGreet,
     newChat,
     regenerate,
     selectConversation,
@@ -29,6 +28,12 @@
   import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
   import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
+  import {
+    DEFAULT_MCP_TOOL_GROUPS,
+    MCP_TOOL_GROUPS,
+    normalizeMcpToolGroups,
+    type McpToolGroupId,
+  } from "../../../shared/mcpToolGroups";
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
   let splitAvatarId = "";
@@ -38,6 +43,8 @@
   let physicalKeyboard = false;
   // Per-pane group-knowledge dropdown open state.
   let gkOpenPaneId = "";
+  // Per-pane MCP tool-group checkbox panel open state.
+  let mcpToolsOpenPaneId = "";
   // Per-pane mobile composer settings disclosure state.
   let composerSettingsOpenPaneId = "";
 
@@ -50,11 +57,10 @@
         await selectConversation(route.arg);
         return;
       }
-      const pane = activePane();
-      if (pane) {
-        await attachActiveRun(pane.id);
-        await maybeGreet(pane.id);
-      }
+        const pane = activePane();
+        if (pane) {
+          await attachActiveRun(pane.id);
+        }
     } catch (err) {
       notify(`대화 목록을 불러오지 못했습니다: ${(err as Error).message}`, "warn");
     }
@@ -155,7 +161,7 @@
   }
 
   function hasComposerControls(item: ChatPane): boolean {
-    return hasModelPicker() || hasEffortPicker() || eligibleGroups(item).length > 0;
+    return hasModelPicker() || hasEffortPicker() || eligibleGroups(item).length > 0 || MCP_TOOL_GROUPS.length > 0;
   }
 
   function modelTierLabel(item: ChatPane): string {
@@ -175,12 +181,22 @@
     return `그룹 ${onCount}/${groups.length}`;
   }
 
+  function selectedMcpToolGroups(item: ChatPane): McpToolGroupId[] {
+    const selected = item.mcpToolGroups ?? DEFAULT_MCP_TOOL_GROUPS;
+    return normalizeMcpToolGroups(selected);
+  }
+
+  function mcpToolsLabel(item: ChatPane): string {
+    return `도구 ${selectedMcpToolGroups(item).length}/${MCP_TOOL_GROUPS.length}`;
+  }
+
   function composerSettingsSummary(item: ChatPane): string {
     const parts: string[] = [];
     if (hasModelPicker()) parts.push(modelTierLabel(item));
     if (hasEffortPicker()) parts.push(`강도 ${effortLabel(item)}`);
     const groupLabel = groupKnowledgeLabel(item);
     if (groupLabel) parts.push(groupLabel);
+    parts.push(mcpToolsLabel(item));
     return parts.join(" · ");
   }
 
@@ -188,6 +204,19 @@
     const closing = composerSettingsOpenPaneId === item.id;
     composerSettingsOpenPaneId = closing ? "" : item.id;
     if (closing && gkOpenPaneId === item.id) gkOpenPaneId = "";
+    if (closing && mcpToolsOpenPaneId === item.id) mcpToolsOpenPaneId = "";
+  }
+
+  function toggleMcpToolsPanel(item: ChatPane) {
+    const closing = mcpToolsOpenPaneId === item.id;
+    mcpToolsOpenPaneId = closing ? "" : item.id;
+    if (!closing && gkOpenPaneId === item.id) gkOpenPaneId = "";
+  }
+
+  function toggleGroupKnowledgePanel(item: ChatPane) {
+    const closing = gkOpenPaneId === item.id;
+    gkOpenPaneId = closing ? "" : item.id;
+    if (!closing && mcpToolsOpenPaneId === item.id) mcpToolsOpenPaneId = "";
   }
 
   async function submit(item: ChatPane) {
@@ -630,6 +659,19 @@
     notify(`사고 강도를 ${label ?? effort}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
   }
 
+  function setMcpToolGroup(item: ChatPane, groupId: McpToolGroupId, on: boolean) {
+    const current = new Set(selectedMcpToolGroups(item));
+    if (on) current.add(groupId);
+    else current.delete(groupId);
+    const next = MCP_TOOL_GROUPS.map((group) => group.id).filter((id) => current.has(id));
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.mcpToolGroups = next;
+    });
+    const label = MCP_TOOL_GROUPS.find((group) => group.id === groupId)?.labelKo ?? groupId;
+    notify(`"${label}" MCP 도구를 ${on ? "사용" : "사용 해제"}했습니다. 다음 메시지부터 적용됩니다.`, "info");
+  }
+
   function messageText(message: StoredMessage) {
     return message.response?.text || message.response?.summary || message.content;
   }
@@ -902,7 +944,7 @@
                   class="composer-settings-btn"
                   type="button"
                   aria-expanded={composerSettingsOpenPaneId === item.id ? "true" : "false"}
-                  title="이 대화의 모델, 사고 강도, 그룹 지식을 설정합니다"
+                  title="이 대화의 모델, 사고 강도, 지식, MCP 도구를 설정합니다"
                   on:click={() => toggleComposerSettings(item)}
                 >
                   <Icon name="gear" size={16} />
@@ -946,9 +988,16 @@
                       type="button"
                       aria-expanded={gkOpenPaneId === item.id ? "true" : "false"}
                       title="이 대화에서 다음 메시지부터 사용할 그룹 지식을 고릅니다"
-                      on:click={() => (gkOpenPaneId = gkOpenPaneId === item.id ? "" : item.id)}
+                      on:click={() => toggleGroupKnowledgePanel(item)}
                     >그룹 지식 {onCount}/{groups.length}</button>
                   {/if}
+                  <button
+                    class="composer-tools-btn"
+                    type="button"
+                    aria-expanded={mcpToolsOpenPaneId === item.id ? "true" : "false"}
+                    title="이 대화에서 다음 메시지부터 사용할 MCP 도구 묶음을 고릅니다"
+                    on:click={() => toggleMcpToolsPanel(item)}
+                  >MCP 도구 {selectedMcpToolGroups(item).length}/{MCP_TOOL_GROUPS.length}</button>
                 </span>
               {/if}
               {#if formatUsageLabel(item.usage)}
@@ -969,6 +1018,24 @@
                 on:change={(event) => setGroupKnowledge(item, group.id, event.currentTarget.checked)}
               />
               <span>{group.name}</span>
+            </label>
+          {/each}
+        </div>
+      {/if}
+      {#if mcpToolsOpenPaneId === item.id}
+        <div class="composer-tools-panel" role="group" aria-label="이 대화에서 사용할 MCP 도구">
+          <div class="composer-tools-title">이 대화에서 사용할 MCP 도구</div>
+          {#each MCP_TOOL_GROUPS as group (group.id)}
+            <label class="composer-tools-item">
+              <input
+                type="checkbox"
+                checked={selectedMcpToolGroups(item).includes(group.id)}
+                on:change={(event) => setMcpToolGroup(item, group.id, event.currentTarget.checked)}
+              />
+              <span>
+                <strong>{group.labelKo}</strong>
+                <small>{group.descriptionKo}</small>
+              </span>
             </label>
           {/each}
         </div>
