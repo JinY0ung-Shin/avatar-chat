@@ -81,6 +81,36 @@ export function autosize(node: HTMLTextAreaElement, _value?: string) {
   };
 }
 
+// Close a lightweight popover/panel when the user interacts anywhere outside it.
+// `onOutside` fires on a document pointerdown whose target is neither inside the
+// node nor matching the `ignore` selector (the toggle button that opened it —
+// excluded so its own click handler does the toggle instead of double-firing).
+// Used for the composer's group-knowledge / MCP-tool panels. Because the panel
+// mounts only once it's open, the opening click's pointerdown has already
+// finished before the listener attaches, so it can't immediately self-close.
+export function clickOutside(
+  node: HTMLElement,
+  params: { onOutside: () => void; ignore?: string },
+) {
+  let { onOutside, ignore } = params;
+  const handle = (event: PointerEvent) => {
+    const target = event.target as Element | null;
+    if (!target || node.contains(target)) return;
+    if (ignore && target.closest(ignore)) return;
+    onOutside();
+  };
+  document.addEventListener("pointerdown", handle, true);
+  return {
+    update(next: { onOutside: () => void; ignore?: string }) {
+      onOutside = next.onOutside;
+      ignore = next.ignore;
+    },
+    destroy() {
+      document.removeEventListener("pointerdown", handle, true);
+    },
+  };
+}
+
 // Wrap each <pre> in a .code-block with a copy button, and each <table> in a
 // .table-wrap scroller. Idempotent. Use as `<div use:enhanceMarkdown>{@html …}</div>`;
 // re-runs after the html updates because Svelte calls update() on dependency change.

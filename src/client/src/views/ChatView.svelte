@@ -20,7 +20,7 @@
     stopPane,
   } from "../lib/chat";
   import { api } from "../lib/api";
-  import { autosize, copyText, enhanceMarkdown } from "../lib/dom";
+  import { autosize, clickOutside, copyText, enhanceMarkdown } from "../lib/dom";
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
@@ -1021,7 +1021,12 @@
         </div>
       </form>
       {#if gkOpenPaneId === item.id && eligibleGroups(item).length}
-        <div class="composer-gk-panel" role="group" aria-label="이 대화에서 사용할 그룹 지식">
+        <div
+          class="composer-gk-panel"
+          role="group"
+          aria-label="이 대화에서 사용할 그룹 지식"
+          use:clickOutside={{ onOutside: () => (gkOpenPaneId = ""), ignore: ".composer-gk-btn" }}
+        >
           <div class="composer-gk-title">이 대화에서 사용할 그룹 지식</div>
           {#each eligibleGroups(item) as group (group.id)}
             <label class="composer-gk-item">
@@ -1036,7 +1041,12 @@
         </div>
       {/if}
       {#if mcpToolsOpenPaneId === item.id}
-        <div class="composer-tools-panel" role="group" aria-label="이 대화에서 사용할 MCP 도구">
+        <div
+          class="composer-tools-panel"
+          role="group"
+          aria-label="이 대화에서 사용할 MCP 도구"
+          use:clickOutside={{ onOutside: () => (mcpToolsOpenPaneId = ""), ignore: ".composer-tools-btn" }}
+        >
           <div class="composer-tools-title">이 대화에서 사용할 MCP 도구</div>
           {#each MCP_TOOL_GROUPS as group (group.id)}
             <label class="composer-tools-item">
