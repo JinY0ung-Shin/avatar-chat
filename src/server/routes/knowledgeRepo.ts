@@ -7,7 +7,34 @@ import { isInternalGitSource } from "../gitCredentials.js";
 import { ensureClone, knowledgeRepoContextFor, readFile } from "../knowledgeRepo.js";
 import { buildKnowledgeGraph, isVaultNotePath } from "../knowledgeGraph.js";
 import { generateSshKeyPair, deriveSshPublicKey } from "../sshIdentity.js";
-import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
+import {
+  apiError,
+  looksLikeRepo,
+  respondNoteFsError,
+  safeString,
+  type RouterDeps,
+} from "./_shared.js";
+import type { Response } from "express";
+import type { KnowledgeRepoContext } from "../knowledgeRepo.js";
+
+/**
+ * ensureClone → inspectRepoContents → res.json, shared by the personal repo's
+ * GET /contents and POST /refresh (functionally identical bodies; only the
+ * Korean catch label differs). User-facing Korean — `errorLabel` carries it.
+ */
+async function respondRepoContents(
+  res: Response,
+  ctx: KnowledgeRepoContext,
+  errorLabel: string,
+): Promise<void> {
+  try {
+    const repoRoot = await ensureClone(ctx);
+    const contents = await inspectRepoContents(repoRoot);
+    res.json({ contents });
+  } catch (error) {
+    apiError(res, 502, `${errorLabel}: ${scrubGitError(error)}`);
+  }
+}
 
 // ---- Git credentials & personal knowledge repo ----------------------
 // The knowledge repo is browsed/edited/committed by the AVATAR via chat (the
@@ -148,13 +175,7 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       apiError(res, 404, "연결된 지식 저장소가 없습니다.");
       return;
     }
-    try {
-      const repoRoot = await ensureClone(ctx);
-      const contents = await inspectRepoContents(repoRoot);
-      res.json({ contents });
-    } catch (error) {
-      apiError(res, 502, `저장소를 가져오지 못했습니다: ${scrubGitError(error)}`);
-    }
+    await respondRepoContents(res, ctx, "저장소를 가져오지 못했습니다");
   });
 
   // Build the second-brain `[[wikilink]]` graph for the interactive graph view.
@@ -194,16 +215,7 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       const content = await readFile(repoRoot, path);
       res.json({ note: { path, content } });
     } catch (error) {
-      const err = error as NodeJS.ErrnoException;
-      if (err.code === "ENOENT" || err.message === "INVALID_PATH" || err.message === "NOT_A_FILE") {
-        apiError(res, 404, "노트를 찾을 수 없습니다.");
-        return;
-      }
-      if (err.message === "FILE_TOO_LARGE") {
-        apiError(res, 413, "노트가 너무 커서 표시할 수 없습니다.");
-        return;
-      }
-      apiError(res, 502, `노트를 불러오지 못했습니다: ${scrubGitError(error)}`);
+      respondNoteFsError(res, error);
     }
   });
 
@@ -217,13 +229,7 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       apiError(res, 404, "연결된 지식 저장소가 없습니다.");
       return;
     }
-    try {
-      const repoRoot = await ensureClone(ctx);
-      const contents = await inspectRepoContents(repoRoot);
-      res.json({ contents });
-    } catch (error) {
-      apiError(res, 502, `새로고침 실패: ${scrubGitError(error)}`);
-    }
+    await respondRepoContents(res, ctx, "새로고침 실패");
   });
 
   // Choose which knowledge-repo plugins the avatar loads. `selected: null`

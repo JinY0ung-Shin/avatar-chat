@@ -1,4 +1,3 @@
-import path from "node:path";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
@@ -9,9 +8,9 @@ import {
   type GroupKnowledgeRepoContext,
 } from "../groupKnowledgeRepo.js";
 import { readFile as readRepoFile } from "../knowledgeRepo.js";
-import { OWNER_ONLY, type Resolved, cloneFailureMessage, readFileErrorMessage } from "./repoToolKit.js";
+import { OWNER_ONLY, type Resolved, cloneFailureMessage, readFileErrorMessage, resolveOwnerGroup } from "./repoToolKit.js";
 import { text } from "./mcpTools.js";
-import { formatBrainHits, rankBrainNotes } from "./brainSearch.js";
+import { formatBrainHits, normalizeWikiPath, rankBrainNotes } from "./brainSearch.js";
 
 /**
  * Per-conversation context for the GROUP (team) second-brain search tools.
@@ -47,19 +46,9 @@ const NO_REPO =
  * `groupKnowledgeRepoContextFor`, which does not verify membership). Members read.
  */
 export function buildGroupBrainTools(store: Store, ctx: GroupBrainToolsContext) {
-  const ownerGroups = (): UserGroupMembership[] => store.listUserGroups(ctx.avatarUserId);
-
   /** Resolve a `group` arg (id or name, case-insensitive) among the owner's groups only. */
-  const resolveGroup = (arg: string): UserGroupMembership | null => {
-    const a = arg.trim().toLowerCase();
-    if (!a) return null;
-    const groups = ownerGroups();
-    return (
-      groups.find((g) => g.id.toLowerCase() === a) ??
-      groups.find((g) => g.name.toLowerCase() === a) ??
-      null
-    );
-  };
+  const resolveGroup = (arg: string): UserGroupMembership | null =>
+    resolveOwnerGroup(store, ctx.avatarUserId, arg);
 
   type GroupResolved = { group: UserGroupMembership; repo: GroupKnowledgeRepoContext };
   const resolveRead = (groupArg: string): Resolved<GroupResolved> => {
@@ -115,13 +104,13 @@ export function buildGroupBrainTools(store: Store, ctx: GroupBrainToolsContext) 
       async (args) => {
         const r = resolveRead(args.group);
         if (!r.ok) return r.result;
-        const norm = path.posix.normalize(args.path.replace(/^[/]+/, ""));
-        if (norm !== "wiki" && !norm.startsWith("wiki/")) {
+        const w = normalizeWikiPath(args.path);
+        if (!w.ok) {
           return text("get_note only reads notes under `wiki/`. Use mcp__group_repo__read_file for other paths.", true);
         }
         try {
           const repoRoot = await ensureGroupClone(r.repo.repo);
-          return text(await readRepoFile(repoRoot, norm));
+          return text(await readRepoFile(repoRoot, w.norm));
         } catch (error) {
           return text(readFileErrorMessage(error), true);
         }

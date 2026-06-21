@@ -235,28 +235,19 @@ export async function selectConversation(
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [
-    {
-      messages,
-      groupKnowledgeOff,
-      selectedModel,
-      selectedEffort,
-      selectedMcpToolGroups,
-      canvases,
-    },
-    avatarRes,
-  ] = await Promise.all([
+  const [loaded, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(
       `/api/avatars/${encodeURIComponent(conv.avatarUserId)}`,
     ),
   ]);
-  const pane = makePane(avatarRes.avatar, conversationId, messages, canvases);
-  pane.groupKnowledgeOff = groupKnowledgeOff || [];
-  pane.modelTier = selectedModel || undefined;
-  pane.effort = selectedEffort || undefined;
-  pane.mcpToolGroups = selectedMcpToolGroups ?? [...DEFAULT_MCP_TOOL_GROUPS];
-  pane.usage = lastUsage(messages);
+  const pane = makePane(
+    avatarRes.avatar,
+    conversationId,
+    loaded.messages,
+    loaded.canvases,
+  );
+  applyLoadedConversation(pane, loaded);
   updateState((s) => {
     s.currentAvatar = avatarRes.avatar;
     s.chatPanes = [pane];
@@ -298,28 +289,19 @@ export async function addConversationToSplit(
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
   }
-  const [
-    {
-      messages,
-      groupKnowledgeOff,
-      selectedModel,
-      selectedEffort,
-      selectedMcpToolGroups,
-      canvases,
-    },
-    avatarRes,
-  ] = await Promise.all([
+  const [loaded, avatarRes] = await Promise.all([
     loadMessages(conversationId),
     api<{ avatar: AvatarDetail }>(
       `/api/avatars/${encodeURIComponent(conv.avatarUserId)}`,
     ),
   ]);
-  const pane = makePane(avatarRes.avatar, conversationId, messages, canvases);
-  pane.groupKnowledgeOff = groupKnowledgeOff || [];
-  pane.modelTier = selectedModel || undefined;
-  pane.effort = selectedEffort || undefined;
-  pane.mcpToolGroups = selectedMcpToolGroups ?? [...DEFAULT_MCP_TOOL_GROUPS];
-  pane.usage = lastUsage(messages);
+  const pane = makePane(
+    avatarRes.avatar,
+    conversationId,
+    loaded.messages,
+    loaded.canvases,
+  );
+  applyLoadedConversation(pane, loaded);
   updateState((s) => {
     if (s.chatPanes.length >= MAX_CHAT_PANES) return;
     s.chatPanes.push(pane);
@@ -582,24 +564,9 @@ export async function attachActiveRun(paneId: string): Promise<void> {
       return;
     }
     if (pane.messages[pane.messages.length - 1]?.role === "user") {
-      const {
-        messages,
-        groupKnowledgeOff,
-        selectedModel,
-        selectedEffort,
-        selectedMcpToolGroups,
-        canvases,
-      } = await loadMessages(pane.conversationId);
+      const loaded = await loadMessages(pane.conversationId);
       updatePane(paneId, (target) => {
-        target.messages = messages;
-        target.groupKnowledgeOff = groupKnowledgeOff || [];
-        target.modelTier = selectedModel || undefined;
-        target.effort = selectedEffort || undefined;
-        target.mcpToolGroups = selectedMcpToolGroups ?? [
-          ...DEFAULT_MCP_TOOL_GROUPS,
-        ];
-        target.canvases = paneCanvasesFromArtifacts(canvases);
-        target.usage = lastUsage(messages);
+        applyLoadedConversation(target, loaded);
       });
     }
   } catch {
@@ -628,22 +595,9 @@ export async function attachRun(paneId: string, runId: string): Promise<void> {
     if (response.status === 404) {
       const pane = readState().chatPanes.find((item) => item.id === paneId);
       if (pane) {
-        const {
-          messages,
-          groupKnowledgeOff,
-          selectedModel,
-          selectedEffort,
-          selectedMcpToolGroups,
-        } = await loadMessages(pane.conversationId);
+        const loaded = await loadMessages(pane.conversationId);
         updatePane(paneId, (target) => {
-          target.messages = messages;
-          target.groupKnowledgeOff = groupKnowledgeOff || [];
-          target.modelTier = selectedModel || undefined;
-          target.effort = selectedEffort || undefined;
-          target.mcpToolGroups = selectedMcpToolGroups ?? [
-            ...DEFAULT_MCP_TOOL_GROUPS,
-          ];
-          target.usage = lastUsage(messages);
+          applyLoadedConversation(target, loaded);
         });
       }
       return;
@@ -1138,62 +1092,55 @@ function notifyTurnComplete(paneId: string): void {
   );
 }
 
+// Build a client-side terminal (stop/error) assistant message: a text
+// AgentResponse carrying the snapshot activity + live plan, push it, then clear the
+// live state. Callers compute their own summary/text/content.
+function pushTerminalMessage(
+  pane: ChatPane,
+  { summary, text, content }: { summary: string; text: string; content: string },
+): void {
+  const response: AgentResponse = {
+    kind: "text",
+    runtime: "claude",
+    summary,
+    text,
+  };
+  attachActivity(response, snapshotActivity(pane));
+  attachPlan(response, pane.livePlan);
+  pane.messages.push({
+    id: newId(),
+    conversationId: pane.conversationId,
+    role: "assistant",
+    content,
+    response,
+    createdAt: new Date().toISOString(),
+  });
+  clearLive(pane);
+}
+
 function finalizePane(paneId: string, message: string, stopped: boolean): void {
   updatePane(paneId, (pane) => {
-    const content = pane.liveText || (stopped ? "(중지됨)" : message);
-    const response: AgentResponse = {
-      kind: "text",
-      runtime: "claude",
+    pushTerminalMessage(pane, {
       summary: stopped ? "중지됨" : "오류",
       text: pane.liveText,
-    };
-    attachActivity(response, snapshotActivity(pane));
-    attachPlan(response, pane.livePlan);
-    pane.messages.push({
-      id: newId(),
-      conversationId: pane.conversationId,
-      role: "assistant",
-      content,
-      response,
-      createdAt: new Date().toISOString(),
+      content: pane.liveText || (stopped ? "(중지됨)" : message),
     });
-    clearLive(pane);
   });
 }
 
 function finalizeError(paneId: string, message: string): void {
   updatePane(paneId, (pane) => {
-    const response: AgentResponse = {
-      kind: "text",
-      runtime: "claude",
+    pushTerminalMessage(pane, {
       summary: "오류",
       text: pane.liveText || message,
-    };
-    attachActivity(response, snapshotActivity(pane));
-    attachPlan(response, pane.livePlan);
-    pane.messages.push({
-      id: newId(),
-      conversationId: pane.conversationId,
-      role: "assistant",
       content: pane.liveText ? `${pane.liveText}\n\n${message}` : message,
-      response,
-      createdAt: new Date().toISOString(),
     });
-    clearLive(pane);
   });
   notify(`메시지를 보내지 못했습니다: ${message}`);
 }
 
 function clearLive(pane: ChatPane): void {
-  pane.liveText = "";
-  pane.liveTextBreakPending = false;
-  pane.livePlan = "";
-  pane.planPending = false;
-  pane.liveStatus = "";
-  pane.liveAgents = [];
-  pane.liveTools = [];
-  pane.liveTasks = [];
-  pane.livePlugins = [];
+  resetLive(pane);
   pane.streaming = false;
 }
 
@@ -1315,6 +1262,26 @@ export async function submitCanvasEdit(
   });
 }
 
+// Cancel a parked BLOCKING canvas's run (so it can proceed past awaitResponse).
+// No-op for a non-blocking/display-only canvas. Best-effort: swallows failures
+// (the run may have already ended).
+async function cancelParkedCanvas(
+  canvas: PaneCanvas,
+  opts: { deleteCanvas?: boolean } = {},
+): Promise<void> {
+  if (!(canvas.pending && canvas.requestId && canvas.runId)) return;
+  await api("/api/chat/respond", {
+    method: "POST",
+    body: JSON.stringify({
+      runId: canvas.runId,
+      requestId: canvas.requestId,
+      value: opts.deleteCanvas
+        ? { cancelled: true, deleteCanvas: true }
+        : { cancelled: true },
+    }),
+  }).catch(() => {});
+}
+
 // Dismiss a canvas's prompt without answering (sends a cancellation so the parked
 // run can proceed). For a non-blocking/display-only canvas this just hides locally.
 export async function dismissCanvas(
@@ -1323,16 +1290,7 @@ export async function dismissCanvas(
 ): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
-  if (canvas?.pending && canvas.requestId && canvas.runId) {
-    api("/api/chat/respond", {
-      method: "POST",
-      body: JSON.stringify({
-        runId: canvas.runId,
-        requestId: canvas.requestId,
-        value: { cancelled: true },
-      }),
-    }).catch(() => {});
-  }
+  if (canvas) await cancelParkedCanvas(canvas);
   updatePane(paneId, (p) => {
     const c = p.canvases.find((x) => x.id === canvasId);
     if (c) c.pending = false;
@@ -1356,16 +1314,7 @@ export async function closeCanvas(
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
   if (!canvas) return;
   // Cancel a parked blocking run before removal.
-  if (canvas.pending && canvas.requestId && canvas.runId) {
-    await api("/api/chat/respond", {
-      method: "POST",
-      body: JSON.stringify({
-        runId: canvas.runId,
-        requestId: canvas.requestId,
-        value: { cancelled: true, deleteCanvas: true },
-      }),
-    }).catch(() => {});
-  }
+  await cancelParkedCanvas(canvas, { deleteCanvas: true });
   // Hard-delete if it has been persisted. Greeting-only ephemeral canvases were
   // never stored, so a 404 here is expected and should still close locally.
   try {
@@ -1558,4 +1507,23 @@ function updatePane(paneId: string, mutator: (pane: ChatPane) => void): void {
     const pane = state.chatPanes.find((item) => item.id === paneId);
     if (pane) mutator(pane);
   });
+}
+
+// Apply a loadMessages() result onto a pane/draft target: messages, the
+// per-conversation picker selections (falling back to defaults), canvases, and the
+// usage snapshot. Shared by the four load sites (select / split / attachActiveRun /
+// attachRun-404) so they stay in lockstep.
+function applyLoadedConversation(
+  target: ChatPane,
+  loaded: Awaited<ReturnType<typeof loadMessages>>,
+): void {
+  target.messages = loaded.messages;
+  target.groupKnowledgeOff = loaded.groupKnowledgeOff || [];
+  target.modelTier = loaded.selectedModel || undefined;
+  target.effort = loaded.selectedEffort || undefined;
+  target.mcpToolGroups = loaded.selectedMcpToolGroups ?? [
+    ...DEFAULT_MCP_TOOL_GROUPS,
+  ];
+  target.canvases = paneCanvasesFromArtifacts(loaded.canvases);
+  target.usage = lastUsage(loaded.messages);
 }

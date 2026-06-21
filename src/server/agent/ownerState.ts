@@ -67,8 +67,14 @@ export function summarizeOwnerState(
     gitTokenSet: Boolean(store.getGitToken(avatarUserId)),
     secretNames: store.listUserSecretNames(avatarUserId),
     groups: store.listUserGroups(avatarUserId),
-    gitRepoCount: store.listGitRepos(avatarUserId).length,
-    openRequestCount: store.countOpenKnowledgeRequests(avatarUserId),
+    // Lazy: only describe_system reads these; the buildPrompt/runClaudeAgent path
+    // never accesses them, so defer the store queries until a consumer reads them.
+    get gitRepoCount() {
+      return store.listGitRepos(avatarUserId).length;
+    },
+    get openRequestCount() {
+      return store.countOpenKnowledgeRequests(avatarUserId);
+    },
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
     experimentalFeatures: store.getExperimentalFeatures(avatarUserId),

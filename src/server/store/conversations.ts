@@ -27,6 +27,16 @@ interface CanvasArtifactRow {
   updated_at: string | null;
 }
 
+interface ConversationSummaryRow {
+  id: string;
+  avatar_user_id: string;
+  title: string;
+  updated_at: string;
+  avatar_display_name: string | null;
+  routine_id: string | null;
+  routine_prompt: string | null;
+}
+
 interface CanvasVersionRow {
   artifact_id: string;
   version: number;
@@ -70,16 +80,13 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
            WHERE ${where.join(" AND ")}
            ORDER BY c.updated_at DESC`,
         )
-        .all(...params) as {
-        id: string;
-        avatar_user_id: string;
-        title: string;
-        updated_at: string;
-        avatar_display_name: string | null;
-        routine_id: string | null;
-        routine_prompt: string | null;
-      }[];
-      return rows.map((r) => ({
+        .all(...params) as ConversationSummaryRow[];
+      return rows.map((r) => this.toConversationSummary(r));
+    }
+
+    /** Map a conversation join row (see listConversations / conversationSummaryById) to a summary. */
+    private toConversationSummary(r: ConversationSummaryRow): ConversationSummary {
+      return {
         id: r.id,
         avatarUserId: r.avatar_user_id,
         avatarDisplayName: r.avatar_display_name ?? "(삭제된 아바타)",
@@ -88,7 +95,23 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         isRoutine: Boolean(r.routine_id),
         routineId: r.routine_id,
         routinePrompt: r.routine_prompt,
-      }));
+      };
+    }
+
+    /** A single conversation summary (owner-scoped) using the same join as listConversations. */
+    private conversationSummaryById(ownerId: string, id: string): ConversationSummary | null {
+      const row = this.db
+        .prepare(
+          `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, u.display_name AS avatar_display_name,
+                  r.id AS routine_id, r.prompt AS routine_prompt
+           FROM conversations c
+           LEFT JOIN users u ON u.id = c.avatar_user_id
+           LEFT JOIN routine_jobs r ON r.conversation_id = c.id
+           WHERE c.owner_user_id = ? AND c.id = ?
+           LIMIT 1`,
+        )
+        .get(ownerId, id) as ConversationSummaryRow | undefined;
+      return row ? this.toConversationSummary(row) : null;
     }
 
     private ownsConversation(ownerId: string, conversationId: string): boolean {
@@ -440,7 +463,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
     }
 
     /** Delete every version + artifact row for one conversation (manual cascade). */
-    private deleteCanvasArtifactsForConversation(conversationId: string): void {
+    deleteCanvasArtifactsForConversation(conversationId: string): void {
       this.db
         .prepare("DELETE FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE conversation_id = ?)")
         .run(conversationId);
@@ -659,7 +682,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       this.db
         .prepare("UPDATE conversations SET title = ?, updated_at = ? WHERE id = ?")
         .run(finalTitle, now(), id);
-      return this.listConversations(ownerId, undefined, "all").find((c) => c.id === id) ?? null;
+      return this.conversationSummaryById(ownerId, id);
     }
 
     deleteConversation(ownerId: string, id: string): boolean {

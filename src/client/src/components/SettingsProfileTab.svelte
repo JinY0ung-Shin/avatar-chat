@@ -4,6 +4,7 @@
   import HashtagChipEditor from "./HashtagChipEditor.svelte";
   import { api, refreshMe } from "../lib/api";
   import { normalizeTags } from "../lib/format";
+  import { downscaleImageToDataUrl } from "../lib/dom";
   import { appState, notify, readState, replaceState } from "../lib/state";
   import type { AvatarVisibility, User } from "../lib/types";
 
@@ -207,32 +208,8 @@
     }
   }
 
-  function readFileAsDataUrl(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-  }
-
   async function resizeImage(file: File, max: number): Promise<string> {
-    // Load via a `data:` URL, NOT `URL.createObjectURL`: a `blob:` URL is blocked
-    // by the production CSP (`img-src 'self' data:`), which would fail the load.
-    const sourceDataUrl = await readFileAsDataUrl(file);
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, max / Math.max(img.width, img.height));
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.round(img.width * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
-        resolve(canvas.toDataURL(file.type === "image/jpeg" ? "image/jpeg" : file.type === "image/webp" ? "image/webp" : "image/png", 0.9));
-      };
-      img.onerror = reject;
-      img.src = sourceDataUrl;
-    });
+    return downscaleImageToDataUrl(file, max);
   }
 </script>
 

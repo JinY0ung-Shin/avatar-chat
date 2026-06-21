@@ -21,15 +21,20 @@ import {
   writeRepoTemplate,
 } from "../knowledgeRepo.js";
 import {
+  NO_CHANGES,
+  NO_GIT_TOKEN,
   OWNER_ONLY as REPO_OWNER_ONLY,
   type Resolved,
   commitFailureMessage,
+  createRepoCatchMessage,
+  createRepoFailureMessage,
   runDeleteFile,
   runListFiles,
   runMoveFile,
   runReadFile,
   runScaffoldSkill,
   runWriteFile,
+  validateRepoCreateNames,
 } from "./repoToolKit.js";
 
 const execFileAsync = promisify(execFile);
@@ -336,7 +341,7 @@ export function buildRepoTools(
           return text(NO_REPO, true);
         }
         if (!c.token) {
-          return text("To push, please first register an internal Git token (GIT_TOKEN) in settings.", true);
+          return text(NO_GIT_TOKEN, true);
         }
         try {
           // No ensureClone here: commitAndPush operates on the already-synced
@@ -344,7 +349,7 @@ export function buildRepoTools(
           // its own NOT_CLONED check. Re-syncing would only add a needless fetch.
           const committed = await commitAndPush(c, args.message, commitIdentityFor(store, ctx.owner));
           if (!committed) {
-            return text("There are no changes to commit.");
+            return text(NO_CHANGES);
           }
           store.audit({
             actorUserId: ctx.owner.id,
@@ -390,14 +395,11 @@ export function buildRepoTools(
           true,
         );
       }
-      const name = args.name.trim();
-      if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
-        return text("The repository name may only use letters/digits and the characters - _ .", true);
+      const validated = validateRepoCreateNames(args.name, args.org);
+      if (!validated.ok) {
+        return text(validated.message, true);
       }
-      const org = (args.org ?? "").trim();
-      if (org && !/^[A-Za-z0-9._-]{1,100}$/.test(org)) {
-        return text("The organization name may only use letters/digits and the characters - _ .", true);
-      }
+      const { name, org } = validated;
       const targetHost = normalizeGithubHost(ctx.config.githubHost);
       try {
         const result = await (opts.createRemoteRepo ?? createRemoteRepo)(
@@ -410,12 +412,7 @@ export function buildRepoTools(
           org || undefined,
         );
         if (!result.ok) {
-          const status = result.status ? `, HTTP ${result.status}` : "";
-          const exitCode = result.exitCode ? `, exit ${result.exitCode}` : "";
-          return text(
-            `Failed to create GitHub repository (host: ${targetHost}${status}${exitCode}): ${result.message}\nCheck whether the token (GIT_TOKEN) has repo-creation permission and whether a repository with the same name already exists. Do not work around this with Bash \`gh\`/git — the shell has no git credentials.`,
-            true,
-          );
+          return text(createRepoFailureMessage(targetHost, result), true);
         }
         store.setKnowledgeRepo(ctx.avatarUserId, result.fullName, result.defaultBranch);
         store.audit({
@@ -451,7 +448,7 @@ export function buildRepoTools(
             : `Created and connected the ${kind} knowledge repository \`${result.fullName}\`.${seedNote} Create your first skill with \`scaffold_skill\`, then push with \`commit\`.`,
         );
       } catch (error) {
-        return text(`Error while creating GitHub repository (host: ${targetHost}): ${scrubGitError(error)}`, true);
+        return text(createRepoCatchMessage(targetHost, error), true);
       }
     },
   );

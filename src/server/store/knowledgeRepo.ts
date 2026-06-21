@@ -430,9 +430,14 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(
           input.conversationId ?? null,
           now(),
         );
-      return this.listAvatarNotifications(ownerUserId).find(
-        (n) => n.id === id,
-      )!;
+      const row = this.db
+        .prepare(
+          `SELECT n.*, u.display_name AS avatar_display_name
+           FROM avatar_notifications n LEFT JOIN users u ON u.id = n.avatar_user_id
+           WHERE n.id = ?`,
+        )
+        .get(id) as AvatarNotificationRow;
+      return this.toAvatarNotification(row);
     }
 
     listAvatarNotifications(

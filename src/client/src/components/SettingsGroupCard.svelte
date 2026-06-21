@@ -24,6 +24,7 @@
   import { api } from "../lib/api";
   import { startChatWith, openSeededChat } from "../lib/chat";
   import { notify, readState, newId } from "../lib/state";
+  import { repoToHref } from "../lib/format";
   import type { AvatarSummary, RepoPluginContents } from "../lib/types";
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
@@ -257,17 +258,6 @@
   }
 
   // ---- group knowledge repo ----
-  function repoToHref(repo: string | null): string | null {
-    if (!repo) return null;
-    const r = repo.trim();
-    if (/^https?:\/\//.test(r)) return r.replace(/\.git$/, "");
-    if (/^[\w.-]+\/[\w.-]+$/.test(r)) {
-      const host = (githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/g, "");
-      return `https://${host}/${r.replace(/\.git$/, "")}`;
-    }
-    return null;
-  }
-
   let repoInput = "";
   let branchInput = "";
   $: {
@@ -486,7 +476,7 @@
           <button class="linkish small" type="button" on:click={requestGroupRepo}>아바타에게 공용 저장소 만들기 요청</button>
         </div>
       {:else}
-        {@const href = repoToHref(group.knowledgeRepo)}
+        {@const href = repoToHref(group.knowledgeRepo, githubHost)}
         {@const linkText = group.knowledgeRepo + (group.knowledgeBranch ? ` @ ${group.knowledgeBranch}` : "")}
         <div class="kr-link">
           <Icon name="globe" />

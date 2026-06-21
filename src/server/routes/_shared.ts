@@ -10,6 +10,7 @@ import {
   syncPluginRepo,
 } from "../plugins.js";
 import { knowledgeRepoContextFor } from "../knowledgeRepo.js";
+import { scrubGitError } from "../marketplace.js";
 import { groupKnowledgeRepoContextsForUser } from "../groupKnowledgeRepo.js";
 import { Store } from "../store.js";
 import type { AppConfig, AvatarVisibility, PluginRoot } from "../types.js";
@@ -77,6 +78,49 @@ export function isAvatarVisibility(value: unknown): value is AvatarVisibility {
 
 export function apiError(res: Response, status: number, message: string): void {
   res.status(status).json({ error: message });
+}
+
+/**
+ * The "what this avatar can actually do" block shared by `/api/me/intro/generate`
+ * and `/api/me/hashtags/generate` — both ground the model in the avatar's skills,
+ * connected plugins, and (optionally) reference persona. Agent-facing English.
+ * Returns the exact block both endpoints interpolate as
+ * `Available skills:\n…\n\nConnected plugins:\n…<persona>`.
+ */
+export function describeAvatarEquipment(
+  skills: { name: string; description?: string }[],
+  enabledPlugins: { label?: string | null; repo: string }[],
+  persona?: string,
+): string {
+  const skillLines = skills.length
+    ? skills.map((s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`).join("\n")
+    : "(no skills registered)";
+  const pluginLines = enabledPlugins.length
+    ? enabledPlugins.map((p) => `- ${p.label || p.repo}`).join("\n")
+    : "(no plugins connected)";
+  const personaLine = persona?.trim()
+    ? `\n\nReference persona/instructions:\n${persona.trim()}`
+    : "";
+  return `Available skills:\n${skillLines}\n\nConnected plugins:\n${pluginLines}${personaLine}`;
+}
+
+/**
+ * Map a knowledge-repo `readFile` rejection to its user-facing (Korean) HTTP
+ * response — shared by the personal + group note endpoints, whose catch blocks
+ * were byte-identical. Do NOT reuse `mcpTools.decodeRepoFsError` (English agent
+ * channel).
+ */
+export function respondNoteFsError(res: Response, error: unknown): void {
+  const err = error as NodeJS.ErrnoException;
+  if (err.code === "ENOENT" || err.message === "INVALID_PATH" || err.message === "NOT_A_FILE") {
+    apiError(res, 404, "노트를 찾을 수 없습니다.");
+    return;
+  }
+  if (err.message === "FILE_TOO_LARGE") {
+    apiError(res, 413, "노트가 너무 커서 표시할 수 없습니다.");
+    return;
+  }
+  apiError(res, 502, `노트를 불러오지 못했습니다: ${scrubGitError(error)}`);
 }
 
 /** User-facing (Korean) messages for routine-schedule validation errors. */

@@ -67,6 +67,21 @@ export function normalizeTags(input: unknown): string[] {
   return out;
 }
 
+// Resolve a knowledge-repo address (owner/repo shorthand or full git URL) to a
+// browsable https href, or null when it's neither. `githubHost` is the configured
+// internal GitHub host (falls back to github.com). Hand-mirrors the server-side
+// repo-href logic; keep them in lockstep.
+export function repoToHref(repo: string | null, githubHost: string): string | null {
+  if (!repo) return null;
+  const r = repo.trim();
+  if (/^https?:\/\//.test(r)) return r.replace(/\.git$/, "");
+  if (/^[\w.-]+\/[\w.-]+$/.test(r)) {
+    const host = (githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/g, "");
+    return `https://${host}/${r.replace(/\.git$/, "")}`;
+  }
+  return null;
+}
+
 export function timeToMinute(value: string): number {
   const [hh, mm] = value.split(":").map((part) => Number(part));
   return (Number.isFinite(hh) ? hh : 0) * 60 + (Number.isFinite(mm) ? mm : 0);

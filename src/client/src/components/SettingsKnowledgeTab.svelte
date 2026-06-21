@@ -6,7 +6,7 @@
   import { api } from "../lib/api";
   import { openSeededChat } from "../lib/chat";
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
-  import { timeLabel } from "../lib/format";
+  import { repoToHref, timeLabel } from "../lib/format";
   import type { Plugin, RepoPluginContents, User } from "../lib/types";
 
   export let active = false;
@@ -40,17 +40,6 @@
   $: plugins = $appState.plugins;
 
   // ---- knowledge repo ----
-  function repoToHref(repo: string | null): string | null {
-    if (!repo) return null;
-    const r = repo.trim();
-    if (/^https?:\/\//.test(r)) return r.replace(/\.git$/, "");
-    if (/^[\w.-]+\/[\w.-]+$/.test(r)) {
-      const host = githubHost.replace(/^https?:\/\//i, "").replace(/\/+$/g, "");
-      return `https://${host}/${r.replace(/\.git$/, "")}`;
-    }
-    return null;
-  }
-
   async function saveKnowledge(): Promise<void> {
     const repo = knowledgeRepo.trim();
     const branch = knowledgeBranch.trim();
@@ -248,7 +237,7 @@
         <button class="linkish small" type="button" on:click={requestKnowledgeRepo}>아바타에게 저장소 만들기 요청</button>
       </div>
     {:else}
-      {@const href = repoToHref(user.knowledgeRepo)}
+      {@const href = repoToHref(user.knowledgeRepo, githubHost)}
       {@const linkText = user.knowledgeRepo + (user.knowledgeBranch ? ` @ ${user.knowledgeBranch}` : "")}
       <div class="kr-link">
         <Icon name="globe" />

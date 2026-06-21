@@ -96,6 +96,7 @@ import {
   SDK_TOOL_LABELS,
   SDK_UI_HANDLED_TOOLS,
 } from "../src/shared/sdkToolPresentation.js";
+import { summarizeOwnerState } from "../src/server/agent/ownerState.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";
 import {
   formatMinuteOfDay,
@@ -2976,5 +2977,138 @@ describe("model fallback (routines)", () => {
       ),
     ).toBe(false);
     expect(isMissingResumeSessionError(new Error("Overloaded"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeOwnerState — metacognition sync point; gitRepoCount /
+// openRequestCount are LAZY getters (see ownerState.ts)
+// ---------------------------------------------------------------------------
+
+describe("summarizeOwnerState lazy counts", () => {
+  function setup(dir: string) {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({
+      username: "owner",
+      displayName: "Owner",
+      password: "password123",
+    });
+    return { store, config, ownerId: owner.id };
+  }
+
+  it("defers store.listGitRepos / countOpenKnowledgeRequests until the getters are read", () => {
+    const { store, config, ownerId } = setup("owner-state-lazy");
+    // Canned returns so the test is independent of how repos/requests are seeded.
+    const gitSpy = vi
+      .spyOn(store, "listGitRepos")
+      .mockReturnValue([{ name: "r1" }, { name: "r2" }] as never);
+    const reqSpy = vi
+      .spyOn(store, "countOpenKnowledgeRequests")
+      .mockReturnValue(3);
+
+    const state = summarizeOwnerState(store, config, ownerId);
+
+    // The whole point of the refactor: building the snapshot must NOT run these
+    // two queries — only describe_system reads them, the buildPrompt path never
+    // touches them.
+    expect(gitSpy).not.toHaveBeenCalled();
+    expect(reqSpy).not.toHaveBeenCalled();
+
+    // Reading the getter fires the underlying query and returns the right value.
+    expect(state.gitRepoCount).toBe(2);
+    expect(gitSpy).toHaveBeenCalledTimes(1);
+    expect(gitSpy).toHaveBeenCalledWith(ownerId);
+
+    expect(state.openRequestCount).toBe(3);
+    expect(reqSpy).toHaveBeenCalledTimes(1);
+    expect(reqSpy).toHaveBeenCalledWith(ownerId);
+  });
+
+  it("re-queries on each access (getter, not a cached snapshot value)", () => {
+    const { store, config, ownerId } = setup("owner-state-requery");
+    const gitSpy = vi.spyOn(store, "listGitRepos").mockReturnValue([] as never);
+
+    const state = summarizeOwnerState(store, config, ownerId);
+    void state.gitRepoCount;
+    void state.gitRepoCount;
+    expect(gitSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractUsage promptTokens summation (exercised via interpretResult, the
+// public entry point that drives extractUsage → promptTokens)
+// ---------------------------------------------------------------------------
+
+describe("interpretResult prompt-token summation", () => {
+  it("sums input + cache_read + cache_creation as the input/context total", () => {
+    // All three distinct & nonzero — the sum must include cache_creation too,
+    // not just input + cache_read.
+    const r = interpretResult({
+      type: "result",
+      subtype: "success",
+      result: "hi",
+      usage: {
+        input_tokens: 100,
+        output_tokens: 40,
+        cache_read_input_tokens: 200,
+        cache_creation_input_tokens: 30,
+      },
+    });
+    expect(r.usage?.inputTokens).toBe(330);
+    expect(r.usage?.outputTokens).toBe(40);
+  });
+
+  it("treats a missing cache field as 0", () => {
+    const r = interpretResult({
+      type: "result",
+      subtype: "success",
+      result: "hi",
+      usage: {
+        input_tokens: 100,
+        output_tokens: 5,
+        cache_read_input_tokens: 50,
+        // cache_creation_input_tokens omitted → 0
+      },
+    });
+    expect(r.usage?.inputTokens).toBe(150);
+  });
+
+  it("yields no usage (undefined) when the usage record is null/absent", () => {
+    expect(
+      interpretResult({
+        type: "result",
+        subtype: "success",
+        result: "hi",
+        usage: null,
+      }).usage,
+    ).toBeUndefined();
+    expect(
+      interpretResult({
+        type: "result",
+        subtype: "success",
+        result: "hi",
+      }).usage,
+    ).toBeUndefined();
+  });
+
+  it("yields no usage when every count is zero", () => {
+    expect(
+      interpretResult({
+        type: "result",
+        subtype: "success",
+        result: "hi",
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_read_input_tokens: 0,
+          cache_creation_input_tokens: 0,
+        },
+      }).usage,
+    ).toBeUndefined();
   });
 });

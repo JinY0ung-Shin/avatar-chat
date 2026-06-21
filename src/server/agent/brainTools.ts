@@ -1,4 +1,3 @@
-import path from "node:path";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
@@ -6,7 +5,7 @@ import type { AppConfig } from "../types.js";
 import { ensureClone, knowledgeRepoContextFor, readFile as readRepoFile } from "../knowledgeRepo.js";
 import { OWNER_ONLY, cloneFailureMessage, readFileErrorMessage } from "./repoToolKit.js";
 import { text } from "./mcpTools.js";
-import { formatBrainHits, rankBrainNotes } from "./brainSearch.js";
+import { formatBrainHits, normalizeWikiPath, rankBrainNotes } from "./brainSearch.js";
 
 /**
  * Per-conversation context for the PERSONAL second-brain search tools. Read-only
@@ -93,13 +92,13 @@ export function buildBrainTools(store: Store, ctx: BrainToolsContext) {
         // Wiki-scoped: normalize first so `wiki/../CLAUDE.md` can't escape the
         // vault into other repo files. (readFile's resolveInRepo still guards
         // repo containment; this restricts the surface to wiki/ specifically.)
-        const norm = path.posix.normalize(args.path.replace(/^[/]+/, ""));
-        if (norm !== "wiki" && !norm.startsWith("wiki/")) {
+        const w = normalizeWikiPath(args.path);
+        if (!w.ok) {
           return text("get_note only reads notes under `wiki/`. Use mcp__repo__read_file for other paths.", true);
         }
         try {
           const repoRoot = await ensureClone(c);
-          return text(await readRepoFile(repoRoot, norm));
+          return text(await readRepoFile(repoRoot, w.norm));
         } catch (error) {
           return text(readFileErrorMessage(error), true);
         }

@@ -107,6 +107,89 @@ describe("chatImages", () => {
     expect(readChatImages(config(), "conv-2", [{ id: "ghost", kind: "image", mediaType: "image/png" }])).toEqual([]);
   });
 
+  it("reads multiple attachments back as blocks in attachment order", () => {
+    const decoded = decodeChatImages([
+      { id: "img-a", data: PNG_URL },
+      { id: "img-b", data: PNG_URL },
+      { id: "img-c", data: PNG_URL },
+    ]);
+    if (!("images" in decoded)) throw new Error("expected images");
+    const { attachments } = saveChatImages(config(), "conv-multi", decoded.images);
+    expect(attachments.map((a) => a.id)).toEqual(["img-a", "img-b", "img-c"]);
+
+    // Feed the attachments back in a NON-storage order; output must follow the
+    // attachment-list order, not the directory listing order.
+    const reordered = [attachments[2], attachments[0], attachments[1]];
+    const blocks = readChatImages(config(), "conv-multi", reordered);
+    expect(blocks).toHaveLength(3);
+    expect(blocks).toEqual([
+      { mediaType: "image/png", data: PNG_B64 },
+      { mediaType: "image/png", data: PNG_B64 },
+      { mediaType: "image/png", data: PNG_B64 },
+    ]);
+  });
+
+  it("returns [] when the conversation image directory does not exist", () => {
+    expect(fs.existsSync(chatImagesDir(config(), "conv-never"))).toBe(false);
+    const blocks = readChatImages(config(), "conv-never", [
+      { id: "img-x", kind: "image", mediaType: "image/png" },
+    ]);
+    expect(blocks).toEqual([]);
+  });
+
+  it("skips attachments with no file on disk while returning the rest", () => {
+    const decoded = decodeChatImages([
+      { id: "img-present-1", data: PNG_URL },
+      { id: "img-present-2", data: PNG_URL },
+    ]);
+    if (!("images" in decoded)) throw new Error("expected images");
+    const { attachments } = saveChatImages(config(), "conv-gap", decoded.images);
+
+    const blocks = readChatImages(config(), "conv-gap", [
+      attachments[0],
+      { id: "img-missing", kind: "image", mediaType: "image/png" },
+      attachments[1],
+    ]);
+    // Only the two stored attachments come back; the gap is silently dropped.
+    expect(blocks).toEqual([
+      { mediaType: "image/png", data: PNG_B64 },
+      { mediaType: "image/png", data: PNG_B64 },
+    ]);
+  });
+
+  it("skips an attachment whose stored file has a disallowed extension", () => {
+    const decoded = decodeChatImages([{ id: "img-ok", data: PNG_URL }]);
+    if (!("images" in decoded)) throw new Error("expected images");
+    const { attachments } = saveChatImages(config(), "conv-ext", decoded.images);
+
+    // Drop a file with an id that isn't backed by an EXT_MIME-known extension.
+    const dir = chatImagesDir(config(), "conv-ext");
+    fs.writeFileSync(path.join(dir, "img-bad.bmp"), Buffer.from(PNG_B64, "base64"));
+
+    const blocks = readChatImages(config(), "conv-ext", [
+      attachments[0],
+      { id: "img-bad", kind: "image", mediaType: "image/png" },
+    ]);
+    // The .bmp file is not in EXT_MIME, so only the valid png returns.
+    expect(blocks).toEqual([{ mediaType: "image/png", data: PNG_B64 }]);
+  });
+
+  it("matches the bytes that resolveStoredImage points to (single-readdir equivalence)", () => {
+    const decoded = decodeChatImages([{ id: "img-eq", data: PNG_URL }]);
+    if (!("images" in decoded)) throw new Error("expected images");
+    const { attachments } = saveChatImages(config(), "conv-eq", decoded.images);
+
+    const blocks = readChatImages(config(), "conv-eq", attachments);
+    expect(blocks).toHaveLength(1);
+
+    const resolved = resolveStoredImage(config(), "conv-eq", "img-eq");
+    expect(resolved).toBeTruthy();
+    const onDisk = fs.readFileSync(resolved!.path).toString("base64");
+    // The block's base64 + media type equal a direct read of the resolved path.
+    expect(blocks[0].data).toBe(onDisk);
+    expect(blocks[0].mediaType).toBe(resolved!.mediaType);
+  });
+
   it("deletes a conversation's image directory", () => {
     const decoded = decodeChatImages([PNG_URL]);
     if (!("images" in decoded)) throw new Error("expected images");

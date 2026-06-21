@@ -14,7 +14,7 @@ import {
 import { tokenForGitUrl } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
 import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
-import { git, currentBranch, dirtyPaths } from "./repoGitCore.js";
+import { git, currentBranch, dirtyPaths, originUrl } from "./repoGitCore.js";
 import logger from "./logger.js";
 import {
   deleteFile,
@@ -117,15 +117,6 @@ export function gitRepoContextFromRecord(
   };
 }
 
-async function remoteUrl(repoRoot: string): Promise<string | null> {
-  try {
-    const { stdout } = await git(repoRoot, ["remote", "get-url", "origin"]);
-    return stdout.trim() || null;
-  } catch {
-    return null;
-  }
-}
-
 async function checkoutBranch(repoRoot: string, branch: string): Promise<void> {
   assertSafeGitValue(branch, "branch");
   try {
@@ -213,7 +204,7 @@ async function ensureGitRepoCloneLocked(
   const auth = gitAuthArgs(url, ctx.token ?? undefined);
 
   if (await pathExists(path.join(repoRoot, ".git"))) {
-    const existing = await remoteUrl(repoRoot);
+    const existing = await originUrl(repoRoot);
     if (existing && existing !== url) {
       // The remote URL changed. Blowing the clone away silently destroys any
       // committed-but-unpushed work, so refuse when such work exists; only

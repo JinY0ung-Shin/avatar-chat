@@ -140,12 +140,28 @@ export function readChatImages(
   attachments: MessageAttachment[] | undefined,
 ): AgentImageInput[] {
   if (!attachments?.length) return [];
+  const dir = chatImagesDir(config, conversationId);
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return [];
+  }
+  // Index the dir ONCE (id -> filename) so N attachments don't trigger N readdirs.
+  const byId = new Map<string, string>();
+  for (const name of entries) {
+    const dot = name.lastIndexOf(".");
+    if (dot > 0) byId.set(name.slice(0, dot), name);
+  }
   const out: AgentImageInput[] = [];
   for (const att of attachments) {
-    const resolved = resolveStoredImage(config, conversationId, att.id);
-    if (!resolved) continue;
+    const file = byId.get(att.id);
+    if (!file) continue;
+    const ext = file.slice(file.lastIndexOf(".") + 1).toLowerCase();
+    const mediaType = EXT_MIME[ext];
+    if (!mediaType) continue;
     try {
-      out.push({ mediaType: resolved.mediaType, data: fs.readFileSync(resolved.path).toString("base64") });
+      out.push({ mediaType, data: fs.readFileSync(path.join(dir, file)).toString("base64") });
     } catch {
       /* skip unreadable */
     }

@@ -43,8 +43,7 @@
       return;
     }
     expanded = true;
-    if (members.length || loadError) await loadDetail();
-    else await loadDetail();
+    await loadDetail();
   }
 
   async function loadDetail() {

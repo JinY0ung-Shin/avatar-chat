@@ -22,15 +22,21 @@ import {
 } from "../groupKnowledgeRepo.js";
 import { createRemoteRepo } from "./repoTools.js";
 import {
+  NO_CHANGES,
+  NO_GIT_TOKEN,
   OWNER_ONLY as REPO_OWNER_ONLY,
   type Resolved,
   commitFailureMessage,
+  createRepoCatchMessage,
+  createRepoFailureMessage,
+  resolveOwnerGroup,
   runDeleteFile,
   runListFiles,
   runMoveFile,
   runReadFile,
   runScaffoldSkill,
   runWriteFile,
+  validateRepoCreateNames,
 } from "./repoToolKit.js";
 
 /**
@@ -95,16 +101,8 @@ export function buildGroupRepoTools(
   const ownerGroups = (): UserGroupMembership[] => store.listUserGroups(ctx.avatarUserId);
 
   /** Resolve a `group` argument (id or name, case-insensitive) among the owner's groups. */
-  const resolveGroup = (arg: string): UserGroupMembership | null => {
-    const a = arg.trim().toLowerCase();
-    if (!a) return null;
-    const groups = ownerGroups();
-    return (
-      groups.find((g) => g.id.toLowerCase() === a) ??
-      groups.find((g) => g.name.toLowerCase() === a) ??
-      null
-    );
-  };
+  const resolveGroup = (arg: string): UserGroupMembership | null =>
+    resolveOwnerGroup(store, ctx.avatarUserId, arg);
 
   const repoCtx = (groupId: string, groupName?: string) =>
     groupKnowledgeRepoContextFor(store, groupId, ctx.avatarUserId, ctx.config, groupName);
@@ -254,11 +252,11 @@ export function buildGroupRepoTools(
         const c = repoCtx(group.id, group.name);
         if (!c) return text(NO_REPO, true);
         if (!c.token) {
-          return text("To push, please first register an internal Git token (GIT_TOKEN) in settings.", true);
+          return text(NO_GIT_TOKEN, true);
         }
         try {
           const committed = await groupCommitAndPush(c, args.message, commitIdentityFor(store, ctx.owner));
-          if (!committed) return text("There are no changes to commit.");
+          if (!committed) return text(NO_CHANGES);
           store.audit({
             actorUserId: ctx.owner.id,
             actorName: ctx.owner.username,
@@ -299,14 +297,11 @@ export function buildGroupRepoTools(
             true,
           );
         }
-        const name = args.name.trim();
-        if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
-          return text("The repository name may only use letters/digits and the characters - _ .", true);
+        const validated = validateRepoCreateNames(args.name, args.org);
+        if (!validated.ok) {
+          return text(validated.message, true);
         }
-        const org = (args.org ?? "").trim();
-        if (org && !/^[A-Za-z0-9._-]{1,100}$/.test(org)) {
-          return text("The organization name may only use letters/digits and the characters - _ .", true);
-        }
+        const { name, org } = validated;
         const targetHost = normalizeGithubHost(ctx.config.githubHost);
         try {
           const result = await create(
@@ -319,12 +314,7 @@ export function buildGroupRepoTools(
             org || undefined,
           );
           if (!result.ok) {
-            const status = result.status ? `, HTTP ${result.status}` : "";
-            const exitCode = result.exitCode ? `, exit ${result.exitCode}` : "";
-            return text(
-              `Failed to create GitHub repository (host: ${targetHost}${status}${exitCode}): ${result.message}\nCheck whether the token (GIT_TOKEN) has repo-creation permission and whether a repository with the same name already exists. Do not work around this with Bash \`gh\`/git — the shell has no git credentials.`,
-              true,
-            );
+            return text(createRepoFailureMessage(targetHost, result), true);
           }
           store.setGroupKnowledgeRepo(group.id, result.fullName, result.defaultBranch);
           store.audit({
@@ -355,7 +345,7 @@ export function buildGroupRepoTools(
               : `Created and connected the ${kind} shared knowledge repository \`${result.fullName}\` for the '${group.name}' group.${seedNote}`,
           );
         } catch (error) {
-          return text(`Error while creating GitHub repository (host: ${targetHost}): ${scrubGitError(error)}`, true);
+          return text(createRepoCatchMessage(targetHost, error), true);
         }
       },
     ),

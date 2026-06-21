@@ -1563,3 +1563,318 @@ describe("store canvas backfill migration (#50)", () => {
     expect(second.listCanvasArtifacts(owner.id, "conv-bfg")).toHaveLength(0);
   });
 });
+
+
+// ---- Just-applied dedup/efficiency store refactors (regression locks) ----
+
+describe("store avatar directory aggregates (N+1 reshape)", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    return store;
+  }
+
+  it("directory pluginCount counts only ENABLED avatar_plugins, and getAvatar agrees", () => {
+    const store = makeStore("dir-plugins");
+    // Public so the same store user (no shared group) is its own viewer and is listable.
+    const owner = store.createUser({ username: "dirowner", displayName: "Dir Owner", password: "password123" });
+    store.updateProfile(owner.id, { visibility: "public" });
+
+    // Two enabled + one disabled plugin → directory count must be 2.
+    const p1 = store.addPlugin(owner.id, { repo: "owner/one" });
+    store.addPlugin(owner.id, { repo: "owner/two" });
+    const p3 = store.addPlugin(owner.id, { repo: "owner/three" });
+    store.setPluginEnabled(owner.id, p3.id, false);
+    void p1;
+
+    // listPublishedAvatars path: pluginCount comes from the correlated subquery column.
+    const listCard = store.listPublishedAvatars(owner.id).find((a) => a.id === owner.id);
+    expect(listCard?.pluginCount).toBe(2);
+
+    // searchAvatars path: same subquery column.
+    const searchCard = store.searchAvatars(owner.id, "").find((a) => a.id === owner.id);
+    expect(searchCard?.pluginCount).toBe(2);
+
+    // getAvatar single-row path: toAvatarSummary FALLS BACK to the per-row query
+    // (no subquery columns on the plain UserRow). It must compute the SAME count.
+    const detail = store.getAvatar(owner.id, owner.id);
+    expect(detail?.pluginCount).toBe(2);
+    expect(detail?.pluginCount).toBe(listCard?.pluginCount);
+
+    // Re-enabling the disabled plugin bumps every path to 3 in lockstep.
+    store.setPluginEnabled(owner.id, p3.id, true);
+    expect(store.listPublishedAvatars(owner.id).find((a) => a.id === owner.id)?.pluginCount).toBe(3);
+    expect(store.searchAvatars(owner.id, "").find((a) => a.id === owner.id)?.pluginCount).toBe(3);
+    expect(store.getAvatar(owner.id, owner.id)?.pluginCount).toBe(3);
+  });
+
+  it("directory updatedAt reflects MAX(updated_at) over the owner's own-avatar conversations; getAvatar agrees", () => {
+    const store = makeStore("dir-updated");
+    const owner = store.createUser({ username: "updowner", displayName: "Upd Owner", password: "password123" });
+    store.updateProfile(owner.id, { visibility: "public" });
+
+    // No own-avatar conversations yet → MAX over an empty set is NULL.
+    expect(store.listPublishedAvatars(owner.id).find((a) => a.id === owner.id)?.updatedAt).toBeNull();
+    expect(store.getAvatar(owner.id, owner.id)?.updatedAt).toBeNull();
+
+    // The subquery only counts conversations where avatar_user_id == owner_user_id
+    // (the owner chatting with their OWN avatar). Create two such conversations.
+    store.touchConversation(owner.id, "own-conv-1", owner.id, "first");
+    store.touchConversation(owner.id, "own-conv-2", owner.id, "second");
+    // A conversation targeting a DIFFERENT avatar must NOT count toward this owner.
+    const otherAvatar = store.createUser({ username: "otheravatar", displayName: "Other", password: "password123" });
+    store.touchConversation(owner.id, "cross-conv", otherAvatar.id, "ignored");
+
+    const ownConvs = store
+      .listConversations(owner.id)
+      .filter((c) => c.avatarUserId === owner.id);
+    const maxOwn = ownConvs.map((c) => c.updatedAt).sort().at(-1)!;
+
+    // The directory + search + single-row paths all surface that MAX, in agreement.
+    const listed = store.listPublishedAvatars(owner.id).find((a) => a.id === owner.id);
+    const searched = store.searchAvatars(owner.id, "").find((a) => a.id === owner.id);
+    const detail = store.getAvatar(owner.id, owner.id);
+    expect(listed?.updatedAt).toBe(maxOwn);
+    expect(searched?.updatedAt).toBe(maxOwn);
+    // Single-row path uses the avatarUpdatedAt fallback — must match the subquery paths.
+    expect(detail?.updatedAt).toBe(maxOwn);
+    expect(detail?.updatedAt).toBe(listed?.updatedAt);
+
+    // Re-touching one own-avatar conversation advances MAX in lockstep across paths.
+    store.touchConversation(owner.id, "own-conv-1", owner.id, "first");
+    const bumped = store
+      .listConversations(owner.id)
+      .filter((c) => c.avatarUserId === owner.id)
+      .map((c) => c.updatedAt)
+      .sort()
+      .at(-1)!;
+    expect(store.listPublishedAvatars(owner.id).find((a) => a.id === owner.id)?.updatedAt).toBe(bumped);
+    expect(store.getAvatar(owner.id, owner.id)?.updatedAt).toBe(bumped);
+  });
+});
+
+
+describe("store avatar visibility scope parity (shared VISIBILITY_WHERE)", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const subject = store.createUser({ username: "subject", displayName: "주제", password: "password123" });
+    const teammate = store.createUser({ username: "teammate", displayName: "Teammate", password: "password123" });
+    const stranger = store.createUser({ username: "stranger", displayName: "Stranger", password: "password123" });
+    return { store, subjectId: subject.id, teammateId: teammate.id, strangerId: stranger.id };
+  }
+
+  it("a group-visible avatar reaches a co-member but not a stranger, consistently across list + search", () => {
+    const { store, subjectId, teammateId, strangerId } = makeStore("vis-parity");
+    // subject keeps the default `group` visibility, with a hashtag so search can match.
+    store.updateProfile(subjectId, { hashtags: ["쿠버네티스"] });
+
+    // Before any shared group: invisible to BOTH viewers via list AND search.
+    expect(store.listPublishedAvatars(teammateId).some((a) => a.id === subjectId)).toBe(false);
+    expect(store.searchAvatars(teammateId, "쿠버네티스").some((a) => a.id === subjectId)).toBe(false);
+    expect(store.listPublishedAvatars(strangerId).some((a) => a.id === subjectId)).toBe(false);
+    expect(store.searchAvatars(strangerId, "쿠버네티스").some((a) => a.id === subjectId)).toBe(false);
+
+    // Put subject + teammate in one group; stranger stays out.
+    const group = store.createGroup({ name: "Platform" });
+    store.addGroupMember(group.id, subjectId, "member");
+    store.addGroupMember(group.id, teammateId, "member");
+
+    // Teammate now sees the subject in BOTH the list and the matching search,
+    // and the two surfaces agree on membership.
+    const inList = store.listPublishedAvatars(teammateId).some((a) => a.id === subjectId);
+    const inSearch = store.searchAvatars(teammateId, "쿠버네티스").some((a) => a.id === subjectId);
+    expect(inList).toBe(true);
+    expect(inSearch).toBe(true);
+    expect(inSearch).toBe(inList);
+    // The list surface also flags the group co-membership.
+    expect(store.listPublishedAvatars(teammateId).find((a) => a.id === subjectId)?.sharesGroup).toBe(true);
+
+    // The stranger still sees the subject in NEITHER surface — also in agreement.
+    const strangerList = store.listPublishedAvatars(strangerId).some((a) => a.id === subjectId);
+    const strangerSearch = store.searchAvatars(strangerId, "쿠버네티스").some((a) => a.id === subjectId);
+    expect(strangerList).toBe(false);
+    expect(strangerSearch).toBe(false);
+    expect(strangerSearch).toBe(strangerList);
+  });
+});
+
+
+describe("store renameConversation single-row summary", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "rcowner", displayName: "RC Owner", password: "password123" });
+    return { store, ownerId: owner.id };
+  }
+
+  it("returns a summary with the new title that equals the matching listConversations entry", () => {
+    const { store, ownerId } = makeStore("rc-title");
+    const avatar = store.createUser({ username: "rcavatar", displayName: "RC Avatar", password: "password123" });
+    store.touchConversation(ownerId, "rc-1", avatar.id, "original");
+
+    const renamed = store.renameConversation(ownerId, "rc-1", "  새 제목  ");
+    expect(renamed?.title).toBe("새 제목");
+    expect(renamed?.isRoutine).toBe(false);
+    expect(renamed?.routineId).toBeNull();
+    expect(renamed?.avatarDisplayName).toBe("RC Avatar");
+
+    // The single-row summary must be identical to the entry the list scan produces.
+    const fromList = store.listConversations(ownerId).find((c) => c.id === "rc-1");
+    expect(renamed).toEqual(fromList);
+
+    // Blank title falls back to the default "새 대화".
+    const blanked = store.renameConversation(ownerId, "rc-1", "   ");
+    expect(blanked?.title).toBe("새 대화");
+  });
+
+  it("sets isRoutine + routineId from the joined routine_jobs row for a routine-backed conversation", () => {
+    const { store, ownerId } = makeStore("rc-routine");
+    const job = store.createRoutineJob(ownerId, { prompt: "매일 요약", minuteOfDay: 540 });
+
+    const renamed = store.renameConversation(ownerId, job.conversationId, "루틴 새 이름");
+    expect(renamed?.title).toBe("루틴 새 이름");
+    expect(renamed?.isRoutine).toBe(true);
+    expect(renamed?.routineId).toBe(job.id);
+    expect(renamed?.routinePrompt).toBe("매일 요약");
+
+    // Equals the matching entry from the routine list (same join, single-row vs scan).
+    const fromList = store
+      .listConversations(ownerId, undefined, "routine")
+      .find((c) => c.id === job.conversationId);
+    expect(renamed).toEqual(fromList);
+  });
+
+  it("falls back to the Korean '(삭제된 아바타)' label when the target avatar was removed", () => {
+    const { store, ownerId } = makeStore("rc-deleted");
+    const avatar = store.createUser({ username: "rcgone", displayName: "Gone", password: "password123" });
+    store.touchConversation(ownerId, "rc-del", avatar.id, "hi");
+    expect(store.deleteUser(avatar.id)).toBe(true);
+    // The owner's conversation survives (deleteUser only drops conversations the
+    // deleted user OWNS or where they're the avatar — this one targets them, so
+    // it is removed; recreate one targeting a since-deleted avatar id instead).
+    store.touchConversation(ownerId, "rc-del2", avatar.id, "hi again");
+
+    const renamed = store.renameConversation(ownerId, "rc-del2", "고아 대화");
+    expect(renamed?.title).toBe("고아 대화");
+    expect(renamed?.avatarDisplayName).toBe("(삭제된 아바타)");
+    expect(renamed).toEqual(store.listConversations(ownerId).find((c) => c.id === "rc-del2"));
+  });
+
+  it("is owner-scoped: renaming a conversation you don't own returns null", () => {
+    const { store, ownerId } = makeStore("rc-scope");
+    store.touchConversation(ownerId, "rc-mine", ownerId, "mine");
+    const other = store.createUser({ username: "rcother", displayName: "Other", password: "password123" });
+    expect(store.renameConversation(other.id, "rc-mine", "stolen")).toBeNull();
+    expect(store.listConversations(ownerId).find((c) => c.id === "rc-mine")?.title).toBe("mine");
+  });
+});
+
+
+describe("store addAvatarNotification keyed single-row return", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "anowner", displayName: "AN Owner", password: "password123" });
+    const avatar = store.createUser({ username: "anavatar", displayName: "AN Avatar", password: "password123" });
+    return { store, ownerId: owner.id, avatarId: avatar.id };
+  }
+
+  it("returns the inserted row with the right fields AND the joined avatar display name", () => {
+    const { store, ownerId, avatarId } = makeStore("an-fields");
+    const created = store.addAvatarNotification(ownerId, {
+      avatarUserId: avatarId,
+      title: "알림 제목",
+      message: "  본문 내용  ",
+      conversationId: "conv-an",
+    });
+
+    expect(created.ownerUserId).toBe(ownerId);
+    expect(created.avatarUserId).toBe(avatarId);
+    expect(created.title).toBe("알림 제목");
+    // message is trimmed on insert.
+    expect(created.message).toBe("본문 내용");
+    expect(created.conversationId).toBe("conv-an");
+    expect(created.readAt).toBeNull();
+    // The LEFT JOIN alias must be populated, not the deleted-avatar fallback.
+    expect(created.avatarDisplayName).toBe("AN Avatar");
+
+    // The keyed single-row return must equal what the list query produces for the same id.
+    const fromList = store.listAvatarNotifications(ownerId).find((n) => n.id === created.id);
+    expect(created).toEqual(fromList);
+  });
+
+  it("defaults a blank title to the Korean fallback and still resolves the display name", () => {
+    const { store, ownerId, avatarId } = makeStore("an-title");
+    const created = store.addAvatarNotification(ownerId, {
+      avatarUserId: avatarId,
+      title: "   ",
+      message: "내용",
+    });
+    expect(created.title).toBe("아바타 알림");
+    expect(created.avatarDisplayName).toBe("AN Avatar");
+    expect(created.conversationId).toBeNull();
+    expect(created).toEqual(store.listAvatarNotifications(ownerId).find((n) => n.id === created.id));
+  });
+});
+
+
+describe("store deleteUser canvas cascade (no orphans)", () => {
+  // Reach the raw better-sqlite3 handle to assert no canvas rows survive, mirroring
+  // the dbOf() pattern used by the canvas backfill tests above.
+  type WithDb = { db: { prepare(sql: string): { get(...a: unknown[]): unknown } } };
+  const dbOf = (store: unknown): WithDb["db"] => (store as unknown as WithDb).db;
+  const countRows = (store: unknown, sql: string, ...params: unknown[]): number =>
+    (dbOf(store).prepare(sql).get(...params) as { n: number }).n;
+
+  it("removes canvas_artifacts AND canvas_versions for the deleted owner, leaving no orphans", () => {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "del-canvas"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "delowner", displayName: "Del Owner", password: "password123" });
+    const avatar = store.createUser({ username: "delavatar", displayName: "Del Avatar", password: "password123" });
+    store.touchConversation(owner.id, "conv-del-1", avatar.id, "hi");
+    store.touchConversation(owner.id, "conv-del-2", avatar.id, "hi2");
+
+    // Seed two artifacts; refine one so it carries multiple versions.
+    store.upsertCanvasArtifact(owner.id, "conv-del-1", { artifactId: "art-1", title: "T", content: "v1", contentType: "markdown" });
+    store.upsertCanvasArtifact(owner.id, "conv-del-1", { artifactId: "art-1", title: "T", content: "v2", contentType: "markdown" });
+    store.upsertCanvasArtifact(owner.id, "conv-del-2", { artifactId: "art-2", title: "T2", content: "x", contentType: "markdown" });
+
+    // Sanity: rows exist before deletion (1 artifact w/ 2 versions + 1 artifact w/ 1 version).
+    expect(countRows(store, "SELECT COUNT(*) AS n FROM canvas_artifacts WHERE owner_user_id = ?", owner.id)).toBe(2);
+    expect(
+      countRows(
+        store,
+        "SELECT COUNT(*) AS n FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE owner_user_id = ?)",
+        owner.id,
+      ),
+    ).toBe(3);
+    // Capture the version artifact_ids so we can prove no orphan versions remain after delete.
+    expect(countRows(store, "SELECT COUNT(*) AS n FROM canvas_versions WHERE artifact_id IN ('art-1','art-2')")).toBe(3);
+
+    expect(store.deleteUser(owner.id)).toBe(true);
+
+    // Both tables fully cleared for this owner — and no version rows left dangling
+    // for the now-deleted artifact ids.
+    expect(countRows(store, "SELECT COUNT(*) AS n FROM canvas_artifacts WHERE owner_user_id = ?", owner.id)).toBe(0);
+    expect(countRows(store, "SELECT COUNT(*) AS n FROM canvas_versions WHERE artifact_id IN ('art-1','art-2')")).toBe(0);
+    // Whole-table guard: no canvas rows remain at all in this single-owner DB.
+    expect(countRows(store, "SELECT COUNT(*) AS n FROM canvas_artifacts")).toBe(0);
+    expect(countRows(store, "SELECT COUNT(*) AS n FROM canvas_versions")).toBe(0);
+  });
+});

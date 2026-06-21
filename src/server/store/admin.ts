@@ -187,13 +187,8 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
           )
           .all(id, id) as { id: string }[];
         const delMsgs = this.db.prepare("DELETE FROM messages WHERE conversation_id = ?");
-        const delCanvasVersions = this.db.prepare(
-          "DELETE FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE conversation_id = ?)",
-        );
-        const delCanvasArtifacts = this.db.prepare("DELETE FROM canvas_artifacts WHERE conversation_id = ?");
         for (const c of convRows) {
-          delCanvasVersions.run(c.id);
-          delCanvasArtifacts.run(c.id);
+          this.deleteCanvasArtifactsForConversation(c.id);
           delMsgs.run(c.id);
         }
         this.db

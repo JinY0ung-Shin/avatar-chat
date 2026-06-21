@@ -7,6 +7,50 @@ const COPY_SVG =
 const CHECK_SVG =
   '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
 
+export function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+// Downscale an image file to a `maxDim` long edge via canvas, returning a data URL.
+// The Image is loaded from a `data:` URL (FileReader), NOT `URL.createObjectURL`:
+// a `blob:` URL is blocked by the production CSP (`img-src 'self' data:`), which
+// would make the load fail. Output type defaults to the file's family (jpeg/webp/png
+// ternary) unless `outputType` forces it; default quality 0.9.
+export async function downscaleImageToDataUrl(
+  file: File,
+  maxDim: number,
+  opts?: { quality?: number; outputType?: string },
+): Promise<string> {
+  const quality = opts?.quality ?? 0.9;
+  const sourceDataUrl = await readFileAsDataUrl(file);
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(img.width * scale));
+      canvas.height = Math.max(1, Math.round(img.height * scale));
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("no 2d context"));
+        return;
+      }
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const out =
+        opts?.outputType ??
+        (file.type === "image/jpeg" ? "image/jpeg" : file.type === "image/webp" ? "image/webp" : "image/png");
+      resolve(canvas.toDataURL(out, quality));
+    };
+    img.onerror = () => reject(new Error("image load failed"));
+    img.src = sourceDataUrl;
+  });
+}
+
 export async function copyText(text: string, btn?: HTMLButtonElement | null): Promise<void> {
   try {
     if (navigator.clipboard?.writeText) {

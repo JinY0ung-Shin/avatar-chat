@@ -7,9 +7,44 @@ import {
   parseHashtags,
 } from "./internal.js";
 
+/**
+ * A users row plus the optional per-avatar aggregates the discovery queries
+ * precompute (plugin_count + updated_at). getAvatar passes a plain UserRow, so
+ * both are optional and toAvatarSummary falls back when they're absent.
+ */
+interface AvatarSummaryRow extends UserRow {
+  plugin_count?: number;
+  updated_at?: string | null;
+}
+
 export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class Avatars extends Base {
     // ---- Avatars (discovery) ---------------------------------------------
+
+    /**
+     * Shared visibility WHERE predicate for the discovery queries
+     * (listPublishedAvatars + searchAvatars): suspended owners are hidden;
+     * `public` avatars show to everyone, the viewer's own always shows, and
+     * `group` avatars show to group teammates. Binds TWO positional params, both
+     * the viewer id, in order: the `id = ?` self-exception, then the group-teammate
+     * subquery's `m1.user_id = ?`. Callers must pass `(viewerId, viewerId, ...)`.
+     */
+    private static readonly VISIBILITY_WHERE = `suspended = 0
+             AND (visibility = 'public' OR id = ?
+              OR (visibility = 'group' AND id IN (
+                SELECT m2.user_id FROM group_members m1
+                JOIN group_members m2 ON m1.group_id = m2.group_id
+                WHERE m1.user_id = ?
+              )))`;
+
+    /**
+     * Correlated per-avatar aggregates (plugin_count + updated_at) embedded in the
+     * discovery SELECTs so toAvatarSummary reads them off the row instead of
+     * issuing two extra queries per avatar. Mirrors avatarUpdatedAt + the enabled
+     * plugin count below.
+     */
+    private static readonly SUMMARY_AGGREGATES = `(SELECT COUNT(*) FROM avatar_plugins p WHERE p.user_id = users.id AND p.enabled = 1) AS plugin_count,
+           (SELECT MAX(updated_at) FROM conversations cx WHERE cx.avatar_user_id = users.id AND cx.owner_user_id = users.id) AS updated_at`;
 
     private avatarUpdatedAt(userId: string): string | null {
       const row = this.db
@@ -39,17 +74,13 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       // also what makes teammates mutually elevated — see isTrustedFor.)
       const rows = this.db
         .prepare(
-          `SELECT * FROM users
-           WHERE suspended = 0
-             AND (visibility = 'public' OR id = ?
-              OR (visibility = 'group' AND id IN (
-                SELECT m2.user_id FROM group_members m1
-                JOIN group_members m2 ON m1.group_id = m2.group_id
-                WHERE m1.user_id = ?
-              )))
+          `SELECT *,
+           ${Avatars.SUMMARY_AGGREGATES}
+           FROM users
+           WHERE ${Avatars.VISIBILITY_WHERE}
            ORDER BY display_name COLLATE NOCASE ASC`,
         )
-        .all(viewerId, viewerId) as UserRow[];
+        .all(viewerId, viewerId) as AvatarSummaryRow[];
       const teammates = this.groupTeammateIds(viewerId);
       return rows.map((row) => ({
         ...this.toAvatarSummary(row),
@@ -57,11 +88,19 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       }));
     }
 
-    private toAvatarSummary(row: UserRow): AvatarSummary {
-      const pluginCount = this.count(
-        "SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ? AND enabled = 1",
-        row.id,
-      );
+    private toAvatarSummary(row: AvatarSummaryRow): AvatarSummary {
+      // The discovery queries (listPublishedAvatars/searchAvatars) precompute the
+      // enabled-plugin count and last-activity timestamp as correlated subquery
+      // columns; getAvatar passes a plain UserRow, so fall back to the per-row
+      // queries when those columns are absent.
+      const pluginCount =
+        row.plugin_count ??
+        this.count(
+          "SELECT COUNT(*) AS c FROM avatar_plugins WHERE user_id = ? AND enabled = 1",
+          row.id,
+        );
+      const updatedAt =
+        row.updated_at !== undefined ? row.updated_at : this.avatarUpdatedAt(row.id);
       return {
         id: row.id,
         username: row.username,
@@ -72,7 +111,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         hasImage: Boolean(row.avatar_ext),
         pluginCount,
         visibility: this.rowVisibility(row),
-        updatedAt: this.avatarUpdatedAt(row.id),
+        updatedAt,
       };
     }
 
@@ -100,16 +139,12 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       // to surface the same teammates the viewer can browse.
       const rows = this.db
         .prepare(
-          `SELECT * FROM users
-           WHERE suspended = 0
-             AND (visibility = 'public' OR id = ?
-              OR (visibility = 'group' AND id IN (
-                SELECT m2.user_id FROM group_members m1
-                JOIN group_members m2 ON m1.group_id = m2.group_id
-                WHERE m1.user_id = ?
-              )))`,
+          `SELECT *,
+           ${Avatars.SUMMARY_AGGREGATES}
+           FROM users
+           WHERE ${Avatars.VISIBILITY_WHERE}`,
         )
-        .all(viewerId, viewerId) as UserRow[];
+        .all(viewerId, viewerId) as AvatarSummaryRow[];
       const teammates = this.groupTeammateIds(viewerId);
       const tokens = query
         .toLowerCase()

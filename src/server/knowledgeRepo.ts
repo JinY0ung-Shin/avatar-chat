@@ -3,11 +3,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import logger from "./logger.js";
-import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError } from "./marketplace.js";
+import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName } from "./marketplace.js";
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
-import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
-import { git, currentBranch, originUrl, dirtyPaths as coreDirtyPaths } from "./repoGitCore.js";
+import {
+  git,
+  currentBranch,
+  originUrl,
+  dirtyPaths as coreDirtyPaths,
+  alignBranch,
+  commitAndPushClone,
+} from "./repoGitCore.js";
 import fsSync from "node:fs";
 import type { AppConfig, KnowledgeRepoStatus, KnowledgeRepoTreeEntry } from "./types.js";
 import type { Store } from "./store.js";
@@ -131,12 +137,6 @@ function realpathContained(repoRoot: string, abs: string, mustExist: boolean): s
   return null;
 }
 
-/** Configure local commit identity on the clone (no global git config touched). */
-async function setIdentity(repoRoot: string, name: string, email: string): Promise<void> {
-  await git(repoRoot, ["config", "user.name", name]);
-  await git(repoRoot, ["config", "user.email", email]);
-}
-
 /**
  * Ensure the user's knowledge repo is cloned (full clone) and up to date on
  * the configured branch. Returns the working-tree path. Fetches if already
@@ -198,71 +198,14 @@ async function ensureCloneLocked(ctx: KnowledgeRepoContext, repoRoot: string): P
   // Align the working tree with the chosen branch's remote tip.
   const branch = ctx.branch || (await currentBranch(repoRoot));
   if (branch && !branch.startsWith("-")) {
-    await alignBranch(repoRoot, branch, { userId: ctx.userId, repo: ctx.repo });
-  }
-  return repoRoot;
-}
-
-/**
- * Move the working tree onto `branch`@origin without discarding unpushed
- * commits. If local HEAD is ahead of origin/<branch>, a hard `checkout -B`
- * would silently destroy those commits — so we only `checkout -B` when HEAD is
- * NOT ahead; when it is, we merge --ff-only (a no-op if the remote didn't move,
- * a clean catch-up otherwise) and, if that can't fast-forward (diverged), leave
- * the branch as-is with a warning so the unpushed work survives (git-01). When
- * the branch doesn't exist on the remote yet (fresh repo), stay on HEAD.
- */
-async function alignBranch(
-  repoRoot: string,
-  branch: string,
-  log: Record<string, unknown>,
-): Promise<void> {
-  const ahead = await aheadOfRemote(repoRoot, branch);
-  if (ahead === null) {
-    // origin/<branch> doesn't exist yet (fresh repo) — keep the clone's HEAD.
-    return;
-  }
-  if (ahead === 0) {
-    // No unpushed work — safe to re-point the branch at the remote tip.
-    try {
-      await git(repoRoot, ["checkout", "-B", branch, `origin/${branch}`]);
-    } catch {
-      // Branch may not exist locally/remotely in some edge state — stay put.
-    }
-    return;
-  }
-  // HEAD is ahead of the remote: preserve the local commits. Make sure we're on
-  // the branch, then only fast-forward (never reset) to absorb new remote work.
-  try {
-    await git(repoRoot, ["checkout", branch]);
-    await git(repoRoot, ["merge", "--ff-only", `origin/${branch}`]);
-  } catch (error) {
-    logger.warn(
-      { ...log, branch, ahead, error: scrubGitError(error) },
+    await alignBranch(
+      repoRoot,
+      branch,
+      { userId: ctx.userId, repo: ctx.repo },
       "knowledge repo has unpushed commits that can't fast-forward; leaving local branch as-is",
     );
   }
-}
-
-/**
- * Count commits on local HEAD not yet on origin/<branch>. Returns 0 when the
- * branch is up to date or behind, a positive count when ahead, and null when
- * origin/<branch> doesn't exist (so callers can tell "fresh repo" apart from
- * "in sync").
- */
-async function aheadOfRemote(repoRoot: string, branch: string): Promise<number | null> {
-  try {
-    await git(repoRoot, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
-  } catch {
-    return null;
-  }
-  try {
-    const { stdout } = await git(repoRoot, ["rev-list", `origin/${branch}..HEAD`, "--count"]);
-    const n = Number.parseInt(stdout.trim(), 10);
-    return Number.isFinite(n) ? n : 0;
-  } catch {
-    return 0;
-  }
+  return repoRoot;
 }
 
 /**
@@ -677,32 +620,6 @@ export async function status(ctx: KnowledgeRepoContext): Promise<KnowledgeRepoSt
 }
 
 /**
- * Restore every tracked `.mcp.json` to its committed (HEAD) state, discarding
- * the runtime `stripManagedMcpServers` edit so it never gets committed/pushed.
- * Best-effort and tolerant: untracked `.mcp.json` files (genuinely new, added
- * by the avatar) are left alone; if `ls-files` finds none it's a no-op.
- */
-async function restoreTrackedMcpJson(repoRoot: string): Promise<void> {
-  let tracked: string[];
-  try {
-    const { stdout } = await git(repoRoot, ["ls-files", "-z", "*.mcp.json"]);
-    tracked = stdout.split("\0").filter(Boolean);
-  } catch {
-    return;
-  }
-  if (tracked.length === 0) {
-    return;
-  }
-  // `--` so paths are never parsed as options. Ignore failures (e.g. a path
-  // that's tracked but unchanged) — this is purely defensive cleanup.
-  try {
-    await git(repoRoot, ["checkout", "HEAD", "--", ...tracked]);
-  } catch {
-    /* best-effort */
-  }
-}
-
-/**
  * Stage all changes, commit with the user's identity, and push to the remote
  * branch. Returns false (no commit) when the tree is clean. Throws on git
  * failure (auth, conflicts) so the route can surface the detail.
@@ -716,44 +633,19 @@ export async function commitAndPush(
   // Serialize the add/commit/push against any concurrent ensureClone or other
   // commit on the same working tree (git-02). Keyed by clone path, same as
   // ensureClone, and never nested under that lock (commitAndPush doesn't clone).
-  return withRepoLock(repoRoot, () => commitAndPushLocked(ctx, repoRoot, message, identity));
-}
-
-async function commitAndPushLocked(
-  ctx: KnowledgeRepoContext,
-  repoRoot: string,
-  message: string,
-  identity: { name: string; email: string },
-): Promise<boolean> {
-  if (!(await pathExists(path.join(repoRoot, ".git")))) {
-    throw new Error("NOT_CLONED");
-  }
-  // Guard against identity values git would read as options (passed positionally
-  // after the config key). Fall back to a safe default rather than failing.
-  const { name, email } = safeIdentity(identity);
-  await setIdentity(repoRoot, name, email);
-  // Undo any in-place `.mcp.json` strip we did at load time (removing the
-  // app-managed `hex-ssh` server so it can't shadow our keyed registration —
-  // see plugins.ts `stripManagedMcpServers`). That edit is a runtime-only
-  // concern; restoring each tracked `.mcp.json` to HEAD keeps it out of the
-  // user's repo. The avatar edits skills/docs via write_file, never `.mcp.json`,
-  // so nothing legitimate is lost. Best-effort: ignore if there are none.
-  await restoreTrackedMcpJson(repoRoot);
-  await git(repoRoot, ["add", "-A"]);
-  if ((await dirtyPaths(repoRoot)).length === 0) {
-    return false;
-  }
-  // commitMsg is the value of `-m` (a discrete argv element), so it's never
-  // parsed as a flag even if it starts with `-`.
-  const commitMsg = message.trim() || "Update knowledge repo";
-  await git(repoRoot, ["commit", "-m", commitMsg]);
-
-  const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
-  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
-  const branch = safePushBranch(ctx.branch || (await currentBranch(repoRoot)) || "HEAD");
-  await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
-  logger.info({ userId: ctx.userId, repo: ctx.repo, branch }, "knowledge repo pushed");
-  return true;
+  return withRepoLock(repoRoot, () =>
+    commitAndPushClone(repoRoot, {
+      url: marketplaceCloneUrl(ctx.repo, ctx.config.githubHost),
+      config: ctx.config,
+      tokens: repoTokens(ctx),
+      branch: ctx.branch,
+      message,
+      defaultMessage: "Update knowledge repo",
+      identity,
+      log: { userId: ctx.userId, repo: ctx.repo },
+      pushedMessage: "knowledge repo pushed",
+    }),
+  );
 }
 
 /**

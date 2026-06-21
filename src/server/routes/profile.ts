@@ -14,6 +14,7 @@ import type { AvatarVisibility } from "../types.js";
 import {
   apiError,
   avatarDir,
+  describeAvatarEquipment,
   isAvatarVisibility,
   resolveAvatarSkillSources,
   runHeadlessAvatarPrompt,
@@ -194,19 +195,6 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
 
       // Describe the avatar's equipment so it can ground the intro in reality
       // rather than inventing capabilities.
-      const skillLines = skills.length
-        ? skills
-            .map(
-              (s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`,
-            )
-            .join("\n")
-        : "(no skills registered)";
-      const pluginLines = enabledPlugins.length
-        ? enabledPlugins.map((p) => `- ${p.label || p.repo}`).join("\n")
-        : "(no plugins connected)";
-      const personaLine = avatar.persona?.trim()
-        ? `\n\nReference persona/instructions:\n${avatar.persona.trim()}`
-        : "";
       const message =
         "You are writing a short self-introduction. It is the intro a conversation partner (a colleague) will read before they start talking to you.\n\n" +
         "Based on the information below, write the introduction in the first person, centered on 'what you can help with'. " +
@@ -215,7 +203,7 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         "organize your main capabilities as a bullet list (`- `). Write each bullet as a single line about 'what you can help with', " +
         "and use bold (`**`) to emphasize key keywords where helpful. Do not use Markdown headings (`#`), code blocks, or wrapping quotes — " +
         "output only the introduction body.\n\n" +
-        `Available skills:\n${skillLines}\n\nConnected plugins:\n${pluginLines}${personaLine}`;
+        describeAvatarEquipment(skills, enabledPlugins, avatar.persona);
 
       const result = await runHeadlessAvatarPrompt(
         store,
@@ -281,19 +269,6 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         await resolveAvatarSkillSources(store, avatar, config, true);
       const skills = await listSkillsInRoots(sourced);
 
-      const skillLines = skills.length
-        ? skills
-            .map(
-              (s) => `- ${s.name}${s.description ? `: ${s.description}` : ""}`,
-            )
-            .join("\n")
-        : "(no skills registered)";
-      const pluginLines = enabledPlugins.length
-        ? enabledPlugins.map((p) => `- ${p.label || p.repo}`).join("\n")
-        : "(no plugins connected)";
-      const personaLine = avatar.persona?.trim()
-        ? `\n\nReference persona/instructions:\n${avatar.persona.trim()}`
-        : "";
       // When adding to an existing set, tell the avatar what it already has and ask
       // for DISTINCT new tags only; otherwise generate a fresh set.
       const addingMore = existing.length > 0;
@@ -309,7 +284,7 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         "Output format: output only the hashtags on a single line separated by spaces. Each tag starts with `#` and contains no spaces (join multiple words together or connect them with hyphens). " +
         "Default to Korean, but widely used technical terms may be written in English. Output only the hashtag line — no explanatory sentences, lists, or code blocks.\n" +
         "Example: #코드리뷰 #파이썬 #데이터분석 #기술문서작성\n\n" +
-        `Available skills:\n${skillLines}\n\nConnected plugins:\n${pluginLines}${personaLine}`;
+        describeAvatarEquipment(skills, enabledPlugins, avatar.persona);
 
       const result = await runHeadlessAvatarPrompt(
         store,

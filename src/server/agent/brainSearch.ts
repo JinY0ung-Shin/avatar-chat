@@ -7,7 +7,25 @@
 // already-cloned `repoRoot`. Keyword ranking keeps the no-new-infra philosophy
 // (open decision #2); recency/importance can be layered on later via frontmatter.
 
+import path from "node:path";
 import { listTree, readFile } from "../knowledgeRepo.js";
+
+/**
+ * The shared wiki-path guard both `get_note` handlers (`brainTools.ts` /
+ * `groupBrainTools.ts`) run before reading: strip leading slashes, normalize, and
+ * confirm the result is `wiki` or lives under `wiki/` (so `wiki/../CLAUDE.md`
+ * can't escape the vault). On success returns the normalized path to read with;
+ * on failure the caller emits its own (repo vs group) refusal message.
+ */
+export type WikiPathCheck = { ok: true; norm: string } | { ok: false };
+
+export function normalizeWikiPath(rawPath: string): WikiPathCheck {
+  const norm = path.posix.normalize(rawPath.replace(/^[/]+/, ""));
+  if (norm !== "wiki" && !norm.startsWith("wiki/")) {
+    return { ok: false };
+  }
+  return { ok: true, norm };
+}
 
 // Hard cap on `wiki/` notes scanned per search. NOTE: `listTree` orders entries
 // alphabetically by path (dir-before-file), NOT by recency, so this keeps the

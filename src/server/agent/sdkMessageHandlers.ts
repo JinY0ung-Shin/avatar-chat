@@ -419,13 +419,21 @@ export function interpretResult(message: unknown): { text?: string; errorSubtype
  * turn). The cumulative value is kept here so the unit test / fallback path
  * still works when no assistant snapshot is available.
  */
+/**
+ * Prompt-token size of a usage record: `input_tokens` + cache reads + cache
+ * creation — the size of the prompt sent on that model request.
+ */
+function promptTokens(usage: Record<string, unknown>): number {
+  return (
+    asNumber(usage.input_tokens) +
+    asNumber(usage.cache_read_input_tokens) +
+    asNumber(usage.cache_creation_input_tokens)
+  );
+}
+
 function extractUsage(message: Record<string, unknown>): AgentUsage | undefined {
   const usage = isRecord(message.usage) ? message.usage : undefined;
-  const inputTokens = usage
-    ? asNumber(usage.input_tokens) +
-      asNumber(usage.cache_read_input_tokens) +
-      asNumber(usage.cache_creation_input_tokens)
-    : 0;
+  const inputTokens = usage ? promptTokens(usage) : 0;
   const outputTokens = usage ? asNumber(usage.output_tokens) : 0;
   let contextWindow = 0;
   if (isRecord(message.modelUsage)) {
@@ -462,10 +470,7 @@ export function mainAssistantContextTokens(message: unknown): number | undefined
   if (!usage) {
     return undefined;
   }
-  const tokens =
-    asNumber(usage.input_tokens) +
-    asNumber(usage.cache_read_input_tokens) +
-    asNumber(usage.cache_creation_input_tokens);
+  const tokens = promptTokens(usage);
   return tokens > 0 ? tokens : undefined;
 }
 
@@ -499,10 +504,7 @@ export function streamStartContextTokens(message: unknown): number | undefined {
   if (!usage) {
     return undefined;
   }
-  const tokens =
-    asNumber(usage.input_tokens) +
-    asNumber(usage.cache_read_input_tokens) +
-    asNumber(usage.cache_creation_input_tokens);
+  const tokens = promptTokens(usage);
   return tokens > 0 ? tokens : undefined;
 }
 

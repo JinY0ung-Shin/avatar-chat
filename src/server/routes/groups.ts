@@ -3,10 +3,39 @@ import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import { inspectRepoContents } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import { isInternalGitSource } from "../gitCredentials.js";
-import { ensureGroupClone, groupKnowledgeRepoContextFor } from "../groupKnowledgeRepo.js";
+import {
+  ensureGroupClone,
+  groupKnowledgeRepoContextFor,
+  type GroupKnowledgeRepoContext,
+} from "../groupKnowledgeRepo.js";
 import { readFile } from "../knowledgeRepo.js";
 import { buildKnowledgeGraph, isVaultNotePath } from "../knowledgeGraph.js";
-import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
+import type { Response } from "express";
+import {
+  apiError,
+  looksLikeRepo,
+  respondNoteFsError,
+  safeString,
+  type RouterDeps,
+} from "./_shared.js";
+
+/**
+ * ensureGroupClone → inspectRepoContents → res.json, shared by the group repo's
+ * GET /contents and POST /refresh (functionally identical bodies; only the
+ * Korean catch label differs). User-facing Korean — `errorLabel` carries it.
+ */
+async function respondRepoContents(
+  res: Response,
+  ctx: GroupKnowledgeRepoContext,
+  errorLabel: string,
+): Promise<void> {
+  try {
+    const repoRoot = await ensureGroupClone(ctx);
+    res.json({ contents: await inspectRepoContents(repoRoot) });
+  } catch (error) {
+    apiError(res, 502, `${errorLabel}: ${scrubGitError(error)}`);
+  }
+}
 
 // ---- Groups (membership roster + group-admin self-service) -----------
 // Members of a group auto-trust each other (store.isTrustedFor) and share one
@@ -20,6 +49,9 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
   /** A group admin OR a system admin may manage a group's members/repo. */
   const canManageGroup = (userId: string, groupId: string) =>
     store.isAdmin(userId) || store.isGroupAdmin(userId, groupId);
+  /** Any group member OR a system admin may VIEW the group's shared repo. */
+  const canViewGroupRepo = (userId: string, groupId: string) =>
+    isGroupMember(userId, groupId) || store.isAdmin(userId);
 
   // The current user's groups, each with its member roster — members discover &
   // chat with teammates' avatars (now auto-trusted via group co-membership).
@@ -156,7 +188,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     requireAuth(store),
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
-      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+      if (!canViewGroupRepo(req.user!.id, groupId)) {
         apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
@@ -165,12 +197,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
         apiError(res, 404, "연결된 그룹 지식 저장소가 없습니다.");
         return;
       }
-      try {
-        const repoRoot = await ensureGroupClone(ctx);
-        res.json({ contents: await inspectRepoContents(repoRoot) });
-      } catch (error) {
-        apiError(res, 502, `저장소를 가져오지 못했습니다: ${scrubGitError(error)}`);
-      }
+      await respondRepoContents(res, ctx, "저장소를 가져오지 못했습니다");
     },
   );
 
@@ -180,7 +207,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     requireAuth(store),
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
-      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+      if (!canViewGroupRepo(req.user!.id, groupId)) {
         apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
@@ -205,7 +232,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     requireAuth(store),
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
-      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+      if (!canViewGroupRepo(req.user!.id, groupId)) {
         apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
@@ -224,16 +251,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
         const content = await readFile(repoRoot, path);
         res.json({ note: { path, content } });
       } catch (error) {
-        const err = error as NodeJS.ErrnoException;
-        if (err.code === "ENOENT" || err.message === "INVALID_PATH" || err.message === "NOT_A_FILE") {
-          apiError(res, 404, "노트를 찾을 수 없습니다.");
-          return;
-        }
-        if (err.message === "FILE_TOO_LARGE") {
-          apiError(res, 413, "노트가 너무 커서 표시할 수 없습니다.");
-          return;
-        }
-        apiError(res, 502, `노트를 불러오지 못했습니다: ${scrubGitError(error)}`);
+        respondNoteFsError(res, error);
       }
     },
   );
@@ -243,7 +261,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     requireAuth(store),
     async (req: AuthenticatedRequest, res) => {
       const groupId = req.params.id;
-      if (!isGroupMember(req.user!.id, groupId) && !store.isAdmin(req.user!.id)) {
+      if (!canViewGroupRepo(req.user!.id, groupId)) {
         apiError(res, 403, "이 그룹의 그룹원이 아닙니다.");
         return;
       }
@@ -252,12 +270,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
         apiError(res, 404, "연결된 그룹 지식 저장소가 없습니다.");
         return;
       }
-      try {
-        const repoRoot = await ensureGroupClone(ctx);
-        res.json({ contents: await inspectRepoContents(repoRoot) });
-      } catch (error) {
-        apiError(res, 502, `새로고침 실패: ${scrubGitError(error)}`);
-      }
+      await respondRepoContents(res, ctx, "새로고침 실패");
     },
   );
 

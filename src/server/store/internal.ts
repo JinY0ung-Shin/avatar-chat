@@ -815,6 +815,7 @@ export interface StoreBase {
     firstUserText: string,
     opts?: { isRoutine?: boolean },
   ): void;
+  deleteCanvasArtifactsForConversation(conversationId: string): void;
   countOpenKnowledgeRequests(avatarUserId: string): number;
   getAppSecret(key: string): string | null;
   setAppSecret(key: string, value: string): void;

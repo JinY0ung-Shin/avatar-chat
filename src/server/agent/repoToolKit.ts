@@ -17,10 +17,82 @@
 // every string that units.test.ts asserts stays at the call site unchanged.
 
 import { scrubGitError } from "../marketplace.js";
+import type { Store } from "../store.js";
+import type { UserGroupMembership } from "../types.js";
 import { decodeRepoFsError, text } from "./mcpTools.js";
 
 /** Shared owner-only refusal text (identical in both repo servers). */
 export const OWNER_ONLY = "This tool can only be used by the avatar owner.";
+
+/** Shared commit-tool refusal when no internal Git token is registered (identical in both repo servers). */
+export const NO_GIT_TOKEN = "To push, please first register an internal Git token (GIT_TOKEN) in settings.";
+
+/** Shared commit-tool message when the working tree has nothing to commit (identical in both repo servers). */
+export const NO_CHANGES = "There are no changes to commit.";
+
+/**
+ * The shared create_repo name validation both servers run: `name` is required and
+ * must match `/^[A-Za-z0-9._-]{1,100}$/`; `org` (when present) must match the same
+ * pattern. Returns the trimmed values on success, or the byte-identical refusal
+ * text (returned to the model verbatim) on failure. `units.test.ts` asserts the
+ * "letters/digits" wording, so the strings stay byte-for-byte here.
+ */
+export type RepoNameValidation =
+  | { ok: true; name: string; org: string }
+  | { ok: false; message: string };
+
+export function validateRepoCreateNames(rawName: string, rawOrg?: string): RepoNameValidation {
+  const name = rawName.trim();
+  if (!/^[A-Za-z0-9._-]{1,100}$/.test(name)) {
+    return { ok: false, message: "The repository name may only use letters/digits and the characters - _ ." };
+  }
+  const org = (rawOrg ?? "").trim();
+  if (org && !/^[A-Za-z0-9._-]{1,100}$/.test(org)) {
+    return { ok: false, message: "The organization name may only use letters/digits and the characters - _ ." };
+  }
+  return { ok: true, name, org };
+}
+
+/**
+ * The shared create_repo failure message (remote-create returned `ok:false`),
+ * byte-identical in both repo servers, including the no-Bash-fallback hint. Takes
+ * the normalized target host and the failed `CreateRepoResult`-shaped result.
+ */
+export function createRepoFailureMessage(
+  targetHost: string,
+  result: { status?: number; exitCode?: number; message: string },
+): string {
+  const status = result.status ? `, HTTP ${result.status}` : "";
+  const exitCode = result.exitCode ? `, exit ${result.exitCode}` : "";
+  return `Failed to create GitHub repository (host: ${targetHost}${status}${exitCode}): ${result.message}\nCheck whether the token (GIT_TOKEN) has repo-creation permission and whether a repository with the same name already exists. Do not work around this with Bash \`gh\`/git — the shell has no git credentials.`;
+}
+
+/** The shared create_repo outer-catch message (byte-identical in both repo servers). */
+export function createRepoCatchMessage(targetHost: string, error: unknown): string {
+  return `Error while creating GitHub repository (host: ${targetHost}): ${scrubGitError(error)}`;
+}
+
+/**
+ * Resolve a `group` argument (id or name, case-insensitive) among the groups the
+ * avatar's owner belongs to. Shared by `groupRepoTools.ts`/`groupBrainTools.ts`
+ * so a model-supplied group is always checked against the owner's OWN memberships
+ * (never a cross-tenant read of another team's repo). Returns null when blank or
+ * unmatched; the caller maps that to its own NO_SUCH_GROUP refusal.
+ */
+export function resolveOwnerGroup(
+  store: Store,
+  avatarUserId: string,
+  arg: string,
+): UserGroupMembership | null {
+  const a = arg.trim().toLowerCase();
+  if (!a) return null;
+  const groups = store.listUserGroups(avatarUserId);
+  return (
+    groups.find((g) => g.id.toLowerCase() === a) ??
+    groups.find((g) => g.name.toLowerCase() === a) ??
+    null
+  );
+}
 
 /** Render a `listTree` result the same way both servers do (dirs get a trailing slash). */
 export function formatTree(entries: Array<{ type: string; path: string }>): string {

@@ -3,11 +3,16 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 import logger from "./logger.js";
-import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName, scrubGitError } from "./marketplace.js";
+import { gitAuthArgs, marketplaceCloneUrl, pathExists, sanitizeName } from "./marketplace.js";
 import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
-import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
-import { git, currentBranch, originUrl, dirtyPaths } from "./repoGitCore.js";
+import {
+  git,
+  currentBranch,
+  originUrl,
+  alignBranch,
+  commitAndPushClone,
+} from "./repoGitCore.js";
 import type { AppConfig } from "./types.js";
 import type { Store } from "./store.js";
 
@@ -109,85 +114,14 @@ async function ensureGroupCloneLocked(
 
   const branch = ctx.branch || (await currentBranch(repoRoot));
   if (branch && !branch.startsWith("-")) {
-    await alignBranch(repoRoot, branch, { groupId: ctx.groupId, repo: ctx.repo });
-  }
-  return repoRoot;
-}
-
-/**
- * Move onto `branch`@origin without discarding unpushed commits (git-01): only
- * `checkout -B` (which would drop local commits) when HEAD is NOT ahead of
- * origin/<branch>; otherwise merge --ff-only and, if that can't fast-forward,
- * leave the local branch as-is with a warning. Mirrors knowledgeRepo.ts.
- */
-async function alignBranch(
-  repoRoot: string,
-  branch: string,
-  log: Record<string, unknown>,
-): Promise<void> {
-  const ahead = await aheadOfRemote(repoRoot, branch);
-  if (ahead === null) {
-    return; // origin/<branch> absent (fresh repo) — keep the clone's HEAD.
-  }
-  if (ahead === 0) {
-    try {
-      await git(repoRoot, ["checkout", "-B", branch, `origin/${branch}`]);
-    } catch {
-      /* stay put on an edge state */
-    }
-    return;
-  }
-  try {
-    await git(repoRoot, ["checkout", branch]);
-    await git(repoRoot, ["merge", "--ff-only", `origin/${branch}`]);
-  } catch (error) {
-    logger.warn(
-      { ...log, branch, ahead, error: scrubGitError(error) },
+    await alignBranch(
+      repoRoot,
+      branch,
+      { groupId: ctx.groupId, repo: ctx.repo },
       "group knowledge repo has unpushed commits that can't fast-forward; leaving local branch as-is",
     );
   }
-}
-
-/**
- * Count commits on local HEAD not yet on origin/<branch>. 0 = up to date/behind,
- * >0 = ahead, null = origin/<branch> doesn't exist. Mirrors knowledgeRepo.ts.
- */
-async function aheadOfRemote(repoRoot: string, branch: string): Promise<number | null> {
-  try {
-    await git(repoRoot, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
-  } catch {
-    return null;
-  }
-  try {
-    const { stdout } = await git(repoRoot, ["rev-list", `origin/${branch}..HEAD`, "--count"]);
-    const n = Number.parseInt(stdout.trim(), 10);
-    return Number.isFinite(n) ? n : 0;
-  } catch {
-    return 0;
-  }
-}
-
-/**
- * Restore every tracked `.mcp.json` to its committed state before push, undoing
- * the runtime `stripManagedMcpServers` edit so it never gets committed (mirrors
- * knowledgeRepo.ts `restoreTrackedMcpJson`). Best-effort.
- */
-async function restoreTrackedMcpJson(repoRoot: string): Promise<void> {
-  let tracked: string[];
-  try {
-    const { stdout } = await git(repoRoot, ["ls-files", "-z", "*.mcp.json"]);
-    tracked = stdout.split("\0").filter(Boolean);
-  } catch {
-    return;
-  }
-  if (tracked.length === 0) {
-    return;
-  }
-  try {
-    await git(repoRoot, ["checkout", "HEAD", "--", ...tracked]);
-  } catch {
-    /* best-effort */
-  }
+  return repoRoot;
 }
 
 /**
@@ -203,35 +137,19 @@ export async function groupCommitAndPush(
   const repoRoot = groupKnowledgeClonePath(ctx.groupId, ctx.config);
   // Serialize the add/commit/push against concurrent ensureGroupClone or other
   // commits on the shared group tree (git-02). Same key, never nested.
-  return withRepoLock(repoRoot, () => groupCommitAndPushLocked(ctx, repoRoot, message, identity));
-}
-
-async function groupCommitAndPushLocked(
-  ctx: GroupKnowledgeRepoContext,
-  repoRoot: string,
-  message: string,
-  identity: { name: string; email: string },
-): Promise<boolean> {
-  if (!(await pathExists(path.join(repoRoot, ".git")))) {
-    throw new Error("NOT_CLONED");
-  }
-  const { name, email } = safeIdentity(identity);
-  await git(repoRoot, ["config", "user.name", name]);
-  await git(repoRoot, ["config", "user.email", email]);
-  await restoreTrackedMcpJson(repoRoot);
-  await git(repoRoot, ["add", "-A"]);
-  if ((await dirtyPaths(repoRoot)).length === 0) {
-    return false;
-  }
-  const commitMsg = message.trim() || "Update group knowledge repo";
-  await git(repoRoot, ["commit", "-m", commitMsg]);
-
-  const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
-  const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
-  const branch = safePushBranch(ctx.branch || (await currentBranch(repoRoot)) || "HEAD");
-  await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
-  logger.info({ groupId: ctx.groupId, repo: ctx.repo, branch }, "group knowledge repo pushed");
-  return true;
+  return withRepoLock(repoRoot, () =>
+    commitAndPushClone(repoRoot, {
+      url: marketplaceCloneUrl(ctx.repo, ctx.config.githubHost),
+      config: ctx.config,
+      tokens: repoTokens(ctx),
+      branch: ctx.branch,
+      message,
+      defaultMessage: "Update group knowledge repo",
+      identity,
+      log: { groupId: ctx.groupId, repo: ctx.repo },
+      pushedMessage: "group knowledge repo pushed",
+    }),
+  );
 }
 
 /**

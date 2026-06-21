@@ -11,7 +11,13 @@
 // the inlined versions it replaces.
 
 import { execFile } from "node:child_process";
+import path from "node:path";
 import { promisify } from "node:util";
+import logger from "./logger.js";
+import { gitAuthArgs, pathExists, scrubGitError } from "./marketplace.js";
+import { tokenForGitUrl, type GitTokenSet } from "./gitCredentials.js";
+import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
+import type { AppConfig } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -73,4 +79,142 @@ export async function dirtyPaths(
     .split("\n")
     .map((line) => line.slice(3).trim())
     .filter(Boolean);
+}
+
+/**
+ * Count commits on local HEAD not yet on origin/<branch>. Returns 0 when the
+ * branch is up to date or behind, a positive count when ahead, and null when
+ * origin/<branch> doesn't exist (so callers can tell "fresh repo" apart from
+ * "in sync"). Shared by the knowledge / group-knowledge align paths.
+ */
+export async function aheadOfRemote(repoRoot: string, branch: string): Promise<number | null> {
+  try {
+    await git(repoRoot, ["rev-parse", "--verify", "--quiet", `origin/${branch}`]);
+  } catch {
+    return null;
+  }
+  try {
+    const { stdout } = await git(repoRoot, ["rev-list", `origin/${branch}..HEAD`, "--count"]);
+    const n = Number.parseInt(stdout.trim(), 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Move the working tree onto `branch`@origin without discarding unpushed
+ * commits. If local HEAD is ahead of origin/<branch>, a hard `checkout -B`
+ * would silently destroy those commits — so we only `checkout -B` when HEAD is
+ * NOT ahead; when it is, we merge --ff-only (a no-op if the remote didn't move,
+ * a clean catch-up otherwise) and, if that can't fast-forward (diverged), leave
+ * the branch as-is with a warning so the unpushed work survives (git-01). When
+ * the branch doesn't exist on the remote yet (fresh repo), stay on HEAD. The
+ * caller supplies `warnMessage` so each repo kind keeps its own log wording.
+ */
+export async function alignBranch(
+  repoRoot: string,
+  branch: string,
+  log: Record<string, unknown>,
+  warnMessage: string,
+): Promise<void> {
+  const ahead = await aheadOfRemote(repoRoot, branch);
+  if (ahead === null) {
+    // origin/<branch> doesn't exist yet (fresh repo) — keep the clone's HEAD.
+    return;
+  }
+  if (ahead === 0) {
+    // No unpushed work — safe to re-point the branch at the remote tip.
+    try {
+      await git(repoRoot, ["checkout", "-B", branch, `origin/${branch}`]);
+    } catch {
+      // Branch may not exist locally/remotely in some edge state — stay put.
+    }
+    return;
+  }
+  // HEAD is ahead of the remote: preserve the local commits. Make sure we're on
+  // the branch, then only fast-forward (never reset) to absorb new remote work.
+  try {
+    await git(repoRoot, ["checkout", branch]);
+    await git(repoRoot, ["merge", "--ff-only", `origin/${branch}`]);
+  } catch (error) {
+    logger.warn({ ...log, branch, ahead, error: scrubGitError(error) }, warnMessage);
+  }
+}
+
+/**
+ * Restore every tracked `.mcp.json` to its committed (HEAD) state, discarding
+ * the runtime `stripManagedMcpServers` edit so it never gets committed/pushed.
+ * Best-effort and tolerant: untracked `.mcp.json` files (genuinely new, added
+ * by the avatar) are left alone; if `ls-files` finds none it's a no-op.
+ */
+export async function restoreTrackedMcpJson(repoRoot: string): Promise<void> {
+  let tracked: string[];
+  try {
+    const { stdout } = await git(repoRoot, ["ls-files", "-z", "*.mcp.json"]);
+    tracked = stdout.split("\0").filter(Boolean);
+  } catch {
+    return;
+  }
+  if (tracked.length === 0) {
+    return;
+  }
+  // `--` so paths are never parsed as options. Ignore failures (e.g. a path
+  // that's tracked but unchanged) — this is purely defensive cleanup.
+  try {
+    await git(repoRoot, ["checkout", "HEAD", "--", ...tracked]);
+  } catch {
+    /* best-effort */
+  }
+}
+
+/**
+ * Stage all changes, commit with the given identity, and push to the remote
+ * branch — the shared body of the knowledge / group-knowledge commitAndPush
+ * paths. Returns false (no commit) when the tree is clean. Throws NOT_CLONED if
+ * the clone is missing, and on git failure (auth, conflicts) so the caller can
+ * surface the detail. The caller already holds the per-clone lock.
+ *
+ * PRESERVE: restoreTrackedMcpJson runs BEFORE `git add -A`, and auth is routed
+ * per-host via tokenForGitUrl — this is the security-sensitive auth/push path.
+ */
+export async function commitAndPushClone(
+  repoRoot: string,
+  options: {
+    url: string;
+    config: Pick<AppConfig, "githubHost">;
+    tokens: GitTokenSet;
+    branch: string | null;
+    message: string;
+    defaultMessage: string;
+    identity: { name: string; email: string };
+    log: Record<string, unknown>;
+    pushedMessage: string;
+  },
+): Promise<boolean> {
+  if (!(await pathExists(path.join(repoRoot, ".git")))) {
+    throw new Error("NOT_CLONED");
+  }
+  // Guard against identity values git would read as options (passed positionally
+  // after the config key). Fall back to a safe default rather than failing.
+  const { name, email } = safeIdentity(options.identity);
+  await git(repoRoot, ["config", "user.name", name]);
+  await git(repoRoot, ["config", "user.email", email]);
+  // Undo any in-place `.mcp.json` strip done at load time before staging, so the
+  // runtime-only edit never gets committed/pushed. MUST run before `git add -A`.
+  await restoreTrackedMcpJson(repoRoot);
+  await git(repoRoot, ["add", "-A"]);
+  if ((await dirtyPaths(repoRoot)).length === 0) {
+    return false;
+  }
+  // commitMsg is the value of `-m` (a discrete argv element), so it's never
+  // parsed as a flag even if it starts with `-`.
+  const commitMsg = options.message.trim() || options.defaultMessage;
+  await git(repoRoot, ["commit", "-m", commitMsg]);
+
+  const auth = gitAuthArgs(options.url, tokenForGitUrl(options.url, options.config, options.tokens));
+  const branch = safePushBranch(options.branch || (await currentBranch(repoRoot)) || "HEAD");
+  await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
+  logger.info({ ...options.log, branch }, options.pushedMessage);
+  return true;
 }

@@ -116,6 +116,8 @@ import {
   type SystemToolsContext,
 } from "../src/server/agent/systemTools.js";
 import { buildBrainTools, BRAIN_SERVER_NAME, BRAIN_TOOL_NAMES } from "../src/server/agent/brainTools.js";
+import { NO_CHANGES, NO_GIT_TOKEN } from "../src/server/agent/repoToolKit.js";
+import { normalizeWikiPath } from "../src/server/agent/brainSearch.js";
 import {
   buildGroupBrainTools,
   GROUP_BRAIN_SERVER_NAME,
@@ -2044,5 +2046,317 @@ describe("system conversation-read tools + brain self-state", () => {
     s.store.setKnowledgeRepo(s.owner.id, "/tmp/repo", "main");
     const on = await callTool(ownerTools(s), "describe_system", {});
     expect(on.content[0].text).toContain("Second brain (personal): active");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Refactor lock-in: shared agent-tools helpers (repoToolKit / brainSearch) that
+// BOTH the personal and group servers route through must keep byte-identical
+// wording and identical scoping behavior across the two servers.
+// ---------------------------------------------------------------------------
+
+describe("normalizeWikiPath (shared wiki-scope guard)", () => {
+  it("accepts wiki, wiki/<file>, and strips leading slashes", () => {
+    expect(normalizeWikiPath("wiki")).toEqual({ ok: true, norm: "wiki" });
+    expect(normalizeWikiPath("wiki/foo.md")).toEqual({ ok: true, norm: "wiki/foo.md" });
+    // Leading slashes stripped; result still normalizes under wiki/.
+    expect(normalizeWikiPath("/wiki/foo")).toEqual({ ok: true, norm: "wiki/foo" });
+    expect(normalizeWikiPath("///wiki/concepts/deploy.md")).toEqual({
+      ok: true,
+      norm: "wiki/concepts/deploy.md",
+    });
+  });
+
+  it("rejects non-wiki paths and vault escapes", () => {
+    expect(normalizeWikiPath("raw/x")).toEqual({ ok: false });
+    expect(normalizeWikiPath("../etc")).toEqual({ ok: false });
+    expect(normalizeWikiPath("notes")).toEqual({ ok: false });
+    // `wiki/../CLAUDE.md` normalizes to `CLAUDE.md`, escaping the vault → rejected.
+    expect(normalizeWikiPath("wiki/../CLAUDE.md")).toEqual({ ok: false });
+  });
+
+  it("the personal get_note refusal points at mcp__repo__read_file", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "wikiguard-personal"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    store.setKnowledgeRepo(owner.id, "/tmp/whatever", "main");
+    const tools = buildBrainTools(store, {
+      avatarUserId: owner.id,
+      viewerIsOwner: true,
+      elevated: true,
+      config,
+    });
+    const res = await callTool(tools, "get_note", { path: "raw/secret.md" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("mcp__repo__read_file");
+    expect(res.content[0].text).not.toContain("mcp__group_repo__read_file");
+  });
+
+  it("the group get_note refusal points at mcp__group_repo__read_file", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "wikiguard-group"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const group = store.createGroup({ name: "Team", createdBy: null });
+    store.addGroupMember(group.id, owner.id, "member");
+    store.setGroupKnowledgeRepo(group.id, "/tmp/g-repo", "main");
+    const tools = buildGroupBrainTools(store, { avatarUserId: owner.id, viewerIsOwner: true, config });
+    const res = await callTool(tools, "get_note", { group: "Team", path: "raw/secret.md" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("mcp__group_repo__read_file");
+  });
+});
+
+describe("repoToolKit commit messages shared across personal + group servers", () => {
+  // A connected repo WITHOUT a git token → commit must hit the `!c.token` guard
+  // and return the byte-identical NO_GIT_TOKEN constant in BOTH servers.
+  function makeRemoteWithMain(dir: string) {
+    const remote = makeBareRemote(path.join(tempDir, dir, "remote.git"));
+    const seed = path.join(tempDir, dir, "seed");
+    gitInit(seed);
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("branch", "-M", "main");
+    g("remote", "add", "origin", remote);
+    g("push", "-q", "origin", "main");
+    return remote;
+  }
+
+  it("personal commit with no git token returns NO_GIT_TOKEN verbatim", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "notoken-personal"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const remote = makeRemoteWithMain("notoken-personal");
+    store.setKnowledgeRepo(owner.id, remote, "main"); // connected, but NO git token set
+    const tools = buildRepoTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config,
+    });
+    const res = await callTool(tools, "commit", { message: "m" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toBe(NO_GIT_TOKEN);
+    expect(NO_GIT_TOKEN).toBe("To push, please first register an internal Git token (GIT_TOKEN) in settings.");
+  });
+
+  it("group commit with no git token returns NO_GIT_TOKEN verbatim (same wording)", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "notoken-group"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const group = store.createGroup({ name: "Team", createdBy: null });
+    store.addGroupMember(group.id, owner.id, "admin"); // admin so it passes the role gate to the token check
+    const remote = makeRemoteWithMain("notoken-group");
+    store.setGroupKnowledgeRepo(group.id, remote, "main"); // connected, but owner has NO git token
+    const tools = buildGroupRepoTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config,
+    });
+    const res = await callTool(tools, "commit", { group: "Team", message: "m" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toBe(NO_GIT_TOKEN);
+  });
+
+  it("personal commit with no changes returns NO_CHANGES verbatim", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "nochanges-personal"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const remote = makeRemoteWithMain("nochanges-personal");
+    store.setKnowledgeRepo(owner.id, remote, "main");
+    store.setGitToken(owner.id, "tok"); // present so commit reaches the no-changes branch
+    const tools = buildRepoTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config,
+    });
+    // list_files clones the working tree without dirtying it; commit then finds
+    // nothing to commit (commitAndPush operates on the already-synced clone).
+    await callTool(tools, "list_files", {});
+    const res = await callTool(tools, "commit", { message: "m" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toBe(NO_CHANGES);
+    expect(NO_CHANGES).toBe("There are no changes to commit.");
+  });
+
+  it("group commit with no changes returns NO_CHANGES verbatim (same wording)", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "nochanges-group"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    store.setGitToken(owner.id, "tok");
+    const group = store.createGroup({ name: "Team", createdBy: null });
+    store.addGroupMember(group.id, owner.id, "admin");
+    const remote = makeRemoteWithMain("nochanges-group");
+    store.setGroupKnowledgeRepo(group.id, remote, "main");
+    const tools = buildGroupRepoTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config,
+    });
+    await callTool(tools, "list_files", { group: "Team" });
+    const res = await callTool(tools, "commit", { group: "Team", message: "m" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toBe(NO_CHANGES);
+  });
+});
+
+describe("create_repo shared validation/token guards (personal vs group wording)", () => {
+  it("personal create_repo no-token message includes the repo-creation parenthetical", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "create-notoken-personal"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const tools = buildRepoTools(
+      store,
+      {
+        avatarUserId: owner.id,
+        owner: { id: owner.id, username: "owner", displayName: "Owner" },
+        viewerIsOwner: true,
+        config,
+      },
+      { allowCreate: true },
+    );
+    const res = await callTool(tools, "create_repo", { name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("internal Git token (GIT_TOKEN)");
+    // Personal keeps the parenthetical about repo-creation permission.
+    expect(res.content[0].text).toContain("(A token with repo-creation permission is required.)");
+  });
+
+  it("group create_repo no-token message OMITS the repo-creation parenthetical", async () => {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, "create-notoken-group"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const group = store.createGroup({ name: "Team", createdBy: null });
+    store.addGroupMember(group.id, owner.id, "admin");
+    const tools = buildGroupRepoTools(store, {
+      avatarUserId: owner.id,
+      owner: { id: owner.id, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config,
+    });
+    const res = await callTool(tools, "create_repo", { group: "Team", name: "x" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("internal Git token (GIT_TOKEN)");
+    // Group does NOT carry the personal parenthetical — the difference is preserved.
+    expect(res.content[0].text).not.toContain("repo-creation permission is required");
+  });
+
+  it("invalid repo name returns the byte-identical letters/digits refusal on BOTH servers", async () => {
+    const expected = "The repository name may only use letters/digits and the characters - _ .";
+
+    const ps = createServices({
+      dataDir: path.join(tempDir, "create-badname-personal"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const pOwner = ps.store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    ps.store.setGitToken(pOwner.id, "tok"); // past the token guard so we hit name validation
+    const personalTools = buildRepoTools(
+      ps.store,
+      { avatarUserId: pOwner.id, owner: { id: pOwner.id, username: "owner", displayName: "Owner" }, viewerIsOwner: true, config: ps.config },
+      { allowCreate: true },
+    );
+    const personal = await callTool(personalTools, "create_repo", { name: "bad name!" });
+    expect(personal.isError).toBe(true);
+    expect(personal.content[0].text).toBe(expected);
+
+    const gs = createServices({
+      dataDir: path.join(tempDir, "create-badname-group"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const gOwner = gs.store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    gs.store.setGitToken(gOwner.id, "tok");
+    const group = gs.store.createGroup({ name: "Team", createdBy: null });
+    gs.store.addGroupMember(group.id, gOwner.id, "admin");
+    const groupTools = buildGroupRepoTools(gs.store, {
+      avatarUserId: gOwner.id,
+      owner: { id: gOwner.id, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config: gs.config,
+    });
+    const grp = await callTool(groupTools, "create_repo", { group: "Team", name: "bad name!" });
+    expect(grp.isError).toBe(true);
+    expect(grp.content[0].text).toBe(expected);
+  });
+});
+
+describe("resolveOwnerGroup scoping via a group tool", () => {
+  function setup(dir: string) {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    return { store, config, owner };
+  }
+  const groupBrain = (s: ReturnType<typeof setup>) =>
+    buildGroupBrainTools(s.store, { avatarUserId: s.owner.id, viewerIsOwner: true, config: s.config });
+
+  it("resolves an owner group by ID and by case-insensitive name", async () => {
+    const s = setup("resolve-ok");
+    const g = s.store.createGroup({ name: "Platform Team", createdBy: null });
+    s.store.addGroupMember(g.id, s.owner.id, "member");
+    s.store.setGroupKnowledgeRepo(g.id, "/tmp/platform-repo", "main");
+
+    // Resolve by exact ID: the group resolves, so we pass the resolve gate and
+    // proceed to the clone (a /tmp path → load failure, NOT a NO_SUCH_GROUP).
+    const byId = await callTool(groupBrain(s), "search", { group: g.id, query: "q" });
+    expect(byId.content[0].text).not.toContain("Could not find a group");
+
+    // Resolve by name, case-insensitively.
+    const byName = await callTool(groupBrain(s), "search", { group: "platform team", query: "q" });
+    expect(byName.content[0].text).not.toContain("Could not find a group");
+
+    const byNameUpper = await callTool(groupBrain(s), "search", { group: "PLATFORM TEAM", query: "q" });
+    expect(byNameUpper.content[0].text).not.toContain("Could not find a group");
+  });
+
+  it("returns NO_SUCH_GROUP for an unknown group and for a group the owner is not in", async () => {
+    const s = setup("resolve-miss");
+    // A group the owner DOES belong to, plus one they do NOT.
+    const mine = s.store.createGroup({ name: "Mine", createdBy: null });
+    s.store.addGroupMember(mine.id, s.owner.id, "member");
+    const foreign = s.store.createGroup({ name: "Foreign", createdBy: null });
+    s.store.setGroupKnowledgeRepo(foreign.id, "/tmp/foreign-repo", "main");
+
+    const unknown = await callTool(groupBrain(s), "search", { group: "Nope", query: "q" });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toContain("Could not find a group");
+
+    // The foreign group is unreachable BY NAME and BY ID — scoping is the owner's
+    // own memberships only, never a cross-tenant read of another team's repo.
+    const foreignByName = await callTool(groupBrain(s), "search", { group: "Foreign", query: "q" });
+    expect(foreignByName.isError).toBe(true);
+    expect(foreignByName.content[0].text).toContain("Could not find a group");
+    const foreignById = await callTool(groupBrain(s), "search", { group: foreign.id, query: "q" });
+    expect(foreignById.isError).toBe(true);
+    expect(foreignById.content[0].text).toContain("Could not find a group");
   });
 });

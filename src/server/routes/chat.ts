@@ -879,9 +879,8 @@ export function createChatRouter({
       // A regenerate also persists its fresh session id, so without this every later
       // turn would resume a context-less session.
       // (chat-01 / lifecycle-02)
-      const conversationHistory = conversationHistoryForPrompt(
-        store.listMessages(req.user!.id, conversationId),
-      );
+      const priorMessages = store.listMessages(req.user!.id, conversationId);
+      const conversationHistory = conversationHistoryForPrompt(priorMessages);
       // On regenerate the trailing history entry is the user turn being re-run,
       // which is ALSO re-sent as `message` — drop it so it isn't duplicated.
       if (
@@ -944,7 +943,6 @@ export function createChatRouter({
           attachments: saved.attachments,
         });
       } else {
-        const priorMessages = store.listMessages(req.user!.id, conversationId);
         const lastUser = [...priorMessages]
           .reverse()
           .find((m) => m.role === "user");

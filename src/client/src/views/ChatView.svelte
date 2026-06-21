@@ -20,7 +20,7 @@
     stopPane,
   } from "../lib/chat";
   import { api } from "../lib/api";
-  import { autosize, clickOutside, copyText, enhanceMarkdown } from "../lib/dom";
+  import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
@@ -248,45 +248,17 @@
   const IMAGE_MAX_DIM = 1568;
   const ACCEPTED_IMAGE_TYPES: ImageMediaType[] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
-  function readFileAsDataUrl(file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-  }
-
   // Downscale to IMAGE_MAX_DIM via canvas (re-encoding to the same family). GIFs
-  // are kept verbatim so animation survives (still size-capped server-side).
-  // The Image is loaded from a `data:` URL (FileReader), NOT `URL.createObjectURL`:
-  // a `blob:` URL is blocked by the production CSP (`img-src 'self' data:`), which
-  // would make the load fail and silently drop every attachment.
+  // are kept verbatim so animation survives (still size-capped server-side). The
+  // decode/downscale (a CSP-sensitive `data:` URL load) lives in downscaleImageToDataUrl.
   async function resizeImageForChat(file: File): Promise<{ dataUrl: string; mediaType: ImageMediaType }> {
     const type: ImageMediaType = (ACCEPTED_IMAGE_TYPES as string[]).includes(file.type) ? (file.type as ImageMediaType) : "image/png";
-    const sourceDataUrl = await readFileAsDataUrl(file);
     if (type === "image/gif") {
+      const sourceDataUrl = await readFileAsDataUrl(file);
       return { dataUrl: sourceDataUrl, mediaType: "image/gif" };
     }
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => {
-        const scale = Math.min(1, IMAGE_MAX_DIM / Math.max(img.width, img.height));
-        const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, Math.round(img.width * scale));
-        canvas.height = Math.max(1, Math.round(img.height * scale));
-        const ctx = canvas.getContext("2d");
-        if (!ctx) {
-          reject(new Error("no 2d context"));
-          return;
-        }
-        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-        const out = type === "image/jpeg" ? "image/jpeg" : type === "image/webp" ? "image/webp" : "image/png";
-        resolve(canvas.toDataURL(out, 0.9));
-      };
-      img.onerror = () => reject(new Error("image load failed"));
-      img.src = sourceDataUrl;
-    });
+    const out = type === "image/jpeg" ? "image/jpeg" : type === "image/webp" ? "image/webp" : "image/png";
+    const dataUrl = await downscaleImageToDataUrl(file, IMAGE_MAX_DIM, { outputType: out });
     // The browser may emit PNG if it can't encode the requested type — trust the prefix.
     const mediaType = (/^data:(image\/[a-z+]+);/.exec(dataUrl)?.[1] as ImageMediaType) || "image/png";
     return { dataUrl, mediaType };
@@ -694,15 +666,20 @@
     if (message.response?.summary === "오류" || message.response?.summary === "중지됨") return message.response.summary;
     return null;
   }
-  function activitySummary(item: ChatPane): string {
-    const toolCount = item.liveTools.filter((t) => t.kind === "tool").length;
-    const taskCount = item.liveTasks.length;
-    const agentCount = item.liveAgents.filter((a) => !a.isMain).length;
+  // "도구 N개 · 태스크 N개 · 에이전트 N개 <suffix>" from the three counts, or
+  // emptyLabel when all are zero. Shared by the live + completed activity labels.
+  function activityCountLabel(toolCount: number, taskCount: number, agentCount: number, suffix: string, emptyLabel: string): string {
     const parts: string[] = [];
     if (toolCount) parts.push(`도구 ${toolCount}개`);
     if (taskCount) parts.push(`태스크 ${taskCount}개`);
     if (agentCount) parts.push(`에이전트 ${agentCount}개`);
-    return parts.length ? `${parts.join(" · ")} 진행 중` : "작업 중…";
+    return parts.length ? `${parts.join(" · ")} ${suffix}` : emptyLabel;
+  }
+  function activitySummary(item: ChatPane): string {
+    const toolCount = item.liveTools.filter((t) => t.kind === "tool").length;
+    const taskCount = item.liveTasks.length;
+    const agentCount = item.liveAgents.filter((a) => !a.isMain).length;
+    return activityCountLabel(toolCount, taskCount, agentCount, "진행 중", "작업 중…");
   }
 
   // Activity-tree snapshot kept on a COMPLETED assistant message, so the tool/agent
@@ -715,11 +692,7 @@
     const toolCount = activity.tools.filter((t) => t.kind === "tool").length;
     const taskCount = (activity.tasks?.length || 0) + activity.tools.filter((t) => t.kind === "task").length;
     const agentCount = activity.agents.filter((a) => !a.isMain).length;
-    const parts: string[] = [];
-    if (toolCount) parts.push(`도구 ${toolCount}개`);
-    if (taskCount) parts.push(`태스크 ${taskCount}개`);
-    if (agentCount) parts.push(`에이전트 ${agentCount}개`);
-    return parts.length ? `${parts.join(" · ")} 사용함` : "작업 내역";
+    return activityCountLabel(toolCount, taskCount, agentCount, "사용함", "작업 내역");
   }
 </script>
 
