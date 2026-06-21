@@ -958,6 +958,9 @@ export function createChatRouter({
       // Accumulate the main-agent text as it streams, so the cancel/error paths can
       // persist the partial the user already watched (not an empty "(중지됨)" stub).
       let streamedText = "";
+      // Accumulate the main-agent reasoning (extended-thinking) text as it streams,
+      // so it can be persisted on the response (success) and the cancel/error paths.
+      let streamedThinking = "";
       // Visual-canvas artifacts (#50) now persist to the dedicated canvas tables as
       // they are shown (see the onCanvas handler), with version history — they no
       // longer ride the assistant message's response JSON.
@@ -1099,6 +1102,16 @@ export function createChatRouter({
             onDelta: (text) => {
               streamedText += text;
               emitRunEvent(runId, "delta", { text });
+            },
+            onThinking: (text) => {
+              streamedThinking += text;
+              emitRunEvent(runId, "thinking", { text });
+            },
+            // Empty-turn retry: drop the discarded attempt's reasoning so the kept
+            // turn's thinking isn't shown/persisted glued onto the throwaway one.
+            onThinkingReset: () => {
+              streamedThinking = "";
+              emitRunEvent(runId, "thinking_reset", {});
             },
             onStatus: (label) => {
               emitRunEvent(runId, "status", { label });
@@ -1266,6 +1279,11 @@ export function createChatRouter({
         if (latestPlan) {
           response.plan = latestPlan;
         }
+        // Carry the turn's reasoning so the collapsible "생각 과정" view rebuilds
+        // on reload (streaming path only — headless runs emit no onThinking).
+        if (streamedThinking) {
+          response.thinking = streamedThinking;
+        }
 
         // Remember this run's SDK session so the next turn resumes its context.
         if (runSessionId) {
@@ -1314,6 +1332,7 @@ export function createChatRouter({
             summary: "중지됨",
             text: streamedText,
             ...(latestPlan ? { plan: latestPlan } : {}),
+            ...(streamedThinking ? { thinking: streamedThinking } : {}),
           };
           // Skip the insert if the conversation was deleted mid-run (FK would reject).
           const stopped =
@@ -1366,22 +1385,24 @@ export function createChatRouter({
             ? `${streamedText}\n\n${userFacing}`
             : userFacing;
           // Any canvas shown before the error is already persisted to the canvas
-          // tables by the onCanvas handler. If a plan was submitted, carry it so the
-          // plan card survives reload; text=content keeps the error bubble identical,
-          // and a response is attached only when there's a plan (plain errors keep
-          // their existing null-response shape).
+          // tables by the onCanvas handler. If a plan and/or reasoning was produced,
+          // carry it so the plan/thinking cards survive reload; text=content keeps the
+          // error bubble identical, and a response is attached only when there's
+          // something to carry (plain errors keep their existing null-response shape).
           store.addMessage(conversationId, {
             role: "assistant",
             content,
-            response: latestPlan
-              ? {
-                  kind: "text",
-                  runtime: config.agentRuntime,
-                  summary: "오류",
-                  text: content,
-                  plan: latestPlan,
-                }
-              : undefined,
+            response:
+              latestPlan || streamedThinking
+                ? {
+                    kind: "text",
+                    runtime: config.agentRuntime,
+                    summary: "오류",
+                    text: content,
+                    ...(latestPlan ? { plan: latestPlan } : {}),
+                    ...(streamedThinking ? { thinking: streamedThinking } : {}),
+                  }
+                : undefined,
           });
         }
         emitRunEvent(runId, "error", { error: userFacing });

@@ -746,6 +746,12 @@
                     </div>
                   </details>
                 {/if}
+                {#if message.response?.thinking}
+                  <details class="thinking-card">
+                    <summary class="thinking-card-head"><span class="thinking-card-badge">생각 과정</span></summary>
+                    <div class="md thinking-card-body" use:enhanceMarkdown={message.response.thinking}>{@html renderMarkdown(message.response.thinking)}</div>
+                  </details>
+                {/if}
                 {#if message.response?.plan}
                   <details class="plan-card" open>
                     <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
@@ -790,6 +796,12 @@
                   <div class="agent-activity">
                     <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
                   </div>
+                </details>
+              {/if}
+              {#if item.liveThinking}
+                <details class="thinking-card" open>
+                  <summary class="thinking-card-head"><span class="thinking-card-badge">생각 과정</span></summary>
+                  <div class="md thinking-card-body" use:enhanceMarkdown={item.liveThinking}>{@html renderMarkdown(item.liveThinking)}</div>
                 </details>
               {/if}
               {#if item.livePlan}
@@ -1239,5 +1251,64 @@
     border-top-color: var(--accent);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
+  }
+  /* Reasoning (extended-thinking) view. Deliberately muted and secondary to the
+     answer — collapsed by default on completed bubbles, expanded live so the user
+     sees the chain of thought stream (esp. while the answer text is still empty). */
+  .thinking-card {
+    min-width: 0;
+    max-width: 100%;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--muted);
+    border-radius: var(--r-md);
+    background: var(--surface-2);
+    margin: var(--s-2) 0;
+    overflow: hidden;
+  }
+  .thinking-card-head {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    padding: var(--s-2) var(--s-3);
+    cursor: pointer;
+    list-style: none;
+    user-select: none;
+    font-size: 0.85rem;
+    min-width: 0;
+  }
+  .thinking-card-head::-webkit-details-marker {
+    display: none;
+  }
+  /* Chevron affordance (right when closed, down when open) — the badge alone
+     doesn't read as expandable on a collapsed card. */
+  .thinking-card-head::after {
+    content: "";
+    margin-left: auto;
+    flex: none;
+    width: 6px;
+    height: 6px;
+    border-right: 2px solid var(--muted);
+    border-bottom: 2px solid var(--muted);
+    transform: rotate(-45deg);
+    transition: transform 0.15s ease;
+  }
+  .thinking-card[open] .thinking-card-head::after {
+    transform: rotate(45deg);
+  }
+  .thinking-card-badge {
+    font-size: 0.7rem;
+    font-weight: 700;
+    padding: 1px 8px;
+    border-radius: 999px;
+    background: var(--line);
+    color: var(--muted);
+    letter-spacing: 0.02em;
+  }
+  .thinking-card-body {
+    padding: 0 var(--s-3) var(--s-2);
+    min-width: 0;
+    max-width: 100%;
+    color: var(--muted);
+    font-size: 0.92em;
   }
 </style>

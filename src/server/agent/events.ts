@@ -150,6 +150,16 @@ export interface PlanEvent {
 export interface AgentEvents {
   /** Incremental assistant text to APPEND to the live bubble (main agent only). */
   onDelta?: (text: string) => void;
+  /**
+   * Incremental THINKING/reasoning text (main agent only). Surfaced in a
+   * separate collapsible reasoning view — NEVER appended to the answer bubble.
+   */
+  onThinking?: (text: string) => void;
+  /**
+   * Discard the reasoning streamed so far this run (the empty-turn retry re-runs
+   * the model, so the failed attempt's thinking must not glue onto the kept one).
+   */
+  onThinkingReset?: () => void;
   /** Human-readable Korean activity label. */
   onStatus?: (label: string) => void;
   /** The model the SDK actually initialized with (from the `init` system event). */

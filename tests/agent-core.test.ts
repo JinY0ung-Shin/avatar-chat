@@ -1292,6 +1292,8 @@ describe("sdk message handlers", () => {
   function events() {
     return {
       onDelta: vi.fn(),
+      onThinking: vi.fn(),
+      onThinkingReset: vi.fn(),
       onStatus: vi.fn(),
       onModel: vi.fn(),
       onSessionId: vi.fn(),
@@ -1838,6 +1840,38 @@ describe("sdk message handlers", () => {
         sink,
       ),
     ).toBe("");
+
+    // Main-agent thinking goes to onThinking ONLY and is never returned (so it
+    // can't leak into the answer bubble's delta accumulator).
+    expect(
+      handleStreamEvent(
+        {
+          type: "stream_event",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "thinking_delta", thinking: "pondering" },
+          },
+        },
+        sink,
+      ),
+    ).toBe("");
+    expect(sink.onThinking).toHaveBeenCalledWith("pondering");
+    // Subagent thinking is dropped entirely (not main → no onThinking).
+    sink.onThinking.mockClear();
+    expect(
+      handleStreamEvent(
+        {
+          type: "stream_event",
+          parent_tool_use_id: "agent-1",
+          event: {
+            type: "content_block_delta",
+            delta: { type: "thinking_delta", thinking: "subagent" },
+          },
+        },
+        sink,
+      ),
+    ).toBe("");
+    expect(sink.onThinking).not.toHaveBeenCalled();
 
     expect(
       extractMainAssistantText({

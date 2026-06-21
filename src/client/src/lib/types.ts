@@ -75,6 +75,8 @@ export interface ChatPane {
   liveText: string;
   /** Set when tool/agent activity interrupts the text stream; the next delta inserts a paragraph break so resumed text doesn't run onto the previous line. */
   liveTextBreakPending?: boolean;
+  /** The model's reasoning (extended-thinking) text streamed this turn; shown in a collapsible "생각 과정" view until the turn finishes and the persisted `response.thinking` takes over. */
+  liveThinking?: string;
   /** Plan submitted via ExitPlanMode this turn (plan mode); shown live as a plan card until the turn finishes and the persisted `response.plan` takes over. */
   livePlan?: string;
   /** True between EnterPlanMode and ExitPlanMode: the avatar is composing a plan in the background. Drives a "writing plan…" placeholder card so the turn doesn't look stalled. Cleared once `livePlan` arrives. */

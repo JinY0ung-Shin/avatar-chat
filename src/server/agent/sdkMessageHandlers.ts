@@ -578,15 +578,20 @@ export function handleStreamEvent(message: Record<string, unknown>, events: Agen
     return "";
   }
   const isMain = !asString(message.parent_tool_use_id);
-  if (
-    event.type === "content_block_delta" &&
-    isRecord(event.delta) &&
-    event.delta.type === "text_delta"
-  ) {
-    const text = asString(event.delta.text);
-    if (text && isMain) {
-      events.onDelta?.(text);
-      return text;
+  if (event.type === "content_block_delta" && isRecord(event.delta)) {
+    if (event.delta.type === "text_delta") {
+      const text = asString(event.delta.text);
+      if (text && isMain) {
+        events.onDelta?.(text);
+        return text;
+      }
+    } else if (event.delta.type === "thinking_delta") {
+      // Reasoning stream: forward to the dedicated thinking view only. It is NOT
+      // returned (so the caller never appends it to the answer bubble's deltas).
+      const thinking = asString(event.delta.thinking);
+      if (thinking && isMain) {
+        events.onThinking?.(thinking);
+      }
     }
   }
   return "";

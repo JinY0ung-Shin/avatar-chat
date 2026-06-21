@@ -114,6 +114,7 @@ function makePane(
     streaming: false,
     liveText: "",
     liveTextBreakPending: false,
+    liveThinking: "",
     livePlan: "",
     planPending: false,
     liveStatus: "",
@@ -666,6 +667,23 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         });
       }
       return;
+    case "thinking":
+      // Reasoning stream — its own collapsible view, never the answer bubble.
+      if (typeof data?.text === "string") {
+        const text = data.text;
+        updatePane(paneId, (pane) => {
+          pane.liveThinking = (pane.liveThinking || "") + text;
+        });
+      }
+      return;
+    case "thinking_reset":
+      // Empty-turn retry discarded the prior attempt: drop its reasoning so only
+      // the kept turn's thinking shows. On reconnect this frame replays in order
+      // between the two thinking bursts, so the end state is the kept turn's only.
+      updatePane(paneId, (pane) => {
+        pane.liveThinking = "";
+      });
+      return;
     case "open":
       updatePane(paneId, (pane) => {
         if (data?.conversationId) pane.conversationId = data.conversationId;
@@ -977,6 +995,7 @@ function setStatus(paneId: string, label: string, sticky: boolean): void {
 function resetLive(pane: ChatPane): void {
   pane.liveText = "";
   pane.liveTextBreakPending = false;
+  pane.liveThinking = "";
   pane.livePlan = "";
   pane.planPending = false;
   pane.liveStatus = "";
@@ -1028,6 +1047,16 @@ function attachPlan(
   if (response && plan && !response.plan) response.plan = plan;
 }
 
+// Same as attachPlan for the reasoning view: the server sets `response.thinking`
+// on persisted responses, but a client-built response (stop/error, or a fallback
+// done without `response`) wouldn't carry it — graft the live thinking on then.
+function attachThinking(
+  response: AgentResponse | null,
+  thinking: string | undefined,
+): void {
+  if (response && thinking && !response.thinking) response.thinking = thinking;
+}
+
 function finalizeDone(paneId: string, data: any): void {
   // A persisted server message id + its activity → persist the
   // snapshot so the completed tool/agent tree survives reload.
@@ -1039,6 +1068,7 @@ function finalizeDone(paneId: string, data: any): void {
     if (message?.role === "assistant") {
       attachActivity(message.response, activity);
       attachPlan(message.response, pane.livePlan);
+      attachThinking(message.response, pane.liveThinking);
       pane.messages.push(message);
       pane.usage = message.response?.usage ?? pane.usage;
       if (message.id && activity) {
@@ -1049,6 +1079,7 @@ function finalizeDone(paneId: string, data: any): void {
       const response = data?.response as AgentResponse | undefined;
       attachActivity(response ?? null, activity);
       attachPlan(response ?? null, pane.livePlan);
+      attachThinking(response ?? null, pane.liveThinking);
       pane.messages.push({
         id: newId(),
         conversationId: pane.conversationId,
@@ -1107,6 +1138,7 @@ function pushTerminalMessage(
   };
   attachActivity(response, snapshotActivity(pane));
   attachPlan(response, pane.livePlan);
+  attachThinking(response, pane.liveThinking);
   pane.messages.push({
     id: newId(),
     conversationId: pane.conversationId,

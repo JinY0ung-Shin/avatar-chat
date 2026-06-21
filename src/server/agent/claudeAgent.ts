@@ -219,6 +219,13 @@ export async function* buildImageQueryPrompt(
 // retrying on a different model (overload/rate-limit/5xx/timeout).
 const RETRYABLE_MODEL_STATUS = new Set([408, 429, 500, 502, 503, 504, 529]);
 
+// Appended to the prompt on the one-shot empty-turn retry (see emptyTurnRetryTried).
+// Agent-facing → English. Steers the model to emit a visible text answer after a
+// turn that produced only an (invisible) thinking block.
+const EMPTY_TURN_RETRY_NUDGE =
+  "[note] Your previous turn ended with internal reasoning only and produced no " +
+  "visible reply. Answer the user's message now as plain text — do not stop after thinking.";
+
 /**
  * Whether an SDK/query failure looks like a transient MODEL or SERVER-side
  * problem (overloaded, rate-limited, 5xx, network) — as opposed to a genuine
@@ -821,6 +828,17 @@ export async function runClaudeAgent(
   // a live chat — nothing the viewer saw gets discarded.
   let resumeFallbackTried = false;
 
+  // One-shot guard for the empty-turn self-heal below: occasionally the model
+  // ends a turn with ONLY a thinking block (stopReason end_turn, no `text`
+  // block, no tool call) and the SDK reports a `success` result with an empty
+  // string, so the bubble would otherwise show the bare "응답이 비어 있습니다"
+  // fallback. We re-run the SAME model once with a nudge to actually emit a text
+  // answer. No ANSWER text streamed (producedText is false), so nothing the
+  // viewer reads as the reply is discarded — but the failed attempt's reasoning
+  // DID stream to the thinking view, so the retry fires onThinkingReset to drop
+  // it (otherwise the kept turn's reasoning would render glued to the throwaway).
+  let emptyTurnRetryTried = false;
+
   // Run the SDK query, walking the model fallback chain (single-element unless a
   // routine opted in). A retry re-runs from scratch on a fresh attempt, so it is
   // only safe for headless routines (no live stream consuming partial output);
@@ -922,6 +940,42 @@ export async function runClaudeAgent(
       }
       // Attempt finished (success or an in-band error result, e.g. max_turns) —
       // those are not transient model-server failures, so don't fall back.
+      //
+      // Empty-turn self-heal: a `success` result that yielded NO text anywhere
+      // (no streamed/assistant text, no result string) and carried NO error
+      // subtype means the model ended on a thinking-only turn. Re-run the SAME
+      // model once with a nudge to emit a visible answer; mirrors the resume
+      // self-heal (re-run, don't consume a fallback step). Skip if aborted or
+      // already retried — then fall through to the empty-text fallback below.
+      const producedText = Boolean(
+        assistantChunks.join("").trim() ||
+          deltaChunks.join("").trim() ||
+          resultText.trim(),
+      );
+      if (
+        !producedText &&
+        !resultErrorSubtype &&
+        !emptyTurnRetryTried &&
+        !abortController?.signal.aborted
+      ) {
+        emptyTurnRetryTried = true;
+        promptText = `${promptText}\n\n${EMPTY_TURN_RETRY_NUDGE}`;
+        agentLogger.warn(
+          {
+            avatarId: request.avatar.id,
+            conversationId: request.conversationId,
+            model,
+          },
+          "empty turn (thinking-only); retrying once with a text-answer nudge",
+        );
+        // Drop the throwaway attempt's streamed reasoning so the kept turn's
+        // thinking doesn't render concatenated onto it (the chat-route/client
+        // thinking accumulators live outside this loop and never reset on retry).
+        events?.onThinkingReset?.();
+        events?.onStatus?.("응답을 다시 생성하는 중…");
+        attempt -= 1; // re-run the SAME model (don't consume a fallback step)
+        continue;
+      }
       break;
     } catch (error) {
       // Self-heal a stale/missing resume target: re-run this same attempt with

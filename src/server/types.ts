@@ -595,6 +595,12 @@ export interface AgentResponse {
    * automatically, so there is no accept/reject state to persist.
    */
   plan?: string;
+  /**
+   * The model's reasoning (extended-thinking) text for this turn, kept on the
+   * assistant message so a collapsible "생각 과정" view rebuilds on reload.
+   * Only captured on the streaming chat path (no viewer → not persisted).
+   */
+  thinking?: string;
   /** Activity-tree snapshot so the completed bubble keeps showing tool/agent runs. */
   activity?: AgentActivity;
   raw?: unknown;
