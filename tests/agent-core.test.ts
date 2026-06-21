@@ -1465,7 +1465,10 @@ describe("sdk message handlers", () => {
     expect(sink.onToolStart).not.toHaveBeenCalled();
     expect(sink.onTaskStart).not.toHaveBeenCalled();
     expect(sink.onStatus).toHaveBeenCalledWith("계획 모드로 전환 중…");
-    expect(sink.onStatus).toHaveBeenCalledWith("계획을 확인하는 중…");
+    // Empty ExitPlanMode (no plan submitted) ends the planning phase explicitly so
+    // the placeholder clears instead of lingering to the terminal reset.
+    expect(sink.onStatus).toHaveBeenCalledWith("계획 단계를 마쳤습니다.");
+    expect(sink.onPlan).toHaveBeenCalledWith({ plan: "", planning: false });
   });
 
   it("signals plan-mode entry through the plan event so the UI can show a placeholder", () => {

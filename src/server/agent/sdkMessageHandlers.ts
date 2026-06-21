@@ -247,16 +247,19 @@ function handleTaskToolUse(
     // without this the plan content was discarded and only a status line showed.
     if (name === "ExitPlanMode") {
       const plan = asString(input.plan);
-      if (plan) {
-        events.onPlan?.({ plan });
-      }
+      // A real plan becomes a card. An empty ExitPlanMode (degenerate output) still
+      // ENDS the planning phase, so signal planning:false to clear the "writing
+      // plan…" placeholder right away instead of letting it linger until the turn's
+      // terminal reset and then vanish with no trace.
+      events.onPlan?.(plan ? { plan } : { plan: "", planning: false });
+      events.onStatus?.(plan ? "계획을 확인하는 중…" : "계획 단계를 마쳤습니다.");
     } else {
       // EnterPlanMode: no plan exists yet. Signal the UI to show a "writing plan…"
       // placeholder so the planning phase (which suppresses tool rows) doesn't look
       // like a stalled/disconnected turn.
       events.onPlan?.({ plan: "", planning: true });
+      events.onStatus?.("계획 모드로 전환 중…");
     }
-    events.onStatus?.(name === "ExitPlanMode" ? "계획을 확인하는 중…" : "계획 모드로 전환 중…");
     return true;
   }
   if (isTaskInspectionTool(name)) {

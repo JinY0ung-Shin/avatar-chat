@@ -831,6 +831,13 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
           pane.planPending = true;
         });
         setStatus(paneId, "계획을 작성하는 중…", true);
+      } else {
+        // Planning ended without a submitted plan (empty ExitPlanMode): clear the
+        // placeholder now so it resolves into the avatar's answer instead of
+        // lingering until turn end and vanishing with no trace.
+        updatePane(paneId, (pane) => {
+          pane.planPending = false;
+        });
       }
       return;
     case "prompt_resolved":
