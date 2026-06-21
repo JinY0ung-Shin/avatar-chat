@@ -40,8 +40,11 @@ These are the invariants the project is built around. New work should reinforce 
   **Second brain = a CONVENTION (`wiki/`+`raw/`) over that SAME repo, NOT a new store** — recall is
   read-only MCP search; capture writes through the repo-write tools + commit (uncommitted = not persisted).
 - **Per-user settings follow ONE pattern** (column → migration → `toUser` → `updateProfile` → `User` type →
-  `PATCH /api/me` → settings tab). But not everything is per-user: the model/effort picker is
-  INTENTIONALLY per-conversation-only — don't add a default for it.
+  `PATCH /api/me` → settings tab). Some defaults are written from the composer, not a settings tab: the
+  model/effort/MCP-tool-group pickers remember the owner's last choice via per-user defaults
+  (`*_default` columns + `setChatDefaults` + `PUT /api/me/chat-defaults`) that seed new conversations,
+  mirroring `groupKnowledgeOffDefault`. The per-conversation `selected_*` value still overrides the
+  default when resuming an existing thread.
 - **Modules are split behind UNCHANGED exports.** When refactoring, keep import paths stable via
   re-exports rather than forcing callers to move.
 

@@ -700,12 +700,10 @@ export function createChatRouter({
       // the owner). A known tier alias applies; "" clears back to the server default;
       // anything else (incl. nothing sent) → null = keep whatever is already stored.
       // The client owns this and sends it on each turn, so it works from a brand-new
-      // chat with no row yet. INTENTIONALLY per-conversation
-      // ONLY — unlike groupKnowledgeOff there is NO per-user default column, so the
-      // picker resets to the hardcoded server default for every new conversation
-      // (the client seeds new panes from DEFAULT_MODEL_TIER, not a remembered choice).
-      // This divergence is deliberate: model/effort is a per-turn knob, not a profile
-      // preference, so we don't persist a per-user memory for it.
+      // chat with no row yet. The composer ALSO writes the choice to a per-user
+      // default (PUT /api/me/chat-defaults → users.model_default) that seeds the next
+      // new conversation's pane; this per-conversation value still overrides that
+      // default for an already-started thread.
       const rawModel = safeString(req.body?.model);
       const requestedModel: string | null =
         req.body?.model === undefined || req.body?.model === null
@@ -714,12 +712,10 @@ export function createChatRouter({
             ? rawModel
             : ""; // sent but not a known tier (incl. empty) → clear to default
 
-      // Per-conversation reasoning effort, same client-owned, per-conversation-only
-      // model as the tier above: a known level applies; "" clears back to the SDK
-      // default; nothing sent → null = keep whatever is already stored. Like the tier,
-      // there is NO per-user default — each new conversation resets to the SDK default
-      // (the client seeds new panes from DEFAULT_EFFORT_LEVEL); this is intentional,
-      // not a missing groupKnowledgeOff-style per-user memory.
+      // Per-conversation reasoning effort, same client-owned model as the tier
+      // above: a known level applies; "" clears back to the SDK default; nothing
+      // sent → null = keep whatever is already stored. Like the tier, the composer
+      // also writes a per-user default (users.effort_default) that seeds new panes.
       const rawEffort = safeString(req.body?.effort);
       const requestedEffort: string | null =
         req.body?.effort === undefined || req.body?.effort === null

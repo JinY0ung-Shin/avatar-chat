@@ -126,6 +126,18 @@ export interface User {
    */
   groupKnowledgeOffDefault: string[];
   /**
+   * The owner's remembered chat-composer defaults, seeding every NEW conversation
+   * so the picker's last choice persists across conversations. `null` = never
+   * chosen → a new conversation falls back to the hardcoded server/SDK default.
+   * `modelDefault` is a model-tier alias; `effortDefault` a reasoning-effort level;
+   * `mcpToolGroupsDefault` the enabled MCP tool groups (`null` = every group on,
+   * `[]` = explicitly all off). The per-conversation `selected_*` value still
+   * overrides these for an already-started conversation.
+   */
+  modelDefault: string | null;
+  effortDefault: string | null;
+  mcpToolGroupsDefault: McpToolGroupId[] | null;
+  /**
    * Names of the user's stored secrets (e.g. SSH_PRIVATE_KEY). Only the NAMES
    * are exposed — the encrypted values never leave the server. The avatar's
    * MCP tools receive them as subprocess env (injected by the owner's identity),

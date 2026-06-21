@@ -4,6 +4,12 @@ import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import { listSkillsInRoots } from "../plugins.js";
 import { normalizeHashtags } from "../store.js";
+import { isModelTier } from "../modelTiers.js";
+import { isEffortLevel } from "../effortLevels.js";
+import {
+  type McpToolGroupId,
+  normalizeMcpToolGroups,
+} from "../../shared/mcpToolGroups.js";
 import type { AvatarVisibility } from "../types.js";
 import {
   apiError,
@@ -92,6 +98,54 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         req.user!.id,
         raw as string[],
       );
+      res.json({ user });
+    },
+  );
+
+  // Owner's remembered chat-composer defaults (model tier / reasoning effort / MCP
+  // tool groups). The composer pickers write here so each choice seeds the NEXT new
+  // conversation — the per-conversation `selected_*` value (chat POST) still
+  // overrides it for an already-started conversation. Each field is optional: omit
+  // to leave untouched, send null/"" to clear back to the default. Body:
+  // `{ model?: string|null, effort?: string|null, mcpToolGroups?: string[]|null }`.
+  router.put(
+    "/api/me/chat-defaults",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const patch: {
+        model?: string | null;
+        effort?: string | null;
+        mcpToolGroups?: McpToolGroupId[] | null;
+      } = {};
+      if (req.body?.model !== undefined) {
+        const raw = req.body.model;
+        if (raw === null || raw === "") patch.model = null;
+        else if (isModelTier(raw)) patch.model = raw;
+        else {
+          apiError(res, 400, "알 수 없는 모델입니다.");
+          return;
+        }
+      }
+      if (req.body?.effort !== undefined) {
+        const raw = req.body.effort;
+        if (raw === null || raw === "") patch.effort = null;
+        else if (isEffortLevel(raw)) patch.effort = raw;
+        else {
+          apiError(res, 400, "알 수 없는 사고 강도입니다.");
+          return;
+        }
+      }
+      if (req.body?.mcpToolGroups !== undefined) {
+        const raw = req.body.mcpToolGroups;
+        if (raw === null) patch.mcpToolGroups = null;
+        else if (Array.isArray(raw))
+          patch.mcpToolGroups = normalizeMcpToolGroups(raw);
+        else {
+          apiError(res, 400, "MCP 도구 설정이 올바르지 않습니다.");
+          return;
+        }
+      }
+      const user = store.setChatDefaults(req.user!.id, patch);
       res.json({ user });
     },
   );

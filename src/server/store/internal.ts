@@ -128,6 +128,9 @@ export interface UserRow {
   ssh_public_key: string | null;
   hashtags: string | null;
   group_knowledge_off_default: string | null;
+  model_default: string | null;
+  effort_default: string | null;
+  mcp_tool_groups_default: string | null;
   experimental_features: string | null;
   onboarded_at: string | null;
 }
@@ -477,6 +480,16 @@ export class StoreBase {
     // per-conversation `conversations.group_knowledge_off`, but at the user level:
     // the composer toggle writes here so the choice persists across conversations.
     this.addColumnIfMissing("users", "group_knowledge_off_default", "TEXT");
+    // The owner's remembered chat-composer defaults, seeding every NEW conversation
+    // (the picker's last choice persists across conversations). NULL = never chosen,
+    // so a new conversation falls back to the hardcoded server/SDK default. Mirrors
+    // the per-conversation `conversations.selected_*` columns, but at the user level:
+    // the composer pickers write here so the choice carries to the next conversation.
+    this.addColumnIfMissing("users", "model_default", "TEXT");
+    this.addColumnIfMissing("users", "effort_default", "TEXT");
+    // JSON array of MCP tool group ids; NULL = never chosen (seed every group on),
+    // "[]" = explicitly all groups off (a remembered choice, not "unset").
+    this.addColumnIfMissing("users", "mcp_tool_groups_default", "TEXT");
     // Public half of an app-generated SSH keypair. The private half is stored
     // only as the encrypted SSH_PRIVATE_KEY user secret.
     this.addColumnIfMissing("users", "ssh_public_key", "TEXT");

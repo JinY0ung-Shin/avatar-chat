@@ -2,6 +2,10 @@ import crypto from "node:crypto";
 import { hashPassword, hashToken, verifyPassword } from "../auth.js";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
 import { normalizeExperimentalFeatures } from "../experimentalFeatures.js";
+import {
+  type McpToolGroupId,
+  normalizeMcpToolGroups,
+} from "../../shared/mcpToolGroups.js";
 import type { AvatarVisibility, User } from "../types.js";
 import {
   type Constructor,
@@ -50,6 +54,14 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         // OFF-set seeding new conversations ([] = every group on).
         groupKnowledgeOffDefault:
           parseNameList(row.group_knowledge_off_default) ?? [],
+        // Remembered composer defaults seeding new conversations (null = unset →
+        // fall back to the hardcoded server/SDK default).
+        modelDefault: row.model_default?.trim() || null,
+        effortDefault: row.effort_default?.trim() || null,
+        mcpToolGroupsDefault: (() => {
+          const parsed = parseNameList(row.mcp_tool_groups_default);
+          return parsed ? normalizeMcpToolGroups(parsed) : null;
+        })(),
         // Only the names — the encrypted values never leave the server.
         secretNames,
         sshPublicKey: row.ssh_public_key ?? null,
@@ -313,6 +325,47 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
           experimentalFeatures,
           userId,
         );
+      return this.toUser(this.userRowById(userId)!);
+    }
+
+    /**
+     * Set the owner's remembered chat-composer defaults, which seed every new
+     * conversation. Each field is independent: omit a key to leave it untouched,
+     * pass `null`/`""` to clear it back to the hardcoded default. `mcpToolGroups`
+     * stores the explicit selection (incl. `[]` = all groups off as a remembered
+     * choice); pass `null` to forget it (new conversations seed every group on).
+     */
+    setChatDefaults(
+      userId: string,
+      patch: {
+        model?: string | null;
+        effort?: string | null;
+        mcpToolGroups?: McpToolGroupId[] | null;
+      },
+    ): User {
+      const row = this.userRowById(userId);
+      if (!row) {
+        throw new Error("USER_NOT_FOUND");
+      }
+      const model =
+        patch.model !== undefined
+          ? patch.model?.trim() || null
+          : row.model_default;
+      const effort =
+        patch.effort !== undefined
+          ? patch.effort?.trim() || null
+          : row.effort_default;
+      const mcp =
+        patch.mcpToolGroups !== undefined
+          ? patch.mcpToolGroups
+            ? JSON.stringify(normalizeMcpToolGroups(patch.mcpToolGroups))
+            : null
+          : row.mcp_tool_groups_default;
+      this.db
+        .prepare(
+          "UPDATE users SET model_default = ?, effort_default = ?, mcp_tool_groups_default = ? WHERE id = ?",
+        )
+        .run(model, effort, mcp, userId);
       return this.toUser(this.userRowById(userId)!);
     }
 

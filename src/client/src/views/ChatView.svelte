@@ -634,29 +634,38 @@
     );
   }
 
-  // Per-conversation model tier picked in the composer. Like the group-knowledge
-  // toggle it lives on the pane and rides the next chat POST (which persists it),
-  // so it works from a brand-new chat. The picker has no "default" option — every
-  // value is a real tier (the default is Opus, applied server-side when unset).
+  // Model tier picked in the composer. Like the group-knowledge toggle it lives on
+  // the pane and rides the next chat POST (which persists it per-conversation), AND
+  // writes through to the owner's remembered default so the choice seeds the next
+  // new conversation. The picker has no "default" option — every value is a real
+  // tier (the default is Opus, applied server-side when never chosen).
   function setModelTier(item: ChatPane, tier: string) {
     updateState((state) => {
       const target = state.chatPanes.find((p) => p.id === item.id);
       if (target) target.modelTier = tier;
+      if (state.user) state.user.modelDefault = tier;
     });
     const label = $appState.bootstrap?.modelSelection?.tiers.find((t) => t.id === tier)?.label;
     notify(`모델을 ${label ?? tier}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
+    api("/api/me/chat-defaults", { method: "PUT", body: JSON.stringify({ model: tier }) }).catch((err) =>
+      notify(`기본 모델을 저장하지 못했습니다: ${(err as Error).message}`, "warn"),
+    );
   }
 
-  // Per-conversation reasoning effort, mirroring setModelTier: lives on the pane
-  // and rides the next chat POST (which persists it). Every value is a real level
-  // (the default is "높음"/high, applied SDK-side when unset).
+  // Reasoning effort, mirroring setModelTier: lives on the pane, rides the next chat
+  // POST (per-conversation), and writes through to the remembered per-user default.
+  // Every value is a real level (the default is "높음"/high when never chosen).
   function setEffort(item: ChatPane, effort: string) {
     updateState((state) => {
       const target = state.chatPanes.find((p) => p.id === item.id);
       if (target) target.effort = effort;
+      if (state.user) state.user.effortDefault = effort;
     });
     const label = $appState.bootstrap?.effortSelection?.levels.find((e) => e.id === effort)?.label;
     notify(`사고 강도를 ${label ?? effort}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
+    api("/api/me/chat-defaults", { method: "PUT", body: JSON.stringify({ effort }) }).catch((err) =>
+      notify(`기본 사고 강도를 저장하지 못했습니다: ${(err as Error).message}`, "warn"),
+    );
   }
 
   function setMcpToolGroup(item: ChatPane, groupId: McpToolGroupId, on: boolean) {
@@ -667,9 +676,13 @@
     updateState((state) => {
       const target = state.chatPanes.find((p) => p.id === item.id);
       if (target) target.mcpToolGroups = next;
+      if (state.user) state.user.mcpToolGroupsDefault = [...next];
     });
     const label = MCP_TOOL_GROUPS.find((group) => group.id === groupId)?.labelKo ?? groupId;
     notify(`"${label}" MCP 도구를 ${on ? "사용" : "사용 해제"}했습니다. 다음 메시지부터 적용됩니다.`, "info");
+    api("/api/me/chat-defaults", { method: "PUT", body: JSON.stringify({ mcpToolGroups: next }) }).catch((err) =>
+      notify(`기본 MCP 도구 설정을 저장하지 못했습니다: ${(err as Error).message}`, "warn"),
+    );
   }
 
   function messageText(message: StoredMessage) {

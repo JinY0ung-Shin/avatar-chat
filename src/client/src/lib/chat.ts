@@ -126,7 +126,15 @@ function makePane(
     groupKnowledgeOff: avatar.isOwn
       ? [...(readState().user?.groupKnowledgeOffDefault || [])]
       : [],
-    mcpToolGroups: [...DEFAULT_MCP_TOOL_GROUPS],
+    // Seed the composer pickers from the owner's remembered defaults so the last
+    // choice carries to a new conversation (null/undefined = fall back to the
+    // hardcoded server/SDK default). selectConversation() overrides these with the
+    // per-conversation stored value when resuming an existing thread.
+    modelTier: readState().user?.modelDefault ?? undefined,
+    effort: readState().user?.effortDefault ?? undefined,
+    mcpToolGroups: readState().user?.mcpToolGroupsDefault
+      ? [...readState().user!.mcpToolGroupsDefault!]
+      : [...DEFAULT_MCP_TOOL_GROUPS],
     canvases,
     activeCanvasId: canvases.length ? canvases[canvases.length - 1].id : null,
     stickBottom: true,
@@ -500,12 +508,12 @@ export async function sendMessage(
         regenerate: opts.regenerate === true,
         multiSession: readState().chatPanes.length > 1,
         groupKnowledgeOff: pane.groupKnowledgeOff || [],
-        // Model tier + reasoning effort are INTENTIONALLY per-conversation only:
-        // unlike groupKnowledgeOff (which seeds new panes from a remembered per-user
-        // default), these have NO per-user memory. A new pane starts unset, so we
-        // fall back to the hardcoded defaults here every time — the picker does not
-        // remember the user's last choice across conversations by design (a per-turn
-        // knob, not a profile preference).
+        // Model tier / reasoning effort / MCP groups: the pane is seeded from the
+        // owner's remembered per-user defaults (makePane), so a new pane already
+        // carries the last choice. These fallbacks only fire when no default was
+        // ever chosen (modelDefault/effortDefault null) — then the hardcoded
+        // server/SDK default applies. The chat POST still persists the value
+        // per-conversation so resuming an existing thread restores its own pick.
         model: pane.modelTier || DEFAULT_MODEL_TIER,
         effort: pane.effort || DEFAULT_EFFORT_LEVEL,
         mcpToolGroups: pane.mcpToolGroups ?? DEFAULT_MCP_TOOL_GROUPS,

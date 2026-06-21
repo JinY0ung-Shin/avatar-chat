@@ -130,9 +130,13 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   conversation — crucially the **auto-greeting**, which fires before any toggle interaction. Client seeds
   new panes via `defaultGroupKnowledgeOff(avatar)` (own avatar only). Existing conversations still load
   their persisted per-conversation value, which overrides the default for that chat.
-- **The per-conversation model/effort picker is INTENTIONALLY per-conversation-only** — there is NO
-  per-user default that seeds it. Don't "add a default" for model/effort. (Contrast `group_knowledge_off`,
-  which DOES have `group_knowledge_off_default`.)
+- **The composer model/effort/MCP-tool-group pickers remember the owner's last choice** via per-user
+  defaults (`users.model_default` / `effort_default` / `mcp_tool_groups_default`), mirroring
+  `group_knowledge_off_default`. The setter `store.setChatDefaults` + `PUT /api/me/chat-defaults` write
+  them; `toUser` exposes `modelDefault`/`effortDefault`/`mcpToolGroupsDefault` (null = never chosen →
+  fall back to the hardcoded server/SDK default; for MCP, `[]` = explicitly all-off as a remembered
+  choice). The client seeds new panes from these in `makePane`; the per-conversation `selected_*` value
+  still overrides them when resuming an existing thread.
 
 ### Avatar visibility (3-state) — mechanics
 - `users.visibility` = `public` | `group` | `private`; `AvatarVisibility` type in types.ts, default
@@ -619,8 +623,9 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   `state.user.groupKnowledgeOffDefault` optimistically and PUTs `/api/me/group-knowledge-default` in the
   background; it deliberately does NOT sync `state.user` from the response (rapid toggles resolve out of
   order) and only toasts on failure. Don't "fix" this into an await-and-sync.
-- **The model/effort picker is per-conversation-ONLY — no per-user default**, unlike the group-knowledge
-  toggle. Don't add a per-user default for it.
+- **The model/effort/MCP-group pickers write through to a per-user default** (`PUT /api/me/chat-defaults`),
+  same optimistic-update pattern as the group-knowledge toggle: update `state.user.{model,effort,
+  mcpToolGroups}Default` then PUT in the background, toast only on failure. New panes seed from these.
 - Some settings cards (profile/visibility/secrets) save WITHOUT a full reload to avoid wiping unsaved form
   text — preserve in-place updates there.
 - **Splitting a multi-tab view into per-tab components: ALWAYS-MOUNT + `active` prop, never `{#if tab}`
