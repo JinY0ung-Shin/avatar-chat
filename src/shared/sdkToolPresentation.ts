@@ -38,6 +38,32 @@ export const SDK_HIDDEN_ACTIVITY_TOOLS = [
   ...SDK_ORCHESTRATION_TOOLS,
 ] as const;
 
+/**
+ * Full-CLI harness tools the SDK/CLI advertises by default but that Noah Almighty
+ * does NOT use: they're absent from `allowedTools`, duplicate an app feature
+ * (Cron* vs. `mcp__system__*_routine`, PushNotification vs. `mcp__system__notify_user`,
+ * Enter/ExitWorktree vs. `mcp__git_repo__open_repo`), or are interactive-CLI-only
+ * (Workflow / Monitor / DesignSync / ScheduleWakeup / SendMessage / RemoteTrigger).
+ * Fed to the SDK `disallowedTools` option so they're dropped from the advertised
+ * `tools` array on every request — ~10k tokens of tool descriptions (Workflow's
+ * description alone is ~4.7k tokens). Unknown names are harmless no-ops, so the
+ * list can name tools a given CLI version may not ship.
+ */
+export const UNUSED_SDK_BUILTIN_TOOLS = [
+  "Workflow",
+  "Monitor",
+  "DesignSync",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "EnterWorktree",
+  "ExitWorktree",
+  "ScheduleWakeup",
+  "SendMessage",
+  "PushNotification",
+  "RemoteTrigger",
+] as const;
+
 export const SDK_TOOL_LABELS: Record<string, string> = {
   Agent: "에이전트 실행",
   Artifact: "아티팩트 게시",

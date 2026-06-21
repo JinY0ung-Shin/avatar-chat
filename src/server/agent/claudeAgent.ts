@@ -57,6 +57,7 @@ import {
   traceSdkMessage,
 } from "./sdkMessageHandlers.js";
 import { effectiveMcpToolGroups } from "../../shared/mcpToolGroups.js";
+import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
 
 // Re-export the symbols moved into sibling modules so existing import paths
 // (app.ts, index.ts, tests/units.test.ts, infra/agent-core/… tests) keep
@@ -656,6 +657,11 @@ export async function runClaudeAgent(
       "TodoWrite",
       ...TASK_ORCHESTRATION_TOOLS,
     ],
+    // Drop full-CLI harness tools we never use from the advertised tool list.
+    // `allowedTools` only auto-approves; it does NOT restrict what the CLI offers,
+    // so these (Workflow/Monitor/Cron*/Worktree/…) would otherwise ride along on
+    // every request as ~10k tokens of unused tool descriptions. See the constant.
+    disallowedTools: [...UNUSED_SDK_BUILTIN_TOOLS],
     // Enable bundled + plugin skills (also auto-allows the `Skill` tool).
     skills: "all",
     // Register the SSH host-trust server alongside hex-ssh, and only when hex-ssh
