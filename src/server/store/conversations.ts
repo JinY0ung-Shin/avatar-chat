@@ -192,6 +192,38 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
     }
 
     /**
+     * The registered git-repo NAME opened as this conversation's working directory
+     * (via `mcp__git_repo__open_repo`), or null when none is open. Durable home of
+     * the per-conversation working surface (repoWorkspace.ts) so routine runs —
+     * spaced out and across restarts — keep their repo. Keyed by conversation id
+     * alone, matching the prior in-memory selection (its owner IS the avatar owner).
+     */
+    getConversationWorkingRepo(conversationId: string): string | null {
+      const row = this.db
+        .prepare("SELECT working_repo FROM conversations WHERE id = ?")
+        .get(conversationId) as { working_repo: string | null } | undefined;
+      return row?.working_repo ?? null;
+    }
+
+    /**
+     * Set (repoName) or clear (null) this conversation's working repo. In practice
+     * the row always exists when this runs (chat touches it pre-run; routines create
+     * it eagerly), so a 0-row UPDATE means a broken invariant — log it rather than
+     * silently dropping the selection (which would look like a phantom open).
+     */
+    setConversationWorkingRepo(conversationId: string, repoName: string | null): void {
+      const info = this.db
+        .prepare("UPDATE conversations SET working_repo = ? WHERE id = ?")
+        .run(repoName, conversationId);
+      if (info.changes === 0) {
+        logger.warn(
+          { conversationId },
+          "setConversationWorkingRepo: no conversation row — working-repo selection dropped",
+        );
+      }
+    }
+
+    /**
      * Group ids whose shared knowledge is toggled OFF for this conversation
      * (owner-only). Empty array = every group enabled (the default). Owner-scoped
      * so a guessed conversation id can't read another owner's setting.

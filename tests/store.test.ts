@@ -371,6 +371,28 @@ describe("store agent session resume", () => {
     expect(store.getAgentSessionId(ownerId, "conv-3")).toBe("sess-ccc");
   });
 
+  it("round-trips the conversation working repo and clears it", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-wr", ownerId, "hi");
+    // Default is no working repo (scratch workspace).
+    expect(store.getConversationWorkingRepo("conv-wr")).toBeNull();
+    store.setConversationWorkingRepo("conv-wr", "app");
+    expect(store.getConversationWorkingRepo("conv-wr")).toBe("app");
+    // Persists across opens (last write wins) and clears back to scratch.
+    store.setConversationWorkingRepo("conv-wr", "other");
+    expect(store.getConversationWorkingRepo("conv-wr")).toBe("other");
+    store.setConversationWorkingRepo("conv-wr", null);
+    expect(store.getConversationWorkingRepo("conv-wr")).toBeNull();
+  });
+
+  it("clears the working repo when the conversation is deleted", () => {
+    const { store, ownerId } = makeStore();
+    store.touchConversation(ownerId, "conv-wr2", ownerId, "hi");
+    store.setConversationWorkingRepo("conv-wr2", "app");
+    store.deleteConversation(ownerId, "conv-wr2");
+    expect(store.getConversationWorkingRepo("conv-wr2")).toBeNull();
+  });
+
   it("returns a conversation avatar only to its owner", () => {
     const { store, ownerId } = makeStore();
     const avatar = store.createUser({ username: "avatar", displayName: "Avatar", password: "password123" });

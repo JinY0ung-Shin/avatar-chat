@@ -140,15 +140,17 @@ function knowledgeRepoSection(
  * Both the owner branch (`gitRepoSection`) AND the trusted-teammate branch call
  * this — keep it as the only hand-written copy so the two can't drift again (they
  * did once: the teammate copy kept advertising deleted file-CRUD tools). The
- * routine branch reuses the `"routine"` mode (no `open_repo` — the scheduler does
- * not thread `conversationId`, so the working surface is unavailable headlessly).
+ * routine branch also reuses it (`"routine"` mode): the scheduler now threads
+ * `conversationId` and resolves the opened repo as the run's cwd, so open_repo IS
+ * available — it just takes effect from the routine's NEXT scheduled run.
  *
  * `mode` tailors permission scope and which tools are named:
  *  - `owner`    — full surface incl. register_repo/remove_repo + the open_repo flow.
  *  - `teammate` — elevated trusted user: list_repos/sync_repo/open_repo/close_repo/push,
  *                 NO register_repo/remove_repo (registration/removal is owner-only).
- *  - `routine`  — headless owner run: register_repo/list_repos/sync_repo/push, NO
- *                 open_repo/close_repo (no conversation → no working surface).
+ *  - `routine`  — headless owner run: register_repo/list_repos/sync_repo/open_repo/
+ *                 close_repo/push. The opened repo's selection persists on the
+ *                 conversation, so it applies from the next scheduled run.
  */
 function gitRepoWorkflowSection(
   mode: "owner" | "teammate" | "routine",
@@ -160,11 +162,13 @@ function gitRepoWorkflowSection(
         ? "General **git repo work** (the owner's pre-registered work/code repositories) is separate from the knowledge-repository tools. List them with `mcp__git_repo__list_repos`, then "
         : "General **git repo work** (`mcp__git_repo__*`, separate from the knowledge-repository tools) is available. Inspect the owner's registered repos with `mcp__git_repo__list_repos`, and register a new work/code repository with `mcp__git_repo__register_repo` when a task needs one. ";
 
-  // The open_repo working-surface flow — only when there IS a conversation to
-  // hold the selection (owner/teammate); a headless routine has none.
+  // The open_repo working-surface flow. The selection is held per conversation
+  // (durably, on conversations.working_repo), so it works for an interactive chat
+  // AND a routine — only the "takes effect" boundary differs (next message vs next
+  // scheduled run), because the cwd is fixed when a turn/run starts.
   const workingSurface =
     mode === "routine"
-      ? ""
+      ? "**open it as your working directory with `mcp__git_repo__open_repo`** to read, edit, and test it with native tools. Opening takes effect from this routine's NEXT scheduled run (the working directory is fixed when a run starts) and the selection PERSISTS across runs, so to work inside a repo, open it on one run (or interactively in this routine's thread) and operate on it from the next run; once it is your working directory, read/edit files and run tests and LOCAL git (`git status`/`diff`/`log`/`add`/`commit`) natively there. `close_repo` returns to the scratch workspace. "
       : "**open it as your working directory with `mcp__git_repo__open_repo`** to read, edit, and test it. Opening takes effect from the NEXT message (the working directory is fixed when a turn starts), so after opening, tell the user it is ready and continue from their next message; from then on read/edit files and run tests and LOCAL git (`git status`/`diff`/`log`/`add`/`commit`) natively in the working directory. `close_repo` returns to the scratch workspace. ";
 
   // Remote git (sync_repo/push) always stays MCP — the shell has no credentials.
@@ -182,7 +186,7 @@ function gitRepoWorkflowSection(
       ? "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. Registration/removal is owner-only; opening/syncing/pushing an already-registered repo is possible in owner or trusted-user conversations. These are pure git tools and do not cover GitHub issue/PR/release management."
       : mode === "teammate"
         ? "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. You may open/sync/push the owner's already-registered repos, but **registering or removing** a repository is owner-only — if a new repo needs registering, ask the owner. These are pure git tools and do not cover GitHub issue/PR/release management."
-        : "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. NOTE: you cannot open a working directory in a routine (`open_repo` needs an interactive conversation), so for code edits operate on the local clone via the personal/group knowledge-repo tools where possible, or limit yourself to register/sync/push of already-staged work. These are pure git tools and do not cover GitHub issue/PR/release management.";
+        : "Cloning/syncing internal or external public repos is attempted without a token, so do not demand token setup first. push succeeds only when you have remote write permission. NOTE: `open_repo` in a routine takes effect from the NEXT scheduled run (the cwd is fixed when a run starts) and the selection persists across runs — so to work inside a repo, open it on one run (or interactively in this routine's thread) and operate on it from the next; within a SINGLE run you can still register/sync/push and edit the local knowledge-repo clones. These are pure git tools and do not cover GitHub issue/PR/release management.";
 
   return `${intro}${workingSurface}${remote}${scope}`;
 }
@@ -553,12 +557,19 @@ export function buildSystemPromptAppend(
         lines.push(routineBrainBlock);
       }
       // General git-repo guidance for the routine: the SAME tools the owner chat
-      // gets are registered & callable here EXCEPT open_repo/close_repo (those need
-      // request.conversationId, which the scheduler does not thread — so the
-      // "routine" mode of the shared helper drops the working-surface flow). Reusing
-      // gitRepoWorkflowSection keeps this from drifting from the owner branch.
+      // gets are registered & callable here, INCLUDING open_repo/close_repo — the
+      // scheduler now threads request.conversationId and resolves the opened repo as
+      // the run's cwd (the selection persists on the conversation, applying from the
+      // next scheduled run). Reusing gitRepoWorkflowSection keeps the "routine" mode
+      // from drifting from the owner branch.
       if (mcpToolGroupEnabled(request, "git_repo")) {
         lines.push(gitRepoWorkflowSection("routine"));
+        // When a working repo is already open for this routine, tell it so — same
+        // self-state the owner/teammate branches surface via activeRepoSection.
+        const routineActiveRepoBlock = activeRepoSection(request);
+        if (routineActiveRepoBlock) {
+          lines.push(routineActiveRepoBlock);
+        }
       }
       if (
         anyMcpToolGroupEnabled(request, [

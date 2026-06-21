@@ -222,16 +222,23 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   opportunistic. Unlike the knowledge repo, push EXTENDS to trusted users.
 - **Working repository (avatar-opened, NOT a UI picker).** The avatar opens ONE registered git repo as
   this conversation's working directory with `open_repo`; `close_repo` clears it. The selection is held
-  per-conversation, **in-memory** (`repoWorkspace.ts` `get/setWorkspaceRepo` — a restart clears it).
-  **The SDK cwd is fixed when a turn starts**, so `open_repo` takes effect **from the NEXT message**: the
-  chat route reads `getWorkspaceRepo(conversationId)` at turn start → sets the repo's clone as the SDK
-  **cwd** (per-conversation scratch dir rides along as `additionalDirectories`). From then the avatar
+  per-conversation and **persisted on `conversations.working_repo`** (`repoWorkspace.ts`
+  `get/setWorkspaceRepo` are thin wrappers over `store.get/setConversationWorkingRepo`; deleting the
+  conversation clears it for free). Persistence — not the old in-memory map — is what lets **routines**
+  keep a working repo between their spaced-out runs and across restarts.
+  **The SDK cwd is fixed when a turn starts**, so `open_repo` takes effect **from the NEXT turn**.
+  **One shared resolver, `activeRepoResolve.ts` `resolveActiveWorkspaceRepo`, is used by BOTH the chat
+  route (turn start) AND the routine scheduler (before a headless run)** so they can't drift: it reads
+  the selection → resolves/ensures the clone (no sync) → takes the per-clone lock → configures commit
+  identity → returns the clone path as the SDK **cwd** (per-conversation scratch dir rides along as
+  `additionalDirectories`) + a `release()` the caller invokes when the run ends. From then the avatar
   edits/tests with native Read/Edit/Bash + LOCAL git; only `push`/`sync_repo` stay MCP. `open_repo` needs
-  `request.conversationId` (a run with no conversation, e.g. intro gen, can't open one). A per-clone-path
-  lock (`activeRepoLock.ts`) serializes concurrent opens (409). `preToolUseHook`'s `activeRepoMode`
-  (= `Boolean(request.activeRepoName)`) is an INTEGRITY (not security) guard: denies
-  remote/branch/history-rewriting/destructive Bash git, allows read-only git + local staging/commit. The
-  clone path is NEVER returned to the client.
+  `request.conversationId` — the chat route and the scheduler both thread it; only a run with NO
+  conversation (e.g. intro gen) can't open one. A per-clone-path lock (`activeRepoLock.ts`) serializes
+  concurrent opens (chat → 409; a routine whose repo is busy/missing logs and falls back to scratch).
+  `preToolUseHook`'s `activeRepoMode` (= `Boolean(request.activeRepoName)`) is an INTEGRITY (not security)
+  guard: denies remote/branch/history-rewriting/destructive Bash git, allows read-only git + local
+  staging/commit. The clone path is NEVER returned to the client.
 
 ### Knowledge backfill, request_info, second brain — mechanics
 - Owner sees pending `request_info` gaps in-app via a "내 아바타" nav badge + a poll/visibility watcher

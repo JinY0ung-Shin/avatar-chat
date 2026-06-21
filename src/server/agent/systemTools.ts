@@ -155,7 +155,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           "- The avatar converses by loading its profile/persona, base skills, owner plugins, and personal knowledge repository together.",
           "- The knowledge repository is a personal repo where the avatar can directly create and commit files and skills.",
           "- Plugins are added via a GitHub repo or git URL and load starting from the next conversation.",
-          "- Routines run headlessly on a daily, weekly, or interval schedule in KST, work with the same tool permissions as the owner, and leave their results in the routines tab.",
+          "- Routines run headlessly on a daily, weekly, or interval schedule in KST, work with the same tool permissions as the owner, and leave their results in the routines tab. A routine can also open one registered git repository as its working directory (open_repo) — the selection persists and takes effect from the routine's next scheduled run.",
           "- Secret values are not exposed; only their names are revealed to the avatar.",
           "- Remote git operations (clone/push, etc.) are performed only through dedicated MCP tools. The shell has no git credentials.",
         ];

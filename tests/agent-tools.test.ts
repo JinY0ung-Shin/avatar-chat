@@ -1198,6 +1198,10 @@ describe("git repo tools (general git repository management)", () => {
 
   it("registers, opens, pushes a native commit, and removes a general git repo", async () => {
     const s = setup("gr-flow");
+    // open_repo persists the working-repo selection on the conversation row, which
+    // always exists in production before the model can call open_repo (chat touches
+    // it pre-run; routines create it eagerly). Seed it so the persistence asserts.
+    s.store.touchConversation(s.ownerId, "conv-flow", s.ownerId, "flow test");
     const ownerTools = tools(s, { conversationId: "conv-flow" });
 
     const register = await callTool(ownerTools, "register_repo", { repo: s.remote, name: "work", branch: "main" });
@@ -1209,7 +1213,7 @@ describe("git repo tools (general git repository management)", () => {
     const open = await callTool(ownerTools, "open_repo", { name: "work" });
     expect(open.isError).toBeFalsy();
     expect(open.content[0].text).toContain("working directory");
-    expect(getWorkspaceRepo("conv-flow")).toBe("work");
+    expect(getWorkspaceRepo(s.store, "conv-flow")).toBe("work");
 
     // The avatar edits + commits natively in the opened working directory; push is MCP.
     const clonePath = gitRepoClonePath(s.ownerId, "work", s.config);
@@ -1226,7 +1230,7 @@ describe("git repo tools (general git repository management)", () => {
     // close_repo clears the working-repo selection for the conversation.
     const close = await callTool(ownerTools, "close_repo", {});
     expect(close.isError).toBeFalsy();
-    expect(getWorkspaceRepo("conv-flow")).toBeNull();
+    expect(getWorkspaceRepo(s.store, "conv-flow")).toBeNull();
 
     expect(fs.existsSync(clonePath)).toBe(true);
     const remove = await callTool(ownerTools, "remove_repo", { name: "work" });

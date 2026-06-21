@@ -5,6 +5,9 @@ import type { AppServices } from "./app.js";
 import logger from "./logger.js";
 import type { PluginRoot, RoutineJob } from "./types.js";
 import { workspaceDirFor } from "./workspace.js";
+import { resolveActiveWorkspaceRepo } from "./activeRepoResolve.js";
+import { getActiveRunForConversation } from "./agent/runRegistry.js";
+import { DEFAULT_MCP_TOOL_GROUPS } from "../shared/mcpToolGroups.js";
 
 const schedLogger = logger.child({ module: "scheduler" });
 
@@ -39,6 +42,8 @@ async function runRoutineJobNow(
   const { config, store } = services;
   const abortController = new AbortController();
   const deadline = setTimeout(() => abortController.abort(), RUN_TIMEOUT_MS);
+  // Frees the per-clone serialization lock if this run opened a working repo.
+  let releaseActiveRepoLock: (() => void) | null = null;
   try {
     const avatar = store.resolveChatAvatar(job.avatarUserId, job.avatarUserId);
     if (!avatar) {
@@ -64,11 +69,45 @@ async function runRoutineJobNow(
     const workspaceDir = workspaceDirFor(config, avatar.id, job.conversationId);
     fs.mkdirSync(workspaceDir, { recursive: true });
 
+    // Working repository: a routine may open one registered git repo as its cwd
+    // via `mcp__git_repo__open_repo`. The selection persists on the conversation
+    // (conversations.working_repo), so it survives between spaced-out scheduled
+    // runs and restarts — and an interactive open in the routine's thread carries
+    // here. Resolve it the SAME way the chat route does (shared resolver). On any
+    // failure, log and fall back to the scratch workspace — the routine still runs.
+    const repoResolution = await resolveActiveWorkspaceRepo({
+      store,
+      config,
+      avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias },
+      conversationId: job.conversationId,
+      elevated: true,
+      gitRepoToolsEnabled: DEFAULT_MCP_TOOL_GROUPS.includes("git_repo"),
+    });
+    let activeRepoCwd: string | null = null;
+    let activeRepoName: string | null = null;
+    if (repoResolution.kind === "ok") {
+      activeRepoCwd = repoResolution.cwd;
+      activeRepoName = repoResolution.repoName;
+      releaseActiveRepoLock = repoResolution.release;
+    } else if (repoResolution.kind === "error") {
+      schedLogger.warn(
+        { jobId: job.id, reason: repoResolution.reason, detail: repoResolution.detail },
+        "routine working repo unavailable; running in scratch workspace",
+      );
+    }
+
     const response = await runAgentStream(
       {
         message: job.prompt,
         avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias, persona: avatar.persona },
-        cwd: workspaceDir,
+        // Lets in-process tools (open_repo/close_repo) key the working-repo
+        // selection to this routine's conversation, persisted for the next run.
+        conversationId: job.conversationId,
+        // Working repository: the opened repo's clone becomes the cwd; the scratch
+        // dir stays exposed as an additional writable dir (mirrors the chat route).
+        cwd: activeRepoCwd ?? workspaceDir,
+        additionalDirs: activeRepoCwd ? [workspaceDir] : undefined,
+        activeRepoName: activeRepoName ?? undefined,
         viewerUserId: avatar.id,
         viewerName: avatar.displayName,
         viewerIsOwner: true,
@@ -120,6 +159,7 @@ async function runRoutineJobNow(
     }
     return { ok: false, error: detail };
   } finally {
+    releaseActiveRepoLock?.();
     clearTimeout(deadline);
   }
 }
@@ -135,6 +175,14 @@ export async function executeRoutineJob(
 ): Promise<{ ok: boolean; error?: string; skipped?: boolean }> {
   if (runningJobs.has(job.id)) {
     return { ok: false, skipped: true, error: "이미 실행 중인 루틴입니다." };
+  }
+  // A routine and an interactive chat share ONE conversation id (a routine's thread
+  // is openable in the client). If the owner is mid-turn there, skip this tick: both
+  // runs would point the SDK cwd at the SAME working-repo clone / scratch dir and
+  // stomp each other (activeRepoLock is re-entrant by conversation id, so it won't
+  // catch this). It retries on the next tick once the chat turn is done.
+  if (getActiveRunForConversation(job.avatarUserId, job.conversationId)) {
+    return { ok: false, skipped: true, error: "대화에서 응답을 생성 중이라 루틴을 건너뜁니다." };
   }
   runningJobs.add(job.id);
   schedLogger.info({ jobId: job.id, avatarUserId: job.avatarUserId }, "routine job started");

@@ -2386,6 +2386,25 @@ describe("buildPrompt", () => {
     // since its group has a shared repo, knows about the team brain it can search.
     expect(p).toContain("mcp__brain__search");
     expect(p).toContain("mcp__group_brain__search");
+    // A routine CAN now open a working repo (scheduler threads conversationId +
+    // resolves the opened repo as cwd); it takes effect from the next run.
+    expect(p).toContain("mcp__git_repo__open_repo");
+    expect(p).toContain("NEXT scheduled run");
+    expect(p).not.toContain("you cannot open a working directory in a routine");
+  });
+
+  it("tells a routine which working repository is open (activeRepoSection)", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        headless: true,
+        allowHeadlessTools: true,
+        activeRepoName: "service-api",
+      }),
+      0,
+    );
+    expect(p).toContain("Working repository");
+    expect(p).toContain("service-api");
   });
 
   it("points a routine without a knowledge repo at create_repo instead of letting it guess", () => {

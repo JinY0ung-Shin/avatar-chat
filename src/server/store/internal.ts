@@ -312,6 +312,7 @@ export class StoreBase {
         owner_user_id TEXT NOT NULL,
         avatar_user_id TEXT NOT NULL,
         title TEXT,
+        working_repo TEXT,
         created_at TEXT,
         updated_at TEXT
       );
@@ -505,6 +506,12 @@ export class StoreBase {
     // SDK session id of the conversation's last turn, used to resume context on
     // the next turn (see claudeAgent resume). Null until the first turn completes.
     this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");
+    // The registered git-repo NAME this conversation opened as its working dir via
+    // `mcp__git_repo__open_repo` (repoWorkspace.ts); NULL = scratch workspace. Made
+    // durable (vs in-memory) so routine runs — spaced out and across restarts — keep
+    // their working repo, and so an interactive open in a routine's thread carries to
+    // every scheduled run on the same conversation id.
+    this.addColumnIfMissing("conversations", "working_repo", "TEXT");
     // Capability hashtags (역량 해시태그): a JSON array of short searchable tags the
     // avatar generates from its skills/persona, shown in discovery (탐색) and queried
     // by the cross-avatar `mcp__avatars__search_avatars` tool. Null/[] = none.

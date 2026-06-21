@@ -19,6 +19,13 @@
  * sync elsewhere could fetch/checkout the working tree mid-edit. Acceptable for the
  * MVP (the issue flags per-conversation `git worktree` isolation as the eventual
  * fix); revisit if that races in practice.
+ *
+ * Re-acquire by the SAME conversation id always succeeds (sequential turns of one
+ * chat), so this lock does NOT serialize two runs that share a conversation id — a
+ * routine run and an interactive chat on the routine's thread. They are kept apart
+ * upstream instead: the scheduler skips a job whose conversation has an active chat
+ * run (`getActiveRunForConversation` in scheduler.ts). The reverse (a chat starting
+ * mid-routine-run) is a narrow window left to the MVP.
  */
 const heldBy = new Map<string, string>();
 

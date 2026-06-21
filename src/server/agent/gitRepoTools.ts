@@ -18,16 +18,21 @@ export interface GitRepoToolsContext {
   /** The avatar owner whose registered repos and git tokens are used. */
   avatarUserId: string;
   owner: AgentOwner;
-  /** True only for the avatar owner in an interactive chat. */
+  /** True for the avatar owner in an interactive chat AND in an owner routine run. */
   viewerIsOwner: boolean;
-  /** True for owner/trusted-user interactive chats. */
+  /**
+   * True for owner/trusted-user interactive chats AND owner routine runs (the
+   * scheduler passes elevated:true). open_repo/close_repo gate on this, so a
+   * routine can open a working repo.
+   */
   elevated: boolean;
   config: AppConfig;
   /**
    * The conversation this run belongs to. Needed by `open_repo`/`close_repo` to
-   * record the working-repo selection the chat route reads next turn. Unset for
-   * runs with no conversation (e.g. headless intro generation) — open_repo then
-   * reports it cannot open a working repo.
+   * record the working-repo selection the chat route AND the routine scheduler
+   * read on the next turn/run (persisted on conversations.working_repo). Unset
+   * only for runs with no conversation (e.g. headless intro generation) —
+   * open_repo then reports it cannot open a working repo.
    */
   conversationId?: string;
 }
@@ -176,7 +181,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
     ),
     tool(
       "open_repo",
-      "Open a registered git repository as THIS conversation's working directory so you can read, edit, and test it with native tools (Read/Edit/Write/Bash). The change takes effect from the NEXT message — the working directory is fixed when a turn starts and cannot be repointed mid-turn — so after calling this, tell the user it is ready and continue on their next message. From then on, work the repo natively in the working directory: read/edit files, run tests, and use local git (`git status`/`diff`/`log`/`add`/`commit`); then `push` the result and `sync_repo` to pull updates (those need server-side credentials, so they stay MCP-only). Only one repo is open at a time per conversation — opening another replaces it. (owner / trusted user only)",
+      "Open a registered git repository as THIS conversation's working directory so you can read, edit, and test it with native tools (Read/Edit/Write/Bash). The change takes effect from the NEXT turn — the next message in a chat, or (in a scheduled routine) this routine's next scheduled run — because the working directory is fixed when a turn/run starts and cannot be repointed mid-turn; the selection persists for this conversation until close_repo. So after calling this, in a chat tell the user it is ready and continue on their next message; in a routine, finish this run and the repo applies on the next one. From then on, work the repo natively in the working directory: read/edit files, run tests, and use local git (`git status`/`diff`/`log`/`add`/`commit`); then `push` the result and `sync_repo` to pull updates (those need server-side credentials, so they stay MCP-only). Only one repo is open at a time per conversation — opening another replaces it. (owner / trusted user only)",
       { name: z.string().describe("Registered repo name") },
       async (args) => {
         const denied = elevatedGuard();
@@ -189,9 +194,9 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           // Make sure the clone exists now so a bad-repo/access error surfaces
           // immediately — WITHOUT syncing (a fetch/checkout could clobber edits).
           await ensureGitRepoClone(repoCtx);
-          setWorkspaceRepo(ctx.conversationId, repoCtx.name);
+          setWorkspaceRepo(store, ctx.conversationId, repoCtx.name);
           return text(
-            `Opened '${repoCtx.name}' as this conversation's working directory. It becomes your working directory from the NEXT message, so let the user know it is ready and continue from their next message — then edit/test it with native tools and use \`push\`/\`sync_repo\` for remote git. (Use \`close_repo\` to close it.)`,
+            `Opened '${repoCtx.name}' as this conversation's working directory. It becomes your working directory from the NEXT turn — the next message in a chat, or this routine's next scheduled run — so let the user know it is ready and continue from there; then edit/test it with native tools and use \`push\`/\`sync_repo\` for remote git. The selection persists for this conversation until you \`close_repo\`.`,
           );
         } catch (error) {
           return text(
@@ -208,9 +213,9 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
       async () => {
         const denied = elevatedGuard();
         if (denied) return denied;
-        if (ctx.conversationId) setWorkspaceRepo(ctx.conversationId, null);
+        if (ctx.conversationId) setWorkspaceRepo(store, ctx.conversationId, null);
         return text(
-          "Closed the working repository. From the next message this conversation runs in the default scratch workspace.",
+          "Closed the working repository. From the next turn this conversation runs in the default scratch workspace.",
         );
       },
     ),

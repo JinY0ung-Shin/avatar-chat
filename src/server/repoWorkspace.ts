@@ -1,30 +1,34 @@
+import type { Store } from "./store.js";
+
 /**
  * Per-conversation "working repository" selection for general git repos.
  *
  * Direction B (single working surface): the avatar no longer edits a registered
  * repo through MCP file tools. Instead it OPENS one repo as the conversation's
  * working directory (`mcp__git_repo__open_repo`); from the NEXT turn the chat
- * route points the SDK cwd at that repo's clone and the avatar edits/tests it
- * with native tools (Read/Edit/Bash), while remote git (push/sync) stays MCP.
+ * route (and the routine scheduler) point the SDK cwd at that repo's clone and
+ * the avatar edits/tests it with native tools (Read/Edit/Bash), while remote git
+ * (push/sync) stays MCP.
  *
  * The SDK cwd is fixed when a turn starts and the model cannot repoint it
- * mid-turn, so the selection has to live OUTSIDE the model turn. This holds it
- * per conversation, in memory — single-process, matching `activeRepoLock` and
- * the rest of the app (in-process SQLite + runRegistry). A server restart clears
- * it (the avatar simply re-opens the repo); persist to a column later if needed.
+ * mid-turn, so the selection has to live OUTSIDE the model turn. It is persisted
+ * on the `conversations.working_repo` column (store), NOT in memory: routine runs
+ * are spaced out over time and survive server restarts, so an in-memory map would
+ * silently drop the selection between scheduled runs. Durability also gives a
+ * clean bootstrap — opening a repo interactively in a routine's thread carries to
+ * every later scheduled run on that same conversation id.
  */
-const selectedByConversation = new Map<string, string>();
 
 /** Set (or clear, when `repoName` is null) the working repo for a conversation. */
-export function setWorkspaceRepo(conversationId: string, repoName: string | null): void {
-  if (repoName) {
-    selectedByConversation.set(conversationId, repoName);
-  } else {
-    selectedByConversation.delete(conversationId);
-  }
+export function setWorkspaceRepo(
+  store: Store,
+  conversationId: string,
+  repoName: string | null,
+): void {
+  store.setConversationWorkingRepo(conversationId, repoName || null);
 }
 
 /** The working repo opened for this conversation, or null when none is open. */
-export function getWorkspaceRepo(conversationId: string): string | null {
-  return selectedByConversation.get(conversationId) ?? null;
+export function getWorkspaceRepo(store: Store, conversationId: string): string | null {
+  return store.getConversationWorkingRepo(conversationId);
 }
