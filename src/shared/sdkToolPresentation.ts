@@ -17,7 +17,12 @@ export const SDK_TASK_INSPECTION_TOOLS = [
 
 export const SDK_PLAN_TOOLS = ["EnterPlanMode", "ExitPlanMode"] as const;
 
-export const SDK_INTERNAL_HIDDEN_TOOLS = ["ToolSearch", "TodoWrite", "SlashCommand"] as const;
+export const SDK_INTERNAL_HIDDEN_TOOLS = [
+  "ToolSearch",
+  "TodoWrite",
+  "SlashCommand",
+  "ShowOnboardingRolePicker",
+] as const;
 
 export const SDK_ORCHESTRATION_TOOLS = [
   ...SDK_SUBAGENT_TOOLS,
@@ -35,6 +40,7 @@ export const SDK_HIDDEN_ACTIVITY_TOOLS = [
 
 export const SDK_TOOL_LABELS: Record<string, string> = {
   Agent: "에이전트 실행",
+  Artifact: "아티팩트 게시",
   AskUserQuestion: "사용자 질문",
   Bash: "명령 실행",
   CronCreate: "예약 생성",
@@ -54,6 +60,7 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
   Mcp: "MCP 도구",
   Monitor: "모니터링 시작",
   NotebookEdit: "노트북 편집",
+  Projects: "프로젝트 지식",
   PushNotification: "푸시 알림",
   Read: "파일 읽기",
   ReadMcpResource: "MCP 리소스 읽기",
