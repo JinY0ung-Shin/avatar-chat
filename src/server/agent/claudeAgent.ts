@@ -33,7 +33,10 @@ import {
 } from "../modelTiers.js";
 import { isEffortLevel } from "../effortLevels.js";
 import { summarizeOwnerState } from "./ownerState.js";
-import { buildPrompt } from "./promptBuilder.js";
+import {
+  buildSystemPromptAppend,
+  buildUserPrompt,
+} from "./promptBuilder.js";
 import {
   buildPreToolUseHook,
   rewriteBashCommandWithRtk,
@@ -58,7 +61,11 @@ import { effectiveMcpToolGroups } from "../../shared/mcpToolGroups.js";
 // Re-export the symbols moved into sibling modules so existing import paths
 // (app.ts, index.ts, tests/units.test.ts, infra/agent-core/… tests) keep
 // resolving against this module unchanged.
-export { buildPrompt } from "./promptBuilder.js";
+export {
+  buildPrompt,
+  buildSystemPromptAppend,
+  buildUserPrompt,
+} from "./promptBuilder.js";
 export {
   buildPreToolUseHook,
   rewriteBashCommandWithRtk,
@@ -814,12 +821,25 @@ export async function runClaudeAgent(
       : [],
   };
 
-  // The prompt is normally a plain string. When the turn carries image
+  const setSystemPrompt = () => {
+    options.systemPrompt = {
+      type: "preset",
+      preset: "claude_code",
+      append: buildSystemPromptAppend(promptRequest),
+      // Keep Claude Code's stable default prompt, but move its per-user dynamic
+      // cwd/memory/git-status sections out of the system layer. The app supplies
+      // its own workspace/tool-state guidance in the appended system prompt.
+      excludeDynamicSections: true,
+    };
+  };
+  setSystemPrompt();
+
+  // The user prompt is normally a plain string. When the turn carries image
   // attachments we instead pass a single-message async-iterable ("streaming
-  // input" mode) whose content is the prompt text + image blocks — the only way
-  // to feed the model images. All `options` (resume/hooks/mcpServers/model) work
-  // identically in both modes, so text-only turns keep the unchanged string path.
-  let promptText = buildPrompt(promptRequest);
+  // input" mode) whose content is the user prompt text + image blocks — the only
+  // way to feed the model images. All `options` (resume/hooks/mcpServers/model)
+  // work identically in both modes, so text-only turns keep the string path.
+  let promptText = buildUserPrompt(promptRequest);
 
   // One-shot guard for the stale-resume self-heal below: if the SDK can't find
   // the session we asked it to resume, we drop `resume`, rebuild the prompt with
@@ -992,7 +1012,8 @@ export async function runClaudeAgent(
         resumeFallbackTried = true;
         delete options.resume;
         promptRequest.resumeSessionId = undefined;
-        promptText = buildPrompt(promptRequest);
+        setSystemPrompt();
+        promptText = buildUserPrompt(promptRequest);
         agentLogger.warn(
           {
             avatarId: request.avatar.id,

@@ -12,7 +12,7 @@ Durable principles for this layer:
   `sdkMessageHandlers.ts`, `preToolUseHook.ts`, `agentUtils.ts`) so importer paths stay stable. Keep the
   re-export set minimal to the original public surface.
 - **`ownerState.ts` is the metacognition sync point.** `summarizeOwnerState` returns UNFORMATTED self-state
-  DATA consumed by BOTH `buildPrompt` (English prompt) and `describe_system` (tool text); gating +
+  DATA consumed by BOTH `buildSystemPromptAppend` (English prompt appended to the SDK default system prompt) and `describe_system` (tool text); gating +
   formatting stay at each call site. Add a self-state fact to `OwnerState` and BOTH consumers together.
 - **Every MCP tool MUST self-gate in its handler** — the `mcp__`-prefix auto-allow in the PreToolUse hook
   fires BEFORE any owner check. **Guard conventions differ per file BY DESIGN** (owner-only vs elevated vs
@@ -21,5 +21,8 @@ Durable principles for this layer:
   lists. Miss one and the model either sees a tool it can't call or calls one it can't see.
 - **Don't re-copy shared helpers.** `mcpTools.ts` (`text()`, `decodeRepoFsError`, `decodeExecError`) and
   `repoToolKit.ts` (the guard→resolve→ensureClone→decode skeleton) exist so the ~9 servers don't drift.
+- **Prompt assembly is split:** `buildSystemPromptAppend` holds app/tool/self-state standing guidance and is
+  appended to the SDK's default Claude Code system prompt; `buildUserPrompt` holds stored history fallback and
+  the current user/task instruction. Compatibility `buildPrompt` returns both for older tests/importers.
 - **`agent-core.test.ts` checks the prompt with `toContain`/`not.toContain` substrings**, not byte-for-byte
   — adding a section is safe; changing an existing string (or its per-viewer presence) breaks a test.

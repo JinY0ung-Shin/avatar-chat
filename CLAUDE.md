@@ -12,17 +12,17 @@ These are the invariants the project is built around. New work should reinforce 
 - **Give the avatar META-COGNITION of its own system state.** The avatar should accurately know what's
   configured and what it can do RIGHT NOW — knowledge repo connected? git token set? which secrets/SSH
   enabled? which tools it currently has — so it acts and explains correctly instead of guessing or
-  relaying stale manual steps. `buildPrompt` (per viewer/headless) is where this self-state is injected;
-  `mcp__system__describe_system` is the runtime mirror of the same info. **When you add a capability,
-  surface its current state in BOTH.** The structural sync point is `agent/ownerState.ts`
-  (`summarizeOwnerState` → unformatted facts shared by both consumers).
+  relaying stale manual steps. `buildSystemPromptAppend` (per viewer/headless) appends this self-state to
+  the SDK's default Claude Code system prompt; `mcp__system__describe_system` is the runtime mirror of the
+  same info. **When you add a capability, surface its current state in BOTH.** The structural sync point is
+  `agent/ownerState.ts` (`summarizeOwnerState` → unformatted facts shared by both consumers).
 - **For the avatar to actually USE a capability, greeting-only prompt text isn't enough.** Give it
   STANDING per-turn guidance + an action-trigger in the tool's description + an error that redirects.
 - **Language split: agent-facing text is English, user-facing text is Korean.** Classify a new string by
   *"does the model read it as INPUT?"* → English (prompts, tool descriptions, hook-deny reasons, server
   slash-command expansions, bundled `SKILL.md` body + frontmatter); else Korean (UI, `apiError`,
   status/activity labels, conversation titles). The avatar always REPLIES in the user's language (default
-  Korean), anchored in `buildPrompt`'s 2nd line. A string used on BOTH channels is split.
+  Korean), anchored in `buildSystemPromptAppend`. A string used on BOTH channels is split.
 - **Trust/elevation is GROUP-ONLY.** `isTrustedFor` IS `shareAnyGroup` (symmetric group co-membership) —
   the single choke point every elevated/trust check flows through. Add new trust sources THERE, not at
   call sites. There is no per-avatar trust list anymore.
@@ -51,9 +51,10 @@ These are the invariants the project is built around. New work should reinforce 
 ## Module map
 - **HTTP:** `app.ts` is thin glue (`createApp` mounts per-domain routers); handlers in
   `src/server/routes/{auth,profile,plugins,knowledgeRepo,groups,routines,chat,admin}.ts` (+ `_shared.ts`).
-- **Agent:** `claudeAgent.ts` re-exports `buildPrompt` (`agent/promptBuilder.ts`), SDK-message handlers
-  (`agent/sdkMessageHandlers.ts`), the PreToolUse hook (`agent/preToolUseHook.ts`). Shared self-state in
-  `agent/ownerState.ts`; MCP helpers in `agent/mcpTools.ts`; repo-tool skeleton in `agent/repoToolKit.ts`.
+- **Agent:** `claudeAgent.ts` re-exports `buildPrompt` / `buildSystemPromptAppend` / `buildUserPrompt`
+  (`agent/promptBuilder.ts`), SDK-message handlers (`agent/sdkMessageHandlers.ts`), the PreToolUse hook
+  (`agent/preToolUseHook.ts`). Shared self-state in `agent/ownerState.ts`; MCP helpers in
+  `agent/mcpTools.ts`; repo-tool skeleton in `agent/repoToolKit.ts`.
 - **Store:** `store.ts` is a thin barrel; the `Store` facade is composed from per-domain mixins in
   `store/*.ts`. Public surface unchanged (`new Store(config)` + `store.foo()`).
 - **Repo git:** low-level plumbing shared via `repoGitCore.ts` + `repoGitGuards.ts`.

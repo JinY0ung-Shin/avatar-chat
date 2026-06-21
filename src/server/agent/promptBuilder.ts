@@ -392,7 +392,7 @@ function experimentalFeaturesSection(request: AgentRequest): string | null {
   );
 }
 
-export function buildPrompt(
+export function buildSystemPromptAppend(
   request: AgentRequest,
   _openRequestCount?: number,
 ): string {
@@ -713,6 +713,11 @@ export function buildPrompt(
           : "."),
     );
   }
+  return lines.join("\n\n");
+}
+
+export function buildUserPrompt(request: AgentRequest): string {
+  const lines: string[] = [];
   // Stored history is the fallback for context the SDK session would otherwise
   // carry. Inject it ONLY when there's no session to resume: a resume turn gets
   // its context from the SDK transcript, so replaying the history here too would
@@ -725,5 +730,13 @@ export function buildPrompt(
   if (historyBlock) {
     lines.push(historyBlock);
   }
-  return `${lines.join("\n\n")}\n\n${request.headless ? "Task instruction" : "User message"}:\n${request.message}`;
+  lines.push(`${request.headless ? "Task instruction" : "User message"}:\n${request.message}`);
+  return lines.join("\n\n");
+}
+
+export function buildPrompt(
+  request: AgentRequest,
+  openRequestCount?: number,
+): string {
+  return `${buildSystemPromptAppend(request, openRequestCount)}\n\n${buildUserPrompt(request)}`;
 }

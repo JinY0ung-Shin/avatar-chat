@@ -70,6 +70,8 @@ import {
   buildModelFallbackChain,
   buildPreToolUseHook,
   buildPrompt,
+  buildSystemPromptAppend,
+  buildUserPrompt,
   deriveAgentToolAccess,
   interpretResult,
   isMissingResumeSessionError,
@@ -2326,6 +2328,32 @@ describe("buildPrompt", () => {
     // claudeAgent can self-heal a missing transcript by re-running without resume.
     expect(p).not.toContain("Earlier conversation history");
     expect(p).not.toContain("첫 요청: 배포 체크리스트를 만들어줘");
+  });
+
+  it("splits app guidance into system append and keeps turn content in the user prompt", () => {
+    const input = req({
+      viewerIsOwner: true,
+      message: "방금 말한 내용을 이어서 처리해줘",
+      conversationHistory: [
+        { role: "user", content: "첫 요청: 배포 체크리스트를 만들어줘" },
+        { role: "assistant", content: "초안 작성 중이었습니다." },
+      ],
+    });
+    const systemAppend = buildSystemPromptAppend(input);
+    const userPrompt = buildUserPrompt(input);
+
+    expect(systemAppend).toContain("Noah Almighty (avatar-chat)");
+    expect(systemAppend).toContain("mcp__system__describe_system");
+    expect(systemAppend).not.toContain("Earlier conversation history");
+    expect(systemAppend).not.toContain(
+      "User message:\n방금 말한 내용을 이어서 처리해줘",
+    );
+    expect(userPrompt).toContain("Earlier conversation history");
+    expect(userPrompt).toContain("첫 요청: 배포 체크리스트를 만들어줘");
+    expect(userPrompt).toContain(
+      "User message:\n방금 말한 내용을 이어서 처리해줘",
+    );
+    expect(userPrompt).not.toContain("Noah Almighty (avatar-chat)");
   });
 
   it("gives an owner-scheduled routine its self-state and the git-MCP-only rule", () => {

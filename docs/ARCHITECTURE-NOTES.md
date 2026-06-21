@@ -349,9 +349,11 @@ Agent orchestration + in-process MCP tool servers. Companion to the agent-area p
 ### claudeAgent.ts is split (behind unchanged exports)
 `claudeAgent.ts` is the orchestrator (`runClaudeAgent` + subprocess-env helpers) and **re-exports** the
 moved symbols so importers keep their paths:
-- `promptBuilder.ts` — `buildPrompt` + `compactConversationHistory`/`conversationHistoryBlock` +
-  `GIT_MCP_ONLY_GUIDANCE`. `buildPrompt` assembles per-section helpers
-  (knowledgeRepo/gitRepo/groups/secrets/sshEnablement/knowledgeMemory/greeting). **`agent-core.test.ts`
+- `promptBuilder.ts` — `buildSystemPromptAppend` + `buildUserPrompt` + compatibility `buildPrompt` +
+  `compactConversationHistory`/`conversationHistoryBlock` + `GIT_MCP_ONLY_GUIDANCE`.
+  `claudeAgent.ts` uses the SDK's default Claude Code system prompt via `systemPrompt: { type: "preset",
+  preset: "claude_code", append, excludeDynamicSections: true }`; app/permission/self-state guidance goes
+  in the append, while stored history + the current user/task instruction stay in the user prompt. **`agent-core.test.ts`
   checks the prompt with `toContain`/`not.toContain` substrings, NOT byte-for-byte** — ADDING a section is
   safe; only changing an EXISTING string (or its presence per viewer class) breaks a test.
 - `sdkMessageHandlers.ts` — SDK-message→`AgentEvents` translation (`handle*` + Task helpers + `LoopState`
