@@ -157,10 +157,11 @@ export function formatTokenCount(n: number): string {
 }
 
 // "이번 턴" 토큰 사용량 배지 라벨: 컨텍스트 점유(입력/윈도우) + 출력.
-export function formatUsageLabel(usage: { inputTokens?: number; outputTokens?: number; contextWindow?: number } | null | undefined): string {
+export function formatUsageLabel(usage: { inputTokens?: number; outputTokens?: number; thinkingTokens?: number; contextWindow?: number } | null | undefined): string {
   if (!usage) return "";
   const input = Number(usage.inputTokens) || 0;
   const output = Number(usage.outputTokens) || 0;
+  const thinking = Number(usage.thinkingTokens) || 0;
   const ctx = Number(usage.contextWindow) || 0;
   if (!input && !output) return "";
   const parts: string[] = [];
@@ -174,6 +175,13 @@ export function formatUsageLabel(usage: { inputTokens?: number; outputTokens?: n
   }
   // input === 0 marks a turn with no honest occupancy snapshot (see
   // finalizeTurnUsage); fall through to output-only rather than show "입력 0".
-  parts.push(`출력 ${formatTokenCount(output)}`);
+  // `output` is the turn-cumulative total (every request, incl. reasoning), so a
+  // short visible reply can still read large — append the reasoning share when
+  // present so the number doesn't look bogus.
+  parts.push(
+    thinking > 0 && thinking <= output
+      ? `출력 ${formatTokenCount(output)} (추론 ${formatTokenCount(thinking)})`
+      : `출력 ${formatTokenCount(output)}`,
+  );
   return parts.join(" · ");
 }

@@ -25,7 +25,7 @@ import {
   viewerClassForAgentRequest,
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
-import { isRecord, asString } from "./agentUtils.js";
+import { isRecord, asString, asNumber } from "./agentUtils.js";
 import {
   isModelTier,
   DEFAULT_MODEL_TIER,
@@ -312,7 +312,16 @@ export async function runClaudeAgent(
   abortController?: AbortController,
 ): Promise<AgentResponse> {
   const sdk = (await import("@anthropic-ai/claude-agent-sdk")) as {
-    query: (input: unknown) => AsyncIterable<unknown>;
+    // `query()` returns an AsyncIterable PLUS control methods. We use
+    // getContextUsage() — the SDK's first-party "current context-window usage"
+    // breakdown — to report true occupancy instead of scraping message usage.
+    // It only answers while the session is live (streaming I/O), so we call it
+    // mid-turn (see the assistant branch in the run loop).
+    query: (input: unknown) => AsyncIterable<unknown> & {
+      getContextUsage?: () => Promise<
+        { totalTokens?: number; maxTokens?: number } | undefined
+      >;
+    };
   };
   const { buildKnowledgeServer, KNOWLEDGE_SERVER_NAME, KNOWLEDGE_TOOL_NAMES } =
     await import("./knowledgeTools.js");
@@ -797,7 +806,14 @@ export async function runClaudeAgent(
   let runUsage: AgentUsage | undefined;
   // Snapshot of the latest main-agent prompt size (≈ live context occupancy),
   // used to override the result usage's CUMULATIVE inputTokens for the badge.
+  // FALLBACK only — preferred source is `contextUsage` below.
   let contextTokens: number | undefined;
+  // Authoritative context occupancy from the SDK's first-party getContextUsage()
+  // control method, captured mid-turn on streaming chat. When set it supersedes
+  // the scraped `contextTokens` snapshot (it carries the true window too, so no
+  // correctContextWindow guess is needed). Undefined on headless/non-streaming
+  // turns or if the control call fails — then we fall back to contextTokens.
+  let contextUsage: { total: number; window: number } | undefined;
   let usedModel = effectiveModel;
 
   // Owner self-state (secret names, group memberships) flows to every
@@ -884,6 +900,7 @@ export async function runClaudeAgent(
     resultErrorSubtype = "";
     runUsage = undefined;
     contextTokens = undefined;
+    contextUsage = undefined;
     // Build the prompt fresh each attempt: the image path is a single-use async
     // generator, so a retry needs a new one (the string path is reused as-is).
     const queryPrompt =
@@ -892,7 +909,10 @@ export async function runClaudeAgent(
         : promptText;
 
     try {
-      for await (const message of sdk.query({ prompt: queryPrompt, options })) {
+      // Keep the Query handle (not just its iterator) so we can call the
+      // getContextUsage() control method on it during the turn.
+      const queryHandle = sdk.query({ prompt: queryPrompt, options });
+      for await (const message of queryHandle) {
         if (!isRecord(message)) {
           continue;
         }
@@ -941,10 +961,29 @@ export async function runClaudeAgent(
             assistantChunks.push(assistantText);
           }
           // Track the final main-agent prompt size as the context-occupancy
-          // snapshot (overrides the cumulative result usage below).
+          // snapshot (FALLBACK; overrides the cumulative result usage below).
           const ctxTokens = mainAssistantContextTokens(message);
           if (ctxTokens !== undefined) {
             contextTokens = ctxTokens;
+          }
+          // PREFERRED source: ask the SDK for the authoritative current context
+          // usage while the session is still live. The control channel answers
+          // until the result message closes it, so we call it per main-agent
+          // assistant message and keep the latest — the LAST one ≈ the final
+          // request's true occupancy (totalTokens) and real window (maxTokens).
+          // Streaming chat only (control methods need the live streaming
+          // session); headless/non-streaming turns keep the scraped fallback.
+          if (streaming && !asString(message.parent_tool_use_id)) {
+            try {
+              const cu = await queryHandle.getContextUsage?.();
+              const total = asNumber(cu?.totalTokens);
+              if (total > 0) {
+                contextUsage = { total, window: asNumber(cu?.maxTokens) };
+              }
+            } catch {
+              // Session closing or control unsupported on this backend — fall
+              // back to the contextTokens snapshot captured above.
+            }
           }
           continue;
         }
@@ -1062,16 +1101,25 @@ export async function runClaudeAgent(
   // case nothing streamed; the error fallback applies when neither produced text.
   // The result usage's inputTokens is cumulative across all of the turn's model
   // requests, so dividing it by the context window made the badge's % balloon
-  // past 100% on tool-heavy turns. Swap in the final request's prompt size — a
-  // true context-occupancy snapshot — while keeping outputTokens cumulative
-  // (total generated this turn). finalizeTurnUsage also corrects contextWindow
-  // (the SDK reports a stale 200K base for Opus 4.8's real 1M) and — crucially —
-  // handles the no-snapshot turn: when contextTokens is undefined (error_max_turns
-  // result, or subagent-only assistant messages) it does NOT divide the cumulative
-  // inputTokens by the window (a meaningless ratio that ballooned past 100%); it
-  // zeroes the context numbers so the badge shows output-only instead.
+  // past 100% on tool-heavy turns. We replace it with true occupancy + keep
+  // outputTokens cumulative (total generated this turn).
+  //   PREFERRED: getContextUsage()'s totalTokens/maxTokens (authoritative,
+  //   carries the real window — no stale-200K guess). Used whenever the control
+  //   call succeeded this turn (streaming chat).
+  //   FALLBACK: finalizeTurnUsage with the scraped contextTokens snapshot — and
+  //   when even that is undefined (error_max_turns, subagent-only, or a backend
+  //   that doesn't emit usage) it zeroes the context numbers so the badge shows
+  //   output-only rather than a fabricated ratio.
   if (runUsage) {
-    runUsage = finalizeTurnUsage(runUsage, contextTokens);
+    if (contextUsage) {
+      runUsage = {
+        ...runUsage,
+        inputTokens: contextUsage.total,
+        ...(contextUsage.window ? { contextWindow: contextUsage.window } : {}),
+      };
+    } else {
+      runUsage = finalizeTurnUsage(runUsage, contextTokens);
+    }
   }
 
   const partialText =

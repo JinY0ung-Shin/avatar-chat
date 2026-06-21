@@ -1119,6 +1119,30 @@ describe("interpretResult", () => {
     });
   });
 
+  it("surfaces the reasoning share from output_tokens_details when present", () => {
+    const r = interpretResult({
+      type: "result",
+      subtype: "success",
+      result: "hi",
+      usage: {
+        input_tokens: 100,
+        output_tokens: 5000,
+        output_tokens_details: { thinking_tokens: 4200 },
+      },
+    });
+    expect(r.usage).toMatchObject({ outputTokens: 5000, thinkingTokens: 4200 });
+  });
+
+  it("omits thinkingTokens when no reasoning was reported", () => {
+    const r = interpretResult({
+      type: "result",
+      subtype: "success",
+      result: "hi",
+      usage: { input_tokens: 100, output_tokens: 40 },
+    });
+    expect(r.usage).not.toHaveProperty("thinkingTokens");
+  });
+
   it("omits usage when the result carries no counts", () => {
     expect(
       interpretResult({ type: "result", subtype: "success", result: "hi" }),

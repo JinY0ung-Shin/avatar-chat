@@ -430,16 +430,25 @@ export interface AdminUserDetail extends AdminUserSummary {
 /** Token usage for a single chat turn, surfaced to the client for display. */
 export interface AgentUsage {
   /**
-   * Prompt tokens of the turn's FINAL model request (input + cache read + cache
-   * creation) ≈ live context-window occupancy at the end of the turn. A
-   * snapshot, NOT the cumulative sum across the turn's requests — so
-   * `inputTokens / contextWindow` is a meaningful fill % (see
-   * `mainAssistantContextTokens`).
+   * Live context-window occupancy at the end of the turn — the SDK's
+   * authoritative `getContextUsage().totalTokens` when available, else the final
+   * request's prompt-size snapshot (input + cache read + cache creation, see
+   * `mainAssistantContextTokens`). A snapshot, NOT the cumulative sum across the
+   * turn's requests, so `inputTokens / contextWindow` is a meaningful fill %.
+   * 0 marks a turn with no honest occupancy figure (the badge then shows
+   * output-only).
    */
   inputTokens: number;
   /** Tokens the model generated this turn (cumulative across all requests). */
   outputTokens: number;
-  /** The model's context-window size, if the SDK reported it. */
+  /**
+   * Of `outputTokens`, the portion spent on internal reasoning (extended
+   * thinking), when the SDK reports it. Lets the badge separate reasoning from
+   * the visible reply so a short answer with heavy thinking doesn't read as a
+   * bogus "출력" count. Omitted/0 when the turn did no reasoning.
+   */
+  thinkingTokens?: number;
+  /** The model's context-window size, if known (getContextUsage/modelUsage). */
   contextWindow?: number;
 }
 

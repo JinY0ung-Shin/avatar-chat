@@ -434,10 +434,24 @@ function promptTokens(usage: Record<string, unknown>): number {
   );
 }
 
+/**
+ * Reasoning tokens within `output_tokens`, from `output_tokens_details`
+ * (`thinking_tokens`) when the SDK populates it — 0 otherwise. `output_tokens`
+ * stays the inclusive total; this is just the breakdown so the badge can show
+ * the reasoning share separately.
+ */
+function thinkingTokens(usage: Record<string, unknown>): number {
+  const details = isRecord(usage.output_tokens_details)
+    ? usage.output_tokens_details
+    : undefined;
+  return details ? asNumber(details.thinking_tokens) : 0;
+}
+
 function extractUsage(message: Record<string, unknown>): AgentUsage | undefined {
   const usage = isRecord(message.usage) ? message.usage : undefined;
   const inputTokens = usage ? promptTokens(usage) : 0;
   const outputTokens = usage ? asNumber(usage.output_tokens) : 0;
+  const thinking = usage ? thinkingTokens(usage) : 0;
   let contextWindow = 0;
   if (isRecord(message.modelUsage)) {
     for (const entry of Object.values(message.modelUsage)) {
@@ -447,7 +461,12 @@ function extractUsage(message: Record<string, unknown>): AgentUsage | undefined 
   if (!inputTokens && !outputTokens && !contextWindow) {
     return undefined;
   }
-  return { inputTokens, outputTokens, ...(contextWindow ? { contextWindow } : {}) };
+  return {
+    inputTokens,
+    outputTokens,
+    ...(thinking ? { thinkingTokens: thinking } : {}),
+    ...(contextWindow ? { contextWindow } : {}),
+  };
 }
 
 /**
