@@ -1140,6 +1140,29 @@ export function createChatRouter({
                   planning: event.planning ?? false,
                 });
               },
+              // Interactive plan approval (owner only). The avatar proposed a plan
+              // via ExitPlanMode; park the run and emit the plan to the client,
+              // which shows approve/reject controls on the plan card. Approve →
+              // the avatar implements; reject → feed the feedback back so it revises.
+              onPlanReview: async (requestData) => {
+                const requestId = crypto.randomUUID();
+                emitRunEvent(runId, "plan_review", {
+                  runId,
+                  requestId,
+                  plan: requestData.plan,
+                });
+                const answer = await awaitResponse(runId, requestId);
+                if (answer === CANCELLED) {
+                  // Run ended / cancelled / timed out before an answer: treat as a
+                  // rejection (no feedback) so the avatar never barrels ahead with
+                  // an unapproved plan.
+                  return { behavior: "rejected" };
+                }
+                const reply = answer as { behavior?: string; feedback?: string };
+                return reply?.behavior === "approved"
+                  ? { behavior: "approved" }
+                  : { behavior: "rejected", feedback: reply?.feedback };
+              },
               // Interactive permission prompt (owner only — see claudeAgent).
               onPermission: async (requestData) => {
                 const requestId = crypto.randomUUID();

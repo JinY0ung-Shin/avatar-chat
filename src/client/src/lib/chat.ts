@@ -117,6 +117,8 @@ function makePane(
     liveThinking: "",
     livePlan: "",
     planPending: false,
+    planReview: null,
+    planReviewSubmitting: false,
     liveStatus: "",
     liveRunId: null,
     liveAgents: [],
@@ -840,6 +842,24 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         });
       }
       return;
+    case "plan_review":
+      // The avatar proposed a plan (ExitPlanMode) and is awaiting the owner's
+      // approval. Show the plan as a live card (in case the "plan" event was
+      // missed) and surface inline approve/reject controls keyed by requestId.
+      if (data?.requestId && !resolvedRequestIds.has(data.requestId)) {
+        markTextBreak(paneId);
+        updatePane(paneId, (pane) => {
+          if (typeof data.plan === "string" && data.plan) {
+            pane.livePlan = data.plan;
+            pane.planPending = false;
+          }
+          pane.planReview = { requestId: data.requestId, runId: data.runId || "" };
+          pane.planReviewSubmitting = false;
+        });
+        setStatus(paneId, "계획 승인을 기다리는 중…", true);
+        notifyPlanReview(paneId);
+      }
+      return;
     case "prompt_resolved":
       if (data?.requestId) {
         resolvePrompt(data.requestId);
@@ -850,6 +870,12 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
             (c) => c.requestId === data.requestId,
           );
           if (canvas) canvas.pending = false;
+          // A plan awaiting approval was resolved (answered elsewhere / timeout /
+          // reconnect): drop the inline controls so they can't 404 on re-submit.
+          if (pane.planReview?.requestId === data.requestId) {
+            pane.planReview = null;
+            pane.planReviewSubmitting = false;
+          }
         });
       }
       return;
@@ -1005,6 +1031,8 @@ function resetLive(pane: ChatPane): void {
   pane.liveThinking = "";
   pane.livePlan = "";
   pane.planPending = false;
+  pane.planReview = null;
+  pane.planReviewSubmitting = false;
   pane.liveStatus = "";
   pane.liveAgents = [];
   pane.liveTools = [];
@@ -1472,6 +1500,18 @@ function notifyPrompt(
   }
 }
 
+// OS notification when the avatar's proposed plan is waiting on the owner's
+// approval. Like the prompt notifications, only meaningful while backgrounded.
+function notifyPlanReview(paneId: string): void {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  const who = pane?.avatar?.alias || pane?.avatar?.displayName || "아바타";
+  osNotify(
+    `${who} · 계획 승인 필요`,
+    "제안한 계획을 검토해 주세요.",
+    `plan-${paneId}`,
+  );
+}
+
 function resolvePrompt(requestId: string): void {
   resolvedRequestIds.add(requestId);
   updateState((state) => {
@@ -1507,6 +1547,53 @@ export async function answerPrompt(
       state.promptQueue = state.promptQueue.filter((p) => p.id !== requestId);
     });
   } catch (err) {
+    notify(`응답을 전송하지 못했습니다: ${(err as Error).message}`, "warn");
+    throw err;
+  }
+}
+
+// Submit the owner's plan-approval decision for the pane's pending ExitPlanMode
+// review. Unlike answerPrompt, a plan review lives on the pane (inline on the
+// plan card), not in the prompt queue. Approve → the avatar implements; reject
+// → the optional feedback is fed back to the model so it revises the plan.
+export async function respondPlanReview(
+  paneId: string,
+  behavior: "approved" | "rejected",
+  feedback?: string,
+): Promise<void> {
+  const review = readState().chatPanes.find((p) => p.id === paneId)?.planReview;
+  if (!review) return;
+  updatePane(paneId, (pane) => {
+    pane.planReviewSubmitting = true;
+  });
+  try {
+    await api("/api/chat/respond", {
+      method: "POST",
+      body: JSON.stringify({
+        runId: review.runId,
+        requestId: review.requestId,
+        value:
+          behavior === "approved"
+            ? { behavior: "approved" }
+            : { behavior: "rejected", feedback: feedback?.trim() || undefined },
+      }),
+    });
+    resolvedRequestIds.add(review.requestId);
+    updatePane(paneId, (pane) => {
+      pane.planReview = null;
+      pane.planReviewSubmitting = false;
+    });
+    setStatus(
+      paneId,
+      behavior === "approved"
+        ? "계획을 승인했습니다."
+        : "계획 수정을 요청했습니다.",
+      true,
+    );
+  } catch (err) {
+    updatePane(paneId, (pane) => {
+      pane.planReviewSubmitting = false;
+    });
     notify(`응답을 전송하지 못했습니다: ${(err as Error).message}`, "warn");
     throw err;
   }

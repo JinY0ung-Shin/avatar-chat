@@ -126,8 +126,9 @@ export interface BlockedEvent {
 
 /**
  * The model submitted a plan via ExitPlanMode (plan mode). The host forwards the
- * plan markdown to the client to render as a dedicated plan card (not an
- * interactive prompt — autoApprove turns continue automatically). Display-only.
+ * plan markdown to the client to render as a dedicated plan card. This is the
+ * DISPLAY signal (always fires); a PRESENT owner additionally gets an interactive
+ * approval gate via `onPlanReview` (see below), which BLOCKS the run.
  */
 export interface PlanEvent {
   /** The plan markdown the model proposed. Empty while still planning. */
@@ -140,6 +141,21 @@ export interface PlanEvent {
    */
   planning?: boolean;
 }
+
+/**
+ * The model proposed a plan via ExitPlanMode and the present owner must approve
+ * it before the avatar starts implementing. Surfaced to the client as inline
+ * approve/reject controls on the plan card; the run blocks on the answer.
+ */
+export interface PlanReviewRequest {
+  /** The plan markdown awaiting approval. */
+  plan: string;
+  /** The ExitPlanMode tool_use id, for correlating with the display card. */
+  toolUseId?: string;
+}
+export type PlanReviewDecision =
+  | { behavior: "approved" }
+  | { behavior: "rejected"; feedback?: string };
 
 /**
  * Streaming sink passed into the agent runners. Every callback is optional so a
@@ -190,8 +206,18 @@ export interface AgentEvents {
   onAgentEnd?: (event: { agentId: string; ok: boolean }) => void;
   /** A tool was auto-denied (no interactive prompt). */
   onBlocked?: (event: BlockedEvent) => void;
-  /** The model submitted a plan via ExitPlanMode (plan mode) — display-only card. */
+  /** The model submitted a plan via ExitPlanMode (plan mode) — display card. */
   onPlan?: (event: PlanEvent) => void;
+
+  /**
+   * BLOCKING: the model finished planning and proposed a plan via ExitPlanMode.
+   * For a present owner (interactive, non-auto-approve) the run PARKS here for an
+   * explicit approval: approve → the avatar proceeds to implement; reject → the
+   * (optional) feedback is fed back to the model so it revises and re-proposes.
+   * If omitted (headless / colleague / auto-approve), the plan tool just
+   * auto-continues and only the display card (`onPlan`) is shown.
+   */
+  onPlanReview?: (request: PlanReviewRequest) => Promise<PlanReviewDecision>;
 
   /**
    * BLOCKING: the model wants a non-pre-approved tool. Resolve with the user's

@@ -207,6 +207,36 @@ export function buildPreToolUseHook(
       );
     }
 
+    // ExitPlanMode: the avatar finished planning and proposed a plan. For a PRESENT
+    // owner (interactive, non-auto-approve) we PARK for explicit approval — approve
+    // → allow (the avatar proceeds to implement); reject → deny carrying the user's
+    // feedback, which the model reads as a tool result and uses to revise the plan
+    // before re-proposing. Headless / colleague / auto-approve runs keep the
+    // original display-only behavior (fall through to the auto-allow below). An
+    // empty plan (degenerate ExitPlanMode) has nothing to approve, so it skips too.
+    if (toolName === "ExitPlanMode") {
+      const plan = asString((toolInput as Record<string, unknown>).plan);
+      const canReview =
+        plan && !headless && elevated && !autoApprove && Boolean(events.onPlanReview);
+      if (canReview) {
+        const decision = await events.onPlanReview!({ plan, toolUseId });
+        if (decision.behavior === "approved") {
+          return trace(hookAllow());
+        }
+        const feedback = decision.feedback?.trim();
+        return trace(
+          hookDeny(
+            "The user REJECTED this plan and did NOT approve proceeding." +
+              (feedback
+                ? ` Their feedback: ${feedback}`
+                : " They gave no specific feedback.") +
+              " Revise the plan to address this, then call ExitPlanMode again with the" +
+              " updated plan. Do NOT begin implementing until a plan is approved.",
+          ),
+        );
+      }
+    }
+
     let updatedToolInput: Record<string, unknown> | undefined;
     if (toolName === "Bash") {
       const rewrittenCommand = rewriteBashCommandWithRtk(asString(toolInput.command), rtkCommand);

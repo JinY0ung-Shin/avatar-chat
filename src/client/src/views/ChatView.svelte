@@ -14,6 +14,7 @@
     closePane,
     newChat,
     regenerate,
+    respondPlanReview,
     selectConversation,
     sendMessage,
     startChatWith,
@@ -47,6 +48,26 @@
   let mcpToolsOpenPaneId = "";
   // Per-pane mobile composer settings disclosure state.
   let composerSettingsOpenPaneId = "";
+  // Plan-approval: which pane is in "수정 요청" (reject-with-feedback) mode, and its draft.
+  let planRejectPaneId = "";
+  let planFeedback = "";
+
+  function approvePlan(pane: ChatPane): void {
+    void respondPlanReview(pane.id, "approved");
+  }
+  function startRejectPlan(pane: ChatPane): void {
+    planRejectPaneId = pane.id;
+    planFeedback = "";
+  }
+  function cancelRejectPlan(): void {
+    planRejectPaneId = "";
+    planFeedback = "";
+  }
+  async function submitRejectPlan(pane: ChatPane): Promise<void> {
+    const feedback = planFeedback;
+    cancelRejectPlan();
+    await respondPlanReview(pane.id, "rejected", feedback);
+  }
 
   onMount(async () => {
     try {
@@ -806,8 +827,30 @@
               {/if}
               {#if item.livePlan}
                 <details class="plan-card" open>
-                  <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
+                  <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">{item.planReview ? "승인 대기 중" : "계획 모드"}</span></summary>
                   <div class="md plan-card-body" use:enhanceMarkdown={item.livePlan}>{@html renderMarkdown(item.livePlan)}</div>
+                  {#if item.planReview}
+                    <div class="plan-actions">
+                      {#if planRejectPaneId === item.id}
+                        <textarea
+                          class="plan-feedback"
+                          rows="2"
+                          placeholder="수정할 점을 알려주세요 (선택)"
+                          bind:value={planFeedback}
+                          disabled={item.planReviewSubmitting}
+                        ></textarea>
+                        <div class="plan-actions-row">
+                          <button class="btn btn-ghost btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={cancelRejectPlan}>취소</button>
+                          <button class="btn btn-primary btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={() => submitRejectPlan(item)}>수정 요청 보내기</button>
+                        </div>
+                      {:else}
+                        <div class="plan-actions-row">
+                          <button class="btn btn-ghost btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={() => startRejectPlan(item)}>수정 요청</button>
+                          <button class="btn btn-primary btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={() => approvePlan(item)}>승인</button>
+                        </div>
+                      {/if}
+                    </div>
+                  {/if}
                 </details>
               {:else if item.planPending}
                 <div class="plan-card plan-card-pending">
@@ -1233,6 +1276,31 @@
     padding: 0 var(--s-3) var(--s-2);
     min-width: 0;
     max-width: 100%;
+  }
+  /* Inline approve / reject controls shown on a live plan card while the avatar
+     waits for the owner's approval (interactive plan mode). */
+  .plan-actions {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-2);
+    padding: 0 var(--s-3) var(--s-3);
+  }
+  .plan-actions-row {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--s-2);
+  }
+  .plan-feedback {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+    background: var(--panel);
+    color: var(--text);
+    padding: var(--s-2);
+    font: inherit;
+    font-size: 0.85rem;
   }
   /* Placeholder shown between EnterPlanMode and ExitPlanMode: the avatar is
      composing the plan in the background (tool rows are suppressed for plan

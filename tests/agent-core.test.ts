@@ -2880,6 +2880,105 @@ exit 1
     expect(prompted).toBe(false);
   });
 
+  it("gates a proposed plan through an interactive plan review for a present owner", async () => {
+    const reviews: string[] = [];
+    const hook = buildPreToolUseHook(
+      {
+        onPlanReview: async (req) => {
+          reviews.push(req.plan);
+          return { behavior: "approved" };
+        },
+      },
+      true, // elevated owner
+      READONLY,
+      false, // headless
+      false, // allowHeadlessTools
+      false, // autoApprove
+    );
+    const out = await hook(
+      {
+        tool_name: "ExitPlanMode",
+        tool_input: { plan: "## 단계\n1. 구현" },
+        tool_use_id: "plan-1",
+      },
+      "plan-1",
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(reviews).toEqual(["## 단계\n1. 구현"]);
+  });
+
+  it("denies a rejected plan and feeds the feedback back to the model", async () => {
+    const hook = buildPreToolUseHook(
+      {
+        onPlanReview: async () => ({
+          behavior: "rejected",
+          feedback: "DB 마이그레이션을 먼저 다뤄라",
+        }),
+      },
+      true,
+      READONLY,
+      false,
+      false,
+      false,
+    );
+    const out = await hook(
+      {
+        tool_name: "ExitPlanMode",
+        tool_input: { plan: "계획" },
+        tool_use_id: "plan-2",
+      },
+      "plan-2",
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain(
+      "DB 마이그레이션을 먼저 다뤄라",
+    );
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain(
+      "ExitPlanMode",
+    );
+  });
+
+  it("skips plan review (auto-allows) on auto-approve runs and empty plans", async () => {
+    const onPlanReview = vi.fn(async () => ({ behavior: "approved" as const }));
+    // Owner who opted into auto-approve: no plan-approval prompt.
+    const autoHook = buildPreToolUseHook(
+      { onPlanReview },
+      true,
+      READONLY,
+      false,
+      false,
+      true, // autoApprove
+    );
+    const auto = await autoHook(
+      {
+        tool_name: "ExitPlanMode",
+        tool_input: { plan: "계획" },
+        tool_use_id: "plan-3",
+      },
+      "plan-3",
+    );
+    expect(auto.hookSpecificOutput.permissionDecision).toBe("allow");
+    // Empty ExitPlanMode (degenerate) has nothing to approve.
+    const emptyHook = buildPreToolUseHook(
+      { onPlanReview },
+      true,
+      READONLY,
+      false,
+      false,
+      false,
+    );
+    const empty = await emptyHook(
+      {
+        tool_name: "ExitPlanMode",
+        tool_input: { plan: "" },
+        tool_use_id: "plan-4",
+      },
+      "plan-4",
+    );
+    expect(empty.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(onPlanReview).not.toHaveBeenCalled();
+  });
+
   // ---- active repo workspace Bash-git integrity policy (#47) ----
   // rtkCommand "/nonexistent-rtk" makes the rtk rewrite a no-op (spawn fails),
   // so the command reaches the git policy verbatim. activeRepoMode is the 10th arg.

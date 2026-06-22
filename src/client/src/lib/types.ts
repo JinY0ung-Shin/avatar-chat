@@ -81,6 +81,10 @@ export interface ChatPane {
   livePlan?: string;
   /** True between EnterPlanMode and ExitPlanMode: the avatar is composing a plan in the background. Drives a "writing plan…" placeholder card so the turn doesn't look stalled. Cleared once `livePlan` arrives. */
   planPending?: boolean;
+  /** Set when the avatar proposed a plan (ExitPlanMode) and is awaiting the owner's approval; drives inline approve/reject controls on the live plan card. Holds the ids needed to answer via /api/chat/respond. Cleared once answered/resolved. */
+  planReview?: { requestId: string; runId: string } | null;
+  /** A plan-approval submit (approve/reject) is in flight, to disable the controls. */
+  planReviewSubmitting?: boolean;
   liveStatus: string;
   liveRunId: string | null;
   /** Multi-agent activity tree (root "main" + sub-agents) for the live bubble. */
