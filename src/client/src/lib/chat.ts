@@ -115,6 +115,7 @@ function makePane(
     liveText: "",
     liveTextBreakPending: false,
     liveThinking: "",
+    thinkingActive: false,
     livePlan: "",
     planPending: false,
     planReview: null,
@@ -666,6 +667,8 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
               pane.liveText += "\n\n";
           }
           pane.liveText += text;
+          // Answer text means the reasoning phase has handed off; stop the pulse.
+          pane.thinkingActive = false;
         });
       }
       return;
@@ -675,6 +678,7 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         const text = data.text;
         updatePane(paneId, (pane) => {
           pane.liveThinking = (pane.liveThinking || "") + text;
+          pane.thinkingActive = true;
         });
       }
       return;
@@ -1008,6 +1012,8 @@ function markTextBreak(paneId: string): void {
   updatePane(paneId, (pane) => {
     if (pane.liveText && !pane.liveText.endsWith("\n"))
       pane.liveTextBreakPending = true;
+    // Tool / agent / task / plan activity interrupts reasoning: stop the pulse.
+    pane.thinkingActive = false;
   });
 }
 
@@ -1029,6 +1035,7 @@ function resetLive(pane: ChatPane): void {
   pane.liveText = "";
   pane.liveTextBreakPending = false;
   pane.liveThinking = "";
+  pane.thinkingActive = false;
   pane.livePlan = "";
   pane.planPending = false;
   pane.planReview = null;

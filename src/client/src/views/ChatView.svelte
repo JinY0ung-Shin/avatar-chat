@@ -759,18 +759,18 @@
                 {#if runtimeBadge(message)}
                   <div class="response-meta"><span class="meta-badge">{runtimeBadge(message)}</span></div>
                 {/if}
+                {#if message.response?.thinking}
+                  <details class="thinking-card">
+                    <summary class="thinking-card-head"><span class="thinking-card-badge">생각 과정</span></summary>
+                    <div class="md thinking-card-body" use:enhanceMarkdown={message.response.thinking}>{@html renderMarkdown(message.response.thinking)}</div>
+                  </details>
+                {/if}
                 {#if activity}
                   <details class="activity-live activity-done">
                     <summary><span class="activity-summary-text">{completedActivityLabel(activity)}</span></summary>
                     <div class="agent-activity">
                       <ActivityTree agentId="main" agents={activity.agents} tools={activity.tools} tasks={activity.tasks || []} />
                     </div>
-                  </details>
-                {/if}
-                {#if message.response?.thinking}
-                  <details class="thinking-card">
-                    <summary class="thinking-card-head"><span class="thinking-card-badge">생각 과정</span></summary>
-                    <div class="md thinking-card-body" use:enhanceMarkdown={message.response.thinking}>{@html renderMarkdown(message.response.thinking)}</div>
                   </details>
                 {/if}
                 {#if message.response?.plan}
@@ -811,18 +811,24 @@
               <span>{item.avatar.displayName}</span>
             </div>
             <div class="bubble">
+              {#if item.liveThinking}
+                <details class="thinking-card" class:thinking-card-active={item.thinkingActive}>
+                  <summary class="thinking-card-head">
+                    <span class="thinking-card-badge">생각 과정</span>
+                    {#if item.thinkingActive}
+                      <span class="thinking-card-hint">생각 중…</span>
+                      <span class="thinking-card-spin" aria-hidden="true"></span>
+                    {/if}
+                  </summary>
+                  <div class="md thinking-card-body" use:enhanceMarkdown={item.liveThinking}>{@html renderMarkdown(item.liveThinking)}</div>
+                </details>
+              {/if}
               {#if item.liveAgents.length}
                 <details class="activity-live" open>
                   <summary><span class="activity-summary-text">{activitySummary(item)}</span></summary>
                   <div class="agent-activity">
                     <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
                   </div>
-                </details>
-              {/if}
-              {#if item.liveThinking}
-                <details class="thinking-card" open>
-                  <summary class="thinking-card-head"><span class="thinking-card-badge">생각 과정</span></summary>
-                  <div class="md thinking-card-body" use:enhanceMarkdown={item.liveThinking}>{@html renderMarkdown(item.liveThinking)}</div>
                 </details>
               {/if}
               {#if item.livePlan}
@@ -1371,6 +1377,41 @@
     background: var(--line);
     color: var(--muted);
     letter-spacing: 0.02em;
+  }
+  /* Live reasoning indicator: shown on the collapsed card while thinking deltas
+     stream, so a closed-by-default card still signals the avatar is thinking. */
+  .thinking-card-hint {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--muted);
+    font-size: 0.75rem;
+  }
+  /* Self-contained spinner: the base `.spinner` rule is scoped to `.stream-status`.
+     `spin` is a global keyframe. */
+  .thinking-card-spin {
+    flex: none;
+    width: 11px;
+    height: 11px;
+    border: 2px solid var(--line);
+    border-top-color: var(--muted);
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+  }
+  /* Pulse the left rail while reasoning is active so the collapsed card reads as
+     "working" at a glance; the badge gains a subtle breathing accent too. */
+  .thinking-card-active {
+    animation: thinking-rail 1.4s ease-in-out infinite;
+  }
+  @keyframes thinking-rail {
+    0%,
+    100% {
+      border-left-color: var(--muted);
+    }
+    50% {
+      border-left-color: var(--accent);
+    }
   }
   .thinking-card-body {
     padding: 0 var(--s-3) var(--s-2);

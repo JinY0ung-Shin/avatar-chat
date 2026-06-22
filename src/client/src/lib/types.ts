@@ -77,6 +77,8 @@ export interface ChatPane {
   liveTextBreakPending?: boolean;
   /** The model's reasoning (extended-thinking) text streamed this turn; shown in a collapsible "생각 과정" view until the turn finishes and the persisted `response.thinking` takes over. */
   liveThinking?: string;
+  /** True while reasoning deltas are actively streaming (set on each thinking delta, cleared once answer text / tool / agent / task / plan activity arrives). Drives the live "생각 중…" indicator on the collapsed thinking card. */
+  thinkingActive?: boolean;
   /** Plan submitted via ExitPlanMode this turn (plan mode); shown live as a plan card until the turn finishes and the persisted `response.plan` takes over. */
   livePlan?: string;
   /** True between EnterPlanMode and ExitPlanMode: the avatar is composing a plan in the background. Drives a "writing plan…" placeholder card so the turn doesn't look stalled. Cleared once `livePlan` arrives. */
