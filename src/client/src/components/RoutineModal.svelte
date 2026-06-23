@@ -85,9 +85,9 @@
       daysInvalid = true;
       return "매주 반복은 요일을 1개 이상 선택해 주세요.";
     }
-    if (scheduleKind === "interval" && intervalMinutesFromInputs() < 15) {
+    if (scheduleKind === "interval" && intervalMinutesFromInputs() < 5) {
       intervalInvalid = true;
-      return "반복 간격은 15분 이상이어야 합니다.";
+      return "반복 간격은 5분 이상이어야 합니다.";
     }
     return null;
   }

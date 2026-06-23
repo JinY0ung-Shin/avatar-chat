@@ -78,7 +78,7 @@ const ENGLISH_SCHEDULE_ERROR: Record<ScheduleError, string> = {
   DAYS_REQUIRED: "weekly schedules require at least one weekday in daysOfWeek.",
   INVALID_DAYS: "daysOfWeek must be integers 0-6 (0=Sunday, 6=Saturday).",
   INTERVAL_REQUIRED: "intervalMinutes is required for interval schedules.",
-  INVALID_INTERVAL: "intervalMinutes must be an integer between 15 and 10080.",
+  INVALID_INTERVAL: "intervalMinutes must be an integer between 5 and 10080.",
 };
 
 const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -387,7 +387,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         intervalMinutes: z
           .number()
           .optional()
-          .describe("Interval length in minutes for interval schedules; 15..10080"),
+          .describe("Interval length in minutes for interval schedules; 5..10080"),
         enabled: z.boolean().optional().describe("Whether to enable immediately after creation (default true)"),
       },
       async (args) => {
@@ -444,7 +444,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         intervalMinutes: z
           .number()
           .optional()
-          .describe("Interval length in minutes for interval schedules; 15..10080"),
+          .describe("Interval length in minutes for interval schedules; 5..10080"),
         enabled: z.boolean().optional().describe("Whether enabled"),
       },
       async (args) => {

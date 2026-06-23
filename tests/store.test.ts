@@ -660,7 +660,7 @@ describe("routineSchedule", () => {
         ok: false,
         error: "INTERVAL_REQUIRED",
       });
-      expect(parseRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 10 })).toEqual({
+      expect(parseRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 4 })).toEqual({
         ok: false,
         error: "INVALID_INTERVAL",
       });

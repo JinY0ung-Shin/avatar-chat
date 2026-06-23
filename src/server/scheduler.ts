@@ -136,6 +136,8 @@ async function runRoutineJobNow(
       content: response.text || response.summary,
       response,
     });
+    // Cap the routine thread so long-lived routines don't grow their history without bound.
+    store.pruneRoutineMessages(job.conversationId);
     store.audit({
       actorUserId: avatar.id,
       actorName: avatar.displayName,

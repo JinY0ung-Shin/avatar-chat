@@ -16,6 +16,13 @@ import { allMcpToolGroupsSelected, normalizeMcpToolGroups, type McpToolGroupId }
 /** Keep at most this many versions per canvas artifact (oldest pruned on overflow). */
 const MAX_CANVAS_VERSIONS = 20;
 
+/**
+ * Keep at most this many routine-run records in a routine's thread (one run leaves a
+ * user+assistant message pair); the oldest messages are pruned on overflow so a long-lived
+ * routine doesn't grow its conversation without bound.
+ */
+const MAX_ROUTINE_RUN_RECORDS = 100;
+
 interface CanvasArtifactRow {
   id: string;
   conversation_id: string;
@@ -423,6 +430,21 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         response: input.response ?? null,
         createdAt,
       };
+    }
+
+    /**
+     * Cap a routine thread to the most recent MAX_ROUTINE_RUN_RECORDS runs (a run = one
+     * user+assistant pair), deleting the oldest messages on overflow. Called after a routine
+     * run records its messages so headless runs don't accumulate unbounded history. Ordered by
+     * rowid (insertion order), which is stable even when createdAt timestamps collide.
+     */
+    pruneRoutineMessages(conversationId: string): void {
+      this.db
+        .prepare(
+          "DELETE FROM messages WHERE conversation_id = ? AND id NOT IN " +
+            "(SELECT id FROM messages WHERE conversation_id = ? ORDER BY rowid DESC LIMIT ?)",
+        )
+        .run(conversationId, conversationId, MAX_ROUTINE_RUN_RECORDS * 2);
     }
 
     /**

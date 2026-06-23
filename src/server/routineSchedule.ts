@@ -89,7 +89,7 @@ export function parseRoutineSchedule(raw: {
     if (interval === undefined || interval === null) {
       return { ok: false, error: "INTERVAL_REQUIRED" };
     }
-    if (typeof interval !== "number" || !Number.isInteger(interval) || interval < 15 || interval > 10080) {
+    if (typeof interval !== "number" || !Number.isInteger(interval) || interval < 5 || interval > 10080) {
       return { ok: false, error: "INVALID_INTERVAL" };
     }
     return {

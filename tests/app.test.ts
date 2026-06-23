@@ -357,7 +357,7 @@ describe("noah-almighty platform", () => {
     // Interval with an out-of-range value → 400.
     await agent
       .post("/api/me/routines")
-      .send({ prompt: "p", scheduleKind: "interval", intervalMinutes: 5 })
+      .send({ prompt: "p", scheduleKind: "interval", intervalMinutes: 4 })
       .expect(400);
     // Unknown schedule kind → 400.
     await agent
