@@ -746,6 +746,12 @@ export async function runClaudeAgent(
   if (userEffort) {
     options.effort = userEffort;
   }
+  // Override the autocompact trigger window when the operator set one (env
+  // AUTO_COMPACT_WINDOW). Omitted → the SDK compacts near the model's full
+  // context window. The SDK takes the min of this and the model's real window.
+  if (config.autoCompactWindow) {
+    options.autoCompactWindow = config.autoCompactWindow;
+  }
   if (streaming) {
     options.includePartialMessages = true;
   }

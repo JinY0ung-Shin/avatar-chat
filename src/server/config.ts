@@ -11,6 +11,18 @@ function parseRuntime(value: string): AgentRuntime {
   return value === "local" ? "local" : "claude";
 }
 
+// SDK-accepted bounds for `autoCompactWindow` (the CLI rejects values outside
+// 100K–1M). We clamp into range rather than drop, and ignore non-numeric/≤0.
+const AUTO_COMPACT_WINDOW_MIN = 100_000;
+const AUTO_COMPACT_WINDOW_MAX = 1_000_000;
+
+function parseAutoCompactWindow(value: string): number | undefined {
+  if (!value) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n <= 0) return undefined;
+  return Math.min(AUTO_COMPACT_WINDOW_MAX, Math.max(AUTO_COMPACT_WINDOW_MIN, Math.round(n)));
+}
+
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const isProduction = process.env.NODE_ENV === "production";
   const dataDir = overrides.dataDir ?? env("APP_DATA_DIR", path.join(process.cwd(), "data"));
@@ -60,6 +72,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // Generous default: tool/skill/subagent-heavy replies blow past a handful of
     // turns. Override via MAX_TURNS; values <1 fall back to the default.
     maxTurns: Math.max(1, Number(env("MAX_TURNS", "1000")) || 1000),
+    // Optional: compact the conversation near this many context tokens instead
+    // of waiting for the model's full window. Unset → SDK/CLI default.
+    autoCompactWindow: parseAutoCompactWindow(env("AUTO_COMPACT_WINDOW")),
     // Upstream command used by the app's hex-ssh policy proxy. Installed into
     // the image at build time and exposed under this fixed name (see Dockerfile).
     // Override with HEX_SSH_COMMAND when the global bin isn't available.

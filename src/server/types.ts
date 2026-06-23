@@ -63,6 +63,15 @@ export interface AppConfig {
    */
   maxTurns: number;
   /**
+   * Optional override for the SDK autocompact trigger: the working context
+   * window (in tokens) the agent compacts near the top of. Maps to the SDK
+   * `autoCompactWindow` option. Unset (the default) → the CLI uses the model's
+   * full context window. Env `AUTO_COMPACT_WINDOW`; clamped to the SDK's
+   * 100K–1M range, non-numeric/≤0 ignored. Lower it to compact earlier (keeps
+   * each turn cheaper at the cost of more frequent summarization).
+   */
+  autoCompactWindow?: number;
+  /**
    * Command that launches the upstream hex-ssh MCP server behind the app's
    * policy proxy. The image installs the package at build time and exposes it as
    * `hex-ssh-mcp` (the default) — avoiding a runtime `npx` download that fails

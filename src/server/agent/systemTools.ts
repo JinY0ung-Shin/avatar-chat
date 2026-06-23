@@ -226,6 +226,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Reasoning effort: ${effortLine}`,
           `- MCP tool groups enabled for this conversation: ${enabledMcpToolGroupLabels.length ? enabledMcpToolGroupLabels.join(", ") : "(none)"}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
+          `- Autocompact window: ${ctx.config.autoCompactWindow ? `${ctx.config.autoCompactWindow} tokens (AUTO_COMPACT_WINDOW)` : "model default (full context window)"}`,
           `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
           `- Knowledge repository: ${knowledgeRepo.repo || "(none)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
