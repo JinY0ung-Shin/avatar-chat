@@ -32,6 +32,8 @@
   import GraphViewModal from "./GraphViewModal.svelte";
 
   let graphOpen = false;
+  let requestRepoBusy = false;
+  let chatBusyId = "";
 
   export let group: SettingsGroup;
   export let githubHost = "github.com";
@@ -40,6 +42,10 @@
 
   $: amAdmin = group.role === "admin";
   $: meId = readState().user?.id;
+
+  function groupPanelId(suffix: string): string {
+    return `group-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${suffix}`;
+  }
 
   // ---- roster search ----
   let rosterQuery = "";
@@ -57,8 +63,12 @@
       : `표시 ${shownMembers.length}명 / 전체 ${group.members.length}명`;
 
   let rowBusy: Record<string, boolean> = {};
+  let memberStatus = "";
+  $: memberStatusId = groupPanelId("member-status");
+  $: addStatusId = groupPanelId("member-add-status");
 
-  function chatWith(m: GroupMember): void {
+  async function chatWith(m: GroupMember): Promise<void> {
+    if (chatBusyId) return;
     const av: AvatarSummary =
       readState().avatars.find((a) => a.id === m.userId) || {
         id: m.userId,
@@ -72,22 +82,41 @@
         visibility: m.visibility,
         updatedAt: null,
       };
-    void startChatWith(av);
+    chatBusyId = m.userId;
+    memberStatus = `${m.displayName}님과의 대화를 여는 중입니다.`;
+    try {
+      await startChatWith(av);
+    } catch (err) {
+      memberStatus = `대화를 열지 못했습니다: ${(err as Error).message}`;
+      notify(memberStatus, "warn");
+    } finally {
+      chatBusyId = "";
+    }
   }
 
   async function toggleRole(m: GroupMember): Promise<void> {
     if (rowBusy[m.userId]) return;
     rowBusy = { ...rowBusy, [m.userId]: true };
     const nextRole = m.role === "admin" ? "member" : "admin";
+    memberStatus = `${m.displayName}님의 역할을 변경하는 중입니다.`;
     try {
       await api(`/api/me/groups/${encodeURIComponent(group.id)}/members/${encodeURIComponent(m.userId)}`, {
         method: "PATCH",
         body: JSON.stringify({ role: nextRole }),
       });
-      await reload();
-      notify(`${m.displayName}님의 그룹 관리자 역할을 ${m.role === "admin" ? "해제" : "부여"}했습니다.`, "ok");
     } catch (err) {
-      notify(`역할 변경 실패: ${(err as Error).message}`, "warn");
+      memberStatus = `역할 변경 실패: ${(err as Error).message}`;
+      notify(memberStatus, "warn");
+      rowBusy = { ...rowBusy, [m.userId]: false };
+      return;
+    }
+    try {
+      await reload();
+      memberStatus = `${m.displayName}님의 그룹 관리자 역할을 ${m.role === "admin" ? "해제" : "부여"}했습니다.`;
+      notify(memberStatus, "ok");
+    } catch (err) {
+      memberStatus = `역할은 변경했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`;
+      notify(memberStatus, "warn");
     } finally {
       rowBusy = { ...rowBusy, [m.userId]: false };
     }
@@ -97,12 +126,22 @@
     if (rowBusy[m.userId]) return;
     if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
     rowBusy = { ...rowBusy, [m.userId]: true };
+    memberStatus = `${m.displayName}님을 그룹에서 제거하는 중입니다.`;
     try {
       await api(`/api/me/groups/${encodeURIComponent(group.id)}/members/${encodeURIComponent(m.userId)}`, { method: "DELETE" });
-      await reload();
-      notify(`${m.displayName}님을 그룹에서 제거했습니다.`, "ok");
     } catch (err) {
-      notify(`제거 실패: ${(err as Error).message}`, "warn");
+      memberStatus = `제거 실패: ${(err as Error).message}`;
+      notify(memberStatus, "warn");
+      rowBusy = { ...rowBusy, [m.userId]: false };
+      return;
+    }
+    try {
+      await reload();
+      memberStatus = `${m.displayName}님을 그룹에서 제거했습니다.`;
+      notify(memberStatus, "ok");
+    } catch (err) {
+      memberStatus = `그룹원은 제거했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`;
+      notify(memberStatus, "warn");
     } finally {
       rowBusy = { ...rowBusy, [m.userId]: false };
     }
@@ -125,7 +164,23 @@
   let selected = new Map<string, SearchUser>();
   let selectedArr: SearchUser[] = [];
   let adding = false;
+  let addError = "";
+  let addResult = "";
 
+  $: addQueryTrimmed = addQuery.trim().replace(/^@/, "");
+  $: canPickTyped = Boolean(!adding && addQueryTrimmed);
+  $: canSubmitMembers = Boolean(!adding && (selectedArr.length || addQueryTrimmed));
+  $: addStatus = adding
+    ? "그룹원을 추가하는 중입니다."
+    : addError
+      ? addError
+      : addResult
+        ? addResult
+        : selectedArr.length
+          ? `${selectedArr.length}명이 선택 목록에 있습니다.`
+          : addQueryTrimmed
+            ? "입력한 사용자를 선택 목록에 추가하거나 바로 추가할 수 있습니다."
+            : "추가할 사용자를 검색해 주세요.";
   $: existingNames = new Set(group.members.map((m) => (m.username || "").toLowerCase()));
   $: existingIds = new Set(group.members.map((m) => m.userId));
 
@@ -145,11 +200,16 @@
       showResults = true;
       activeIndex = searchResults.length ? 0 : -1;
     } catch {
-      if (s === searchSeq) showResults = false;
+      if (s === searchSeq) {
+        showResults = false;
+        addError = "사용자 검색에 실패했습니다.";
+      }
     }
   }
 
   function onAddInput(): void {
+    addError = "";
+    addResult = "";
     const q = addQuery.trim().replace(/^@/, "");
     if (searchTimer) clearTimeout(searchTimer);
     if (!q) {
@@ -162,19 +222,24 @@
   }
 
   function selectUser(user: SearchUser): boolean {
+    if (adding) return false;
     const username = (user.username || "").trim().replace(/^@/, "");
     const key = username.toLowerCase();
     if (!username) return false;
     if (existingNames.has(key) || (user.id && existingIds.has(user.id))) {
+      addError = "이미 그룹에 있는 사용자입니다.";
       notify("이미 그룹에 있는 사용자입니다.", "info");
       addQuery = "";
       return false;
     }
     if (selected.has(key)) {
+      addError = "이미 선택한 사용자입니다.";
       notify("이미 선택한 사용자입니다.", "info");
       addQuery = "";
       return false;
     }
+    addError = "";
+    addResult = `${user.displayName || username}님을 선택 목록에 추가했습니다.`;
     selected.set(key, { ...user, username, displayName: user.displayName || username });
     refreshSelectedArr();
     addQuery = "";
@@ -184,7 +249,8 @@
   }
 
   function addTyped(): boolean {
-    const username = addQuery.trim().replace(/^@/, "");
+    if (adding) return false;
+    const username = addQueryTrimmed;
     if (!username) return false;
     return selectUser({ id: "", username, displayName: username });
   }
@@ -225,7 +291,10 @@
     const queued = [...selected.entries()];
     const role = addAsAdmin ? "admin" : "member";
     adding = true;
+    addError = "";
+    addResult = "";
     const failures: string[] = [];
+    let refreshError: Error | null = null;
     let successes = 0;
     try {
       for (const [key, user] of queued) {
@@ -244,13 +313,22 @@
       if (successes) {
         addAsAdmin = false;
         addQuery = "";
-        await reload();
+        try {
+          await reload();
+        } catch (err) {
+          refreshError = err as Error;
+        }
       }
       if (failures.length) {
         const added = successes ? `${successes}명은 추가했습니다. ` : "";
-        notify(`${added}일부 그룹원을 추가하지 못했습니다. ${failures.join(" / ")}`, "warn");
+        addError = `${added}일부 그룹원을 추가하지 못했습니다. ${failures.join(" / ")}`;
+        notify(addError, "warn");
+      } else if (refreshError) {
+        addError = `${successes}명을 추가했지만 목록 새로고침에 실패했습니다: ${refreshError.message}`;
+        notify(addError, "warn");
       } else {
-        notify(`${successes}명을 그룹에 추가했습니다.`, "ok");
+        addResult = `${successes}명을 그룹에 추가했습니다.`;
+        notify(addResult, "ok");
       }
     } finally {
       adding = false;
@@ -260,36 +338,67 @@
   // ---- group knowledge repo ----
   let repoInput = "";
   let branchInput = "";
+  $: savedGroupRepo = group.knowledgeRepo || "";
+  $: savedGroupBranch = group.knowledgeBranch || "";
   $: {
-    repoInput = group.knowledgeRepo || "";
-    branchInput = group.knowledgeBranch || "";
+    repoInput = savedGroupRepo;
+    branchInput = savedGroupBranch;
   }
   let repoBusy = false;
   let repoRefreshed = false;
+  let repoError = "";
+  $: repoStatusId = groupPanelId("repo-status");
+  $: repoInputTrimmed = repoInput.trim();
+  $: branchInputTrimmed = branchInput.trim();
+  $: repoDirty = repoInputTrimmed !== savedGroupRepo || branchInputTrimmed !== savedGroupBranch;
+  $: repoCanSave = Boolean(!repoBusy && repoInputTrimmed && repoDirty);
+  $: repoStatus = repoBusy
+    ? "저장 중…"
+    : repoError
+      ? `저장 실패: ${repoError}`
+      : !repoInputTrimmed && savedGroupRepo
+        ? "연결 해제는 ‘연결 해제’ 버튼을 사용합니다."
+        : repoDirty
+          ? "저장하지 않은 저장소 변경 사항이 있습니다."
+          : savedGroupRepo
+            ? "연결됨"
+            : "연결 전";
 
   async function saveRepo(): Promise<void> {
-    const repo = repoInput.trim();
-    const branch = branchInput.trim();
+    if (repoBusy) return;
+    const repo = repoInputTrimmed;
+    const branch = branchInputTrimmed;
     if (!repo) {
+      repoError = group.knowledgeRepo ? "공용 저장소 연결 해제는 ‘연결 해제’ 버튼을 사용해 주세요." : "공용 지식 저장소 주소를 입력해 주세요.";
       notify(group.knowledgeRepo ? "공용 저장소 연결을 해제하려면 ‘연결 해제’ 버튼을 사용해 주세요." : "공용 지식 저장소 주소를 입력해 주세요.", "warn");
       return;
     }
+    if (!repoDirty) return;
     repoBusy = true;
+    repoError = "";
     try {
       await api(`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo`, {
         method: "PUT",
         body: JSON.stringify({ repo, branch: branch || null }),
       });
+    } catch (err) {
+      repoError = (err as Error).message;
+      notify(`저장 실패: ${repoError}`, "warn");
+      repoBusy = false;
+      return;
+    }
+    try {
       await reload();
       notify(`"${group.name}" 공용 지식 저장소 "${repo}"을 연결했습니다.`, "ok");
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`, "warn");
+      notify(`공용 지식 저장소는 연결했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
       repoBusy = false;
     }
   }
 
   async function refreshRepo(): Promise<void> {
+    if (repoBusy) return;
     repoBusy = true;
     try {
       await api(`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo/refresh`, { method: "POST" });
@@ -304,21 +413,36 @@
   }
 
   async function disconnectRepo(): Promise<void> {
+    if (repoBusy) return;
     if (!window.confirm("이 그룹의 공용 지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 그룹원 아바타들이 더 이상 그 스킬을 불러오지 않습니다.")) return;
     repoBusy = true;
     try {
       await api(`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo`, { method: "PUT", body: JSON.stringify({ repo: null }) });
+    } catch (err) {
+      notify(`연결 해제 실패: ${(err as Error).message}`, "warn");
+      repoBusy = false;
+      return;
+    }
+    try {
       await reload();
       notify(`"${group.name}" 공용 지식 저장소 연결을 해제했습니다.`, "ok");
     } catch (err) {
-      notify(`연결 해제 실패: ${(err as Error).message}`, "warn");
+      notify(`공용 지식 저장소 연결은 해제했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
       repoBusy = false;
     }
   }
 
-  function requestGroupRepo(): void {
-    void openSeededChat(`"${group.name}" 그룹의 공용 지식 저장소를 만들어서 연결해줘. 그룹원들이 함께 사용할 기본 지식/스킬 구조까지 준비해줘.`);
+  async function requestGroupRepo(): Promise<void> {
+    if (requestRepoBusy) return;
+    requestRepoBusy = true;
+    try {
+      await openSeededChat(`"${group.name}" 그룹의 공용 지식 저장소를 만들어서 연결해줘. 그룹원들이 함께 사용할 기본 지식/스킬 구조까지 준비해줘.`);
+    } catch (err) {
+      notify(`요청 대화를 열지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      requestRepoBusy = false;
+    }
   }
 
   // plugin selection (expandable)
@@ -333,6 +457,7 @@
     if (pickOpen && !contents && !contentsLoading) await loadContents();
   }
   async function loadContents(): Promise<void> {
+    if (contentsLoading) return;
     contentsLoading = true;
     contentsErr = "";
     try {
@@ -346,7 +471,11 @@
   }
   async function saveSelection(next: string[] | null): Promise<void> {
     await api(`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo/selected`, { method: "PUT", body: JSON.stringify({ selected: next }) });
-    await reload();
+    try {
+      await reload();
+    } catch (err) {
+      notify(`플러그인 선택은 저장했지만 그룹 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+    }
   }
 
   const listboxId = `group-search-${newId()}`;
@@ -379,7 +508,10 @@
       </div>
     {:else}
       {#each shownMembers as m (m.userId)}
-        <div class="plugin-row" class:busy={rowBusy[m.userId]}>
+        <div
+          class="plugin-row"
+          class:busy={rowBusy[m.userId] || chatBusyId === m.userId}
+          aria-busy={rowBusy[m.userId] || chatBusyId === m.userId ? "true" : "false"}>
           <AvatarImage user={{ ...m, id: m.userId }} size={32} alt="" />
           <div class="pr-main">
             <strong>{m.displayName}{m.userId === meId ? " (나)" : ""}</strong>
@@ -387,22 +519,27 @@
           </div>
           <div class="pr-actions">
             {#if m.userId !== meId}
-              <button class="ghost-sm" type="button" title={`${m.displayName}의 아바타와 대화`} on:click={() => chatWith(m)}>대화</button>
+              <button class="ghost-sm" type="button" title={`${m.displayName}의 아바타와 대화`} aria-describedby={memberStatus ? memberStatusId : undefined} disabled={Boolean(chatBusyId)} on:click={() => chatWith(m)}>
+                {chatBusyId === m.userId ? "여는 중…" : "대화"}
+              </button>
             {/if}
             {#if amAdmin && m.userId !== meId}
-              <button class="ghost-sm" type="button" disabled={rowBusy[m.userId]} on:click={() => toggleRole(m)}>
+              <button class="ghost-sm" type="button" aria-describedby={memberStatus ? memberStatusId : undefined} disabled={rowBusy[m.userId]} on:click={() => toggleRole(m)}>
                 {m.role === "admin" ? "관리자 해제" : "관리자 지정"}
               </button>
-              <button class="ghost-sm danger" type="button" disabled={rowBusy[m.userId]} on:click={() => removeMember(m)}>제거</button>
+              <button class="ghost-sm danger" type="button" aria-describedby={memberStatus ? memberStatusId : undefined} disabled={rowBusy[m.userId]} on:click={() => removeMember(m)}>제거</button>
             {/if}
           </div>
         </div>
       {/each}
     {/if}
   </div>
+  {#if memberStatus}
+    <div id={memberStatusId} class="settings-save-status" class:dirty={memberStatus.includes("실패") || memberStatus.includes("못했습니다")} role="status" aria-live="polite">{memberStatus}</div>
+  {/if}
 
   {#if amAdmin}
-    <div class="group-add-panel" aria-busy={adding}>
+    <div class="group-add-panel" aria-busy={adding} aria-describedby={addStatusId}>
       <div class="group-add">
         <div class="trusted-search">
           <input
@@ -411,6 +548,8 @@
             aria-autocomplete="list"
             aria-controls={listboxId}
             aria-expanded={showResults}
+            aria-describedby={addStatusId}
+            aria-invalid={addError ? "true" : undefined}
             placeholder="추가할 그룹원 아이디(@) 또는 이름"
             aria-label="그룹원 추가"
             disabled={adding}
@@ -424,7 +563,7 @@
               <div class="empty-note">일치하는 사용자가 없습니다.</div>
             {:else}
               {#each searchResults as u, idx (u.id || u.username)}
-                <button type="button" class="trusted-result" class:active={idx === activeIndex} role="option" aria-selected={idx === activeIndex} on:click={() => selectUser(u)}>
+                <button type="button" class="trusted-result" class:active={idx === activeIndex} role="option" aria-selected={idx === activeIndex} disabled={adding} on:click={() => selectUser(u)}>
                   <div class="pr-main">
                     <strong>{u.displayName}</strong>
                     <div class="pr-sub">@{u.username}</div>
@@ -434,13 +573,16 @@
             {/if}
           </div>
         </div>
-        <button class="icon-button group-add-pick" type="button" title="입력한 사용자를 선택 목록에 추가" aria-label="입력한 사용자를 선택 목록에 추가" disabled={adding} on:click={addTyped}>
+        <button class="icon-button group-add-pick" type="button" title="입력한 사용자를 선택 목록에 추가" aria-label="입력한 사용자를 선택 목록에 추가" aria-describedby={addStatusId} disabled={!canPickTyped} on:click={addTyped}>
           <Icon name="plus" />
         </button>
-        <label class="group-add-admin"><input type="checkbox" bind:checked={addAsAdmin} disabled={adding} /><span>그룹 관리자로</span></label>
-        <button class="primary small" type="button" disabled={adding} on:click={submitMembers}>
-          {adding ? "추가 중…" : selectedArr.length ? `${selectedArr.length}명 추가` : "선택한 그룹원 추가"}
+        <label class="group-add-admin"><input type="checkbox" bind:checked={addAsAdmin} aria-describedby={addStatusId} disabled={adding} /><span>그룹 관리자로</span></label>
+        <button class="primary small" type="button" aria-describedby={addStatusId} disabled={!canSubmitMembers} on:click={submitMembers}>
+          {adding ? "추가 중…" : selectedArr.length ? `${selectedArr.length}명 추가` : addQueryTrimmed ? "입력한 사용자 추가" : "선택한 그룹원 추가"}
         </button>
+      </div>
+      <div class="settings-save-row compact">
+        <span id={addStatusId} class="settings-save-status" class:dirty={Boolean(addError || addResult || selectedArr.length || addQueryTrimmed)} role="status" aria-live="polite">{addStatus}</span>
       </div>
       {#if selectedArr.length}
         <div class="group-add-selected">
@@ -466,14 +608,19 @@
         </div>
       {/if}
       <form class="plugin-add rows-2" on:submit|preventDefault={saveRepo}>
-        <input bind:value={repoInput} placeholder="owner/repo 또는 사내 git URL" aria-label="그룹 지식 저장소" />
-        <input bind:value={branchInput} class="narrow" placeholder="브랜치 (선택)" aria-label="브랜치" />
-        <button class="primary" type="submit" disabled={repoBusy}>{repoBusy ? "저장 중…" : "저장"}</button>
+        <input bind:value={repoInput} placeholder="owner/repo 또는 사내 git URL" aria-label="그룹 지식 저장소" aria-describedby={repoStatusId} aria-invalid={repoError ? "true" : undefined} disabled={repoBusy} on:input={() => (repoError = "")} />
+        <input bind:value={branchInput} class="narrow" placeholder="브랜치 (선택)" aria-label="브랜치" aria-describedby={repoStatusId} disabled={repoBusy} on:input={() => (repoError = "")} />
+        <button class="primary" type="submit" disabled={!repoCanSave}>{repoBusy ? "저장 중…" : savedGroupRepo ? "변경 저장" : "연결"}</button>
       </form>
+      <div class="settings-save-row compact">
+        <span id={repoStatusId} class="settings-save-status" class:dirty={repoDirty || Boolean(repoError)} role="status" aria-live="polite">{repoStatus}</span>
+      </div>
       {#if !group.knowledgeRepo}
         <div class="empty-note">
           공용 저장소를 연결하면 그룹원 전원의 아바타가 그 저장소의 스킬을 사용합니다.
-          <button class="linkish small" type="button" on:click={requestGroupRepo}>아바타에게 공용 저장소 만들기 요청</button>
+          <button class="linkish small" type="button" disabled={requestRepoBusy} on:click={requestGroupRepo}>
+            {requestRepoBusy ? "대화 여는 중…" : "아바타에게 공용 저장소 만들기 요청"}
+          </button>
         </div>
       {:else}
         {@const href = repoToHref(group.knowledgeRepo, githubHost)}
@@ -488,14 +635,20 @@
         </div>
         <div class="kr-plugins">
           <span class="muted">{selSummary}</span>
-          <button class="linkish small" type="button" aria-expanded={pickOpen} on:click={togglePick}>사용할 플러그인 선택</button>
+          <button
+            class="linkish small"
+            type="button"
+            aria-expanded={pickOpen}
+            aria-controls={groupPanelId("plugin-contents")}
+            on:click={togglePick}
+          >사용할 플러그인 선택</button>
         </div>
         {#if pickOpen}
-          <div class="plugin-contents">
+          <div id={groupPanelId("plugin-contents")} class="plugin-contents" aria-busy={contentsLoading ? "true" : "false"}>
             {#if contentsLoading}
-              <div class="muted">불러오는 중…</div>
+              <div class="muted" role="status">불러오는 중…</div>
             {:else if contentsErr}
-              <div class="error-note">조회 실패: {contentsErr} <button class="linkish small" type="button" on:click={loadContents}>다시 시도</button></div>
+              <div class="error-note" role="alert">조회 실패: {contentsErr} <button class="linkish small" type="button" disabled={contentsLoading} on:click={loadContents}>다시 시도</button></div>
             {:else if contents}
               <SettingsPluginSelect
                 info={contents}

@@ -32,57 +32,114 @@
   let tagAddBusy = false;
   let allGenBusy = false;
   let picBusy = false;
+  let profileError = "";
+  let profileGenError = "";
+  let profileGenMessage = "";
   let fileInput: HTMLInputElement;
+  const profileStatusId = "settings-profile-save-status";
+  const profileGenStatusId = "settings-profile-generation-status";
 
   // visibility
   let visibility: AvatarVisibility = u0?.visibility || "group";
   let visSaving = false;
 
+  function sameTags(left: string[], right: string[]): boolean {
+    return left.length === right.length && left.every((tag, index) => tag === right[index]);
+  }
+
+  function syncProfileForm(next: User): void {
+    displayName = next.displayName || "";
+    alias = next.alias || "";
+    bio = next.bio || "";
+    intro = next.intro || "";
+    persona = next.persona || "";
+    hashtags = [...(next.hashtags || [])];
+  }
+
+  $: profileDirty = Boolean(
+    user &&
+      (displayName !== (user.displayName || "") ||
+        alias !== (user.alias || "") ||
+        bio !== (user.bio || "") ||
+        intro !== (user.intro || "") ||
+        persona !== (user.persona || "") ||
+        !sameTags(hashtags, user.hashtags || [])),
+  );
+  $: profileGenBusy = Boolean(introGenBusy || tagGenBusy || tagAddBusy || allGenBusy);
+  $: profileGenStatus = profileGenBusy
+    ? "자동 생성 중입니다."
+    : profileGenError
+      ? profileGenError
+      : profileGenMessage;
+  $: profileSaveStatus = profileSaving
+    ? "저장 중…"
+    : profileError
+      ? `저장 실패: ${profileError}`
+      : profileDirty
+        ? "저장하지 않은 변경 사항이 있습니다."
+        : "저장됨";
+
   async function saveProfile(): Promise<void> {
+    if (profileSaving || !profileDirty) return;
     profileSaving = true;
+    profileError = "";
     try {
       const { user: next } = await api<{ user: User }>("/api/me", {
         method: "PATCH",
         body: JSON.stringify({ displayName, alias, bio, intro, persona, hashtags }),
       });
+      syncProfileForm(next);
       replaceState({ user: next });
       notify("프로필을 저장했습니다.", "ok");
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`, "warn");
+      profileError = (err as Error).message;
+      notify(`저장 실패: ${profileError}`, "warn");
     } finally {
       profileSaving = false;
     }
   }
 
   async function generateIntro(): Promise<void> {
+    if (profileSaving || introGenBusy || allGenBusy) return;
     introGenBusy = true;
+    profileGenError = "";
+    profileGenMessage = "";
     try {
       const { intro: next } = await api<{ intro: string }>("/api/me/intro/generate", { method: "POST" });
       if (next) {
         intro = next;
-        notify("자기소개 초안이 채워졌습니다. 저장하려면 프로필 저장을 누르세요.", "info");
+        profileGenMessage = "자기소개 초안이 채워졌습니다.";
+        notify(`${profileGenMessage} 저장하려면 프로필 저장을 누르세요.`, "info");
       } else {
+        profileGenMessage = "생성된 자기소개가 없습니다.";
         notify("생성된 자기소개가 없습니다. 페르소나나 스킬을 먼저 보강해 보세요.", "info");
       }
     } catch (err) {
-      notify(`자기소개 생성 실패: ${(err as Error).message}`, "warn");
+      profileGenError = `자기소개 생성 실패: ${(err as Error).message}`;
+      notify(profileGenError, "warn");
     } finally {
       introGenBusy = false;
     }
   }
 
   async function generateTags(): Promise<void> {
+    if (profileSaving || tagGenBusy || allGenBusy) return;
     tagGenBusy = true;
+    profileGenError = "";
+    profileGenMessage = "";
     try {
       const { hashtags: next } = await api<{ hashtags: string[] }>("/api/me/hashtags/generate", { method: "POST" });
       if (next?.length) {
         hashtags = [...next];
-        notify("해시태그 초안이 채워졌습니다. 저장하려면 프로필 저장을 누르세요.", "info");
+        profileGenMessage = "해시태그 초안이 채워졌습니다.";
+        notify(`${profileGenMessage} 저장하려면 프로필 저장을 누르세요.`, "info");
       } else {
+        profileGenMessage = "생성된 해시태그가 없습니다.";
         notify("생성된 해시태그가 없습니다. 스킬이나 플러그인을 먼저 연결해 보세요.", "info");
       }
     } catch (err) {
-      notify(`해시태그 생성 실패: ${(err as Error).message}`, "warn");
+      profileGenError = `해시태그 생성 실패: ${(err as Error).message}`;
+      notify(profileGenError, "warn");
     } finally {
       tagGenBusy = false;
     }
@@ -92,8 +149,10 @@
   // existing tags so the avatar proposes only new, distinct ones, then merge
   // (normalizeTags dedupes + caps at 12). For when the current set feels thin.
   async function addTags(): Promise<void> {
-    if (tagAddBusy || tagGenBusy || allGenBusy) return;
+    if (profileSaving || tagAddBusy || tagGenBusy || allGenBusy) return;
     tagAddBusy = true;
+    profileGenError = "";
+    profileGenMessage = "";
     try {
       const { hashtags: next } = await api<{ hashtags: string[] }>("/api/me/hashtags/generate", {
         method: "POST",
@@ -109,11 +168,14 @@
             : "추가할 새 해시태그가 없습니다. 이미 충분히 채워져 있어요.",
           "info",
         );
+        profileGenMessage = added > 0 ? `해시태그 ${added}개를 추가했습니다.` : "추가할 새 해시태그가 없습니다.";
       } else {
+        profileGenMessage = "추가할 새 해시태그가 없습니다.";
         notify("추가할 새 해시태그가 없습니다. 페르소나나 스킬을 먼저 보강해 보세요.", "info");
       }
     } catch (err) {
-      notify(`해시태그 추가 실패: ${(err as Error).message}`, "warn");
+      profileGenError = `해시태그 추가 실패: ${(err as Error).message}`;
+      notify(profileGenError, "warn");
     } finally {
       tagAddBusy = false;
     }
@@ -124,8 +186,10 @@
   // can (allSettled). Like the individual buttons, neither result is persisted —
   // the owner reviews then saves.
   async function generateAll(): Promise<void> {
-    if (allGenBusy || introGenBusy || tagGenBusy) return;
+    if (profileSaving || allGenBusy || introGenBusy || tagGenBusy || tagAddBusy) return;
     allGenBusy = true;
+    profileGenError = "";
+    profileGenMessage = "";
     try {
       const [introRes, tagsRes] = await Promise.allSettled([
         api<{ intro: string }>("/api/me/intro/generate", { method: "POST" }),
@@ -137,13 +201,16 @@
       const okIntro = introRes.status === "fulfilled" && !!introRes.value.intro;
       const okTags = tagsRes.status === "fulfilled" && !!tagsRes.value.hashtags?.length;
       if (okIntro && okTags) {
-        notify("자기소개와 해시태그 초안이 채워졌습니다. 저장하려면 프로필 저장을 누르세요.", "info");
+        profileGenMessage = "자기소개와 해시태그 초안이 채워졌습니다.";
+        notify(`${profileGenMessage} 저장하려면 프로필 저장을 누르세요.`, "info");
       } else if (okIntro || okTags) {
-        notify(`${okIntro ? "자기소개" : "해시태그"} 초안만 채워졌습니다. 나머지는 다시 시도해 주세요. 저장하려면 프로필 저장을 누르세요.`, "warn");
+        profileGenError = `${okIntro ? "자기소개" : "해시태그"} 초안만 채워졌습니다.`;
+        notify(`${profileGenError} 나머지는 다시 시도해 주세요. 저장하려면 프로필 저장을 누르세요.`, "warn");
       } else {
         const reason =
           introRes.status === "rejected" ? (introRes.reason as Error).message : "결과가 비어 있습니다.";
-        notify(`자동 생성 실패: ${reason}`, "warn");
+        profileGenError = `자동 생성 실패: ${reason}`;
+        notify(profileGenError, "warn");
       }
     } finally {
       allGenBusy = false;
@@ -178,16 +245,27 @@
   // ---- avatar image ----
   async function uploadImage(event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
+    if (picBusy) {
+      input.value = "";
+      return;
+    }
     const file = input.files?.[0];
     if (!file) return;
     picBusy = true;
     try {
       const image = await resizeImage(file, 256);
       await api("/api/me/avatar-image", { method: "PUT", body: JSON.stringify({ image }) });
+    } catch (err) {
+      notify(`사진 업로드 실패: ${(err as Error).message}`, "warn");
+      input.value = "";
+      picBusy = false;
+      return;
+    }
+    try {
       await refreshMe();
       notify("아바타 사진을 변경했습니다.", "ok");
     } catch (err) {
-      notify(`사진 업로드 실패: ${(err as Error).message}`, "warn");
+      notify(`사진은 변경했지만 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
       input.value = "";
       picBusy = false;
@@ -195,14 +273,21 @@
   }
 
   async function deleteImage(): Promise<void> {
+    if (picBusy) return;
     if (!window.confirm("아바타 사진을 삭제할까요?")) return;
     picBusy = true;
     try {
       await api("/api/me/avatar-image", { method: "DELETE" });
+    } catch (err) {
+      notify(`사진 삭제 실패: ${(err as Error).message}`, "warn");
+      picBusy = false;
+      return;
+    }
+    try {
       await refreshMe();
       notify("아바타 사진을 삭제했습니다.", "ok");
     } catch (err) {
-      notify(`사진 삭제 실패: ${(err as Error).message}`, "warn");
+      notify(`사진은 삭제했지만 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
       picBusy = false;
     }
@@ -210,6 +295,26 @@
 
   async function resizeImage(file: File, max: number): Promise<string> {
     return downscaleImageToDataUrl(file, max);
+  }
+
+  function focusVisibility(value: AvatarVisibility): void {
+    requestAnimationFrame(() => document.getElementById(`visibility-${value}`)?.focus());
+  }
+
+  function onVisibilityKeydown(event: KeyboardEvent, current: AvatarVisibility): void {
+    if (visSaving || !["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = VISIBILITY_OPTIONS.findIndex((item) => item.value === current);
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? VISIBILITY_OPTIONS.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + VISIBILITY_OPTIONS.length) %
+            VISIBILITY_OPTIONS.length;
+    const next = VISIBILITY_OPTIONS[nextIndex].value;
+    void chooseVisibility(next);
+    focusVisibility(next);
   }
 </script>
 
@@ -234,35 +339,43 @@
 
     <form class="settings-form" on:submit|preventDefault={saveProfile}>
       <div class="field gen-all-row">
-        <button class="ghost-sm" type="button" disabled={allGenBusy || introGenBusy || tagGenBusy} on:click={generateAll}>
+        <button class="ghost-sm" type="button" aria-describedby={profileGenStatus ? profileGenStatusId : undefined} disabled={profileSaving || allGenBusy || introGenBusy || tagGenBusy || tagAddBusy} on:click={generateAll}>
           {allGenBusy ? "생성 중…" : "자기소개·해시태그 한 번에 생성"}
         </button>
         <span class="muted">페르소나와 스킬을 바탕으로 아바타가 자기소개와 역량 해시태그를 함께 만들어 줍니다.</span>
       </div>
-      <label class="field"><span>표시 이름</span><input bind:value={displayName} required /></label>
-      <label class="field"><span>별칭 (아바타가 스스로를 부르는 이름)</span><input bind:value={alias} placeholder="비우면 표시 이름을 사용합니다" /></label>
-      <label class="field"><span>소개 (한 줄)</span><input bind:value={bio} placeholder="어떤 아바타인지 소개하세요" /></label>
+      {#if profileGenStatus}
+        <div class="settings-save-row compact">
+          <span id={profileGenStatusId} class="settings-save-status" class:dirty={Boolean(profileGenBusy || profileGenError || profileGenMessage)} role="status" aria-live="polite">{profileGenStatus}</span>
+        </div>
+      {/if}
+      <label class="field"><span>표시 이름</span><input bind:value={displayName} required aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
+      <label class="field"><span>별칭 (아바타가 스스로를 부르는 이름)</span><input bind:value={alias} placeholder="비우면 표시 이름을 사용합니다" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
+      <label class="field"><span>소개 (한 줄)</span><input bind:value={bio} placeholder="어떤 아바타인지 소개하세요" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
       <div class="field">
         <div class="field-row">
           <span>자기소개 (대화 패널 상단에 표시)</span>
-          <button class="ghost-sm" type="button" disabled={introGenBusy || allGenBusy} on:click={generateIntro}>{introGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
+          <button class="ghost-sm" type="button" aria-describedby={profileGenStatus ? profileGenStatusId : undefined} disabled={profileSaving || introGenBusy || allGenBusy} on:click={generateIntro}>{introGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
         </div>
-        <textarea rows="4" bind:value={intro} placeholder="대화 상대에게 보여줄 자기소개. 직접 쓰거나 위의 '아바타가 자동 생성' 버튼으로 만들 수 있어요."></textarea>
+        <textarea rows="4" bind:value={intro} placeholder="대화 상대에게 보여줄 자기소개. 직접 쓰거나 위의 '아바타가 자동 생성' 버튼으로 만들 수 있어요." aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")}></textarea>
       </div>
       <div class="field">
         <div class="field-row">
           <span>역량 해시태그 (탐색에서 검색됨)</span>
           <div class="field-row-actions">
             {#if hashtags.length > 0}
-              <button class="ghost-sm" type="button" disabled={tagAddBusy || tagGenBusy || allGenBusy} on:click={addTags}>{tagAddBusy ? "추가 중…" : "더 추가"}</button>
+              <button class="ghost-sm" type="button" aria-describedby={profileGenStatus ? profileGenStatusId : undefined} disabled={profileSaving || tagAddBusy || tagGenBusy || allGenBusy} on:click={addTags}>{tagAddBusy ? "추가 중…" : "더 추가"}</button>
             {/if}
-            <button class="ghost-sm" type="button" disabled={tagGenBusy || tagAddBusy || allGenBusy} on:click={generateTags}>{tagGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
+            <button class="ghost-sm" type="button" aria-describedby={profileGenStatus ? profileGenStatusId : undefined} disabled={profileSaving || tagGenBusy || tagAddBusy || allGenBusy} on:click={generateTags}>{tagGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
           </div>
         </div>
-        <HashtagChipEditor bind:tags={hashtags} />
+        <HashtagChipEditor bind:tags={hashtags} disabled={profileSaving} />
       </div>
-      <label class="field"><span>페르소나 (행동 지침)</span><textarea rows="4" bind:value={persona} placeholder="이 아바타가 어떻게 행동해야 하는지 (선택)"></textarea></label>
-      <button class="primary" type="submit" disabled={profileSaving}>{profileSaving ? "저장 중…" : "프로필 저장"}</button>
+      <label class="field"><span>페르소나 (행동 지침)</span><textarea rows="4" bind:value={persona} placeholder="이 아바타가 어떻게 행동해야 하는지 (선택)" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")}></textarea></label>
+      <div class="settings-save-row">
+        <span id={profileStatusId} class="settings-save-status" class:dirty={profileDirty || Boolean(profileError)} role="status" aria-live="polite">{profileSaveStatus}</span>
+        <button class="primary" type="submit" disabled={profileSaving || !profileDirty}>{profileSaving ? "저장 중…" : "프로필 저장"}</button>
+      </div>
     </form>
   </section>
 
@@ -272,6 +385,7 @@
       <div class="seg-control" role="radiogroup" aria-label="아바타 공개 범위" aria-busy={visSaving}>
         {#each VISIBILITY_OPTIONS as opt}
           <button
+            id={`visibility-${opt.value}`}
             type="button"
             class="seg-btn"
             class:active={visibility === opt.value}
@@ -280,6 +394,7 @@
             tabindex={visibility === opt.value ? 0 : -1}
             disabled={visSaving}
             on:click={() => chooseVisibility(opt.value)}
+            on:keydown={(event) => onVisibilityKeydown(event, opt.value)}
           >
             {opt.label}
           </button>

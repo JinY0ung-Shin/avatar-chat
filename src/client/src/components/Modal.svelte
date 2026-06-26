@@ -3,13 +3,16 @@
 
   export let cardClass = "";
   export let ariaLabelledby: string | undefined = undefined;
+  export let ariaDescribedby: string | undefined = undefined;
   export let closeOnBackdrop = true;
+  export let closeDisabled = false;
 
   const dispatch = createEventDispatcher<{ close: void }>();
   let overlayEl: HTMLDivElement;
   let cardEl: HTMLDivElement;
 
   function close() {
+    if (closeDisabled) return;
     dispatch("close");
   }
 
@@ -57,7 +60,15 @@
     if (closeOnBackdrop && event.target === overlayEl) close();
   }}
 >
-  <div bind:this={cardEl} class={`modal-card ${cardClass}`} role="dialog" aria-modal="true" aria-labelledby={ariaLabelledby} tabindex="-1">
+  <div
+    bind:this={cardEl}
+    class={`modal-card ${cardClass}`}
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby={ariaLabelledby}
+    aria-describedby={ariaDescribedby}
+    tabindex="-1"
+  >
     <slot />
   </div>
 </div>

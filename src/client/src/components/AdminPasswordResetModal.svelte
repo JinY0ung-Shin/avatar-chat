@@ -9,13 +9,37 @@
   export let user: AdminUserSummary;
 
   const dispatch = createEventDispatcher<{ close: void; done: void }>();
+  const VALIDATION_ERRORS = new Set(["비밀번호는 8자 이상이어야 합니다.", "두 비밀번호가 일치하지 않습니다."]);
 
   let password = "";
   let confirmPassword = "";
   let errorMessage = "";
   let busy = false;
+  const descId = "admin-password-reset-desc";
+  const statusId = "admin-password-reset-status";
+  const errorId = "admin-password-reset-error";
+
+  $: passwordReady = password.length >= 8;
+  $: passwordsMatch = Boolean(password && confirmPassword && password === confirmPassword);
+  $: canSubmit = Boolean(!busy && passwordReady && passwordsMatch);
+  $: passwordInvalid = Boolean(password && !passwordReady) || errorMessage === "비밀번호는 8자 이상이어야 합니다.";
+  $: confirmInvalid = Boolean(confirmPassword && !passwordsMatch) || errorMessage === "두 비밀번호가 일치하지 않습니다.";
+  $: inputDescribedBy = errorMessage ? `${statusId} ${errorId}` : statusId;
+  $: passwordStatus = busy
+    ? "재설정 중…"
+    : !password
+      ? "새 비밀번호를 입력해 주세요."
+      : !passwordReady
+        ? "비밀번호는 8자 이상이어야 합니다."
+        : !confirmPassword
+          ? "확인 비밀번호를 입력해 주세요."
+          : !passwordsMatch
+            ? "두 비밀번호가 일치하지 않습니다."
+            : "재설정할 준비가 됐습니다.";
+  $: if (errorMessage && VALIDATION_ERRORS.has(errorMessage) && canSubmit) errorMessage = "";
 
   async function submit() {
+    if (busy) return;
     if (password.length < 8) {
       errorMessage = "비밀번호는 8자 이상이어야 합니다.";
       return;
@@ -41,9 +65,15 @@
   }
 </script>
 
-<Modal cardClass="password-reset-card" ariaLabelledby="admin-password-reset-title" on:close={() => dispatch("close")}>
+<Modal
+  cardClass="password-reset-card"
+  ariaLabelledby="admin-password-reset-title"
+  ariaDescribedby={descId}
+  closeDisabled={busy}
+  on:close={() => dispatch("close")}
+>
   <h2 id="admin-password-reset-title">비밀번호 재설정</h2>
-  <p class="muted">저장하면 이 사용자의 기존 세션이 모두 로그아웃됩니다.</p>
+  <p class="muted" id={descId}>저장하면 이 사용자의 기존 세션이 모두 로그아웃됩니다.</p>
   <form
     class="routine-modal-form"
     on:submit|preventDefault={submit}
@@ -56,7 +86,10 @@
         autocomplete="new-password"
         placeholder="새 비밀번호"
         ariaLabel={`${user.displayName} 새 비밀번호`}
+        ariaDescribedby={inputDescribedBy}
+        ariaInvalid={passwordInvalid}
         revealLabel="비밀번호"
+        disabled={busy}
       />
     </label>
     <label class="field">
@@ -67,19 +100,23 @@
         autocomplete="new-password"
         placeholder="새 비밀번호 확인"
         ariaLabel={`${user.displayName} 새 비밀번호 확인`}
+        ariaDescribedby={inputDescribedBy}
+        ariaInvalid={confirmInvalid}
         revealLabel="비밀번호"
+        disabled={busy}
       />
     </label>
     {#if errorMessage}
-      <div class="error" role="alert">{errorMessage}</div>
+      <div class="error" id={errorId} role="alert">{errorMessage}</div>
     {/if}
+    <div class="routine-form-status" id={statusId} class:invalid={!canSubmit && !busy} class:dirty={canSubmit} role="status">{passwordStatus}</div>
     <div class="routine-modal-actions">
       <div class="routine-modal-actions-left">
         <span class="muted">대상: {user.displayName} (@{user.username})</span>
       </div>
       <div class="routine-modal-actions-right">
         <button class="ghost-sm" type="button" disabled={busy} on:click={() => dispatch("close")}>취소</button>
-        <button class="primary" type="submit" disabled={busy}>{busy ? "재설정 중…" : "재설정"}</button>
+        <button class="primary" type="submit" disabled={!canSubmit}>{busy ? "재설정 중…" : "재설정"}</button>
       </div>
     </div>
   </form>

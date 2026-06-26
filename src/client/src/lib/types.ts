@@ -223,4 +223,5 @@ export interface Toast {
   kind: "ok" | "info" | "warn";
   actionLabel?: string;
   action?: () => void;
+  durationMs?: number;
 }

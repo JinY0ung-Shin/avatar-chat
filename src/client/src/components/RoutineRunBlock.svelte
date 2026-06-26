@@ -13,6 +13,7 @@
   export let expanded = false;
   export let currentPrompt = "";
   export let onRun: (() => void) | null = null;
+  export let runBusy = false;
 
   $: time = run.at ? timeLabel(run.at) : "";
   $: runPrompt = (run.prompt?.content || "").trim();
@@ -69,7 +70,7 @@
     {:else}
       <div class="empty-note">
         이 실행에는 결과 메시지가 없습니다.{" "}
-        {#if onRun}<button class="linkish small" type="button" on:click={onRun}>현재 루틴 다시 실행</button>{/if}
+        {#if onRun}<button class="linkish small" type="button" disabled={runBusy} on:click={onRun}>{runBusy ? "실행 중…" : "현재 루틴 다시 실행"}</button>{/if}
       </div>
     {/if}
   </div>

@@ -11,12 +11,15 @@
   import type { AdminGroupSummary, AdminTab, AdminUserSummary, SignupMode } from "../lib/types";
 
   let loading = true;
+  let loadBusy = false;
   let error = "";
 
   // group create form
   let newGroupName = "";
   let newGroupDescription = "";
   let creatingGroup = false;
+  let groupCreateError = "";
+  let groupCreateMessage = "";
 
   // system tab field state
   let modelInput = "";
@@ -24,11 +27,20 @@
   let subBusy = false;
   let modelBusy = false;
   let hexBusy = false;
+  let signupBusy = false;
+  let tokenError = "";
+  let modelError = "";
+  let signupError = "";
+  let hexError = "";
   // hex-ssh policy local checkbox matrix: policy[role][toolName] = boolean
   let hexPolicy: Record<string, Record<string, boolean>> = {};
 
   // audit action filter
   let auditAction = "";
+  const signupStatusId = "admin-signup-status";
+  const tokenStatusId = "admin-token-status";
+  const modelStatusId = "admin-model-status";
+  const hexStatusId = "admin-hex-policy-status";
 
   type AdminTabDef = { id: AdminTab; label: string; icon: string };
   const tabs: AdminTabDef[] = [
@@ -94,6 +106,61 @@
   $: auditActions = [...new Set(($appState.audit || []).map((r) => r.action))].sort();
   $: shownAudit = auditAction ? ($appState.audit || []).filter((r) => r.action === auditAction) : $appState.audit || [];
   $: stats = $appState.adminStats;
+  $: newGroupNameTrimmed = newGroupName.trim();
+  $: canCreateGroup = Boolean(!creatingGroup && newGroupNameTrimmed);
+  $: groupCreateStatusId = "admin-group-create-status";
+  $: groupCreateStatus = creatingGroup
+    ? "그룹을 만드는 중입니다."
+    : groupCreateError
+      ? `그룹 생성 실패: ${groupCreateError}`
+      : groupCreateMessage
+        ? groupCreateMessage
+        : newGroupNameTrimmed
+          ? "그룹을 만들 준비가 됐습니다."
+          : "그룹 이름을 입력해 주세요.";
+  $: savedModelOverride = String(sys.modelOverride || "");
+  $: modelValueTrimmed = modelInput.trim();
+  $: modelDirty = modelValueTrimmed !== savedModelOverride;
+  $: modelCanSave = Boolean(!modelBusy && modelDirty);
+  $: modelStatus = modelBusy
+    ? "저장 중…"
+    : modelError
+      ? `저장 실패: ${modelError}`
+      : modelDirty
+        ? modelValueTrimmed
+          ? "저장하지 않은 모델 변경 사항이 있습니다."
+          : "저장하면 SDK 기본값으로 되돌립니다."
+        : savedModelOverride
+          ? "저장됨"
+          : "SDK 기본값 사용 중";
+  $: claudeTokenTrimmed = claudeToken.trim();
+  $: tokenCanSave = Boolean(!subBusy && claudeTokenTrimmed);
+  $: tokenStatus = subBusy
+    ? "저장 중…"
+    : tokenError
+      ? `저장 실패: ${tokenError}`
+      : claudeTokenTrimmed
+        ? "저장할 준비가 됐습니다."
+        : sys.subscriptionConnected
+          ? "새 토큰을 붙여넣으면 기존 토큰을 교체합니다."
+          : "토큰을 붙여넣어 주세요.";
+  $: signupMode = (sys.signupMode || "open") as SignupMode;
+  $: signupModeLabel = signupModes.find((m) => m.id === signupMode)?.label || "개방";
+  $: signupStatus = signupBusy ? "회원가입 정책을 저장 중입니다." : signupError ? `저장 실패: ${signupError}` : `현재 정책: ${signupModeLabel}`;
+  $: hexTools = Array.isArray(sys.hexSshTools) ? sys.hexSshTools : [];
+  $: hexSavedKey = hexPolicyKeyFromSaved(sys.hexSshToolPolicy || {}, hexTools);
+  $: hexCurrentKey = hexPolicyKeyFromMatrix(hexPolicy, hexTools);
+  $: hexDirty = Boolean(hexTools.length && hexCurrentKey !== hexSavedKey);
+  $: hexCanSave = Boolean(!hexBusy && hexDirty);
+  $: hexStatus = hexBusy
+    ? "정책을 저장 중입니다."
+    : hexError
+      ? `저장 실패: ${hexError}`
+      : hexDirty
+        ? "저장하지 않은 정책 변경 사항이 있습니다."
+        : hexTools.length
+          ? "저장된 정책과 같습니다."
+          : "설정할 SSH 도구가 없습니다.";
 
   // overview stat cards
   $: statCards = [
@@ -109,6 +176,8 @@
   ] as { label: string; value: number | undefined; sub: string; target: string; filter: typeof $appState.adminUserFilter }[];
 
   async function load() {
+    if (loadBusy) return;
+    loadBusy = true;
     loading = true;
     error = "";
     try {
@@ -119,11 +188,31 @@
       error = (err as Error).message;
     } finally {
       loading = false;
+      loadBusy = false;
     }
   }
 
   function setTab(id: AdminTab) {
     updateState((state) => (state.adminTab = id));
+  }
+
+  function focusAdminTab(id: AdminTab): void {
+    requestAnimationFrame(() => document.getElementById(`admin-tab-${id}`)?.focus());
+  }
+
+  function onAdminTabKeydown(event: KeyboardEvent, currentId: AdminTab): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = tabs.findIndex((tab) => tab.id === currentId);
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? tabs.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + tabs.length) % tabs.length;
+    const next = tabs[nextIndex].id;
+    setTab(next);
+    focusAdminTab(next);
   }
 
   function goOverviewTarget(target: string, filter: typeof $appState.adminUserFilter) {
@@ -138,18 +227,41 @@
     updateState((state) => (state.adminUserFilter = id));
   }
 
+  function focusUserFilter(id: typeof $appState.adminUserFilter): void {
+    requestAnimationFrame(() => document.getElementById(`admin-user-filter-${id}`)?.focus());
+  }
+
+  function onUserFilterKeydown(event: KeyboardEvent, currentId: typeof $appState.adminUserFilter): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = userFilters.findIndex((item) => item.id === currentId);
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? userFilters.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + userFilters.length) % userFilters.length;
+    const next = userFilters[nextIndex].id;
+    setUserFilter(next);
+    focusUserFilter(next);
+  }
+
   function userFilterCount(f: (u: AdminUserSummary) => boolean): number {
     return $appState.adminUsers.filter(f).length;
   }
 
   // ---- groups ----
   async function createGroup() {
-    const name = newGroupName.trim();
+    if (creatingGroup) return;
+    const name = newGroupNameTrimmed;
+    groupCreateMessage = "";
     if (!name) {
+      groupCreateError = "그룹 이름을 입력하세요.";
       notify("그룹 이름을 입력하세요.", "warn");
       return;
     }
     creatingGroup = true;
+    groupCreateError = "";
     try {
       await api("/api/admin/groups", {
         method: "POST",
@@ -157,7 +269,8 @@
       });
     } catch (err) {
       creatingGroup = false;
-      notify(`그룹 생성 실패: ${(err as Error).message}`);
+      groupCreateError = (err as Error).message;
+      notify(`그룹 생성 실패: ${groupCreateError}`);
       return;
     }
     newGroupName = "";
@@ -165,9 +278,11 @@
     updateState((state) => (state.adminGroupSearch = ""));
     try {
       await loadAdminGroups();
-      notify(`그룹 "${name}"을 만들었습니다.`, "ok");
+      groupCreateMessage = `그룹 "${name}"을 만들었습니다.`;
+      notify(groupCreateMessage, "ok");
     } catch (err) {
-      notify(`그룹은 만들었지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+      groupCreateError = `그룹은 만들었지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`;
+      notify(groupCreateError, "warn");
     } finally {
       creatingGroup = false;
     }
@@ -175,10 +290,15 @@
 
   // ---- access ----
   async function saveSignupMode(mode: SignupMode) {
+    if (signupBusy || signupMode === mode) return;
+    signupBusy = true;
+    signupError = "";
     try {
       await api("/api/admin/signup-mode", { method: "PUT", body: JSON.stringify({ mode }) });
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`);
+      signupBusy = false;
+      signupError = (err as Error).message;
+      notify(`저장 실패: ${signupError}`);
       return;
     }
     try {
@@ -187,20 +307,25 @@
       notify("회원가입 정책을 저장했습니다.", "ok");
     } catch (err) {
       notify(`회원가입 정책은 저장했지만 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      signupBusy = false;
     }
   }
 
   // ---- system: model ----
   async function saveModel() {
-    const value = modelInput.trim();
+    if (modelBusy || !modelDirty) return;
+    const value = modelValueTrimmed;
     const successMessage = value ? "모델을 저장했습니다." : "모델 지정을 해제했습니다. SDK 기본값을 사용합니다.";
     modelBusy = true;
+    modelError = "";
     try {
       if (value) await api("/api/admin/model", { method: "PUT", body: JSON.stringify({ model: value }) });
       else await api("/api/admin/model", { method: "DELETE" });
     } catch (err) {
       modelBusy = false;
-      notify(`저장 실패: ${(err as Error).message}`);
+      modelError = (err as Error).message;
+      notify(`저장 실패: ${modelError}`);
       return;
     }
     try {
@@ -216,17 +341,21 @@
 
   // ---- system: subscription ----
   async function saveToken() {
-    const token = claudeToken.trim();
+    if (subBusy) return;
+    const token = claudeTokenTrimmed;
     if (!token) {
+      tokenError = "토큰을 붙여넣어 주세요.";
       notify("토큰을 붙여넣어 주세요.", "warn");
       return;
     }
     subBusy = true;
+    tokenError = "";
     try {
       await api("/api/admin/claude-token", { method: "PUT", body: JSON.stringify({ token }) });
     } catch (err) {
       subBusy = false;
-      notify(`저장 실패: ${(err as Error).message}`);
+      tokenError = (err as Error).message;
+      notify(`저장 실패: ${tokenError}`);
       return;
     }
     claudeToken = "";
@@ -241,13 +370,16 @@
   }
 
   async function disconnectToken() {
+    if (subBusy) return;
     if (!window.confirm("저장된 구독 토큰을 삭제할까요?")) return;
     subBusy = true;
+    tokenError = "";
     try {
       await api("/api/admin/claude-token", { method: "DELETE" });
     } catch (err) {
       subBusy = false;
-      notify(`해제 실패: ${(err as Error).message}`);
+      tokenError = (err as Error).message;
+      notify(`해제 실패: ${tokenError}`);
       return;
     }
     try {
@@ -261,6 +393,27 @@
   }
 
   // ---- system: hex-ssh policy ----
+  function hexToolNames(tools: any[]): string[] {
+    return tools.map((tool) => String(tool?.name || "")).filter(Boolean).sort();
+  }
+
+  function hexPolicyKeyFromSaved(policy: Record<string, string[]> = {}, tools: any[]): string {
+    const names = hexToolNames(tools);
+    return roleDefs
+      .map((role) => {
+        const allowed = Array.isArray(policy[role.key]) ? policy[role.key] : [];
+        return `${role.key}:${names.filter((name) => allowed.includes(name)).join(",")}`;
+      })
+      .join("|");
+  }
+
+  function hexPolicyKeyFromMatrix(matrix: Record<string, Record<string, boolean>>, tools: any[]): string {
+    const names = hexToolNames(tools);
+    return roleDefs
+      .map((role) => `${role.key}:${names.filter((name) => Boolean(matrix[role.key]?.[name])).join(",")}`)
+      .join("|");
+  }
+
   function syncHexPolicyFromSys() {
     const cur = unwrapSystem($appState.adminSystem);
     const tools = Array.isArray(cur.hexSshTools) ? cur.hexSshTools : [];
@@ -276,6 +429,7 @@
   }
 
   async function saveHexPolicy() {
+    if (!hexCanSave) return;
     const cur = unwrapSystem($appState.adminSystem);
     const tools = Array.isArray(cur.hexSshTools) ? cur.hexSshTools : [];
     const nextPolicy: Record<string, string[]> = {};
@@ -283,11 +437,13 @@
       nextPolicy[role.key] = tools.filter((t: any) => hexPolicy[role.key]?.[t.name]).map((t: any) => t.name);
     }
     hexBusy = true;
+    hexError = "";
     try {
       await api("/api/admin/hex-ssh-policy", { method: "PUT", body: JSON.stringify({ policy: nextPolicy }) });
     } catch (err) {
       hexBusy = false;
-      notify(`저장 실패: ${(err as Error).message}`);
+      hexError = (err as Error).message;
+      notify(`저장 실패: ${hexError}`);
       return;
     }
     try {
@@ -314,28 +470,31 @@
     <h1>관리자</h1>
     <p>사용자·접근·시스템을 관리하세요</p>
   </div>
-  <button class="ghost-sm" type="button" on:click={load}>새로고침</button>
+  <button class="ghost-sm" type="button" disabled={loadBusy} on:click={load}>{loadBusy ? "새로고침 중…" : "새로고침"}</button>
 </header>
 
 <div class="view-body scroll-thin">
   {#if loading}
-    <div class="muted pad">불러오는 중…</div>
+    <div class="muted pad" role="status">불러오는 중…</div>
   {:else if error}
-    <div class="warn-box">
+    <div class="warn-box" role="alert">
       관리자 정보를 불러오지 못했습니다: {error}
-      <button class="linkish" type="button" on:click={load}>다시 시도</button>
+      <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
     </div>
   {:else}
     <div class="settings-tabs" role="tablist" aria-label="관리자 분류">
       {#each tabs as tab}
         <button
+          id={`admin-tab-${tab.id}`}
           class="settings-tab"
           type="button"
           class:active={$appState.adminTab === tab.id}
           role="tab"
           aria-selected={$appState.adminTab === tab.id}
+          aria-controls="admin-panel"
           tabindex={$appState.adminTab === tab.id ? 0 : -1}
           on:click={() => setTab(tab.id)}
+          on:keydown={(event) => onAdminTabKeydown(event, tab.id)}
         >
           <Icon name={tab.icon} />
           <span>{tab.label}</span>
@@ -343,7 +502,7 @@
       {/each}
     </div>
 
-    <div class="admin-panel" role="tabpanel" id="admin-panel">
+    <div class="admin-panel" role="tabpanel" id="admin-panel" aria-labelledby={`admin-tab-${$appState.adminTab}`}>
       {#if $appState.adminTab === "overview"}
         <div class="admin-list">
           <section class="settings-card">
@@ -390,12 +549,15 @@
           <div class="admin-filter seg-control" role="radiogroup" aria-label="사용자 필터">
             {#each userFilters as f}
               <button
+                id={`admin-user-filter-${f.id}`}
                 class="seg-btn"
                 class:active={$appState.adminUserFilter === f.id}
                 type="button"
                 role="radio"
                 aria-checked={$appState.adminUserFilter === f.id}
+                tabindex={$appState.adminUserFilter === f.id ? 0 : -1}
                 on:click={() => setUserFilter(f.id)}
+                on:keydown={(event) => onUserFilterKeydown(event, f.id)}
               >{f.label} {userFilterCount(f.match)}</button>
             {/each}
           </div>
@@ -431,11 +593,32 @@
                 <p class="muted">같은 그룹원끼리는 자동으로 서로 신뢰해 권한을 얻고, 그룹 공용 지식 저장소를 공유합니다. 그룹 생성·삭제와 그룹 관리자 지정은 시스템 관리자만 합니다. 공용 저장소 편집은 각 그룹 관리자가 ‘내 아바타 ▸ 그룹’에서 합니다.</p>
               </div>
             </div>
-            <form class="plugin-add rows-2" on:submit|preventDefault={createGroup}>
-              <input bind:value={newGroupName} name="name" placeholder="그룹 이름" aria-label="그룹 이름" required />
-              <input bind:value={newGroupDescription} name="description" placeholder="설명 (선택)" aria-label="그룹 설명" />
-              <button class="primary" type="submit" disabled={creatingGroup}>그룹 만들기</button>
+            <form class="plugin-add rows-2" aria-busy={creatingGroup} aria-describedby={groupCreateStatusId} on:submit|preventDefault={createGroup}>
+              <input
+                bind:value={newGroupName}
+                name="name"
+                placeholder="그룹 이름"
+                aria-label="그룹 이름"
+                aria-describedby={groupCreateStatusId}
+                aria-invalid={groupCreateError ? "true" : undefined}
+                required
+                disabled={creatingGroup}
+                on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
+              />
+              <input
+                bind:value={newGroupDescription}
+                name="description"
+                placeholder="설명 (선택)"
+                aria-label="그룹 설명"
+                aria-describedby={groupCreateStatusId}
+                disabled={creatingGroup}
+                on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
+              />
+              <button class="primary" type="submit" aria-describedby={groupCreateStatusId} disabled={!canCreateGroup}>{creatingGroup ? "생성 중…" : "그룹 만들기"}</button>
             </form>
+            <div class="settings-save-row compact">
+              <span id={groupCreateStatusId} class="settings-save-status" class:dirty={Boolean(creatingGroup || groupCreateError || groupCreateMessage || newGroupNameTrimmed)} role="status" aria-live="polite">{groupCreateStatus}</span>
+            </div>
             <div class="admin-users-head">
               <input
                 type="search"
@@ -475,7 +658,7 @@
                 <p class="muted">새 사용자가 스스로 가입하는 방식을 정합니다. 첫 관리자 계정은 정책과 무관하게 항상 허용됩니다.</p>
               </div>
             </div>
-            <div class="radio-cards">
+            <div class="radio-cards" role="radiogroup" aria-label="회원가입 정책" aria-describedby={signupStatusId}>
               {#each signupModes as m}
                 <label class="radio-card" for={`sm-${m.id}`}>
                   <input
@@ -483,7 +666,8 @@
                     name="signup-mode"
                     id={`sm-${m.id}`}
                     value={m.id}
-                    checked={(sys.signupMode || "open") === m.id}
+                    checked={signupMode === m.id}
+                    disabled={signupBusy}
                     on:change={() => saveSignupMode(m.id)}
                   />
                   <div class="radio-card-body">
@@ -493,13 +677,16 @@
                 </label>
               {/each}
             </div>
+            <div class="settings-save-row compact">
+              <span id={signupStatusId} class="settings-save-status" class:dirty={Boolean(signupError)} role="status" aria-live="polite">{signupStatus}</span>
+            </div>
           </section>
         </div>
       {:else if $appState.adminTab === "system"}
         {#if !$appState.adminSystem}
-          <div class="warn-box">
+          <div class="warn-box" role="alert">
             시스템 정보를 불러올 수 없습니다.
-            <button class="linkish" type="button" on:click={load}>다시 시도</button>
+            <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
           </div>
         {:else}
           <div class="admin-list">
@@ -567,9 +754,22 @@
               <form class="settings-form" on:submit|preventDefault={saveToken}>
                 <label class="field">
                   <span>{sys.subscriptionConnected ? "토큰 교체" : "Claude 구독 토큰"}</span>
-                  <RevealableInput bind:value={claudeToken} name="token" placeholder="sk-ant-oat01-..." ariaLabel={sys.subscriptionConnected ? "Claude 구독 토큰 교체" : "Claude 구독 토큰"} revealLabel="토큰" />
+                  <RevealableInput
+                    bind:value={claudeToken}
+                    name="token"
+                    placeholder="sk-ant-oat01-..."
+                    ariaLabel={sys.subscriptionConnected ? "Claude 구독 토큰 교체" : "Claude 구독 토큰"}
+                    ariaDescribedby={tokenStatusId}
+                    ariaInvalid={Boolean(tokenError)}
+                    revealLabel="토큰"
+                    disabled={subBusy}
+                    onInput={() => (tokenError = "")}
+                  />
                 </label>
-                <button class="primary" type="submit" disabled={subBusy}>저장</button>
+                <div class="settings-save-row">
+                  <span id={tokenStatusId} class="settings-save-status" class:dirty={Boolean(tokenError || claudeTokenTrimmed)} role="status" aria-live="polite">{tokenStatus}</span>
+                  <button class="primary" type="submit" disabled={!tokenCanSave}>{subBusy ? "저장 중…" : sys.subscriptionConnected ? "교체 저장" : "저장"}</button>
+                </div>
               </form>
             </section>
 
@@ -587,9 +787,21 @@
               <form class="settings-form" on:submit|preventDefault={saveModel}>
                 <label class="field">
                   <span>모델 이름</span>
-                  <input name="model" bind:value={modelInput} placeholder="claude-opus-4-8 (비우면 기본값)" autocomplete="off" />
+                  <input
+                    name="model"
+                    bind:value={modelInput}
+                    placeholder="claude-opus-4-8 (비우면 기본값)"
+                    autocomplete="off"
+                    aria-describedby={modelStatusId}
+                    aria-invalid={modelError ? "true" : undefined}
+                    disabled={modelBusy}
+                    on:input={() => (modelError = "")}
+                  />
                 </label>
-                <button class="primary" type="submit" disabled={modelBusy}>저장</button>
+                <div class="settings-save-row">
+                  <span id={modelStatusId} class="settings-save-status" class:dirty={modelDirty || Boolean(modelError)} role="status" aria-live="polite">{modelStatus}</span>
+                  <button class="primary" type="submit" disabled={!modelCanSave}>{modelBusy ? "저장 중…" : modelValueTrimmed ? "모델 저장" : "기본값 사용"}</button>
+                </div>
               </form>
             </section>
 
@@ -603,7 +815,7 @@
                   </div>
                 </div>
                 <form class="hex-policy-form" on:submit|preventDefault={saveHexPolicy}>
-                  <div class="hex-policy-grid">
+                  <div class="hex-policy-grid" role="group" aria-label="SSH 도구 역할별 정책" aria-describedby={hexStatusId}>
                     <div class="hex-policy-head muted">도구</div>
                     {#each roleDefs as role}
                       <div class="hex-policy-head">{role.label}</div>
@@ -616,13 +828,14 @@
                       </div>
                       {#each roleDefs as role}
                         <label class="hex-policy-check">
-                          <input type="checkbox" bind:checked={hexPolicy[role.key][tool.name]} aria-label={`${role.label} ${tool.label || tool.name}`} />
+                          <input type="checkbox" bind:checked={hexPolicy[role.key][tool.name]} aria-label={`${role.label} ${tool.label || tool.name}`} aria-describedby={hexStatusId} disabled={hexBusy} on:change={() => (hexError = "")} />
                         </label>
                       {/each}
                     {/each}
                   </div>
-                  <div class="form-actions">
-                    <button class="primary" type="submit" disabled={hexBusy}>정책 저장</button>
+                  <div class="settings-save-row">
+                    <span id={hexStatusId} class="settings-save-status" class:dirty={hexDirty || Boolean(hexError)} role="status" aria-live="polite">{hexStatus}</span>
+                    <button class="primary" type="submit" disabled={!hexCanSave}>{hexBusy ? "저장 중…" : "정책 저장"}</button>
                   </div>
                 </form>
               </section>

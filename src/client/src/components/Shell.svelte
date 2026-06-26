@@ -24,7 +24,12 @@
   let conversationsError = "";
   let renamingId = "";
   let renameValue = "";
+  let renameError = "";
+  let renameInput: HTMLInputElement | undefined;
+  let renamingBusyId = "";
+  let busyConversationIds = new Set<string>();
   let clearingConversations = false;
+  let logoutBusy = false;
 
   const nav = [
     { view: "explore", label: "탐색", icon: "compass" },
@@ -53,7 +58,11 @@
     });
   $: chatConversationCount = $appState.conversations.filter((conversation) => !conversation.isRoutine).length;
 
-  onMount(async () => {
+  onMount(() => {
+    void refreshConversations();
+  });
+
+  async function refreshConversations() {
     conversationsLoading = true;
     conversationsError = "";
     try {
@@ -63,9 +72,11 @@
     } finally {
       conversationsLoading = false;
     }
-  });
+  }
 
   async function logout() {
+    if (logoutBusy) return;
+    logoutBusy = true;
     stopKnowledgeWatch();
     try {
       await api("/api/auth/logout", { method: "POST" });
@@ -88,24 +99,49 @@
     history.replaceState(null, "", location.pathname);
   }
 
+  function setConversationBusy(id: string, on: boolean) {
+    const next = new Set(busyConversationIds);
+    if (on) next.add(id);
+    else next.delete(id);
+    busyConversationIds = next;
+  }
+
+  function isConversationBusy(id: string): boolean {
+    return busyConversationIds.has(id) || renamingBusyId === id;
+  }
+
+  function isConversationStreaming(id: string): boolean {
+    return $appState.chatPanes.some((pane) => pane.conversationId === id && pane.streaming);
+  }
+
+  function conversationDomId(id: string, suffix: string): string {
+    return `conversation-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${suffix}`;
+  }
+
   function startRename(conversation: ConversationSummary, event: MouseEvent) {
     event.stopPropagation();
+    if (isConversationBusy(conversation.id)) return;
     renamingId = conversation.id;
     renameValue = conversation.title || "";
+    renameError = "";
   }
 
   function cancelRename() {
+    if (renamingBusyId) return;
     renamingId = "";
     renameValue = "";
+    renameError = "";
   }
 
   async function commitRename(conversation: ConversationSummary) {
+    if (renamingBusyId === conversation.id) return;
     const title = renameValue.trim();
     if (!title || title === conversation.title) {
       cancelRename();
       return;
     }
-    cancelRename();
+    renamingBusyId = conversation.id;
+    renameError = "";
     try {
       const { conversation: updated } = await api<{ conversation: ConversationSummary }>(`/api/conversations/${encodeURIComponent(conversation.id)}`, {
         method: "PATCH",
@@ -116,23 +152,32 @@
         if (target) target.title = updated?.title || title;
       });
       notify("대화 이름을 변경했습니다.", "ok");
+      renamingId = "";
+      renameValue = "";
     } catch (err) {
-      notify(`이름 변경 실패: ${(err as Error).message}`, "warn");
+      renameError = (err as Error).message;
+      notify(`이름 변경 실패: ${renameError}`, "warn");
+      queueMicrotask(() => renameInput?.focus());
+    } finally {
+      renamingBusyId = "";
     }
   }
 
   async function deleteConversation(conversation: ConversationSummary, event: MouseEvent) {
     event.stopPropagation();
+    if (isConversationBusy(conversation.id)) return;
     if ($appState.chatPanes.some((pane) => pane.conversationId === conversation.id && pane.streaming)) {
       notify("응답 중인 대화는 삭제할 수 없습니다. 먼저 응답을 중지해 주세요.", "warn");
       return;
     }
     const title = conversation.title || "새 대화";
     if (!window.confirm(`"${title}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
+    setConversationBusy(conversation.id, true);
     try {
       await api(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: "DELETE" });
     } catch (err) {
       notify(`삭제 실패: ${(err as Error).message}`, "warn");
+      setConversationBusy(conversation.id, false);
       return;
     }
     const openPane = $appState.chatPanes.find((pane) => pane.conversationId === conversation.id);
@@ -141,6 +186,7 @@
     });
     if (openPane) newChat(openPane.id);
     notify(`"${title}" 대화를 삭제했습니다.`, "ok");
+    setConversationBusy(conversation.id, false);
   }
 
   async function clearConversations() {
@@ -175,11 +221,15 @@
   }
 
   async function openConversation(conversation: ConversationSummary) {
+    if (isConversationBusy(conversation.id)) return;
+    setConversationBusy(conversation.id, true);
     try {
       await selectConversation(conversation.id);
       closeRail();
     } catch (err) {
       notify(`대화를 열지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      setConversationBusy(conversation.id, false);
     }
   }
 
@@ -200,11 +250,15 @@
   // Touch/keyboard-friendly alternative to dragging: add directly to the split.
   async function addToSplit(conversation: ConversationSummary, event: Event) {
     event.stopPropagation();
+    if (isConversationBusy(conversation.id)) return;
+    setConversationBusy(conversation.id, true);
     try {
       await addConversationToSplit(conversation.id);
       closeRail();
     } catch (err) {
       notify(`분할에 추가하지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      setConversationBusy(conversation.id, false);
     }
   }
 
@@ -228,7 +282,15 @@
 
 <svelte:window on:keydown={handleKeydown} />
 
-<button class="icon-button rail-toggle svelte-rail-toggle" type="button" aria-label="메뉴 열기" title="메뉴" on:click={openRail}>
+<button
+  class="icon-button rail-toggle svelte-rail-toggle"
+  type="button"
+  aria-label="메뉴 열기"
+  aria-controls="rail"
+  aria-expanded={railOpen ? "true" : "false"}
+  title="메뉴"
+  on:click={openRail}
+>
   <Icon name="menu" />
 </button>
 
@@ -294,14 +356,18 @@
         type="search"
         placeholder={conversationsLoading ? "대화 불러오는 중" : "대화 검색"}
         aria-label="대화 검색"
+        aria-controls="rail-conversation-list"
         disabled={conversationsLoading}
         bind:value={conversationQuery}
       />
-      <div class="conv-list scroll-thin">
+      <div id="rail-conversation-list" class="conv-list scroll-thin" role="list" aria-label="내 대화 목록">
         {#if conversationsLoading}
-          <div class="conv-empty">불러오는 중…</div>
+          <div class="conv-empty" role="status">불러오는 중…</div>
         {:else if conversationsError}
-          <div class="conv-empty">대화를 불러오지 못했습니다.</div>
+          <div class="conv-empty" role="alert">
+            대화를 불러오지 못했습니다.
+            <button class="linkish small rail-retry" type="button" disabled={conversationsLoading} on:click={refreshConversations}>다시 시도</button>
+          </div>
         {:else if !railConversations.length}
           <div class="conv-empty">{conversationQuery ? "검색 결과가 없습니다." : "아직 저장된 대화가 없습니다."}</div>
         {:else}
@@ -311,33 +377,58 @@
               class="conv-item"
               class:active={conversation.id === activeConversationId}
               class:editing={renamingId === conversation.id}
-              draggable={renamingId !== conversation.id}
+              class:busy={isConversationBusy(conversation.id)}
+              aria-busy={isConversationBusy(conversation.id) ? "true" : "false"}
+              role="listitem"
+              draggable={renamingId !== conversation.id && !isConversationBusy(conversation.id)}
               on:dragstart={(event) => onConvDragStart(event, conversation)}
             >
               {#if renamingId === conversation.id}
-                <!-- svelte-ignore a11y-autofocus -->
-                <input
-                  class="conv-rename"
-                  bind:value={renameValue}
-                  placeholder="대화 이름"
-                  aria-label="대화 이름"
-                  title="Enter 저장 · Esc 취소"
-                  autofocus
-                  on:click|stopPropagation
-                  on:keydown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      void commitRename(conversation);
-                    } else if (event.key === "Escape") {
-                      event.preventDefault();
-                      event.stopPropagation();
-                      cancelRename();
-                    }
-                  }}
-                  on:blur={() => commitRename(conversation)}
-                />
+                <div class="conv-edit-wrap">
+                  <!-- svelte-ignore a11y-autofocus -->
+                  <input
+                    class="conv-rename"
+                    bind:this={renameInput}
+                    bind:value={renameValue}
+                    placeholder="대화 이름"
+                    aria-label="대화 이름"
+                    aria-describedby={conversationDomId(conversation.id, "rename-status")}
+                    aria-invalid={renameError ? "true" : undefined}
+                    title="Enter 저장 · Esc 취소"
+                    autofocus
+                    disabled={renamingBusyId === conversation.id}
+                    on:click|stopPropagation
+                    on:input={() => (renameError = "")}
+                    on:keydown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        void commitRename(conversation);
+                      } else if (event.key === "Escape") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        cancelRename();
+                      }
+                    }}
+                    on:blur={() => commitRename(conversation)}
+                  />
+                  <span
+                    id={conversationDomId(conversation.id, "rename-status")}
+                    class="conv-edit-status"
+                    class:invalid={Boolean(renameError)}
+                    role="status"
+                    aria-live="polite"
+                  >{renamingBusyId === conversation.id ? "저장 중…" : renameError ? `이름 변경 실패: ${renameError}` : "Enter 저장 · Esc 취소"}</span>
+                </div>
               {:else}
-                <button class="conv-open" type="button" title={`대화 열기: ${conversationTitle(conversation)}`} aria-label={`대화 열기: ${conversationTitle(conversation)}`} on:click={() => openConversation(conversation)}>
+                <button
+                  class="conv-open"
+                  type="button"
+                  title={`대화 열기: ${conversationTitle(conversation)}`}
+                  aria-label={`대화 열기: ${conversationTitle(conversation)}`}
+                  aria-current={conversation.id === activeConversationId ? "true" : undefined}
+                  disabled={isConversationBusy(conversation.id)}
+                  on:click={() => openConversation(conversation)}
+                >
                   <span class="conv-name">{conversationTitle(conversation)}</span>
                   <span class="conv-time">{conversation.avatarDisplayName} · {formatDate(conversation.updatedAt)}</span>
                 </button>
@@ -347,15 +438,29 @@
                     type="button"
                     aria-label="분할 대화에 추가"
                     title={paneCount >= 4 ? "분할 대화는 최대 4개" : "분할 대화에 추가"}
-                    disabled={paneCount >= 4}
+                    disabled={paneCount >= 4 || isConversationBusy(conversation.id)}
                     on:click={(event) => addToSplit(conversation, event)}
                   >
                     <Icon name="columns" size={15} />
                   </button>
-                  <button class="conv-act" type="button" aria-label="대화 이름 바꾸기" title="이름 바꾸기" on:click={(event) => startRename(conversation, event)}>
+                  <button
+                    class="conv-act"
+                    type="button"
+                    aria-label="대화 이름 바꾸기"
+                    title="이름 바꾸기"
+                    disabled={isConversationBusy(conversation.id)}
+                    on:click={(event) => startRename(conversation, event)}
+                  >
                     <Icon name="edit" size={15} />
                   </button>
-                  <button class="conv-act danger" type="button" aria-label="대화 삭제" title="삭제" on:click={(event) => deleteConversation(conversation, event)}>
+                  <button
+                    class="conv-act danger"
+                    type="button"
+                    aria-label="대화 삭제"
+                    title={isConversationStreaming(conversation.id) ? "응답 중인 대화는 삭제할 수 없습니다" : "삭제"}
+                    disabled={isConversationBusy(conversation.id) || isConversationStreaming(conversation.id)}
+                    on:click={(event) => deleteConversation(conversation, event)}
+                  >
                     <Icon name="trash" size={15} />
                   </button>
                 </div>
@@ -382,11 +487,19 @@
       <button class="icon-button" type="button" aria-label={themeLabel} title={`${themeLabel} (클릭하여 변경)`} on:click={cycleTheme}>
         <Icon name={themeIcon} />
       </button>
-      <button class="icon-button" type="button" aria-label="로그아웃" title="로그아웃" on:click={logout}>
+      <button class="icon-button" type="button" aria-label="로그아웃" title="로그아웃" disabled={logoutBusy} on:click={logout}>
       <Icon name="logout" />
       </button>
     </div>
   </div>
 </aside>
 
-<button class="rail-backdrop" class:open={railOpen} type="button" aria-label="메뉴 닫기" on:click={closeRail}></button>
+<button
+  class="rail-backdrop"
+  class:open={railOpen}
+  type="button"
+  aria-label="메뉴 닫기"
+  aria-hidden={railOpen ? undefined : "true"}
+  tabindex={railOpen ? 0 : -1}
+  on:click={closeRail}
+></button>

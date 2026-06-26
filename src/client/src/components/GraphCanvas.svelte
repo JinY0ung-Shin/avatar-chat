@@ -44,10 +44,15 @@
   // The graph reference currently rendered, so a new non-empty `graph` re-inits
   // (rather than showing the stale one) even if the parent swaps it in place.
   let renderedGraph: KnowledgeGraph | undefined;
+  let graphLoading = false;
+  let graphError = "";
+  let renderToken = 0;
 
   $: presentSections = graph
     ? [...new Set(graph.nodes.map((n) => n.section))].filter((s) => s in SECTION_COLORS)
     : [];
+  $: nodeList = graph?.nodes ?? [];
+  $: selectedNode = selectedId ? nodeList.find((node) => node.id === selectedId) ?? null : null;
 
   // (Re)init whenever the container is mounted and the non-empty graph changes.
   $: if (containerEl && graph && graph.nodes.length && graph !== renderedGraph) {
@@ -70,73 +75,106 @@
   }
 
   onDestroy(() => {
+    renderToken++;
     cy?.destroy();
     cy = null;
   });
 
   async function initCy(g: KnowledgeGraph, container: HTMLDivElement): Promise<void> {
-    const cytoscape = (await import("cytoscape")).default;
-    if (!containerEl) return; // unmounted while the chunk loaded
-    const dark = document.documentElement.getAttribute("data-theme") === "dark";
-    const labelColor = dark ? "#e5e7eb" : "#1e293b";
-    const edgeColor = dark ? "#475569" : "#cbd5e1";
+    const token = ++renderToken;
+    graphLoading = true;
+    graphError = "";
+    try {
+      const cytoscape = (await import("cytoscape")).default;
+      if (!containerEl || token !== renderToken) return; // unmounted or replaced while the chunk loaded
+      const dark = document.documentElement.getAttribute("data-theme") === "dark";
+      const labelColor = dark ? "#e5e7eb" : "#1e293b";
+      const edgeColor = dark ? "#475569" : "#cbd5e1";
 
-    const nodeById = new Map(g.nodes.map((n) => [n.id, n]));
-    const elements = [
-      ...g.nodes.map((n) => ({ data: { id: n.id, label: n.label, section: n.section } })),
-      ...g.edges.map((e, i) => ({ data: { id: `e${i}`, source: e.source, target: e.target } })),
-    ];
+      const nodeById = new Map(g.nodes.map((n) => [n.id, n]));
+      const elements = [
+        ...g.nodes.map((n) => ({ data: { id: n.id, label: n.label, section: n.section } })),
+        ...g.edges.map((e, i) => ({ data: { id: `e${i}`, source: e.source, target: e.target } })),
+      ];
 
-    const sectionStyles = Object.entries(SECTION_COLORS).map(([section, color]) => ({
-      selector: `node[section = "${section}"]`,
-      style: { "background-color": color },
-    }));
+      const sectionStyles = Object.entries(SECTION_COLORS).map(([section, color]) => ({
+        selector: `node[section = "${section}"]`,
+        style: { "background-color": color },
+      }));
 
-    cy = cytoscape({
-      container,
-      elements,
-      layout: { name: "cose", animate: false, padding: 30, nodeRepulsion: 8000, idealEdgeLength: 80 },
-      style: [
-        {
-          selector: "node",
-          style: {
-            label: "data(label)",
-            "font-size": 9,
-            color: labelColor,
-            "text-valign": "bottom",
-            "text-halign": "center",
-            "text-margin-y": 3,
-            "min-zoomed-font-size": 7,
-            width: 14,
-            height: 14,
-            "border-width": 0,
+      cy = cytoscape({
+        container,
+        elements,
+        layout: { name: "cose", animate: false, padding: 30, nodeRepulsion: 8000, idealEdgeLength: 80 },
+        style: [
+          {
+            selector: "node",
+            style: {
+              label: "data(label)",
+              "font-size": 9,
+              color: labelColor,
+              "text-valign": "bottom",
+              "text-halign": "center",
+              "text-margin-y": 3,
+              "min-zoomed-font-size": 7,
+              width: 14,
+              height: 14,
+              "border-width": 0,
+            },
           },
-        },
-        ...sectionStyles,
-        {
-          selector: 'node[section = "unresolved"]',
-          style: { "background-opacity": 0.25, "border-width": 1, "border-color": edgeColor, "border-style": "dashed" },
-        },
-        {
-          selector: "edge",
-          style: { width: 1, "line-color": edgeColor, "curve-style": "haystack", opacity: 0.6 },
-        },
-        { selector: "node:selected", style: { "border-width": 3, "border-color": "#0ea5e9" } },
-      ],
-    });
+          ...sectionStyles,
+          {
+            selector: 'node[section = "unresolved"]',
+            style: { "background-opacity": 0.25, "border-width": 1, "border-color": edgeColor, "border-style": "dashed" },
+          },
+          {
+            selector: "edge",
+            style: { width: 1, "line-color": edgeColor, "curve-style": "haystack", opacity: 0.6 },
+          },
+          { selector: "node:selected", style: { "border-width": 3, "border-color": "#0ea5e9" } },
+        ],
+      });
 
-    cy.on("tap", "node", (evt: { target: { id(): string } }) => {
-      dispatch("select", nodeById.get(evt.target.id()) ?? null);
-    });
-    cy.on("tap", (evt: { target: unknown }) => {
-      if (evt.target === cy) dispatch("select", null);
-    });
+      cy.on("tap", "node", (evt: { target: { id(): string } }) => {
+        dispatch("select", nodeById.get(evt.target.id()) ?? null);
+      });
+      cy.on("tap", (evt: { target: unknown }) => {
+        if (evt.target === cy) dispatch("select", null);
+      });
 
-    syncSelection(selectedId);
+      syncSelection(selectedId);
+    } catch (err) {
+      if (token !== renderToken) return;
+      graphError = (err as Error).message || "그래프 렌더러를 불러오지 못했습니다.";
+    } finally {
+      if (token === renderToken) graphLoading = false;
+    }
+  }
+
+  function retryRender(): void {
+    if (!containerEl || !graph) return;
+    cy?.destroy();
+    cy = null;
+    renderedGraph = graph;
+    void initCy(graph, containerEl);
+  }
+
+  function selectNode(node: KnowledgeGraphNode): void {
+    dispatch("select", node);
+    syncSelection(node.id);
   }
 </script>
 
-<div class="graph-canvas" bind:this={containerEl}></div>
+<div class="graph-canvas" bind:this={containerEl} role="group" aria-label={`지식 그래프: 노트 ${nodeList.length}개, 연결 ${graph?.edges.length ?? 0}개`}>
+  {#if graphLoading}
+    <div class="graph-overlay muted">그래프를 렌더링하는 중…</div>
+  {:else if graphError}
+    <div class="graph-overlay error-note">
+      그래프를 표시하지 못했습니다: {graphError}
+      <button class="linkish small" type="button" on:click={retryRender}>다시 시도</button>
+    </div>
+  {/if}
+</div>
 <div class="graph-legend">
   {#each presentSections as s}
     <span class="legend-chip">
@@ -144,6 +182,23 @@
     </span>
   {/each}
 </div>
+{#if nodeList.length}
+  <div class="graph-node-strip" aria-label="그래프 노트 목록">
+    {#each nodeList as node (node.id)}
+      <button
+        class="graph-node-chip"
+        class:active={selectedNode?.id === node.id}
+        type="button"
+        aria-pressed={selectedNode?.id === node.id ? "true" : "false"}
+        title={`${node.label} · ${SECTION_LABELS[node.section] ?? node.section}`}
+        on:click={() => selectNode(node)}
+      >
+        <span class="legend-dot" style={`background:${SECTION_COLORS[node.section] ?? SECTION_COLORS.other}`}></span>
+        <span>{node.label}</span>
+      </button>
+    {/each}
+  </div>
+{/if}
 
 <style>
   .graph-canvas {
@@ -153,6 +208,19 @@
     border-radius: var(--r-md);
     background: var(--bg);
     overflow: hidden;
+    position: relative;
+  }
+  .graph-overlay {
+    position: absolute;
+    inset: var(--s-3);
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    text-align: center;
+    pointer-events: none;
+  }
+  .graph-overlay.error-note {
+    pointer-events: auto;
   }
   .graph-legend {
     display: flex;
@@ -171,5 +239,39 @@
     height: 9px;
     border-radius: 50%;
     display: inline-block;
+  }
+  .graph-node-strip {
+    display: flex;
+    gap: var(--s-1);
+    max-width: 100%;
+    overflow-x: auto;
+    padding-bottom: var(--s-1);
+    scrollbar-width: thin;
+  }
+  .graph-node-chip {
+    flex: 0 0 auto;
+    max-width: 220px;
+    min-height: 30px;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1);
+    border: 1px solid var(--line);
+    border-radius: var(--r-pill);
+    background: var(--panel);
+    color: var(--text);
+    padding: var(--s-1) var(--s-2);
+    font-size: var(--t-xs);
+  }
+  .graph-node-chip span:last-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .graph-node-chip:hover,
+  .graph-node-chip.active {
+    border-color: var(--accent-soft-strong);
+    background: var(--accent-soft);
+    color: var(--accent-strong);
   }
 </style>

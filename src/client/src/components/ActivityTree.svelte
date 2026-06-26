@@ -22,10 +22,26 @@
       } satisfies LiveTaskRow)),
   ];
   $: children = agents.filter((a) => a.parentId === agentId && !a.isMain);
+
+  const statusLabels: Record<string, string> = {
+    running: "진행 중",
+    done: "완료",
+    failed: "실패",
+    blocked: "승인 대기",
+  };
+
+  function rowLabel(kind: string, label: string, status: string, detail = ""): string {
+    return [kind, label, statusLabels[status] || status, detail].filter(Boolean).join(" · ");
+  }
 </script>
 
 {#if node}
-  <div class={`agent-node ${node.isMain ? "is-main" : "sub"}`} data-status={node.status}>
+  <div
+    class={`agent-node ${node.isMain ? "is-main" : "sub"}`}
+    data-status={node.status}
+    role={node.isMain ? undefined : "listitem"}
+    aria-label={node.isMain ? undefined : rowLabel("에이전트", node.label, node.status)}
+  >
     {#if !node.isMain}
       <div class="agent-head">
         <span class="agent-spinner"></span>
@@ -34,9 +50,9 @@
       </div>
     {/if}
     {#if ownTasks.length}
-      <div class="agent-tasks">
+      <div class="agent-tasks" role="list" aria-label={`${node.label} 태스크`}>
         {#each ownTasks as row (row.id)}
-          <div class="task-row" data-status={row.status}>
+          <div class="task-row" data-status={row.status} role="listitem" title={rowLabel("태스크", row.label || "작업", row.status, row.detail || "")} aria-label={rowLabel("태스크", row.label || "작업", row.status, row.detail || "")}>
             <span class="task-spinner"></span>
             <span class="task-badge">태스크</span>
             {#if row.label}<span class="task-name">{row.label}</span>{/if}
@@ -46,9 +62,9 @@
       </div>
     {/if}
     {#if ownTools.length}
-      <div class="agent-tools">
+      <div class="agent-tools" role="list" aria-label={`${node.label} 도구 실행`}>
         {#each ownTools as row (row.id)}
-          <div class={`tool-row ${row.kind === "blocked" ? "blocked" : ""}`} data-status={row.status}>
+          <div class={`tool-row ${row.kind === "blocked" ? "blocked" : ""}`} data-status={row.status} role="listitem" title={rowLabel("도구", row.label, row.status, row.detail || "")} aria-label={rowLabel("도구", row.label, row.status, row.detail || "")}>
             {#if row.status === "blocked"}
               <span class="tool-dot"></span>
             {:else}
@@ -61,7 +77,7 @@
       </div>
     {/if}
     {#if children.length}
-      <div class="agent-children">
+      <div class="agent-children" role="list" aria-label={`${node.label} 하위 에이전트`}>
         {#each children as child (child.id)}
           <Self agentId={child.id} {agents} {tools} {tasks} />
         {/each}

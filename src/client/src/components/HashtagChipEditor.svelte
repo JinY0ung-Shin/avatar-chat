@@ -1,3 +1,7 @@
+<script context="module" lang="ts">
+  let nextHashtagEditorId = 0;
+</script>
+
 <script lang="ts">
   // Chip editor for capability hashtags: type + Enter/comma/space to add, click
   // × or Backspace-on-empty to remove. Ports buildHashtagEditor from explore.js.
@@ -6,10 +10,14 @@
   import { notify } from "../lib/state";
 
   export let tags: string[] = [];
+  export let disabled = false;
 
   let value = "";
+  const editorId = `hashtag-editor-${++nextHashtagEditorId}`;
+  $: statusText = tags.length ? `${tags.length}개 해시태그가 선택되었습니다.` : "선택된 해시태그가 없습니다.";
 
   function addFromInput(): void {
+    if (disabled) return;
     const parts = value
       .split(/[\s,]+/)
       .map((s) => s.trim())
@@ -21,6 +29,7 @@
   }
 
   function onKeydown(e: KeyboardEvent): void {
+    if (disabled) return;
     if (e.key === "Enter" || e.key === ",") {
       e.preventDefault();
       addFromInput();
@@ -32,33 +41,54 @@
     }
   }
 
+  function onEditorKeydown(e: KeyboardEvent): void {
+    if (disabled) return;
+    if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
+      e.preventDefault();
+      inputEl?.focus();
+    }
+  }
+
   function remove(index: number): void {
+    if (disabled) return;
     tags = tags.filter((_, i) => i !== index);
   }
 
   let inputEl: HTMLInputElement;
   function focusInput(e: MouseEvent): void {
+    if (disabled) return;
     if (e.target === e.currentTarget || (e.target as HTMLElement).classList.contains("tag-chips")) {
       inputEl?.focus();
     }
   }
 </script>
 
-<!-- svelte-ignore a11y-click-events-have-key-events a11y-no-static-element-interactions -->
-<div class="hashtag-editor" on:click={focusInput}>
-  <div class="tag-chips">
+<!-- svelte-ignore a11y_no_noninteractive_element_interactions - clicks on editor whitespace focus the chip input; keyboard users tab directly to the input/buttons. -->
+<div
+  class="hashtag-editor"
+  role="group"
+  aria-label="역량 해시태그 편집"
+  aria-describedby={`${editorId}-status`}
+  aria-disabled={disabled ? "true" : "false"}
+  on:click={focusInput}
+  on:keydown={onEditorKeydown}
+>
+  <div class="tag-chips" role="list" aria-label="현재 해시태그">
     {#each tags as tag, i (tag + i)}
-      <span class="tag accent hashtag-chip">
+      <span class="tag accent hashtag-chip" role="listitem">
         <span>#{tag}</span>
-        <button type="button" class="chip-x" aria-label={`${tag} 제거`} on:click={() => remove(i)}>×</button>
+        <button type="button" class="chip-x" aria-label={`${tag} 제거`} disabled={disabled} on:click={() => remove(i)}>×</button>
       </span>
     {/each}
   </div>
+  <span class="sr-only" id={`${editorId}-status`} role="status" aria-live="polite">{statusText} Enter, 쉼표, 공백으로 추가할 수 있습니다.</span>
   <input
     class="tag-input"
     type="text"
     placeholder="태그 입력 후 Enter"
     aria-label="역량 해시태그 추가"
+    aria-describedby={`${editorId}-status`}
+    disabled={disabled}
     bind:value
     bind:this={inputEl}
     on:keydown={onKeydown}

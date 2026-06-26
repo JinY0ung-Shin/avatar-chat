@@ -27,6 +27,7 @@
   type="button"
   role="switch"
   aria-checked={on ? "true" : "false"}
+  aria-busy={busy ? "true" : "false"}
   aria-label={label}
   title={label}
   disabled={busy}

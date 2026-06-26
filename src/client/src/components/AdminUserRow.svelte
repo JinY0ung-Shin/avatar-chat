@@ -14,11 +14,15 @@
   let loadError = "";
   let detail: AdminUserDetail | null = null;
   let busy = false;
+  let actionStatus = "";
   let showPasswordModal = false;
 
   $: isMe = user.id === $appState.user?.id;
   $: isAdmin = user.roles?.includes("admin");
   $: willHide = user.visibility !== "private";
+  $: userBaseId = user.id.replace(/[^a-zA-Z0-9_-]/g, "-");
+  $: detailId = `admin-user-detail-${userBaseId}`;
+  $: actionStatusId = `admin-user-action-status-${userBaseId}`;
 
   async function toggle() {
     if (expanded) {
@@ -31,6 +35,7 @@
   }
 
   async function loadDetail() {
+    if (loading) return;
     loading = true;
     loadError = "";
     try {
@@ -44,19 +49,24 @@
   }
 
   async function run(fn: () => Promise<void>, errLabel: string, successLabel = "") {
+    if (busy) return;
     busy = true;
+    actionStatus = "작업을 처리하는 중입니다.";
     try {
       await fn();
     } catch (err) {
       busy = false;
-      notify(`${errLabel}: ${(err as Error).message}`);
+      actionStatus = `${errLabel}: ${(err as Error).message}`;
+      notify(actionStatus);
       return;
     }
     try {
       await reload();
+      actionStatus = successLabel || "작업이 완료되었습니다.";
       if (successLabel) notify(successLabel, "ok");
     } catch (err) {
-      notify(`작업은 완료됐지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+      actionStatus = `작업은 완료됐지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`;
+      notify(actionStatus, "warn");
     } finally {
       busy = false;
     }
@@ -154,6 +164,7 @@
         class="ghost-sm"
         type="button"
         aria-expanded={expanded}
+        aria-controls={detailId}
         aria-label={expanded ? `${user.displayName} 사용자 관리 접기` : `${user.displayName} 사용자 관리 열기`}
         title={expanded ? `${user.displayName} 사용자 관리 접기` : `${user.displayName} 사용자 관리 열기`}
         on:click={toggle}
@@ -162,13 +173,13 @@
   </div>
 
   {#if expanded}
-    <div class="ar-detail">
+    <div id={detailId} class="ar-detail">
       {#if loading}
-        <div class="muted">불러오는 중…</div>
+        <div class="muted" role="status">불러오는 중…</div>
       {:else if loadError}
-        <div class="warn-box">
+        <div class="warn-box" role="alert">
           불러오기 실패: {loadError}
-          <button class="linkish" type="button" on:click={loadDetail}>다시 시도</button>
+          <button class="linkish" type="button" disabled={loading} on:click={loadDetail}>다시 시도</button>
         </div>
       {:else if detail}
         <div class="ud-grid">
@@ -179,17 +190,20 @@
             </div>
           {/each}
         </div>
-        <div class="ud-actions" aria-busy={busy}>
-          <button class="ghost-sm" type="button" disabled={isMe || busy} on:click={toggleRole}>{isAdmin ? "관리자 해제" : "관리자 지정"}</button>
-          <button class="ghost-sm" type="button" disabled={busy} on:click={toggleVisibility}>{willHide ? "비공개로 전환" : "공개로 전환"}</button>
-          <button class="ghost-sm {user.suspended ? '' : 'danger'}" type="button" disabled={isMe || busy} on:click={toggleSuspend}>{user.suspended ? "활성화" : "정지"}</button>
+        <div class="ud-actions" aria-busy={busy} aria-describedby={actionStatus ? actionStatusId : undefined}>
+          <button class="ghost-sm" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={isMe || busy} on:click={toggleRole}>{isAdmin ? "관리자 해제" : "관리자 지정"}</button>
+          <button class="ghost-sm" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={busy} on:click={toggleVisibility}>{willHide ? "비공개로 전환" : "공개로 전환"}</button>
+          <button class="ghost-sm {user.suspended ? '' : 'danger'}" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={isMe || busy} on:click={toggleSuspend}>{user.suspended ? "활성화" : "정지"}</button>
           <button class="ghost-sm" type="button" disabled={busy} on:click={() => (showPasswordModal = true)}>비밀번호 재설정</button>
-          <button class="ghost-sm" type="button" disabled={busy} on:click={forceLogout}>강제 로그아웃</button>
-          <button class="ghost-sm danger" type="button" disabled={isMe || busy} on:click={deleteUser}>삭제</button>
+          <button class="ghost-sm" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={busy} on:click={forceLogout}>강제 로그아웃</button>
+          <button class="ghost-sm danger" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={isMe || busy} on:click={deleteUser}>삭제</button>
           {#if isMe}
             <p class="muted ud-self-note">자기 자신에게는 권한 해제·정지·삭제를 적용할 수 없습니다.</p>
           {/if}
         </div>
+        {#if actionStatus}
+          <div id={actionStatusId} class="settings-save-status" class:dirty={busy || actionStatus.includes("실패")} role="status" aria-live="polite">{actionStatus}</div>
+        {/if}
       {/if}
     </div>
   {/if}

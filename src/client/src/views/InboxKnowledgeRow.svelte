@@ -16,6 +16,21 @@
   let textarea: HTMLTextAreaElement | undefined;
 
   $: disabled = busy || ignoring;
+  $: answerTrimmed = answer.trim();
+  $: canSubmitAnswer = Boolean(!disabled && answerTrimmed);
+  $: rowBase = request.id.replace(/[^a-zA-Z0-9_-]/g, "-");
+  $: questionId = `knowledge-request-question-${rowBase}`;
+  $: statusId = `knowledge-request-status-${rowBase}`;
+  $: composeId = `knowledge-request-compose-${rowBase}`;
+  $: rowStatus = ignoring
+    ? "정보 요청을 무시하는 중입니다."
+    : busy
+      ? "답변을 지식 저장소에 기록 요청하는 중입니다."
+      : showCompose
+        ? answerTrimmed
+          ? "답변을 기록 요청할 수 있습니다."
+          : "답변을 입력해 주세요."
+        : "정보 추가를 누르면 답변 입력창이 열립니다.";
 
   function toggleCompose() {
     showCompose = !showCompose;
@@ -49,7 +64,7 @@
   }
 
   async function submit() {
-    const text = answer.trim();
+    const text = answerTrimmed;
     if (!text) {
       textarea?.focus();
       notify("기록할 답변을 입력해 주세요.", "warn");
@@ -83,30 +98,33 @@
   }
 </script>
 
-<div class="knowledge-row" aria-busy={disabled ? "true" : "false"}>
+<div class="knowledge-row" aria-busy={disabled ? "true" : "false"} aria-describedby={statusId}>
   <div class="inbox-row-head">
     <span class="inbox-chip req">정보 요청</span>
   </div>
-  <div class="kr-q">{request.question}</div>
+  <div class="kr-q" id={questionId}>{request.question}</div>
   <div class="muted kr-meta">
     {#if request.askerName}질문자: {request.askerName} · {timeLabel(request.createdAt)}{:else}{timeLabel(request.createdAt)}{/if}
   </div>
+  <div class="sr-only" id={statusId} role="status" aria-live="polite">{rowStatus}</div>
   <div class="kr-actions">
     <button
       class="primary small"
       class:active={showCompose}
       type="button"
       aria-expanded={showCompose ? "true" : "false"}
+      aria-controls={composeId}
+      aria-describedby={statusId}
       title="답변 입력창 열기"
       disabled={disabled}
       on:click={toggleCompose}
     >정보 추가</button>
-    <button class="ghost-sm" type="button" disabled={disabled} on:click={ignore}>
+    <button class="ghost-sm" type="button" aria-describedby={statusId} disabled={disabled} on:click={ignore}>
       {ignoring ? "무시 중…" : "무시"}
     </button>
   </div>
   {#if showCompose}
-    <div class="kr-compose">
+    <div id={composeId} class="kr-compose" role="region" aria-labelledby={questionId} aria-describedby={statusId}>
       <textarea
         class="kr-answer"
         rows="3"
@@ -115,9 +133,10 @@
         disabled={disabled}
         placeholder="이 질문에 대한 답·정보를 적어주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다."
         aria-label="정보 요청 답변"
+        aria-describedby={statusId}
       ></textarea>
       <div class="kr-compose-actions">
-        <button class="primary small" type="button" disabled={disabled} on:click={submit}>
+        <button class="primary small" type="button" aria-describedby={statusId} disabled={!canSubmitAnswer} on:click={submit}>
           {busy ? "기록 중…" : "기록 요청"}
         </button>
         <button class="ghost-sm" type="button" disabled={disabled} on:click={cancelCompose}>취소</button>

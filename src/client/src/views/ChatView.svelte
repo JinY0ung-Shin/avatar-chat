@@ -38,6 +38,7 @@
 
   let transcriptEls: Record<string, HTMLDivElement> = {};
   let splitAvatarId = "";
+  let splitAddBusy = false;
   // Slash autocomplete: which pane it's open for + the selected index.
   let slashPaneId = "";
   let slashIndex = 0;
@@ -51,13 +52,37 @@
   // Plan-approval: which pane is in "수정 요청" (reject-with-feedback) mode, and its draft.
   let planRejectPaneId = "";
   let planFeedback = "";
+  let planReviewErrors: Record<string, string> = {};
 
-  function approvePlan(pane: ChatPane): void {
-    void respondPlanReview(pane.id, "approved");
+  function planReviewStatusId(paneId: string): string {
+    return `plan-review-status-${paneId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  }
+  function planReviewStatusText(pane: ChatPane): string {
+    if (pane.planReviewSubmitting) return "응답을 전송하는 중입니다.";
+    return planReviewErrors[pane.id] ? `응답 전송 실패: ${planReviewErrors[pane.id]}` : "";
+  }
+  function clearPlanReviewError(paneId: string): void {
+    if (!planReviewErrors[paneId]) return;
+    const next = { ...planReviewErrors };
+    delete next[paneId];
+    planReviewErrors = next;
+  }
+  function setPlanReviewError(paneId: string, message: string): void {
+    planReviewErrors = { ...planReviewErrors, [paneId]: message };
+  }
+
+  async function approvePlan(pane: ChatPane): Promise<void> {
+    clearPlanReviewError(pane.id);
+    try {
+      await respondPlanReview(pane.id, "approved");
+    } catch (err) {
+      setPlanReviewError(pane.id, (err as Error).message);
+    }
   }
   function startRejectPlan(pane: ChatPane): void {
     planRejectPaneId = pane.id;
     planFeedback = "";
+    clearPlanReviewError(pane.id);
   }
   function cancelRejectPlan(): void {
     planRejectPaneId = "";
@@ -65,8 +90,13 @@
   }
   async function submitRejectPlan(pane: ChatPane): Promise<void> {
     const feedback = planFeedback;
-    cancelRejectPlan();
-    await respondPlanReview(pane.id, "rejected", feedback);
+    clearPlanReviewError(pane.id);
+    try {
+      await respondPlanReview(pane.id, "rejected", feedback);
+      cancelRejectPlan();
+    } catch (err) {
+      setPlanReviewError(pane.id, (err as Error).message);
+    }
   }
 
   onMount(async () => {
@@ -174,7 +204,17 @@
   }
 
   function hasModelPicker(): boolean {
-    return Boolean($appState.bootstrap?.modelSelection && !$appState.bootstrap.modelSelection.locked);
+    return Boolean($appState.bootstrap?.modelSelection?.tiers.length);
+  }
+
+  function canPickModel(): boolean {
+    return Boolean(hasModelPicker() && !$appState.bootstrap?.modelSelection?.locked);
+  }
+
+  function currentModelTier(item: ChatPane): string {
+    const tiers = $appState.bootstrap?.modelSelection?.tiers || [];
+    const selected = item.modelTier ?? DEFAULT_MODEL_TIER;
+    return tiers.some((tier) => tier.id === selected) ? selected : DEFAULT_MODEL_TIER;
   }
 
   function hasEffortPicker(): boolean {
@@ -186,7 +226,7 @@
   }
 
   function modelTierLabel(item: ChatPane): string {
-    const tierId = item.modelTier ?? DEFAULT_MODEL_TIER;
+    const tierId = currentModelTier(item);
     return $appState.bootstrap?.modelSelection?.tiers.find((tier) => tier.id === tierId)?.label ?? tierId;
   }
 
@@ -221,6 +261,21 @@
     return parts.join(" · ");
   }
 
+  function paneDomId(prefix: string, paneId: string): string {
+    return `${prefix}-${paneId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  }
+
+  function slashOptionId(paneId: string, index: number): string {
+    return paneDomId(`slash-option-${index}`, paneId);
+  }
+
+  function activeSlashOptionId(item: ChatPane): string | undefined {
+    if (slashPaneId !== item.id) return undefined;
+    const matches = slashMatches(item);
+    if (!matches.length) return undefined;
+    return slashOptionId(item.id, Math.min(slashIndex, matches.length - 1));
+  }
+
   function toggleComposerSettings(item: ChatPane) {
     const closing = composerSettingsOpenPaneId === item.id;
     composerSettingsOpenPaneId = closing ? "" : item.id;
@@ -241,6 +296,7 @@
   }
 
   async function submit(item: ChatPane) {
+    if (!canSendMessage(item)) return;
     closeSlash();
     const message = item.draft;
     // On desktop, restore focus to the composer so the user can keep typing while
@@ -252,6 +308,10 @@
     else focusComposer(item.id);
     await pending;
     await tick();
+  }
+
+  function canSendMessage(item: ChatPane): boolean {
+    return Boolean(!item.streaming && item.avatar && (item.draft.trim() || item.pendingImages?.length));
   }
 
   function isMobileViewport(): boolean {
@@ -462,6 +522,10 @@
       // While a response is streaming we can't send yet — let Enter insert a
       // newline so the user can compose the next message instead of swallowing it.
       if (item.streaming) return;
+      if (!canSendMessage(item)) {
+        event.preventDefault();
+        return;
+      }
       event.preventDefault();
       void submit(item);
     }
@@ -570,13 +634,21 @@
   }
 
   async function addSplitPane() {
+    if (splitAddBusy) return;
     const avatar = splitOptions.find((item) => item.id === splitAvatarId);
     if (!avatar) return;
     if (panes.length >= 4) {
       notify("분할 대화는 최대 4개까지 가능합니다.", "warn");
       return;
     }
-    await startChatWith(avatar as AvatarSummary, true);
+    splitAddBusy = true;
+    try {
+      await startChatWith(avatar as AvatarSummary, true);
+    } catch (err) {
+      notify(`분할 대화를 추가하지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      splitAddBusy = false;
+    }
   }
 
   // Drop target for a conversation dragged from the rail's "내 대화" list.
@@ -836,24 +908,31 @@
                   <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">{item.planReview ? "승인 대기 중" : "계획 모드"}</span></summary>
                   <div class="md plan-card-body" use:enhanceMarkdown={item.livePlan}>{@html renderMarkdown(item.livePlan)}</div>
                   {#if item.planReview}
-                    <div class="plan-actions">
+                    {@const planStatus = planReviewStatusText(item)}
+                    <div class="plan-actions" aria-busy={item.planReviewSubmitting ? "true" : "false"} aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined}>
                       {#if planRejectPaneId === item.id}
                         <textarea
                           class="plan-feedback"
                           rows="2"
                           placeholder="수정할 점을 알려주세요 (선택)"
                           bind:value={planFeedback}
+                          aria-label="계획 수정 요청 내용"
+                          aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined}
+                          aria-invalid={planReviewErrors[item.id] ? "true" : undefined}
                           disabled={item.planReviewSubmitting}
                         ></textarea>
                         <div class="plan-actions-row">
-                          <button class="btn btn-ghost btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={cancelRejectPlan}>취소</button>
-                          <button class="btn btn-primary btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={() => submitRejectPlan(item)}>수정 요청 보내기</button>
+                          <button class="btn btn-ghost btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={cancelRejectPlan}>취소</button>
+                          <button class="btn btn-primary btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => submitRejectPlan(item)}>수정 요청 보내기</button>
                         </div>
                       {:else}
                         <div class="plan-actions-row">
-                          <button class="btn btn-ghost btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={() => startRejectPlan(item)}>수정 요청</button>
-                          <button class="btn btn-primary btn-sm" type="button" disabled={item.planReviewSubmitting} on:click={() => approvePlan(item)}>승인</button>
+                          <button class="btn btn-ghost btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => startRejectPlan(item)}>수정 요청</button>
+                          <button class="btn btn-primary btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => approvePlan(item)}>승인</button>
                         </div>
+                      {/if}
+                      {#if planStatus}
+                        <div id={planReviewStatusId(item.id)} class="plan-review-status" class:invalid={Boolean(planReviewErrors[item.id])} role="status" aria-live="polite">{planStatus}</div>
                       {/if}
                     </div>
                   {/if}
@@ -898,10 +977,11 @@
         {#if slashPaneId === item.id}
           {@const matches = slashMatches(item)}
           {#if matches.length}
-            <div class="slash-menu" role="listbox" aria-label="슬래시 명령">
+            <div id={paneDomId("slash-menu", item.id)} class="slash-menu" role="listbox" aria-label="슬래시 명령">
               <div class="slash-menu-head">슬래시 명령</div>
               {#each matches as cmd, i}
                 <button
+                  id={slashOptionId(item.id, i)}
                   class="slash-option"
                   class:active={i === Math.min(slashIndex, matches.length - 1)}
                   type="button"
@@ -960,7 +1040,12 @@
             rows="1"
             placeholder={item.streaming ? "응답을 기다리는 중… (다음 메시지를 미리 작성할 수 있어요)" : `${item.avatar.displayName}에게 메시지…`}
             value={item.draft}
+            aria-label={`${item.avatar.displayName}에게 보낼 메시지`}
+            aria-describedby={paneDomId("composer-hint", item.id)}
             use:autosize={item.draft}
+            aria-controls={activeSlashOptionId(item) ? paneDomId("slash-menu", item.id) : undefined}
+            aria-haspopup="listbox"
+            aria-activedescendant={activeSlashOptionId(item)}
             on:input={(event) => onComposerInput(event, item)}
             on:keydown={(event) => onComposerKeydown(event, item)}
             on:paste={(event) => onComposerPaste(event, item)}
@@ -970,13 +1055,14 @@
             class:is-stop={item.streaming}
             type="button"
             aria-label={item.streaming ? "응답 중지" : "보내기"}
-            title={item.streaming ? "응답 중지" : "보내기"}
+            title={item.streaming ? "응답 중지" : canSendMessage(item) ? "보내기" : "메시지 또는 이미지를 추가하세요"}
+            disabled={!item.streaming && !canSendMessage(item)}
             on:click={() => (item.streaming ? stopPane(item.id) : submit(item))}
           >
             <Icon name={item.streaming ? "stop" : "send"} />
           </button>
         </div>
-        <div class="composer-hint">
+        <div class="composer-hint" id={paneDomId("composer-hint", item.id)}>
           {#if compact}
             <span>대화 {index + 1}</span>
           {:else if enterSends}
@@ -991,6 +1077,7 @@
                   class="composer-settings-btn"
                   type="button"
                   aria-expanded={composerSettingsOpenPaneId === item.id ? "true" : "false"}
+                  aria-controls={paneDomId("composer-controls", item.id)}
                   title="이 대화의 모델, 사고 강도, 지식, MCP 도구를 설정합니다"
                   on:click={() => toggleComposerSettings(item)}
                 >
@@ -998,13 +1085,14 @@
                   <span class="composer-settings-label">설정</span>
                   <span class="composer-settings-summary">{composerSettingsSummary(item)}</span>
                 </button>
-                <span class="composer-controls" class:open={composerSettingsOpenPaneId === item.id}>
-                  {#if $appState.bootstrap?.modelSelection && !$appState.bootstrap.modelSelection.locked}
+                <span id={paneDomId("composer-controls", item.id)} class="composer-controls" class:open={composerSettingsOpenPaneId === item.id}>
+                  {#if $appState.bootstrap?.modelSelection?.tiers.length}
                     <select
                       class="composer-model-select"
                       aria-label="이 대화에 사용할 모델"
-                      title="이 대화에서 다음 메시지부터 사용할 모델을 고릅니다"
-                      value={item.modelTier ?? DEFAULT_MODEL_TIER}
+                      title={canPickModel() ? "이 대화에서 다음 메시지부터 사용할 모델을 고릅니다" : "서버 설정으로 모델이 고정되어 있습니다"}
+                      value={currentModelTier(item)}
+                      disabled={!canPickModel()}
                       on:change={(event) => setModelTier(item, event.currentTarget.value)}
                     >
                       {#each $appState.bootstrap.modelSelection.tiers as tier (tier.id)}
@@ -1034,6 +1122,7 @@
                       class="composer-gk-btn"
                       type="button"
                       aria-expanded={gkOpenPaneId === item.id ? "true" : "false"}
+                      aria-controls={paneDomId("composer-gk-panel", item.id)}
                       title="이 대화에서 다음 메시지부터 사용할 그룹 지식을 고릅니다"
                       on:click={() => toggleGroupKnowledgePanel(item)}
                     >그룹 지식 {onCount}/{groups.length}</button>
@@ -1042,6 +1131,7 @@
                     class="composer-tools-btn"
                     type="button"
                     aria-expanded={mcpToolsOpenPaneId === item.id ? "true" : "false"}
+                    aria-controls={paneDomId("composer-tools-panel", item.id)}
                     title="이 대화에서 다음 메시지부터 사용할 MCP 도구 묶음을 고릅니다"
                     on:click={() => toggleMcpToolsPanel(item)}
                   >MCP 도구 {selectedMcpToolGroups(item).length}/{MCP_TOOL_GROUPS.length}</button>
@@ -1056,6 +1146,7 @@
       </form>
       {#if gkOpenPaneId === item.id && eligibleGroups(item).length}
         <div
+          id={paneDomId("composer-gk-panel", item.id)}
           class="composer-gk-panel"
           role="group"
           aria-label="이 대화에서 사용할 그룹 지식"
@@ -1076,6 +1167,7 @@
       {/if}
       {#if mcpToolsOpenPaneId === item.id}
         <div
+          id={paneDomId("composer-tools-panel", item.id)}
           class="composer-tools-panel"
           role="group"
           aria-label="이 대화에서 사용할 MCP 도구"
@@ -1117,7 +1209,7 @@
         </button>
       {/each}
     {/if}
-    <select class="split-avatar-select" bind:value={splitAvatarId} disabled={!splitOptions.length || panes.length >= 4} aria-label="분할로 추가할 아바타">
+    <select class="split-avatar-select" bind:value={splitAvatarId} disabled={splitAddBusy || !splitOptions.length || panes.length >= 4} aria-label="분할로 추가할 아바타">
       {#if splitOptions.length}
         {#each splitOptions as av}
           <option value={av.id}>{av.alias || av.displayName || av.username}</option>
@@ -1126,7 +1218,7 @@
         <option value="">추가할 아바타 없음</option>
       {/if}
     </select>
-    <button class="split-add" type="button" title="대화 추가 (분할)" aria-label="대화 추가 (분할)" disabled={!splitOptions.length || panes.length >= 4} on:click={addSplitPane}>
+    <button class="split-add" type="button" title="대화 추가 (분할)" aria-label="대화 추가 (분할)" disabled={splitAddBusy || !splitOptions.length || panes.length >= 4} on:click={addSplitPane}>
       <Icon name="plus" />
     </button>
   </div>
@@ -1175,21 +1267,24 @@
         class="chat-col chat-pane compact"
         class:active={item.id === pane.id}
         data-pane={item.id}
-        role="button"
-        tabindex="0"
-        on:click={() => setActive(item.id)}
-        on:keydown={(event) => {
-          if (event.key === "Enter" || event.key === " ") setActive(item.id);
-        }}
+        aria-labelledby={paneDomId("pane-title", item.id)}
+        aria-current={item.id === pane.id ? "true" : undefined}
+        on:focusin={() => setActive(item.id)}
       >
         <div class="pane-head">
-          <div class="pane-title">
+          <button
+            id={paneDomId("pane-title", item.id)}
+            class="pane-title pane-title-button"
+            type="button"
+            aria-pressed={item.id === pane.id ? "true" : "false"}
+            on:click={() => setActive(item.id)}
+          >
             <AvatarImage user={item.avatar} size={30} alt="" />
             <div>
               <strong>대화 {index + 1}</strong>
               <span>{item.avatar.alias || item.avatar.displayName}</span>
             </div>
-          </div>
+          </button>
           <div class="pane-actions">
             <button class="ghost-sm" type="button" disabled={item.streaming} on:click|stopPropagation={() => newChat(item.id)}>새 대화</button>
             <button class="msg-act" type="button" aria-label="대화 창 닫기" disabled={panes.length <= 1} on:click|stopPropagation={() => closePane(item.id)}>
@@ -1307,6 +1402,14 @@
     padding: var(--s-2);
     font: inherit;
     font-size: 0.85rem;
+  }
+  .plan-review-status {
+    align-self: flex-end;
+    color: var(--muted);
+    font-size: var(--t-xs);
+  }
+  .plan-review-status.invalid {
+    color: var(--danger);
   }
   /* Placeholder shown between EnterPlanMode and ExitPlanMode: the avatar is
      composing the plan in the background (tool rows are suppressed for plan

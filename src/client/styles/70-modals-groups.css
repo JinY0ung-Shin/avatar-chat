@@ -184,6 +184,18 @@
 .routine-modal-actions .ghost-sm.danger {
   color: var(--danger);
 }
+.routine-form-status {
+  min-height: 20px;
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+.routine-form-status.invalid {
+  color: var(--warn);
+  font-weight: 700;
+}
+.routine-form-status.dirty {
+  color: var(--muted);
+}
 
 .onboard-card .login-mark {
   align-self: flex-start;
@@ -192,61 +204,81 @@
 .onboard-card {
   width: min(860px, 100%);
 }
-.onboard-guide {
-  display: grid;
-  gap: var(--s-3);
-}
-.onboard-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-}
-.onboard-section h3,
 .onboard-connect h3 {
   margin: 0;
   font-size: var(--t-md);
   line-height: 1.35;
 }
-.onboard-feature-list {
+.onboard-quick {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: var(--s-2);
 }
-.onboard-feature {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-1);
-  min-height: 96px;
+.onboard-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--s-2);
+  min-height: 74px;
   padding: var(--s-3);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background: var(--panel);
+  text-align: left;
 }
-.onboard-feature strong {
+.onboard-step:hover:not(:disabled) {
+  border-color: var(--accent-soft-strong);
+  background: var(--bg-elevated);
+}
+.onboard-step.done {
+  border-color: color-mix(in srgb, var(--ok) 34%, var(--line));
+  background: color-mix(in srgb, var(--ok) 8%, var(--panel));
+}
+.onboard-step.primary-step {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.onboard-step.primary-step:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+}
+.onboard-step-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: var(--r-md);
+  background: var(--bg-elevated);
+  color: var(--accent);
+}
+.onboard-step.done .onboard-step-icon {
+  color: var(--ok);
+}
+.onboard-step.primary-step .onboard-step-icon {
+  background: color-mix(in srgb, var(--on-accent) 18%, transparent);
+  color: var(--on-accent);
+}
+.onboard-step-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.onboard-step-copy strong {
   color: var(--text);
   font-size: var(--t-sm);
 }
-.onboard-feature p {
+.onboard-step.primary-step .onboard-step-copy strong,
+.onboard-step.primary-step .onboard-step-copy span {
+  color: var(--on-accent);
+}
+.onboard-step-copy span {
   color: var(--text-soft);
   font-size: var(--t-xs);
-}
-.onboard-examples {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-  margin: 0;
-  padding-left: 1.2em;
-  color: var(--text-soft);
-  font-size: var(--t-sm);
-  line-height: 1.5;
-}
-.onboard-note {
-  padding: var(--s-3);
-  border: 1px solid var(--info-line);
-  border-radius: var(--r-sm);
-  background: var(--info-soft);
-  color: var(--info);
-  font-size: var(--t-sm);
+  line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .onboard-connect {
   display: flex;
@@ -342,7 +374,7 @@
   background: var(--bg-elevated);
 }
 @media (max-width: 860px) {
-  .onboard-feature-list {
+  .onboard-quick {
     grid-template-columns: 1fr;
   }
   .onboard-setup-item summary {
@@ -535,4 +567,47 @@
   gap: var(--s-3);
   flex-wrap: wrap;
   flex: none;
+}
+.setup-steps {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.setup-step {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  min-height: 32px;
+  padding: var(--s-1) var(--s-2);
+  border: 1px solid var(--info-line);
+  border-radius: var(--r-pill);
+  background: color-mix(in srgb, var(--bg-elevated) 72%, var(--info-soft));
+  color: var(--info);
+  font-size: var(--t-xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+.setup-step:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+.setup-step.done {
+  border-color: color-mix(in srgb, var(--ok) 42%, var(--info-line));
+  color: var(--ok);
+}
+.setup-step svg {
+  width: 14px;
+  height: 14px;
+  flex: none;
+}
+@media (max-width: 760px) {
+  .setup-steps {
+    width: 100%;
+  }
+  .setup-step {
+    flex: 1 1 120px;
+    justify-content: center;
+  }
 }

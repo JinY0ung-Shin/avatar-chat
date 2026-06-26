@@ -135,6 +135,30 @@
 .settings-form .primary {
   justify-self: start;
 }
+.settings-save-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  padding-top: var(--s-1);
+}
+.settings-save-status {
+  color: var(--muted);
+  font-size: var(--t-sm);
+}
+.settings-save-status.dirty {
+  color: var(--warn);
+  font-weight: 700;
+}
+.settings-save-row .primary {
+  justify-self: auto;
+}
+.settings-save-row.compact {
+  justify-content: flex-start;
+  padding-top: 0;
+  margin-top: calc(-1 * var(--s-1));
+}
 /* Avatar visibility selector (모두 공개 / 그룹 공개 / 비공개) */
 .visibility-row {
   display: flex;
@@ -262,6 +286,23 @@
 .pc-head {
   font-size: var(--t-xs);
 }
+.pc-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.pc-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.pc-list {
+  display: grid;
+  gap: var(--s-1-5);
+}
 .pc-item {
   display: flex;
   align-items: center;
@@ -281,7 +322,21 @@
 }
 .pc-actions {
   display: flex;
-  justify-content: flex-end;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+.pc-save-status {
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
+.pc-save-status.dirty {
+  color: var(--warn);
+  font-weight: 700;
+}
+.pc-save-status.invalid {
+  color: var(--danger);
 }
 .primary.small {
   padding: var(--s-1-5) var(--s-3);
@@ -886,6 +941,11 @@
   align-items: center;
   justify-content: flex-end;
   align-self: stretch;
+  flex-wrap: wrap;
+}
+.secret-preset-actions .settings-save-status {
+  margin-right: auto;
+  min-width: min(260px, 100%);
 }
 .secret-preset-actions .primary,
 .secret-preset-actions .linkish.small {

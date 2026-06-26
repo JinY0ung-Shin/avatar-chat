@@ -96,6 +96,30 @@
     void loadGraph(source);
   }
 
+  function sourceDomId(key: string): string {
+    return `brain-source-${key.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  }
+
+  function focusSource(key: string): void {
+    requestAnimationFrame(() => document.getElementById(sourceDomId(key))?.focus());
+  }
+
+  function onSourceKeydown(event: KeyboardEvent, source: GraphSource): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = sources.findIndex((item) => item.key === source.key);
+    if (currentIndex < 0) return;
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? sources.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + sources.length) % sources.length;
+    const next = sources[nextIndex];
+    selectSource(next);
+    focusSource(next.key);
+  }
+
   function clearNote(): void {
     // Bump the token so any in-flight note fetch is discarded on resolve.
     noteToken++;
@@ -126,6 +150,10 @@
       if (token === noteToken) noteLoading = false;
     }
   }
+
+  function retrySelectedNote(): void {
+    if (selected) void onSelect(selected);
+  }
 </script>
 
 <div class="brain-view">
@@ -134,7 +162,7 @@
       <h1>지식 그래프</h1>
       <p class="muted small">노트 사이의 <code>[[링크]]</code> 연결을 한눈에 보고, 노드를 클릭하면 내용을 바로 읽을 수 있어요.</p>
     </div>
-    <button class="ghost-sm" type="button" title="다시 불러오기" on:click={() => loadGraph(active)}>
+    <button class="ghost-sm" type="button" title="다시 불러오기" disabled={loading} on:click={() => loadGraph(active)}>
       <Icon name="refresh" size={15} /><span>새로고침</span>
     </button>
   </header>
@@ -143,12 +171,16 @@
     <div class="brain-sources" role="tablist" aria-label="지식 저장소 선택">
       {#each sources as source}
         <button
+          id={sourceDomId(source.key)}
           class="brain-source"
           type="button"
           role="tab"
           aria-selected={source.key === activeKey}
+          aria-controls="brain-graph-panel"
+          tabindex={source.key === activeKey ? 0 : -1}
           class:active={source.key === activeKey}
           on:click={() => selectSource(source)}
+          on:keydown={(event) => onSourceKeydown(event, source)}
         >
           <Icon name={source.key === "personal" ? "user" : "users"} size={14} />
           <span>{source.label}</span>
@@ -158,11 +190,20 @@
   {/if}
 
   <div class="brain-body">
-    <section class="brain-graph">
+    <div
+      id="brain-graph-panel"
+      class="brain-graph"
+      role="tabpanel"
+      aria-labelledby={active ? sourceDomId(active.key) : undefined}
+      aria-busy={loading ? "true" : "false"}
+    >
       {#if loading}
-        <div class="brain-state muted">그래프를 불러오는 중…</div>
+        <div class="brain-state muted" role="status">그래프를 불러오는 중…</div>
       {:else if error}
-        <div class="brain-state error-note">불러오기 실패: {error}</div>
+        <div class="brain-state error-note" role="alert">
+          불러오기 실패: {error}
+          <button class="linkish small" type="button" disabled={loading} on:click={() => loadGraph(active)}>다시 시도</button>
+        </div>
       {:else if graph?.noVault}
         <div class="brain-state muted">
           이 저장소는 아직 vault 구조(<code>wiki/</code>·<code>raw/</code>)가 없습니다. 아바타에게
@@ -174,7 +215,7 @@
         <GraphCanvas {graph} selectedId={selected?.id ?? null} on:select={(e) => onSelect(e.detail)} />
         <div class="brain-stats muted">{graph.nodes.length}개 노트 · {graph.edges.length}개 연결</div>
       {/if}
-    </section>
+    </div>
 
     <aside class="brain-note" aria-label="노트 내용">
       {#if !selected}
@@ -203,7 +244,10 @@
         {:else if noteLoading}
           <div class="brain-state muted">노트를 불러오는 중…</div>
         {:else if noteError}
-          <div class="brain-state error-note">불러오기 실패: {noteError}</div>
+          <div class="brain-state error-note" role="alert">
+            불러오기 실패: {noteError}
+            <button class="linkish small" type="button" disabled={noteLoading} on:click={retrySelectedNote}>다시 시도</button>
+          </div>
         {:else}
           <!-- eslint-disable-next-line svelte/no-at-html-tags -->
           <article class="brain-note-body md">{@html noteHtml}</article>
@@ -280,6 +324,9 @@
     padding: var(--s-6) var(--s-2);
     text-align: center;
     line-height: 1.6;
+  }
+  .brain-state .linkish.small {
+    margin-left: var(--s-2);
   }
   .brain-note {
     flex: 1 1 40%;

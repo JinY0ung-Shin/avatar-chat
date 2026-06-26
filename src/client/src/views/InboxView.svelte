@@ -105,12 +105,32 @@
   function setFilter(id: Filter) {
     updateState((state) => (state.inboxFilter = id));
   }
+  function focusFilter(id: Filter): void {
+    requestAnimationFrame(() => document.getElementById(`inbox-filter-${id}`)?.focus());
+  }
+  function onFilterKeydown(event: KeyboardEvent, currentId: Filter): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = filters.findIndex((item) => item.id === currentId);
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? filters.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + filters.length) % filters.length;
+    const next = filters[nextIndex].id;
+    setFilter(next);
+    focusFilter(next);
+  }
   function resetFilter() {
     updateState((state) => (state.inboxFilter = "all"));
   }
 
   function isRoutineConversation(conversationId: string | null | undefined): boolean {
     return Boolean(conversationId) && $appState.routineConversations.some((c) => c.id === conversationId);
+  }
+  function notificationDomId(notification: AvatarNotification, part: string): string {
+    return `notification-${part}-${notification.id.replace(/[^A-Za-z0-9_-]/g, "-")}`;
   }
 
   // Mark a notification read: optimistic update + fire-and-forget PATCH, reload
@@ -128,37 +148,36 @@
 
   // Whole-row click → open a fresh chat with my own avatar seeded with the topic
   // (and mark read). Inner buttons handle themselves (guarded in the handler).
-  function openNotificationChat(notification: AvatarNotification) {
+  async function openNotificationChat(notification: AvatarNotification) {
     if (busyIds.has(notification.id)) return;
+    setBusy(notification.id, true);
     markRead(notification);
     const seed = `다음은 네가 남긴 알림이야. 이 주제로 이어서 이야기하자.\n\n[${notification.title}]\n${notification.message}`;
-    void openSeededChat(seed);
-  }
-
-  function onRowClick(event: MouseEvent, notification: AvatarNotification) {
-    if (busyIds.has(notification.id)) return;
-    if ((event.target as HTMLElement | null)?.closest("button")) return; // inner actions
-    openNotificationChat(notification);
-  }
-
-  function onRowKeydown(event: KeyboardEvent, notification: AvatarNotification) {
-    if (busyIds.has(notification.id)) return;
-    if (event.target !== event.currentTarget) return;
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      openNotificationChat(notification);
+    try {
+      await openSeededChat(seed);
+    } catch (err) {
+      notify(`대화를 열지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      setBusy(notification.id, false);
     }
   }
 
   // Routine results route to the routines view; ordinary conversations open in chat.
   async function openResult(notification: AvatarNotification) {
-    if (!notification.conversationId) return;
-    markRead(notification);
-    if (isRoutineConversation(notification.conversationId)) {
-      goView("routines", notification.conversationId);
-    } else {
-      goView("chat");
-      await selectConversation(notification.conversationId);
+    if (!notification.conversationId || busyIds.has(notification.id)) return;
+    setBusy(notification.id, true);
+    try {
+      markRead(notification);
+      if (isRoutineConversation(notification.conversationId)) {
+        goView("routines", notification.conversationId);
+      } else {
+        goView("chat");
+        await selectConversation(notification.conversationId);
+      }
+    } catch (err) {
+      notify(`결과를 열지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      setBusy(notification.id, false);
     }
   }
 
@@ -244,11 +263,11 @@
 
 <div class="view-body scroll-thin inbox-body">
   {#if loading}
-    <div class="muted pad">불러오는 중…</div>
+    <div class="muted pad" role="status">불러오는 중…</div>
   {:else if hardError}
-    <div class="warn-box">
+    <div class="warn-box" role="alert">
       알림을 불러오지 못했습니다: {notificationsError || requestsError || "네트워크 오류"}
-      <button class="linkish" type="button" on:click={load}>다시 시도</button>
+      <button class="linkish" type="button" disabled={loading} on:click={load}>다시 시도</button>
     </div>
   {:else}
     <div class="inbox-wrap">
@@ -261,15 +280,16 @@
         </div>
 
         {#if loadWarnings.length}
-          <div class="warn-box inbox-load-warning">
+          <div class="warn-box inbox-load-warning" role="alert">
             일부 항목({loadWarnings.join(" · ")})을 불러오지 못했습니다. 표시된 목록은 일부만 최신일 수 있습니다.
-            <button class="linkish" type="button" on:click={load}>다시 시도</button>
+            <button class="linkish" type="button" disabled={loading} on:click={load}>다시 시도</button>
           </div>
         {/if}
 
         <div class="inbox-filter seg-control" role="radiogroup" aria-label="알림 필터">
           {#each filters as f}
             <button
+              id={`inbox-filter-${f.id}`}
               class="seg-btn"
               class:active={filter === f.id}
               type="button"
@@ -277,6 +297,7 @@
               aria-checked={filter === f.id ? "true" : "false"}
               tabindex={filter === f.id ? 0 : -1}
               on:click={() => setFilter(f.id)}
+              on:keydown={(event) => onFilterKeydown(event, f.id)}
             >{f.label}</button>
           {/each}
         </div>
@@ -298,13 +319,10 @@
                 <div
                   class="notification-row clickable"
                   class:unread={!n.readAt}
-                  role="button"
-                  tabindex="0"
-                  aria-label={`알림 열기: ${n.title}`}
+                  role="group"
+                  aria-labelledby={notificationDomId(n, "title")}
+                  aria-describedby={notificationDomId(n, "meta")}
                   aria-busy={busyIds.has(n.id) ? "true" : "false"}
-                  title="알림 주제로 대화 열기"
-                  on:click={(e) => onRowClick(e, n)}
-                  on:keydown={(e) => onRowKeydown(e, n)}
                 >
                   <button
                     class="notification-dismiss"
@@ -316,17 +334,27 @@
                   >
                     <Icon name="close" size={16} />
                   </button>
-                  <div class="pr-main">
+                  <button
+                    class="notification-main"
+                    type="button"
+                    aria-label={`알림 주제로 대화 열기: ${n.title}`}
+                    aria-describedby={notificationDomId(n, "meta")}
+                    disabled={busyIds.has(n.id)}
+                    title="알림 주제로 대화 열기"
+                    on:click={() => openNotificationChat(n)}
+                  >
                     <div class="inbox-row-head">
                       <span class="inbox-chip note">알림</span>
-                      <strong>{n.title}</strong>
+                      <strong id={notificationDomId(n, "title")}>{n.title}</strong>
                     </div>
-                    <div class="pr-sub">{n.avatarDisplayName} · {timeLabel(n.createdAt)}</div>
+                    <div class="pr-sub" id={notificationDomId(n, "meta")}>{n.avatarDisplayName} · {timeLabel(n.createdAt)}</div>
                     <p>{n.message}</p>
-                  </div>
+                  </button>
                   {#if isRoutineConversation(n.conversationId)}
                     <div class="kr-actions">
-                      <button class="ghost-sm" type="button" on:click={() => openResult(n)}>결과 보기</button>
+                      <button class="ghost-sm" type="button" disabled={busyIds.has(n.id)} on:click={() => openResult(n)}>
+                        {busyIds.has(n.id) ? "여는 중…" : "결과 보기"}
+                      </button>
                     </div>
                   {/if}
                 </div>

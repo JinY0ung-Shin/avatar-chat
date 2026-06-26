@@ -2,9 +2,10 @@
   import { dismissToast, toasts } from "../lib/state";
 </script>
 
-<div class="notify-wrap" aria-live="polite" aria-atomic="false">
+<div class="toast-wrap" aria-atomic="false">
   {#each $toasts as toast (toast.id)}
-    <div class={`toast ${toast.kind}`} role="status">
+    {@const urgent = toast.kind === "warn"}
+    <div class={`toast ${toast.kind}`} role={urgent ? "alert" : "status"} aria-live={urgent ? "assertive" : "polite"}>
       <span>{toast.message}</span>
       {#if toast.action && toast.actionLabel}
         <button

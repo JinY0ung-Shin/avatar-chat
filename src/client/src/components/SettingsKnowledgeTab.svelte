@@ -23,42 +23,96 @@
   let krContentsErr = "";
   let krContentsLoading = false;
   let graphOpen = false;
+  let requestRepoBusy = false;
+  let knowledgeError = "";
 
   // plugin add form
   let pluginRepo = "";
   let pluginRef = "";
   let pluginLabel = "";
   let pluginAddBusy = false;
+  let pluginAddError = "";
   // per-plugin expandable contents
   let openPluginId = "";
   let pluginContents: Record<string, RepoPluginContents> = {};
   let pluginContentsErr: Record<string, string> = {};
+  let pluginContentsLoading: Record<string, boolean> = {};
   let pluginRowBusy: Record<string, boolean> = {};
 
   $: user = $appState.user;
   $: githubHost = $appState.bootstrap?.githubHost || "github.com";
   $: plugins = $appState.plugins;
+  $: savedKnowledgeRepo = user?.knowledgeRepo || "";
+  $: savedKnowledgeBranch = user?.knowledgeBranch || "";
+  $: knowledgeRepoTrimmed = knowledgeRepo.trim();
+  $: knowledgeBranchTrimmed = knowledgeBranch.trim();
+  $: knowledgeDirty = Boolean(
+    user &&
+      (knowledgeRepoTrimmed !== savedKnowledgeRepo ||
+        (knowledgeBranchTrimmed || "") !== savedKnowledgeBranch),
+  );
+  $: knowledgeCanSave = Boolean(!krBusy && knowledgeRepoTrimmed && knowledgeDirty);
+  $: knowledgeStatus = krBusy
+    ? "저장 중…"
+    : knowledgeError
+      ? `저장 실패: ${knowledgeError}`
+      : !knowledgeRepoTrimmed && savedKnowledgeRepo
+        ? "연결 해제는 오른쪽의 ‘연결 해제’ 버튼을 사용합니다."
+        : knowledgeDirty
+          ? "저장하지 않은 저장소 변경 사항이 있습니다."
+          : savedKnowledgeRepo
+            ? "연결됨"
+            : "연결 전";
+  $: pluginRepoTrimmed = pluginRepo.trim();
+  $: pluginCanAdd = Boolean(!pluginAddBusy && pluginRepoTrimmed);
+  $: pluginAddStatus = pluginAddBusy
+    ? "플러그인을 추가하는 중입니다."
+    : pluginAddError
+      ? `추가 실패: ${pluginAddError}`
+      : pluginRepoTrimmed
+        ? "플러그인을 추가할 준비가 됐습니다."
+        : "추가할 플러그인 저장소를 입력하세요.";
+
+  const krContentsId = "knowledge-repo-plugin-contents";
+  const knowledgeStatusId = "knowledge-repo-save-status";
+  const pluginAddStatusId = "plugin-add-save-status";
+
+  function pluginContentsPanelId(id: string): string {
+    return `plugin-contents-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  }
 
   // ---- knowledge repo ----
+  function syncKnowledgeForm(next: User): void {
+    knowledgeRepo = next.knowledgeRepo || "";
+    knowledgeBranch = next.knowledgeBranch || "";
+  }
+
   async function saveKnowledge(): Promise<void> {
-    const repo = knowledgeRepo.trim();
-    const branch = knowledgeBranch.trim();
+    if (krBusy) return;
+    const repo = knowledgeRepoTrimmed;
+    const branch = knowledgeBranchTrimmed;
     if (!repo) {
+      knowledgeError = user?.knowledgeRepo ? "연결 해제는 오른쪽의 ‘연결 해제’ 버튼을 사용해 주세요." : "지식 저장소 주소를 입력해 주세요.";
       notify(user?.knowledgeRepo ? "저장소 연결을 해제하려면 오른쪽의 ‘연결 해제’ 버튼을 사용해 주세요." : "지식 저장소 주소를 입력해 주세요.", "warn");
       return;
     }
+    if (!knowledgeDirty) return;
     krBusy = true;
+    knowledgeError = "";
     try {
       const { user: next } = await api<{ user: User }>("/api/me/knowledge-repo", { method: "PUT", body: JSON.stringify({ repo, branch: branch || null }) });
+      syncKnowledgeForm(next);
       replaceState({ user: next });
       notify(`지식 저장소 "${repo}"을 연결했습니다.`, "ok");
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`, "warn");
+      knowledgeError = (err as Error).message;
+      notify(`저장 실패: ${knowledgeError}`, "warn");
     } finally {
       krBusy = false;
     }
   }
   async function refreshKnowledge(): Promise<void> {
+    if (krBusy) return;
     krBusy = true;
     try {
       await api("/api/me/knowledge-repo/refresh", { method: "POST" });
@@ -72,10 +126,12 @@
     }
   }
   async function disconnectKnowledge(): Promise<void> {
+    if (krBusy) return;
     if (!window.confirm("지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 아바타가 더 이상 그 스킬을 불러오지 않습니다.")) return;
     krBusy = true;
     try {
       const { user: next } = await api<{ user: User }>("/api/me/knowledge-repo", { method: "PUT", body: JSON.stringify({ repo: null }) });
+      syncKnowledgeForm(next);
       replaceState({ user: next });
       krPickOpen = false;
       krContents = null;
@@ -91,6 +147,7 @@
     if (krPickOpen && !krContents && !krContentsLoading) await loadKrContents();
   }
   async function loadKrContents(): Promise<void> {
+    if (krContentsLoading) return;
     krContentsLoading = true;
     krContentsErr = "";
     try {
@@ -106,8 +163,16 @@
     const { user: u } = await api<{ user: User }>("/api/me/knowledge-repo/selected", { method: "PUT", body: JSON.stringify({ selected: next }) });
     replaceState({ user: u });
   }
-  function requestKnowledgeRepo(): void {
-    void openSeededChat("내 지식 저장소를 만들어서 연결해줘. 사내 GitHub에 저장소를 만들고, 앞으로 쓸 기본 지식/스킬 구조까지 준비해줘.");
+  async function requestKnowledgeRepo(): Promise<void> {
+    if (requestRepoBusy) return;
+    requestRepoBusy = true;
+    try {
+      await openSeededChat("내 지식 저장소를 만들어서 연결해줘. 사내 GitHub에 저장소를 만들고, 앞으로 쓸 기본 지식/스킬 구조까지 준비해줘.");
+    } catch (err) {
+      notify(`요청 대화를 열지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      requestRepoBusy = false;
+    }
   }
 
   // ---- plugins ----
@@ -121,9 +186,10 @@
   }
 
   async function addPlugin(): Promise<void> {
-    const repo = pluginRepo.trim();
-    if (!repo) return;
+    const repo = pluginRepoTrimmed;
+    if (!pluginCanAdd) return;
     pluginAddBusy = true;
+    pluginAddError = "";
     try {
       const { plugin } = await api<{ plugin: Plugin }>("/api/me/plugins", {
         method: "POST",
@@ -135,7 +201,8 @@
       pluginLabel = "";
       notify(`플러그인 "${plugin.label || plugin.repo}"을 추가했습니다.`, "ok");
     } catch (err) {
-      notify(`플러그인 추가 실패: ${(err as Error).message}`, "warn");
+      pluginAddError = (err as Error).message;
+      notify(`플러그인 추가 실패: ${pluginAddError}`, "warn");
     } finally {
       pluginAddBusy = false;
     }
@@ -157,6 +224,7 @@
   }
 
   async function refreshPlugin(p: Plugin): Promise<void> {
+    if (pluginRowBusy[p.id]) return;
     pluginRowBusy = { ...pluginRowBusy, [p.id]: true };
     try {
       const { plugin } = await api<{ plugin: Plugin }>(`/api/me/plugins/${encodeURIComponent(p.id)}/refresh`, { method: "POST" });
@@ -170,6 +238,7 @@
   }
 
   async function deletePlugin(p: Plugin): Promise<void> {
+    if (pluginRowBusy[p.id]) return;
     if (!window.confirm(`플러그인 "${p.label || p.repo}"을(를) 삭제할까요?`)) return;
     pluginRowBusy = { ...pluginRowBusy, [p.id]: true };
     try {
@@ -192,12 +261,16 @@
     if (!pluginContents[p.id]) await loadPluginContents(p);
   }
   async function loadPluginContents(p: Plugin): Promise<void> {
+    if (pluginContentsLoading[p.id]) return;
+    pluginContentsLoading = { ...pluginContentsLoading, [p.id]: true };
     pluginContentsErr = { ...pluginContentsErr, [p.id]: "" };
     try {
       const { contents } = await api<{ contents: RepoPluginContents }>(`/api/me/plugins/${encodeURIComponent(p.id)}/contents`);
       pluginContents = { ...pluginContents, [p.id]: contents };
     } catch (err) {
       pluginContentsErr = { ...pluginContentsErr, [p.id]: (err as Error).message };
+    } finally {
+      pluginContentsLoading = { ...pluginContentsLoading, [p.id]: false };
     }
   }
   function savePluginSelection(p: Plugin) {
@@ -225,16 +298,21 @@
       {/if}
     </div>
 
-    <form class="plugin-add rows-2" on:submit|preventDefault={saveKnowledge}>
-      <input bind:value={knowledgeRepo} placeholder="owner/repo 또는 사내 git URL" aria-label="지식 저장소 (owner/repo 또는 사내 git URL)" />
-      <input bind:value={knowledgeBranch} class="narrow" placeholder="브랜치 (선택)" aria-label="브랜치 (선택)" />
-      <button class="primary" type="submit" disabled={krBusy}>{krBusy ? "저장 중…" : "저장"}</button>
+    <form class="plugin-add rows-2 knowledge-repo-form" on:submit|preventDefault={saveKnowledge}>
+      <input bind:value={knowledgeRepo} placeholder="owner/repo 또는 사내 git URL" aria-label="지식 저장소 (owner/repo 또는 사내 git URL)" aria-describedby={knowledgeStatusId} aria-invalid={knowledgeError ? "true" : undefined} disabled={krBusy} on:input={() => (knowledgeError = "")} />
+      <input bind:value={knowledgeBranch} class="narrow" placeholder="브랜치 (선택)" aria-label="브랜치 (선택)" aria-describedby={knowledgeStatusId} disabled={krBusy} on:input={() => (knowledgeError = "")} />
+      <button class="primary" type="submit" disabled={!knowledgeCanSave}>{krBusy ? "저장 중…" : savedKnowledgeRepo ? "변경 저장" : "연결"}</button>
     </form>
+    <div class="settings-save-row compact">
+      <span id={knowledgeStatusId} class="settings-save-status" class:dirty={knowledgeDirty || Boolean(knowledgeError)} role="status" aria-live="polite">{knowledgeStatus}</span>
+    </div>
 
     {#if !user.knowledgeRepo}
       <div class="empty-note">
         지식 저장소를 연결하면 아바타가 그 저장소의 지식·스킬을 사용하고, 대화로 직접 관리할 수 있어요.
-        <button class="linkish small" type="button" on:click={requestKnowledgeRepo}>아바타에게 저장소 만들기 요청</button>
+        <button class="linkish small" type="button" disabled={requestRepoBusy} on:click={requestKnowledgeRepo}>
+          {requestRepoBusy ? "대화 여는 중…" : "아바타에게 저장소 만들기 요청"}
+        </button>
       </div>
     {:else}
       {@const href = repoToHref(user.knowledgeRepo, githubHost)}
@@ -256,14 +334,14 @@
       </div>
       <div class="kr-plugins">
         <span class="muted">{!user.knowledgeSelected ? "저장소의 모든 플러그인을 사용 중" : `${user.knowledgeSelected.length}개 플러그인만 사용 중`}</span>
-        <button class="linkish small" type="button" aria-expanded={krPickOpen} on:click={toggleKrPick}>사용할 플러그인 선택</button>
+        <button class="linkish small" type="button" aria-expanded={krPickOpen} aria-controls={krContentsId} on:click={toggleKrPick}>사용할 플러그인 선택</button>
       </div>
       {#if krPickOpen}
-        <div class="plugin-contents">
+        <div id={krContentsId} class="plugin-contents" aria-busy={krContentsLoading ? "true" : "false"}>
           {#if krContentsLoading}
-            <div class="muted">불러오는 중…</div>
+            <div class="muted" role="status">불러오는 중…</div>
           {:else if krContentsErr}
-            <div class="error-note">조회 실패: {krContentsErr} <button class="linkish small" type="button" on:click={loadKrContents}>다시 시도</button></div>
+            <div class="error-note" role="alert">조회 실패: {krContentsErr} <button class="linkish small" type="button" disabled={krContentsLoading} on:click={loadKrContents}>다시 시도</button></div>
           {:else if krContents}
             <SettingsPluginSelect
               info={krContents}
@@ -291,21 +369,32 @@
         <div class="empty-note">추가한 플러그인이 없습니다.</div>
       {:else}
         {#each plugins as p (p.id)}
-          <div class="plugin-row" class:busy={pluginRowBusy[p.id]}>
+          <div class="plugin-row" class:busy={pluginRowBusy[p.id] || pluginContentsLoading[p.id]}>
             <div class="pr-main">
               <strong>{p.label || p.repo}</strong>
               <div class="pr-sub">{p.ref ? `${p.repo} @ ${p.ref}` : p.repo}</div>
               <div class="pr-meta muted">{pluginSyncLabel(p)} · {pluginSelSummary(p)}</div>
             </div>
             <Toggle on={p.enabled} label={`플러그인 사용: ${p.label || p.repo}`} onChange={(v) => togglePlugin(p, v)} />
-            <button class="msg-act" type="button" aria-label="저장소 내 플러그인 선택" title="저장소 내 플러그인 선택" aria-expanded={openPluginId === p.id} on:click={() => togglePluginPick(p)}><Icon name="menu" /></button>
+            <button
+              class="msg-act"
+              type="button"
+              aria-label="저장소 내 플러그인 선택"
+              title="저장소 내 플러그인 선택"
+              aria-expanded={openPluginId === p.id}
+              aria-controls={pluginContentsPanelId(p.id)}
+              disabled={pluginContentsLoading[p.id]}
+              on:click={() => togglePluginPick(p)}
+            ><Icon name="menu" /></button>
             <button class="msg-act" type="button" aria-label="최신 버전으로 새로고침" title="최신 버전으로 새로고침" class:spinning={pluginRowBusy[p.id]} disabled={pluginRowBusy[p.id]} on:click={() => refreshPlugin(p)}><Icon name="refresh" /></button>
             <button class="msg-act danger" type="button" aria-label={`플러그인 삭제: ${p.label || p.repo}`} title="삭제" disabled={pluginRowBusy[p.id]} on:click={() => deletePlugin(p)}><Icon name="trash" /></button>
           </div>
           {#if openPluginId === p.id}
-            <div class="plugin-contents">
-              {#if pluginContentsErr[p.id]}
-                <div class="error-note">조회 실패: {pluginContentsErr[p.id]} <button class="linkish small" type="button" on:click={() => loadPluginContents(p)}>다시 시도</button></div>
+            <div id={pluginContentsPanelId(p.id)} class="plugin-contents" aria-busy={pluginContentsLoading[p.id] ? "true" : "false"}>
+              {#if pluginContentsLoading[p.id]}
+                <div class="muted" role="status">저장소 내용을 불러오는 중…</div>
+              {:else if pluginContentsErr[p.id]}
+                <div class="error-note" role="alert">조회 실패: {pluginContentsErr[p.id]} <button class="linkish small" type="button" disabled={pluginContentsLoading[p.id]} on:click={() => loadPluginContents(p)}>다시 시도</button></div>
               {:else if pluginContents[p.id]}
                 <SettingsPluginSelect
                   info={pluginContents[p.id]}
@@ -323,11 +412,14 @@
     </div>
 
     <form class="plugin-add rows-3" on:submit|preventDefault={addPlugin}>
-      <input bind:value={pluginRepo} placeholder="owner/repo 또는 git URL" aria-label="플러그인 저장소 (owner/repo 또는 git URL)" required />
-      <input bind:value={pluginRef} class="narrow" placeholder="브랜치/태그 (선택)" aria-label="브랜치/태그 (선택)" />
-      <input bind:value={pluginLabel} class="narrow" placeholder="라벨 (선택)" aria-label="라벨 (선택)" />
-      <button class="primary" type="submit" disabled={pluginAddBusy || !pluginRepo.trim()}>{pluginAddBusy ? "추가 중…" : "추가"}</button>
+      <input bind:value={pluginRepo} placeholder="owner/repo 또는 git URL" aria-label="플러그인 저장소 (owner/repo 또는 git URL)" required aria-describedby={pluginAddStatusId} aria-invalid={pluginAddError ? "true" : undefined} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
+      <input bind:value={pluginRef} class="narrow" placeholder="브랜치/태그 (선택)" aria-label="브랜치/태그 (선택)" aria-describedby={pluginAddStatusId} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
+      <input bind:value={pluginLabel} class="narrow" placeholder="라벨 (선택)" aria-label="라벨 (선택)" aria-describedby={pluginAddStatusId} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
+      <button class="primary" type="submit" disabled={!pluginCanAdd}>{pluginAddBusy ? "추가 중…" : "추가"}</button>
     </form>
+    <div class="settings-save-row compact">
+      <span id={pluginAddStatusId} class="settings-save-status" class:dirty={Boolean(pluginAddError || pluginRepoTrimmed)} role="status" aria-live="polite">{pluginAddStatus}</span>
+    </div>
   </section>
 
   {#if graphOpen}

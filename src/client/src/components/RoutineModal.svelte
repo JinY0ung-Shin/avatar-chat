@@ -40,10 +40,23 @@
   let daysInvalid = false;
   let intervalInvalid = false;
   let busy = false;
-  let saveLabel = "저장";
   let promptEl: HTMLTextAreaElement;
   let daysWrapEl: HTMLDivElement;
   let intervalEl: HTMLInputElement;
+  const descId = "routine-modal-desc";
+  const statusId = "routine-modal-status";
+  const errorId = "routine-modal-error";
+
+  const initialName = routine?.name || "";
+  const initialPrompt = routine?.prompt || "";
+  const initialScheduleKind = routine?.scheduleKind || "daily";
+  const initialTime = routine?.time || "09:00";
+  const initialDayKey = [...selectedDays].sort((a, b) => a - b).join(",");
+  const initialScheduleKey = [
+    initialScheduleKind,
+    initialScheduleKind === "interval" ? initialInterval : initialTime,
+    initialScheduleKind === "weekly" ? initialDayKey : "",
+  ].join("|");
 
   // Toggle aria-invalid imperatively: the role="group" element triggers a
   // (correct in general, wrong here) svelte a11y warning if bound in markup, but
@@ -55,6 +68,31 @@
   }
 
   $: dayList = [...selectedDays];
+  $: promptTrimmed = prompt.trim();
+  $: nameTrimmed = name.trim();
+  $: intervalMinutes = (intervalUnit === "hour" ? 60 : 1) * Math.floor(Number(intervalValue) || 0);
+  $: dayKey = [...dayList].sort((a, b) => a - b).join(",");
+  $: currentScheduleKey = [
+    scheduleKind,
+    scheduleKind === "interval" ? intervalMinutes : time,
+    scheduleKind === "weekly" ? dayKey : "",
+  ].join("|");
+  $: scheduleReady = scheduleKind === "weekly" ? dayList.length > 0 : scheduleKind === "interval" ? intervalMinutes >= 5 : true;
+  $: routineDirty = !isEdit || nameTrimmed !== initialName || prompt !== initialPrompt || currentScheduleKey !== initialScheduleKey;
+  $: routineCanSave = Boolean(!busy && promptTrimmed && scheduleReady && routineDirty);
+  $: saveButtonLabel = busy ? "저장 중…" : isEdit ? "변경 저장" : "루틴 추가";
+  $: routineStatus = busy
+    ? "저장 중…"
+    : !promptTrimmed
+      ? "작업 프롬프트를 입력해 주세요."
+      : scheduleKind === "weekly" && !dayList.length
+        ? "매주 반복할 요일을 선택해 주세요."
+        : scheduleKind === "interval" && intervalMinutes < 5
+          ? "반복 간격은 5분 이상이어야 합니다."
+          : isEdit && !routineDirty
+            ? "저장됨"
+            : "저장할 준비가 됐습니다.";
+  $: fieldDescribedBy = errorMessage ? `${statusId} ${errorId}` : statusId;
 
   function toggleDay(idx: number) {
     if (selectedDays.has(idx)) selectedDays.delete(idx);
@@ -62,11 +100,22 @@
     // Reassign to trigger reactivity on the derived list.
     dayList = [...selectedDays];
     daysInvalid = false;
+    if (errorMessage === "매주 반복은 요일을 1개 이상 선택해 주세요.") errorMessage = "";
+  }
+
+  function onScheduleKindChange(): void {
+    daysInvalid = false;
+    intervalInvalid = false;
+    errorMessage = "";
+  }
+
+  function clearIntervalError(): void {
+    intervalInvalid = false;
+    if (errorMessage === "반복 간격은 5분 이상이어야 합니다.") errorMessage = "";
   }
 
   function intervalMinutesFromInputs(): number {
-    const n = Math.floor(Number(intervalValue) || 0);
-    return intervalUnit === "hour" ? n * 60 : n;
+    return intervalMinutes;
   }
 
   function schedulePayload(): Record<string, unknown> {
@@ -101,7 +150,8 @@
   }
 
   async function submit() {
-    if (!prompt.trim()) {
+    if (busy) return;
+    if (!promptTrimmed) {
       errorMessage = "작업 프롬프트를 입력해 주세요.";
       promptInvalid = true;
       promptEl?.focus();
@@ -115,12 +165,12 @@
       else if (intervalInvalid) intervalEl?.focus();
       return;
     }
+    if (!routineDirty) return;
     errorMessage = "";
     busy = true;
-    saveLabel = "저장 중…";
     try {
       const payload = {
-        name: name.trim() || null,
+        name: nameTrimmed || null,
         prompt,
         ...schedulePayload(),
       };
@@ -143,7 +193,6 @@
       notify(isEdit ? "루틴을 수정했습니다." : "루틴을 추가했습니다.", "ok");
     } catch (err) {
       errorMessage = (err as Error).message || "저장에 실패했습니다.";
-      saveLabel = "저장";
       busy = false;
     }
   }
@@ -178,8 +227,16 @@
   }
 </script>
 
-<Modal cardClass="routine-modal-card" ariaLabelledby="routine-modal-title" closeOnBackdrop={false} on:close={requestClose}>
+<Modal
+  cardClass="routine-modal-card"
+  ariaLabelledby="routine-modal-title"
+  ariaDescribedby={descId}
+  closeOnBackdrop={false}
+  closeDisabled={busy}
+  on:close={requestClose}
+>
   <h2 id="routine-modal-title">{isEdit ? "루틴 편집" : "루틴 추가"}</h2>
+  <p class="sr-only" id={descId}>루틴 이름, 작업 프롬프트, 실행 주기를 설정합니다. 저장 중에는 닫을 수 없습니다.</p>
   <form class="routine-modal-form" aria-busy={busy} on:submit|preventDefault={submit}>
     <label class="field">
       <span>이름 (선택)</span>
@@ -192,11 +249,12 @@
         rows="4"
         placeholder="예: 오늘의 서비스 상태를 요약해줘"
         aria-label="작업 프롬프트"
+        aria-describedby={fieldDescribedBy}
         aria-invalid={promptInvalid ? "true" : undefined}
         disabled={busy}
         bind:this={promptEl}
         bind:value={prompt}
-        on:input={() => (promptInvalid = false)}
+        on:input={() => { promptInvalid = false; if (errorMessage === "작업 프롬프트를 입력해 주세요.") errorMessage = ""; }}
       ></textarea>
     </label>
 
@@ -212,7 +270,7 @@
     <div class="schedule-builder">
       <div class="schedule-row">
         <label class="schedule-label" for="routine-kind">주기</label>
-        <select id="routine-kind" aria-label="주기" disabled={busy} bind:value={scheduleKind}>
+        <select id="routine-kind" aria-label="주기" disabled={busy} bind:value={scheduleKind} on:change={onScheduleKindChange}>
           <option value="daily">매일</option>
           <option value="weekly">매주</option>
           <option value="interval">간격</option>
@@ -229,7 +287,7 @@
       {#if scheduleKind === "weekly"}
         <div class="schedule-row">
           <span class="schedule-label">요일</span>
-          <div class="weekday-chips" role="group" aria-label="반복 요일" use:ariaInvalid={daysInvalid} bind:this={daysWrapEl}>
+          <div class="weekday-chips" role="group" aria-label="반복 요일" aria-describedby={fieldDescribedBy} use:ariaInvalid={daysInvalid} bind:this={daysWrapEl}>
             {#each WEEKDAY_NAMES as label, idx}
               {@const on = dayList.includes(idx)}
               <button
@@ -254,12 +312,13 @@
               step="1"
               class="narrow"
               aria-label="반복 간격 값"
+              aria-describedby={fieldDescribedBy}
               aria-invalid={intervalInvalid ? "true" : undefined}
               disabled={busy}
               bind:this={intervalEl}
               bind:value={intervalValue}
-              on:input={() => (intervalInvalid = false)} />
-            <select class="narrow" aria-label="반복 간격 단위" disabled={busy} bind:value={intervalUnit} on:change={() => (intervalInvalid = false)}>
+              on:input={clearIntervalError} />
+            <select class="narrow" aria-label="반복 간격 단위" disabled={busy} bind:value={intervalUnit} on:change={clearIntervalError}>
               <option value="hour">시간</option>
               <option value="minute">분</option>
             </select>
@@ -269,8 +328,16 @@
     </div>
 
     {#if errorMessage}
-      <div class="error" role="alert">{errorMessage}</div>
+      <div class="error" id={errorId} role="alert">{errorMessage}</div>
     {/if}
+
+    <div
+      class="routine-form-status"
+      id={statusId}
+      class:invalid={!busy && (!promptTrimmed || !scheduleReady)}
+      class:dirty={!busy && routineDirty && Boolean(promptTrimmed) && scheduleReady}
+      role="status"
+    >{routineStatus}</div>
 
     <div class="routine-modal-actions">
       <div class="routine-modal-actions-left">
@@ -281,7 +348,7 @@
       </div>
       <div class="routine-modal-actions-right">
         <button class="ghost-sm" type="button" disabled={busy} on:click={requestClose}>닫기</button>
-        <button class="primary" type="submit" disabled={busy}>{saveLabel}</button>
+        <button class="primary" type="submit" disabled={!routineCanSave}>{saveButtonLabel}</button>
       </div>
     </div>
   </form>

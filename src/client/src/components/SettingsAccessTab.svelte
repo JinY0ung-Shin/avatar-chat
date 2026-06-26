@@ -11,6 +11,7 @@
 
   const INTERNAL_GIT_TOKEN = "GIT_TOKEN";
   const EXTERNAL_GIT_TOKEN = "GITHUB_TOKEN";
+  const SECRET_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 
   const SECRET_PRESETS = [
     {
@@ -41,23 +42,40 @@
   let externalToken = "";
   let internalBusy = false;
   let externalBusy = false;
+  let internalError = "";
+  let externalError = "";
 
   // preset secrets value inputs (keyed by name)
   let presetValues: Record<string, string> = {};
   let presetBusy: Record<string, boolean> = {};
+  let presetErrors: Record<string, string> = {};
 
   // arbitrary secret form
   let extraName = "";
   let extraValue = "";
   let extraBusy = false;
+  let extraError = "";
+  let extraDeleting: Record<string, boolean> = {};
 
   let sshBusy = false;
+  let sshError = "";
+  let sshMessage = "";
 
   // experimental features (#50)
   let experimentalBusy = "";
+  const identityStatusId = "access-git-identity-status";
+  const internalStatusId = "access-internal-token-status";
+  const externalStatusId = "access-external-token-status";
+  const extraStatusId = "access-extra-secret-status";
+  const sshStatusId = "access-ssh-key-status";
 
   $: user = $appState.user;
   $: enabledExperimental = new Set(user?.experimentalFeatures || []);
+  $: sshStatus = sshBusy
+    ? "SSH 키를 생성하는 중입니다."
+    : sshError
+      ? `SSH 키 생성 실패: ${sshError}`
+      : sshMessage;
 
   async function toggleExperimental(key: string, on: boolean): Promise<void> {
     const current = new Set(readState().user?.experimentalFeatures || []);
@@ -82,26 +100,100 @@
   $: githubHost = $appState.bootstrap?.githubHost || "github.com";
   $: presetNames = new Set(SECRET_PRESETS.map((p) => p.name));
   $: extraSecretNames = (user?.secretNames || []).filter((n) => !presetNames.has(n));
+  $: savedGitIdentityName = user?.gitIdentityName || "";
+  $: savedGitIdentityEmail = user?.gitIdentityEmail || "";
+  $: gitIdentityNameTrimmed = gitIdentityName.trim();
+  $: gitIdentityEmailTrimmed = gitIdentityEmail.trim();
+  $: identityDirty = Boolean(
+    user &&
+      (gitIdentityNameTrimmed !== savedGitIdentityName ||
+        gitIdentityEmailTrimmed !== savedGitIdentityEmail),
+  );
+  $: identityStatus = identitySaving
+    ? "저장 중…"
+    : identityDirty
+      ? "저장하지 않은 커밋 정보가 있습니다."
+      : savedGitIdentityName || savedGitIdentityEmail
+        ? "저장됨"
+        : "저장 전";
+  $: identityCanSave = Boolean(!identitySaving && identityDirty);
+  $: internalStatus = internalBusy
+    ? "저장 중…"
+    : internalError
+      ? `저장 실패: ${internalError}`
+      : internalToken.trim()
+        ? "저장할 토큰이 입력되었습니다."
+        : internalSet
+          ? "사내 Git 토큰이 설정되어 있습니다."
+          : "사내 Git 토큰이 아직 없습니다.";
+  $: externalStatus = externalBusy
+    ? "저장 중…"
+    : externalError
+      ? `저장 실패: ${externalError}`
+      : externalToken.trim()
+        ? "저장할 토큰이 입력되었습니다."
+        : externalSet
+          ? "외부 GitHub 토큰이 설정되어 있습니다."
+          : "외부 GitHub 토큰이 아직 없습니다.";
+  $: extraNameTrimmed = extraName.trim();
+  $: extraHasValue = Boolean(extraValue.trim());
+  $: extraNameValid = !extraNameTrimmed || SECRET_NAME_PATTERN.test(extraNameTrimmed);
+  $: extraCanSave = Boolean(!extraBusy && extraNameTrimmed && extraHasValue && extraNameValid);
+  $: extraStatus = extraBusy
+    ? "저장 중…"
+    : extraError
+      ? extraError
+      : !extraNameValid
+        ? "이름 형식을 확인해 주세요."
+        : !extraNameTrimmed && !extraHasValue
+          ? "입력 대기"
+          : !extraNameTrimmed
+            ? "이름을 입력해 주세요."
+            : !extraHasValue
+              ? "값을 입력해 주세요."
+              : "저장할 준비가 됐습니다.";
+
+  function hasPresetValue(name: string): boolean {
+    return Boolean(presetValues[name]?.trim());
+  }
+  function secretDomId(name: string, part: string): string {
+    return `access-secret-${name.replace(/[^A-Za-z0-9_-]/g, "-")}-${part}`;
+  }
+  function presetStatus(name: string, label: string, isSet: boolean): string {
+    if (presetBusy[name]) return "저장 중…";
+    if (presetErrors[name]) return `저장 실패: ${presetErrors[name]}`;
+    if (hasPresetValue(name)) return "저장할 값이 입력되었습니다.";
+    return isSet ? `${label} 시크릿이 설정되어 있습니다.` : `${label} 시크릿이 아직 없습니다.`;
+  }
+  function clearPresetError(name: string): void {
+    if (!presetErrors[name]) return;
+    presetErrors = { ...presetErrors, [name]: "" };
+  }
 
   // ---- git tokens ----
   async function saveInternalToken(): Promise<void> {
+    if (internalBusy) return;
     const token = internalToken.trim();
     if (!token) return;
     internalBusy = true;
+    internalError = "";
     try {
       const { user: next } = await api<{ user: User }>("/api/me/git-token", { method: "PUT", body: JSON.stringify({ token }) });
       replaceState({ user: next });
       internalToken = "";
       notify("사내 Git 토큰을 저장했습니다.", "ok");
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`, "warn");
+      internalError = (err as Error).message;
+      notify(`저장 실패: ${internalError}`, "warn");
     } finally {
       internalBusy = false;
     }
   }
   async function clearInternalToken(): Promise<void> {
+    if (internalBusy) return;
     if (!window.confirm("사내 Git 토큰을 삭제할까요?")) return;
     internalBusy = true;
+    internalError = "";
     try {
       const { user: next } = await api<{ user: User }>("/api/me/git-token", { method: "DELETE" });
       replaceState({ user: next });
@@ -113,23 +205,28 @@
     }
   }
   async function saveExternalToken(): Promise<void> {
+    if (externalBusy) return;
     const token = externalToken.trim();
     if (!token) return;
     externalBusy = true;
+    externalError = "";
     try {
       const { user: next } = await api<{ user: User }>(`/api/me/secrets/${EXTERNAL_GIT_TOKEN}`, { method: "PUT", body: JSON.stringify({ value: token }) });
       replaceState({ user: next });
       externalToken = "";
       notify("외부 GitHub 토큰을 저장했습니다.", "ok");
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`, "warn");
+      externalError = (err as Error).message;
+      notify(`저장 실패: ${externalError}`, "warn");
     } finally {
       externalBusy = false;
     }
   }
   async function clearExternalToken(): Promise<void> {
+    if (externalBusy) return;
     if (!window.confirm("외부 GitHub 토큰을 삭제할까요?")) return;
     externalBusy = true;
+    externalError = "";
     try {
       const { user: next } = await api<{ user: User }>(`/api/me/secrets/${EXTERNAL_GIT_TOKEN}`, { method: "DELETE" });
       replaceState({ user: next });
@@ -141,13 +238,20 @@
     }
   }
 
+  function syncGitIdentityForm(next: User): void {
+    gitIdentityName = next.gitIdentityName || "";
+    gitIdentityEmail = next.gitIdentityEmail || "";
+  }
+
   async function saveGitIdentity(): Promise<void> {
+    if (identitySaving || !identityDirty) return;
     identitySaving = true;
     try {
       const { user: next } = await api<{ user: User }>("/api/me/git-identity", {
         method: "PUT",
-        body: JSON.stringify({ name: gitIdentityName || null, email: gitIdentityEmail || null }),
+        body: JSON.stringify({ name: gitIdentityNameTrimmed || null, email: gitIdentityEmailTrimmed || null }),
       });
+      syncGitIdentityForm(next);
       replaceState({ user: next });
       notify("커밋 정보를 저장했습니다.", "ok");
     } catch (err) {
@@ -159,26 +263,31 @@
 
   // ---- secrets ----
   async function savePresetSecret(name: string, label: string): Promise<void> {
+    if (presetBusy[name]) return;
     const value = presetValues[name] || "";
-    if (!value) {
+    if (!value.trim()) {
       notify(`${label} 값을 입력해 주세요.`, "warn");
       return;
     }
     presetBusy = { ...presetBusy, [name]: true };
+    presetErrors = { ...presetErrors, [name]: "" };
     try {
       const { user: next } = await api<{ user: User }>(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "PUT", body: JSON.stringify({ value }) });
       replaceState({ user: next });
       presetValues = { ...presetValues, [name]: "" };
       notify(`${label} 시크릿을 저장했습니다.`, "ok");
     } catch (err) {
+      presetErrors = { ...presetErrors, [name]: (err as Error).message };
       notify(`저장 실패: ${(err as Error).message}`, "warn");
     } finally {
       presetBusy = { ...presetBusy, [name]: false };
     }
   }
   async function clearPresetSecret(name: string, label: string): Promise<void> {
+    if (presetBusy[name]) return;
     if (!window.confirm(`${label} 시크릿을 삭제할까요?`)) return;
     presetBusy = { ...presetBusy, [name]: true };
+    presetErrors = { ...presetErrors, [name]: "" };
     try {
       const { user: next } = await api<{ user: User }>(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
       replaceState({ user: next });
@@ -191,13 +300,17 @@
   }
 
   async function saveExtraSecret(): Promise<void> {
-    const name = extraName.trim();
+    if (extraBusy) return;
+    const name = extraNameTrimmed;
     const value = extraValue;
-    if (!name || !value) {
+    extraError = "";
+    if (!name || !value.trim()) {
+      extraError = "시크릿 이름과 값을 모두 입력해 주세요.";
       notify("시크릿 이름과 값을 모두 입력해 주세요.", "warn");
       return;
     }
-    if (!/^[A-Z][A-Z0-9_]*$/.test(name)) {
+    if (!SECRET_NAME_PATTERN.test(name)) {
+      extraError = "이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다.";
       notify("이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다. 예: SSH_PRIVATE_KEY", "warn");
       return;
     }
@@ -209,30 +322,40 @@
       extraValue = "";
       notify(`시크릿 "${name}"을(를) 저장했습니다.`, "ok");
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`, "warn");
+      extraError = `저장 실패: ${(err as Error).message}`;
+      notify(extraError, "warn");
     } finally {
       extraBusy = false;
     }
   }
   async function deleteExtraSecret(name: string): Promise<void> {
+    if (extraDeleting[name]) return;
     if (!window.confirm(`시크릿 "${name}"을(를) 삭제할까요?`)) return;
+    extraDeleting = { ...extraDeleting, [name]: true };
     try {
       const { user: next } = await api<{ user: User }>(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
       replaceState({ user: next });
       notify(`시크릿 "${name}"을(를) 삭제했습니다.`, "ok");
     } catch (err) {
       notify(`삭제 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      extraDeleting = { ...extraDeleting, [name]: false };
     }
   }
 
   async function generateSshKey(): Promise<void> {
+    if (sshBusy) return;
     sshBusy = true;
+    sshError = "";
+    sshMessage = "";
     try {
       const { user: next } = await api<{ user: User }>("/api/me/ssh-key", { method: "POST" });
       replaceState({ user: next });
-      notify("SSH 키를 생성했습니다.", "ok");
+      sshMessage = "SSH 키를 생성했습니다.";
+      notify(sshMessage, "ok");
     } catch (err) {
-      notify(`SSH 키 생성 실패: ${(err as Error).message}`, "warn");
+      sshError = (err as Error).message;
+      notify(`SSH 키 생성 실패: ${sshError}`, "warn");
     } finally {
       sshBusy = false;
     }
@@ -285,7 +408,7 @@
       {#if externalSet}<span class="token-set">외부 GitHub (GITHUB_TOKEN) 설정됨</span>{:else}<span>외부 GitHub (GITHUB_TOKEN) 미설정</span>{/if}
     </div>
 
-    <form class="secret-preset-row" on:submit|preventDefault={saveInternalToken}>
+    <form class="secret-preset-row" aria-busy={internalBusy} on:submit|preventDefault={saveInternalToken}>
       <div class="secret-preset-meta">
         <div class="secret-preset-title">
           <strong>사내 Git 토큰</strong>
@@ -294,14 +417,15 @@
         </div>
         <p class="muted">사내 GitHub({githubHost}) 전용입니다. 지식 저장소 생성·푸시와 사내 비공개 저장소 접근에 사용됩니다.</p>
       </div>
-      <RevealableInput bind:value={internalToken} name="internalToken" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" revealLabel="토큰" />
+      <RevealableInput bind:value={internalToken} name="internalToken" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" ariaDescribedby={internalStatusId} revealLabel="토큰" disabled={internalBusy} onInput={() => (internalError = "")} />
       <div class="secret-preset-actions">
+        <span id={internalStatusId} class="settings-save-status" class:dirty={Boolean(internalError || internalToken.trim())} role="status" aria-live="polite">{internalStatus}</span>
         <button class="primary" type="submit" disabled={internalBusy || !internalToken.trim()}>{internalSet ? "교체" : "저장"}</button>
         <button class="linkish small" type="button" disabled={!internalSet || internalBusy} on:click={clearInternalToken}>삭제</button>
       </div>
     </form>
 
-    <form class="secret-preset-row" on:submit|preventDefault={saveExternalToken}>
+    <form class="secret-preset-row" aria-busy={externalBusy} on:submit|preventDefault={saveExternalToken}>
       <div class="secret-preset-meta">
         <div class="secret-preset-title">
           <strong>외부 GitHub 토큰</strong>
@@ -310,8 +434,9 @@
         </div>
         <p class="muted">github.com HTTPS 저장소 접근 전용입니다. 지식 저장소 생성·푸시에는 사용되지 않습니다.</p>
       </div>
-      <RevealableInput bind:value={externalToken} name="externalToken" placeholder="github.com PAT (GITHUB_TOKEN)" ariaLabel="외부 GitHub 토큰 GITHUB_TOKEN" revealLabel="토큰" />
+      <RevealableInput bind:value={externalToken} name="externalToken" placeholder="github.com PAT (GITHUB_TOKEN)" ariaLabel="외부 GitHub 토큰 GITHUB_TOKEN" ariaDescribedby={externalStatusId} revealLabel="토큰" disabled={externalBusy} onInput={() => (externalError = "")} />
       <div class="secret-preset-actions">
+        <span id={externalStatusId} class="settings-save-status" class:dirty={Boolean(externalError || externalToken.trim())} role="status" aria-live="polite">{externalStatus}</span>
         <button class="primary" type="submit" disabled={externalBusy || !externalToken.trim()}>{externalSet ? "교체" : "저장"}</button>
         <button class="linkish small" type="button" disabled={!externalSet || externalBusy} on:click={clearExternalToken}>삭제</button>
       </div>
@@ -319,10 +444,13 @@
 
     <form class="settings-form" on:submit|preventDefault={saveGitIdentity}>
       <div class="field-row-2col">
-        <label class="field"><span>커밋 이름</span><input bind:value={gitIdentityName} placeholder={user.alias || user.displayName || ""} /></label>
-        <label class="field"><span>커밋 이메일</span><input type="email" bind:value={gitIdentityEmail} placeholder={`${user.username}@example.com`} /></label>
+        <label class="field"><span>커밋 이름</span><input bind:value={gitIdentityName} placeholder={user.alias || user.displayName || ""} aria-describedby={identityStatusId} disabled={identitySaving} /></label>
+        <label class="field"><span>커밋 이메일</span><input type="email" bind:value={gitIdentityEmail} placeholder={`${user.username}@example.com`} aria-describedby={identityStatusId} disabled={identitySaving} /></label>
       </div>
-      <button class="primary" type="submit" disabled={identitySaving}>{identitySaving ? "저장 중…" : "커밋 정보 저장"}</button>
+      <div class="settings-save-row">
+        <span id={identityStatusId} class="settings-save-status" class:dirty={identityDirty} role="status">{identityStatus}</span>
+        <button class="primary" type="submit" disabled={!identityCanSave}>{identitySaving ? "저장 중…" : "커밋 정보 저장"}</button>
+      </div>
     </form>
   </section>
 
@@ -338,7 +466,8 @@
     <div class="secret-preset-list">
       {#each SECRET_PRESETS as preset}
         {@const isSet = user.secretNames.includes(preset.name)}
-        <form class="secret-preset-row" on:submit|preventDefault={() => savePresetSecret(preset.name, preset.label)}>
+        {@const presetStatusId = secretDomId(preset.name, "status")}
+        <form class="secret-preset-row" aria-busy={presetBusy[preset.name]} on:submit|preventDefault={() => savePresetSecret(preset.name, preset.label)}>
           <div class="secret-preset-meta">
             <div class="secret-preset-title">
               <strong>{preset.label}</strong>
@@ -347,9 +476,20 @@
             </div>
             <p class="muted">{preset.description}</p>
           </div>
-          <textarea rows={preset.rows} placeholder={preset.placeholder} autocomplete="off" bind:value={presetValues[preset.name]}></textarea>
+          <textarea
+            rows={preset.rows}
+            placeholder={preset.placeholder}
+            autocomplete="off"
+            aria-label={`${preset.label} 값`}
+            aria-describedby={presetStatusId}
+            aria-invalid={presetErrors[preset.name] ? "true" : undefined}
+            bind:value={presetValues[preset.name]}
+            disabled={presetBusy[preset.name]}
+            on:input={() => clearPresetError(preset.name)}
+          ></textarea>
           <div class="secret-preset-actions">
-            <button class="primary" type="submit" disabled={presetBusy[preset.name] || !presetValues[preset.name]}>{isSet ? "교체" : "저장"}</button>
+            <span id={presetStatusId} class="settings-save-status" class:dirty={Boolean(presetErrors[preset.name] || hasPresetValue(preset.name))} role="status" aria-live="polite">{presetStatus(preset.name, preset.label, isSet)}</span>
+            <button class="primary" type="submit" disabled={presetBusy[preset.name] || !hasPresetValue(preset.name)}>{isSet ? "교체" : "저장"}</button>
             <button class="linkish small" type="button" disabled={!isSet || presetBusy[preset.name]} on:click={() => clearPresetSecret(preset.name, preset.label)}>삭제</button>
           </div>
         </form>
@@ -367,7 +507,12 @@
         </label>
       </div>
     {:else}
-      <button class="primary" type="button" disabled={sshBusy} on:click={generateSshKey}>{sshBusy ? "생성 중…" : "SSH 키 생성"}</button>
+      <button class="primary" type="button" aria-describedby={sshStatus ? sshStatusId : undefined} disabled={sshBusy} on:click={generateSshKey}>{sshBusy ? "생성 중…" : "SSH 키 생성"}</button>
+    {/if}
+    {#if sshStatus}
+      <div class="settings-save-row compact">
+        <span id={sshStatusId} class="settings-save-status" class:dirty={Boolean(sshBusy || sshError || sshMessage)} role="status" aria-live="polite">{sshStatus}</span>
+      </div>
     {/if}
 
     <div class="secret-extra-head">
@@ -382,15 +527,18 @@
           <div class="secret-row">
             <code>{name}</code>
             <span class="muted token-set">● 설정됨</span>
-            <button class="linkish small" type="button" aria-label={`시크릿 삭제: ${name}`} on:click={() => deleteExtraSecret(name)}>삭제</button>
+            <button class="linkish small" type="button" aria-label={`시크릿 삭제: ${name}`} disabled={extraDeleting[name]} on:click={() => deleteExtraSecret(name)}>삭제</button>
           </div>
         {/each}
       {/if}
     </div>
     <form class="settings-form" on:submit|preventDefault={saveExtraSecret}>
-      <label class="field"><span>이름</span><input bind:value={extraName} placeholder="SSH_PRIVATE_KEY" autocomplete="off" /></label>
-      <label class="field"><span>값</span><textarea rows="4" bind:value={extraValue} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----…" autocomplete="off"></textarea></label>
-      <button class="primary" type="submit" disabled={extraBusy}>{extraBusy ? "저장 중…" : "추가 시크릿 저장"}</button>
+      <label class="field"><span>이름</span><input bind:value={extraName} placeholder="SSH_PRIVATE_KEY" autocomplete="off" required aria-describedby={extraStatusId} aria-invalid={extraNameValid ? undefined : "true"} disabled={extraBusy} on:input={() => (extraError = "")} /></label>
+      <label class="field"><span>값</span><textarea rows="4" bind:value={extraValue} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----…" autocomplete="off" required aria-describedby={extraStatusId} disabled={extraBusy} on:input={() => (extraError = "")}></textarea></label>
+      <div class="settings-save-row">
+        <span id={extraStatusId} class="settings-save-status" class:dirty={!extraNameValid || Boolean(extraError)} role="status">{extraStatus}</span>
+        <button class="primary" type="submit" disabled={!extraCanSave}>{extraBusy ? "저장 중…" : "추가 시크릿 저장"}</button>
+      </div>
     </form>
   </section>
 {/if}

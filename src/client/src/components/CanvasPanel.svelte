@@ -17,6 +17,8 @@
   import { notify } from "../lib/state";
   import type { ChatPane, PaneCanvas } from "../lib/types";
 
+  type CanvasControl = NonNullable<PaneCanvas["controls"]>[number];
+
   // Visual canvas side panel (experimental `canvas` feature, #50). Renders the
   // avatar-shown artifact (markdown/svg/html/mermaid/vega — all sanitized, never
   // executing avatar JS) plus real form controls that post back through
@@ -49,6 +51,10 @@
     const available = Math.max(CANVAS_WIDTH_MIN, window.innerWidth - 248 - 380);
     return Math.min(Math.min(CANVAS_WIDTH_MAX, available), Math.max(CANVAS_WIDTH_MIN, width));
   }
+  function savePanelWidth(width: number): void {
+    panelWidth = clampWidth(width);
+    setPref("canvasPanelWidth", String(Math.round(panelWidth)));
+  }
   function startResize(event: PointerEvent) {
     event.preventDefault();
     const startX = event.clientX;
@@ -71,6 +77,22 @@
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onUp);
   }
+  function onResizeKeydown(event: KeyboardEvent): void {
+    const step = event.shiftKey ? 48 : 16;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      savePanelWidth(panelWidth + step);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      savePanelWidth(panelWidth - step);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      savePanelWidth(CANVAS_WIDTH_DEFAULT);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      savePanelWidth(CANVAS_WIDTH_MAX);
+    }
+  }
   function setCollapsed(value: boolean) {
     collapsed = value;
     setPref("canvasPanelCollapsed", value ? "1" : "0");
@@ -84,6 +106,8 @@
 
   $: canvases = pane.canvases || [];
   $: active = canvases.find((c) => c.id === pane.activeCanvasId) ?? canvases[canvases.length - 1] ?? null;
+  $: canvasBodyId = canvasDomId("canvas-panel-body", pane.id);
+  $: versionListId = active ? canvasDomId("canvas-versions", active.id) : "canvas-versions";
 
   // ---- per-canvas control + editor state, rebuilt when the active canvas changes ----
   let formCanvasId = "";
@@ -92,6 +116,8 @@
   let resubmitting = false;
   let showVersions = false;
   let versions: { version: number; createdAt: string }[] = [];
+  let versionsLoading = false;
+  let versionsError = "";
   $: if (active && active.id !== formCanvasId) {
     initForm(active);
   }
@@ -108,6 +134,8 @@
     resubmitting = false;
     showVersions = false;
     versions = [];
+    versionsError = "";
+    versionsLoading = false;
   }
 
   // ---- content rendering (CSP-safe: no avatar-authored JS ever runs) ----
@@ -229,7 +257,7 @@
     });
 
   function onSubmit(): void {
-    if (!active) return;
+    if (!active || controlsLocked || !canSubmit) return;
     const values: Record<string, unknown> = {};
     for (const ctrl of active.controls || []) {
       const v = ctrlVals[ctrl.id];
@@ -246,17 +274,47 @@
     void submitCanvas(pane.id, active.id, values);
   }
 
+  function submitEdit(): void {
+    if (!active || !editCanSubmit) return;
+    void submitCanvasEdit(pane.id, active.id, editDraft);
+  }
+
   // The controls form is shown for a blocking pending canvas, an async canvas, or a
   // re-submission of an already-answered async canvas.
   $: showForm = Boolean(
     active?.controls?.length &&
       (active.pending || (active.interaction === "async" && (!active.submittedValues || resubmitting))),
   );
+  $: controlsLocked = Boolean(active?.submitting || pane.streaming);
+  $: editTrimmed = editDraft.trim();
+  $: editDirty = Boolean(active && editDraft !== active.content);
+  $: editCanSubmit = Boolean(active?.editable && editTrimmed && editDirty && !controlsLocked);
+  $: editStatus = controlsLocked
+    ? "아바타 응답이 끝난 뒤 수정할 수 있습니다."
+    : !editTrimmed
+      ? "수정할 내용을 입력하세요."
+      : !editDirty
+        ? "원본과 같은 내용입니다."
+        : "수정본을 보낼 준비가 됐습니다.";
+  $: controlsStatusId = active ? canvasDomId("canvas-controls-status", active.id) : "canvas-controls-status";
+  $: controlsStatus = active?.submitting
+    ? "응답을 보내는 중입니다."
+    : pane.streaming
+      ? "아바타 응답이 끝난 뒤 보낼 수 있습니다."
+      : canSubmit
+        ? "보낼 준비가 됐습니다."
+        : "필수 항목을 입력해 주세요.";
   // The skip button only makes sense for a blocking, parked run.
   $: canSkip = Boolean(active?.pending && active?.requestId && active?.runId);
 
   function renderSubmitted(value: unknown): string {
     return Array.isArray(value) ? value.join(", ") : String(value ?? "");
+  }
+  function controlLabel(ctrl: CanvasControl): string {
+    return ctrl.label || ctrl.id;
+  }
+  function controlDomId(canvas: PaneCanvas, ctrl: CanvasControl, suffix: string): string {
+    return canvasDomId(`canvas-control-${suffix}`, `${canvas.id}-${ctrl.id}`);
   }
 
   // ---- export ----
@@ -288,12 +346,50 @@
   }
 
   // ---- version history ----
+  function canvasDomId(prefix: string, id: string): string {
+    return `${prefix}-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  }
+
+  function focusCanvasTab(id: string): void {
+    requestAnimationFrame(() => document.getElementById(canvasDomId("canvas-tab", id))?.focus());
+  }
+
+  function onCanvasTabKeydown(event: KeyboardEvent, canvas: PaneCanvas): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = canvases.findIndex((item) => item.id === canvas.id);
+    if (currentIndex < 0) return;
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? canvases.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + canvases.length) % canvases.length;
+    const next = canvases[nextIndex];
+    setActiveCanvas(pane.id, next.id);
+    focusCanvasTab(next.id);
+  }
+
+  async function loadVersions(): Promise<void> {
+    if (!active || versionsLoading) return;
+    versionsLoading = true;
+    versionsError = "";
+    try {
+      versions = await fetchCanvasVersions(active.id);
+    } catch (err) {
+      versionsError = (err as Error).message || "버전 기록을 불러오지 못했습니다.";
+    } finally {
+      versionsLoading = false;
+    }
+  }
+
   async function toggleVersions(): Promise<void> {
     showVersions = !showVersions;
-    if (showVersions && active) versions = await fetchCanvasVersions(active.id);
+    if (showVersions) await loadVersions();
   }
   function doRollback(version: number): void {
     if (!active) return;
+    if (version === active.currentVersion) return;
     showVersions = false;
     void rollbackCanvas(pane.id, active.id, version);
   }
@@ -325,11 +421,24 @@
 <svelte:window on:keydown={fullscreen ? onFsKey : undefined} />
 
 {#if canvases.length}
-  <aside class="canvas-panel" class:collapsed aria-label="비주얼 캔버스" style={collapsed ? undefined : `width:${panelWidth}px`}>
-    <div class="canvas-resize" role="separator" aria-orientation="vertical" aria-label="패널 너비 조절" on:pointerdown={startResize}></div>
-    <button class="canvas-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} on:click={() => setCollapsed(true)}>›</button>
+<aside class="canvas-panel" class:collapsed aria-label="비주얼 캔버스" style={collapsed ? undefined : `width:${panelWidth}px`}>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+  <div
+    class="canvas-resize"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="캔버스 패널 너비 조절"
+    aria-valuenow={Math.round(panelWidth)}
+    aria-valuemin={CANVAS_WIDTH_MIN}
+    aria-valuemax={CANVAS_WIDTH_MAX}
+    aria-valuetext={`${Math.round(panelWidth)}px`}
+    tabindex="0"
+    on:pointerdown={startResize}
+    on:keydown={onResizeKeydown}
+  ></div>
+    <button class="canvas-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} aria-controls={canvasBodyId} on:click={() => setCollapsed(true)}>›</button>
 
-    <div class="canvas-body scroll-thin">
+    <div id={canvasBodyId} class="canvas-body scroll-thin">
       <div class="canvas-head">
         <h3>캔버스 <span class="canvas-beta">실험</span></h3>
         {#if canvases.length > 1}
@@ -337,13 +446,17 @@
             {#each canvases as c (c.id)}
               <div class="canvas-tab-wrap" class:active={active?.id === c.id}>
                 <button
+                  id={canvasDomId("canvas-tab", c.id)}
                   class="canvas-tab"
                   type="button"
                   role="tab"
                   aria-selected={active?.id === c.id}
+                  aria-controls="canvas-active-panel"
+                  tabindex={active?.id === c.id ? 0 : -1}
                   on:click={() => setActiveCanvas(pane.id, c.id)}
+                  on:keydown={(event) => onCanvasTabKeydown(event, c)}
                 >{c.title}</button>
-                <button class="canvas-tab-close" type="button" aria-label="캔버스 닫기" title="캔버스 닫기" on:click={() => closeCanvas(pane.id, c.id)}>×</button>
+                <button class="canvas-tab-close" type="button" aria-label={`캔버스 닫기: ${c.title}`} title="캔버스 닫기" on:click={() => closeCanvas(pane.id, c.id)}>×</button>
               </div>
             {/each}
           </div>
@@ -351,12 +464,17 @@
       </div>
 
       {#if active}
-        <div class="canvas-card">
+        <div
+          id="canvas-active-panel"
+          class="canvas-card"
+          role={canvases.length > 1 ? "tabpanel" : undefined}
+          aria-labelledby={canvases.length > 1 ? canvasDomId("canvas-tab", active.id) : undefined}
+        >
           <div class="canvas-card-top">
             <div class="canvas-title">{active.title}</div>
             <div class="canvas-toolbar">
               {#if (active.versionCount || 1) > 1}
-                <button class="canvas-tool-btn" type="button" title="버전 기록" aria-expanded={showVersions} on:click={toggleVersions}>v{active.currentVersion ?? 1} ▾</button>
+                <button class="canvas-tool-btn" type="button" title="버전 기록" aria-expanded={showVersions} aria-controls={versionListId} on:click={toggleVersions}>v{active.currentVersion ?? 1} ▾</button>
               {/if}
               <button class="canvas-tool-btn" type="button" title="복사" on:click={onCopy}>복사</button>
               {#if isImageType(active)}
@@ -371,35 +489,55 @@
           </div>
 
           {#if showVersions}
-            <div class="canvas-versions" role="listbox" aria-label="버전 기록">
-              {#each versions as v (v.version)}
-                <button
-                  class="canvas-version-row"
-                  class:current={v.version === active.currentVersion}
-                  type="button"
-                  on:click={() => doRollback(v.version)}
-                >
-                  <span>v{v.version}</span>
-                  <span class="canvas-version-time">{versionTime(v.createdAt)}</span>
-                  {#if v.version !== active.currentVersion}<span class="canvas-version-action">되돌리기</span>{/if}
-                </button>
-              {/each}
+            <div id={versionListId} class="canvas-versions" role="listbox" aria-label="버전 기록">
+              {#if versionsLoading}
+                <div class="canvas-version-state" role="status">버전 기록을 불러오는 중…</div>
+              {:else if versionsError}
+                <div class="canvas-version-state error-note" role="alert">
+                  {versionsError}
+                  <button class="linkish small" type="button" on:click={loadVersions}>다시 시도</button>
+                </div>
+              {:else}
+                {#each versions as v (v.version)}
+                  <button
+                    class="canvas-version-row"
+                    class:current={v.version === active.currentVersion}
+                    type="button"
+                    role="option"
+                    aria-selected={v.version === active.currentVersion ? "true" : "false"}
+                    disabled={v.version === active.currentVersion}
+                    on:click={() => doRollback(v.version)}
+                  >
+                    <span>v{v.version}</span>
+                    <span class="canvas-version-time">{versionTime(v.createdAt)}</span>
+                    {#if v.version === active.currentVersion}<span class="canvas-version-action">현재</span>{:else}<span class="canvas-version-action">되돌리기</span>{/if}
+                  </button>
+                {/each}
+              {/if}
             </div>
           {/if}
 
           <div class="canvas-content md" bind:this={contentEl}>{@html renderedHtml}</div>
           {#if renderError}
-            <p class="canvas-render-error">렌더링 실패: {renderError}</p>
+            <p class="canvas-render-error" role="alert">렌더링 실패: {renderError}</p>
           {/if}
 
           {#if active.editable}
             <div class="canvas-edit">
-              <div class="canvas-control-label">내용 편집</div>
+              <div class="canvas-control-label" id={canvasDomId("canvas-edit-label", active.id)}>내용 편집</div>
               <div class="field">
-                <textarea rows="5" bind:value={editDraft} placeholder="내용을 수정해 아바타에게 보내세요"></textarea>
+                <textarea
+                  rows="5"
+                  bind:value={editDraft}
+                  placeholder="내용을 수정해 아바타에게 보내세요"
+                  aria-labelledby={canvasDomId("canvas-edit-label", active.id)}
+                  aria-describedby={canvasDomId("canvas-edit-status", active.id)}
+                  disabled={controlsLocked}
+                ></textarea>
               </div>
+              <div id={canvasDomId("canvas-edit-status", active.id)} class="canvas-edit-status" class:dirty={editCanSubmit} role="status">{editStatus}</div>
               <div class="canvas-actions">
-                <button class="btn btn-primary btn-sm" type="button" disabled={pane.streaming || !editDraft.trim()} on:click={() => active && submitCanvasEdit(pane.id, active.id, editDraft)}>수정해서 보내기</button>
+                <button class="btn btn-primary btn-sm" type="button" aria-describedby={canvasDomId("canvas-edit-status", active.id)} disabled={!editCanSubmit} on:click={submitEdit}>수정해서 보내기</button>
               </div>
             </div>
           {/if}
@@ -418,18 +556,27 @@
                 {/if}
               </div>
             {:else if showForm}
-              <form class="canvas-controls" on:submit|preventDefault={onSubmit}>
+              <form class="canvas-controls" aria-busy={active.submitting ? "true" : "false"} aria-describedby={controlsStatusId} on:submit|preventDefault={onSubmit}>
                 {#each active.controls as ctrl (ctrl.id)}
+                  {@const labelId = controlDomId(active, ctrl, "label")}
                   <div class="canvas-control">
-                    {#if ctrl.label}<div class="canvas-control-label">{ctrl.label}{#if ctrl.required === false}<span class="canvas-optional"> (선택)</span>{/if}</div>{/if}
+                    {#if ctrl.label}<div id={labelId} class="canvas-control-label">{ctrl.label}{#if ctrl.required === false}<span class="canvas-optional"> (선택)</span>{/if}</div>{/if}
                     {#if ctrl.type === "buttons"}
-                      <div class="canvas-options" role="group" aria-label={ctrl.label || "선택"}>
+                      <div
+                        class="canvas-options"
+                        role="group"
+                        aria-labelledby={ctrl.label ? labelId : undefined}
+                        aria-label={!ctrl.label ? controlLabel(ctrl) : undefined}
+                        aria-describedby={controlsStatusId}
+                      >
                         {#each ctrl.options || [] as opt}
                           <button
                             type="button"
                             class="canvas-opt"
                             class:selected={isSelected(ctrl.id, optValue(opt))}
                             aria-pressed={isSelected(ctrl.id, optValue(opt))}
+                            aria-describedby={controlsStatusId}
+                            disabled={controlsLocked}
                             on:click={() => toggleButton(ctrl.id, optValue(opt), Boolean(ctrl.multiSelect))}
                           >
                             <span class="canvas-opt-label">{opt.label}</span>
@@ -439,7 +586,13 @@
                       </div>
                     {:else if ctrl.type === "select"}
                       <div class="field">
-                        <select bind:value={ctrlVals[ctrl.id]}>
+                        <select
+                          bind:value={ctrlVals[ctrl.id]}
+                          aria-labelledby={ctrl.label ? labelId : undefined}
+                          aria-label={!ctrl.label ? controlLabel(ctrl) : undefined}
+                          aria-describedby={controlsStatusId}
+                          disabled={controlsLocked}
+                        >
                           <option value="" disabled>{ctrl.placeholder || "선택하세요"}</option>
                           {#each ctrl.options || [] as opt}
                             <option value={optValue(opt)}>{opt.label}</option>
@@ -448,35 +601,80 @@
                       </div>
                     {:else if ctrl.type === "slider"}
                       <div class="canvas-slider">
-                        <input type="range" min={ctrl.min ?? 0} max={ctrl.max ?? 100} step={ctrl.step ?? 1} bind:value={ctrlVals[ctrl.id]} />
+                        <input
+                          type="range"
+                          min={ctrl.min ?? 0}
+                          max={ctrl.max ?? 100}
+                          step={ctrl.step ?? 1}
+                          bind:value={ctrlVals[ctrl.id]}
+                          aria-labelledby={ctrl.label ? labelId : undefined}
+                          aria-label={!ctrl.label ? controlLabel(ctrl) : undefined}
+                          aria-describedby={controlsStatusId}
+                          disabled={controlsLocked}
+                        />
                         <span class="canvas-slider-val">{ctrlVals[ctrl.id]}</span>
                       </div>
                     {:else if ctrl.type === "number"}
                       <div class="field">
-                        <input type="number" min={ctrl.min} max={ctrl.max} step={ctrl.step ?? 1} placeholder={ctrl.placeholder || ""} bind:value={ctrlVals[ctrl.id]} />
+                        <input
+                          type="number"
+                          min={ctrl.min}
+                          max={ctrl.max}
+                          step={ctrl.step ?? 1}
+                          placeholder={ctrl.placeholder || ""}
+                          bind:value={ctrlVals[ctrl.id]}
+                          aria-labelledby={ctrl.label ? labelId : undefined}
+                          aria-label={!ctrl.label ? controlLabel(ctrl) : undefined}
+                          aria-describedby={controlsStatusId}
+                          disabled={controlsLocked}
+                        />
                       </div>
                     {:else if ctrl.type === "date"}
                       <div class="field">
-                        <input type="date" bind:value={ctrlVals[ctrl.id]} />
+                        <input
+                          type="date"
+                          bind:value={ctrlVals[ctrl.id]}
+                          aria-labelledby={ctrl.label ? labelId : undefined}
+                          aria-label={!ctrl.label ? controlLabel(ctrl) : undefined}
+                          aria-describedby={controlsStatusId}
+                          disabled={controlsLocked}
+                        />
                       </div>
                     {:else}
                       <div class="field">
                         {#if ctrl.multiline}
-                          <textarea rows="3" placeholder={ctrl.placeholder || ""} bind:value={ctrlVals[ctrl.id]}></textarea>
+                          <textarea
+                            rows="3"
+                            placeholder={ctrl.placeholder || ""}
+                            bind:value={ctrlVals[ctrl.id]}
+                            aria-labelledby={ctrl.label ? labelId : undefined}
+                            aria-label={!ctrl.label ? controlLabel(ctrl) : undefined}
+                            aria-describedby={controlsStatusId}
+                            disabled={controlsLocked}
+                          ></textarea>
                         {:else}
-                          <input type="text" placeholder={ctrl.placeholder || ""} bind:value={ctrlVals[ctrl.id]} />
+                          <input
+                            type="text"
+                            placeholder={ctrl.placeholder || ""}
+                            bind:value={ctrlVals[ctrl.id]}
+                            aria-labelledby={ctrl.label ? labelId : undefined}
+                            aria-label={!ctrl.label ? controlLabel(ctrl) : undefined}
+                            aria-describedby={controlsStatusId}
+                            disabled={controlsLocked}
+                          />
                         {/if}
                       </div>
                     {/if}
                   </div>
                 {/each}
+                <div id={controlsStatusId} class="canvas-edit-status" class:dirty={canSubmit || controlsLocked} role="status" aria-live="polite">{controlsStatus}</div>
                 <div class="canvas-actions">
                   {#if canSkip}
-                    <button class="btn btn-ghost btn-sm" type="button" disabled={active.submitting} on:click={() => active && dismissCanvas(pane.id, active.id)}>건너뛰기</button>
+                    <button class="btn btn-ghost btn-sm" type="button" aria-describedby={controlsStatusId} disabled={controlsLocked} on:click={() => active && dismissCanvas(pane.id, active.id)}>건너뛰기</button>
                   {:else if resubmitting}
-                    <button class="btn btn-ghost btn-sm" type="button" on:click={() => (resubmitting = false)}>취소</button>
+                    <button class="btn btn-ghost btn-sm" type="button" aria-describedby={controlsStatusId} on:click={() => (resubmitting = false)}>취소</button>
                   {/if}
-                  <button class="btn btn-primary btn-sm" type="submit" disabled={!canSubmit || active.submitting || pane.streaming}>보내기</button>
+                  <button class="btn btn-primary btn-sm" type="submit" aria-describedby={controlsStatusId} disabled={!canSubmit || controlsLocked}>보내기</button>
                 </div>
               </form>
             {/if}
@@ -485,7 +683,7 @@
       {/if}
     </div>
 
-    <button class="canvas-expand" type="button" aria-label="캔버스 패널 펼치기" title="캔버스 패널 펼치기" aria-expanded={!collapsed} on:click={() => setCollapsed(false)}>
+    <button class="canvas-expand" type="button" aria-label="캔버스 패널 펼치기" title="캔버스 패널 펼치기" aria-expanded={!collapsed} aria-controls={canvasBodyId} on:click={() => setCollapsed(false)}>
       <span aria-hidden="true">‹</span>
       <span class="canvas-expand-label">캔버스 보기</span>
     </button>

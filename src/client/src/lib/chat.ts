@@ -1568,8 +1568,9 @@ export async function respondPlanReview(
   behavior: "approved" | "rejected",
   feedback?: string,
 ): Promise<void> {
-  const review = readState().chatPanes.find((p) => p.id === paneId)?.planReview;
-  if (!review) return;
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  const review = pane?.planReview;
+  if (!review || pane?.planReviewSubmitting) return;
   updatePane(paneId, (pane) => {
     pane.planReviewSubmitting = true;
   });

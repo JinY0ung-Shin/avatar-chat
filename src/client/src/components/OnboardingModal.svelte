@@ -1,11 +1,13 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
+  import Icon from "./Icon.svelte";
   import Modal from "./Modal.svelte";
   import RevealableInput from "./RevealableInput.svelte";
   import { api } from "../lib/api";
   import { copyText } from "../lib/dom";
+  import { goView } from "../lib/nav";
   import { notify, replaceState } from "../lib/state";
-  import type { User } from "../lib/types";
+  import type { SettingsTab, User } from "../lib/types";
 
   export let user: User;
   export let confluenceConfigured = false;
@@ -13,19 +15,9 @@
 
   const dispatch = createEventDispatcher<{ close: void }>();
 
-  const FEATURES = [
-    { title: "아바타 찾기", desc: "탐색에서 공개 아바타를 검색하고 바로 대화를 시작합니다." },
-    { title: "내 아바타 키우기", desc: "프로필, 페르소나, 자기소개, 역량 태그를 설정해 업무 맥락을 드러냅니다." },
-    { title: "지식 저장소 연결", desc: "반복 업무와 프로젝트 규칙을 저장소와 스킬로 쌓아 다음 대화에 재사용합니다." },
-    { title: "동료에게 요청", desc: "동료가 공개한 지식과 스킬을 바탕으로 조사, 검토, 정리를 요청합니다." },
-    { title: "루틴 자동 실행", desc: "매일·매주 반복되는 확인 작업을 예약하고 결과를 대화에 쌓습니다." },
-    { title: "도구 확장", desc: "Git 토큰, 플러그인, SSH, Confluence 연결로 작업 범위를 넓힙니다." },
-  ];
-  const EXAMPLES = [
+  const STARTER_PROMPTS = [
     "내가 자주 맡기는 배포 점검 절차를 스킬로 정리하고 다음부터 그대로 수행해줘.",
     "민수님의 아바타에게 이번 장애 원인과 재발 방지 체크리스트를 물어봐.",
-    "내 지식 저장소에 이 프로젝트 운영 절차를 스킬로 정리해줘.",
-    "접근 가능한 서버에 SSH로 접속해서 서비스 로그와 디스크 사용량을 점검해줘.",
   ];
 
   let gitToken = "";
@@ -37,13 +29,35 @@
   $: tokensHost = (githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   $: sshPublicKey = (user.sshPublicKey || "").trim();
   $: sshConfigured = Boolean(sshPublicKey) || user.secretNames?.includes("SSH_PRIVATE_KEY");
-  $: saveLabel = busy ? (gitToken.trim() || confluencePat.trim() ? "저장 중…" : "시작 중…") : gitToken.trim() || confluencePat.trim() ? "저장하고 시작" : "시작하기";
+  $: profileReady = Boolean(user.alias || user.bio || user.intro || user.hashtags?.length);
+  $: knowledgeReady = Boolean(user.knowledgeRepo);
+  $: accessReady = Boolean(user.gitTokenSet || sshConfigured || user.secretNames?.includes("CONFLUENCE_PAT"));
+  $: saveLabel = sshBusy
+    ? "SSH 생성 중…"
+    : busy
+      ? (gitToken.trim() || confluencePat.trim() ? "저장 중…" : "시작 중…")
+      : gitToken.trim() || confluencePat.trim()
+        ? "저장하고 시작"
+        : "시작하기";
 
   function done() {
     dispatch("close");
   }
 
+  function jumpToSettings(tab: SettingsTab) {
+    if (busy || sshBusy) return;
+    done();
+    window.setTimeout(() => goView("settings", tab), 0);
+  }
+
+  function startExplore() {
+    if (busy || sshBusy) return;
+    done();
+    window.setTimeout(() => goView("explore"), 0);
+  }
+
   async function generateSsh() {
+    if (busy || sshBusy || sshConfigured) return;
     sshBusy = true;
     error = "";
     try {
@@ -58,6 +72,7 @@
   }
 
   async function submit() {
+    if (busy || sshBusy) return;
     busy = true;
     error = "";
     try {
@@ -81,34 +96,46 @@
   }
 </script>
 
-<Modal cardClass="onboard-card" ariaLabelledby="onboarding-title" on:close={done}>
+<Modal cardClass="onboard-card" ariaLabelledby="onboarding-title" closeDisabled={busy || sshBusy} on:close={done}>
   <img class="login-mark" src="/icon-192.png" alt="" aria-hidden="true" width="48" height="48" />
   <h2 id="onboarding-title">아바타 사용 준비하기</h2>
-  <p class="muted">업무 방식과 반복 절차를 아바타에 쌓고, 동료 아바타에게도 질문·요청할 수 있습니다.</p>
+  <p class="muted">먼저 프로필과 지식 저장소만 잡아두면 탐색과 대화에서 바로 쓰기 좋습니다.</p>
 
-  <div class="onboard-guide">
-    <section class="onboard-section">
-      <h3>이 앱에서 할 수 있는 일</h3>
-      <div class="onboard-feature-list">
-        {#each FEATURES as feature}
-          <div class="onboard-feature">
-            <strong>{feature.title}</strong>
-            <p>{feature.desc}</p>
-          </div>
-        {/each}
-      </div>
-    </section>
-    <section class="onboard-section">
-      <h3>처음 대화할 때 이렇게 시켜볼 수 있어요</h3>
-      <ul class="onboard-examples">
-        {#each EXAMPLES as example}
-          <li>{example}</li>
-        {/each}
-      </ul>
-    </section>
-    <p class="onboard-note">
-      권한은 대화 상대에 따라 달라집니다. 내 아바타와 같은 그룹원은 작업 도구를 쓸 수 있고, 그 외 사용자가 다른 아바타와 대화할 때는 읽기 전용으로 실행됩니다.
-    </p>
+  <div class="onboard-quick" aria-label="초기 설정 상태">
+    <button class="onboard-step" class:done={profileReady} type="button" disabled={busy || sshBusy} on:click={() => jumpToSettings("profile")}>
+      <span class="onboard-step-icon"><Icon name={profileReady ? "check" : "user"} /></span>
+      <span class="onboard-step-copy">
+        <strong>프로필</strong>
+        <span>{profileReady ? "기본 소개가 준비됨" : "이름, 소개, 역량 태그"}</span>
+      </span>
+    </button>
+    <button class="onboard-step" class:done={knowledgeReady} type="button" disabled={busy || sshBusy} on:click={() => jumpToSettings("knowledge")}>
+      <span class="onboard-step-icon"><Icon name={knowledgeReady ? "check" : "book"} /></span>
+      <span class="onboard-step-copy">
+        <strong>지식 저장소</strong>
+        <span>{knowledgeReady ? "저장소 연결됨" : "업무 기억을 쌓을 저장소"}</span>
+      </span>
+    </button>
+    <button class="onboard-step" class:done={accessReady} type="button" disabled={busy || sshBusy} on:click={() => jumpToSettings("access")}>
+      <span class="onboard-step-icon"><Icon name={accessReady ? "check" : "key"} /></span>
+      <span class="onboard-step-copy">
+        <strong>권한 연결</strong>
+        <span>{accessReady ? "작업 자격증명 일부 설정됨" : "Git, SSH, 문서 토큰"}</span>
+      </span>
+    </button>
+    <button class="onboard-step primary-step" type="button" disabled={busy || sshBusy} on:click={startExplore}>
+      <span class="onboard-step-icon"><Icon name="chat" /></span>
+      <span class="onboard-step-copy">
+        <strong>대화 시작</strong>
+        <span>탐색으로 이동</span>
+      </span>
+    </button>
+  </div>
+
+  <div class="onboard-highlight">
+    <strong>처음 맡겨볼 일</strong>
+    <p>{STARTER_PROMPTS[0]}</p>
+    <span class="onboard-highlight-note">{STARTER_PROMPTS[1]}</span>
   </div>
 
   <div class="onboard-connect">
@@ -126,7 +153,7 @@
               사내 Git 토큰 (GIT_TOKEN, 선택)
               <a class="linkish" href={`https://${tokensHost}/settings/tokens`} target="_blank" rel="noopener noreferrer">토큰 만들러 가기 ↗</a>
             </span>
-            <RevealableInput bind:value={gitToken} name="token" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" revealLabel="토큰" />
+            <RevealableInput bind:value={gitToken} name="token" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" revealLabel="토큰" disabled={busy} />
           </label>
         </div>
       </details>
@@ -145,7 +172,7 @@
             {/if}
           </div>
           <div class="git-token-actions">
-            <button class="primary" type="button" disabled={sshConfigured || sshBusy} on:click={generateSsh}>
+            <button class="primary" type="button" disabled={busy || sshConfigured || sshBusy} on:click={generateSsh}>
               {sshConfigured ? (sshPublicKey ? "SSH 키 생성됨" : "SSH 키 설정됨") : sshBusy ? "생성 중…" : "SSH 키 생성"}
             </button>
           </div>
@@ -169,7 +196,7 @@
           <div class="onboard-setup-body">
             <label class="field">
               <span>Confluence PAT (CONFLUENCE_PAT, 선택)</span>
-              <RevealableInput bind:value={confluencePat} name="confluence" placeholder="Confluence PAT (CONFLUENCE_PAT)" ariaLabel="Confluence Personal Access Token CONFLUENCE_PAT" revealLabel="토큰" />
+              <RevealableInput bind:value={confluencePat} name="confluence" placeholder="Confluence PAT (CONFLUENCE_PAT)" ariaLabel="Confluence Personal Access Token CONFLUENCE_PAT" revealLabel="토큰" disabled={busy} />
             </label>
           </div>
         </details>
@@ -179,8 +206,8 @@
     {#if error}<div class="error" role="alert">{error}</div>{/if}
 
     <div class="onboard-actions">
-      <button class="linkish" type="button" on:click={done}>건너뛰기</button>
-      <button class="primary" type="submit" disabled={busy}>{saveLabel}</button>
+      <button class="linkish" type="button" disabled={busy || sshBusy} on:click={done}>건너뛰기</button>
+      <button class="primary" type="submit" disabled={busy || sshBusy}>{saveLabel}</button>
     </div>
   </form>
 </Modal>

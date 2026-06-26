@@ -28,6 +28,20 @@
   let error = "";
 
   $: questions = request?.kind === "question" && Array.isArray(request.data?.payload?.questions) ? request.data.payload.questions : null;
+  $: promptBase = request ? String(request.id).replace(/[^A-Za-z0-9_-]/g, "-") : "current";
+  $: permissionTitleId = `prompt-${promptBase}-permission-title`;
+  $: permissionToolId = `prompt-${promptBase}-permission-tool`;
+  $: permissionDescId = `prompt-${promptBase}-permission-desc`;
+  $: permissionErrorId = `prompt-${promptBase}-permission-error`;
+  $: permissionDescribedBy = joinIds(permissionToolId, request?.data?.description ? permissionDescId : null, error ? permissionErrorId : null);
+  $: questionTitleId = `prompt-${promptBase}-question-title`;
+  $: questionHintId = `prompt-${promptBase}-question-hint`;
+  $: questionPayloadId = `prompt-${promptBase}-question-payload`;
+  $: questionErrorId = `prompt-${promptBase}-question-error`;
+  $: questionDescribedBy = joinIds(questions ? questionHintId : questionPayloadId, error ? questionErrorId : null);
+  $: questionStates = questions
+    ? questions.map((q: any, qi: number) => questionState(q, qi))
+    : [];
 
   $: if (request && request.id !== activeId) {
     activeId = request.id;
@@ -46,6 +60,23 @@
 
   function answeredFor(qi: number): boolean {
     return selections[qi]?.length > 0 || (customOn[qi] && customText[qi].trim().length > 0);
+  }
+  function joinIds(...ids: Array<string | null | undefined | false>): string | undefined {
+    const joined = ids.filter(Boolean).join(" ");
+    return joined || undefined;
+  }
+  function questionId(base: string, qi: number, part: string): string {
+    return `prompt-${base}-question-${qi}-${part}`;
+  }
+  function questionState(q: any, qi: number): string {
+    const picked = selections[qi]?.length ?? 0;
+    const customReady = customOn[qi] && customText[qi].trim().length > 0;
+    if (!picked && !customReady) return "답변이 필요합니다.";
+    if (q?.multiSelect) {
+      const count = picked + (customReady ? 1 : 0);
+      return `${count}개 답변이 선택되었습니다.`;
+    }
+    return "답변이 선택되었습니다.";
   }
   // Reference selections/customOn/customText directly so Svelte tracks them — a
   // call to answeredFor() alone hides those deps and leaves the submit button
@@ -77,7 +108,7 @@
   }
 
   async function respond(value: unknown) {
-    if (!request) return;
+    if (!request || busy) return;
     busy = true;
     error = "";
     try {
@@ -90,7 +121,7 @@
   }
 
   function submitQuestions() {
-    if (!request || !questions) return;
+    if (!request || !questions || busy || !canSubmit) return;
     const answers: Record<string, string> = {};
     questions.forEach((q: any, qi: number) => {
       const vals = [...selections[qi]];
@@ -101,7 +132,7 @@
   }
 
   function cancel() {
-    if (!request) return;
+    if (!request || busy) return;
     if (request.kind === "permission") void respond({ behavior: "deny" });
     else void respond({ cancelled: true });
   }
@@ -113,36 +144,57 @@
       <!-- aria-modal only on the app-root fallback (paneId=null): an in-pane modal
            doesn't make the rest of the page inert, and several aria-modal="true"
            dialogs on screen at once (one per split pane) is invalid ARIA. -->
-      <div class="prompt-card permission" role="dialog" aria-modal={paneId ? undefined : "true"} aria-label="권한 요청">
+      <div
+        class="prompt-card permission"
+        role="dialog"
+        aria-modal={paneId ? undefined : "true"}
+        aria-labelledby={permissionTitleId}
+        aria-describedby={permissionDescribedBy}
+        aria-busy={busy}
+      >
         <div class="prompt-head">
           <span class="prompt-icon"><Icon name="lock" /></span>
           <span class="prompt-head-label">권한 요청</span>
-          <button class="msg-act prompt-close" type="button" aria-label="닫기" title="닫기" on:click={cancel}><Icon name="close" /></button>
+          <button class="msg-act prompt-close" type="button" aria-label="권한 요청 닫기" title="닫기" disabled={busy} on:click={cancel}><Icon name="close" /></button>
         </div>
-        <div class="prompt-title">{permissionTitle}</div>
-        <div class="prompt-tool">
+        <div class="prompt-title" id={permissionTitleId}>{permissionTitle}</div>
+        <div class="prompt-tool" id={permissionToolId}>
           <code>{request.data?.toolName || "도구"}</code>
           {#if permissionArg}<span class="prompt-arg">{permissionArg}</span>{/if}
         </div>
-        {#if request.data?.description}<div class="prompt-desc">{request.data.description}</div>{/if}
-        {#if error}<div class="error-note prompt-error" role="alert">{error}</div>{/if}
+        {#if request.data?.description}<div class="prompt-desc" id={permissionDescId}>{request.data.description}</div>{/if}
+        {#if error}<div class="error-note prompt-error" id={permissionErrorId} role="alert">{error}</div>{/if}
         <div class="prompt-actions">
           <button class="btn btn-ghost btn-sm" type="button" disabled={busy} on:click={cancel}>거부</button>
           <button class="btn btn-primary btn-sm" type="button" disabled={busy} on:click={() => respond({ behavior: "allow" })}>승인</button>
         </div>
       </div>
     {:else}
-      <div class="prompt-card question" role="dialog" aria-modal={paneId ? undefined : "true"} aria-label="질문">
+      <div
+        class="prompt-card question"
+        role="dialog"
+        aria-modal={paneId ? undefined : "true"}
+        aria-labelledby={questionTitleId}
+        aria-describedby={questionDescribedBy}
+        aria-busy={busy}
+      >
         <div class="prompt-head">
           <span class="prompt-icon"><Icon name="chat" /></span>
-          <span class="prompt-head-label">질문</span>
-          <button class="msg-act prompt-close" type="button" aria-label="닫기" title="닫기" on:click={cancel}><Icon name="close" /></button>
+          <span class="prompt-head-label" id={questionTitleId}>질문</span>
+          <button class="msg-act prompt-close" type="button" aria-label="질문 닫기" title="닫기" disabled={busy} on:click={cancel}><Icon name="close" /></button>
         </div>
         {#if questions}
+          <div class="sr-only" id={questionHintId}>모든 질문에 답하면 보낼 수 있습니다. 건너뛰기를 선택하면 요청이 취소됩니다.</div>
           {#each questions as q, qi}
-            <div class="q-block">
+            <div
+              class="q-block"
+              role="group"
+              aria-labelledby={questionId(promptBase, qi, "text")}
+              aria-describedby={questionId(promptBase, qi, "state")}
+            >
               {#if q.header}<span class="q-chip">{q.header}</span>{/if}
-              <div class="q-text">{q.question || ""}</div>
+              <div class="q-text" id={questionId(promptBase, qi, "text")}>{q.question || ""}</div>
+              <div class="q-state sr-only" id={questionId(promptBase, qi, "state")} role="status" aria-live="polite">{questionStates[qi]}</div>
               <div class="q-options" role="group" aria-label={q.multiSelect ? "여러 개 선택 가능" : "하나 선택"}>
                 {#each (q.options || []) as opt}
                   <button
@@ -150,6 +202,7 @@
                     class:selected={selections[qi]?.includes(opt.label)}
                     type="button"
                     aria-pressed={selections[qi]?.includes(opt.label) ? "true" : "false"}
+                    disabled={busy}
                     on:click={() => toggleOption(qi, q, opt.label)}
                   >
                     <span class="q-opt-label">{opt.label || ""}</span>
@@ -161,20 +214,28 @@
                   class:selected={customOn[qi]}
                   type="button"
                   aria-pressed={customOn[qi] ? "true" : "false"}
+                  disabled={busy}
                   on:click={() => toggleCustom(qi, q)}
                 >
-                  <span class="q-opt-label">✎ 직접 입력</span>
+                  <span class="q-opt-label">직접 입력</span>
                 </button>
               </div>
               {#if customOn[qi]}
-                <textarea class="q-custom-input" rows="2" placeholder="직접 답변을 입력하세요…" bind:value={customText[qi]}></textarea>
+                <textarea
+                  class="q-custom-input"
+                  rows="2"
+                  placeholder="직접 답변을 입력하세요…"
+                  aria-label={`${q.question || `질문 ${qi + 1}`} 직접 답변`}
+                  bind:value={customText[qi]}
+                  disabled={busy}
+                ></textarea>
               {/if}
             </div>
           {/each}
         {:else}
-          <pre class="prompt-input">{JSON.stringify(request.data?.payload ?? request.data, null, 2)}</pre>
+          <pre class="prompt-input" id={questionPayloadId}>{JSON.stringify(request.data?.payload ?? request.data, null, 2)}</pre>
         {/if}
-        {#if error}<div class="error-note prompt-error" role="alert">{error}</div>{/if}
+        {#if error}<div class="error-note prompt-error" id={questionErrorId} role="alert">{error}</div>{/if}
         <div class="prompt-actions">
           <button class="btn btn-ghost btn-sm" type="button" disabled={busy} on:click={cancel}>건너뛰기</button>
           {#if questions}

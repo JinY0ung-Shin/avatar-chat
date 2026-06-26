@@ -23,23 +23,31 @@
   let error = "";
   let graph: KnowledgeGraph | null = null;
   let selected: KnowledgeGraphNode | null = null;
+  let loadToken = 0;
+  let destroyed = false;
 
   onMount(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await api<{ graph: KnowledgeGraph }>(endpoint);
-        if (!cancelled) graph = res.graph;
-      } catch (err) {
-        if (!cancelled) error = (err as Error).message;
-      } finally {
-        if (!cancelled) loading = false;
-      }
-    })();
+    void loadGraph();
     return () => {
-      cancelled = true;
+      destroyed = true;
     };
   });
+
+  async function loadGraph() {
+    const token = ++loadToken;
+    loading = true;
+    error = "";
+    graph = null;
+    selected = null;
+    try {
+      const res = await api<{ graph: KnowledgeGraph }>(endpoint);
+      if (!destroyed && token === loadToken) graph = res.graph;
+    } catch (err) {
+      if (!destroyed && token === loadToken) error = (err as Error).message;
+    } finally {
+      if (!destroyed && token === loadToken) loading = false;
+    }
+  }
 
   function openFullView() {
     dispatch("close");
@@ -60,16 +68,19 @@
   </div>
 
   {#if loading}
-    <div class="graph-state muted">그래프를 불러오는 중…</div>
+    <div class="graph-state muted" role="status">그래프를 불러오는 중…</div>
   {:else if error}
-    <div class="graph-state error-note">불러오기 실패: {error}</div>
+    <div class="graph-state error-note" role="alert">
+      불러오기 실패: {error}
+      <button class="linkish small" type="button" on:click={loadGraph}>다시 시도</button>
+    </div>
   {:else if graph?.noVault}
-    <div class="graph-state muted">
+    <div class="graph-state muted" role="status">
       이 저장소는 아직 vault 구조(<code>wiki/</code>·<code>raw/</code>)가 없습니다. 아바타에게
       <strong>brain-migrate</strong>를 한 번 실행해 달라고 하면 구조를 만들어 줍니다.
     </div>
   {:else if !graph?.nodes.length}
-    <div class="graph-state muted">아직 표시할 노트가 없습니다. 대화로 지식을 쌓으면 여기에 나타납니다.</div>
+    <div class="graph-state muted" role="status">아직 표시할 노트가 없습니다. 대화로 지식을 쌓으면 여기에 나타납니다.</div>
   {:else}
     <GraphCanvas {graph} selectedId={selected?.id ?? null} on:select={(e) => (selected = e.detail)} />
     <div class="graph-footer">
@@ -107,6 +118,9 @@
     padding: var(--s-6) var(--s-2);
     text-align: center;
     line-height: 1.6;
+  }
+  .graph-state .linkish.small {
+    margin-left: var(--s-2);
   }
   .graph-footer {
     display: flex;

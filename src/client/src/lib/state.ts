@@ -142,10 +142,11 @@ export function activePane(): ChatPane | null {
 
 export function notify(message: string, kind: Toast["kind"] = "warn", opts: Partial<Toast> = {}): void {
   const toast: Toast = { id: newId(), message, kind, ...opts };
+  const durationMs = opts.durationMs ?? (opts.action ? 9000 : kind === "warn" ? 7000 : 5000);
   toasts.update((items) => [...items.slice(-3), toast]);
   window.setTimeout(() => {
     toasts.update((items) => items.filter((item) => item.id !== toast.id));
-  }, 5000);
+  }, durationMs);
 }
 
 export function dismissToast(id: string): void {

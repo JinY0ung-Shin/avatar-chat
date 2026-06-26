@@ -479,6 +479,9 @@
   gap: var(--s-2);
   box-shadow: var(--shadow-sm);
 }
+.prompt-card[aria-busy="true"] {
+  cursor: progress;
+}
 .prompt-card.permission {
   border-color: var(--warn-line);
   background: var(--warn-soft);
@@ -600,8 +603,12 @@
   padding: var(--s-2) var(--s-3);
   cursor: pointer;
 }
-.q-option:hover {
+.q-option:hover:not(:disabled) {
   border-color: var(--accent-ring);
+}
+.q-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
 }
 .q-option.selected {
   border-color: var(--accent);
@@ -982,6 +989,10 @@ textarea::placeholder {
 }
 .send-button:hover:not(:disabled) {
   background: var(--accent-strong);
+}
+.send-button:disabled {
+  cursor: default;
+  opacity: 0.45;
 }
 .send-button.is-stop {
   background: var(--danger);

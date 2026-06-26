@@ -1,3 +1,7 @@
+<script lang="ts" context="module">
+  let nextCapabilityPanelId = 0;
+</script>
+
 <script lang="ts">
   import { onMount } from "svelte";
   import { api } from "../lib/api";
@@ -11,6 +15,9 @@
   let error = "";
   let skills: SkillInfo[] = [];
   let openSkills = new Set<string>();
+  let loadToken = 0;
+  const panelId = `cap-panel-${++nextCapabilityPanelId}`;
+  const bodyId = `${panelId}-body`;
 
   const CAP_WIDTH_MIN = 220;
   const CAP_WIDTH_MAX = 720;
@@ -36,6 +43,10 @@
     const available = Math.max(CAP_WIDTH_MIN, window.innerWidth - 248 - 380);
     return Math.min(Math.min(CAP_WIDTH_MAX, available), Math.max(CAP_WIDTH_MIN, width));
   }
+  function savePanelWidth(width: number): void {
+    panelWidth = clampWidth(width);
+    setCapPref("capPanelWidth", String(Math.round(panelWidth)));
+  }
 
   function startResize(event: PointerEvent) {
     event.preventDefault();
@@ -60,6 +71,23 @@
     handle.addEventListener("pointercancel", onUp);
   }
 
+  function onResizeKeydown(event: KeyboardEvent): void {
+    const step = event.shiftKey ? 48 : 16;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      savePanelWidth(panelWidth + step);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      savePanelWidth(panelWidth - step);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      savePanelWidth(CAP_WIDTH_DEFAULT);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      savePanelWidth(CAP_WIDTH_MAX);
+    }
+  }
+
   function setCollapsed(value: boolean) {
     collapsed = value;
     setCapPref("capPanelCollapsed", value ? "1" : "0");
@@ -68,18 +96,21 @@
   $: if (avatar?.id) void loadSkills(avatar.id);
 
   let loadedFor = "";
-  async function loadSkills(avatarId: string) {
-    if (loadedFor === avatarId) return;
+  async function loadSkills(avatarId: string, force = false) {
+    if (!force && loadedFor === avatarId) return;
+    const token = ++loadToken;
     loadedFor = avatarId;
     loading = true;
     error = "";
     try {
       const result = await api<{ skills: SkillInfo[] }>(`/api/avatars/${encodeURIComponent(avatarId)}/skills`);
+      if (token !== loadToken) return;
       skills = result.skills || [];
     } catch (err) {
+      if (token !== loadToken) return;
       error = (err as Error).message;
     } finally {
-      loading = false;
+      if (token === loadToken) loading = false;
     }
   }
 
@@ -96,13 +127,30 @@
     else next.add(key);
     openSkills = next;
   }
+
+  function retrySkills() {
+    if (avatar?.id) void loadSkills(avatar.id, true);
+  }
 </script>
 
 <aside class="cap-panel" class:collapsed aria-label="아바타 역량" style={collapsed ? undefined : `width:${panelWidth}px`}>
-  <div class="cap-resize" role="separator" aria-orientation="vertical" aria-label="패널 너비 조절" on:pointerdown={startResize}></div>
-  <button class="cap-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} on:click={() => setCollapsed(true)}>›</button>
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+  <div
+    class="cap-resize"
+    role="separator"
+    aria-orientation="vertical"
+    aria-label="역량 패널 너비 조절"
+    aria-valuenow={Math.round(panelWidth)}
+    aria-valuemin={CAP_WIDTH_MIN}
+    aria-valuemax={CAP_WIDTH_MAX}
+    aria-valuetext={`${Math.round(panelWidth)}px`}
+    tabindex="0"
+    on:pointerdown={startResize}
+    on:keydown={onResizeKeydown}
+  ></div>
+  <button class="cap-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} aria-controls={bodyId} on:click={() => setCollapsed(true)}>›</button>
 
-  <div class="cap-body scroll-thin">
+  <div id={bodyId} class="cap-body scroll-thin">
     <div class="cap-head">
       <h3>이 아바타의 역량</h3>
       <p class="cap-sub">{avatar.displayName}이(가) 사용할 수 있는 도구</p>
@@ -136,37 +184,48 @@
       </div>
     {/if}
 
-    <div class="cap-section">
+    <div class="cap-section" aria-busy={loading ? "true" : "false"}>
       <div class="cap-section-title">스킬</div>
       <div class="cap-section-body cap-skills">
       {#if loading}
-        <p class="cap-loading">불러오는 중…</p>
+        <p class="cap-loading" role="status">불러오는 중…</p>
       {:else if error}
-        <div class="cap-empty cap-error">
+        <div class="cap-empty cap-error" role="alert">
           <span>{error}</span>
+          <button class="linkish small" type="button" disabled={loading} on:click={retrySkills}>다시 시도</button>
         </div>
       {:else if !skills.length}
         <p class="cap-empty">사용 가능한 스킬이 없습니다.</p>
       {:else}
-        {#each skills as skill, index}
-          {@const key = `${skill.name}-${skill.source || "default"}-${index}`}
-          {@const hasDescription = Boolean(skill.description)}
-          {@const fromPlugin = Boolean(skill.source && skill.source !== "default")}
-          <div class="cap-skill" class:open={openSkills.has(key)}>
-            <button class="cap-skill-head" type="button" disabled={!hasDescription} aria-expanded={openSkills.has(key)} on:click={() => toggleSkill(key)}>
-              {#if hasDescription}<span class="cap-skill-caret" aria-hidden="true">▸</span>{/if}
-              <span class="cap-skill-name">{skill.name}</span>
-              {#if fromPlugin}<span class="cap-skill-src">{skill.source}</span>{/if}
-            </button>
-            {#if hasDescription}<p class="cap-skill-desc">{skill.description}</p>{/if}
-          </div>
-        {/each}
+        <div class="cap-skill-list" role="list" aria-label={`${avatar.displayName} 스킬`}>
+          {#each skills as skill, index}
+            {@const key = `${skill.name}-${skill.source || "default"}-${index}`}
+            {@const descId = `${panelId}-skill-desc-${index}`}
+            {@const hasDescription = Boolean(skill.description)}
+            {@const fromPlugin = Boolean(skill.source && skill.source !== "default")}
+            <div class="cap-skill" class:open={openSkills.has(key)} role="listitem">
+              <button
+                class="cap-skill-head"
+                type="button"
+                disabled={!hasDescription}
+                aria-expanded={hasDescription ? openSkills.has(key) : undefined}
+                aria-describedby={hasDescription ? descId : undefined}
+                on:click={() => toggleSkill(key)}
+              >
+                {#if hasDescription}<span class="cap-skill-caret" aria-hidden="true">▸</span>{/if}
+                <span class="cap-skill-name">{skill.name}</span>
+                {#if fromPlugin}<span class="cap-skill-src">{skill.source}</span>{/if}
+              </button>
+              {#if hasDescription}<p id={descId} class="cap-skill-desc">{skill.description}</p>{/if}
+            </div>
+          {/each}
+        </div>
       {/if}
       </div>
     </div>
   </div>
 
-  <button class="cap-expand" type="button" aria-label="역량 패널 펼치기" title="역량 패널 펼치기" aria-expanded={!collapsed} on:click={() => setCollapsed(false)}>
+  <button class="cap-expand" type="button" aria-label="역량 패널 펼치기" title="역량 패널 펼치기" aria-expanded={!collapsed} aria-controls={bodyId} on:click={() => setCollapsed(false)}>
     <span aria-hidden="true">‹</span>
     <span class="cap-expand-label">아바타 역량 보기</span>
   </button>

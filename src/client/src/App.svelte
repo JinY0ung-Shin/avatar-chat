@@ -21,11 +21,16 @@
   import type { BootstrapInfo, User } from "./lib/types";
 
   let showOnboarding = false;
+  let themeWatcherInstalled = false;
 
   async function boot() {
-    try {
-      const themePref = applyTheme();
+    const themePref = applyTheme();
+    if (!themeWatcherInstalled) {
       watchSystemTheme();
+      themeWatcherInstalled = true;
+    }
+    replaceState({ booted: false, bootError: "", themePref });
+    try {
       const bootstrap = await api<BootstrapInfo>("/api/bootstrap");
       const { user } = await api<{ user: User | null }>("/api/me");
       replaceState({ bootstrap, user, booted: true, themePref, view: "explore" });
@@ -113,7 +118,10 @@
 {#if !$appState.booted}
   <div class="svelte-fallback-pad muted">불러오는 중…</div>
 {:else if $appState.bootError}
-  <div class="svelte-fallback-pad warn-box">앱을 시작하지 못했습니다: {$appState.bootError}</div>
+  <div class="svelte-fallback-pad warn-box">
+    앱을 시작하지 못했습니다: {$appState.bootError}
+    <button class="linkish" type="button" on:click={boot}>다시 시도</button>
+  </div>
 {:else if !$appState.user}
   <AuthView bootstrap={$appState.bootstrap} />
 {:else}
