@@ -1013,7 +1013,11 @@ textarea::placeholder {
   color: var(--muted);
   display: flex;
   justify-content: space-between;
-  gap: var(--s-3);
+  gap: var(--s-2) var(--s-3);
+  /* Let the meta row drop below the hint (and its controls wrap among themselves)
+     on a narrow chat column instead of spilling past the column under the side
+     panel. */
+  flex-wrap: wrap;
   min-width: 0;
   max-width: 100%;
 }
@@ -1028,14 +1032,18 @@ textarea::placeholder {
 .composer-meta {
   display: inline-flex;
   align-items: center;
-  gap: var(--s-3);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s-2) var(--s-3);
   min-width: 0;
   max-width: 100%;
 }
 .composer-controls {
   display: inline-flex;
   align-items: center;
-  gap: var(--s-3);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s-2) var(--s-3);
   min-width: 0;
   max-width: 100%;
 }

@@ -514,6 +514,12 @@
   min-width: 0;
   min-height: 0;
   display: grid;
+  /* Explicit 0-floored column: without it the implicit `auto` column sizes to the
+     content's max-content, so a long message lets the transcript/composer grow PAST
+     the column width and spill under the side panel (looks like the right side is
+     clipped, text cut mid-word instead of wrapping). minmax(0,1fr) pins the column
+     to the chat-col width and forces content to wrap. */
+  grid-template-columns: minmax(0, 1fr);
   grid-template-rows: auto minmax(0, 1fr) auto;
   background: var(--bg);
 }
