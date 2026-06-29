@@ -46,10 +46,12 @@
       /* private mode: prefs just won't persist */
     }
   }
-  // Clamp so the panel can never squeeze the chat column out (rail 248 + ~380 readable).
+  // Bound the stored/dragged width to the panel's own min/max only. CSS owns the
+  // actual fit (`.canvas-panel:not(.collapsed)` flex-shrink + the chat-col floor,
+  // and stacking on narrow viewports — #40 responsive). The old viewport-width term
+  // double-counted rail+chat against the always-present capabilities panel.
   function clampWidth(width: number): number {
-    const available = Math.max(CANVAS_WIDTH_MIN, window.innerWidth - 248 - 380);
-    return Math.min(Math.min(CANVAS_WIDTH_MAX, available), Math.max(CANVAS_WIDTH_MIN, width));
+    return Math.min(CANVAS_WIDTH_MAX, Math.max(CANVAS_WIDTH_MIN, width));
   }
   function savePanelWidth(width: number): void {
     panelWidth = clampWidth(width);

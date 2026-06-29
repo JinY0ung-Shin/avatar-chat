@@ -518,6 +518,14 @@
   background: var(--bg);
 }
 
+/* Single-pane chat keeps a real width floor so the side panels yield (shrink, then
+   stack — see #40 responsive) BEFORE the conversation is crushed or clipped. Scoped
+   to the direct child of `.chat-layout` so split panes (`.chat-workbench > .chat-col`)
+   stay at min-width:0 and 2–4 of them still fit. Released to 0 on mobile / when stacked. */
+.chat-layout > .chat-col {
+  min-width: 360px;
+}
+
 /* Capabilities panel: what the avatar can do (skills + plugins). Resizable via
    the left-edge handle, collapsible to a slim strip via the chevron buttons. */
 .cap-panel {
@@ -530,11 +538,22 @@
   flex-direction: column;
   min-height: 0;
 }
-/* On narrow desktops/tablets the panel must never squeeze the chat column out:
-   leave room for the rail (248px) plus a readable transcript (~380px). */
+/* When expanded, the panel shrinks toward its own min before the chat floor is
+   reached, so two open side panels degrade gracefully instead of overflowing.
+   Collapsed keeps `flex:none` + the 28px strip width (below), so this is scoped
+   away from `.collapsed`. */
+.cap-panel:not(.collapsed) {
+  flex: 0 1 auto;
+  min-width: 220px; /* = CAP_WIDTH_MIN */
+}
+/* `max-width: 100%` keeps the panel inside `.chat-layout` no matter how many
+   panels are open — the old `calc(100vw - 628px)` reserved rail+chat as if this
+   were the ONLY side panel, which double-counted when the canvas panel was also
+   open and pushed the last panel off the right edge. Flex-shrink + the chat-col
+   floor now own the actual fit. */
 @media (min-width: 861px) {
   .cap-panel {
-    max-width: calc(100vw - 628px);
+    max-width: 100%;
   }
 }
 
@@ -643,9 +662,15 @@ body.col-resizing {
   flex-direction: column;
   min-height: 0;
 }
+/* Shrinkable when expanded (mirrors .cap-panel) so the cap + canvas pair fits
+   before either overflows; collapsed keeps the 28px strip. */
+.canvas-panel:not(.collapsed) {
+  flex: 0 1 auto;
+  min-width: 300px; /* = CANVAS_WIDTH_MIN */
+}
 @media (min-width: 861px) {
   .canvas-panel {
-    max-width: calc(100vw - 628px);
+    max-width: 100%;
   }
 }
 .canvas-body {

@@ -52,9 +52,11 @@
   }
   .chat-layout > .chat-col {
     /* In the stacked column the chat grows; height:100% above would leave no
-       room for the panel below it. */
+       room for the panel below it. Release the desktop min-width floor so the
+       chat can shrink below 360px on narrow phones. */
     height: auto;
     flex: 1;
+    min-width: 0;
   }
   .cap-panel,
   .cap-panel.collapsed {
@@ -220,6 +222,84 @@
   }
   .composer-hint {
     margin-top: var(--s-1);
+  }
+}
+
+/* ----------------------------------------------------------------------------
+   Narrow desktop / portrait monitors (861–1180px).
+   The rail (248) + a usable chat floor (360) + BOTH side panels at their minimums
+   (cap 220 + canvas 300) = 1128px, which cannot fit side-by-side here. A pure
+   width-clamp therefore can't keep both panels expanded AND a usable chat, so when
+   the canvas panel is ALSO open we stack both panels below a full-width chat —
+   reusing the same single-column layout as the ≤860 mobile drawer. The clip is
+   structurally impossible once there is only one column.
+
+   Gated on `:has(.canvas-panel)`: the always-present capabilities panel alone still
+   fits side-by-side at these widths (chat 360 + cap ≥220 ≤ rail-less width), so it is
+   left untouched — only the two-panel case stacks. Width-keyed (not orientation) so a
+   narrow LANDSCAPE window is covered too. `.canvas-panel` exists in the DOM only while
+   a canvas is open (ChatView `{#if pane.canvases?.length}`). ---------------------- */
+@media (min-width: 861px) and (max-width: 1180px) {
+  .chat-layout:has(.canvas-panel) {
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .chat-layout:has(.canvas-panel) > .chat-col {
+    height: auto;
+    flex: 1;
+    min-width: 0;
+  }
+  .chat-layout:has(.canvas-panel) .cap-panel,
+  .chat-layout:has(.canvas-panel) .cap-panel.collapsed,
+  .chat-layout:has(.canvas-panel) .canvas-panel,
+  .chat-layout:has(.canvas-panel) .canvas-panel.collapsed {
+    width: auto !important;
+    max-width: none;
+    min-width: 0;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .chat-layout:has(.canvas-panel) .cap-panel {
+    max-height: 40%;
+  }
+  .chat-layout:has(.canvas-panel) .canvas-panel {
+    max-height: 45%;
+  }
+  .chat-layout:has(.canvas-panel) .cap-resize,
+  .chat-layout:has(.canvas-panel) .canvas-resize {
+    display: none;
+  }
+  .chat-layout:has(.canvas-panel) .cap-panel.collapsed,
+  .chat-layout:has(.canvas-panel) .canvas-panel.collapsed {
+    max-height: none;
+  }
+  .chat-layout:has(.canvas-panel) .cap-panel.collapsed .cap-body,
+  .chat-layout:has(.canvas-panel) .cap-panel.collapsed .cap-collapse,
+  .chat-layout:has(.canvas-panel) .canvas-panel.collapsed .canvas-body,
+  .chat-layout:has(.canvas-panel) .canvas-panel.collapsed .canvas-collapse {
+    display: none;
+  }
+  .chat-layout:has(.canvas-panel) .cap-panel.collapsed .cap-expand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-1-5);
+    height: 34px;
+  }
+  .chat-layout:has(.canvas-panel) .canvas-panel.collapsed .canvas-expand {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--s-1-5);
+    height: 34px;
+    writing-mode: horizontal-tb;
+  }
+  .chat-layout:has(.canvas-panel) .cap-expand .cap-expand-label,
+  .chat-layout:has(.canvas-panel) .canvas-expand .canvas-expand-label {
+    display: inline;
+    font-size: var(--t-sm);
+    font-weight: 600;
   }
 }
 
