@@ -25,6 +25,7 @@
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
+  import { nextStickBottom } from "../lib/scroll";
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
   import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
@@ -117,14 +118,11 @@
     }
   });
 
-  // Auto-scroll uses scroll DIRECTION, not a programmatic-scroll flag, to tell a
-  // genuine user scroll-up from our own auto-scroll. Only a user can DECREASE
-  // `scrollTop`; `stickToBottom` and streamed content growth never do. The old
-  // flag+rAF guard relied on the programmatic scroll's `scroll` event landing
-  // before the next frame — but under fast streaming the browser coalesces/defers
-  // scroll events, so a late one would read a stale "not near bottom" and flip
-  // `stickBottom` off for good, permanently killing auto-scroll. Tracking the last
-  // scrollTop per pane and only disengaging on a real upward move is race-free.
+  // Auto-scroll keys off scroll DIRECTION + distance-from-bottom (see
+  // `lib/scroll.ts` `nextStickBottom` for the full rationale — chiefly that the
+  // browser DECREASES scrollTop too whenever it clamps to a shrunk range, so an
+  // upward move only counts as user intent when it also lands away from bottom).
+  // We track the last scrollTop per pane as the base for the direction check.
   let lastScrollTop: Record<string, number> = {};
 
   function stickToBottom(item: ChatPane) {
@@ -587,38 +585,20 @@
     const prev = lastScrollTop[item.id];
     const top = el.scrollTop;
     lastScrollTop[item.id] = top;
-    // Disengage ONLY on a genuine user scroll-UP. Only a real gesture decreases
-    // scrollTop; our `stickToBottom` pin and streamed content-growth never do.
-    // The handler used to ALSO re-engage on any downward move / arrival at the
-    // bottom via a ternary — but that read `nearBottom` every event, and under
-    // fast SSE deltas the browser coalesces scroll events so a late one fired
-    // with a stale scrollHeight, computed `nearBottom === false`, and flipped
-    // `stickBottom` off for good. Splitting the two intents removes that race:
-    // an upward move (and ONLY that) hands control to the user; we never touch
-    // `stickBottom` on the down/grow path while still sticky, so no stale read
-    // can disengage us. A 5px deadzone (was 2px) absorbs sub-pixel jitter and
-    // any residual scroll-anchor micro-shift. Skip no-op store writes — scroll
-    // fires rapidly while streaming and updateState recomputes + notifies.
-    const scrolledUp = prev !== undefined && top < prev - 5;
-    if (scrolledUp) {
-      if (item.stickBottom) {
-        updateState((state) => {
-          const target = state.chatPanes.find((p) => p.id === item.id);
-          if (target) target.stickBottom = false;
-        });
-      }
-    } else if (item.stickBottom === false) {
-      // Already disengaged and the user is scrolling back DOWN toward the
-      // bottom — re-engage once they reach it (this is also the path the FAB's
-      // `scrollToBottom` relies on settling into).
-      const nearBottom = el.scrollHeight - top - el.clientHeight < 120;
-      if (nearBottom) {
-        updateState((state) => {
-          const target = state.chatPanes.find((p) => p.id === item.id);
-          if (target) target.stickBottom = true;
-        });
-      }
-    }
+    // Skip no-op store writes — scroll fires rapidly while streaming and
+    // updateState recomputes + notifies subscribers.
+    const next = nextStickBottom({
+      prev,
+      top,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      stickBottom: item.stickBottom,
+    });
+    if (next === null) return;
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.stickBottom = next;
+    });
   }
 
   function scrollToBottom(item: ChatPane) {

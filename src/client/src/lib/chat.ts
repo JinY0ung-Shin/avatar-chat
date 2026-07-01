@@ -477,6 +477,11 @@ export async function sendMessage(
     target.draft = "";
     resetLive(target);
     target.streaming = true;
+    // A send is an explicit "follow the response" intent, so re-arm auto-scroll
+    // even if a prior turn (or a stray scroll) had detached it — otherwise the
+    // new answer streams in off-screen. onTranscriptScroll can still disengage
+    // it the moment the user genuinely scrolls up.
+    target.stickBottom = true;
     target.liveStatus = "응답 준비 중…";
     target.abortController = controller;
   });
