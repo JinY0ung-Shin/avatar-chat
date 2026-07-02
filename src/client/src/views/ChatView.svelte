@@ -25,7 +25,7 @@
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
-  import { nextStickBottom } from "../lib/scroll";
+  import { createStickController, type StickController } from "../lib/autoscroll";
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
   import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
@@ -37,7 +37,6 @@
     type McpToolGroupId,
   } from "../../../shared/mcpToolGroups";
 
-  let transcriptEls: Record<string, HTMLDivElement> = {};
   let splitAvatarId = "";
   let splitAddBusy = false;
   // Slash autocomplete: which pane it's open for + the selected index.
@@ -118,56 +117,44 @@
     }
   });
 
-  // Auto-scroll keys off scroll DIRECTION + distance-from-bottom (see
-  // `lib/scroll.ts` `nextStickBottom` for the full rationale — chiefly that the
-  // browser DECREASES scrollTop too whenever it clamps to a shrunk range, so an
-  // upward move only counts as user intent when it also lands away from bottom).
-  // We track the last scrollTop per pane as the base for the direction check.
-  let lastScrollTop: Record<string, number> = {};
+  // Auto-scroll: one StickController per pane owns ALL the mechanics — the
+  // ResizeObserver re-pins, wheel/touch/pointer gesture capture (user intent is
+  // read from INPUT events, not inferred from scroll deltas), and the
+  // scroll-event decision via `nextStickBottom`. See `lib/autoscroll.ts` for
+  // the full rationale; `stickBottom` stays in the pane store so the FAB and
+  // the send-time re-arm (lib/chat.ts) keep working unchanged.
+  const stickControllers: Record<string, StickController> = {};
 
-  function stickToBottom(item: ChatPane) {
-    const el = transcriptEls[item.id];
-    // Bail once the user has scrolled up (stickBottom===false) — even mid-stream,
-    // so a reader who scrolls back to re-read isn't yanked to the bottom by the
-    // next delta. This bail no longer risks "locking auto-scroll off for good":
-    // the false-disengage it used to guard against is gone now that the scroll
-    // container has `overflow-anchor:none` (the browser no longer repositions
-    // scrollTop behind our back) and onTranscriptScroll only disengages on a
-    // genuine upward gesture (never on a coalesced/intermediate read while sticky).
-    if (!el || item.stickBottom === false) return;
-    el.scrollTop = el.scrollHeight;
-    lastScrollTop[item.id] = el.scrollTop;
+  function stickFor(paneId: string): StickController {
+    return (stickControllers[paneId] ??= createStickController({
+      // Read/write through the LIVE store — never a captured pane snapshot, so
+      // the controller can't act on a stale stickBottom between re-renders.
+      isStuck: () => readState().chatPanes.find((p) => p.id === paneId)?.stickBottom,
+      setStuck: (next) =>
+        updateState((state) => {
+          const target = state.chatPanes.find((p) => p.id === paneId);
+          if (target && target.stickBottom !== next) target.stickBottom = next;
+        }),
+    }));
   }
 
-  afterUpdate(() => {
-    for (const item of panes) stickToBottom(item);
-  });
-
-  // `afterUpdate` only re-pins at the instant the store changes — but the
-  // streaming bubble keeps GROWING afterward: the activity tree (skills/tools
-  // loading), plugin chips, status spinner, lazy images and markdown all settle
-  // their height asynchronously, below that instant. A ResizeObserver re-pins on
-  // every content-size change (and on viewport shrink when the composer grows),
-  // so auto-scroll tracks that late growth instead of leaving the new rows just
-  // out of view — which is what made it feel like it "doesn't scroll" at all.
-  // Re-pinning only moves scrollTop down, so the direction-based handler above
-  // never mistakes it for a user scroll, and it never disturbs a user who has
-  // scrolled up (stickToBottom bails when stickBottom === false).
-  function autostick(node: HTMLElement, item: ChatPane) {
-    let current = item;
-    const inner = node.querySelector<HTMLElement>(".transcript-inner");
-    const ro = new ResizeObserver(() => stickToBottom(current));
-    ro.observe(node);
-    if (inner) ro.observe(inner);
+  // Svelte action for the `.transcript` element of one pane.
+  function transcriptStick(node: HTMLElement, paneId: string) {
+    const wired = stickFor(paneId).attach(node);
     return {
-      update(next: ChatPane) {
-        current = next;
-      },
       destroy() {
-        ro.disconnect();
+        wired.destroy();
+        delete stickControllers[paneId];
       },
     };
   }
+
+  // Re-pin on every store-driven render (new message, conversation switch —
+  // even one that doesn't change content height, which the ResizeObserver
+  // can't see). pin() bails when the user has scrolled up.
+  afterUpdate(() => {
+    for (const item of panes) stickControllers[item.id]?.pin();
+  });
 
   $: panes = $appState.chatPanes;
   $: pane = panes.find((item) => item.id === $appState.activePaneId) ?? panes[0] ?? null;
@@ -580,37 +567,8 @@
     });
   }
 
-  function onTranscriptScroll(event: Event, item: ChatPane) {
-    const el = event.currentTarget as HTMLDivElement;
-    const prev = lastScrollTop[item.id];
-    const top = el.scrollTop;
-    lastScrollTop[item.id] = top;
-    // Skip no-op store writes — scroll fires rapidly while streaming and
-    // updateState recomputes + notifies subscribers.
-    const next = nextStickBottom({
-      prev,
-      top,
-      scrollHeight: el.scrollHeight,
-      clientHeight: el.clientHeight,
-      stickBottom: item.stickBottom,
-    });
-    if (next === null) return;
-    updateState((state) => {
-      const target = state.chatPanes.find((p) => p.id === item.id);
-      if (target) target.stickBottom = next;
-    });
-  }
-
   function scrollToBottom(item: ChatPane) {
-    updateState((state) => {
-      const target = state.chatPanes.find((p) => p.id === item.id);
-      if (target) target.stickBottom = true;
-    });
-    const el = transcriptEls[item.id];
-    if (el) {
-      el.scrollTop = el.scrollHeight;
-      lastScrollTop[item.id] = el.scrollTop;
-    }
+    stickFor(item.id).jumpToBottom();
   }
 
   async function addSplitPane() {
@@ -773,13 +731,11 @@
   <div class="chat-body">
     <div
       class="transcript scroll-thin"
-      bind:this={transcriptEls[item.id]}
-      use:autostick={item}
+      use:transcriptStick={item.id}
       role="log"
       aria-live="polite"
       aria-relevant="additions"
       aria-busy={item.streaming ? "true" : "false"}
-      on:scroll={(event) => onTranscriptScroll(event, item)}
     >
       <div class="transcript-inner">
         {#if !item.messages.length && !item.streaming}

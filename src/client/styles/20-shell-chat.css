@@ -1245,6 +1245,10 @@ body.col-resizing {
      Vertical auto-scroll is unaffected once both axes are explicit. */
   overflow-x: hidden;
   overscroll-behavior: contain;
+  /* Scroll anchoring is disabled on .transcript-inner (see below); repeat it on
+     the scroller itself so any future sibling added next to .transcript-inner
+     can't silently re-enable an anchor candidate. */
+  overflow-anchor: none;
   padding: var(--s-5) var(--s-5) var(--s-6);
 }
 

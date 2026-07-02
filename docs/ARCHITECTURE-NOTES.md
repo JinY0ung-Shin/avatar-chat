@@ -610,6 +610,33 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   param-driven grow with `queueMicrotask(grow)`; keep the `input`-listener path synchronous. General rule:
   when an action must react to a programmatic value change, defer any layout read to a microtask.
 
+### Chat transcript auto-scroll (stick-to-bottom)
+- **User intent is read from INPUT events (wheel/touch/pointer), never inferred from scroll deltas.**
+  Scroll-event heuristics lost twice over: mid-stream re-pins reset the viewport between wheel notches
+  (so per-event deltas/distances never accumulate — slow trackpad drags are 1–4px/event and a single
+  notch always lands back inside any near-bottom zone), and the wheel's scroll event can coalesce with
+  our own pin into one net-downward move. That's what made auto-scroll "work sometimes" for years.
+  Mechanism (all in `lib/autoscroll.ts` `createStickController`, one per pane; decision function
+  `lib/scroll.ts` `nextStickBottom` is pure + unit-tested):
+  - wheel-up → detach SYNCHRONOUSLY (before the scroll even applies); touch drag-down > 8px → detach;
+    held pointer (scrollbar drag) or recent wheel/touch marks scroll events `userGesture`, which
+    detaches on ANY ≥1px upward move that doesn't land at the bottom.
+  - Browser range-clamps (content shrink / composer autosize growing the viewport) also decrease
+    scrollTop but always LAND at the new bottom — that landing spot is the discriminator, both for
+    detach (skip clamps) and re-engage (require top to INCREASE into the bottom zone; you can't reach
+    the bottom by scrolling up, so a clamp can never re-stick a reader).
+  - **Chromium ANIMATES wheel/keyboard scrolls**: after a re-engage/FAB-jump our pin overtakes the
+    still-flying animation, whose next frame then looks like an upward move. A 250ms grace window
+    (re-armed by down-wheels) suppresses heuristic detaches; direct input (wheel-up/touch/scrollbar)
+    bypasses it. Without this, wheeling down to the bottom re-engaged and instantly un-engaged.
+  - Nested vertical scrollers inside the transcript (`.activity-live > .agent-activity`) consume
+    wheel-up themselves while they can still scroll up — the controller walks target→transcript and
+    skips detach so the inner pane scrolls without killing the outer stick.
+  - `overflow-anchor: none` sits on BOTH `.transcript` and `.transcript-inner` (scroll anchoring would
+    silently reposition scrollTop after our pin, invisible to JS).
+  - ChatView keeps only thin wiring: `use:transcriptStick={item.id}` + `afterUpdate → pin()` + the FAB's
+    `jumpToBottom()`; `stickBottom` stays in the pane store (send re-arms it in `lib/chat.ts`).
+
 ### Split chat
 - Avatar pool = all visible avatars, duplicates allowed (multiple parallel conversations with the same
   avatar incl. your own); the only gate is the 4-pane max. User message bubbles render text directly in
@@ -658,7 +685,14 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   test, serve it (`node_modules/.bin/vite --config <fixture>/vite.config.mjs`, `configFile:false`,
   `plugins:[svelte()]`), and drive it headless to measure real DOM/layout. Clean up after: `rm -rf` the
   fixture and `npm uninstall` the playwright devDeps so `package.json`/lock stay clean. This caught the
-  `autosize` shrink-after-send fix PASSING svelte-check yet FAILING at runtime.
+  `autosize` shrink-after-send fix PASSING svelte-check yet FAILING at runtime, and the wheel-animation
+  re-engage race in the transcript auto-scroll rewrite.
+- ⚠️ **Vite full-reloads the fixture page once after a source edit** (dep re-optimize): everything you
+  `evaluate()`d before the reload — seeded DOM, started intervals, window hooks — is silently wiped while
+  the driver keeps talking to the fresh page. Warm up first: `goto` → wait ~700ms → `reload()` → then
+  run the scenario. (Symptom: assertions on state you "just set" find defaults; `[vite] connecting...`
+  appears twice with console piped.) Playwright can't synthesize scrollbar drags in headless Chromium —
+  assert that path via unit tests, and report the browser check as skipped rather than green.
 
 ---
 
