@@ -29,9 +29,6 @@ RUN sh /usr/local/bin/apt_mirror_sources.sh \
     ripgrep \
     procps \
     jq \
-  && (curl -LsSf https://astral.sh/uv/install.sh | sh \
-      && cp /root/.local/bin/uv /usr/local/bin/uv \
-      || echo "uv install skipped (no internet access)") \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/* \
   && rm -f /usr/local/bin/apt_mirror_sources.sh
@@ -76,6 +73,25 @@ RUN case "$TARGETARCH" in \
   && chmod +x /usr/local/bin/rtk \
   && rtk --version \
   && test "$(rtk rewrite 'git status && git diff')" = "rtk git status && rtk git diff"
+
+# uv/uvx (Python package + venv manager) for agent shell workflows. Same
+# pinned-GitHub-release pattern as RTK above (the previous install.sh attempt
+# silently skipped on closed networks, leaving images without uv). At RUNTIME,
+# point uv at a corporate PyPI mirror via UV_DEFAULT_INDEX / UV_INDEX in .env —
+# the whole .env reaches the container (compose env_file) and flows through the
+# server into the agent subprocess env, so `uv pip install`/`uvx` in the agent
+# shell resolve through the mirror. Bump UV_VERSION to upgrade.
+ARG UV_VERSION=0.8.17
+RUN case "$TARGETARCH" in \
+      amd64|"") UV_TARGET=x86_64-unknown-linux-musl ;; \
+      arm64)    UV_TARGET=aarch64-unknown-linux-musl ;; \
+      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+  && curl -fsSL "https://github.com/astral-sh/uv/releases/download/${UV_VERSION}/uv-${UV_TARGET}.tar.gz" \
+       | tar -xz -C /usr/local/bin --strip-components=1 "uv-${UV_TARGET}/uv" "uv-${UV_TARGET}/uvx" \
+  && chmod +x /usr/local/bin/uv /usr/local/bin/uvx \
+  && uv --version \
+  && uvx --version
 
 # Always use npm install (not npm ci) so the build doesn't fail when the lock
 # file drifts out of sync with package.json, and so a corporate mirror can
