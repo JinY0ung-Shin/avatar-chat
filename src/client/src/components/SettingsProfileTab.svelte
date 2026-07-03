@@ -271,21 +271,15 @@
   }
 
   // ---- avatar image ----
-  async function uploadImage(event: Event): Promise<void> {
-    const input = event.currentTarget as HTMLInputElement;
-    if (picBusy) {
-      input.value = "";
-      return;
-    }
-    const file = input.files?.[0];
-    if (!file) return;
+  // Shared by the file picker AND clipboard paste (Ctrl+V): resize → PUT → refresh.
+  async function applyAvatarImage(file: File): Promise<void> {
+    if (picBusy) return;
     picBusy = true;
     try {
       const image = await resizeImage(file, 256);
       await api("/api/me/avatar-image", { method: "PUT", body: JSON.stringify({ image }) });
     } catch (err) {
       notify(`사진 업로드 실패: ${(err as Error).message}`, "warn");
-      input.value = "";
       picBusy = false;
       return;
     }
@@ -295,9 +289,49 @@
     } catch (err) {
       notify(`사진은 변경했지만 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
-      input.value = "";
       picBusy = false;
     }
+  }
+
+  async function uploadImage(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    if (picBusy) {
+      input.value = "";
+      return;
+    }
+    const file = input.files?.[0];
+    if (!file) return;
+    await applyAvatarImage(file);
+    input.value = ""; // allow re-picking the same file
+  }
+
+  // First image in the clipboard, mirroring ChatView.onComposerPaste: prefer
+  // items (screenshots/copied images), fall back to files (some browsers only
+  // populate one of the two for a pasted image).
+  function pastedImageFile(clipboard: DataTransfer | null): File | null {
+    if (!clipboard) return null;
+    const fromItems = Array.from(clipboard.items || [])
+      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+      .map((it) => it.getAsFile())
+      .filter((f): f is File => Boolean(f));
+    const fromFiles = Array.from(clipboard.files || []).filter((f) => f.type.startsWith("image/"));
+    return fromItems[0] ?? fromFiles[0] ?? null;
+  }
+
+  // Ctrl+V anywhere on the profile tab registers a copied image as the avatar
+  // photo. Gated on `active` (the tab is always mounted — see SettingsView) and
+  // careful not to hijack an intended TEXT paste into a form field; an
+  // image-only clipboard pastes nothing into fields, so taking it is safe.
+  function onWindowPaste(event: ClipboardEvent): void {
+    if (!active || picBusy) return;
+    const file = pastedImageFile(event.clipboardData);
+    if (!file) return;
+    const target = event.target as HTMLElement | null;
+    const inField = Boolean(target?.closest?.("input, textarea, [contenteditable]"));
+    const hasText = Boolean(event.clipboardData?.getData("text/plain"));
+    if (inField && hasText) return;
+    event.preventDefault();
+    void applyAvatarImage(file);
   }
 
   async function deleteImage(): Promise<void> {
@@ -346,18 +380,21 @@
   }
 </script>
 
+<svelte:window on:paste={onWindowPaste} />
+
 {#if active && user}
   <section class="settings-card">
     <div class="settings-head">
       <div class="pic-edit">
         <AvatarImage {user} size={96} alt="내 아바타 사진" />
-        <button class="pic-cam" type="button" aria-label="사진 변경" title="사진 변경" disabled={picBusy} on:click={() => fileInput?.click()}>
+        <button class="pic-cam" type="button" aria-label="사진 변경" title="사진 변경 (복사한 이미지는 Ctrl+V로도 등록돼요)" disabled={picBusy} on:click={() => fileInput?.click()}>
           <Icon name="camera" />
         </button>
         <input bind:this={fileInput} type="file" accept="image/png,image/jpeg,image/webp" hidden on:change={uploadImage} />
         {#if user.hasImage}
           <button class="linkish small" type="button" disabled={picBusy} on:click={deleteImage}>사진 삭제</button>
         {/if}
+        <span class="muted pic-paste-hint">{picBusy ? "사진 등록 중…" : "복사한 이미지를 Ctrl+V로 붙여넣어도 돼요"}</span>
       </div>
       <div class="settings-id">
         <h3>{user.displayName}</h3>
@@ -449,6 +486,11 @@
 {/if}
 
 <style>
+  .pic-paste-hint {
+    font-size: 11px;
+    text-align: center;
+    max-width: 140px;
+  }
   .shared-account-item {
     display: flex;
     align-items: flex-start;
