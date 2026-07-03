@@ -302,10 +302,24 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   `.mcp.json` servers itself through `plugins.liftPluginMcpServers` (both the `{"mcpServers":{…}}` wrapper
   and the legacy flat shape parse). OWNED roots (the avatar's own plugin clones + personal knowledge repo)
   get `mcpInjectableSecretEnv` (vault minus git-credential + SSH names); group/default roots are lifted
-  verbatim with NO secrets (a group teammate's `.mcp.json` must not read your vault).
+  verbatim with NO secrets (a group teammate's `.mcp.json` must not read your vault). **Injection is
+  additionally gated on `elevatedToolAccess`** (owner or trusted teammate; same line Confluence draws for
+  the owner's PAT): plugin servers can't self-gate per viewer and the PreToolUse hook auto-allows every
+  `mcp__*`, so REGISTRATION is the gate — plain-colleague and restricted-headless runs get the servers
+  credential-less (pre-lift parity), never with the vault.
   `${CLAUDE_PLUGIN_ROOT}` is expanded app-side (the CLI no longer sees the plugin origin); first
   definition of a name wins (load order default → avatar plugins → knowledge repo → group), and app
   in-process servers spread after the lifted map so app names always win.
+- **Per-secret AGENT-SHELL exposure (opt-in):** `user_secrets.shell_expose` (0 default) — toggled per key
+  via `PATCH /api/me/secrets/:name {shellExpose}` (셸 노출 checkbox in the 시크릿 card; hidden for reserved
+  names via the client-imported `secretPolicy.isShellExposableSecret`). Flagged values merge into
+  `options.env` on ELEVATED runs only, so `$NAME` works in Bash; the **PostToolUse hook
+  (`postToolUseHook.ts`, SDK `updatedToolOutput`) redacts every injectable value from every tool output**
+  (`[REDACTED:<NAME>]`, values ≥6 chars) before the model sees it — accident prevention, not containment
+  (a prompted model could re-encode a value it can use). Because the CLI env is inherited by every
+  CLI-spawned server, non-owned lifted MCP servers get the shell-exposed names BLANKED
+  (`liftPluginMcpServers` `maskEnvNames`). Reserved git/SSH names live in `secretPolicy.ts` (leaf module,
+  shared with the client; a unit test pins it to the gitCredentials constants).
 - **⚠️ MCP secret TRANSPORT is a one-shot file + wrapper, NEVER the server definition.** The SDK
   serializes `options.mcpServers` into the CLI's `--mcp-config` ARGV, and argv is world-readable via
   `/proc/<pid>/cmdline` — the agent's own Bash is a child of that CLI (`cat /proc/$PPID/cmdline`). So

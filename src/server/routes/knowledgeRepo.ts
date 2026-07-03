@@ -7,6 +7,7 @@ import { isInternalGitSource } from "../gitCredentials.js";
 import { ensureClone, knowledgeRepoContextFor, readFile } from "../knowledgeRepo.js";
 import { buildKnowledgeGraph, isVaultNotePath } from "../knowledgeGraph.js";
 import { generateSshKeyPair, deriveSshPublicKey } from "../sshIdentity.js";
+import { isShellExposableSecret } from "../secretPolicy.js";
 import {
   apiError,
   looksLikeRepo,
@@ -99,6 +100,30 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
     const name = String(req.params.name || "");
     store.deleteUserSecret(req.user!.id, name);
     logger.info({ userId: req.user!.id, name }, "user secret cleared");
+    res.json({ user: store.getUserById(req.user!.id) });
+  });
+
+  // Per-secret agent-shell exposure toggle (value untouched — the value is
+  // write-only via PUT). Reserved git/SSH names have dedicated routing and can
+  // never be shell-exposed.
+  router.patch("/api/me/secrets/:name", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const name = String(req.params.name || "");
+    if (typeof req.body?.shellExpose !== "boolean") {
+      apiError(res, 400, "shellExpose(boolean)를 보내 주세요.");
+      return;
+    }
+    if (!isShellExposableSecret(name)) {
+      apiError(res, 400, "이 시크릿은 전용 경로로만 사용되어 셸에 노출할 수 없습니다.");
+      return;
+    }
+    if (!store.setSecretShellExpose(req.user!.id, name, req.body.shellExpose)) {
+      apiError(res, 404, "등록되지 않은 시크릿입니다.");
+      return;
+    }
+    logger.info(
+      { userId: req.user!.id, name, shellExpose: req.body.shellExpose },
+      "user secret shell exposure toggled",
+    );
     res.json({ user: store.getUserById(req.user!.id) });
   });
 

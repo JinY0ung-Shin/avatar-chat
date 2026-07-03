@@ -1145,6 +1145,29 @@ describe("group trust & visibility", () => {
     expect(store.updateProfile(ownerId, { experimentalFeatures: [] }).experimentalFeatures).toEqual([]);
   });
 
+  // ---- per-secret shell exposure ----
+  it("secret shell exposure defaults off, toggles per key, and dies with the secret", () => {
+    const { store, ownerId } = makeStore("se1");
+    store.setUserSecret(ownerId, "MY_API_KEY", "v1");
+    store.setUserSecret(ownerId, "OTHER", "v2");
+    expect(store.listShellExposedSecretNames(ownerId)).toEqual([]);
+    expect(store.getUserById(ownerId)?.shellExposedSecretNames).toEqual([]);
+    expect(store.setSecretShellExpose(ownerId, "MY_API_KEY", true)).toBe(true);
+    expect(store.listShellExposedSecretNames(ownerId)).toEqual(["MY_API_KEY"]);
+    expect(store.getUserById(ownerId)?.shellExposedSecretNames).toEqual(["MY_API_KEY"]);
+    // Replacing the value keeps the flag; toggling off removes it.
+    store.setUserSecret(ownerId, "MY_API_KEY", "v1b");
+    expect(store.listShellExposedSecretNames(ownerId)).toEqual(["MY_API_KEY"]);
+    expect(store.setSecretShellExpose(ownerId, "MY_API_KEY", false)).toBe(true);
+    expect(store.listShellExposedSecretNames(ownerId)).toEqual([]);
+    // Unknown secret → false (nothing to flag).
+    expect(store.setSecretShellExpose(ownerId, "NOPE", true)).toBe(false);
+    // Deleting the secret clears the exposure with it.
+    store.setSecretShellExpose(ownerId, "OTHER", true);
+    store.deleteUserSecret(ownerId, "OTHER");
+    expect(store.listShellExposedSecretNames(ownerId)).toEqual([]);
+  });
+
   // ---- shared (communal) account ----
   it("sharedAccount defaults off, round-trips through updateProfile, and reads via isSharedAccount", () => {
     const { store, ownerId } = makeStore("sa1");

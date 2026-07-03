@@ -139,6 +139,34 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
     }
 
     /**
+     * Names of the secrets the user opted into AGENT-SHELL exposure for
+     * (per-secret `shell_expose` toggle). The injection site additionally
+     * filters through `mcpInjectableSecretEnv`, so a reserved git/SSH name
+     * never ships even if its flag were somehow set.
+     */
+    listShellExposedSecretNames(userId: string): string[] {
+      const rows = this.db
+        .prepare(
+          "SELECT name FROM user_secrets WHERE user_id = ? AND shell_expose = 1 ORDER BY name",
+        )
+        .all(userId) as { name: string }[];
+      return rows.map((r) => r.name);
+    }
+
+    /**
+     * Toggle a stored secret's agent-shell exposure. Returns false when the
+     * secret doesn't exist (the flag rides the secret row; value untouched).
+     */
+    setSecretShellExpose(userId: string, name: string, expose: boolean): boolean {
+      const result = this.db
+        .prepare(
+          "UPDATE user_secrets SET shell_expose = ? WHERE user_id = ? AND name = ?",
+        )
+        .run(expose ? 1 : 0, userId, name);
+      return result.changes > 0;
+    }
+
+    /**
      * Decrypt all of the user's secrets into a name→value map for server-side use
      * (injected as MCP subprocess env). Undecryptable entries (e.g. after a
      * SESSION_SECRET change) are skipped. This is the ONLY path the plaintext

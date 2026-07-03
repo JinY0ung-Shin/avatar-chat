@@ -5,6 +5,7 @@
   import { appState, notify, readState, replaceState } from "../lib/state";
   import { copyText } from "../lib/dom";
   import { EXPERIMENTAL_FEATURES } from "../../../server/experimentalFeatures";
+  import { isShellExposableSecret } from "../../../server/secretPolicy";
   import type { User } from "../lib/types";
 
   export let active = false;
@@ -63,6 +64,31 @@
 
   // experimental features (#50)
   let experimentalBusy = "";
+
+  // per-secret agent-shell exposure toggle
+  let shellExposeBusy = "";
+
+  async function toggleShellExpose(name: string, on: boolean): Promise<void> {
+    if (shellExposeBusy) return;
+    shellExposeBusy = name;
+    try {
+      const { user: next } = await api<{ user: User }>(`/api/me/secrets/${encodeURIComponent(name)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ shellExpose: on }),
+      });
+      replaceState({ user: next });
+      notify(
+        on
+          ? `${name} 시크릿을 에이전트 셸에 노출합니다. 다음 대화부터 명령에서 $${name}으로 쓸 수 있어요.`
+          : `${name} 시크릿의 셸 노출을 껐습니다.`,
+        "ok",
+      );
+    } catch (err) {
+      notify(`셸 노출 설정 변경 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      shellExposeBusy = "";
+    }
+  }
   const identityStatusId = "access-git-identity-status";
   const internalStatusId = "access-internal-token-status";
   const externalStatusId = "access-external-token-status";
@@ -71,6 +97,7 @@
 
   $: user = $appState.user;
   $: enabledExperimental = new Set(user?.experimentalFeatures || []);
+  $: shellExposed = new Set(user?.shellExposedSecretNames || []);
   $: sshStatus = sshBusy
     ? "SSH 키를 생성하는 중입니다."
     : sshError
@@ -473,7 +500,7 @@
     <div class="panel-section-head">
       <div>
         <h3>시크릿</h3>
-        <p class="muted">내 아바타의 도구에만 주입되는 비밀값입니다. 암호화되어 저장되고 아바타에게도 값 자체는 보이지 않으며(셸/Bash에 노출되지 않음), 다시 표시되지 않습니다. 직접 등록한 플러그인·지식 저장소의 <code>.mcp.json</code> 커스텀 MCP 서버에는 시크릿이 환경변수로 주입됩니다 — 단, GIT_TOKEN·GITHUB_TOKEN·SSH 계열은 전용 경로로만 쓰이고, 그룹 저장소의 MCP 서버에는 주입되지 않아요. 신뢰할 수 있는 플러그인만 사용하세요.</p>
+        <p class="muted">내 아바타의 도구에만 주입되는 비밀값입니다. 암호화되어 저장되고 다시 표시되지 않습니다. 직접 등록한 플러그인·지식 저장소의 <code>.mcp.json</code> 커스텀 MCP 서버에는 시크릿이 환경변수로 주입되고(본인 또는 같은 그룹 팀원과의 대화에서만), <strong>셸 노출</strong>을 켠 시크릿은 아바타의 셸(Bash)에서도 <code>$이름</code>으로 쓸 수 있어요 — 도구 출력에 값이 나타나면 자동으로 가려지지만, 노출을 켠 키는 아바타가 사용할 수 있게 된다는 뜻이니 필요한 키만 켜세요. GIT_TOKEN·GITHUB_TOKEN·SSH 계열은 전용 경로로만 쓰이며 셸 노출이 불가하고, 그룹 저장소의 MCP 서버와 일반 사용자와의 대화에는 어떤 시크릿도 주입되지 않습니다.</p>
       </div>
     </div>
 
@@ -503,6 +530,17 @@
           ></textarea>
           <div class="secret-preset-actions">
             <span id={presetStatusId} class="settings-save-status" class:dirty={Boolean(presetErrors[preset.name]) || presetFilled[preset.name]} role="status" aria-live="polite">{presetStatusText[preset.name]}</span>
+            {#if isSet && isShellExposableSecret(preset.name)}
+              <label class="shell-expose-toggle" title="켜면 이 값이 아바타의 셸(Bash) 환경변수로도 주입됩니다 (본인·신뢰 팀원 대화에서만, 도구 출력에서는 자동 가려짐)">
+                <input
+                  type="checkbox"
+                  checked={shellExposed.has(preset.name)}
+                  disabled={shellExposeBusy === preset.name}
+                  on:change={(event) => toggleShellExpose(preset.name, event.currentTarget.checked)}
+                />
+                <span class="muted">셸 노출</span>
+              </label>
+            {/if}
             <button class="primary" type="submit" disabled={presetBusy[preset.name] || !presetFilled[preset.name]}>{isSet ? "교체" : "저장"}</button>
             <button class="linkish small" type="button" disabled={!isSet || presetBusy[preset.name]} on:click={() => clearPresetSecret(preset.name, preset.label)}>삭제</button>
           </div>
@@ -541,6 +579,17 @@
           <div class="secret-row">
             <code>{name}</code>
             <span class="muted token-set">● 설정됨</span>
+            {#if isShellExposableSecret(name)}
+              <label class="shell-expose-toggle" title="켜면 이 값이 아바타의 셸(Bash) 환경변수로도 주입됩니다 (본인·신뢰 팀원 대화에서만, 도구 출력에서는 자동 가려짐)">
+                <input
+                  type="checkbox"
+                  checked={shellExposed.has(name)}
+                  disabled={shellExposeBusy === name}
+                  on:change={(event) => toggleShellExpose(name, event.currentTarget.checked)}
+                />
+                <span class="muted">셸 노출</span>
+              </label>
+            {/if}
             <button class="linkish small" type="button" aria-label={`시크릿 삭제: ${name}`} disabled={extraDeleting[name]} on:click={() => deleteExtraSecret(name)}>삭제</button>
           </div>
         {/each}
@@ -576,6 +625,13 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+  }
+  .shell-expose-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+    white-space: nowrap;
   }
   .experimental-badge {
     font-size: 0.65rem;

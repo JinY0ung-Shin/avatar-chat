@@ -176,6 +176,34 @@ describe("noah-almighty platform", () => {
     expect(ignored.body.user.sharedAccount).toBe(true);
   });
 
+  it("toggles per-secret shell exposure via PATCH /api/me/secrets/:name", async () => {
+    const app = testApp();
+    const agent = request.agent(app);
+    await signup(agent, "sally").expect(201);
+    await agent.put("/api/me/secrets/MY_API_KEY").send({ value: "v" }).expect(200);
+
+    // Toggle on → reflected in shellExposedSecretNames; off → removed.
+    const on = await agent
+      .patch("/api/me/secrets/MY_API_KEY")
+      .send({ shellExpose: true })
+      .expect(200);
+    expect(on.body.user.shellExposedSecretNames).toEqual(["MY_API_KEY"]);
+    const off = await agent
+      .patch("/api/me/secrets/MY_API_KEY")
+      .send({ shellExpose: false })
+      .expect(200);
+    expect(off.body.user.shellExposedSecretNames).toEqual([]);
+
+    // Guards: non-boolean body, reserved names, unknown secrets.
+    await agent.patch("/api/me/secrets/MY_API_KEY").send({ shellExpose: "y" }).expect(400);
+    await agent.put("/api/me/secrets/SSH_PRIVATE_KEY").send({ value: "k" }).expect(200);
+    await agent
+      .patch("/api/me/secrets/SSH_PRIVATE_KEY")
+      .send({ shellExpose: true })
+      .expect(400);
+    await agent.patch("/api/me/secrets/UNSET_NAME").send({ shellExpose: true }).expect(404);
+  });
+
   it("supports plugin add / list / delete", async () => {
     const app = testApp();
     const agent = request.agent(app);

@@ -37,6 +37,8 @@ export interface OwnerState {
   gitTokenSet: boolean;
   /** Names of the owner's configured secret-tab env vars (values never included). */
   secretNames: string[];
+  /** Subset of `secretNames` opted into agent-shell exposure (per-key toggle). */
+  shellExposedSecretNames: string[];
   /** Groups the owner belongs to, with role + shared-repo flag per group. */
   groups: UserGroupMembership[];
   /** Number of general (work/code) git repos the owner has registered. */
@@ -71,6 +73,7 @@ export function summarizeOwnerState(
     knowledgeRepo: { repo: knowledgeRepo.repo, branch: knowledgeRepo.branch },
     gitTokenSet: Boolean(store.getGitToken(avatarUserId)),
     secretNames: store.listUserSecretNames(avatarUserId),
+    shellExposedSecretNames: store.listShellExposedSecretNames(avatarUserId),
     groups: store.listUserGroups(avatarUserId),
     // Lazy: only describe_system reads these; the buildPrompt/runClaudeAgent path
     // never accesses them, so defer the store queries until a consumer reads them.

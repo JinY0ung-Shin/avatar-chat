@@ -69,6 +69,15 @@ import {
   submitResponse,
 } from "../src/server/agent/runRegistry.js";
 import {
+  buildPostToolUseHook,
+  redactSecretValues,
+} from "../src/server/agent/postToolUseHook.js";
+import {
+  GIT_CREDENTIAL_ENV_NAMES,
+  SSH_MCP_SECRET_ENV_NAMES,
+  isShellExposableSecret,
+} from "../src/server/secretPolicy.js";
+import {
   agentSubprocessEnv,
   buildModelFallbackChain,
   buildPreToolUseHook,
@@ -1049,6 +1058,9 @@ describe("plugin MCP server lift (secret injection)", () => {
       avatarUserId: uid,
       config: cfg,
       secretWrapper,
+      // Shell-exposed names ride the CLI env (inherited by every server) —
+      // non-owned servers must get them blanked.
+      maskEnvNames: ["MY_API_KEY"],
     });
 
     // Owned stdio server: rewritten through the wrapper — plugin-root expanded,
@@ -1073,8 +1085,9 @@ describe("plugin MCP server lift (secret injection)", () => {
     expect(JSON.stringify(servers)).not.toContain("vault-value");
     // Owned but non-stdio: lifted verbatim, never wrapped.
     expect(servers.remote).toEqual({ type: "http", url: "https://mcp.example.com" });
-    // Group root: lifted so it still loads, but NEVER wrapped with secrets.
-    expect(servers.team).toEqual({ command: "node", env: { A: "1" } });
+    // Group root: still loads, never wrapped — and inherited shell-exposed
+    // names are BLANKED so it can't read them from the CLI env.
+    expect(servers.team).toEqual({ command: "node", env: { A: "1", MY_API_KEY: "" } });
   });
 
   it("lifts without wrapping when there are no injectable secrets", async () => {
@@ -1104,6 +1117,51 @@ describe("plugin MCP server lift (secret injection)", () => {
       secretWrapper: null,
     });
     expect(servers.corp.command).toBe("mine");
+  });
+
+  it("secretPolicy reserved lists stay in sync with the gitCredentials constants", () => {
+    expect(GIT_CREDENTIAL_ENV_NAMES).toContain(INTERNAL_GIT_TOKEN_SECRET_NAME);
+    expect(GIT_CREDENTIAL_ENV_NAMES).toContain(EXTERNAL_GIT_TOKEN_SECRET_NAME);
+    for (const name of [...GIT_CREDENTIAL_ENV_NAMES, ...SSH_MCP_SECRET_ENV_NAMES]) {
+      expect(isShellExposableSecret(name)).toBe(false);
+    }
+    expect(isShellExposableSecret("MY_API_KEY")).toBe(true);
+    expect(isShellExposableSecret("CONFLUENCE_PAT")).toBe(true);
+  });
+
+  it("redacts secret values from tool outputs (strings, nested, arrays) and skips short values", () => {
+    const secrets = { MY_API_KEY: "vault-value-123", TINY: "ab" };
+    const { value, changed } = redactSecretValues(
+      {
+        stdout: "token=vault-value-123 done",
+        nested: { list: ["ok", "prefix vault-value-123 suffix"], n: 42 },
+        clean: "nothing here ab", // TINY is below the length floor — untouched
+      },
+      secrets,
+    );
+    expect(changed).toBe(true);
+    expect(value).toEqual({
+      stdout: "token=[REDACTED:MY_API_KEY] done",
+      nested: { list: ["ok", "prefix [REDACTED:MY_API_KEY] suffix"], n: 42 },
+      clean: "nothing here ab",
+    });
+    // Unchanged input comes back as-is (identity), so the hook can no-op.
+    const clean = redactSecretValues({ stdout: "all clear" }, secrets);
+    expect(clean.changed).toBe(false);
+  });
+
+  it("buildPostToolUseHook rewrites tool_response only when a value leaked", async () => {
+    const hook = buildPostToolUseHook({ MY_API_KEY: "vault-value-123" });
+    const leaked = await hook({
+      tool_name: "Bash",
+      tool_response: { stdout: "vault-value-123", stderr: "" },
+    });
+    expect(leaked.hookSpecificOutput?.updatedToolOutput).toEqual({
+      stdout: "[REDACTED:MY_API_KEY]",
+      stderr: "",
+    });
+    const clean = await hook({ tool_name: "Bash", tool_response: { stdout: "ok" } });
+    expect(clean).toEqual({});
   });
 
   it("mcpInjectableSecretEnv drops git-credential and SSH names, keeps the rest", () => {
@@ -2698,6 +2756,26 @@ describe("buildPrompt", () => {
     );
     expect(shared).toContain("brain-ingest");
     expect(shared).not.toContain("is owner-only, so do not attempt those");
+  });
+
+  it("tells the owner which secrets are shell-exposed (and that outputs are redacted)", () => {
+    const exposed = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        secretNames: ["MY_API_KEY", "OTHER"],
+        shellExposedSecretNames: ["MY_API_KEY"],
+      }),
+      0,
+    );
+    expect(exposed).toContain("exported into your Bash shell environment");
+    expect(exposed).toContain("`MY_API_KEY`");
+    expect(exposed).toContain("REDACTED from tool outputs");
+    // Without any exposed key the prompt says so (and points at the toggle).
+    const none = buildPrompt(
+      req({ viewerIsOwner: true, secretNames: ["MY_API_KEY"] }),
+      0,
+    );
+    expect(none).toContain("None of them are exported into your Bash shell");
   });
 
   it("surfaces the shared-account flag to the owner as self-state", () => {

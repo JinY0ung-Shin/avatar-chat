@@ -226,6 +226,12 @@ export async function liftPluginMcpServers(
     avatarUserId: string;
     config: AppConfig;
     secretWrapper: McpSecretWrapper | null;
+    /**
+     * Env names to BLANK (`""`) on non-owned stdio servers. Shell-exposed
+     * secrets live in the CLI subprocess env, which every CLI-spawned server
+     * inherits — group/default servers must not see those values.
+     */
+    maskEnvNames?: string[];
   },
 ): Promise<{ servers: Record<string, PluginMcpServerDef>; secretFiles: string[] }> {
   const servers: Record<string, PluginMcpServerDef> = {};
@@ -257,6 +263,12 @@ export async function liftPluginMcpServers(
         }
       }
       const type = typeof def.type === "string" ? def.type : "stdio";
+      if (!owned && type === "stdio" && opts.maskEnvNames?.length) {
+        def.env = {
+          ...(def.env && typeof def.env === "object" ? (def.env as object) : {}),
+          ...Object.fromEntries(opts.maskEnvNames.map((n) => [n, ""])),
+        };
+      }
       if (
         owned &&
         type === "stdio" &&

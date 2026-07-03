@@ -16,9 +16,9 @@ import type { AgentEvents } from "./events.js";
 import logger from "../logger.js";
 import { knownHostsPath } from "../sshTrust.js";
 import {
-  EXTERNAL_GIT_TOKEN_SECRET_NAME,
-  INTERNAL_GIT_TOKEN_SECRET_NAME,
-} from "../gitCredentials.js";
+  GIT_CREDENTIAL_ENV_NAMES,
+  SSH_MCP_SECRET_ENV_NAMES,
+} from "../secretPolicy.js";
 import {
   HEX_SSH_SERVER_NAME,
   allowedHexSshToolsForViewer,
@@ -43,6 +43,7 @@ import {
   rewriteBashCommandWithRtk,
   TASK_ORCHESTRATION_TOOLS,
 } from "./preToolUseHook.js";
+import { buildPostToolUseHook } from "./postToolUseHook.js";
 import {
   createLoopState,
   extractMainAssistantText,
@@ -75,22 +76,6 @@ export {
 export { interpretResult, resultErrorMessage } from "./sdkMessageHandlers.js";
 
 const agentLogger = logger.child({ module: "agent" });
-const GIT_CREDENTIAL_ENV_NAMES = [
-  INTERNAL_GIT_TOKEN_SECRET_NAME,
-  EXTERNAL_GIT_TOKEN_SECRET_NAME,
-  "GH_TOKEN",
-  "GH_ENTERPRISE_TOKEN",
-  "GITHUB_ENTERPRISE_TOKEN",
-] as const;
-const SSH_MCP_SECRET_ENV_NAMES = [
-  "SSH_PRIVATE_KEY",
-  "SSH_PASSPHRASE",
-  "SSH_PASSWORD",
-  "SSH_USER",
-  "SSH_USERNAME",
-  "ALLOWED_HOSTS",
-  "ALLOWED_HOST_FINGERPRINTS",
-] as const;
 
 export function withoutGitCredentialEnv(
   env: Record<string, string | undefined>,
@@ -683,6 +668,20 @@ export async function runClaudeAgent(
   const mcpRunId = randomUUID();
   sweepStaleMcpSecretFiles(mcpSecretsDir);
   const injectableSecretEnv = mcpInjectableSecretEnv(ownerSecrets);
+  // Per-key shell exposure: only the secrets the owner individually toggled
+  // (`user_secrets.shell_expose`) export into the agent shell env, and only on
+  // ELEVATED runs — the same viewer line as the MCP injection, so a plain
+  // colleague's Bash stays secret-free. Reserved git/SSH names are already
+  // absent from injectableSecretEnv regardless of the flag.
+  const shellSecretEnv: Record<string, string> = {};
+  if (elevatedToolAccess) {
+    for (const name of ownerState.shellExposedSecretNames) {
+      const value = injectableSecretEnv[name];
+      if (value !== undefined) {
+        shellSecretEnv[name] = value;
+      }
+    }
+  }
   // Plugin-defined MCP servers (each root's `.mcp.json`): the APP registers
   // them (strictMcpConfig below stops the CLI from auto-spawning duplicates),
   // so the owner's secret vault — minus the reserved git/SSH names — can reach
@@ -693,14 +692,25 @@ export async function runClaudeAgent(
     {
       avatarUserId: request.avatar.id,
       config,
+      // Secrets ride only on ELEVATED runs (owner or trusted same-group
+      // teammate, incl. owner-scheduled routines) — the exact line the
+      // Confluence tools draw for the owner's PAT. Plugin servers are
+      // third-party processes that cannot self-gate per viewer, and the
+      // PreToolUse hook auto-allows every mcp__* call, so REGISTRATION is the
+      // gate: a plain colleague or a restricted headless run still gets the
+      // servers, but credential-less (the pre-lift CLI behavior).
       secretWrapper:
-        Object.keys(injectableSecretEnv).length > 0
+        elevatedToolAccess && Object.keys(injectableSecretEnv).length > 0
           ? {
               scriptPath: mcpSecretWrapperPath,
               secretsDir: mcpSecretsDir,
               runId: mcpRunId,
             }
           : null,
+      // Shell-exposed values live in the CLI subprocess env (options.env
+      // below), which every CLI-spawned server INHERITS — blank them on
+      // non-owned (group/default) servers so those never see the vault.
+      maskEnvNames: Object.keys(shellSecretEnv),
     },
   );
   const liftedPluginMcpServers = lifted.servers;
@@ -863,7 +873,14 @@ export async function runClaudeAgent(
   // auth/proxy settings, but strip git credentials: git auth is only available
   // through the app-managed in-process MCP bridge.
   fs.mkdirSync(config.agentSessionsDir, { recursive: true });
-  options.env = agentSubprocessEnv(process.env, config.agentSessionsDir);
+  options.env = {
+    ...agentSubprocessEnv(process.env, config.agentSessionsDir),
+    // Per-key OPT-IN shell exposure (elevated runs only): `$NAME` works in
+    // Bash and in anything the CLI spawns. The PostToolUse hook below redacts
+    // these values from every tool output before the model sees it, and
+    // non-owned lifted MCP servers get them blanked (maskEnvNames above).
+    ...shellSecretEnv,
+  };
   // Subscription auth: when no ANTHROPIC_API_KEY is configured, fall back to the
   // admin-pasted `claude setup-token` token (stored encrypted in app_config),
   // injecting it as CLAUDE_CODE_OAUTH_TOKEN. Precedence is API key (.env) > stored
@@ -925,6 +942,13 @@ export async function runClaudeAgent(
   // PreToolUse hook: enforcement + interactivity. Runs in-process, so it can call
   // straight into the events sink and await the user.
   if (events) {
+    // Redaction set: every injectable value that can actually reach a process
+    // this run (shell-exposed env and/or the plugin-MCP wrapper files). Tool
+    // outputs echoing one of these come back `[REDACTED:<NAME>]`.
+    const redactSecretEnv =
+      Object.keys(shellSecretEnv).length > 0 || lifted.secretFiles.length > 0
+        ? injectableSecretEnv
+        : {};
     options.hooks = {
       PreToolUse: [
         {
@@ -946,6 +970,13 @@ export async function runClaudeAgent(
           ],
         },
       ],
+      ...(Object.keys(redactSecretEnv).length > 0
+        ? {
+            PostToolUse: [
+              { hooks: [buildPostToolUseHook(redactSecretEnv)] },
+            ],
+          }
+        : {}),
     };
   }
 
@@ -979,6 +1010,9 @@ export async function runClaudeAgent(
   const promptRequest: AgentRequest = {
     ...request,
     secretNames: ownerToolAccess ? ownerState.secretNames : [],
+    shellExposedSecretNames: ownerToolAccess
+      ? ownerState.shellExposedSecretNames
+      : [],
     knowledgeRepoConfigured,
     // Shared-account self-state rides on EVERY viewer class (it is not a secret):
     // the teammate branch switches its repo guidance to "writes allowed" on it,

@@ -266,14 +266,25 @@ function groupsSection(request: AgentRequest): string | null {
 }
 
 /** Configured secret-NAMES section (owner prompt). Returns null when none. */
-function secretsSection(secretNames: string[]): string | null {
+function secretsSection(
+  secretNames: string[],
+  shellExposedSecretNames: string[] = [],
+): string | null {
   if (secretNames.length === 0) {
     return null;
   }
+  const shellExposed = shellExposedSecretNames.filter((name) =>
+    secretNames.includes(name),
+  );
+  const shellNote =
+    shellExposed.length > 0
+      ? ` Of these, ${shellExposed.map((name) => `\`${name}\``).join(", ")} ${shellExposed.length === 1 ? "is" : "are"} ALSO exported into your Bash shell environment (per-key opt-in by the owner): use them as \`$NAME\` inside commands. Their values are automatically REDACTED from tool outputs — never echo, print, or paste a secret value; reference it only by \`$NAME\`.`
+      : " None of them are exported into your Bash shell (the owner can enable per-secret shell exposure with the 셸 노출 toggle in Settings).";
   return (
     "Environment-variable names registered in the **Secrets** tab of Settings: " +
     secretNames.map((name) => `\`${name}\``).join(", ") +
-    ". You cannot see the values; do not output or guess them (they are never present in your Bash shell). The server injects them where they are needed: custom secrets are provided as environment variables to the MCP servers registered by YOUR OWN plugins/knowledge repo (`.mcp.json`), while git credentials (`GIT_TOKEN`/`GITHUB_TOKEN`), SSH material, and the Confluence PAT flow only into their dedicated built-in tools. MCP servers from group repositories never receive these secrets."
+    ". You cannot read the values; do not output or guess them. The server injects them where they are needed: custom secrets are provided as environment variables to the MCP servers registered by YOUR OWN plugins/knowledge repo (`.mcp.json`), while git credentials (`GIT_TOKEN`/`GITHUB_TOKEN`) and SSH material flow only into their dedicated built-in tools. MCP servers from group repositories never receive these secrets." +
+    shellNote
   );
 }
 
@@ -640,7 +651,10 @@ export function buildSystemPromptAppend(
     if (groupBlock) {
       lines.push(groupBlock);
     }
-    const secretsBlock = secretsSection(secretNames);
+    const secretsBlock = secretsSection(
+      secretNames,
+      request.shellExposedSecretNames ?? [],
+    );
     if (secretsBlock) {
       lines.push(secretsBlock);
     }

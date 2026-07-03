@@ -504,6 +504,11 @@ export class StoreBase {
     // repo (write/delete/move/scaffold/commit). Repo creation/connection settings
     // stay owner-only. Widens ONLY the repo-write tool gate (repoTools.ts).
     this.addColumnIfMissing("users", "shared_account", "INTEGER DEFAULT 0");
+    // Per-secret shell exposure opt-in: when 1, this secret is ALSO exported
+    // into the agent shell env on elevated runs (values are redacted from tool
+    // outputs by the PostToolUse hook). OFF by default; reserved git/SSH names
+    // never ship regardless (secretPolicy.ts).
+    this.addColumnIfMissing("user_secrets", "shell_expose", "INTEGER DEFAULT 0");
     // When the user dismissed first-run onboarding (ISO timestamp); NULL = not yet.
     // Server-persisted so the welcome modal shows ONCE per account instead of every
     // login (the old localStorage flag re-fired on each new browser / cleared store).
@@ -820,6 +825,7 @@ export interface StoreBase {
   toUser(row: UserRow): User;
   rolesFor(userId: string): string[];
   listUserSecretNames(userId: string): string[];
+  listShellExposedSecretNames(userId: string): string[];
   listUserGroups(userId: string): UserGroupMembership[];
   touchConversation(
     ownerId: string,
