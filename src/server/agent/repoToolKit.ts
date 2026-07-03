@@ -108,9 +108,23 @@ export function cloneFailureMessage(error: unknown): string {
   return `Failed to load the repository: ${scrubGitError(error)}\nCheck the repository address/branch and token permissions. Do not clone directly with Bash git — the shell has no git credentials.`;
 }
 
-/** The shared commit/push failure message (with the no-Bash-fallback hint). */
+/**
+ * The shared commit/push failure message (with the no-Bash-fallback hint). A
+ * `REBASE_CONFLICT:<files>` sentinel (the pre-push rebase in commitAndPushClone
+ * hit a conflicting external change) gets its own explanation — the generic
+ * token/branch-protection hint would point the model at the wrong cause.
+ */
 export function commitFailureMessage(error: unknown): string {
-  return `Commit/push failed: ${scrubGitError(error)}\nCheck the write permission of the token (GIT_TOKEN) and the remote branch protection settings. Do not work around this with Bash \`git push\` — the shell has no git credentials.`;
+  const detail = scrubGitError(error);
+  const conflict = /^REBASE_CONFLICT:([\s\S]*)$/.exec(detail);
+  if (conflict) {
+    const files = conflict[1].trim();
+    return (
+      `Commit/push failed: the remote branch has new commits that CONFLICT with this change${files ? ` (conflicting file(s): ${files})` : ""}. ` +
+      "The local commit is preserved, but it cannot be pushed until the conflict is resolved. Tell the user that the same file(s) were changed outside this conversation (e.g. a direct push, or another chat that already pushed), and that the repository owner/admin needs to reconcile it manually. Do not retry in a loop, and do not work around this with Bash `git` — the shell has no git credentials."
+    );
+  }
+  return `Commit/push failed: ${detail}\nCheck the write permission of the token (GIT_TOKEN) and the remote branch protection settings. Do not work around this with Bash \`git push\` — the shell has no git credentials.`;
 }
 
 /** read_file's shared error decode (identical sentinels/wording in both servers). */

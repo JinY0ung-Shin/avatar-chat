@@ -1144,6 +1144,18 @@ describe("group trust & visibility", () => {
     // Clearing works.
     expect(store.updateProfile(ownerId, { experimentalFeatures: [] }).experimentalFeatures).toEqual([]);
   });
+
+  // ---- shared (communal) account ----
+  it("sharedAccount defaults off, round-trips through updateProfile, and reads via isSharedAccount", () => {
+    const { store, ownerId } = makeStore("sa1");
+    expect(store.getUserById(ownerId)?.sharedAccount).toBe(false);
+    expect(store.isSharedAccount(ownerId)).toBe(false);
+    expect(store.updateProfile(ownerId, { sharedAccount: true }).sharedAccount).toBe(true);
+    expect(store.isSharedAccount(ownerId)).toBe(true);
+    // An unrelated profile patch leaves the flag untouched.
+    expect(store.updateProfile(ownerId, { bio: "b" }).sharedAccount).toBe(true);
+    expect(store.updateProfile(ownerId, { sharedAccount: false }).sharedAccount).toBe(false);
+  });
 });
 
 

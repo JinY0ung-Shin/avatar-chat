@@ -640,6 +640,155 @@ describe("repo tools (knowledge-repo management)", () => {
     }
   });
 
+  it("shared account: an elevated teammate can WRITE + commit; create_repo stays owner-only", async () => {
+    const s = setup("rt1c");
+    // The owner marks the account as shared (공용 계정) → claudeAgent passes
+    // writeAccess = ownerToolAccess || (sharedAccount && elevatedToolAccess).
+    s.store.updateProfile(s.ownerId, { sharedAccount: true });
+    const mate = s.store.createUser({ username: "mate", displayName: "Mate", password: "password123" });
+    const teammate = buildRepoTools(
+      s.store,
+      {
+        avatarUserId: s.ownerId,
+        owner: s.owner,
+        viewerIsOwner: false,
+        elevated: true,
+        writeAccess: true,
+        viewer: { id: mate.id, name: "Mate" },
+        config: s.config,
+      },
+      { allowCreate: true },
+    );
+
+    // The write tools' descriptions must NOT advertise "(owner only)" on this
+    // run, or the model self-refuses instead of calling them.
+    const writeFileTool = teammate.find((t) => t.name === "write_file") as
+      | { description?: string }
+      | undefined;
+    expect(writeFileTool?.description).toContain("shared account");
+    expect(writeFileTool?.description).not.toContain("(owner only)");
+
+    const w = await callTool(teammate, "write_file", { path: "notes/from-mate.md", content: "# 팀원이 남긴 지식" });
+    expect(w.isError).toBeFalsy();
+    const c = await callTool(teammate, "commit", { message: "mate: add note" });
+    expect(c.isError).toBeFalsy();
+    expect(c.content[0].text).toContain("Committed and pushed");
+
+    // The audit trail names the ACTUAL actor (the teammate), not the owner.
+    const audit = s.store
+      .listAudit(s.ownerId, true)
+      .find((e) => e.action === "knowledge_repo_push");
+    expect(audit?.actorUserId).toBe(mate.id);
+    expect(audit?.detail).toContain("shared account");
+
+    // Git history records the teammate as co-author (the commit itself stays
+    // authored as the owner, whose token pushed it).
+    const clonePath = path.join(tempDir, "rt1c", "knowledge", s.ownerId);
+    const log = execFileSync("git", ["-C", clonePath, "log", "-1", "--pretty=%B"]).toString();
+    expect(log).toContain("mate: add note");
+    expect(log).toContain("Co-authored-by: Mate <mate@noah-almighty.local>");
+
+    // Repo creation/connection stays strictly owner-only regardless of the flag.
+    const cr = await callTool(teammate, "create_repo", { name: "nope" });
+    expect(cr.isError).toBe(true);
+    expect(cr.content[0].text).toContain("can only be used by the avatar owner");
+  });
+
+  // Push a commit to the bare remote from OUTSIDE the app (the seed clone),
+  // simulating the owner's laptop / CI / another already-pushed chat.
+  function externalPush(dir: string, file: string, content: string) {
+    const seed = path.join(tempDir, dir, "seed");
+    const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+    g("pull", "-q", "origin", "main");
+    fs.writeFileSync(path.join(seed, file), content);
+    g("add", "-A");
+    g("commit", "-q", "-m", `external: ${file}`);
+    g("push", "-q", "origin", "main");
+  }
+
+  it("commit auto-rebases over a non-conflicting external push instead of failing", async () => {
+    const s = setup("rt6");
+    const tools = ownerTools(s);
+    await callTool(tools, "write_file", { path: "a.md", content: "A" });
+    await callTool(tools, "commit", { message: "add a" });
+
+    // A local edit is pending (base = current tip)…
+    await callTool(tools, "write_file", { path: "b.md", content: "B" });
+    // …when someone pushes a DIFFERENT file to the remote behind our back.
+    externalPush("rt6", "external.md", "E");
+
+    // Previously: non-fast-forward push failure. Now: fetch + rebase + push.
+    const res = await callTool(tools, "commit", { message: "add b" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("Committed and pushed");
+
+    // The remote branch holds all three commits (external one absorbed).
+    const clonePath = path.join(tempDir, "rt6", "knowledge", s.ownerId);
+    const subjects = execFileSync(
+      "git",
+      ["-C", clonePath, "log", "--pretty=%s", "origin/main"],
+    ).toString();
+    expect(subjects).toContain("add b");
+    expect(subjects).toContain("external: external.md");
+    expect(subjects).toContain("add a");
+  });
+
+  it("commit aborts the rebase and names the files when an external push CONFLICTS", async () => {
+    const s = setup("rt7");
+    const tools = ownerTools(s);
+    await callTool(tools, "write_file", { path: "notes/x.md", content: "v1" });
+    await callTool(tools, "commit", { message: "x v1" });
+
+    // Local (uncommitted) edit to x.md from the v1 base…
+    await callTool(tools, "write_file", { path: "notes/x.md", content: "local edit" });
+    // …while an external push rewrites the SAME file.
+    externalPush("rt7", path.join("notes", "x.md"), "external edit");
+
+    const res = await callTool(tools, "commit", { message: "x local" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("CONFLICT");
+    expect(res.content[0].text).toContain("notes/x.md");
+    // The misleading generic token/branch-protection hint must NOT appear.
+    expect(res.content[0].text).not.toContain("GIT_TOKEN");
+
+    // The rebase was aborted: the local commit is preserved on top of v1.
+    const clonePath = path.join(tempDir, "rt7", "knowledge", s.ownerId);
+    const head = execFileSync("git", ["-C", clonePath, "log", "-1", "--pretty=%s"]).toString();
+    expect(head).toContain("x local");
+    const content = fs.readFileSync(path.join(clonePath, "notes", "x.md"), "utf8");
+    expect(content).toBe("local edit");
+  });
+
+  it("pushes stacked local commits on a clean tree instead of reporting no changes", async () => {
+    const s = setup("rt8");
+    const tools = ownerTools(s);
+    await callTool(tools, "write_file", { path: "a.md", content: "A" });
+    await callTool(tools, "commit", { message: "add a" });
+
+    // Simulate a commit whose push failed transiently: committed locally,
+    // never pushed (created directly in the server-side clone).
+    const clonePath = path.join(tempDir, "rt8", "knowledge", s.ownerId);
+    const cg = (...a: string[]) => execFileSync("git", ["-C", clonePath, ...a], { stdio: "pipe" });
+    fs.writeFileSync(path.join(clonePath, "stacked.md"), "S");
+    cg("add", "-A");
+    cg("commit", "-q", "-m", "stacked");
+
+    // Clean tree + ahead-of-remote → the retry pushes the stacked commit.
+    const res = await callTool(tools, "commit", { message: "retry" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("Committed and pushed");
+    const subjects = execFileSync(
+      "git",
+      ["-C", clonePath, "log", "--pretty=%s", "origin/main"],
+    ).toString();
+    expect(subjects).toContain("stacked");
+
+    // With nothing stacked and nothing dirty, it still reports no changes.
+    const res2 = await callTool(tools, "commit", { message: "noop" });
+    expect(res2.isError).toBeFalsy();
+    expect(res2.content[0].text).toContain("There are no changes to commit.");
+  });
+
   it("errors clearly when no knowledge repo is configured", async () => {
     const dataDir = path.join(tempDir, "rt2");
     const { store, config } = createServices({ dataDir, agentRuntime: "local", sessionSecret: "t" });

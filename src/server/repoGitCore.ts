@@ -103,6 +103,22 @@ export async function aheadOfRemote(repoRoot: string, branch: string): Promise<n
 }
 
 /**
+ * Count commits on origin/<branch> not yet on local HEAD (how far the clone is
+ * BEHIND the remote). 0 when up to date or ahead-only, and 0 when
+ * origin/<branch> doesn't exist. Complement of `aheadOfRemote`; used by the
+ * push path to decide whether a pre-push rebase is needed.
+ */
+export async function behindRemote(repoRoot: string, branch: string): Promise<number> {
+  try {
+    const { stdout } = await git(repoRoot, ["rev-list", `HEAD..origin/${branch}`, "--count"]);
+    const n = Number.parseInt(stdout.trim(), 10);
+    return Number.isFinite(n) ? n : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * Move the working tree onto `branch`@origin without discarding unpushed
  * commits. If local HEAD is ahead of origin/<branch>, a hard `checkout -B`
  * would silently destroy those commits — so we only `checkout -B` when HEAD is
@@ -171,9 +187,19 @@ export async function restoreTrackedMcpJson(repoRoot: string): Promise<void> {
 /**
  * Stage all changes, commit with the given identity, and push to the remote
  * branch — the shared body of the knowledge / group-knowledge commitAndPush
- * paths. Returns false (no commit) when the tree is clean. Throws NOT_CLONED if
- * the clone is missing, and on git failure (auth, conflicts) so the caller can
- * surface the detail. The caller already holds the per-clone lock.
+ * paths. Returns false when there is nothing to do (clean tree AND nothing
+ * stacked); a clean tree with unpushed local commits (a prior push failed
+ * transiently) still pushes, so an explicit retry self-heals. Throws NOT_CLONED
+ * if the clone is missing, and on git failure (auth, conflicts) so the caller
+ * can surface the detail. The caller already holds the per-clone lock.
+ *
+ * Before pushing, remote commits that landed since the last sync (a direct push
+ * from the owner's laptop, CI, another chat's already-pushed work) are absorbed
+ * by fetch + rebase, so a non-conflicting external push no longer leaves the
+ * clone permanently diverged. A CONFLICTING rebase is aborted — the local
+ * commits stay intact — and surfaces as `REBASE_CONFLICT:<files>` so the tool
+ * layer can explain the real cause (see repoToolKit.commitFailureMessage)
+ * instead of hinting at token/branch-protection problems.
  *
  * PRESERVE: restoreTrackedMcpJson runs BEFORE `git add -A`, and auth is routed
  * per-host via tokenForGitUrl — this is the security-sensitive auth/push path.
@@ -204,16 +230,48 @@ export async function commitAndPushClone(
   // runtime-only edit never gets committed/pushed. MUST run before `git add -A`.
   await restoreTrackedMcpJson(repoRoot);
   await git(repoRoot, ["add", "-A"]);
-  if ((await dirtyPaths(repoRoot)).length === 0) {
+  const hasChanges = (await dirtyPaths(repoRoot)).length > 0;
+  const branch = safePushBranch(options.branch || (await currentBranch(repoRoot)) || "HEAD");
+  if (hasChanges) {
+    // commitMsg is the value of `-m` (a discrete argv element), so it's never
+    // parsed as a flag even if it starts with `-`.
+    const commitMsg = options.message.trim() || options.defaultMessage;
+    await git(repoRoot, ["commit", "-m", commitMsg]);
+  } else if (branch === "HEAD" || !(await aheadOfRemote(repoRoot, branch))) {
+    // Clean tree and nothing stacked locally → genuinely nothing to do. (With
+    // unpushed commits we fall through and push them instead of reporting "no
+    // changes" until the next edit.)
     return false;
   }
-  // commitMsg is the value of `-m` (a discrete argv element), so it's never
-  // parsed as a flag even if it starts with `-`.
-  const commitMsg = options.message.trim() || options.defaultMessage;
-  await git(repoRoot, ["commit", "-m", commitMsg]);
 
   const auth = gitAuthArgs(options.url, tokenForGitUrl(options.url, options.config, options.tokens));
-  const branch = safePushBranch(options.branch || (await currentBranch(repoRoot)) || "HEAD");
+  // Absorb remote commits pushed since the last sync BEFORE pushing. Fetch is
+  // best-effort: offline, the push below reports the real network error.
+  if (branch !== "HEAD") {
+    try {
+      await git(repoRoot, [...auth, "fetch", "origin", branch]);
+    } catch {
+      /* fall through to push */
+    }
+    if ((await behindRemote(repoRoot, branch)) > 0) {
+      try {
+        await git(repoRoot, ["rebase", `origin/${branch}`]);
+      } catch {
+        // Conflicting external change: capture the conflicted paths, restore
+        // the pre-rebase state (local commits preserved), and surface a
+        // decodable sentinel — the generic push-failure hint would mislead.
+        let conflicted: string[] = [];
+        try {
+          const { stdout } = await git(repoRoot, ["diff", "--name-only", "--diff-filter=U"]);
+          conflicted = stdout.split("\n").map((l) => l.trim()).filter(Boolean);
+        } catch {
+          /* file list is best-effort */
+        }
+        await git(repoRoot, ["rebase", "--abort"]).catch(() => {});
+        throw new Error(`REBASE_CONFLICT:${conflicted.join(", ")}`);
+      }
+    }
+  }
   await git(repoRoot, [...auth, "push", "origin", `HEAD:${branch}`]);
   logger.info({ ...options.log, branch }, options.pushedMessage);
   return true;

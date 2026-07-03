@@ -167,6 +167,13 @@ export interface User {
    */
   experimentalFeatures: string[];
   /**
+   * Shared (communal) account: when true, trusted same-group teammates chatting
+   * with this avatar may also UPDATE the owner's personal knowledge repo
+   * (write/delete/move/scaffold/commit). Repo creation/connection settings stay
+   * owner-only, and plain (non-group) viewers stay read-only. Off by default.
+   */
+  sharedAccount: boolean;
+  /**
    * When the user dismissed first-run onboarding (ISO timestamp), or null if they
    * haven't yet. Server-persisted so the welcome modal shows ONCE per account —
    * across devices and surviving a localStorage clear — instead of every login.
@@ -756,6 +763,15 @@ export interface AgentRequest {
    * owner-scheduled routines) — group repo tools register on the same gate.
    */
   groupMemberships?: UserGroupMembership[];
+  /**
+   * Whether the avatar owner marked their account as a shared (communal)
+   * account (`User.sharedAccount`). Filled by the server from the owner's row
+   * before building the prompt (like `knowledgeRepoConfigured`); drives the
+   * teammate-branch guidance that repo WRITES are allowed here, and the owner
+   * self-state note (META-COGNITION). Undefined means "unknown"/false for
+   * direct unit calls.
+   */
+  sharedAccount?: boolean;
   /**
    * Group names the (non-owner) viewer shares with the avatar owner — i.e. the
    * REASON this viewer is auto-trusted, when group co-membership is the source.

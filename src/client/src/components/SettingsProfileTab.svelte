@@ -43,6 +43,10 @@
   let visibility: AvatarVisibility = u0?.visibility || "group";
   let visSaving = false;
 
+  // shared (communal) account
+  let sharedAccount = Boolean(u0?.sharedAccount);
+  let sharedSaving = false;
+
   function sameTags(left: string[], right: string[]): boolean {
     return left.length === right.length && left.every((tag, index) => tag === right[index]);
   }
@@ -242,6 +246,30 @@
     }
   }
 
+  // ---- shared (communal) account ----
+  async function toggleSharedAccount(on: boolean): Promise<void> {
+    if (sharedSaving) return;
+    const prev = sharedAccount;
+    sharedAccount = on;
+    sharedSaving = true;
+    try {
+      const { user: next } = await api<{ user: User }>("/api/me", { method: "PATCH", body: JSON.stringify({ sharedAccount: on }) });
+      replaceState({ user: next });
+      sharedAccount = next.sharedAccount;
+      notify(
+        next.sharedAccount
+          ? "공용 계정으로 설정했습니다. 같은 그룹 팀원이 이 아바타와 대화하며 지식 저장소를 수정·커밋할 수 있어요."
+          : "공용 계정 설정을 해제했습니다. 지식 저장소 수정은 다시 소유자 전용이 됩니다.",
+        "ok",
+      );
+    } catch (err) {
+      sharedAccount = prev;
+      notify(`공용 계정 설정 변경 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      sharedSaving = false;
+    }
+  }
+
   // ---- avatar image ----
   async function uploadImage(event: Event): Promise<void> {
     const input = event.currentTarget as HTMLInputElement;
@@ -404,5 +432,36 @@
         {VISIBILITY_OPTIONS.find((o) => o.value === visibility)?.desc || ""}{visSaving ? " 저장 중…" : ""}
       </p>
     </div>
+    <label class="shared-account-item">
+      <input
+        type="checkbox"
+        checked={sharedAccount}
+        disabled={sharedSaving}
+        aria-busy={sharedSaving}
+        on:change={(event) => toggleSharedAccount(event.currentTarget.checked)}
+      />
+      <span class="shared-account-meta">
+        <strong>공용 계정</strong>
+        <span class="muted">이 계정을 팀 공용 계정으로 표시합니다. 같은 그룹의 팀원이 이 아바타와 대화하면서 지식 저장소를 직접 수정하고 커밋할 수 있게 돼요. 저장소 생성·연결 같은 설정 변경은 계속 소유자만 할 수 있습니다.</span>
+      </span>
+    </label>
   </section>
 {/if}
+
+<style>
+  .shared-account-item {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--s-2, 8px);
+    cursor: pointer;
+    margin-top: var(--s-3, 12px);
+  }
+  .shared-account-item input {
+    margin-top: 3px;
+  }
+  .shared-account-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+</style>

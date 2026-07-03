@@ -42,6 +42,7 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         hashtags?: string[];
         visibility?: AvatarVisibility;
         experimentalFeatures?: string[];
+        sharedAccount?: boolean;
       } = {};
       if (typeof req.body?.displayName === "string")
         patch.displayName = req.body.displayName;
@@ -65,6 +66,11 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
           (k: unknown): k is string => typeof k === "string",
         );
       }
+      // Shared (communal) account: opens the owner's knowledge-repo WRITE tools
+      // to trusted same-group teammates. Self-service is safe — the flag only
+      // widens access to the caller's OWN repo, never grants the caller anything.
+      if (typeof req.body?.sharedAccount === "boolean")
+        patch.sharedAccount = req.body.sharedAccount;
       const user = store.updateProfile(req.user!.id, patch);
       res.json({ user });
     },

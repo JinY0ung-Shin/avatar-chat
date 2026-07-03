@@ -217,7 +217,11 @@ function brainSection(
   const migrate =
     " If `mcp__brain__search` reports the vault is missing (NO_VAULT), the repository predates the vault layout — run the `brain-migrate` skill ONCE (it never overwrites existing files), then retry.";
   if (mode === "teammate") {
-    return `${base} (You can search the owner's second brain; capturing or editing notes is owner-only.)${migrate}`;
+    // On a shared (communal) account the teammate's writes go through the same
+    // repo-write tools the capture skills use, so capture is open to them too.
+    return request.sharedAccount
+      ? `${base} This avatar is a shared (communal) account, so you may also capture on this teammate's behalf: record a durable fact or decision with the **brain-ingest** skill. Brain edits are not pushed until you commit.${migrate}`
+      : `${base} (You can search the owner's second brain; capturing or editing notes is owner-only.)${migrate}`;
   }
   const capture =
     " To capture a durable fact or decision use the **brain-ingest** skill; to consolidate `raw/` into clean `wiki/` notes use **brain-reflect**; to audit the vault use **brain-lint**. Brain edits are not pushed until you commit.";
@@ -603,6 +607,13 @@ export function buildSystemPromptAppend(
       lines.push(
         knowledgeRepoSection(request, knowledgeRepoConfigured, githubHost),
       );
+      // Shared-account self-state (META-COGNITION): the owner should hear from
+      // the avatar that teammates can write here, not discover it by surprise.
+      if (request.sharedAccount) {
+        lines.push(
+          "This account is marked as a **shared (communal) account**: trusted same-group teammates chatting with this avatar can also update the personal knowledge repository (write/delete/move/scaffold/commit). Creating/connecting the repository itself stays owner-only; the setting is under Settings → Profile.",
+        );
+      }
       const ownerBrainBlock = brainSection(request, "owner");
       if (ownerBrainBlock) {
         lines.push(ownerBrainBlock);
@@ -695,8 +706,13 @@ export function buildSystemPromptAppend(
         mcpToolGroupEnabled(request, "personal_knowledge") &&
         request.knowledgeRepoConfigured !== false
       ) {
+        // A shared (communal) account opens the repo WRITE tools to this trusted
+        // teammate — the guidance must say so or the model self-refuses writes
+        // (standing per-turn guidance + tool-description trigger, per CLAUDE.md).
         lines.push(
-          "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
+          request.sharedAccount
+            ? "This avatar is a **shared (communal) account**: this trusted teammate may not only read but also **update the owner's personal knowledge repository** — `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. When they ask you to record knowledge or skills, apply the change and push it with `commit` (changes are not pushed until you commit). Creating/connecting the repository itself stays owner-only."
+            : "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
         );
         const teammateBrainBlock = brainSection(request, "teammate");
         if (teammateBrainBlock) {

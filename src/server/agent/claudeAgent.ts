@@ -480,6 +480,14 @@ export async function runClaudeAgent(
     personalKnowledgeToolsEnabled &&
     ownerToolAccess &&
     !knowledgeRepoConfigured;
+  // Shared (communal) account: the owner opted into letting trusted same-group
+  // teammates WRITE to the personal knowledge repo through this avatar. Widens
+  // ONLY the repo file-CRUD/commit gate below (still headless-gated via
+  // elevatedToolAccess); create_repo, repo connection settings, and every other
+  // owner-only tool keep requiring the owner.
+  const sharedAccount = ownerState.sharedAccount;
+  const repoWriteAccess =
+    ownerToolAccess || (sharedAccount && elevatedToolAccess);
   const repoServer = buildRepoServer(
     store,
     {
@@ -487,8 +495,15 @@ export async function runClaudeAgent(
       owner,
       viewerIsOwner: ownerToolAccess,
       // Trusted same-group teammates may READ (list_files/read_file) the owner's
-      // personal repo; write/commit stay owner-only (see repoTools.ts).
+      // personal repo; write/commit stay owner-only UNLESS the owner marked this
+      // a shared account (see repoTools.ts `writeAccess`).
       elevated: elevatedToolAccess,
+      writeAccess: repoWriteAccess,
+      // The person actually chatting, for commit audit attribution on shared
+      // accounts (owner runs audit as the owner regardless).
+      viewer: request.viewerUserId
+        ? { id: request.viewerUserId, name: request.viewerName ?? "" }
+        : null,
       config,
     },
     { allowCreate: allowRepoCreate },
@@ -831,6 +846,10 @@ export async function runClaudeAgent(
     ...request,
     secretNames: ownerToolAccess ? ownerState.secretNames : [],
     knowledgeRepoConfigured,
+    // Shared-account self-state rides on EVERY viewer class (it is not a secret):
+    // the teammate branch switches its repo guidance to "writes allowed" on it,
+    // and the owner branch surfaces it as META-COGNITION.
+    sharedAccount,
     gitTokenSet: ownerState.gitTokenSet,
     githubHost: config.githubHost,
     confluenceUrlConfigured: Boolean(config.confluenceUrl),

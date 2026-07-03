@@ -49,6 +49,11 @@ export interface OwnerState {
   modelOverride: string | null;
   /** Experimental (beta) feature keys the owner enabled for this avatar (#50). */
   experimentalFeatures: string[];
+  /**
+   * Shared (communal) account flag: trusted same-group teammates may also WRITE
+   * to the owner's personal knowledge repo (see repoTools.ts `writeAccess`).
+   */
+  sharedAccount: boolean;
 }
 
 /**
@@ -78,5 +83,6 @@ export function summarizeOwnerState(
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
     experimentalFeatures: store.getExperimentalFeatures(avatarUserId),
+    sharedAccount: store.isSharedAccount(avatarUserId),
   };
 }

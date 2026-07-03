@@ -44,11 +44,14 @@ const execFileAsync = promisify(execFile);
  * tools let the avatar manage its OWNER's personal knowledge repo (the repo the
  * avatar accumulates work knowledge/skills into) directly from chat.
  *
- * Access is split: the WRITE tools (write/delete/move/scaffold/commit/create) are
- * OWNER-ONLY — a colleague, a trusted user, or a headless routine gets a refusal.
- * The READ tools (`list_files`/`read_file`) additionally allow an `elevated`
- * viewer (a trusted same-group teammate), so a teammate's chat can read the
- * owner's accumulated knowledge without being able to modify it.
+ * Access is split: the WRITE tools (write/delete/move/scaffold/commit) are
+ * OWNER-ONLY by default — a colleague, a trusted user, or a headless routine gets
+ * a refusal. The READ tools (`list_files`/`read_file`) additionally allow an
+ * `elevated` viewer (a trusted same-group teammate), so a teammate's chat can
+ * read the owner's accumulated knowledge without being able to modify it.
+ * When the owner marked the account as a SHARED (communal) account, the caller
+ * passes `writeAccess` so trusted teammates may also write/commit; `create_repo`
+ * and repo connection settings stay owner-only regardless.
  */
 export interface RepoToolsContext {
   /** The avatar (== owner) whose knowledge repo these tools manage. */
@@ -67,6 +70,19 @@ export interface RepoToolsContext {
    * modify — the personal repo. Defaults to `viewerIsOwner` when omitted.
    */
   elevated?: boolean;
+  /**
+   * True when the current run may WRITE (write/delete/move/scaffold/commit): the
+   * owner, or — when the owner marked this a SHARED (communal) account — a
+   * trusted same-group teammate. Defaults to `viewerIsOwner` when omitted.
+   * `create_repo` ignores this and stays strictly owner-only.
+   */
+  writeAccess?: boolean;
+  /**
+   * The user actually chatting, for commit AUDIT attribution when a shared
+   * account lets a teammate push. Omitted/null (or the owner themselves) keeps
+   * the audit actor = owner, byte-identical to the pre-shared-account behavior.
+   */
+  viewer?: { id: string; name: string } | null;
   config: AppConfig;
 }
 
@@ -227,8 +243,9 @@ const NO_REPO =
 /**
  * Build the knowledge-repo management tool definitions bound to a single
  * conversation's store + context. Exposed separately from the server so the
- * handlers can be exercised directly in tests. Owner-only gating is enforced
- * here (the model can call them, but a non-owner gets a refusal result).
+ * handlers can be exercised directly in tests. Gating is enforced here (the
+ * model can call them, but a viewer past the read/write gate gets a refusal
+ * result — see `RepoToolsContext.writeAccess` for the shared-account widening).
  */
 export function buildRepoTools(
   store: Store,
@@ -240,10 +257,19 @@ export function buildRepoTools(
   const repoCtx = () => knowledgeRepoContextFor(store, ctx.avatarUserId, ctx.config);
 
   // Guard chains for the file-CRUD tools: <gate> → repo configured. WRITE tools
-  // gate on owner; READ tools gate on `elevated` (owner OR trusted teammate), so
-  // a teammate can read — but not modify — the owner's personal repo.
+  // gate on `writeAccess` (owner; plus trusted teammates on a shared account);
+  // READ tools gate on `elevated` (owner OR trusted teammate), so a teammate can
+  // read — but not modify — a non-shared owner's personal repo.
   type RepoCtx = NonNullable<ReturnType<typeof repoCtx>>;
   const canRead = ctx.elevated ?? ctx.viewerIsOwner;
+  const canWrite = ctx.writeAccess ?? ctx.viewerIsOwner;
+  // Write-gate label on the write tools' descriptions, accurate PER RUN: on a
+  // shared-account teammate turn the tools must not advertise "(owner only)" or
+  // the model refuses on its own before ever calling them (action-trigger rule).
+  const writeGate =
+    canWrite && !ctx.viewerIsOwner
+      ? "(shared account: the owner and trusted same-group teammates may write)"
+      : "(owner only)";
   const resolveGated = (allowed: boolean): Resolved<RepoCtx> => {
     if (!allowed) {
       return { ok: false, result: text(OWNER_ONLY, true) };
@@ -254,7 +280,7 @@ export function buildRepoTools(
     }
     return { ok: true, repo: c };
   };
-  const resolve = (): Resolved<RepoCtx> => resolveGated(ctx.viewerIsOwner);
+  const resolve = (): Resolved<RepoCtx> => resolveGated(canWrite);
   const resolveRead = (): Resolved<RepoCtx> => resolveGated(canRead);
 
   const manageTools = [
@@ -276,7 +302,7 @@ export function buildRepoTools(
     ),
     tool(
       "write_file",
-      "Create/modify a file in my knowledge repository (creates it if it doesn't exist). Changes apply only to the working tree, and **until you commit & push with the commit tool they are saved only temporarily** and may disappear on the next sync. (owner only)",
+      `Create/modify a file in my knowledge repository (creates it if it doesn't exist). Changes apply only to the working tree, and **until you commit & push with the commit tool they are saved only temporarily** and may disappear on the next sync. ${writeGate}`,
       {
         path: z.string().describe("Path relative to the repository root"),
         content: z.string().describe("The full file content"),
@@ -292,7 +318,7 @@ export function buildRepoTools(
     ),
     tool(
       "delete_file",
-      "Delete a file OR a whole directory (e.g. an entire skill folder `skills/<name>`) from my knowledge repository. The deletion applies only to the working tree, and **until you commit & push with the commit tool it is not removed from the remote** and may reappear on the next sync. (owner only)",
+      `Delete a file OR a whole directory (e.g. an entire skill folder \`skills/<name>\`) from my knowledge repository. The deletion applies only to the working tree, and **until you commit & push with the commit tool it is not removed from the remote** and may reappear on the next sync. ${writeGate}`,
       { path: z.string().describe("Path relative to the repository root — a file (skills/foo/SKILL.md) or a directory (skills/foo)") },
       (args) =>
         runDeleteFile(
@@ -305,7 +331,7 @@ export function buildRepoTools(
     ),
     tool(
       "move_file",
-      "Rename or move a file/directory within my knowledge repository (e.g. rename a skill folder or relocate a note). Applies only to the working tree until you commit & push. (owner only)",
+      `Rename or move a file/directory within my knowledge repository (e.g. rename a skill folder or relocate a note). Applies only to the working tree until you commit & push. ${writeGate}`,
       {
         from: z.string().describe("Current path relative to the repository root"),
         to: z.string().describe("New path relative to the repository root"),
@@ -321,7 +347,7 @@ export function buildRepoTools(
     ),
     tool(
       "scaffold_skill",
-      "Create a new skill (skills/<name>/SKILL.md + marketplace registration) in my knowledge repository. After creating it, fill in the content with write_file and push with commit, and from the next conversation the avatar can use that skill. (owner only)",
+      `Create a new skill (skills/<name>/SKILL.md + marketplace registration) in my knowledge repository. After creating it, fill in the content with write_file and push with commit, and from the next conversation the avatar can use that skill. ${writeGate}`,
       {
         name: z.string().describe("Skill name (e.g. deploy-runbook)"),
         description: z.string().optional().describe("One-line description of the skill"),
@@ -330,10 +356,10 @@ export function buildRepoTools(
     ),
     tool(
       "commit",
-      "Commit all changes in my knowledge repository and push to the remote (branch). Call this when a unit of work is finished or when the owner requests it. (owner only)",
+      `Commit all changes in my knowledge repository and push to the remote (branch). Call this when a unit of work is finished or when the user requests it. ${writeGate}`,
       { message: z.string().describe("Commit message") },
       async (args) => {
-        if (!ctx.viewerIsOwner) {
+        if (!canWrite) {
           return text(OWNER_ONLY, true);
         }
         const c = repoCtx();
@@ -343,20 +369,47 @@ export function buildRepoTools(
         if (!c.token) {
           return text(NO_GIT_TOKEN, true);
         }
+        // Shared-account teammate commits carry a Co-authored-by trailer so git
+        // HISTORY records the actual person too — the commit stays authored as
+        // the owner (whose token pushes), and the audit below logs the actor.
+        const teammate =
+          ctx.viewer && ctx.viewer.id !== ctx.owner.id ? ctx.viewer : null;
+        let message = args.message;
+        if (teammate) {
+          const viewerUser = store.getUserById(teammate.id);
+          const co = viewerUser
+            ? commitIdentityFor(store, viewerUser)
+            : {
+                name: teammate.name || "teammate",
+                email: "teammate@noah-almighty.local",
+              };
+          const coName = co.name.replace(/[<>]/g, "").trim() || "teammate";
+          message = `${args.message.trim() || "Update knowledge repo"}\n\nCo-authored-by: ${coName} <${co.email}>`;
+        }
         try {
           // No ensureClone here: commitAndPush operates on the already-synced
           // working tree (write_file/scaffold_skill cloned it) and guards with
           // its own NOT_CLONED check. Re-syncing would only add a needless fetch.
-          const committed = await commitAndPush(c, args.message, commitIdentityFor(store, ctx.owner));
+          const committed = await commitAndPush(c, message, commitIdentityFor(store, ctx.owner));
           if (!committed) {
             return text(NO_CHANGES);
           }
+          // Audit the person who actually drove the push: on a shared account a
+          // trusted teammate can commit, and the trail must say so. An owner run
+          // (viewer == owner, or no viewer) keeps the original owner attribution.
+          const actor =
+            ctx.viewer && ctx.viewer.id !== ctx.owner.id
+              ? ctx.viewer
+              : { id: ctx.owner.id, name: ctx.owner.username };
           store.audit({
-            actorUserId: ctx.owner.id,
-            actorName: ctx.owner.username,
+            actorUserId: actor.id,
+            actorName: actor.name,
             action: "knowledge_repo_push",
             status: "success",
-            detail: `pushed to ${c.repo}`,
+            detail:
+              actor.id === ctx.owner.id
+                ? `pushed to ${c.repo}`
+                : `pushed to ${c.repo} (shared account, owner ${ctx.owner.username})`,
           });
           return text(`Committed and pushed the changes: ${c.repo}`);
         } catch (error) {

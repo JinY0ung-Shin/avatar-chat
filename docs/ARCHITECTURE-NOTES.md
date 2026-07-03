@@ -157,8 +157,21 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   power the group member-add typeahead. `isTrustedFor` is THE single choke point every elevated/trust
   check flows through (`getAvatar`/`resolveChatAvatar`/`routes/chat.ts` chat `elevated`) — add new trust
   sources THERE, not at call sites.
-
-### Capability hashtags (역량 해시태그)
+- **Shared (communal) account (공용 계정)** — `users.shared_account` (per-user settings pattern: column →
+  `toUser`/`updateProfile` → `User.sharedAccount` → `PATCH /api/me` → 프로필 탭 공개 설정 카드 토글). When ON,
+  trusted same-group teammates chatting with that avatar also get the personal knowledge-repo WRITE
+  tools: claudeAgent computes `repoWriteAccess = ownerToolAccess || (sharedAccount && elevatedToolAccess)`
+  and passes it as `RepoToolsContext.writeAccess` (defaults to `viewerIsOwner`; still headless-gated).
+  Scope is DELIBERATELY narrow: `create_repo`, repo connect/disconnect settings (`knowledgeTools`), group
+  repo tools, and every other owner-only tool are untouched; a plain (non-group) viewer stays read-only.
+  The write tools' `(owner only)` description suffix is computed per run (`writeGate`) so a shared-account
+  teammate turn doesn't self-refuse; `commit` audits the ACTUAL actor (`ctx.viewer`) with a
+  `(shared account, owner <username>)` detail when a teammate pushes AND appends a
+  `Co-authored-by: <viewer> <username@noah-almighty.local>` trailer (via `commitIdentityFor` on the viewer)
+  so git history records the person too — the commit stays authored as the owner. Self-state rides
+  `ownerState.sharedAccount` → owner prompt note + teammate-branch writable guidance
+  (`promptBuilder`) + a `describe_system` line. Flag lives on the OWNER; toggling it is self-service
+  (grants others access to YOUR repo only — no escalation).
 - `users.hashtags` is a JSON array of bare tags (`normalizeHashtags`/`parseHashtags` in store.ts) wired
   through the per-user settings pattern, surfaced on BOTH `User` and `AvatarSummary`, edited via
   `HashtagChipEditor.svelte`. Auto-generated like the intro: `POST /api/me/hashtags/generate` mirrors
@@ -194,6 +207,14 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   review** (T3.8); consolidate arg-safety into one validator, don't paper over it.
 - **`withRepoLock` (`gitMutex.ts`) is NOT reentrant by key** — a fn running under `withRepoLock(key,…)`
   must never call it again for the same key (deadlock). Outer ops call the `*Locked` internals directly.
+- **`commitAndPushClone` self-heals around the remote:** before pushing it fetches and REBASES local
+  commits onto `origin/<branch>` (absorbs non-conflicting external pushes that would otherwise leave the
+  clone permanently diverged), and a CLEAN tree with unpushed local commits still pushes them (an explicit
+  commit retry after a transient push failure works) — only clean+in-sync returns `false`/"no changes". A
+  conflicting rebase is `--abort`ed (local commits preserved) and thrown as **`REBASE_CONFLICT:<files>`**;
+  `repoToolKit.commitFailureMessage` decodes that sentinel into a conflict explanation (naming the files,
+  telling the model to inform the user, not to retry-loop) instead of the misleading token/branch-protection
+  hint. Applies to BOTH personal and group knowledge repos (shared core).
 - **`stripManagedMcpServers` mutates `.mcp.json` in place.** Committable-repo write paths MUST
   `restoreTrackedMcpJson` (from HEAD) before `git add -A`, or the strip gets pushed to the user's repo.
   Preserve that ordering.

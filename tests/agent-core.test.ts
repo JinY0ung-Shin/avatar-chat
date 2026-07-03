@@ -2509,6 +2509,60 @@ describe("buildPrompt", () => {
     expect(direct).not.toContain("automatically trusted");
   });
 
+  // ---- shared (communal) account ----
+  it("switches teammate repo guidance to writable on a shared account", () => {
+    // Default (non-shared): teammate repo guidance stays read-only.
+    const readOnly = buildPrompt(
+      req({
+        viewerIsOwner: false,
+        elevated: true,
+        viewerName: "김철수",
+        knowledgeRepoConfigured: true,
+      }),
+      0,
+    );
+    expect(readOnly).toContain(
+      "Modifying it (write/delete/move/scaffold/commit) is owner-only",
+    );
+    expect(readOnly).not.toContain("shared (communal) account");
+
+    // Shared account: the teammate branch advertises repo writes + brain capture.
+    const shared = buildPrompt(
+      req({
+        viewerIsOwner: false,
+        elevated: true,
+        viewerName: "김철수",
+        knowledgeRepoConfigured: true,
+        sharedAccount: true,
+      }),
+      0,
+    );
+    expect(shared).toContain("shared (communal) account");
+    expect(shared).toContain(
+      "update the owner's personal knowledge repository",
+    );
+    expect(shared).toContain("brain-ingest");
+    expect(shared).not.toContain("is owner-only, so do not attempt those");
+  });
+
+  it("surfaces the shared-account flag to the owner as self-state", () => {
+    const off = buildPrompt(
+      req({ viewerIsOwner: true, knowledgeRepoConfigured: true }),
+      0,
+    );
+    expect(off).not.toContain("shared (communal) account");
+    const on = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        knowledgeRepoConfigured: true,
+        sharedAccount: true,
+      }),
+      0,
+    );
+    expect(on).toContain("shared (communal) account");
+    expect(on).toContain("trusted same-group teammates chatting with this avatar");
+  });
+
   // ---- experimental canvas feature (#50) ----
   it("injects canvas guidance only when canvasEnabled", () => {
     const off = buildPrompt(req({ viewerIsOwner: true }), 0);

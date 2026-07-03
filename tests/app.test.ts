@@ -161,6 +161,19 @@ describe("noah-almighty platform", () => {
     // visibility persists: a fresh read reflects the stored value.
     const me = await agent.get("/api/me").expect(200);
     expect(me.body.user.visibility).toBe("public");
+    // Shared (communal) account flag: off by default, toggles via the same PATCH.
+    expect(me.body.user.sharedAccount).toBe(false);
+    const shared = await agent
+      .patch("/api/me")
+      .send({ sharedAccount: true })
+      .expect(200);
+    expect(shared.body.user.sharedAccount).toBe(true);
+    // A non-boolean value is ignored, keeping the stored flag.
+    const ignored = await agent
+      .patch("/api/me")
+      .send({ sharedAccount: "yes" })
+      .expect(200);
+    expect(ignored.body.user.sharedAccount).toBe(true);
   });
 
   it("supports plugin add / list / delete", async () => {

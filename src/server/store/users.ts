@@ -69,8 +69,20 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         experimentalFeatures: normalizeExperimentalFeatures(
           parseNameList(row.experimental_features),
         ),
+        sharedAccount: Boolean(row.shared_account),
         onboardedAt: row.onboarded_at ?? null,
       };
+    }
+
+    /**
+     * True when the user marked their account as a shared (communal) account —
+     * trusted same-group teammates may then also WRITE to this user's personal
+     * knowledge repo through the avatar (see repoTools.ts `writeAccess`).
+     * Cheap row read for the per-turn agent path (ownerState.ts).
+     */
+    isSharedAccount(userId: string): boolean {
+      const row = this.userRowById(userId);
+      return Boolean(row?.shared_account);
     }
 
     /** Mark first-run onboarding as completed (idempotent — only sets it once, so
@@ -279,6 +291,7 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         hashtags?: string[];
         visibility?: AvatarVisibility;
         experimentalFeatures?: string[];
+        sharedAccount?: boolean;
       },
     ): User {
       const row = this.userRowById(userId);
@@ -310,9 +323,15 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
               normalizeExperimentalFeatures(patch.experimentalFeatures),
             )
           : row.experimental_features;
+      const sharedAccount =
+        patch.sharedAccount !== undefined
+          ? patch.sharedAccount
+            ? 1
+            : 0
+          : row.shared_account;
       this.db
         .prepare(
-          "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, hashtags = ?, visibility = ?, experimental_features = ? WHERE id = ?",
+          "UPDATE users SET display_name = ?, alias = ?, bio = ?, persona = ?, intro = ?, hashtags = ?, visibility = ?, experimental_features = ?, shared_account = ? WHERE id = ?",
         )
         .run(
           displayName,
@@ -323,6 +342,7 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
           hashtags,
           visibility,
           experimentalFeatures,
+          sharedAccount,
           userId,
         );
       return this.toUser(this.userRowById(userId)!);

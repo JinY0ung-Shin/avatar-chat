@@ -117,6 +117,7 @@ export interface UserRow {
   visibility: string | null;
   auto_approve: number;
   suspended: number;
+  shared_account: number;
   created_at: string;
   last_seen_at: string | null;
   git_token_enc: string | null;
@@ -498,6 +499,11 @@ export class StoreBase {
     // array of registry keys (experimentalFeatures.ts); NULL/[] = none. Mirrors
     // the hashtags JSON-array pattern; unknown keys are dropped on read/write.
     this.addColumnIfMissing("users", "experimental_features", "TEXT");
+    // Shared (communal) account flag: when 1, trusted same-group teammates
+    // chatting with this avatar may also WRITE to the owner's personal knowledge
+    // repo (write/delete/move/scaffold/commit). Repo creation/connection settings
+    // stay owner-only. Widens ONLY the repo-write tool gate (repoTools.ts).
+    this.addColumnIfMissing("users", "shared_account", "INTEGER DEFAULT 0");
     // When the user dismissed first-run onboarding (ISO timestamp); NULL = not yet.
     // Server-persisted so the welcome modal shows ONCE per account instead of every
     // login (the old localStorage flag re-fired on each new browser / cleared store).
