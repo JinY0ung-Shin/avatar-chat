@@ -32,6 +32,7 @@ import {
   MODEL_TIER_IDS,
 } from "../modelTiers.js";
 import { isEffortLevel } from "../effortLevels.js";
+import { liftPluginMcpServers } from "../plugins.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import {
   buildSystemPromptAppend,
@@ -132,6 +133,57 @@ export function sshMcpSecretEnv(
   for (const name of SSH_MCP_SECRET_ENV_NAMES) {
     const value = ownerSecrets[name];
     if (value !== undefined) {
+      out[name] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Backstop for the one-shot MCP secret files: the wrapper deletes its file on
+ * read, so anything older than an hour is a crash leftover — remove it. Never
+ * throws (missing dir on first run is the normal case).
+ */
+const MCP_SECRET_FILE_MAX_AGE_MS = 60 * 60 * 1000;
+function sweepStaleMcpSecretFiles(dir: string): void {
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    const file = path.join(dir, entry);
+    try {
+      if (Date.now() - fs.statSync(file).mtimeMs > MCP_SECRET_FILE_MAX_AGE_MS) {
+        fs.unlinkSync(file);
+      }
+    } catch {
+      /* raced with a wrapper's own unlink */
+    }
+  }
+}
+
+/**
+ * The subset of the owner's secret vault that may be injected as env into the
+ * owner's OWN plugin-defined MCP servers (see plugins.liftPluginMcpServers).
+ * Reserved names with app-dedicated routing are excluded:
+ *  - git credentials (GIT_TOKEN/GITHUB_TOKEN/GH_*) are used server-side only —
+ *    "git work is MCP-only BY DESIGN" (root CLAUDE.md) must survive this
+ *    feature, or a plugin `.mcp.json` could exfiltrate push rights.
+ *  - SSH material stays exclusive to the app-pinned hex-ssh subprocess.
+ * Everything else (CONFLUENCE_PAT, arbitrary custom names) is injected.
+ */
+export function mcpInjectableSecretEnv(
+  ownerSecrets: Record<string, string>,
+): Record<string, string> {
+  const reserved = new Set<string>([
+    ...GIT_CREDENTIAL_ENV_NAMES,
+    ...SSH_MCP_SECRET_ENV_NAMES,
+  ]);
+  const out: Record<string, string> = {};
+  for (const [name, value] of Object.entries(ownerSecrets)) {
+    if (!reserved.has(name)) {
       out[name] = value;
     }
   }
@@ -615,6 +667,61 @@ export async function runClaudeAgent(
   // surface to the agent (Bash/`env` runs in a different process) nor to `toUser`.
   const ownerSecrets = store.getUserSecrets(request.avatar.id);
   const sshSecrets = sshMcpSecretEnv(ownerSecrets);
+  // Secret handoff for app-registered EXTERNAL MCP subprocesses. The SDK
+  // serializes `mcpServers` into the CLI's `--mcp-config` ARGV — readable via
+  // /proc/<pid>/cmdline by the agent's own Bash — so secret VALUES must never
+  // sit in a server definition. They ride in per-server one-shot 0600 files
+  // that scripts/mcp-secret-wrapper.mjs reads, deletes, and merges into the
+  // real server's env; only the file PATH appears in the definition. Stale
+  // files (a crash before the wrapper consumed them) are swept after an hour.
+  const mcpSecretsDir = path.join(config.dataDir, "runtime", "mcp-secrets");
+  const mcpSecretWrapperPath = path.join(
+    process.cwd(),
+    "scripts",
+    "mcp-secret-wrapper.mjs",
+  );
+  const mcpRunId = randomUUID();
+  sweepStaleMcpSecretFiles(mcpSecretsDir);
+  const injectableSecretEnv = mcpInjectableSecretEnv(ownerSecrets);
+  // Plugin-defined MCP servers (each root's `.mcp.json`): the APP registers
+  // them (strictMcpConfig below stops the CLI from auto-spawning duplicates),
+  // so the owner's secret vault — minus the reserved git/SSH names — can reach
+  // the OWNED servers while the agent shell env stays clean. Group and default
+  // roots load too but never receive secrets.
+  const lifted = await liftPluginMcpServers(
+    pluginRoots.map((root) => root.path),
+    {
+      avatarUserId: request.avatar.id,
+      config,
+      secretWrapper:
+        Object.keys(injectableSecretEnv).length > 0
+          ? {
+              scriptPath: mcpSecretWrapperPath,
+              secretsDir: mcpSecretsDir,
+              runId: mcpRunId,
+            }
+          : null,
+    },
+  );
+  const liftedPluginMcpServers = lifted.servers;
+  if (lifted.secretFiles.length > 0) {
+    fs.mkdirSync(mcpSecretsDir, { recursive: true, mode: 0o700 });
+    for (const file of lifted.secretFiles) {
+      fs.writeFileSync(file, JSON.stringify(injectableSecretEnv), {
+        mode: 0o600,
+      });
+    }
+  }
+  if (Object.keys(liftedPluginMcpServers).length > 0) {
+    agentLogger.info(
+      {
+        avatarId: request.avatar.id,
+        pluginMcpServers: Object.keys(liftedPluginMcpServers),
+        secretInjected: lifted.secretFiles.length,
+      },
+      "plugin mcp servers lifted",
+    );
+  }
   const confluenceServer = buildConfluenceServer({
     config,
     ownerSecrets,
@@ -633,21 +740,39 @@ export async function runClaudeAgent(
   const sshActive =
     sshToolsEnabled &&
     Boolean(ownerSecrets.SSH_PRIVATE_KEY && hexSshAllowedTools.length > 0);
+  // The SSH key/passphrase ride the same one-shot secret-file handoff as the
+  // plugin servers: embedding them in `env` here would serialize them into the
+  // CLI's --mcp-config ARGV, world-readable via /proc/<pid>/cmdline (this was
+  // a real pre-wrapper exposure). Only non-secret config stays in env.
+  const sshSecretsFile = path.join(mcpSecretsDir, `ssh-${mcpRunId}.json`);
+  if (sshActive && Object.keys(sshSecrets).length > 0) {
+    fs.mkdirSync(mcpSecretsDir, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(sshSecretsFile, JSON.stringify(sshSecrets), {
+      mode: 0o600,
+    });
+  }
   const sshServers = sshActive
     ? {
         [HEX_SSH_SERVER_NAME]: {
           type: "stdio" as const,
           command: process.execPath,
-          args: [hexSshProxyPath],
+          args: [
+            mcpSecretWrapperPath,
+            "--secrets",
+            sshSecretsFile,
+            "--",
+            process.execPath,
+            hexSshProxyPath,
+          ],
           // KNOWN_HOSTS_PATH points hex-ssh at the owner's persistent trust file
           // (under the data volume). hex-ssh re-reads it on every connection, so
           // the `mcp__ssh_trust__*` tools can add a host mid-session and it takes
-          // effect immediately. Only SSH-specific secrets are forwarded here:
-          // git credentials stay inside the app-managed git MCP handlers.
+          // effect immediately. SSH-specific secrets arrive via the wrapper's
+          // secrets file: git credentials stay inside the app-managed git MCP
+          // handlers, and no secret value enters this definition.
           env: {
             REMOTE_SSH_MODE: "safe",
             KNOWN_HOSTS_PATH: knownHostsPath(request.avatar.id, config),
-            ...sshSecrets,
             HEX_SSH_UPSTREAM_COMMAND: config.hexSshCommand,
             HEX_SSH_ALLOWED_TOOLS: hexSshAllowedTools.join(","),
           },
@@ -688,10 +813,19 @@ export async function runClaudeAgent(
     disallowedTools: [...UNUSED_SDK_BUILTIN_TOOLS],
     // Enable bundled + plugin skills (also auto-allows the `Skill` tool).
     skills: "all",
+    // Only the servers registered HERE exist: the CLI's own MCP discovery
+    // (plugin .mcp.json, cwd project .mcp.json, user settings) is disabled so
+    // plugin servers can't double-spawn beside the lifted, secret-injected
+    // registrations below — and so an opened work repo's .mcp.json can't
+    // register servers behind the app's back.
+    strictMcpConfig: true,
     // Register the SSH host-trust server alongside hex-ssh, and only when hex-ssh
     // itself is active (the owner stored a key) — trust management is pointless
     // without a server to connect.
     mcpServers: {
+      // Plugin-provided servers first: every app-managed name spread after
+      // this wins a collision, so a plugin can't shadow an app server.
+      ...liftedPluginMcpServers,
       ...(personalKnowledgeToolsEnabled
         ? { [KNOWLEDGE_SERVER_NAME]: knowledgeServer }
         : {}),

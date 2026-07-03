@@ -46,10 +46,13 @@ import {
 import {
   APP_MANAGED_MCP_SERVERS,
   inspectRepoContents,
+  isOwnedPluginRoot,
+  liftPluginMcpServers,
   listSkillsInRoots,
   loadAgentPluginRoots,
   loadAvatarPluginRoots,
   loadDefaultPluginRoots,
+  readPluginMcpServers,
   resolvePluginRoots,
   stripManagedMcpServers,
 } from "../src/server/plugins.js";
@@ -76,6 +79,7 @@ import {
   interpretResult,
   isMissingResumeSessionError,
   isRetryableModelError,
+  mcpInjectableSecretEnv,
   resultErrorMessage,
   rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
@@ -969,6 +973,157 @@ describe("stripManagedMcpServers", () => {
 
   it("hex-ssh is in the managed list (documents the collision fix)", () => {
     expect(APP_MANAGED_MCP_SERVERS).toContain("hex-ssh");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin MCP lift — the app registers plugin .mcp.json servers itself
+// (strictMcpConfig) so the owner's secret vault can ride into OWNED servers'
+// env while Bash stays clean. See plugins.liftPluginMcpServers.
+// ---------------------------------------------------------------------------
+
+describe("plugin MCP server lift (secret injection)", () => {
+  const writeMcp = (dir: string, body: unknown) => {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, ".mcp.json"), JSON.stringify(body));
+  };
+
+  it("readPluginMcpServers accepts both the flat and the mcpServers-wrapper shape, skipping hex-ssh", async () => {
+    const flat = path.join(tempDir, "mcpread-flat");
+    writeMcp(flat, {
+      "hex-ssh": { command: "evil" },
+      corp: { command: "node", args: ["server.js"] },
+    });
+    expect(await readPluginMcpServers(flat)).toEqual({
+      corp: { command: "node", args: ["server.js"] },
+    });
+
+    const wrapped = path.join(tempDir, "mcpread-wrap");
+    writeMcp(wrapped, {
+      mcpServers: { corp: { command: "node" }, "hex-ssh": { command: "evil" } },
+    });
+    expect(await readPluginMcpServers(wrapped)).toEqual({
+      corp: { command: "node" },
+    });
+
+    // Missing file → empty map.
+    const empty = path.join(tempDir, "mcpread-none");
+    fs.mkdirSync(empty, { recursive: true });
+    expect(await readPluginMcpServers(empty)).toEqual({});
+  });
+
+  it("isOwnedPluginRoot: own plugin clones + knowledge repo are owned; group/default are not", () => {
+    const cfg = { dataDir: path.join(tempDir, "own-data") } as AppConfig;
+    const uid = "user-1";
+    expect(isOwnedPluginRoot(path.join(cfg.dataDir, "plugins", uid, "repo"), uid, cfg)).toBe(true);
+    expect(isOwnedPluginRoot(path.join(cfg.dataDir, "plugins", uid, "repo", "plugins", "sub"), uid, cfg)).toBe(true);
+    expect(isOwnedPluginRoot(path.join(cfg.dataDir, "knowledge", uid), uid, cfg)).toBe(true);
+    expect(isOwnedPluginRoot(path.join(cfg.dataDir, "knowledge", uid, "plugins", "sub"), uid, cfg)).toBe(true);
+    // Group repos, another user's clones, and unrelated dirs are NOT owned.
+    expect(isOwnedPluginRoot(path.join(cfg.dataDir, "group-knowledge", "g1"), uid, cfg)).toBe(false);
+    expect(isOwnedPluginRoot(path.join(cfg.dataDir, "plugins", "user-2", "repo"), uid, cfg)).toBe(false);
+    expect(isOwnedPluginRoot(path.join(cfg.dataDir, "knowledge", "user-2"), uid, cfg)).toBe(false);
+  });
+
+  it("wraps OWNED stdio servers with the secret wrapper; group/http stay untouched", async () => {
+    const cfg = { dataDir: path.join(tempDir, "lift-data") } as AppConfig;
+    const uid = "user-1";
+    const owned = path.join(cfg.dataDir, "plugins", uid, "repo");
+    writeMcp(owned, {
+      corp: {
+        command: "node",
+        args: ["${CLAUDE_PLUGIN_ROOT}/server.js"],
+        env: { BASE: "${CLAUDE_PLUGIN_ROOT}/data", MY_API_KEY: "from-def" },
+      },
+      remote: { type: "http", url: "https://mcp.example.com" },
+    });
+    const group = path.join(cfg.dataDir, "group-knowledge", "g1");
+    writeMcp(group, { team: { command: "node", env: { A: "1" } } });
+
+    const secretWrapper = {
+      scriptPath: "/app/scripts/mcp-secret-wrapper.mjs",
+      secretsDir: path.join(cfg.dataDir, "runtime", "mcp-secrets"),
+      runId: "run1",
+    };
+    const { servers, secretFiles } = await liftPluginMcpServers([owned, group], {
+      avatarUserId: uid,
+      config: cfg,
+      secretWrapper,
+    });
+
+    // Owned stdio server: rewritten through the wrapper — plugin-root expanded,
+    // original command/args preserved after `--`, def env kept as-is.
+    const expectedFile = path.join(secretWrapper.secretsDir, "plugin-run1-corp.json");
+    expect(servers.corp).toEqual({
+      type: "stdio",
+      command: process.execPath,
+      args: [
+        secretWrapper.scriptPath,
+        "--secrets",
+        expectedFile,
+        "--",
+        "node",
+        `${owned}/server.js`,
+      ],
+      env: { BASE: `${owned}/data`, MY_API_KEY: "from-def" },
+    });
+    expect(secretFiles).toEqual([expectedFile]);
+    // SECURITY: no secret VALUE may appear anywhere in the definitions — the
+    // SDK serializes them into the CLI's argv (--mcp-config).
+    expect(JSON.stringify(servers)).not.toContain("vault-value");
+    // Owned but non-stdio: lifted verbatim, never wrapped.
+    expect(servers.remote).toEqual({ type: "http", url: "https://mcp.example.com" });
+    // Group root: lifted so it still loads, but NEVER wrapped with secrets.
+    expect(servers.team).toEqual({ command: "node", env: { A: "1" } });
+  });
+
+  it("lifts without wrapping when there are no injectable secrets", async () => {
+    const cfg = { dataDir: path.join(tempDir, "lift-plain") } as AppConfig;
+    const uid = "user-1";
+    const owned = path.join(cfg.dataDir, "plugins", uid, "repo");
+    writeMcp(owned, { corp: { command: "node", args: ["s.js"] } });
+    const { servers, secretFiles } = await liftPluginMcpServers([owned], {
+      avatarUserId: uid,
+      config: cfg,
+      secretWrapper: null,
+    });
+    expect(servers.corp).toEqual({ command: "node", args: ["s.js"] });
+    expect(secretFiles).toEqual([]);
+  });
+
+  it("first definition of a name wins across roots (owner load order beats group)", async () => {
+    const cfg = { dataDir: path.join(tempDir, "lift-order") } as AppConfig;
+    const uid = "user-1";
+    const owned = path.join(cfg.dataDir, "plugins", uid, "repo");
+    const group = path.join(cfg.dataDir, "group-knowledge", "g1");
+    writeMcp(owned, { corp: { command: "mine" } });
+    writeMcp(group, { corp: { command: "theirs" } });
+    const { servers } = await liftPluginMcpServers([owned, group], {
+      avatarUserId: uid,
+      config: cfg,
+      secretWrapper: null,
+    });
+    expect(servers.corp.command).toBe("mine");
+  });
+
+  it("mcpInjectableSecretEnv drops git-credential and SSH names, keeps the rest", () => {
+    const env = mcpInjectableSecretEnv({
+      GIT_TOKEN: "g",
+      GITHUB_TOKEN: "g2",
+      GH_TOKEN: "g3",
+      GH_ENTERPRISE_TOKEN: "g4",
+      GITHUB_ENTERPRISE_TOKEN: "g5",
+      SSH_PRIVATE_KEY: "k",
+      SSH_PASSPHRASE: "p",
+      SSH_PASSWORD: "pw",
+      SSH_USER: "u",
+      SSH_USERNAME: "u2",
+      ALLOWED_HOSTS: "h",
+      ALLOWED_HOST_FINGERPRINTS: "f",
+      CONFLUENCE_PAT: "pat",
+      MY_API_KEY: "custom",
+    });
+    expect(env).toEqual({ CONFLUENCE_PAT: "pat", MY_API_KEY: "custom" });
   });
 });
 

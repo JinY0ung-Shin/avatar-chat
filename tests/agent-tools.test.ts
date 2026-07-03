@@ -557,6 +557,56 @@ describe("confluence tools", () => {
 });
 
 
+describe("mcp-secret-wrapper script", () => {
+  const wrapperPath = path.join(process.cwd(), "scripts", "mcp-secret-wrapper.mjs");
+
+  it("injects the secrets file into the child env, deletes the file, and passes stdio through", () => {
+    const dir = path.join(tempDir, "wrap1");
+    fs.mkdirSync(dir, { recursive: true });
+    const secretsFile = path.join(dir, "s.json");
+    fs.writeFileSync(secretsFile, JSON.stringify({ MY_API_KEY: "vault-value" }));
+    const out = execFileSync(process.execPath, [
+      wrapperPath,
+      "--secrets",
+      secretsFile,
+      "--",
+      process.execPath,
+      "-e",
+      "console.log(process.env.MY_API_KEY)",
+    ]).toString();
+    expect(out.trim()).toBe("vault-value");
+    // One-shot handoff: the plaintext file is consumed on read.
+    expect(fs.existsSync(secretsFile)).toBe(false);
+  });
+
+  it("fails loudly (instead of starting secret-less) when the secrets file is missing", () => {
+    expect(() =>
+      execFileSync(
+        process.execPath,
+        [wrapperPath, "--secrets", path.join(tempDir, "nope.json"), "--", process.execPath, "-e", "0"],
+        { stdio: "pipe" },
+      ),
+    ).toThrow();
+  });
+
+  it("propagates the child's exit code", () => {
+    const dir = path.join(tempDir, "wrap2");
+    fs.mkdirSync(dir, { recursive: true });
+    const secretsFile = path.join(dir, "s.json");
+    fs.writeFileSync(secretsFile, "{}");
+    try {
+      execFileSync(
+        process.execPath,
+        [wrapperPath, "--secrets", secretsFile, "--", process.execPath, "-e", "process.exit(7)"],
+        { stdio: "pipe" },
+      );
+      throw new Error("expected the wrapper to exit non-zero");
+    } catch (error) {
+      expect((error as { status?: number }).status).toBe(7);
+    }
+  });
+});
+
 describe("repo tools (knowledge-repo management)", () => {
   // A store + owner pointed at a local bare git remote, so commit/push works
   // offline. Returns the config so tools can resolve the clone path.

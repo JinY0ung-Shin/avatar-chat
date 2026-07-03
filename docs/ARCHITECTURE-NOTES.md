@@ -293,6 +293,29 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   `secretNames` ONLY (values never via `toUser`). `PUT/DELETE /api/me/secrets/:name` (env-key-name
   validated). Settings UI "시크릿" card under the 권한·연결 tab. Owner, non-headless chat prompts include
   only those secret NAMES so the avatar knows what is configured; values never enter the prompt or Bash env.
+- **Where secret VALUES actually flow (selective injection, never the shell):** the SDK subprocess env
+  (`agentSubprocessEnv`) gets NO user secrets — Bash/`env` stays clean. Known names route to dedicated
+  consumers: `SSH_*`/`ALLOWED_HOST*` → the hex-ssh subprocess only (`sshMcpSecretEnv`), `CONFLUENCE_PAT`
+  → the in-process Confluence tools, git tokens → server-side git only. **Custom secrets reach plugin MCP
+  servers via the lift**: `runClaudeAgent` sets `strictMcpConfig: true` (CLI MCP discovery — plugin
+  `.mcp.json`, cwd project `.mcp.json`, user settings — is OFF) and registers every plugin root's
+  `.mcp.json` servers itself through `plugins.liftPluginMcpServers` (both the `{"mcpServers":{…}}` wrapper
+  and the legacy flat shape parse). OWNED roots (the avatar's own plugin clones + personal knowledge repo)
+  get `mcpInjectableSecretEnv` (vault minus git-credential + SSH names); group/default roots are lifted
+  verbatim with NO secrets (a group teammate's `.mcp.json` must not read your vault).
+  `${CLAUDE_PLUGIN_ROOT}` is expanded app-side (the CLI no longer sees the plugin origin); first
+  definition of a name wins (load order default → avatar plugins → knowledge repo → group), and app
+  in-process servers spread after the lifted map so app names always win.
+- **⚠️ MCP secret TRANSPORT is a one-shot file + wrapper, NEVER the server definition.** The SDK
+  serializes `options.mcpServers` into the CLI's `--mcp-config` ARGV, and argv is world-readable via
+  `/proc/<pid>/cmdline` — the agent's own Bash is a child of that CLI (`cat /proc/$PPID/cmdline`). So
+  injected env values (and hex-ssh's `SSH_PRIVATE_KEY`, which used to sit in the def env — a real
+  pre-wrapper exposure) ride in per-server mode-0600 files under `dataDir/runtime/mcp-secrets/`, and the
+  def becomes `node scripts/mcp-secret-wrapper.mjs --secrets <file> -- <real command…>`. The wrapper
+  reads the file, DELETES it (one-shot), and execs the real server with secrets merged over its env;
+  `sweepStaleMcpSecretFiles` removes >1h crash leftovers at the next run. Residual (accepted) exposure:
+  everything runs as ONE container uid, so a determined Bash user can still read same-uid `/proc/*/environ`
+  or files — the wrapper closes the casual `env`-dump and world-readable-argv tiers, not uid isolation.
 - **Two git tokens, vault-backed, host-routed.** Each user can store TWO git tokens as named
   `user_secrets`: `GIT_TOKEN` (`INTERNAL_GIT_TOKEN_SECRET_NAME`) for the internal `GITHUB_HOST`, and
   `GITHUB_TOKEN` (`EXTERNAL_GIT_TOKEN_SECRET_NAME`) for github.com. `tokenForGitUrl` in

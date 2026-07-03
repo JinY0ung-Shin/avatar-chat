@@ -273,7 +273,7 @@ function secretsSection(secretNames: string[]): string | null {
   return (
     "Environment-variable names registered in the **Secrets** tab of Settings: " +
     secretNames.map((name) => `\`${name}\``).join(", ") +
-    ". You cannot see the values; do not output or guess them. The server injects those values separately into the MCP tools that need them."
+    ". You cannot see the values; do not output or guess them (they are never present in your Bash shell). The server injects them where they are needed: custom secrets are provided as environment variables to the MCP servers registered by YOUR OWN plugins/knowledge repo (`.mcp.json`), while git credentials (`GIT_TOKEN`/`GITHUB_TOKEN`), SSH material, and the Confluence PAT flow only into their dedicated built-in tools. MCP servers from group repositories never receive these secrets."
   );
 }
 

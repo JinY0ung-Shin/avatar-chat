@@ -104,6 +104,190 @@ export async function stripManagedMcpServers(rootDir: string): Promise<boolean> 
   return changed;
 }
 
+/**
+ * A raw MCP server definition read from a plugin root's `.mcp.json`. Kept
+ * loose on purpose — the SDK validates the real schema; we only look at the
+ * fields we transform (`type`/`env`, plus string fields for
+ * `${CLAUDE_PLUGIN_ROOT}` expansion) and pass everything else through.
+ */
+export type PluginMcpServerDef = Record<string, unknown>;
+
+/**
+ * Read the MCP server definitions from a plugin root's `.mcp.json`.
+ *
+ * Accepts BOTH shapes seen in the wild: a `{ "mcpServers": { <name>: def } }`
+ * wrapper (project-style) and a flat `{ <name>: def }` map (the shape
+ * `stripManagedMcpServers` has always assumed). App-managed server names
+ * (hex-ssh) are dropped here for the same reason that strip exists: the app's
+ * keyed registration must stay the sole definition. Missing/unparseable file →
+ * empty map.
+ */
+export async function readPluginMcpServers(
+  rootDir: string,
+): Promise<Record<string, PluginMcpServerDef>> {
+  const config = await readJson<Record<string, unknown>>(path.join(rootDir, ".mcp.json"));
+  if (!config || typeof config !== "object") {
+    return {};
+  }
+  const wrapper = config.mcpServers;
+  const entries =
+    wrapper && typeof wrapper === "object" && !Array.isArray(wrapper)
+      ? (wrapper as Record<string, unknown>)
+      : config;
+  const out: Record<string, PluginMcpServerDef> = {};
+  for (const [name, def] of Object.entries(entries)) {
+    if (!def || typeof def !== "object" || Array.isArray(def)) continue;
+    if ((APP_MANAGED_MCP_SERVERS as readonly string[]).includes(name)) continue;
+    out[name] = def as PluginMcpServerDef;
+  }
+  return out;
+}
+
+/**
+ * True when a plugin root belongs to the avatar OWNER's own sources — their
+ * synced plugin repos (`dataDir/plugins/<userId>/…`) or their personal
+ * knowledge repo clone (`dataDir/knowledge/<userId>`, incl. marketplace
+ * subdirs). Group knowledge repos and the app's default plugin roots are NOT
+ * owned: secrets must never flow into an MCP server a group teammate (or the
+ * app repo) defined. Used by the secret-injection lift below.
+ */
+export function isOwnedPluginRoot(
+  rootPath: string,
+  avatarUserId: string,
+  config: AppConfig,
+): boolean {
+  const resolved = path.resolve(rootPath);
+  const pluginBase = path.resolve(
+    path.join(config.dataDir, "plugins", sanitizeName(avatarUserId)),
+  );
+  const knowledgeBase = path.resolve(knowledgeClonePath(avatarUserId, config));
+  return (
+    resolved === pluginBase ||
+    resolved.startsWith(pluginBase + path.sep) ||
+    resolved === knowledgeBase ||
+    resolved.startsWith(knowledgeBase + path.sep)
+  );
+}
+
+/** Expand `${CLAUDE_PLUGIN_ROOT}` in one string value. */
+function expandPluginRoot(value: string, rootDir: string): string {
+  return value.split("${CLAUDE_PLUGIN_ROOT}").join(rootDir);
+}
+
+/**
+ * Secret-handoff wiring for `liftPluginMcpServers`: the app-owned wrapper
+ * script plus the directory the per-server mode-0600 secret files go in. The
+ * caller (claudeAgent) WRITES the files after the lift returns which paths are
+ * needed — the values never enter the server definitions themselves.
+ */
+export interface McpSecretWrapper {
+  /** Absolute path of scripts/mcp-secret-wrapper.mjs. */
+  scriptPath: string;
+  /** Directory for the one-shot secret files (created by the caller). */
+  secretsDir: string;
+  /** Per-run unique id used in the secret file names. */
+  runId: string;
+}
+
+/**
+ * Lift the MCP servers defined by the given plugin roots' `.mcp.json` files
+ * into an SDK `mcpServers`-shaped map, so the app — not the CLI — registers
+ * them. Runs with `strictMcpConfig: true` on the query, which stops the CLI
+ * from ALSO auto-spawning the same servers from the plugin dirs.
+ *
+ * Why the app registers them itself: it lets the owner's secret vault reach
+ * the OWNED servers while the agent shell (Bash) env stays clean. Per root:
+ *  - `${CLAUDE_PLUGIN_ROOT}` in string fields (command/args/env/url/…) is
+ *    expanded to the root path, since the CLI can no longer resolve the
+ *    plugin origin. Other `${VAR}` forms are left for the CLI's own
+ *    `--mcp-config` expansion, same as before the lift.
+ *  - OWNED roots (see `isOwnedPluginRoot`) with a stdio def (no `type` or
+ *    `type: "stdio"`) are REWRITTEN to run through the secret wrapper:
+ *    `node mcp-secret-wrapper.mjs --secrets <file> -- <command> [args…]`.
+ *    SECURITY: the SDK serializes `mcpServers` into the CLI's `--mcp-config`
+ *    ARGV (readable via /proc/<pid>/cmdline by the agent's own Bash), so
+ *    secret VALUES must never be embedded in the def env — only the secret
+ *    FILE PATH may appear. The wrapper reads + deletes the 0600 file and
+ *    execs the real server with the secrets merged over its env.
+ *  - Non-owned roots (group repos, default plugins) are lifted verbatim —
+ *    they keep loading, but NEVER receive the owner's secrets.
+ *  - FIRST definition of a name wins, matching the load order default →
+ *    avatar plugins → knowledge repo → group repos, so a group repo can't
+ *    shadow the owner's own server. App in-process servers are spread AFTER
+ *    the lifted map at the call site, so app names always win overall.
+ *
+ * Returns the servers plus the secret-file paths the wrapped defs reference;
+ * the caller writes the injectable env to each (0600) BEFORE starting the
+ * query. `secretWrapper: null` (no injectable secrets) lifts without wrapping.
+ */
+export async function liftPluginMcpServers(
+  rootPaths: string[],
+  opts: {
+    avatarUserId: string;
+    config: AppConfig;
+    secretWrapper: McpSecretWrapper | null;
+  },
+): Promise<{ servers: Record<string, PluginMcpServerDef>; secretFiles: string[] }> {
+  const servers: Record<string, PluginMcpServerDef> = {};
+  const secretFiles: string[] = [];
+  for (const rootPath of rootPaths) {
+    const defs = await readPluginMcpServers(rootPath);
+    const owned = isOwnedPluginRoot(rootPath, opts.avatarUserId, opts.config);
+    for (const [name, rawDef] of Object.entries(defs)) {
+      if (name in servers) continue;
+      const def: PluginMcpServerDef = {};
+      for (const [key, value] of Object.entries(rawDef)) {
+        if (typeof value === "string") {
+          def[key] = expandPluginRoot(value, rootPath);
+        } else if (Array.isArray(value)) {
+          def[key] = value.map((v) =>
+            typeof v === "string" ? expandPluginRoot(v, rootPath) : v,
+          );
+        } else if (key === "env" && value && typeof value === "object") {
+          const env: Record<string, unknown> = {};
+          for (const [envName, envValue] of Object.entries(value)) {
+            env[envName] =
+              typeof envValue === "string"
+                ? expandPluginRoot(envValue, rootPath)
+                : envValue;
+          }
+          def[key] = env;
+        } else {
+          def[key] = value;
+        }
+      }
+      const type = typeof def.type === "string" ? def.type : "stdio";
+      if (
+        owned &&
+        type === "stdio" &&
+        opts.secretWrapper &&
+        typeof def.command === "string"
+      ) {
+        const file = path.join(
+          opts.secretWrapper.secretsDir,
+          `plugin-${opts.secretWrapper.runId}-${sanitizeName(name)}.json`,
+        );
+        secretFiles.push(file);
+        const originalArgs = Array.isArray(def.args)
+          ? def.args.filter((a): a is string => typeof a === "string")
+          : [];
+        def.args = [
+          opts.secretWrapper.scriptPath,
+          "--secrets",
+          file,
+          "--",
+          def.command,
+          ...originalArgs,
+        ];
+        def.command = process.execPath;
+        def.type = "stdio";
+      }
+      servers[name] = def;
+    }
+  }
+  return { servers, secretFiles };
+}
+
 async function isPluginDir(dir: string): Promise<boolean> {
   return pathExists(path.join(dir, ".claude-plugin", "plugin.json"));
 }
