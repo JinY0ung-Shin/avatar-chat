@@ -66,6 +66,16 @@ Each item lists: files · why · risk · effort · breaking.
 - (b) Full zod schemas + Express-5/`asyncHandler` so the central error middleware becomes reachable — **changes error responses**, so it's a behavior change, out of scope for a pure restructure. Defer (b).
 - **risk:** med · **effort:** M · **breaking:** (b) yes
 
+### T3.10 — audit remaining untracked template function calls (Svelte 5 legacy)
+- **Files:** `src/client/src/components/Shell.svelte` (`isConversationBusy`/`isConversationStreaming`),
+  `src/client/src/views/ChatView.svelte` (`canPickModel`)
+- Same class as the fixed CONFLUENCE_PAT save-button bug (ARCHITECTURE-NOTES §Svelte 5 runtime gotchas):
+  the template calls a helper whose BODY reads reactive state → compiled with `$.untrack` → the attribute
+  goes stale until an unrelated invalidation. These are currently masked by coincident list/store
+  refreshes (unverified). Verify each with a Playwright fixture, then convert to `$:` derived maps the
+  template reads DIRECTLY. Helpers reading only their arguments are fine — leave them.
+- **risk:** low · **effort:** S · **breaking:** no
+
 ---
 
 ## Coverage gaps (not refactors — flagged)

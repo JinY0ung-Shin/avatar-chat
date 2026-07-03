@@ -630,6 +630,14 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   then Svelte set `value=""` without re-measuring → the textarea never shrank back. Fix: defer the
   param-driven grow with `queueMicrotask(grow)`; keep the `input`-listener path synchronous. General rule:
   when an action must react to a programmatic value change, defer any layout read to a microtask.
+- **Legacy mode compiles template FUNCTION CALLS inside `$.untrack()`** (Svelte-4 compile-time dependency
+  semantics: only variables referenced DIRECTLY in the expression are tracked). A helper like
+  `hasPresetValue(name)` that reads a reactive `let` in its BODY never re-runs when that state changes —
+  the CONFLUENCE_PAT 저장 button stayed disabled while typing (`SettingsAccessTab`). Fix pattern: derive
+  per-item state in a `$:` map (`presetFilled`/`presetStatusText`) and have the template read the map
+  DIRECTLY. Functions that read only their ARGUMENTS (e.g. `canSendMessage(item)`) are fine — the arg is
+  the tracked dep. Known latent same-class instances (masked by coincident list refreshes, unverified):
+  `Shell.isConversationBusy`/`isConversationStreaming`, `ChatView.canPickModel` — see REFACTORING-BACKLOG.
 
 ### Chat transcript auto-scroll (stick-to-bottom)
 - **User intent is read from INPUT events (wheel/touch/pointer), never inferred from scroll deltas.**

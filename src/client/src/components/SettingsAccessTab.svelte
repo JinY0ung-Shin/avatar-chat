@@ -153,18 +153,32 @@
               ? "값을 입력해 주세요."
               : "저장할 준비가 됐습니다.";
 
-  function hasPresetValue(name: string): boolean {
-    return Boolean(presetValues[name]?.trim());
-  }
   function secretDomId(name: string, part: string): string {
     return `access-secret-${name.replace(/[^A-Za-z0-9_-]/g, "-")}-${part}`;
   }
-  function presetStatus(name: string, label: string, isSet: boolean): string {
-    if (presetBusy[name]) return "저장 중…";
-    if (presetErrors[name]) return `저장 실패: ${presetErrors[name]}`;
-    if (hasPresetValue(name)) return "저장할 값이 입력되었습니다.";
-    return isSet ? `${label} 시크릿이 설정되어 있습니다.` : `${label} 시크릿이 아직 없습니다.`;
-  }
+  // Svelte 5 legacy mode compiles template FUNCTION CALLS inside untrack()
+  // (preserving Svelte-4 compile-time dependency semantics), so a helper that
+  // reads `presetValues` in its BODY never re-ran while typing — the 저장
+  // button stayed disabled and the status label stale. Derive the per-preset
+  // state up front and have the template read these maps DIRECTLY instead.
+  $: presetFilled = Object.fromEntries(
+    SECRET_PRESETS.map((p) => [p.name, Boolean(presetValues[p.name]?.trim())]),
+  ) as Record<string, boolean>;
+  $: presetStatusText = Object.fromEntries(
+    SECRET_PRESETS.map((p) => {
+      const isSet = Boolean(user?.secretNames.includes(p.name));
+      const text = presetBusy[p.name]
+        ? "저장 중…"
+        : presetErrors[p.name]
+          ? `저장 실패: ${presetErrors[p.name]}`
+          : presetFilled[p.name]
+            ? "저장할 값이 입력되었습니다."
+            : isSet
+              ? `${p.label} 시크릿이 설정되어 있습니다.`
+              : `${p.label} 시크릿이 아직 없습니다.`;
+      return [p.name, text];
+    }),
+  ) as Record<string, string>;
   function clearPresetError(name: string): void {
     if (!presetErrors[name]) return;
     presetErrors = { ...presetErrors, [name]: "" };
@@ -488,8 +502,8 @@
             on:input={() => clearPresetError(preset.name)}
           ></textarea>
           <div class="secret-preset-actions">
-            <span id={presetStatusId} class="settings-save-status" class:dirty={Boolean(presetErrors[preset.name] || hasPresetValue(preset.name))} role="status" aria-live="polite">{presetStatus(preset.name, preset.label, isSet)}</span>
-            <button class="primary" type="submit" disabled={presetBusy[preset.name] || !hasPresetValue(preset.name)}>{isSet ? "교체" : "저장"}</button>
+            <span id={presetStatusId} class="settings-save-status" class:dirty={Boolean(presetErrors[preset.name]) || presetFilled[preset.name]} role="status" aria-live="polite">{presetStatusText[preset.name]}</span>
+            <button class="primary" type="submit" disabled={presetBusy[preset.name] || !presetFilled[preset.name]}>{isSet ? "교체" : "저장"}</button>
             <button class="linkish small" type="button" disabled={!isSet || presetBusy[preset.name]} on:click={() => clearPresetSecret(preset.name, preset.label)}>삭제</button>
           </div>
         </form>
