@@ -26,6 +26,7 @@
   let groups: SettingsGroup[] = [];
   let groupsLoading = false;
   let groupsError = "";
+  let groupsLoadedFor = "";
 
   $: user = $appState.user;
   $: githubHost = $appState.bootstrap?.githubHost || "github.com";
@@ -33,8 +34,14 @@
 
   onMount(load);
 
-  // Load groups when the groups tab is first opened.
-  $: if (settingsTab === "groups" && !loading && user && !groupsLoading && !groups.length && !groupsError) {
+  $: if (user?.id && groupsLoadedFor && groupsLoadedFor !== user.id) {
+    groups = [];
+    groupsError = "";
+    groupsLoadedFor = "";
+  }
+
+  // Load groups when the groups tab is first opened for this user.
+  $: if (settingsTab === "groups" && !loading && user && !groupsLoading && groupsLoadedFor !== user.id) {
     void loadGroups();
   }
 
@@ -60,8 +67,10 @@
     try {
       const { groups: next } = await api<{ groups: SettingsGroup[] }>("/api/me/groups");
       groups = next;
+      groupsLoadedFor = user?.id || groupsLoadedFor;
     } catch (err) {
       groupsError = (err as Error).message;
+      groupsLoadedFor = user?.id || groupsLoadedFor;
     } finally {
       groupsLoading = false;
     }
@@ -92,9 +101,9 @@
 </script>
 
 <header class="view-header">
-  <div>
+  <div class="title">
     <h1>내 아바타</h1>
-    <p>프로필과 플러그인을 관리하고 공개하세요</p>
+    <p>프로필·권한·지식·그룹을 관리하세요</p>
   </div>
 </header>
 
@@ -146,6 +155,10 @@
                 내가 속한 그룹과 그룹원입니다. 같은 그룹원끼리는 자동으로 서로 신뢰해 아바타에 권한이 부여됩니다. 그룹 관리자는 그룹원과 공용 지식 저장소를 관리할 수
                 있어요. 그룹 생성·삭제는 시스템 관리자가 합니다.
               </p>
+            </div>
+            <div class="head-actions">
+              <span class="muted small nowrap">{groupsError ? "조회 실패" : groupsLoading ? "새로고침 중" : `총 ${groups.length}개`}</span>
+              <button class="linkish small" type="button" disabled={groupsLoading} on:click={loadGroups}>새로고침</button>
             </div>
           </div>
           <div class="groups-body">

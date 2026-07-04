@@ -1320,6 +1320,7 @@ textarea::placeholder {
   padding: var(--s-2-5) var(--s-3);
   font-size: var(--t-sm);
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .empty-note {
@@ -1336,6 +1337,7 @@ textarea::placeholder {
   align-content: center;
   gap: var(--s-2);
   white-space: pre-line;
+  overflow-wrap: anywhere;
 }
 .avatar-grid > .empty-note {
   grid-column: 1 / -1;

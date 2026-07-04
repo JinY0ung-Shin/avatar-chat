@@ -466,9 +466,9 @@
 </script>
 
 <header class="view-header">
-  <div>
+  <div class="title">
     <h1>관리자</h1>
-    <p>사용자·접근·시스템을 관리하세요</p>
+    <p>사용자·그룹·접근·시스템을 관리하세요</p>
   </div>
   <button class="ghost-sm" type="button" disabled={loadBusy} on:click={load}>{loadBusy ? "새로고침 중…" : "새로고침"}</button>
 </header>
@@ -617,7 +617,16 @@
               <button class="primary" type="submit" aria-describedby={groupCreateStatusId} disabled={!canCreateGroup}>{creatingGroup ? "생성 중…" : "그룹 만들기"}</button>
             </form>
             <div class="settings-save-row compact">
-              <span id={groupCreateStatusId} class="settings-save-status" class:dirty={Boolean(creatingGroup || groupCreateError || groupCreateMessage || newGroupNameTrimmed)} role="status" aria-live="polite">{groupCreateStatus}</span>
+              <span
+                id={groupCreateStatusId}
+                class="settings-save-status"
+                class:dirty={Boolean(newGroupNameTrimmed && !creatingGroup && !groupCreateError && !groupCreateMessage)}
+                class:pending={creatingGroup}
+                class:success={Boolean(groupCreateMessage)}
+                class:invalid={Boolean(groupCreateError)}
+                role="status"
+                aria-live="polite"
+              >{groupCreateStatus}</span>
             </div>
             <div class="admin-users-head">
               <input
@@ -678,7 +687,7 @@
               {/each}
             </div>
             <div class="settings-save-row compact">
-              <span id={signupStatusId} class="settings-save-status" class:dirty={Boolean(signupError)} role="status" aria-live="polite">{signupStatus}</span>
+              <span id={signupStatusId} class="settings-save-status" class:pending={signupBusy} class:invalid={Boolean(signupError)} role="status" aria-live="polite">{signupStatus}</span>
             </div>
           </section>
         </div>
@@ -767,7 +776,7 @@
                   />
                 </label>
                 <div class="settings-save-row">
-                  <span id={tokenStatusId} class="settings-save-status" class:dirty={Boolean(tokenError || claudeTokenTrimmed)} role="status" aria-live="polite">{tokenStatus}</span>
+                  <span id={tokenStatusId} class="settings-save-status" class:dirty={Boolean(claudeTokenTrimmed && !subBusy && !tokenError)} class:pending={subBusy} class:invalid={Boolean(tokenError)} role="status" aria-live="polite">{tokenStatus}</span>
                   <button class="primary" type="submit" disabled={!tokenCanSave}>{subBusy ? "저장 중…" : sys.subscriptionConnected ? "교체 저장" : "저장"}</button>
                 </div>
               </form>
@@ -799,7 +808,7 @@
                   />
                 </label>
                 <div class="settings-save-row">
-                  <span id={modelStatusId} class="settings-save-status" class:dirty={modelDirty || Boolean(modelError)} role="status" aria-live="polite">{modelStatus}</span>
+                  <span id={modelStatusId} class="settings-save-status" class:dirty={modelDirty && !modelBusy && !modelError} class:pending={modelBusy} class:invalid={Boolean(modelError)} role="status" aria-live="polite">{modelStatus}</span>
                   <button class="primary" type="submit" disabled={!modelCanSave}>{modelBusy ? "저장 중…" : modelValueTrimmed ? "모델 저장" : "기본값 사용"}</button>
                 </div>
               </form>
@@ -834,7 +843,7 @@
                     {/each}
                   </div>
                   <div class="settings-save-row">
-                    <span id={hexStatusId} class="settings-save-status" class:dirty={hexDirty || Boolean(hexError)} role="status" aria-live="polite">{hexStatus}</span>
+                    <span id={hexStatusId} class="settings-save-status" class:dirty={hexDirty && !hexBusy && !hexError} class:pending={hexBusy} class:invalid={Boolean(hexError)} role="status" aria-live="polite">{hexStatus}</span>
                     <button class="primary" type="submit" disabled={!hexCanSave}>{hexBusy ? "저장 중…" : "정책 저장"}</button>
                   </div>
                 </form>
@@ -868,6 +877,12 @@
                   <option value={a}>{a}</option>
                 {/each}
               </select>
+              <span class="muted nowrap">
+                {#if auditAction}표시 {shownAudit.length}건 / 전체 {($appState.audit || []).length}건{:else}총 {shownAudit.length}건{/if}
+              </span>
+              {#if auditAction}
+                <button class="linkish small" type="button" on:click={() => (auditAction = "")}>필터 해제</button>
+              {/if}
             </div>
             <div class="audit-table-wrap">
               {#if !shownAudit.length}

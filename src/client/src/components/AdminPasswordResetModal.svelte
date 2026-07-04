@@ -15,10 +15,12 @@
   let confirmPassword = "";
   let errorMessage = "";
   let busy = false;
-  const descId = "admin-password-reset-desc";
-  const statusId = "admin-password-reset-status";
-  const errorId = "admin-password-reset-error";
 
+  $: userIdBase = user.id.replace(/[^A-Za-z0-9_-]/g, "-");
+  $: titleId = `admin-password-reset-${userIdBase}-title`;
+  $: descId = `admin-password-reset-${userIdBase}-desc`;
+  $: statusId = `admin-password-reset-${userIdBase}-status`;
+  $: errorId = `admin-password-reset-${userIdBase}-error`;
   $: passwordReady = password.length >= 8;
   $: passwordsMatch = Boolean(password && confirmPassword && password === confirmPassword);
   $: canSubmit = Boolean(!busy && passwordReady && passwordsMatch);
@@ -67,12 +69,12 @@
 
 <Modal
   cardClass="password-reset-card"
-  ariaLabelledby="admin-password-reset-title"
+  ariaLabelledby={titleId}
   ariaDescribedby={descId}
   closeDisabled={busy}
   on:close={() => dispatch("close")}
 >
-  <h2 id="admin-password-reset-title">비밀번호 재설정</h2>
+  <h2 id={titleId}>비밀번호 재설정</h2>
   <p class="muted" id={descId}>저장하면 이 사용자의 기존 세션이 모두 로그아웃됩니다.</p>
   <form
     class="routine-modal-form"
@@ -109,7 +111,15 @@
     {#if errorMessage}
       <div class="error" id={errorId} role="alert">{errorMessage}</div>
     {/if}
-    <div class="routine-form-status" id={statusId} class:invalid={!canSubmit && !busy} class:dirty={canSubmit} role="status">{passwordStatus}</div>
+    <div
+      class="routine-form-status"
+      id={statusId}
+      class:invalid={Boolean(errorMessage || passwordInvalid || confirmInvalid)}
+      class:dirty={canSubmit}
+      class:pending={busy}
+      role="status"
+      aria-live="polite"
+    >{passwordStatus}</div>
     <div class="routine-modal-actions">
       <div class="routine-modal-actions-left">
         <span class="muted">대상: {user.displayName} (@{user.username})</span>

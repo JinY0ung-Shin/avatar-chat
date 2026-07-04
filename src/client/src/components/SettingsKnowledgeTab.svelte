@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import Icon from "./Icon.svelte";
   import Toggle from "./Toggle.svelte";
   import SettingsPluginSelect from "./SettingsPluginSelect.svelte";
@@ -25,6 +26,7 @@
   let graphOpen = false;
   let requestRepoBusy = false;
   let knowledgeError = "";
+  let syncedKnowledgeUserId = u0?.id || "";
 
   // plugin add form
   let pluginRepo = "";
@@ -63,6 +65,12 @@
           : savedKnowledgeRepo
             ? "연결됨"
             : "연결 전";
+  $: if (user?.id && user.id !== syncedKnowledgeUserId && !krBusy) {
+    syncKnowledgeForm(user);
+    krPickOpen = false;
+    krContents = null;
+    krContentsErr = "";
+  }
   $: pluginRepoTrimmed = pluginRepo.trim();
   $: pluginCanAdd = Boolean(!pluginAddBusy && pluginRepoTrimmed);
   $: pluginAddStatus = pluginAddBusy
@@ -77,6 +85,17 @@
   const knowledgeStatusId = "knowledge-repo-save-status";
   const pluginAddStatusId = "plugin-add-save-status";
 
+  function summarizeRepoContentsError(message: string): string {
+    const lower = message.toLowerCase();
+    if (lower.includes("repository not found")) return "저장소를 찾지 못했습니다. 저장소 주소 또는 접근 권한을 확인해 주세요.";
+    if (lower.includes("command failed") || lower.includes("git clone")) return "저장소 내용을 가져오지 못했습니다.";
+    return message.length > 140 ? `${message.slice(0, 140)}...` : message;
+  }
+
+  function shouldShowRepoErrorDetails(message: string): boolean {
+    return message.length > 140 || /command failed|git clone/i.test(message);
+  }
+
   function pluginContentsPanelId(id: string): string {
     return `plugin-contents-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   }
@@ -85,6 +104,8 @@
   function syncKnowledgeForm(next: User): void {
     knowledgeRepo = next.knowledgeRepo || "";
     knowledgeBranch = next.knowledgeBranch || "";
+    syncedKnowledgeUserId = next.id;
+    knowledgeError = "";
   }
 
   async function saveKnowledge(): Promise<void> {
@@ -144,7 +165,10 @@
   }
   async function toggleKrPick(): Promise<void> {
     krPickOpen = !krPickOpen;
-    if (krPickOpen && !krContents && !krContentsLoading) await loadKrContents();
+    if (!krPickOpen) return;
+    if (!krContents && !krContentsLoading) await loadKrContents();
+    await tick();
+    document.getElementById(krContentsId)?.scrollIntoView({ block: "center" });
   }
   async function loadKrContents(): Promise<void> {
     if (krContentsLoading) return;
@@ -259,6 +283,8 @@
     }
     openPluginId = p.id;
     if (!pluginContents[p.id]) await loadPluginContents(p);
+    await tick();
+    document.getElementById(pluginContentsPanelId(p.id))?.scrollIntoView({ block: "center" });
   }
   async function loadPluginContents(p: Plugin): Promise<void> {
     if (pluginContentsLoading[p.id]) return;
@@ -304,7 +330,7 @@
       <button class="primary" type="submit" disabled={!knowledgeCanSave}>{krBusy ? "저장 중…" : savedKnowledgeRepo ? "변경 저장" : "연결"}</button>
     </form>
     <div class="settings-save-row compact">
-      <span id={knowledgeStatusId} class="settings-save-status" class:dirty={knowledgeDirty || Boolean(knowledgeError)} role="status" aria-live="polite">{knowledgeStatus}</span>
+      <span id={knowledgeStatusId} class="settings-save-status" class:dirty={knowledgeDirty && !krBusy && !knowledgeError} class:pending={krBusy} class:invalid={Boolean(knowledgeError)} role="status" aria-live="polite">{knowledgeStatus}</span>
     </div>
 
     {#if !user.knowledgeRepo}
@@ -341,7 +367,16 @@
           {#if krContentsLoading}
             <div class="muted" role="status">불러오는 중…</div>
           {:else if krContentsErr}
-            <div class="error-note" role="alert">조회 실패: {krContentsErr} <button class="linkish small" type="button" disabled={krContentsLoading} on:click={loadKrContents}>다시 시도</button></div>
+            <div class="error-note" role="alert">
+              조회 실패: {summarizeRepoContentsError(krContentsErr)}
+              {#if shouldShowRepoErrorDetails(krContentsErr)}
+                <details class="error-details">
+                  <summary>오류 상세</summary>
+                  <code>{krContentsErr}</code>
+                </details>
+              {/if}
+              <button class="linkish small" type="button" disabled={krContentsLoading} on:click={loadKrContents}>다시 시도</button>
+            </div>
           {:else if krContents}
             <SettingsPluginSelect
               info={krContents}
@@ -391,13 +426,22 @@
           </div>
           {#if openPluginId === p.id}
             <div id={pluginContentsPanelId(p.id)} class="plugin-contents" aria-busy={pluginContentsLoading[p.id] ? "true" : "false"}>
-              {#if pluginContentsLoading[p.id]}
-                <div class="muted" role="status">저장소 내용을 불러오는 중…</div>
-              {:else if pluginContentsErr[p.id]}
-                <div class="error-note" role="alert">조회 실패: {pluginContentsErr[p.id]} <button class="linkish small" type="button" disabled={pluginContentsLoading[p.id]} on:click={() => loadPluginContents(p)}>다시 시도</button></div>
-              {:else if pluginContents[p.id]}
-                <SettingsPluginSelect
-                  info={pluginContents[p.id]}
+            {#if pluginContentsLoading[p.id]}
+              <div class="muted" role="status">저장소 내용을 불러오는 중…</div>
+            {:else if pluginContentsErr[p.id]}
+              <div class="error-note" role="alert">
+                조회 실패: {summarizeRepoContentsError(pluginContentsErr[p.id])}
+                {#if shouldShowRepoErrorDetails(pluginContentsErr[p.id])}
+                  <details class="error-details">
+                    <summary>오류 상세</summary>
+                    <code>{pluginContentsErr[p.id]}</code>
+                  </details>
+                {/if}
+                <button class="linkish small" type="button" disabled={pluginContentsLoading[p.id]} on:click={() => loadPluginContents(p)}>다시 시도</button>
+              </div>
+            {:else if pluginContents[p.id]}
+              <SettingsPluginSelect
+                info={pluginContents[p.id]}
                   selected={p.selected}
                   headText="사용할 플러그인을 선택하세요. 모두 선택하거나 모두 해제하면 전체가 사용됩니다."
                   onSave={savePluginSelection(p)}
@@ -418,7 +462,7 @@
       <button class="primary" type="submit" disabled={!pluginCanAdd}>{pluginAddBusy ? "추가 중…" : "추가"}</button>
     </form>
     <div class="settings-save-row compact">
-      <span id={pluginAddStatusId} class="settings-save-status" class:dirty={Boolean(pluginAddError || pluginRepoTrimmed)} role="status" aria-live="polite">{pluginAddStatus}</span>
+      <span id={pluginAddStatusId} class="settings-save-status" class:dirty={Boolean(pluginRepoTrimmed && !pluginAddBusy && !pluginAddError)} class:pending={pluginAddBusy} class:invalid={Boolean(pluginAddError)} role="status" aria-live="polite">{pluginAddStatus}</span>
     </div>
   </section>
 

@@ -36,6 +36,7 @@
   let profileGenError = "";
   let profileGenMessage = "";
   let fileInput: HTMLInputElement;
+  let syncedProfileUserId = u0?.id || "";
   const profileStatusId = "settings-profile-save-status";
   const profileGenStatusId = "settings-profile-generation-status";
 
@@ -58,6 +59,12 @@
     intro = next.intro || "";
     persona = next.persona || "";
     hashtags = [...(next.hashtags || [])];
+    visibility = next.visibility || "group";
+    sharedAccount = Boolean(next.sharedAccount);
+    syncedProfileUserId = next.id;
+    profileError = "";
+    profileGenError = "";
+    profileGenMessage = "";
   }
 
   $: profileDirty = Boolean(
@@ -70,6 +77,7 @@
         !sameTags(hashtags, user.hashtags || [])),
   );
   $: profileGenBusy = Boolean(introGenBusy || tagGenBusy || tagAddBusy || allGenBusy);
+  $: profileGenPartial = Boolean(profileGenError && profileGenError.includes("초안만 채워졌습니다"));
   $: profileGenStatus = profileGenBusy
     ? "자동 생성 중입니다."
     : profileGenError
@@ -82,6 +90,9 @@
       : profileDirty
         ? "저장하지 않은 변경 사항이 있습니다."
         : "저장됨";
+  $: if (user?.id && user.id !== syncedProfileUserId && !profileSaving && !profileGenBusy && !picBusy && !visSaving && !sharedSaving) {
+    syncProfileForm(user);
+  }
 
   async function saveProfile(): Promise<void> {
     if (profileSaving || !profileDirty) return;
@@ -411,7 +422,16 @@
       </div>
       {#if profileGenStatus}
         <div class="settings-save-row compact">
-          <span id={profileGenStatusId} class="settings-save-status" class:dirty={Boolean(profileGenBusy || profileGenError || profileGenMessage)} role="status" aria-live="polite">{profileGenStatus}</span>
+          <span
+            id={profileGenStatusId}
+            class="settings-save-status"
+            class:dirty={profileGenPartial}
+            class:pending={profileGenBusy}
+            class:success={Boolean(profileGenMessage)}
+            class:invalid={Boolean(profileGenError && !profileGenPartial)}
+            role="status"
+            aria-live="polite"
+          >{profileGenStatus}</span>
         </div>
       {/if}
       <label class="field"><span>표시 이름</span><input bind:value={displayName} required aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
@@ -438,7 +458,7 @@
       </div>
       <label class="field"><span>페르소나 (행동 지침)</span><textarea rows="4" bind:value={persona} placeholder="이 아바타가 어떻게 행동해야 하는지 (선택)" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")}></textarea></label>
       <div class="settings-save-row">
-        <span id={profileStatusId} class="settings-save-status" class:dirty={profileDirty || Boolean(profileError)} role="status" aria-live="polite">{profileSaveStatus}</span>
+        <span id={profileStatusId} class="settings-save-status" class:dirty={profileDirty && !profileSaving && !profileError} class:pending={profileSaving} class:invalid={Boolean(profileError)} role="status" aria-live="polite">{profileSaveStatus}</span>
         <button class="primary" type="submit" disabled={profileSaving || !profileDirty}>{profileSaving ? "저장 중…" : "프로필 저장"}</button>
       </div>
     </form>
@@ -487,9 +507,10 @@
 
 <style>
   .pic-paste-hint {
-    font-size: 11px;
+    font-size: var(--t-xs, 12px);
     text-align: center;
     max-width: 140px;
+    line-height: 1.35;
   }
   .shared-account-item {
     display: flex;
@@ -505,5 +526,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
 </style>

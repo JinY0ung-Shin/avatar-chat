@@ -409,7 +409,13 @@
   display: inline-flex;
   align-items: center;
   gap: var(--s-1);
+  max-width: 100%;
   padding-right: var(--s-1);
+}
+.hashtag-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .hashtag-editor .chip-x {
   border: 0;

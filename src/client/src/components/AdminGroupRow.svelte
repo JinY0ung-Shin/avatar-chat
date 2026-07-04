@@ -26,12 +26,23 @@
   let memberSearch = "";
 
   // add-member typeahead
+  interface SearchUser {
+    id: string;
+    username: string;
+    displayName: string;
+    hasImage?: boolean;
+  }
   let addQuery = "";
   let addAsAdmin = false;
-  let searchResults: { id: string; username: string; displayName: string; hasImage?: boolean }[] = [];
+  let searchResults: SearchUser[] = [];
+  let showResults = false;
+  let activeIndex = -1;
   let searchSeq = 0;
   let searchTimer: number | null = null;
+  let selected = new Map<string, SearchUser>();
+  let selectedArr: SearchUser[] = [];
   let adding = false;
+  let addResult = "";
 
   $: shownMembers = (() => {
     const q = memberSearch.trim().toLowerCase();
@@ -54,7 +65,9 @@
           ? "저장하지 않은 그룹 정보 변경 사항이 있습니다."
           : "저장됨";
   $: addQueryTrimmed = addQuery.trim().replace(/^@/, "");
-  $: canAddMember = Boolean(!adding && addQueryTrimmed);
+  $: canPickTyped = Boolean(!adding && addQueryTrimmed);
+  $: canSubmitMembers = Boolean(!adding && (selectedArr.length || addQueryTrimmed));
+  $: addRoleHint = addAsAdmin ? "관리자 권한으로 추가됩니다." : "그룹원으로 추가됩니다.";
   $: detailId = `admin-group-detail-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   $: addListboxId = `admin-group-add-results-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   $: editStatusId = `admin-group-edit-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -64,9 +77,15 @@
     ? "그룹원을 추가하는 중입니다."
     : addError
       ? addError
-      : addQueryTrimmed
-        ? "입력한 사용자를 추가할 수 있습니다."
-        : "추가할 사용자를 검색해 주세요.";
+      : selectedArr.length
+        ? `${selectedArr.length}명이 선택 목록에 있습니다. ${addRoleHint}`
+        : addResult
+          ? addResult
+          : addQueryTrimmed
+            ? `입력한 사용자를 선택 목록에 추가하거나 바로 추가할 수 있습니다. ${addRoleHint}`
+            : "추가할 사용자를 검색해 주세요.";
+  $: existingNames = new Set(members.map((m) => (m.username || "").toLowerCase()));
+  $: existingIds = new Set(members.map((m) => m.userId));
 
   async function toggle() {
     if (expanded) {
@@ -125,59 +144,171 @@
     }
   }
 
-  function runSearch() {
-    const q = addQuery.trim().replace(/^@/, "");
+  function refreshSelectedArr() {
+    selectedArr = [...selected.values()];
+  }
+
+  function runSearch(q: string) {
     if (searchTimer != null) window.clearTimeout(searchTimer);
     if (!q) {
       searchSeq++;
       searchResults = [];
+      showResults = false;
       return;
     }
     searchTimer = window.setTimeout(async () => {
       const s = ++searchSeq;
       try {
-        const { users } = await api<{ users: typeof searchResults }>(`/api/me/users/search?q=${encodeURIComponent(q)}`);
+        const { users } = await api<{ users: SearchUser[] }>(`/api/me/users/search?q=${encodeURIComponent(q)}`);
         if (s !== searchSeq) return;
-        const existing = new Set(members.map((m) => (m.username || "").toLowerCase()));
-        searchResults = users.filter((u) => !existing.has((u.username || "").toLowerCase()));
+        const selectedKeys = new Set(selected.keys());
+        searchResults = users.filter(
+          (u) =>
+            !existingIds.has(u.id) &&
+            !existingNames.has((u.username || "").toLowerCase()) &&
+            !selectedKeys.has((u.username || "").toLowerCase()),
+        );
+        showResults = true;
+        activeIndex = searchResults.length ? 0 : -1;
       } catch {
-        if (s === searchSeq) searchResults = [];
+        if (s === searchSeq) {
+          searchResults = [];
+          showResults = false;
+          addError = "사용자 검색에 실패했습니다.";
+        }
       }
     }, 200);
   }
 
-  async function addMember(username: string) {
-    if (adding) return;
-    const clean = username.trim().replace(/^@/, "");
-    if (!clean) return;
-    if (members.some((m) => (m.username || "").toLowerCase() === clean.toLowerCase())) {
+  function onAddInput() {
+    addError = "";
+    addResult = "";
+    runSearch(addQueryTrimmed);
+  }
+
+  function selectUser(user: SearchUser): boolean {
+    if (adding) return false;
+    const username = (user.username || "").trim().replace(/^@/, "");
+    const key = username.toLowerCase();
+    if (!username) return false;
+    if (existingNames.has(key) || (user.id && existingIds.has(user.id))) {
       addError = "이미 그룹에 있는 사용자입니다.";
       notify("이미 그룹에 있는 사용자입니다.", "info");
       addQuery = "";
       searchResults = [];
-      return;
+      showResults = false;
+      return false;
     }
-    adding = true;
+    if (selected.has(key)) {
+      addError = "이미 선택한 사용자입니다.";
+      notify("이미 선택한 사용자입니다.", "info");
+      addQuery = "";
+      showResults = false;
+      return false;
+    }
     addError = "";
-    try {
-      await api(`/api/admin/groups/${encodeURIComponent(group.id)}/members`, {
-        method: "POST",
-        body: JSON.stringify({ username: clean, role: addAsAdmin ? "admin" : "member" }),
-      });
-    } catch (err) {
-      addError = `그룹원 추가 실패: @${clean}: ${(err as Error).message}`;
-      notify(addError, "warn");
-      adding = false;
-      return;
-    }
+    addResult = "";
+    selected.set(key, { ...user, username, displayName: user.displayName || username });
+    refreshSelectedArr();
     addQuery = "";
     searchResults = [];
-    addAsAdmin = false;
+    showResults = false;
+    return true;
+  }
+
+  function addTyped(): boolean {
+    if (adding) return false;
+    const username = addQueryTrimmed;
+    if (!username) return false;
+    return selectUser({ id: "", username, displayName: username });
+  }
+
+  function removeSelected(key: string) {
+    if (adding) return;
+    selected.delete(key);
+    refreshSelectedArr();
+    addError = "";
+    addResult = "";
+  }
+
+  function clearSelected() {
+    if (adding) return;
+    selected.clear();
+    refreshSelectedArr();
+    addError = "";
+    addResult = "";
+  }
+
+  function onAddKeydown(e: KeyboardEvent) {
+    if (e.key === "Escape" && showResults) {
+      e.preventDefault();
+      showResults = false;
+      return;
+    }
+    if (e.key === "Enter") {
+      e.preventDefault();
+      if (showResults && activeIndex >= 0 && searchResults[activeIndex]) {
+        selectUser(searchResults[activeIndex]);
+      } else {
+        addTyped();
+      }
+      return;
+    }
+    if (!showResults || !searchResults.length) return;
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const step = e.key === "ArrowDown" ? 1 : -1;
+      activeIndex = (activeIndex + step + searchResults.length) % searchResults.length;
+    }
+  }
+
+  async function submitMembers() {
+    if (adding) return;
+    if (!selected.size && addQueryTrimmed) addTyped();
+    if (!selected.size) return;
+    const queued = [...selected.entries()];
+    const role = addAsAdmin ? "admin" : "member";
+    adding = true;
+    addError = "";
+    addResult = "";
+    const failures: string[] = [];
+    let successes = 0;
+    let refreshError: Error | null = null;
     try {
-      await reloadMembers();
-      notify(`${clean}님을 그룹에 추가했습니다.`, "ok");
-    } catch (err) {
-      notify(`그룹원은 추가했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+      for (const [key, user] of queued) {
+        try {
+          await api(`/api/admin/groups/${encodeURIComponent(group.id)}/members`, {
+            method: "POST",
+            body: JSON.stringify({ username: user.username, role }),
+          });
+          selected.delete(key);
+          successes++;
+        } catch (err) {
+          failures.push(`@${user.username}: ${(err as Error).message}`);
+        }
+      }
+      refreshSelectedArr();
+      if (successes) {
+        if (!selected.size) addAsAdmin = false;
+        addQuery = "";
+        showResults = false;
+        try {
+          await reloadMembers();
+        } catch (err) {
+          refreshError = err as Error;
+        }
+      }
+      if (failures.length) {
+        const added = successes ? `${successes}명은 추가했습니다. ` : "";
+        addError = `${added}일부 그룹원을 추가하지 못했습니다. ${failures.join(" / ")}`;
+        notify(addError, "warn");
+      } else if (refreshError) {
+        addError = `${successes}명을 추가했지만 목록 새로고침에 실패했습니다: ${refreshError.message}`;
+        notify(addError, "warn");
+      } else {
+        addResult = `${successes}명을 그룹에 추가했습니다.`;
+        notify(addResult, "ok");
+      }
     } finally {
       adding = false;
     }
@@ -296,10 +427,10 @@
           <form class="plugin-add rows-2" on:submit|preventDefault={saveEdit}>
             <input bind:value={editName} aria-label="그룹 이름" aria-describedby={editStatusId} aria-invalid={editError || !editNameTrimmed ? "true" : undefined} disabled={busy} on:input={() => (editError = "")} />
             <input bind:value={editDescription} placeholder="설명" aria-label="그룹 설명" aria-describedby={editStatusId} disabled={busy} on:input={() => (editError = "")} />
-            <button class="ghost-sm" type="submit" disabled={!editCanSave}>{busy ? "저장 중…" : "수정"}</button>
+            <button class="primary small" type="submit" disabled={!editCanSave}>{busy ? "저장 중…" : "수정"}</button>
           </form>
           <div class="settings-save-row compact">
-            <span id={editStatusId} class="settings-save-status" class:dirty={editDirty || !editNameTrimmed || Boolean(editError)} role="status" aria-live="polite">{editStatus}</span>
+            <span id={editStatusId} class="settings-save-status" class:dirty={Boolean(editDirty && !busy && editNameTrimmed && !editError)} class:pending={busy} class:invalid={Boolean(editError || !editNameTrimmed)} role="status" aria-live="polite">{editStatus}</span>
           </div>
 
           <h4 class="knowledge-sub">그룹원</h4>
@@ -346,7 +477,15 @@
             {/if}
           </div>
           {#if memberStatus}
-            <div id={memberStatusId} class="settings-save-status" class:dirty={memberStatus.includes("실패")} role="status" aria-live="polite">{memberStatus}</div>
+            <div
+              id={memberStatusId}
+              class="settings-save-status"
+              class:pending={memberStatus.includes("중입니다")}
+              class:success={memberStatus.includes("했습니다")}
+              class:invalid={memberStatus.includes("실패") || memberStatus.includes("못했습니다")}
+              role="status"
+              aria-live="polite"
+            >{memberStatus}</div>
           {/if}
 
           <div class="group-add-panel" aria-describedby={addStatusId} aria-busy={adding}>
@@ -357,37 +496,78 @@
                   role="combobox"
                   aria-autocomplete="list"
                   aria-controls={addListboxId}
-                  aria-expanded={searchResults.length ? "true" : "false"}
+                  aria-expanded={showResults ? "true" : "false"}
+                  aria-activedescendant={showResults && activeIndex >= 0 ? `${addListboxId}-option-${activeIndex}` : undefined}
                   aria-describedby={addStatusId}
+                  aria-invalid={addError ? "true" : undefined}
                   placeholder="추가할 사용자 아이디(@) 또는 이름"
                   aria-label="그룹원 추가"
                   disabled={adding}
                   bind:value={addQuery}
-                  on:input={() => { addError = ""; runSearch(); }}
-                  on:keydown={(e) => { if (e.key === "Enter") { e.preventDefault(); addMember(addQuery); } }}
+                  on:input={onAddInput}
+                  on:keydown={onAddKeydown}
+                  on:blur={() => setTimeout(() => (showResults = false), 150)}
                 />
-                {#if searchResults.length}
-                  <div id={addListboxId} class="trusted-results" role="listbox">
-                    {#each searchResults as u (u.id)}
-                      <button type="button" class="trusted-result" role="option" aria-selected="false" disabled={adding} on:click={() => addMember(u.username)}>
+                <div id={addListboxId} class="trusted-results" role="listbox" hidden={!showResults}>
+                  {#if !searchResults.length}
+                    <div class="empty-note">일치하는 사용자가 없습니다.</div>
+                  {:else}
+                    {#each searchResults as u, idx (u.id || u.username)}
+                      <button
+                        id={`${addListboxId}-option-${idx}`}
+                        type="button"
+                        class="trusted-result"
+                        class:active={idx === activeIndex}
+                        role="option"
+                        aria-selected={idx === activeIndex}
+                        disabled={adding}
+                        on:click={() => selectUser(u)}
+                      >
                         <div class="pr-main">
                           <strong>{u.displayName}</strong>
                           <div class="pr-sub">@{u.username}</div>
                         </div>
                       </button>
                     {/each}
-                  </div>
-                {/if}
+                  {/if}
+                </div>
               </div>
-              <button class="icon-button group-add-pick" type="button" title="입력한 사용자를 추가" aria-label="입력한 사용자를 추가" disabled={!canAddMember} on:click={() => addMember(addQuery)}>
+              <button class="icon-button group-add-pick" type="button" title="입력한 사용자를 선택 목록에 추가" aria-label="입력한 사용자를 선택 목록에 추가" aria-describedby={addStatusId} disabled={!canPickTyped} on:click={addTyped}>
                 <Icon name="plus" />
               </button>
-              <label class="group-add-admin"><input type="checkbox" bind:checked={addAsAdmin} disabled={adding} /><span>그룹 관리자로</span></label>
+              <label class="group-add-admin"><input type="checkbox" bind:checked={addAsAdmin} aria-describedby={addStatusId} disabled={adding} /><span>그룹 관리자로</span></label>
+              <button class="primary small" type="button" aria-describedby={addStatusId} disabled={!canSubmitMembers} on:click={submitMembers}>
+                {adding ? "추가 중…" : selectedArr.length ? `${selectedArr.length}명 추가` : addQueryTrimmed ? "입력한 사용자 추가" : "선택한 그룹원 추가"}
+              </button>
             </div>
           </div>
           <div class="settings-save-row compact">
-            <span id={addStatusId} class="settings-save-status" class:dirty={Boolean(addError || addQueryTrimmed)} role="status" aria-live="polite">{addStatus}</span>
+            <span
+              id={addStatusId}
+              class="settings-save-status"
+              class:dirty={Boolean(!adding && !addError && !addResult && (selectedArr.length || addQueryTrimmed))}
+              class:pending={adding}
+              class:success={Boolean(addResult)}
+              class:invalid={Boolean(addError)}
+              role="status"
+              aria-live="polite"
+            >{addStatus}</span>
           </div>
+          {#if selectedArr.length}
+            <div class="group-add-selected">
+              <div class="group-add-chip-list" role="list" aria-label="추가할 그룹원 선택 목록">
+                {#each selectedArr as u (u.username.toLowerCase())}
+                  <span class="group-add-chip" role="listitem">
+                    <span>{u.displayName || u.username} · @{u.username}</span>
+                    <button class="msg-act" type="button" title="선택 해제" aria-label={`${u.displayName || u.username} 선택 해제`} disabled={adding} on:click={() => removeSelected(u.username.toLowerCase())}>
+                      <Icon name="close" />
+                    </button>
+                  </span>
+                {/each}
+              </div>
+              <button class="linkish small group-add-clear" type="button" disabled={adding} on:click={clearSelected}>선택 모두 해제</button>
+            </div>
+          {/if}
 
           <div class="ud-actions">
             <button class="ghost-sm danger" type="button" disabled={busy} on:click={deleteGroup}>그룹 삭제</button>

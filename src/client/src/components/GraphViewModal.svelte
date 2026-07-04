@@ -1,3 +1,7 @@
+<script context="module" lang="ts">
+  let graphModalSeq = 0;
+</script>
+
 <script lang="ts">
   import { createEventDispatcher, onMount } from "svelte";
   import Modal from "./Modal.svelte";
@@ -25,6 +29,10 @@
   let selected: KnowledgeGraphNode | null = null;
   let loadToken = 0;
   let destroyed = false;
+  const instanceId = ++graphModalSeq;
+  $: idBase = `graph-${instanceId}-${sourceKey.replace(/[^A-Za-z0-9_-]/g, "-")}`;
+  $: titleId = `${idBase}-title`;
+  $: descId = `${idBase}-desc`;
 
   onMount(() => {
     void loadGraph();
@@ -55,11 +63,11 @@
   }
 </script>
 
-<Modal cardClass="graph-modal-card" ariaLabelledby="graph-title" on:close={() => dispatch("close")}>
+<Modal cardClass="graph-modal-card" ariaLabelledby={titleId} ariaDescribedby={descId} on:close={() => dispatch("close")}>
   <div class="graph-head">
     <div>
-      <h2 id="graph-title">{title}</h2>
-      <p class="muted">노트 사이의 <code>[[링크]]</code> 연결을 시각화합니다. 드래그·휠 줌·노드 클릭이 가능합니다.</p>
+      <h2 id={titleId}>{title}</h2>
+      <p class="muted" id={descId}>노트 사이의 <code>[[링크]]</code> 연결을 시각화합니다. 드래그·휠 줌·노드 클릭이 가능합니다.</p>
     </div>
     <div class="graph-head-acts">
       <button class="linkish small" type="button" on:click={openFullView}>전체 화면으로 열기</button>
@@ -103,21 +111,34 @@
     align-items: flex-start;
     justify-content: space-between;
     gap: var(--s-3);
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .graph-head > div:first-child {
+    min-width: 0;
+    flex: 1 1 280px;
+  }
+  .graph-head h2 {
+    overflow-wrap: anywhere;
   }
   .graph-head-acts {
     display: flex;
     align-items: center;
     gap: var(--s-3);
-    flex: none;
+    flex: 0 1 auto;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
   .graph-head p {
     margin: var(--s-1) 0 0;
     font-size: var(--t-sm);
+    overflow-wrap: anywhere;
   }
   .graph-state {
     padding: var(--s-6) var(--s-2);
     text-align: center;
     line-height: 1.6;
+    overflow-wrap: anywhere;
   }
   .graph-state .linkish.small {
     margin-left: var(--s-2);
@@ -133,12 +154,20 @@
     display: inline-flex;
     align-items: center;
     gap: var(--s-2);
+    flex-wrap: wrap;
     font-size: var(--t-sm);
     min-width: 0;
+    max-width: 100%;
+  }
+  .graph-info strong,
+  .graph-info span {
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .graph-info code {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    min-width: 0;
+    max-width: 100%;
+    overflow-wrap: anywhere;
+    white-space: normal;
   }
 </style>

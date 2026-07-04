@@ -37,6 +37,8 @@
   let gitIdentityName = u0?.gitIdentityName || "";
   let gitIdentityEmail = u0?.gitIdentityEmail || "";
   let identitySaving = false;
+  let identityError = "";
+  let syncedIdentityUserId = u0?.id || "";
 
   // git token forms
   let internalToken = "";
@@ -138,12 +140,17 @@
   );
   $: identityStatus = identitySaving
     ? "저장 중…"
-    : identityDirty
-      ? "저장하지 않은 커밋 정보가 있습니다."
-      : savedGitIdentityName || savedGitIdentityEmail
-        ? "저장됨"
-        : "저장 전";
+    : identityError
+      ? `저장 실패: ${identityError}`
+      : identityDirty
+        ? "저장하지 않은 커밋 정보가 있습니다."
+        : savedGitIdentityName || savedGitIdentityEmail
+          ? "저장됨"
+          : "저장 전";
   $: identityCanSave = Boolean(!identitySaving && identityDirty);
+  $: if (user?.id && user.id !== syncedIdentityUserId && !identitySaving) {
+    syncGitIdentityForm(user);
+  }
   $: internalStatus = internalBusy
     ? "저장 중…"
     : internalError
@@ -282,11 +289,14 @@
   function syncGitIdentityForm(next: User): void {
     gitIdentityName = next.gitIdentityName || "";
     gitIdentityEmail = next.gitIdentityEmail || "";
+    syncedIdentityUserId = next.id;
+    identityError = "";
   }
 
   async function saveGitIdentity(): Promise<void> {
     if (identitySaving || !identityDirty) return;
     identitySaving = true;
+    identityError = "";
     try {
       const { user: next } = await api<{ user: User }>("/api/me/git-identity", {
         method: "PUT",
@@ -296,7 +306,8 @@
       replaceState({ user: next });
       notify("커밋 정보를 저장했습니다.", "ok");
     } catch (err) {
-      notify(`저장 실패: ${(err as Error).message}`, "warn");
+      identityError = (err as Error).message;
+      notify(`저장 실패: ${identityError}`, "warn");
     } finally {
       identitySaving = false;
     }
@@ -460,7 +471,7 @@
       </div>
       <RevealableInput bind:value={internalToken} name="internalToken" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" ariaDescribedby={internalStatusId} revealLabel="토큰" disabled={internalBusy} onInput={() => (internalError = "")} />
       <div class="secret-preset-actions">
-        <span id={internalStatusId} class="settings-save-status" class:dirty={Boolean(internalError || internalToken.trim())} role="status" aria-live="polite">{internalStatus}</span>
+        <span id={internalStatusId} class="settings-save-status" class:dirty={Boolean(internalToken.trim() && !internalBusy && !internalError)} class:pending={internalBusy} class:invalid={Boolean(internalError)} role="status" aria-live="polite">{internalStatus}</span>
         <button class="primary" type="submit" disabled={internalBusy || !internalToken.trim()}>{internalSet ? "교체" : "저장"}</button>
         <button class="linkish small" type="button" disabled={!internalSet || internalBusy} on:click={clearInternalToken}>삭제</button>
       </div>
@@ -477,7 +488,7 @@
       </div>
       <RevealableInput bind:value={externalToken} name="externalToken" placeholder="github.com PAT (GITHUB_TOKEN)" ariaLabel="외부 GitHub 토큰 GITHUB_TOKEN" ariaDescribedby={externalStatusId} revealLabel="토큰" disabled={externalBusy} onInput={() => (externalError = "")} />
       <div class="secret-preset-actions">
-        <span id={externalStatusId} class="settings-save-status" class:dirty={Boolean(externalError || externalToken.trim())} role="status" aria-live="polite">{externalStatus}</span>
+        <span id={externalStatusId} class="settings-save-status" class:dirty={Boolean(externalToken.trim() && !externalBusy && !externalError)} class:pending={externalBusy} class:invalid={Boolean(externalError)} role="status" aria-live="polite">{externalStatus}</span>
         <button class="primary" type="submit" disabled={externalBusy || !externalToken.trim()}>{externalSet ? "교체" : "저장"}</button>
         <button class="linkish small" type="button" disabled={!externalSet || externalBusy} on:click={clearExternalToken}>삭제</button>
       </div>
@@ -485,11 +496,11 @@
 
     <form class="settings-form" on:submit|preventDefault={saveGitIdentity}>
       <div class="field-row-2col">
-        <label class="field"><span>커밋 이름</span><input bind:value={gitIdentityName} placeholder={user.alias || user.displayName || ""} aria-describedby={identityStatusId} disabled={identitySaving} /></label>
-        <label class="field"><span>커밋 이메일</span><input type="email" bind:value={gitIdentityEmail} placeholder={`${user.username}@example.com`} aria-describedby={identityStatusId} disabled={identitySaving} /></label>
+        <label class="field"><span>커밋 이름</span><input bind:value={gitIdentityName} placeholder={user.alias || user.displayName || ""} aria-describedby={identityStatusId} aria-invalid={identityError ? "true" : undefined} disabled={identitySaving} on:input={() => (identityError = "")} /></label>
+        <label class="field"><span>커밋 이메일</span><input type="email" bind:value={gitIdentityEmail} placeholder={`${user.username}@example.com`} aria-describedby={identityStatusId} aria-invalid={identityError ? "true" : undefined} disabled={identitySaving} on:input={() => (identityError = "")} /></label>
       </div>
       <div class="settings-save-row">
-        <span id={identityStatusId} class="settings-save-status" class:dirty={identityDirty} role="status">{identityStatus}</span>
+        <span id={identityStatusId} class="settings-save-status" class:dirty={identityDirty && !identitySaving && !identityError} class:pending={identitySaving} class:invalid={Boolean(identityError)} role="status" aria-live="polite">{identityStatus}</span>
         <button class="primary" type="submit" disabled={!identityCanSave}>{identitySaving ? "저장 중…" : "커밋 정보 저장"}</button>
       </div>
     </form>
@@ -529,7 +540,7 @@
             on:input={() => clearPresetError(preset.name)}
           ></textarea>
           <div class="secret-preset-actions">
-            <span id={presetStatusId} class="settings-save-status" class:dirty={Boolean(presetErrors[preset.name]) || presetFilled[preset.name]} role="status" aria-live="polite">{presetStatusText[preset.name]}</span>
+            <span id={presetStatusId} class="settings-save-status" class:dirty={Boolean(presetFilled[preset.name] && !presetBusy[preset.name] && !presetErrors[preset.name])} class:pending={Boolean(presetBusy[preset.name])} class:invalid={Boolean(presetErrors[preset.name])} role="status" aria-live="polite">{presetStatusText[preset.name]}</span>
             {#if isSet && isShellExposableSecret(preset.name)}
               <label class="shell-expose-toggle" title="켜면 이 값이 아바타의 셸(Bash) 환경변수로도 주입됩니다 (본인·신뢰 팀원 대화에서만, 도구 출력에서는 자동 가려짐)">
                 <input
@@ -563,7 +574,7 @@
     {/if}
     {#if sshStatus}
       <div class="settings-save-row compact">
-        <span id={sshStatusId} class="settings-save-status" class:dirty={Boolean(sshBusy || sshError || sshMessage)} role="status" aria-live="polite">{sshStatus}</span>
+        <span id={sshStatusId} class="settings-save-status" class:pending={sshBusy} class:success={Boolean(sshMessage)} class:invalid={Boolean(sshError)} role="status" aria-live="polite">{sshStatus}</span>
       </div>
     {/if}
 
@@ -599,7 +610,7 @@
       <label class="field"><span>이름</span><input bind:value={extraName} placeholder="SSH_PRIVATE_KEY" autocomplete="off" required aria-describedby={extraStatusId} aria-invalid={extraNameValid ? undefined : "true"} disabled={extraBusy} on:input={() => (extraError = "")} /></label>
       <label class="field"><span>값</span><textarea rows="4" bind:value={extraValue} placeholder="-----BEGIN OPENSSH PRIVATE KEY-----…" autocomplete="off" required aria-describedby={extraStatusId} disabled={extraBusy} on:input={() => (extraError = "")}></textarea></label>
       <div class="settings-save-row">
-        <span id={extraStatusId} class="settings-save-status" class:dirty={!extraNameValid || Boolean(extraError)} role="status">{extraStatus}</span>
+        <span id={extraStatusId} class="settings-save-status" class:dirty={Boolean(extraNameTrimmed && extraHasValue && extraNameValid && !extraBusy && !extraError)} class:pending={extraBusy} class:invalid={!extraNameValid || Boolean(extraError)} role="status" aria-live="polite">{extraStatus}</span>
         <button class="primary" type="submit" disabled={!extraCanSave}>{extraBusy ? "저장 중…" : "추가 시크릿 저장"}</button>
       </div>
     </form>
@@ -625,6 +636,8 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
+    overflow-wrap: anywhere;
   }
   .shell-expose-toggle {
     display: inline-flex;
@@ -632,6 +645,7 @@
     gap: 4px;
     cursor: pointer;
     white-space: nowrap;
+    min-height: 32px;
   }
   .experimental-badge {
     font-size: 0.65rem;

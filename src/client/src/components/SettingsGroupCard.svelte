@@ -15,6 +15,7 @@
 </script>
 
 <script lang="ts">
+  import { tick } from "svelte";
   // One group block in the 그룹 tab: teammate roster (searchable, chat shortcut),
   // and for group admins, member management (role toggle / remove) + a member-add
   // typeahead, plus the shared knowledge-repo card. Ports buildGroupBlock /
@@ -170,16 +171,17 @@
   $: addQueryTrimmed = addQuery.trim().replace(/^@/, "");
   $: canPickTyped = Boolean(!adding && addQueryTrimmed);
   $: canSubmitMembers = Boolean(!adding && (selectedArr.length || addQueryTrimmed));
+  $: addRoleHint = addAsAdmin ? "관리자 권한으로 추가됩니다." : "그룹원으로 추가됩니다.";
   $: addStatus = adding
     ? "그룹원을 추가하는 중입니다."
     : addError
       ? addError
-      : addResult
-        ? addResult
-        : selectedArr.length
-          ? `${selectedArr.length}명이 선택 목록에 있습니다.`
+      : selectedArr.length
+        ? `${selectedArr.length}명이 선택 목록에 있습니다. ${addRoleHint}`
+        : addResult
+          ? addResult
           : addQueryTrimmed
-            ? "입력한 사용자를 선택 목록에 추가하거나 바로 추가할 수 있습니다."
+            ? `입력한 사용자를 선택 목록에 추가하거나 바로 추가할 수 있습니다. ${addRoleHint}`
             : "추가할 사용자를 검색해 주세요.";
   $: existingNames = new Set(group.members.map((m) => (m.username || "").toLowerCase()));
   $: existingIds = new Set(group.members.map((m) => m.userId));
@@ -239,7 +241,7 @@
       return false;
     }
     addError = "";
-    addResult = `${user.displayName || username}님을 선택 목록에 추가했습니다.`;
+    addResult = "";
     selected.set(key, { ...user, username, displayName: user.displayName || username });
     refreshSelectedArr();
     addQuery = "";
@@ -259,6 +261,16 @@
     if (adding) return;
     selected.delete(key);
     refreshSelectedArr();
+    addError = "";
+    addResult = "";
+  }
+
+  function clearSelected(): void {
+    if (adding) return;
+    selected.clear();
+    refreshSelectedArr();
+    addError = "";
+    addResult = "";
   }
 
   function onAddKeydown(e: KeyboardEvent): void {
@@ -311,7 +323,7 @@
       }
       refreshSelectedArr();
       if (successes) {
-        addAsAdmin = false;
+        if (!selected.size) addAsAdmin = false;
         addQuery = "";
         try {
           await reload();
@@ -454,7 +466,10 @@
 
   async function togglePick(): Promise<void> {
     pickOpen = !pickOpen;
-    if (pickOpen && !contents && !contentsLoading) await loadContents();
+    if (!pickOpen) return;
+    if (!contents && !contentsLoading) await loadContents();
+    await tick();
+    document.getElementById(groupPanelId("plugin-contents"))?.scrollIntoView({ block: "center" });
   }
   async function loadContents(): Promise<void> {
     if (contentsLoading) return;
@@ -479,6 +494,17 @@
   }
 
   const listboxId = `group-search-${newId()}`;
+
+  function summarizeRepoContentsError(message: string): string {
+    const lower = message.toLowerCase();
+    if (lower.includes("repository not found")) return "저장소를 찾지 못했습니다. 저장소 주소 또는 접근 권한을 확인해 주세요.";
+    if (lower.includes("command failed") || lower.includes("git clone")) return "저장소 내용을 가져오지 못했습니다.";
+    return message.length > 140 ? `${message.slice(0, 140)}...` : message;
+  }
+
+  function shouldShowRepoErrorDetails(message: string): boolean {
+    return message.length > 140 || /command failed|git clone/i.test(message);
+  }
 </script>
 
 <div class="group-block">
@@ -535,7 +561,15 @@
     {/if}
   </div>
   {#if memberStatus}
-    <div id={memberStatusId} class="settings-save-status" class:dirty={memberStatus.includes("실패") || memberStatus.includes("못했습니다")} role="status" aria-live="polite">{memberStatus}</div>
+    <div
+      id={memberStatusId}
+      class="settings-save-status"
+      class:pending={memberStatus.includes("중입니다")}
+      class:success={memberStatus.includes("했습니다")}
+      class:invalid={memberStatus.includes("실패") || memberStatus.includes("못했습니다")}
+      role="status"
+      aria-live="polite"
+    >{memberStatus}</div>
   {/if}
 
   {#if amAdmin}
@@ -548,6 +582,7 @@
             aria-autocomplete="list"
             aria-controls={listboxId}
             aria-expanded={showResults}
+            aria-activedescendant={showResults && activeIndex >= 0 ? `${listboxId}-option-${activeIndex}` : undefined}
             aria-describedby={addStatusId}
             aria-invalid={addError ? "true" : undefined}
             placeholder="추가할 그룹원 아이디(@) 또는 이름"
@@ -563,7 +598,16 @@
               <div class="empty-note">일치하는 사용자가 없습니다.</div>
             {:else}
               {#each searchResults as u, idx (u.id || u.username)}
-                <button type="button" class="trusted-result" class:active={idx === activeIndex} role="option" aria-selected={idx === activeIndex} disabled={adding} on:click={() => selectUser(u)}>
+                <button
+                  id={`${listboxId}-option-${idx}`}
+                  type="button"
+                  class="trusted-result"
+                  class:active={idx === activeIndex}
+                  role="option"
+                  aria-selected={idx === activeIndex}
+                  disabled={adding}
+                  on:click={() => selectUser(u)}
+                >
                   <div class="pr-main">
                     <strong>{u.displayName}</strong>
                     <div class="pr-sub">@{u.username}</div>
@@ -582,18 +626,30 @@
         </button>
       </div>
       <div class="settings-save-row compact">
-        <span id={addStatusId} class="settings-save-status" class:dirty={Boolean(addError || addResult || selectedArr.length || addQueryTrimmed)} role="status" aria-live="polite">{addStatus}</span>
+        <span
+          id={addStatusId}
+          class="settings-save-status"
+          class:dirty={Boolean(!adding && !addError && !addResult && (selectedArr.length || addQueryTrimmed))}
+          class:pending={adding}
+          class:success={Boolean(addResult)}
+          class:invalid={Boolean(addError)}
+          role="status"
+          aria-live="polite"
+        >{addStatus}</span>
       </div>
       {#if selectedArr.length}
         <div class="group-add-selected">
-          {#each selectedArr as u (u.username.toLowerCase())}
-            <span class="group-add-chip">
-              <span>{u.displayName || u.username} · @{u.username}</span>
-              <button class="msg-act" type="button" title="선택 해제" aria-label={`${u.displayName || u.username} 선택 해제`} disabled={adding} on:click={() => removeSelected(u.username.toLowerCase())}>
-                <Icon name="close" />
-              </button>
-            </span>
-          {/each}
+          <div class="group-add-chip-list" role="list" aria-label="추가할 그룹원 선택 목록">
+            {#each selectedArr as u (u.username.toLowerCase())}
+              <span class="group-add-chip" role="listitem">
+                <span>{u.displayName || u.username} · @{u.username}</span>
+                <button class="msg-act" type="button" title="선택 해제" aria-label={`${u.displayName || u.username} 선택 해제`} disabled={adding} on:click={() => removeSelected(u.username.toLowerCase())}>
+                  <Icon name="close" />
+                </button>
+              </span>
+            {/each}
+          </div>
+          <button class="linkish small group-add-clear" type="button" disabled={adding} on:click={clearSelected}>선택 모두 해제</button>
         </div>
       {/if}
     </div>
@@ -613,7 +669,7 @@
         <button class="primary" type="submit" disabled={!repoCanSave}>{repoBusy ? "저장 중…" : savedGroupRepo ? "변경 저장" : "연결"}</button>
       </form>
       <div class="settings-save-row compact">
-        <span id={repoStatusId} class="settings-save-status" class:dirty={repoDirty || Boolean(repoError)} role="status" aria-live="polite">{repoStatus}</span>
+        <span id={repoStatusId} class="settings-save-status" class:dirty={repoDirty && !repoBusy && !repoError} class:pending={repoBusy} class:invalid={Boolean(repoError)} role="status" aria-live="polite">{repoStatus}</span>
       </div>
       {#if !group.knowledgeRepo}
         <div class="empty-note">
@@ -648,7 +704,16 @@
             {#if contentsLoading}
               <div class="muted" role="status">불러오는 중…</div>
             {:else if contentsErr}
-              <div class="error-note" role="alert">조회 실패: {contentsErr} <button class="linkish small" type="button" disabled={contentsLoading} on:click={loadContents}>다시 시도</button></div>
+              <div class="error-note" role="alert">
+                조회 실패: {summarizeRepoContentsError(contentsErr)}
+                {#if shouldShowRepoErrorDetails(contentsErr)}
+                  <details class="error-details">
+                    <summary>오류 상세</summary>
+                    <code>{contentsErr}</code>
+                  </details>
+                {/if}
+                <button class="linkish small" type="button" disabled={contentsLoading} on:click={loadContents}>다시 시도</button>
+              </div>
             {:else if contents}
               <SettingsPluginSelect
                 info={contents}

@@ -136,7 +136,7 @@
   <div class="pc-summary muted" id={`${pluginSelectId}-summary`} role="status" aria-live="polite">{summary}</div>
   {#if loadableNames.length}
     <div class="pc-actions">
-      <span class:dirty class:invalid={Boolean(error)} class="pc-save-status" role="status" aria-live="polite">{saveStatus}</span>
+      <span class="pc-save-status" class:dirty={dirty && !saving && !error} class:pending={saving} class:success={saved && !dirty} class:invalid={Boolean(error)} role="status" aria-live="polite">{saveStatus}</span>
       <button class="primary small" type="button" disabled={!canSave} on:click={save}>
         {saveLabel}
       </button>

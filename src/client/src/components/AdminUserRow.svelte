@@ -202,7 +202,15 @@
           {/if}
         </div>
         {#if actionStatus}
-          <div id={actionStatusId} class="settings-save-status" class:dirty={busy || actionStatus.includes("실패")} role="status" aria-live="polite">{actionStatus}</div>
+          <div
+            id={actionStatusId}
+            class="settings-save-status"
+            class:pending={busy}
+            class:success={actionStatus.includes("완료") || actionStatus.includes("했습니다")}
+            class:invalid={actionStatus.includes("실패")}
+            role="status"
+            aria-live="polite"
+          >{actionStatus}</div>
         {/if}
       {/if}
     </div>

@@ -82,13 +82,19 @@
   align-items: center;
   gap: var(--s-4);
   margin-bottom: var(--s-4);
+  min-width: 0;
+}
+.settings-id {
+  min-width: 0;
 }
 .settings-id h3 {
   margin: 0;
   font-size: var(--t-lg);
+  overflow-wrap: anywhere;
 }
 .settings-id .muted {
   font-size: var(--t-sm);
+  overflow-wrap: anywhere;
 }
 .pic-edit {
   position: relative;
@@ -146,9 +152,24 @@
 .settings-save-status {
   color: var(--muted);
   font-size: var(--t-sm);
+  min-width: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 .settings-save-status.dirty {
   color: var(--warn);
+  font-weight: 700;
+}
+.settings-save-status.pending {
+  color: var(--info);
+  font-weight: 700;
+}
+.settings-save-status.success {
+  color: var(--ok);
+  font-weight: 700;
+}
+.settings-save-status.invalid {
+  color: var(--danger);
   font-weight: 700;
 }
 .settings-save-row .primary {
@@ -245,13 +266,15 @@
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  flex-wrap: wrap;
+  min-width: 0;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: var(--s-3);
   background: var(--bg-elevated);
 }
 .pr-main {
-  flex: 1;
+  flex: 1 1 260px;
   min-width: 0;
 }
 .pr-main strong {
@@ -292,6 +315,11 @@
   justify-content: space-between;
   gap: var(--s-2);
   flex-wrap: wrap;
+  min-width: 0;
+}
+.pc-head {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .pc-toolbar {
   display: flex;
@@ -309,6 +337,11 @@
   gap: var(--s-2);
   font-size: var(--t-sm);
   cursor: pointer;
+  min-width: 0;
+}
+.pc-item > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 .pc-item input[disabled] {
   cursor: not-allowed;
@@ -338,6 +371,14 @@
 .pc-save-status.invalid {
   color: var(--danger);
 }
+.pc-save-status.pending {
+  color: var(--info);
+  font-weight: 700;
+}
+.pc-save-status.success {
+  color: var(--ok);
+  font-weight: 700;
+}
 .primary.small {
   padding: var(--s-1-5) var(--s-3);
   font-size: var(--t-xs);
@@ -345,6 +386,32 @@
 .error-note {
   font-size: var(--t-xs);
   color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.error-note .linkish.small {
+  margin-top: var(--s-1);
+}
+.error-details {
+  margin-top: var(--s-1);
+  color: var(--muted);
+}
+.error-details summary {
+  cursor: pointer;
+  color: var(--danger);
+  font-weight: 700;
+}
+.error-details code {
+  display: block;
+  max-height: 160px;
+  margin-top: var(--s-1);
+  padding: var(--s-2);
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2, rgba(127, 127, 127, 0.04));
+  color: var(--text);
 }
 /* Bare annotation lines inside expandable areas sit next to 12px siblings. */
 .plugin-contents > .muted,
@@ -511,6 +578,7 @@
 }
 .ar-main .muted {
   font-size: var(--t-xs);
+  overflow-wrap: anywhere;
 }
 .ar-tags {
   display: flex;
@@ -672,6 +740,7 @@
   align-items: center;
   gap: var(--s-3);
   flex-wrap: wrap;
+  min-width: 0;
 }
 .admin-filter {
   max-width: 100%;
@@ -798,6 +867,7 @@
 }
 .radio-card-body .muted {
   font-size: var(--t-xs);
+  overflow-wrap: anywhere;
 }
 
 /* Audit log table */
@@ -810,16 +880,17 @@
 .audit-table {
   display: grid;
   gap: 1px;
-  min-width: 560px;
+  min-width: 640px;
 }
 .audit-row {
   display: grid;
-  grid-template-columns: 110px 120px minmax(120px, max-content) 72px 1fr;
+  grid-template-columns: 110px minmax(90px, 120px) minmax(100px, 160px) 72px minmax(180px, 1fr);
   gap: var(--s-2);
   align-items: center;
   padding: var(--s-2) 0;
   border-bottom: 1px solid var(--line);
   font-size: var(--t-xs);
+  min-width: 0;
 }
 .audit-row:last-child {
   border-bottom: none;
@@ -835,6 +906,12 @@
 }
 .audit-row .tag {
   justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+}
+.audit-row .tag.mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .auth-note {
@@ -1058,6 +1135,7 @@
   display: flex;
   align-items: center;
   gap: var(--s-3);
+  flex-wrap: wrap;
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   padding: var(--s-3);
@@ -1073,6 +1151,7 @@
 .secret-row .token-set {
   font-size: var(--t-xs);
   flex: none;
+  white-space: nowrap;
 }
 .secret-row .linkish.small {
   margin-top: 0;
@@ -1360,6 +1439,14 @@
   }
   .admin-row {
     align-items: flex-start;
+  }
+  .sys-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--s-1);
+  }
+  .sys-key {
+    flex-basis: auto;
   }
   .admin-row .ar-tags,
   .admin-row .ar-actions {
