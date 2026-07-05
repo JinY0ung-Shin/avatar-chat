@@ -40,6 +40,11 @@
   let pluginContentsErr: Record<string, string> = {};
   let pluginContentsLoading: Record<string, boolean> = {};
   let pluginRowBusy: Record<string, boolean> = {};
+  // per-plugin ref (branch/tag) editor
+  let refEditId = "";
+  let refDraft = "";
+  let refSaveBusy = false;
+  let refSaveError = "";
 
   $: user = $appState.user;
   $: githubHost = $appState.bootstrap?.githubHost || "github.com";
@@ -98,6 +103,10 @@
 
   function pluginContentsPanelId(id: string): string {
     return `plugin-contents-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  }
+
+  function refEditPanelId(id: string): string {
+    return `plugin-ref-edit-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   }
 
   // ---- knowledge repo ----
@@ -276,12 +285,71 @@
     }
   }
 
+  async function toggleRefEdit(p: Plugin): Promise<void> {
+    if (refEditId === p.id) {
+      refEditId = "";
+      return;
+    }
+    refEditId = p.id;
+    refDraft = p.ref || "";
+    refSaveError = "";
+    openPluginId = "";
+    await tick();
+    const panel = document.getElementById(refEditPanelId(p.id));
+    panel?.scrollIntoView({ block: "nearest" });
+    panel?.querySelector<HTMLInputElement>("input")?.focus();
+  }
+
+  async function saveRef(p: Plugin): Promise<void> {
+    if (refSaveBusy) return;
+    const next = refDraft.trim();
+    if (next === (p.ref || "")) {
+      refEditId = "";
+      return;
+    }
+    refSaveBusy = true;
+    refSaveError = "";
+    pluginRowBusy = { ...pluginRowBusy, [p.id]: true };
+    try {
+      const { plugin } = await api<{ plugin: Plugin }>(`/api/me/plugins/${encodeURIComponent(p.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({ ref: next || null }),
+      });
+      replaceState({ plugins: readState().plugins.map((x) => (x.id === plugin.id ? plugin : x)) });
+      // The new ref may carry different contents — drop the cached listing.
+      const { [p.id]: _dropped, ...rest } = pluginContents;
+      pluginContents = rest;
+      pluginContentsErr = { ...pluginContentsErr, [p.id]: "" };
+      try {
+        const { plugin: synced } = await api<{ plugin: Plugin }>(`/api/me/plugins/${encodeURIComponent(p.id)}/refresh`, { method: "POST" });
+        replaceState({ plugins: readState().plugins.map((x) => (x.id === synced.id ? synced : x)) });
+        notify(
+          next
+            ? `"${plugin.label || plugin.repo}" 플러그인을 "${next}" 브랜치/태그로 전환했습니다.`
+            : `"${plugin.label || plugin.repo}" 플러그인을 기본 브랜치로 되돌렸습니다.`,
+          "ok",
+        );
+        refEditId = "";
+      } catch (err) {
+        refSaveError = `저장은 됐지만 동기화에 실패했습니다: ${summarizeRepoContentsError((err as Error).message)}`;
+        notify(`브랜치/태그 동기화 실패: ${(err as Error).message}`, "warn");
+      }
+    } catch (err) {
+      refSaveError = (err as Error).message;
+      notify(`브랜치/태그 변경 실패: ${refSaveError}`, "warn");
+    } finally {
+      refSaveBusy = false;
+      pluginRowBusy = { ...pluginRowBusy, [p.id]: false };
+    }
+  }
+
   async function togglePluginPick(p: Plugin): Promise<void> {
     if (openPluginId === p.id) {
       openPluginId = "";
       return;
     }
     openPluginId = p.id;
+    refEditId = "";
     if (!pluginContents[p.id]) await loadPluginContents(p);
     await tick();
     document.getElementById(pluginContentsPanelId(p.id))?.scrollIntoView({ block: "center" });
@@ -421,9 +489,38 @@
               disabled={pluginContentsLoading[p.id]}
               on:click={() => togglePluginPick(p)}
             ><Icon name="menu" /></button>
+            <button
+              class="msg-act"
+              type="button"
+              aria-label={`브랜치/태그 변경: ${p.label || p.repo}`}
+              title="브랜치/태그 변경"
+              aria-expanded={refEditId === p.id}
+              aria-controls={refEditPanelId(p.id)}
+              disabled={pluginRowBusy[p.id]}
+              on:click={() => toggleRefEdit(p)}
+            ><Icon name="edit" /></button>
             <button class="msg-act" type="button" aria-label="최신 버전으로 새로고침" title="최신 버전으로 새로고침" class:spinning={pluginRowBusy[p.id]} disabled={pluginRowBusy[p.id]} on:click={() => refreshPlugin(p)}><Icon name="refresh" /></button>
             <button class="msg-act danger" type="button" aria-label={`플러그인 삭제: ${p.label || p.repo}`} title="삭제" disabled={pluginRowBusy[p.id]} on:click={() => deletePlugin(p)}><Icon name="trash" /></button>
           </div>
+          {#if refEditId === p.id}
+            <div id={refEditPanelId(p.id)} class="plugin-contents">
+              <div class="pc-head">사용할 브랜치·태그를 지정합니다. 비워 두고 저장하면 기본 브랜치를 사용합니다.</div>
+              <form class="plugin-add" on:submit|preventDefault={() => saveRef(p)}>
+                <input
+                  bind:value={refDraft}
+                  placeholder="브랜치/태그 (비우면 기본 브랜치)"
+                  aria-label={`브랜치/태그: ${p.label || p.repo}`}
+                  aria-invalid={refSaveError ? "true" : undefined}
+                  disabled={refSaveBusy}
+                  on:input={() => (refSaveError = "")}
+                />
+                <button class="primary" type="submit" disabled={refSaveBusy}>{refSaveBusy ? "적용 중…" : "저장"}</button>
+              </form>
+              {#if refSaveError}
+                <div class="error-note" role="alert">{refSaveError}</div>
+              {/if}
+            </div>
+          {/if}
           {#if openPluginId === p.id}
             <div id={pluginContentsPanelId(p.id)} class="plugin-contents" aria-busy={pluginContentsLoading[p.id] ? "true" : "false"}>
             {#if pluginContentsLoading[p.id]}
