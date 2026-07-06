@@ -1000,7 +1000,10 @@ function upsertTask(paneId: string, row: LiveTaskRow): void {
   updatePane(paneId, (pane) => {
     const existing = pane.liveTasks.find((t) => t.id === row.id);
     if (existing) {
-      existing.label = row.label;
+      // task_update/task_end frames may omit the naming fields (subagentType/
+      // workflowName/taskType), making taskLabel() "" — that must not wipe the
+      // label captured at task start.
+      if (row.label) existing.label = row.label;
       if (row.detail !== undefined) existing.detail = row.detail;
       existing.status = row.status;
       existing.agentId = row.agentId;

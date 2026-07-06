@@ -254,6 +254,44 @@ describe("sendMessage streaming pipeline", () => {
     expect(post).toBeTruthy();
   });
 
+  it("keeps the task label when task_update/task_end frames omit the naming fields", async () => {
+    const id = seedPane();
+    const assistantMsg = {
+      id: "msg-task-label",
+      conversationId: "conv-task-label",
+      role: "assistant",
+      content: "끝",
+      response: { kind: "text", runtime: "claude", text: "끝" },
+      createdAt: new Date().toISOString(),
+    };
+    useFetch((url) => {
+      if (url === "/api/chat/stream") {
+        return sseRes([
+          ["open", { conversationId: "conv-task-label", runId: "run-tl" }],
+          ["task", { taskId: "k1", agentId: "main", subagentType: "worker" }],
+          // Real task_update/task_end frames often carry only ids + progress —
+          // an empty recomputed label must not wipe the one from task start.
+          ["task_update", { taskId: "k1", summary: "진행 상황" }],
+          ["task_end", { taskId: "k1", ok: true }],
+          ["done", { message: assistantMsg }],
+        ]);
+      }
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      if (url.startsWith("/api/messages/")) return jsonRes({ ok: true });
+      return undefined;
+    });
+
+    await sendMessage(id, "라벨 유지 확인");
+
+    const last = pane(id).messages.at(-1)!;
+    const activity = (last.response as any).activity;
+    expect(activity.tasks[0]).toMatchObject({
+      label: "worker",
+      detail: "진행 상황",
+      status: "done",
+    });
+  });
+
   it("no-ops on an empty text-only send and on the /new slash action", async () => {
     const id = seedPane();
     const fetchFn = noFetch();
