@@ -1,9 +1,9 @@
+import { svelte } from "@sveltejs/vite-plugin-svelte";
+import { svelteTesting } from "@testing-library/svelte/vite";
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    include: ["tests/**/*.test.ts"],
-    exclude: [".claude/**", "dist/**", "node_modules/**"],
     coverage: {
       provider: "v8",
       include: ["src/**/*.ts"],
@@ -14,5 +14,23 @@ export default defineConfig({
       // Raise as coverage grows; don't lower to admit untested code.
       thresholds: { lines: 90, branches: 77, functions: 90, statements: 88 },
     },
+    projects: [
+      {
+        test: {
+          name: "unit",
+          include: ["tests/**/*.test.ts"],
+          exclude: [".claude/**", "dist/**", "node_modules/**", "tests/svelte-*.test.ts"],
+        },
+      },
+      {
+        // Svelte component tests: compiled browser-side, rendered into jsdom.
+        plugins: [svelte(), svelteTesting()],
+        test: {
+          name: "components",
+          include: ["tests/svelte-*.test.ts"],
+          environment: "jsdom",
+        },
+      },
+    ],
   },
 });

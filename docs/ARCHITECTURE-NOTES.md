@@ -744,6 +744,14 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   `npm run lint:client`); `npx tsc --noEmit` covers shared server types. `vite build` (`npm run
   build:client`) is the production compile; `pretest` runs `vite build --mode test`. ⚠️ Don't trust
   `npm run lint` — the rtk hook misrewrites it to eslint.
+- **Svelte component tests** live in `tests/svelte-*.test.ts` (vitest "components" project: jsdom +
+  `@sveltejs/vite-plugin-svelte` + `@testing-library/svelte`; `tests/svelte-components.test.ts` is the
+  worked example). The glob is load-bearing THREE ways: it routes the file into that project
+  (vitest.config.ts), OUT of the root NodeNext tsc program (tsconfig.json `exclude`), and INTO
+  `tsconfig.client.json`'s include (svelte-check typechecks it). Non-component client-lib tests use the
+  sibling `tests/client-*.test.ts` glob (same tsconfig routing; node env with per-file jsdom pragmas; no
+  Svelte plugin). `.svelte` files are NOT in the coverage `include` yet — adding them would sink totals
+  below the vitest thresholds until component tests broaden.
 - **Isolated UI/layout/interaction behavior CAN be runtime-verified** when no `HTTP_PROXY` is set (check
   `env | grep -i proxy`). Install Playwright on demand (`npm i -D playwright && npx playwright install
   chromium`), build a MINIMAL Svelte fixture **inside the project dir** (a `/tmp` fixture can't resolve
