@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
-import { forgetClone, inspectRepoContents, pluginClonePath, syncPluginRepo } from "../plugins.js";
+import { forgetClone, inspectRepoContents, pluginClonePath, syncPluginRepoWithStatus } from "../plugins.js";
 import { scrubGitError } from "../marketplace.js";
 import { apiError, looksLikeRepo, safeString, type RouterDeps } from "./_shared.js";
 
@@ -77,9 +77,11 @@ export function createPluginsRouter({ config, store }: RouterDeps): Router {
       return;
     }
     try {
-      const dir = await syncPluginRepo(req.user!.id, plugin, config, false, store.getGitTokens(req.user!.id));
-      store.markPluginSynced(req.user!.id, req.params.id);
-      const contents = await inspectRepoContents(dir);
+      const sync = await syncPluginRepoWithStatus(req.user!.id, plugin, config, false, store.getGitTokens(req.user!.id));
+      if (sync.synced) {
+        store.markPluginSynced(req.user!.id, req.params.id);
+      }
+      const contents = await inspectRepoContents(sync.path);
       res.json({ contents });
     } catch (error) {
       const detail = scrubGitError(error);
@@ -95,7 +97,7 @@ export function createPluginsRouter({ config, store }: RouterDeps): Router {
       return;
     }
     try {
-      await syncPluginRepo(req.user!.id, plugin, config, true, store.getGitTokens(req.user!.id));
+      await syncPluginRepoWithStatus(req.user!.id, plugin, config, true, store.getGitTokens(req.user!.id));
       const updated = store.markPluginSynced(req.user!.id, req.params.id);
       res.json({ plugin: updated });
     } catch (error) {

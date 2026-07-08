@@ -815,6 +815,54 @@ describe("loadAgentPluginRoots", () => {
   // same skills (the personal knowledge repo, group repos) an owner chat can.
   // Routines once loaded only default + avatar plugins and silently missed
   // knowledge-repo skills; this test is the canary if the two ever drift again.
+  it("auto-refreshes stale avatar plugins before resolving chat roots", async () => {
+    const dataDir = path.join(tempDir, "plugin-autorefresh");
+    const { store, config } = createServices({
+      dataDir,
+      agentRuntime: "claude",
+      sessionSecret: "t",
+      defaultPluginsDir: path.join(dataDir, "no-default-plugins"),
+      pluginAutoRefreshIntervalMs: 1,
+    });
+    const owner = store.createUser({
+      username: "plugowner",
+      displayName: "Plugin Owner",
+      password: "password123",
+    });
+    const remote = makeBareRemote(path.join(dataDir, "plugin.git"));
+    const seed = path.join(dataDir, "plugin-seed");
+    makePluginRepo(seed, "auto");
+    makeSkill(seed, "old-skill", "---\nname: old-skill\ndescription: old\n---");
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-C", seed, ...args], { stdio: "pipe" })
+        .toString()
+        .trim();
+    git("add", "-A");
+    git("commit", "-q", "-m", "add old skill");
+    git("branch", "-M", "main");
+    git("remote", "add", "origin", remote);
+    git("push", "-q", "origin", "main");
+    const plugin = store.addPlugin(owner.id, { repo: remote });
+
+    let roots = await loadAgentPluginRoots(store, owner.id, config);
+    let skills = await listSkillsInRoots(roots.map((root) => ({ path: root.path, source: "plugin" })));
+    expect(skills.map((s) => s.name)).toContain("old-skill");
+    const firstSyncedAt = store.getPlugin(owner.id, plugin.id)?.lastSyncedAt;
+    expect(firstSyncedAt).toBeTruthy();
+
+    makeSkill(seed, "new-skill", "---\nname: new-skill\ndescription: new\n---");
+    git("add", "-A");
+    git("commit", "-q", "-m", "add new skill");
+    git("push", "-q", "origin", "main");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    roots = await loadAgentPluginRoots(store, owner.id, config);
+    skills = await listSkillsInRoots(roots.map((root) => ({ path: root.path, source: "plugin" })));
+    expect(skills.map((s) => s.name)).toContain("new-skill");
+    const secondSyncedAt = store.getPlugin(owner.id, plugin.id)?.lastSyncedAt;
+    expect(Date.parse(secondSyncedAt ?? "")).toBeGreaterThan(Date.parse(firstSyncedAt ?? ""));
+  });
+
   function setupKnowledgeRepo(dir: string) {
     const dataDir = path.join(tempDir, dir);
     const { store, config } = createServices({

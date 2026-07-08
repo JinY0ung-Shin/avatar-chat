@@ -25,10 +25,11 @@ import type {
   SkillInfo,
 } from "./types.js";
 
-// Clone-once-per-process cache keyed by the destination clone path. Avoids
-// re-fetching the same repo on every chat turn; refresh is explicit (process
-// restart or the refresh endpoint, which clears the entry via `forgetClone`).
+// Per-process clone cache keyed by the destination clone path. Avoids
+// re-fetching the same repo on every chat turn; stale entries are refreshed by
+// the chat/routine loader's TTL or explicitly by the refresh endpoint.
 const clonedPaths = new Set<string>();
+const syncingPaths = new Map<string, Promise<void>>();
 
 interface MarketplaceEntry {
   name?: string;
@@ -46,6 +47,20 @@ export function pluginClonePath(userId: string, repo: string, config: AppConfig)
 /** Drop a destination from the clone-once cache so the next sync re-fetches. */
 export function forgetClone(destination: string): void {
   clonedPaths.delete(destination);
+}
+
+function isPluginRefreshDue(plugin: Pick<Plugin, "lastSyncedAt">, intervalMs: number): boolean {
+  if (intervalMs <= 0) {
+    return false;
+  }
+  if (!plugin.lastSyncedAt) {
+    return true;
+  }
+  const syncedAt = Date.parse(plugin.lastSyncedAt);
+  if (!Number.isFinite(syncedAt)) {
+    return true;
+  }
+  return Date.now() - syncedAt >= intervalMs;
 }
 
 /** The plugin name a repo subdirectory advertises (its `plugin.json` `name`). */
@@ -699,6 +714,12 @@ export async function loadAgentPluginRoots(
       config,
       onWarn,
       store.getGitTokens(avatarId),
+      {
+        autoRefreshIntervalMs: config.pluginAutoRefreshIntervalMs,
+        onSynced: (plugin) => {
+          store.markPluginSynced(avatarId, plugin.id);
+        },
+      },
     )),
     ...(await loadKnowledgeRepoRoots(knowledgeRepoContextFor(store, avatarId, config), onWarn)),
     // Shared knowledge repos of every group the avatar's owner belongs to — so
@@ -794,17 +815,32 @@ export async function loadAvatarPluginRoots(
   onWarn?: (message: string) => void,
   // The avatar owner's internal/external git tokens, selected per repo host.
   userTokens?: string | null | GitTokenSet,
+  opts?: {
+    autoRefreshIntervalMs?: number;
+    onSynced?: (plugin: Plugin) => void;
+  },
 ): Promise<PluginRoot[]> {
   const roots: PluginRoot[] = [];
   for (const plugin of plugins) {
     const destination = pluginClonePath(userId, plugin.repo, config);
+    const forceRefresh = isPluginRefreshDue(
+      plugin,
+      opts?.autoRefreshIntervalMs ?? config.pluginAutoRefreshIntervalMs,
+    );
     try {
-      if (!clonedPaths.has(destination)) {
-        const url = marketplaceCloneUrl(plugin.repo, config.githubHost);
-        const token = tokenForGitUrl(url, config, userTokens);
-        await syncGitRepo(url, destination, plugin.ref ?? undefined, token);
-        clonedPaths.add(destination);
-        logger.debug({ repo: plugin.repo, destination }, "plugin repo cloned");
+      const sync = await syncPluginRepoWithStatus(
+        userId,
+        plugin,
+        config,
+        forceRefresh,
+        userTokens,
+      );
+      if (sync.synced) {
+        opts?.onSynced?.(plugin);
+        logger.debug(
+          { repo: plugin.repo, destination },
+          forceRefresh ? "plugin repo auto-refreshed" : "plugin repo cloned",
+        );
       }
     } catch (error) {
       // A refresh/clone failure is non-fatal if we already have a cached clone.
@@ -830,11 +866,55 @@ export async function loadAvatarPluginRoots(
   return roots;
 }
 
+interface PluginSyncOutcome {
+  path: string;
+  synced: boolean;
+}
+
 /**
  * Ensure a single plugin repo is cloned/up-to-date on disk and return its path.
  * `force` re-fetches even if the process already synced it this run (used by the
  * refresh endpoint); otherwise it respects the clone-once cache.
  */
+export async function syncPluginRepoWithStatus(
+  userId: string,
+  plugin: Pick<Plugin, "repo" | "ref">,
+  config: AppConfig,
+  force = false,
+  userTokens?: string | null | GitTokenSet,
+): Promise<PluginSyncOutcome> {
+  const destination = pluginClonePath(userId, plugin.repo, config);
+  if (force) {
+    forgetClone(destination);
+  }
+  const needsSync = force || !clonedPaths.has(destination);
+  const existing = syncingPaths.get(destination);
+  if (!needsSync) {
+    if (existing) {
+      await existing;
+    }
+    return { path: destination, synced: false };
+  }
+
+  let sync = existing;
+  if (!sync) {
+    const url = marketplaceCloneUrl(plugin.repo, config.githubHost);
+    const token = tokenForGitUrl(url, config, userTokens);
+    sync = syncGitRepo(url, destination, plugin.ref ?? undefined, token).then(() => {
+      clonedPaths.add(destination);
+    });
+    syncingPaths.set(destination, sync);
+    const clearInFlight = () => {
+      if (syncingPaths.get(destination) === sync) {
+        syncingPaths.delete(destination);
+      }
+    };
+    sync.then(clearInFlight, clearInFlight);
+  }
+  await sync;
+  return { path: destination, synced: true };
+}
+
 export async function syncPluginRepo(
   userId: string,
   plugin: Pick<Plugin, "repo" | "ref">,
@@ -842,15 +922,6 @@ export async function syncPluginRepo(
   force = false,
   userTokens?: string | null | GitTokenSet,
 ): Promise<string> {
-  const destination = pluginClonePath(userId, plugin.repo, config);
-  if (force) {
-    forgetClone(destination);
-  }
-  if (!clonedPaths.has(destination)) {
-    const url = marketplaceCloneUrl(plugin.repo, config.githubHost);
-    const token = tokenForGitUrl(url, config, userTokens);
-    await syncGitRepo(url, destination, plugin.ref ?? undefined, token);
-    clonedPaths.add(destination);
-  }
-  return destination;
+  const result = await syncPluginRepoWithStatus(userId, plugin, config, force, userTokens);
+  return result.path;
 }

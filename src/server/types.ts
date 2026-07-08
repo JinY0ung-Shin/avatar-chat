@@ -50,6 +50,11 @@ export interface AppConfig {
   /** Repo-bundled plugin dir loaded for EVERY avatar (default skills). */
   defaultPluginsDir: string;
   /**
+   * How long an avatar plugin clone may be reused before a chat/routine turn
+   * refreshes it from git. 0 disables automatic refresh after the first clone.
+   */
+  pluginAutoRefreshIntervalMs: number;
+  /**
    * Where the SDK persists per-conversation session transcripts (its
    * `CLAUDE_CONFIG_DIR`). Lives under `dataDir` so resumable sessions survive a
    * server/container restart, instead of the SDK's default `~/.claude`.

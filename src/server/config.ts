@@ -23,6 +23,17 @@ function parseAutoCompactWindow(value: string): number | undefined {
   return Math.min(AUTO_COMPACT_WINDOW_MAX, Math.max(AUTO_COMPACT_WINDOW_MIN, Math.round(n)));
 }
 
+function parseMinutes(value: string, fallbackMinutes: number): number {
+  if (!value) {
+    return Math.round(fallbackMinutes * 60_000);
+  }
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) {
+    return Math.round(fallbackMinutes * 60_000);
+  }
+  return Math.round(n * 60_000);
+}
+
 export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   const isProduction = process.env.NODE_ENV === "production";
   const dataDir = overrides.dataDir ?? env("APP_DATA_DIR", path.join(process.cwd(), "data"));
@@ -66,6 +77,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // Repo-bundled default skills, loaded for every avatar. cwd-based to match
     // dataDir; cwd is the app root under both `tsx` (dev) and `node dist` (prod).
     defaultPluginsDir: env("DEFAULT_PLUGINS_DIR", path.join(process.cwd(), "default-skills")),
+    // Avoid stale avatar plugins on long-lived server processes while keeping
+    // chat startup from fetching on every turn. Set 0 to disable automatic refresh.
+    pluginAutoRefreshIntervalMs: parseMinutes(env("PLUGIN_AUTO_REFRESH_MINUTES"), 10),
     // SDK session transcripts (the subprocess's CLAUDE_CONFIG_DIR). Under dataDir
     // so a conversation's resumable session survives a server/container restart.
     agentSessionsDir: path.join(dataDir, "agent-sessions"),
