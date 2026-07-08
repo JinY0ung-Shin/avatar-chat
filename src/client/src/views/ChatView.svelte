@@ -743,7 +743,7 @@
           <div class="empty-state">
             <AvatarImage user={item.avatar} size={72} alt="" />
             <div class="hero">
-              <h3>{item.avatar.displayName}와(과) 대화</h3>
+              <h3>{item.avatar.alias || item.avatar.displayName}와(과) 대화</h3>
               <p>{item.avatar.bio || (item.avatar.elevated || own ? "무엇이든 물어보세요." : "무엇이든 물어보세요. 이 아바타의 도구는 읽기 전용으로 실행됩니다.")}</p>
             </div>
             <div class="starter-prompts" role="group" aria-label="시작 프롬프트">
@@ -758,7 +758,7 @@
           <div class={`message ${message.role}`}>
             <div class="msg-role">
               <span class="role-dot"></span>
-              <span>{message.role === "user" ? "나" : item.avatar.displayName}</span>
+              <span>{message.role === "user" ? "나" : item.avatar.alias || item.avatar.displayName}</span>
               {#if message.createdAt}<time class="msg-time" datetime={message.createdAt}>{timeLabel(message.createdAt)}</time>{/if}
             </div>
             <div class={`bubble ${message.response?.summary === "오류" ? "errored" : ""}`}>
@@ -816,7 +816,7 @@
           <div class="message assistant" aria-live="off">
             <div class="msg-role">
               <span class="role-dot"></span>
-              <span>{item.avatar.displayName}</span>
+              <span>{item.avatar.alias || item.avatar.displayName}</span>
             </div>
             <div class="bubble">
               {#if item.liveThinking}
@@ -974,9 +974,9 @@
                only lets the user keep focus + draft the follow-up. -->
           <textarea
             rows="1"
-            placeholder={item.streaming ? "응답을 기다리는 중… (다음 메시지를 미리 작성할 수 있어요)" : `${item.avatar.displayName}에게 메시지…`}
+            placeholder={item.streaming ? "응답을 기다리는 중… (다음 메시지를 미리 작성할 수 있어요)" : `${item.avatar.alias || item.avatar.displayName}에게 메시지…`}
             value={item.draft}
-            aria-label={`${item.avatar.displayName}에게 보낼 메시지`}
+            aria-label={`${item.avatar.alias || item.avatar.displayName}에게 보낼 메시지`}
             aria-describedby={paneDomId("composer-hint", item.id)}
             use:autosize={item.draft}
             aria-controls={activeSlashOptionId(item) ? paneDomId("slash-menu", item.id) : undefined}
