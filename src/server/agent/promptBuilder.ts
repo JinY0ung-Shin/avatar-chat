@@ -623,7 +623,7 @@ export function buildSystemPromptAppend(
       // the avatar that teammates can write here, not discover it by surprise.
       if (request.sharedAccount) {
         lines.push(
-          "This account is marked as a **shared (communal) account**: trusted same-group teammates chatting with this avatar can also update the personal knowledge repository (write/delete/move/scaffold/commit). Creating/connecting the repository itself stays owner-only; the setting is under Settings → Profile.",
+          "This account is marked as a **shared (communal) account**: trusted same-group teammates chatting with this avatar can also update the personal knowledge repository (write/edit/delete/move/scaffold/commit). Creating/connecting the repository itself stays owner-only; the setting is under Settings → Profile.",
         );
       }
       const ownerBrainBlock = brainSection(request, "owner");
@@ -727,7 +727,7 @@ export function buildSystemPromptAppend(
         lines.push(
           request.sharedAccount
             ? "This avatar is a **shared (communal) account**: this trusted teammate may not only read but also **update the owner's personal knowledge repository** — `mcp__repo__list_files`/`read_file`/`write_file`/`edit_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. When they ask you to record knowledge or skills, apply the change and push it with `commit` (changes are not pushed until you commit). Creating/connecting the repository itself stays owner-only."
-            : "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
+            : "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/edit/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
         );
         const teammateBrainBlock = brainSection(request, "teammate");
         if (teammateBrainBlock) {
