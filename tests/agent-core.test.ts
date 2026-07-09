@@ -2783,7 +2783,7 @@ describe("buildPrompt", () => {
       0,
     );
     expect(readOnly).toContain(
-      "Modifying it (write/delete/move/scaffold/commit) is owner-only",
+      "Modifying it (write/edit/delete/move/scaffold/commit) is owner-only",
     );
     expect(readOnly).not.toContain("shared (communal) account");
 

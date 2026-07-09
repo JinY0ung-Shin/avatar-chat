@@ -642,7 +642,72 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(REPO_TOOL_NAMES).toContain("mcp__repo__write_file");
     const s = setup("rt0");
     const names = ownerTools(s).map((t) => t.name);
-    expect(names).toEqual(["list_files", "read_file", "write_file", "delete_file", "move_file", "scaffold_skill", "commit"]);
+    expect(names).toEqual(["list_files", "read_file", "write_file", "edit_file", "delete_file", "move_file", "scaffold_skill", "commit"]);
+  });
+
+  it("edit_file replaces an exact snippet without resending the whole file, and reports the recovery path on misses", async () => {
+    const s = setup("rt-edit");
+    const tools = ownerTools(s);
+    await callTool(tools, "write_file", { path: "notes/doc.md", content: "# Title\nalpha\nbeta\nalpha\n" });
+
+    // Unique match: replaces only the first occurrence-safe target.
+    const ok = await callTool(tools, "edit_file", {
+      path: "notes/doc.md",
+      old_string: "# Title",
+      new_string: "# Heading",
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content[0].text).toContain("1 replacement");
+    const afterOne = await callTool(tools, "read_file", { path: "notes/doc.md" });
+    expect(afterOne.content[0].text).toBe("# Heading\nalpha\nbeta\nalpha\n");
+
+    // Ambiguous match without replace_all → refuse with a redirect.
+    const dup = await callTool(tools, "edit_file", {
+      path: "notes/doc.md",
+      old_string: "alpha",
+      new_string: "gamma",
+    });
+    expect(dup.isError).toBe(true);
+    expect(dup.content[0].text).toContain("matches more than one place");
+
+    // replace_all replaces every occurrence and reports the count.
+    const all = await callTool(tools, "edit_file", {
+      path: "notes/doc.md",
+      old_string: "alpha",
+      new_string: "gamma",
+      replace_all: true,
+    });
+    expect(all.isError).toBeFalsy();
+    expect(all.content[0].text).toContain("2 replacements");
+
+    // new_string is inserted literally: a `$&`/`$1` must NOT be treated as a
+    // regex match reference (split/join, not String.replace).
+    const literalDollar = await callTool(tools, "edit_file", {
+      path: "notes/doc.md",
+      old_string: "beta",
+      new_string: "price $& and $1",
+    });
+    expect(literalDollar.isError).toBeFalsy();
+    const afterDollar = await callTool(tools, "read_file", { path: "notes/doc.md" });
+    expect(afterDollar.content[0].text).toContain("price $& and $1");
+
+    // Missing snippet → tells the model to read the file and copy exact text.
+    const miss = await callTool(tools, "edit_file", {
+      path: "notes/doc.md",
+      old_string: "nonexistent",
+      new_string: "x",
+    });
+    expect(miss.isError).toBe(true);
+    expect(miss.content[0].text).toContain("was not found");
+
+    // Missing file → tells the model to use write_file to create it.
+    const noFile = await callTool(tools, "edit_file", {
+      path: "notes/ghost.md",
+      old_string: "a",
+      new_string: "b",
+    });
+    expect(noFile.isError).toBe(true);
+    expect(noFile.content[0].text).toContain("does not exist");
   });
 
   it("refuses every tool for a non-owner viewer", async () => {
@@ -653,8 +718,8 @@ describe("repo tools (knowledge-repo management)", () => {
       viewerIsOwner: false,
       config: s.config,
     });
-    for (const name of ["list_files", "read_file", "write_file", "delete_file", "move_file", "scaffold_skill", "commit"]) {
-      const res = await callTool(tools, name, { path: "x", content: "y", name: "x", message: "m", from: "x", to: "z" });
+    for (const name of ["list_files", "read_file", "write_file", "edit_file", "delete_file", "move_file", "scaffold_skill", "commit"]) {
+      const res = await callTool(tools, name, { path: "x", content: "y", old_string: "a", new_string: "b", name: "x", message: "m", from: "x", to: "z" });
       expect(res.isError).toBe(true);
       expect(res.content[0].text).toContain("can only be used by the avatar owner");
     }
@@ -683,8 +748,8 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(rd.content[0].text).toContain("# 공유 지식");
 
     // Write/commit stay owner-only for the elevated teammate.
-    for (const name of ["write_file", "delete_file", "move_file", "scaffold_skill", "commit"]) {
-      const res = await callTool(teammate, name, { path: "x", content: "y", name: "x", message: "m", from: "x", to: "z" });
+    for (const name of ["write_file", "edit_file", "delete_file", "move_file", "scaffold_skill", "commit"]) {
+      const res = await callTool(teammate, name, { path: "x", content: "y", old_string: "a", new_string: "b", name: "x", message: "m", from: "x", to: "z" });
       expect(res.isError).toBe(true);
       expect(res.content[0].text).toContain("can only be used by the avatar owner");
     }
@@ -1946,12 +2011,38 @@ describe("group repo tools (mcp__group_repo__*)", () => {
       "list_files",
       "read_file",
       "write_file",
+      "edit_file",
       "delete_file",
       "move_file",
       "scaffold_skill",
       "commit",
       "create_repo",
     ]);
+  });
+
+  it("lets a group admin edit_file but refuses a member", async () => {
+    const s = setup("gp-edit");
+    await callTool(tools(s), "write_file", { group: "Team", path: "docs/n.md", content: "one two one" });
+    const edited = await callTool(tools(s), "edit_file", {
+      group: "Team",
+      path: "docs/n.md",
+      old_string: "two",
+      new_string: "three",
+    });
+    expect(edited.isError).toBeFalsy();
+    expect(edited.content[0].text).toContain("1 replacement");
+    const rd = await callTool(tools(s), "read_file", { group: "Team", path: "docs/n.md" });
+    expect(rd.content[0].text).toBe("one three one");
+
+    const sm = setup("gp-edit-m", { role: "member" });
+    const denied = await callTool(tools(sm), "edit_file", {
+      group: "Team",
+      path: "docs/n.md",
+      old_string: "a",
+      new_string: "b",
+    });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toContain("Only a group admin can modify");
   });
 
   it("is owner-only (a non-owner viewer is refused)", async () => {

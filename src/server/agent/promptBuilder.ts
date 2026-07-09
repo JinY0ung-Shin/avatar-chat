@@ -113,9 +113,10 @@ function knowledgeRepoSection(
   if (knowledgeRepoConfigured) {
     // The owner can have the avatar manage its connected knowledge repo.
     return (
-      "You can directly manage your own **knowledge repository** (an owner-only personal repo): `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. " +
+      "You can directly manage your own **knowledge repository** (an owner-only personal repo): `mcp__repo__list_files`/`read_file`/`write_file`/`edit_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. " +
+      "To change part of a file that already exists, use `edit_file` (a targeted text replacement) rather than rewriting the whole file with `write_file`. " +
       "If you organize work knowledge and skills here, you will use them starting from the next conversation; use `delete_file` to remove outdated knowledge/skills (a file or a whole skill folder) and `move_file` to rename/relocate them. " +
-      "write_file/delete_file/move_file/scaffold_skill changes are **not pushed until you commit**, so commit when a unit of work is finished or the owner asks."
+      "write_file/edit_file/delete_file/move_file/scaffold_skill changes are **not pushed until you commit**, so commit when a unit of work is finished or the owner asks."
     );
   }
   // No repo yet → the `create_repo` tool IS available (exposed only in this
@@ -250,7 +251,7 @@ function groupsSection(request: AgentRequest): string | null {
   const groupLines = [
     `The owner belongs to the following groups: ${groups.map(describe).join(", ")}. ` +
       "Members of the same group **automatically trust each other (elevated)** — group co-membership is the ONLY source of elevated (owner-level tool) access. So when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and group-visible avatars can find and talk to each other.",
-    "Each group may have a **shared knowledge repository**, handled with the `mcp__group_repo__*` tools: use `list_groups` to check groups/roles; all group members can `list_files`/`read_file`, while only **group admins** can `write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. Skills organized in a group's shared repository are used by every group member's avatar starting from the next conversation.",
+    "Each group may have a **shared knowledge repository**, handled with the `mcp__group_repo__*` tools: use `list_groups` to check groups/roles; all group members can `list_files`/`read_file`, while only **group admins** can `write_file`/`edit_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. Skills organized in a group's shared repository are used by every group member's avatar starting from the next conversation.",
   ];
   if (adminNoRepo.length > 0) {
     groupLines.push(
@@ -501,7 +502,7 @@ export function buildSystemPromptAppend(
       if (mcpToolGroupEnabled(request, "personal_knowledge")) {
         routineState.push(
           request.knowledgeRepoConfigured !== false
-            ? "Personal knowledge repository: connected — `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit` are available (changes must be committed to be pushed)."
+            ? "Personal knowledge repository: connected — `mcp__repo__list_files`/`read_file`/`write_file`/`edit_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit` are available (changes must be committed to be pushed)."
             : request.gitTokenSet
               ? "Personal knowledge repository: none — if a task needs a repository, create and connect one first with `mcp__repo__create_repo` (`scaffold_skill`/`write_file`/`commit` fail before one is connected)."
               : "Personal knowledge repository: none, and `GIT_TOKEN` is also not set — you cannot do tasks that need a repository, so note in your result report that a token needs to be registered.",
@@ -622,7 +623,7 @@ export function buildSystemPromptAppend(
       // the avatar that teammates can write here, not discover it by surprise.
       if (request.sharedAccount) {
         lines.push(
-          "This account is marked as a **shared (communal) account**: trusted same-group teammates chatting with this avatar can also update the personal knowledge repository (write/delete/move/scaffold/commit). Creating/connecting the repository itself stays owner-only; the setting is under Settings → Profile.",
+          "This account is marked as a **shared (communal) account**: trusted same-group teammates chatting with this avatar can also update the personal knowledge repository (write/edit/delete/move/scaffold/commit). Creating/connecting the repository itself stays owner-only; the setting is under Settings → Profile.",
         );
       }
       const ownerBrainBlock = brainSection(request, "owner");
@@ -725,8 +726,8 @@ export function buildSystemPromptAppend(
         // (standing per-turn guidance + tool-description trigger, per CLAUDE.md).
         lines.push(
           request.sharedAccount
-            ? "This avatar is a **shared (communal) account**: this trusted teammate may not only read but also **update the owner's personal knowledge repository** — `mcp__repo__list_files`/`read_file`/`write_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. When they ask you to record knowledge or skills, apply the change and push it with `commit` (changes are not pushed until you commit). Creating/connecting the repository itself stays owner-only."
-            : "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
+            ? "This avatar is a **shared (communal) account**: this trusted teammate may not only read but also **update the owner's personal knowledge repository** — `mcp__repo__list_files`/`read_file`/`write_file`/`edit_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. When they ask you to record knowledge or skills, apply the change and push it with `commit` (changes are not pushed until you commit). Creating/connecting the repository itself stays owner-only."
+            : "You may **read** the owner's personal **knowledge repository** with `mcp__repo__list_files`/`read_file` to draw on the owner's accumulated knowledge and skills when helping this teammate. Modifying it (write/edit/delete/move/scaffold/commit) is owner-only, so do not attempt those.",
         );
         const teammateBrainBlock = brainSection(request, "teammate");
         if (teammateBrainBlock) {

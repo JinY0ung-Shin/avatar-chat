@@ -11,6 +11,7 @@ import {
   commitAndPush,
   commitIdentityFor,
   deleteFile as deleteRepoFile,
+  editFile as editRepoFile,
   ensureClone,
   knowledgeRepoContextFor,
   listTree,
@@ -29,6 +30,7 @@ import {
   createRepoCatchMessage,
   createRepoFailureMessage,
   runDeleteFile,
+  runEditFile,
   runListFiles,
   runMoveFile,
   runReadFile,
@@ -94,6 +96,7 @@ export const REPO_TOOL_NAMES = [
   "mcp__repo__list_files",
   "mcp__repo__read_file",
   "mcp__repo__write_file",
+  "mcp__repo__edit_file",
   "mcp__repo__delete_file",
   "mcp__repo__move_file",
   "mcp__repo__scaffold_skill",
@@ -314,6 +317,28 @@ export function buildRepoTools(
           writeRepoFile,
           args,
           (path) => `Saved the file ${path}. (Not committed yet — push it with the commit tool.)`,
+        ),
+    ),
+    tool(
+      "edit_file",
+      `Modify an EXISTING file in my knowledge repository by replacing an exact text snippet. **Prefer this over write_file when changing a file that already exists** — you only send the part that changes, not the whole file (cheaper and safer for large notes/skills). Read the file first if unsure of the exact text. \`old_string\` must match the file exactly (including whitespace/indentation) and be unique, unless you set \`replace_all\`. Changes apply only to the working tree, and **until you commit & push with the commit tool they are saved only temporarily** and may disappear on the next sync. ${writeGate}`,
+      {
+        path: z.string().describe("Path relative to the repository root"),
+        old_string: z.string().describe("The exact text to replace (must be unique in the file unless replace_all is true)"),
+        new_string: z.string().describe("The replacement text"),
+        replace_all: z
+          .boolean()
+          .optional()
+          .describe("Replace every occurrence instead of requiring a unique match (default false)"),
+      },
+      (args) =>
+        runEditFile(
+          resolve(),
+          ensureClone,
+          editRepoFile,
+          args,
+          (path, count) =>
+            `Edited ${path} (${count} replacement${count === 1 ? "" : "s"}). (Not committed yet — push it with the commit tool.)`,
         ),
     ),
     tool(
