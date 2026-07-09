@@ -7,6 +7,7 @@ import { text } from "./mcpTools.js";
 import {
   commitIdentityFor,
   deleteFile as deleteRepoFile,
+  editFile as editRepoFile,
   listTree,
   moveFile as moveRepoFile,
   readFile as readRepoFile,
@@ -31,6 +32,7 @@ import {
   createRepoFailureMessage,
   resolveOwnerGroup,
   runDeleteFile,
+  runEditFile,
   runListFiles,
   runMoveFile,
   runReadFile,
@@ -65,6 +67,7 @@ export const GROUP_REPO_TOOL_NAMES = [
   "mcp__group_repo__list_files",
   "mcp__group_repo__read_file",
   "mcp__group_repo__write_file",
+  "mcp__group_repo__edit_file",
   "mcp__group_repo__delete_file",
   "mcp__group_repo__move_file",
   "mcp__group_repo__scaffold_skill",
@@ -192,6 +195,29 @@ export function buildGroupRepoTools(
           writeRepoFile,
           args,
           (path) => `Saved the file ${path}. (Not committed yet — push it with commit.)`,
+        ),
+    ),
+    tool(
+      "edit_file",
+      "Modify an EXISTING file in the specified group's shared knowledge repository by replacing an exact text snippet. **Prefer this over write_file when changing a file that already exists** — you send only the part that changes, not the whole file. `old_string` must match the file exactly (including whitespace/indentation) and be unique, unless you set `replace_all`. Applies only to the working tree until commit. (group admin only)",
+      {
+        group: z.string().describe("Group name or ID"),
+        path: z.string().describe("Path relative to the repository root"),
+        old_string: z.string().describe("The exact text to replace (must be unique in the file unless replace_all is true)"),
+        new_string: z.string().describe("The replacement text"),
+        replace_all: z
+          .boolean()
+          .optional()
+          .describe("Replace every occurrence instead of requiring a unique match (default false)"),
+      },
+      (args) =>
+        runEditFile(
+          resolveWrite(args.group),
+          cloneResolved,
+          editRepoFile,
+          args,
+          (path, count) =>
+            `Edited ${path} (${count} replacement${count === 1 ? "" : "s"}). (Not committed yet — push it with commit.)`,
         ),
     ),
     tool(

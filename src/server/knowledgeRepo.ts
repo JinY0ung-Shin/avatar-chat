@@ -291,6 +291,67 @@ export async function writeFile(repoRoot: string, relPath: string, content: stri
 }
 
 /**
+ * Replace an exact text snippet in an EXISTING tracked file (targeted edit, so
+ * the caller need not resend the whole file). Mirrors the built-in `Edit` tool:
+ * `oldString` must occur exactly once unless `replaceAll` is set. Throws the same
+ * traversal/symlink guards as read/write (INVALID_PATH), plus NOT_FOUND (missing
+ * file), NOT_A_FILE, FILE_TOO_LARGE, NO_CHANGE (old === new or empty old),
+ * STRING_NOT_FOUND (no match), and STRING_NOT_UNIQUE (multiple matches without
+ * replaceAll). Returns the number of replacements made.
+ */
+export async function editFile(
+  repoRoot: string,
+  relPath: string,
+  oldString: string,
+  newString: string,
+  replaceAll = false,
+): Promise<number> {
+  if (!oldString || oldString === newString) {
+    throw new Error("NO_CHANGE");
+  }
+  const lexical = resolveInRepo(repoRoot, relPath);
+  if (!lexical || lexical === repoRoot) {
+    throw new Error("INVALID_PATH");
+  }
+  // mustExist=false resolves symlinked ancestors but leaves the leaf unresolved,
+  // so the lstat below can reject a symlinked leaf (same guard as writeFile).
+  const abs = realpathContained(repoRoot, lexical, false);
+  if (!abs) {
+    throw new Error("INVALID_PATH");
+  }
+  const stat = await fs.lstat(abs).catch(() => null);
+  if (!stat) {
+    throw new Error("NOT_FOUND");
+  }
+  if (stat.isSymbolicLink()) {
+    throw new Error("INVALID_PATH");
+  }
+  if (!stat.isFile()) {
+    throw new Error("NOT_A_FILE");
+  }
+  if (stat.size > MAX_FILE_BYTES) {
+    throw new Error("FILE_TOO_LARGE");
+  }
+  const current = await fs.readFile(abs, "utf8");
+  const occurrences = current.split(oldString).length - 1;
+  if (occurrences === 0) {
+    throw new Error("STRING_NOT_FOUND");
+  }
+  if (occurrences > 1 && !replaceAll) {
+    throw new Error("STRING_NOT_UNIQUE");
+  }
+  // split/join (not String.replace) so `newString` is inserted literally — a `$&`
+  // or `$1` in the replacement must not be interpreted as a match reference. When
+  // !replaceAll we've already asserted a single occurrence, so this replaces once.
+  const next = current.split(oldString).join(newString);
+  if (Buffer.byteLength(next, "utf8") > MAX_FILE_BYTES) {
+    throw new Error("FILE_TOO_LARGE");
+  }
+  await fs.writeFile(abs, next, "utf8");
+  return replaceAll ? occurrences : 1;
+}
+
+/**
  * Delete a tracked file OR directory (recursively). Throws on traversal. No-op
  * if already gone. `recursive` lets a whole skill directory be removed in one
  * call; `force` won't follow a symlinked leaf (it removes the link itself) and

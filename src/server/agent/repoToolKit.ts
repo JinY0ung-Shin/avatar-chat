@@ -144,6 +144,32 @@ export function writeFileErrorMessage(error: unknown): string {
   });
 }
 
+/**
+ * edit_file's shared error decode. Adds the edit-specific sentinels (NOT_FOUND /
+ * STRING_NOT_FOUND / STRING_NOT_UNIQUE / NO_CHANGE) with a redirect that tells the
+ * model how to recover, then falls back to the shared FS decode.
+ */
+export function editFileErrorMessage(error: unknown): string {
+  const detail = scrubGitError(error);
+  if (detail === "NOT_FOUND") {
+    return "The file does not exist yet. Use write_file to create it (or check the path with list_files/read_file).";
+  }
+  if (detail === "STRING_NOT_FOUND") {
+    return "old_string was not found in the file. Read the current file with read_file and copy the exact text to replace, including whitespace and indentation.";
+  }
+  if (detail === "STRING_NOT_UNIQUE") {
+    return "old_string matches more than one place in the file. Include enough surrounding context to make it unique, or pass replace_all: true to replace every occurrence.";
+  }
+  if (detail === "NO_CHANGE") {
+    return "Nothing to change: old_string is empty or identical to new_string.";
+  }
+  return decodeRepoFsError(detail, {
+    tooLarge: "The resulting file is too large.",
+    notAFile: "Not a file.",
+    fallback: "Failed to edit the file",
+  });
+}
+
 /** scaffold_skill's shared error decode. */
 export function scaffoldErrorMessage(error: unknown): string {
   return decodeRepoFsError(scrubGitError(error), {
@@ -174,6 +200,13 @@ export interface RepoFileOps {
   listTree: (repoRoot: string) => Promise<Array<{ type: string; path: string }>>;
   readFile: (repoRoot: string, p: string) => Promise<string>;
   writeFile: (repoRoot: string, p: string, content: string) => Promise<void>;
+  editFile: (
+    repoRoot: string,
+    p: string,
+    oldString: string,
+    newString: string,
+    replaceAll: boolean,
+  ) => Promise<number>;
   deleteFile: (repoRoot: string, p: string) => Promise<void>;
   moveFile: (repoRoot: string, from: string, to: string) => Promise<void>;
   scaffoldSkill: (repoRoot: string, name: string, description: string) => Promise<string>;
@@ -242,6 +275,33 @@ export async function runWriteFile<C>(
     return text(success(args.path));
   } catch (error) {
     return text(writeFileErrorMessage(error), true);
+  }
+}
+
+/**
+ * Run the shared edit_file body (clone → targeted replace → decode). `success`
+ * builds the caller-specific message from the path + replacement count.
+ */
+export async function runEditFile<C>(
+  resolved: Resolved<C>,
+  ensureClone: (repo: C) => Promise<string>,
+  editFile: RepoFileOps["editFile"],
+  args: { path: string; old_string: string; new_string: string; replace_all?: boolean },
+  success: (path: string, count: number) => string,
+): Promise<ReturnType<typeof text>> {
+  if (!resolved.ok) return resolved.result;
+  try {
+    const repoRoot = await ensureClone(resolved.repo);
+    const count = await editFile(
+      repoRoot,
+      args.path,
+      args.old_string,
+      args.new_string,
+      args.replace_all ?? false,
+    );
+    return text(success(args.path, count));
+  } catch (error) {
+    return text(editFileErrorMessage(error), true);
   }
 }
 
