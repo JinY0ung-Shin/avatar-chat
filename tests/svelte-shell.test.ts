@@ -90,18 +90,34 @@ describe("Shell rail controls", () => {
   it("uses the same controls as an open/close drawer on mobile without changing the desktop preference", async () => {
     setDesktopViewport(false);
     const onRailCollapsedChange = vi.fn();
+    const onMobileRailOpenChange = vi.fn();
     render(Shell, {
-      props: { user, view: "explore", railCollapsed: true, onRailCollapsedChange },
+      props: { user, view: "explore", railCollapsed: true, onRailCollapsedChange, onMobileRailOpenChange },
     });
 
     const open = screen.getByRole("button", { name: "메뉴 열기" });
+    const rail = document.getElementById("rail")!;
     expect(open.getAttribute("aria-expanded")).toBe("false");
+    expect(rail.inert).toBe(true);
+    expect(document.getElementById("rail-conversation-list")?.hasAttribute("role")).toBe(false);
     await fireEvent.click(open);
     expect(open.getAttribute("aria-expanded")).toBe("true");
-    expect(document.getElementById("rail")?.hasAttribute("aria-hidden")).toBe(false);
+    expect(rail.hasAttribute("aria-hidden")).toBe(false);
+    expect(rail.inert).toBe(false);
+    expect(open.inert).toBe(true);
+    expect(onMobileRailOpenChange).toHaveBeenCalledWith(true);
 
-    await fireEvent.click(within(document.getElementById("rail")!).getByRole("button", { name: "메뉴 닫기" }));
+    const close = within(rail).getByRole("button", { name: "메뉴 닫기" });
+    await vi.waitFor(() => expect(document.activeElement).toBe(close));
+    await fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(rail.contains(document.activeElement)).toBe(true);
+
+    await fireEvent.keyDown(window, { key: "Escape" });
     expect(open.getAttribute("aria-expanded")).toBe("false");
+    expect(rail.inert).toBe(true);
+    expect(open.inert).toBe(false);
+    await vi.waitFor(() => expect(document.activeElement).toBe(open));
     expect(onRailCollapsedChange).not.toHaveBeenCalled();
+    expect(onMobileRailOpenChange).toHaveBeenLastCalledWith(false);
   });
 });

@@ -220,7 +220,7 @@
 }
 .seg-btn.active {
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 /* Toggle switch */
@@ -1426,6 +1426,34 @@
 
 /* Very narrow screens: let settings rows wrap instead of crushing the label. */
 @media (max-width: 480px) {
+  .inbox-filter {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+    overflow: visible;
+  }
+  .inbox-filter .seg-btn {
+    min-width: 0;
+  }
+  .settings-primary-tabs,
+  .admin-primary-tabs {
+    display: grid;
+    overflow: visible;
+    min-height: 0;
+    height: max-content;
+  }
+  .settings-primary-tabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .admin-primary-tabs {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  .settings-primary-tabs .settings-tab,
+  .admin-primary-tabs .settings-tab {
+    width: 100%;
+    min-width: 0;
+    padding-inline: var(--s-2);
+  }
   .plugin-row {
     flex-wrap: wrap;
   }

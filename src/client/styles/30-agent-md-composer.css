@@ -896,12 +896,12 @@ tbody tr:hover td {
   place-items: center;
   flex: none;
   cursor: pointer;
-  color: var(--n-500);
+  color: var(--muted);
   transition: background 0.15s var(--ease), color 0.15s var(--ease);
 }
 .composer-attach:hover {
   background: var(--n-100);
-  color: var(--fg);
+  color: var(--text);
 }
 .composer-attach.disabled {
   opacity: 0.5;
@@ -973,7 +973,7 @@ tbody tr:hover td {
 .composer textarea::placeholder,
 input::placeholder,
 textarea::placeholder {
-  color: var(--n-500);
+  color: var(--muted);
 }
 
 .send-button {
@@ -1075,8 +1075,9 @@ textarea::placeholder {
   border-radius: var(--r-md);
   background: var(--bg-elevated);
   color: var(--muted);
-  padding: 2px var(--s-2);
-  font-size: 0.8em;
+  min-height: var(--s-6);
+  padding: 0 var(--s-2);
+  font-size: var(--t-xs);
   cursor: pointer;
   white-space: nowrap;
   max-width: 16em;
@@ -1098,8 +1099,9 @@ textarea::placeholder {
   border-radius: var(--r-md);
   background: var(--bg-elevated);
   color: var(--muted);
-  padding: 2px var(--s-2);
-  font-size: 0.8em;
+  min-height: var(--s-6);
+  padding: 0 var(--s-2);
+  font-size: var(--t-xs);
   cursor: pointer;
   white-space: nowrap;
   overflow: hidden;

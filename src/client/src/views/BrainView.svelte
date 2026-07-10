@@ -4,7 +4,7 @@
   import Icon from "../components/Icon.svelte";
   import { api } from "../lib/api";
   import { renderMarkdown } from "../lib/format";
-  import { syncHash } from "../lib/nav";
+  import { goView, syncHash } from "../lib/nav";
   import { appState, readState, updateState } from "../lib/state";
   import type { KnowledgeGraph, KnowledgeGraphNode, KnowledgeNote, User } from "../lib/types";
 
@@ -25,7 +25,9 @@
   // Personal repo first, then each group that has a knowledge repo connected
   // (the graph/note endpoints 404 without one).
   $: sources = [
-    { key: "personal", label: "내 지식 저장소", graphEndpoint: "/api/me/knowledge-repo/graph", noteEndpoint: "/api/me/knowledge-repo/note" },
+    ...(user?.knowledgeRepo
+      ? [{ key: "personal", label: "내 지식 저장소", graphEndpoint: "/api/me/knowledge-repo/graph", noteEndpoint: "/api/me/knowledge-repo/note" }]
+      : []),
     ...(user?.groups ?? [])
       .filter((g) => g.knowledgeRepoConfigured)
       .map((g) => ({
@@ -57,7 +59,11 @@
   onMount(() => {
     // Normalize a stale/forbidden source key (e.g. a group that lost its repo)
     // down to whatever `active` resolved to, and reflect it in the hash.
-    if (active && active.key !== activeKey) setActiveKey(active.key);
+    if (!active) {
+      loading = false;
+      return;
+    }
+    if (active.key !== activeKey) setActiveKey(active.key);
     void loadGraph(active);
   });
 
@@ -162,11 +168,23 @@
       <h1>지식 그래프</h1>
       <p class="muted small">노트 사이의 <code>[[링크]]</code> 연결을 한눈에 보고, 노드를 클릭하면 내용을 바로 읽을 수 있어요.</p>
     </div>
-    <button class="ghost-sm" type="button" title="다시 불러오기" disabled={loading} on:click={() => loadGraph(active)}>
-      <Icon name="refresh" size={15} /><span>새로고침</span>
-    </button>
+    {#if sources.length}
+      <button class="ghost-sm" type="button" title="다시 불러오기" disabled={loading} on:click={() => loadGraph(active)}>
+        <Icon name="refresh" size={15} /><span>새로고침</span>
+      </button>
+    {/if}
   </header>
 
+  {#if !sources.length}
+    <section class="brain-empty">
+      <span class="brain-empty-icon"><Icon name="book" size={24} /></span>
+      <div>
+        <h2>연결된 지식 저장소가 없습니다</h2>
+        <p class="muted">지식 저장소를 연결하면 노트 사이의 관계와 내용을 이 화면에서 바로 탐색할 수 있습니다.</p>
+      </div>
+      <button class="primary" type="button" on:click={() => goView("settings", "knowledge")}>지식 저장소 설정</button>
+    </section>
+  {:else}
   {#if sources.length > 1}
     <div class="brain-sources" role="tablist" aria-label="지식 저장소 선택">
       {#each sources as source}
@@ -255,6 +273,7 @@
       {/if}
     </aside>
   </div>
+  {/if}
 </div>
 
 <style>
@@ -285,6 +304,36 @@
     display: flex;
     flex-wrap: wrap;
     gap: var(--s-2);
+  }
+  .brain-empty {
+    width: min(560px, 100%);
+    margin: auto;
+    display: grid;
+    justify-items: center;
+    gap: var(--s-4);
+    padding: var(--s-6);
+    border: 1px solid var(--line);
+    border-radius: var(--r-xl);
+    background: var(--panel);
+    text-align: center;
+    box-shadow: var(--shadow-sm);
+  }
+  .brain-empty-icon {
+    width: var(--s-7);
+    height: var(--s-7);
+    display: grid;
+    place-items: center;
+    border-radius: var(--r-pill);
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .brain-empty h2 {
+    margin: 0;
+    font-size: var(--t-lg);
+  }
+  .brain-empty p {
+    margin: var(--s-2) 0 0;
+    line-height: 1.6;
   }
   .brain-source {
     display: inline-flex;

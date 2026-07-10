@@ -19,8 +19,10 @@
   export let themePref: ThemePref = "system";
   export let railCollapsed = false;
   export let onRailCollapsedChange: (collapsed: boolean) => void = () => {};
+  export let onMobileRailOpenChange: (open: boolean) => void = () => {};
 
   let railOpen = false;
+  let railElement: HTMLElement | undefined;
   let railToggle: HTMLButtonElement | undefined;
   let railDismiss: HTMLButtonElement | undefined;
   const desktopRailMedia =
@@ -69,10 +71,13 @@
     void refreshConversations();
     const syncRailLayout = (event: MediaQueryListEvent) => {
       desktopRail = event.matches;
-      if (desktopRail) railOpen = false;
+      if (desktopRail && railOpen) setRailOpen(false);
     };
     desktopRailMedia?.addEventListener?.("change", syncRailLayout);
-    return () => desktopRailMedia?.removeEventListener?.("change", syncRailLayout);
+    return () => {
+      desktopRailMedia?.removeEventListener?.("change", syncRailLayout);
+      if (railOpen) onMobileRailOpenChange(false);
+    };
   });
 
   async function refreshConversations() {
@@ -220,20 +225,27 @@
     }
   }
 
-  function closeRail() {
-    railOpen = false;
+  function setRailOpen(open: boolean) {
+    if (railOpen === open) return;
+    railOpen = open;
+    onMobileRailOpenChange(open);
+  }
+
+  function closeRail(restoreFocus = false) {
+    setRailOpen(false);
+    if (restoreFocus) requestAnimationFrame(() => railToggle?.focus());
   }
 
   function openRail() {
     if (desktopRail) onRailCollapsedChange(false);
-    else railOpen = true;
+    else setRailOpen(true);
     requestAnimationFrame(() => railDismiss?.focus());
   }
 
   function dismissRail() {
     if (desktopRail) onRailCollapsedChange(true);
-    else closeRail();
-    requestAnimationFrame(() => railToggle?.focus());
+    else closeRail(true);
+    if (desktopRail) requestAnimationFrame(() => railToggle?.focus());
   }
 
   function navigate(viewName: ViewName) {
@@ -297,7 +309,28 @@
   }
 
   function handleKeydown(event: KeyboardEvent) {
-    if (event.key === "Escape") closeRail();
+    if (!desktopRail && railOpen && event.key === "Escape") {
+      event.preventDefault();
+      dismissRail();
+      return;
+    }
+    if (!desktopRail && railOpen && event.key === "Tab") {
+      const focusables = [
+        ...(railElement?.querySelectorAll<HTMLElement>(
+          "button:not(:disabled), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
+        ) ?? []),
+      ];
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (event.shiftKey && (document.activeElement === first || !railElement?.contains(document.activeElement))) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
   }
 
   $: railExpanded = desktopRail ? !railCollapsed : railOpen;
@@ -312,6 +345,7 @@
   aria-label="메뉴 열기"
   aria-controls="rail"
   aria-expanded={railExpanded ? "true" : "false"}
+  inert={railOpen && !desktopRail}
   title="메뉴"
   on:click={openRail}
 >
@@ -319,11 +353,13 @@
 </button>
 
 <aside
+  bind:this={railElement}
   class="rail"
   class:open={railOpen}
   id="rail"
   aria-label="대화 목록"
   aria-hidden={railExpanded ? undefined : "true"}
+  inert={!railExpanded}
 >
   <div class="rail-head">
     <div class="rail-brand-row">
@@ -403,7 +439,12 @@
         disabled={conversationsLoading}
         bind:value={conversationQuery}
       />
-      <div id="rail-conversation-list" class="conv-list scroll-thin" role="list" aria-label="내 대화 목록">
+      <div
+        id="rail-conversation-list"
+        class="conv-list scroll-thin"
+        role={!conversationsLoading && !conversationsError && railConversations.length ? "list" : undefined}
+        aria-label={!conversationsLoading && !conversationsError && railConversations.length ? "내 대화 목록" : undefined}
+      >
         {#if conversationsLoading}
           <div class="conv-empty" role="status">불러오는 중…</div>
         {:else if conversationsError}
@@ -543,6 +584,6 @@
   type="button"
   aria-label="메뉴 닫기"
   aria-hidden={railOpen ? undefined : "true"}
-  tabindex={railOpen ? 0 : -1}
-  on:click={closeRail}
+  tabindex="-1"
+  on:click={() => closeRail(true)}
 ></button>

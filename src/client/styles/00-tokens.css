@@ -43,7 +43,7 @@
   --surface-2: rgba(127, 127, 127, 0.04);
   --rail: #0c1f1d;
   --rail-text: #d9e6e3;
-  --rail-muted: #7f9893;
+  --rail-muted: #91aaa5;
   --rail-line: rgba(255, 255, 255, 0.08);
   --rail-active: rgba(255, 255, 255, 0.1);
   --rail-danger: #fca5a5;
@@ -51,7 +51,8 @@
 
   --text: var(--n-900);
   --text-soft: var(--n-700);
-  --muted: var(--n-500);
+  /* n-500 fell just below 4.5:1 on the light page surfaces at 12–14px. */
+  --muted: var(--n-600);
   --line: var(--n-200);
   --line-soft: var(--n-150);
 
@@ -169,7 +170,7 @@
   --panel-strong: var(--n-100);
   --rail: #0a1413;
   --rail-text: #cfe0dd;
-  --rail-muted: #6f8682;
+  --rail-muted: #91aaa5;
   --rail-line: rgba(255, 255, 255, 0.07);
   --rail-active: rgba(255, 255, 255, 0.08);
   --scrim: rgba(0, 0, 0, 0.55);

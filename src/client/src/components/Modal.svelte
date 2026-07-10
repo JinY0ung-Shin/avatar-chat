@@ -43,10 +43,32 @@
     }
   }
 
+  function inertOutside(root: HTMLElement): () => void {
+    const changed: HTMLElement[] = [];
+    let branch: HTMLElement = root;
+    while (branch.parentElement) {
+      const parent = branch.parentElement;
+      for (const sibling of parent.children) {
+        if (sibling === branch || !(sibling instanceof HTMLElement) || sibling.inert) continue;
+        sibling.inert = true;
+        changed.push(sibling);
+      }
+      if (parent === document.body) break;
+      branch = parent;
+    }
+    return () => {
+      for (const element of changed) element.inert = false;
+    };
+  }
+
   onMount(() => {
     const previous = document.activeElement as HTMLElement | null;
+    const restoreOutside = inertOutside(overlayEl);
     (cardEl.querySelector<HTMLElement>("input, select, textarea, button:not(:disabled)") || cardEl)?.focus?.();
-    return () => previous?.focus?.();
+    return () => {
+      restoreOutside();
+      previous?.focus?.();
+    };
   });
 </script>
 

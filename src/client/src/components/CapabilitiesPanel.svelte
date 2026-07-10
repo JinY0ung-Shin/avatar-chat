@@ -16,12 +16,14 @@
   let skills: SkillInfo[] = [];
   let openSkills = new Set<string>();
   let loadToken = 0;
+  let hasStoredCollapsePref = false;
+  let mobile = false;
   const panelId = `cap-panel-${++nextCapabilityPanelId}`;
   const bodyId = `${panelId}-body`;
 
   const CAP_WIDTH_MIN = 220;
   const CAP_WIDTH_MAX = 720;
-  const CAP_WIDTH_DEFAULT = 480;
+  const CAP_WIDTH_DEFAULT = 360;
   let panelWidth = CAP_WIDTH_DEFAULT;
 
   function capPref(key: string, fallback: string): string {
@@ -94,7 +96,14 @@
 
   function setCollapsed(value: boolean) {
     collapsed = value;
+    hasStoredCollapsePref = true;
     setCapPref("capPanelCollapsed", value ? "1" : "0");
+  }
+
+  function syncAutomaticCollapse(): void {
+    if (hasStoredCollapsePref) return;
+    const empty = !error && !avatar.intro && !avatar.hashtags?.length && !avatar.plugins?.length && !skills.length;
+    collapsed = mobile || empty;
   }
 
   $: if (avatar?.id) void loadSkills(avatar.id);
@@ -110,17 +119,21 @@
       const result = await api<{ skills: SkillInfo[] }>(`/api/avatars/${encodeURIComponent(avatarId)}/skills`);
       if (token !== loadToken) return;
       skills = result.skills || [];
+      syncAutomaticCollapse();
     } catch (err) {
       if (token !== loadToken) return;
       error = (err as Error).message;
+      syncAutomaticCollapse();
     } finally {
       if (token === loadToken) loading = false;
     }
   }
 
   onMount(() => {
-    const mobile = window.matchMedia?.("(max-width: 860px)").matches ?? false;
-    collapsed = capPref("capPanelCollapsed", mobile ? "1" : "0") === "1";
+    mobile = window.matchMedia?.("(max-width: 860px)").matches ?? false;
+    const storedCollapse = capPref("capPanelCollapsed", "");
+    hasStoredCollapsePref = storedCollapse === "0" || storedCollapse === "1";
+    collapsed = hasStoredCollapsePref ? storedCollapse === "1" : mobile;
     panelWidth = clampWidth(Number(capPref("capPanelWidth", String(CAP_WIDTH_DEFAULT))) || CAP_WIDTH_DEFAULT);
     if (avatar?.id) void loadSkills(avatar.id);
   });
@@ -157,7 +170,7 @@
   <div id={bodyId} class="cap-body scroll-thin">
     <div class="cap-head">
       <h3>이 아바타의 역량</h3>
-      <p class="cap-sub">{avatar.displayName}이(가) 사용할 수 있는 도구</p>
+      <p class="cap-sub">{avatar.displayName} 아바타가 사용할 수 있는 도구</p>
     </div>
 
     {#if avatar.intro}

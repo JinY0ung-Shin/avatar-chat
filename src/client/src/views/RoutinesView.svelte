@@ -431,10 +431,7 @@
 
           <div class="routine-manage-list">
             {#if !routines.length}
-              <div class="empty-note">
-                아직 등록한 루틴이 없습니다.{" "}
-                <button class="linkish small" type="button" on:click={() => openModal(null)}>첫 루틴 추가</button>
-              </div>
+              <div class="empty-note">아직 등록한 루틴이 없습니다. 위의 ‘루틴 추가’로 첫 예약 작업을 만들어 보세요.</div>
             {:else if !filtered.length}
               <div class="empty-note">
                 {#if query}
@@ -574,10 +571,7 @@
                   <button class="linkish small" type="button" aria-describedby={routineActionStatus ? routineActionStatusId : undefined} disabled={busyRoutineId === routines[0].id} on:click={() => runFromButton(routines[0])}>첫 루틴 지금 실행</button>
                 </div>
               {:else}
-                <div class="empty-note" role="status">
-                  아직 확인할 루틴 결과가 없습니다.{" "}
-                  <button class="linkish small" type="button" on:click={() => openModal(null)}>첫 루틴 추가</button>
-                </div>
+                <div class="empty-note" role="status">루틴을 추가하면 실행 기록과 결과가 여기에 쌓입니다.</div>
               {/if}
             {:else if messageLoadError}
               <div class="warn-box" role="alert">

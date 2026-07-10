@@ -272,7 +272,7 @@
 
   async function deletePlugin(p: Plugin): Promise<void> {
     if (pluginRowBusy[p.id]) return;
-    if (!window.confirm(`플러그인 "${p.label || p.repo}"을(를) 삭제할까요?`)) return;
+    if (!window.confirm(`"${p.label || p.repo}" 플러그인을 삭제할까요?`)) return;
     pluginRowBusy = { ...pluginRowBusy, [p.id]: true };
     try {
       await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" });

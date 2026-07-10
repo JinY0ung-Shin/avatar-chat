@@ -482,7 +482,7 @@
       <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
     </div>
   {:else}
-    <div class="settings-tabs" role="tablist" aria-label="관리자 분류">
+    <div class="settings-tabs admin-primary-tabs" role="tablist" aria-label="관리자 분류">
       {#each tabs as tab}
         <button
           id={`admin-tab-${tab.id}`}

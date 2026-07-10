@@ -302,6 +302,7 @@
   font-size: var(--t-2xs);
   font-weight: 700;
   white-space: nowrap;
+  min-height: var(--s-6);
 }
 
 .rail-clear-history:hover:not(:disabled) {
@@ -584,7 +585,7 @@
    the left-edge handle, collapsible to a slim strip via the chevron buttons. */
 .cap-panel {
   flex: none;
-  width: 480px; /* fallback only — JS sets the (clamped) inline width */
+  width: 360px; /* fallback only — JS sets the (clamped) inline width */
   position: relative;
   border-left: 1px solid var(--line);
   background: var(--panel);
@@ -655,8 +656,8 @@ body.col-resizing {
   top: var(--s-3);
   right: var(--s-3);
   z-index: 3;
-  width: 22px;
-  height: 22px;
+  width: var(--s-6);
+  height: var(--s-6);
   border: 1px solid var(--line);
   border-radius: var(--r-xs);
   background: var(--bg-elevated);
@@ -761,8 +762,8 @@ body.col-resizing {
   top: var(--s-3);
   right: var(--s-3);
   z-index: 3;
-  width: 22px;
-  height: 22px;
+  width: var(--s-6);
+  height: var(--s-6);
   border: 1px solid var(--line);
   border-radius: var(--r-xs);
   background: var(--bg-elevated);
@@ -808,7 +809,7 @@ body.col-resizing {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);
-  padding-right: 26px; /* clear the collapse button */
+  padding-right: var(--s-7); /* clear the collapse button */
 }
 .canvas-head h3 {
   margin: 0;
@@ -864,6 +865,8 @@ body.col-resizing {
   padding: 0 6px;
   font-size: var(--t-sm);
   line-height: 1;
+  min-width: var(--s-5);
+  min-height: var(--s-5);
 }
 .canvas-tab-close:hover {
   color: var(--danger);
@@ -1105,6 +1108,10 @@ body.col-resizing {
 }
 .canvas-fs-content svg {
   max-width: none;
+}
+
+.cap-head {
+  padding-right: var(--s-7);
 }
 
 .cap-head h3 {

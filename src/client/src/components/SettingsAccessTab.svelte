@@ -372,7 +372,7 @@
       replaceState({ user: next });
       extraName = "";
       extraValue = "";
-      notify(`시크릿 "${name}"을(를) 저장했습니다.`, "ok");
+      notify(`"${name}" 시크릿을 저장했습니다.`, "ok");
     } catch (err) {
       extraError = `저장 실패: ${(err as Error).message}`;
       notify(extraError, "warn");
@@ -382,12 +382,12 @@
   }
   async function deleteExtraSecret(name: string): Promise<void> {
     if (extraDeleting[name]) return;
-    if (!window.confirm(`시크릿 "${name}"을(를) 삭제할까요?`)) return;
+    if (!window.confirm(`"${name}" 시크릿을 삭제할까요?`)) return;
     extraDeleting = { ...extraDeleting, [name]: true };
     try {
       const { user: next } = await api<{ user: User }>(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });
       replaceState({ user: next });
-      notify(`시크릿 "${name}"을(를) 삭제했습니다.`, "ok");
+      notify(`"${name}" 시크릿을 삭제했습니다.`, "ok");
     } catch (err) {
       notify(`삭제 실패: ${(err as Error).message}`, "warn");
     } finally {

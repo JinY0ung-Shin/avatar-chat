@@ -551,8 +551,8 @@
 }
 .group-add-chip .msg-act {
   flex: none;
-  width: 22px;
-  height: 22px;
+  width: var(--s-6);
+  height: var(--s-6);
 }
 .group-add-clear {
   flex: 0 1 auto;

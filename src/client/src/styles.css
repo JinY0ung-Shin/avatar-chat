@@ -31,6 +31,11 @@
   cursor: pointer;
   font: inherit;
   line-height: 1;
+  width: var(--s-6);
+  height: var(--s-6);
+  display: inline-grid;
+  place-items: center;
+  flex: none;
 }
 
 .svelte-fallback-pad {
@@ -89,5 +94,9 @@
 @media (max-width: 860px) {
   .main > .view-header {
     padding-left: calc(var(--s-4) + 46px + env(safe-area-inset-left, 0px));
+  }
+
+  .main .brain-head {
+    padding-left: calc(46px + env(safe-area-inset-left, 0px));
   }
 }

@@ -62,6 +62,13 @@
   cursor: pointer;
   white-space: nowrap;
 }
+button.linkish {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: var(--s-5);
+  min-height: var(--s-5);
+}
 .linkish:hover {
   color: var(--accent-strong);
   text-decoration: underline;
@@ -1127,6 +1134,19 @@ body.col-resizing {
   }
   .routine-result-card .routine-result-transcript {
     min-height: 320px;
+  }
+}
+@media (max-width: 640px) {
+  .routine-filter.seg-control {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    overflow: visible;
+    border-radius: var(--r-lg);
+  }
+  .routine-filter .seg-btn {
+    min-width: 0;
+    padding-inline: var(--s-2);
   }
 }
 .chat-pane.compact .transcript {

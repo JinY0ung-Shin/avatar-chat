@@ -665,7 +665,7 @@
       if (state.user) state.user.effortDefault = effort;
     });
     const label = $appState.bootstrap?.effortSelection?.levels.find((e) => e.id === effort)?.label;
-    notify(`사고 강도를 ${label ?? effort}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
+    notify(`사고 강도: ${label ?? effort}. 다음 메시지부터 적용됩니다.`, "info");
     api("/api/me/chat-defaults", { method: "PUT", body: JSON.stringify({ effort }) }).catch((err) =>
       notify(`기본 사고 강도를 저장하지 못했습니다: ${(err as Error).message}`, "warn"),
     );
@@ -743,7 +743,7 @@
           <div class="empty-state">
             <AvatarImage user={item.avatar} size={72} alt="" />
             <div class="hero">
-              <h3>{item.avatar.alias || item.avatar.displayName}와(과) 대화</h3>
+              <h3>{item.avatar.alias || item.avatar.displayName} 아바타와 대화</h3>
               <p>{item.avatar.bio || (item.avatar.elevated || own ? "무엇이든 물어보세요." : "무엇이든 물어보세요. 이 아바타의 도구는 읽기 전용으로 실행됩니다.")}</p>
             </div>
             <div class="starter-prompts" role="group" aria-label="시작 프롬프트">

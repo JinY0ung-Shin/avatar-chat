@@ -116,7 +116,7 @@
       <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
     </div>
   {:else if user}
-    <div class="settings-tabs" role="tablist" aria-label="설정 분류">
+    <div class="settings-tabs settings-primary-tabs" role="tablist" aria-label="설정 분류">
       {#each tabs as tab}
         <button
           id={`settings-tab-${tab.id}`}

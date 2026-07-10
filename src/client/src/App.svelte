@@ -24,10 +24,15 @@
   let showOnboarding = false;
   let themeWatcherInstalled = false;
   let railCollapsed = loadRailCollapsed();
+  let mobileRailOpen = false;
 
   function setRailCollapsed(collapsed: boolean): void {
     railCollapsed = collapsed;
     persistRailCollapsed(collapsed);
+  }
+
+  function setMobileRailOpen(open: boolean): void {
+    mobileRailOpen = open;
   }
 
   async function boot() {
@@ -141,8 +146,9 @@
       themePref={$appState.themePref}
       {railCollapsed}
       onRailCollapsedChange={setRailCollapsed}
+      onMobileRailOpenChange={setMobileRailOpen}
     />
-    <main id="main" class="main" tabindex="-1">
+    <main id="main" class="main" tabindex="-1" inert={mobileRailOpen}>
       {#if $appState.view === "explore"}
         <ExploreView />
       {:else if $appState.view === "chat"}

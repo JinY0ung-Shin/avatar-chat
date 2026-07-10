@@ -76,6 +76,19 @@ describe("Toggle", () => {
 /* ------------------------------------------------------------------ */
 
 describe("RoutineModal", () => {
+  it("makes content outside the modal inert and restores it on close", () => {
+    const background = document.createElement("button");
+    background.textContent = "배경 작업";
+    document.body.append(background);
+
+    const modal = render(RoutineModal, { props: { routine: null } });
+    expect(background.inert).toBe(true);
+
+    modal.unmount();
+    expect(background.inert).toBe(false);
+    background.remove();
+  });
+
   it("offers a one-time date/time schedule and rejects a past slot", async () => {
     render(RoutineModal, { props: { routine: null } });
 
