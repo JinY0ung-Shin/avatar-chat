@@ -602,6 +602,47 @@ describe("autoscroll.createStickController", () => {
     expect(el.scrollTop).toBe(0);
   });
 
+  it("opening a transcript disclosure detaches before its resize can pin to the bottom", () => {
+    const store = makeStore(undefined);
+    const ctrl = createStickController(store);
+    const { el, g } = makeNode({ scrollHeight: 1000, clientHeight: 600 });
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    const label = document.createElement("span");
+    label.textContent = "생각 과정";
+    summary.append(label);
+    details.append(summary, document.createElement("div"));
+    el.append(details);
+    ctrl.attach(el);
+
+    expect(el.scrollTop).toBe(1000);
+    label.click(); // nested targets and keyboard-generated clicks bubble here
+    expect(details.open).toBe(true);
+    expect(store.isStuck()).toBe(false);
+
+    g.scrollHeight = 1800; // the disclosure body became visible
+    roInstances[0].cb();
+    expect(el.scrollTop).toBe(1000); // keep the summary where the reader opened it
+  });
+
+  it("does not detach for ordinary transcript clicks or when closing a disclosure", () => {
+    const store = makeStore(undefined);
+    const ctrl = createStickController(store);
+    const { el } = makeNode({ scrollHeight: 1000, clientHeight: 600 });
+    const ordinary = document.createElement("button");
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    details.open = true;
+    details.append(summary, document.createElement("div"));
+    el.append(ordinary, details);
+    ctrl.attach(el);
+
+    ordinary.click();
+    summary.click();
+    expect(details.open).toBe(false);
+    expect(store.setStuck).not.toHaveBeenCalled();
+  });
+
   it("jumpToBottom() forces stick, jumps to the bottom, from a detached state", () => {
     const store = makeStore(false);
     const ctrl = createStickController(store);
@@ -792,9 +833,14 @@ describe("autoscroll.createStickController", () => {
     const store = makeStore(undefined);
     const ctrl = createStickController(store);
     const { el } = makeNode({ scrollHeight: 2000, clientHeight: 600 });
+    const details = document.createElement("details");
+    const summary = document.createElement("summary");
+    details.append(summary);
+    el.append(details);
     const handle = ctrl.attach(el);
     handle.destroy();
     fire(el, "wheel", { deltaY: -100 });
+    summary.click();
     expect(store.setStuck).not.toHaveBeenCalled();
     expect(roInstances[0].disconnected).toBe(true);
   });

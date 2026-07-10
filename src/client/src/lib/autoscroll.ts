@@ -139,6 +139,23 @@ export function createStickController(store: StickStore): StickController {
     detach();
   }
 
+  // Expanding a <details> inside the transcript is a user-driven content
+  // resize. Without this signal the ResizeObserver below cannot distinguish it
+  // from streamed content growth and immediately pins the viewport to the
+  // bottom, moving the disclosure the user just opened out of view. Detach
+  // before the summary's default click action toggles the element so the
+  // observer preserves the reader's current position. Keyboard activation of a
+  // <summary> dispatches the same click event, so it follows this path too.
+  function onClick(event: MouseEvent) {
+    if (event.defaultPrevented) return;
+    const target = event.target instanceof Element ? event.target : null;
+    const summary = target?.closest("summary");
+    if (!summary || !node?.contains(summary)) return;
+    const details = summary.parentElement;
+    if (!(details instanceof HTMLDetailsElement) || details.open) return;
+    detach();
+  }
+
   // Scrollbar drags produce scroll events with no wheel/touch — attribute them
   // via the held pointer. (Chromium fires pointerdown on the element for its
   // scrollbar; where a browser doesn't, the distance fallback still applies.)
@@ -195,6 +212,7 @@ export function createStickController(store: StickStore): StickController {
     el.addEventListener("touchstart", onTouchStart, { passive: true });
     el.addEventListener("touchmove", onTouchMove, { passive: true });
     el.addEventListener("pointerdown", onPointerDown);
+    el.addEventListener("click", onClick);
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerUp);
     pin(); // land at the bottom on mount (conversation open / pane restore)
@@ -207,6 +225,7 @@ export function createStickController(store: StickStore): StickController {
         el.removeEventListener("touchstart", onTouchStart);
         el.removeEventListener("touchmove", onTouchMove);
         el.removeEventListener("pointerdown", onPointerDown);
+        el.removeEventListener("click", onClick);
         window.removeEventListener("pointerup", onPointerUp);
         window.removeEventListener("pointercancel", onPointerUp);
         if (node === el) node = null;
