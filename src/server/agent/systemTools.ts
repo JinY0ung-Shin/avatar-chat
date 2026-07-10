@@ -1,6 +1,11 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { parseRoutineSchedule, type ScheduleError } from "../routineSchedule.js";
+import {
+  isFutureOnceSchedule,
+  parseRoutineSchedule,
+  type RoutineSchedule,
+  type ScheduleError,
+} from "../routineSchedule.js";
 import type { Store } from "../store.js";
 import type { AgentOwner, AppConfig, Plugin, RoutineJob, RoutineSchedulePatch } from "../types.js";
 import { text } from "./mcpTools.js";
@@ -72,13 +77,16 @@ const OWNER_ONLY = "This tool can only be used in a conversation the avatar owne
 
 /** Agent-facing (English) messages for each schedule validation error. */
 const ENGLISH_SCHEDULE_ERROR: Record<ScheduleError, string> = {
-  INVALID_KIND: "scheduleKind must be one of: daily, weekly, interval.",
-  TIME_REQUIRED: "time (HH:MM, KST) is required for daily and weekly schedules.",
+  INVALID_KIND: "scheduleKind must be one of: once, daily, weekly, interval.",
+  TIME_REQUIRED: "time (HH:MM, KST) is required for once, daily, and weekly schedules.",
   INVALID_TIME: "time must be in HH:MM format.",
   DAYS_REQUIRED: "weekly schedules require at least one weekday in daysOfWeek.",
   INVALID_DAYS: "daysOfWeek must be integers 0-6 (0=Sunday, 6=Saturday).",
   INTERVAL_REQUIRED: "intervalMinutes is required for interval schedules.",
   INVALID_INTERVAL: "intervalMinutes must be an integer between 5 and 10080.",
+  DATE_REQUIRED: "date (YYYY-MM-DD, KST) is required for one-time schedules.",
+  INVALID_DATE: "date must be a real calendar date in YYYY-MM-DD format.",
+  DATE_IN_PAST: "A one-time schedule must be later than the current KST date and time.",
 };
 
 const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
@@ -86,6 +94,8 @@ const WEEKDAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const
 /** A concise English summary of a routine's firing schedule. */
 function formatScheduleEnglish(job: RoutineJob): string {
   switch (job.scheduleKind) {
+    case "once":
+      return `once on ${job.runDate ?? "(missing date)"} at ${job.time} KST`;
     case "weekly": {
       const days = (job.daysOfWeek ?? []).map((d) => WEEKDAY_NAMES[d] ?? String(d)).join(",");
       return `weekly on ${days} at ${job.time} KST`;
@@ -155,7 +165,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           "- The avatar converses by loading its profile/persona, base skills, owner plugins, and personal knowledge repository together.",
           "- The knowledge repository is a personal repo where the avatar can directly create and commit files and skills.",
           "- Plugins are added via a GitHub repo or git URL and load starting from the next conversation.",
-          "- Routines run headlessly on a daily, weekly, or interval schedule in KST, work with the same tool permissions as the owner, and leave their results in the routines tab. A routine can also open one registered git repository as its working directory (open_repo) — the selection persists and takes effect from the routine's next scheduled run.",
+          "- Routines run headlessly once at a specified KST date/time or recur on a daily, weekly, or interval schedule, work with the same tool permissions as the owner, and leave their results in the routines tab. A routine can also open one registered git repository as its working directory (open_repo) — the selection persists and takes effect from the routine's next scheduled run.",
           "- Secret values are not exposed; only their names are revealed to the avatar.",
           "- Remote git operations (clone/push, etc.) are performed only through dedicated MCP tools. The shell has no git credentials.",
         ];
@@ -359,7 +369,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
     ),
     tool(
       "list_routines",
-      "Lists the owner's avatar routines. Routines run headlessly on a daily, weekly, or interval schedule in KST and use the same tool permissions as the owner. (owner only)",
+      "Lists the owner's avatar routines. Routines run headlessly once at a specified KST date/time or recur daily, weekly, or at an interval, using the same tool permissions as the owner. (owner only)",
       {},
       async () => {
         if (!ctx.viewerIsOwner) {
@@ -374,15 +384,16 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
     ),
     tool(
       "create_routine",
-      "Creates a new routine task. Runs the prompt headlessly on a daily, weekly, or interval schedule in KST, and leaves the result of working with the same tool permissions as the owner in the routines tab. (owner only)",
+      "Creates a new routine task. Runs the prompt headlessly once at a specified KST date/time or on a recurring daily, weekly, or interval schedule, and leaves the result in the routines tab. (owner only)",
       {
         prompt: z.string().describe("The task instruction to run on schedule"),
         name: z.string().optional().describe("Short display name for the routine (optional)"),
         scheduleKind: z
-          .enum(["daily", "weekly", "interval"])
+          .enum(["once", "daily", "weekly", "interval"])
           .optional()
           .describe("Schedule type; defaults to daily"),
-        time: z.string().optional().describe("HH:MM in KST for daily/weekly, e.g.: 09:30"),
+        date: z.string().optional().describe("YYYY-MM-DD in KST for one-time schedules"),
+        time: z.string().optional().describe("HH:MM in KST for once/daily/weekly, e.g.: 09:30"),
         daysOfWeek: z
           .array(z.number())
           .optional()
@@ -406,6 +417,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           time: args.time,
           daysOfWeek: args.daysOfWeek,
           intervalMinutes: args.intervalMinutes,
+          date: args.date,
         });
         if (!parsed.ok) {
           return text(ENGLISH_SCHEDULE_ERROR[parsed.error], true);
@@ -417,6 +429,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           minuteOfDay: parsed.value.minuteOfDay,
           daysOfWeek: parsed.value.daysOfWeek,
           intervalMinutes: parsed.value.intervalMinutes,
+          runDate: parsed.value.runDate,
           enabled: args.enabled,
         });
         store.audit({
@@ -430,16 +443,17 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
     ),
     tool(
       "update_routine",
-      "Updates an existing routine's name, prompt, schedule (daily/weekly/interval in KST), and enabled values. Provide any of scheduleKind/time/daysOfWeek/intervalMinutes to replace the schedule. (owner only)",
+      "Updates an existing routine's name, prompt, schedule (once/daily/weekly/interval in KST), and enabled values. Provide any of scheduleKind/date/time/daysOfWeek/intervalMinutes to replace the schedule. (owner only)",
       {
         id: z.string().describe("id of the routine to update"),
         prompt: z.string().optional().describe("New task instruction"),
         name: z.string().optional().describe("New display name; pass an empty string to clear it"),
         scheduleKind: z
-          .enum(["daily", "weekly", "interval"])
+          .enum(["once", "daily", "weekly", "interval"])
           .optional()
           .describe("New schedule type"),
-        time: z.string().optional().describe("HH:MM in KST for daily/weekly"),
+        date: z.string().optional().describe("YYYY-MM-DD in KST for one-time schedules"),
+        time: z.string().optional().describe("HH:MM in KST for once/daily/weekly"),
         daysOfWeek: z
           .array(z.number())
           .optional()
@@ -471,6 +485,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         }
         const scheduleProvided =
           args.scheduleKind !== undefined ||
+          args.date !== undefined ||
           args.time !== undefined ||
           args.daysOfWeek !== undefined ||
           args.intervalMinutes !== undefined;
@@ -480,6 +495,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
             time: args.time,
             daysOfWeek: args.daysOfWeek,
             intervalMinutes: args.intervalMinutes,
+            date: args.date,
           });
           if (!parsed.ok) {
             return text(ENGLISH_SCHEDULE_ERROR[parsed.error], true);
@@ -488,12 +504,33 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           patch.minuteOfDay = parsed.value.minuteOfDay;
           patch.daysOfWeek = parsed.value.daysOfWeek;
           patch.intervalMinutes = parsed.value.intervalMinutes;
+          patch.runDate = parsed.value.runDate;
         }
         if (args.enabled !== undefined) {
           patch.enabled = args.enabled;
         }
         if (Object.keys(patch).length === 0) {
           return text("At least one of the values to update (name, prompt, schedule, enabled) is required.", true);
+        }
+        const current = store.getRoutineJob(ctx.avatarUserId, args.id);
+        if (!current) {
+          return text("Routine not found.", true);
+        }
+        if (patch.enabled === true) {
+          const candidate: RoutineSchedule = {
+            kind: patch.scheduleKind ?? current.scheduleKind,
+            minuteOfDay: patch.minuteOfDay ?? current.minuteOfDay,
+            daysOfWeek:
+              patch.daysOfWeek !== undefined ? patch.daysOfWeek : current.daysOfWeek,
+            intervalMinutes:
+              patch.intervalMinutes !== undefined
+                ? patch.intervalMinutes
+                : current.intervalMinutes,
+            runDate: patch.runDate !== undefined ? patch.runDate : current.runDate,
+          };
+          if (!isFutureOnceSchedule(candidate)) {
+            return text(ENGLISH_SCHEDULE_ERROR.DATE_IN_PAST, true);
+          }
         }
         const routine = store.updateRoutineJob(ctx.avatarUserId, args.id, patch);
         if (!routine) {

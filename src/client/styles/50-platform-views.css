@@ -967,6 +967,9 @@ body.col-resizing {
 .routine-dot.err {
   background: var(--danger);
 }
+.routine-dot.done {
+  background: var(--accent);
+}
 .routine-dot.off {
   background: var(--line);
 }

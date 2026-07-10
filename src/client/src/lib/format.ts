@@ -112,14 +112,19 @@ export function timeLabel(iso: string | null | undefined): string {
 
 export const WEEKDAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
 
-// Human routine schedule label, e.g. "매일 09:00 (KST)", "매주 월·수·금 09:00 (KST)",
-// "3시간마다", "45분마다". Mirrors the old routines.js formatRoutineSchedule().
+// Human routine schedule label, e.g. "한 번 · 2026. 07. 15. 09:00 (KST)",
+// "매일 09:00 (KST)", "매주 월·수·금 09:00 (KST)", "3시간마다".
 export function formatRoutineSchedule(routine: {
   scheduleKind?: string;
   time?: string;
   daysOfWeek?: number[] | null;
   intervalMinutes?: number | null;
+  runDate?: string | null;
 }): string {
+  if (routine.scheduleKind === "once") {
+    const date = routine.runDate?.replace(/^(\d{4})-(\d{2})-(\d{2})$/, "$1. $2. $3.") || "날짜 미정";
+    return `한 번 · ${date} ${routine.time || ""} (KST)`.trim();
+  }
   if (routine.scheduleKind === "interval") {
     const minutes = Number(routine.intervalMinutes) || 0;
     if (minutes && minutes % 60 === 0) return `${minutes / 60}시간마다`;

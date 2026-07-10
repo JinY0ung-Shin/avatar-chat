@@ -16,12 +16,13 @@
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
   import type { RoutineJob, StoredMessage } from "../lib/types";
 
-  type FilterId = "all" | "enabled" | "paused" | "error";
+  type FilterId = "all" | "enabled" | "paused" | "completed" | "error";
 
   const FILTER_DEFS: { id: FilterId; label: string; match: (r: RoutineJob) => boolean }[] = [
     { id: "all", label: "전체", match: () => true },
     { id: "enabled", label: "사용 중", match: (r) => r.enabled },
-    { id: "paused", label: "일시 정지", match: (r) => !r.enabled },
+    { id: "paused", label: "일시 정지", match: (r) => !r.enabled && !r.completedAt },
+    { id: "completed", label: "완료", match: (r) => Boolean(r.completedAt) },
     { id: "error", label: "실패", match: (r) => r.lastStatus === "error" },
   ];
 
@@ -382,7 +383,7 @@
           <div class="panel-section-head">
             <div>
               <h3>내 루틴</h3>
-              <p class="muted">매일·매주 또는 일정 간격(KST)으로 아바타가 스스로 실행합니다. 카드를 누르면 결과가 오른쪽에 표시돼요.</p>
+          <p class="muted">특정 날짜에 한 번만 또는 매일·매주·일정 간격(KST)으로 아바타가 스스로 실행합니다. 카드를 누르면 결과가 오른쪽에 표시돼요.</p>
             </div>
             <button class="primary small routine-add-btn" type="button" on:click={() => openModal(null)}>
               <Icon name="plus" size={16} /><span>루틴 추가</span>
@@ -450,11 +451,12 @@
               {#each filtered as routine (routine.id)}
                 {@const active = $appState.routineConversationId === routine.conversationId}
                 {@const errored = routine.lastStatus === "error"}
-                {@const dotClass = !routine.enabled ? "off" : errored ? "err" : "on"}
+                {@const completed = Boolean(routine.completedAt)}
+                {@const dotClass = errored ? "err" : completed ? "done" : !routine.enabled ? "off" : "on"}
                 {@const title = routineTitle(routine)}
                 {@const rowLabel = active ? `선택된 루틴 결과: ${title}` : `루틴 결과 보기: ${title}`}
                 <div
-                  class={`routine-manage-row ${active ? "active" : ""} ${routine.enabled ? "" : "paused"}`}
+                  class={`routine-manage-row ${active ? "active" : ""} ${!routine.enabled && !completed ? "paused" : ""}`}
                   role="group"
                   aria-label={`루틴: ${title}`}
                   aria-current={active ? "true" : undefined}
@@ -476,7 +478,7 @@
                         <strong class="routine-manage-title">{title}</strong>
                       </span>
                       <span class="routine-manage-meta" id={routineDomId(routine, "meta")}>
-                        {formatRoutineSchedule(routine)}{#if routine.enabled && routine.nextRunAt} · <span class="routine-next">다음 실행 {timeLabel(routine.nextRunAt)}</span>{/if} · {routine.lastRunAt
+                        {formatRoutineSchedule(routine)}{#if completed} · <span class="routine-next">한 번 실행 완료</span>{:else if routine.enabled && routine.nextRunAt} · <span class="routine-next">다음 실행 {timeLabel(routine.nextRunAt)}</span>{/if} · {routine.lastRunAt
                           ? `최근 실행 ${timeLabel(routine.lastRunAt)} · ${errored ? "실패" : "완료"}`
                           : "아직 실행되지 않음"}
                       </span>
@@ -484,23 +486,29 @@
                         <span class="error-note routine-manage-error" id={routineDomId(routine, "error")}>{routine.lastError}</span>
                       {/if}
                     </button>
-                    <Toggle
-                      on={routine.enabled}
-                      label={`루틴 사용: ${title}`}
-                      onChange={(next) => toggleRoutine(routine, next)} />
+                    {#if completed}
+                      <span class="meta-badge">완료</span>
+                    {:else}
+                      <Toggle
+                        on={routine.enabled}
+                        label={`루틴 사용: ${title}`}
+                        onChange={(next) => toggleRoutine(routine, next)} />
+                    {/if}
                   </div>
                   <div class="routine-manage-actions">
                     <button class="ghost-sm" type="button" on:click|stopPropagation={() => openModal(routine)}>
                       <Icon name="edit" size={16} /><span>편집</span>
                     </button>
-                    <button
-                      class="ghost-sm"
-                      type="button"
-                      aria-describedby={routineActionStatus ? routineActionStatusId : undefined}
-                      disabled={busyRoutineId === routine.id}
-                      on:click|stopPropagation={() => runFromButton(routine)}>
-                      {busyRoutineId === routine.id ? "실행 중…" : "지금 실행"}
-                    </button>
+                    {#if !completed}
+                      <button
+                        class="ghost-sm"
+                        type="button"
+                        aria-describedby={routineActionStatus ? routineActionStatusId : undefined}
+                        disabled={busyRoutineId === routine.id}
+                        on:click|stopPropagation={() => runFromButton(routine)}>
+                        {busyRoutineId === routine.id ? "실행 중…" : "지금 실행"}
+                      </button>
+                    {/if}
                   </div>
                 </div>
               {/each}

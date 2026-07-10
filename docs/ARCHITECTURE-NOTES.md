@@ -382,10 +382,14 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
 - A routine (`routine_jobs` table, `get/list/create/update/deleteRoutineJob`, `markRoutineRun`) runs its
   `prompt` headlessly with owner-level tools and appends results to a dedicated conversation
   (`[루틴] <name|prompt>` title). Schedule kinds (`src/server/routineSchedule.ts`, the ONE place for all
-  schedule math + validation): **daily** (`minuteOfDay` KST), **weekly** (`daysOfWeek` 0=Sun..6=Sat at
-  `minuteOfDay`), **interval** (`intervalMinutes`, 15..10080). `parseRoutineSchedule` validates raw
+  schedule math + validation): **once** (`runDate` YYYY-MM-DD KST + `minuteOfDay`; disabled with
+  `completedAt` after its single attempt), **daily** (`minuteOfDay` KST), **weekly** (`daysOfWeek`
+  0=Sun..6=Sat at `minuteOfDay`), **interval** (`intervalMinutes`, 5..10080).
+  `parseRoutineSchedule` validates raw
   API/MCP input → a `RoutineSchedule` or a `ScheduleError` CODE; each caller maps the code to its own
   channel (`routes/_shared.ts` `KOREAN_SCHEDULE_ERROR`, `systemTools.ts` `ENGLISH_SCHEDULE_ERROR`).
+  One-time schedules retain `run_date` separately from `next_run_at`, so disabling/completing does not
+  lose the configured date; `completed_at` distinguishes completion from a manual pause.
   `nextRunIso` computes the next firing in fixed UTC+9 (no DST); a name/prompt-only `updateRoutineJob`
   edit preserves an overdue `next_run_at`, only a schedule change recomputes. `store.create/updateRoutineJob`
   stay backward-compatible with `{prompt, minuteOfDay}`. Editable by owner (UI modal: clickable title →
@@ -716,7 +720,7 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   - `normalizeTags` (`lib/format.ts`) ↔ server `normalizeHashtags`
   - repo-href building ↔ server `githubHost` resolution
   - the schedule builder (`RoutineModal.svelte` + `formatRoutineSchedule`/`timeToMinute`/`minuteToTime` in
-    `lib/format.ts`) ↔ server `routineSchedule.ts` (daily/weekly/interval semantics)
+    `lib/format.ts`) ↔ server `routineSchedule.ts` (once/daily/weekly/interval semantics)
 
 ### Behavior gotchas (don't "fix" these)
 - **Group-knowledge toggle saves a per-USER default, fire-and-forget with NO readback.** A new chat pane

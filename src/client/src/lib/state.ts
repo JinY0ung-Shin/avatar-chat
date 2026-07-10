@@ -50,7 +50,7 @@ export interface ClientState {
   routineConversationId: string;
   routineMessages: import("./types").StoredMessage[];
   routineSearch: string;
-  routineFilter: "all" | "enabled" | "paused" | "error";
+  routineFilter: "all" | "enabled" | "paused" | "completed" | "error";
   adminUsers: AdminUserSummary[];
   adminGroups: AdminGroupSummary[];
   adminUserFilter: "all" | "admins" | "suspended" | "public" | "sessions";

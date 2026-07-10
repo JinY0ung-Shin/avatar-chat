@@ -2,16 +2,18 @@
 // Korea observes no DST, so KST is a fixed UTC+9 offset — the arithmetic below
 // is independent of the server's own timezone. Pure module, no DB access.
 
-export type ScheduleKind = "daily" | "weekly" | "interval";
+export type ScheduleKind = "daily" | "weekly" | "interval" | "once";
 
 export interface RoutineSchedule {
   kind: ScheduleKind;
-  /** 0..1439; used by daily/weekly; 0 for interval. */
+  /** 0..1439; used by once/daily/weekly; 0 for interval. */
   minuteOfDay: number;
   /** weekly only: sorted unique ints 0(Sun)..6(Sat), length>=1. */
   daysOfWeek: number[] | null;
-  /** interval only: integer 15..10080. */
+  /** interval only: integer 5..10080. */
   intervalMinutes: number | null;
+  /** once only: YYYY-MM-DD in KST; null for recurring schedules. */
+  runDate: string | null;
 }
 
 export type ScheduleError =
@@ -21,10 +23,59 @@ export type ScheduleError =
   | "DAYS_REQUIRED"
   | "INVALID_DAYS"
   | "INTERVAL_REQUIRED"
-  | "INVALID_INTERVAL";
+  | "INVALID_INTERVAL"
+  | "DATE_REQUIRED"
+  | "INVALID_DATE"
+  | "DATE_IN_PAST";
 
 const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+interface CalendarDate {
+  year: number;
+  month: number;
+  day: number;
+  value: string;
+}
+
+/** Strict YYYY-MM-DD parser that rejects normalized dates such as 2026-02-31. */
+function parseCalendarDate(value: unknown): CalendarDate | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+  const trimmed = value.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(trimmed);
+  if (!match) {
+    return null;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (year < 1970 || year > 9999 || month < 1 || month > 12 || day < 1 || day > 31) {
+    return null;
+  }
+  const probe = new Date(Date.UTC(year, month - 1, day));
+  if (
+    probe.getUTCFullYear() !== year ||
+    probe.getUTCMonth() !== month - 1 ||
+    probe.getUTCDate() !== day
+  ) {
+    return null;
+  }
+  return { year, month, day, value: trimmed };
+}
+
+/** Convert a KST calendar date + minutes-from-midnight to an exact UTC ISO instant. */
+function onceRunIso(runDate: string | null, minuteOfDay: number): string | null {
+  const date = parseCalendarDate(runDate);
+  if (!date || !Number.isInteger(minuteOfDay) || minuteOfDay < 0 || minuteOfDay > 1439) {
+    return null;
+  }
+  const hour = Math.floor(minuteOfDay / 60);
+  const minute = minuteOfDay % 60;
+  const utcMs = Date.UTC(date.year, date.month - 1, date.day, hour, minute) - KST_OFFSET_MS;
+  return new Date(utcMs).toISOString();
+}
 
 /** "HH:MM" (KST wall-clock) for minutes-from-midnight (0..1439). */
 export function formatMinuteOfDay(minuteOfDay: number): string {
@@ -70,14 +121,16 @@ export function parseRoutineSchedule(raw: {
   time?: unknown;
   daysOfWeek?: unknown;
   intervalMinutes?: unknown;
-}): { ok: true; value: RoutineSchedule } | { ok: false; error: ScheduleError } {
+  date?: unknown;
+}, from: Date = new Date()): { ok: true; value: RoutineSchedule } | { ok: false; error: ScheduleError } {
   let kind: ScheduleKind;
   if (raw.scheduleKind === undefined || raw.scheduleKind === null) {
     kind = "daily";
   } else if (
     raw.scheduleKind === "daily" ||
     raw.scheduleKind === "weekly" ||
-    raw.scheduleKind === "interval"
+    raw.scheduleKind === "interval" ||
+    raw.scheduleKind === "once"
   ) {
     kind = raw.scheduleKind;
   } else {
@@ -94,8 +147,36 @@ export function parseRoutineSchedule(raw: {
     }
     return {
       ok: true,
-      value: { kind, minuteOfDay: 0, daysOfWeek: null, intervalMinutes: interval },
+      value: { kind, minuteOfDay: 0, daysOfWeek: null, intervalMinutes: interval, runDate: null },
     };
+  }
+
+  if (kind === "once") {
+    if (raw.date === undefined || raw.date === null || raw.date === "") {
+      return { ok: false, error: "DATE_REQUIRED" };
+    }
+    const runDate = parseCalendarDate(raw.date);
+    if (!runDate) {
+      return { ok: false, error: "INVALID_DATE" };
+    }
+    if (raw.time === undefined || raw.time === null || raw.time === "") {
+      return { ok: false, error: "TIME_REQUIRED" };
+    }
+    const minuteOfDay = parseTimeToMinute(raw.time);
+    if (minuteOfDay === null) {
+      return { ok: false, error: "INVALID_TIME" };
+    }
+    const schedule: RoutineSchedule = {
+      kind,
+      minuteOfDay,
+      daysOfWeek: null,
+      intervalMinutes: null,
+      runDate: runDate.value,
+    };
+    if (!isFutureOnceSchedule(schedule, from)) {
+      return { ok: false, error: "DATE_IN_PAST" };
+    }
+    return { ok: true, value: schedule };
   }
 
   // daily and weekly both need a time.
@@ -110,7 +191,7 @@ export function parseRoutineSchedule(raw: {
   if (kind === "daily") {
     return {
       ok: true,
-      value: { kind, minuteOfDay, daysOfWeek: null, intervalMinutes: null },
+      value: { kind, minuteOfDay, daysOfWeek: null, intervalMinutes: null, runDate: null },
     };
   }
 
@@ -128,8 +209,17 @@ export function parseRoutineSchedule(raw: {
   }
   return {
     ok: true,
-    value: { kind, minuteOfDay, daysOfWeek: days, intervalMinutes: null },
+    value: { kind, minuteOfDay, daysOfWeek: days, intervalMinutes: null, runDate: null },
   };
+}
+
+/** True unless this is a one-time schedule whose exact KST slot is no longer future. */
+export function isFutureOnceSchedule(schedule: RoutineSchedule, from: Date = new Date()): boolean {
+  if (schedule.kind !== "once") {
+    return true;
+  }
+  const iso = onceRunIso(schedule.runDate, schedule.minuteOfDay);
+  return Boolean(iso && new Date(iso).getTime() > from.getTime());
 }
 
 /**
@@ -176,9 +266,20 @@ function nextWeeklyRunIso(minuteOfDay: number, daysOfWeek: number[], from: Date)
   return new Date(kstMidnight + 7 * DAY_MS + minuteOfDay * 60_000 - KST_OFFSET_MS).toISOString();
 }
 
-/** The next firing of `schedule`, strictly after `from`, as a UTC ISO string. */
+/**
+ * The next firing as a UTC ISO string. Recurring schedules return a slot
+ * strictly after `from`; a one-time schedule returns its exact configured slot
+ * (callers validate that it is future before enabling it).
+ */
 export function nextRunIso(schedule: RoutineSchedule, from: Date = new Date()): string {
   switch (schedule.kind) {
+    case "once": {
+      const iso = onceRunIso(schedule.runDate, schedule.minuteOfDay);
+      if (!iso) {
+        throw new Error("INVALID_ONCE_SCHEDULE");
+      }
+      return iso;
+    }
     case "interval":
       return new Date(from.getTime() + (schedule.intervalMinutes ?? 0) * 60_000).toISOString();
     case "weekly":

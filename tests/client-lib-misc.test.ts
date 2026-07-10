@@ -872,7 +872,10 @@ describe("format helpers", () => {
     expect(timeLabel("2001-07-06T09:30:00")).not.toBe("");
   });
 
-  it("formatRoutineSchedule renders interval/weekly/daily variants (server-mirrored)", () => {
+it("formatRoutineSchedule renders once/interval/weekly/daily variants (server-mirrored)", () => {
+  expect(
+    formatRoutineSchedule({ scheduleKind: "once", runDate: "2099-12-31", time: "14:30" }),
+  ).toBe("한 번 · 2099. 12. 31. 14:30 (KST)");
     expect(formatRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 180 })).toBe("3시간마다");
     expect(formatRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 45 })).toBe("45분마다");
     expect(formatRoutineSchedule({ scheduleKind: "weekly", daysOfWeek: [5, 1, 3], time: "09:00" })).toBe(

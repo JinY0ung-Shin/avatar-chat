@@ -1,7 +1,7 @@
 <script lang="ts">
   // Centered create/edit modal for a routine. `routine === null` = create mode.
   // Mirrors the old openRoutineModal()/buildScheduleForm(): markdown prompt
-  // preview, daily/weekly/interval schedule builder with validation, plus
+  // preview, once/daily/weekly/interval schedule builder with validation, plus
   // run-now/delete actions in edit mode.
   import { createEventDispatcher } from "svelte";
   import Modal from "./Modal.svelte";
@@ -19,8 +19,24 @@
 
   let name = routine?.name || "";
   let prompt = routine?.prompt || "";
-  let scheduleKind: "daily" | "weekly" | "interval" = routine?.scheduleKind || "daily";
+  let scheduleKind: RoutineJob["scheduleKind"] = routine?.scheduleKind || "daily";
   let time = routine?.time || "09:00";
+  const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+  function kstDateString(offsetDays = 0): string {
+    const shifted = new Date(Date.now() + KST_OFFSET_MS + offsetDays * 24 * 60 * 60 * 1000);
+    return shifted.toISOString().slice(0, 10);
+  }
+  function validWallTime(wallTime: string): boolean {
+    const match = /^(\d{2}):(\d{2})$/.exec(wallTime);
+    return Boolean(match && Number(match[1]) <= 23 && Number(match[2]) <= 59);
+  }
+  function onceRunTimestamp(date: string, wallTime: string): number | null {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !validWallTime(wallTime)) return null;
+    const timestamp = Date.parse(`${date}T${wallTime}:00+09:00`);
+    return Number.isFinite(timestamp) ? timestamp : null;
+  }
+  const todayKst = kstDateString();
+  let runDate = routine?.runDate || kstDateString(1);
   const selectedDays = new Set<number>(Array.isArray(routine?.daysOfWeek) ? routine!.daysOfWeek! : []);
 
   // Interval: split the stored minutes into a value + unit (hour/minute).
@@ -39,10 +55,13 @@
   let promptInvalid = false;
   let daysInvalid = false;
   let intervalInvalid = false;
+  let dateInvalid = false;
   let busy = false;
+  let routineStatus = "";
   let promptEl: HTMLTextAreaElement;
   let daysWrapEl: HTMLDivElement;
   let intervalEl: HTMLInputElement;
+  let dateEl: HTMLInputElement;
   const descId = "routine-modal-desc";
   const statusId = "routine-modal-status";
   const errorId = "routine-modal-error";
@@ -51,11 +70,13 @@
   const initialPrompt = routine?.prompt || "";
   const initialScheduleKind = routine?.scheduleKind || "daily";
   const initialTime = routine?.time || "09:00";
+  const initialRunDate = routine?.runDate || runDate;
   const initialDayKey = [...selectedDays].sort((a, b) => a - b).join(",");
   const initialScheduleKey = [
     initialScheduleKind,
     initialScheduleKind === "interval" ? initialInterval : initialTime,
     initialScheduleKind === "weekly" ? initialDayKey : "",
+    initialScheduleKind === "once" ? initialRunDate : "",
   ].join("|");
 
   // Toggle aria-invalid imperatively: the role="group" element triggers a
@@ -76,22 +97,36 @@
     scheduleKind,
     scheduleKind === "interval" ? intervalMinutes : time,
     scheduleKind === "weekly" ? dayKey : "",
+    scheduleKind === "once" ? runDate : "",
   ].join("|");
-  $: scheduleReady = scheduleKind === "weekly" ? dayList.length > 0 : scheduleKind === "interval" ? intervalMinutes >= 5 : true;
-  $: routineDirty = !isEdit || nameTrimmed !== initialName || prompt !== initialPrompt || currentScheduleKey !== initialScheduleKey;
+  $: scheduleDirty = currentScheduleKey !== initialScheduleKey;
+  $: onceTimestamp = onceRunTimestamp(runDate, time);
+  $: timeReady = validWallTime(time);
+  $: scheduleReady = scheduleKind === "weekly"
+    ? dayList.length > 0 && timeReady
+    : scheduleKind === "interval"
+      ? intervalMinutes >= 5
+      : scheduleKind === "once"
+        ? Boolean(runDate && timeReady && ((onceTimestamp ?? 0) > Date.now() || (isEdit && !scheduleDirty)))
+        : timeReady;
+  $: routineDirty = !isEdit || nameTrimmed !== initialName || prompt !== initialPrompt || scheduleDirty;
   $: routineCanSave = Boolean(!busy && promptTrimmed && scheduleReady && routineDirty);
   $: saveButtonLabel = busy ? "저장 중…" : isEdit ? "변경 저장" : "루틴 추가";
-  $: routineStatus = busy
-    ? "저장 중…"
-    : !promptTrimmed
-      ? "작업 프롬프트를 입력해 주세요."
-      : scheduleKind === "weekly" && !dayList.length
-        ? "매주 반복할 요일을 선택해 주세요."
-        : scheduleKind === "interval" && intervalMinutes < 5
-          ? "반복 간격은 5분 이상이어야 합니다."
-          : isEdit && !routineDirty
-            ? "저장됨"
-            : "저장할 준비가 됐습니다.";
+  $: {
+    if (busy) routineStatus = "저장 중…";
+    else if (!promptTrimmed) routineStatus = "작업 프롬프트를 입력해 주세요.";
+    else if (scheduleKind === "weekly" && !dayList.length) routineStatus = "매주 반복할 요일을 선택해 주세요.";
+    else if (scheduleKind === "interval" && intervalMinutes < 5) routineStatus = "반복 간격은 5분 이상이어야 합니다.";
+    else if (scheduleKind === "once" && !runDate) routineStatus = "실행 날짜를 선택해 주세요.";
+    else if (!timeReady) routineStatus = "실행 시각을 입력해 주세요.";
+    else if (
+      scheduleKind === "once" &&
+      (onceTimestamp ?? 0) <= Date.now() &&
+      (!isEdit || scheduleDirty)
+    ) routineStatus = "한 번만 실행할 날짜와 시각은 현재보다 이후여야 합니다.";
+    else if (isEdit && !routineDirty) routineStatus = "저장됨";
+    else routineStatus = "저장할 준비가 됐습니다.";
+  }
   $: fieldDescribedBy = errorMessage ? `${statusId} ${errorId}` : statusId;
 
   function toggleDay(idx: number) {
@@ -106,7 +141,28 @@
   function onScheduleKindChange(): void {
     daysInvalid = false;
     intervalInvalid = false;
+    dateInvalid = false;
     errorMessage = "";
+  }
+
+  function clearDateError(): void {
+    dateInvalid = false;
+    if (
+      errorMessage === "실행 날짜를 선택해 주세요." ||
+      errorMessage === "한 번만 실행할 날짜와 시각은 현재보다 이후여야 합니다."
+    ) {
+      errorMessage = "";
+    }
+  }
+
+  function clearTimeError(): void {
+    if (scheduleKind === "once") dateInvalid = false;
+    if (
+      errorMessage === "실행 시각을 입력해 주세요." ||
+      errorMessage === "한 번만 실행할 날짜와 시각은 현재보다 이후여야 합니다."
+    ) {
+      errorMessage = "";
+    }
   }
 
   function clearIntervalError(): void {
@@ -120,7 +176,8 @@
 
   function schedulePayload(): Record<string, unknown> {
     const payload: Record<string, unknown> = { scheduleKind };
-    if (scheduleKind === "daily" || scheduleKind === "weekly") payload.time = time;
+    if (scheduleKind === "once") payload.date = runDate;
+    if (scheduleKind === "once" || scheduleKind === "daily" || scheduleKind === "weekly") payload.time = time;
     if (scheduleKind === "weekly") payload.daysOfWeek = [...selectedDays].sort((a, b) => a - b);
     if (scheduleKind === "interval") payload.intervalMinutes = intervalMinutesFromInputs();
     return payload;
@@ -130,6 +187,22 @@
   function validateSchedule(): string | null {
     daysInvalid = false;
     intervalInvalid = false;
+    dateInvalid = false;
+    if (scheduleKind === "once" && !runDate) {
+      dateInvalid = true;
+      return "실행 날짜를 선택해 주세요.";
+    }
+    if (scheduleKind !== "interval" && !timeReady) {
+      return "실행 시각을 입력해 주세요.";
+    }
+    if (
+      scheduleKind === "once" &&
+      (onceTimestamp ?? 0) <= Date.now() &&
+      (!isEdit || scheduleDirty)
+    ) {
+      dateInvalid = true;
+      return "한 번만 실행할 날짜와 시각은 현재보다 이후여야 합니다.";
+    }
     if (scheduleKind === "weekly" && selectedDays.size === 0) {
       daysInvalid = true;
       return "매주 반복은 요일을 1개 이상 선택해 주세요.";
@@ -163,17 +236,21 @@
       errorMessage = schedErr;
       if (daysInvalid) daysWrapEl?.querySelector<HTMLButtonElement>("button")?.focus();
       else if (intervalInvalid) intervalEl?.focus();
+      else if (dateInvalid) dateEl?.focus();
       return;
     }
     if (!routineDirty) return;
     errorMessage = "";
     busy = true;
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         name: nameTrimmed || null,
         prompt,
-        ...schedulePayload(),
       };
+      if (!isEdit || scheduleDirty) Object.assign(payload, schedulePayload());
+      // Editing the date of a completed one-time task is an explicit reschedule.
+      // Reactivate it in the same save instead of requiring a second toggle.
+      if (isEdit && routine?.completedAt && scheduleDirty) payload.enabled = true;
       if (isEdit && routine) {
         await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "PATCH", body: JSON.stringify(payload) });
       } else {
@@ -236,7 +313,7 @@
   on:close={requestClose}
 >
   <h2 id="routine-modal-title">{isEdit ? "루틴 편집" : "루틴 추가"}</h2>
-  <p class="sr-only" id={descId}>루틴 이름, 작업 프롬프트, 실행 주기를 설정합니다. 저장 중에는 닫을 수 없습니다.</p>
+  <p class="sr-only" id={descId}>루틴 이름, 작업 프롬프트, 실행 날짜 또는 반복 주기를 설정합니다. 저장 중에는 닫을 수 없습니다.</p>
   <form class="routine-modal-form" aria-busy={busy} on:submit|preventDefault={submit}>
     <label class="field">
       <span>이름 (선택)</span>
@@ -269,18 +346,35 @@
 
     <div class="schedule-builder">
       <div class="schedule-row">
-        <label class="schedule-label" for="routine-kind">주기</label>
-        <select id="routine-kind" aria-label="주기" disabled={busy} bind:value={scheduleKind} on:change={onScheduleKindChange}>
+        <label class="schedule-label" for="routine-kind">실행 방식</label>
+        <select id="routine-kind" aria-label="실행 방식" disabled={busy} bind:value={scheduleKind} on:change={onScheduleKindChange}>
+          <option value="once">한 번만</option>
           <option value="daily">매일</option>
           <option value="weekly">매주</option>
           <option value="interval">간격</option>
         </select>
       </div>
 
+      {#if scheduleKind === "once"}
+        <div class="schedule-row">
+          <span class="schedule-label">실행 날짜</span>
+          <input
+            type="date"
+            min={todayKst}
+            aria-label="실행 날짜"
+            aria-describedby={fieldDescribedBy}
+            aria-invalid={dateInvalid ? "true" : undefined}
+            disabled={busy}
+            bind:this={dateEl}
+            bind:value={runDate}
+            on:input={clearDateError} />
+        </div>
+      {/if}
+
       {#if scheduleKind !== "interval"}
         <div class="schedule-row">
           <span class="schedule-label">시각</span>
-          <input type="time" aria-label="실행 시각" disabled={busy} bind:value={time} />
+          <input type="time" aria-label="실행 시각" disabled={busy} bind:value={time} on:input={clearTimeError} />
         </div>
       {/if}
 
@@ -342,7 +436,9 @@
     <div class="routine-modal-actions">
       <div class="routine-modal-actions-left">
         {#if isEdit}
-          <button class="ghost-sm" type="button" disabled={busy} on:click={runNowClick}>지금 실행</button>
+          {#if !routine?.completedAt}
+            <button class="ghost-sm" type="button" disabled={busy} on:click={runNowClick}>지금 실행</button>
+          {/if}
           <button class="ghost-sm danger" type="button" disabled={busy} on:click={deleteClick}>삭제</button>
         {/if}
       </div>

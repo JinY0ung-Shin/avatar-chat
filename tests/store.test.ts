@@ -593,7 +593,7 @@ describe("routineSchedule", () => {
       const res = parseRoutineSchedule({ time: "09:30" });
       expect(res).toEqual({
         ok: true,
-        value: { kind: "daily", minuteOfDay: 9 * 60 + 30, daysOfWeek: null, intervalMinutes: null },
+        value: { kind: "daily", minuteOfDay: 9 * 60 + 30, daysOfWeek: null, intervalMinutes: null, runDate: null },
       });
     });
 
@@ -601,7 +601,7 @@ describe("routineSchedule", () => {
       const res = parseRoutineSchedule({ scheduleKind: "daily", time: "07:00" });
       expect(res).toEqual({
         ok: true,
-        value: { kind: "daily", minuteOfDay: 7 * 60, daysOfWeek: null, intervalMinutes: null },
+        value: { kind: "daily", minuteOfDay: 7 * 60, daysOfWeek: null, intervalMinutes: null, runDate: null },
       });
     });
 
@@ -613,7 +613,7 @@ describe("routineSchedule", () => {
       });
       expect(res).toEqual({
         ok: true,
-        value: { kind: "weekly", minuteOfDay: 8 * 60 + 15, daysOfWeek: [1, 3, 5], intervalMinutes: null },
+        value: { kind: "weekly", minuteOfDay: 8 * 60 + 15, daysOfWeek: [1, 3, 5], intervalMinutes: null, runDate: null },
       });
     });
 
@@ -621,7 +621,25 @@ describe("routineSchedule", () => {
       const res = parseRoutineSchedule({ scheduleKind: "interval", intervalMinutes: 90 });
       expect(res).toEqual({
         ok: true,
-        value: { kind: "interval", minuteOfDay: 0, daysOfWeek: null, intervalMinutes: 90 },
+        value: { kind: "interval", minuteOfDay: 0, daysOfWeek: null, intervalMinutes: 90, runDate: null },
+      });
+    });
+
+    it("parses a future one-time KST date and time", () => {
+      const from = new Date("2026-07-10T00:00:00.000Z"); // 09:00 KST
+      const res = parseRoutineSchedule(
+        { scheduleKind: "once", date: "2026-07-11", time: "14:30" },
+        from,
+      );
+      expect(res).toEqual({
+        ok: true,
+        value: {
+          kind: "once",
+          minuteOfDay: 14 * 60 + 30,
+          daysOfWeek: null,
+          intervalMinutes: null,
+          runDate: "2026-07-11",
+        },
       });
     });
 
@@ -672,6 +690,19 @@ describe("routineSchedule", () => {
         ok: false,
         error: "INVALID_INTERVAL",
       });
+      expect(parseRoutineSchedule({ scheduleKind: "once", time: "09:00" })).toEqual({
+        ok: false,
+        error: "DATE_REQUIRED",
+      });
+      expect(
+        parseRoutineSchedule({ scheduleKind: "once", date: "2026-02-30", time: "09:00" }),
+      ).toEqual({ ok: false, error: "INVALID_DATE" });
+      expect(
+        parseRoutineSchedule(
+          { scheduleKind: "once", date: "2026-07-10", time: "08:59" },
+          new Date("2026-07-10T00:00:00.000Z"),
+        ),
+      ).toEqual({ ok: false, error: "DATE_IN_PAST" });
     });
   });
 
@@ -679,7 +710,7 @@ describe("routineSchedule", () => {
     it("daily: lands on the requested KST minute, strictly after `from`", () => {
       const from = new Date("2026-06-13T00:00:00.000Z"); // 09:00 KST
       const iso = nextRunIso(
-        { kind: "daily", minuteOfDay: 9 * 60 + 30, daysOfWeek: null, intervalMinutes: null },
+        { kind: "daily", minuteOfDay: 9 * 60 + 30, daysOfWeek: null, intervalMinutes: null, runDate: null },
         from,
       );
       expect(new Date(iso).getTime()).toBeGreaterThan(from.getTime());
@@ -689,7 +720,7 @@ describe("routineSchedule", () => {
     it("daily: rolls to tomorrow when today's slot already passed", () => {
       const from = new Date("2026-06-13T01:00:00.000Z"); // 10:00 KST
       const iso = nextRunIso(
-        { kind: "daily", minuteOfDay: 9 * 60, daysOfWeek: null, intervalMinutes: null },
+        { kind: "daily", minuteOfDay: 9 * 60, daysOfWeek: null, intervalMinutes: null, runDate: null },
         from,
       );
       expect(kstMinuteOfDay(iso)).toBe(9 * 60);
@@ -703,7 +734,7 @@ describe("routineSchedule", () => {
       expect(kstWeekday(from.toISOString())).toBe(6);
       // Schedule for Monday(1)/Wednesday(3) at 08:00 KST → next is Monday.
       const iso = nextRunIso(
-        { kind: "weekly", minuteOfDay: 8 * 60, daysOfWeek: [1, 3], intervalMinutes: null },
+        { kind: "weekly", minuteOfDay: 8 * 60, daysOfWeek: [1, 3], intervalMinutes: null, runDate: null },
         from,
       );
       expect(kstWeekday(iso)).toBe(1);
@@ -715,7 +746,7 @@ describe("routineSchedule", () => {
       // Saturday 09:00 KST `from`; schedule Saturday(6) at 08:00 KST (already past today).
       const from = new Date("2026-06-13T00:00:00.000Z");
       const iso = nextRunIso(
-        { kind: "weekly", minuteOfDay: 8 * 60, daysOfWeek: [6], intervalMinutes: null },
+        { kind: "weekly", minuteOfDay: 8 * 60, daysOfWeek: [6], intervalMinutes: null, runDate: null },
         from,
       );
       expect(kstWeekday(iso)).toBe(6);
@@ -727,10 +758,21 @@ describe("routineSchedule", () => {
     it("interval: exactly from + intervalMinutes", () => {
       const from = new Date("2026-06-13T12:00:00.000Z");
       const iso = nextRunIso(
-        { kind: "interval", minuteOfDay: 0, daysOfWeek: null, intervalMinutes: 45 },
+        { kind: "interval", minuteOfDay: 0, daysOfWeek: null, intervalMinutes: 45, runDate: null },
         from,
       );
       expect(new Date(iso).getTime()).toBe(from.getTime() + 45 * 60_000);
+    });
+
+    it("once: returns the exact configured KST date and time", () => {
+      const iso = nextRunIso({
+        kind: "once",
+        minuteOfDay: 14 * 60 + 30,
+        daysOfWeek: null,
+        intervalMinutes: null,
+        runDate: "2026-07-11",
+      });
+      expect(iso).toBe("2026-07-11T05:30:00.000Z");
     });
   });
 });
@@ -841,6 +883,57 @@ describe("routine jobs", () => {
     expect(reloaded.scheduleKind).toBe("interval");
   });
 
+  it("persists a one-time schedule and completes it after exactly one attempt", () => {
+    const { store, ownerId } = makeStore("rj-once");
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "한 번 실행",
+      scheduleKind: "once",
+      minuteOfDay: 9 * 60,
+      runDate: "2099-12-31",
+    });
+    expect(job.scheduleKind).toBe("once");
+    expect(job.runDate).toBe("2099-12-31");
+    expect(job.nextRunAt).toBe("2099-12-31T00:00:00.000Z");
+    expect(job.completedAt).toBeNull();
+    expect(store.listDueRoutineJobs("2100-01-01T00:00:00.000Z").map((r) => r.id)).toContain(job.id);
+
+    store.markRoutineRun(job.id, { status: "success" });
+    const completed = store.getRoutineJob(ownerId, job.id)!;
+    expect(completed.enabled).toBe(false);
+    expect(completed.nextRunAt).toBeNull();
+    expect(completed.completedAt).toBeTruthy();
+    expect(completed.lastStatus).toBe("success");
+    expect(store.listDueRoutineJobs("2100-01-01T00:00:00.000Z").map((r) => r.id)).not.toContain(job.id);
+
+    const failed = store.createRoutineJob(ownerId, {
+      prompt: "실패해도 한 번",
+      scheduleKind: "once",
+      minuteOfDay: 10 * 60,
+      runDate: "2099-12-31",
+    });
+    store.markRoutineRun(failed.id, { status: "error", error: "실행 실패" });
+    const failedCompleted = store.getRoutineJob(ownerId, failed.id)!;
+    expect(failedCompleted.enabled).toBe(false);
+    expect(failedCompleted.completedAt).toBeTruthy();
+    expect(failedCompleted.lastStatus).toBe("error");
+    expect(failedCompleted.lastError).toBe("실행 실패");
+  });
+
+  it("parks a past one-time schedule created through the low-level store API", () => {
+    const { store, ownerId } = makeStore("rj-once-past");
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "지난 예약",
+      scheduleKind: "once",
+      minuteOfDay: 0,
+      runDate: "2000-01-01",
+    });
+    expect(job.enabled).toBe(false);
+    expect(job.nextRunAt).toBeNull();
+    const stillParked = store.updateRoutineJob(ownerId, job.id, { enabled: true });
+    expect(stillParked?.enabled).toBe(false);
+    expect(stillParked?.nextRunAt).toBeNull();
+  });
+
   it("a name-only edit does not reschedule, but a schedule change does", () => {
     const { store, ownerId } = makeStore("rj-name-vs-sched");
     const job = store.createRoutineJob(ownerId, { prompt: "p", minuteOfDay: 300 });
@@ -933,11 +1026,13 @@ describe("routine jobs", () => {
       time: "00:00",
       daysOfWeek: null,
       intervalMinutes: null,
+      runDate: null,
       enabled: true,
       nextRunAt: new Date().toISOString(),
       lastRunAt: null,
       lastStatus: null,
       lastError: null,
+      completedAt: null,
       createdAt: new Date().toISOString(),
     } as const;
 

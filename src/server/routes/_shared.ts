@@ -132,6 +132,9 @@ export const KOREAN_SCHEDULE_ERROR: Record<ScheduleError, string> = {
   INVALID_DAYS: "요일 값이 올바르지 않습니다 (0=일 ~ 6=토).",
   INTERVAL_REQUIRED: "반복 간격(분)을 입력해 주세요.",
   INVALID_INTERVAL: "반복 간격은 5분 이상 10080분(7일) 이하의 정수여야 합니다.",
+  DATE_REQUIRED: "한 번만 실행할 날짜(date)를 입력해 주세요.",
+  INVALID_DATE: "date는 YYYY-MM-DD 형식의 올바른 날짜여야 합니다.",
+  DATE_IN_PAST: "한 번만 실행할 날짜와 시각은 현재보다 이후여야 합니다.",
 };
 
 export function avatarDir(config: AppConfig): string {

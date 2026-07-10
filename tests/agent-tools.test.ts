@@ -1863,6 +1863,18 @@ describe("system tools (avatar system management)", () => {
     expect(hourly.isError).toBeFalsy();
     expect(hourly.content[0].text).toContain("schedule=every 2h");
 
+    const once = await callTool(tools, "create_routine", {
+      name: "출시 점검",
+      prompt: "출시 상태를 한 번 확인해줘",
+      scheduleKind: "once",
+      date: "2099-12-31",
+      time: "14:30",
+    });
+    expect(once.isError).toBeFalsy();
+    expect(once.content[0].text).toContain(
+      "schedule=once on 2099-12-31 at 14:30 KST",
+    );
+
     const stored = s.store.listRoutineJobs(s.owner.id);
     const weeklyJob = stored.find((j) => j.name === "주간 리뷰");
     expect(weeklyJob?.scheduleKind).toBe("weekly");
@@ -1870,6 +1882,30 @@ describe("system tools (avatar system management)", () => {
     const intervalJob = stored.find((j) => j.prompt === "30분마다 점검");
     expect(intervalJob?.scheduleKind).toBe("interval");
     expect(intervalJob?.intervalMinutes).toBe(30);
+    const onceJob = stored.find((j) => j.name === "출시 점검");
+    expect(onceJob?.scheduleKind).toBe("once");
+    expect(onceJob?.runDate).toBe("2099-12-31");
+  });
+
+  it("rejects missing or past dates for one-time routines", async () => {
+    const s = setup("st-routine-once-invalid");
+    const tools = toolsFor(s);
+    const missing = await callTool(tools, "create_routine", {
+      prompt: "p",
+      scheduleKind: "once",
+      time: "09:00",
+    });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toContain("date (YYYY-MM-DD, KST) is required");
+
+    const past = await callTool(tools, "create_routine", {
+      prompt: "p",
+      scheduleKind: "once",
+      date: "2000-01-01",
+      time: "09:00",
+    });
+    expect(past.isError).toBe(true);
+    expect(past.content[0].text).toContain("later than the current KST");
   });
 
   it("rejects a weekly routine without weekdays with the English error", async () => {
@@ -1887,11 +1923,12 @@ describe("system tools (avatar system management)", () => {
     expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
   });
 
-  it("describes routines as daily/weekly/interval, not daily-only", async () => {
+  it("describes routines as one-time or recurring, not daily-only", async () => {
     const s = setup("st-routine-describe");
     const res = await callTool(toolsFor(s), "describe_system", {});
     expect(res.isError).toBeFalsy();
-    expect(res.content[0].text).toContain("daily, weekly, or interval schedule in KST");
+    expect(res.content[0].text).toContain("once at a specified KST date/time");
+    expect(res.content[0].text).toContain("daily, weekly, or interval schedule");
     expect(res.content[0].text).not.toContain("once a day");
   });
 

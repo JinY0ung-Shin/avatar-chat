@@ -210,11 +210,13 @@ export interface RoutineJobRow {
   schedule_kind: string | null;
   days_of_week: string | null;
   interval_minutes: number | null;
+  run_date: string | null;
   enabled: number;
   next_run_at: string | null;
   last_run_at: string | null;
   last_status: string | null;
   last_error: string | null;
+  completed_at: string | null;
   created_at: string;
 }
 
@@ -535,12 +537,16 @@ export class StoreBase {
     // Flexible routine scheduling: an optional human label plus the schedule
     // shape. schedule_kind defaults to "daily" (legacy rows have it NULL → read
     // as "daily"); days_of_week is a JSON array string (weekly only); and
-    // interval_minutes drives interval schedules. The legacy minute_of_day stays
-    // the daily/weekly time-of-day.
+    // interval_minutes drives interval schedules; run_date is the YYYY-MM-DD KST
+    // date for a one-time schedule; completed_at distinguishes an automatically
+    // finished one-time run from a manually paused routine. The legacy
+    // minute_of_day stays the once/daily/weekly time-of-day.
     this.addColumnIfMissing("routine_jobs", "name", "TEXT");
     this.addColumnIfMissing("routine_jobs", "schedule_kind", "TEXT");
     this.addColumnIfMissing("routine_jobs", "days_of_week", "TEXT");
     this.addColumnIfMissing("routine_jobs", "interval_minutes", "INTEGER");
+    this.addColumnIfMissing("routine_jobs", "run_date", "TEXT");
+    this.addColumnIfMissing("routine_jobs", "completed_at", "TEXT");
     // Routine conversations must never show in the normal chat history, even after
     // their routine is deleted (which orphans the conversation). Tag the row itself
     // so classification doesn't depend on the routine_jobs link still existing.

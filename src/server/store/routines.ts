@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import {
   formatMinuteOfDay,
+  isFutureOnceSchedule,
   nextRunIso,
   type RoutineSchedule,
   type ScheduleKind,
@@ -10,7 +11,7 @@ import { type Constructor, type RoutineJobRow, type StoreBase, now } from "./int
 
 export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class Routines extends Base {
-    // ---- Routine jobs (owner-scheduled recurring runs) -------------------
+    // ---- Routine jobs (owner-scheduled one-time or recurring runs) -------
 
     private toRoutineJob(row: RoutineJobRow): RoutineJob {
       const schedule = this.scheduleFromRow(row);
@@ -25,11 +26,13 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
         time: formatMinuteOfDay(schedule.minuteOfDay),
         daysOfWeek: schedule.daysOfWeek,
         intervalMinutes: schedule.intervalMinutes,
+        runDate: schedule.runDate,
         enabled: row.enabled === 1,
         nextRunAt: row.next_run_at,
         lastRunAt: row.last_run_at,
         lastStatus: (row.last_status as RoutineJob["lastStatus"]) ?? null,
         lastError: row.last_error,
+        completedAt: row.completed_at,
         createdAt: row.created_at,
       };
     }
@@ -55,6 +58,7 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
         minuteOfDay: row.minute_of_day,
         daysOfWeek: this.parseDaysOfWeek(row.days_of_week),
         intervalMinutes: row.interval_minutes ?? null,
+        runDate: row.run_date ?? null,
       };
     }
 
@@ -107,12 +111,13 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
         minuteOfDay?: number;
         daysOfWeek?: number[] | null;
         intervalMinutes?: number | null;
+        runDate?: string | null;
         enabled?: boolean;
       },
     ): RoutineJob {
       const id = crypto.randomUUID();
       const conversationId = crypto.randomUUID();
-      const enabled = input.enabled !== false;
+      const requestedEnabled = input.enabled !== false;
       const prompt = input.prompt.trim();
       const name = input.name?.trim() || null;
       // A validated RoutineSchedule object fully defines the schedule when present;
@@ -123,14 +128,24 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
       const minuteOfDay = schedule ? schedule.minuteOfDay : (input.minuteOfDay ?? 0);
       const daysOfWeek = schedule ? schedule.daysOfWeek : (input.daysOfWeek ?? null);
       const intervalMinutes = schedule ? schedule.intervalMinutes : (input.intervalMinutes ?? null);
-      const nextRunAt = enabled
-        ? nextRunIso({ kind, minuteOfDay, daysOfWeek, intervalMinutes })
-        : null;
+      const runDate = kind === "once" ? (schedule ? schedule.runDate : (input.runDate ?? null)) : null;
+      const normalizedSchedule: RoutineSchedule = {
+        kind,
+        minuteOfDay,
+        daysOfWeek,
+        intervalMinutes,
+        runDate,
+      };
+      // API/MCP callers reject past one-time slots. Keep the store safe for
+      // legacy/direct callers too: an expired one-time job is created parked,
+      // never as an immediately due job that could run unexpectedly.
+      const enabled = requestedEnabled && isFutureOnceSchedule(normalizedSchedule);
+      const nextRunAt = enabled ? nextRunIso(normalizedSchedule) : null;
       const tx = this.db.transaction(() => {
         this.db
           .prepare(
-            `INSERT INTO routine_jobs (id, avatar_user_id, conversation_id, name, prompt, minute_of_day, schedule_kind, days_of_week, interval_minutes, enabled, next_run_at, created_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO routine_jobs (id, avatar_user_id, conversation_id, name, prompt, minute_of_day, schedule_kind, days_of_week, interval_minutes, run_date, enabled, next_run_at, completed_at, created_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           )
           .run(
             id,
@@ -142,8 +157,10 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
             kind,
             daysOfWeek ? JSON.stringify(daysOfWeek) : null,
             intervalMinutes,
+            runDate,
             enabled ? 1 : 0,
             nextRunAt,
+            null,
             now(),
           );
         // Create the dedicated conversation eagerly so the client can always
@@ -169,6 +186,7 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
         minuteOfDay?: number;
         daysOfWeek?: number[] | null;
         intervalMinutes?: number | null;
+        runDate?: string | null;
         enabled?: boolean;
       },
     ): RoutineJob | null {
@@ -189,12 +207,17 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
       const patchIntervalMinutes = patch.schedule
         ? patch.schedule.intervalMinutes
         : patch.intervalMinutes;
+      const patchRunDate = patch.schedule ? patch.schedule.runDate : patch.runDate;
       const existing = this.scheduleFromRow(row);
       const kind: ScheduleKind = scheduleKind ?? existing.kind;
       const minuteOfDay = patchMinuteOfDay !== undefined ? patchMinuteOfDay : existing.minuteOfDay;
       const daysOfWeek = patchDaysOfWeek !== undefined ? patchDaysOfWeek : existing.daysOfWeek;
       const intervalMinutes =
         patchIntervalMinutes !== undefined ? patchIntervalMinutes : existing.intervalMinutes;
+      const runDate =
+        kind === "once"
+          ? (patchRunDate !== undefined ? patchRunDate : existing.runDate)
+          : null;
       const wasEnabled = row.enabled === 1;
       const enabled = patch.enabled !== undefined ? patch.enabled : wasEnabled;
       // The schedule changed if any schedule field was supplied AND differs from
@@ -205,18 +228,36 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
         (patchMinuteOfDay !== undefined && patchMinuteOfDay !== existing.minuteOfDay) ||
         (patchDaysOfWeek !== undefined &&
           JSON.stringify(patchDaysOfWeek ?? null) !== JSON.stringify(existing.daysOfWeek)) ||
-        (patchIntervalMinutes !== undefined && patchIntervalMinutes !== existing.intervalMinutes);
+        (patchIntervalMinutes !== undefined && patchIntervalMinutes !== existing.intervalMinutes) ||
+        (patchRunDate !== undefined && patchRunDate !== existing.runDate);
+      const normalizedSchedule: RoutineSchedule = {
+        kind,
+        minuteOfDay,
+        daysOfWeek,
+        intervalMinutes,
+        runDate,
+      };
       let nextRunAt: string | null;
       if (!enabled) {
         nextRunAt = null;
       } else if (scheduleChanged || !wasEnabled || !row.next_run_at) {
-        nextRunAt = nextRunIso({ kind, minuteOfDay, daysOfWeek, intervalMinutes });
+        nextRunAt = isFutureOnceSchedule(normalizedSchedule)
+          ? nextRunIso(normalizedSchedule)
+          : null;
       } else {
         nextRunAt = row.next_run_at;
       }
+      // A past one-time schedule cannot be re-enabled without selecting a new
+      // future date. Route/tool layers return a validation error; this is the
+      // final invariant for direct store callers.
+      const effectiveEnabled = enabled && (kind !== "once" || nextRunAt !== null);
+      const completedAt =
+        !effectiveEnabled && kind === "once" && !scheduleChanged
+          ? row.completed_at
+          : null;
       this.db
         .prepare(
-          "UPDATE routine_jobs SET name = ?, prompt = ?, schedule_kind = ?, minute_of_day = ?, days_of_week = ?, interval_minutes = ?, enabled = ?, next_run_at = ? WHERE id = ?",
+          "UPDATE routine_jobs SET name = ?, prompt = ?, schedule_kind = ?, minute_of_day = ?, days_of_week = ?, interval_minutes = ?, run_date = ?, enabled = ?, next_run_at = ?, completed_at = ? WHERE id = ?",
         )
         .run(
           name,
@@ -225,8 +266,10 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
           minuteOfDay,
           daysOfWeek ? JSON.stringify(daysOfWeek) : null,
           intervalMinutes,
-          enabled ? 1 : 0,
+          runDate,
+          effectiveEnabled ? 1 : 0,
           nextRunAt,
+          completedAt,
           id,
         );
       return this.toRoutineJob(this.routineJobRow(id)!);
@@ -240,20 +283,32 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
     }
 
     /**
-     * Record the outcome of a firing and schedule the next one. An enabled job
-     * rolls forward to its next slot; a job disabled mid-run stays parked.
+     * Record the outcome of a firing and schedule the next one. Recurring jobs
+     * roll forward; a one-time job becomes completed after its single attempt.
+     * A recurring job disabled mid-run stays parked.
      */
     markRoutineRun(id: string, outcome: { status: "success" | "error"; error?: string | null }): void {
       const row = this.routineJobRow(id);
       if (!row) {
         return;
       }
-      const nextRunAt = row.enabled === 1 ? nextRunIso(this.scheduleFromRow(row)) : null;
+      const schedule = this.scheduleFromRow(row);
+      const runAt = now();
+      const oneTimeCompleted = schedule.kind === "once";
+      const nextRunAt = row.enabled === 1 && !oneTimeCompleted ? nextRunIso(schedule) : null;
       this.db
         .prepare(
-          "UPDATE routine_jobs SET last_run_at = ?, last_status = ?, last_error = ?, next_run_at = ? WHERE id = ?",
+          "UPDATE routine_jobs SET last_run_at = ?, last_status = ?, last_error = ?, next_run_at = ?, enabled = ?, completed_at = ? WHERE id = ?",
         )
-        .run(now(), outcome.status, outcome.error ?? null, nextRunAt, id);
+        .run(
+          runAt,
+          outcome.status,
+          outcome.error ?? null,
+          nextRunAt,
+          oneTimeCompleted ? 0 : row.enabled,
+          oneTimeCompleted ? runAt : row.completed_at,
+          id,
+        );
     }
   };
 }

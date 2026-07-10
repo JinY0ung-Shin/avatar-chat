@@ -23,8 +23,9 @@ plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
 - **Delegation loop**: grow your avatar by turning repeated work, project rules, runbooks,
   and answers to teammate questions into skills / knowledge files / routines, then delegate
   more of that work back to the avatar over time.
-- **Scheduled routines**: owners can create recurring chat jobs (`/api/me/routines`) that
-  run on a cron schedule — the avatar executes them headlessly (read-only, no tool prompts).
+- **Scheduled routines**: owners can create one-time or recurring chat jobs (`/api/me/routines`)
+  for a specific KST date/time, daily/weekly slots, or a fixed interval. The avatar executes
+  them headlessly and keeps each run's result in a dedicated routine conversation.
   The `/routine <task>` chat command creates a routine inline. The avatar itself can manage
   routines via the `mcp__system__*_routine` tools.
 - **Groups**: the system admin creates named teams (`/api/admin/groups*`) and assigns group

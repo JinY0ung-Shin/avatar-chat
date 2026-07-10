@@ -7,6 +7,7 @@ import { get } from "svelte/store";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import ActivityTree from "../src/client/src/components/ActivityTree.svelte";
+import RoutineModal from "../src/client/src/components/RoutineModal.svelte";
 import Toasts from "../src/client/src/components/Toasts.svelte";
 import Toggle from "../src/client/src/components/Toggle.svelte";
 import { toasts } from "../src/client/src/lib/state.js";
@@ -14,6 +15,7 @@ import type {
   LiveAgentNode,
   LiveTaskRow,
   LiveToolRow,
+  RoutineJob,
   Toast,
 } from "../src/client/src/lib/types.js";
 
@@ -66,6 +68,61 @@ describe("Toggle", () => {
 
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(sw.getAttribute("aria-checked")).toBe("true");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* RoutineModal — one-time KST date/time schedule builder              */
+/* ------------------------------------------------------------------ */
+
+describe("RoutineModal", () => {
+  it("offers a one-time date/time schedule and rejects a past slot", async () => {
+    render(RoutineModal, { props: { routine: null } });
+
+    const kind = screen.getByRole("combobox", { name: "실행 방식" });
+    await fireEvent.change(kind, { target: { value: "once" } });
+    const date = screen.getByLabelText("실행 날짜") as HTMLInputElement;
+    expect(date.value).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(screen.getByLabelText("실행 시각")).toBeTruthy();
+
+    await fireEvent.input(screen.getByLabelText("작업 프롬프트"), {
+      target: { value: "출시 상태를 확인해줘" },
+    });
+    expect((screen.getByRole("button", { name: "루틴 추가" }) as HTMLButtonElement).disabled).toBe(false);
+
+    await fireEvent.input(date, { target: { value: "2000-01-01" } });
+    expect(screen.getByText("한 번만 실행할 날짜와 시각은 현재보다 이후여야 합니다.")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "루틴 추가" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("lets a completed one-time routine's metadata be edited without re-running it", async () => {
+    const routine: RoutineJob = {
+      id: "once-1",
+      avatarUserId: "owner-1",
+      conversationId: "conv-1",
+      name: "지난 작업",
+      prompt: "한 번 실행",
+      scheduleKind: "once",
+      minuteOfDay: 9 * 60,
+      time: "09:00",
+      daysOfWeek: null,
+      intervalMinutes: null,
+      runDate: "2000-01-01",
+      enabled: false,
+      nextRunAt: null,
+      lastRunAt: "2000-01-01T00:00:00.000Z",
+      lastStatus: "success",
+      lastError: null,
+      completedAt: "2000-01-01T00:00:00.000Z",
+      createdAt: "1999-12-01T00:00:00.000Z",
+    };
+    render(RoutineModal, { props: { routine } });
+
+    expect(screen.queryByRole("button", { name: "지금 실행" })).toBeNull();
+    await fireEvent.input(screen.getByLabelText("루틴 이름"), {
+      target: { value: "지난 작업 이름 변경" },
+    });
+    expect((screen.getByRole("button", { name: "변경 저장" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

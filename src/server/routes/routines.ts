@@ -2,10 +2,15 @@ import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
 import { executeRoutineJob, isRoutineRunning } from "../scheduler.js";
-import { parseRoutineSchedule, type ScheduleKind } from "../routineSchedule.js";
+import {
+  isFutureOnceSchedule,
+  parseRoutineSchedule,
+  type RoutineSchedule,
+  type ScheduleKind,
+} from "../routineSchedule.js";
 import { apiError, KOREAN_SCHEDULE_ERROR, safeString, type RouterDeps } from "./_shared.js";
 
-// ---- Routine jobs (owner-scheduled recurring runs) -------------------
+// ---- Routine jobs (owner-scheduled one-time or recurring runs) -------
 export function createRoutinesRouter({ services, store }: RouterDeps): Router {
   const router = Router();
 
@@ -33,6 +38,7 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
       time: req.body?.time,
       daysOfWeek: req.body?.daysOfWeek,
       intervalMinutes: req.body?.intervalMinutes,
+      date: req.body?.date,
     });
     if (!parsed.ok) {
       apiError(res, 400, KOREAN_SCHEDULE_ERROR[parsed.error]);
@@ -41,10 +47,7 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
     const routine = store.createRoutineJob(req.user!.id, {
       name,
       prompt,
-      scheduleKind: parsed.value.kind,
-      minuteOfDay: parsed.value.minuteOfDay,
-      daysOfWeek: parsed.value.daysOfWeek,
-      intervalMinutes: parsed.value.intervalMinutes,
+      schedule: parsed.value,
       enabled,
     });
     logger.info(
@@ -62,6 +65,7 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
       minuteOfDay?: number;
       daysOfWeek?: number[] | null;
       intervalMinutes?: number | null;
+      runDate?: string | null;
       enabled?: boolean;
     } = {};
     if (typeof req.body?.name === "string") {
@@ -84,13 +88,15 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
       req.body?.scheduleKind !== undefined ||
       req.body?.time !== undefined ||
       req.body?.daysOfWeek !== undefined ||
-      req.body?.intervalMinutes !== undefined;
+      req.body?.intervalMinutes !== undefined ||
+      req.body?.date !== undefined;
     if (scheduleTouched) {
       const parsed = parseRoutineSchedule({
         scheduleKind: req.body?.scheduleKind,
         time: req.body?.time,
         daysOfWeek: req.body?.daysOfWeek,
         intervalMinutes: req.body?.intervalMinutes,
+        date: req.body?.date,
       });
       if (!parsed.ok) {
         apiError(res, 400, KOREAN_SCHEDULE_ERROR[parsed.error]);
@@ -100,6 +106,28 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
       patch.minuteOfDay = parsed.value.minuteOfDay;
       patch.daysOfWeek = parsed.value.daysOfWeek;
       patch.intervalMinutes = parsed.value.intervalMinutes;
+      patch.runDate = parsed.value.runDate;
+    }
+    const existing = store.getRoutineJob(req.user!.id, req.params.id);
+    if (!existing) {
+      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      return;
+    }
+    if (patch.enabled === true) {
+      const candidate: RoutineSchedule = {
+        kind: patch.scheduleKind ?? existing.scheduleKind,
+        minuteOfDay: patch.minuteOfDay ?? existing.minuteOfDay,
+        daysOfWeek: patch.daysOfWeek !== undefined ? patch.daysOfWeek : existing.daysOfWeek,
+        intervalMinutes:
+          patch.intervalMinutes !== undefined
+            ? patch.intervalMinutes
+            : existing.intervalMinutes,
+        runDate: patch.runDate !== undefined ? patch.runDate : existing.runDate,
+      };
+      if (!isFutureOnceSchedule(candidate)) {
+        apiError(res, 400, KOREAN_SCHEDULE_ERROR.DATE_IN_PAST);
+        return;
+      }
     }
     const routine = store.updateRoutineJob(req.user!.id, req.params.id, patch);
     if (!routine) {
@@ -119,7 +147,8 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
     res.json({ ok: true });
   });
 
-  // Fire a routine immediately (a "test run"), then reschedule its next firing.
+  // Fire a routine immediately (a "test run"). Recurring jobs reschedule;
+  // one-time jobs consume their single run and become completed.
   // executeRoutineJob owns the shared overlap guard and outcome recording, so a
   // manual run can never overlap a scheduled firing of the same job.
   router.post("/api/me/routines/:id/run", requireAuth(store), async (req: AuthenticatedRequest, res) => {

@@ -390,6 +390,39 @@ describe("noah-almighty platform", () => {
     expect(interval.body.routine.intervalMinutes).toBe(30);
     expect(interval.body.routine.nextRunAt).toBeTruthy();
 
+    // One-time schedules preserve their KST calendar date and complete after
+    // their single execution attempt.
+    const once = await agent
+      .post("/api/me/routines")
+      .send({
+        name: "출시일 점검",
+        prompt: "출시 상태를 한 번 점검해줘",
+        scheduleKind: "once",
+        date: "2099-12-30",
+        time: "14:30",
+      })
+      .expect(200);
+    expect(once.body.routine.scheduleKind).toBe("once");
+    expect(once.body.routine.runDate).toBe("2099-12-30");
+    expect(once.body.routine.nextRunAt).toBe("2099-12-30T05:30:00.000Z");
+    expect(once.body.routine.completedAt).toBeNull();
+
+    const ranOnce = await agent
+      .post(`/api/me/routines/${once.body.routine.id}/run`)
+      .expect(200);
+    expect(ranOnce.body.routine.enabled).toBe(false);
+    expect(ranOnce.body.routine.nextRunAt).toBeNull();
+    expect(ranOnce.body.routine.completedAt).toBeTruthy();
+
+    // Picking a new future slot explicitly reschedules and clears completion.
+    const rescheduledOnce = await agent
+      .patch(`/api/me/routines/${once.body.routine.id}`)
+      .send({ scheduleKind: "once", date: "2099-12-31", time: "10:00", enabled: true })
+      .expect(200);
+    expect(rescheduledOnce.body.routine.enabled).toBe(true);
+    expect(rescheduledOnce.body.routine.runDate).toBe("2099-12-31");
+    expect(rescheduledOnce.body.routine.completedAt).toBeNull();
+
     // Weekly without weekdays → 400.
     await agent
       .post("/api/me/routines")
@@ -399,6 +432,19 @@ describe("noah-almighty platform", () => {
     await agent
       .post("/api/me/routines")
       .send({ prompt: "p", scheduleKind: "interval", intervalMinutes: 4 })
+      .expect(400);
+    // One-time schedules require a real future KST date.
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", scheduleKind: "once", time: "09:00" })
+      .expect(400);
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", scheduleKind: "once", date: "2026-02-30", time: "09:00" })
+      .expect(400);
+    await agent
+      .post("/api/me/routines")
+      .send({ prompt: "p", scheduleKind: "once", date: "2000-01-01", time: "09:00" })
       .expect(400);
     // Unknown schedule kind → 400.
     await agent

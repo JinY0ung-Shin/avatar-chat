@@ -200,7 +200,7 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
     case "routine":
       return args
         ? {
-            message: `Create a routine that runs the following task on a recurring schedule. If an execution time (KST) is written below, use it as-is; otherwise ask me for it first.\n\n${args}`,
+            message: `Create a routine that runs the following task either once at a specific KST date/time or on a recurring schedule. Use any date/time written below as-is; otherwise ask me which execution schedule I want first.\n\n${args}`,
             ownerOnly: true,
           }
         : {
