@@ -18,6 +18,7 @@ import {
   type StickStore,
 } from "../src/client/src/lib/autoscroll.js";
 import { copyPng, downloadPng, downloadSvg } from "../src/client/src/lib/canvasExport.js";
+import { loadRailCollapsed, persistRailCollapsed } from "../src/client/src/lib/layout.js";
 import { toasts } from "../src/client/src/lib/state.js";
 
 // theme.ts captures its MediaQueryList at module-eval time, so a controllable
@@ -922,6 +923,39 @@ describe("theme.ts", () => {
     themeMedia.matches = false;
     themeMedia.fire();
     expect(document.documentElement.dataset.theme).toBe("dark"); // unchanged: guard skipped applyTheme
+  });
+});
+
+// ===========================================================================
+// layout.ts
+// ===========================================================================
+
+describe("layout.ts", () => {
+  it("defaults the desktop rail to expanded and reads only the persisted true state", () => {
+    expect(loadRailCollapsed()).toBe(false);
+    localStorage.setItem("noah.railCollapsed", "true");
+    expect(loadRailCollapsed()).toBe(true);
+    localStorage.setItem("noah.railCollapsed", "invalid");
+    expect(loadRailCollapsed()).toBe(false);
+  });
+
+  it("persists collapse and removes the key when returning to the default", () => {
+    persistRailCollapsed(true);
+    expect(localStorage.getItem("noah.railCollapsed")).toBe("true");
+    persistRailCollapsed(false);
+    expect(localStorage.getItem("noah.railCollapsed")).toBeNull();
+  });
+
+  it("keeps working when browser storage is unavailable", () => {
+    const read = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(loadRailCollapsed()).toBe(false);
+    read.mockRestore();
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new Error("blocked");
+    });
+    expect(() => persistRailCollapsed(true)).not.toThrow();
   });
 });
 

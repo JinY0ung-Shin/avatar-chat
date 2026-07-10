@@ -17,8 +17,15 @@
   export let streaming = false;
   export let unreadCount = 0;
   export let themePref: ThemePref = "system";
+  export let railCollapsed = false;
+  export let onRailCollapsedChange: (collapsed: boolean) => void = () => {};
 
   let railOpen = false;
+  let railToggle: HTMLButtonElement | undefined;
+  let railDismiss: HTMLButtonElement | undefined;
+  const desktopRailMedia =
+    typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(min-width: 861px)") : null;
+  let desktopRail = desktopRailMedia?.matches ?? true;
   let conversationQuery = "";
   let conversationsLoading = false;
   let conversationsError = "";
@@ -60,6 +67,12 @@
 
   onMount(() => {
     void refreshConversations();
+    const syncRailLayout = (event: MediaQueryListEvent) => {
+      desktopRail = event.matches;
+      if (desktopRail) railOpen = false;
+    };
+    desktopRailMedia?.addEventListener?.("change", syncRailLayout);
+    return () => desktopRailMedia?.removeEventListener?.("change", syncRailLayout);
   });
 
   async function refreshConversations() {
@@ -212,7 +225,15 @@
   }
 
   function openRail() {
-    railOpen = true;
+    if (desktopRail) onRailCollapsedChange(false);
+    else railOpen = true;
+    requestAnimationFrame(() => railDismiss?.focus());
+  }
+
+  function dismissRail() {
+    if (desktopRail) onRailCollapsedChange(true);
+    else closeRail();
+    requestAnimationFrame(() => railToggle?.focus());
   }
 
   function navigate(viewName: ViewName) {
@@ -278,30 +299,52 @@
   function handleKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") closeRail();
   }
+
+  $: railExpanded = desktopRail ? !railCollapsed : railOpen;
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
 
 <button
+  bind:this={railToggle}
   class="icon-button rail-toggle svelte-rail-toggle"
   type="button"
   aria-label="메뉴 열기"
   aria-controls="rail"
-  aria-expanded={railOpen ? "true" : "false"}
+  aria-expanded={railExpanded ? "true" : "false"}
   title="메뉴"
   on:click={openRail}
 >
   <Icon name="menu" />
 </button>
 
-<aside class="rail" class:open={railOpen} id="rail" aria-label="대화 목록">
+<aside
+  class="rail"
+  class:open={railOpen}
+  id="rail"
+  aria-label="대화 목록"
+  aria-hidden={railExpanded ? undefined : "true"}
+>
   <div class="rail-head">
-    <div class="rail-brand">
-      <img class="mark" src="/icon-192.png" alt="" aria-hidden="true" width="34" height="34" />
-      <div>
-        <div class="name">Noah Almighty</div>
-        <div class="sub">아바타 플랫폼</div>
+    <div class="rail-brand-row">
+      <div class="rail-brand">
+        <img class="mark" src="/icon-192.png" alt="" aria-hidden="true" width="34" height="34" />
+        <div>
+          <div class="name">Noah Almighty</div>
+          <div class="sub">아바타 플랫폼</div>
+        </div>
       </div>
+      <button
+        bind:this={railDismiss}
+        class="icon-button rail-dismiss"
+        type="button"
+        aria-label={desktopRail ? "왼쪽 메뉴 접기" : "메뉴 닫기"}
+        aria-controls="rail"
+        title={desktopRail ? "왼쪽 메뉴 접기" : "메뉴 닫기"}
+        on:click={dismissRail}
+      >
+        <Icon name="close" size={18} />
+      </button>
     </div>
 
     <nav class="rail-nav" aria-label="주 메뉴">

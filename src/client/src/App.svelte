@@ -14,6 +14,7 @@
   import SettingsView from "./views/SettingsView.svelte";
   import { api, setSessionExpiredHandler } from "./lib/api";
   import { selectConversation } from "./lib/chat";
+  import { loadRailCollapsed, persistRailCollapsed } from "./lib/layout";
   import { loadInboxData, startKnowledgeWatch, stopKnowledgeWatch } from "./lib/loaders";
   import { applyInitialRoute, installRouteListener, syncHash } from "./lib/nav";
   import { appState, notify, readState, replaceState, updateState } from "./lib/state";
@@ -22,6 +23,12 @@
 
   let showOnboarding = false;
   let themeWatcherInstalled = false;
+  let railCollapsed = loadRailCollapsed();
+
+  function setRailCollapsed(collapsed: boolean): void {
+    railCollapsed = collapsed;
+    persistRailCollapsed(collapsed);
+  }
 
   async function boot() {
     const themePref = applyTheme();
@@ -125,8 +132,16 @@
 {:else if !$appState.user}
   <AuthView bootstrap={$appState.bootstrap} />
 {:else}
-  <section class="workspace">
-    <Shell user={$appState.user} view={$appState.view} streaming={$appState.streaming} {unreadCount} themePref={$appState.themePref} />
+  <section class="workspace" class:rail-collapsed={railCollapsed}>
+    <Shell
+      user={$appState.user}
+      view={$appState.view}
+      streaming={$appState.streaming}
+      {unreadCount}
+      themePref={$appState.themePref}
+      {railCollapsed}
+      onRailCollapsedChange={setRailCollapsed}
+    />
     <main id="main" class="main" tabindex="-1">
       {#if $appState.view === "explore"}
         <ExploreView />
