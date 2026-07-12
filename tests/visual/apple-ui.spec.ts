@@ -71,6 +71,10 @@ test("explore shell stays visually stable in light and dark themes", async ({ pa
 
   await page.getByRole("button", { name: "알림", exact: true }).click();
   await expect(page.getByRole("heading", { name: "알림", level: 1 })).toBeVisible();
+  await expect.poll(() => page.evaluate(async () => {
+    await document.fonts.load('400 14px "Noto Sans KR Variable"', "한글");
+    return document.fonts.check('400 14px "Noto Sans KR Variable"', "한글");
+  })).toBe(true);
 });
 
 test("mobile rail and destructive confirmation remain spatially connected", async ({ page }) => {

@@ -242,7 +242,7 @@
 }
 .tool-name {
   font-weight: 600;
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-mono);
   color: var(--text);
   /* Was `flex: none` (flex-shrink:0) with no overflow handling on desktop — a
      long/unbreakable label then locked the row to its max-content width and
@@ -530,7 +530,7 @@
   min-width: 0;
 }
 .prompt-tool code {
-  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-family: var(--font-mono);
   background: var(--panel-strong);
   border-radius: var(--r-sm);
   padding: 1px var(--s-1-5);
@@ -709,7 +709,7 @@
   color: var(--accent-strong);
 }
 .md code {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 0.88em;
   background: var(--panel-strong);
   border: 1px solid var(--line-soft);
@@ -1218,7 +1218,7 @@ textarea::placeholder {
   background: var(--accent-soft);
 }
 .slash-option-command {
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   color: var(--accent-strong);
   font-size: var(--t-sm);
   overflow: hidden;
@@ -1231,7 +1231,7 @@ textarea::placeholder {
   border-radius: var(--r-xs, 4px);
   background: var(--accent-soft);
   color: var(--accent-strong);
-  font-family: var(--font-sans, system-ui), sans-serif;
+  font-family: var(--font-sans);
   font-size: var(--t-2xs);
   font-weight: 700;
   white-space: nowrap;
@@ -1311,7 +1311,7 @@ textarea::placeholder {
   background: var(--warn-soft);
 }
 .tag.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
 }
 
 .warn-box {

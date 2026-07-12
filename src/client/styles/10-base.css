@@ -11,10 +11,7 @@ body {
   overscroll-behavior-y: none;
   background: var(--bg);
   color: var(--text);
-  font-family:
-    system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
-    "Apple SD Gothic Neo", "Noto Sans KR Variable", "Noto Sans KR", "Noto Sans CJK KR",
-    "Malgun Gothic", "Segoe UI", sans-serif;
+  font-family: var(--font-sans);
   font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;

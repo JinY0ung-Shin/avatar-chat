@@ -8,6 +8,16 @@
 :root {
   color-scheme: light;
 
+  /* One typography source for every UI surface. Platform fonts render first;
+     Noto Sans KR Variable supplies Korean glyphs on minimal Linux installs. */
+  --font-sans:
+    system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "Apple SD Gothic Neo", "Noto Sans KR Variable", "Noto Sans KR", "Noto Sans CJK KR",
+    "Malgun Gothic", "Segoe UI", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas,
+    "Liberation Mono", "Noto Sans Mono CJK KR", monospace;
+
   /* Neutral ramp */
   --n-0: #ffffff;
   --n-25: #fbfcfd;
@@ -134,8 +144,6 @@
   --code-overlay-strong: rgba(255, 255, 255, 0.16);
   --code-ok: #4ade80;
   --code-danger: #f87171;
-
-  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --ease: cubic-bezier(0.32, 0.72, 0, 1);
 }

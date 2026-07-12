@@ -284,7 +284,7 @@
 .pr-sub {
   font-size: var(--t-xs);
   color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -995,7 +995,7 @@
   font-size: var(--t-sm);
 }
 .secret-preset-title code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--t-xs);
   overflow-wrap: anywhere;
 }
@@ -1144,7 +1144,7 @@
 .secret-row code {
   flex: 1;
   min-width: 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--t-sm);
   overflow-wrap: anywhere;
 }
@@ -1204,7 +1204,7 @@
   background: var(--bg-elevated);
   padding: var(--s-2-5) var(--s-3);
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-family: var(--font-mono);
   font-size: var(--t-xs);
   resize: vertical;
 }
