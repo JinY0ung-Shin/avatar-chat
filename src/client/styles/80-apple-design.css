@@ -154,7 +154,16 @@ small,
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--accent) 26%, transparent);
+  background: color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+/* A blue selection wash disappears on the equally blue user bubble. Use a
+   darker direct-manipulation highlight there so dragged text is unmistakable
+   while preserving the bubble's white foreground in both color schemes. */
+.message.user .bubble::selection,
+.message.user .bubble *::selection {
+  color: var(--on-accent);
+  background: color-mix(in srgb, #000 38%, transparent);
 }
 
 /* Controls respond on press and retain a stable, platform-like hit surface. */
