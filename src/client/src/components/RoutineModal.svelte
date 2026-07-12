@@ -111,7 +111,7 @@
         : timeReady;
   $: routineDirty = !isEdit || nameTrimmed !== initialName || prompt !== initialPrompt || scheduleDirty;
   $: routineCanSave = Boolean(!busy && promptTrimmed && scheduleReady && routineDirty);
-  $: saveButtonLabel = busy ? "저장 중…" : isEdit ? "변경 저장" : "루틴 추가";
+  $: saveButtonLabel = busy ? "저장 중…" : isEdit ? "변경 저장" : "예약 작업 추가";
   $: {
     if (busy) routineStatus = "저장 중…";
     else if (!promptTrimmed) routineStatus = "작업 프롬프트를 입력해 주세요.";
@@ -261,13 +261,13 @@
       } catch (err) {
         busy = false;
         dispatch("close");
-        notify(`루틴은 저장했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+        notify(`예약 작업은 저장했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
         return;
       }
       busy = false;
       dispatch("saved");
       dispatch("close");
-      notify(isEdit ? "루틴을 수정했습니다." : "루틴을 추가했습니다.", "ok");
+      notify(isEdit ? "예약 작업을 수정했습니다." : "예약 작업을 추가했습니다.", "ok");
     } catch (err) {
       errorMessage = (err as Error).message || "저장에 실패했습니다.";
       busy = false;
@@ -282,21 +282,21 @@
       busy = false;
       dispatch("close");
     } catch (err) {
-      notify(`루틴 실행 실패: ${(err as Error).message}`);
+      notify(`예약 작업 실행 실패: ${(err as Error).message}`);
       busy = false;
     }
   }
 
   async function deleteClick() {
     if (!routine) return;
-    if (!window.confirm("이 루틴을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
+    if (!window.confirm("이 예약 작업을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
     busy = true;
     try {
       await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });
       busy = false;
       dispatch("deleted", { routine });
       dispatch("close");
-      notify("루틴을 삭제했습니다.", "ok");
+      notify("예약 작업을 삭제했습니다.", "ok");
     } catch (err) {
       notify(`삭제 실패: ${(err as Error).message}`);
       busy = false;
@@ -312,12 +312,12 @@
   closeDisabled={busy}
   on:close={requestClose}
 >
-  <h2 id="routine-modal-title">{isEdit ? "루틴 편집" : "루틴 추가"}</h2>
-  <p class="sr-only" id={descId}>루틴 이름, 작업 프롬프트, 실행 날짜 또는 반복 주기를 설정합니다. 저장 중에는 닫을 수 없습니다.</p>
+  <h2 id="routine-modal-title">{isEdit ? "예약 작업 편집" : "예약 작업 추가"}</h2>
+  <p class="sr-only" id={descId}>예약 작업 이름, 작업 프롬프트, 실행 날짜 또는 반복 주기를 설정합니다. 저장 중에는 닫을 수 없습니다.</p>
   <form class="routine-modal-form" aria-busy={busy} on:submit|preventDefault={submit}>
     <label class="field">
       <span>이름 (선택)</span>
-      <input type="text" placeholder="예: 아침 서비스 점검" aria-label="루틴 이름" disabled={busy} bind:value={name} />
+      <input type="text" placeholder="예: 아침 서비스 점검" aria-label="예약 작업 이름" disabled={busy} bind:value={name} />
     </label>
 
     <label class="field">

@@ -705,14 +705,14 @@ export class StoreBase {
   }
 
   /** Backfill is_routine on existing conversations. Linked ones come from the
-   *  routine_jobs join; already-orphaned ones (routine since deleted) are matched
-   *  by the "[루틴] " title prefix createRoutineJob writes. Idempotent. */
+   *  routine_jobs join; already-orphaned ones (scheduled job since deleted) are
+   *  matched by the legacy/current title prefixes. Idempotent. */
   private migrateRoutineConversations(): void {
     this.db
       .prepare(
         "UPDATE conversations SET is_routine = 1 WHERE is_routine = 0 AND " +
           "(id IN (SELECT conversation_id FROM routine_jobs WHERE conversation_id IS NOT NULL) " +
-          "OR title LIKE '[루틴] %')",
+          "OR title LIKE '[루틴] %' OR title LIKE '[예약 작업] %')",
       )
       .run();
   }

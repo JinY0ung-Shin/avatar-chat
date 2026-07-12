@@ -764,9 +764,34 @@ body.col-resizing {
 .routine-filter .seg-btn {
   flex: 0 0 auto;
 }
+.routine-type-filter {
+  margin-top: var(--s-1);
+}
 .routine-manage-list {
   display: grid;
   gap: var(--s-2);
+}
+.routine-list-group {
+  display: grid;
+  gap: var(--s-2);
+}
+.routine-list-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s-2);
+  color: var(--text);
+  font-size: var(--t-sm);
+  font-weight: 700;
+  padding: var(--s-1) var(--s-1-5);
+}
+summary.routine-list-group-head {
+  cursor: pointer;
+}
+.routine-list-group-items {
+  display: grid;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
 }
 .notification-row {
   width: 100%;

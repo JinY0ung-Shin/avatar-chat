@@ -50,6 +50,7 @@ export interface ClientState {
   routineConversationId: string;
   routineMessages: import("./types").StoredMessage[];
   routineSearch: string;
+  routineTypeFilter: "all" | "recurring" | "once";
   routineFilter: "all" | "enabled" | "paused" | "completed" | "error";
   adminUsers: AdminUserSummary[];
   adminGroups: AdminGroupSummary[];
@@ -93,6 +94,7 @@ export const appState = writable<ClientState>({
   routineConversationId: "",
   routineMessages: [],
   routineSearch: "",
+  routineTypeFilter: "all",
   routineFilter: "all",
   adminUsers: [],
   adminGroups: [],
@@ -168,7 +170,7 @@ export function setDocumentTitle(): void {
     chat: activePane()?.avatar.alias || activePane()?.avatar.displayName || "대화",
     brain: "지식 그래프",
     inbox: "알림",
-    routines: "루틴",
+  routines: "예약 작업",
     settings: "내 아바타",
     admin: "관리자",
   };

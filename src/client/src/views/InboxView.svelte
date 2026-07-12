@@ -60,7 +60,7 @@
   $: loadWarnings = [
     requestsError ? "정보 요청" : null,
     notificationsError ? "아바타 알림" : null,
-    routinesError ? "루틴 결과 링크" : null,
+      routinesError ? "예약 작업 결과 링크" : null,
   ].filter((x): x is string => Boolean(x));
 
   const emptyTexts: Record<Filter, string> = {

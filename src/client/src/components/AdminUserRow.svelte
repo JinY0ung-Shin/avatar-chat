@@ -134,7 +134,7 @@
     { k: "시작한 대화", v: d.conversationsStarted },
     { k: "받은 대화", v: d.conversationsReceived },
     { k: "플러그인", v: d.pluginCount },
-    { k: "루틴", v: `${d.routinesActive}/${d.routinesTotal}` },
+        { k: "예약 작업", v: `${d.routinesActive}/${d.routinesTotal}` },
     { k: "시크릿", v: d.secretCount },
     { k: "활성 세션", v: d.activeSessions },
     { k: "미응답 질문", v: d.openRequests },

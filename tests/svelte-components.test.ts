@@ -2,7 +2,7 @@
 // @sveltejs/vite-plugin-svelte + @testing-library/svelte; see vitest.config.ts).
 // New component tests must be named tests/svelte-*.test.ts: that glob routes
 // them to this project, and to tsconfig.client.json for typechecking.
-import { fireEvent, render, screen } from "@testing-library/svelte";
+import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { get } from "svelte/store";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -10,7 +10,8 @@ import ActivityTree from "../src/client/src/components/ActivityTree.svelte";
 import RoutineModal from "../src/client/src/components/RoutineModal.svelte";
 import Toasts from "../src/client/src/components/Toasts.svelte";
 import Toggle from "../src/client/src/components/Toggle.svelte";
-import { toasts } from "../src/client/src/lib/state.js";
+import RoutinesView from "../src/client/src/views/RoutinesView.svelte";
+import { readState, replaceState, toasts } from "../src/client/src/lib/state.js";
 import type {
   LiveAgentNode,
   LiveTaskRow,
@@ -101,11 +102,11 @@ describe("RoutineModal", () => {
     await fireEvent.input(screen.getByLabelText("작업 프롬프트"), {
       target: { value: "출시 상태를 확인해줘" },
     });
-    expect((screen.getByRole("button", { name: "루틴 추가" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "예약 작업 추가" }) as HTMLButtonElement).disabled).toBe(false);
 
     await fireEvent.input(date, { target: { value: "2000-01-01" } });
     expect(screen.getByText("한 번만 실행할 날짜와 시각은 현재보다 이후여야 합니다.")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "루틴 추가" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "예약 작업 추가" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("lets a completed one-time routine's metadata be edited without re-running it", async () => {
@@ -132,10 +133,97 @@ describe("RoutineModal", () => {
     render(RoutineModal, { props: { routine } });
 
     expect(screen.queryByRole("button", { name: "지금 실행" })).toBeNull();
-    await fireEvent.input(screen.getByLabelText("루틴 이름"), {
+    await fireEvent.input(screen.getByLabelText("예약 작업 이름"), {
       target: { value: "지난 작업 이름 변경" },
     });
     expect((screen.getByRole("button", { name: "변경 저장" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* RoutinesView — type filters and one-time lifecycle grouping         */
+/* ------------------------------------------------------------------ */
+
+describe("RoutinesView", () => {
+  it("collects one-time jobs under 예정 and collapsed 지난 실행 groups", async () => {
+    const base: Omit<RoutineJob, "id" | "conversationId" | "name" | "scheduleKind" | "runDate" | "enabled" | "nextRunAt" | "lastRunAt" | "lastStatus" | "completedAt"> = {
+      avatarUserId: "owner-1",
+      prompt: "작업 실행",
+      minuteOfDay: 9 * 60,
+      time: "09:00",
+      daysOfWeek: null,
+      intervalMinutes: null,
+      lastError: null,
+      createdAt: "2026-07-01T00:00:00.000Z",
+    };
+    const routines: RoutineJob[] = [
+      {
+        ...base,
+        id: "daily-1",
+        conversationId: "conv-daily",
+        name: "매일 점검",
+        scheduleKind: "daily",
+        runDate: null,
+        enabled: true,
+        nextRunAt: "2026-07-14T00:00:00.000Z",
+        lastRunAt: null,
+        lastStatus: null,
+        completedAt: null,
+      },
+      {
+        ...base,
+        id: "once-upcoming",
+        conversationId: "conv-once-upcoming",
+        name: "출시일 확인",
+        scheduleKind: "once",
+        runDate: "2026-07-15",
+        enabled: true,
+        nextRunAt: "2026-07-15T00:00:00.000Z",
+        lastRunAt: null,
+        lastStatus: null,
+        completedAt: null,
+      },
+      {
+        ...base,
+        id: "once-completed",
+        conversationId: "conv-once-completed",
+        name: "백업 확인",
+        scheduleKind: "once",
+        runDate: "2026-07-10",
+        enabled: false,
+        nextRunAt: null,
+        lastRunAt: "2026-07-10T00:00:00.000Z",
+        lastStatus: "success",
+        completedAt: "2026-07-10T00:00:00.000Z",
+      },
+    ];
+    vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
+      const path = String(input);
+      const body = path.startsWith("/api/me/routines") ? { routines } : { conversations: [] };
+      return new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    replaceState({
+      routines: [],
+      routineConversations: [],
+      routineConversationId: "",
+      routineMessages: [],
+      routineSearch: "",
+      routineTypeFilter: "all",
+      routineFilter: "all",
+    });
+
+    render(RoutinesView);
+    const onceFilter = await screen.findByRole("radio", { name: "1회성 2" });
+    await fireEvent.click(onceFilter);
+
+    expect(readState().routineTypeFilter).toBe("once");
+    expect(screen.getByText("예정")).toBeTruthy();
+    expect(screen.getByText("지난 실행")).toBeTruthy();
+    expect(screen.getByText("출시일 확인")).toBeTruthy();
+    expect(screen.getByText("백업 확인")).toBeTruthy();
+    expect(screen.queryByText("매일 점검")).toBeNull();
+    const history = screen.getByText("지난 실행").closest("details") as HTMLDetailsElement;
+    await waitFor(() => expect(history.open).toBe(false));
   });
 });
 

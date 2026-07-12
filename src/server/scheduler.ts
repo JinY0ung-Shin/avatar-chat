@@ -129,7 +129,7 @@ async function runRoutineJobNow(
       abortController,
     );
 
-    store.touchConversation(avatar.id, job.conversationId, avatar.id, `[루틴] ${job.prompt}`, { isRoutine: true });
+    store.touchConversation(avatar.id, job.conversationId, avatar.id, `[예약 작업] ${job.prompt}`, { isRoutine: true });
     store.addMessage(job.conversationId, { role: "user", content: job.prompt });
     store.addMessage(job.conversationId, {
       role: "assistant",
@@ -176,7 +176,7 @@ export async function executeRoutineJob(
   job: RoutineJob,
 ): Promise<{ ok: boolean; error?: string; skipped?: boolean }> {
   if (runningJobs.has(job.id)) {
-    return { ok: false, skipped: true, error: "이미 실행 중인 루틴입니다." };
+    return { ok: false, skipped: true, error: "이미 실행 중인 예약 작업입니다." };
   }
   // A routine and an interactive chat share ONE conversation id (a routine's thread
   // is openable in the client). If the owner is mid-turn there, skip this tick: both
@@ -184,7 +184,7 @@ export async function executeRoutineJob(
   // stomp each other (activeRepoLock is re-entrant by conversation id, so it won't
   // catch this). It retries on the next tick once the chat turn is done.
   if (getActiveRunForConversation(job.avatarUserId, job.conversationId)) {
-    return { ok: false, skipped: true, error: "대화에서 응답을 생성 중이라 루틴을 건너뜁니다." };
+    return { ok: false, skipped: true, error: "대화에서 응답을 생성 중이라 예약 작업을 건너뜁니다." };
   }
   runningJobs.add(job.id);
   schedLogger.info({ jobId: job.id, avatarUserId: job.avatarUserId }, "routine job started");

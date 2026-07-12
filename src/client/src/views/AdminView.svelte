@@ -169,7 +169,7 @@
     { label: "공개 아바타", value: stats?.publicAvatars, sub: "", target: "users", filter: "public" },
     { label: "대화", value: stats?.conversations, sub: "", target: "", filter: "all" },
     { label: "메시지", value: stats?.messages, sub: "", target: "", filter: "all" },
-    { label: "활성 루틴", value: stats?.activeRoutines, sub: "", target: "", filter: "all" },
+    { label: "활성 예약 작업", value: stats?.activeRoutines, sub: "", target: "", filter: "all" },
     { label: "미응답 질문", value: stats?.openRequests, sub: "", target: "", filter: "all" },
     { label: "활성 세션", value: stats?.activeSessions, sub: "", target: "users", filter: "sessions" },
     { label: "그룹", value: stats?.groups, sub: "", target: "groups", filter: "all" },

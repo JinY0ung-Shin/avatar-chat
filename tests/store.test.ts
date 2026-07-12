@@ -977,7 +977,7 @@ describe("routine jobs", () => {
     expect(store.listConversations(ownerId).some((c) => c.id === job.conversationId)).toBe(false);
     const conv = store.listConversations(ownerId, undefined, "routine").find((c) => c.id === job.conversationId);
     expect(conv).toBeTruthy();
-    expect(conv!.title.startsWith("[루틴]")).toBe(true);
+    expect(conv!.title.startsWith("[예약 작업]")).toBe(true);
     expect(conv!.isRoutine).toBe(true);
     expect(conv!.routineId).toBe(job.id);
   });

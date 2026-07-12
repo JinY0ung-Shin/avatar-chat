@@ -45,7 +45,7 @@
     { view: "chat", label: "대화", icon: "chat" },
     { view: "brain", label: "지식 그래프", icon: "network" },
     { view: "inbox", label: "알림", icon: "bell" },
-    { view: "routines", label: "루틴", icon: "clock" },
+    { view: "routines", label: "예약 작업", icon: "clock" },
     { view: "settings", label: "내 아바타", icon: "user" },
   ] as const;
 

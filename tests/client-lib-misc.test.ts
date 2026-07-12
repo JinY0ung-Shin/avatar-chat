@@ -890,7 +890,7 @@ it("formatRoutineSchedule renders once/interval/weekly/daily variants (server-mi
     expect(routineTitle({ name: "  Standup " })).toBe("Standup");
     expect(routineTitle({ prompt: "  line one\nline two  " })).toBe("line one line two");
     expect(routineTitle({ prompt: "x".repeat(50) })).toBe(`${"x".repeat(40)}…`);
-    expect(routineTitle({})).toBe("(이름 없는 루틴)");
+    expect(routineTitle({})).toBe("(이름 없는 예약 작업)");
   });
 
   it("formatTokenCount compacts by magnitude", () => {

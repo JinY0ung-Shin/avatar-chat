@@ -44,9 +44,9 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: "routine",
-    title: "루틴 만들기",
+    title: "예약 작업 만들기",
     argsLabel: "작업",
-    description: "작업 내용을 받아 매일 실행할 루틴 생성을 요청합니다.",
+    description: "작업 내용을 받아 한 번 또는 반복 실행할 예약 작업 생성을 요청합니다.",
     ownerOnly: true,
     requiresArgs: true,
   },

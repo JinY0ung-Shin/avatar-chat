@@ -52,7 +52,7 @@
         <div class={`message ${message.role}`}>
           <div class="msg-role">
             <span class="role-dot"></span>
-            <span>{isUser ? "루틴 지시" : authorName}</span>
+            <span>{isUser ? "예약 작업 지시" : authorName}</span>
             {#if message.createdAt}<time class="msg-time" datetime={message.createdAt}>{timeLabel(message.createdAt)}</time>{/if}
           </div>
           {#if isUser}
@@ -70,7 +70,7 @@
     {:else}
       <div class="empty-note">
         이 실행에는 결과 메시지가 없습니다.{" "}
-        {#if onRun}<button class="linkish small" type="button" disabled={runBusy} on:click={onRun}>{runBusy ? "실행 중…" : "현재 루틴 다시 실행"}</button>{/if}
+        {#if onRun}<button class="linkish small" type="button" disabled={runBusy} on:click={onRun}>{runBusy ? "실행 중…" : "현재 예약 작업 다시 실행"}</button>{/if}
       </div>
     {/if}
   </div>

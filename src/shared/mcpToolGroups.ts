@@ -45,7 +45,7 @@ export const MCP_TOOL_GROUPS = [
     id: "system",
     labelKo: "시스템",
     labelEn: "system management",
-    descriptionKo: "상태 확인, 루틴, 플러그인, 알림",
+    descriptionKo: "상태 확인, 예약 작업, 플러그인, 알림",
   },
 ] as const;
 

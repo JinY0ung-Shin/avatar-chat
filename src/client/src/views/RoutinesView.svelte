@@ -16,7 +16,14 @@
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
   import type { RoutineJob, StoredMessage } from "../lib/types";
 
+  type TypeFilterId = "all" | "recurring" | "once";
   type FilterId = "all" | "enabled" | "paused" | "completed" | "error";
+
+  const TYPE_FILTER_DEFS: { id: TypeFilterId; label: string; match: (r: RoutineJob) => boolean }[] = [
+    { id: "all", label: "전체", match: () => true },
+    { id: "recurring", label: "반복", match: (r) => r.scheduleKind !== "once" },
+    { id: "once", label: "1회성", match: (r) => r.scheduleKind === "once" },
+  ];
 
   const FILTER_DEFS: { id: FilterId; label: string; match: (r: RoutineJob) => boolean }[] = [
     { id: "all", label: "전체", match: () => true },
@@ -113,10 +120,13 @@
   });
 
   $: routines = $appState.routines;
+  $: typeFilterId = (TYPE_FILTER_DEFS.some((f) => f.id === $appState.routineTypeFilter) ? $appState.routineTypeFilter : "all") as TypeFilterId;
+  $: activeTypeFilter = TYPE_FILTER_DEFS.find((f) => f.id === typeFilterId) ?? TYPE_FILTER_DEFS[0];
   $: filterId = (FILTER_DEFS.some((f) => f.id === $appState.routineFilter) ? $appState.routineFilter : "all") as FilterId;
   $: activeFilter = FILTER_DEFS.find((f) => f.id === filterId) ?? FILTER_DEFS[0];
   $: query = $appState.routineSearch.trim().toLowerCase();
-  $: filteredByTab = routines.filter(activeFilter.match);
+  $: filteredByType = routines.filter(activeTypeFilter.match);
+  $: filteredByTab = filteredByType.filter(activeFilter.match);
   $: filtered = query
     ? filteredByTab.filter((r) => {
         const haystack = [
@@ -131,6 +141,24 @@
         return haystack.includes(query);
       })
     : filteredByTab;
+  $: listGroups = typeFilterId === "once"
+    ? [
+        {
+          id: "upcoming",
+          label: "예정",
+          routines: filtered
+            .filter((r) => !r.completedAt)
+            .sort((a, b) => (a.nextRunAt || "9999").localeCompare(b.nextRunAt || "9999")),
+        },
+        {
+          id: "history",
+          label: "지난 실행",
+          routines: filtered
+            .filter((r) => Boolean(r.completedAt))
+            .sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || "")),
+        },
+      ]
+    : [{ id: "all", label: "", routines: filtered }];
   $: countLabel = filtered.length === routines.length ? `총 ${routines.length}개` : `표시 ${filtered.length}개 / 전체 ${routines.length}개`;
   $: filterLabel = (id: FilterId) => FILTER_DEFS.find((f) => f.id === id)?.label || "전체";
 
@@ -176,6 +204,9 @@
   function setFilter(id: FilterId) {
     updateState((state) => (state.routineFilter = id));
   }
+  function setTypeFilter(id: TypeFilterId) {
+    updateState((state) => (state.routineTypeFilter = id));
+  }
   function focusFilter(id: FilterId): void {
     requestAnimationFrame(() => document.getElementById(`routine-filter-${id}`)?.focus());
   }
@@ -196,7 +227,27 @@
 
   function filterCount(id: FilterId): number {
     const def = FILTER_DEFS.find((f) => f.id === id);
+    return def ? filteredByType.filter(def.match).length : 0;
+  }
+
+  function typeFilterCount(id: TypeFilterId): number {
+    const def = TYPE_FILTER_DEFS.find((f) => f.id === id);
     return def ? routines.filter(def.match).length : 0;
+  }
+
+  function onTypeFilterKeydown(event: KeyboardEvent, currentId: TypeFilterId): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const currentIndex = TYPE_FILTER_DEFS.findIndex((item) => item.id === currentId);
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? TYPE_FILTER_DEFS.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + TYPE_FILTER_DEFS.length) % TYPE_FILTER_DEFS.length;
+    const next = TYPE_FILTER_DEFS[nextIndex].id;
+    setTypeFilter(next);
+    requestAnimationFrame(() => document.getElementById(`routine-type-filter-${next}`)?.focus());
   }
 
   function clearSearch() {
@@ -238,7 +289,7 @@
     if (resultBusyId || busyRoutineId === routine.id) return;
     const wasActive = $appState.routineConversationId === routine.conversationId;
     resultBusyId = routine.id;
-    routineActionStatus = `"${routineTitle(routine)}" 루틴 결과를 불러오는 중입니다.`;
+    routineActionStatus = `"${routineTitle(routine)}" 예약 작업 결과를 불러오는 중입니다.`;
     updateState((state) => (state.routineConversationId = routine.conversationId));
     messageLoadError = "";
     let loaded = true;
@@ -247,14 +298,14 @@
     } catch (err) {
       loaded = false;
       messageLoadError = (err as Error).message || "네트워크 오류";
-      routineActionStatus = `루틴 결과 불러오기 실패: ${messageLoadError}`;
+      routineActionStatus = `예약 작업 결과 불러오기 실패: ${messageLoadError}`;
       replaceState({ routineMessages: [] });
     } finally {
       resultBusyId = "";
     }
     const title = routineTitle(routine);
     if (loaded) {
-      routineActionStatus = wasActive ? `"${title}" 루틴 결과를 보고 있습니다.` : `"${title}" 루틴 결과를 표시했습니다.`;
+      routineActionStatus = wasActive ? `"${title}" 예약 작업 결과를 보고 있습니다.` : `"${title}" 예약 작업 결과를 표시했습니다.`;
       notify(routineActionStatus, "info");
     }
   }
@@ -265,7 +316,7 @@
 
   async function toggleRoutine(routine: RoutineJob, next: boolean) {
     const title = routineTitle(routine);
-    routineActionStatus = `"${title}" 루틴을 ${next ? "사용" : "일시 정지"}하는 중입니다.`;
+    routineActionStatus = `"${title}" 예약 작업을 ${next ? "사용" : "일시 정지"}하는 중입니다.`;
     try {
       await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, {
         method: "PATCH",
@@ -278,16 +329,16 @@
     }
     try {
       await loadRoutinesData();
-      routineActionStatus = `"${title}" 루틴을 ${next ? "사용" : "일시 정지"}했습니다.`;
+      routineActionStatus = `"${title}" 예약 작업을 ${next ? "사용" : "일시 정지"}했습니다.`;
       notify(routineActionStatus, "ok");
     } catch (err) {
-      routineActionStatus = `루틴 상태는 변경했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`;
+      routineActionStatus = `예약 작업 상태는 변경했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`;
       notify(routineActionStatus, "warn");
     }
   }
 
   async function runRoutineNow(routine: RoutineJob) {
-    routineActionStatus = `"${routineTitle(routine)}" 루틴을 실행하는 중입니다.`;
+    routineActionStatus = `"${routineTitle(routine)}" 예약 작업을 실행하는 중입니다.`;
     const res = await api<{ ok?: boolean; error?: string }>(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
     let refreshError: Error | null = null;
     try {
@@ -298,13 +349,13 @@
       refreshError = err as Error;
     }
     if (res && res.ok === false) {
-      routineActionStatus = `루틴 실행 실패: ${res.error || "알 수 없는 오류"}`;
+      routineActionStatus = `예약 작업 실행 실패: ${res.error || "알 수 없는 오류"}`;
       notify(routineActionStatus);
     } else if (refreshError) {
-      routineActionStatus = `루틴은 실행했지만 상태 새로고침에 실패했습니다: ${refreshError.message}`;
+      routineActionStatus = `예약 작업은 실행했지만 상태 새로고침에 실패했습니다: ${refreshError.message}`;
       notify(routineActionStatus, "warn");
     } else {
-      routineActionStatus = `"${routineTitle(routine)}" 루틴을 실행했습니다.`;
+      routineActionStatus = `"${routineTitle(routine)}" 예약 작업을 실행했습니다.`;
       notify(routineActionStatus, "ok");
     }
     // Jump straight to the result this run just produced.
@@ -323,7 +374,7 @@
     try {
       await runRoutineNow(routine);
     } catch (err) {
-      routineActionStatus = `루틴 실행 실패: ${(err as Error).message}`;
+      routineActionStatus = `예약 작업 실행 실패: ${(err as Error).message}`;
       notify(routineActionStatus);
     } finally {
       busyRoutineId = "";
@@ -362,8 +413,8 @@
 
 <header class="view-header">
   <div>
-    <h1>루틴</h1>
-    <p>아바타가 스스로 실행하는 예약 작업과 그 결과를 관리하세요</p>
+    <h1>예약 작업</h1>
+    <p>한 번만 또는 반복해서 아바타가 스스로 실행할 작업과 결과를 관리하세요</p>
   </div>
 </header>
 
@@ -372,7 +423,7 @@
     <div class="muted pad" role="status">불러오는 중…</div>
   {:else if error}
     <div class="warn-box" role="alert">
-      루틴 정보를 불러오지 못했습니다: {error}
+      예약 작업 정보를 불러오지 못했습니다: {error}
       <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
     </div>
   {:else}
@@ -382,11 +433,11 @@
         <section class="settings-card routine-card">
           <div class="panel-section-head">
             <div>
-              <h3>내 루틴</h3>
-          <p class="muted">특정 날짜에 한 번만 또는 매일·매주·일정 간격(KST)으로 아바타가 스스로 실행합니다. 카드를 누르면 결과가 오른쪽에 표시돼요.</p>
+              <h3>내 예약 작업</h3>
+              <p class="muted">특정 날짜에 한 번만 또는 매일·매주·일정 간격(KST)으로 아바타가 스스로 실행합니다. 카드를 누르면 결과가 오른쪽에 표시돼요.</p>
             </div>
             <button class="primary small routine-add-btn" type="button" on:click={() => openModal(null)}>
-              <Icon name="plus" size={16} /><span>루틴 추가</span>
+              <Icon name="plus" size={16} /><span>예약 작업 추가</span>
             </button>
           </div>
 
@@ -394,8 +445,8 @@
             <input
               class="routine-search"
               type="search"
-              placeholder="루틴 검색"
-              aria-label="루틴 검색"
+              placeholder="예약 작업 검색"
+              aria-label="예약 작업 검색"
               disabled={!routines.length}
               value={$appState.routineSearch}
               on:input={(event) => updateState((state) => (state.routineSearch = event.currentTarget.value))} />
@@ -412,7 +463,21 @@
           {/if}
 
           {#if routines.length}
-            <div class="routine-filter seg-control" role="radiogroup" aria-label="루틴 필터">
+            <div class="routine-filter routine-type-filter seg-control" role="radiogroup" aria-label="예약 작업 유형">
+              {#each TYPE_FILTER_DEFS as f}
+                {@const active = typeFilterId === f.id}
+                <button
+                  id={`routine-type-filter-${f.id}`}
+                  class={`seg-btn ${active ? "active" : ""}`}
+                  type="button"
+                  role="radio"
+                  aria-checked={active ? "true" : "false"}
+                  tabindex={active ? 0 : -1}
+                  on:click={() => setTypeFilter(f.id)}
+                  on:keydown={(event) => onTypeFilterKeydown(event, f.id)}>{f.label} {typeFilterCount(f.id)}</button>
+              {/each}
+            </div>
+            <div class="routine-filter seg-control" role="radiogroup" aria-label="예약 작업 상태">
               {#each FILTER_DEFS as f}
                 {@const active = filterId === f.id}
                 <button
@@ -431,31 +496,64 @@
 
           <div class="routine-manage-list">
             {#if !routines.length}
-              <div class="empty-note">아직 등록한 루틴이 없습니다. 위의 ‘루틴 추가’로 첫 예약 작업을 만들어 보세요.</div>
+              <div class="empty-note">아직 등록한 예약 작업이 없습니다. 위의 ‘예약 작업 추가’로 첫 작업을 만들어 보세요.</div>
             {:else if !filtered.length}
               <div class="empty-note">
                 {#if query}
-                  "{$appState.routineSearch.trim()}"에 맞는 {filterId === "all" ? "루틴" : `${filterLabel(filterId)} 루틴`}이 없습니다.{" "}
+                  "{$appState.routineSearch.trim()}"에 맞는 예약 작업이 없습니다.{" "}
                   <button class="linkish small" type="button" on:click={clearSearch}>검색어 지우기</button>
                 {:else}
-                  {filterLabel(filterId)} 루틴이 없습니다.{" "}
+                  {typeFilterId === "once" ? "1회성" : typeFilterId === "recurring" ? "반복" : filterLabel(filterId)} 예약 작업이 없습니다.{" "}
                 {/if}
                 {#if filterId !== "all"}
-                  <button class="linkish small" type="button" on:click={() => setFilter("all")}>전체 루틴 보기</button>
+                  <button class="linkish small" type="button" on:click={() => setFilter("all")}>전체 상태 보기</button>
                 {/if}
               </div>
             {:else}
-              {#each filtered as routine (routine.id)}
+              {#each listGroups as group (group.id)}
+                {#if group.routines.length}
+                  {#if group.id === "history"}
+                    <details class="routine-list-group" open={filterId === "completed" || filterId === "error" || Boolean(query)}>
+                      <summary class="routine-list-group-head"><span>{group.label}</span><span class="muted">{group.routines.length}</span></summary>
+                      <div class="routine-list-group-items">
+                        {#each group.routines as routine (routine.id)}
+                          {@const active = $appState.routineConversationId === routine.conversationId}
+                          {@const errored = routine.lastStatus === "error"}
+                          {@const completed = Boolean(routine.completedAt)}
+                          {@const dotClass = errored ? "err" : completed ? "done" : !routine.enabled ? "off" : "on"}
+                          {@const title = routineTitle(routine)}
+                          {@const rowLabel = active ? `선택된 예약 작업 결과: ${title}` : `예약 작업 결과 보기: ${title}`}
+                          <div
+                            class={`routine-manage-row ${active ? "active" : ""}`}
+                            role="group"
+                            aria-label={`예약 작업: ${title}`}
+                            aria-current={active ? "true" : undefined}
+                          >
+                            <div class="routine-manage-head">
+                              <button class="routine-manage-main" type="button" aria-label={rowLabel} on:click={() => selectResult(routine)}>
+                                <span class="routine-manage-title-line"><span class={`routine-dot ${dotClass}`} aria-hidden="true"></span><strong class="routine-manage-title">{title}</strong><span class="tag">1회</span></span>
+                                <span class="routine-manage-meta">{formatRoutineSchedule(routine)} · 최근 실행 {timeLabel(routine.lastRunAt || routine.completedAt || "")} · {errored ? "실패" : "완료"}</span>
+                              </button>
+                              <span class="meta-badge">{errored ? "실패" : "완료"}</span>
+                            </div>
+                            <div class="routine-manage-actions"><button class="ghost-sm" type="button" on:click|stopPropagation={() => openModal(routine)}><Icon name="edit" size={16} /><span>편집</span></button></div>
+                          </div>
+                        {/each}
+                      </div>
+                    </details>
+                  {:else}
+                    {#if group.label}<div class="routine-list-group-head static"><span>{group.label}</span><span class="muted">{group.routines.length}</span></div>{/if}
+                    {#each group.routines as routine (routine.id)}
                 {@const active = $appState.routineConversationId === routine.conversationId}
                 {@const errored = routine.lastStatus === "error"}
                 {@const completed = Boolean(routine.completedAt)}
                 {@const dotClass = errored ? "err" : completed ? "done" : !routine.enabled ? "off" : "on"}
                 {@const title = routineTitle(routine)}
-                {@const rowLabel = active ? `선택된 루틴 결과: ${title}` : `루틴 결과 보기: ${title}`}
+                {@const rowLabel = active ? `선택된 예약 작업 결과: ${title}` : `예약 작업 결과 보기: ${title}`}
                 <div
                   class={`routine-manage-row ${active ? "active" : ""} ${!routine.enabled && !completed ? "paused" : ""}`}
                   role="group"
-                  aria-label={`루틴: ${title}`}
+                  aria-label={`예약 작업: ${title}`}
                   aria-current={active ? "true" : undefined}
                   aria-busy={busyRoutineId === routine.id || resultBusyId === routine.id ? "true" : undefined}
                 >
@@ -473,6 +571,7 @@
                       <span class="routine-manage-title-line">
                         <span class={`routine-dot ${dotClass}`} aria-hidden="true"></span>
                         <strong class="routine-manage-title">{title}</strong>
+                        {#if routine.scheduleKind === "once"}<span class="tag">1회</span>{/if}
                       </span>
                       <span class="routine-manage-meta" id={routineDomId(routine, "meta")}>
                         {formatRoutineSchedule(routine)}{#if completed} · <span class="routine-next">한 번 실행 완료</span>{:else if routine.enabled && routine.nextRunAt} · <span class="routine-next">다음 실행 {timeLabel(routine.nextRunAt)}</span>{/if} · {routine.lastRunAt
@@ -488,7 +587,7 @@
                     {:else}
                       <Toggle
                         on={routine.enabled}
-                        label={`루틴 사용: ${title}`}
+                        label={`예약 작업 사용: ${title}`}
                         onChange={(next) => toggleRoutine(routine, next)} />
                     {/if}
                   </div>
@@ -508,6 +607,9 @@
                     {/if}
                   </div>
                 </div>
+                    {/each}
+                  {/if}
+                {/if}
               {/each}
             {/if}
           </div>
@@ -539,9 +641,9 @@
       <section class="settings-card routine-result-card">
         <div class="panel-section-head">
           <div>
-            <h3>{selectedConv?.title || "루틴 결과"}</h3>
+            <h3>{selectedRoutine ? routineTitle(selectedRoutine) : selectedConv?.title || "예약 작업 결과"}</h3>
             <p class="muted">
-              {#if selectedConv}{selectedConv.avatarDisplayName} · {timeLabel(selectedConv.updatedAt)}{:else}루틴 실행 기록을 선택하세요.{/if}
+              {#if selectedConv}{selectedConv.avatarDisplayName} · {timeLabel(selectedConv.updatedAt)}{:else}예약 작업 실행 기록을 선택하세요.{/if}
             </p>
           </div>
           {#if selectedConv}
@@ -568,14 +670,14 @@
               {#if routines.length}
                 <div class="empty-note" role="status">
                   아직 확인할 실행 결과가 없습니다. 바로 실행하거나 다음 예약 실행 후 결과가 표시됩니다.{" "}
-                  <button class="linkish small" type="button" aria-describedby={routineActionStatus ? routineActionStatusId : undefined} disabled={busyRoutineId === routines[0].id} on:click={() => runFromButton(routines[0])}>첫 루틴 지금 실행</button>
+                  <button class="linkish small" type="button" aria-describedby={routineActionStatus ? routineActionStatusId : undefined} disabled={busyRoutineId === routines[0].id} on:click={() => runFromButton(routines[0])}>첫 예약 작업 지금 실행</button>
                 </div>
               {:else}
-                <div class="empty-note" role="status">루틴을 추가하면 실행 기록과 결과가 여기에 쌓입니다.</div>
+                <div class="empty-note" role="status">예약 작업을 추가하면 실행 기록과 결과가 여기에 쌓입니다.</div>
               {/if}
             {:else if messageLoadError}
               <div class="warn-box" role="alert">
-                루틴 결과를 불러오지 못했습니다: {messageLoadError}
+                예약 작업 결과를 불러오지 못했습니다: {messageLoadError}
                 <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
               </div>
             {:else if !$appState.routineMessages.length}

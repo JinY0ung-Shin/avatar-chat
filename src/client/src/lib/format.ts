@@ -150,7 +150,7 @@ function oneLine(text: string, limit: number): string {
 // Display title for a routine: explicit name, else a one-line prompt preview,
 // else a placeholder. Mirrors the old routines.js routineTitle().
 export function routineTitle(routine: { name?: string | null; prompt?: string }): string {
-  return (routine.name || "").trim() || oneLine(routine.prompt || "", 40) || "(이름 없는 루틴)";
+  return (routine.name || "").trim() || oneLine(routine.prompt || "", 40) || "(이름 없는 예약 작업)";
 }
 
 // Compact token count: 950 → "950", 17500 → "17.5K", 184000 → "184K".

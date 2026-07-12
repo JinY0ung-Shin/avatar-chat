@@ -381,7 +381,7 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
 ### Routines
 - A routine (`routine_jobs` table, `get/list/create/update/deleteRoutineJob`, `markRoutineRun`) runs its
   `prompt` headlessly with owner-level tools and appends results to a dedicated conversation
-  (`[루틴] <name|prompt>` title). Schedule kinds (`src/server/routineSchedule.ts`, the ONE place for all
+  (`[예약 작업] <name|prompt>` title; legacy rows may retain `[루틴]`). Schedule kinds (`src/server/routineSchedule.ts`, the ONE place for all
   schedule math + validation): **once** (`runDate` YYYY-MM-DD KST + `minuteOfDay`; disabled with
   `completedAt` after its single attempt), **daily** (`minuteOfDay` KST), **weekly** (`daysOfWeek`
   0=Sun..6=Sat at `minuteOfDay`), **interval** (`intervalMinutes`, 5..10080).

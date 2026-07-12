@@ -166,7 +166,7 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
         // Create the dedicated conversation eagerly so the client can always
         // open it (and so its title comes from the name/prompt, not from whatever
         // message lands in it first).
-        this.touchConversation(avatarUserId, conversationId, avatarUserId, `[루틴] ${name || prompt}`, { isRoutine: true });
+        this.touchConversation(avatarUserId, conversationId, avatarUserId, `[예약 작업] ${name || prompt}`, { isRoutine: true });
       });
       tx();
       return this.toRoutineJob(this.routineJobRow(id)!);

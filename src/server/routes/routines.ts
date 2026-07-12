@@ -110,7 +110,7 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
     }
     const existing = store.getRoutineJob(req.user!.id, req.params.id);
     if (!existing) {
-      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      apiError(res, 404, "예약 작업을 찾을 수 없습니다.");
       return;
     }
     if (patch.enabled === true) {
@@ -131,7 +131,7 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
     }
     const routine = store.updateRoutineJob(req.user!.id, req.params.id, patch);
     if (!routine) {
-      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      apiError(res, 404, "예약 작업을 찾을 수 없습니다.");
       return;
     }
     res.json({ routine });
@@ -140,7 +140,7 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
   router.delete("/api/me/routines/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const removed = store.deleteRoutineJob(req.user!.id, req.params.id);
     if (!removed) {
-      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      apiError(res, 404, "예약 작업을 찾을 수 없습니다.");
       return;
     }
     logger.info({ userId: req.user!.id, routineId: req.params.id }, "routine deleted");
@@ -154,16 +154,16 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
   router.post("/api/me/routines/:id/run", requireAuth(store), async (req: AuthenticatedRequest, res) => {
     const job = store.getRoutineJob(req.user!.id, req.params.id);
     if (!job) {
-      apiError(res, 404, "루틴을 찾을 수 없습니다.");
+      apiError(res, 404, "예약 작업을 찾을 수 없습니다.");
       return;
     }
     if (isRoutineRunning(job.id)) {
-      apiError(res, 409, "이미 실행 중인 루틴입니다.");
+      apiError(res, 409, "이미 실행 중인 예약 작업입니다.");
       return;
     }
     const result = await executeRoutineJob(services, job);
     if (result.skipped) {
-      apiError(res, 409, "이미 실행 중인 루틴입니다.");
+      apiError(res, 409, "이미 실행 중인 예약 작업입니다.");
       return;
     }
     logger.info({ userId: req.user!.id, routineId: job.id, ok: result.ok }, "routine manual run");
