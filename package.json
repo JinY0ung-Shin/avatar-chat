@@ -16,6 +16,8 @@
     "start": "node dist/server/index.js",
     "pretest": "npm run build:client -- --mode test",
     "test": "vitest run",
+    "test:visual": "node tests/run-visual.mjs",
+    "test:visual:update": "node tests/run-visual.mjs --update-snapshots",
     "pretest:coverage": "npm run pretest",
     "test:coverage": "vitest run --coverage",
     "lint": "tsc --noEmit && npm run lint:client",
@@ -37,6 +39,7 @@
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.1",
     "@sveltejs/vite-plugin-svelte": "^7.1.2",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/svelte": "^5.4.2",

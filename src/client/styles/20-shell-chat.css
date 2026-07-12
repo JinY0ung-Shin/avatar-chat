@@ -514,7 +514,7 @@
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.28s var(--ease);
-  z-index: 30;
+  z-index: var(--z-rail);
 }
 /* The `.open` visible state is scoped to the mobile breakpoint (below) so a
    stale `.open` class can never cover the desktop layout after a resize. */
@@ -1063,7 +1063,7 @@ body.col-resizing {
 .canvas-fs {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: var(--z-modal);
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--bg) 92%, transparent);

@@ -20,6 +20,10 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+html {
+  font-size: 100%;
+}
+
 button,
 input,
 select,
@@ -101,7 +105,7 @@ input[type="radio"] {
   position: fixed;
   top: var(--s-2);
   left: var(--s-2);
-  z-index: 100;
+  z-index: var(--z-modal);
   padding: var(--s-2) var(--s-4);
   border-radius: var(--r-md);
   background: var(--accent);
@@ -120,7 +124,7 @@ input[type="radio"] {
   left: 50%;
   bottom: calc(var(--s-5) + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
-  z-index: 90;
+  z-index: var(--z-toast);
   display: flex;
   flex-direction: column;
   align-items: center;

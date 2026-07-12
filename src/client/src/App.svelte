@@ -3,16 +3,9 @@
   import AuthView from "./components/AuthView.svelte";
   import Shell from "./components/Shell.svelte";
   import Toasts from "./components/Toasts.svelte";
-  import AdminView from "./views/AdminView.svelte";
-  import BrainView from "./views/BrainView.svelte";
-  import ChatView from "./views/ChatView.svelte";
   import ConfirmationDialog from "./components/ConfirmationDialog.svelte";
-  import ExploreView from "./views/ExploreView.svelte";
-  import InboxView from "./views/InboxView.svelte";
   import OnboardingModal from "./components/OnboardingModal.svelte";
   import PromptModal from "./components/PromptModal.svelte";
-  import RoutinesView from "./views/RoutinesView.svelte";
-  import SettingsView from "./views/SettingsView.svelte";
   import { api, setSessionExpiredHandler } from "./lib/api";
   import { selectConversation } from "./lib/chat";
   import { loadRailCollapsed, persistRailCollapsed } from "./lib/layout";
@@ -21,11 +14,40 @@
   import { appState, notify, readState, replaceState, updateState } from "./lib/state";
   import { applyTheme, getThemePref, watchSystemTheme } from "./lib/theme";
   import type { BootstrapInfo, User } from "./lib/types";
+  import type { ViewName } from "./lib/types";
 
   let showOnboarding = false;
   let themeWatcherInstalled = false;
   let railCollapsed = loadRailCollapsed();
   let mobileRailOpen = false;
+  let activeViewName: ViewName | null = null;
+  let activeViewComponent: any = null;
+  let viewLoadToken = 0;
+
+  const viewLoaders: Record<ViewName, () => Promise<{ default: any }>> = {
+    explore: () => import("./views/ExploreView.svelte"),
+    chat: () => import("./views/ChatView.svelte"),
+    brain: () => import("./views/BrainView.svelte"),
+    inbox: () => import("./views/InboxView.svelte"),
+    routines: () => import("./views/RoutinesView.svelte"),
+    settings: () => import("./views/SettingsView.svelte"),
+    admin: () => import("./views/AdminView.svelte"),
+  };
+  const viewCache = new Map<ViewName, any>();
+
+  async function loadView(view: ViewName): Promise<void> {
+    const token = ++viewLoadToken;
+    activeViewName = view;
+    const cached = viewCache.get(view);
+    if (cached) {
+      activeViewComponent = cached;
+      return;
+    }
+    activeViewComponent = null;
+    const component = (await viewLoaders[view]()).default;
+    viewCache.set(view, component);
+    if (token === viewLoadToken && activeViewName === view) activeViewComponent = component;
+  }
 
   function setRailCollapsed(collapsed: boolean): void {
     railCollapsed = collapsed;
@@ -126,6 +148,7 @@
   $: unreadCount =
     $appState.knowledgeRequests.filter((request) => request.status === "open").length +
     $appState.notifications.filter((notification) => !notification.readAt).length;
+  $: if ($appState.user && activeViewName !== $appState.view) void loadView($appState.view);
 </script>
 
 {#if !$appState.booted}
@@ -150,20 +173,10 @@
       onMobileRailOpenChange={setMobileRailOpen}
     />
     <main id="main" class="main" tabindex="-1" inert={mobileRailOpen}>
-      {#if $appState.view === "explore"}
-        <ExploreView />
-      {:else if $appState.view === "chat"}
-        <ChatView />
-      {:else if $appState.view === "brain"}
-        <BrainView />
-      {:else if $appState.view === "inbox"}
-        <InboxView />
-      {:else if $appState.view === "routines"}
-        <RoutinesView />
-      {:else if $appState.view === "settings"}
-        <SettingsView />
-      {:else if $appState.view === "admin"}
-        <AdminView />
+      {#if activeViewComponent}
+        <svelte:component this={activeViewComponent} />
+      {:else}
+        <div class="svelte-fallback-pad muted" role="status">화면을 준비하는 중…</div>
       {/if}
     </main>
   </section>

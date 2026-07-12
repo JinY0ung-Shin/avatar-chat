@@ -2,7 +2,7 @@
 .modal-overlay {
   position: fixed;
   inset: 0;
-  z-index: 70;
+  z-index: var(--z-modal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -22,7 +22,8 @@
   display: flex;
   flex-direction: column;
   gap: var(--s-3);
-  animation: prompt-modal-in 0.16s var(--ease);
+  transform: translate3d(0, var(--sheet-translate-y, 0px), 0);
+  will-change: transform;
 }
 .modal-card h2 {
   margin: 0;

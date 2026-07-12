@@ -18,7 +18,7 @@
     transform: translateX(-100%);
     visibility: hidden;
     transition: transform 0.3s var(--ease), visibility 0s 0.3s;
-    z-index: 31;
+    z-index: calc(var(--z-rail) + 1);
     box-shadow: var(--shadow-drawer);
     padding-top: calc(var(--s-4) + env(safe-area-inset-top, 0px));
     padding-left: max(var(--s-3), env(safe-area-inset-left, 0px));

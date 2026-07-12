@@ -7,6 +7,7 @@
   import { addConversationToSplit, clearChatHistory, newChat, selectConversation } from "../lib/chat";
   import { formatDate } from "../lib/format";
   import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
+  import { prefersReducedMotion, project, rubberband, springValue } from "../lib/motion";
   import { goView } from "../lib/nav";
   import { appState, notify, replaceState, updateState } from "../lib/state";
   import { setThemePref } from "../lib/theme";
@@ -28,8 +29,7 @@
   let railDismiss: HTMLButtonElement | undefined;
   let railBackdrop: HTMLButtonElement | undefined;
   let railSpringing = false;
-  let railAnimationFrame = 0;
-  let railAnimationToken = 0;
+  let cancelRailSpring: () => void = () => {};
   const desktopRailMedia =
     typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(min-width: 861px)") : null;
   let desktopRail = desktopRailMedia?.matches ?? true;
@@ -240,14 +240,9 @@
     onMobileRailOpenChange(open);
   }
 
-  function reducedMotion(): boolean {
-    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
-  }
-
   function cancelRailAnimation(): void {
-    railAnimationToken += 1;
-    if (railAnimationFrame) cancelAnimationFrame(railAnimationFrame);
-    railAnimationFrame = 0;
+    cancelRailSpring();
+    cancelRailSpring = () => {};
     railSpringing = false;
   }
 
@@ -256,7 +251,7 @@
   }
 
   function canAnimateRail(): boolean {
-    return !reducedMotion() && (railElement?.getBoundingClientRect().width ?? 0) > 0;
+    return !prefersReducedMotion() && (railElement?.getBoundingClientRect().width ?? 0) > 0;
   }
 
   function currentRailX(): number {
@@ -293,33 +288,18 @@
   function springRail(from: number, target: number, initialVelocity: number, complete: () => void): void {
     cancelRailAnimation();
     railSpringing = true;
-    const token = ++railAnimationToken;
-    const response = 0.3;
-    const dampingRatio = 0.86;
-    const omega = (2 * Math.PI) / response;
-    const stiffness = omega * omega;
-    const damping = 2 * dampingRatio * omega;
-    let position = from;
-    let velocity = initialVelocity;
-    let previous = performance.now();
-
-    const step = (now: number) => {
-      if (token !== railAnimationToken) return;
-      const dt = Math.min(1 / 30, Math.max(1 / 240, (now - previous) / 1000));
-      previous = now;
-      const acceleration = -stiffness * (position - target) - damping * velocity;
-      velocity += acceleration * dt;
-      position += velocity * dt;
-      setRailVisual(position);
-      if (Math.abs(position - target) < 0.5 && Math.abs(velocity) < 5) {
-        setRailVisual(target);
-        railAnimationFrame = 0;
+    cancelRailSpring = springValue({
+      from,
+      to: target,
+      velocity: initialVelocity,
+      response: 0.3,
+      dampingRatio: 0.86,
+      onUpdate: setRailVisual,
+      onComplete: () => {
+        cancelRailSpring = () => {};
         complete();
-        return;
-      }
-      railAnimationFrame = requestAnimationFrame(step);
-    };
-    railAnimationFrame = requestAnimationFrame(step);
+      },
+    });
   }
 
   function finishRailClose(restoreFocus: boolean): void {
@@ -364,10 +344,6 @@
     });
   }
 
-  function rubberband(overshoot: number, dimension: number, constant = 0.55): number {
-    return (overshoot * dimension * constant) / (dimension + constant * Math.abs(overshoot));
-  }
-
   function startRailDrag(event: PointerEvent): void {
     if (desktopRail || !railOpen || !railElement) return;
     event.preventDefault();
@@ -398,8 +374,8 @@
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onUp);
-      const projection = position + (velocity / 1000) * 0.998 / (1 - 0.998);
-      const shouldClose = projection < -width * 0.5 || velocity < -520;
+      const projectedPosition = project(position, velocity);
+      const shouldClose = projectedPosition < -width * 0.5 || velocity < -520;
       const target = shouldClose ? -width : 0;
       springRail(position, target, velocity, () => {
         if (shouldClose) finishRailClose(true);
@@ -409,6 +385,48 @@
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onUp);
+  }
+
+  function startRailEdgeDrag(event: PointerEvent): void {
+    if (desktopRail || railOpen || !railElement) return;
+    event.preventDefault();
+    cancelRailAnimation();
+    setRailOpen(true);
+    railSpringing = true;
+    const width = railWidth();
+    const startPointer = event.clientX;
+    let position = -width;
+    let velocity = 0;
+    let lastPosition = position;
+    let lastTime = event.timeStamp;
+    setRailVisual(position);
+
+    const onMove = (move: PointerEvent) => {
+      const raw = -width + Math.max(0, move.clientX - startPointer);
+      position = raw > 0 ? rubberband(raw, width) : raw;
+      const dt = Math.max(1, move.timeStamp - lastTime) / 1000;
+      velocity = velocity * 0.65 + ((position - lastPosition) / dt) * 0.35;
+      lastPosition = position;
+      lastTime = move.timeStamp;
+      setRailVisual(position);
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
+      const shouldOpen = project(position, velocity) > -width * 0.5 || velocity > 520;
+      springRail(position, shouldOpen ? 0 : -width, velocity, () => {
+        if (shouldOpen) {
+          clearRailVisual();
+          railDismiss?.focus();
+        } else {
+          finishRailClose(false);
+        }
+      });
+    };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onUp);
   }
 
   function dismissRail() {
@@ -506,6 +524,11 @@
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
+
+{#if !desktopRail && !railOpen}
+  <!-- svelte-ignore a11y-no-static-element-interactions -->
+  <div class="rail-edge-swipe" aria-hidden="true" on:pointerdown={startRailEdgeDrag}></div>
+{/if}
 
 <button
   bind:this={railToggle}

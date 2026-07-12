@@ -291,6 +291,18 @@ button:disabled {
 @media (min-width: 861px) {
   .workspace {
     grid-template-columns: 280px minmax(0, 1fr);
+    transition: grid-template-columns 320ms var(--ease-out);
+  }
+
+  .workspace .rail {
+    transition: opacity 220ms var(--ease-out), transform 320ms var(--ease-out), visibility 0s;
+  }
+
+  .workspace.rail-collapsed .rail {
+    visibility: hidden;
+    opacity: 0;
+    transform: translateX(-12px);
+    transition: opacity 180ms var(--ease-in), transform 260ms var(--ease-in), visibility 0s 260ms;
   }
 }
 
@@ -305,6 +317,10 @@ button:disabled {
 }
 
 .rail-grabber {
+  display: none;
+}
+
+.rail-edge-swipe {
   display: none;
 }
 
@@ -423,11 +439,13 @@ button:disabled {
     transform 240ms var(--ease-out);
 }
 
-.avatar-card:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
-  background: var(--material-thick);
-  box-shadow: var(--shadow-md), 0 1px 0 var(--material-edge) inset;
-  transform: translateY(-3px) scale(1.008);
+@media (hover: hover) {
+  .avatar-card:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--accent) 34%, var(--line));
+    background: var(--material-thick);
+    box-shadow: var(--shadow-md), 0 1px 0 var(--material-edge) inset;
+    transform: translateY(-3px) scale(1.008);
+  }
 }
 
 .avatar-card::after {
@@ -616,7 +634,15 @@ button:disabled {
   background: var(--scrim);
   -webkit-backdrop-filter: saturate(120%) blur(10px);
   backdrop-filter: saturate(120%) blur(10px);
-  animation: apple-scrim-in 180ms var(--ease-out) both;
+}
+
+.modal-motion {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  max-height: 100%;
+  pointer-events: none;
 }
 
 .modal-card,
@@ -629,7 +655,11 @@ button:disabled {
   -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur-thick));
   backdrop-filter: saturate(180%) blur(var(--material-blur-thick));
   transform-origin: center bottom;
-  animation: apple-modal-in 360ms var(--ease-out) both;
+  pointer-events: auto;
+}
+
+.modal-sheet-grabber {
+  display: none;
 }
 
 .confirm-card {
@@ -696,24 +726,6 @@ button:disabled {
   box-shadow: 0 4px 14px color-mix(in srgb, var(--danger) 22%, transparent);
 }
 
-@keyframes apple-scrim-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes apple-modal-in {
-  from {
-    opacity: 0;
-    transform: translateY(18px) scale(0.96);
-    filter: blur(8px);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-    filter: none;
-  }
-}
-
 .composer-gk-panel,
 .composer-tools-panel,
 .slash-menu,
@@ -727,23 +739,22 @@ button:disabled {
   box-shadow: var(--shadow-md), 0 1px 0 var(--material-edge) inset;
   -webkit-backdrop-filter: saturate(180%) blur(var(--material-blur));
   backdrop-filter: saturate(180%) blur(var(--material-blur));
-  transform-origin: center bottom;
+  transform-origin: bottom center;
+}
+
+.composer-gk-panel,
+.composer-tools-panel,
+.slash-menu {
+  transform-origin: bottom left;
+}
+
+.model-menu,
+.effort-menu {
+  transform-origin: bottom right;
 }
 
 .toast {
   border-radius: var(--r-pill);
-  animation: apple-toast-in 420ms var(--ease-out) both;
-}
-
-@keyframes apple-toast-in {
-  from {
-    opacity: 0;
-    transform: translateY(14px) scale(0.92);
-  }
-  to {
-    opacity: 1;
-    transform: none;
-  }
 }
 
 /* Scroll edges read as depth, not a stack of hard separators. */
@@ -765,6 +776,19 @@ button:disabled {
 
 /* Responsive material weights. */
 @media (max-width: 860px) {
+  .rail-edge-swipe {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: var(--z-rail);
+    display: block;
+    width: 22px;
+    touch-action: pan-y;
+  }
+
+  .rail {
+    z-index: calc(var(--z-rail) + 1);
+  }
+
   .rail {
     position: fixed;
     width: min(320px, 88%);
@@ -827,12 +851,42 @@ button:disabled {
     padding: var(--s-2);
   }
 
+  .modal-motion {
+    align-items: flex-end;
+  }
+
   .modal-card:not(.graph-modal-card) {
     width: 100%;
     max-height: calc(92dvh - env(safe-area-inset-top, 0px));
     border-radius: 24px 24px 18px 18px;
     padding-bottom: calc(var(--s-5) + env(safe-area-inset-bottom, 0px));
     transform-origin: center bottom;
+  }
+
+  .modal-sheet-grabber {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 100%;
+    height: 28px;
+    margin: calc(var(--s-3) * -1) 0 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    touch-action: none;
+    cursor: grab;
+  }
+
+  .modal-sheet-grabber:active {
+    cursor: grabbing;
+    transform: none;
+  }
+
+  .modal-sheet-grabber span {
+    width: 36px;
+    height: 5px;
+    border-radius: var(--r-pill);
+    background: color-mix(in srgb, var(--muted) 36%, transparent);
   }
 
   .composer {
@@ -843,11 +897,8 @@ button:disabled {
 /* Accessibility: preserve useful feedback while removing vestibular travel. */
 @media (prefers-reduced-motion: reduce) {
   .message,
-  .modal-card,
   .permission-modal,
   .prompt-modal-card,
-  .toast,
-  .modal-overlay,
   .permission-modal-overlay,
   .canvas-fs {
     animation-name: apple-crossfade !important;
@@ -858,6 +909,29 @@ button:disabled {
   [role="button"],
   .composer-box {
     transform: none !important;
+  }
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 180ms;
+  animation-timing-function: var(--ease-out);
+}
+
+.theme-changing body,
+.theme-changing .rail,
+.theme-changing .main,
+.theme-changing .view-header,
+.theme-changing .composer,
+.theme-changing .modal-card,
+.theme-changing .toast {
+  transition: color 180ms var(--ease-out), background-color 180ms var(--ease-out), border-color 180ms var(--ease-out);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: 0.001ms;
   }
 }
 
@@ -930,5 +1004,22 @@ button:disabled {
   .settings-card,
   .modal-card {
     border-color: var(--line);
+  }
+}
+
+@media (pointer: coarse) {
+  button,
+  [role="button"],
+  input:not([type="checkbox"]):not([type="radio"]),
+  select {
+    min-height: 44px;
+  }
+
+  .icon-button,
+  .conv-act,
+  .msg-act,
+  .toast-close,
+  .modal-sheet-grabber {
+    min-width: 44px;
   }
 }

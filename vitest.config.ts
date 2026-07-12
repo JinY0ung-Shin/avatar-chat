@@ -29,6 +29,7 @@ export default defineConfig({
           name: "components",
           include: ["tests/svelte-*.test.ts"],
           environment: "jsdom",
+          setupFiles: ["tests/setup-dom.ts"],
         },
       },
     ],

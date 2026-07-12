@@ -19,6 +19,22 @@ export function applyTheme(pref = getThemePref()): ThemePref {
   return pref;
 }
 
+function applyThemeWithTransition(pref: ThemePref): void {
+  const reduced = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  const documentWithTransitions = document as Document & {
+    startViewTransition?: (update: () => void) => { finished: Promise<void> };
+  };
+  if (!reduced && documentWithTransitions.startViewTransition) {
+    documentWithTransitions.startViewTransition(() => applyTheme(pref));
+    return;
+  }
+  if (!reduced) {
+    document.documentElement.classList.add("theme-changing");
+    window.setTimeout(() => document.documentElement.classList.remove("theme-changing"), 220);
+  }
+  applyTheme(pref);
+}
+
 export function setThemePref(pref: ThemePref): void {
   try {
     if (pref === "system") localStorage.removeItem(THEME_KEY);
@@ -26,11 +42,11 @@ export function setThemePref(pref: ThemePref): void {
   } catch {
     /* ignore */
   }
-  applyTheme(pref);
+  applyThemeWithTransition(pref);
 }
 
 export function watchSystemTheme(): void {
   media?.addEventListener?.("change", () => {
-    if (getThemePref() === "system") applyTheme("system");
+    if (getThemePref() === "system") applyThemeWithTransition("system");
   });
 }

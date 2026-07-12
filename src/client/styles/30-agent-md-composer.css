@@ -153,7 +153,7 @@
 }
 .agent-node.sub[data-status="running"] {
   border-color: var(--accent);
-  animation: agent-glow 1.8s ease-in-out infinite;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
 }
 @keyframes agent-glow {
   0%, 100% { box-shadow: 0 0 0 0 var(--accent-ring); }
@@ -430,7 +430,7 @@
 .prompt-modal-backdrop {
   position: fixed;
   inset: 0;
-  z-index: 95;
+  z-index: var(--z-prompt);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -449,7 +449,7 @@
    clips overflow, so the card stays inside its own column. */
 .prompt-modal-backdrop.in-pane {
   position: absolute;
-  z-index: 40;
+  z-index: var(--z-popover);
   padding: var(--s-3);
 }
 .prompt-modal-backdrop.in-pane .prompt-card {
@@ -1123,7 +1123,7 @@ textarea::placeholder {
   position: absolute;
   right: 0;
   bottom: calc(100% + 8px);
-  z-index: 12;
+  z-index: var(--z-popover);
   display: grid;
   gap: var(--s-1);
   min-width: 200px;
@@ -1178,7 +1178,7 @@ textarea::placeholder {
   left: 0;
   right: 0;
   bottom: calc(100% + 8px);
-  z-index: 12;
+  z-index: var(--z-popover);
   display: grid;
   gap: var(--s-0-5);
   max-height: min(340px, 45dvh);
@@ -1396,17 +1396,17 @@ textarea::placeholder {
   .msg-act,
   .conv-act,
   .code-block .code-copy {
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
   }
   .split-btn,
   .split-add {
-    width: 38px;
-    height: 38px;
+    width: 44px;
+    height: 44px;
   }
   .cap-collapse {
-    width: 32px;
-    height: 32px;
+    width: 44px;
+    height: 44px;
   }
   .cap-resize {
     width: 18px;

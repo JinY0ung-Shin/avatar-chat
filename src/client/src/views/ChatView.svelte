@@ -1441,7 +1441,7 @@
   /* Pulse the left rail while reasoning is active so the collapsed card reads as
      "working" at a glance; the badge gains a subtle breathing accent too. */
   .thinking-card-active {
-    animation: thinking-rail 1.4s ease-in-out infinite;
+    opacity: 0.78;
   }
   @keyframes thinking-rail {
     0%,

@@ -1,3 +1,5 @@
+/* System fonts stay first in 10-base.css. This face is a glyph fallback for
+   Linux/Chromium installations that ship without a Korean UI font. */
 @import "@fontsource-variable/noto-sans-kr/index.css";
 
 /* ============================================================
@@ -99,14 +101,14 @@
 
   /* Type scale (see docs/DESIGN.md §2.4). --t-2xs is the readability floor for
      dense meta/badges; do not go below it. */
-  --t-2xs: 11px;
-  --t-xs: 12px;
-  --t-sm: 13px;
-  --t-base: 14px;
-  --t-md: 15px;
-  --t-lg: 18px;
-  --t-xl: 22px;
-  --t-2xl: 28px;
+  --t-2xs: 0.6875rem;
+  --t-xs: 0.75rem;
+  --t-sm: 0.8125rem;
+  --t-base: 0.875rem;
+  --t-md: 0.9375rem;
+  --t-lg: 1.125rem;
+  --t-xl: 1.375rem;
+  --t-2xl: 1.75rem;
 
   --transcript-max: 800px;
   --list-scroll-max: clamp(220px, 42dvh, 420px);
@@ -121,6 +123,7 @@
   --z-popover: 40;
   --z-toast: 90;
   --z-modal: 100;
+  --z-prompt: 110;
 
   /* Code-block surface — deliberately FIXED in both themes (never rides the
      neutral ramp, which would flash a bright block in dark mode). */
