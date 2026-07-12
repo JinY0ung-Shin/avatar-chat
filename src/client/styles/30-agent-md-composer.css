@@ -361,12 +361,6 @@
   animation: none;
   position: relative;
 }
-.tool-row[data-status="done"] .tool-spinner::after {
-  content: "✓";
-  color: var(--ok);
-  font-size: var(--t-xs);
-  line-height: 11px;
-}
 .tool-row[data-status="failed"] .tool-spinner::after {
   content: "✕";
   color: var(--warn);
@@ -389,12 +383,6 @@
   animation: none;
   position: relative;
 }
-.task-row[data-status="done"] .task-spinner::after {
-  content: "✓";
-  color: var(--ok);
-  font-size: var(--t-xs);
-  line-height: 11px;
-}
 .task-row[data-status="failed"] .task-spinner::after {
   content: "✕";
   color: var(--warn);
@@ -412,15 +400,32 @@
   border: none;
   animation: none;
 }
-.agent-node[data-status="done"] > .agent-head > .agent-spinner::after {
-  content: "✓";
-  color: var(--ok);
-  font-size: var(--t-xs);
-}
 .agent-node[data-status="failed"] > .agent-head > .agent-spinner::after {
   content: "✕";
   color: var(--warn);
   font-size: var(--t-2xs);
+}
+
+/* Draw completion ticks instead of relying on a font glyph. Some platform
+   fonts give U+2713 a negative left bearing; inside the 11px status slot and
+   the row's overflow clip that cuts off the short stroke, leaving only `/`.
+   This geometry stays intact across OS/font stacks. */
+.tool-row[data-status="done"] .tool-spinner,
+.task-row[data-status="done"] .task-spinner,
+.agent-node[data-status="done"] > .agent-head > .agent-spinner {
+  display: grid;
+  place-items: center;
+}
+.tool-row[data-status="done"] .tool-spinner::after,
+.task-row[data-status="done"] .task-spinner::after,
+.agent-node[data-status="done"] > .agent-head > .agent-spinner::after {
+  content: "";
+  box-sizing: border-box;
+  width: 5px;
+  height: 9px;
+  border: solid var(--ok);
+  border-width: 0 2px 2px 0;
+  transform: translateY(-1px) rotate(45deg);
 }
 
 /* ---- Permission modal (standalone, centered overlay) ----
