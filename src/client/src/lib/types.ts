@@ -73,6 +73,8 @@ export interface ChatPane {
   draft: string;
   streaming: boolean;
   liveText: string;
+  /** Images published by show_file during the currently streaming assistant turn. */
+  liveAttachments: import("../../../server/types.js").MessageAttachment[];
   /** Set when tool/agent activity interrupts the text stream; the next delta inserts a paragraph break so resumed text doesn't run onto the previous line. */
   liveTextBreakPending?: boolean;
   /** The model's reasoning (extended-thinking) text streamed this turn; shown in a collapsible "생각 과정" view until the turn finishes and the persisted `response.thinking` takes over. */

@@ -1,4 +1,6 @@
 import http from "node:http";
+import fs from "node:fs";
+import path from "node:path";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRequest, AgentResponse, AppConfig } from "../src/server/types.js";
@@ -602,7 +604,7 @@ describe("SSE event fan-out", () => {
     const owner = request.agent(app);
     const ownerId = (await signup(owner, "fanout").expect(201)).body.user.id as string;
 
-    H.impl = async (_req, _pr, config, _store, events) => {
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
       events.onSessionId?.("sess-nb");
       events.onModel?.("claude-test-model");
       events.onStatus?.("작업 중");
@@ -622,6 +624,10 @@ describe("SSE event fan-out", () => {
       events.onPlan?.({ plan: "", planning: true });
       events.onPlan?.({ plan: "THE PLAN" });
       await events.onCanvas?.({ artifactId: "c1", title: "T", content: "# hi", contentType: "markdown", awaitInput: false });
+      const generatedPath = path.join(agentRequest.cwd!, "generated.png");
+      fs.writeFileSync(generatedPath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"));
+      const shown = await events.onFile?.({ path: generatedPath, caption: "생성 결과" });
+      expect(shown?.behavior).toBe("shown");
       return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "final answer" };
     };
 
@@ -630,7 +636,7 @@ describe("SSE event fan-out", () => {
     const events = frames.map((f) => f.event);
     for (const name of [
       "open", "delta", "thinking", "thinking_reset", "status", "plugin", "tool", "tool_end",
-      "task", "task_update", "task_end", "agent", "agent_end", "blocked", "plan", "canvas", "done",
+      "task", "task_update", "task_end", "agent", "agent_end", "blocked", "plan", "canvas", "file", "done",
     ]) {
       expect(events).toContain(name);
     }
@@ -643,6 +649,8 @@ describe("SSE event fan-out", () => {
     expect(doneData.response.plan).toBe("THE PLAN");
     expect(doneData.response.thinking).toBe("final thinking"); // reset dropped the throwaway
     expect(doneData.response.text).toBe("final answer");
+    const stored = store.listMessages(ownerId, "conv-fan").find((message) => message.role === "assistant");
+    expect(stored?.attachments?.[0]).toMatchObject({ mediaType: "image/png", caption: "생성 결과" });
 
     // The non-blocking canvas was recorded to the dedicated tables.
     expect(store.getCanvasArtifact(ownerId, "c1")?.title).toBe("T");

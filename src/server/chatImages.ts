@@ -37,6 +37,32 @@ const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_CONVERSATION_DIR = /^[A-Za-z0-9_-]{1,128}$/;
 const DATA_URL = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/;
 
+function isInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+function detectImageMediaType(buffer: Buffer): ImageMediaType | null {
+  if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    return "image/png";
+  }
+  if (buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+    return "image/jpeg";
+  }
+  const header = buffer.subarray(0, 6).toString("ascii");
+  if (header === "GIF87a" || header === "GIF89a") {
+    return "image/gif";
+  }
+  if (
+    buffer.length >= 12 &&
+    buffer.subarray(0, 4).toString("ascii") === "RIFF" &&
+    buffer.subarray(8, 12).toString("ascii") === "WEBP"
+  ) {
+    return "image/webp";
+  }
+  return null;
+}
+
 function safeConversationDir(conversationId: string): string {
   if (SAFE_CONVERSATION_DIR.test(conversationId)) return conversationId;
   const hash = crypto.createHash("sha256").update(conversationId).digest("hex");
@@ -127,6 +153,102 @@ export function saveChatImages(
     images.push({ mediaType: img.mediaType, data: img.buffer.toString("base64") });
   }
   return { attachments, images };
+}
+
+export type PublishWorkspaceImageResult =
+  | { attachment: MessageAttachment }
+  | { error: "OUTSIDE_WORKSPACE" | "NOT_FOUND" | "NOT_FILE" | "EMPTY" | "TOO_LARGE" | "UNSUPPORTED" | "READ_FAILED" };
+
+/**
+ * Copy a local image from one of this run's explicit working roots into the
+ * owner-scoped conversation image store. The browser never receives the source
+ * path. MIME is detected from file bytes, not from the extension supplied by a
+ * repo or download.
+ */
+export function publishWorkspaceImage(
+  config: AppConfig,
+  conversationId: string,
+  inputPath: string,
+  allowedRoots: string[],
+  caption?: string,
+): PublishWorkspaceImageResult {
+  const roots = allowedRoots.flatMap((root) => {
+    try {
+      return [fs.realpathSync(root)];
+    } catch {
+      return [];
+    }
+  });
+  if (!roots.length) return { error: "OUTSIDE_WORKSPACE" };
+
+  const unresolved = path.isAbsolute(inputPath) ? inputPath : path.resolve(roots[0], inputPath);
+  let source: string;
+  try {
+    source = fs.realpathSync(unresolved);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { error: code === "ENOENT" ? "NOT_FOUND" : "READ_FAILED" };
+  }
+  if (!roots.some((root) => isInside(root, source))) {
+    return { error: "OUTSIDE_WORKSPACE" };
+  }
+
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(source);
+  } catch {
+    return { error: "READ_FAILED" };
+  }
+  if (!stat.isFile()) return { error: "NOT_FILE" };
+  if (stat.size === 0) return { error: "EMPTY" };
+  if (stat.size > MAX_CHAT_IMAGE_BYTES) return { error: "TOO_LARGE" };
+
+  let buffer: Buffer;
+  try {
+    buffer = fs.readFileSync(source);
+  } catch {
+    return { error: "READ_FAILED" };
+  }
+  if (buffer.length === 0) return { error: "EMPTY" };
+  if (buffer.length > MAX_CHAT_IMAGE_BYTES) return { error: "TOO_LARGE" };
+  const mediaType = detectImageMediaType(buffer);
+  if (!mediaType) return { error: "UNSUPPORTED" };
+
+  const id = crypto.randomUUID();
+  const dir = chatImagesDir(config, conversationId);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${id}.${MIME_EXT[mediaType]}`), buffer, { flag: "wx" });
+  } catch {
+    return { error: "READ_FAILED" };
+  }
+  return {
+    attachment: {
+      id,
+      kind: "image",
+      mediaType,
+      name: path.basename(source).slice(0, 200),
+      caption: caption?.trim().slice(0, 300) || undefined,
+    },
+  };
+}
+
+/** Delete selected conversation image files, ignoring already-missing entries. */
+export function deleteChatImageAttachments(
+  config: AppConfig,
+  conversationId: string,
+  attachments: MessageAttachment[] | undefined,
+): void {
+  if (!attachments?.length) return;
+  for (const attachment of attachments) {
+    const resolved = resolveStoredImage(config, conversationId, attachment.id);
+    if (!resolved) continue;
+    try {
+      fs.rmSync(resolved.path, { force: true });
+    } catch {
+      // Best effort: the entire directory is swept when the conversation is deleted.
+    }
+  }
 }
 
 /**

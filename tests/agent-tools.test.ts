@@ -110,6 +110,11 @@ import { getWorkspaceRepo } from "../src/server/repoWorkspace.js";
 import { buildCanvasTools, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES, MAX_CANVAS_CONTENT_CHARS } from "../src/server/agent/canvasTools.js";
 import type { CanvasRequest, CanvasResult } from "../src/server/agent/events.js";
 import {
+  buildFileOutputTools,
+  FILE_OUTPUT_SERVER_NAME,
+  FILE_OUTPUT_TOOL_NAMES,
+} from "../src/server/agent/fileOutputTools.js";
+import {
   buildSystemTools,
   SYSTEM_SERVER_NAME,
   SYSTEM_TOOL_NAMES,
@@ -2235,6 +2240,34 @@ describe("canvas tools (experimental, #50)", () => {
       controls: [{ type: "text", id: "note" }],
     });
     expect(res.content[0].text).toContain("dismissed");
+  });
+});
+
+describe("file output tools", () => {
+  it("exposes show_file and forwards its path + caption to the host", async () => {
+    expect(FILE_OUTPUT_SERVER_NAME).toBe("file_output");
+    expect(FILE_OUTPUT_TOOL_NAMES).toContain("mcp__file_output__show_file");
+    const showFile = vi.fn(async () => ({
+      behavior: "shown" as const,
+      attachment: { id: "img-1", kind: "image" as const, mediaType: "image/png" as const, name: "result.png" },
+    }));
+    const result = await callTool(buildFileOutputTools({ showFile }), "show_file", {
+      path: "out/result.png",
+      caption: "결과",
+    });
+    expect(result.isError).toBeFalsy();
+    expect(showFile).toHaveBeenCalledWith({ path: "out/result.png", caption: "결과" });
+    expect(result.content[0].text).toContain("img-1");
+  });
+
+  it("returns host validation failures as tool errors", async () => {
+    const result = await callTool(
+      buildFileOutputTools({ showFile: async () => ({ behavior: "error", message: "outside workspace" }) }),
+      "show_file",
+      { path: "/etc/secret.png" },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("outside workspace");
   });
 });
 

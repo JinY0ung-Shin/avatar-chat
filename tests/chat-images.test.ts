@@ -10,6 +10,8 @@ import {
   deleteConversationImages,
   chatImagesDir,
   MAX_CHAT_IMAGES_PER_MESSAGE,
+  publishWorkspaceImage,
+  deleteChatImageAttachments,
 } from "../src/server/chatImages.js";
 import { withTempDir } from "./helpers.js";
 
@@ -197,5 +199,37 @@ describe("chatImages", () => {
     expect(fs.existsSync(chatImagesDir(config(), "conv-3"))).toBe(true);
     deleteConversationImages(config(), "conv-3");
     expect(fs.existsSync(chatImagesDir(config(), "conv-3"))).toBe(false);
+  });
+
+  it("publishes a workspace PNG with byte-sniffed metadata and removes it individually", () => {
+    const workspace = path.join(dir(), "workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.writeFileSync(path.join(workspace, "result.bin"), Buffer.from(PNG_B64, "base64"));
+
+    const result = publishWorkspaceImage(config(), "conv-output", "result.bin", [workspace], "결과 이미지");
+    expect("attachment" in result).toBe(true);
+    if (!("attachment" in result)) return;
+    expect(result.attachment).toMatchObject({
+      kind: "image",
+      mediaType: "image/png",
+      name: "result.bin",
+      caption: "결과 이미지",
+    });
+    expect(resolveStoredImage(config(), "conv-output", result.attachment.id)).toBeTruthy();
+
+    deleteChatImageAttachments(config(), "conv-output", [result.attachment]);
+    expect(resolveStoredImage(config(), "conv-output", result.attachment.id)).toBeNull();
+  });
+
+  it("rejects workspace escapes, unsupported bytes, and oversized files", () => {
+    const workspace = path.join(dir(), "safe-workspace");
+    fs.mkdirSync(workspace, { recursive: true });
+    fs.writeFileSync(path.join(dir(), "outside.png"), Buffer.from(PNG_B64, "base64"));
+    fs.writeFileSync(path.join(workspace, "text.png"), "not an image");
+    fs.writeFileSync(path.join(workspace, "huge.png"), Buffer.alloc(5 * 1024 * 1024 + 1));
+
+    expect(publishWorkspaceImage(config(), "conv-safe", "../outside.png", [workspace])).toEqual({ error: "OUTSIDE_WORKSPACE" });
+    expect(publishWorkspaceImage(config(), "conv-safe", "text.png", [workspace])).toEqual({ error: "UNSUPPORTED" });
+    expect(publishWorkspaceImage(config(), "conv-safe", "huge.png", [workspace])).toEqual({ error: "TOO_LARGE" });
   });
 });

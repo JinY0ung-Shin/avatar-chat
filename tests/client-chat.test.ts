@@ -293,6 +293,34 @@ describe("sendMessage streaming pipeline", () => {
     });
   });
 
+  it("keeps a live show_file image on a fallback assistant message", async () => {
+    const id = seedPane();
+    const attachment = {
+      id: "generated-1",
+      kind: "image",
+      mediaType: "image/png",
+      name: "result.png",
+      caption: "생성 결과",
+    };
+    useFetch((url) => {
+      if (url === "/api/chat/stream") {
+        return sseRes([
+          ["open", { conversationId: "conv1", runId: "run-file" }],
+          ["file", { attachment }],
+          ["done", { response: { kind: "text", runtime: "claude", summary: "완료", text: "완료" } }],
+        ]);
+      }
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+
+    await sendMessage(id, "이미지 만들어줘");
+
+    const last = pane(id).messages.at(-1);
+    expect(last).toMatchObject({ role: "assistant", attachments: [attachment] });
+    expect(pane(id).liveAttachments).toEqual([]);
+  });
+
   it("no-ops on an empty text-only send and on the /new slash action", async () => {
     const id = seedPane();
     const fetchFn = noFetch();

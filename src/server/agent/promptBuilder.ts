@@ -373,6 +373,16 @@ function canvasSection(request: AgentRequest): string | null {
   );
 }
 
+/** Standing guidance for publishing local raster output into the chat. */
+function fileOutputSection(request: AgentRequest): string | null {
+  if (!request.fileOutputEnabled) return null;
+  return (
+    "**Local image output**: when you generate or download a PNG, JPEG, WebP, or GIF that the user should see, call `mcp__file_output__show_file` with its local path. " +
+    "Use the optional `caption` for a short user-facing description. Local filesystem paths and `file://` URLs in Markdown are not visible to the browser, so never use those as a substitute. " +
+    "Only files inside your current working directory or conversation scratch workspace can be shown; the file must be at most 5 MB, and one turn can show at most 6 images."
+  );
+}
+
 /**
  * Working-repository guidance. When the cwd is a registered repo's clone (the
  * avatar opened it with `open_repo`), the avatar may edit/test locally with
@@ -476,6 +486,10 @@ export function buildSystemPromptAppend(
   const canvasBlock = canvasSection(request);
   if (canvasBlock) {
     lines.push(canvasBlock);
+  }
+  const fileOutputBlock = fileOutputSection(request);
+  if (fileOutputBlock) {
+    lines.push(fileOutputBlock);
   }
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.

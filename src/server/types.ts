@@ -354,7 +354,7 @@ export type ImageMediaType =
   | "image/gif";
 
 /**
- * An image a user attached to a chat message. The bytes live on disk under
+ * An image attached to a user or assistant chat message. The bytes live on disk under
  * `dataDir/chat-images/<conversationId>/<id>.<ext>` (see `chatImages.ts`); this
  * is the metadata persisted on the message so the bubble can render the image
  * (`GET /api/conversations/:id/images/:imageId`) after reload. The model is fed
@@ -367,6 +367,8 @@ export interface MessageAttachment {
   mediaType: ImageMediaType;
   /** Original filename, for the alt text / download name (optional). */
   name?: string;
+  /** Optional agent-provided description shown below the image. */
+  caption?: string;
 }
 
 export interface StoredMessage {
@@ -374,7 +376,7 @@ export interface StoredMessage {
   conversationId: string;
   role: "user" | "assistant" | "system";
   content: string;
-  /** Images the user attached to this (user) message; absent/[] when none. */
+  /** Images attached to this message; absent/[] when none. */
   attachments?: MessageAttachment[];
   response: AgentResponse | null;
   createdAt: string;
@@ -820,6 +822,11 @@ export interface AgentRequest {
    * turn — colleagues see canvases too; it grants no elevation.
    */
   canvasEnabled?: boolean;
+  /**
+   * This interactive turn can publish PNG/JPEG/WebP/GIF files from its allowed
+   * working directories into the assistant bubble with `show_file`.
+   */
+  fileOutputEnabled?: boolean;
   /**
    * Experimental (beta) feature keys enabled for the avatar owner. Surfaced in
    * the owner/routine self-state (META-COGNITION) so the avatar knows which beta

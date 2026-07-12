@@ -75,6 +75,18 @@ export type CanvasResult =
   | { behavior: "cancelled" }
   | { behavior: "shown" };
 
+/** A local image the avatar wants to publish into the current assistant turn. */
+export interface FileOutputRequest {
+  /** Relative to the run cwd, or an absolute path inside one of the allowed roots. */
+  path: string;
+  /** Optional user-facing description displayed below the image. */
+  caption?: string;
+}
+
+export type FileOutputResult =
+  | { behavior: "shown"; attachment: import("../types.js").MessageAttachment }
+  | { behavior: "error"; message: string };
+
 /** A concrete tool call (NOT a subagent spawn — those use AgentSpawnEvent). */
 export interface ToolEvent {
   toolUseId: string;
@@ -235,4 +247,9 @@ export interface AgentEvents {
    * immediately for display-only. If omitted, the canvas tool is not registered.
    */
   onCanvas?: (request: CanvasRequest) => Promise<CanvasResult>;
+  /**
+   * Publish a local raster image into the live assistant bubble. If omitted,
+   * the file-output tool is not registered (headless runs have no viewer).
+   */
+  onFile?: (request: FileOutputRequest) => Promise<FileOutputResult>;
 }

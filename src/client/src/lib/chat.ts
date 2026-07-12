@@ -45,6 +45,7 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__confluence__get_page: "Confluence 페이지 조회",
   mcp__confluence__list_attachments: "Confluence 첨부 조회",
   mcp__confluence__get_attachment: "Confluence 첨부 가져오기",
+  mcp__file_output__show_file: "이미지 표시",
   mcp__confluence__extract_page_assets: "Confluence 자산 추출",
   mcp__confluence__create_page: "Confluence 페이지 생성",
   mcp__confluence__update_page: "Confluence 페이지 수정",
@@ -114,6 +115,7 @@ function makePane(
     draft: "",
     streaming: false,
     liveText: "",
+    liveAttachments: [],
     liveTextBreakPending: false,
     liveThinking: "",
     thinkingActive: false,
@@ -824,6 +826,17 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "canvas":
       if (data?.artifactId) handleCanvas(paneId, data);
       return;
+    case "file":
+      if (data?.attachment?.id) {
+        markTextBreak(paneId);
+        updatePane(paneId, (pane) => {
+          if (!pane.liveAttachments.some((item) => item.id === data.attachment.id)) {
+            pane.liveAttachments.push(data.attachment);
+          }
+        });
+        setStatus(paneId, "이미지를 표시했습니다.", true);
+      }
+      return;
     case "plan":
       // Plan mode. EnterPlanMode emits a `planning` signal with no plan yet — show a
       // "writing plan…" placeholder so the (tool-row-suppressed) planning phase isn't
@@ -1042,6 +1055,7 @@ function setStatus(paneId: string, label: string, sticky: boolean): void {
 
 function resetLive(pane: ChatPane): void {
   pane.liveText = "";
+  pane.liveAttachments = [];
   pane.liveTextBreakPending = false;
   pane.liveThinking = "";
   pane.thinkingActive = false;
@@ -1136,6 +1150,7 @@ function finalizeDone(paneId: string, data: any): void {
         conversationId: pane.conversationId,
         role: "assistant",
         content: response?.text || response?.summary || pane.liveText,
+        attachments: pane.liveAttachments.length ? [...pane.liveAttachments] : undefined,
         response: response || null,
         createdAt: new Date().toISOString(),
       });
@@ -1195,6 +1210,7 @@ function pushTerminalMessage(
     conversationId: pane.conversationId,
     role: "assistant",
     content,
+    attachments: pane.liveAttachments.length ? [...pane.liveAttachments] : undefined,
     response,
     createdAt: new Date().toISOString(),
   });

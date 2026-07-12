@@ -2864,6 +2864,14 @@ describe("buildPrompt", () => {
     expect(p).toContain("Visual canvas");
   });
 
+  it("injects local image-output guidance only when show_file is available", () => {
+    expect(buildPrompt(req({ viewerIsOwner: true }), 0)).not.toContain("mcp__file_output__show_file");
+    const prompt = buildPrompt(req({ viewerIsOwner: true, fileOutputEnabled: true }), 0);
+    expect(prompt).toContain("mcp__file_output__show_file");
+    expect(prompt).toContain("Local image output");
+    expect(prompt).toContain("file://");
+  });
+
   it("lists enabled experimental features only for owner-driven turns", () => {
     const owner = buildPrompt(
       req({ viewerIsOwner: true, experimentalFeatures: ["canvas"] }),

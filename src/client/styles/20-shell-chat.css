@@ -1442,7 +1442,7 @@ body.col-resizing {
   max-width: min(560px, 88%);
 }
 
-/* Attached images inside a user bubble. `white-space: pre-wrap` on the bubble
+/* Attached images inside a chat bubble. `white-space: pre-wrap` on the bubble
    would otherwise add stray whitespace around the block, so the strip is a flex
    row; a margin separates it from any caption text below. */
 .msg-images {
@@ -1457,6 +1457,18 @@ body.col-resizing {
 .msg-image-link {
   display: block;
   line-height: 0;
+}
+.msg-image-item {
+  margin: 0;
+  min-width: 0;
+}
+.msg-image-caption {
+  max-width: 240px;
+  margin-top: var(--s-1);
+  color: var(--text-soft);
+  font-size: var(--t-xs);
+  line-height: 1.35;
+  white-space: normal;
 }
 .msg-image {
   max-width: 240px;

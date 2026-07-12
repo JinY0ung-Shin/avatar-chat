@@ -318,6 +318,22 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(serverNames).toContain("repo");
   });
 
+  it("registers file_output only when an interactive file sink is present", async () => {
+    const { config, store, baseRequest } = setup();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+    const onFile = vi.fn(async () => ({
+      behavior: "shown" as const,
+      attachment: { id: "out-1", kind: "image" as const, mediaType: "image/png" as const },
+    }));
+
+    await runAgentStream(baseRequest, [], config, store, makeEvents({ onFile }));
+
+    const options = sdkMock.calls[0].options;
+    expect(Object.keys(options.mcpServers as Record<string, unknown>)).toContain("file_output");
+    expect(options.allowedTools as string[]).toContain("mcp__file_output__show_file");
+    expect(JSON.stringify(options.systemPrompt)).toContain("mcp__file_output__show_file");
+  });
+
   it("registers the group repo + group brain servers when the owner belongs to a group with a shared repo", async () => {
     const { config, store, baseRequest, owner } = setup();
     const group = store.createGroup({ name: "팀" });

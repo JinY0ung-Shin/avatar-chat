@@ -14,6 +14,7 @@ import type {
   AgentConversationMessage,
   AgentImageInput,
   AgentResponse,
+  MessageAttachment,
   StoredMessage,
 } from "../types.js";
 import {
@@ -27,7 +28,9 @@ import {
 } from "../../shared/mcpToolGroups.js";
 import {
   decodeChatImages,
+  deleteChatImageAttachments,
   deleteConversationImages,
+  publishWorkspaceImage,
   readChatImages,
   resolveStoredImage,
   saveChatImages,
@@ -580,6 +583,7 @@ export function createChatRouter({
         return;
       }
       res.type(resolved.mediaType);
+      res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
       res.sendFile(resolved.path);
     },
@@ -837,7 +841,11 @@ export function createChatRouter({
         const regenerate = req.body?.regenerate === true;
         const chatStart = Date.now();
         if (regenerate) {
+          const last = [...store.listMessages(req.user!.id, conversationId)].pop();
           store.dropLastAssistant(req.user!.id, conversationId);
+          if (last?.role === "assistant") {
+            deleteChatImageAttachments(config, conversationId, last.attachments);
+          }
         }
         const imageTurn = !regenerate && decodedImages.length > 0;
         // Resume the conversation's prior SDK session so the model keeps its context
@@ -940,6 +948,10 @@ export function createChatRouter({
         // Accumulate the main-agent reasoning (extended-thinking) text as it streams,
         // so it can be persisted on the response (success) and the cancel/error paths.
         let streamedThinking = "";
+        // Images published by `show_file` during this run. They render live over
+        // SSE and are attached to the terminal assistant message on every exit
+        // path so a reload matches what the user already saw.
+        const shownAttachments: MessageAttachment[] = [];
         // Visual-canvas artifacts (#50) now persist to the dedicated canvas tables as
         // they are shown (see the onCanvas handler), with version history — they no
         // longer ride the assistant message's response JSON.
@@ -1266,6 +1278,45 @@ export function createChatRouter({
                 record(reply?.values ?? {});
                 return { behavior: "submitted", values: reply?.values ?? {} };
               },
+              onFile: async (requestData) => {
+                if (shownAttachments.length >= MAX_CHAT_IMAGES_PER_MESSAGE) {
+                  return {
+                    behavior: "error",
+                    message: `This turn already showed ${MAX_CHAT_IMAGES_PER_MESSAGE} images. Do not show more in the same response.`,
+                  };
+                }
+                if (store.conversationOwner(conversationId) !== req.user!.id) {
+                  return {
+                    behavior: "error",
+                    message: "The conversation no longer exists, so the image cannot be shown.",
+                  };
+                }
+                const result = publishWorkspaceImage(
+                  config,
+                  conversationId,
+                  requestData.path,
+                  [activeRepoCwd ?? workspaceDir, ...(activeRepoCwd ? [workspaceDir] : [])],
+                  requestData.caption,
+                );
+                if ("error" in result) {
+                  const messages = {
+                    OUTSIDE_WORKSPACE: "The image path must stay inside the current working directory or conversation scratch workspace.",
+                    NOT_FOUND: "The image file does not exist.",
+                    NOT_FILE: "The supplied path is not a regular file.",
+                    EMPTY: "The image file is empty.",
+                    TOO_LARGE: "The image is larger than the 5 MB limit.",
+                    UNSUPPORTED: "Unsupported image format. show_file accepts PNG, JPEG, WebP, or GIF files whose bytes match the format.",
+                    READ_FAILED: "The image file could not be read.",
+                  } as const;
+                  return { behavior: "error", message: messages[result.error] };
+                }
+                shownAttachments.push(result.attachment);
+                emitRunEvent(runId, "file", {
+                  runId,
+                  attachment: result.attachment,
+                });
+                return { behavior: "shown", attachment: result.attachment };
+              },
             },
             abortController,
           );
@@ -1296,6 +1347,7 @@ export function createChatRouter({
                   role: "assistant",
                   content: response.text || response.summary,
                   response,
+                  attachments: shownAttachments,
                 })
               : null;
           auditAs(
@@ -1340,6 +1392,7 @@ export function createChatRouter({
                     role: "assistant",
                     content: streamedText || "(중지됨)",
                     response,
+                    attachments: shownAttachments,
                   })
                 : null;
             emitRunEvent(runId, "cancelled", { message: stopped, response });
@@ -1391,6 +1444,7 @@ export function createChatRouter({
             store.addMessage(conversationId, {
               role: "assistant",
               content,
+              attachments: shownAttachments,
               response:
                 latestPlan || streamedThinking
                   ? {

@@ -60,6 +60,11 @@ import {
 } from "./sdkMessageHandlers.js";
 import { effectiveMcpToolGroups } from "../../shared/mcpToolGroups.js";
 import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
+import {
+  buildFileOutputServer,
+  FILE_OUTPUT_SERVER_NAME,
+  FILE_OUTPUT_TOOL_NAMES,
+} from "./fileOutputTools.js";
 
 // Re-export the symbols moved into sibling modules so existing import paths
 // (app.ts, index.ts, tests/units.test.ts, infra/agent-core/… tests) keep
@@ -561,6 +566,7 @@ export async function runClaudeAgent(
     elevated: elevatedToolAccess,
     config,
   });
+  const fileOutputActive = Boolean(request.cwd && events?.onFile);
   const systemServer = buildSystemServer(store, {
     avatarUserId: request.avatar.id,
     owner,
@@ -572,6 +578,7 @@ export async function runClaudeAgent(
     // The working repo opened for this conversation (NAME only — the clone path is
     // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
     activeRepoName: request.activeRepoName,
+    fileOutputEnabled: fileOutputActive,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
   // avatars by capability so it can point the user at a teammate avatar for
@@ -634,6 +641,12 @@ export async function runClaudeAgent(
     ownerState.experimentalFeatures.includes("canvas");
   const canvasServer = canvasActive
     ? buildCanvasServer({ emitCanvas: events!.onCanvas! })
+    : null;
+  // Local image output is available only for an interactive run with an
+  // explicit working directory and a host sink that validates + persists the
+  // file. Headless runs have nobody to show a bubble to, so the tool stays out.
+  const fileOutputServer = fileOutputActive
+    ? buildFileOutputServer({ showFile: events!.onFile! })
     : null;
 
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
@@ -811,6 +824,7 @@ export async function runClaudeAgent(
       ...(brainActive ? BRAIN_TOOL_NAMES : []),
       ...(groupBrainActive ? GROUP_BRAIN_TOOL_NAMES : []),
       ...(canvasActive ? CANVAS_TOOL_NAMES : []),
+      ...(fileOutputActive ? FILE_OUTPUT_TOOL_NAMES : []),
       ...(sshActive ? SSH_TRUST_TOOL_NAMES : []),
       "Skill",
       "TodoWrite",
@@ -859,6 +873,9 @@ export async function runClaudeAgent(
         ? { [GROUP_BRAIN_SERVER_NAME]: groupBrainServer }
         : {}),
       ...(canvasServer ? { [CANVAS_SERVER_NAME]: canvasServer } : {}),
+      ...(fileOutputServer
+        ? { [FILE_OUTPUT_SERVER_NAME]: fileOutputServer }
+        : {}),
       ...sshServers,
       ...(sshActive ? { [SSH_TRUST_SERVER_NAME]: sshTrustServer } : {}),
     },
@@ -1031,6 +1048,7 @@ export async function runClaudeAgent(
     // turn (colleagues see canvases too). Experimental-feature self-state is
     // owner-driven only (META-COGNITION), matching describe_system's gating.
     canvasEnabled: canvasActive,
+    fileOutputEnabled: fileOutputActive,
     experimentalFeatures: ownerToolAccess
       ? ownerState.experimentalFeatures
       : [],

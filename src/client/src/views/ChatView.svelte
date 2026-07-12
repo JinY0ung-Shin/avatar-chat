@@ -788,13 +788,28 @@
                   </details>
                 {/if}
                 <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
+                {#if message.attachments?.length}
+                  <div class="msg-images">
+                    {#each message.attachments as att (att.id)}
+                      <figure class="msg-image-item">
+                        <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
+                          <img class="msg-image" src={imageSrc(message, att, item)} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
+                        </a>
+                        {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
+                      </figure>
+                    {/each}
+                  </div>
+                {/if}
               {:else}
                 {#if message.attachments?.length}
                   <div class="msg-images">
                     {#each message.attachments as att (att.id)}
-                      <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
-                        <img class="msg-image" src={imageSrc(message, att, item)} alt={att.name || "첨부 이미지"} loading="lazy" />
-                      </a>
+                      <figure class="msg-image-item">
+                        <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
+                          <img class="msg-image" src={imageSrc(message, att, item)} alt={att.caption || att.name || "첨부 이미지"} loading="lazy" />
+                        </a>
+                        {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
+                      </figure>
                     {/each}
                   </div>
                 {/if}
@@ -880,6 +895,18 @@
               {/if}
               {#if item.liveText}
                 <div class="md" use:enhanceMarkdown={item.liveText}>{@html renderMarkdown(item.liveText)}<span class="stream-caret" aria-hidden="true"></span></div>
+              {/if}
+              {#if item.liveAttachments.length}
+                <div class="msg-images">
+                  {#each item.liveAttachments as att (att.id)}
+                    <figure class="msg-image-item">
+                      <a class="msg-image-link" href={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} target="_blank" rel="noopener noreferrer">
+                        <img class="msg-image" src={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
+                      </a>
+                      {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
+                    </figure>
+                  {/each}
+                </div>
               {/if}
               <div class="stream-status">
                 <span class="spinner"></span>

@@ -53,6 +53,8 @@ export interface SystemToolsContext {
    * claudeAgent request.activeRepoName.
    */
   activeRepoName?: string;
+  /** Whether this interactive run can publish local raster images to the chat. */
+  fileOutputEnabled?: boolean;
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -245,6 +247,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Team second brain: ${groups.filter((g) => g.knowledgeRepoConfigured).length > 0 ? `${groups.filter((g) => g.knowledgeRepoConfigured).length} group(s) expose \`mcp__group_brain__search\` (members search; admins consolidate)` : "none (no group has a connected shared repository)"}`,
           `- General git repos: ${state.gitRepoCount}`,
           `- Working repository: ${ctx.activeRepoName ? `${ctx.activeRepoName} (opened via open_repo; local edits/commit native, push via mcp__git_repo__push)` : "(none open)"}`,
+          `- Local image output: ${ctx.fileOutputEnabled ? "enabled — use `mcp__file_output__show_file` for PNG/JPEG/WebP/GIF files in the working directories" : "unavailable in this run"}`,
           `- Internal Git token (GIT_TOKEN): ${state.gitTokenSet ? "set" : "not set"}`,
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") + " (custom secrets are injected as env into MCP servers from your own plugins/knowledge repo; git/SSH credentials go only to their dedicated tools)" : "(none)"}`,
           `- Shell-exposed secrets: ${state.shellExposedSecretNames.length ? state.shellExposedSecretNames.map((name) => `\`${name}\``).join(", ") + " — usable as `$NAME` in Bash on elevated runs; values are redacted from tool outputs (per-secret 셸 노출 toggle in Settings)" : "(none — every secret stays out of the agent shell; enable per-secret with the 셸 노출 toggle in Settings)"}`,
