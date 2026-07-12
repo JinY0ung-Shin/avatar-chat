@@ -77,24 +77,34 @@
       lastTime = move.timeStamp;
       setSheetY(position);
     };
-    const onUp = () => {
+    const cleanup = () => {
       dragging = false;
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
+      handle.removeEventListener("pointercancel", onCancel);
+    };
+    const onUp = () => {
+      cleanup();
       const shouldClose = project(position, velocity) > height * 0.45 || velocity > 620;
       if (shouldClose) {
-        close();
-        // If a parent vetoes the request (for example, an unsaved-form guard),
-        // the still-mounted sheet returns to its current snap point.
-        settleSheet(position, 0, velocity);
+        settleSheet(position, height, velocity, () => {
+          close();
+          // If a parent vetoes close, bring the still-mounted sheet back.
+          queueMicrotask(() => {
+            if (cardEl?.isConnected) settleSheet(height, 0);
+          });
+        });
       } else {
         settleSheet(position, 0, velocity);
       }
     };
+    const onCancel = () => {
+      cleanup();
+      settleSheet(position, 0);
+    };
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    handle.addEventListener("pointercancel", onCancel);
   }
 
   function focusables(): HTMLElement[] {
@@ -102,7 +112,11 @@
       ...cardEl.querySelectorAll<HTMLElement>(
         "button:not(:disabled), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
       ),
-    ].filter((el) => el.getAttribute("aria-hidden") !== "true");
+    ].filter((el) => {
+      if (el.getAttribute("aria-hidden") === "true" || el.hidden) return false;
+      const style = getComputedStyle(el);
+      return style.display !== "none" && style.visibility !== "hidden";
+    });
   }
 
   function onKeydown(event: KeyboardEvent) {
@@ -145,7 +159,8 @@
   onMount(() => {
     const previous = document.activeElement as HTMLElement | null;
     const restoreOutside = inertOutside(overlayEl);
-    (cardEl.querySelector<HTMLElement>("input, select, textarea, button:not(:disabled)") || cardEl)?.focus?.();
+    const preferred = cardEl.querySelector<HTMLElement>("[data-modal-autofocus]");
+    (preferred && focusables().includes(preferred) ? preferred : focusables()[0] || cardEl).focus();
     return () => {
       cancelSheetSpring();
       restoreOutside();
@@ -193,6 +208,7 @@
         type="button"
         aria-label="아래로 쓸어 창 닫기"
         disabled={closeDisabled}
+        tabindex="-1"
         on:pointerdown={startSheetDrag}
       ><span></span></button>
       <slot />

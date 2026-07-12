@@ -370,10 +370,13 @@
       lastTime = move.timeStamp;
       setRailVisual(position);
     };
-    const onUp = () => {
+    const cleanup = () => {
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
+      handle.removeEventListener("pointercancel", onCancel);
+    };
+    const onUp = () => {
+      cleanup();
       const projectedPosition = project(position, velocity);
       const shouldClose = projectedPosition < -width * 0.5 || velocity < -520;
       const target = shouldClose ? -width : 0;
@@ -382,9 +385,13 @@
         else clearRailVisual();
       });
     };
+    const onCancel = () => {
+      cleanup();
+      springRail(position, 0, 0, clearRailVisual);
+    };
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    handle.addEventListener("pointercancel", onCancel);
   }
 
   function startRailEdgeDrag(event: PointerEvent): void {
@@ -410,10 +417,13 @@
       lastTime = move.timeStamp;
       setRailVisual(position);
     };
-    const onUp = () => {
+    const cleanup = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
-      window.removeEventListener("pointercancel", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+    };
+    const onUp = () => {
+      cleanup();
       const shouldOpen = project(position, velocity) > -width * 0.5 || velocity > 520;
       springRail(position, shouldOpen ? 0 : -width, velocity, () => {
         if (shouldOpen) {
@@ -424,9 +434,13 @@
         }
       });
     };
+    const onCancel = () => {
+      cleanup();
+      springRail(position, -width, 0, () => finishRailClose(false));
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
-    window.addEventListener("pointercancel", onUp);
+    window.addEventListener("pointercancel", onCancel);
   }
 
   function dismissRail() {

@@ -2,9 +2,9 @@ import { defineConfig, devices } from "@playwright/test";
 
 export default defineConfig({
   testDir: "tests/visual",
-  fullyParallel: true,
+  fullyParallel: false,
   timeout: 30_000,
-  expect: { toHaveScreenshot: { animations: "disabled", maxDiffPixelRatio: 0.01 } },
+  expect: { toHaveScreenshot: { animations: "disabled", maxDiffPixelRatio: 0.001 } },
   use: {
     baseURL: "http://localhost:5173",
     locale: "ko-KR",

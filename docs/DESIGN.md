@@ -42,9 +42,12 @@ macOS 화면을 복제하지 않는다. 콘텐츠(대화·지식·작업)가 주
 - **시맨틱 별칭** `--bg / --panel / --text / --text-soft / --muted / --line / --line-soft`:
   컴포넌트는 `--n-*` 원시값이 아니라 **시맨틱 별칭**을 쓴다(다크모드가 별칭만 스왑하면 되도록).
 - **액센트** `--accent / --accent-strong / --accent-soft / --accent-ring`은 system blue 계열이다.
-  액센트 면 위 텍스트/아이콘은 **반드시 `--on-accent`** (다크모드에서 accent가 밝은 민트로
-  바뀌므로 `#fff` 직접 사용 금지).
+  액센트 면 위 텍스트/아이콘은 **반드시 `--on-accent`**를 사용한다. 색상 모드별 대비를
+  확보하기 위해 light는 흰색, 밝은 accent를 쓰는 dark는 검은색으로 전환되므로 `#fff` 직접 사용 금지.
+- **포커스 표시**는 반투명 glow인 `--accent-ring`과 구분해, 인접 표면 대비 3:1 이상인
+  불투명 `--focus-ring`을 사용한다.
 - **상태색** `--warn / --danger / --ok / --info` (+ `-soft` / `-line` / `--on-danger`).
+- **활성 컨트롤** `--control-on`: 토글처럼 성공 상태가 아니라 켜짐 상태를 나타내는 플랫폼 green.
 - **재질** `--material-thin / --material-regular / --material-thick`: 크롬의 깊이에 맞춰 사용한다.
 - **레일(rail)** 전용 `--rail*`: 좌측 네비게이션의 반투명 표면. 다른 곳에 쓰지 않는다.
 

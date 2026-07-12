@@ -24,7 +24,7 @@
       </div>
     </div>
     <div class="confirm-actions">
-      <button class="ghost-sm" type="button" on:click={() => resolveConfirmation(false)}>
+      <button class="ghost-sm" type="button" data-modal-autofocus on:click={() => resolveConfirmation(false)}>
         {$confirmation.cancelLabel}
       </button>
       <button

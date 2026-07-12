@@ -8,12 +8,15 @@
    ============================================================ */
 
 :root {
-  --accent: #007aff;
+  --accent: #006edc;
   --accent-strong: #0062cc;
   --accent-soft: #eaf3ff;
   --accent-soft-strong: #cfe3ff;
   --accent-ring: rgba(0, 122, 255, 0.3);
+  --focus-ring: #006edc;
   --on-accent: #fff;
+  --on-accent-selection: #fff;
+  --accent-selection: rgba(0, 0, 0, 0.38);
 
   --bg: #f2f2f7;
   --bg-elevated: rgba(255, 255, 255, 0.92);
@@ -42,6 +45,7 @@
   --danger-soft: #fff0f1;
   --danger-line: rgba(215, 0, 21, 0.24);
   --ok: #248a3d;
+  --control-on: #34c759;
   --info: #0066cc;
   --info-soft: #eef6ff;
   --info-line: rgba(0, 102, 204, 0.24);
@@ -77,7 +81,10 @@
   --accent-soft: rgba(10, 132, 255, 0.16);
   --accent-soft-strong: rgba(10, 132, 255, 0.28);
   --accent-ring: rgba(10, 132, 255, 0.42);
-  --on-accent: #fff;
+  --focus-ring: #66b2ff;
+  --on-accent: #000;
+  --on-accent-selection: #000;
+  --accent-selection: rgba(255, 255, 255, 0.42);
 
   --bg: #000;
   --bg-elevated: rgba(36, 36, 38, 0.92);
@@ -106,6 +113,7 @@
   --danger-soft: rgba(255, 69, 58, 0.12);
   --danger-line: rgba(255, 69, 58, 0.28);
   --ok: #30d158;
+  --control-on: #30d158;
   --info: #64d2ff;
   --info-soft: rgba(100, 210, 255, 0.12);
   --info-line: rgba(100, 210, 255, 0.26);
@@ -128,7 +136,7 @@ html {
 
 body {
   line-height: 1.5;
-  letter-spacing: -0.006em;
+  letter-spacing: 0;
   background:
     radial-gradient(circle at 78% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 42%),
     var(--bg);
@@ -162,8 +170,8 @@ small,
    while preserving the bubble's white foreground in both color schemes. */
 .message.user .bubble::selection,
 .message.user .bubble *::selection {
-  color: var(--on-accent);
-  background: color-mix(in srgb, #000 38%, transparent);
+  color: var(--on-accent-selection);
+  background: var(--accent-selection);
 }
 
 /* Controls respond on press and retain a stable, platform-like hit surface. */
@@ -201,7 +209,7 @@ button:disabled {
 }
 
 :focus-visible {
-  outline: 3px solid var(--accent-ring);
+  outline: 3px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -210,7 +218,7 @@ button:disabled {
 .new-chat {
   border-color: color-mix(in srgb, var(--accent) 84%, #000);
   border-radius: var(--r-md);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent));
+  background: var(--accent);
   color: var(--on-accent);
   box-shadow: 0 1px 1px rgba(255, 255, 255, 0.3) inset, 0 4px 14px color-mix(in srgb, var(--accent) 22%, transparent);
 }
@@ -219,7 +227,7 @@ button:disabled {
 .btn-primary:hover:not(:disabled),
 .new-chat:hover:not(:disabled) {
   border-color: var(--accent-strong);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--accent-strong) 84%, #fff), var(--accent-strong));
+  background: var(--accent-strong);
   box-shadow: 0 1px 1px rgba(255, 255, 255, 0.24) inset, 0 7px 20px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
@@ -514,15 +522,31 @@ button:disabled {
 }
 
 .toggle {
+  position: relative;
   width: 48px;
-  height: 28px;
+  height: 44px;
+  min-height: 44px;
+  padding: 0;
   border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.toggle::before {
+  content: "";
+  position: absolute;
+  inset: 8px 0;
+  border-radius: var(--r-pill);
   background: rgba(120, 120, 128, 0.28);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.06) inset;
   transition: background-color 180ms var(--ease-out), box-shadow 180ms var(--ease-out);
 }
 
 .toggle .knob {
+  position: absolute;
+  top: 10px;
+  left: 2px;
+  z-index: 1;
   width: 24px;
   height: 24px;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.26), 0 1px 1px rgba(0, 0, 0, 0.12);
@@ -530,7 +554,12 @@ button:disabled {
 }
 
 .toggle.on {
-  background: #34c759;
+  background: transparent;
+  box-shadow: none;
+}
+
+.toggle.on::before {
+  background: var(--control-on);
   box-shadow: none;
 }
 
@@ -730,8 +759,8 @@ button:disabled {
 
 .confirm-danger {
   border-color: var(--danger);
-  background: linear-gradient(180deg, color-mix(in srgb, var(--danger) 88%, #fff), var(--danger));
-  color: #fff;
+  background: var(--danger);
+  color: var(--on-danger);
   box-shadow: 0 4px 14px color-mix(in srgb, var(--danger) 22%, transparent);
 }
 
@@ -870,6 +899,10 @@ button:disabled {
     border-radius: 24px 24px 18px 18px;
     padding-bottom: calc(var(--s-5) + env(safe-area-inset-bottom, 0px));
     transform-origin: center bottom;
+  }
+
+  .modal-overlay.sheet-dragging .modal-card:not(.graph-modal-card) {
+    will-change: transform;
   }
 
   .modal-sheet-grabber {

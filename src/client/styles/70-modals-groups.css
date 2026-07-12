@@ -23,7 +23,6 @@
   flex-direction: column;
   gap: var(--s-3);
   transform: translate3d(0, var(--sheet-translate-y, 0px), 0);
-  will-change: transform;
 }
 .modal-card h2 {
   margin: 0;
