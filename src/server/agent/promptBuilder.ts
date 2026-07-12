@@ -379,6 +379,7 @@ function fileOutputSection(request: AgentRequest): string | null {
   return (
     "**Local image output**: when you generate or download a PNG, JPEG, WebP, or GIF that the user should see, call `mcp__file_output__show_file` with its local path. " +
     "Use the optional `caption` for a short user-facing description. Local filesystem paths and `file://` URLs in Markdown are not visible to the browser, so never use those as a substitute. " +
+    "Do NOT call Read to inspect or verify an image before showing it: `show_file` validates the bytes itself, while Read may fail when the active model cannot accept image input. If an image is outside the allowed roots (such as `/tmp`), copy it into the current directory with Bash (`cp /tmp/image.png \"$PWD/image.png\"`) and retry `show_file` with `./image.png`. " +
     "Only files inside your current working directory or conversation scratch workspace can be shown; the file must be at most 5 MB, and one turn can show at most 6 images."
   );
 }

@@ -2870,6 +2870,8 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("mcp__file_output__show_file");
     expect(prompt).toContain("Local image output");
     expect(prompt).toContain("file://");
+    expect(prompt).toContain("Do NOT call Read");
+    expect(prompt).toContain('cp /tmp/image.png "$PWD/image.png"');
   });
 
   it("lists enabled experimental features only for owner-driven turns", () => {

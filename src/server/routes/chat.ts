@@ -1300,7 +1300,7 @@ export function createChatRouter({
                 );
                 if ("error" in result) {
                   const messages = {
-                    OUTSIDE_WORKSPACE: "The image path must stay inside the current working directory or conversation scratch workspace.",
+                    OUTSIDE_WORKSPACE: "The image path must stay inside the current working directory or conversation scratch workspace. Do not use Read on the image. Copy it into the current directory with Bash (for example: cp /tmp/image.png \"$PWD/image.png\"), then retry show_file with ./image.png.",
                     NOT_FOUND: "The image file does not exist.",
                     NOT_FILE: "The supplied path is not a regular file.",
                     EMPTY: "The image file is empty.",

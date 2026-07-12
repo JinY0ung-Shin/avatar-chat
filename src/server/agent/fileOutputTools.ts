@@ -16,6 +16,8 @@ export function buildFileOutputTools(ctx: FileOutputToolsContext) {
       "show_file",
       "Show a PNG, JPEG, WebP, or GIF file from your current working directory to the user in the chat. " +
         "Use this after you generate or download an image the user should see. Pass the local file path; never put a local path or file:// URL in Markdown because the browser cannot access your filesystem. " +
+        "Do NOT call Read to inspect, verify, or prepare an image: show_file validates the image bytes itself, while Read may fail when the active model cannot accept image input. " +
+        "If the image is outside the allowed working roots (for example under /tmp), copy it into the current directory with Bash (`cp /tmp/image.png \"$PWD/image.png\"`), then call show_file with `./image.png`. " +
         "The file must be inside the run's working directory or scratch workspace, no larger than 5 MB, and a turn can show at most 6 images.",
       {
         path: z.string().min(1).max(4096).describe("Image path, relative to the current working directory or absolute inside an allowed working root."),
