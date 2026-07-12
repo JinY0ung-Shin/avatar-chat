@@ -6,6 +6,7 @@
   import { createEventDispatcher } from "svelte";
   import Modal from "./Modal.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { enhanceMarkdown } from "../lib/dom";
   import { renderMarkdown, WEEKDAY_NAMES } from "../lib/format";
   import { loadRoutinesData } from "../lib/loaders";
@@ -289,7 +290,7 @@
 
   async function deleteClick() {
     if (!routine) return;
-    if (!window.confirm("이 예약 작업을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다.")) return;
+    if (!(await confirmAction("이 예약 작업을 삭제할까요? 지난 실행 결과 기록은 더 이상 표시되지 않습니다."))) return;
     busy = true;
     try {
       await api(`/api/me/routines/${encodeURIComponent(routine.id)}`, { method: "DELETE" });

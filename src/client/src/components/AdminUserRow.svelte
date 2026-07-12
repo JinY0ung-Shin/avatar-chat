@@ -2,6 +2,7 @@
   import AvatarImage from "./AvatarImage.svelte";
   import AdminPasswordResetModal from "./AdminPasswordResetModal.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { appState, notify } from "../lib/state";
   import { timeLabel } from "../lib/format";
   import type { AdminUserDetail, AdminUserSummary } from "../lib/types";
@@ -72,9 +73,9 @@
     }
   }
 
-  function toggleRole() {
+  async function toggleRole() {
     const verb = isAdmin ? "해제" : "부여";
-    if (!window.confirm(`${user.displayName}(@${user.username})님의 관리자 권한을 ${verb}할까요?`)) return;
+    if (!(await confirmAction(`${user.displayName}(@${user.username})님의 관리자 권한을 ${verb}할까요?`))) return;
     run(
       () =>
         api(`/api/admin/users/${encodeURIComponent(user.id)}/roles`, {
@@ -98,8 +99,8 @@
     );
   }
 
-  function toggleSuspend() {
-    if (!user.suspended && !window.confirm(`${user.displayName} 계정을 정지할까요?\n로그인과 활성 세션이 즉시 차단됩니다.`)) return;
+  async function toggleSuspend() {
+    if (!user.suspended && !(await confirmAction(`${user.displayName} 계정을 정지할까요?\n로그인과 활성 세션이 즉시 차단됩니다.`))) return;
     run(
       () =>
         api(`/api/admin/users/${encodeURIComponent(user.id)}/suspend`, {
@@ -121,8 +122,8 @@
     );
   }
 
-  function deleteUser() {
-    if (!window.confirm(`${user.displayName}(@${user.username}) 계정을 삭제할까요?\n이 사용자의 아바타·대화·설정이 모두 영구 삭제되며 되돌릴 수 없습니다.`)) return;
+  async function deleteUser() {
+    if (!(await confirmAction(`${user.displayName}(@${user.username}) 계정을 삭제할까요?\n이 사용자의 아바타·대화·설정이 모두 영구 삭제되며 되돌릴 수 없습니다.`))) return;
     run(
       () => api(`/api/admin/users/${encodeURIComponent(user.id)}`, { method: "DELETE" }).then(() => undefined),
       "삭제 실패",

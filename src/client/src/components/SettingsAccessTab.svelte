@@ -2,6 +2,7 @@
   import Icon from "./Icon.svelte";
   import RevealableInput from "./RevealableInput.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { appState, notify, readState, replaceState } from "../lib/state";
   import { copyText } from "../lib/dom";
   import { EXPERIMENTAL_FEATURES } from "../../../server/experimentalFeatures";
@@ -239,7 +240,7 @@
   }
   async function clearInternalToken(): Promise<void> {
     if (internalBusy) return;
-    if (!window.confirm("사내 Git 토큰을 삭제할까요?")) return;
+    if (!(await confirmAction("사내 Git 토큰을 삭제할까요?"))) return;
     internalBusy = true;
     internalError = "";
     try {
@@ -272,7 +273,7 @@
   }
   async function clearExternalToken(): Promise<void> {
     if (externalBusy) return;
-    if (!window.confirm("외부 GitHub 토큰을 삭제할까요?")) return;
+    if (!(await confirmAction("외부 GitHub 토큰을 삭제할까요?"))) return;
     externalBusy = true;
     externalError = "";
     try {
@@ -337,7 +338,7 @@
   }
   async function clearPresetSecret(name: string, label: string): Promise<void> {
     if (presetBusy[name]) return;
-    if (!window.confirm(`${label} 시크릿을 삭제할까요?`)) return;
+    if (!(await confirmAction(`${label} 시크릿을 삭제할까요?`))) return;
     presetBusy = { ...presetBusy, [name]: true };
     presetErrors = { ...presetErrors, [name]: "" };
     try {
@@ -382,7 +383,7 @@
   }
   async function deleteExtraSecret(name: string): Promise<void> {
     if (extraDeleting[name]) return;
-    if (!window.confirm(`"${name}" 시크릿을 삭제할까요?`)) return;
+    if (!(await confirmAction(`"${name}" 시크릿을 삭제할까요?`))) return;
     extraDeleting = { ...extraDeleting, [name]: true };
     try {
       const { user: next } = await api<{ user: User }>(`/api/me/secrets/${encodeURIComponent(name)}`, { method: "DELETE" });

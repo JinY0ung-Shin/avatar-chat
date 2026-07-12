@@ -6,6 +6,7 @@
 @import "../styles/50-platform-views.css";
 @import "../styles/60-settings-admin.css";
 @import "../styles/70-modals-groups.css";
+@import "../styles/80-apple-design.css";
 
 .avatar-img {
   display: inline-grid;

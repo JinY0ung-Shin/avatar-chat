@@ -1,47 +1,52 @@
 # 디자인 철학 — Noah Almighty
 
-이 문서는 프론트엔드(`public/styles.css`, `public/app.js`)의 **시각 언어 기준**이다.
+이 문서는 Svelte 프론트엔드(`src/client/`)의 **시각 언어 기준**이다.
 새 UI를 만들거나 기존 UI를 고칠 때 여기 정의된 토큰·규칙을 따른다. 어긋난 곳을
 발견하면 이 문서 쪽으로 수렴시킨다(즉석 새 값 도입 금지).
 
-> 배경: 토큰 시스템은 이미 있었으나 실제 사용이 토큰을 안 따라 드리프트가 누적됨
-> (스케일 밖 px 90곳+, 버튼 클래스 15+종 / 네이밍 3체계, 베이스 `.tag` CSS 부재 등).
-> 이 문서는 "리뉴얼"이 아니라 **원칙 명문화 + 토큰 재정렬 + 컴포넌트 통합**을 위한 기준이다.
+기본 토큰과 구조는 `00-tokens.css`, Apple-inspired 시각·동작 계층은
+`80-apple-design.css`가 담당한다. 도메인 레이아웃은 중간 계층 파일에 남기고, 재질·모션·접근성은
+마지막 계층으로 수렴시킨다.
 
 ---
 
 ## 1. 성격 (Personality)
 
-**차분한 프로덕티비티 도구.** Linear·Notion 계열. 콘텐츠(대화·지식·설정)가 주인공이고
-UI는 뒤로 빠진다.
+**차분하고 유동적인 에이전트 작업 공간.** Apple의 인터페이스 원칙을 웹에 맞게 적용하되
+macOS 화면을 복제하지 않는다. 콘텐츠(대화·지식·작업)가 주인공이고 UI는 맥락과 상태를
+명확히 전달한 뒤 뒤로 물러난다.
 
-- **중립톤이 바탕, teal은 액센트만.** 화면 대부분은 뉴트럴 그레이(`--n-*`)로 구성하고
-  `--accent`(teal)는 *행동을 유도하거나 상태를 알릴 때만* 쓴다. teal 면을 크게 칠하지 않는다.
-- **경계는 라인으로, 그림자는 최소.** 표면 구분은 `1px solid var(--line)`이 1순위.
-  그림자(`--shadow-*`)는 "떠 있는" 요소(모달·드로어·토스트·팝오버)에만.
-- **모션은 거들 뿐.** 전환은 `--ease`로 짧고 절제되게. 강조용 애니메이션 남발 금지.
-  `prefers-reduced-motion` 존중.
+- **중립톤이 바탕, system blue는 행동과 선택에만.** 넓은 면을 액센트로 채우지 않는다.
+- **재질로 위계를 표현한다.** 사이드바·헤더·컴포저·시트는 반투명 material, 읽기 콘텐츠는
+  불투명 표면을 기본으로 한다. 유리 표면을 겹쳐 가독성을 떨어뜨리지 않는다.
+- **모션은 현재 화면 값에서 이어진다.** 눌림은 pointer-down에 즉시 반응하고, 제스처 기반
+  요소는 손가락을 1:1 추적하며 release velocity를 스프링으로 넘긴다.
+- **접근성은 동일한 피드백의 다른 표현이다.** reduced motion은 cross-fade,
+  reduced transparency는 불투명 표면, increased contrast는 강한 경계로 대체한다.
 - **장식보다 위계.** 대비·여백·타이포 weight로 정보 위계를 만든다. 박스·배경색·아이콘을
   덧대서 위계를 만들지 않는다.
 
-이 성격이 색·라운드·여백·타이포의 모든 판단 기준이다. 판단이 갈리면 "더 조용한 쪽"을 택한다.
+이 성격이 색·재질·여백·타이포·동작의 판단 기준이다. 판단이 갈리면 더 예측 가능하고
+덜 장식적인 쪽을 택한다.
 
 ---
 
 ## 2. 토큰 (Tokens) — 단일 진실 공급원
 
-모든 값은 `:root`의 토큰을 거친다. **하드코딩된 hex·rgba·px는 금지**(아래 허용 예외만).
-토큰은 `public/styles.css` 최상단 `:root` + `@media (prefers-color-scheme: dark)`에 정의.
+재사용되는 값은 `:root` 토큰을 거친다. 새 시맨틱 색·재질·모션 값은 즉석 도입하지 않는다.
+기능적인 단일 크기와 오프셋은 컴포넌트 안에서 의도를 설명한 경우 허용한다.
+기본 토큰은 `00-tokens.css`, Apple 계층과 `[data-theme="dark"]` 변형은 `80-apple-design.css`에 정의한다.
 
 ### 2.1 색 (Color)
 - **뉴트럴 램프** `--n-0 … --n-900`: 모든 회색/배경/텍스트의 출처.
 - **시맨틱 별칭** `--bg / --panel / --text / --text-soft / --muted / --line / --line-soft`:
   컴포넌트는 `--n-*` 원시값이 아니라 **시맨틱 별칭**을 쓴다(다크모드가 별칭만 스왑하면 되도록).
-- **액센트** `--accent / --accent-strong / --accent-soft / --accent-ring`.
+- **액센트** `--accent / --accent-strong / --accent-soft / --accent-ring`은 system blue 계열이다.
   액센트 면 위 텍스트/아이콘은 **반드시 `--on-accent`** (다크모드에서 accent가 밝은 민트로
   바뀌므로 `#fff` 직접 사용 금지).
 - **상태색** `--warn / --danger / --ok / --info` (+ `-soft` / `-line` / `--on-danger`).
-- **레일(rail)** 전용 `--rail* `: 좌측 네비게이션의 다크 표면. 다른 곳에 쓰지 않는다.
+- **재질** `--material-thin / --material-regular / --material-thick`: 크롬의 깊이에 맞춰 사용한다.
+- **레일(rail)** 전용 `--rail*`: 좌측 네비게이션의 반투명 표면. 다른 곳에 쓰지 않는다.
 
 허용되는 하드코딩: ① `50%`(원형), ② `rgba(255,255,255,α)`/`rgba(0,0,0,α)` 같은
 *반투명 오버레이*(스크림·하이라이트)는 토큰화하기 애매하면 인라인 허용하되 한 곳에 모은다.
@@ -74,12 +79,14 @@ UI는 뒤로 빠진다.
 
 ### 2.3 라운드 (Radius)
 ```
---r-sm: 8px     /* 컨트롤·인풋·작은 카드 (현 md/lg와 통합 유지) */
---r-xl: 14px    /* 큰 카드·모달·시트 */
+--r-sm: 10px    /* 작은 컨트롤·칩 */
+--r-md: 12px    /* 기본 컨트롤·카드 */
+--r-lg: 16px    /* 큰 카드·패널 */
+--r-xl: 22px    /* 모달·시트 */
 --r-pill: 999px /* 토글·세그먼트·칩·배지 */
 ```
-`--r-xs(6px)`는 사실상 미사용 — 신규 사용 금지, `--r-sm`으로 수렴.
-`2px / 4px / 5px / 7px` 하드코딩 라운드는 `--r-sm`(또는 의도가 "거의 직각"이면 그대로 두되 토큰화)으로 교체.
+`--r-xs(8px)`는 조밀한 코드/메타 컨트롤에만 사용한다. 일반 입력과 버튼은 `--r-md`,
+콘텐츠 패널은 `--r-lg`, 모달·시트는 `--r-xl`을 사용한다.
 
 ### 2.4 타이포 (Typography)
 ```
@@ -94,7 +101,10 @@ UI는 뒤로 빠진다.
 ### 2.5 그림자 (Shadow) / 모션
 - `--shadow-sm`(살짝 뜬 카드) / `--shadow-md`(팝오버·드롭다운) / `--shadow-lg`(모달·시트) /
   `--shadow-drawer`(레일). **인라인 box-shadow 금지** (리셋용 `none`·키프레임 제외).
-- 전환은 `transition: … var(--ease)`. 지속시간은 120~220ms 범위.
+- 비제스처 전환은 `--ease-out`을 기본으로 120~240ms 범위에서 사용한다.
+- 드로어·시트·직접 조작 요소는 고정 duration 대신 스프링을 사용한다. 기본은 damping ratio
+  `1.0`, response `0.3~0.4s`; 사용자의 flick momentum이 있을 때만 damping `~0.8`을 허용한다.
+- transform/opacity 중심으로 합성하고 진행 중인 모션도 다시 잡고 반전할 수 있어야 한다.
 
 ---
 
@@ -181,7 +191,7 @@ backdrop을 토큰·베이스로 통일.**
 **프론트는 런타임 검증이 약하니**(브라우저 없음, `node --check`만) 한 묶음씩 작게,
 사람이 브라우저로 스모크 테스트하며 진행한다.
 
-**✅ 완료 (styles.css, 1차 패스):**
+**✅ 완료:**
 1. **토큰 추가** — `--s-0-5/--s-1-5/--s-2-5`, `--t-2xs`, z-index(`--z-*`), 코드블록(`--code-*`),
    `--mono`, 미정의였던 `--bg-subtle/--surface-2`를 `:root`에 정의.
 2. **의미색·하드코딩 정리** — 코드블록 색을 `--code-*`로 토큰화(다크/라이트 고정 표면이라
@@ -194,12 +204,14 @@ backdrop을 토큰·베이스로 통일.**
    (compact)에서 override. `.settings-card`/`.admin-row`가 이를 소비. **현 시각 결과는 동일**
    (override 값=기존 값)이라, 화면별 밀도를 더 벌리고 싶으면 이 토큰만 조정하면 된다.
 
-**⏳ 남음 (app.js 클래스까지 건드려야 함 — 신중히, 일괄 rename 금지):**
-5. **컴포넌트 통합** — §4.1 버튼 패밀리(`.primary`/`.btn-primary`/`.ghost-sm`/`.linkish` →
-   `.btn` + variant), §4.2 카드 의도 네이밍(`.card`/`.elevated`/`.flat`), §4.4 오버레이 베이스
-   (`.overlay`/`.popover` + `--z-*`). 기존 클래스는 alias로 남겨 점진 교체.
+5. **Apple-inspired 계층** — system blue, platform typography, material hierarchy, 전체 화면 surface,
+   press feedback, modal/popover materialization을 `80-apple-design.css`에서 제공한다.
+6. **접근성 재질 변형** — reduced motion/transparency와 increased contrast를 지원한다.
+7. **확인 흐름 통합** — 브라우저 기본 confirm 대신 공용 `ConfirmationDialog`를 사용한다.
+8. **직접 조작** — 모바일 레일은 pointer capture, rubber-banding, velocity projection, spring settle을 사용한다.
 
-각 단계는 `node --check public/app.js` + 사람 스모크 테스트로 확인. (`public/CLAUDE.md` 참고.)
+기존 클래스는 호환 alias로 유지한다. 새 컴포넌트는 §4 베이스 패밀리를 사용하고, 기존 화면은
+기능 변경 시 점진적으로 의미 기반 클래스에 수렴시킨다.
 
 > ⚠️ 1차 패스의 반올림(~50곳)은 픽셀이 ±1–2px 바뀐다(라운드 일부는 더). 브라우저에서
 > 채팅/탐색/설정/관리자를 라이트·다크 양쪽으로 한 번 훑어 확인 권장.
@@ -211,8 +223,9 @@ backdrop을 토큰·베이스로 통일.**
 - [ ] 새 hex/rgba 없음 (시맨틱 토큰 또는 `--n-*` 사용, 액센트 면엔 `--on-accent`)
 - [ ] 새 px 간격/라운드/폰트 없음 (`--s-*` / `--r-*` / `--t-*`)
 - [ ] 인라인 box-shadow 없음 (`--shadow-*`)
-- [ ] teal 면을 크게 칠하지 않음 (액센트는 행동·상태에만)
-- [ ] 표면 구분은 라인 우선, 그림자는 "떠 있는" 요소에만
+- [ ] system blue 면을 크게 칠하지 않음 (액센트는 행동·상태에만)
+- [ ] material을 중첩하지 않고 크기·역할에 맞는 blur/shadow를 사용
 - [ ] 버튼/칩/카드/오버레이는 §4 베이스 패밀리 사용 (새 일회성 클래스 지양)
 - [ ] 밀도는 화면 컨텍스트 토큰으로 (하드코딩 패딩 금지)
 - [ ] `prefers-color-scheme: dark`에서 확인 (별칭 스왑만으로 동작하는지)
+- [ ] reduced motion/transparency와 increased contrast에서 의미와 조작성이 유지되는지 확인

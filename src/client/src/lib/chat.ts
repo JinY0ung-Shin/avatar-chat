@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { confirmAction } from "./confirm";
 import { loadConversations, loadMessages } from "./loaders";
 import { syncHash } from "./nav";
 import { consumeSse, type SseFrame } from "./sse";
@@ -154,7 +155,7 @@ export async function startChatWith(
   if (
     !split &&
     readState().chatPanes.some((pane) => pane.streaming) &&
-    !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")
+    !(await confirmAction("응답 생성 중입니다. 새 대화로 전환할까요?"))
   ) {
     return;
   }
@@ -198,7 +199,7 @@ export async function openSeededChat(seedText: string): Promise<void> {
   if (!me) return;
   if (
     readState().chatPanes.some((pane) => pane.streaming) &&
-    !window.confirm("응답 생성 중입니다. 새 대화로 전환할까요?")
+    !(await confirmAction("응답 생성 중입니다. 새 대화로 전환할까요?"))
   )
     return;
   const { avatar } = await api<{ avatar: AvatarDetail }>(

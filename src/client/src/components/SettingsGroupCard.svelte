@@ -23,6 +23,7 @@
   // settings/groups.js. The user-search typeahead is inlined here (per the task
   // rule: no shared UserSearch component).
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { startChatWith, openSeededChat } from "../lib/chat";
   import { notify, readState, newId } from "../lib/state";
   import { repoToHref } from "../lib/format";
@@ -125,7 +126,7 @@
 
   async function removeMember(m: GroupMember): Promise<void> {
     if (rowBusy[m.userId]) return;
-    if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
+    if (!(await confirmAction(`${m.displayName}님을 그룹에서 제거할까요?`))) return;
     rowBusy = { ...rowBusy, [m.userId]: true };
     memberStatus = `${m.displayName}님을 그룹에서 제거하는 중입니다.`;
     try {
@@ -426,7 +427,7 @@
 
   async function disconnectRepo(): Promise<void> {
     if (repoBusy) return;
-    if (!window.confirm("이 그룹의 공용 지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 그룹원 아바타들이 더 이상 그 스킬을 불러오지 않습니다.")) return;
+    if (!(await confirmAction("이 그룹의 공용 지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 그룹원 아바타들이 더 이상 그 스킬을 불러오지 않습니다."))) return;
     repoBusy = true;
     try {
       await api(`/api/me/groups/${encodeURIComponent(group.id)}/knowledge-repo`, { method: "PUT", body: JSON.stringify({ repo: null }) });

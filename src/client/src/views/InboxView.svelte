@@ -3,6 +3,7 @@
   import Icon from "../components/Icon.svelte";
   import InboxKnowledgeRow from "./InboxKnowledgeRow.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { loadInboxData } from "../lib/loaders";
   import { goView } from "../lib/nav";
   import { appState, notify, replaceState, updateState } from "../lib/state";
@@ -225,7 +226,7 @@
   async function clearAll() {
     const count = notifications.length;
     if (!count || bulkBusy) return;
-    if (!window.confirm(`알림 ${count}개를 모두 삭제할까요? 정보 요청은 삭제되지 않습니다.`)) return;
+    if (!(await confirmAction(`알림 ${count}개를 모두 삭제할까요? 정보 요청은 삭제되지 않습니다.`))) return;
     bulkBusy = true;
     try {
       await api("/api/me/notifications", { method: "DELETE" });

@@ -312,11 +312,11 @@
     justify-items: center;
     gap: var(--s-4);
     padding: var(--s-6);
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-soft);
     border-radius: var(--r-xl);
-    background: var(--panel);
+    background: var(--material-regular, var(--panel));
     text-align: center;
-    box-shadow: var(--shadow-sm);
+    box-shadow: var(--shadow-md), 0 1px 0 var(--material-edge, transparent) inset;
   }
   .brain-empty-icon {
     width: var(--s-7);
@@ -340,17 +340,18 @@
     align-items: center;
     gap: var(--s-1);
     padding: var(--s-1) var(--s-3);
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-soft);
     border-radius: var(--r-pill);
-    background: var(--panel);
+    background: var(--material-thick, var(--panel));
     color: var(--muted);
     font-size: var(--t-sm);
     cursor: pointer;
   }
   .brain-source.active {
-    border-color: var(--accent);
-    color: var(--accent);
-    background: var(--accent-soft);
+    border-color: var(--line-soft);
+    color: var(--text);
+    background: var(--material-thick, var(--panel));
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.13), 0 1px 0 var(--material-edge, transparent) inset;
   }
   .brain-body {
     flex: 1;
@@ -386,9 +387,10 @@
     flex-direction: column;
     gap: var(--s-3);
     padding: var(--s-4);
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-soft);
     border-radius: var(--r-lg);
-    background: var(--panel);
+    background: var(--material-regular, var(--panel));
+    box-shadow: var(--shadow-sm), 0 1px 0 var(--material-edge, transparent) inset;
     overflow-y: auto;
   }
   .brain-note-empty {

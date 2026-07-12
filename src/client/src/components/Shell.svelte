@@ -3,6 +3,7 @@
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { addConversationToSplit, clearChatHistory, newChat, selectConversation } from "../lib/chat";
   import { formatDate } from "../lib/format";
   import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
@@ -25,6 +26,10 @@
   let railElement: HTMLElement | undefined;
   let railToggle: HTMLButtonElement | undefined;
   let railDismiss: HTMLButtonElement | undefined;
+  let railBackdrop: HTMLButtonElement | undefined;
+  let railSpringing = false;
+  let railAnimationFrame = 0;
+  let railAnimationToken = 0;
   const desktopRailMedia =
     typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(min-width: 861px)") : null;
   let desktopRail = desktopRailMedia?.matches ?? true;
@@ -71,7 +76,11 @@
     void refreshConversations();
     const syncRailLayout = (event: MediaQueryListEvent) => {
       desktopRail = event.matches;
-      if (desktopRail && railOpen) setRailOpen(false);
+      if (desktopRail && railOpen) {
+        cancelRailAnimation();
+        clearRailVisual();
+        setRailOpen(false);
+      }
     };
     desktopRailMedia?.addEventListener?.("change", syncRailLayout);
     return () => {
@@ -189,7 +198,7 @@
       return;
     }
     const title = conversation.title || "새 대화";
-    if (!window.confirm(`"${title}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`)) return;
+    if (!(await confirmAction(`"${title}" 대화를 삭제할까요? 삭제하면 되돌릴 수 없습니다.`))) return;
     setConversationBusy(conversation.id, true);
     try {
       await api(`/api/conversations/${encodeURIComponent(conversation.id)}`, { method: "DELETE" });
@@ -213,7 +222,7 @@
       notify("응답 중인 대화가 있습니다. 먼저 응답을 중지해 주세요.", "warn");
       return;
     }
-    if (!window.confirm("저장된 모든 일반 대화 기록을 삭제할까요? 삭제하면 되돌릴 수 없습니다.")) return;
+    if (!(await confirmAction("저장된 모든 일반 대화 기록을 삭제할까요? 삭제하면 되돌릴 수 없습니다."))) return;
     clearingConversations = true;
     try {
       const deleted = await clearChatHistory();
@@ -231,15 +240,175 @@
     onMobileRailOpenChange(open);
   }
 
-  function closeRail(restoreFocus = false) {
+  function reducedMotion(): boolean {
+    return window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+  }
+
+  function cancelRailAnimation(): void {
+    railAnimationToken += 1;
+    if (railAnimationFrame) cancelAnimationFrame(railAnimationFrame);
+    railAnimationFrame = 0;
+    railSpringing = false;
+  }
+
+  function railWidth(): number {
+    return Math.max(1, railElement?.getBoundingClientRect().width ?? 320);
+  }
+
+  function canAnimateRail(): boolean {
+    return !reducedMotion() && (railElement?.getBoundingClientRect().width ?? 0) > 0;
+  }
+
+  function currentRailX(): number {
+    if (!railElement) return 0;
+    const transform = getComputedStyle(railElement).transform;
+    if (!transform || transform === "none") return 0;
+    try {
+      return new DOMMatrixReadOnly(transform).m41;
+    } catch {
+      return 0;
+    }
+  }
+
+  function setRailVisual(x: number): void {
+    if (!railElement) return;
+    const width = railWidth();
+    const progress = Math.max(0, Math.min(1, 1 + x / width));
+    railElement.style.transform = `translate3d(${x}px, 0, 0)`;
+    railElement.style.visibility = "visible";
+    if (railBackdrop) {
+      railBackdrop.style.opacity = String(progress);
+      railBackdrop.style.pointerEvents = progress > 0.02 ? "auto" : "none";
+    }
+  }
+
+  function clearRailVisual(): void {
+    railElement?.style.removeProperty("transform");
+    railElement?.style.removeProperty("visibility");
+    railBackdrop?.style.removeProperty("opacity");
+    railBackdrop?.style.removeProperty("pointer-events");
+    railSpringing = false;
+  }
+
+  function springRail(from: number, target: number, initialVelocity: number, complete: () => void): void {
+    cancelRailAnimation();
+    railSpringing = true;
+    const token = ++railAnimationToken;
+    const response = 0.3;
+    const dampingRatio = 0.86;
+    const omega = (2 * Math.PI) / response;
+    const stiffness = omega * omega;
+    const damping = 2 * dampingRatio * omega;
+    let position = from;
+    let velocity = initialVelocity;
+    let previous = performance.now();
+
+    const step = (now: number) => {
+      if (token !== railAnimationToken) return;
+      const dt = Math.min(1 / 30, Math.max(1 / 240, (now - previous) / 1000));
+      previous = now;
+      const acceleration = -stiffness * (position - target) - damping * velocity;
+      velocity += acceleration * dt;
+      position += velocity * dt;
+      setRailVisual(position);
+      if (Math.abs(position - target) < 0.5 && Math.abs(velocity) < 5) {
+        setRailVisual(target);
+        railAnimationFrame = 0;
+        complete();
+        return;
+      }
+      railAnimationFrame = requestAnimationFrame(step);
+    };
+    railAnimationFrame = requestAnimationFrame(step);
+  }
+
+  function finishRailClose(restoreFocus: boolean): void {
     setRailOpen(false);
+    queueMicrotask(clearRailVisual);
     if (restoreFocus) requestAnimationFrame(() => railToggle?.focus());
   }
 
+  function closeRail(restoreFocus = false) {
+    if (desktopRail || !railOpen || !canAnimateRail()) {
+      cancelRailAnimation();
+      setRailOpen(false);
+      clearRailVisual();
+      if (restoreFocus) requestAnimationFrame(() => railToggle?.focus());
+      return;
+    }
+    const from = currentRailX();
+    springRail(from, -railWidth(), 0, () => finishRailClose(restoreFocus));
+  }
+
   function openRail() {
-    if (desktopRail) onRailCollapsedChange(false);
-    else setRailOpen(true);
-    requestAnimationFrame(() => railDismiss?.focus());
+    if (desktopRail) {
+      onRailCollapsedChange(false);
+      requestAnimationFrame(() => railDismiss?.focus());
+      return;
+    }
+    if (railOpen) return;
+    railSpringing = true;
+    setRailOpen(true);
+    requestAnimationFrame(() => {
+      if (!canAnimateRail()) {
+        clearRailVisual();
+        railDismiss?.focus();
+        return;
+      }
+      const from = -railWidth();
+      setRailVisual(from);
+      springRail(from, 0, 0, () => {
+        clearRailVisual();
+        railDismiss?.focus();
+      });
+    });
+  }
+
+  function rubberband(overshoot: number, dimension: number, constant = 0.55): number {
+    return (overshoot * dimension * constant) / (dimension + constant * Math.abs(overshoot));
+  }
+
+  function startRailDrag(event: PointerEvent): void {
+    if (desktopRail || !railOpen || !railElement) return;
+    event.preventDefault();
+    event.stopPropagation();
+    cancelRailAnimation();
+    railSpringing = true;
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    const width = railWidth();
+    const startPointer = event.clientX;
+    const startPosition = currentRailX();
+    let position = startPosition;
+    let velocity = 0;
+    let lastPosition = position;
+    let lastTime = event.timeStamp;
+
+    const onMove = (move: PointerEvent) => {
+      const raw = startPosition + move.clientX - startPointer;
+      position = raw > 0 ? rubberband(raw, width) : raw < -width ? -width + rubberband(raw + width, width) : raw;
+      const dt = Math.max(1, move.timeStamp - lastTime) / 1000;
+      const instantVelocity = (position - lastPosition) / dt;
+      velocity = velocity * 0.65 + instantVelocity * 0.35;
+      lastPosition = position;
+      lastTime = move.timeStamp;
+      setRailVisual(position);
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      const projection = position + (velocity / 1000) * 0.998 / (1 - 0.998);
+      const shouldClose = projection < -width * 0.5 || velocity < -520;
+      const target = shouldClose ? -width : 0;
+      springRail(position, target, velocity, () => {
+        if (shouldClose) finishRailClose(true);
+        else clearRailVisual();
+      });
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
   }
 
   function dismissRail() {
@@ -356,11 +525,15 @@
   bind:this={railElement}
   class="rail"
   class:open={railOpen}
+  class:rail-springing={railSpringing}
   id="rail"
   aria-label="대화 목록"
   aria-hidden={railExpanded ? undefined : "true"}
   inert={!railExpanded}
 >
+  <button class="rail-grabber" type="button" aria-label="메뉴를 왼쪽으로 끌어 닫기" on:pointerdown={startRailDrag}>
+    <span aria-hidden="true"></span>
+  </button>
   <div class="rail-head">
     <div class="rail-brand-row">
       <div class="rail-brand">
@@ -579,6 +752,7 @@
 </aside>
 
 <button
+  bind:this={railBackdrop}
   class="rail-backdrop"
   class:open={railOpen}
   type="button"

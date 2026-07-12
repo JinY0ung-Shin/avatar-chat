@@ -5,6 +5,7 @@
   import SettingsPluginSelect from "./SettingsPluginSelect.svelte";
   import GraphViewModal from "./GraphViewModal.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { openSeededChat } from "../lib/chat";
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
   import { repoToHref, timeLabel } from "../lib/format";
@@ -157,7 +158,7 @@
   }
   async function disconnectKnowledge(): Promise<void> {
     if (krBusy) return;
-    if (!window.confirm("지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 아바타가 더 이상 그 스킬을 불러오지 않습니다.")) return;
+    if (!(await confirmAction("지식 저장소 연결을 해제할까요?\nGitHub의 저장소는 삭제되지 않고, 아바타가 더 이상 그 스킬을 불러오지 않습니다."))) return;
     krBusy = true;
     try {
       const { user: next } = await api<{ user: User }>("/api/me/knowledge-repo", { method: "PUT", body: JSON.stringify({ repo: null }) });
@@ -272,7 +273,7 @@
 
   async function deletePlugin(p: Plugin): Promise<void> {
     if (pluginRowBusy[p.id]) return;
-    if (!window.confirm(`"${p.label || p.repo}" 플러그인을 삭제할까요?`)) return;
+    if (!(await confirmAction(`"${p.label || p.repo}" 플러그인을 삭제할까요?`))) return;
     pluginRowBusy = { ...pluginRowBusy, [p.id]: true };
     try {
       await api(`/api/me/plugins/${encodeURIComponent(p.id)}`, { method: "DELETE" });

@@ -204,9 +204,10 @@
   .graph-canvas {
     flex: 1;
     min-height: 0;
-    border: 1px solid var(--line);
-    border-radius: var(--r-md);
-    background: var(--bg);
+    border: 1px solid var(--line-soft);
+    border-radius: var(--r-lg);
+    background: var(--material-regular, var(--bg));
+    box-shadow: var(--shadow-sm), 0 1px 0 var(--material-edge, transparent) inset;
     overflow: hidden;
     position: relative;
   }
@@ -255,9 +256,9 @@
     display: inline-flex;
     align-items: center;
     gap: var(--s-1);
-    border: 1px solid var(--line);
+    border: 1px solid var(--line-soft);
     border-radius: var(--r-pill);
-    background: var(--panel);
+    background: var(--material-thick, var(--panel));
     color: var(--text);
     padding: var(--s-1) var(--s-2);
     font-size: var(--t-xs);

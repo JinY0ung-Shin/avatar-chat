@@ -28,6 +28,7 @@ import {
   attachActiveRun,
 } from "../src/client/src/lib/chat.js";
 import { appState, readState, replaceState, toasts, updateState } from "../src/client/src/lib/state.js";
+import { resolveConfirmation } from "../src/client/src/lib/confirm.js";
 import { DEFAULT_MCP_TOOL_GROUPS } from "../src/shared/mcpToolGroups.js";
 import type { ChatPane } from "../src/client/src/lib/types.js";
 
@@ -363,9 +364,10 @@ describe("opening + resuming conversations", () => {
 
   it("startChatWith bails out when the owner declines the streaming-switch confirm", async () => {
     seedPane({ streaming: true });
-    vi.spyOn(window, "confirm").mockReturnValue(false);
     const fetchFn = noFetch();
-    await startChatWith({ id: "av9" } as any);
+    const opening = startChatWith({ id: "av9" } as any);
+    resolveConfirmation(false);
+    await opening;
     expect(fetchFn).not.toHaveBeenCalled();
     expect(readState().chatPanes).toHaveLength(1); // unchanged
   });

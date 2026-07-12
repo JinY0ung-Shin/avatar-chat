@@ -5,6 +5,7 @@
   import AdminUserRow from "../components/AdminUserRow.svelte";
   import AdminGroupRow from "../components/AdminGroupRow.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { loadAdminGroups, loadAdminOverview } from "../lib/loaders";
   import { appState, notify, replaceState, updateState } from "../lib/state";
   import { timeLabel } from "../lib/format";
@@ -371,7 +372,7 @@
 
   async function disconnectToken() {
     if (subBusy) return;
-    if (!window.confirm("저장된 구독 토큰을 삭제할까요?")) return;
+    if (!(await confirmAction("저장된 구독 토큰을 삭제할까요?"))) return;
     subBusy = true;
     tokenError = "";
     try {

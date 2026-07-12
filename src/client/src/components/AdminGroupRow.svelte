@@ -2,6 +2,7 @@
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { notify } from "../lib/state";
   import type { AdminGroupSummary, GroupMember } from "../lib/types";
 
@@ -344,7 +345,7 @@
 
   async function removeMember(m: GroupMember) {
     if (memberBusy[m.userId]) return;
-    if (!window.confirm(`${m.displayName}님을 그룹에서 제거할까요?`)) return;
+    if (!(await confirmAction(`${m.displayName}님을 그룹에서 제거할까요?`))) return;
     memberBusy = { ...memberBusy, [m.userId]: true };
     memberStatus = `${m.displayName}님을 제거하는 중입니다.`;
     try {
@@ -369,7 +370,7 @@
 
   async function deleteGroup() {
     if (busy) return;
-    if (!window.confirm(`'${group.name}' 그룹을 삭제할까요?\n그룹 소속이 모두 해제되고 그룹원 간 자동 신뢰가 사라집니다. (공용 저장소 자체는 GitHub에 남습니다.)`)) return;
+    if (!(await confirmAction(`'${group.name}' 그룹을 삭제할까요?\n그룹 소속이 모두 해제되고 그룹원 간 자동 신뢰가 사라집니다. (공용 저장소 자체는 GitHub에 남습니다.)`))) return;
     busy = true;
     try {
       await api(`/api/admin/groups/${encodeURIComponent(group.id)}`, { method: "DELETE" });

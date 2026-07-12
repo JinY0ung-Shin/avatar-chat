@@ -6,6 +6,7 @@
   import AdminView from "./views/AdminView.svelte";
   import BrainView from "./views/BrainView.svelte";
   import ChatView from "./views/ChatView.svelte";
+  import ConfirmationDialog from "./components/ConfirmationDialog.svelte";
   import ExploreView from "./views/ExploreView.svelte";
   import InboxView from "./views/InboxView.svelte";
   import OnboardingModal from "./components/OnboardingModal.svelte";
@@ -185,3 +186,4 @@
 {/if}
 
 <Toasts />
+<ConfirmationDialog />

@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import HashtagChipEditor from "./HashtagChipEditor.svelte";
   import { api, refreshMe } from "../lib/api";
+  import { confirmAction } from "../lib/confirm";
   import { normalizeTags } from "../lib/format";
   import { downscaleImageToDataUrl } from "../lib/dom";
   import { appState, notify, readState, replaceState } from "../lib/state";
@@ -347,7 +348,7 @@
 
   async function deleteImage(): Promise<void> {
     if (picBusy) return;
-    if (!window.confirm("아바타 사진을 삭제할까요?")) return;
+    if (!(await confirmAction("아바타 사진을 삭제할까요?"))) return;
     picBusy = true;
     try {
       await api("/api/me/avatar-image", { method: "DELETE" });
