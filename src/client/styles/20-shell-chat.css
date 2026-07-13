@@ -209,10 +209,24 @@
   padding: var(--s-1) var(--s-2);
   flex: 1;
   min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rail-text);
+  text-align: left;
+  border-radius: var(--r-md);
 }
 
-.rail-brand > div {
+.rail-brand:hover {
+  background: var(--rail-active);
+}
+
+.rail-brand > span {
   min-width: 0;
+}
+
+.rail-brand .name,
+.rail-brand .sub {
+  display: block;
 }
 
 .rail-brand .mark {

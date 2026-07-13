@@ -573,13 +573,13 @@
   </button>
   <div class="rail-head">
     <div class="rail-brand-row">
-      <div class="rail-brand">
+      <button class="rail-brand" type="button" title="홈으로 이동" on:click={() => navigate("explore")}>
         <img class="mark" src="/icon-192.png" alt="" aria-hidden="true" width="34" height="34" />
-        <div>
-          <div class="name">Noah Almighty</div>
-          <div class="sub">아바타 플랫폼</div>
-        </div>
-      </div>
+        <span>
+          <span class="name">Noah Almighty</span>
+          <span class="sub">아바타 플랫폼</span>
+        </span>
+      </button>
       <button
         bind:this={railDismiss}
         class="icon-button rail-dismiss"
