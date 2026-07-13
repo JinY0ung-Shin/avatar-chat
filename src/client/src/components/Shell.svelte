@@ -577,7 +577,6 @@
         <img class="mark" src="/icon-192.png" alt="" aria-hidden="true" width="34" height="34" />
         <span>
           <span class="name">Noah Almighty</span>
-          <span class="sub">아바타 플랫폼</span>
         </span>
       </button>
       <button
@@ -589,7 +588,7 @@
         title={desktopRail ? "왼쪽 메뉴 접기" : "메뉴 닫기"}
         on:click={dismissRail}
       >
-        <Icon name="close" size={18} />
+        <Icon name={desktopRail ? "panel-left-close" : "close"} size={18} />
       </button>
     </div>
 

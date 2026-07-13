@@ -224,8 +224,7 @@
   min-width: 0;
 }
 
-.rail-brand .name,
-.rail-brand .sub {
+.rail-brand .name {
   display: block;
 }
 
@@ -244,11 +243,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.rail-brand .sub {
-  font-size: var(--t-xs);
-  color: var(--rail-muted);
 }
 
 .rail-dismiss {
