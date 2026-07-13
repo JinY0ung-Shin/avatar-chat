@@ -12,8 +12,28 @@ import {
 import type { User } from "../types.js";
 import { type Constructor, type StoreBase } from "./internal.js";
 
+export type AppSecretState =
+  | { status: "missing" }
+  | { status: "unreadable" }
+  | { status: "ok"; value: string };
+
 export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class Secrets extends Base {
+    /**
+     * Ciphertext-aware cache: DB is still checked on every read so another Store
+     * instance or direct recovery write is observed immediately, but expensive
+     * synchronous scrypt/AES work only repeats when the ciphertext changes.
+     */
+    private readonly appSecretStateCache = new Map<
+      string,
+      { ciphertext: string | null; state: AppSecretState }
+    >();
+
+    override close(): void {
+      this.appSecretStateCache.clear();
+      super.close();
+    }
+
     // ---- Git credentials / personal knowledge repo -----------------------
 
     /** Store (encrypted) or clear the user's internal GitHub token as GIT_TOKEN. */
@@ -203,6 +223,7 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
             "ON CONFLICT(key) DO UPDATE SET value_enc = excluded.value_enc, updated_at = excluded.updated_at",
         )
         .run(key, enc, new Date().toISOString());
+      this.appSecretStateCache.delete(key);
     }
 
     /** Decrypt an app-wide secret. Null if unset or undecryptable (e.g. SESSION_SECRET changed). */
@@ -214,23 +235,34 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
     /** Distinguish an absent app setting from ciphertext that can no longer be decrypted. */
     getAppSecretState(
       key: string,
-    ):
-      | { status: "missing" }
-      | { status: "unreadable" }
-      | { status: "ok"; value: string } {
+    ): AppSecretState {
       const row = this.db.prepare("SELECT value_enc FROM app_config WHERE key = ?").get(key) as
         | { value_enc: string }
         | undefined;
-      if (!row) {
-        return { status: "missing" };
+      const ciphertext = row?.value_enc ?? null;
+      const cached = this.appSecretStateCache.get(key);
+      if (cached?.ciphertext === ciphertext) {
+        return cached.state;
       }
-      const value = decryptSecret(row.value_enc, this.secret);
-      return value === null ? { status: "unreadable" } : { status: "ok", value };
+      let state: AppSecretState;
+      if (ciphertext === null) {
+        state = Object.freeze({ status: "missing" });
+      } else {
+        const value = decryptSecret(ciphertext, this.secret);
+        state = Object.freeze(
+          value === null
+            ? { status: "unreadable" as const }
+            : { status: "ok" as const, value },
+        );
+      }
+      this.appSecretStateCache.set(key, { ciphertext, state });
+      return state;
     }
 
     /** Remove an app-wide secret. No-op if it doesn't exist. */
     deleteAppSecret(key: string): void {
       this.db.prepare("DELETE FROM app_config WHERE key = ?").run(key);
+      this.appSecretStateCache.delete(key);
     }
 
     /** Deployment-wide hex-ssh tool allowlist, grouped by viewer class. */

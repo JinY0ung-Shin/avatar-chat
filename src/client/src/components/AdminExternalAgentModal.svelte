@@ -38,26 +38,42 @@
   let selectedGroupIds = [...(agent?.visibleToGroupIds || [])];
   let apiKeyMode: "keep" | "set" | "clear" = "keep";
   let apiKey = "";
-  let connectTimeout = agent?.connectTimeoutSeconds?.toString() || "";
-  let idleTimeout = agent?.idleTimeoutSeconds?.toString() || "";
-  let totalTimeout = agent?.totalTimeoutSeconds?.toString() || "";
+  let connectTimeout: string | number | null = agent?.connectTimeoutSeconds?.toString() || "";
+  let idleTimeout: string | number | null = agent?.idleTimeoutSeconds?.toString() || "";
+  let totalTimeout: string | number | null = agent?.totalTimeoutSeconds?.toString() || "";
   let busy = false;
   let testBusy = false;
   let error = "";
   let testMessage = "";
   let testKind: "ok" | "warn" | "error" | "" = "";
+  let testedConnectionFingerprint = "";
+  let validationVisible = isEdit;
+  let idTouched = isEdit;
+  let displayNameTouched = isEdit;
+  let endpointTouched = isEdit;
 
   $: knownGroupIds = new Set(groups.map((group) => group.id));
   $: missingGroupIds = selectedGroupIds.filter((groupId) => !knownGroupIds.has(groupId));
   $: idReady = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id.trim());
   $: endpointReady = validEndpoint(endpoint);
   $: groupsReady = visibility === "public" || selectedGroupIds.length > 0;
-  $: apiKeyReady = apiKeyMode !== "set" || Boolean(apiKey.trim());
+  $: storedKeyNeedsReplacement = Boolean(
+    agent?.apiKeySet &&
+      apiKeyMode === "keep" &&
+      endpointReady &&
+      endpointIdentity(endpoint) !== endpointIdentity(agent.endpoint),
+  );
+  $: apiKeyReady =
+    (apiKeyMode !== "set" || Boolean(apiKey.trim())) &&
+    !storedKeyNeedsReplacement;
   $: timeoutsReady = [
     [connectTimeout, 300],
     [idleTimeout, 3_600],
     [totalTimeout, 86_400],
-  ].every(([value, max]) => !value || validPositiveNumber(String(value), Number(max)));
+  ].every(
+    ([value, max]) =>
+      isBlankValue(value) || validPositiveNumber(String(value), Number(max)),
+  );
   $: formReady = Boolean(
     idReady &&
       displayName.trim() &&
@@ -68,22 +84,41 @@
       !missingGroupIds.length,
   );
   $: canSubmit = Boolean(!busy && !testBusy && formReady);
+  $: connectionFingerprint = JSON.stringify([
+    endpoint.trim(),
+    model.trim(),
+    apiKeyMode,
+    apiKeyMode === "set" ? apiKey.trim() : "",
+  ]);
+  $: if (
+    testMessage &&
+    testedConnectionFingerprint &&
+    testedConnectionFingerprint !== connectionFingerprint
+  ) {
+    testedConnectionFingerprint = "";
+    testKind = "warn";
+    testMessage = "연결 설정이 변경되었습니다. 인증·모델 목록을 다시 확인해 주세요.";
+  }
   $: status = busy
     ? "저장 중…"
     : error
       ? error
+      : !validationVisible
+        ? "필수 항목을 입력하면 저장과 인증·모델 확인을 진행할 수 있습니다."
       : !idReady
         ? "ID는 영문·숫자로 시작하고 영문·숫자·_·-만 사용할 수 있습니다."
         : !displayName.trim()
           ? "표시 이름을 입력해 주세요."
           : !endpointReady
-            ? "http 또는 https 형식의 Gateway endpoint를 입력해 주세요."
+            ? "쿼리 없이 /v1/agents/messages로 끝나는 http(s) Gateway endpoint를 입력해 주세요."
             : !groupsReady
               ? "그룹 공개를 선택했다면 한 개 이상의 그룹을 선택해 주세요."
               : missingGroupIds.length
                 ? "삭제되었거나 알 수 없는 그룹 선택을 먼저 해제해 주세요."
                 : !apiKeyReady
-                  ? "교체할 Gateway API 키를 입력해 주세요."
+                  ? storedKeyNeedsReplacement
+                    ? "Gateway endpoint를 변경하려면 새 API 키를 등록하거나 저장된 키를 삭제해 주세요."
+                    : "교체할 Gateway API 키를 입력해 주세요."
                   : !timeoutsReady
                     ? "고급 시간 제한은 허용 범위 안의 양수여야 합니다."
                     : "저장할 준비가 됐습니다.";
@@ -95,10 +130,22 @@
         (url.protocol === "http:" || url.protocol === "https:") &&
         !url.username &&
         !url.password &&
-        !url.hash
+        !url.hash &&
+        !url.search &&
+        url.pathname.replace(/\/+$/, "").endsWith("/v1/agents/messages")
       );
     } catch {
       return false;
+    }
+  }
+
+  function endpointIdentity(value: string): string {
+    try {
+      const url = new URL(value.trim());
+      url.pathname = url.pathname.replace(/\/+$/, "");
+      return url.toString();
+    } catch {
+      return "";
     }
   }
 
@@ -107,8 +154,17 @@
     return Number.isFinite(parsed) && parsed > 0 && parsed <= max;
   }
 
-  function optionalSeconds(value: string): number | undefined {
-    return value.trim() ? Number(value) : undefined;
+  function isBlankValue(
+    value: string | number | null | undefined,
+  ): boolean {
+    return value === null || value === undefined || String(value).trim() === "";
+  }
+
+  function optionalSeconds(
+    value: string | number | null | undefined,
+  ): number | undefined {
+    const normalized = String(value ?? "").trim();
+    return normalized ? Number(normalized) : undefined;
   }
 
   function toggleGroup(groupId: string, checked: boolean): void {
@@ -183,6 +239,7 @@
       testKind = "error";
       testMessage = `연결 확인 실패: ${(err as Error).message}`;
     } finally {
+      testedConnectionFingerprint = connectionFingerprint;
       testBusy = false;
     }
   }
@@ -250,18 +307,22 @@
     </label>
   </div>
 
-  <form class="external-agent-form" on:submit|preventDefault={submit}>
+  <form
+    class="external-agent-form"
+    on:input={() => (validationVisible = true)}
+    on:submit|preventDefault={submit}
+  >
     <fieldset class="external-agent-section" disabled={busy || testBusy}>
       <legend>프로필</legend>
       <div class="external-agent-fields two-columns">
         <label class="field">
           <span>ID</span>
-          <input bind:value={id} disabled={isEdit || busy || testBusy} placeholder="research-agent" autocomplete="off" aria-describedby={statusId} />
+          <input bind:value={id} on:input={() => (idTouched = true)} disabled={isEdit || busy || testBusy} placeholder="research-agent" autocomplete="off" required aria-invalid={idTouched && !idReady} aria-describedby={statusId} />
           <small class="field-hint">생성 후 변경할 수 없으며 공개 ID는 external:{id || "…"}입니다.</small>
         </label>
         <label class="field">
           <span>표시 이름</span>
-          <input bind:value={displayName} placeholder="Research Agent" autocomplete="off" aria-describedby={statusId} />
+          <input bind:value={displayName} on:input={() => (displayNameTouched = true)} placeholder="Research Agent" autocomplete="off" required aria-invalid={displayNameTouched && !displayName.trim()} aria-describedby={statusId} />
         </label>
         <label class="field">
           <span>별칭</span>
@@ -291,7 +352,7 @@
       <legend>Gateway</legend>
       <label class="field">
         <span>메시지 endpoint</span>
-        <input bind:value={endpoint} type="url" placeholder="https://gateway.example/v1/agents/messages" autocomplete="url" aria-describedby={statusId} />
+        <input bind:value={endpoint} on:input={() => (endpointTouched = true)} type="url" placeholder="https://gateway.example/v1/agents/messages" autocomplete="url" required aria-invalid={endpointTouched && !endpointReady} aria-describedby={statusId} />
         <small class="field-hint">리디렉션은 허용하지 않으며 API 키는 Authorization: Bearer 헤더로만 전송됩니다.</small>
       </label>
       <div class="external-agent-fields two-columns">
@@ -338,6 +399,11 @@
           />
         {/if}
         <small class="field-hint">값은 암호화해 저장하고, 저장 후에는 다시 표시하지 않습니다.</small>
+        {#if storedKeyNeedsReplacement}
+          <small class="field-hint warn" role="alert">
+            endpoint가 바뀌면 기존 키를 새 주소로 전달하지 않습니다. 새 키 등록 또는 저장된 키 삭제를 선택하세요.
+          </small>
+        {/if}
       </div>
 
       <details class="external-agent-advanced">
@@ -345,21 +411,21 @@
         <div class="external-agent-fields three-columns">
           <label class="field">
             <span>연결 (초)</span>
-            <input bind:value={connectTimeout} type="number" min="1" max="300" placeholder="15" inputmode="numeric" />
+            <input bind:value={connectTimeout} type="number" min="1" max="300" placeholder="15" inputmode="numeric" aria-invalid={Boolean(validationVisible && !isBlankValue(connectTimeout) && !validPositiveNumber(String(connectTimeout), 300))} aria-describedby={statusId} />
           </label>
           <label class="field">
             <span>스트림 무응답 (초)</span>
-            <input bind:value={idleTimeout} type="number" min="1" max="3600" placeholder="120" inputmode="numeric" />
+            <input bind:value={idleTimeout} type="number" min="1" max="3600" placeholder="120" inputmode="numeric" aria-invalid={Boolean(validationVisible && !isBlankValue(idleTimeout) && !validPositiveNumber(String(idleTimeout), 3_600))} aria-describedby={statusId} />
           </label>
           <label class="field">
             <span>전체 실행 (초)</span>
-            <input bind:value={totalTimeout} type="number" min="1" max="86400" placeholder="1800" inputmode="numeric" />
+            <input bind:value={totalTimeout} type="number" min="1" max="86400" placeholder="1800" inputmode="numeric" aria-invalid={Boolean(validationVisible && !isBlankValue(totalTimeout) && !validPositiveNumber(String(totalTimeout), 86_400))} aria-describedby={statusId} />
           </label>
         </div>
       </details>
     </fieldset>
 
-    <fieldset class="external-agent-section" disabled={busy || testBusy}>
+    <fieldset class="external-agent-section" disabled={busy || testBusy} aria-describedby={statusId}>
       <legend>공개 범위</legend>
       <div class="radio-cards compact" role="radiogroup" aria-label="외부 아바타 공개 범위">
         <label class="radio-card">
@@ -367,12 +433,17 @@
           <div class="radio-card-body"><strong>모든 사용자</strong><div class="muted">로그인한 모든 Noah 사용자에게 표시</div></div>
         </label>
         <label class="radio-card">
-          <input type="radio" bind:group={visibility} value="group" />
+          <input
+            type="radio"
+            bind:group={visibility}
+            value="group"
+            aria-describedby={statusId}
+          />
           <div class="radio-card-body"><strong>지정 그룹</strong><div class="muted">선택한 그룹의 현재 구성원에게만 표시</div></div>
         </label>
       </div>
       {#if visibility === "group"}
-        <div class="external-agent-group-picker" role="group" aria-label="허용 그룹">
+        <div class="external-agent-group-picker" role="group" aria-label="허용 그룹" aria-describedby={statusId}>
           {#if !groups.length && !missingGroupIds.length}
             <div class="empty-note">먼저 관리자 ▸ 그룹에서 그룹을 만들어 주세요.</div>
           {:else}
@@ -401,7 +472,7 @@
     <div
       id={statusId}
       class="routine-form-status"
-      class:invalid={Boolean(error || !formReady)}
+      class:invalid={Boolean(error || (validationVisible && !formReady))}
       class:dirty={formReady && !busy && !testBusy}
       class:pending={busy}
       role="status"
@@ -414,7 +485,7 @@
     <div class="routine-modal-actions">
       <div class="routine-modal-actions-left">
         <button class="ghost-sm" type="button" disabled={!canSubmit || testBusy} on:click={testConnection}>
-          {testBusy ? "확인 중…" : "Gateway 연결 확인"}
+          {testBusy ? "확인 중…" : "인증·모델 확인"}
         </button>
       </div>
       <div class="routine-modal-actions-right">

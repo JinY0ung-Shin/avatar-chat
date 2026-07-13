@@ -631,6 +631,12 @@ describe("external avatar chat routes", () => {
         expect(
           services.store.getAgentSessionId(viewerId, conversationId),
         ).toBeNull();
+        expect(
+          services.store.getConversationExternalEndpoint(
+            viewerId,
+            conversationId,
+          ),
+        ).toBe(endpoint);
 
         await viewer
           .post("/api/chat/stream")
@@ -644,6 +650,8 @@ describe("external avatar chat routes", () => {
         expect(
           services.store.getAgentSessionId(viewerId, conversationId),
         ).toBeNull();
+        const system = await viewer.get("/api/admin/system").expect(200);
+        expect(system.body.system.observedModel).toBeNull();
 
         const conversations = await viewer
           .get("/api/conversations")

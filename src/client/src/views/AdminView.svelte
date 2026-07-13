@@ -473,7 +473,9 @@
     <h1>관리자</h1>
     <p>사용자·그룹·외부 아바타·접근·시스템을 관리하세요</p>
   </div>
-  <button class="ghost-sm" type="button" disabled={loadBusy} on:click={load}>{loadBusy ? "새로고침 중…" : "새로고침"}</button>
+  {#if $appState.adminTab !== "external-agents"}
+    <button class="ghost-sm" type="button" disabled={loadBusy} on:click={load}>{loadBusy ? "새로고침 중…" : "새로고침"}</button>
+  {/if}
 </header>
 
 <div class="view-body scroll-thin">
@@ -506,7 +508,11 @@
     </div>
 
     <div class="admin-panel" role="tabpanel" id="admin-panel" aria-labelledby={`admin-tab-${$appState.adminTab}`}>
-      <AdminExternalAgentsPanel active={$appState.adminTab === "external-agents"} groups={$appState.adminGroups} />
+      <AdminExternalAgentsPanel
+        active={$appState.adminTab === "external-agents"}
+        groups={$appState.adminGroups}
+        {reloadGroups}
+      />
       {#if $appState.adminTab === "overview"}
         <div class="admin-list">
           <section class="settings-card">

@@ -60,6 +60,25 @@ export function registerAdminExternalAgentRoutes(
     return true;
   };
 
+  const replaceRegistry = (
+    res: Response,
+    expected: readonly ExternalAgentConfig[],
+    next: readonly ExternalAgentConfig[],
+    rebind?: {
+      avatarId: string;
+      previousEndpoint: string;
+      nextEndpoint: string;
+    },
+  ): boolean => {
+    if (store.replaceManagedExternalAgents(expected, next, rebind)) return true;
+    apiError(
+      res,
+      409,
+      "외부 아바타 설정이 다른 관리자 작업으로 변경되었습니다. 새로고침한 뒤 다시 시도해 주세요.",
+    );
+    return false;
+  };
+
   router.get(
     "/api/admin/external-agents",
     requireAuth(store),
@@ -110,7 +129,7 @@ export function registerAdminExternalAgentRoutes(
         apiError(res, 400, `외부 아바타는 최대 ${MAX_EXTERNAL_AGENTS}개까지 등록할 수 있습니다.`);
         return;
       }
-      store.setManagedExternalAgents([...state.agents, agent]);
+      if (!replaceRegistry(res, state.agents, [...state.agents, agent])) return;
       auditAs(req, "external_agent_create", `external agent ${agent.id}`);
       logger.info(
         { actorId: req.user!.id, externalAgentId: agent.id },
@@ -166,7 +185,15 @@ export function registerAdminExternalAgentRoutes(
       }
       const next = [...state.agents];
       next[index] = agent;
-      store.setManagedExternalAgents(next);
+      const endpointRebind =
+        historyCount > 0 && previous.endpoint !== agent.endpoint
+          ? {
+              avatarId: externalAvatarId(previous),
+              previousEndpoint: previous.endpoint,
+              nextEndpoint: agent.endpoint,
+            }
+          : undefined;
+      if (!replaceRegistry(res, state.agents, next, endpointRebind)) return;
       const action =
         previous.enabled !== false && agent.enabled === false
           ? "external_agent_disable"
@@ -208,9 +235,15 @@ export function registerAdminExternalAgentRoutes(
         );
         return;
       }
-      store.setManagedExternalAgents(
-        state.agents.filter((item) => item.id !== req.params.id),
-      );
+      if (
+        !replaceRegistry(
+          res,
+          state.agents,
+          state.agents.filter((item) => item.id !== req.params.id),
+        )
+      ) {
+        return;
+      }
       auditAs(req, "external_agent_delete", `external agent ${agent.id}`);
       logger.warn(
         { actorId: req.user!.id, externalAgentId: agent.id },
@@ -226,11 +259,20 @@ export function registerAdminExternalAgentRoutes(
     requireAdmin,
     async (req: AuthenticatedRequest, res) => {
       const storedId = safeString(req.body?.storedId);
+      const environmentStoredId = storedId && environmentIds().has(storedId);
       const existing = storedId
         ? effectiveAgents().find((item) => item.id === storedId)
         : undefined;
       if (storedId && !existing) {
         apiError(res, 404, "연결을 확인할 외부 아바타를 찾을 수 없습니다.");
+        return;
+      }
+      if (environmentStoredId && req.body?.agent !== undefined) {
+        apiError(
+          res,
+          409,
+          "환경 변수에서 관리되는 외부 아바타는 저장된 설정 그대로만 확인할 수 있습니다.",
+        );
         return;
       }
       let agent = existing;
@@ -241,6 +283,10 @@ export function registerAdminExternalAgentRoutes(
           inputError(res, error);
           return;
         }
+      }
+      if (storedId && agent?.id !== storedId) {
+        apiError(res, 400, "연결 확인 설정의 외부 아바타 ID가 일치하지 않습니다.");
+        return;
       }
       if (!agent) {
         apiError(res, 400, "연결을 확인할 외부 아바타 설정을 입력해 주세요.");

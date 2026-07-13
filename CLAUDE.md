@@ -62,9 +62,15 @@ These are the invariants the project is built around. New work should reinforce 
   and does not interrupt a run that already passed its start-time authorization check. Admin-managed
   entries live as one versioned, AES-GCM-encrypted registry under `app_config`; environment entries are
   read-only and win same-ID collisions. API keys are write-only (`apiKeySet` only on reads), and admin
-  Gateway checks use authenticated `/v1/models` rather than executing an agent/tool turn. Keep external
-  ids immutable: a history-bearing entry may be disabled but not deleted, and changing its endpoint
-  requires explicit confirmation because the next stateless turn sends the full stored history.
+  Gateway checks use authenticated `/v1/models` rather than executing an agent/tool turn. Bind a stored
+  API key to its exact normalized endpoint: an address change must use key `set` or `clear`, never `keep`.
+  Keep external ids immutable: a history-bearing entry may be disabled but not deleted, and changing its
+  managed endpoint requires explicit confirmation plus conversation-binding migration. Every external
+  conversation stores the exact endpoint it first trusted; an unapproved env/config re-point must fail
+  closed before sending history, and a legacy conversation whose binding is `NULL` must start over rather
+  than lazily adopting the current address. Commit a confirmed managed rebind and its encrypted registry
+  compare-and-swap in one immediate DB transaction. Registry caching may skip scrypt/JSON work only while the exact DB
+  ciphertext is unchanged; tamper, wrong secrets, and invalid versions must still become an empty registry.
 
 ## Module map
 - **HTTP:** `app.ts` is thin glue (`createApp` mounts per-domain routers); handlers in

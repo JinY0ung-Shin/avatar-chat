@@ -168,16 +168,23 @@ function endpointFor(raw: Record<string, unknown>, index: number): string {
       `EXTERNAL_AGENTS_JSON[${index}] endpoint must not contain a URL fragment.`,
     );
   }
+  if (parsed.search) {
+    throw new Error(
+      `EXTERNAL_AGENTS_JSON[${index}] endpoint must not contain a query string.`,
+    );
+  }
+  const normalizedPath = parsed.pathname.replace(/\/+$/, "");
   if (base) {
-    if (parsed.search) {
-      throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].baseUrl must not contain a query string.`,
-      );
-    }
-    const normalizedPath = parsed.pathname.replace(/\/+$/, "");
     parsed.pathname = normalizedPath.endsWith("/v1/agents/messages")
       ? normalizedPath
       : `${normalizedPath}/v1/agents/messages`;
+  } else {
+    if (!normalizedPath.endsWith("/v1/agents/messages")) {
+      throw new Error(
+        `EXTERNAL_AGENTS_JSON[${index}].endpoint must end with /v1/agents/messages.`,
+      );
+    }
+    parsed.pathname = normalizedPath;
   }
   return parsed.toString();
 }
@@ -318,6 +325,12 @@ export function parseExternalAgents(
       index,
       MAX_TOTAL_TIMEOUT_SECONDS,
     );
+    const agent = optionalText(raw.agent, "agent", index, 64) ?? "claude";
+    if (agent !== "claude") {
+      throw new Error(
+        `EXTERNAL_AGENTS_JSON[${index}].agent must be claude.`,
+      );
+    }
     return {
       id,
       displayName,
@@ -327,7 +340,7 @@ export function parseExternalAgents(
       intro: optionalText(raw.intro, "intro", index, 2_000) ?? "",
       hashtags: hashtagsFor(raw.hashtags, index),
       endpoint: endpointFor(raw, index),
-      agent: optionalText(raw.agent, "agent", index, 64) ?? "claude",
+      agent,
       enabled: optionalBoolean(raw.enabled, "enabled", index) ?? true,
       model: optionalText(raw.model, "model", index, 256),
       system: optionalText(raw.system, "system", index, 100_000),
@@ -342,8 +355,8 @@ export function parseExternalAgents(
 
 /**
  * Validate one UI-managed definition with explicit write-only credential
- * semantics. Managed v1 entries deliberately support only the Claude agent;
- * static env entries keep the broader parser for backward compatibility.
+ * semantics. The stateless v1 contract deliberately supports only the Claude
+ * agent in both managed and environment-backed entries.
  */
 export function parseAdminExternalAgentInput(
   value: unknown,
@@ -393,6 +406,15 @@ export function parseAdminExternalAgentInput(
   candidate.agent = "claude";
   if (nextApiKey) candidate.apiKey = nextApiKey;
   const [parsed] = parseExternalAgents(JSON.stringify([candidate]));
+  if (
+    apiKeyMode === "keep" &&
+    existing?.apiKey &&
+    parsed.endpoint !== existing.endpoint
+  ) {
+    throw new Error(
+      "Gateway endpoint를 변경할 때는 새 API 키를 등록하거나 저장된 키를 삭제해야 합니다.",
+    );
+  }
   return parsed;
 }
 

@@ -316,6 +316,7 @@ export class StoreBase {
         avatar_user_id TEXT NOT NULL,
         title TEXT,
         working_repo TEXT,
+        external_endpoint TEXT,
         created_at TEXT,
         updated_at TEXT
       );
@@ -525,6 +526,10 @@ export class StoreBase {
     // their working repo, and so an interactive open in a routine's thread carries to
     // every scheduled run on the same conversation id.
     this.addColumnIfMissing("conversations", "working_repo", "TEXT");
+    // Exact stateless Gateway endpoint this external conversation first trusted.
+    // Binding prevents an env/config change from silently sending the stored full
+    // transcript to a different endpoint on the next turn.
+    this.addColumnIfMissing("conversations", "external_endpoint", "TEXT");
     // Capability hashtags (역량 해시태그): a JSON array of short searchable tags the
     // avatar generates from its skills/persona, shown in discovery (탐색) and queried
     // by the cross-avatar `mcp__avatars__search_avatars` tool. Null/[] = none.
@@ -838,7 +843,7 @@ export interface StoreBase {
     conversationId: string,
     avatarUserId: string,
     firstUserText: string,
-    opts?: { isRoutine?: boolean },
+    opts?: { isRoutine?: boolean; externalEndpoint?: string },
   ): void;
   deleteCanvasArtifactsForConversation(conversationId: string): void;
   countOpenKnowledgeRequests(avatarUserId: string): number;

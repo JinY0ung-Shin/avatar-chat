@@ -819,6 +819,28 @@ export function createChatRouter({
         apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
         return;
       }
+      if (externalAgent && existingAvatarId) {
+        const boundEndpoint = store.getConversationExternalEndpoint(
+          req.user!.id,
+          conversationId,
+        );
+        if (!boundEndpoint) {
+          apiError(
+            res,
+            409,
+            "이 기존 대화에는 신뢰한 Gateway 주소 정보가 없습니다. 기록 보호를 위해 새 대화를 시작해 주세요.",
+          );
+          return;
+        }
+        if (boundEndpoint !== externalAgent.endpoint) {
+          apiError(
+            res,
+            409,
+            "이 대화는 이전 Gateway 주소에 연결되어 있습니다. 기록 보호를 위해 새 대화를 시작해 주세요.",
+          );
+          return;
+        }
+      }
       const conversationMcpToolGroups = requestedMcpToolGroups ??
         store.getConversationMcpToolGroups(req.user!.id, conversationId) ?? [
           ...DEFAULT_MCP_TOOL_GROUPS,
@@ -954,6 +976,7 @@ export function createChatRouter({
           conversationId,
           avatar.id,
           displayMessage,
+          externalAgent ? { externalEndpoint: externalAgent.endpoint } : {},
         );
         // Persist the owner's group-knowledge selection now that the row exists, so
         // it survives reload and applies to later turns until changed again.
@@ -1077,9 +1100,8 @@ export function createChatRouter({
                 onStatus: (label) => {
                   emitRunEvent(runId, "status", { label });
                 },
-                onModel: (model) => {
-                  observedModel.set(model);
-                },
+                // External Gateway telemetry must not overwrite the local SDK
+                // model shown in the administrator system overview.
                 // runExternalAgent deliberately suppresses this callback: a
                 // gateway SDK session id must never become Noah continuation state.
                 onSessionId: (sessionId) => {

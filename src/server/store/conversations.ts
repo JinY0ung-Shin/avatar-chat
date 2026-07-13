@@ -143,6 +143,21 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       return row?.avatar_user_id ?? null;
     }
 
+    /** Exact Gateway endpoint bound to an external conversation, if established. */
+    getConversationExternalEndpoint(
+      ownerId: string,
+      conversationId: string,
+    ): string | null {
+      const row = this.db
+        .prepare(
+          "SELECT external_endpoint FROM conversations WHERE id = ? AND owner_user_id = ?",
+        )
+        .get(conversationId, ownerId) as
+        | { external_endpoint: string | null }
+        | undefined;
+      return row?.external_endpoint ?? null;
+    }
+
     /** The owner of a conversation regardless of caller (null if it doesn't exist). */
     conversationOwner(conversationId: string): string | null {
       const row = this.db
@@ -156,7 +171,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       conversationId: string,
       avatarUserId: string,
       firstUserText: string,
-      opts: { isRoutine?: boolean } = {},
+      opts: { isRoutine?: boolean; externalEndpoint?: string } = {},
     ): void {
       const timestamp = now();
       // Look up by id ALONE so a conversation id that already exists under a
@@ -165,26 +180,58 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       // Express 4, escape the async handler as an unhandled rejection). The chat
       // route also rejects a foreign supplied id up front with a 409.
       const existing = this.db
-        .prepare("SELECT owner_user_id FROM conversations WHERE id = ?")
-        .get(conversationId) as { owner_user_id: string } | undefined;
+        .prepare(
+          "SELECT owner_user_id, external_endpoint FROM conversations WHERE id = ?",
+        )
+        .get(conversationId) as
+        | { owner_user_id: string; external_endpoint: string | null }
+        | undefined;
       if (existing) {
         if (existing.owner_user_id !== ownerId) {
           throw new Error("CONVERSATION_OWNER_MISMATCH");
         }
+        if (
+          opts.externalEndpoint &&
+          existing.external_endpoint !== opts.externalEndpoint
+        ) {
+          throw new Error(
+            existing.external_endpoint
+              ? "EXTERNAL_ENDPOINT_MISMATCH"
+              : "EXTERNAL_ENDPOINT_UNBOUND",
+          );
+        }
         // Promote to routine-tagged if asked (idempotent); never clears the flag.
+        // Existing external rows must already be endpoint-bound. In particular,
+        // legacy NULL rows may contain a transcript from before this column existed;
+        // silently adopting the current endpoint could disclose that history after
+        // an env/config change.
         this.db
-          .prepare(`UPDATE conversations SET updated_at = ?${opts.isRoutine ? ", is_routine = 1" : ""} WHERE id = ?`)
-          .run(timestamp, conversationId);
+          .prepare(
+            `UPDATE conversations SET updated_at = ?${opts.isRoutine ? ", is_routine = 1" : ""} WHERE id = ?`,
+          )
+          .run(
+            timestamp,
+            conversationId,
+          );
         return;
       }
       const rawTitle = firstUserText.trim().replace(/\s+/g, " ");
       const title = rawTitle.length > 0 ? rawTitle.slice(0, 40) : "새 대화";
       this.db
         .prepare(
-          `INSERT INTO conversations (id, owner_user_id, avatar_user_id, title, is_routine, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO conversations (id, owner_user_id, avatar_user_id, title, is_routine, external_endpoint, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(conversationId, ownerId, avatarUserId, title, opts.isRoutine ? 1 : 0, timestamp, timestamp);
+        .run(
+          conversationId,
+          ownerId,
+          avatarUserId,
+          title,
+          opts.isRoutine ? 1 : 0,
+          opts.externalEndpoint ?? null,
+          timestamp,
+          timestamp,
+        );
     }
 
     /** The SDK session to resume for this conversation's next turn (null if none). */

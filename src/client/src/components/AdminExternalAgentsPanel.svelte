@@ -13,9 +13,11 @@
 
   export let active = false;
   export let groups: AdminGroupSummary[] = [];
+  export let reloadGroups: () => Promise<void> = async () => {};
 
   let agents: AdminExternalAgent[] = [];
   let loading = false;
+  let refreshBusy = false;
   let initialized = false;
   let error = "";
   let configError: "decrypt_failed" | "invalid" | null = null;
@@ -100,6 +102,18 @@
     }
   }
 
+  async function refresh(): Promise<void> {
+    if (refreshBusy) return;
+    refreshBusy = true;
+    try {
+      await Promise.all([load(), reloadGroups()]);
+    } catch (err) {
+      notify(`그룹 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      refreshBusy = false;
+    }
+  }
+
   async function refreshRuntimeAvatars(): Promise<void> {
     try {
       await loadAvatars(true);
@@ -112,6 +126,7 @@
   }
 
   function openCreate(): void {
+    if (configError) return;
     editing = null;
     editorOpen = true;
   }
@@ -239,10 +254,10 @@
           </p>
         </div>
         <div class="ar-actions">
-          <button class="ghost-sm" type="button" disabled={loading} on:click={load}>
-            {loading ? "새로고침 중…" : "새로고침"}
+          <button class="ghost-sm" type="button" disabled={loading || refreshBusy} on:click={refresh}>
+            {loading || refreshBusy ? "새로고침 중…" : "새로고침"}
           </button>
-          <button class="primary small" type="button" on:click={openCreate}>
+          <button class="primary small" type="button" disabled={Boolean(configError)} on:click={openCreate}>
             <Icon name="plus" size={16} /> 추가
           </button>
         </div>
@@ -283,11 +298,16 @@
         <div class="admin-list external-agent-list" aria-busy={loading}>
           {#if loading && !initialized}
             <div class="muted pad" role="status">외부 아바타 설정을 불러오는 중…</div>
+          {:else if configError && !agents.length}
+            <div class="empty-note external-agent-empty" role="status">
+              <strong>저장된 설정을 복구해야 합니다.</strong>
+              <span class="muted">SESSION_SECRET과 암호화된 registry를 확인한 뒤 새로고침해 주세요. 복구 전에는 설정을 덮어쓰지 않습니다.</span>
+            </div>
           {:else if !agents.length}
             <div class="empty-note external-agent-empty">
               <strong>등록된 외부 아바타가 없습니다.</strong>
               <span class="muted">Gateway endpoint와 공개 그룹을 설정해 첫 외부 아바타를 추가하세요.</span>
-              <button class="primary small" type="button" on:click={openCreate}>외부 아바타 추가</button>
+              <button class="primary small" type="button" disabled={Boolean(configError)} on:click={openCreate}>외부 아바타 추가</button>
             </div>
           {:else if !shownAgents.length}
             <div class="muted pad">
@@ -316,7 +336,7 @@
                   </div>
                   <div class="ar-actions">
                     <button class="ghost-sm" type="button" disabled={rowBusy[agent.id]} on:click={() => testSaved(agent)}>
-                      {rowBusy[agent.id] ? "확인 중…" : "연결 확인"}
+                      {rowBusy[agent.id] ? "확인 중…" : "인증·모델 확인"}
                     </button>
                     {#if agent.source === "managed"}
                       <button class="ghost-sm" type="button" disabled={rowBusy[agent.id]} on:click={() => openEdit(agent)}>편집</button>

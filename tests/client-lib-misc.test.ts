@@ -510,6 +510,8 @@ describe("nav routing", () => {
     expect(currentRoute()).toBe("#/settings/knowledge");
     replaceState({ view: "admin", adminTab: "audit" });
     expect(currentRoute()).toBe("#/admin/audit");
+    replaceState({ view: "admin", adminTab: "external-agents" });
+    expect(currentRoute()).toBe("#/admin/external-agents");
     replaceState({ view: "brain", brainSource: "group:42" });
     expect(currentRoute()).toBe("#/brain/group%3A42");
     replaceState({ view: "brain", brainSource: "personal" });

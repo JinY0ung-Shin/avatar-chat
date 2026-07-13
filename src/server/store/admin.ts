@@ -21,9 +21,25 @@ import {
   SIGNUP_MODE_KEY,
   now,
 } from "./internal.js";
+import type { AppSecretState } from "./secrets.js";
 
 export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class Admin extends Base {
+    private managedExternalAgentsCache:
+      | {
+          source: AppSecretState;
+          state: {
+            agents: ExternalAgentConfig[];
+            configError: "decrypt_failed" | "invalid" | null;
+          };
+      }
+      | undefined;
+
+    override close(): void {
+      this.managedExternalAgentsCache = undefined;
+      super.close();
+    }
+
     // ---- Admin ------------------------------------------------------------
 
     private toAdminSummary(row: UserRow): AdminUserSummary {
@@ -186,19 +202,41 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
       agents: ExternalAgentConfig[];
       configError: "decrypt_failed" | "invalid" | null;
     } {
-      const state = this.getAppSecretState(MANAGED_EXTERNAL_AGENTS_KEY);
-      if (state.status === "missing") return { agents: [], configError: null };
-      if (state.status === "unreadable") {
-        return { agents: [], configError: "decrypt_failed" };
-      }
-      try {
-        return {
-          agents: parseManagedExternalAgents(state.value),
-          configError: null,
+      const source = this.getAppSecretState(MANAGED_EXTERNAL_AGENTS_KEY);
+      if (this.managedExternalAgentsCache?.source !== source) {
+        let state: {
+          agents: ExternalAgentConfig[];
+          configError: "decrypt_failed" | "invalid" | null;
         };
-      } catch {
-        return { agents: [], configError: "invalid" };
+        if (source.status === "missing") {
+          state = { agents: [], configError: null };
+        } else if (source.status === "unreadable") {
+          state = { agents: [], configError: "decrypt_failed" };
+        } else {
+          try {
+            state = {
+              agents: parseManagedExternalAgents(source.value),
+              configError: null,
+            };
+          } catch {
+            state = { agents: [], configError: "invalid" };
+          }
+        }
+        this.managedExternalAgentsCache = { source, state };
       }
+      const cached = this.managedExternalAgentsCache!.state;
+      return {
+        configError: cached.configError,
+        // Route code gets fresh mutable objects; cache-owned plaintext remains
+        // immutable by convention and cannot be poisoned by a caller.
+        agents: cached.agents.map((agent) => ({
+          ...agent,
+          hashtags: [...agent.hashtags],
+          ...(agent.visibleToGroupIds
+            ? { visibleToGroupIds: [...agent.visibleToGroupIds] }
+            : {}),
+        })),
+      };
     }
 
     getManagedExternalAgents(): ExternalAgentConfig[] {
@@ -208,12 +246,58 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
     setManagedExternalAgents(agents: readonly ExternalAgentConfig[]): void {
       if (!agents.length) {
         this.deleteAppSecret(MANAGED_EXTERNAL_AGENTS_KEY);
+        this.managedExternalAgentsCache = undefined;
         return;
       }
       this.setAppSecret(
         MANAGED_EXTERNAL_AGENTS_KEY,
         serializeManagedExternalAgents(agents),
       );
+      this.managedExternalAgentsCache = undefined;
+    }
+
+    /**
+     * Compare-and-swap the managed registry and, when requested, move exact
+     * conversation endpoint bindings in the same IMMEDIATE SQLite transaction.
+     * This prevents a failed registry write or a concurrent admin process from
+     * leaving stored transcripts bound to a different endpoint than the active
+     * registry. NULL legacy rows are adopted only through the administrator's
+     * explicit endpoint-change confirmation path.
+     */
+    replaceManagedExternalAgents(
+      expectedAgents: readonly ExternalAgentConfig[],
+      nextAgents: readonly ExternalAgentConfig[],
+      rebind?: {
+        avatarId: string;
+        previousEndpoint: string;
+        nextEndpoint: string;
+      },
+    ): boolean {
+      const expected = serializeManagedExternalAgents(expectedAgents);
+      const replace = this.db.transaction(() => {
+        const current = this.getManagedExternalAgentsState();
+        if (
+          current.configError ||
+          serializeManagedExternalAgents(current.agents) !== expected
+        ) {
+          return false;
+        }
+        if (rebind) {
+          this.db
+            .prepare(
+              "UPDATE conversations SET external_endpoint = ? " +
+                "WHERE avatar_user_id = ? AND (external_endpoint IS NULL OR external_endpoint = ?)",
+            )
+            .run(
+              rebind.nextEndpoint,
+              rebind.avatarId,
+              rebind.previousEndpoint,
+            );
+        }
+        this.setManagedExternalAgents(nextAgents);
+        return true;
+      });
+      return replace.immediate();
     }
 
     deleteUser(id: string): boolean {

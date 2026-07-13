@@ -135,9 +135,10 @@ function externalError(data: string): string {
 function gatewayModelsUrl(endpoint: string): string {
   const url = new URL(endpoint);
   const suffix = "/v1/agents/messages";
-  url.pathname = url.pathname.endsWith(suffix)
-    ? `${url.pathname.slice(0, -suffix.length)}/v1/models`
-    : "/v1/models";
+  if (!url.pathname.endsWith(suffix)) {
+    throw new Error("외부 에이전트 endpoint가 /v1/agents/messages 형식이 아닙니다.");
+  }
+  url.pathname = `${url.pathname.slice(0, -suffix.length)}/v1/models`;
   url.search = "";
   url.hash = "";
   return url.toString();
@@ -214,6 +215,9 @@ export async function probeExternalAgentGateway(
       .filter((item) => item.backend === "claude")
       .map((item) => item.id)
       .filter((id): id is string => typeof id === "string");
+    if (!modelIds.length) {
+      throw new Error("Gateway에서 사용 가능한 Claude 모델을 찾지 못했습니다.");
+    }
     return {
       ok: true,
       latencyMs: Date.now() - started,
