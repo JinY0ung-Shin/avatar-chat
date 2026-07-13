@@ -112,6 +112,30 @@ export const appState = writable<ClientState>({
 
 export const toasts = writable<Toast[]>([]);
 
+interface ToastTimer {
+  remainingMs: number;
+  startedAt: number;
+  timeoutId: number | null;
+}
+
+const toastTimers = new Map<string, ToastTimer>();
+
+function clearToastTimer(id: string): void {
+  const timer = toastTimers.get(id);
+  if (timer?.timeoutId != null) window.clearTimeout(timer.timeoutId);
+  toastTimers.delete(id);
+}
+
+function scheduleToastTimer(id: string, timer: ToastTimer): void {
+  if (timer.remainingMs <= 0) {
+    dismissToast(id);
+    return;
+  }
+  timer.startedAt = Date.now();
+  timer.timeoutId = window.setTimeout(() => dismissToast(id), timer.remainingMs);
+  toastTimers.set(id, timer);
+}
+
 export function readState(): ClientState {
   return get(appState);
 }
@@ -145,14 +169,36 @@ export function activePane(): ChatPane | null {
 export function notify(message: string, kind: Toast["kind"] = "warn", opts: Partial<Toast> = {}): void {
   const toast: Toast = { id: newId(), message, kind, ...opts };
   const durationMs = opts.durationMs ?? (opts.action ? 9000 : kind === "warn" ? 7000 : 5000);
-  toasts.update((items) => [...items.slice(-3), toast]);
-  window.setTimeout(() => {
-    toasts.update((items) => items.filter((item) => item.id !== toast.id));
-  }, durationMs);
+  let droppedIds: string[] = [];
+  toasts.update((items) => {
+    const kept = items.slice(-3);
+    const keptIds = new Set(kept.map((item) => item.id));
+    droppedIds = items.filter((item) => !keptIds.has(item.id)).map((item) => item.id);
+    return [...kept, toast];
+  });
+  for (const id of droppedIds) clearToastTimer(id);
+  scheduleToastTimer(toast.id, { remainingMs: durationMs, startedAt: Date.now(), timeoutId: null });
+  if (typeof document !== "undefined" && document.hidden) pauseToast(toast.id);
 }
 
 export function dismissToast(id: string): void {
+  clearToastTimer(id);
   toasts.update((items) => items.filter((item) => item.id !== id));
+}
+
+/** Keep actionable feedback available while the user is reading or interacting with it. */
+export function pauseToast(id: string): void {
+  const timer = toastTimers.get(id);
+  if (!timer || timer.timeoutId == null) return;
+  window.clearTimeout(timer.timeoutId);
+  timer.remainingMs = Math.max(0, timer.remainingMs - (Date.now() - timer.startedAt));
+  timer.timeoutId = null;
+}
+
+export function resumeToast(id: string): void {
+  const timer = toastTimers.get(id);
+  if (!timer || timer.timeoutId != null) return;
+  scheduleToastTimer(id, timer);
 }
 
 export function setDocumentTitle(): void {

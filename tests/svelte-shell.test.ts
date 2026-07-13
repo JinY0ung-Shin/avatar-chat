@@ -120,4 +120,48 @@ describe("Shell rail controls", () => {
     expect(onRailCollapsedChange).not.toHaveBeenCalled();
     expect(onMobileRailOpenChange).toHaveBeenLastCalledWith(false);
   });
+
+  it("makes conversation search reversible and gives repeated row actions contextual names", async () => {
+    setDesktopViewport(true);
+    const conversations = [
+      {
+        id: "conv-alpha",
+        title: "Alpha 계획",
+        avatarDisplayName: "Noah",
+        updatedAt: "2026-07-13T12:00:00.000Z",
+        isRoutine: false,
+      },
+      {
+        id: "conv-beta",
+        title: "Beta 점검",
+        avatarDisplayName: "Noah",
+        updatedAt: "2026-07-13T11:00:00.000Z",
+        isRoutine: false,
+      },
+    ];
+    replaceState({ conversations: conversations as any });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ conversations }),
+      })),
+    );
+
+    render(Shell, { props: { user, view: "explore" } });
+    await screen.findByRole("button", { name: "대화 열기: Alpha 계획" });
+
+    const search = screen.getByRole("searchbox", { name: "대화 검색" }) as HTMLInputElement;
+    await fireEvent.input(search, { target: { value: "alpha" } });
+    expect(document.getElementById("rail-conversation-status")?.textContent).toContain("검색 결과 1개");
+    expect(screen.queryByRole("button", { name: "대화 열기: Beta 점검" })).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "대화 검색어 지우기" }));
+    expect(search.value).toBe("");
+    expect(document.activeElement).toBe(search);
+    expect(screen.getByRole("button", { name: "분할 대화에 추가: Alpha 계획" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "대화 이름 바꾸기: Alpha 계획" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "대화 삭제: Alpha 계획" })).toBeTruthy();
+  });
 });

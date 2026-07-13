@@ -47,10 +47,29 @@ These are the invariants the project is built around. New work should reinforce 
   default when resuming an existing thread.
 - **Modules are split behind UNCHANGED exports.** When refactoring, keep import paths stable via
   re-exports rather than forcing callers to move.
+- **External avatars share one versioned wire contract with oh-my-gateway.**
+  `src/server/agent/externalAgent.ts` consumes `claude-agent-sdk-message-v1` from
+  `POST /v1/agents/messages`, then sends normalized `sdk_message` payloads through the SAME
+  `dispatchSdkMessage` used by local SDK runs. When changing SDK event handling or the external stream
+  shape, update and verify both Noah and oh-my-gateway's endpoint mapper; never fork a second handler.
+  Preserve stateless semantics: send the complete stored text history each turn, ignore upstream
+  `session_id`, and propagate aborts. Run Noah's `tests/external-agent.test.ts` together with the
+  gateway endpoint and `/v1/responses` regression tests. `visibleToGroupIds` is a Noah-only visibility
+  ACL: omission means public, a non-empty list means membership in any listed group, and unknown/deleted
+  group IDs fail closed. Enforce it through the shared external-agent visibility helper on list, detail,
+  skills, and every new chat turn; never treat it as trust/elevation or a Gateway tool policy. System
+  admins do not bypass membership. Revocation blocks the next request but preserves user-owned history
+  and does not interrupt a run that already passed its start-time authorization check. Admin-managed
+  entries live as one versioned, AES-GCM-encrypted registry under `app_config`; environment entries are
+  read-only and win same-ID collisions. API keys are write-only (`apiKeySet` only on reads), and admin
+  Gateway checks use authenticated `/v1/models` rather than executing an agent/tool turn. Keep external
+  ids immutable: a history-bearing entry may be disabled but not deleted, and changing its endpoint
+  requires explicit confirmation because the next stateless turn sends the full stored history.
 
 ## Module map
 - **HTTP:** `app.ts` is thin glue (`createApp` mounts per-domain routers); handlers in
-  `src/server/routes/{auth,profile,plugins,knowledgeRepo,groups,routines,chat,admin}.ts` (+ `_shared.ts`).
+  `src/server/routes/{auth,profile,plugins,knowledgeRepo,groups,routines,chat,admin}.ts`, with external
+  avatar admin CRUD registered from `routes/adminExternalAgents.ts` (+ `_shared.ts`).
 - **Agent:** `claudeAgent.ts` re-exports `buildPrompt` / `buildSystemPromptAppend` / `buildUserPrompt`
   (`agent/promptBuilder.ts`), SDK-message handlers (`agent/sdkMessageHandlers.ts`), the PreToolUse hook
   (`agent/preToolUseHook.ts`). Shared self-state in `agent/ownerState.ts`; MCP helpers in

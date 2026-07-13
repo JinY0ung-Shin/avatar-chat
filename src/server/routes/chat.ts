@@ -17,6 +17,7 @@ import type {
   MessageAttachment,
   StoredMessage,
 } from "../types.js";
+import type { AgentEvents } from "../agent/events.js";
 import {
   formatSubmission,
   MAX_CANVAS_CONTENT_CHARS,
@@ -37,6 +38,14 @@ import {
   MAX_CHAT_IMAGES_PER_MESSAGE,
 } from "../chatImages.js";
 import { runAgentStream, isRetryableModelError } from "../agent/index.js";
+import { runExternalAgent } from "../agent/externalAgent.js";
+import {
+  externalAvatarDetail,
+  findExternalAgent,
+  findVisibleExternalAgent,
+  listExternalAvatarSummaries,
+  mergeExternalAgentRegistries,
+} from "../externalAgents.js";
 import {
   isModelTier,
   modelTierLabel,
@@ -310,6 +319,13 @@ export function createChatRouter({
   auditAs,
 }: RouterDeps): Router {
   const router = Router();
+  const viewerGroupIds = (req: AuthenticatedRequest): Set<string> =>
+    new Set((req.user?.groups ?? []).map((group) => group.id));
+  const effectiveExternalAgents = () =>
+    mergeExternalAgentRegistries(
+      config.externalAgents,
+      store.getManagedExternalAgents(),
+    );
 
   // ---- Discovery -------------------------------------------------------
 
@@ -317,7 +333,14 @@ export function createChatRouter({
     "/api/avatars",
     requireAuth(store),
     (req: AuthenticatedRequest, res) => {
-      res.json({ avatars: store.listPublishedAvatars(req.user!.id) });
+      const avatars = [
+        ...store.listPublishedAvatars(req.user!.id),
+        ...listExternalAvatarSummaries(
+          effectiveExternalAgents(),
+          viewerGroupIds(req),
+        ),
+      ].sort((a, b) => a.displayName.localeCompare(b.displayName));
+      res.json({ avatars });
     },
   );
 
@@ -325,7 +348,14 @@ export function createChatRouter({
     "/api/avatars/:id",
     requireAuth(store),
     (req: AuthenticatedRequest, res) => {
-      const avatar = store.getAvatar(req.user!.id, req.params.id);
+      const external = findVisibleExternalAgent(
+        effectiveExternalAgents(),
+        req.params.id,
+        viewerGroupIds(req),
+      );
+      const avatar = external
+        ? externalAvatarDetail(external)
+        : store.getAvatar(req.user!.id, req.params.id);
       if (!avatar) {
         apiError(res, 404, "아바타를 찾을 수 없습니다.");
         return;
@@ -342,9 +372,20 @@ export function createChatRouter({
     "/api/avatars/:id/skills",
     requireAuth(store),
     async (req: AuthenticatedRequest, res) => {
-      const avatar = store.getAvatar(req.user!.id, req.params.id);
+      const external = findVisibleExternalAgent(
+        effectiveExternalAgents(),
+        req.params.id,
+        viewerGroupIds(req),
+      );
+      const avatar = external
+        ? externalAvatarDetail(external)
+        : store.getAvatar(req.user!.id, req.params.id);
       if (!avatar) {
         apiError(res, 404, "아바타를 찾을 수 없습니다.");
+        return;
+      }
+      if (external) {
+        res.json({ skills: [] });
         return;
       }
       // The local runtime loads no plugins/skills, so there's nothing to list.
@@ -387,7 +428,17 @@ export function createChatRouter({
       const kind =
         kindRaw === "routine" || kindRaw === "all" ? kindRaw : "chat";
       res.json({
-        conversations: store.listConversations(req.user!.id, avatarId, kind),
+        conversations: store
+          .listConversations(req.user!.id, avatarId, kind)
+          .map((conversation) => {
+            const external = findExternalAgent(
+              effectiveExternalAgents(),
+              conversation.avatarUserId,
+            );
+            return external
+              ? { ...conversation, avatarDisplayName: external.displayName }
+              : conversation;
+          }),
       });
     },
   );
@@ -658,9 +709,20 @@ export function createChatRouter({
         apiError(res, 400, "avatarId가 필요합니다.");
         return;
       }
-      const avatar = store.resolveChatAvatar(req.user!.id, avatarId);
+      const externalAgent = findVisibleExternalAgent(
+        effectiveExternalAgents(),
+        avatarId,
+        viewerGroupIds(req),
+      );
+      const avatar = externalAgent
+        ? externalAvatarDetail(externalAgent)
+        : store.resolveChatAvatar(req.user!.id, avatarId);
       if (!avatar) {
         apiError(res, 403, "이 아바타와 대화할 수 없습니다.");
+        return;
+      }
+      if (externalAgent && decodedImages.length > 0) {
+        apiError(res, 400, "외부 아바타는 아직 이미지 첨부를 지원하지 않습니다.");
         return;
       }
       // ownerOnly bites on a RAW `/command`: server-expanded commands (e.g. /learn)
@@ -678,7 +740,7 @@ export function createChatRouter({
         );
         return;
       }
-      const viewerIsOwner = req.user!.id === avatar.id;
+      const viewerIsOwner = !externalAgent && req.user!.id === avatar.id;
       // Owner-only per-conversation group-knowledge selection, chosen in the UI and
       // sent with the turn: the group ids turned OFF (skills + CLAUDE.md). The client
       // owns this state from the moment a chat starts, so no separate persist step is
@@ -793,48 +855,53 @@ export function createChatRouter({
       // belt-and-suspenders — open_repo is itself elevated-only — in case trust
       // changed since the repo was opened.
       const elevatedViewer =
-        viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id);
-      const repoResolution = await resolveActiveWorkspaceRepo({
-        store,
-        config,
-        avatar: {
-          id: avatar.id,
-          displayName: avatar.displayName,
-          alias: avatar.alias,
-        },
-        conversationId,
-        elevated: elevatedViewer,
-        gitRepoToolsEnabled,
-      });
-      if (repoResolution.kind === "error") {
-        if (repoResolution.reason === "not_found") {
-          apiError(
-            res,
-            400,
-            "등록된 저장소를 찾을 수 없습니다. 먼저 저장소를 등록해 주세요.",
-          );
-        } else if (repoResolution.reason === "locked") {
-          apiError(
-            res,
-            409,
-            "이 저장소는 다른 대화에서 작업 중입니다. 잠시 후 다시 시도해 주세요.",
-          );
-        } else {
-          apiError(
-            res,
-            502,
-            `저장소 작업공간을 열지 못했습니다: ${repoResolution.detail ?? ""}`,
-          );
+        !externalAgent &&
+        (viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id));
+      let activeRepoCwd: string | null = null;
+      let activeRepoName: string | null = null;
+      let releaseActiveRepoLock: (() => void) | null = null;
+      if (!externalAgent) {
+        const repoResolution = await resolveActiveWorkspaceRepo({
+          store,
+          config,
+          avatar: {
+            id: avatar.id,
+            displayName: avatar.displayName,
+            alias: avatar.alias,
+          },
+          conversationId,
+          elevated: elevatedViewer,
+          gitRepoToolsEnabled,
+        });
+        if (repoResolution.kind === "error") {
+          if (repoResolution.reason === "not_found") {
+            apiError(
+              res,
+              400,
+              "등록된 저장소를 찾을 수 없습니다. 먼저 저장소를 등록해 주세요.",
+            );
+          } else if (repoResolution.reason === "locked") {
+            apiError(
+              res,
+              409,
+              "이 저장소는 다른 대화에서 작업 중입니다. 잠시 후 다시 시도해 주세요.",
+            );
+          } else {
+            apiError(
+              res,
+              502,
+              `저장소 작업공간을 열지 못했습니다: ${repoResolution.detail ?? ""}`,
+            );
+          }
+          return;
         }
-        return;
+        if (repoResolution.kind === "ok") {
+          activeRepoCwd = repoResolution.cwd;
+          activeRepoName = repoResolution.repoName;
+          // Frees the per-clone serialization lock; called once when the run ends.
+          releaseActiveRepoLock = repoResolution.release;
+        }
       }
-      const activeRepoCwd =
-        repoResolution.kind === "ok" ? repoResolution.cwd : null;
-      const activeRepoName =
-        repoResolution.kind === "ok" ? repoResolution.repoName : null;
-      // Frees the per-clone serialization lock; called once when the run ends.
-      const releaseActiveRepoLock =
-        repoResolution.kind === "ok" ? repoResolution.release : null;
 
       try {
         const runId = crypto.randomUUID();
@@ -854,7 +921,7 @@ export function createChatRouter({
         // receives images through streaming input, and combining that with `resume`
         // can drop the structured image blocks before they reach the model.
         const resumeSessionId =
-          regenerate || imageTurn
+          externalAgent || regenerate || imageTurn
             ? undefined
             : (store.getAgentSessionId(req.user!.id, conversationId) ??
               undefined);
@@ -899,7 +966,7 @@ export function createChatRouter({
         }
         // Persist the chosen model tier so it survives reload and applies to later
         // turns until changed. null = client sent nothing → leave the stored value.
-        if (requestedModel !== null) {
+        if (!externalAgent && requestedModel !== null) {
           store.setConversationModel(
             req.user!.id,
             conversationId,
@@ -907,14 +974,14 @@ export function createChatRouter({
           );
         }
         // Persist the chosen effort level (same semantics as the model tier above).
-        if (requestedEffort !== null) {
+        if (!externalAgent && requestedEffort !== null) {
           store.setConversationEffort(
             req.user!.id,
             conversationId,
             requestedEffort || null,
           );
         }
-        if (requestedMcpToolGroups !== null) {
+        if (!externalAgent && requestedMcpToolGroups !== null) {
           store.setConversationMcpToolGroups(
             req.user!.id,
             conversationId,
@@ -988,6 +1055,103 @@ export function createChatRouter({
         });
 
         try {
+          if (externalAgent) {
+            // External avatars are conversation-stateless and run their own tool
+            // stack behind the gateway. Do not resolve local plugins, knowledge,
+            // MCP servers, repos, workspaces, model settings, or SDK sessions.
+            const response = await runExternalAgent(
+              {
+                message: agentMessage,
+                conversationHistory,
+              },
+              externalAgent,
+              {
+                onDelta: (text) => {
+                  streamedText += text;
+                  emitRunEvent(runId, "delta", { text });
+                },
+                onThinking: (text) => {
+                  streamedThinking += text;
+                  emitRunEvent(runId, "thinking", { text });
+                },
+                onStatus: (label) => {
+                  emitRunEvent(runId, "status", { label });
+                },
+                onModel: (model) => {
+                  observedModel.set(model);
+                },
+                // runExternalAgent deliberately suppresses this callback: a
+                // gateway SDK session id must never become Noah continuation state.
+                onSessionId: (sessionId) => {
+                  runSessionId = sessionId;
+                },
+                onPlugin: (event) => {
+                  emitRunEvent(runId, "plugin", event);
+                },
+                onToolStart: (event) => {
+                  emitRunEvent(runId, "tool", event);
+                },
+                onToolEnd: (event) => {
+                  emitRunEvent(runId, "tool_end", event);
+                },
+                onTaskStart: (event) => {
+                  emitRunEvent(runId, "task", event);
+                },
+                onTaskUpdate: (event) => {
+                  emitRunEvent(runId, "task_update", event);
+                },
+                onTaskEnd: (event) => {
+                  emitRunEvent(runId, "task_end", event);
+                },
+                onAgentStart: (event) => {
+                  emitRunEvent(runId, "agent", event);
+                },
+                onAgentEnd: (event) => {
+                  emitRunEvent(runId, "agent_end", event);
+                },
+                onBlocked: (event) => {
+                  emitRunEvent(runId, "blocked", event);
+                },
+                onPlan: (event) => {
+                  if (event.plan) latestPlan = event.plan;
+                  emitRunEvent(runId, "plan", {
+                    plan: event.plan,
+                    planning: event.planning ?? false,
+                  });
+                },
+              } satisfies AgentEvents,
+              abortController,
+            );
+            if (latestPlan) response.plan = latestPlan;
+            if (streamedThinking) response.thinking = streamedThinking;
+
+            const assistantMessage =
+              store.conversationOwner(conversationId) === req.user!.id
+                ? store.addMessage(conversationId, {
+                    role: "assistant",
+                    content: response.text || response.summary,
+                    response,
+                  })
+                : null;
+            auditAs(
+              req,
+              "chat",
+              `chat with ${avatar.displayName} (${response.runtime})`,
+            );
+            logger.info(
+              {
+                userId: req.user!.id,
+                avatarId: avatar.id,
+                conversationId,
+                runtime: response.runtime,
+                durationMs: Date.now() - chatStart,
+              },
+              "external chat completed",
+            );
+            emitRunEvent(runId, "done", { message: assistantMessage, response });
+            return;
+          }
+
           // Load plugin roots (read-only): default plugins + the avatar's own + its
           // personal knowledge repo + group knowledge repos. Shared with the routine
           // scheduler via `loadAgentPluginRoots` so the two can't drift. Tolerate
@@ -1373,13 +1537,15 @@ export function createChatRouter({
             // incomplete, so the NEXT turn rebuilds context from stored messages
             // (which now include this cancelled turn's user message + partial)
             // instead of resuming a half-written session that omits it. (chat-02)
-            store.setAgentSessionId(req.user!.id, conversationId, null);
+            if (!externalAgent) {
+              store.setAgentSessionId(req.user!.id, conversationId, null);
+            }
             // Keep whatever the model already streamed before the stop. The client's
             // finalizeStopped keeps it on screen, so the persisted record must carry
             // it too — otherwise the visible answer is gone on the next reload/revisit.
             const response: AgentResponse = {
               kind: "text",
-              runtime: config.agentRuntime,
+              runtime: externalAgent ? "external" : config.agentRuntime,
               summary: "중지됨",
               text: streamedText,
               ...(latestPlan ? { plan: latestPlan } : {}),
@@ -1425,14 +1591,18 @@ export function createChatRouter({
             .map((t) => t.label)
             .join(", ");
           const userFacing =
-            !config.anthropicModel && isRetryableModelError(error)
+            !externalAgent &&
+            !config.anthropicModel &&
+            isRetryableModelError(error)
               ? `지금 ${modelTierLabel(failedTier)} 모델이 일시적으로 응답하지 못했어요 (서버 과부하 또는 일시적 오류). 입력창의 모델 선택에서 다른 모델(${alternatives})로 바꿔 다시 시도해 보세요.`
               : detail;
           if (store.conversationOwner(conversationId) === req.user!.id) {
             // Clear the session for the same reason as the cancel path (chat-02), and
             // don't discard the partial the user already watched stream — keep it
             // alongside the error so a reload shows what the live view showed.
-            store.setAgentSessionId(req.user!.id, conversationId, null);
+            if (!externalAgent) {
+              store.setAgentSessionId(req.user!.id, conversationId, null);
+            }
             const content = streamedText
               ? `${streamedText}\n\n${userFacing}`
               : userFacing;
@@ -1449,7 +1619,7 @@ export function createChatRouter({
                 latestPlan || streamedThinking
                   ? {
                       kind: "text",
-                      runtime: config.agentRuntime,
+                      runtime: externalAgent ? "external" : config.agentRuntime,
                       summary: "오류",
                       text: content,
                       ...(latestPlan ? { plan: latestPlan } : {}),

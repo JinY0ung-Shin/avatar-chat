@@ -251,7 +251,16 @@ test("chat chrome and bubbles retain the Apple hierarchy", async ({ page }) => {
   await expect(page).toHaveScreenshot("chat-light.png", { fullPage: true });
 });
 
-test("coarse pointers keep a 44px toggle target around a 28px track", async ({ browser }) => {
+test("empty chat provides a direct path back to avatar discovery", async ({ page }) => {
+  await page.goto("/");
+  await page.getByRole("button", { name: "대화", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "아직 선택한 아바타가 없어요" })).toBeVisible();
+  await expect(page.locator('[role="status"]', { hasText: "대화 화면" })).toBeAttached();
+  await page.getByRole("button", { name: "대화할 아바타 찾기" }).click();
+  await expect(page.getByRole("heading", { name: "탐색" })).toBeVisible();
+});
+
+test("coarse pointers keep 44px targets around compact controls", async ({ browser }) => {
   const context = await browser.newContext({ hasTouch: true, viewport: { width: 390, height: 844 } });
   const page = await context.newPage();
   await mockApp(page);
@@ -262,6 +271,10 @@ test("coarse pointers keep a 44px toggle target around a 28px track", async ({ b
     toggle.setAttribute("aria-label", "테스트 토글");
     toggle.innerHTML = '<span class="knob"></span>';
     document.body.append(toggle);
+    const dismiss = document.createElement("button");
+    dismiss.className = "notification-dismiss";
+    dismiss.setAttribute("aria-label", "테스트 알림 닫기");
+    document.body.append(dismiss);
   });
   const metrics = await page.getByRole("button", { name: "테스트 토글" }).evaluate((element) => ({
     targetHeight: element.getBoundingClientRect().height,
@@ -271,5 +284,10 @@ test("coarse pointers keep a 44px toggle target around a 28px track", async ({ b
   expect(metrics.targetHeight).toBe(44);
   expect(metrics.trackHeight).toBe(28);
   expect(metrics.knobTop).toBe(10);
+  const dismissMetrics = await page.getByRole("button", { name: "테스트 알림 닫기" }).evaluate((element) => ({
+    width: element.getBoundingClientRect().width,
+    height: element.getBoundingClientRect().height,
+  }));
+  expect(dismissMetrics).toEqual({ width: 44, height: 44 });
   await context.close();
 });

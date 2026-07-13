@@ -8,8 +8,10 @@ import {
   dismissToast,
   newId,
   notify,
+  pauseToast,
   readState,
   replaceState,
+  resumeToast,
   setDocumentTitle,
   toasts,
   updateState,
@@ -190,6 +192,23 @@ describe("state store", () => {
     expect(get(toasts)).toHaveLength(1);
     vi.advanceTimersByTime(9000);
     expect(get(toasts)).toHaveLength(0);
+  });
+
+  it("keeps a toast alive while paused and resumes only the remaining timeout", () => {
+    vi.useFakeTimers();
+    notify("읽는 중인 알림", "info", { durationMs: 1000 });
+    const toast = get(toasts)[0];
+
+    vi.advanceTimersByTime(400);
+    pauseToast(toast.id);
+    vi.advanceTimersByTime(2000);
+    expect(get(toasts).map((item) => item.id)).toContain(toast.id);
+
+    resumeToast(toast.id);
+    vi.advanceTimersByTime(599);
+    expect(get(toasts).map((item) => item.id)).toContain(toast.id);
+    vi.advanceTimersByTime(1);
+    expect(get(toasts).map((item) => item.id)).not.toContain(toast.id);
   });
 
   it("dismissToast removes a toast by id", () => {

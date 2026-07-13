@@ -71,7 +71,6 @@
 
   --ease: cubic-bezier(0.25, 0.8, 0.25, 1);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
-  --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --press-scale: 0.97;
 }
 
@@ -308,18 +307,18 @@ button:disabled {
 @media (min-width: 861px) {
   .workspace {
     grid-template-columns: 280px minmax(0, 1fr);
-    transition: grid-template-columns 320ms var(--ease-out);
+    transition: grid-template-columns 240ms var(--ease-out);
   }
 
   .workspace .rail {
-    transition: opacity 220ms var(--ease-out), transform 320ms var(--ease-out), visibility 0s;
+    transition: opacity 180ms var(--ease-out), transform 220ms var(--ease-out), visibility 0s;
   }
 
   .workspace.rail-collapsed .rail {
     visibility: hidden;
     opacity: 0;
     transform: translateX(-12px);
-    transition: opacity 180ms var(--ease-in), transform 260ms var(--ease-in), visibility 0s 260ms;
+    transition: opacity 140ms var(--ease-out), transform 200ms var(--ease-out), visibility 0s 200ms;
   }
 }
 
@@ -1060,8 +1059,21 @@ button:disabled {
   .icon-button,
   .conv-act,
   .msg-act,
+  .notification-dismiss,
+  .password-toggle,
+  .composer-attach,
+  .conv-search-clear,
   .toast-close,
   .modal-sheet-grabber {
     min-width: 44px;
+    min-height: 44px;
+  }
+
+  .notification-row .notification-main {
+    padding-right: var(--s-8);
+  }
+
+  .field .password-field input {
+    padding-right: var(--s-8);
   }
 }

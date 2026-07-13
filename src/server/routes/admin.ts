@@ -15,10 +15,14 @@ import {
   MIN_PASSWORD_LENGTH,
   type RouterDeps,
 } from "./_shared.js";
+import { registerAdminExternalAgentRoutes } from "./adminExternalAgents.js";
 
 // ---- Admin -----------------------------------------------------------
-export function createAdminRouter({ config, store, observedModel, auditAs }: RouterDeps): Router {
+export function createAdminRouter(deps: RouterDeps): Router {
+  const { config, store, observedModel, auditAs } = deps;
   const router = Router();
+
+  registerAdminExternalAgentRoutes(router, deps);
 
   // System/runtime info: which model the agent is pinned to (config) vs. which
   // one the SDK actually reported on its last run (observed), plus the auth mode

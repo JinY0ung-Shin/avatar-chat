@@ -536,7 +536,7 @@
                               </button>
                               <span class="meta-badge">{errored ? "실패" : "완료"}</span>
                             </div>
-                            <div class="routine-manage-actions"><button class="ghost-sm" type="button" on:click|stopPropagation={() => openModal(routine)}><Icon name="edit" size={16} /><span>편집</span></button></div>
+                            <div class="routine-manage-actions"><button class="ghost-sm" type="button" aria-label={`예약 작업 편집: ${title}`} on:click|stopPropagation={() => openModal(routine)}><Icon name="edit" size={16} /><span>편집</span></button></div>
                           </div>
                         {/each}
                       </div>
@@ -592,13 +592,14 @@
                     {/if}
                   </div>
                   <div class="routine-manage-actions">
-                    <button class="ghost-sm" type="button" on:click|stopPropagation={() => openModal(routine)}>
+                    <button class="ghost-sm" type="button" aria-label={`예약 작업 편집: ${title}`} on:click|stopPropagation={() => openModal(routine)}>
                       <Icon name="edit" size={16} /><span>편집</span>
                     </button>
                     {#if !completed}
                       <button
                         class="ghost-sm"
                         type="button"
+                        aria-label={`예약 작업 지금 실행: ${title}`}
                         aria-describedby={routineActionStatus ? routineActionStatusId : undefined}
                         disabled={busyRoutineId === routine.id}
                         on:click|stopPropagation={() => runFromButton(routine)}>

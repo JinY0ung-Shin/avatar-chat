@@ -65,6 +65,22 @@ plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
   unpublished avatars. An avatar can look up other avatars' capabilities mid-chat
   (the shared read-only `mcp__avatars__search_avatars` tool) and point you to a
   better-suited teammate when a request is outside its own expertise.
+- **External avatars**: operators can register stateless agents in **관리자 ▸ 외부 아바타**
+  (encrypted at rest) or as read-only deployment entries with `EXTERNAL_AGENTS_JSON`. They
+  appear in Explore and use the same Noah transcript/activity
+  UI, while each turn sends the full stored text history to an external
+  `POST /v1/agents/messages` endpoint. Their gateway owns model, system prompt, and tools;
+  Noah does not expose local model/effort, MCP, repo/plugin, routine, or image controls for
+  them. The event stream must declare schema `claude-agent-sdk-message-v1` and wrap normalized
+  Claude Agent SDK envelopes in `sdk_message` events. Omit `visibleToGroupIds` to expose one
+  to every signed-in user, or provide a non-empty list of Noah group UUIDs to limit discovery
+  and new chat turns to current members. This group list is a Noah visibility ACL only; it
+  neither changes gateway tools nor grants local trust/elevation. System admins must also be
+  members of an allowed group to chat; removing membership blocks the next detail/chat request
+  but does not erase that user's existing conversation history or interrupt a run already started.
+  The admin screen supports create/edit, activation, group selection, write-only Gateway API
+  keys, safety timeouts, and a side-effect-free Gateway auth/model check. Environment entries
+  remain read-only and win an ID collision, so existing deployments keep their behavior.
 - **Per-conversation model picker**: the chat composer lets any user choose a model
   tier (Opus / Sonnet / Haiku) per conversation; the choice persists on the conversation
   and rides each turn. **Opus is the default** when nothing is picked. Operators map each
@@ -114,6 +130,7 @@ uploaded avatar images persist under `APP_DATA_DIR`. The container runs as the n
 | `SESSION_SECRET` | Session token hashing secret (required in production). |
 | `SECURE_COOKIES` | `true` to mark the session cookie `Secure` (HTTPS-only). Leave unset for plain-HTTP deployments (e.g. local docker-compose) or the cookie is never sent back and login fails. |
 | `AGENT_RUNTIME` | `claude` (default) or `local` (offline stub, no plugin execution). |
+| `EXTERNAL_AGENTS_JSON` | Optional read-only JSON array of stateless external avatars (the admin UI can manage additional entries). Each entry requires `id`, `displayName`, and exactly one of `endpoint` or `baseUrl`; supports public `alias`/`bio`/`persona`/`intro`/`hashtags`, optional non-empty `visibleToGroupIds` for Noah group visibility, private upstream `agent` (default `claude`), `model`, `system`, and `apiKeyEnv` (preferred) or `apiKey`, plus positive `connectTimeoutSeconds` (default 15), `idleTimeoutSeconds` (default 120), and `totalTimeoutSeconds` (default 1800). Omitting `visibleToGroupIds` keeps the avatar public; values are stable group IDs from the admin groups API/UI and are never returned by public avatar APIs. Environment entries are read-only and take precedence over a UI entry with the same ID. Public ids are `external:<id>`. |
 | `ANTHROPIC_API_KEY` | Optional; absent → SDK uses subscription token (admin UI) or local Claude Code auth. |
 | `ANTHROPIC_MODEL` | Optional. Pin the Claude model (e.g. `claude-opus-4-8`). When set it's a **hard lock**: the per-conversation model picker is hidden. Absent → the resolution chain below (defaulting to Opus). |
 | `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL` | Optional. Map each composer model TIER (Opus/Sonnet/Haiku) to a concrete model id; the picker shows the mapped id. Unset tier → SDK resolves the alias to the account default (shown as just the tier label). Precedence: `ANTHROPIC_MODEL` > user's per-conversation tier > admin override > **Opus** (default). |

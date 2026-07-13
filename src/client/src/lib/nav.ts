@@ -4,7 +4,15 @@ import type { AdminTab, SettingsTab, ViewName } from "./types";
 
 const VIEW_ROUTES: ViewName[] = ["explore", "chat", "brain", "inbox", "routines", "settings", "admin"];
 const SETTINGS_TABS: SettingsTab[] = ["profile", "access", "knowledge", "groups"];
-const ADMIN_TABS: AdminTab[] = ["overview", "users", "groups", "access", "system", "audit"];
+const ADMIN_TABS: AdminTab[] = [
+  "overview",
+  "users",
+  "groups",
+  "external-agents",
+  "access",
+  "system",
+  "audit",
+];
 
 let applyingRoute = false;
 

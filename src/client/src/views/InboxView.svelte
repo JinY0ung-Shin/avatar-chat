@@ -328,7 +328,7 @@
                   <button
                     class="notification-dismiss"
                     type="button"
-                    aria-label="알림 삭제"
+                    aria-label={`알림 삭제: ${n.title}`}
                     title="알림 삭제"
                     disabled={busyIds.has(n.id)}
                     on:click={() => deleteNotification(n)}
@@ -353,7 +353,7 @@
                   </button>
                   {#if isRoutineConversation(n.conversationId)}
                     <div class="kr-actions">
-                      <button class="ghost-sm" type="button" disabled={busyIds.has(n.id)} on:click={() => openResult(n)}>
+                      <button class="ghost-sm" type="button" aria-label={`예약 작업 결과 보기: ${n.title}`} disabled={busyIds.has(n.id)} on:click={() => openResult(n)}>
                         {busyIds.has(n.id) ? "여는 중…" : "결과 보기"}
                       </button>
                     </div>

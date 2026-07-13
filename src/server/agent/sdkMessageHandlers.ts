@@ -781,3 +781,89 @@ export function extractMainAssistantText(message: Record<string, unknown>): stri
     .filter(Boolean)
     .join("\n");
 }
+
+/**
+ * Normalized result of dispatching one recursively-serialized Claude Agent SDK
+ * envelope. Both the in-process SDK iterator and the external gateway runner use
+ * this function, so SDK event semantics stay identical across the two paths.
+ */
+export interface SdkMessageDispatchResult {
+  kind:
+    | "stream_event"
+    | "system"
+    | "user"
+    | "tool_progress"
+    | "assistant"
+    | "result"
+    | "other";
+  delta?: string;
+  assistantText?: string;
+  resultText?: string;
+  errorSubtype?: string;
+  usage?: AgentUsage;
+  contextTokens?: number;
+  /** True only for a main-agent assembled assistant envelope. */
+  mainAssistant?: boolean;
+}
+
+export function dispatchSdkMessage(
+  message: Record<string, unknown>,
+  events: AgentEvents | undefined,
+  state: LoopState,
+): SdkMessageDispatchResult {
+  // One trace point for both local and gateway-delivered SDK messages.
+  traceSdkMessage(message);
+
+  if (message.type === "stream_event") {
+    const delta = events ? handleStreamEvent(message, events) : "";
+    const contextTokens = events
+      ? streamStartContextTokens(message)
+      : undefined;
+    return {
+      kind: "stream_event",
+      ...(delta ? { delta } : {}),
+      ...(contextTokens !== undefined
+        ? { contextTokens }
+        : {}),
+    };
+  }
+  if (message.type === "system") {
+    if (events) handleSystemEvent(message, events, state);
+    return { kind: "system" };
+  }
+  if (message.type === "user") {
+    if (events) handleUserMessage(message, events, state);
+    return { kind: "user" };
+  }
+  if (message.type === "tool_progress") {
+    if (events) {
+      const toolName =
+        asString(message.tool_name) || asString(message.toolName);
+      events.onStatus?.(toolName ? `실행 중: ${toolName}` : "실행 중…");
+    }
+    return { kind: "tool_progress" };
+  }
+  if (message.type === "assistant") {
+    const assistantText = events
+      ? handleAssistantMessage(message, events, state)
+      : extractMainAssistantText(message);
+    const contextTokens = mainAssistantContextTokens(message);
+    return {
+      kind: "assistant",
+      mainAssistant: !asString(message.parent_tool_use_id),
+      ...(assistantText ? { assistantText } : {}),
+      ...(contextTokens !== undefined ? { contextTokens } : {}),
+    };
+  }
+
+  const { text, errorSubtype, usage } = interpretResult(message);
+  if (message.type === "result") {
+    return {
+      kind: "result",
+      ...(text ? { resultText: text } : {}),
+      ...(errorSubtype ? { errorSubtype } : {}),
+      ...(usage ? { usage } : {}),
+    };
+  }
+  return { kind: "other" };
+}

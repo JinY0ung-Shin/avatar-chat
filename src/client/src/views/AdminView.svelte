@@ -4,6 +4,7 @@
   import RevealableInput from "../components/RevealableInput.svelte";
   import AdminUserRow from "../components/AdminUserRow.svelte";
   import AdminGroupRow from "../components/AdminGroupRow.svelte";
+  import AdminExternalAgentsPanel from "../components/AdminExternalAgentsPanel.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
   import { loadAdminGroups, loadAdminOverview } from "../lib/loaders";
@@ -48,6 +49,7 @@
     { id: "overview", label: "개요", icon: "activity" },
     { id: "users", label: "사용자", icon: "users" },
     { id: "groups", label: "그룹", icon: "users" },
+    { id: "external-agents", label: "외부 아바타", icon: "globe" },
     { id: "access", label: "가입·접근", icon: "key" },
     { id: "system", label: "시스템", icon: "server" },
     { id: "audit", label: "감사 로그", icon: "list" },
@@ -469,7 +471,7 @@
 <header class="view-header">
   <div class="title">
     <h1>관리자</h1>
-    <p>사용자·그룹·접근·시스템을 관리하세요</p>
+    <p>사용자·그룹·외부 아바타·접근·시스템을 관리하세요</p>
   </div>
   <button class="ghost-sm" type="button" disabled={loadBusy} on:click={load}>{loadBusy ? "새로고침 중…" : "새로고침"}</button>
 </header>
@@ -504,6 +506,7 @@
     </div>
 
     <div class="admin-panel" role="tabpanel" id="admin-panel" aria-labelledby={`admin-tab-${$appState.adminTab}`}>
+      <AdminExternalAgentsPanel active={$appState.adminTab === "external-agents"} groups={$appState.adminGroups} />
       {#if $appState.adminTab === "overview"}
         <div class="admin-list">
           <section class="settings-card">

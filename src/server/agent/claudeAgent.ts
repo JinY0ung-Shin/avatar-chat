@@ -46,17 +46,10 @@ import {
 import { buildPostToolUseHook } from "./postToolUseHook.js";
 import {
   createLoopState,
-  extractMainAssistantText,
-  handleAssistantMessage,
-  handleStreamEvent,
-  handleSystemEvent,
-  handleUserMessage,
+  dispatchSdkMessage,
   interpretResult,
-  mainAssistantContextTokens,
-  streamStartContextTokens,
   finalizeTurnUsage,
   resultErrorMessage,
-  traceSdkMessage,
 } from "./sdkMessageHandlers.js";
 import { effectiveMcpToolGroups } from "../../shared/mcpToolGroups.js";
 import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
@@ -1127,56 +1120,27 @@ export async function runClaudeAgent(
         if (!isRecord(message)) {
           continue;
         }
-        // Opt-in (AGENT_TOOL_TRACE) lifecycle trace of every raw SDK message, in
-        // order — pinpoints where a tool-calling run stalls (e.g. vLLM opens a
-        // tool_use block that never closes). No-op unless the flag is set.
-        traceSdkMessage(message);
-        if (events) {
-          if (message.type === "stream_event") {
-            const delta = handleStreamEvent(message, events);
-            if (delta) {
-              deltaChunks.push(delta);
-            }
-            // Capture the context-occupancy snapshot HERE: while streaming, the
-            // prompt-size counts live on the message_start event, not on the
-            // final assistant message's usage (which carries only output). The
-            // last main-agent message_start of the turn = final request's size.
-            const startCtx = streamStartContextTokens(message);
-            if (startCtx !== undefined) {
-              contextTokens = startCtx;
-            }
-            continue;
-          }
-          if (message.type === "system") {
-            handleSystemEvent(message, events, state);
-            continue;
-          }
-          if (message.type === "user") {
-            handleUserMessage(message, events, state);
-            continue;
-          }
-          if (message.type === "tool_progress") {
-            const toolName =
-              asString(message.tool_name) || asString(message.toolName);
-            events.onStatus?.(toolName ? `실행 중: ${toolName}` : "실행 중…");
-            continue;
-          }
+        const dispatched = dispatchSdkMessage(message, events, state);
+        if (dispatched.delta) {
+          deltaChunks.push(dispatched.delta);
+        }
+        if (dispatched.assistantText) {
+          assistantChunks.push(dispatched.assistantText);
+        }
+        if (dispatched.contextTokens !== undefined) {
+          contextTokens = dispatched.contextTokens;
+        }
+        if (dispatched.resultText) {
+          resultText = dispatched.resultText;
+        }
+        if (dispatched.errorSubtype) {
+          resultErrorSubtype = dispatched.errorSubtype;
+        }
+        if (dispatched.usage) {
+          runUsage = dispatched.usage;
         }
 
-        if (message.type === "assistant") {
-          // With an events sink this also emits tool/agent start events.
-          const assistantText = events
-            ? handleAssistantMessage(message, events, state)
-            : extractMainAssistantText(message);
-          if (assistantText) {
-            assistantChunks.push(assistantText);
-          }
-          // Track the final main-agent prompt size as the context-occupancy
-          // snapshot (FALLBACK; overrides the cumulative result usage below).
-          const ctxTokens = mainAssistantContextTokens(message);
-          if (ctxTokens !== undefined) {
-            contextTokens = ctxTokens;
-          }
+        if (dispatched.kind === "assistant") {
           // PREFERRED source: ask the SDK for the authoritative current context
           // usage while the session is still live. The control channel answers
           // until the result message closes it, so we call it per main-agent
@@ -1184,7 +1148,7 @@ export async function runClaudeAgent(
           // request's true occupancy (totalTokens) and real window (maxTokens).
           // Streaming chat only (control methods need the live streaming
           // session); headless/non-streaming turns keep the scraped fallback.
-          if (streaming && !asString(message.parent_tool_use_id)) {
+          if (streaming && dispatched.mainAssistant) {
             try {
               const cu = await queryHandle.getContextUsage?.();
               const total = asNumber(cu?.totalTokens);
@@ -1196,22 +1160,6 @@ export async function runClaudeAgent(
               // back to the contextTokens snapshot captured above.
             }
           }
-          continue;
-        }
-
-        const {
-          text: extractedResult,
-          errorSubtype,
-          usage,
-        } = interpretResult(message);
-        if (extractedResult) {
-          resultText = extractedResult;
-        }
-        if (errorSubtype) {
-          resultErrorSubtype = errorSubtype;
-        }
-        if (usage) {
-          runUsage = usage;
         }
       }
       // Attempt finished (success or an in-band error result, e.g. max_turns) —

@@ -192,6 +192,8 @@
               <strong>{av.displayName}</strong>
               {#if av.id === $appState.user?.id}
                 <span class="tag accent">나</span>
+              {:else if av.runtime === "external"}
+                <span class="tag accent">외부 Agent</span>
               {:else if av.sharesGroup}
                 <span class="tag write">같은 그룹</span>
               {/if}
@@ -209,7 +211,7 @@
               {#each (av.hashtags || []).slice(0, 6) as tag}
                 <span class="tag accent">#{tag}</span>
               {/each}
-              {#if av.pluginCount != null}
+              {#if av.runtime !== "external" && av.pluginCount != null}
                 <span class="tag">플러그인 {av.pluginCount}개</span>
               {/if}
             </div>

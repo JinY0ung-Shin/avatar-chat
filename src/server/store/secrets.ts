@@ -207,13 +207,25 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
 
     /** Decrypt an app-wide secret. Null if unset or undecryptable (e.g. SESSION_SECRET changed). */
     getAppSecret(key: string): string | null {
+      const state = this.getAppSecretState(key);
+      return state.status === "ok" ? state.value : null;
+    }
+
+    /** Distinguish an absent app setting from ciphertext that can no longer be decrypted. */
+    getAppSecretState(
+      key: string,
+    ):
+      | { status: "missing" }
+      | { status: "unreadable" }
+      | { status: "ok"; value: string } {
       const row = this.db.prepare("SELECT value_enc FROM app_config WHERE key = ?").get(key) as
         | { value_enc: string }
         | undefined;
       if (!row) {
-        return null;
+        return { status: "missing" };
       }
-      return decryptSecret(row.value_enc, this.secret);
+      const value = decryptSecret(row.value_enc, this.secret);
+      return value === null ? { status: "unreadable" } : { status: "ok", value };
     }
 
     /** Remove an app-wide secret. No-op if it doesn't exist. */

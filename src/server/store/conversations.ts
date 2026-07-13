@@ -91,6 +91,14 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       return rows.map((r) => this.toConversationSummary(r));
     }
 
+    /** Deployment-wide history count used to guard external-avatar deletion/repointing. */
+    countConversationsForAvatar(avatarId: string): number {
+      return this.count(
+        "SELECT COUNT(*) AS c FROM conversations WHERE avatar_user_id = ?",
+        avatarId,
+      );
+    }
+
     /** Map a conversation join row (see listConversations / conversationSummaryById) to a summary. */
     private toConversationSummary(r: ConversationSummaryRow): ConversationSummary {
       return {

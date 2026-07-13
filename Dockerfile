@@ -148,7 +148,7 @@ ENV APP_DATA_DIR=/app/data
 EXPOSE 48787
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -f --noproxy '*' http://localhost:48787/api/bootstrap || exit 1
+  CMD curl -f --noproxy '*' "http://localhost:${PORT:-48787}/api/bootstrap" || exit 1
 
 # Drop root privileges: the node:22 base image ships a `node` user (uid 1000).
 # The `node` user only ever WRITES under APP_DATA_DIR (default /app/data): the

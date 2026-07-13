@@ -843,6 +843,12 @@ export interface StoreBase {
   deleteCanvasArtifactsForConversation(conversationId: string): void;
   countOpenKnowledgeRequests(avatarUserId: string): number;
   getAppSecret(key: string): string | null;
+  getAppSecretState(
+    key: string,
+  ):
+    | { status: "missing" }
+    | { status: "unreadable" }
+    | { status: "ok"; value: string };
   setAppSecret(key: string, value: string): void;
   deleteAppSecret(key: string): void;
 }

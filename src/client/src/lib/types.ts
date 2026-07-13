@@ -1,5 +1,7 @@
 export type {
   AdminGroupSummary,
+  AdminExternalAgent,
+  AdminExternalAgentInput,
   AdminStats,
   AdminUserDetail,
   AdminUserSummary,
@@ -49,6 +51,7 @@ export type AdminTab =
   | "overview"
   | "users"
   | "groups"
+  | "external-agents"
   | "access"
   | "system"
   | "audit";

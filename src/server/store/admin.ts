@@ -1,10 +1,16 @@
 import { hashPassword } from "../auth.js";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
+import {
+  MANAGED_EXTERNAL_AGENTS_KEY,
+  parseManagedExternalAgents,
+  serializeManagedExternalAgents,
+} from "../externalAgents.js";
 import type {
   AdminStats,
   AdminUserDetail,
   AdminUserSummary,
   AvatarVisibility,
+  ExternalAgentConfig,
   SignupMode,
 } from "../types.js";
 import {
@@ -173,6 +179,41 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
 
     clearModelOverride(): void {
       this.deleteAppSecret(MODEL_OVERRIDE_KEY);
+    }
+
+    /** UI-managed deployment-wide external avatars, encrypted as one versioned registry. */
+    getManagedExternalAgentsState(): {
+      agents: ExternalAgentConfig[];
+      configError: "decrypt_failed" | "invalid" | null;
+    } {
+      const state = this.getAppSecretState(MANAGED_EXTERNAL_AGENTS_KEY);
+      if (state.status === "missing") return { agents: [], configError: null };
+      if (state.status === "unreadable") {
+        return { agents: [], configError: "decrypt_failed" };
+      }
+      try {
+        return {
+          agents: parseManagedExternalAgents(state.value),
+          configError: null,
+        };
+      } catch {
+        return { agents: [], configError: "invalid" };
+      }
+    }
+
+    getManagedExternalAgents(): ExternalAgentConfig[] {
+      return this.getManagedExternalAgentsState().agents;
+    }
+
+    setManagedExternalAgents(agents: readonly ExternalAgentConfig[]): void {
+      if (!agents.length) {
+        this.deleteAppSecret(MANAGED_EXTERNAL_AGENTS_KEY);
+        return;
+      }
+      this.setAppSecret(
+        MANAGED_EXTERNAL_AGENTS_KEY,
+        serializeManagedExternalAgents(agents),
+      );
     }
 
     deleteUser(id: string): boolean {

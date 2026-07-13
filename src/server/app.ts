@@ -149,11 +149,11 @@ export function createApp(services = createServices()) {
   app.use(createChatRouter(deps));
   app.use(createAdminRouter(deps));
 
-  // ---- Error handler ------------------------------------------------------
-
-  app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    logger.error({ err, method: req.method, path: req.path, userId: (req as AuthenticatedRequest).user?.id ?? null }, "unhandled error");
-    res.status(500).json({ error: "Internal server error" });
+  // Unknown API requests must stay API-shaped. Without this boundary, GET
+  // /api/typo falls through to the SPA index with HTTP 200, hiding route drift
+  // from clients, probes, and operators.
+  app.use("/api", (_req, res) => {
+    res.status(404).json({ error: "API 엔드포인트를 찾을 수 없습니다." });
   });
 
   // ---- SPA catch-all ---------------------------------------------------
@@ -167,6 +167,15 @@ export function createApp(services = createServices()) {
     res.status(404).type("text/plain").send(
       "Frontend bundle not found. Run npm run dev and open the Vite dev server, or run npm run build first.",
     );
+  });
+
+  // ---- Error handler ------------------------------------------------------
+
+  // Keep this last so errors from routers, the API boundary, static serving,
+  // and the SPA fallback all receive the same scrubbed JSON response.
+  app.use((err: Error, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    logger.error({ err, method: req.method, path: req.path, userId: (req as AuthenticatedRequest).user?.id ?? null }, "unhandled error");
+    res.status(500).json({ error: "Internal server error" });
   });
 
   return app;

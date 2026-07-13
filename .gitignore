@@ -5,5 +5,8 @@ data/
 .env
 .DS_Store
 npm-debug.log*
+test-results/
+playwright-report/
+coverage/
 docker/tls-fullchain.crt
 .claude.local.md

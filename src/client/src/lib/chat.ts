@@ -501,19 +501,22 @@ export async function sendMessage(
         conversationId: pane.conversationId,
         regenerate: opts.regenerate === true,
         multiSession: readState().chatPanes.length > 1,
-        groupKnowledgeOff: pane.groupKnowledgeOff || [],
-        // Model tier / reasoning effort / MCP groups: the pane is seeded from the
-        // owner's remembered per-user defaults (makePane), so a new pane already
-        // carries the last choice. These fallbacks only fire when no default was
-        // ever chosen (modelDefault/effortDefault null) — then the hardcoded
-        // server/SDK default applies. The chat POST still persists the value
-        // per-conversation so resuming an existing thread restores its own pick.
-        model: pane.modelTier || DEFAULT_MODEL_TIER,
-        effort: pane.effort || DEFAULT_EFFORT_LEVEL,
-        mcpToolGroups: pane.mcpToolGroups ?? DEFAULT_MCP_TOOL_GROUPS,
+        // External avatars own their model, system prompt, and tools behind the
+        // gateway. Do not send Noah's local-only composer settings on that path.
+        ...(pane.avatar.runtime === "external"
+          ? {}
+          : {
+              groupKnowledgeOff: pane.groupKnowledgeOff || [],
+              // Model tier / reasoning effort / MCP groups: the pane is seeded from
+              // remembered defaults, then persisted per native conversation.
+              model: pane.modelTier || DEFAULT_MODEL_TIER,
+              effort: pane.effort || DEFAULT_EFFORT_LEVEL,
+              mcpToolGroups:
+                pane.mcpToolGroups ?? DEFAULT_MCP_TOOL_GROUPS,
+            }),
         // Staged image attachments (data URLs). The server reuses our id as the
         // stored attachment id + filename. Omit when none.
-        images: pendingImages.length
+        images: pane.avatar.runtime !== "external" && pendingImages.length
           ? pendingImages.map((img) => ({ id: img.id, data: img.dataUrl }))
           : undefined,
         // Non-blocking canvas submission/edit (#50), when this turn was triggered

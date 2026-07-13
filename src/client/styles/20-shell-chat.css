@@ -139,6 +139,9 @@
   background: var(--panel-strong);
   color: var(--text);
 }
+.password-toggle:active:not(:disabled) {
+  transform: translateY(-50%) scale(var(--press-scale));
+}
 .password-toggle svg {
   width: 17px;
   height: 17px;
@@ -294,6 +297,12 @@
 .rail-section-row .rail-section-label {
   min-width: 0;
   padding-bottom: 0;
+}
+
+.rail-section-count {
+  margin-left: var(--s-1);
+  color: var(--rail-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .rail-clear-history {

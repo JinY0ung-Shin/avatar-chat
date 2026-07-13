@@ -4,6 +4,14 @@ data
 .env
 .git
 .omx
+.agents
+.codex
+.ui-audit
+.claude.local.md
+AGENT.md
+test-results
+playwright-report
+coverage
 npm-debug.log*
 # Agent worktrees: full embedded repo checkouts with their own node_modules.
 # Exclude to keep the Docker build context small and avoid accidentally

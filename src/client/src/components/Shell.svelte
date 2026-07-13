@@ -34,6 +34,7 @@
     typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(min-width: 861px)") : null;
   let desktopRail = desktopRailMedia?.matches ?? true;
   let conversationQuery = "";
+  let conversationSearchInput: HTMLInputElement | undefined;
   let conversationsLoading = false;
   let conversationsError = "";
   let renamingId = "";
@@ -71,6 +72,13 @@
       return conversationTokens.every((token) => hay.includes(token));
     });
   $: chatConversationCount = $appState.conversations.filter((conversation) => !conversation.isRoutine).length;
+  $: conversationResultStatus = conversationsLoading
+    ? "대화 목록을 불러오는 중입니다."
+    : conversationsError
+      ? "대화 목록을 불러오지 못했습니다."
+      : conversationQuery.trim()
+        ? `검색 결과 ${railConversations.length}개, 전체 대화 ${chatConversationCount}개입니다.`
+        : `저장된 대화 ${chatConversationCount}개입니다.`;
 
   onMount(() => {
     void refreshConversations();
@@ -293,7 +301,7 @@
       to: target,
       velocity: initialVelocity,
       response: 0.3,
-      dampingRatio: 0.86,
+      dampingRatio: Math.abs(initialVelocity) > 120 ? 0.86 : 1,
       onUpdate: setRailVisual,
       onComplete: () => {
         cancelRailSpring = () => {};
@@ -471,6 +479,11 @@
     return conversation.title || conversation.avatarDisplayName || "제목 없는 대화";
   }
 
+  function clearConversationSearch(): void {
+    conversationQuery = "";
+    conversationSearchInput?.focus();
+  }
+
   // Drag a conversation onto the chat workbench to add it as a split pane. The
   // chat-id MIME lets the drop zone (ChatView) accept only our payload.
   const CONV_DND_MIME = "application/x-noah-conversation";
@@ -625,7 +638,7 @@
 
   <div class="rail-history">
     <div class="rail-section-row">
-      <div class="rail-section-label">내 대화</div>
+      <div class="rail-section-label">내 대화 <span class="rail-section-count">{chatConversationCount}</span></div>
       <button
         class="rail-clear-history"
         type="button"
@@ -639,15 +652,29 @@
       </button>
     </div>
     <div class="conv-list-wrap">
-      <input
-        class="conv-search"
-        type="search"
-        placeholder={conversationsLoading ? "대화 불러오는 중" : "대화 검색"}
-        aria-label="대화 검색"
-        aria-controls="rail-conversation-list"
-        disabled={conversationsLoading}
-        bind:value={conversationQuery}
-      />
+      <div class="conv-search-wrap">
+        <input
+          bind:this={conversationSearchInput}
+          class="conv-search"
+          type="search"
+          placeholder={conversationsLoading ? "대화 불러오는 중" : "대화 검색"}
+          aria-label="대화 검색"
+          aria-controls="rail-conversation-list"
+          aria-describedby="rail-conversation-status"
+          disabled={conversationsLoading}
+          bind:value={conversationQuery}
+        />
+        {#if conversationQuery}
+          <button
+            class="conv-search-clear"
+            type="button"
+            aria-label="대화 검색어 지우기"
+            title="검색어 지우기"
+            on:click={clearConversationSearch}
+          ><Icon name="close" size={14} /></button>
+        {/if}
+      </div>
+      <div id="rail-conversation-status" class="sr-only" role="status" aria-live="polite">{conversationResultStatus}</div>
       <div
         id="rail-conversation-list"
         class="conv-list scroll-thin"
@@ -729,7 +756,7 @@
                   <button
                     class="conv-act"
                     type="button"
-                    aria-label="분할 대화에 추가"
+                    aria-label={`분할 대화에 추가: ${conversationTitle(conversation)}`}
                     title={paneCount >= 4 ? "분할 대화는 최대 4개" : "분할 대화에 추가"}
                     disabled={paneCount >= 4 || isConversationBusy(conversation.id)}
                     on:click={(event) => addToSplit(conversation, event)}
@@ -739,7 +766,7 @@
                   <button
                     class="conv-act"
                     type="button"
-                    aria-label="대화 이름 바꾸기"
+                    aria-label={`대화 이름 바꾸기: ${conversationTitle(conversation)}`}
                     title="이름 바꾸기"
                     disabled={isConversationBusy(conversation.id)}
                     on:click={(event) => startRename(conversation, event)}
@@ -749,7 +776,7 @@
                   <button
                     class="conv-act danger"
                     type="button"
-                    aria-label="대화 삭제"
+                    aria-label={`대화 삭제: ${conversationTitle(conversation)}`}
                     title={isConversationStreaming(conversation.id) ? "응답 중인 대화는 삭제할 수 없습니다" : "삭제"}
                     disabled={isConversationBusy(conversation.id) || isConversationStreaming(conversation.id)}
                     on:click={(event) => deleteConversation(conversation, event)}

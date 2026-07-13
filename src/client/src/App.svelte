@@ -34,6 +34,15 @@
     admin: () => import("./views/AdminView.svelte"),
   };
   const viewCache = new Map<ViewName, any>();
+  const viewLabels: Record<ViewName, string> = {
+    explore: "탐색",
+    chat: "대화",
+    brain: "지식 그래프",
+    inbox: "알림",
+    routines: "예약 작업",
+    settings: "내 아바타",
+    admin: "관리자",
+  };
 
   async function loadView(view: ViewName): Promise<void> {
     const token = ++viewLoadToken;
@@ -148,15 +157,25 @@
   $: unreadCount =
     $appState.knowledgeRequests.filter((request) => request.status === "open").length +
     $appState.notifications.filter((notification) => !notification.readAt).length;
+  $: activeViewLabel = viewLabels[$appState.view];
   $: if ($appState.user && activeViewName !== $appState.view) void loadView($appState.view);
 </script>
 
 {#if !$appState.booted}
-  <div class="svelte-fallback-pad muted">불러오는 중…</div>
+  <div class="app-status-screen" role="status" aria-live="polite" aria-label="앱을 불러오는 중">
+    <div class="app-status-card">
+      <img class="app-status-mark" src="/icon-192.png" alt="" aria-hidden="true" width="48" height="48" />
+      <strong>Noah Almighty</strong>
+      <span class="muted">작업 공간을 준비하는 중…</span>
+    </div>
+  </div>
 {:else if $appState.bootError}
-  <div class="svelte-fallback-pad warn-box">
-    앱을 시작하지 못했습니다: {$appState.bootError}
-    <button class="linkish" type="button" on:click={boot}>다시 시도</button>
+  <div class="app-status-screen" role="alert">
+    <div class="app-status-card warn-box">
+      <strong>앱을 시작하지 못했습니다</strong>
+      <span>{$appState.bootError}</span>
+      <button class="primary" type="button" on:click={boot}>다시 시도</button>
+    </div>
   </div>
 {:else if !$appState.user}
   <AuthView bootstrap={$appState.bootstrap} />
@@ -172,13 +191,14 @@
       onRailCollapsedChange={setRailCollapsed}
       onMobileRailOpenChange={setMobileRailOpen}
     />
-    <main id="main" class="main" tabindex="-1" inert={mobileRailOpen}>
+    <main id="main" class="main" tabindex="-1" inert={mobileRailOpen} aria-busy={!activeViewComponent}>
       {#if activeViewComponent}
         <svelte:component this={activeViewComponent} />
       {:else}
         <div class="svelte-fallback-pad muted" role="status">화면을 준비하는 중…</div>
       {/if}
     </main>
+    <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{activeViewLabel} 화면</div>
   </section>
 {/if}
 

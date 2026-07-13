@@ -50,6 +50,21 @@ describe("noah-almighty platform", () => {
     expect(after.body.needsSetup).toBe(false);
   });
 
+  it("returns a JSON 404 for unknown API paths instead of the SPA index", async () => {
+    const app = testApp();
+    const get = await request(app)
+      .get("/api/does-not-exist")
+      .expect("Content-Type", /json/)
+      .expect(404);
+    expect(get.body.error).toContain("API 엔드포인트");
+
+    await request(app)
+      .post("/api/does-not-exist")
+      .send({})
+      .expect("Content-Type", /json/)
+      .expect(404);
+  });
+
   it("reports the configured default GitHub host", async () => {
     const services = createServices({
       dataDir: tempDir,

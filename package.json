@@ -28,7 +28,7 @@
     "@fontsource-variable/noto-sans-kr": "^5.2.10",
     "better-sqlite3": "^12.10.0",
     "cytoscape": "^3.34.0",
-    "dompurify": "^3.4.8",
+    "dompurify": "^3.4.12",
     "express": "^4.19.2",
     "marked": "^18.0.5",
     "mermaid": "^11.15.0",

@@ -4,6 +4,102 @@ import type { McpToolGroupId } from "../shared/mcpToolGroups.js";
 export type AgentRuntime = "claude" | "local";
 
 /**
+ * A statically registered agent served by an external Noah-compatible gateway.
+ * Connection details and credentials are server-only and must never be copied
+ * into an AvatarSummary/AvatarDetail response.
+ */
+export interface ExternalAgentConfig {
+  /** Operator-facing slug; the public avatar id is `external:${id}`. */
+  id: string;
+  displayName: string;
+  alias: string;
+  bio: string;
+  persona: string;
+  intro: string;
+  hashtags: string[];
+  /** Exact POST endpoint for the gateway's `/v1/agents/messages` API. */
+  endpoint: string;
+  /** Gateway agent implementation. v1 defaults to `claude`. */
+  agent: string;
+  /** Disabled entries stay in admin/history metadata but cannot be discovered or run. */
+  enabled?: boolean;
+  model?: string;
+  /** Private upstream system instruction; never included in public avatar JSON. */
+  system?: string;
+  /** Private bearer token; never included in public avatar JSON. */
+  apiKey?: string;
+  /** Maximum time to receive upstream response headers. Defaults to 15s. */
+  connectTimeoutMs?: number;
+  /** Maximum silence between upstream SSE bytes. Defaults to 120s. */
+  idleTimeoutMs?: number;
+  /** Hard cap for one external turn. Defaults to 30 minutes. */
+  totalTimeoutMs?: number;
+  /**
+   * Optional Noah group ACL. Omitted means public; a non-empty list means only
+   * members of at least one listed group may discover or chat with this avatar.
+   * This controls Noah visibility only and never grants Gateway tool privileges.
+   */
+  visibleToGroupIds?: string[];
+}
+
+/** Where an administrator-visible external avatar definition comes from. */
+export type ExternalAgentSource = "environment" | "managed";
+
+/**
+ * Secret-free external avatar shape returned only from the admin API. Public
+ * avatar endpoints expose a much smaller projection and never include these
+ * connection/runtime fields.
+ */
+export interface AdminExternalAgent {
+  id: string;
+  displayName: string;
+  alias: string;
+  bio: string;
+  persona: string;
+  intro: string;
+  hashtags: string[];
+  endpoint: string;
+  agent: string;
+  enabled: boolean;
+  model?: string;
+  system?: string;
+  visibleToGroupIds?: string[];
+  connectTimeoutSeconds?: number;
+  idleTimeoutSeconds?: number;
+  totalTimeoutSeconds?: number;
+  source: ExternalAgentSource;
+  /** The credential itself is write-only; admins receive only this flag. */
+  apiKeySet: boolean;
+  /** Used to guard destructive delete and endpoint reassignment. */
+  conversationCount: number;
+}
+
+export type ExternalAgentApiKeyMode = "keep" | "set" | "clear";
+
+/** Write contract shared by the external-avatar editor and admin API. */
+export interface AdminExternalAgentInput {
+  id: string;
+  displayName: string;
+  alias?: string;
+  bio?: string;
+  persona?: string;
+  intro?: string;
+  hashtags?: string[];
+  endpoint: string;
+  agent?: "claude";
+  enabled?: boolean;
+  model?: string;
+  system?: string;
+  visibleToGroupIds?: string[];
+  connectTimeoutSeconds?: number;
+  idleTimeoutSeconds?: number;
+  totalTimeoutSeconds?: number;
+  apiKeyMode: ExternalAgentApiKeyMode;
+  /** Accepted only with apiKeyMode="set" and never returned by the server. */
+  apiKey?: string;
+}
+
+/**
  * Minimal avatar-owner descriptor the in-process MCP tool servers
  * (`agent/*Tools.ts`) act on behalf of: identity for commit attribution and the
  * username/displayName fallbacks. `alias` is the avatar's self-name (optional).
@@ -85,6 +181,8 @@ export interface AppConfig {
   hexSshCommand: string;
   /** Command used to rewrite Bash tool calls through RTK when available. */
   rtkCommand: string;
+  /** Server-only static registry loaded from `EXTERNAL_AGENTS_JSON`. */
+  externalAgents?: ExternalAgentConfig[];
 }
 
 /**
@@ -309,6 +407,8 @@ export interface AvatarSummary {
   /** Who can discover and chat with this avatar — see {@link AvatarVisibility}. */
   visibility: AvatarVisibility;
   updatedAt: string | null;
+  /** External avatars bypass Noah's local Claude/local runtime and tool stack. */
+  runtime?: "native" | "external";
   /**
    * True when the viewer shares a group with this avatar's owner (so they
    * auto-trust each other). Set by `listPublishedAvatars`; drives the 탐색
@@ -615,7 +715,7 @@ export interface AgentActivity {
 
 export interface AgentResponse {
   kind: "text";
-  runtime: "local" | "claude";
+  runtime: "local" | "claude" | "external";
   summary: string;
   text: string;
   /** Per-turn token usage (Claude runtime only; omitted for local runs). */

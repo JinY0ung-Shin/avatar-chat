@@ -500,7 +500,7 @@
               disabled={pluginRowBusy[p.id]}
               on:click={() => toggleRefEdit(p)}
             ><Icon name="edit" /></button>
-            <button class="msg-act" type="button" aria-label="최신 버전으로 새로고침" title="최신 버전으로 새로고침" class:spinning={pluginRowBusy[p.id]} disabled={pluginRowBusy[p.id]} on:click={() => refreshPlugin(p)}><Icon name="refresh" /></button>
+            <button class="msg-act" type="button" aria-label={`플러그인 최신 버전으로 새로고침: ${p.label || p.repo}`} title="최신 버전으로 새로고침" class:spinning={pluginRowBusy[p.id]} disabled={pluginRowBusy[p.id]} on:click={() => refreshPlugin(p)}><Icon name="refresh" /></button>
             <button class="msg-act danger" type="button" aria-label={`플러그인 삭제: ${p.label || p.repo}`} title="삭제" disabled={pluginRowBusy[p.id]} on:click={() => deletePlugin(p)}><Icon name="trash" /></button>
           </div>
           {#if refEditId === p.id}

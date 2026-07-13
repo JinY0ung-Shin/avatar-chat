@@ -23,7 +23,7 @@
   import { api } from "../lib/api";
   import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
   import { loadAvatars, loadConversations } from "../lib/loaders";
-  import { routeFromHash } from "../lib/nav";
+  import { goView, routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
   import { createStickController, type StickController } from "../lib/autoscroll";
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
@@ -184,6 +184,10 @@
     return Boolean(item.avatar.isOwn || item.avatar.id === user?.id);
   }
 
+  function isExternalPane(item: ChatPane): boolean {
+    return item.avatar.runtime === "external";
+  }
+
   function eligibleGroups(item: ChatPane) {
     return isOwnPane(item) ? (user?.groups || []).filter((g) => g.knowledgeRepoConfigured) : [];
   }
@@ -207,6 +211,7 @@
   }
 
   function hasComposerControls(item: ChatPane): boolean {
+    if (isExternalPane(item)) return false;
     return hasModelPicker() || hasEffortPicker() || eligibleGroups(item).length > 0 || MCP_TOOL_GROUPS.length > 0;
   }
 
@@ -296,7 +301,11 @@
   }
 
   function canSendMessage(item: ChatPane): boolean {
-    return Boolean(!item.streaming && item.avatar && (item.draft.trim() || item.pendingImages?.length));
+    return Boolean(
+      !item.streaming &&
+        item.avatar &&
+        (item.draft.trim() || (!isExternalPane(item) && item.pendingImages?.length)),
+    );
   }
 
   function isMobileViewport(): boolean {
@@ -332,6 +341,10 @@
 
   async function addImages(item: ChatPane, files: FileList | File[] | null | undefined) {
     if (!files) return;
+    if (isExternalPane(item)) {
+      notify("외부 아바타는 아직 이미지 첨부를 지원하지 않습니다.", "warn");
+      return;
+    }
     const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
     if (!list.length) return;
     const current = readState().chatPanes.find((p) => p.id === item.id);
@@ -364,6 +377,7 @@
   }
 
   function onComposerPaste(event: ClipboardEvent, item: ChatPane) {
+    if (isExternalPane(item)) return;
     const clipboard = event.clipboardData;
     if (!clipboard) return;
     // Prefer items (covers screenshots/copied images), fall back to files (some
@@ -694,6 +708,7 @@
   function runtimeBadge(message: StoredMessage): string | null {
     const runtime = message.response?.runtime;
     if (runtime === "local") return "로컬";
+    if (runtime === "external") return "외부 Agent";
     if (message.response?.summary === "오류" || message.response?.summary === "중지됨") return message.response.summary;
     return null;
   }
@@ -963,7 +978,7 @@
             </div>
           {/if}
         {/if}
-        {#if item.pendingImages?.length}
+        {#if !isExternalPane(item) && item.pendingImages?.length}
           <div class="composer-attachments" aria-label="첨부한 이미지">
             {#each item.pendingImages as img (img.id)}
               <div class="composer-thumb">
@@ -983,17 +998,19 @@
           </div>
         {/if}
         <div class="composer-box">
-          <label class="composer-attach" class:disabled={item.streaming} title="이미지 첨부" aria-label="이미지 첨부">
-            <Icon name="image" />
-            <input
-              type="file"
-              accept="image/png,image/jpeg,image/webp,image/gif"
-              multiple
-              hidden
-              disabled={item.streaming}
-              on:change={(event) => onPickImages(event, item)}
-            />
-          </label>
+          {#if !isExternalPane(item)}
+            <label class="composer-attach" class:disabled={item.streaming} title="이미지 첨부" aria-label="이미지 첨부">
+              <Icon name="image" />
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                hidden
+                disabled={item.streaming}
+                on:change={(event) => onPickImages(event, item)}
+              />
+            </label>
+          {/if}
           <!-- Intentionally NOT disabled while streaming: disabling blurs the
                textarea (focus loss after every send) and blocks composing the
                next message. Sending mid-stream is already prevented (Enter is
@@ -1018,7 +1035,7 @@
             class:is-stop={item.streaming}
             type="button"
             aria-label={item.streaming ? "응답 중지" : "보내기"}
-            title={item.streaming ? "응답 중지" : canSendMessage(item) ? "보내기" : "메시지 또는 이미지를 추가하세요"}
+            title={item.streaming ? "응답 중지" : canSendMessage(item) ? "보내기" : isExternalPane(item) ? "메시지를 입력하세요" : "메시지 또는 이미지를 추가하세요"}
             disabled={!item.streaming && !canSendMessage(item)}
             on:click={() => (item.streaming ? stopPane(item.id) : submit(item))}
           >
@@ -1128,7 +1145,7 @@
           {/each}
         </div>
       {/if}
-      {#if mcpToolsOpenPaneId === item.id}
+      {#if !isExternalPane(item) && mcpToolsOpenPaneId === item.id}
         <div
           id={paneDomId("composer-tools-panel", item.id)}
           class="composer-tools-panel"
@@ -1201,6 +1218,7 @@
         <h3>아직 선택한 아바타가 없어요</h3>
         <p>탐색 탭에서 대화할 아바타를 골라 보세요. 왼쪽 대화 목록에서 대화를 끌어와 열 수도 있어요.</p>
       </div>
+      <button class="primary" type="button" on:click={() => goView("explore")}>대화할 아바타 찾기</button>
     </div>
   </div>
 {:else if panes.length > 1}
