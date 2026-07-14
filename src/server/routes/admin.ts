@@ -7,6 +7,8 @@ import { knowledgeClonePath } from "../knowledgeRepo.js";
 import { knownHostsPath } from "../sshTrust.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import { HEX_SSH_TOOL_INFOS, parseHexSshToolPolicy } from "../hexSshPolicy.js";
+import { TOGGLABLE_BUILTIN_TOOLS, parseToolSkillPolicy } from "../toolSkillPolicy.js";
+import { discoverGlobalSkills } from "../agent/skillDiscovery.js";
 import {
   apiError,
   avatarDir,
@@ -27,7 +29,20 @@ export function createAdminRouter(deps: RouterDeps): Router {
   // System/runtime info: which model the agent is pinned to (config) vs. which
   // one the SDK actually reported on its last run (observed), plus the auth mode
   // and the read-only tool allowlist. Read-only; admin-gated.
-  router.get("/api/admin/system", requireAuth(store), requireAdmin, (_req, res) => {
+  router.get("/api/admin/system", requireAuth(store), requireAdmin, async (_req, res) => {
+    // Global skill list for the tool/skill policy card. Cached per bundled CLI
+    // version; a cache miss runs the SDK preflight inline (~0.3s measured). A
+    // broken CLI surfaces as skillDiscovery: null so the panel still loads —
+    // the admin can keep editing via the free-form skill input. The `local`
+    // (offline/test) runtime never spawns the CLI: cache-only.
+    let skillDiscovery = store.getSkillDiscoveryCache();
+    if (config.agentRuntime === "claude") {
+      try {
+        skillDiscovery = await discoverGlobalSkills(store, config);
+      } catch (error) {
+        logger.warn({ err: error }, "skill discovery preflight failed");
+      }
+    }
     res.json({
       system: {
         agentRuntime: config.agentRuntime,
@@ -45,6 +60,11 @@ export function createAdminRouter(deps: RouterDeps): Router {
         confluenceConfigured: Boolean(config.confluenceUrl),
         hexSshTools: HEX_SSH_TOOL_INFOS,
         hexSshToolPolicy: store.getHexSshToolPolicy(),
+        // Admin-managed built-in tool/skill on-off policy + the catalogs the
+        // panel renders it against.
+        toolSkillPolicy: store.getToolSkillPolicy(),
+        togglableBuiltinTools: TOGGLABLE_BUILTIN_TOOLS,
+        skillDiscovery,
         // Self-service signup gating, admin-managed (see PUT /api/admin/signup-mode).
         signupMode: store.getSignupMode(),
         // Admin-selected model override + whether an env ANTHROPIC_MODEL shadows it
@@ -68,6 +88,22 @@ export function createAdminRouter(deps: RouterDeps): Router {
       `owner=${saved.owner.length}, trusted=${saved.trusted.length}, colleague=${saved.colleague.length}`,
     );
     logger.warn({ actorId: req.user!.id, policy: saved }, "hex-ssh tool policy changed");
+    res.json({ policy: saved });
+  });
+
+  router.put("/api/admin/tool-skill-policy", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const policy = parseToolSkillPolicy(req.body?.policy);
+    if (!policy) {
+      apiError(res, 400, "도구/스킬 정책 형식이 올바르지 않습니다.");
+      return;
+    }
+    const saved = store.setToolSkillPolicy(policy);
+    auditAs(
+      req,
+      "set_tool_skill_policy",
+      `disabledTools=${saved.disabledTools.length}, disabledSkills=${saved.disabledSkills.length}`,
+    );
+    logger.warn({ actorId: req.user!.id, policy: saved }, "builtin tool/skill policy changed");
     res.json({ policy: saved });
   });
 

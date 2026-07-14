@@ -13,6 +13,7 @@ import { DEFAULT_MODEL_TIER } from "../modelTiers.js";
 import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
+import type { ToolSkillPolicy } from "../toolSkillPolicy.js";
 
 /**
  * Per-conversation context for avatar-system management tools. These tools let
@@ -45,6 +46,12 @@ export interface SystemToolsContext {
   selectedEffort?: string;
   /** MCP tool groups enabled for THIS run, chosen in the chat composer. */
   enabledMcpToolGroups?: McpToolGroupId[];
+  /**
+   * Admin-managed built-in tool/skill on-off policy for this deployment.
+   * Reported by describe_system (META-COGNITION), mirroring buildPrompt's
+   * admin-disabled standing note. Undefined → treated as nothing disabled.
+   */
+  toolSkillPolicy?: ToolSkillPolicy;
   /**
    * The working repository (by NAME) opened for THIS conversation via
    * `mcp__git_repo__open_repo`, if any. Reported by describe_system, mirroring
@@ -241,6 +248,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Autocompact window: ${ctx.config.autoCompactWindow ? `${ctx.config.autoCompactWindow} tokens (AUTO_COMPACT_WINDOW)` : "model default (full context window)"}`,
           `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
+          `- Admin-disabled built-in tools: ${ctx.toolSkillPolicy?.disabledTools.length ? ctx.toolSkillPolicy.disabledTools.map((name) => `\`${name}\``).join(", ") + " (removed deployment-wide by the system administrator)" : "(none)"}`,
+          `- Admin-disabled skills: ${ctx.toolSkillPolicy?.disabledSkills.length ? ctx.toolSkillPolicy.disabledSkills.map((name) => `\`${name}\``).join(", ") + " (deployment-wide; they may still appear in a skill listing but every invocation is blocked)" : "(none)"}`,
           `- Knowledge repository: ${knowledgeRepo.repo || "(none)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,
           `- Shared (communal) account: ${state.sharedAccount ? "yes — trusted same-group teammates chatting with this avatar can also update the personal knowledge repository (write/commit); repo creation/connection stays owner-only" : "no — knowledge-repo writes are owner-only (toggle under Settings → Profile)"}`,
           `- Second brain (personal): ${state.knowledgeRepoConfigured ? "active — `mcp__brain__search` recall over wiki/, plus the brain-search/brain-ingest/brain-reflect/brain-lint skills (run brain-migrate once if the wiki/ vault is missing)" : "inactive (connect a knowledge repository to enable brain recall/ingest/reflect)"}`,

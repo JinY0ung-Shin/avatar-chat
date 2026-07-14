@@ -451,6 +451,40 @@ moved symbols so importers keep their paths:
 - `agentUtils.ts` — small shared helpers.
 Keep the re-export set in `claudeAgent.ts` minimal to the original public surface.
 
+### Admin builtin tool/skill on-off policy (`toolSkillPolicy.ts` + `agent/skillDiscovery.ts`)
+- **What it is:** the admin panel (system tab → "내장 도구·스킬 정책") disables SDK BUILT-IN tools
+  (WebFetch/WebSearch/NotebookEdit/Task+Agent — the `TOGGLABLE_BUILTIN_TOOLS` catalog; core tools are
+  deliberately NOT togglable and the strict parser rejects them) and individual SKILLS (CLI built-ins
+  like code-review/deep-research AND app/plugin skills) deployment-wide. Storage mirrors the hex-ssh
+  policy: one JSON blob in `app_config` (`getToolSkillPolicy`/`setToolSkillPolicy` in `store/secrets.ts`,
+  lenient `normalize*` on read / strict `parse*` at `PUT /api/admin/tool-skill-policy`), read FRESH per
+  agent run. Empty policy == pre-feature behavior (safe under `SESSION_SECRET` rotation).
+- **Three-layer enforcement (all from ONE `toolSkillPolicy` read in `runClaudeAgent`):**
+  1. `disallowedTools` = `UNUSED_SDK_BUILTIN_TOOLS ∪ disallowedEntriesForPolicy(policy)` — bare names
+     remove built-ins from the advertised set; `Skill(<name>)` denies that one skill at the CLI (a
+     content-carrying deny never strips the whole Skill tool — verified against the bundled CLI matcher).
+  2. `options.skills` — `"all"` normally; when skills are disabled AND the discovery cache matches the
+     bundled CLI version, an explicit allowlist (`computeSkillsOption`) HIDES them from the skill
+     listing. **Visibility fail-open / execution fail-closed:** missing or stale cache → `"all"` (skills
+     must never vanish because a preflight failed); the hook still denies.
+  3. PreToolUse hook — denies disabled skills (`Skill` is otherwise an auto-allowed meta tool, so this
+     branch runs BEFORE the auto-allow; matches bare AND `plugin:name` forms) and disabled tool names.
+     English deny reason, Korean `onBlocked`.
+- **Skill discovery** (`agent/skillDiscovery.ts`, gateway-proven pattern): one preflight SDK session in
+  streaming-input mode that never sends a turn → `query.supportedCommands()` (~0.3s, no API call/auth) →
+  cached in `app_config` keyed by the SDK's `claudeCodeVersion`. Runs lazily from
+  `GET /api/admin/system` (claude runtime only — the `local` test runtime is cache-only), single-flight
+  guarded. Per-avatar plugin skills are NOT in the cache: `listPluginRootSkills` scans each run's plugin
+  roots (`skills/<dir>/SKILL.md`) so the allowlist covers them. Over-inclusion in the allowlist is inert;
+  omission hides a skill — hence fail-open on any doubt. Known edge: an availability-gated CLI skill
+  absent at preflight (e.g. `commit`) stays hidden while any skill is disabled.
+- **Meta-cognition:** `buildSystemPromptAppend` standing note (`adminDisabledTools/-Skills` on
+  `AgentRequest`) + `describe_system` "Admin-disabled …" lines (via `SystemToolsContext.toolSkillPolicy`)
+  — a disabled skill may still be LISTED when the cache is stale, so the note pre-empts wasted attempts.
+- **Beware `*/` in JSDoc:** a glob like `skills/*/SKILL.md` inside a block comment TERMINATES it and the
+  rest of the file parses as code (surfaced as bizarre TS1443/TS1160 errors far below). Write
+  `skills/<dir>/SKILL.md` in block comments; `//` line comments are safe.
+
 ### Adding / changing an MCP tool server
 - **One template per `*Tools.ts`:** `buildXTools` (handler-level owner/elevated guards) + `buildXServer`
   + a `SERVER_NAME`/`TOOL_NAMES` const pair.

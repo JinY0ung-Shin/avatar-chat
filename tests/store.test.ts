@@ -331,6 +331,30 @@ describe("store app config (app-wide secrets)", () => {
     expect(store.setHexSshToolPolicy(policy)).toEqual(policy);
     expect(store.getHexSshToolPolicy()).toEqual(policy);
   });
+
+  it("stores the builtin tool/skill policy and discovery cache as app config", () => {
+    const store = makeStore();
+    expect(store.getToolSkillPolicy()).toEqual({ disabledTools: [], disabledSkills: [] });
+    // The lenient normalizer drops unknown tool names and malformed skill names.
+    const saved = store.setToolSkillPolicy({
+      disabledTools: ["WebFetch", "WebSearch", "Bash"],
+      disabledSkills: ["code-review", "bad name!"],
+    });
+    expect(saved).toEqual({
+      disabledTools: ["WebFetch", "WebSearch"],
+      disabledSkills: ["code-review"],
+    });
+    expect(store.getToolSkillPolicy()).toEqual(saved);
+
+    expect(store.getSkillDiscoveryCache()).toBeNull();
+    const cache = {
+      cliVersion: "9.9.9",
+      fetchedAt: "2026-07-14T00:00:00.000Z",
+      skills: [{ name: "code-review", description: "review" }],
+    };
+    store.setSkillDiscoveryCache(cache);
+    expect(store.getSkillDiscoveryCache()).toEqual(cache);
+  });
 });
 
 

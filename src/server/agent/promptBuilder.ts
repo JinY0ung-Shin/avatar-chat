@@ -452,6 +452,27 @@ export function buildSystemPromptAppend(
   if (disabledToolGroupsBlock) {
     lines.push(disabledToolGroupsBlock);
   }
+  // Admin tool/skill policy (META-COGNITION): deployment-wide disables set in
+  // the admin panel. A disabled skill can still show up in the CLI's skill
+  // listing (the hiding allowlist depends on a fresh discovery cache), so this
+  // standing note pre-empts wasted attempts and wrong suggestions for every
+  // viewer class. Mirrored by describe_system.
+  const adminDisabledTools = (request.adminDisabledTools ?? []).filter(Boolean);
+  const adminDisabledSkills = (request.adminDisabledSkills ?? []).filter(Boolean);
+  if (adminDisabledTools.length > 0 || adminDisabledSkills.length > 0) {
+    const disabledParts = [
+      adminDisabledTools.length > 0
+        ? `built-in tools: ${adminDisabledTools.map((name) => `\`${name}\``).join(", ")}`
+        : "",
+      adminDisabledSkills.length > 0
+        ? `skills: ${adminDisabledSkills.map((name) => `\`${name}\``).join(", ")}`
+        : "",
+    ].filter(Boolean);
+    lines.push(
+      `The system administrator disabled the following for ALL avatars in this deployment — ${disabledParts.join("; ")}. ` +
+        "They are unavailable even if they appear in a tool or skill listing. Do not attempt, retry, or suggest them; if the user asks for one, explain that it is administratively disabled.",
+    );
+  }
   const knowledgeMemoryBlock = knowledgeMemorySection(request);
   if (knowledgeMemoryBlock) {
     lines.push(knowledgeMemoryBlock);

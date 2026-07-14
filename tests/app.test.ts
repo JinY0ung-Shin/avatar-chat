@@ -827,6 +827,43 @@ describe("noah-almighty platform", () => {
     await member.put("/api/admin/hex-ssh-policy").send({ policy }).expect(403);
   });
 
+  it("lets admins manage the builtin tool/skill policy and blocks members", async () => {
+    const app = testApp();
+    const { agent: admin } = await newUser(app, "boss");
+    const { agent: member } = await newUser(app, "member1");
+
+    const before = await admin.get("/api/admin/system").expect(200);
+    expect(before.body.system.toolSkillPolicy).toEqual({ disabledTools: [], disabledSkills: [] });
+    expect(
+      before.body.system.togglableBuiltinTools.flatMap((t: { names: string[] }) => t.names),
+    ).toEqual(expect.arrayContaining(["WebFetch", "WebSearch"]));
+    // Offline (`local`) runtime never spawns the CLI preflight: cache-only, absent here.
+    expect(before.body.system.skillDiscovery).toBeNull();
+
+    const policy = { disabledTools: ["WebFetch", "WebSearch"], disabledSkills: ["code-review"] };
+    const saved = await admin.put("/api/admin/tool-skill-policy").send({ policy }).expect(200);
+    expect(saved.body.policy).toEqual(policy);
+
+    const system = await admin.get("/api/admin/system").expect(200);
+    expect(system.body.system.toolSkillPolicy).toEqual(policy);
+
+    // Strict write path: core tools outside the togglable catalog, missing
+    // fields, and malformed skill names are all rejected (never silently dropped).
+    await admin
+      .put("/api/admin/tool-skill-policy")
+      .send({ policy: { disabledTools: ["Bash"], disabledSkills: [] } })
+      .expect(400);
+    await admin
+      .put("/api/admin/tool-skill-policy")
+      .send({ policy: { disabledTools: [] } })
+      .expect(400);
+    await admin
+      .put("/api/admin/tool-skill-policy")
+      .send({ policy: { disabledTools: [], disabledSkills: ["bad name"] } })
+      .expect(400);
+    await member.put("/api/admin/tool-skill-policy").send({ policy }).expect(403);
+  });
+
   it("reports configuredModel as null when ANTHROPIC_MODEL is unset", async () => {
     const app = testApp();
     const admin = request.agent(app);

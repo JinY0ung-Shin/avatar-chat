@@ -934,6 +934,15 @@ export interface AgentRequest {
    */
   experimentalFeatures?: string[];
   /**
+   * Admin tool/skill policy self-state (META-COGNITION): built-in tools /
+   * skills the system administrator disabled deployment-wide. Set by
+   * `runClaudeAgent` for every viewer class — a disabled skill can still
+   * appear in the CLI's skill listing (stale discovery cache), so the standing
+   * prompt note keeps the avatar from attempting or suggesting it.
+   */
+  adminDisabledTools?: string[];
+  adminDisabledSkills?: string[];
+  /**
    * The registered git repo the avatar opened as this conversation's **working
    * repository** (`mcp__git_repo__open_repo`): the repo's registered name. Its
    * clone is the SDK cwd, so the avatar edits/tests and commits locally with

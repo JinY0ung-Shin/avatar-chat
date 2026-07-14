@@ -14,6 +14,10 @@ import {
   SDK_INTERNAL_HIDDEN_TOOLS,
   SDK_ORCHESTRATION_TOOLS,
 } from "../../shared/sdkToolPresentation.js";
+import {
+  DEFAULT_TOOL_SKILL_POLICY,
+  type ToolSkillPolicy,
+} from "../toolSkillPolicy.js";
 
 const agentLogger = logger.child({ module: "agent" });
 const RTK_REWRITE_TIMEOUT_MS = 1_000;
@@ -157,6 +161,7 @@ export function buildPreToolUseHook(
   hexSshPolicy: HexSshToolPolicy = DEFAULT_HEX_SSH_TOOL_POLICY,
   rtkCommand = "rtk",
   activeRepoMode = false,
+  toolSkillPolicy: ToolSkillPolicy = DEFAULT_TOOL_SKILL_POLICY,
 ) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
@@ -260,6 +265,42 @@ export function buildPreToolUseHook(
           ));
         }
       }
+    }
+
+    // Admin tool/skill policy — enforced HERE (the single gate) regardless of
+    // what the CLI advertises: a disabled skill can still be listed (stale
+    // discovery cache), and `Skill` is otherwise auto-allowed as a meta tool
+    // below, so this check must come before the auto-allow.
+    if (toolName === "Skill" && toolSkillPolicy.disabledSkills.length > 0) {
+      const skillName = asString(toolInput.skill);
+      const bareName = skillName.includes(":")
+        ? skillName.slice(skillName.lastIndexOf(":") + 1)
+        : skillName;
+      if (
+        skillName &&
+        (toolSkillPolicy.disabledSkills.includes(skillName) ||
+          toolSkillPolicy.disabledSkills.includes(bareName))
+      ) {
+        const reason = `관리자가 비활성화한 스킬입니다: ${skillName}`;
+        events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+        agentLogger.info({ toolName, agentId, skillName }, "admin-disabled skill blocked");
+        return trace(
+          hookDeny(
+            `The skill '${skillName}' is disabled by the system administrator for this deployment, even if it appears in the skill list. ` +
+              "Do not retry it or work around the restriction; if the user asked for it, explain that it is administratively disabled.",
+          ),
+        );
+      }
+    }
+    if (toolSkillPolicy.disabledTools.includes(toolName)) {
+      const reason = `관리자가 비활성화한 도구입니다: ${toolName}`;
+      events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+      agentLogger.info({ toolName, agentId }, "admin-disabled tool blocked");
+      return trace(
+        hookDeny(
+          `The built-in tool '${toolName}' is disabled by the system administrator for this deployment. Use the available alternatives instead.`,
+        ),
+      );
     }
 
     const hexSshTool = extractHexSshToolName(toolName);

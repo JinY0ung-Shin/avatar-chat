@@ -9,6 +9,14 @@ import {
   normalizeHexSshToolPolicy,
   type HexSshToolPolicy,
 } from "../hexSshPolicy.js";
+import {
+  SKILL_DISCOVERY_CACHE_KEY,
+  TOOL_SKILL_POLICY_CONFIG_KEY,
+  normalizeSkillDiscoveryCache,
+  normalizeToolSkillPolicy,
+  type SkillDiscoveryCache,
+  type ToolSkillPolicy,
+} from "../toolSkillPolicy.js";
 import type { User } from "../types.js";
 import { type Constructor, type StoreBase } from "./internal.js";
 
@@ -282,6 +290,51 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const normalized = normalizeHexSshToolPolicy(policy);
       this.setAppSecret(HEX_SSH_POLICY_CONFIG_KEY, JSON.stringify(normalized));
       return normalized;
+    }
+
+    /**
+     * Deployment-wide built-in tool/skill on-off policy (admin-managed).
+     * Missing/corrupt/unreadable (SESSION_SECRET rotated) → empty policy,
+     * i.e. nothing disabled — the safe pre-feature behavior.
+     */
+    getToolSkillPolicy(): ToolSkillPolicy {
+      const raw = this.getAppSecret(TOOL_SKILL_POLICY_CONFIG_KEY);
+      if (!raw) {
+        return normalizeToolSkillPolicy(null);
+      }
+      try {
+        return normalizeToolSkillPolicy(JSON.parse(raw));
+      } catch {
+        return normalizeToolSkillPolicy(null);
+      }
+    }
+
+    setToolSkillPolicy(policy: ToolSkillPolicy): ToolSkillPolicy {
+      const normalized = normalizeToolSkillPolicy(policy);
+      this.setAppSecret(TOOL_SKILL_POLICY_CONFIG_KEY, JSON.stringify(normalized));
+      return normalized;
+    }
+
+    /**
+     * Cached global skill-discovery result (one preflight `supportedCommands()`
+     * per bundled CLI version). Null when absent, malformed, or unreadable —
+     * callers treat null as "discover again" (admin panel) or fall back to
+     * `skills: "all"` (agent run), never as an error.
+     */
+    getSkillDiscoveryCache(): SkillDiscoveryCache | null {
+      const raw = this.getAppSecret(SKILL_DISCOVERY_CACHE_KEY);
+      if (!raw) {
+        return null;
+      }
+      try {
+        return normalizeSkillDiscoveryCache(JSON.parse(raw));
+      } catch {
+        return null;
+      }
+    }
+
+    setSkillDiscoveryCache(cache: SkillDiscoveryCache): void {
+      this.setAppSecret(SKILL_DISCOVERY_CACHE_KEY, JSON.stringify(cache));
     }
 
     /** Set the commit author identity used for knowledge-repo commits. */

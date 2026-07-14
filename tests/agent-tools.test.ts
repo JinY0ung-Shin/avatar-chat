@@ -1743,6 +1743,22 @@ describe("system tools (avatar system management)", () => {
     expect(res.content[0].text).toContain("Remote SSH tools: enabled");
   });
 
+  it("describe_system reports admin-disabled builtin tools and skills", async () => {
+    const s = setup("st-toolskill");
+    const noPolicy = await callTool(toolsFor(s), "describe_system", {});
+    expect(noPolicy.content[0].text).toContain("Admin-disabled built-in tools: (none)");
+    expect(noPolicy.content[0].text).toContain("Admin-disabled skills: (none)");
+
+    const tools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: true,
+      toolSkillPolicy: { disabledTools: ["WebFetch"], disabledSkills: ["code-review"] },
+    });
+    const res = await callTool(tools, "describe_system", {});
+    expect(res.content[0].text).toContain("Admin-disabled built-in tools: `WebFetch`");
+    expect(res.content[0].text).toContain("Admin-disabled skills: `code-review`");
+  });
+
   it("reports the effective model, groups, profile visibility and pending requests", async () => {
     const s = setup("st-describe-full");
     // No env model pin in tests → the admin override is the effective model.

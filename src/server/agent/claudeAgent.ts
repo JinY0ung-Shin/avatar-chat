@@ -53,6 +53,8 @@ import {
 } from "./sdkMessageHandlers.js";
 import { effectiveMcpToolGroups } from "../../shared/mcpToolGroups.js";
 import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
+import { disallowedEntriesForPolicy } from "../toolSkillPolicy.js";
+import { computeSkillsOption, freshSkillDiscoveryCache } from "./skillDiscovery.js";
 import {
   buildFileOutputServer,
   FILE_OUTPUT_SERVER_NAME,
@@ -422,6 +424,13 @@ export async function runClaudeAgent(
     hexSshPolicy,
     hexSshViewerClass,
   );
+  // Admin-managed built-in tool/skill on-off policy — read fresh per run like
+  // the hex-ssh policy, so a panel change applies from the next turn without a
+  // restart. Enforced three ways below: disallowedTools (removes built-ins
+  // from context / denies Skill(<name>) at the CLI), the skills allowlist
+  // (hides disabled skills from the listing), and the PreToolUse hook (our own
+  // gate — the hook otherwise auto-allows every Skill call).
+  const toolSkillPolicy = store.getToolSkillPolicy();
   const enabledMcpToolGroups = effectiveMcpToolGroups(request.mcpToolGroups);
   const mcpToolGroupEnabled = (id: (typeof enabledMcpToolGroups)[number]) =>
     enabledMcpToolGroups.includes(id);
@@ -572,6 +581,7 @@ export async function runClaudeAgent(
     // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
     activeRepoName: request.activeRepoName,
     fileOutputEnabled: fileOutputActive,
+    toolSkillPolicy,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
   // avatars by capability so it can point the user at a teammate avatar for
@@ -827,9 +837,27 @@ export async function runClaudeAgent(
     // `allowedTools` only auto-approves; it does NOT restrict what the CLI offers,
     // so these (Workflow/Monitor/Cron*/Worktree/…) would otherwise ride along on
     // every request as ~10k tokens of unused tool descriptions. See the constant.
-    disallowedTools: [...UNUSED_SDK_BUILTIN_TOOLS],
+    disallowedTools: Array.from(
+      new Set([
+        ...UNUSED_SDK_BUILTIN_TOOLS,
+        // Admin policy: bare tool names remove built-ins from the advertised
+        // set entirely; `Skill(<name>)` denies that one skill's invocation at
+        // the CLI layer (the skill may still be LISTED — the skills allowlist
+        // below and the PreToolUse hook cover that side).
+        ...disallowedEntriesForPolicy(toolSkillPolicy),
+      ]),
+    ),
     // Enable bundled + plugin skills (also auto-allows the `Skill` tool).
-    skills: "all",
+    // "all" unless the admin disabled skills AND the discovery cache is fresh
+    // for the bundled CLI version — then an explicit allowlist hides them from
+    // the model's skill listing. Visibility is fail-open (a stale/missing
+    // cache must never make skills vanish), execution stays fail-closed (the
+    // hook denies disabled skills regardless).
+    skills: computeSkillsOption(
+      toolSkillPolicy,
+      freshSkillDiscoveryCache(store),
+      pluginRoots.map((root) => root.path),
+    ),
     // Only the servers registered HERE exist: the CLI's own MCP discovery
     // (plugin .mcp.json, cwd project .mcp.json, user settings) is disabled so
     // plugin servers can't double-spawn beside the lifted, secret-injected
@@ -976,6 +1004,7 @@ export async function runClaudeAgent(
               // Active repo workspace (#47): block remote/branch/destructive Bash
               // git so sync/push stay app-managed; local add/commit is allowed.
               Boolean(request.activeRepoName),
+              toolSkillPolicy,
             ),
           ],
         },
@@ -1045,6 +1074,12 @@ export async function runClaudeAgent(
     experimentalFeatures: ownerToolAccess
       ? ownerState.experimentalFeatures
       : [],
+    // Admin tool/skill policy self-state (META-COGNITION): all viewer classes —
+    // a disabled skill may still show in the CLI's listing (stale discovery
+    // cache), so the standing note stops the avatar from attempting/suggesting
+    // it. Mirrored by describe_system.
+    adminDisabledTools: toolSkillPolicy.disabledTools,
+    adminDisabledSkills: toolSkillPolicy.disabledSkills,
   };
 
   const setSystemPrompt = () => {

@@ -36,6 +36,13 @@
   let hexError = "";
   // hex-ssh policy local checkbox matrix: policy[role][toolName] = boolean
   let hexPolicy: Record<string, Record<string, boolean>> = {};
+  // builtin tool/skill policy local state: checked = DISABLED deployment-wide
+  let toolSkillBusy = false;
+  let toolSkillError = "";
+  let disabledToolChecks: Record<string, boolean> = {};
+  let disabledSkillChecks: Record<string, boolean> = {};
+  let customDisabledSkills: string[] = [];
+  let customSkillInput = "";
 
   // audit action filter
   let auditAction = "";
@@ -43,6 +50,7 @@
   const tokenStatusId = "admin-token-status";
   const modelStatusId = "admin-model-status";
   const hexStatusId = "admin-hex-policy-status";
+  const toolSkillStatusId = "admin-tool-skill-status";
 
   type AdminTabDef = { id: AdminTab; label: string; icon: string };
   const tabs: AdminTabDef[] = [
@@ -164,6 +172,22 @@
         : hexTools.length
           ? "저장된 정책과 같습니다."
           : "설정할 SSH 도구가 없습니다.";
+  $: togglableTools = Array.isArray(sys.togglableBuiltinTools) ? sys.togglableBuiltinTools : [];
+  $: discoveredSkills = sys.skillDiscovery && Array.isArray(sys.skillDiscovery.skills) ? sys.skillDiscovery.skills : [];
+  $: savedToolSkillPolicy = sys.toolSkillPolicy || {};
+  $: toolSkillSavedKey = toolSkillPolicyKey(savedToolSkillPolicy.disabledTools || [], savedToolSkillPolicy.disabledSkills || []);
+  $: localDisabledTools = disabledToolNamesFrom(togglableTools, disabledToolChecks);
+  $: localDisabledSkills = disabledSkillNamesFrom(disabledSkillChecks, customDisabledSkills);
+  $: toolSkillCurrentKey = toolSkillPolicyKey(localDisabledTools, localDisabledSkills);
+  $: toolSkillDirty = toolSkillCurrentKey !== toolSkillSavedKey;
+  $: toolSkillCanSave = Boolean(!toolSkillBusy && toolSkillDirty);
+  $: toolSkillStatus = toolSkillBusy
+    ? "정책을 저장 중입니다."
+    : toolSkillError
+      ? `저장 실패: ${toolSkillError}`
+      : toolSkillDirty
+        ? "저장하지 않은 정책 변경 사항이 있습니다."
+        : "저장된 정책과 같습니다.";
 
   // overview stat cards
   $: statCards = [
@@ -186,6 +210,7 @@
     try {
       await Promise.all([loadAdminOverview(), loadAdminGroups()]);
       syncHexPolicyFromSys();
+      syncToolSkillFromSys();
       modelInput = String(unwrapSystem($appState.adminSystem).modelOverride || "");
     } catch (err) {
       error = (err as Error).message;
@@ -457,6 +482,101 @@
       notify(`SSH 도구 정책은 저장했지만 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
       hexBusy = false;
+    }
+  }
+
+  // ---- system: builtin tool/skill policy ----
+  // Hand-mirrors SKILL_NAME_RE in src/server/toolSkillPolicy.ts (no shared
+  // module across the client-server boundary) — update in lockstep.
+  const SKILL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+
+  function toolSkillPolicyKey(tools: string[], skills: string[]): string {
+    return `${[...tools].sort().join(",")}|${[...skills].sort().join(",")}`;
+  }
+
+  function disabledToolNamesFrom(catalog: any[], checks: Record<string, boolean>): string[] {
+    return catalog
+      .filter((entry) => checks[entry.id])
+      .flatMap((entry) => (Array.isArray(entry.names) ? entry.names.map(String) : []));
+  }
+
+  function disabledSkillNamesFrom(checks: Record<string, boolean>, custom: string[]): string[] {
+    const out = Object.keys(checks).filter((name) => checks[name]);
+    for (const name of custom) {
+      if (!out.includes(name)) out.push(name);
+    }
+    return out;
+  }
+
+  function syncToolSkillFromSys() {
+    const cur = unwrapSystem($appState.adminSystem);
+    const catalog = Array.isArray(cur.togglableBuiltinTools) ? cur.togglableBuiltinTools : [];
+    const saved = cur.toolSkillPolicy || {};
+    const savedTools: string[] = Array.isArray(saved.disabledTools) ? saved.disabledTools.map(String) : [];
+    const savedSkills: string[] = Array.isArray(saved.disabledSkills) ? saved.disabledSkills.map(String) : [];
+    const discovered = cur.skillDiscovery && Array.isArray(cur.skillDiscovery.skills) ? cur.skillDiscovery.skills : [];
+    const toolChecks: Record<string, boolean> = {};
+    for (const entry of catalog) {
+      toolChecks[entry.id] = Array.isArray(entry.names) && entry.names.some((name: string) => savedTools.includes(name));
+    }
+    const skillChecks: Record<string, boolean> = {};
+    const discoveredNames = new Set<string>();
+    for (const skill of discovered) {
+      const name = String(skill?.name || "");
+      if (!name) continue;
+      discoveredNames.add(name);
+      skillChecks[name] = savedSkills.includes(name);
+    }
+    disabledToolChecks = toolChecks;
+    disabledSkillChecks = skillChecks;
+    // Saved names the discovery list doesn't cover (typed by an admin, or from
+    // an older CLI) stay visible/removable so the dirty-compare stays honest.
+    customDisabledSkills = savedSkills.filter((name) => !discoveredNames.has(name));
+  }
+
+  function addCustomDisabledSkill() {
+    const name = customSkillInput.trim();
+    if (!name) return;
+    if (!SKILL_NAME_RE.test(name)) {
+      toolSkillError = "스킬 이름 형식이 올바르지 않습니다. (영숫자로 시작, 최대 128자)";
+      return;
+    }
+    toolSkillError = "";
+    if (name in disabledSkillChecks) {
+      disabledSkillChecks = { ...disabledSkillChecks, [name]: true };
+    } else if (!customDisabledSkills.includes(name)) {
+      customDisabledSkills = [...customDisabledSkills, name];
+    }
+    customSkillInput = "";
+  }
+
+  function removeCustomDisabledSkill(name: string) {
+    customDisabledSkills = customDisabledSkills.filter((n) => n !== name);
+  }
+
+  async function saveToolSkillPolicy() {
+    if (!toolSkillCanSave) return;
+    toolSkillBusy = true;
+    toolSkillError = "";
+    try {
+      await api("/api/admin/tool-skill-policy", {
+        method: "PUT",
+        body: JSON.stringify({ policy: { disabledTools: localDisabledTools, disabledSkills: localDisabledSkills } }),
+      });
+    } catch (err) {
+      toolSkillBusy = false;
+      toolSkillError = (err as Error).message;
+      notify(`저장 실패: ${toolSkillError}`);
+      return;
+    }
+    try {
+      await loadAdminOverview();
+      syncToolSkillFromSys();
+      notify("내장 도구·스킬 정책을 저장했습니다.", "ok");
+    } catch (err) {
+      notify(`정책은 저장했지만 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      toolSkillBusy = false;
     }
   }
 
@@ -869,6 +989,86 @@
                 <div class="empty-note">현재 설정할 SSH 도구가 없습니다. hex-ssh 도구 목록이 서버에서 제공되면 역할별 정책 표가 여기에 표시됩니다.</div>
               </section>
             {/if}
+
+            <!-- builtin tool/skill policy -->
+            <section class="settings-card">
+              <div class="panel-section-head">
+                <div>
+                  <h3>내장 도구·스킬 정책</h3>
+                  <p class="muted">체크한 항목은 모든 아바타에서 비활성화됩니다. 도구는 대화에서 완전히 제거되고, 스킬은 목록에서 숨겨지거나 실행이 차단됩니다.</p>
+                </div>
+              </div>
+              <form class="settings-form" on:submit|preventDefault={saveToolSkillPolicy}>
+                <div class="field">
+                  <span>내장 도구 비활성화</span>
+                  <div class="external-agent-group-picker" role="group" aria-label="내장 도구 비활성화" aria-describedby={toolSkillStatusId}>
+                    {#each togglableTools as entry (entry.id)}
+                      <label class="external-agent-group-option">
+                        <input type="checkbox" bind:checked={disabledToolChecks[entry.id]} aria-describedby={toolSkillStatusId} disabled={toolSkillBusy} on:change={() => (toolSkillError = "")} />
+                        <span><strong>{entry.labelKo}</strong><small class="muted">{entry.descriptionKo}</small></span>
+                      </label>
+                    {/each}
+                  </div>
+                </div>
+                <div class="field">
+                  <span>스킬 비활성화</span>
+                  {#if sys.skillDiscovery}
+                    <p class="muted">CLI v{sys.skillDiscovery.cliVersion} 기준으로 발견한 스킬/커맨드 {discoveredSkills.length}개입니다.</p>
+                    <div class="external-agent-group-picker" role="group" aria-label="스킬 비활성화" aria-describedby={toolSkillStatusId}>
+                      {#each discoveredSkills as skill (skill.name)}
+                        <label class="external-agent-group-option">
+                          <input type="checkbox" bind:checked={disabledSkillChecks[skill.name]} aria-describedby={toolSkillStatusId} disabled={toolSkillBusy} on:change={() => (toolSkillError = "")} />
+                          <span><strong>{skill.name}</strong>{#if skill.description}<small class="muted">{skill.description}</small>{/if}</span>
+                        </label>
+                      {/each}
+                      {#each customDisabledSkills as name (name)}
+                        <label class="external-agent-group-option">
+                          <input type="checkbox" checked disabled={toolSkillBusy} on:change={() => removeCustomDisabledSkill(name)} />
+                          <span><strong>{name}</strong><small class="muted">직접 추가됨 — 체크를 해제하면 목록에서 제거됩니다.</small></span>
+                        </label>
+                      {/each}
+                    </div>
+                  {:else}
+                    <div class="empty-note">스킬 목록을 불러오지 못했습니다. 아래 입력으로 스킬 이름을 직접 추가해 비활성화할 수 있습니다.</div>
+                    {#if customDisabledSkills.length}
+                      <div class="external-agent-group-picker" role="group" aria-label="직접 추가한 비활성 스킬" aria-describedby={toolSkillStatusId}>
+                        {#each customDisabledSkills as name (name)}
+                          <label class="external-agent-group-option">
+                            <input type="checkbox" checked disabled={toolSkillBusy} on:change={() => removeCustomDisabledSkill(name)} />
+                            <span><strong>{name}</strong><small class="muted">직접 추가됨 — 체크를 해제하면 목록에서 제거됩니다.</small></span>
+                          </label>
+                        {/each}
+                      </div>
+                    {/if}
+                  {/if}
+                </div>
+                <label class="field">
+                  <span>스킬 이름 직접 추가</span>
+                  <input
+                    bind:value={customSkillInput}
+                    placeholder="예: code-review"
+                    autocomplete="off"
+                    aria-describedby={toolSkillStatusId}
+                    aria-invalid={toolSkillError ? "true" : undefined}
+                    disabled={toolSkillBusy}
+                    on:input={() => (toolSkillError = "")}
+                    on:keydown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        addCustomDisabledSkill();
+                      }
+                    }}
+                  />
+                </label>
+                <div class="ar-actions">
+                  <button class="ghost-sm" type="button" disabled={toolSkillBusy || !customSkillInput.trim()} on:click={addCustomDisabledSkill}>비활성 목록에 추가</button>
+                </div>
+                <div class="settings-save-row">
+                  <span id={toolSkillStatusId} class="settings-save-status" class:dirty={toolSkillDirty && !toolSkillBusy && !toolSkillError} class:pending={toolSkillBusy} class:invalid={Boolean(toolSkillError)} role="status" aria-live="polite">{toolSkillStatus}</span>
+                  <button class="primary" type="submit" disabled={!toolSkillCanSave}>{toolSkillBusy ? "저장 중…" : "정책 저장"}</button>
+                </div>
+              </form>
+            </section>
           </div>
         {/if}
       {:else if $appState.adminTab === "audit"}
