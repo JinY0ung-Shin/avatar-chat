@@ -63,13 +63,21 @@
         body: JSON.stringify(payload),
       });
       if (result.pending) {
-        notify("가입 요청이 접수되었습니다. 관리자가 승인하면 로그인할 수 있습니다.", "info");
+        notify("가입 요청이 접수되었습니다. 관리자가 승인하면 로그인할 수 있으며, 그룹 권한은 승인 후 관리자에게 신청하세요.", "info");
         setMode("login", true);
         pending = true;
         return;
       }
       if (result.user) {
+        const signedUp = mode === "signup" && !isSetup;
         replaceState({ user: result.user, view: "explore" });
+        if (signedUp) {
+          notify(
+            "회원가입이 완료되었습니다. 그룹 아바타 이용 등 그룹 권한이 필요하면 관리자에게 그룹 추가를 신청하세요.",
+            "info",
+            { durationMs: 9000 },
+          );
+        }
       }
     } catch (err) {
       error = (err as Error).message;
