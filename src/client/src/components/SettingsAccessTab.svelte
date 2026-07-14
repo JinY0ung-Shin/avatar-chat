@@ -512,9 +512,15 @@
     <div class="panel-section-head">
       <div>
         <h3>시크릿</h3>
-        <p class="muted">내 아바타의 도구에만 주입되는 비밀값입니다. 암호화되어 저장되고 다시 표시되지 않습니다. 직접 등록한 플러그인·지식 저장소의 <code>.mcp.json</code> 커스텀 MCP 서버에는 시크릿이 환경변수로 주입되고(본인 또는 같은 그룹 팀원과의 대화에서만), <strong>셸 노출</strong>을 켠 시크릿은 아바타의 셸(Bash)에서도 <code>$이름</code>으로 쓸 수 있어요 — 도구 출력에 값이 나타나면 자동으로 가려지지만, 노출을 켠 키는 아바타가 사용할 수 있게 된다는 뜻이니 필요한 키만 켜세요. GIT_TOKEN·GITHUB_TOKEN·SSH 계열은 전용 경로로만 쓰이며 셸 노출이 불가하고, 그룹 저장소의 MCP 서버와 일반 사용자와의 대화에는 어떤 시크릿도 주입되지 않습니다.</p>
+        <p class="muted">내 아바타의 도구에만 주입되는 비밀값입니다. 암호화되어 저장되고 다시 표시되지 않습니다.</p>
       </div>
     </div>
+    <ul class="hint-list">
+      <li>직접 등록한 플러그인·지식 저장소의 <code>.mcp.json</code> MCP 서버에 환경변수로 주입돼요 — 본인·같은 그룹원과의 대화에서만.</li>
+      <li><strong>셸 노출</strong>을 켜면 셸(Bash)에서 같은 이름의 환경변수로도 쓸 수 있어요. 필요한 키만 켜세요.</li>
+      <li>도구 출력에 값이 나타나면 자동으로 가려져요.</li>
+      <li>GIT_TOKEN·GITHUB_TOKEN·SSH 계열은 전용 경로로만 쓰이고, 그룹 저장소 MCP 서버·일반 사용자 대화에는 어떤 시크릿도 주입되지 않아요.</li>
+    </ul>
 
     <div class="secret-preset-list">
       {#each SECRET_PRESETS as preset}
@@ -560,6 +566,10 @@
       {/each}
     </div>
 
+    <div class="secret-extra-head">
+      <strong>SSH 키</strong>
+      <p class="muted">키 쌍을 만들어 개인키는 SSH_PRIVATE_KEY 시크릿에 저장하고, 공개키를 여기에 표시합니다. 원격 서버에는 공개키를 등록하세요.</p>
+    </div>
     {#if user.sshPublicKey}
       <div class="ssh-public-key-box">
         <label class="field ssh-public-key-field">

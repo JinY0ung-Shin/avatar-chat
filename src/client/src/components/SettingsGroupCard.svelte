@@ -542,8 +542,9 @@
           <AvatarImage user={{ ...m, id: m.userId }} size={32} alt="" />
           <div class="pr-main">
             <strong>{m.displayName}{m.userId === meId ? " (나)" : ""}</strong>
-            <div class="pr-sub">@{m.username}{m.role === "admin" ? " · 관리자" : ""}</div>
+            <div class="pr-sub">@{m.username}</div>
           </div>
+          {#if m.role === "admin"}<span class="tag write">관리자</span>{/if}
           <div class="pr-actions">
             {#if m.userId !== meId}
               <button class="ghost-sm" type="button" title={`${m.displayName}의 아바타와 대화`} aria-describedby={memberStatus ? memberStatusId : undefined} disabled={Boolean(chatBusyId)} on:click={() => chatWith(m)}>
@@ -664,14 +665,22 @@
           <button class="linkish small danger" type="button" disabled={repoBusy} title="이 그룹의 공용 저장소 연결을 해제합니다 (GitHub의 저장소 자체는 삭제되지 않습니다)" on:click={disconnectRepo}>연결 해제</button>
         </div>
       {/if}
-      <form class="plugin-add rows-2" on:submit|preventDefault={saveRepo}>
-        <input bind:value={repoInput} placeholder="owner/repo 또는 사내 git URL" aria-label="그룹 지식 저장소" aria-describedby={repoStatusId} aria-invalid={repoError ? "true" : undefined} disabled={repoBusy} on:input={() => (repoError = "")} />
-        <input bind:value={branchInput} class="narrow" placeholder="브랜치 (선택)" aria-label="브랜치" aria-describedby={repoStatusId} disabled={repoBusy} on:input={() => (repoError = "")} />
-        <button class="primary" type="submit" disabled={!repoCanSave}>{repoBusy ? "저장 중…" : savedGroupRepo ? "변경 저장" : "연결"}</button>
+      <form class="settings-form" on:submit|preventDefault={saveRepo}>
+        <div class="field-row-2col">
+          <label class="field">
+            <span>저장소 주소</span>
+            <input bind:value={repoInput} placeholder="owner/repo 또는 사내 git URL" aria-describedby={repoStatusId} aria-invalid={repoError ? "true" : undefined} disabled={repoBusy} on:input={() => (repoError = "")} />
+          </label>
+          <label class="field">
+            <span>브랜치 (선택)</span>
+            <input bind:value={branchInput} placeholder="비우면 기본 브랜치" aria-describedby={repoStatusId} disabled={repoBusy} on:input={() => (repoError = "")} />
+          </label>
+        </div>
+        <div class="settings-save-row">
+          <span id={repoStatusId} class="settings-save-status" class:dirty={repoDirty && !repoBusy && !repoError} class:pending={repoBusy} class:invalid={Boolean(repoError)} role="status" aria-live="polite">{repoStatus}</span>
+          <button class="primary" type="submit" disabled={!repoCanSave}>{repoBusy ? "저장 중…" : savedGroupRepo ? "변경 저장" : "연결"}</button>
+        </div>
       </form>
-      <div class="settings-save-row compact">
-        <span id={repoStatusId} class="settings-save-status" class:dirty={repoDirty && !repoBusy && !repoError} class:pending={repoBusy} class:invalid={Boolean(repoError)} role="status" aria-live="polite">{repoStatus}</span>
-      </div>
       {#if !group.knowledgeRepo}
         <div class="empty-note">
           공용 저장소를 연결하면 그룹원 전원의 아바타가 그 저장소의 스킬을 사용합니다.

@@ -1,5 +1,9 @@
 /* Settings */
 .settings-body {
+  /* Settings = comfortable density (docs/DESIGN.md §3): roomier cards and
+     field rhythm than the compact admin tables. */
+  --pad-card: var(--s-5);
+  --gap-stack: var(--s-4);
   max-width: 780px;
   margin: 0 auto;
   width: 100%;
@@ -59,10 +63,12 @@
 }
 .settings-panel {
   display: grid;
-  gap: var(--s-4);
+  /* Section separation (docs/DESIGN.md §3 설정 화면). */
+  gap: var(--s-6);
   min-width: 0;
 }
-.settings-panel-access {
+/* Comfortable field rhythm inside settings forms; admin keeps the tighter base. */
+.settings-panel .settings-form {
   gap: var(--s-4);
 }
 .settings-card {
@@ -1057,10 +1063,20 @@
   gap: var(--s-1-5);
 }
 .gen-all-row > .ghost-sm {
-  align-self: flex-start;
+  /* .field is a grid: the INLINE axis is justify-*, not align-* — with only
+     align-self the button stretched to the full card width. */
+  justify-self: start;
+  align-self: start;
 }
 .gen-all-row > .muted {
   font-size: var(--t-sm);
+}
+/* Caption under the profile picture (Ctrl+V paste hint). */
+.pic-paste-hint {
+  max-width: 150px;
+  font-size: var(--t-2xs);
+  line-height: 1.35;
+  text-align: center;
 }
 
 /* Two inline actions on the right of a .field-row label (해시태그 "더 추가" + "자동 생성"). */
@@ -1165,14 +1181,11 @@
   color: var(--danger);
   text-decoration: none;
 }
-.settings-panel-access .settings-card {
-  padding: var(--s-4);
-}
 .settings-panel-access .panel-section-head {
   margin-bottom: var(--s-4);
 }
 .settings-panel-access .secret-preset-list {
-  gap: var(--s-3);
+  gap: var(--s-4);
 }
 .settings-panel-access .secret-preset-row {
   grid-template-columns: minmax(0, 1fr);
@@ -1215,6 +1228,7 @@
 .settings-panel-access .secret-preset-meta p {
   max-width: 62ch;
   margin: 0;
+  font-size: var(--t-sm);
   line-height: 1.55;
 }
 .settings-panel-access .secret-preset-actions {
@@ -1235,10 +1249,36 @@
   border-top: 0;
   padding-top: 0;
 }
+/* Compact scannable rules under a card head — replaces wall-of-text intros. */
+.hint-list {
+  margin: 0 0 var(--s-4);
+  padding-left: var(--s-4);
+  display: grid;
+  gap: var(--s-1);
+  color: var(--muted);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+.hint-list li {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.hint-list code {
+  font-family: var(--font-mono);
+  font-size: var(--t-2xs);
+}
+/* Sub-section head inside a large settings card (SSH 키 / 기타 시크릿):
+   hairline divider + air instead of a nested box. */
 .secret-extra-head {
   display: grid;
   gap: var(--s-1);
-  margin: var(--s-3) 0 var(--s-2);
+  margin: var(--s-5) 0 var(--s-3);
+  padding-top: var(--s-4);
+  border-top: 1px solid var(--line-soft);
+}
+.secret-extra-head p {
+  margin: 0;
+  font-size: var(--t-sm);
 }
 .secret-list {
   display: grid;

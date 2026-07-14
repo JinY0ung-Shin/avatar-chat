@@ -393,14 +393,22 @@
       {/if}
     </div>
 
-    <form class="plugin-add rows-2 knowledge-repo-form" on:submit|preventDefault={saveKnowledge}>
-      <input bind:value={knowledgeRepo} placeholder="owner/repo 또는 사내 git URL" aria-label="지식 저장소 (owner/repo 또는 사내 git URL)" aria-describedby={knowledgeStatusId} aria-invalid={knowledgeError ? "true" : undefined} disabled={krBusy} on:input={() => (knowledgeError = "")} />
-      <input bind:value={knowledgeBranch} class="narrow" placeholder="브랜치 (선택)" aria-label="브랜치 (선택)" aria-describedby={knowledgeStatusId} disabled={krBusy} on:input={() => (knowledgeError = "")} />
-      <button class="primary" type="submit" disabled={!knowledgeCanSave}>{krBusy ? "저장 중…" : savedKnowledgeRepo ? "변경 저장" : "연결"}</button>
+    <form class="settings-form knowledge-repo-form" on:submit|preventDefault={saveKnowledge}>
+      <div class="field-row-2col">
+        <label class="field">
+          <span>저장소 주소</span>
+          <input bind:value={knowledgeRepo} placeholder="owner/repo 또는 사내 git URL" aria-describedby={knowledgeStatusId} aria-invalid={knowledgeError ? "true" : undefined} disabled={krBusy} on:input={() => (knowledgeError = "")} />
+        </label>
+        <label class="field">
+          <span>브랜치 (선택)</span>
+          <input bind:value={knowledgeBranch} placeholder="비우면 기본 브랜치" aria-describedby={knowledgeStatusId} disabled={krBusy} on:input={() => (knowledgeError = "")} />
+        </label>
+      </div>
+      <div class="settings-save-row">
+        <span id={knowledgeStatusId} class="settings-save-status" class:dirty={knowledgeDirty && !krBusy && !knowledgeError} class:pending={krBusy} class:invalid={Boolean(knowledgeError)} role="status" aria-live="polite">{knowledgeStatus}</span>
+        <button class="primary" type="submit" disabled={!knowledgeCanSave}>{krBusy ? "저장 중…" : savedKnowledgeRepo ? "변경 저장" : "연결"}</button>
+      </div>
     </form>
-    <div class="settings-save-row compact">
-      <span id={knowledgeStatusId} class="settings-save-status" class:dirty={knowledgeDirty && !krBusy && !knowledgeError} class:pending={krBusy} class:invalid={Boolean(knowledgeError)} role="status" aria-live="polite">{knowledgeStatus}</span>
-    </div>
 
     {#if !user.knowledgeRepo}
       <div class="empty-note">
@@ -553,15 +561,26 @@
       {/if}
     </div>
 
-    <form class="plugin-add rows-3" on:submit|preventDefault={addPlugin}>
-      <input bind:value={pluginRepo} placeholder="owner/repo 또는 git URL" aria-label="플러그인 저장소 (owner/repo 또는 git URL)" required aria-describedby={pluginAddStatusId} aria-invalid={pluginAddError ? "true" : undefined} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
-      <input bind:value={pluginRef} class="narrow" placeholder="브랜치/태그 (선택)" aria-label="브랜치/태그 (선택)" aria-describedby={pluginAddStatusId} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
-      <input bind:value={pluginLabel} class="narrow" placeholder="라벨 (선택)" aria-label="라벨 (선택)" aria-describedby={pluginAddStatusId} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
-      <button class="primary" type="submit" disabled={!pluginCanAdd}>{pluginAddBusy ? "추가 중…" : "추가"}</button>
+    <form class="settings-form" on:submit|preventDefault={addPlugin}>
+      <label class="field">
+        <span>플러그인 저장소</span>
+        <input bind:value={pluginRepo} placeholder="owner/repo 또는 git URL" required aria-describedby={pluginAddStatusId} aria-invalid={pluginAddError ? "true" : undefined} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
+      </label>
+      <div class="field-row-2col">
+        <label class="field">
+          <span>브랜치/태그 (선택)</span>
+          <input bind:value={pluginRef} placeholder="비우면 기본 브랜치" aria-describedby={pluginAddStatusId} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
+        </label>
+        <label class="field">
+          <span>라벨 (선택)</span>
+          <input bind:value={pluginLabel} placeholder="목록에 표시할 이름" aria-describedby={pluginAddStatusId} disabled={pluginAddBusy} on:input={() => (pluginAddError = "")} />
+        </label>
+      </div>
+      <div class="settings-save-row">
+        <span id={pluginAddStatusId} class="settings-save-status" class:dirty={Boolean(pluginRepoTrimmed && !pluginAddBusy && !pluginAddError)} class:pending={pluginAddBusy} class:invalid={Boolean(pluginAddError)} role="status" aria-live="polite">{pluginAddStatus}</span>
+        <button class="primary" type="submit" disabled={!pluginCanAdd}>{pluginAddBusy ? "추가 중…" : "플러그인 추가"}</button>
+      </div>
     </form>
-    <div class="settings-save-row compact">
-      <span id={pluginAddStatusId} class="settings-save-status" class:dirty={Boolean(pluginRepoTrimmed && !pluginAddBusy && !pluginAddError)} class:pending={pluginAddBusy} class:invalid={Boolean(pluginAddError)} role="status" aria-live="polite">{pluginAddStatus}</span>
-    </div>
   </section>
 
   {#if graphOpen}
