@@ -20,12 +20,17 @@ const DEFAULT_IDLE_TIMEOUT_MS = 120_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 30 * 60_000;
 export const EXTERNAL_SDK_MESSAGE_SCHEMA = "claude-agent-sdk-message-v1";
 const MAX_PROBE_BODY_BYTES = 1024 * 1024;
+// The catalog feeds an admin-UI picker; cap what an external server can inject.
+const MAX_PROBE_MODEL_IDS = 50;
+const MAX_PROBE_MODEL_ID_LENGTH = 200;
 
 export interface ExternalGatewayProbeResult {
   ok: true;
   latencyMs: number;
   modelsCount: number;
   modelAvailable: boolean | null;
+  /** Gateway-advertised Claude model ids (deduped, size-capped) for the admin model picker. */
+  models: string[];
 }
 
 type ExternalTimeoutKind = "connect" | "idle" | "total";
@@ -223,6 +228,9 @@ export async function probeExternalAgentGateway(
       latencyMs: Date.now() - started,
       modelsCount: modelIds.length,
       modelAvailable: external.model ? modelIds.includes(external.model) : null,
+      models: [...new Set(modelIds)]
+        .filter((id) => id.length <= MAX_PROBE_MODEL_ID_LENGTH)
+        .slice(0, MAX_PROBE_MODEL_IDS),
     };
   } catch (error) {
     if (controller.signal.aborted && controller.signal.reason instanceof Error) {

@@ -647,6 +647,7 @@ describe("external agent admin API", () => {
         ok: true,
         modelsCount: 1,
         modelAvailable: true,
+        models: ["sonnet"],
       });
       expect(captured).toEqual({
         method: "GET",

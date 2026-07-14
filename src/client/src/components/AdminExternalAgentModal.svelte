@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { createEventDispatcher } from "svelte";
+  import { createEventDispatcher, onMount } from "svelte";
   import Modal from "./Modal.svelte";
   import RevealableInput from "./RevealableInput.svelte";
   import HashtagChipEditor from "./HashtagChipEditor.svelte";
@@ -20,6 +20,7 @@
   const titleId = `external-agent-editor-${agent?.id || "new"}-title`;
   const descriptionId = `external-agent-editor-${agent?.id || "new"}-description`;
   const statusId = `external-agent-editor-${agent?.id || "new"}-status`;
+  const modelOptionsId = `external-agent-model-options-${agent?.id || "new"}`;
 
   let id = agent?.id || "";
   let displayName = agent?.displayName || "";
@@ -47,6 +48,8 @@
   let testMessage = "";
   let testKind: "ok" | "warn" | "error" | "" = "";
   let testedConnectionFingerprint = "";
+  // Gateway-advertised Claude model ids feeding the 모델 field's datalist.
+  let availableModels: string[] = [];
   let validationVisible = isEdit;
   let idTouched = isEdit;
   let displayNameTouched = isEdit;
@@ -210,6 +213,25 @@
     };
   }
 
+  // Quiet best-effort fetch of the gateway's Claude model catalog using the
+  // STORED connection (never the half-edited form), so the 모델 field offers
+  // real options as soon as the editor opens. 인증·모델 확인 refreshes it loudly.
+  onMount(() => {
+    if (!agent) return;
+    const storedId = agent.id;
+    void (async () => {
+      try {
+        const result = await api<{ models?: string[] }>("/api/admin/external-agents/test", {
+          method: "POST",
+          body: JSON.stringify({ storedId }),
+        });
+        availableModels = Array.isArray(result.models) ? result.models : [];
+      } catch {
+        // Silent: the field stays free-text; the explicit check reports errors.
+      }
+    })();
+  });
+
   async function testConnection(): Promise<void> {
     if (!canSubmit || testBusy) return;
     testBusy = true;
@@ -221,6 +243,7 @@
         latencyMs: number;
         modelsCount: number;
         modelAvailable: boolean | null;
+        models?: string[];
       }>("/api/admin/external-agents/test", {
         method: "POST",
         body: JSON.stringify({
@@ -228,6 +251,7 @@
           agent: formValue(),
         }),
       });
+      if (Array.isArray(result.models)) availableModels = result.models;
       if (result.modelAvailable === false) {
         testKind = "warn";
         testMessage = `Gateway 연결은 확인했지만 입력한 모델이 Claude 모델 목록에 없습니다. (${result.latencyMs}ms)`;
@@ -361,10 +385,30 @@
           <input value="claude" disabled />
           <small class="field-hint">v1 계약은 Claude agent만 지원합니다.</small>
         </label>
-        <label class="field">
-          <span>모델</span>
-          <input bind:value={model} placeholder="비우면 Gateway 기본값" autocomplete="off" />
-        </label>
+        <!-- div + aria-labelledby (not a wrapping label): the hint text must not
+             leak into the field's accessible label. -->
+        <div class="field">
+          <span id={`${modelOptionsId}-label`}>모델</span>
+          <input
+            bind:value={model}
+            placeholder="비우면 Gateway 기본값"
+            autocomplete="off"
+            list={modelOptionsId}
+            aria-labelledby={`${modelOptionsId}-label`}
+          />
+          <datalist id={modelOptionsId}>
+            {#each availableModels as modelId (modelId)}
+              <option value={modelId}></option>
+            {/each}
+          </datalist>
+          <small class="field-hint">
+            {#if availableModels.length}
+              Gateway가 지원하는 Claude 모델 {availableModels.length}개 — 목록에서 고르거나 직접 입력할 수 있습니다.{#if model.trim() && !availableModels.includes(model.trim())}{" "}현재 입력한 모델은 목록에 없습니다.{/if}
+            {:else}
+              ‘인증·모델 확인’을 실행하면 Gateway가 지원하는 모델 목록이 여기에 채워집니다.
+            {/if}
+          </small>
+        </div>
       </div>
       <label class="field">
         <span>추가 시스템 지침</span>

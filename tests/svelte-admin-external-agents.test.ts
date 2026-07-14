@@ -139,9 +139,12 @@ describe("external avatar admin UI", () => {
     });
     await fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
 
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0].url).toBe("/api/admin/external-agents/research");
-    const body = JSON.parse(String(calls[0].init?.body));
+    // calls[0] is the editor's quiet model-catalog fetch on open; find the save.
+    await waitFor(() =>
+      expect(calls.map((c) => c.url)).toContain("/api/admin/external-agents/research"),
+    );
+    const save = calls.find((c) => c.url === "/api/admin/external-agents/research")!;
+    const body = JSON.parse(String(save.init?.body));
     expect(body.agent).toMatchObject({
       id: "research",
       visibleToGroupIds: [group.id],
@@ -174,7 +177,15 @@ describe("external avatar admin UI", () => {
 
     await fireEvent.click(screen.getByRole("button", { name: "인증·모델 확인" }));
     expect(await screen.findByText(/모델이 Claude 모델 목록에 없습니다/)).toBeTruthy();
+    // On open the editor quietly fetches the stored-connection catalog (no form
+    // payload); the explicit check sends the current form for validation.
     expect(calls[0]).toMatchObject({
+      url: "/api/admin/external-agents/test",
+      body: { storedId: "research" },
+    });
+    expect(calls[0].body).not.toHaveProperty("agent");
+    const explicit = calls.find((c) => Boolean((c.body as { agent?: unknown } | null)?.agent));
+    expect(explicit).toMatchObject({
       url: "/api/admin/external-agents/test",
       body: {
         storedId: "research",
@@ -191,6 +202,36 @@ describe("external avatar admin UI", () => {
       ).toBeTruthy(),
     );
     expect(screen.queryByText(/모델이 Claude 모델 목록에 없습니다/)).toBeNull();
+  });
+
+  it("fills the model datalist from the stored-connection catalog on open", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        json({
+          ok: true,
+          latencyMs: 5,
+          modelsCount: 2,
+          modelAvailable: true,
+          models: ["sonnet", "haiku"],
+        }),
+      ),
+    );
+    const { container } = render(AdminExternalAgentModal, {
+      props: { agent: managedAgent(), groups: [group] },
+    });
+
+    await waitFor(() => {
+      const options = [...container.querySelectorAll("datalist option")].map(
+        (option) => (option as HTMLOptionElement).value,
+      );
+      expect(options).toEqual(["sonnet", "haiku"]);
+    });
+    const modelInput = screen.getByLabelText("모델") as HTMLInputElement;
+    expect(modelInput.getAttribute("list")).toBe(
+      "external-agent-model-options-research",
+    );
+    expect(screen.getByText(/Claude 모델 2개/)).toBeTruthy();
   });
 
   it("serializes Svelte number bindings for advanced timeouts", async () => {
@@ -230,8 +271,12 @@ describe("external avatar admin UI", () => {
     });
     await fireEvent.click(screen.getByRole("button", { name: "인증·모델 확인" }));
 
-    await waitFor(() => expect(calls).toHaveLength(1));
-    expect(calls[0]).toMatchObject({
+    // The open-time catalog fetch (no form payload) precedes the explicit check.
+    await waitFor(() =>
+      expect(calls.filter((c) => Boolean((c.body as { agent?: unknown } | null)?.agent))).toHaveLength(1),
+    );
+    const explicit = calls.find((c) => Boolean((c.body as { agent?: unknown } | null)?.agent));
+    expect(explicit).toMatchObject({
       url: "/api/admin/external-agents/test",
       body: {
         storedId: "research",
@@ -289,8 +334,12 @@ describe("external avatar admin UI", () => {
     await fireEvent.click(screen.getByRole("radio", { name: "저장된 키 삭제" }));
     await fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
 
-    await waitFor(() => expect(calls).toHaveLength(1));
-    const body = JSON.parse(String(calls[0].init?.body));
+    // calls[0] is the editor's quiet model-catalog fetch on open; find the save.
+    await waitFor(() =>
+      expect(calls.map((c) => c.url)).toContain("/api/admin/external-agents/research"),
+    );
+    const save = calls.find((c) => c.url === "/api/admin/external-agents/research")!;
+    const body = JSON.parse(String(save.init?.body));
     expect(body.agent.apiKeyMode).toBe("clear");
     expect(body.agent).not.toHaveProperty("apiKey");
   });
