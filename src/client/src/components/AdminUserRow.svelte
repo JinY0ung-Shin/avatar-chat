@@ -5,10 +5,17 @@
   import { confirmAction } from "../lib/confirm";
   import { appState, notify } from "../lib/state";
   import { timeLabel } from "../lib/format";
-  import type { AdminUserDetail, AdminUserSummary } from "../lib/types";
+  import type { AdminUserDetail, AdminUserSummary, AvatarVisibility } from "../lib/types";
 
   export let user: AdminUserSummary;
   export let reload: () => Promise<void>;
+
+  // Mirrors the owner-facing selector in SettingsProfileTab (모두 공개/그룹 공개/비공개).
+  const VISIBILITY_OPTIONS: { value: AvatarVisibility; label: string; desc: string }[] = [
+    { value: "public", label: "모두 공개", desc: "모든 사용자가 탐색에서 찾아 대화할 수 있습니다." },
+    { value: "group", label: "그룹 공개", desc: "같은 그룹원만 탐색에서 찾아 대화할 수 있습니다." },
+    { value: "private", label: "비공개", desc: "본인만 볼 수 있습니다." },
+  ];
 
   let expanded = false;
   let loading = false;
@@ -20,10 +27,11 @@
 
   $: isMe = user.id === $appState.user?.id;
   $: isAdmin = user.roles?.includes("admin");
-  $: willHide = user.visibility !== "private";
+  $: visibilityDesc = VISIBILITY_OPTIONS.find((o) => o.value === user.visibility)?.desc || "";
   $: userBaseId = user.id.replace(/[^a-zA-Z0-9_-]/g, "-");
   $: detailId = `admin-user-detail-${userBaseId}`;
   $: actionStatusId = `admin-user-action-status-${userBaseId}`;
+  $: visibilityGroupId = `admin-user-visibility-${userBaseId}`;
 
   async function toggle() {
     if (expanded) {
@@ -87,16 +95,34 @@
     );
   }
 
-  function toggleVisibility() {
+  function setVisibility(visibility: AvatarVisibility) {
+    if (busy || user.visibility === visibility) return;
+    const label = VISIBILITY_OPTIONS.find((o) => o.value === visibility)?.label || visibility;
     run(
       () =>
         api(`/api/admin/users/${encodeURIComponent(user.id)}/visibility`, {
           method: "PUT",
-          body: JSON.stringify({ visibility: willHide ? "private" : "public" }),
+          body: JSON.stringify({ visibility }),
         }).then(() => undefined),
       "공개 설정 실패",
-      `${user.displayName}님의 공개 범위를 ${willHide ? "비공개" : "공개"}로 전환했습니다.`,
+      `${user.displayName}님의 공개 범위를 '${label}'(으)로 변경했습니다.`,
     );
+  }
+
+  function onVisibilityKeydown(event: KeyboardEvent, current: AvatarVisibility): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const idx = VISIBILITY_OPTIONS.findIndex((o) => o.value === current);
+    const nextIdx =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? VISIBILITY_OPTIONS.length - 1
+          : (idx + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + VISIBILITY_OPTIONS.length) %
+            VISIBILITY_OPTIONS.length;
+    const next = VISIBILITY_OPTIONS[nextIdx].value;
+    requestAnimationFrame(() => document.getElementById(`${visibilityGroupId}-${next}`)?.focus());
+    setVisibility(next);
   }
 
   async function toggleSuspend() {
@@ -191,9 +217,28 @@
             </div>
           {/each}
         </div>
+        <div class="ud-visibility" aria-busy={busy}>
+          <span class="ud-visibility-label" id={visibilityGroupId}>아바타 공개 범위</span>
+          <div class="seg-control" role="radiogroup" aria-labelledby={visibilityGroupId} aria-describedby={actionStatus ? actionStatusId : undefined}>
+            {#each VISIBILITY_OPTIONS as opt (opt.value)}
+              <button
+                id={`${visibilityGroupId}-${opt.value}`}
+                type="button"
+                class="seg-btn"
+                class:active={user.visibility === opt.value}
+                role="radio"
+                aria-checked={user.visibility === opt.value}
+                tabindex={user.visibility === opt.value ? 0 : -1}
+                disabled={busy}
+                on:click={() => setVisibility(opt.value)}
+                on:keydown={(event) => onVisibilityKeydown(event, opt.value)}
+              >{opt.label}</button>
+            {/each}
+          </div>
+          <span class="ud-visibility-desc muted">{visibilityDesc}</span>
+        </div>
         <div class="ud-actions" aria-busy={busy} aria-describedby={actionStatus ? actionStatusId : undefined}>
           <button class="ghost-sm" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={isMe || busy} on:click={toggleRole}>{isAdmin ? "관리자 해제" : "관리자 지정"}</button>
-          <button class="ghost-sm" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={busy} on:click={toggleVisibility}>{willHide ? "비공개로 전환" : "공개로 전환"}</button>
           <button class="ghost-sm {user.suspended ? '' : 'danger'}" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={isMe || busy} on:click={toggleSuspend}>{user.suspended ? "활성화" : "정지"}</button>
           <button class="ghost-sm" type="button" disabled={busy} on:click={() => (showPasswordModal = true)}>비밀번호 재설정</button>
           <button class="ghost-sm" type="button" aria-describedby={actionStatus ? actionStatusId : undefined} disabled={busy} on:click={forceLogout}>강제 로그아웃</button>

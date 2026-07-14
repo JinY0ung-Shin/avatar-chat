@@ -723,41 +723,47 @@
                 <p class="muted">같은 그룹원끼리는 자동으로 서로 신뢰해 권한을 얻고, 그룹 공용 지식 저장소를 공유합니다. 그룹 생성·삭제와 그룹 관리자 지정은 시스템 관리자만 합니다. 공용 저장소 편집은 각 그룹 관리자가 ‘내 아바타 ▸ 그룹’에서 합니다.</p>
               </div>
             </div>
-            <form class="plugin-add rows-2" aria-busy={creatingGroup} aria-describedby={groupCreateStatusId} on:submit|preventDefault={createGroup}>
-              <input
-                bind:value={newGroupName}
-                name="name"
-                placeholder="그룹 이름"
-                aria-label="그룹 이름"
-                aria-describedby={groupCreateStatusId}
-                aria-invalid={groupCreateError ? "true" : undefined}
-                required
-                disabled={creatingGroup}
-                on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
-              />
-              <input
-                bind:value={newGroupDescription}
-                name="description"
-                placeholder="설명 (선택)"
-                aria-label="그룹 설명"
-                aria-describedby={groupCreateStatusId}
-                disabled={creatingGroup}
-                on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
-              />
-              <button class="primary" type="submit" aria-describedby={groupCreateStatusId} disabled={!canCreateGroup}>{creatingGroup ? "생성 중…" : "그룹 만들기"}</button>
+            <form class="settings-form" aria-busy={creatingGroup} aria-describedby={groupCreateStatusId} on:submit|preventDefault={createGroup}>
+              <div class="field-row-2col">
+                <label class="field">
+                  <span>그룹 이름</span>
+                  <input
+                    bind:value={newGroupName}
+                    name="name"
+                    placeholder="예: 플랫폼개발팀"
+                    aria-describedby={groupCreateStatusId}
+                    aria-invalid={groupCreateError ? "true" : undefined}
+                    required
+                    disabled={creatingGroup}
+                    on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
+                  />
+                </label>
+                <label class="field">
+                  <span>설명 (선택)</span>
+                  <input
+                    bind:value={newGroupDescription}
+                    name="description"
+                    placeholder="그룹을 한 줄로 소개"
+                    aria-describedby={groupCreateStatusId}
+                    disabled={creatingGroup}
+                    on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
+                  />
+                </label>
+              </div>
+              <div class="settings-save-row">
+                <span
+                  id={groupCreateStatusId}
+                  class="settings-save-status"
+                  class:dirty={Boolean(newGroupNameTrimmed && !creatingGroup && !groupCreateError && !groupCreateMessage)}
+                  class:pending={creatingGroup}
+                  class:success={Boolean(groupCreateMessage)}
+                  class:invalid={Boolean(groupCreateError)}
+                  role="status"
+                  aria-live="polite"
+                >{groupCreateStatus}</span>
+                <button class="primary" type="submit" aria-describedby={groupCreateStatusId} disabled={!canCreateGroup}>{creatingGroup ? "생성 중…" : "그룹 만들기"}</button>
+              </div>
             </form>
-            <div class="settings-save-row compact">
-              <span
-                id={groupCreateStatusId}
-                class="settings-save-status"
-                class:dirty={Boolean(newGroupNameTrimmed && !creatingGroup && !groupCreateError && !groupCreateMessage)}
-                class:pending={creatingGroup}
-                class:success={Boolean(groupCreateMessage)}
-                class:invalid={Boolean(groupCreateError)}
-                role="status"
-                aria-live="polite"
-              >{groupCreateStatus}</span>
-            </div>
             <div class="admin-users-head">
               <input
                 type="search"

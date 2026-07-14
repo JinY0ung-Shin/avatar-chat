@@ -658,6 +658,19 @@
 .group-add-pick {
   flex: none;
   min-height: 36px;
+  /* Visible affordance: as a bare .icon-button it disappeared next to the
+     bordered search input. */
+  border: 1px solid var(--line);
+  background: var(--bg-elevated);
+  color: var(--muted);
+}
+.group-add-pick:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--bg-elevated);
+}
+.group-add-pick:disabled {
+  opacity: 0.55;
 }
 .group-add .primary {
   flex: none;
@@ -750,8 +763,10 @@
   .group-add {
     align-items: stretch;
   }
+  /* Keep the +(pick) button glued to the search input on its row; the rest
+     wraps below. A lone + on its own line reads as a stray control. */
   .group-add > .trusted-search {
-    flex-basis: 100%;
+    flex: 1 1 calc(100% - 48px);
   }
   .group-add-pick {
     flex: 0 0 40px;

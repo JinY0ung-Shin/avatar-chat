@@ -797,7 +797,9 @@ describe("loaders", () => {
       if (url === "/api/admin/stats") return jsonRes({ stats: { users: 3 } });
       if (url === "/api/admin/system") return jsonRes({ uptime: 1 });
       if (url === "/api/admin/users") return jsonRes({ users: [{ id: "au" }] });
-      if (url === "/api/audit") return jsonRes({ events: [{ id: "ev" }] });
+      // Real server shape ({ audit }, see routes/admin.ts) — the loader once
+      // read a nonexistent `events` key and the admin audit tab rendered empty.
+      if (url === "/api/audit") return jsonRes({ audit: [{ id: "ev" }] });
       if (url === "/api/admin/groups") return jsonRes({ groups: [{ id: "g" }] });
       return undefined;
     });

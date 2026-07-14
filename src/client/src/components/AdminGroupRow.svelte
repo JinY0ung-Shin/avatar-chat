@@ -425,14 +425,22 @@
       {:else}
         <div class="ar-detail-inner">
           <h4 class="knowledge-sub">그룹 정보</h4>
-          <form class="plugin-add rows-2" on:submit|preventDefault={saveEdit}>
-            <input bind:value={editName} aria-label="그룹 이름" aria-describedby={editStatusId} aria-invalid={editError || !editNameTrimmed ? "true" : undefined} disabled={busy} on:input={() => (editError = "")} />
-            <input bind:value={editDescription} placeholder="설명" aria-label="그룹 설명" aria-describedby={editStatusId} disabled={busy} on:input={() => (editError = "")} />
-            <button class="primary small" type="submit" disabled={!editCanSave}>{busy ? "저장 중…" : "수정"}</button>
+          <form class="settings-form" on:submit|preventDefault={saveEdit}>
+            <div class="field-row-2col">
+              <label class="field">
+                <span>그룹 이름</span>
+                <input bind:value={editName} aria-describedby={editStatusId} aria-invalid={editError || !editNameTrimmed ? "true" : undefined} disabled={busy} on:input={() => (editError = "")} />
+              </label>
+              <label class="field">
+                <span>설명</span>
+                <input bind:value={editDescription} placeholder="그룹을 한 줄로 소개" aria-describedby={editStatusId} disabled={busy} on:input={() => (editError = "")} />
+              </label>
+            </div>
+            <div class="settings-save-row">
+              <span id={editStatusId} class="settings-save-status" class:dirty={Boolean(editDirty && !busy && editNameTrimmed && !editError)} class:pending={busy} class:invalid={Boolean(editError || !editNameTrimmed)} role="status" aria-live="polite">{editStatus}</span>
+              <button class="primary small" type="submit" disabled={!editCanSave}>{busy ? "저장 중…" : "수정"}</button>
+            </div>
           </form>
-          <div class="settings-save-row compact">
-            <span id={editStatusId} class="settings-save-status" class:dirty={Boolean(editDirty && !busy && editNameTrimmed && !editError)} class:pending={busy} class:invalid={Boolean(editError || !editNameTrimmed)} role="status" aria-live="polite">{editStatus}</span>
-          </div>
 
           <h4 class="knowledge-sub">그룹원</h4>
           <div class="admin-users-head">

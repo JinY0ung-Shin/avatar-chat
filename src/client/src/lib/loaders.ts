@@ -188,9 +188,9 @@ export async function loadAdminOverview(): Promise<void> {
     api<{ stats: AdminStats }>("/api/admin/stats"),
     api<Record<string, unknown>>("/api/admin/system"),
     api<{ users: AdminUserSummary[] }>("/api/admin/users"),
-    api<{ events: AuditEvent[] }>("/api/audit"),
+    api<{ audit: AuditEvent[] }>("/api/audit"),
   ]);
-  replaceState({ adminStats: stats.stats, adminSystem: system, adminUsers: users.users, audit: audit.events });
+  replaceState({ adminStats: stats.stats, adminSystem: system, adminUsers: users.users, audit: audit.audit });
 }
 
 export async function loadAdminGroups(): Promise<void> {

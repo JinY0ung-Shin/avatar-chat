@@ -178,7 +178,9 @@
 .settings-save-row.compact {
   justify-content: flex-start;
   padding-top: 0;
-  margin-top: calc(-1 * var(--s-1));
+  /* No negative pull-up: in bare block-flow contexts (admin cards) it made the
+     status text overlap the bordered field/card above it. */
+  margin-top: 0;
 }
 /* Avatar visibility selector (모두 공개 / 그룹 공개 / 비공개) */
 .visibility-row {
@@ -742,6 +744,11 @@
   flex-wrap: wrap;
   min-width: 0;
 }
+/* Inside a block-flow settings card (groups/audit tabs) the search head needs
+   its own breathing room from the form above and the list below. */
+.settings-card > .admin-users-head {
+  margin: var(--s-4) 0 var(--s-2);
+}
 .admin-filter {
   max-width: 100%;
   overflow-x: auto;
@@ -805,6 +812,28 @@
   gap: var(--s-3);
   background: var(--bg);
 }
+/* Expanded group management body: bare block flow crammed the edit form,
+   status lines, and member list together — grid it with a consistent gap. */
+.ar-detail-inner {
+  display: grid;
+  gap: var(--s-2);
+  min-width: 0;
+}
+.ar-detail-inner > .knowledge-sub {
+  /* Section titles keep extra separation above, the grid gap handles below. */
+  margin: var(--s-2) 0 0;
+}
+.ar-detail-inner > .knowledge-sub:first-child {
+  margin-top: 0;
+}
+.ar-detail-inner > .plugin-rows {
+  margin-bottom: 0;
+}
+.ar-detail-inner > .ud-actions {
+  margin-top: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line);
+}
 .ud-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
@@ -835,11 +864,37 @@
   font-size: var(--t-xs);
   margin: 0;
 }
+/* Admin override of one avatar's visibility (사용자 탭 상세). */
+.ud-visibility {
+  display: flex;
+  align-items: center;
+  gap: var(--s-3);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.ud-visibility-label {
+  font-size: var(--t-sm);
+  font-weight: 600;
+  flex: none;
+}
+.ud-visibility .seg-btn {
+  padding-inline: var(--s-3);
+}
+.ud-visibility-desc {
+  font-size: var(--t-xs);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 
 /* External avatar administration */
 .external-agents-panel .settings-card {
   display: grid;
   gap: var(--s-4);
+}
+/* This card is a grid with its own gap — the block-flow toolbar margin above
+   would double the spacing here. */
+.external-agents-panel .settings-card > .admin-users-head {
+  margin: 0;
 }
 .external-agents-head {
   align-items: flex-start;
@@ -928,6 +983,10 @@
 .radio-card-body .muted {
   font-size: var(--t-xs);
   overflow-wrap: anywhere;
+}
+/* Status line under the radio-card stack sat on the last card's border. */
+.radio-cards + .settings-save-row {
+  margin-top: var(--s-2);
 }
 
 /* Audit log table */
@@ -1552,7 +1611,6 @@
   .group-add {
     align-items: stretch;
   }
-  .group-add > .trusted-search,
   .group-add-admin {
     flex-basis: 100%;
   }
