@@ -51,6 +51,20 @@ export async function downscaleImageToDataUrl(
   });
 }
 
+// First image file in a clipboard: prefer items (covers screenshots/copied
+// images), fall back to files (some browsers only populate one of the two for
+// a pasted image). Shared by the profile photo and external-avatar photo
+// Ctrl+V handlers; ChatView's multi-file composer paste stays separate.
+export function pastedImageFile(clipboard: DataTransfer | null): File | null {
+  if (!clipboard) return null;
+  const fromItems = Array.from(clipboard.items || [])
+    .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
+    .map((it) => it.getAsFile())
+    .filter((f): f is File => Boolean(f));
+  const fromFiles = Array.from(clipboard.files || []).filter((f) => f.type.startsWith("image/"));
+  return fromItems[0] ?? fromFiles[0] ?? null;
+}
+
 export async function copyText(text: string, btn?: HTMLButtonElement | null): Promise<void> {
   try {
     if (navigator.clipboard?.writeText) {

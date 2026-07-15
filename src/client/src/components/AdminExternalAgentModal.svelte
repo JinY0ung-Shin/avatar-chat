@@ -6,7 +6,7 @@
   import AvatarImage from "./AvatarImage.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
-  import { downscaleImageToDataUrl } from "../lib/dom";
+  import { downscaleImageToDataUrl, pastedImageFile } from "../lib/dom";
   import { notify } from "../lib/state";
   import type {
     AdminExternalAgent,
@@ -193,11 +193,8 @@
 
   $: imageSet = Boolean(stagedImage || (agent?.hasImage && !imageRemoved));
 
-  async function pickImage(event: Event): Promise<void> {
-    const input = event.currentTarget as HTMLInputElement;
-    const file = input.files?.[0];
-    input.value = ""; // allow re-picking the same file
-    if (!file || imageBusy) return;
+  async function stageImageFile(file: File): Promise<void> {
+    if (imageBusy) return;
     imageBusy = true;
     try {
       // Same long-edge cap as the profile photo upload (256px → well under 2MB).
@@ -208,6 +205,29 @@
     } finally {
       imageBusy = false;
     }
+  }
+
+  async function pickImage(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ""; // allow re-picking the same file
+    if (!file) return;
+    await stageImageFile(file);
+  }
+
+  // Ctrl+V anywhere in the open editor stages a copied image as the profile
+  // photo, mirroring the profile tab: an intended TEXT paste into one of the
+  // form fields is never hijacked (image-only clipboards paste nothing there).
+  function onModalPaste(event: ClipboardEvent): void {
+    if (busy || testBusy || imageBusy) return;
+    const file = pastedImageFile(event.clipboardData);
+    if (!file) return;
+    const target = event.target as HTMLElement | null;
+    const inField = Boolean(target?.closest?.("input, textarea, [contenteditable]"));
+    const hasText = Boolean(event.clipboardData?.getData("text/plain"));
+    if (inField && hasText) return;
+    event.preventDefault();
+    void stageImageFile(file);
   }
 
   function removeImage(): void {
@@ -368,6 +388,8 @@
   }
 </script>
 
+<svelte:window on:paste={onModalPaste} />
+
 <Modal
   cardClass="external-agent-modal-card"
   ariaLabelledby={titleId}
@@ -447,7 +469,7 @@
             <button class="ghost-sm" type="button" disabled={imageBusy} on:click={removeImage}>제거</button>
           {/if}
         </div>
-        <small class="field-hint">탐색 카드와 대화 화면에 표시됩니다. 저장을 누르면 적용돼요.</small>
+        <small class="field-hint">탐색 카드와 대화 화면에 표시됩니다. 이미지를 복사한 뒤 Ctrl+V로 붙여넣어도 되고, 저장을 누르면 적용돼요.</small>
       </div>
     </fieldset>
 

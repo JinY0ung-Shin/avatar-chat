@@ -965,6 +965,8 @@
   border-top: 1px solid var(--line-soft);
   background: var(--bg);
   font-size: var(--t-xs);
+  /* Korean notes: wrap between words, not mid-word. */
+  word-break: keep-all;
 }
 .external-agent-empty {
   display: grid;

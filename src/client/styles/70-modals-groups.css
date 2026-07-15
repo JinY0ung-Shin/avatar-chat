@@ -260,6 +260,20 @@
   gap: var(--s-2);
   font-size: var(--t-sm);
   font-weight: 400;
+  /* Short radio captions must never wrap INSIDE a label (CJK breaks per
+     glyph at min-content); the container's flex-wrap breaks BETWEEN them. */
+  white-space: nowrap;
+}
+
+/* Korean copy in the editor wraps between words, not mid-word; overflow-wrap
+   still rescues long unbreakable tokens (endpoint URLs, model ids). */
+.external-agent-modal-head p,
+.external-agent-section .field-hint,
+.external-agent-acl-note,
+.external-agent-test-result,
+.external-agent-group-option small {
+  word-break: keep-all;
+  overflow-wrap: anywhere;
 }
 .external-agent-advanced {
   border-top: 1px solid var(--line-soft);

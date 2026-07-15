@@ -5,7 +5,7 @@
   import { api, refreshMe } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
   import { normalizeTags } from "../lib/format";
-  import { downscaleImageToDataUrl } from "../lib/dom";
+  import { downscaleImageToDataUrl, pastedImageFile } from "../lib/dom";
   import { appState, notify, readState, replaceState } from "../lib/state";
   import type { AvatarVisibility, User } from "../lib/types";
 
@@ -315,19 +315,6 @@
     if (!file) return;
     await applyAvatarImage(file);
     input.value = ""; // allow re-picking the same file
-  }
-
-  // First image in the clipboard, mirroring ChatView.onComposerPaste: prefer
-  // items (screenshots/copied images), fall back to files (some browsers only
-  // populate one of the two for a pasted image).
-  function pastedImageFile(clipboard: DataTransfer | null): File | null {
-    if (!clipboard) return null;
-    const fromItems = Array.from(clipboard.items || [])
-      .filter((it) => it.kind === "file" && it.type.startsWith("image/"))
-      .map((it) => it.getAsFile())
-      .filter((f): f is File => Boolean(f));
-    const fromFiles = Array.from(clipboard.files || []).filter((f) => f.type.startsWith("image/"));
-    return fromItems[0] ?? fromFiles[0] ?? null;
   }
 
   // Ctrl+V anywhere on the profile tab registers a copied image as the avatar
