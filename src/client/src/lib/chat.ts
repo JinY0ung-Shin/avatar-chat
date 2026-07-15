@@ -136,9 +136,17 @@ function makePane(
     // Seed the composer pickers from the owner's remembered defaults so the last
     // choice carries to a new conversation (null/undefined = fall back to the
     // hardcoded server/SDK default). selectConversation() overrides these with the
-    // per-conversation stored value when resuming an existing thread.
-    modelTier: readState().user?.modelDefault ?? undefined,
-    effort: readState().user?.effortDefault ?? undefined,
+    // per-conversation stored value when resuming an existing thread. External
+    // panes stay unseeded: their model slot holds a GATEWAY model id, so a native
+    // tier alias must never leak into it (undefined = admin-configured default).
+    modelTier:
+      avatar.runtime === "external"
+        ? undefined
+        : (readState().user?.modelDefault ?? undefined),
+    effort:
+      avatar.runtime === "external"
+        ? undefined
+        : (readState().user?.effortDefault ?? undefined),
     mcpToolGroups: readState().user?.mcpToolGroupsDefault
       ? [...readState().user!.mcpToolGroupsDefault!]
       : [...DEFAULT_MCP_TOOL_GROUPS],
@@ -501,10 +509,12 @@ export async function sendMessage(
         conversationId: pane.conversationId,
         regenerate: opts.regenerate === true,
         multiSession: readState().chatPanes.length > 1,
-        // External avatars own their model, system prompt, and tools behind the
-        // gateway. Do not send Noah's local-only composer settings on that path.
+        // External avatars run their own tool stack behind the gateway, so the
+        // local-only composer settings (effort/knowledge/MCP groups) stay off
+        // that path. The MODEL is the exception: the viewer may pick a gateway
+        // model id per conversation ("" = clear back to the admin default).
         ...(pane.avatar.runtime === "external"
-          ? {}
+          ? { model: pane.modelTier || "" }
           : {
               groupKnowledgeOff: pane.groupKnowledgeOff || [],
               // Model tier / reasoning effort / MCP groups: the pane is seeded from

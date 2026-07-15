@@ -22,12 +22,30 @@ interface GatewayFrame {
   data: unknown;
 }
 
+/** Model catalog served by the fake gateway's GET /v1/models. */
+const GATEWAY_CATALOG = [
+  { id: "gateway-model", backend: "claude" },
+  { id: "claude-frontier-9", backend: "claude" },
+  { id: "gpt-99", backend: "openai" },
+];
+
 async function withGateway(
   framesFor: (request: CapturedRequest, index: number) => GatewayFrame[],
-  run: (endpoint: string, captured: CapturedRequest[]) => Promise<void>,
+  run: (
+    endpoint: string,
+    captured: CapturedRequest[],
+    gateway: { modelsHits: number },
+  ) => Promise<void>,
 ): Promise<void> {
   const captured: CapturedRequest[] = [];
+  const gateway = { modelsHits: 0 };
   const server = http.createServer((req, res) => {
+    if (req.method === "GET" && req.url === "/v1/models") {
+      gateway.modelsHits += 1;
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ data: GATEWAY_CATALOG }));
+      return;
+    }
     let body = "";
     req.setEncoding("utf8");
     req.on("data", (chunk: string) => (body += chunk));
@@ -48,7 +66,7 @@ async function withGateway(
   const address = server.address();
   const port = typeof address === "object" && address ? address.port : 0;
   try {
-    await run(`http://127.0.0.1:${port}/v1/agents/messages`, captured);
+    await run(`http://127.0.0.1:${port}/v1/agents/messages`, captured, gateway);
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
@@ -677,6 +695,98 @@ describe("external avatar chat routes", () => {
     );
   });
 
+  it("lists gateway models to viewers and applies a per-conversation model override", async () => {
+    await withGateway(
+      () => successfulFrames("모델 응답"),
+      async (endpoint, captured, gateway) => {
+        const external = externalConfig(endpoint);
+        const services = createServices({
+          dataDir: tempDir(),
+          agentRuntime: "local",
+          sessionSecret: "test",
+          externalAgents: [external],
+        });
+        const app = createApp(services);
+        const viewer = request.agent(app);
+        const viewerId = (
+          await signup(viewer, "external-model-viewer").expect(201)
+        ).body.user.id as string;
+        const avatarId = "external:research";
+        const conversationId = "external-model-conversation";
+
+        // Catalog: gateway-advertised Claude ids only, plus the admin default.
+        const models = await viewer
+          .get(`/api/avatars/${encodeURIComponent(avatarId)}/models`)
+          .expect(200);
+        expect(models.body).toEqual({
+          models: ["gateway-model", "claude-frontier-9"],
+          defaultModel: "gateway-model",
+        });
+        // A second hit is served from the per-agent cache, not another probe.
+        await viewer
+          .get(`/api/avatars/${encodeURIComponent(avatarId)}/models`)
+          .expect(200);
+        expect(gateway.modelsHits).toBe(1);
+
+        // Native avatars answer with an empty catalog (their picker uses the
+        // bootstrap model tiers); unknown avatars stay 404.
+        const nativeModels = await viewer
+          .get(`/api/avatars/${encodeURIComponent(viewerId)}/models`)
+          .expect(200);
+        expect(nativeModels.body).toEqual({ models: [], defaultModel: null });
+        await viewer.get("/api/avatars/missing-avatar/models").expect(404);
+
+        // Turn 1: an explicit pick rides the gateway request and persists.
+        await viewer
+          .post("/api/chat/stream")
+          .send({
+            avatarId,
+            conversationId,
+            message: "질문 1",
+            model: "claude-frontier-9",
+          })
+          .expect(200);
+        expect(captured[0].body.model).toBe("claude-frontier-9");
+        expect(
+          services.store.getConversationModel(viewerId, conversationId),
+        ).toBe("claude-frontier-9");
+        const detail = await viewer
+          .get(`/api/messages?conversationId=${encodeURIComponent(conversationId)}`)
+          .expect(200);
+        expect(detail.body.selectedModel).toBe("claude-frontier-9");
+
+        // Turn 2: nothing sent → the stored override still applies.
+        await viewer
+          .post("/api/chat/stream")
+          .send({ avatarId, conversationId, message: "질문 2" })
+          .expect(200);
+        expect(captured[1].body.model).toBe("claude-frontier-9");
+
+        // Turn 3: "" clears back to the admin-configured default model.
+        await viewer
+          .post("/api/chat/stream")
+          .send({ avatarId, conversationId, message: "질문 3", model: "" })
+          .expect(200);
+        expect(captured[2].body.model).toBe("gateway-model");
+        expect(
+          services.store.getConversationModel(viewerId, conversationId),
+        ).toBeNull();
+
+        // Turn 4: an unusable id clears too (mirrors the native unknown-tier rule).
+        await viewer
+          .post("/api/chat/stream")
+          .send({
+            avatarId,
+            conversationId,
+            message: "질문 4",
+            model: "제멋대로 모델 !!",
+          })
+          .expect(200);
+        expect(captured[3].body.model).toBe("gateway-model");
+      },
+    );
+  });
+
   it("exposes a group-scoped avatar only to current members", async () => {
     await withGateway(
       () => successfulFrames("그룹 전용 답변"),
@@ -741,6 +851,9 @@ describe("external avatar chat routes", () => {
           .expect(404);
         await outsider
           .get(`/api/avatars/${encodeURIComponent(avatarId)}/skills`)
+          .expect(404);
+        await outsider
+          .get(`/api/avatars/${encodeURIComponent(avatarId)}/models`)
           .expect(404);
         await outsider
           .post("/api/chat/stream")

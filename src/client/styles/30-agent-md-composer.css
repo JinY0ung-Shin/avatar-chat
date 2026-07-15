@@ -891,6 +891,13 @@ tbody tr:hover td {
   transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
 }
 
+/* Panes without the image-attach button (external avatars) render only the
+   textarea + send button; drop the attach column so the textarea doesn't land
+   in the `auto` slot with the send button stranded in the middle 1fr column. */
+.composer-box.no-attach {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 /* Image-attach button (left of the textarea). A label wrapping a hidden file
    input, so clicking it opens the picker with no per-pane ref. */
 .composer-attach {

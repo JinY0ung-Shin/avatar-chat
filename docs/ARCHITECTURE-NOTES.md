@@ -385,6 +385,15 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   deliberately does not execute an agent turn or tools. The configured endpoint is separately
   constrained to the exact `/v1/agents/messages` path contract; its SSE stream is validated on the
   first real chat turn.
+- **`conversations.selected_model` is dual-semantic.** Native conversations store a model TIER alias;
+  external conversations store a GATEWAY model id (viewer-picked per conversation, `isSafeExternalModelId`
+  charset, cleared→admin default). One column is safe because a conversation is bound to a single avatar
+  for life; the chat route branches validation on `externalAgent`. The composer picker's catalog comes
+  from viewer-facing `GET /api/avatars/:id/models` (shared visibility helper, `probeExternalAgentGateway`
+  behind a 60s per-agent cache in the chat-router closure; native avatars answer `{ models: [] }`). The
+  client fetches it EAGERLY per external pane (ChatView reactive loop) because desktop shows composer
+  controls inline — the mobile-only settings toggle can't be the fetch trigger. External panes also skip
+  the native model/effort default seeding in `makePane` so a tier alias never leaks to the gateway.
 
 ### On-prem GitHub CA
 - **One var `GITHUB_CA_CERT`** (PEM path, `applyCustomGithubCa` in `tlsCa.ts`, called from `index.ts`).

@@ -15,6 +15,16 @@ const MAX_IDLE_TIMEOUT_SECONDS = 3_600;
 const MAX_TOTAL_TIMEOUT_SECONDS = 86_400;
 const ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const ENV_NAME_RE = /^[A-Z_][A-Z0-9_]*$/i;
+// Gateway model ids a viewer may pick per conversation (e.g. "claude-sonnet-5",
+// "us.anthropic.claude-..."). Stricter than the admin-config `model` field: the
+// value comes from arbitrary client input and is persisted + echoed to the
+// gateway, so keep it to a conservative id charset.
+const EXTERNAL_MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+
+/** Whether a client-sent gateway model id is safe to persist and forward. */
+export function isSafeExternalModelId(value: string): boolean {
+  return EXTERNAL_MODEL_ID_RE.test(value);
+}
 const EXTERNAL_AGENT_FIELDS = new Set([
   "id",
   "displayName",

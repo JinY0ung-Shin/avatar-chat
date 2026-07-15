@@ -38,11 +38,15 @@ import {
   MAX_CHAT_IMAGES_PER_MESSAGE,
 } from "../chatImages.js";
 import { runAgentStream, isRetryableModelError } from "../agent/index.js";
-import { runExternalAgent } from "../agent/externalAgent.js";
+import {
+  probeExternalAgentGateway,
+  runExternalAgent,
+} from "../agent/externalAgent.js";
 import {
   externalAvatarDetail,
   findExternalAgent,
   findVisibleExternalAgent,
+  isSafeExternalModelId,
   listExternalAvatarSummaries,
   mergeExternalAgentRegistries,
 } from "../externalAgents.js";
@@ -326,6 +330,14 @@ export function createChatRouter({
       config.externalAgents,
       store.getManagedExternalAgents(),
     );
+  // Gateway model catalogs for the external-avatar composer picker, cached per
+  // agent so opening the settings row doesn't probe the gateway on every hit.
+  // Keyed by id+endpoint (an admin rebind changes the endpoint → fresh probe).
+  const externalModelCatalogCache = new Map<
+    string,
+    { at: number; models: string[] }
+  >();
+  const EXTERNAL_MODEL_CATALOG_TTL_MS = 60_000;
 
   // ---- Discovery -------------------------------------------------------
 
@@ -400,6 +412,55 @@ export function createChatRouter({
         false,
       );
       res.json({ skills: await listSkillsInRoots(sourced) });
+    },
+  );
+
+  // Gateway model catalog for an EXTERNAL avatar's composer model picker.
+  // Visibility mirrors getAvatar/skills (shared external visibility helper).
+  // Returns the gateway-advertised Claude model ids plus the admin-configured
+  // default; a native avatar gets an empty catalog (its picker uses the
+  // bootstrap model tiers instead). Probes are cached briefly per agent.
+  router.get(
+    "/api/avatars/:id/models",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const external = findVisibleExternalAgent(
+        effectiveExternalAgents(),
+        req.params.id,
+        viewerGroupIds(req),
+      );
+      if (!external) {
+        const avatar = store.getAvatar(req.user!.id, req.params.id);
+        if (!avatar) {
+          apiError(res, 404, "아바타를 찾을 수 없습니다.");
+          return;
+        }
+        res.json({ models: [], defaultModel: null });
+        return;
+      }
+      const cacheKey = `${external.id}\n${external.endpoint}`;
+      const cached = externalModelCatalogCache.get(cacheKey);
+      if (cached && Date.now() - cached.at < EXTERNAL_MODEL_CATALOG_TTL_MS) {
+        res.json({
+          models: cached.models,
+          defaultModel: external.model ?? null,
+        });
+        return;
+      }
+      try {
+        const probe = await probeExternalAgentGateway(external);
+        externalModelCatalogCache.set(cacheKey, {
+          at: Date.now(),
+          models: probe.models,
+        });
+        res.json({ models: probe.models, defaultModel: external.model ?? null });
+      } catch (error) {
+        logger.warn(
+          { externalAgentId: external.id, detail: (error as Error).message },
+          "external model catalog probe failed",
+        );
+        apiError(res, 502, "Gateway 모델 목록을 가져오지 못했습니다.");
+      }
     },
   );
 
@@ -762,13 +823,20 @@ export function createChatRouter({
       // default (PUT /api/me/chat-defaults → users.model_default) that seeds the next
       // new conversation's pane; this per-conversation value still overrides that
       // default for an already-started thread.
+      // External conversations reuse the same slot for the GATEWAY model id the
+      // viewer picked (validated syntactically here; the gateway is the authority
+      // on whether the id actually exists). Native turns keep tier-alias semantics.
       const rawModel = safeString(req.body?.model);
       const requestedModel: string | null =
         req.body?.model === undefined || req.body?.model === null
           ? null
-          : isModelTier(rawModel)
-            ? rawModel
-            : ""; // sent but not a known tier (incl. empty) → clear to default
+          : externalAgent
+            ? isSafeExternalModelId(rawModel)
+              ? rawModel
+              : "" // sent but not a usable model id (incl. empty) → clear to default
+            : isModelTier(rawModel)
+              ? rawModel
+              : ""; // sent but not a known tier (incl. empty) → clear to default
 
       // Per-conversation reasoning effort, same client-owned model as the tier
       // above: a known level applies; "" clears back to the SDK default; nothing
@@ -987,9 +1055,10 @@ export function createChatRouter({
             requestedGroupKnowledgeOff,
           );
         }
-        // Persist the chosen model tier so it survives reload and applies to later
+        // Persist the chosen model so it survives reload and applies to later
         // turns until changed. null = client sent nothing → leave the stored value.
-        if (!externalAgent && requestedModel !== null) {
+        // Native rows hold a tier alias; external rows hold a gateway model id.
+        if (requestedModel !== null) {
           store.setConversationModel(
             req.user!.id,
             conversationId,
@@ -1081,13 +1150,22 @@ export function createChatRouter({
           if (externalAgent) {
             // External avatars are conversation-stateless and run their own tool
             // stack behind the gateway. Do not resolve local plugins, knowledge,
-            // MCP servers, repos, workspaces, model settings, or SDK sessions.
+            // MCP servers, repos, workspaces, or SDK sessions. The one local
+            // setting that DOES apply is the viewer-picked gateway model id
+            // (this turn's pick, else the stored per-conversation choice); the
+            // admin-configured model stays the default when neither is set.
+            const selectedExternalModel =
+              requestedModel === null
+                ? store.getConversationModel(req.user!.id, conversationId)
+                : requestedModel || null;
             const response = await runExternalAgent(
               {
                 message: agentMessage,
                 conversationHistory,
               },
-              externalAgent,
+              selectedExternalModel
+                ? { ...externalAgent, model: selectedExternalModel }
+                : externalAgent,
               {
                 onDelta: (text) => {
                   streamedText += text;

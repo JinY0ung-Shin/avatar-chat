@@ -211,7 +211,9 @@
   }
 
   function hasComposerControls(item: ChatPane): boolean {
-    if (isExternalPane(item)) return false;
+    // External panes always get the settings row: it hosts the gateway model
+    // picker (the other, local-only controls stay native panes' business).
+    if (isExternalPane(item)) return true;
     return hasModelPicker() || hasEffortPicker() || eligibleGroups(item).length > 0 || MCP_TOOL_GROUPS.length > 0;
   }
 
@@ -242,6 +244,12 @@
   }
 
   function composerSettingsSummary(item: ChatPane): string {
+    if (isExternalPane(item)) {
+      return (
+        item.modelTier ||
+        (item.externalDefaultModel ? `기본 (${item.externalDefaultModel})` : "기본 모델")
+      );
+    }
     const parts: string[] = [];
     if (hasModelPicker()) parts.push(modelTierLabel(item));
     if (hasEffortPicker()) parts.push(`강도 ${effortLabel(item)}`);
@@ -271,6 +279,17 @@
     composerSettingsOpenPaneId = closing ? "" : item.id;
     if (closing && gkOpenPaneId === item.id) gkOpenPaneId = "";
     if (closing && mcpToolsOpenPaneId === item.id) mcpToolsOpenPaneId = "";
+  }
+
+  // Gateway model catalogs load eagerly per EXTERNAL pane: on desktop the
+  // composer controls are always visible (the settings toggle only exists on
+  // mobile), so there is no interaction to hook a lazy fetch onto — populate
+  // the picker as soon as the pane exists. ensureExternalModels is one-shot
+  // per pane (undefined-check + in-flight guard), so this settles immediately.
+  $: for (const paneItem of panes) {
+    if (isExternalPane(paneItem) && paneItem.externalModels === undefined) {
+      void ensureExternalModels(paneItem);
+    }
   }
 
   function toggleMcpToolsPanel(item: ChatPane) {
@@ -451,6 +470,36 @@
       skillsInFlight.delete(item.id);
     }
   }
+  // Gateway model catalog for an external pane's model picker, fetched once
+  // (lazily) the first time the composer settings open. Mirrors ensureSkills:
+  // the result lives on the pane for reactivity; a failure soft-fails to a
+  // default-only picker (externalModels = null) instead of blocking the chat.
+  const externalModelsInFlight = new Set<string>();
+  async function ensureExternalModels(item: ChatPane) {
+    if (item.externalModels !== undefined || externalModelsInFlight.has(item.id)) return;
+    externalModelsInFlight.add(item.id);
+    try {
+      const result = await api<{ models: string[]; defaultModel: string | null }>(
+        `/api/avatars/${encodeURIComponent(item.avatar.id)}/models`,
+      );
+      updateState((state) => {
+        const target = state.chatPanes.find((p) => p.id === item.id);
+        if (target) {
+          target.externalModels = result.models || [];
+          target.externalDefaultModel = result.defaultModel ?? null;
+        }
+      });
+    } catch {
+      updateState((state) => {
+        const target = state.chatPanes.find((p) => p.id === item.id);
+        if (target) target.externalModels = null;
+      });
+      notify("Gateway 모델 목록을 가져오지 못했습니다. 기본 모델로 대화할 수 있어요.", "warn");
+    } finally {
+      externalModelsInFlight.delete(item.id);
+    }
+  }
+
   function closeSlash() {
     slashPaneId = "";
     slashIndex = 0;
@@ -666,6 +715,23 @@
     notify(`모델을 ${label ?? tier}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
     api("/api/me/chat-defaults", { method: "PUT", body: JSON.stringify({ model: tier }) }).catch((err) =>
       notify(`기본 모델을 저장하지 못했습니다: ${(err as Error).message}`, "warn"),
+    );
+  }
+
+  // Gateway model for an EXTERNAL pane: lives on the pane and rides the next
+  // chat POST (per-conversation). Unlike the native tier there is no per-user
+  // default — the admin-configured agent model is the baseline, and "" clears
+  // back to it.
+  function setExternalModel(item: ChatPane, modelId: string) {
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.modelTier = modelId || undefined;
+    });
+    notify(
+      modelId
+        ? `모델을 ${modelId}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`
+        : "기본 모델로 되돌렸어요. 다음 메시지부터 적용됩니다.",
+      "info",
     );
   }
 
@@ -997,7 +1063,7 @@
             {/each}
           </div>
         {/if}
-        <div class="composer-box">
+        <div class="composer-box" class:no-attach={isExternalPane(item)}>
           {#if !isExternalPane(item)}
             <label class="composer-attach" class:disabled={item.streaming} title="이미지 첨부" aria-label="이미지 첨부">
               <Icon name="image" />
@@ -1066,6 +1132,27 @@
                   <span class="composer-settings-summary">{composerSettingsSummary(item)}</span>
                 </button>
                 <span id={paneDomId("composer-controls", item.id)} class="composer-controls" class:open={composerSettingsOpenPaneId === item.id}>
+                  {#if isExternalPane(item)}
+                    <select
+                      class="composer-model-select"
+                      aria-label="이 대화에 사용할 Gateway 모델"
+                      title="이 대화에서 다음 메시지부터 사용할 Gateway 모델을 고릅니다"
+                      value={item.modelTier ?? ""}
+                      disabled={item.externalModels === undefined}
+                      on:change={(event) => setExternalModel(item, event.currentTarget.value)}
+                    >
+                      <option value="">
+                        {item.externalModels === undefined
+                          ? "모델 목록 불러오는 중…"
+                          : item.externalDefaultModel
+                            ? `기본 (${item.externalDefaultModel})`
+                            : "기본 모델"}
+                      </option>
+                      {#each (item.externalModels ?? []).filter((id) => id !== item.externalDefaultModel) as modelId (modelId)}
+                        <option value={modelId}>{modelId}</option>
+                      {/each}
+                    </select>
+                  {:else}
                   {#if $appState.bootstrap?.modelSelection?.tiers.length}
                     <select
                       class="composer-model-select"
@@ -1115,6 +1202,7 @@
                     title="이 대화에서 다음 메시지부터 사용할 MCP 도구 묶음을 고릅니다"
                     on:click={() => toggleMcpToolsPanel(item)}
                   >MCP 도구 {selectedMcpToolGroups(item).length}/{MCP_TOOL_GROUPS.length}</button>
+                  {/if}
                 </span>
               {/if}
               {#if formatUsageLabel(item.usage)}
