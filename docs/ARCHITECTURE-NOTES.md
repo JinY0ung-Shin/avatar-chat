@@ -513,12 +513,34 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `ctx.viewerIsOwner` (= `ownerToolAccess` = owner chat OR owner routine); `repoTools` (personal knowledge
   repo) splits READ (`list_files`/`read_file`, gated on `ctx.elevated` = owner OR trusted same-group
   teammate) vs WRITE/commit/create (owner-only); `gitRepoTools` splits owner vs elevated; `confluenceTools`
-  gates BOTH reads AND writes on `ctx.elevated`; `sshTrustTools`/`avatarDirectoryTools` are intentionally
+  and `webFetchTools` gate on `ctx.elevated`; `sshTrustTools`/`avatarDirectoryTools` are intentionally
   UNGATED (fingerprints aren't secrets; directory search is all-viewer read-only). Don't "normalize" these.
 - **Second-brain read tools (`brainTools`/`groupBrainTools`):** read-only RECALL servers
   (`search`/`get_note`) over the same knowledge-repo clones. `brainTools` (personal) gates reads on
   `ctx.elevated`; `groupBrainTools` gates reads on group-MEMBERship. There is NO brain WRITE tool — route
   writes through `mcp__repo__write_file`/`mcp__group_repo__write_file` + `commit`.
+- **Web fetch (`webFetchTools.ts`, server `web`, tool-group id `web`):** one `mcp__web__fetch` tool that
+  fetches from the APP process, NOT the CLI subprocess — that's the whole point: the built-in WebFetch
+  force-upgrades `http://`→`https://` (verified on the bundled binary), so plain-HTTP intranet pages only
+  work here. Proxy: `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` via undici's `EnvHttpProxyAgent` — must use
+  undici's OWN `fetch` (node's global fetch is a different bundled undici and rejects the dispatcher).
+  Live-verified: undici tunnels EVERY proxied request via `CONNECT` (even `http://` targets; curl uses
+  absolute-form GET instead), so a corporate proxy that only allows `CONNECT :443` refuses proxied
+  plain-HTTP to EXTERNAL port-80 sites. Intranet http bypasses the proxy via `NO_PROXY`/direct, so this
+  bites rarely — check the proxy's CONNECT port policy before blaming the tool.
+  Private CAs: `NODE_EXTRA_CA_CERTS` (node-native) and `GITHUB_CA_CERT` (process-wide
+  `tls.setDefaultCACertificates`, tlsCa.ts) both cover it. Guards: handler gates on `ctx.elevated`;
+  loopback + link-local/metadata (169.254.x, `::1`, `localhost`, v4-mapped) refused while PRIVATE ranges
+  (10.x/172.16-31/192.168) are deliberately allowed; same-host redirects followed (≤5) but cross-host
+  redirects REPORTED for an explicit re-fetch (the built-in WebFetch contract, and it re-runs the guard);
+  2MB streamed body cap; 20k-char result window with `offset` continuation; charset from the header or a
+  `<meta charset>` sniff (KR intranets still serve euc-kr). HTML→text is deliberately dependency-free
+  (entities decoded AFTER tag-strip; links kept as `label (abs-url)`). Proxy self-state comes from ONE
+  helper, `webFetchProxyState()` (values redacted to scheme://host:port — proxy creds never enter a
+  prompt), read by BOTH `buildSystemPromptAppend` (`AgentRequest.webFetchProxy`, set in `runClaudeAgent`)
+  and `describe_system` — the Confluence-style deployment-fact sync. The built-in WebFetch stays
+  available (its own description tells the model to prefer an MCP web fetch tool); admins can still kill
+  it via the builtin-tool policy toggle.
 - **The `mcp__`-prefix auto-allow in the PreToolUse hook fires BEFORE the owner check**, so every tool
   MUST self-gate in its handler. Don't rely on the hook.
 

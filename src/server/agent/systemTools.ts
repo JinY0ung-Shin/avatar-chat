@@ -14,6 +14,7 @@ import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
 import { summarizeOwnerState } from "./ownerState.js";
 import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
 import type { ToolSkillPolicy } from "../toolSkillPolicy.js";
+import { webFetchProxyState } from "./webFetchTools.js";
 
 /**
  * Per-conversation context for avatar-system management tools. These tools let
@@ -224,6 +225,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           ? `${effortLabel(userEffort) ? `${userEffort} (${effortLabel(userEffort)})` : userEffort} (chosen for this conversation)`
           : `${effortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${effortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;
         const enabledMcpToolGroups = ctx.enabledMcpToolGroups ?? MCP_TOOL_GROUPS.map((group) => group.id);
+        const webProxy = webFetchProxyState();
         const enabledMcpToolGroupLabels = MCP_TOOL_GROUPS
           .filter((group) => enabledMcpToolGroups.includes(group.id))
           .map((group) => group.labelEn);
@@ -248,6 +250,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Autocompact window: ${ctx.config.autoCompactWindow ? `${ctx.config.autoCompactWindow} tokens (AUTO_COMPACT_WINDOW)` : "model default (full context window)"}`,
           `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
+          // Mirrors buildSystemPromptAppend's web-fetch proxy self-state (the
+          // shared webFetchProxyState helper; values already redacted).
+          `- Web fetch (mcp__web__fetch): ${enabledMcpToolGroups.includes("web") ? "enabled for this conversation" : "OFF for this conversation (web tool group deselected)"}; ${webProxy.httpsProxy || webProxy.httpProxy ? `external URLs go through the corporate proxy (${webProxy.httpsProxy ?? webProxy.httpProxy}${webProxy.noProxy ? `; NO_PROXY: ${webProxy.noProxy}` : ""})` : "no HTTP_PROXY/HTTPS_PROXY configured — intranet URLs direct; external sites may be unreachable if this deployment requires a proxy"}`,
           `- Admin-disabled built-in tools: ${ctx.toolSkillPolicy?.disabledTools.length ? ctx.toolSkillPolicy.disabledTools.map((name) => `\`${name}\``).join(", ") + " (removed deployment-wide by the system administrator)" : "(none)"}`,
           `- Admin-disabled skills: ${ctx.toolSkillPolicy?.disabledSkills.length ? ctx.toolSkillPolicy.disabledSkills.map((name) => `\`${name}\``).join(", ") + " (deployment-wide; they may still appear in a skill listing but every invocation is blocked)" : "(none)"}`,
           `- Knowledge repository: ${knowledgeRepo.repo || "(none)"}${knowledgeRepo.branch ? ` @ ${knowledgeRepo.branch}` : ""}`,

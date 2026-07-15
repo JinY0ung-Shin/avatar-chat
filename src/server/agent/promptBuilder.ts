@@ -494,6 +494,27 @@ export function buildSystemPromptAppend(
       );
     }
   }
+  // Web fetch standing guidance (META-COGNITION): which proxy path external
+  // URLs take is deployment state the avatar cannot infer, so state it. The
+  // proxy snapshot is redacted to scheme://host:port (webFetchProxyState).
+  if (mcpToolGroupEnabled(request, "web")) {
+    const proxy = request.webFetchProxy;
+    const proxyNote = !proxy
+      ? ""
+      : proxy.httpsProxy || proxy.httpProxy
+        ? ` External (internet) URLs go through the corporate proxy (${[
+            proxy.httpsProxy ? `HTTPS via ${proxy.httpsProxy}` : "",
+            proxy.httpProxy ? `HTTP via ${proxy.httpProxy}` : "",
+          ]
+            .filter(Boolean)
+            .join(", ")}${proxy.noProxy ? `; NO_PROXY: ${proxy.noProxy}` : ""}).`
+        : " No HTTP_PROXY/HTTPS_PROXY is configured: intranet URLs are fetched directly, but external internet sites may be unreachable if this deployment requires a corporate proxy.";
+    lines.push(
+      "Web page fetch: when the user shares a URL or asks about an intranet/internet page, read it with `mcp__web__fetch` (owner/trusted-user conversations only; loopback and link-local/metadata addresses are blocked). " +
+        "Prefer it over the built-in WebFetch tool — it fetches plain http:// intranet pages as-is and honors the deployment's proxy and CA settings." +
+        proxyNote,
+    );
+  }
   // Standing (every-turn) guidance: the avatar can recommend a better-suited
   // teammate avatar. Phrased for ANY viewer class — in a headless routine there's
   // no user to redirect, but the search tool stays useful for the work itself.

@@ -383,6 +383,12 @@ export async function runClaudeAgent(
     CONFLUENCE_TOOL_NAMES,
   } = await import("./confluenceTools.js");
   const {
+    buildWebFetchServer,
+    webFetchProxyState,
+    WEB_FETCH_SERVER_NAME,
+    WEB_FETCH_TOOL_NAMES,
+  } = await import("./webFetchTools.js");
+  const {
     buildAvatarDirectoryServer,
     AVATAR_DIRECTORY_SERVER_NAME,
     AVATAR_DIRECTORY_TOOL_NAMES,
@@ -439,6 +445,7 @@ export async function runClaudeAgent(
   const groupKnowledgeToolsEnabled = mcpToolGroupEnabled("group_knowledge");
   const gitRepoToolsEnabled = mcpToolGroupEnabled("git_repo");
   const confluenceToolsEnabled = mcpToolGroupEnabled("confluence");
+  const webFetchToolsEnabled = mcpToolGroupEnabled("web");
   const sshToolsEnabled = mcpToolGroupEnabled("ssh");
   const avatarDirectoryToolsEnabled = mcpToolGroupEnabled("avatars");
   const canvasToolsEnabled = mcpToolGroupEnabled("canvas");
@@ -753,6 +760,10 @@ export async function runClaudeAgent(
     ownerSecrets,
     elevated: elevatedToolAccess,
   });
+  // Generic web fetch (intranet + internet, proxy-aware). Registration follows
+  // the tool-group picker; the HANDLER gates on `elevated` — the PreToolUse
+  // hook auto-allows every mcp__* call, so registration alone is not the gate.
+  const webFetchServer = buildWebFetchServer({ elevated: elevatedToolAccess });
   // hex-ssh (remote-server access MCP, ssh2-based — no system ssh binary needed):
   // registered explicitly (not via a plugin's .mcp.json) so we can inject the
   // owner's per-user SSH identity. The policy proxy filters tools/list before
@@ -820,6 +831,7 @@ export async function runClaudeAgent(
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
       ...(systemToolsEnabled ? SYSTEM_TOOL_NAMES : []),
       ...(confluenceToolsEnabled ? CONFLUENCE_TOOL_NAMES : []),
+      ...(webFetchToolsEnabled ? WEB_FETCH_TOOL_NAMES : []),
       ...(avatarDirectoryToolsEnabled ? AVATAR_DIRECTORY_TOOL_NAMES : []),
       ...(sshToolsEnabled ? SSH_IDENTITY_TOOL_NAMES : []),
       ...(gitRepoToolsEnabled ? GIT_REPO_TOOL_NAMES : []),
@@ -880,6 +892,9 @@ export async function runClaudeAgent(
       ...(systemToolsEnabled ? { [SYSTEM_SERVER_NAME]: systemServer } : {}),
       ...(confluenceToolsEnabled
         ? { [CONFLUENCE_SERVER_NAME]: confluenceServer }
+        : {}),
+      ...(webFetchToolsEnabled
+        ? { [WEB_FETCH_SERVER_NAME]: webFetchServer }
         : {}),
       ...(avatarDirectoryToolsEnabled
         ? { [AVATAR_DIRECTORY_SERVER_NAME]: avatarDirectoryServer }
@@ -1064,6 +1079,10 @@ export async function runClaudeAgent(
       ownerSecrets.CONFLUENCE_PAT ||
       ownerSecrets.CONFLUENCE_PERSONAL_ACCESS_TOKEN,
     ),
+    // Web-fetch proxy self-state (META-COGNITION): redacted HTTP(S)_PROXY/
+    // NO_PROXY snapshot so the avatar knows whether external sites are
+    // reachable through the corporate proxy. Mirrored by describe_system.
+    webFetchProxy: webFetchProxyState(),
     groupMemberships: ownerToolAccess ? ownerGroups : [],
     mcpToolGroups: enabledMcpToolGroups,
     // Canvas standing guidance fires for ALL viewer classes of a canvas-enabled

@@ -755,6 +755,17 @@ export interface AgentAvatar {
   persona: string;
 }
 
+/**
+ * Deployment proxy env self-state for the web fetch tool (META-COGNITION).
+ * Derived by `webFetchProxyState()` (webFetchTools.ts) with proxy URLs REDACTED
+ * to scheme://host:port — credentials never enter a prompt. `null` = unset.
+ */
+export interface WebFetchProxyState {
+  httpProxy: string | null;
+  httpsProxy: string | null;
+  noProxy: string | null;
+}
+
 export interface AgentRequest {
   message: string;
   avatar: AgentAvatar;
@@ -879,6 +890,12 @@ export interface AgentRequest {
   confluenceUrlConfigured?: boolean;
   /** Whether the avatar owner has stored a Confluence PAT secret. */
   confluencePatConfigured?: boolean;
+  /**
+   * Redacted proxy env self-state for `mcp__web__fetch` guidance (set by
+   * `runClaudeAgent` from the live env). Undefined means "unknown" for direct
+   * unit calls — the prompt then omits the proxy detail sentence.
+   */
+  webFetchProxy?: WebFetchProxyState;
   /**
    * Groups the avatar owner belongs to, with role + whether each has a shared
    * knowledge repo. Injected into the prompt so the avatar knows its group
