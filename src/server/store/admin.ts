@@ -243,6 +243,44 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
       return this.getManagedExternalAgentsState().agents;
     }
 
+    /**
+     * Admin-set profile image extension for an EXTERNAL avatar (keyed by the
+     * public "external:<id>" avatar id), or null when none. The counterpart of
+     * users.avatar_ext for agents that have no users row; bytes live on disk.
+     */
+    getExternalAvatarImageExt(externalAvatarId: string): string | null {
+      const row = this.db
+        .prepare(
+          "SELECT ext FROM external_avatar_images WHERE external_avatar_id = ?",
+        )
+        .get(externalAvatarId) as { ext: string } | undefined;
+      return row?.ext ?? null;
+    }
+
+    /** Set (or clear with null) an external avatar's stored image extension. */
+    setExternalAvatarImageExt(externalAvatarId: string, ext: string | null): void {
+      if (ext) {
+        this.db
+          .prepare(
+            "INSERT INTO external_avatar_images (external_avatar_id, ext) VALUES (?, ?) " +
+              "ON CONFLICT(external_avatar_id) DO UPDATE SET ext = excluded.ext",
+          )
+          .run(externalAvatarId, ext);
+      } else {
+        this.db
+          .prepare("DELETE FROM external_avatar_images WHERE external_avatar_id = ?")
+          .run(externalAvatarId);
+      }
+    }
+
+    /** Avatar ids ("external:<id>") that currently have a stored image. */
+    listExternalAvatarImageIds(): Set<string> {
+      const rows = this.db
+        .prepare("SELECT external_avatar_id FROM external_avatar_images")
+        .all() as { external_avatar_id: string }[];
+      return new Set(rows.map((row) => row.external_avatar_id));
+    }
+
     setManagedExternalAgents(agents: readonly ExternalAgentConfig[]): void {
       if (!agents.length) {
         this.deleteAppSecret(MANAGED_EXTERNAL_AGENTS_KEY);

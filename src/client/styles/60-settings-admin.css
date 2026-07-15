@@ -933,6 +933,22 @@
   border-radius: var(--r-md);
   color: var(--accent);
   background: var(--accent-soft);
+  overflow: hidden;
+}
+
+/* Profile-photo row in the external-avatar editor (preview + pick/remove). */
+.external-agent-image-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.external-agent-image-preview {
+  width: 56px;
+  height: 56px;
+  border-radius: 999px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  display: block;
 }
 .external-agent-id {
   font-family: var(--mono);

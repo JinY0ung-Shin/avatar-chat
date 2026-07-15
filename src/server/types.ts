@@ -72,6 +72,8 @@ export interface AdminExternalAgent {
   apiKeySet: boolean;
   /** Used to guard destructive delete and endpoint reassignment. */
   conversationCount: number;
+  /** Admin-set profile image present (stored outside the registry). */
+  hasImage: boolean;
 }
 
 export type ExternalAgentApiKeyMode = "keep" | "set" | "clear";

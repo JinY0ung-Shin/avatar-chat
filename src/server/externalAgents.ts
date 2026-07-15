@@ -532,6 +532,8 @@ export function adminExternalAgent(
     source,
     apiKeySet: Boolean(agent.apiKey),
     conversationCount,
+    // Images live outside the registry; route code overlays the stored state.
+    hasImage: false,
   };
 }
 

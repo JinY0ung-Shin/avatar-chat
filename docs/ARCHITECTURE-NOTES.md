@@ -385,6 +385,15 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   deliberately does not execute an agent turn or tools. The configured endpoint is separately
   constrained to the exact `/v1/agents/messages` path contract; its SSE stream is validated on the
   first real chat turn.
+- **External avatar profile images live OUTSIDE the registry.** Bytes on disk in the same `avatarDir`
+  as user photos (stem = the public `external:<id>` avatar id), extension in the
+  `external_avatar_images` table (CREATE TABLE IF NOT EXISTS = the migration). Admin-only
+  `PUT/DELETE /api/admin/external-agents/:id/image` (works for env entries too — the registry is
+  untouched); the public `GET /api/users/:id/avatar-image` route falls back to the external ext
+  lookup. `externalAvatarSummary`/`adminExternalAgent` stay pure (`hasImage: false`) — route code
+  overlays the stored state (avatars list, avatar detail, admin DTOs). Agent delete manually
+  cascades the image row + file. Shared upload validation lives in `_shared.ts`
+  (`decodeAvatarImage`/`saveAvatarImageFile`/`deleteAvatarImageFile`, also used by profile photos).
 - **`conversations.selected_model` is dual-semantic.** Native conversations store a model TIER alias;
   external conversations store a GATEWAY model id (viewer-picked per conversation, `isSafeExternalModelId`
   charset, cleared→admin default). One column is safe because a conversation is bound to a single avatar

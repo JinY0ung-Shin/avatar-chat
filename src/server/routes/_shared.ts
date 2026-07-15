@@ -141,6 +141,67 @@ export function avatarDir(config: AppConfig): string {
   return path.join(config.dataDir, "avatars");
 }
 
+/**
+ * Decode + validate a data-URL avatar upload (png/jpeg/webp, ≤ MAX_AVATAR_BYTES).
+ * Shared by the profile photo upload and the admin external-avatar photo upload
+ * so the accepted formats/limits can't drift apart.
+ */
+export function decodeAvatarImage(
+  image: unknown,
+): { ext: string; buffer: Buffer } | { error: string } {
+  const match =
+    typeof image === "string"
+      ? /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(image)
+      : null;
+  if (!match) {
+    return { error: "지원하는 이미지 형식은 png/jpeg/webp 입니다." };
+  }
+  const ext = AVATAR_MIME_EXT[match[1]];
+  let buffer: Buffer;
+  try {
+    buffer = Buffer.from(match[2], "base64");
+  } catch {
+    return { error: "이미지를 디코드할 수 없습니다." };
+  }
+  if (buffer.length === 0 || buffer.length > MAX_AVATAR_BYTES) {
+    return { error: "이미지 크기는 2MB 이하여야 합니다." };
+  }
+  return { ext, buffer };
+}
+
+/**
+ * Write an avatar image under avatarDir as `<stem>.<ext>`, removing any stale
+ * sibling extension so prior files don't linger. The stem is either a user id
+ * or an external avatar id — both come from server-validated registries, never
+ * raw client input.
+ */
+export function saveAvatarImageFile(
+  config: AppConfig,
+  stem: string,
+  ext: string,
+  buffer: Buffer,
+): void {
+  const dir = avatarDir(config);
+  fs.mkdirSync(dir, { recursive: true });
+  for (const candidate of ["png", "jpg", "webp"]) {
+    const prior = path.join(dir, `${stem}.${candidate}`);
+    if (candidate !== ext && fs.existsSync(prior)) {
+      fs.rmSync(prior, { force: true });
+    }
+  }
+  fs.writeFileSync(path.join(dir, `${stem}.${ext}`), buffer);
+}
+
+/** Remove an avatar image file (no-op when ext is null/unknown). */
+export function deleteAvatarImageFile(
+  config: AppConfig,
+  stem: string,
+  ext: string | null,
+): void {
+  if (!ext) return;
+  fs.rmSync(path.join(avatarDir(config), `${stem}.${ext}`), { force: true });
+}
+
 export function looksLikeRepo(value: string): boolean {
   if (/^[\w.-]+\/[\w.-]+$/.test(value)) {
     return true;

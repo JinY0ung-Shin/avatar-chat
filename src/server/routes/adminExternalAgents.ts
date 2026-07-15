@@ -13,8 +13,15 @@ import {
   parseAdminExternalAgentInput,
 } from "../externalAgents.js";
 import logger from "../logger.js";
-import type { ExternalAgentConfig } from "../types.js";
-import { apiError, safeString, type RouterDeps } from "./_shared.js";
+import type { AdminExternalAgent, ExternalAgentConfig } from "../types.js";
+import {
+  apiError,
+  decodeAvatarImage,
+  deleteAvatarImageFile,
+  safeString,
+  saveAvatarImageFile,
+  type RouterDeps,
+} from "./_shared.js";
 
 function inputError(res: Response, error: unknown): void {
   const raw = error instanceof Error ? error.message : "설정 형식이 올바르지 않습니다.";
@@ -37,6 +44,16 @@ export function registerAdminExternalAgentRoutes(
     new Set(environmentAgents().map((agent) => agent.id));
   const countHistory = (agent: ExternalAgentConfig) =>
     store.countConversationsForAvatar(externalAvatarId(agent));
+  // Profile images live OUTSIDE the encrypted registry (disk + a tiny ext
+  // table), so the DTO overlays the current state at read time.
+  const withImage = (
+    dto: AdminExternalAgent,
+    agent: ExternalAgentConfig,
+  ): AdminExternalAgent => ({
+    ...dto,
+    hasImage:
+      store.getExternalAvatarImageExt(externalAvatarId(agent)) !== null,
+  });
 
   const validateGroups = (
     agent: ExternalAgentConfig,
@@ -88,12 +105,18 @@ export function registerAdminExternalAgentRoutes(
       const envIds = environmentIds();
       const agents = [
         ...environmentAgents().map((agent) =>
-          adminExternalAgent(agent, "environment", countHistory(agent)),
+          withImage(
+            adminExternalAgent(agent, "environment", countHistory(agent)),
+            agent,
+          ),
         ),
         ...state.agents
           .filter((agent) => !envIds.has(agent.id))
           .map((agent) =>
-            adminExternalAgent(agent, "managed", countHistory(agent)),
+            withImage(
+              adminExternalAgent(agent, "managed", countHistory(agent)),
+              agent,
+            ),
           ),
       ].sort((a, b) => a.displayName.localeCompare(b.displayName));
       res.json({
@@ -136,7 +159,7 @@ export function registerAdminExternalAgentRoutes(
         "external agent created",
       );
       res.status(201).json({
-        agent: adminExternalAgent(agent, "managed", 0),
+        agent: withImage(adminExternalAgent(agent, "managed", 0), agent),
       });
     },
   );
@@ -206,7 +229,10 @@ export function registerAdminExternalAgentRoutes(
         "external agent updated",
       );
       res.json({
-        agent: adminExternalAgent(agent, "managed", historyCount),
+        agent: withImage(
+          adminExternalAgent(agent, "managed", historyCount),
+          agent,
+        ),
       });
     },
   );
@@ -244,12 +270,73 @@ export function registerAdminExternalAgentRoutes(
       ) {
         return;
       }
+      // Manual cascade (no FK): drop the profile image row + file with the
+      // registry entry so a later same-id agent doesn't inherit the old photo.
+      const avatarId = externalAvatarId(agent);
+      deleteAvatarImageFile(
+        config,
+        avatarId,
+        store.getExternalAvatarImageExt(avatarId),
+      );
+      store.setExternalAvatarImageExt(avatarId, null);
       auditAs(req, "external_agent_delete", `external agent ${agent.id}`);
       logger.warn(
         { actorId: req.user!.id, externalAgentId: agent.id },
         "external agent deleted",
       );
       res.json({ ok: true });
+    },
+  );
+
+  // Profile image for an external avatar. Stored on disk + a tiny ext table —
+  // never inside the encrypted registry — so it also works for read-only
+  // environment entries and survives registry rewrites.
+  router.put(
+    "/api/admin/external-agents/:id/image",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const agent = effectiveAgents().find(
+        (item) => item.id === req.params.id,
+      );
+      if (!agent) {
+        apiError(res, 404, "외부 아바타를 찾을 수 없습니다.");
+        return;
+      }
+      const decoded = decodeAvatarImage(req.body?.image);
+      if ("error" in decoded) {
+        apiError(res, 400, decoded.error);
+        return;
+      }
+      const avatarId = externalAvatarId(agent);
+      saveAvatarImageFile(config, avatarId, decoded.ext, decoded.buffer);
+      store.setExternalAvatarImageExt(avatarId, decoded.ext);
+      auditAs(req, "external_agent_image", `external agent ${agent.id}`);
+      res.json({ ok: true, hasImage: true });
+    },
+  );
+
+  router.delete(
+    "/api/admin/external-agents/:id/image",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const agent = effectiveAgents().find(
+        (item) => item.id === req.params.id,
+      );
+      if (!agent) {
+        apiError(res, 404, "외부 아바타를 찾을 수 없습니다.");
+        return;
+      }
+      const avatarId = externalAvatarId(agent);
+      deleteAvatarImageFile(
+        config,
+        avatarId,
+        store.getExternalAvatarImageExt(avatarId),
+      );
+      store.setExternalAvatarImageExt(avatarId, null);
+      auditAs(req, "external_agent_image", `external agent ${agent.id} image removed`);
+      res.json({ ok: true, hasImage: false });
     },
   );
 

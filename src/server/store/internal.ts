@@ -437,6 +437,16 @@ export class StoreBase {
         created_at TEXT,
         PRIMARY KEY (artifact_id, version)
       );
+      -- Profile images for EXTERNAL avatars (admin-set). External agents have no
+      -- users row, so the users.avatar_ext pattern gets its own tiny table keyed
+      -- by the public avatar id ("external:<registry id>"). Image bytes live on
+      -- disk next to user avatar images; this row only records the extension.
+      -- Deliberately NOT inside the encrypted registry: images are not secret,
+      -- and env-defined (read-only) agents can carry one too.
+      CREATE TABLE IF NOT EXISTS external_avatar_images (
+        external_avatar_id TEXT PRIMARY KEY,
+        ext TEXT NOT NULL
+      );
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);

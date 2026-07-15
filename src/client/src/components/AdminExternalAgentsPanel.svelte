@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import AvatarImage from "./AvatarImage.svelte";
   import AdminExternalAgentModal from "./AdminExternalAgentModal.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
@@ -318,7 +319,13 @@
             {#each shownAgents as agent (agent.source + agent.id)}
               <article class="admin-user external-agent-row" class:is-disabled={!agent.enabled}>
                 <div class="admin-row">
-                  <div class="external-agent-mark" aria-hidden="true"><Icon name="globe" size={18} /></div>
+                  <div class="external-agent-mark" aria-hidden="true">
+                    {#if agent.hasImage}
+                      <AvatarImage user={{ id: `external:${agent.id}`, displayName: agent.displayName, alias: agent.alias, hasImage: true }} size={38} alt="" />
+                    {:else}
+                      <Icon name="globe" size={18} />
+                    {/if}
+                  </div>
                   <div class="ar-main">
                     <strong>{agent.displayName}</strong>
                     <div class="muted external-agent-id">external:{agent.id}</div>

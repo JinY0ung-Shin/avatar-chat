@@ -37,6 +37,7 @@ function managedAgent(
     source: "managed",
     apiKeySet: true,
     conversationCount: 2,
+    hasImage: false,
     ...overrides,
   };
 }

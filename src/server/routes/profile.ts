@@ -14,14 +14,15 @@ import type { AvatarVisibility } from "../types.js";
 import {
   apiError,
   avatarDir,
+  decodeAvatarImage,
+  deleteAvatarImageFile,
   describeAvatarEquipment,
   isAvatarVisibility,
   resolveAvatarSkillSources,
   runHeadlessAvatarPrompt,
   safeString,
-  AVATAR_MIME_EXT,
+  saveAvatarImageFile,
   EXT_MIME,
-  MAX_AVATAR_BYTES,
   type RouterDeps,
 } from "./_shared.js";
 
@@ -332,36 +333,13 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     "/api/me/avatar-image",
     requireAuth(store),
     (req: AuthenticatedRequest, res) => {
-      const image = typeof req.body?.image === "string" ? req.body.image : "";
-      const match = /^data:(image\/(?:png|jpeg|webp));base64,(.+)$/.exec(image);
-      if (!match) {
-        apiError(res, 400, "지원하는 이미지 형식은 png/jpeg/webp 입니다.");
+      const decoded = decodeAvatarImage(req.body?.image);
+      if ("error" in decoded) {
+        apiError(res, 400, decoded.error);
         return;
       }
-      const mime = match[1];
-      const ext = AVATAR_MIME_EXT[mime];
-      let buffer: Buffer;
-      try {
-        buffer = Buffer.from(match[2], "base64");
-      } catch {
-        apiError(res, 400, "이미지를 디코드할 수 없습니다.");
-        return;
-      }
-      if (buffer.length === 0 || buffer.length > MAX_AVATAR_BYTES) {
-        apiError(res, 400, "이미지 크기는 2MB 이하여야 합니다.");
-        return;
-      }
-      const dir = avatarDir(config);
-      fs.mkdirSync(dir, { recursive: true });
-      // Remove any prior extension so stale files don't linger.
-      for (const candidate of ["png", "jpg", "webp"]) {
-        const prior = path.join(dir, `${req.user!.id}.${candidate}`);
-        if (candidate !== ext && fs.existsSync(prior)) {
-          fs.rmSync(prior, { force: true });
-        }
-      }
-      fs.writeFileSync(path.join(dir, `${req.user!.id}.${ext}`), buffer);
-      store.setAvatarExt(req.user!.id, ext);
+      saveAvatarImageFile(config, req.user!.id, decoded.ext, decoded.buffer);
+      store.setAvatarExt(req.user!.id, decoded.ext);
       res.json({ ok: true, hasImage: true });
     },
   );
@@ -370,18 +348,19 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     "/api/me/avatar-image",
     requireAuth(store),
     (req: AuthenticatedRequest, res) => {
-      const ext = store.getAvatarExt(req.user!.id);
-      if (ext) {
-        const file = path.join(avatarDir(config), `${req.user!.id}.${ext}`);
-        fs.rmSync(file, { force: true });
-      }
+      deleteAvatarImageFile(config, req.user!.id, store.getAvatarExt(req.user!.id));
       store.setAvatarExt(req.user!.id, null);
       res.json({ ok: true, hasImage: false });
     },
   );
 
   router.get("/api/users/:id/avatar-image", (req, res) => {
-    const ext = store.getAvatarExt(req.params.id);
+    // Users first, then external avatars ("external:<id>") — the namespaced id
+    // can't collide with a user UUID, and both lookups only hit disk when a
+    // registered row matched (so an arbitrary :id never becomes a file path).
+    const ext =
+      store.getAvatarExt(req.params.id) ??
+      store.getExternalAvatarImageExt(req.params.id);
     if (!ext) {
       res.status(404).json({ error: "No avatar image" });
       return;

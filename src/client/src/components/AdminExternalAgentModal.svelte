@@ -3,8 +3,10 @@
   import Modal from "./Modal.svelte";
   import RevealableInput from "./RevealableInput.svelte";
   import HashtagChipEditor from "./HashtagChipEditor.svelte";
+  import AvatarImage from "./AvatarImage.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
+  import { downscaleImageToDataUrl } from "../lib/dom";
   import { notify } from "../lib/state";
   import type {
     AdminExternalAgent,
@@ -45,6 +47,13 @@
   let busy = false;
   let testBusy = false;
   let error = "";
+  // Profile image is staged locally and applied through the dedicated image
+  // endpoints AFTER a successful save (works for create, where the agent id
+  // doesn't exist server-side until the POST returns).
+  let imageInput: HTMLInputElement | null = null;
+  let stagedImage: string | null = null;
+  let imageRemoved = false;
+  let imageBusy = false;
   let testMessage = "";
   let testKind: "ok" | "warn" | "error" | "" = "";
   let testedConnectionFingerprint = "";
@@ -182,6 +191,53 @@
     error = "";
   }
 
+  $: imageSet = Boolean(stagedImage || (agent?.hasImage && !imageRemoved));
+
+  async function pickImage(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = ""; // allow re-picking the same file
+    if (!file || imageBusy) return;
+    imageBusy = true;
+    try {
+      // Same long-edge cap as the profile photo upload (256px → well under 2MB).
+      stagedImage = await downscaleImageToDataUrl(file, 256);
+      imageRemoved = false;
+    } catch {
+      notify("이미지를 불러오지 못했습니다.", "warn");
+    } finally {
+      imageBusy = false;
+    }
+  }
+
+  function removeImage(): void {
+    stagedImage = null;
+    imageRemoved = Boolean(agent?.hasImage);
+  }
+
+  // Apply the staged photo (or removal) after the agent itself saved. Photo
+  // failure must not roll back the saved agent — report it and move on.
+  async function applyStagedImage(agentId: string): Promise<void> {
+    try {
+      if (stagedImage) {
+        await api(
+          `/api/admin/external-agents/${encodeURIComponent(agentId)}/image`,
+          { method: "PUT", body: JSON.stringify({ image: stagedImage }) },
+        );
+      } else if (imageRemoved && agent?.hasImage) {
+        await api(
+          `/api/admin/external-agents/${encodeURIComponent(agentId)}/image`,
+          { method: "DELETE" },
+        );
+      }
+    } catch (err) {
+      notify(
+        `아바타는 저장했지만 프로필 사진 적용에 실패했습니다: ${(err as Error).message}`,
+        "warn",
+      );
+    }
+  }
+
   function formValue(): AdminExternalAgentInput {
     return {
       id: id.trim(),
@@ -296,6 +352,7 @@
           }),
         },
       );
+      await applyStagedImage(agent?.id || id.trim());
       notify(
         agent
           ? `외부 아바타 "${displayName.trim()}" 설정을 저장했습니다.`
@@ -369,6 +426,28 @@
       <div class="field">
         <span>역량 해시태그</span>
         <HashtagChipEditor bind:tags={hashtags} disabled={busy || testBusy} />
+      </div>
+      <div class="field">
+        <span>프로필 사진</span>
+        <div class="external-agent-image-row">
+          {#if stagedImage}
+            <img class="external-agent-image-preview" src={stagedImage} alt="선택한 프로필 사진 미리보기" width="56" height="56" />
+          {:else}
+            <AvatarImage
+              user={{ id: `external:${(agent?.id || id || "new").trim()}`, displayName, alias, hasImage: Boolean(agent?.hasImage && !imageRemoved) }}
+              size={56}
+              alt=""
+            />
+          {/if}
+          <input bind:this={imageInput} type="file" accept="image/png,image/jpeg,image/webp" hidden on:change={pickImage} />
+          <button class="ghost-sm" type="button" disabled={imageBusy} on:click={() => imageInput?.click()}>
+            {imageBusy ? "불러오는 중…" : imageSet ? "사진 변경" : "사진 선택"}
+          </button>
+          {#if imageSet}
+            <button class="ghost-sm" type="button" disabled={imageBusy} on:click={removeImage}>제거</button>
+          {/if}
+        </div>
+        <small class="field-hint">탐색 카드와 대화 화면에 표시됩니다. 저장을 누르면 적용돼요.</small>
       </div>
     </fieldset>
 

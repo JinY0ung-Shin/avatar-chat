@@ -787,6 +787,121 @@ describe("external avatar chat routes", () => {
     );
   });
 
+  it("stores an admin-set profile image and serves it on the public avatar route", async () => {
+    await withGateway(
+      () => successfulFrames("무관"),
+      async (endpoint) => {
+        const external = externalConfig(endpoint);
+        const services = createServices({
+          dataDir: tempDir(),
+          agentRuntime: "local",
+          sessionSecret: "test",
+          externalAgents: [external],
+        });
+        const app = createApp(services);
+        const admin = request.agent(app);
+        const viewer = request.agent(app);
+        await signup(admin, "image-admin").expect(201); // first user = admin
+        await signup(viewer, "image-viewer").expect(201);
+        const avatarId = "external:research";
+        const png =
+          "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+        // Only admins may set it; the payload is validated like profile photos.
+        await viewer
+          .put("/api/admin/external-agents/research/image")
+          .send({ image: png })
+          .expect(403);
+        await admin
+          .put("/api/admin/external-agents/missing/image")
+          .send({ image: png })
+          .expect(404);
+        await admin
+          .put("/api/admin/external-agents/research/image")
+          .send({ image: "data:text/plain;base64,aGk=" })
+          .expect(400);
+        const put = await admin
+          .put("/api/admin/external-agents/research/image")
+          .send({ image: png })
+          .expect(200);
+        expect(put.body).toEqual({ ok: true, hasImage: true });
+
+        // The stored image surfaces on the admin DTO, viewer list/detail, and
+        // the public avatar-image route (env-defined agents included).
+        const adminList = await admin
+          .get("/api/admin/external-agents")
+          .expect(200);
+        expect(
+          adminList.body.agents.find(
+            (agent: { id: string }) => agent.id === "research",
+          ),
+        ).toMatchObject({ source: "environment", hasImage: true });
+        const list = await viewer.get("/api/avatars").expect(200);
+        expect(
+          list.body.avatars.find(
+            (avatar: { id: string }) => avatar.id === avatarId,
+          ),
+        ).toMatchObject({ hasImage: true });
+        await viewer
+          .get(`/api/avatars/${encodeURIComponent(avatarId)}`)
+          .expect(200)
+          .expect((res) => {
+            expect(res.body.avatar.hasImage).toBe(true);
+          });
+        const image = await viewer
+          .get(`/api/users/${encodeURIComponent(avatarId)}/avatar-image`)
+          .expect(200);
+        expect(image.headers["content-type"]).toContain("image/png");
+
+        // Removal clears the flag and the served file.
+        const removed = await admin
+          .delete("/api/admin/external-agents/research/image")
+          .expect(200);
+        expect(removed.body).toEqual({ ok: true, hasImage: false });
+        await viewer
+          .get(`/api/users/${encodeURIComponent(avatarId)}/avatar-image`)
+          .expect(404);
+        const cleared = await viewer.get("/api/avatars").expect(200);
+        expect(
+          cleared.body.avatars.find(
+            (avatar: { id: string }) => avatar.id === avatarId,
+          ),
+        ).toMatchObject({ hasImage: false });
+
+        // Deleting a managed agent cascades its image row + file away.
+        await admin
+          .post("/api/admin/external-agents")
+          .send({
+            agent: {
+              id: "managed-image",
+              displayName: "Managed Image Agent",
+              endpoint,
+              agent: "claude",
+              enabled: true,
+              apiKeyMode: "clear",
+            },
+          })
+          .expect(201);
+        await admin
+          .put("/api/admin/external-agents/managed-image/image")
+          .send({ image: png })
+          .expect(200);
+        await admin
+          .get(`/api/users/${encodeURIComponent("external:managed-image")}/avatar-image`)
+          .expect(200);
+        await admin
+          .delete("/api/admin/external-agents/managed-image")
+          .expect(200);
+        await admin
+          .get(`/api/users/${encodeURIComponent("external:managed-image")}/avatar-image`)
+          .expect(404);
+        expect(
+          services.store.getExternalAvatarImageExt("external:managed-image"),
+        ).toBeNull();
+      },
+    );
+  });
+
   it("exposes a group-scoped avatar only to current members", async () => {
     await withGateway(
       () => successfulFrames("그룹 전용 답변"),

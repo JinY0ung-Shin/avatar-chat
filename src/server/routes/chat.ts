@@ -345,11 +345,18 @@ export function createChatRouter({
     "/api/avatars",
     requireAuth(store),
     (req: AuthenticatedRequest, res) => {
+      // External summaries hardcode hasImage:false (pure config); overlay the
+      // admin-set profile images stored outside the registry.
+      const externalImageIds = store.listExternalAvatarImageIds();
       const avatars = [
         ...store.listPublishedAvatars(req.user!.id),
         ...listExternalAvatarSummaries(
           effectiveExternalAgents(),
           viewerGroupIds(req),
+        ).map((summary) =>
+          externalImageIds.has(summary.id)
+            ? { ...summary, hasImage: true }
+            : summary,
         ),
       ].sort((a, b) => a.displayName.localeCompare(b.displayName));
       res.json({ avatars });
@@ -371,6 +378,11 @@ export function createChatRouter({
       if (!avatar) {
         apiError(res, 404, "아바타를 찾을 수 없습니다.");
         return;
+      }
+      if (external) {
+        // Detail mirrors the list overlay: images live outside the registry.
+        avatar.hasImage =
+          store.getExternalAvatarImageExt(avatar.id) !== null;
       }
       res.json({ avatar });
     },
