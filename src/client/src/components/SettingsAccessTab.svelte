@@ -19,14 +19,14 @@
     {
       name: "SSH_PRIVATE_KEY",
       label: "SSH 개인키",
-      description: "원격 SSH 도구가 사용할 OpenSSH/PEM 개인키입니다. 앱에서 키를 생성하면 자동으로 채워집니다.",
+      description: "원격 SSH 도구가 사용할 OpenSSH/PEM 개인키입니다. 아래 'SSH 키' 생성 시 자동으로 채워져요.",
       placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----\n...",
       rows: 4,
     },
     {
       name: "CONFLUENCE_PAT",
       label: "Confluence PAT",
-      description: "사내 Confluence 공용 도구가 Bearer 인증에 사용할 Personal Access Token입니다.",
+      description: "사내 Confluence 공용 도구의 Bearer 인증에 사용해요.",
       placeholder: "Confluence personal access token",
       rows: 2,
     },
@@ -129,7 +129,11 @@
   $: externalSet = Boolean(user?.secretNames.includes(EXTERNAL_GIT_TOKEN));
   $: githubHost = $appState.bootstrap?.githubHost || "github.com";
   $: presetNames = new Set(SECRET_PRESETS.map((p) => p.name));
-  $: extraSecretNames = (user?.secretNames || []).filter((n) => !presetNames.has(n));
+  // Git tokens have their own dedicated card — listing them here duplicated the
+  // row and offered a second, competing delete path.
+  $: extraSecretNames = (user?.secretNames || []).filter(
+    (n) => !presetNames.has(n) && n !== INTERNAL_GIT_TOKEN && n !== EXTERNAL_GIT_TOKEN,
+  );
   $: savedGitIdentityName = user?.gitIdentityName || "";
   $: savedGitIdentityEmail = user?.gitIdentityEmail || "";
   $: gitIdentityNameTrimmed = gitIdentityName.trim();
@@ -455,12 +459,6 @@
         <p class="muted">사내 GitHub와 외부 github.com 토큰을 분리해 저장합니다. 값은 암호화되어 저장되며 다시 표시되지 않습니다.</p>
       </div>
     </div>
-    <div class="git-token-status muted">
-      {#if internalSet}<span class="token-set">● 사내 Git (GIT_TOKEN) 설정됨</span>{:else}<span>사내 Git (GIT_TOKEN) 미설정</span>{/if}
-      ·
-      {#if externalSet}<span class="token-set">외부 GitHub (GITHUB_TOKEN) 설정됨</span>{:else}<span>외부 GitHub (GITHUB_TOKEN) 미설정</span>{/if}
-    </div>
-
     <form class="secret-preset-row" aria-busy={internalBusy} on:submit|preventDefault={saveInternalToken}>
       <div class="secret-preset-meta">
         <div class="secret-preset-title">
@@ -468,7 +466,7 @@
           <code>{INTERNAL_GIT_TOKEN}</code>
           <span class={internalSet ? "muted token-set" : "muted"}>{internalSet ? "● 설정됨" : "미설정"}</span>
         </div>
-        <p class="muted">사내 GitHub({githubHost}) 전용입니다. 지식 저장소 생성·푸시와 사내 비공개 저장소 접근에 사용됩니다.</p>
+        <p class="muted">지식 저장소 생성·푸시와 사내({githubHost}) 비공개 저장소 접근에 사용해요.</p>
       </div>
       <RevealableInput bind:value={internalToken} name="internalToken" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" ariaDescribedby={internalStatusId} revealLabel="토큰" disabled={internalBusy} onInput={() => (internalError = "")} />
       <div class="secret-preset-actions">
@@ -485,7 +483,7 @@
           <code>{EXTERNAL_GIT_TOKEN}</code>
           <span class={externalSet ? "muted token-set" : "muted"}>{externalSet ? "● 설정됨" : "미설정"}</span>
         </div>
-        <p class="muted">github.com HTTPS 저장소 접근 전용입니다. 지식 저장소 생성·푸시에는 사용되지 않습니다.</p>
+        <p class="muted">github.com HTTPS 저장소 접근에만 사용해요. 지식 저장소 생성·푸시에는 쓰이지 않아요.</p>
       </div>
       <RevealableInput bind:value={externalToken} name="externalToken" placeholder="github.com PAT (GITHUB_TOKEN)" ariaLabel="외부 GitHub 토큰 GITHUB_TOKEN" ariaDescribedby={externalStatusId} revealLabel="토큰" disabled={externalBusy} onInput={() => (externalError = "")} />
       <div class="secret-preset-actions">
@@ -495,6 +493,10 @@
       </div>
     </form>
 
+    <div class="secret-extra-head">
+      <strong>커밋 정보</strong>
+      <p class="muted">아바타가 만드는 커밋의 작성자 이름·이메일입니다. 비우면 기본값을 사용해요.</p>
+    </div>
     <form class="settings-form" on:submit|preventDefault={saveGitIdentity}>
       <div class="field-row-2col">
         <label class="field"><span>커밋 이름</span><input bind:value={gitIdentityName} placeholder={user.alias || user.displayName || ""} aria-describedby={identityStatusId} aria-invalid={identityError ? "true" : undefined} disabled={identitySaving} on:input={() => (identityError = "")} /></label>
