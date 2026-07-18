@@ -51,7 +51,10 @@ import {
   finalizeTurnUsage,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
-import { effectiveMcpToolGroups } from "../../shared/mcpToolGroups.js";
+import {
+  DEFAULT_MCP_TOOL_GROUPS,
+  effectiveMcpToolGroups,
+} from "../../shared/mcpToolGroups.js";
 import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
 import { disallowedEntriesForPolicy } from "../toolSkillPolicy.js";
 import { computeSkillsOption, freshSkillDiscoveryCache } from "./skillDiscovery.js";
@@ -437,7 +440,27 @@ export async function runClaudeAgent(
   // (hides disabled skills from the listing), and the PreToolUse hook (our own
   // gate — the hook otherwise auto-allows every Skill call).
   const toolSkillPolicy = store.getToolSkillPolicy();
-  const enabledMcpToolGroups = effectiveMcpToolGroups(request.mcpToolGroups);
+  // Admin per-group tool policy (enforcement + META-COGNITION): the driving
+  // user's allowed MCP tool groups is the INTERSECTION across their
+  // policy-bearing groups (null = unrestricted). Clamped HERE — the single
+  // choke point every runAgentStream caller (chat, routines, headless
+  // generators) passes through — so a blocked group's MCP servers are never
+  // even registered, whatever selection the caller passed. Read fresh per run
+  // like the other policies, so a panel change applies from the next turn.
+  const adminAllowedMcpToolGroups = store.allowedMcpToolGroupsForUser(
+    request.viewerUserId ?? request.avatar.id,
+  );
+  const enabledMcpToolGroups = effectiveMcpToolGroups(
+    request.mcpToolGroups,
+  ).filter(
+    (id) =>
+      !adminAllowedMcpToolGroups || adminAllowedMcpToolGroups.includes(id),
+  );
+  const adminBlockedMcpToolGroups = adminAllowedMcpToolGroups
+    ? DEFAULT_MCP_TOOL_GROUPS.filter(
+        (id) => !adminAllowedMcpToolGroups.includes(id),
+      )
+    : [];
   const mcpToolGroupEnabled = (id: (typeof enabledMcpToolGroups)[number]) =>
     enabledMcpToolGroups.includes(id);
   const personalKnowledgeToolsEnabled =
@@ -489,6 +512,7 @@ export async function runClaudeAgent(
       hexSshViewerClass,
       hexSshAllowedToolCount: hexSshAllowedTools.length,
       enabledMcpToolGroups,
+      adminBlockedMcpToolGroups,
       model: effectiveModel,
     },
     "agent run started",
@@ -1085,6 +1109,10 @@ export async function runClaudeAgent(
     webFetchProxy: webFetchProxyState(),
     groupMemberships: ownerToolAccess ? ownerGroups : [],
     mcpToolGroups: enabledMcpToolGroups,
+    // Rides to the prompt ONLY so admin-blocked groups are excluded from the
+    // "user deselected" standing note — the avatar is deliberately NOT told
+    // that a policy exists or what it blocks (it only knows its enabled set).
+    adminBlockedMcpToolGroups,
     // Canvas standing guidance fires for ALL viewer classes of a canvas-enabled
     // turn (colleagues see canvases too). Experimental-feature self-state is
     // owner-driven only (META-COGNITION), matching describe_system's gating.

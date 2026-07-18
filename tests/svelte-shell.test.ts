@@ -28,6 +28,7 @@ const user = {
   modelDefault: null,
   effortDefault: null,
   mcpToolGroupsDefault: null,
+  allowedMcpToolGroups: null,
   secretNames: [],
   shellExposedSecretNames: [],
   sshPublicKey: null,

@@ -1,5 +1,6 @@
 <script lang="ts" context="module">
   import type { GroupMember } from "../lib/types";
+  import type { McpToolGroupId } from "../../../shared/mcpToolGroups";
 
   // The richer per-group shape returned by GET /api/me/groups (members + repo),
   // vs. the lighter UserGroupMembership on User.groups.
@@ -10,6 +11,8 @@
     knowledgeRepo: string | null;
     knowledgeBranch: string | null;
     knowledgeSelected: string[] | null;
+    /** System-admin tool policy for this group (read-only here); null = none. */
+    allowedMcpToolGroups: McpToolGroupId[] | null;
     members: GroupMember[];
   }
 </script>
@@ -28,6 +31,7 @@
   import { notify, readState, newId } from "../lib/state";
   import { repoToHref } from "../lib/format";
   import type { AvatarSummary, RepoPluginContents } from "../lib/types";
+  import { MCP_TOOL_GROUPS } from "../../../shared/mcpToolGroups";
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
   import SettingsPluginSelect from "./SettingsPluginSelect.svelte";
@@ -44,6 +48,12 @@
 
   $: amAdmin = group.role === "admin";
   $: meId = readState().user?.id;
+  // System-admin tool policy (read-only — only the admin page can change it).
+  $: policyAllowedLabels = (() => {
+    const allowed = group.allowedMcpToolGroups;
+    if (!allowed) return null;
+    return MCP_TOOL_GROUPS.filter((g) => allowed.includes(g.id)).map((g) => g.labelKo);
+  })();
 
   function groupPanelId(suffix: string): string {
     return `group-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${suffix}`;
@@ -742,6 +752,14 @@
       {#if group.knowledgeRepo}
         <button class="linkish small" type="button" title="노트 사이의 [[링크]] 연결을 그래프로 봅니다" on:click={() => (graphOpen = true)}>그래프 보기</button>
       {/if}
+    </p>
+  {/if}
+
+  {#if policyAllowedLabels}
+    <p class="muted small">
+      시스템 관리자가 이 그룹의 도구 정책을 설정했습니다 — 허용:
+      {policyAllowedLabels.length ? policyAllowedLabels.join(", ") : "없음 (모든 MCP 도구 묶음 차단)"}.
+      여러 그룹에 속한 경우 정책이 있는 그룹들의 교집합이 적용됩니다.
     </p>
   {/if}
 

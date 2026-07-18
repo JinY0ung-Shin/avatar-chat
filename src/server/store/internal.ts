@@ -10,6 +10,7 @@ import type {
   User,
   UserGroupMembership,
 } from "../types.js";
+import type { McpToolGroupId } from "../../shared/mcpToolGroups.js";
 
 const SESSION_DAYS = 14;
 
@@ -185,6 +186,8 @@ export interface GroupRow {
   knowledge_repo: string | null;
   knowledge_branch: string | null;
   knowledge_selected: string | null;
+  /** Admin tool policy: JSON array of MCP tool-group ids; NULL = no restriction. */
+  allowed_mcp_tool_groups: string | null;
   created_by: string | null;
   created_at: string;
 }
@@ -596,6 +599,12 @@ export class StoreBase {
       "selected_mcp_tool_groups",
       "TEXT",
     );
+    // Per-group ADMIN tool policy: which MCP tool groups this group's members
+    // may use in chats they drive. NULL = no restriction; a JSON array
+    // (including []) is an allowlist validated against src/shared/mcpToolGroups.ts.
+    // System-admin-only (PUT /api/admin/groups/:id/tool-policy); a user in
+    // several policy-bearing groups gets the INTERSECTION of the allowlists.
+    this.addColumnIfMissing("groups", "allowed_mcp_tool_groups", "TEXT");
     this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
@@ -848,6 +857,7 @@ export interface StoreBase {
   listUserSecretNames(userId: string): string[];
   listShellExposedSecretNames(userId: string): string[];
   listUserGroups(userId: string): UserGroupMembership[];
+  allowedMcpToolGroupsForUser(userId: string): McpToolGroupId[] | null;
   touchConversation(
     ownerId: string,
     conversationId: string,

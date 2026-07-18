@@ -14,6 +14,20 @@ import {
   now,
   parseNameList,
 } from "./internal.js";
+import {
+  normalizeMcpToolGroups,
+  type McpToolGroupId,
+} from "../../shared/mcpToolGroups.js";
+
+/**
+ * Stored group tool policy → typed allowlist. NULL/blank/malformed = no
+ * restriction (`null`). Unknown ids are dropped on read, so a policy of only
+ * retired ids degrades to `[]` — blocking everything rather than failing open.
+ */
+function parseAllowedMcpToolGroups(raw: string | null): McpToolGroupId[] | null {
+  const parsed = parseNameList(raw);
+  return parsed ? normalizeMcpToolGroups(parsed) : null;
+}
 
 export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class Groups extends Base {
@@ -31,6 +45,7 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
         knowledgeRepo: row.knowledge_repo ?? null,
         knowledgeBranch: row.knowledge_branch ?? null,
         knowledgeSelected: parseNameList(row.knowledge_selected),
+        allowedMcpToolGroups: parseAllowedMcpToolGroups(row.allowed_mcp_tool_groups),
         createdBy: row.created_by ?? null,
         createdAt: row.created_at,
       };
@@ -80,6 +95,23 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const description =
         patch.description !== undefined ? patch.description.trim() : (row.description ?? "");
       this.db.prepare("UPDATE groups SET name = ?, description = ? WHERE id = ?").run(name, description, id);
+      return this.toGroup(this.groupRowById(id)!);
+    }
+
+    /**
+     * SYSTEM-ADMIN-ONLY tool policy: which MCP tool groups this group's members
+     * may use in chats they drive. `null` clears the policy (no restriction);
+     * `[]` blocks every optional MCP tool group. Ids are normalized against the
+     * shared catalog. Enforcement is the run-time intersection in
+     * `allowedMcpToolGroupsForUser` — claudeAgent clamps every run with it.
+     */
+    setGroupAllowedMcpToolGroups(id: string, allowed: McpToolGroupId[] | null): Group | null {
+      if (!this.groupRowById(id)) {
+        return null;
+      }
+      this.db
+        .prepare("UPDATE groups SET allowed_mcp_tool_groups = ? WHERE id = ?")
+        .run(allowed ? JSON.stringify(normalizeMcpToolGroups(allowed)) : null, id);
       return this.toGroup(this.groupRowById(id)!);
     }
 
@@ -204,17 +236,47 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
     listUserGroups(userId: string): UserGroupMembership[] {
       const rows = this.db
         .prepare(
-          `SELECT g.id AS id, g.name AS name, m.role AS role, g.knowledge_repo AS knowledge_repo
+          `SELECT g.id AS id, g.name AS name, m.role AS role, g.knowledge_repo AS knowledge_repo,
+                  g.allowed_mcp_tool_groups AS allowed_mcp_tool_groups
            FROM group_members m JOIN groups g ON g.id = m.group_id
            WHERE m.user_id = ? ORDER BY g.name COLLATE NOCASE ASC`,
         )
-        .all(userId) as { id: string; name: string; role: string; knowledge_repo: string | null }[];
+        .all(userId) as {
+        id: string;
+        name: string;
+        role: string;
+        knowledge_repo: string | null;
+        allowed_mcp_tool_groups: string | null;
+      }[];
       return rows.map((r) => ({
         id: r.id,
         name: r.name,
         role: this.normalizeRole(r.role),
         knowledgeRepoConfigured: Boolean(r.knowledge_repo),
+        allowedMcpToolGroups: parseAllowedMcpToolGroups(r.allowed_mcp_tool_groups),
       }));
+    }
+
+    /**
+     * EFFECTIVE admin tool policy for a user: the INTERSECTION of
+     * `allowedMcpToolGroups` across every policy-bearing group they belong to.
+     * `null` = unrestricted (no group of theirs sets a policy). Groups WITHOUT
+     * a policy never narrow the result — membership alone doesn't restrict —
+     * and conflicting policies fail CLOSED (only ids every policy allows
+     * survive). Consumed by claudeAgent (run clamp), toUser (composer state),
+     * and the chat/scheduler git-repo gating.
+     */
+    allowedMcpToolGroupsForUser(userId: string): McpToolGroupId[] | null {
+      let allowed: McpToolGroupId[] | null = null;
+      for (const group of this.listUserGroups(userId)) {
+        const policy = group.allowedMcpToolGroups;
+        if (!policy) continue;
+        allowed =
+          allowed === null
+            ? [...policy]
+            : allowed.filter((id) => policy.includes(id));
+      }
+      return allowed;
     }
 
     // ---- Group knowledge repo --------------------------------------------

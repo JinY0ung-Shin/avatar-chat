@@ -31,15 +31,21 @@ function anyMcpToolGroupEnabled(
 
 function disabledMcpToolGroupsSection(request: AgentRequest): string | null {
   const enabled = enabledMcpToolGroups(request);
-  const disabled = MCP_TOOL_GROUPS.filter(
-    (group) => !enabled.includes(group.id),
+  // Groups removed by the ADMIN's per-group tool policy are DELIBERATELY not
+  // surfaced (owner decision): the avatar only knows the tools it HAS — it is
+  // never told that a policy exists or which groups it blocks. They are
+  // excluded here so the user-deselected note below can't (mis)attribute an
+  // admin block to the user's own composer choice.
+  const adminBlocked = request.adminBlockedMcpToolGroups ?? [];
+  const userDisabled = MCP_TOOL_GROUPS.filter(
+    (group) => !enabled.includes(group.id) && !adminBlocked.includes(group.id),
   );
-  if (disabled.length === 0) {
+  if (userDisabled.length === 0) {
     return null;
   }
   return (
     "For this conversation, the user disabled these MCP tool groups in the chat composer: " +
-    disabled.map((group) => group.labelEn).join(", ") +
+    userDisabled.map((group) => group.labelEn).join(", ") +
     ". Do not call or suggest MCP tools from disabled groups unless the user re-enables them."
   );
 }

@@ -81,7 +81,12 @@ async function runRoutineJobNow(
       avatar: { id: avatar.id, displayName: avatar.displayName, alias: avatar.alias },
       conversationId: job.conversationId,
       elevated: true,
-      gitRepoToolsEnabled: DEFAULT_MCP_TOOL_GROUPS.includes("git_repo"),
+      // Routines have no composer, so every tool group is on — capped by the
+      // admin per-group tool policy for the owner (claudeAgent clamps the run
+      // itself the same way; this gate mirrors the chat route's repo gating).
+      gitRepoToolsEnabled: (
+        store.allowedMcpToolGroupsForUser(avatar.id) ?? DEFAULT_MCP_TOOL_GROUPS
+      ).includes("git_repo"),
     });
     let activeRepoCwd: string | null = null;
     let activeRepoName: string | null = null;

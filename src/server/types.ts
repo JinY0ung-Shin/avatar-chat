@@ -252,6 +252,13 @@ export interface User {
   effortDefault: string | null;
   mcpToolGroupsDefault: McpToolGroupId[] | null;
   /**
+   * EFFECTIVE system-admin tool policy for this user: the INTERSECTION of
+   * `Group.allowedMcpToolGroups` across every policy-bearing group they belong
+   * to (`null` = unrestricted). The composer disables blocked groups from this
+   * field; enforcement is server-side (every run is clamped in claudeAgent).
+   */
+  allowedMcpToolGroups: McpToolGroupId[] | null;
+  /**
    * Names of the user's stored secrets (e.g. SSH_PRIVATE_KEY). Only the NAMES
    * are exposed — the encrypted values never leave the server. The avatar's
    * MCP tools receive them as subprocess env (injected by the owner's identity),
@@ -334,6 +341,14 @@ export interface Group {
   knowledgeBranch: string | null;
   /** Subset of the group repo's plugins to load; `null` = load all. */
   knowledgeSelected: string[] | null;
+  /**
+   * SYSTEM-ADMIN tool policy for this group's members: the MCP tool groups
+   * (src/shared/mcpToolGroups.ts ids) members may use in chats THEY drive.
+   * `null` = no restriction; `[]` = every optional MCP tool group blocked. A
+   * user in several policy-bearing groups gets the INTERSECTION — see
+   * `Store.allowedMcpToolGroupsForUser`. Group admins can read but not set it.
+   */
+  allowedMcpToolGroups: McpToolGroupId[] | null;
   /** User id of the system admin who created the group (may be gone). */
   createdBy: string | null;
   createdAt: string;
@@ -364,6 +379,8 @@ export interface UserGroupMembership {
   role: GroupRole;
   /** True when the group has a shared knowledge repo connected. */
   knowledgeRepoConfigured: boolean;
+  /** This group's admin tool policy (see {@link Group.allowedMcpToolGroups}); `null` = none. */
+  allowedMcpToolGroups: McpToolGroupId[] | null;
 }
 
 /** A plugin found inside a cloned repo, surfaced to the UI for selection. */
@@ -847,6 +864,15 @@ export interface AgentRequest {
    * The chat route validates and persists these IDs per conversation.
    */
   mcpToolGroups?: McpToolGroupId[];
+  /**
+   * MCP tool groups BLOCKED for this run by the system admin's per-group tool
+   * policy (`groups.allowed_mcp_tool_groups`, intersected across the driving
+   * user's groups). Set BY runAgentStream itself; the prompt build uses it
+   * ONLY to exclude these groups from the "user deselected" standing note —
+   * the avatar is deliberately NOT told that a policy exists or which groups
+   * it blocks (it only knows its enabled set). Callers never set it.
+   */
+  adminBlockedMcpToolGroups?: McpToolGroupId[];
   /**
    * Opt into model fallback: when the run fails on a transient model/server-side
    * error (overload/5xx/429/network), retry on the next-lower tier down the chain

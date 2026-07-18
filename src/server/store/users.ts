@@ -62,6 +62,10 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
           const parsed = parseNameList(row.mcp_tool_groups_default);
           return parsed ? normalizeMcpToolGroups(parsed) : null;
         })(),
+        // Effective system-admin tool policy (intersection across the user's
+        // policy-bearing groups; null = unrestricted). Display state for the
+        // composer — the server clamps every run regardless.
+        allowedMcpToolGroups: this.allowedMcpToolGroupsForUser(row.id),
         // Only the names — the encrypted values never leave the server.
         secretNames,
         shellExposedSecretNames: this.listShellExposedSecretNames(row.id),

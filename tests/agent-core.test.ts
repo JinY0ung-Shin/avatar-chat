@@ -2304,6 +2304,48 @@ describe("buildPrompt", () => {
     expect(p).not.toContain("mcp__canvas__show");
   });
 
+  it("keeps admin-blocked groups OUT of the user-deselected note without revealing the policy", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        // Effective (already-clamped) selection: git_repo only. ssh+web were
+        // removed by the ADMIN policy; the rest by the user's own composer pick.
+        mcpToolGroups: ["git_repo"],
+        adminBlockedMcpToolGroups: ["ssh", "web"],
+      }),
+      0,
+    );
+    // The user-deselected sentence lists exactly the user's own picks — the
+    // admin-blocked pair is never (mis)attributed to the user...
+    expect(p).toContain(
+      "in the chat composer: personal knowledge, group knowledge, Confluence, avatar discovery, visual canvas, system management.",
+    );
+    // ...and the policy itself is never mentioned: the avatar only knows the
+    // tools it has (owner decision — no policy meta-cognition).
+    expect(p).not.toContain("group tool policy");
+  });
+
+  it("stays silent about admin-blocked groups when the user deselected nothing", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        mcpToolGroups: [
+          "personal_knowledge",
+          "group_knowledge",
+          "git_repo",
+          "confluence",
+          "avatars",
+          "canvas",
+          "system",
+        ],
+        adminBlockedMcpToolGroups: ["ssh", "web"],
+      }),
+      0,
+    );
+    expect(p).not.toContain("disabled these MCP tool groups");
+    expect(p).not.toContain("group tool policy");
+  });
+
   it("injects the second-brain trigger for the owner when a repo is connected", () => {
     const p = buildPrompt(
       req({ viewerIsOwner: true, knowledgeRepoConfigured: true }),

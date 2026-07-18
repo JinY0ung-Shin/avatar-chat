@@ -45,7 +45,12 @@ export interface SystemToolsContext {
    * effortLevels.ts / claudeAgent userEffort.
    */
   selectedEffort?: string;
-  /** MCP tool groups enabled for THIS run, chosen in the chat composer. */
+  /**
+   * MCP tool groups enabled for THIS run, chosen in the chat composer. Arrives
+   * already clamped by the admin's per-group tool policy — describe_system
+   * reports WHAT is enabled and deliberately never which groups a policy
+   * blocked (the avatar only knows the tools it has).
+   */
   enabledMcpToolGroups?: McpToolGroupId[];
   /**
    * Admin-managed built-in tool/skill on-off policy for this deployment.

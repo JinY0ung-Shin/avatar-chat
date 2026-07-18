@@ -239,11 +239,26 @@
     return normalizeMcpToolGroups(selected);
   }
 
-  function mcpToolsLabel(item: ChatPane): string {
-    return `도구 ${selectedMcpToolGroups(item).length}/${MCP_TOOL_GROUPS.length}`;
+  // Admin per-group tool policy from /api/me (`user.allowedMcpToolGroups`, the
+  // effective intersection): blocked groups render disabled in the picker; the
+  // server clamps every run regardless. A top-level `$:` derivation, NOT a
+  // helper-body read — legacy-mode template helper bodies compile inside
+  // $.untrack and would go stale. Helpers below take it as a PARAMETER so the
+  // template callsites stay tracked.
+  $: adminBlockedMcpToolGroupSet = (() => {
+    const allowed = $appState.user?.allowedMcpToolGroups;
+    if (!allowed) return new Set<McpToolGroupId>();
+    return new Set<McpToolGroupId>(
+      MCP_TOOL_GROUPS.map((group) => group.id).filter((id) => !allowed.includes(id)),
+    );
+  })();
+
+  function mcpToolsLabel(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
+    const effective = selectedMcpToolGroups(item).filter((id) => !adminBlocked.has(id));
+    return `도구 ${effective.length}/${MCP_TOOL_GROUPS.length}`;
   }
 
-  function composerSettingsSummary(item: ChatPane): string {
+  function composerSettingsSummary(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
     if (isExternalPane(item)) {
       return (
         item.modelTier ||
@@ -255,7 +270,7 @@
     if (hasEffortPicker()) parts.push(`강도 ${effortLabel(item)}`);
     const groupLabel = groupKnowledgeLabel(item);
     if (groupLabel) parts.push(groupLabel);
-    parts.push(mcpToolsLabel(item));
+    parts.push(mcpToolsLabel(item, adminBlocked));
     return parts.join(" · ");
   }
 
@@ -752,6 +767,8 @@
   }
 
   function setMcpToolGroup(item: ChatPane, groupId: McpToolGroupId, on: boolean) {
+    // Admin-blocked groups are disabled in the picker; ignore any stray toggle.
+    if (adminBlockedMcpToolGroupSet.has(groupId)) return;
     const current = new Set(selectedMcpToolGroups(item));
     if (on) current.add(groupId);
     else current.delete(groupId);
@@ -1129,7 +1146,7 @@
                 >
                   <Icon name="gear" size={16} />
                   <span class="composer-settings-label">설정</span>
-                  <span class="composer-settings-summary">{composerSettingsSummary(item)}</span>
+                  <span class="composer-settings-summary">{composerSettingsSummary(item, adminBlockedMcpToolGroupSet)}</span>
                 </button>
                 <span id={paneDomId("composer-controls", item.id)} class="composer-controls" class:open={composerSettingsOpenPaneId === item.id}>
                   {#if isExternalPane(item)}
@@ -1201,7 +1218,7 @@
                     aria-controls={paneDomId("composer-tools-panel", item.id)}
                     title="이 대화에서 다음 메시지부터 사용할 MCP 도구 묶음을 고릅니다"
                     on:click={() => toggleMcpToolsPanel(item)}
-                  >MCP 도구 {selectedMcpToolGroups(item).length}/{MCP_TOOL_GROUPS.length}</button>
+                  >MCP 도구 {selectedMcpToolGroups(item).filter((id) => !adminBlockedMcpToolGroupSet.has(id)).length}/{MCP_TOOL_GROUPS.length}</button>
                   {/if}
                 </span>
               {/if}
@@ -1243,15 +1260,17 @@
         >
           <div class="composer-tools-title">이 대화에서 사용할 MCP 도구</div>
           {#each MCP_TOOL_GROUPS as group (group.id)}
+            {@const adminBlocked = adminBlockedMcpToolGroupSet.has(group.id)}
             <label class="composer-tools-item">
               <input
                 type="checkbox"
-                checked={selectedMcpToolGroups(item).includes(group.id)}
+                checked={selectedMcpToolGroups(item).includes(group.id) && !adminBlocked}
+                disabled={adminBlocked}
                 on:change={(event) => setMcpToolGroup(item, group.id, event.currentTarget.checked)}
               />
               <span>
                 <strong>{group.labelKo}</strong>
-                <small>{group.descriptionKo}</small>
+                <small>{adminBlocked ? "관리자의 그룹 도구 정책으로 제한된 도구 묶음입니다" : group.descriptionKo}</small>
               </span>
             </label>
           {/each}

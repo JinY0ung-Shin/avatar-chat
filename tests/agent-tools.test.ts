@@ -2086,6 +2086,23 @@ describe("system tools (avatar system management)", () => {
     expect(res.content[0].text).toContain("Admin-disabled skills: `code-review`");
   });
 
+  it("describe_system reports only the enabled MCP tool groups, never an admin policy", async () => {
+    const s = setup("st-group-tool-policy");
+    // A policy-clamped run arrives as a smaller enabled set; describe_system
+    // reports WHAT is enabled and deliberately not what a policy blocked
+    // (owner decision — the avatar only knows the tools it has).
+    const tools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: true,
+      enabledMcpToolGroups: ["git_repo"],
+    });
+    const res = await callTool(tools, "describe_system", {});
+    const body = res.content[0].text;
+    expect(body).toContain("MCP tool groups enabled for this conversation: git repositories");
+    expect(body).not.toContain("Admin-blocked");
+    expect(body).not.toContain("group tool policy");
+  });
+
   it("reports the effective model, groups, profile visibility and pending requests", async () => {
     const s = setup("st-describe-full");
     // No env model pin in tests → the admin override is the effective model.

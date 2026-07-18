@@ -8,6 +8,11 @@ import { knownHostsPath } from "../sshTrust.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import { HEX_SSH_TOOL_INFOS, parseHexSshToolPolicy } from "../hexSshPolicy.js";
 import { TOGGLABLE_BUILTIN_TOOLS, parseToolSkillPolicy } from "../toolSkillPolicy.js";
+import {
+  isMcpToolGroupId,
+  normalizeMcpToolGroups,
+  type McpToolGroupId,
+} from "../../shared/mcpToolGroups.js";
 import { discoverGlobalSkills } from "../agent/skillDiscovery.js";
 import {
   apiError,
@@ -363,6 +368,45 @@ export function createAdminRouter(deps: RouterDeps): Router {
     }
     res.json({ group });
   });
+
+  // SYSTEM-ADMIN-ONLY per-group tool policy: which MCP tool groups this group's
+  // members may use in chats they drive. The composer disables the rest and
+  // every run is clamped server-side (claudeAgent intersects policies across
+  // the user's groups). Body `{ allowed: string[] | null }` — null clears the
+  // policy, [] blocks every optional MCP tool group. Unknown ids are rejected
+  // (not silently dropped) so an admin typo can't change the policy's meaning.
+  // Deliberately NOT mirrored under /api/me/groups/* — group admins read it on
+  // their group card but cannot set it.
+  router.put(
+    "/api/admin/groups/:id/tool-policy",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      const raw = req.body?.allowed;
+      let allowed: McpToolGroupId[] | null;
+      if (raw === null) {
+        allowed = null;
+      } else if (Array.isArray(raw) && raw.every((v) => isMcpToolGroupId(v))) {
+        allowed = normalizeMcpToolGroups(raw);
+      } else {
+        apiError(res, 400, "allowed는 MCP 도구 묶음 id 배열이거나 null이어야 합니다.");
+        return;
+      }
+      const group = store.setGroupAllowedMcpToolGroups(req.params.id, allowed);
+      if (!group) {
+        apiError(res, 404, "그룹을 찾을 수 없습니다.");
+        return;
+      }
+      const summary =
+        allowed === null ? "(no restriction)" : allowed.length ? allowed.join(",") : "(all blocked)";
+      auditAs(req, "group_tool_policy", `group=${req.params.id} allowed=${summary}`);
+      logger.warn(
+        { actorId: req.user!.id, groupId: req.params.id, allowed },
+        "group tool policy changed",
+      );
+      res.json({ group });
+    },
+  );
 
   router.delete("/api/admin/groups/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
     const removed = store.deleteGroup(req.params.id);

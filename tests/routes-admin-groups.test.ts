@@ -4,6 +4,7 @@ import path from "node:path";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp, createServices, type AppServices } from "../src/server/app.js";
+import type { McpToolGroupId } from "../src/shared/mcpToolGroups.js";
 import { gitInit, makeBareRemote, signup, withTempDir } from "./helpers.js";
 
 // Covers src/server/routes/admin.ts, routes/groups.ts, store/admin.ts,
@@ -530,6 +531,152 @@ describe("admin: groups CRUD", () => {
       .expect(200);
     expect(removedAgain.body.ok).toBe(false);
     expect(services.store.groupRoleFor(bob.id, groupId)).toBeNull();
+  });
+});
+
+// ---- Admin: per-group tool policy ----------------------------------------
+
+describe("admin: group tool policy", () => {
+  it("is system-admin-only, validates input, and round-trips the policy", async () => {
+    const { app, services } = boot();
+    const admin = await mkUser(app, "admin");
+    const lead = await mkUser(app, "lead");
+    const groupId = await createGroup(admin, "team");
+    // lead is a GROUP admin — still forbidden (the policy is system-admin-only).
+    await admin.agent
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "lead", role: "admin" })
+      .expect(200);
+
+    await request(app)
+      .put(`/api/admin/groups/${groupId}/tool-policy`)
+      .send({ allowed: null })
+      .expect(401);
+    await lead.agent
+      .put(`/api/admin/groups/${groupId}/tool-policy`)
+      .send({ allowed: null })
+      .expect(403);
+    // No self-service twin exists — group admins cannot reach it there either.
+    await lead.agent
+      .put(`/api/me/groups/${groupId}/tool-policy`)
+      .send({ allowed: null })
+      .expect(404);
+
+    // Unknown id in the list → 400 (strict — never silently dropped).
+    await admin.agent
+      .put(`/api/admin/groups/${groupId}/tool-policy`)
+      .send({ allowed: ["web", "bogus"] })
+      .expect(400);
+    // Non-array, non-null → 400 (including an omitted field).
+    await admin.agent
+      .put(`/api/admin/groups/${groupId}/tool-policy`)
+      .send({ allowed: "web" })
+      .expect(400);
+    await admin.agent.put(`/api/admin/groups/${groupId}/tool-policy`).send({}).expect(400);
+    // Unknown group → 404.
+    await admin.agent
+      .put("/api/admin/groups/ghost/tool-policy")
+      .send({ allowed: null })
+      .expect(404);
+
+    // Set an allowlist; duplicates are deduped by normalization.
+    const set = await admin.agent
+      .put(`/api/admin/groups/${groupId}/tool-policy`)
+      .send({ allowed: ["ssh", "web", "ssh"] })
+      .expect(200);
+    expect(set.body.group.allowedMcpToolGroups).toEqual(["ssh", "web"]);
+
+    // The admin list and detail expose the stored policy.
+    const list = await admin.agent.get("/api/admin/groups").expect(200);
+    expect(
+      list.body.groups.find((g: { id: string }) => g.id === groupId).allowedMcpToolGroups,
+    ).toEqual(["ssh", "web"]);
+    const detail = await admin.agent.get(`/api/admin/groups/${groupId}`).expect(200);
+    expect(detail.body.group.allowedMcpToolGroups).toEqual(["ssh", "web"]);
+
+    // [] blocks every optional MCP tool group (distinct from null).
+    const blockedAll = await admin.agent
+      .put(`/api/admin/groups/${groupId}/tool-policy`)
+      .send({ allowed: [] })
+      .expect(200);
+    expect(blockedAll.body.group.allowedMcpToolGroups).toEqual([]);
+
+    // null clears back to unrestricted.
+    const cleared = await admin.agent
+      .put(`/api/admin/groups/${groupId}/tool-policy`)
+      .send({ allowed: null })
+      .expect(200);
+    expect(cleared.body.group.allowedMcpToolGroups).toBeNull();
+    expect(services.store.getGroup(groupId)!.allowedMcpToolGroups).toBeNull();
+  });
+
+  it("surfaces the policy to members and intersects it across their groups", async () => {
+    const { app, services } = boot();
+    const admin = await mkUser(app, "admin");
+    const bob = await mkUser(app, "bob");
+    const teamId = await createGroup(admin, "team");
+    const guestsId = await createGroup(admin, "guests");
+    await admin.agent
+      .post(`/api/admin/groups/${teamId}/members`)
+      .send({ username: "bob" })
+      .expect(200);
+
+    // No policy anywhere → unrestricted, on the store AND the user payload.
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toBeNull();
+    expect(services.store.getUserById(bob.id)!.allowedMcpToolGroups).toBeNull();
+
+    await admin.agent
+      .put(`/api/admin/groups/${teamId}/tool-policy`)
+      .send({ allowed: ["web", "ssh", "git_repo"] })
+      .expect(200);
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual([
+      "web",
+      "ssh",
+      "git_repo",
+    ]);
+    expect(services.store.getUserById(bob.id)!.allowedMcpToolGroups).toEqual([
+      "web",
+      "ssh",
+      "git_repo",
+    ]);
+
+    // Members see the group's policy read-only on /api/me/groups.
+    const groups = await bob.agent.get("/api/me/groups").expect(200);
+    expect(groups.body.groups[0].allowedMcpToolGroups).toEqual(["web", "ssh", "git_repo"]);
+
+    // A second policy-bearing group INTERSECTS (fail closed on conflicts).
+    await admin.agent
+      .post(`/api/admin/groups/${guestsId}/members`)
+      .send({ username: "bob" })
+      .expect(200);
+    await admin.agent
+      .put(`/api/admin/groups/${guestsId}/tool-policy`)
+      .send({ allowed: ["web", "canvas"] })
+      .expect(200);
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual(["web"]);
+
+    // A policy-LESS third group never narrows the result.
+    const miscId = await createGroup(admin, "misc");
+    await admin.agent
+      .post(`/api/admin/groups/${miscId}/members`)
+      .send({ username: "bob" })
+      .expect(200);
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual(["web"]);
+
+    // Disjoint policies intersect to [] — nothing allowed.
+    await admin.agent
+      .put(`/api/admin/groups/${guestsId}/tool-policy`)
+      .send({ allowed: ["canvas"] })
+      .expect(200);
+    expect(services.store.allowedMcpToolGroupsForUser(bob.id)).toEqual([]);
+
+    // The store setter normalizes unknown ids on WRITE too (defense in depth
+    // for non-route callers); the route itself rejects them with 400.
+    services.store.setGroupAllowedMcpToolGroups(
+      teamId,
+      ["web", "bogus"] as unknown as McpToolGroupId[],
+    );
+    expect(services.store.getGroup(teamId)!.allowedMcpToolGroups).toEqual(["web"]);
   });
 });
 

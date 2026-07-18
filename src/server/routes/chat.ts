@@ -925,8 +925,22 @@ export function createChatRouter({
         store.getConversationMcpToolGroups(req.user!.id, conversationId) ?? [
           ...DEFAULT_MCP_TOOL_GROUPS,
         ];
+      // Admin per-group tool policy: the RUN uses the intersection of the
+      // composer selection and what the system admin allows for this user
+      // (null = unrestricted). The per-conversation row keeps the user's RAW
+      // choice — lifting the policy later restores it untouched. claudeAgent
+      // re-clamps identically; this local copy exists because git-repo gating
+      // below must see the same effective set BEFORE the run starts.
+      const adminAllowedMcpToolGroups = store.allowedMcpToolGroupsForUser(
+        req.user!.id,
+      );
+      const effectiveMcpToolGroupsForRun = adminAllowedMcpToolGroups
+        ? conversationMcpToolGroups.filter((id) =>
+            adminAllowedMcpToolGroups.includes(id),
+          )
+        : conversationMcpToolGroups;
       const gitRepoToolsEnabled =
-        conversationMcpToolGroups.includes("git_repo");
+        effectiveMcpToolGroupsForRun.includes("git_repo");
       // A run is already streaming for this conversation. This POST carries a NEW
       // typed message; the old attach-and-replay path would silently swallow it
       // (never persisted, never echoed — the client would only mirror the FIRST
@@ -1343,7 +1357,7 @@ export function createChatRouter({
               images: requestImages.length ? requestImages : undefined,
               modelTier: conversationModelTier ?? undefined,
               effort: conversationEffort ?? undefined,
-              mcpToolGroups: conversationMcpToolGroups,
+              mcpToolGroups: effectiveMcpToolGroupsForRun,
               viewerUserId: req.user!.id,
               viewerName: req.user!.displayName,
               viewerIsOwner,

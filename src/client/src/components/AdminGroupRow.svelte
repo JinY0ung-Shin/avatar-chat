@@ -5,6 +5,7 @@
   import { confirmAction } from "../lib/confirm";
   import { appState, notify } from "../lib/state";
   import type { AdminGroupSummary, GroupMember } from "../lib/types";
+  import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../../shared/mcpToolGroups";
 
   export let group: AdminGroupSummary;
   export let reload: () => Promise<void>;
@@ -22,6 +23,15 @@
   // edit form
   let editName = group.name;
   let editDescription = group.description || "";
+
+  // Tool policy editor (SYSTEM-admin only — PUT /api/admin/groups/:id/tool-policy).
+  // `policyRestricted` off ⇒ null(제한 없음); on ⇒ the checked allowlist (may be []).
+  let policyRestricted = group.allowedMcpToolGroups !== null;
+  let policyDraft = new Set<McpToolGroupId>(
+    group.allowedMcpToolGroups ?? MCP_TOOL_GROUPS.map((g) => g.id),
+  );
+  let policyBusy = false;
+  let policyError = "";
 
   // member search/filter
   let memberSearch = "";
@@ -75,6 +85,24 @@
   $: editStatusId = `admin-group-edit-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   $: addStatusId = `admin-group-add-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
   $: memberStatusId = `admin-group-member-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  $: policyStatusId = `admin-group-policy-status-${group.id.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  $: savedPolicy = group.allowedMcpToolGroups;
+  $: policyDirty =
+    policyRestricted !== (savedPolicy !== null) ||
+    (policyRestricted &&
+      savedPolicy !== null &&
+      (policyDraft.size !== savedPolicy.length || savedPolicy.some((id) => !policyDraft.has(id))));
+  $: policyStatus = policyBusy
+    ? "저장 중…"
+    : policyError
+      ? `저장 실패: ${policyError}`
+      : policyRestricted && policyDraft.size === 0
+        ? "모든 MCP 도구 묶음이 차단됩니다. 저장하면 그룹원 아바타가 MCP 도구를 쓸 수 없습니다."
+        : policyDirty
+          ? "저장하지 않은 도구 정책 변경 사항이 있습니다."
+          : policyRestricted
+            ? `허용 ${policyDraft.size}/${MCP_TOOL_GROUPS.length} — 저장됨`
+            : "제한 없음 — 그룹원이 모든 MCP 도구 묶음을 쓸 수 있습니다.";
   $: addStatus = adding
     ? "그룹원을 추가하는 중입니다."
     : addError
@@ -126,6 +154,7 @@
       members = d.members;
       editName = group.name;
       editDescription = group.description || "";
+      resetPolicyDraft();
     } catch (err) {
       loadError = (err as Error).message;
     } finally {
@@ -162,6 +191,56 @@
       notify(`그룹 정보는 수정했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
       busy = false;
+    }
+  }
+
+  function resetPolicyDraft() {
+    policyRestricted = group.allowedMcpToolGroups !== null;
+    policyDraft = new Set<McpToolGroupId>(
+      group.allowedMcpToolGroups ?? MCP_TOOL_GROUPS.map((g) => g.id),
+    );
+    policyError = "";
+  }
+
+  function togglePolicyGroup(id: McpToolGroupId, on: boolean) {
+    if (policyBusy) return;
+    const next = new Set(policyDraft);
+    if (on) next.add(id);
+    else next.delete(id);
+    policyDraft = next;
+    policyError = "";
+  }
+
+  async function savePolicy() {
+    if (policyBusy || !policyDirty) return;
+    policyBusy = true;
+    policyError = "";
+    const allowed = policyRestricted
+      ? MCP_TOOL_GROUPS.map((g) => g.id).filter((id) => policyDraft.has(id))
+      : null;
+    try {
+      await api(`/api/admin/groups/${encodeURIComponent(group.id)}/tool-policy`, {
+        method: "PUT",
+        body: JSON.stringify({ allowed }),
+      });
+    } catch (err) {
+      policyBusy = false;
+      policyError = (err as Error).message;
+      notify(`도구 정책 저장 실패: ${policyError}`);
+      return;
+    }
+    try {
+      await reload();
+      notify(
+        allowed === null
+          ? `그룹 "${group.name}"의 도구 제한을 해제했습니다.`
+          : `그룹 "${group.name}"의 도구 정책을 저장했습니다. (허용 ${allowed.length}/${MCP_TOOL_GROUPS.length})`,
+        "ok",
+      );
+    } catch (err) {
+      notify(`도구 정책은 저장했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      policyBusy = false;
     }
   }
 
@@ -398,6 +477,7 @@
       <span class="tag">그룹원 {group.memberCount}</span>
       <span class="tag write">관리자 {group.adminCount}</span>
       {#if group.knowledgeRepo}<span class="tag accent">공용 저장소</span>{/if}
+      {#if group.allowedMcpToolGroups}<span class="tag danger">도구 제한 {group.allowedMcpToolGroups.length}/{MCP_TOOL_GROUPS.length}</span>{/if}
     </div>
     <div class="ar-actions">
       <button
@@ -438,6 +518,53 @@
             <div class="settings-save-row">
               <span id={editStatusId} class="settings-save-status" class:dirty={Boolean(editDirty && !busy && editNameTrimmed && !editError)} class:pending={busy} class:invalid={Boolean(editError || !editNameTrimmed)} role="status" aria-live="polite">{editStatus}</span>
               <button class="primary small" type="submit" disabled={!editCanSave}>{busy ? "저장 중…" : "수정"}</button>
+            </div>
+          </form>
+
+          <h4 class="knowledge-sub">도구 정책</h4>
+          <p class="muted">
+            이 그룹의 그룹원이 아바타 대화에서 사용할 수 있는 MCP 도구 묶음을 제한합니다. 여러 그룹에 속한
+            사용자는 정책이 있는 모든 그룹에서 공통으로 허용된 도구만 쓸 수 있습니다(교집합). 정책이 없는
+            그룹은 제한에 영향을 주지 않으며, 설정은 시스템 관리자만 바꿀 수 있습니다.
+          </p>
+          <form class="settings-form" on:submit|preventDefault={savePolicy}>
+            <label class="group-add-admin">
+              <input
+                type="checkbox"
+                bind:checked={policyRestricted}
+                aria-describedby={policyStatusId}
+                disabled={policyBusy}
+                on:change={() => (policyError = "")}
+              />
+              <span>MCP 도구 묶음 제한 사용</span>
+            </label>
+            {#if policyRestricted}
+              <div class="group-add-chip-list" role="group" aria-label="허용할 MCP 도구 묶음">
+                {#each MCP_TOOL_GROUPS as toolGroup (toolGroup.id)}
+                  <label class="group-add-admin">
+                    <input
+                      type="checkbox"
+                      checked={policyDraft.has(toolGroup.id)}
+                      aria-describedby={policyStatusId}
+                      disabled={policyBusy}
+                      on:change={(event) => togglePolicyGroup(toolGroup.id, event.currentTarget.checked)}
+                    />
+                    <span>{toolGroup.labelKo}</span>
+                  </label>
+                {/each}
+              </div>
+            {/if}
+            <div class="settings-save-row">
+              <span
+                id={policyStatusId}
+                class="settings-save-status"
+                class:dirty={Boolean(policyDirty && !policyBusy && !policyError)}
+                class:pending={policyBusy}
+                class:invalid={Boolean(policyError)}
+                role="status"
+                aria-live="polite"
+              >{policyStatus}</span>
+              <button class="primary small" type="submit" disabled={policyBusy || !policyDirty}>{policyBusy ? "저장 중…" : "정책 저장"}</button>
             </div>
           </form>
 
