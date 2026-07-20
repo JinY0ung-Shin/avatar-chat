@@ -473,11 +473,16 @@
   to { opacity: 1; transform: none; }
 }
 
-/* ---- Interactive prompt cards ---- */
+/* ---- Interactive prompt cards ----
+   The card floats over the scrim + live chat, so its surface must be OPAQUE.
+   The apple-design dark theme redefines --bg-elevated and the warn/info tints
+   as translucent rgba (meant to tint surfaces that already sit on an opaque
+   panel), so stack them over opaque --bg — a bare tint background lets the
+   conversation show through the modal. */
 .prompt-card {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  background: var(--bg-elevated);
+  background: linear-gradient(var(--bg-elevated), var(--bg-elevated)) var(--bg);
   padding: var(--s-3) var(--s-4);
   display: flex;
   flex-direction: column;
@@ -489,11 +494,15 @@
 }
 .prompt-card.permission {
   border-color: var(--warn-line);
-  background: var(--warn-soft);
+  background:
+    linear-gradient(var(--warn-soft), var(--warn-soft)),
+    linear-gradient(var(--bg-elevated), var(--bg-elevated)) var(--bg);
 }
 .prompt-card.question {
   border-color: var(--info-line);
-  background: var(--info-soft);
+  background:
+    linear-gradient(var(--info-soft), var(--info-soft)),
+    linear-gradient(var(--bg-elevated), var(--bg-elevated)) var(--bg);
 }
 .prompt-head {
   display: flex;
