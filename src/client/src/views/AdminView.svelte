@@ -347,6 +347,12 @@
   let visionPolicyDraft: Record<string, "default" | "on" | "off"> = {};
   let visionBusy = false;
   $: visionDefaultLabel = sys.visionDefault === false ? "미지원" : "지원";
+  // Concrete model id each tier maps to (ANTHROPIC_DEFAULT_<TIER>_MODEL), from
+  // the bootstrap payload the composer picker already uses. Null = unmapped
+  // (the SDK resolves the alias to the account default).
+  $: tierModelById = new Map(
+    ($appState.bootstrap?.modelSelection?.tiers ?? []).map((tier) => [tier.id, tier.model]),
+  );
 
   function syncVisionPolicyFromSys() {
     const saved = (unwrapSystem($appState.adminSystem).modelVisionPolicy || {}) as Record<string, boolean>;
@@ -1002,7 +1008,14 @@
               <form class="settings-form" on:submit|preventDefault={saveVisionPolicy}>
                 {#each MODEL_TIERS as tier (tier.id)}
                   <label class="field">
-                    <span>{tier.label}</span>
+                    <span>
+                      {tier.label}
+                      {#if tierModelById.get(tier.id)}
+                        <span class="muted mono">{tierModelById.get(tier.id)}</span>
+                      {:else}
+                        <span class="muted">(매핑 없음 — ANTHROPIC_DEFAULT_{tier.id.toUpperCase()}_MODEL 미설정, SDK 기본값 사용)</span>
+                      {/if}
+                    </span>
                     <select bind:value={visionPolicyDraft[tier.id]} disabled={visionBusy} aria-label={`${tier.label} 이미지 입력 지원`}>
                       <option value="default">기본값 ({visionDefaultLabel})</option>
                       <option value="on">지원</option>
