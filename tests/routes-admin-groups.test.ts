@@ -424,6 +424,32 @@ describe("admin: model override", () => {
   });
 });
 
+describe("admin: model vision policy", () => {
+  it("validates, saves, and surfaces the per-tier vision policy", async () => {
+    const { app, services } = boot();
+    const admin = await mkUser(app, "admin");
+    const member = await mkUser(app, "vp-member");
+
+    await member.agent.put("/api/admin/model-vision-policy").send({ policy: { opus: false } }).expect(403);
+    await admin.agent.put("/api/admin/model-vision-policy").send({ policy: { gpt: true } }).expect(400);
+    await admin.agent.put("/api/admin/model-vision-policy").send({ policy: { opus: "yes" } }).expect(400);
+
+    await admin.agent
+      .put("/api/admin/model-vision-policy")
+      .send({ policy: { sonnet: false, haiku: false } })
+      .expect(200);
+    expect(services.store.getModelVisionPolicy()).toEqual({ sonnet: false, haiku: false });
+
+    const sys = await admin.agent.get("/api/admin/system").expect(200);
+    expect(sys.body.system.modelVisionPolicy).toEqual({ sonnet: false, haiku: false });
+    expect(sys.body.system.visionDefault).toBe(true);
+
+    // Explicit empty policy = every tier inherits the deployment default again.
+    await admin.agent.put("/api/admin/model-vision-policy").send({ policy: {} }).expect(200);
+    expect(services.store.getModelVisionPolicy()).toEqual({});
+  });
+});
+
 describe("admin: hex-ssh tool policy", () => {
   it("rejects a malformed policy payload", async () => {
     const { app } = boot();

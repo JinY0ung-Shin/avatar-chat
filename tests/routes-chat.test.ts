@@ -467,6 +467,35 @@ describe("chat-stream request validation", () => {
     expect(H.requests).toHaveLength(0);
   });
 
+  it("gates image uploads by the per-tier vision policy of this turn's model", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "claude",
+      sessionSecret: "test",
+    });
+    services.store.setModelVisionPolicy({ sonnet: false });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "tiervision").expect(201)).body.user.id as string;
+    const png =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    H.requests.length = 0;
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-tv", message: "이미지", model: "sonnet", images: [png] })
+      .expect(400);
+    expect(res.body.error).toContain("이미지 입력을 지원하지 않아");
+    expect(H.requests).toHaveLength(0);
+
+    // A vision tier (no explicit entry → inherits the on default) still accepts images.
+    await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-tv2", message: "이미지", model: "opus", images: [png] })
+      .expect(200);
+    expect(H.requests).toHaveLength(1);
+  });
+
   it("serves 404 for a missing image on the owner's own conversation", async () => {
     const { app } = boot();
     const owner = request.agent(app);

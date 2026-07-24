@@ -7,7 +7,8 @@ import {
 import logger from "../logger.js";
 import { createRateLimiter } from "../rateLimit.js";
 import { apiError, safeString, MIN_PASSWORD_LENGTH, type RouterDeps } from "./_shared.js";
-import { MODEL_TIERS } from "../modelTiers.js";
+import { DEFAULT_MODEL_TIER, MODEL_TIERS } from "../modelTiers.js";
+import { visionForModel } from "../modelVisionPolicy.js";
 import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
 
 // ---- Auth ------------------------------------------------------------
@@ -135,8 +136,9 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
       // Lets onboarding show the Confluence PAT field only when the deployment
       // has a Confluence host configured (the PAT is useless otherwise).
       confluenceConfigured: Boolean(config.confluenceUrl),
-      // False when the serving backend is text-only (MODEL_VISION=off): the
-      // composer hides the image-attach UI (the server also rejects uploads).
+      // Deployment default for image input (MODEL_VISION). Per-TIER support
+      // rides on modelSelection.tiers[].vision below; this global remains the
+      // fallback for locked/unresolvable cases.
       visionEnabled: config.visionEnabled,
       // Per-conversation model picker: the selectable tiers + whether the choice
       // is locked by an env-pinned ANTHROPIC_MODEL (then the composer hides the
@@ -145,12 +147,21 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
       modelSelection: {
         // Each tier carries the concrete model id it resolves to when the operator
         // pinned one via ANTHROPIC_DEFAULT_<TIER>_MODEL (null otherwise — the SDK
-        // then uses the account default, which the app can't name).
+        // then uses the account default, which the app can't name), plus whether
+        // that tier accepts image input (admin per-tier policy ∘ MODEL_VISION).
         tiers: MODEL_TIERS.map((tier) => ({
           ...tier,
           model: config.defaultTierModels[tier.id] ?? null,
+          vision: visionForModel(tier.id, store.getModelVisionPolicy(), config.visionEnabled),
         })),
         locked: Boolean(config.anthropicModel),
+        // Vision of the model a conversation gets when the user picked nothing:
+        // env pin > admin override > default tier (mirrors claudeAgent).
+        defaultVision: visionForModel(
+          config.anthropicModel ?? store.getModelOverride() ?? DEFAULT_MODEL_TIER,
+          store.getModelVisionPolicy(),
+          config.visionEnabled,
+        ),
       },
       // Per-conversation reasoning effort picker. Independent of the model pin
       // (effort still applies when ANTHROPIC_MODEL locks the model), so there is

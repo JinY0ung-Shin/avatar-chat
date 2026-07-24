@@ -14,6 +14,7 @@ import type { Store } from "../store.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import type { AgentEvents } from "./events.js";
 import { probeDeckRendering } from "../deckRender.js";
+import { visionForModel } from "../modelVisionPolicy.js";
 import logger from "../logger.js";
 import { knownHostsPath } from "../sshTrust.js";
 import {
@@ -500,6 +501,15 @@ export async function runClaudeAgent(
     request.modelFallback && !config.anthropicModel
       ? buildModelFallbackChain(effectiveModel)
       : [effectiveModel];
+  // Effective vision for the model THIS run resolved to: the admin per-tier
+  // policy for tier aliases, the deployment default (MODEL_VISION) otherwise.
+  // Drives the hook's image-Read block, the no-vision prompt section, the
+  // Confluence image-block gate, and describe_system.
+  const runVisionEnabled = visionForModel(
+    effectiveModel,
+    store.getModelVisionPolicy(),
+    config.visionEnabled,
+  );
   const agentStart = Date.now();
 
   agentLogger.info(
@@ -618,6 +628,7 @@ export async function runClaudeAgent(
     activeRepoName: request.activeRepoName,
     fileOutputEnabled: fileOutputActive,
     deckRenderingAvailable,
+    visionEnabled: runVisionEnabled,
     toolSkillPolicy,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
@@ -799,6 +810,8 @@ export async function runClaudeAgent(
     config,
     ownerSecrets,
     elevated: elevatedToolAccess,
+    // Text-only model this run → attachment tools return notes, not image blocks.
+    visionEnabled: runVisionEnabled,
   });
   // Generic web fetch (intranet + internet, proxy-aware). Registration follows
   // the tool-group picker; the HANDLER gates on `elevated` — the PreToolUse
@@ -1060,8 +1073,8 @@ export async function runClaudeAgent(
               // git so sync/push stay app-managed; local add/commit is allowed.
               Boolean(request.activeRepoName),
               toolSkillPolicy,
-              // Text-only backend: deny image/PDF Read before it 400s the turn.
-              config.visionEnabled,
+              // Text-only model this run: deny image/PDF Read before it 400s the turn.
+              runVisionEnabled,
             ),
           ],
         },
@@ -1139,7 +1152,7 @@ export async function runClaudeAgent(
     // Deck standing guidance needs BOTH the deployment toolchain and a turn
     // that can publish files (preview embeds + the download card).
     deckRenderingEnabled: deckRenderingAvailable && fileOutputActive,
-    visionEnabled: config.visionEnabled,
+    visionEnabled: runVisionEnabled,
     experimentalFeatures: ownerToolAccess
       ? ownerState.experimentalFeatures
       : [],

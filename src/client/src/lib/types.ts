@@ -218,8 +218,12 @@ export interface BootstrapInfo {
     /** Each tier + the concrete model id it resolves to (null when not env-pinned). */
     tiers: (import("../../../server/modelTiers").ModelTier & {
       model: string | null;
+      /** Whether this tier's model accepts image input (admin per-tier policy). */
+      vision?: boolean;
     })[];
     locked: boolean;
+    /** Vision of the model used when the user picked no tier (pin/override/default). */
+    defaultVision?: boolean;
   };
   /**
    * Per-conversation reasoning effort picker config: selectable levels + the

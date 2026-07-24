@@ -77,6 +77,23 @@ describe("noah-almighty platform", () => {
     expect(res.body.githubHost).toBe("github.enterprise.local");
   });
 
+  it("surfaces per-tier vision support in the bootstrap model selection", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+    });
+    services.store.setModelVisionPolicy({ haiku: false });
+    const app = createApp(services);
+    const res = await request(app).get("/api/bootstrap").expect(200);
+    expect(res.body.visionEnabled).toBe(true);
+    const tiers = res.body.modelSelection.tiers as Array<{ id: string; vision: boolean }>;
+    expect(tiers.find((t) => t.id === "haiku")?.vision).toBe(false);
+    expect(tiers.find((t) => t.id === "opus")?.vision).toBe(true);
+    // Default tier (opus) has no explicit entry → inherits the on default.
+    expect(res.body.modelSelection.defaultVision).toBe(true);
+  });
+
   it("restricts knowledge repos to the configured internal GitHub host", async () => {
     const services = createServices({
       dataDir: tempDir,

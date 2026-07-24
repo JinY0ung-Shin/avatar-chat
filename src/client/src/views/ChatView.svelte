@@ -373,10 +373,24 @@
     return { dataUrl, mediaType };
   }
 
+  // Vision support for the model THIS pane would use: pane pick > my saved
+  // default > deployment default. Mirrors the server's resolution (which also
+  // enforces it on upload); env-pinned deployments fall back to the global flag.
+  function paneVisionEnabled(item: ChatPane, state: ReturnType<typeof readState> = readState()): boolean {
+    const boot = state.bootstrap;
+    if (!boot || isExternalPane(item)) return true;
+    const sel = boot.modelSelection;
+    if (!sel || sel.locked) return boot.visionEnabled !== false;
+    const tier = item.modelTier || state.user?.modelDefault || "";
+    const entry = tier ? sel.tiers.find((t) => t.id === tier) : undefined;
+    if (entry) return entry.vision !== false;
+    return (sel.defaultVision ?? boot.visionEnabled) !== false;
+  }
+
   async function addImages(item: ChatPane, files: FileList | File[] | null | undefined) {
     if (!files) return;
-    if (readState().bootstrap?.visionEnabled === false) {
-      notify("현재 배포된 모델은 이미지 입력을 지원하지 않아 첨부할 수 없습니다.", "warn");
+    if (!paneVisionEnabled(item)) {
+      notify("현재 선택된 모델은 이미지 입력을 지원하지 않아 첨부할 수 없습니다.", "warn");
       return;
     }
     if (isExternalPane(item)) {
@@ -1124,8 +1138,8 @@
             {/each}
           </div>
         {/if}
-        <div class="composer-box" class:no-attach={isExternalPane(item) || $appState.bootstrap?.visionEnabled === false}>
-          {#if !isExternalPane(item) && $appState.bootstrap?.visionEnabled !== false}
+        <div class="composer-box" class:no-attach={isExternalPane(item) || !paneVisionEnabled(item, $appState)}>
+          {#if !isExternalPane(item) && paneVisionEnabled(item, $appState)}
             <label class="composer-attach" class:disabled={item.streaming} title="이미지 첨부" aria-label="이미지 첨부">
               <Icon name="image" />
               <input

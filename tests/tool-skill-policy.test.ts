@@ -248,3 +248,37 @@ describe("prompt admin-disabled note", () => {
     expect(buildSystemPromptAppend(baseRequest)).not.toContain("system administrator disabled");
   });
 });
+
+// ---- per-model-tier vision policy (modelVisionPolicy.ts) ----
+import {
+  normalizeModelVisionPolicy,
+  parseModelVisionPolicy,
+  visionForModel,
+} from "../src/server/modelVisionPolicy.js";
+
+describe("model vision policy", () => {
+  it("normalize keeps only known tiers with strict-boolean values", () => {
+    expect(normalizeModelVisionPolicy(null)).toEqual({});
+    expect(normalizeModelVisionPolicy("junk")).toEqual({});
+    expect(normalizeModelVisionPolicy({ opus: true, haiku: "no", gpt: false })).toEqual({ opus: true });
+  });
+
+  it("parse rejects unknown tiers, non-boolean values, and non-object shapes", () => {
+    expect(parseModelVisionPolicy({ opus: false })).toEqual({ opus: false });
+    expect(parseModelVisionPolicy({})).toEqual({});
+    expect(parseModelVisionPolicy({ gpt: true })).toBeNull();
+    expect(parseModelVisionPolicy({ opus: 1 })).toBeNull();
+    expect(parseModelVisionPolicy([])).toBeNull();
+    expect(parseModelVisionPolicy(null)).toBeNull();
+  });
+
+  it("visionForModel: tiers consult the policy; concrete ids and unset tiers inherit the default", () => {
+    const policy = { sonnet: false };
+    expect(visionForModel("sonnet", policy, true)).toBe(false);
+    expect(visionForModel("opus", policy, true)).toBe(true);
+    expect(visionForModel("opus", policy, false)).toBe(false);
+    expect(visionForModel("claude-opus-4-8", policy, true)).toBe(true);
+    expect(visionForModel(null, policy, false)).toBe(false);
+    expect(visionForModel(undefined, policy, true)).toBe(true);
+  });
+});

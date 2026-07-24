@@ -2078,7 +2078,7 @@ describe("system tools (avatar system management)", () => {
     const offTools = buildSystemTools(s.store, {
       ...s.baseCtx,
       viewerIsOwner: true,
-      config: { ...s.config, visionEnabled: false },
+      visionEnabled: false,
     });
     const off = await callTool(offTools, "describe_system", {});
     expect(off.content[0].text).toContain("Image input (vision): NOT supported");

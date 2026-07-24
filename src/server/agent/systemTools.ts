@@ -74,6 +74,12 @@ export interface SystemToolsContext {
    * describe_system so the avatar answers "can you make me a PPT?" correctly.
    */
   deckRenderingAvailable?: boolean;
+  /**
+   * Whether the model THIS run resolved to accepts image input (admin per-tier
+   * policy ∘ MODEL_VISION default — see modelVisionPolicy.ts). Undefined →
+   * treated as supported.
+   */
+  visionEnabled?: boolean;
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -273,7 +279,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- General git repos: ${state.gitRepoCount}`,
           `- Working repository: ${ctx.activeRepoName ? `${ctx.activeRepoName} (opened via open_repo; local edits/commit native, push via mcp__git_repo__push)` : "(none open)"}`,
           `- Local image output: ${ctx.fileOutputEnabled ? "enabled — use `mcp__file_output__show_file` for PNG/JPEG/WebP/GIF files in the working directories" : "unavailable in this run"}`,
-          `- Image input (vision): ${ctx.config.visionEnabled === false ? "NOT supported by the active model — Read on image/PDF files is blocked and chat image uploads are disabled; show images to the USER via mcp__file_output__show_file, extract PDF text via `pdftotext`" : "supported by the active model"}`,
+          `- Image input (vision): ${ctx.visionEnabled === false ? "NOT supported by the currently selected model — Read on image/PDF files is blocked and chat image uploads are disabled; show images to the USER via mcp__file_output__show_file, extract PDF text via `pdftotext` (a different model tier may support images — the admin panel sets this per tier)" : "supported by the currently selected model"}`,
           `- Document deck generation (PPTX): ${ctx.deckRenderingAvailable ? `toolchain available (python-pptx + LibreOffice + pdftoppm)${ctx.fileOutputEnabled ? " — use the `pptx` skill: generate, render slide previews, then `mcp__file_output__share_file` for the download" : "; preview/download need an interactive chat turn"}` : "UNAVAILABLE — this deployment image lacks the LibreOffice/python-pptx toolchain; tell the user a system administrator must rebuild the server image to enable PPT generation (do not attempt shell workarounds)"}`,
           `- Internal Git token (GIT_TOKEN): ${state.gitTokenSet ? "set" : "not set"}`,
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") + " (custom secrets are injected as env into MCP servers from your own plugins/knowledge repo; git/SSH credentials go only to their dedicated tools)" : "(none)"}`,

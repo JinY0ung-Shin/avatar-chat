@@ -17,6 +17,11 @@ import {
   type SkillDiscoveryCache,
   type ToolSkillPolicy,
 } from "../toolSkillPolicy.js";
+import {
+  MODEL_VISION_POLICY_CONFIG_KEY,
+  normalizeModelVisionPolicy,
+  type ModelVisionPolicy,
+} from "../modelVisionPolicy.js";
 import type { User } from "../types.js";
 import { type Constructor, type StoreBase } from "./internal.js";
 
@@ -312,6 +317,30 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
     setToolSkillPolicy(policy: ToolSkillPolicy): ToolSkillPolicy {
       const normalized = normalizeToolSkillPolicy(policy);
       this.setAppSecret(TOOL_SKILL_POLICY_CONFIG_KEY, JSON.stringify(normalized));
+      return normalized;
+    }
+
+    /**
+     * Admin-managed per-model-tier vision policy (`{tierId: boolean}`; absent
+     * tier = inherit the MODEL_VISION deployment default). Missing/corrupt/
+     * unreadable → empty map, i.e. everything inherits — the safe pre-feature
+     * behavior.
+     */
+    getModelVisionPolicy(): ModelVisionPolicy {
+      const raw = this.getAppSecret(MODEL_VISION_POLICY_CONFIG_KEY);
+      if (!raw) {
+        return normalizeModelVisionPolicy(null);
+      }
+      try {
+        return normalizeModelVisionPolicy(JSON.parse(raw));
+      } catch {
+        return normalizeModelVisionPolicy(null);
+      }
+    }
+
+    setModelVisionPolicy(policy: ModelVisionPolicy): ModelVisionPolicy {
+      const normalized = normalizeModelVisionPolicy(policy);
+      this.setAppSecret(MODEL_VISION_POLICY_CONFIG_KEY, JSON.stringify(normalized));
       return normalized;
     }
 

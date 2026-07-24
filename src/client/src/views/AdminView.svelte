@@ -10,6 +10,7 @@
   import { loadAdminGroups, loadAdminOverview } from "../lib/loaders";
   import { appState, notify, replaceState, updateState } from "../lib/state";
   import { timeLabel } from "../lib/format";
+  import { MODEL_TIERS } from "../../../server/modelTiers";
   import type { AdminGroupSummary, AdminTab, AdminUserSummary, SignupMode } from "../lib/types";
 
   let loading = true;
@@ -211,6 +212,7 @@
       await Promise.all([loadAdminOverview(), loadAdminGroups()]);
       syncHexPolicyFromSys();
       syncToolSkillFromSys();
+      syncVisionPolicyFromSys();
       modelInput = String(unwrapSystem($appState.adminSystem).modelOverride || "");
     } catch (err) {
       error = (err as Error).message;
@@ -337,6 +339,42 @@
       notify(`회원가입 정책은 저장했지만 상태 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
     } finally {
       signupBusy = false;
+    }
+  }
+
+  // ---- system: per-tier vision policy ----
+  // Draft: tier id → "default" (inherit MODEL_VISION) | "on" | "off".
+  let visionPolicyDraft: Record<string, "default" | "on" | "off"> = {};
+  let visionBusy = false;
+  $: visionDefaultLabel = sys.visionDefault === false ? "미지원" : "지원";
+
+  function syncVisionPolicyFromSys() {
+    const saved = (unwrapSystem($appState.adminSystem).modelVisionPolicy || {}) as Record<string, boolean>;
+    const draft: Record<string, "default" | "on" | "off"> = {};
+    for (const tier of MODEL_TIERS) {
+      draft[tier.id] = tier.id in saved ? (saved[tier.id] ? "on" : "off") : "default";
+    }
+    visionPolicyDraft = draft;
+  }
+
+  async function saveVisionPolicy() {
+    if (visionBusy) return;
+    const policy: Record<string, boolean> = {};
+    for (const tier of MODEL_TIERS) {
+      const pick = visionPolicyDraft[tier.id];
+      if (pick === "on") policy[tier.id] = true;
+      else if (pick === "off") policy[tier.id] = false;
+    }
+    visionBusy = true;
+    try {
+      await api("/api/admin/model-vision-policy", { method: "PUT", body: JSON.stringify({ policy }) });
+      await loadAdminOverview();
+      syncVisionPolicyFromSys();
+      notify("모델별 이미지 입력 설정을 저장했습니다.", "ok");
+    } catch (err) {
+      notify(`저장 실패: ${(err as Error).message}`);
+    } finally {
+      visionBusy = false;
     }
   }
 
@@ -946,6 +984,34 @@
                 <div class="settings-save-row">
                   <span id={modelStatusId} class="settings-save-status" class:dirty={modelDirty && !modelBusy && !modelError} class:pending={modelBusy} class:invalid={Boolean(modelError)} role="status" aria-live="polite">{modelStatus}</span>
                   <button class="primary" type="submit" disabled={!modelCanSave}>{modelBusy ? "저장 중…" : modelValueTrimmed ? "모델 저장" : "기본값 사용"}</button>
+                </div>
+              </form>
+            </section>
+
+            <!-- per-tier vision (image input) policy -->
+            <section class="settings-card">
+              <div class="panel-section-head">
+                <div>
+                  <h3>모델별 이미지 입력(비전)</h3>
+                  <p class="muted">
+                    모델 티어별 이미지 입력 지원 여부를 지정합니다. "기본값"은 배포 환경설정(MODEL_VISION, 현재 {visionDefaultLabel})을 따릅니다.
+                    미지원으로 설정된 모델을 쓰는 대화에서는 이미지 첨부가 차단되고, 아바타의 이미지/PDF 파일 읽기가 거부되며, 아바타에게도 그 사실이 안내됩니다.
+                  </p>
+                </div>
+              </div>
+              <form class="settings-form" on:submit|preventDefault={saveVisionPolicy}>
+                {#each MODEL_TIERS as tier (tier.id)}
+                  <label class="field">
+                    <span>{tier.label}</span>
+                    <select bind:value={visionPolicyDraft[tier.id]} disabled={visionBusy} aria-label={`${tier.label} 이미지 입력 지원`}>
+                      <option value="default">기본값 ({visionDefaultLabel})</option>
+                      <option value="on">지원</option>
+                      <option value="off">미지원</option>
+                    </select>
+                  </label>
+                {/each}
+                <div class="settings-save-row">
+                  <button class="primary" type="submit" disabled={visionBusy}>{visionBusy ? "저장 중…" : "저장"}</button>
                 </div>
               </form>
             </section>

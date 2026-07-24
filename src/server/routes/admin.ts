@@ -10,6 +10,7 @@ import { deleteConversationFiles } from "../chatFiles.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import { HEX_SSH_TOOL_INFOS, parseHexSshToolPolicy } from "../hexSshPolicy.js";
 import { TOGGLABLE_BUILTIN_TOOLS, parseToolSkillPolicy } from "../toolSkillPolicy.js";
+import { parseModelVisionPolicy } from "../modelVisionPolicy.js";
 import {
   isMcpToolGroupId,
   normalizeMcpToolGroups,
@@ -78,6 +79,10 @@ export function createAdminRouter(deps: RouterDeps): Router {
         // (env wins, mirroring the API-key-vs-subscription precedence).
         modelOverride: store.getModelOverride(),
         modelEnvLocked: Boolean(config.anthropicModel),
+        // Per-model-tier vision policy (+ the deployment default an unset tier
+        // inherits) — the panel renders one selector per tier.
+        modelVisionPolicy: store.getModelVisionPolicy(),
+        visionDefault: config.visionEnabled,
       },
     });
   });
@@ -516,6 +521,27 @@ export function createAdminRouter(deps: RouterDeps): Router {
     auditAs(req, "clear_model_override", "model override cleared");
     logger.info({ actorId: req.user!.id }, "model override cleared");
     res.json({ ok: true });
+  });
+
+  // Per-model-tier vision policy: which composer tiers accept image input.
+  // Body: { policy: { opus?: boolean, sonnet?: boolean, haiku?: boolean } } —
+  // a tier ABSENT from the map inherits the MODEL_VISION deployment default.
+  router.put("/api/admin/model-vision-policy", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const policy = parseModelVisionPolicy(req.body?.policy);
+    if (!policy) {
+      apiError(res, 400, "모델별 비전 정책 형식이 올바르지 않습니다.");
+      return;
+    }
+    const saved = store.setModelVisionPolicy(policy);
+    auditAs(
+      req,
+      "set_model_vision_policy",
+      Object.entries(saved)
+        .map(([tier, vision]) => `${tier}=${vision ? "on" : "off"}`)
+        .join(", ") || "(all inherit default)",
+    );
+    logger.info({ actorId: req.user!.id, policy: saved }, "model vision policy set");
+    res.json({ modelVisionPolicy: saved });
   });
 
   // ---- Audit -----------------------------------------------------------

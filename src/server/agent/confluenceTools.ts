@@ -21,6 +21,12 @@ export const CONFLUENCE_TOOL_NAMES = [
 export interface ConfluenceToolsContext {
   /** Deployment config, including the public Confluence base URL. */
   config: AppConfig;
+  /**
+   * Whether the model THIS run resolved to accepts image input. False →
+   * attachment tools return notes instead of MCP image blocks (which would
+   * 400 the whole turn on a text-only model). Undefined → supported.
+   */
+  visionEnabled?: boolean;
   /** Avatar owner's decrypted secret map; values are never returned. */
   ownerSecrets: Record<string, string>;
   /**
@@ -746,7 +752,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
           { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
         > = [];
 
-        if (isSupportedImageMediaType(mediaType) && ctx.config.visionEnabled !== false) {
+        if (isSupportedImageMediaType(mediaType) && ctx.visionEnabled !== false) {
           payload.download = { bytes: bytes.bytes, returnedAs: "image" };
           content.push({ type: "text", text: JSON.stringify(payload, null, 2) });
           content.push({ type: "image", data: bytes.data.toString("base64"), mimeType: mediaType });
@@ -818,7 +824,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
 
         const inlineImages: JsonRecord[] = [];
         const imageBlocks: Array<{ type: "image"; data: string; mimeType: string }> = [];
-        if (args.include_images && ctx.config.visionEnabled === false) {
+        if (args.include_images && ctx.visionEnabled === false) {
           // Text-only backend: never emit image blocks; say so instead of
           // silently returning nothing.
           inlineImages.push({
@@ -826,7 +832,7 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
               "include_images was requested, but the active model cannot accept image input, so no image blocks were returned.",
           });
         }
-        if (args.include_images && ctx.config.visionEnabled !== false) {
+        if (args.include_images && ctx.visionEnabled !== false) {
           const candidates = unique(
             [...referencedImages, ...drawioAttachments.filter(isImageAttachment)]
               .map(attachmentTitle)

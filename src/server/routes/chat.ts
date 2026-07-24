@@ -37,6 +37,7 @@ import {
   saveChatImages,
   MAX_CHAT_IMAGES_PER_MESSAGE,
 } from "../chatImages.js";
+import { visionForModel } from "../modelVisionPolicy.js";
 import {
   deleteChatFileAttachments,
   deleteConversationFiles,
@@ -818,13 +819,6 @@ export function createChatRouter({
         return;
       }
       const decodedImages = decodedImagesResult.images;
-      // Text-only backend (MODEL_VISION=off): reject image uploads up front —
-      // feeding image blocks would 400 the whole turn at the API layer. The
-      // composer hides the attach UI too; this is the server-side net.
-      if (decodedImages.length > 0 && !config.visionEnabled) {
-        apiError(res, 400, "현재 배포된 모델은 이미지 입력을 지원하지 않아 이미지를 첨부할 수 없습니다.");
-        return;
-      }
 
       // Validate BEFORE switching to SSE so failures stay plain JSON. A turn with
       // image attachments but no text is allowed (the images are the message).
@@ -951,6 +945,33 @@ export function createChatRouter({
       );
       if (existingAvatarId && existingAvatarId !== avatar.id) {
         apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
+        return;
+      }
+      // Effective vision for THIS turn's model, mirroring claudeAgent's
+      // resolution chain (env pin > this turn's tier pick > stored tier >
+      // admin override > default) against the admin per-tier policy. Gates the
+      // upload below AND the regenerate image re-feed; the run itself
+      // recomputes the same value. External turns keep the deployment default
+      // (gateway models are outside the tier policy; their composer has no
+      // attach UI anyway).
+      const turnModel = externalAgent
+        ? config.anthropicModel
+        : (config.anthropicModel ??
+          (requestedModel === null
+            ? store.getConversationModel(req.user!.id, conversationId)
+            : requestedModel || null) ??
+          store.getModelOverride() ??
+          DEFAULT_MODEL_TIER);
+      const turnVisionEnabled = visionForModel(
+        turnModel,
+        store.getModelVisionPolicy(),
+        config.visionEnabled,
+      );
+      // Text-only model for this turn: reject image uploads up front — feeding
+      // image blocks would 400 the whole turn at the API layer. The composer
+      // hides the attach UI too; this is the server-side net.
+      if (!externalAgent && decodedImages.length > 0 && !turnVisionEnabled) {
+        apiError(res, 400, "현재 선택된 모델은 이미지 입력을 지원하지 않아 이미지를 첨부할 수 없습니다.");
         return;
       }
       if (externalAgent && existingAvatarId) {
@@ -1173,9 +1194,10 @@ export function createChatRouter({
           const lastUser = [...priorMessages]
             .reverse()
             .find((m) => m.role === "user");
-          // Skip the re-feed entirely on a text-only backend: attachments
-          // uploaded before MODEL_VISION was turned off must not resurface.
-          requestImages = config.visionEnabled
+          // Skip the re-feed entirely when this turn's model is text-only:
+          // attachments uploaded while a vision model was selected must not
+          // resurface into a non-vision run.
+          requestImages = turnVisionEnabled
             ? readChatImages(config, conversationId, lastUser?.attachments)
             : [];
         }
