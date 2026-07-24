@@ -4,6 +4,7 @@
   import AvatarImage from "../components/AvatarImage.svelte";
   import CapabilitiesPanel from "../components/CapabilitiesPanel.svelte";
   import CanvasPanel from "../components/CanvasPanel.svelte";
+  import FilePreviewPanel from "../components/FilePreviewPanel.svelte";
   import Icon from "../components/Icon.svelte";
   import PromptModal from "../components/PromptModal.svelte";
   import { activePane, appState, newId, notify, readState, updateState } from "../lib/state";
@@ -484,6 +485,32 @@
     return `${(size / (1024 * 1024)).toFixed(1)} MB`;
   }
 
+  // Slide PNGs published (hidden) on the same message as a shared file — the
+  // deck preview the pptx skill rendered.
+  function hiddenSlides(attachments: MessageAttachment[] | undefined): MessageAttachment[] {
+    return (attachments ?? []).filter((att) => att.kind === "image" && att.hidden);
+  }
+
+  // File-card click: open the right-side preview panel (slides + download
+  // button). Split view has no side-panel slot, so it keeps the direct
+  // download instead.
+  function openFilePreview(item: ChatPane, att: MessageAttachment, source: MessageAttachment[] | undefined): void {
+    if (readState().chatPanes.length > 1) {
+      const a = document.createElement("a");
+      a.href = fileSrc(item.conversationId, att);
+      a.download = att.name || "file";
+      document.body.append(a);
+      a.click();
+      a.remove();
+      return;
+    }
+    const slides = hiddenSlides(source);
+    updateState((state) => {
+      const target = state.chatPanes.find((p) => p.id === item.id);
+      if (target) target.filePreview = { attachment: att, slides };
+    });
+  }
+
   /* ---- slash autocomplete ---- */
   function slashQuery(text: string): string | null {
     if (typeof text !== "string" || text.startsWith("//")) return null;
@@ -928,13 +955,13 @@
                   <div class="msg-images">
                     {#each visibleAttachments(message.attachments) as att (att.id)}
                       {#if att.kind === "file"}
-                        <a class="msg-file-card" href={fileSrc(message.conversationId, att)} download={att.name || undefined}>
+                        <button class="msg-file-card" type="button" on:click={() => openFilePreview(item, att, message.attachments)}>
                           <span class="msg-file-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
                           <span class="msg-file-meta">
                             <span class="msg-file-name">{att.name || "파일"}</span>
-                            <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}다운로드</span>
+                            <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>
                           </span>
-                        </a>
+                        </button>
                       {:else}
                         <figure class="msg-image-item">
                           <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
@@ -1046,13 +1073,13 @@
                 <div class="msg-images">
                   {#each visibleAttachments(item.liveAttachments) as att (att.id)}
                     {#if att.kind === "file"}
-                      <a class="msg-file-card" href={fileSrc(item.conversationId, att)} download={att.name || undefined}>
+                      <button class="msg-file-card" type="button" on:click={() => openFilePreview(item, att, item.liveAttachments)}>
                         <span class="msg-file-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
                         <span class="msg-file-meta">
                           <span class="msg-file-name">{att.name || "파일"}</span>
-                          <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}다운로드</span>
+                          <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>
                         </span>
-                      </a>
+                      </button>
                     {:else}
                       <figure class="msg-image-item">
                         <a class="msg-image-link" href={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} target="_blank" rel="noopener noreferrer">
@@ -1467,7 +1494,9 @@
       {@render composer(pane, false, 0)}
       <PromptModal paneId={pane.id} />
     </section>
-    {#if pane.canvases?.length}
+    {#if pane.filePreview}
+      <FilePreviewPanel {pane} />
+    {:else if pane.canvases?.length}
       <CanvasPanel {pane} />
     {/if}
     <CapabilitiesPanel avatar={pane.avatar} />

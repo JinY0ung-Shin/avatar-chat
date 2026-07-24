@@ -130,6 +130,15 @@ export interface ChatPane {
   mcpToolGroups?: McpToolGroupId[];
   /** Visual-canvas artifacts shown in this conversation (experimental, #50). */
   canvases: PaneCanvas[];
+  /**
+   * File attachment opened in the right-side preview panel (slides = the same
+   * message's hidden slide PNGs). Takes the canvas panel's slot while open;
+   * null/undefined = closed.
+   */
+  filePreview?: {
+    attachment: import("../../../server/types.js").MessageAttachment;
+    slides: import("../../../server/types.js").MessageAttachment[];
+  } | null;
   /** Which canvas is currently shown in the side panel (artifact id). */
   activeCanvasId?: string | null;
   /** Whether the viewer is pinned to the transcript bottom (intent-based follow). */
