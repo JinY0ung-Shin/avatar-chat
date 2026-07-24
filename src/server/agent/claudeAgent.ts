@@ -1060,6 +1060,8 @@ export async function runClaudeAgent(
               // git so sync/push stay app-managed; local add/commit is allowed.
               Boolean(request.activeRepoName),
               toolSkillPolicy,
+              // Text-only backend: deny image/PDF Read before it 400s the turn.
+              config.visionEnabled,
             ),
           ],
         },
@@ -1137,6 +1139,7 @@ export async function runClaudeAgent(
     // Deck standing guidance needs BOTH the deployment toolchain and a turn
     // that can publish files (preview embeds + the download card).
     deckRenderingEnabled: deckRenderingAvailable && fileOutputActive,
+    visionEnabled: config.visionEnabled,
     experimentalFeatures: ownerToolAccess
       ? ownerState.experimentalFeatures
       : [],

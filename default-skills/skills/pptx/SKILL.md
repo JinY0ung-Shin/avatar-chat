@@ -85,6 +85,8 @@ conversation is in Korean (e.g. `name: "주간보고.pptx"`).
 
 ## 5. Verify before you deliver
 
-- Prefer READING one or two rendered slide PNGs (the `Read` tool) to eyeball layout — if the
-  active model rejects image input, skip this and rely on the overflow checks from section 1.
+- If image input is supported (check the "Image input (vision)" line in `describe_system`),
+  Read one or two rendered slide PNGs to eyeball layout. On text-only deployments that Read is
+  BLOCKED — do not retry it; rely on the overflow checks from section 1 instead (the USER still
+  sees the real slides through the canvas/inline preview).
 - Re-render after every edit; never share a .pptx whose current version you haven't rendered.

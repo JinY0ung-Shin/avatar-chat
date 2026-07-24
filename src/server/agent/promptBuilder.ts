@@ -392,6 +392,20 @@ function fileOutputSection(request: AgentRequest): string | null {
 }
 
 /**
+ * Warning for deployments whose model cannot accept image input. Injected only
+ * when `visionEnabled` is EXPLICITLY false (undefined = assume vision), so
+ * older callers/tests without the flag see no new section.
+ */
+function noVisionSection(request: AgentRequest): string | null {
+  if (request.visionEnabled !== false) return null;
+  return (
+    "**No image input**: the active model CANNOT accept images. Reading image or PDF files with Read is blocked in this deployment (the API would reject the whole turn). " +
+    "Extract PDF text with Bash `pdftotext file.pdf -`. To show an image to the USER, use `mcp__file_output__show_file` — the user sees it even though you cannot. " +
+    "Do not ask the user to attach images; image uploads are disabled here."
+  );
+}
+
+/**
  * Standing guidance for PowerPoint deck work. Present only when the deployment
  * image carries the toolchain (LibreOffice + pdftoppm + python-pptx) AND this
  * turn can publish files — `request.deckRenderingEnabled` bundles both (see
@@ -560,6 +574,10 @@ export function buildSystemPromptAppend(
   const deckBlock = deckSection(request);
   if (deckBlock) {
     lines.push(deckBlock);
+  }
+  const noVisionBlock = noVisionSection(request);
+  if (noVisionBlock) {
+    lines.push(noVisionBlock);
   }
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.

@@ -604,6 +604,13 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   text-only turns keep the unchanged string path. `resume` works in both modes.** Regenerate re-reads the
   prior user turn's stored attachments from disk (`readChatImages`). `express.json` limit was bumped
   3mb→40mb. Conversation delete sweeps the image dir (`deleteConversationImages`).
+- **`MODEL_VISION=off` (text-only backend)**: every path that would put image bytes in MODEL input is
+  cut off BEFORE the API can 400 the whole turn — upload POST rejects (+ composer hides the attach UI
+  via the bootstrap `visionEnabled` flag; `addImages` is the single client intake), the PreToolUse hook
+  denies `Read` on raster/PDF paths (must fire BEFORE the read-only auto-allow; SVG stays readable;
+  redirect: `pdftotext` for PDFs, `show_file` to show the USER), Confluence tools return a note instead
+  of MCP image blocks, and the regenerate re-feed is skipped. Surfaced in the standing prompt
+  (`noVisionSection`) + describe_system. `show_file`/slide previews are unaffected (user-facing only).
 
 ### Generated-file delivery + PPTX deck pipeline (`share_file`, hidden publishes)
 - **`chatFiles.ts` mirrors `chatImages.ts` for agent-GENERATED documents** (there is deliberately NO

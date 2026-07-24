@@ -2919,6 +2919,15 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("download card");
   });
 
+  it("injects the no-vision warning only when visionEnabled is explicitly false", () => {
+    expect(buildPrompt(req({ viewerIsOwner: true }), 0)).not.toContain("No image input");
+    expect(buildPrompt(req({ viewerIsOwner: true, visionEnabled: true }), 0)).not.toContain("No image input");
+    const p = buildPrompt(req({ viewerIsOwner: true, visionEnabled: false }), 0);
+    expect(p).toContain("No image input");
+    expect(p).toContain("pdftotext");
+    expect(p).toContain("mcp__file_output__show_file");
+  });
+
   it("injects deck (PPTX) guidance only when the toolchain and file output are both active", () => {
     // File output alone is not enough — the deployment must carry the toolchain.
     expect(buildPrompt(req({ viewerIsOwner: true, fileOutputEnabled: true }), 0)).not.toContain("PowerPoint decks");
@@ -3044,6 +3053,42 @@ exit 1
       "t1",
     );
   };
+
+  it("blocks Read on image/PDF files when the model has no vision", async () => {
+    const hook = buildPreToolUseHook(
+      {},
+      true,
+      READONLY,
+      false,
+      false,
+      false,
+      "owner",
+      DEFAULT_HEX_SSH_TOOL_POLICY,
+      "rtk",
+      false,
+      undefined,
+      false, // visionEnabled
+    );
+    const read = (file_path: string) =>
+      hook({ tool_name: "Read", tool_input: { file_path }, tool_use_id: "t-nv" }, "t-nv");
+
+    const png = await read("/ws/slide-01.PNG");
+    expect(png.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(png.hookSpecificOutput.permissionDecisionReason).toContain("cannot accept image input");
+    expect((await read("./docs/spec.pdf")).hookSpecificOutput.permissionDecision).toBe("deny");
+    // Text formats (SVG included — it's XML) stay readable.
+    expect((await read("/ws/diagram.svg")).hookSpecificOutput.permissionDecision).toBe("allow");
+    expect((await read("/ws/main.ts")).hookSpecificOutput.permissionDecision).toBe("allow");
+  });
+
+  it("keeps image Read allowed when vision is on (the default)", async () => {
+    const hook = buildPreToolUseHook({}, true, READONLY, false, false, false);
+    const out = await hook(
+      { tool_name: "Read", tool_input: { file_path: "/ws/a.png" }, tool_use_id: "t-v" },
+      "t-v",
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+  });
 
   it("auto-approves a write tool for a present elevated viewer who opted in (no prompt)", async () => {
     let prompted = false;

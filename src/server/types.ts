@@ -131,6 +131,14 @@ export interface AppConfig {
    */
   defaultTierModels: Record<string, string>;
   readOnlyTools: string[];
+  /**
+   * Whether the ACTIVE model accepts image input (vision). Env `MODEL_VISION`
+   * ("off" disables; default on). When false: chat image uploads are rejected,
+   * `Read` on image/PDF files is denied by the PreToolUse hook, Confluence
+   * tools stop returning MCP image blocks, and the avatar is told via the
+   * standing prompt + describe_system (META-COGNITION).
+   */
+  visionEnabled: boolean;
   /** Default host used when a repo is entered as owner/repo. */
   githubHost: string;
   /**
@@ -990,6 +998,12 @@ export interface AgentRequest {
    * describe_system (META-COGNITION).
    */
   deckRenderingEnabled?: boolean;
+  /**
+   * Whether the active model accepts image input. `false` injects the
+   * no-vision standing warning (image/PDF Read blocked, uploads disabled);
+   * undefined/true adds nothing. Mirrors `AppConfig.visionEnabled`.
+   */
+  visionEnabled?: boolean;
   /**
    * Experimental (beta) feature keys enabled for the avatar owner. Surfaced in
    * the owner/routine self-state (META-COGNITION) so the avatar knows which beta

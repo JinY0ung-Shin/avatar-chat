@@ -2070,6 +2070,21 @@ describe("system tools (avatar system management)", () => {
     expect(res.content[0].text).toContain("Remote SSH tools: enabled");
   });
 
+  it("describe_system reports text-only model vision honestly", async () => {
+    const s = setup("st-vision");
+    const on = await callTool(toolsFor(s), "describe_system", {});
+    expect(on.content[0].text).toContain("Image input (vision): supported");
+
+    const offTools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: true,
+      config: { ...s.config, visionEnabled: false },
+    });
+    const off = await callTool(offTools, "describe_system", {});
+    expect(off.content[0].text).toContain("Image input (vision): NOT supported");
+    expect(off.content[0].text).toContain("pdftotext");
+  });
+
   it("describe_system reports deck-generation availability honestly", async () => {
     const s = setup("st-deck");
     // Default context: no toolchain probe result → honest UNAVAILABLE + admin redirect.

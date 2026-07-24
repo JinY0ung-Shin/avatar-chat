@@ -375,6 +375,10 @@
 
   async function addImages(item: ChatPane, files: FileList | File[] | null | undefined) {
     if (!files) return;
+    if (readState().bootstrap?.visionEnabled === false) {
+      notify("현재 배포된 모델은 이미지 입력을 지원하지 않아 첨부할 수 없습니다.", "warn");
+      return;
+    }
     if (isExternalPane(item)) {
       notify("외부 아바타는 아직 이미지 첨부를 지원하지 않습니다.", "warn");
       return;
@@ -1120,8 +1124,8 @@
             {/each}
           </div>
         {/if}
-        <div class="composer-box" class:no-attach={isExternalPane(item)}>
-          {#if !isExternalPane(item)}
+        <div class="composer-box" class:no-attach={isExternalPane(item) || $appState.bootstrap?.visionEnabled === false}>
+          {#if !isExternalPane(item) && $appState.bootstrap?.visionEnabled !== false}
             <label class="composer-attach" class:disabled={item.streaming} title="이미지 첨부" aria-label="이미지 첨부">
               <Icon name="image" />
               <input

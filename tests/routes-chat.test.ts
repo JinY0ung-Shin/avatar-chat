@@ -446,6 +446,27 @@ describe("chat-stream request validation", () => {
     expect(H.requests).toHaveLength(0);
   });
 
+  it("rejects image uploads when the deployment model has no vision", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "claude",
+      sessionSecret: "test",
+      visionEnabled: false,
+    });
+    const app = createApp(services);
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "novision").expect(201)).body.user.id as string;
+    H.requests.length = 0;
+    const png =
+      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-nv", message: "이거 봐줘", images: [png] })
+      .expect(400);
+    expect(res.body.error).toContain("이미지 입력을 지원하지 않아");
+    expect(H.requests).toHaveLength(0);
+  });
+
   it("serves 404 for a missing image on the owner's own conversation", async () => {
     const { app } = boot();
     const owner = request.agent(app);

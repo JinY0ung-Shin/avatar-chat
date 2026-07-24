@@ -97,6 +97,10 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // RTK is optional: if the command is unavailable, Bash tool calls run
     // unchanged. Override when the binary is mounted outside PATH.
     rtkCommand: env("RTK_COMMAND", "rtk"),
+    // MODEL_VISION=off marks the serving backend as text-only: image uploads,
+    // image/PDF Read, and Confluence image blocks are all cut off BEFORE they
+    // can 400 a whole turn at the API layer.
+    visionEnabled: env("MODEL_VISION", "on").trim().toLowerCase() !== "off",
     // Static, server-only external avatar registry. Credentials stay in config
     // and are never projected into the public avatar API.
     externalAgents: parseExternalAgents(process.env.EXTERNAL_AGENTS_JSON),

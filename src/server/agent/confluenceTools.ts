@@ -746,10 +746,17 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
           { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
         > = [];
 
-        if (isSupportedImageMediaType(mediaType)) {
+        if (isSupportedImageMediaType(mediaType) && ctx.config.visionEnabled !== false) {
           payload.download = { bytes: bytes.bytes, returnedAs: "image" };
           content.push({ type: "text", text: JSON.stringify(payload, null, 2) });
           content.push({ type: "image", data: bytes.data.toString("base64"), mimeType: mediaType });
+          return { content };
+        }
+        if (isSupportedImageMediaType(mediaType)) {
+          // Text-only backend: an image block would 400 the whole turn.
+          payload.note =
+            "This is an image attachment, but the active model cannot accept image input, so no image block was returned. Reference the Confluence page/attachment link for the user instead.";
+          content.push({ type: "text", text: JSON.stringify(payload, null, 2) });
           return { content };
         }
 
@@ -811,7 +818,15 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
 
         const inlineImages: JsonRecord[] = [];
         const imageBlocks: Array<{ type: "image"; data: string; mimeType: string }> = [];
-        if (args.include_images) {
+        if (args.include_images && ctx.config.visionEnabled === false) {
+          // Text-only backend: never emit image blocks; say so instead of
+          // silently returning nothing.
+          inlineImages.push({
+            error:
+              "include_images was requested, but the active model cannot accept image input, so no image blocks were returned.",
+          });
+        }
+        if (args.include_images && ctx.config.visionEnabled !== false) {
           const candidates = unique(
             [...referencedImages, ...drawioAttachments.filter(isImageAttachment)]
               .map(attachmentTitle)

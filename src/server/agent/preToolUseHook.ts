@@ -22,6 +22,13 @@ import {
 const agentLogger = logger.child({ module: "agent" });
 const RTK_REWRITE_TIMEOUT_MS = 1_000;
 
+/**
+ * File types the SDK `Read` tool turns into image content blocks (rasters, and
+ * PDFs which are rendered to page images) — exactly what a text-only backend
+ * rejects. SVG stays readable: it is text/XML.
+ */
+const NO_VISION_READ_BLOCKED = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|heic|heif|avif|pdf)$/i;
+
 /** SDK orchestration tools that should never trigger the user permission modal. */
 export const TASK_ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(SDK_ORCHESTRATION_TOOLS);
 const AUTO_ALLOWED_META_TOOLS: ReadonlySet<string> = new Set(["Skill", ...SDK_INTERNAL_HIDDEN_TOOLS]);
@@ -162,6 +169,7 @@ export function buildPreToolUseHook(
   rtkCommand = "rtk",
   activeRepoMode = false,
   toolSkillPolicy: ToolSkillPolicy = DEFAULT_TOOL_SKILL_POLICY,
+  visionEnabled = true,
 ) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
@@ -264,6 +272,26 @@ export function buildPreToolUseHook(
               "Read-only git (status/diff/log/show/rev-parse/ls-files/grep) and local staging/normal commit (add/commit) are allowed.",
           ));
         }
+      }
+    }
+
+    // Non-vision deployment: the active model rejects image input, so a Read
+    // on a raster/PDF file would 400 the WHOLE turn at the API layer. Deny
+    // early with a redirect instead — this must run BEFORE the read-only
+    // auto-allow below (Read is normally auto-approved).
+    if (!visionEnabled && toolName === "Read") {
+      const filePath = asString(toolInput.file_path);
+      if (NO_VISION_READ_BLOCKED.test(filePath)) {
+        const reason = "현재 모델은 이미지 입력을 지원하지 않아 이미지/PDF 읽기가 차단되었습니다.";
+        events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+        agentLogger.info({ toolName, agentId, filePath }, "no-vision image read blocked");
+        return trace(
+          hookDeny(
+            "The active model cannot accept image input, so Read on image/PDF files is blocked in this deployment. " +
+              "Do not retry or try to view the file another way. For a PDF, extract its text with Bash (`pdftotext file.pdf -`). " +
+              "To let the USER see an image, publish it with mcp__file_output__show_file — the user can view it even though you cannot.",
+          ),
+        );
       }
     }
 

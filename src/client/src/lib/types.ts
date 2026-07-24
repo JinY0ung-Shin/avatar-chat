@@ -204,6 +204,12 @@ export interface BootstrapInfo {
   signupMode: "open" | "closed" | "approval";
   confluenceConfigured: boolean;
   /**
+   * False when the deployment's model is text-only (MODEL_VISION=off): the
+   * composer hides the image-attach UI. Optional for older servers (absent =
+   * assume vision).
+   */
+  visionEnabled?: boolean;
+  /**
    * Per-conversation model picker config: selectable tiers + whether an env-pinned
    * ANTHROPIC_MODEL locks the choice (then the composer hides the picker). Optional
    * for forward-compat with an older server that omits it.

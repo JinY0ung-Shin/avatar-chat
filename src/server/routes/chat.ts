@@ -818,6 +818,13 @@ export function createChatRouter({
         return;
       }
       const decodedImages = decodedImagesResult.images;
+      // Text-only backend (MODEL_VISION=off): reject image uploads up front —
+      // feeding image blocks would 400 the whole turn at the API layer. The
+      // composer hides the attach UI too; this is the server-side net.
+      if (decodedImages.length > 0 && !config.visionEnabled) {
+        apiError(res, 400, "현재 배포된 모델은 이미지 입력을 지원하지 않아 이미지를 첨부할 수 없습니다.");
+        return;
+      }
 
       // Validate BEFORE switching to SSE so failures stay plain JSON. A turn with
       // image attachments but no text is allowed (the images are the message).
@@ -1166,11 +1173,11 @@ export function createChatRouter({
           const lastUser = [...priorMessages]
             .reverse()
             .find((m) => m.role === "user");
-          requestImages = readChatImages(
-            config,
-            conversationId,
-            lastUser?.attachments,
-          );
+          // Skip the re-feed entirely on a text-only backend: attachments
+          // uploaded before MODEL_VISION was turned off must not resurface.
+          requestImages = config.visionEnabled
+            ? readChatImages(config, conversationId, lastUser?.attachments)
+            : [];
         }
         // The SDK session id this run reports (init event); persisted on success so
         // the next turn can resume it.

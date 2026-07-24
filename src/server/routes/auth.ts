@@ -135,6 +135,9 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
       // Lets onboarding show the Confluence PAT field only when the deployment
       // has a Confluence host configured (the PAT is useless otherwise).
       confluenceConfigured: Boolean(config.confluenceUrl),
+      // False when the serving backend is text-only (MODEL_VISION=off): the
+      // composer hides the image-attach UI (the server also rejects uploads).
+      visionEnabled: config.visionEnabled,
       // Per-conversation model picker: the selectable tiers + whether the choice
       // is locked by an env-pinned ANTHROPIC_MODEL (then the composer hides the
       // picker). The concrete model each tier maps to is the operator's call via
