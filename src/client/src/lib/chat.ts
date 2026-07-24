@@ -330,13 +330,13 @@ export async function addConversationToSplit(
   await attachActiveRun(pane.id);
 }
 
-export function newChat(paneId?: string): void {
+export function newChat(paneId?: string, opts?: { force?: boolean }): void {
   const pane = paneId
     ? readState().chatPanes.find((item) => item.id === paneId)
     : readState().chatPanes.find(
         (item) => item.id === readState().activePaneId,
       );
-  if (!pane || pane.streaming) return;
+  if (!pane || (pane.streaming && !opts?.force)) return;
   const next = makePane(pane.avatar);
   updateState((state) => {
     state.chatPanes = state.chatPanes.map((item) =>
@@ -346,6 +346,47 @@ export function newChat(paneId?: string): void {
     state.currentAvatar = next.avatar;
   });
   syncHash();
+}
+
+/**
+ * Rail "새 대화" action: start a fresh thread IMMEDIATELY (same meaning as the
+ * chat-header button), instead of merely navigating to explore. Target: the
+ * active pane's avatar; with no open pane, the user's own avatar. Streaming
+ * panes get the same confirm as startChatWith before being replaced.
+ */
+export async function startNewChat(): Promise<void> {
+  const state = readState();
+  const pane =
+    state.chatPanes.find((item) => item.id === state.activePaneId) ??
+    state.chatPanes[0];
+  if (pane) {
+    if (
+      pane.streaming &&
+      !(await confirmAction("응답 생성 중입니다. 새 대화로 전환할까요?"))
+    ) {
+      return;
+    }
+    newChat(pane.id, { force: true });
+    updateState((s) => {
+      s.view = "chat";
+    });
+    syncHash();
+    return;
+  }
+  const me = state.user;
+  if (!me) return;
+  const { avatar } = await api<{ avatar: AvatarDetail }>(
+    `/api/avatars/${encodeURIComponent(me.id)}`,
+  );
+  const fresh = makePane(avatar);
+  updateState((s) => {
+    s.currentAvatar = avatar;
+    s.chatPanes = [fresh];
+    s.activePaneId = fresh.id;
+    s.view = "chat";
+  });
+  syncHash();
+  void loadConversations();
 }
 
 export async function clearChatHistory(): Promise<number> {

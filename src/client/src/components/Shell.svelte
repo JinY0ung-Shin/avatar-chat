@@ -4,7 +4,7 @@
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
-  import { addConversationToSplit, clearChatHistory, newChat, selectConversation } from "../lib/chat";
+  import { addConversationToSplit, clearChatHistory, newChat, selectConversation, startNewChat } from "../lib/chat";
   import { formatDate } from "../lib/format";
   import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { prefersReducedMotion, project, rubberband, springValue } from "../lib/motion";
@@ -630,7 +630,15 @@
       {/if}
     </nav>
 
-    <button class="new-chat" type="button" on:click={() => navigate("explore")}>
+    <button
+      class="new-chat"
+      type="button"
+      title="현재 아바타와 새 대화를 시작합니다 (대화가 없으면 내 아바타)"
+      on:click={() => {
+        void startNewChat();
+        closeRail();
+      }}
+    >
       <Icon name="plus" />
       <span>새 대화</span>
     </button>
