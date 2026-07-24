@@ -1,5 +1,12 @@
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { promisify } from "node:util";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import logger from "./logger.js";
+
+const execFileAsync = promisify(execFile);
+const deckLogger = logger.child({ module: "deck-render" });
 
 /**
  * Deployment-level probe for the PPTX deck toolchain the bundled `pptx` skill
@@ -44,4 +51,93 @@ export function probeDeckRendering(): boolean {
 /** Test hook: override or clear (null) the memoized probe result. */
 export function __setDeckRenderingForTests(value: boolean | null): void {
   cached = value;
+}
+
+/** Document types the server can rasterize into page previews. */
+export const PREVIEWABLE_EXTENSIONS = ["pptx", "docx", "xlsx", "pdf"] as const;
+
+export function isPreviewableExtension(ext: string): boolean {
+  return (PREVIEWABLE_EXTENSIONS as readonly string[]).includes(ext.toLowerCase());
+}
+
+/** Cap on auto-rendered preview pages (matches the hidden-publish budget). */
+export const MAX_PREVIEW_PAGES = 30;
+
+/** Per-stage (soffice / pdftoppm) time budget for an auto-render. */
+const RENDER_STAGE_TIMEOUT_MS = 120_000;
+
+/**
+ * Order pdftoppm outputs numerically: it emits `slide-1.png`…`slide-10.png`
+ * for short docs but zero-pads (`slide-01.png`) for longer ones, so a plain
+ * lexicographic sort would interleave pages. Exported for tests.
+ */
+export function sortSlideFiles(names: string[]): string[] {
+  const pageNo = (name: string) => {
+    const match = /-(\d+)\.png$/i.exec(name);
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  return [...names].sort((a, b) => pageNo(a) - pageNo(b));
+}
+
+/**
+ * Rasterize a stored document into per-page PNG buffers (page order), fully
+ * SERVER-SIDE — the agent never has to render/publish slides itself. pdf goes
+ * straight through pdftoppm; office formats convert to pdf first via a
+ * profile-isolated headless soffice (parallel conversions would otherwise
+ * fight over the shared profile lock). Returns [] when the toolchain is
+ * missing or anything fails — callers treat previews as best-effort.
+ */
+export async function renderDocumentPreviews(
+  sourcePath: string,
+  ext: string,
+): Promise<Buffer[]> {
+  if (!probeDeckRendering() || !isPreviewableExtension(ext)) {
+    return [];
+  }
+  let workDir: string | null = null;
+  try {
+    workDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "deck-preview-"));
+    let pdfPath = sourcePath;
+    if (ext.toLowerCase() !== "pdf") {
+      await execFileAsync(
+        "soffice",
+        [
+          "--headless",
+          "--norestore",
+          `-env:UserInstallation=file://${workDir}/lo-profile`,
+          "--convert-to",
+          "pdf",
+          "--outdir",
+          workDir,
+          sourcePath,
+        ],
+        { timeout: RENDER_STAGE_TIMEOUT_MS },
+      );
+      const base = path.basename(sourcePath);
+      pdfPath = path.join(workDir, `${base.slice(0, base.lastIndexOf("."))}.pdf`);
+    }
+    await fs.promises.access(pdfPath);
+    await execFileAsync(
+      "pdftoppm",
+      ["-png", "-r", "120", "-l", String(MAX_PREVIEW_PAGES), pdfPath, path.join(workDir, "slide")],
+      { timeout: RENDER_STAGE_TIMEOUT_MS },
+    );
+    const entries = await fs.promises.readdir(workDir);
+    const slides = sortSlideFiles(entries.filter((name) => /^slide-\d+\.png$/i.test(name))).slice(
+      0,
+      MAX_PREVIEW_PAGES,
+    );
+    const buffers: Buffer[] = [];
+    for (const name of slides) {
+      buffers.push(await fs.promises.readFile(path.join(workDir, name)));
+    }
+    return buffers;
+  } catch (err) {
+    deckLogger.warn({ err, sourcePath, ext }, "document preview render failed");
+    return [];
+  } finally {
+    if (workDir) {
+      fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }

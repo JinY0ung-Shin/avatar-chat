@@ -233,3 +233,28 @@ describe("chatImages", () => {
     expect(publishWorkspaceImage(config(), "conv-safe", "huge.png", [workspace])).toEqual({ error: "TOO_LARGE" });
   });
 });
+
+// ---- server-rendered preview attachments (share_file auto previews) ----
+import { savePreviewImages } from "../src/server/chatImages.js";
+
+describe("savePreviewImages", () => {
+  const dir = withTempDir("chat-preview-images");
+  const config = () => ({ dataDir: dir() }) as AppConfig;
+
+  it("stores server-rendered pages as hidden PNG attachments", () => {
+    const pages = [Buffer.from("png-1"), Buffer.from("png-2")];
+    const attachments = savePreviewImages(config(), "conv-prev", pages);
+    expect(attachments).toHaveLength(2);
+    for (const [index, att] of attachments.entries()) {
+      expect(att).toMatchObject({
+        kind: "image",
+        mediaType: "image/png",
+        hidden: true,
+        name: `slide-${index + 1}.png`,
+      });
+      const resolved = resolveStoredImage(config(), "conv-prev", att.id);
+      expect(resolved).not.toBeNull();
+    }
+    expect(savePreviewImages(config(), "conv-prev", [])).toEqual([]);
+  });
+});

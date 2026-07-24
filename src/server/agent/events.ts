@@ -104,6 +104,12 @@ export type FileOutputResult =
       attachment: import("../types.js").MessageAttachment;
       /** Same-origin serving URL (e.g. for canvas markdown embeds / download cards). */
       url: string;
+      /**
+       * share_file only: page previews the SERVER auto-rendered and attached
+       * (0/undefined = none). Lets the tool text tell the model not to publish
+       * slides itself.
+       */
+      previews?: number;
     }
   | { behavior: "error"; message: string };
 

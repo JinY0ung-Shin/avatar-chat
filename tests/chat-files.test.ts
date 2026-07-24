@@ -148,3 +148,34 @@ describe("chatFiles", () => {
     });
   });
 });
+
+// ---- server-side auto preview helpers (deckRender.ts) ----
+import {
+  isPreviewableExtension,
+  sortSlideFiles,
+  MAX_PREVIEW_PAGES,
+} from "../src/server/deckRender.js";
+
+describe("deck preview helpers", () => {
+  it("classifies previewable document extensions", () => {
+    expect(isPreviewableExtension("pptx")).toBe(true);
+    expect(isPreviewableExtension("PDF")).toBe(true);
+    expect(isPreviewableExtension("docx")).toBe(true);
+    expect(isPreviewableExtension("zip")).toBe(false);
+    expect(isPreviewableExtension("md")).toBe(false);
+  });
+
+  it("sorts pdftoppm outputs numerically across padded and unpadded names", () => {
+    expect(sortSlideFiles(["slide-10.png", "slide-2.png", "slide-1.png"])).toEqual([
+      "slide-1.png",
+      "slide-2.png",
+      "slide-10.png",
+    ]);
+    expect(sortSlideFiles(["slide-02.png", "slide-01.png", "slide-10.png"])).toEqual([
+      "slide-01.png",
+      "slide-02.png",
+      "slide-10.png",
+    ]);
+    expect(MAX_PREVIEW_PAGES).toBeGreaterThan(0);
+  });
+});

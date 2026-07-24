@@ -634,15 +634,17 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   loop filters hidden entries. Per-turn caps: 6 visible images (unchanged), 30 hidden, 3 files —
   enforced in the `onFile`/`onShareFile` handlers, counted per kind off `shownAttachments`.
 - **Deck (PPTX) pipeline**: bundled `pptx` skill = python-pptx authoring (NanumGothic — 맑은 고딕 is not
-  in the image, LibreOffice would silently substitute) → `scripts/render_deck.sh` (`soffice --headless`
-  pptx→pdf with a per-run `-env:UserInstallation` profile so parallel conversions don't fight the lock,
-  then `pdftoppm` pdf→PNG; **direct pptx→png converts only the FIRST slide**) → hidden `show_file`
-  publishes → ONE canvas markdown embedding the returned same-origin URLs (falls back to inline
-  `show_file` when canvas is off) → `share_file`. **Availability = boot-time probe** (`deckRender.ts`,
-  memoized `spawnSync` soffice/pdftoppm/python-pptx — a NEW pattern, nothing else probes at boot),
-  threaded per-run like `fileOutputEnabled`: `AgentRequest.deckRenderingEnabled` (probe && fileOutput)
-  drives the promptBuilder `deckSection`, `SystemToolsContext.deckRenderingAvailable` the
-  describe_system line (UNAVAILABLE → "admin must rebuild the image"). Docker: `libreoffice-impress` +
+  in the image, LibreOffice would silently substitute) → `share_file`. **Delivery previews are
+  SERVER-AUTOMATIC**: the `onShareFile` handler calls `renderDocumentPreviews` (deckRender.ts —
+  async execFile soffice→pdf with an isolated profile, then `pdftoppm -l 30`; **direct pptx→png
+  converts only the FIRST slide**; pdf skips soffice; also docx/xlsx) and attaches the pages via
+  `savePreviewImages` (chatImages.ts, trusted-input hidden PNGs) — best-effort, a render failure
+  still delivers the file. The agent renders manually (scripts/render_deck.sh + hidden `show_file`
+  + ONE canvas markdown) only for mid-work review/self-check. **Availability = boot-time probe**
+  (`deckRender.ts`, memoized `spawnSync` soffice/pdftoppm/python-pptx — a NEW pattern, nothing else
+  probes at boot), threaded per-run like `fileOutputEnabled`: `AgentRequest.deckRenderingEnabled`
+  (probe && fileOutput) drives the promptBuilder `deckSection`, `SystemToolsContext.deckRenderingAvailable`
+  the describe_system line (UNAVAILABLE → "admin must rebuild the image"). Docker: `libreoffice-impress` +
   `fonts-nanum` + `poppler-utils` via apt mirror; `python-pptx` is NOT in Debian → pip at build with
   `PIP_INDEX_URL`/`PIP_TRUSTED_HOST` build-args (compose passthrough).
 - **Regenerate caveat:** replacing the last assistant turn deletes its attachments (images AND files),

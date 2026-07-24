@@ -415,9 +415,9 @@ function noVisionSection(request: AgentRequest): string | null {
 function deckSection(request: AgentRequest): string | null {
   if (!request.deckRenderingEnabled) return null;
   return (
-    "**PowerPoint decks**: when the user asks for a presentation/PPT/slide deck (or to edit a .pptx you can reach), use the `pptx` skill — it covers authoring with python-pptx, rendering slide previews (soffice → pdftoppm), and delivery. " +
-    "Preview slides for the user as you iterate: publish each rendered slide PNG with `show_file` + `hidden:true` and embed the returned URLs in ONE canvas artifact (when the canvas tool is available) so the deck is reviewable in the side panel; without the canvas tool, show key slides inline with `show_file`. " +
-    "Always finish by sharing the .pptx itself with `mcp__file_output__share_file` so the user can download it."
+    "**PowerPoint decks**: when the user asks for a presentation/PPT/slide deck (or to edit a .pptx you can reach), use the `pptx` skill — author with python-pptx, then deliver with `mcp__file_output__share_file`. " +
+    "Delivery previews are AUTOMATIC: share_file renders the slides server-side into the file card's side panel, so do NOT rasterize or publish slide images just to deliver. " +
+    "Render slides yourself (soffice → pdftoppm, see the skill) only for MID-WORK needs: self-checking layout by Reading a PNG, or an interactive canvas review — publish those with `show_file` + `hidden:true` and embed the returned URLs in ONE canvas artifact."
   );
 }
 

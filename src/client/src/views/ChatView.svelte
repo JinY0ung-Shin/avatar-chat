@@ -956,7 +956,7 @@
                     {#each visibleAttachments(message.attachments) as att (att.id)}
                       {#if att.kind === "file"}
                         <button class="msg-file-card" type="button" on:click={() => openFilePreview(item, att, message.attachments)}>
-                          <span class="msg-file-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
+                          <span class="msg-file-icon" aria-hidden="true"><Icon name="file" /></span>
                           <span class="msg-file-meta">
                             <span class="msg-file-name">{att.name || "파일"}</span>
                             <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>
@@ -1074,7 +1074,7 @@
                   {#each visibleAttachments(item.liveAttachments) as att (att.id)}
                     {#if att.kind === "file"}
                       <button class="msg-file-card" type="button" on:click={() => openFilePreview(item, att, item.liveAttachments)}>
-                        <span class="msg-file-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
+                        <span class="msg-file-icon" aria-hidden="true"><Icon name="file" /></span>
                         <span class="msg-file-meta">
                           <span class="msg-file-name">{att.name || "파일"}</span>
                           <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>

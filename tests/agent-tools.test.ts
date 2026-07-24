@@ -2704,6 +2704,27 @@ describe("file output tools", () => {
     expect(shareFile).toHaveBeenCalledWith({ path: "out/보고서.pdf", name: "보고서.pdf" });
     expect(result.content[0].text).toContain("보고서.pdf");
     expect(result.content[0].text).toContain("download card");
+    // No previews on the host result → no auto-preview note.
+    expect(result.content[0].text).not.toContain("rendered automatically");
+  });
+
+  it("share_file tells the model when previews were auto-rendered", async () => {
+    const result = await callTool(
+      buildFileOutputTools({
+        showFile: async () => ({ behavior: "error", message: "unused" }),
+        shareFile: async () => ({
+          behavior: "shown" as const,
+          attachment: { id: "deck-1", kind: "file" as const, mediaType: "application/vnd.openxmlformats-officedocument.presentationml.presentation", name: "deck.pptx", size: 999 },
+          url: "/api/conversations/c1/files/deck-1",
+          previews: 5,
+        }),
+      }),
+      "share_file",
+      { path: "out/deck.pptx" },
+    );
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("5 page preview(s) were rendered automatically");
+    expect(result.content[0].text).toContain("do not publish slide images yourself");
   });
 
   it("passes share_file host failures through as tool errors", async () => {

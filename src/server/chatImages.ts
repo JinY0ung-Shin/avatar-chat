@@ -235,6 +235,34 @@ export function publishWorkspaceImage(
   };
 }
 
+/**
+ * Persist SERVER-rendered preview pages (share_file's automatic slide
+ * rasterization — see deckRender.ts) as HIDDEN image attachments in the
+ * conversation store. Trusted input from our own renderer, so no MIME
+ * sniffing or byte caps here; hidden keeps them out of the chat bubble while
+ * the file-preview panel reads them off the same message.
+ */
+export function savePreviewImages(
+  config: AppConfig,
+  conversationId: string,
+  buffers: Buffer[],
+): MessageAttachment[] {
+  if (!buffers.length) return [];
+  const dir = chatImagesDir(config, conversationId);
+  fs.mkdirSync(dir, { recursive: true });
+  return buffers.map((buffer, index) => {
+    const id = crypto.randomUUID();
+    fs.writeFileSync(path.join(dir, `${id}.png`), buffer, { flag: "wx" });
+    return {
+      id,
+      kind: "image",
+      mediaType: "image/png",
+      name: `slide-${index + 1}.png`,
+      hidden: true,
+    };
+  });
+}
+
 /** Delete selected conversation image files, ignoring already-missing entries. */
 export function deleteChatImageAttachments(
   config: AppConfig,

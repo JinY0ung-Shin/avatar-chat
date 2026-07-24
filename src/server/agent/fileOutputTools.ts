@@ -55,6 +55,7 @@ export function buildFileOutputTools(ctx: FileOutputToolsContext) {
       "share_file",
       "Hand a generated document to the user as a DOWNLOAD CARD in the chat. " +
         "Use this whenever you finish producing a file the user should keep — a PPTX deck, PDF, DOCX, XLSX, ZIP, CSV, or Markdown/text file. " +
+        "For PPTX/DOCX/XLSX/PDF the server AUTOMATICALLY renders page previews into the card's side panel — do NOT render or publish slide images yourself for delivery. " +
         "Pass the local file path from your working directory; never paste a local path or file:// URL into Markdown, because the browser cannot reach your filesystem and there is NO Bash workaround for delivering files. " +
         "The file must be inside the run's working directory or scratch workspace, at most 30 MB, and its content must match its extension. A turn can share at most 3 files.",
       {
@@ -69,8 +70,11 @@ export function buildFileOutputTools(ctx: FileOutputToolsContext) {
         if (result.behavior === "error") {
           return text(result.message, true);
         }
+        const previewNote = result.previews
+          ? ` ${result.previews} page preview(s) were rendered automatically into the card's side panel — do not publish slide images yourself.`
+          : "";
         return text(
-          `The file "${result.attachment.name}" is now available to the user as a download card (attachment id: ${result.attachment.id}). ` +
+          `The file "${result.attachment.name}" is now available to the user as a download card (attachment id: ${result.attachment.id}).${previewNote} ` +
             "Do not also paste its local path; briefly tell the user the file is ready to download.",
         );
       },

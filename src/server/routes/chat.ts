@@ -35,9 +35,11 @@ import {
   readChatImages,
   resolveStoredImage,
   saveChatImages,
+  savePreviewImages,
   MAX_CHAT_IMAGES_PER_MESSAGE,
 } from "../chatImages.js";
 import { visionForModel } from "../modelVisionPolicy.js";
+import { isPreviewableExtension, renderDocumentPreviews } from "../deckRender.js";
 import {
   deleteChatFileAttachments,
   deleteConversationFiles,
@@ -1745,10 +1747,29 @@ export function createChatRouter({
                   runId,
                   attachment: result.attachment,
                 });
+                // Auto-render page previews SERVER-SIDE (pptx/docx/xlsx/pdf →
+                // hidden PNG attachments on this same message) so the agent
+                // never has to rasterize and publish slides one by one.
+                // Best-effort: a missing toolchain or a render failure still
+                // delivers the file, just without the panel preview.
+                let previewCount = 0;
+                const stored = resolveStoredFile(config, conversationId, result.attachment.id);
+                if (stored && isPreviewableExtension(stored.ext)) {
+                  const pages = await renderDocumentPreviews(stored.path, stored.ext);
+                  if (pages.length) {
+                    const previewAttachments = savePreviewImages(config, conversationId, pages);
+                    previewCount = previewAttachments.length;
+                    for (const attachment of previewAttachments) {
+                      shownAttachments.push(attachment);
+                      emitRunEvent(runId, "file", { runId, attachment });
+                    }
+                  }
+                }
                 return {
                   behavior: "shown",
                   attachment: result.attachment,
                   url: `/api/conversations/${encodeURIComponent(conversationId)}/files/${encodeURIComponent(result.attachment.id)}`,
+                  previews: previewCount,
                 };
               },
             },
