@@ -446,6 +446,26 @@
     );
   }
 
+  // Hidden attachments (slide PNGs published for canvas embeds) are served by
+  // URL but never rendered in the bubble.
+  function visibleAttachments(attachments: MessageAttachment[] | undefined): MessageAttachment[] {
+    return (attachments ?? []).filter((att) => !att.hidden);
+  }
+
+  // Download URL for a generated-file attachment; `name` only picks the
+  // save-dialog filename (the server sanitizes it).
+  function fileSrc(conversationId: string, att: MessageAttachment): string {
+    const base = `/api/conversations/${encodeURIComponent(conversationId)}/files/${encodeURIComponent(att.id)}`;
+    return att.name ? `${base}?name=${encodeURIComponent(att.name)}` : base;
+  }
+
+  function formatFileSize(size: number | undefined): string {
+    if (!size || size <= 0) return "";
+    if (size < 1024) return `${size} B`;
+    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
   /* ---- slash autocomplete ---- */
   function slashQuery(text: string): string | null {
     if (typeof text !== "string" || text.startsWith("//")) return null;
@@ -886,22 +906,32 @@
                   </details>
                 {/if}
                 <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
-                {#if message.attachments?.length}
+                {#if visibleAttachments(message.attachments).length}
                   <div class="msg-images">
-                    {#each message.attachments as att (att.id)}
-                      <figure class="msg-image-item">
-                        <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
-                          <img class="msg-image" src={imageSrc(message, att, item)} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
+                    {#each visibleAttachments(message.attachments) as att (att.id)}
+                      {#if att.kind === "file"}
+                        <a class="msg-file-card" href={fileSrc(message.conversationId, att)} download={att.name || undefined}>
+                          <span class="msg-file-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
+                          <span class="msg-file-meta">
+                            <span class="msg-file-name">{att.name || "파일"}</span>
+                            <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}다운로드</span>
+                          </span>
                         </a>
-                        {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
-                      </figure>
+                      {:else}
+                        <figure class="msg-image-item">
+                          <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
+                            <img class="msg-image" src={imageSrc(message, att, item)} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
+                          </a>
+                          {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
+                        </figure>
+                      {/if}
                     {/each}
                   </div>
                 {/if}
               {:else}
-                {#if message.attachments?.length}
+                {#if visibleAttachments(message.attachments).length}
                   <div class="msg-images">
-                    {#each message.attachments as att (att.id)}
+                    {#each visibleAttachments(message.attachments) as att (att.id)}
                       <figure class="msg-image-item">
                         <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
                           <img class="msg-image" src={imageSrc(message, att, item)} alt={att.caption || att.name || "첨부 이미지"} loading="lazy" />
@@ -994,15 +1024,25 @@
               {#if item.liveText}
                 <div class="md" use:enhanceMarkdown={item.liveText}>{@html renderMarkdown(item.liveText)}<span class="stream-caret" aria-hidden="true"></span></div>
               {/if}
-              {#if item.liveAttachments.length}
+              {#if visibleAttachments(item.liveAttachments).length}
                 <div class="msg-images">
-                  {#each item.liveAttachments as att (att.id)}
-                    <figure class="msg-image-item">
-                      <a class="msg-image-link" href={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} target="_blank" rel="noopener noreferrer">
-                        <img class="msg-image" src={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
+                  {#each visibleAttachments(item.liveAttachments) as att (att.id)}
+                    {#if att.kind === "file"}
+                      <a class="msg-file-card" href={fileSrc(item.conversationId, att)} download={att.name || undefined}>
+                        <span class="msg-file-icon" aria-hidden="true"><Icon name="arrow-down" /></span>
+                        <span class="msg-file-meta">
+                          <span class="msg-file-name">{att.name || "파일"}</span>
+                          <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}다운로드</span>
+                        </span>
                       </a>
-                      {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
-                    </figure>
+                    {:else}
+                      <figure class="msg-image-item">
+                        <a class="msg-image-link" href={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} target="_blank" rel="noopener noreferrer">
+                          <img class="msg-image" src={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
+                        </a>
+                        {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
+                      </figure>
+                    {/if}
                   {/each}
                 </div>
               {/if}

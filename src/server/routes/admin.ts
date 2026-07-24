@@ -5,6 +5,8 @@ import { requireAdmin, requireAuth, type AuthenticatedRequest } from "../auth.js
 import logger from "../logger.js";
 import { knowledgeClonePath } from "../knowledgeRepo.js";
 import { knownHostsPath } from "../sshTrust.js";
+import { deleteConversationImages } from "../chatImages.js";
+import { deleteConversationFiles } from "../chatFiles.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import { HEX_SSH_TOOL_INFOS, parseHexSshToolPolicy } from "../hexSshPolicy.js";
 import { TOGGLABLE_BUILTIN_TOOLS, parseToolSkillPolicy } from "../toolSkillPolicy.js";
@@ -169,6 +171,12 @@ export function createAdminRouter(deps: RouterDeps): Router {
         apiError(res, 400, "마지막 관리자 계정은 삭제할 수 없습니다.");
         return;
       }
+      // Snapshot conversation ids BEFORE the row cascade: the per-conversation
+      // chat-image/file dirs are keyed by these ids, and deleteUser erases the
+      // rows we'd need to find them.
+      const conversationIds = store
+        .listConversations(req.params.id, undefined, "all")
+        .map((conversation) => conversation.id);
       const removed = store.deleteUser(req.params.id);
       if (!removed) {
         apiError(res, 404, "사용자를 찾을 수 없습니다.");
@@ -179,7 +187,8 @@ export function createAdminRouter(deps: RouterDeps): Router {
       // Best-effort on-disk cleanup (the DB rows are already gone). Never throw:
       // a cleanup failure must not turn a successful deletion into a 500. The
       // knowledge clone is a full copy of a possibly-private repo, so removing it
-      // matters most; also drop the per-user ssh trust dir and avatar image. (store-03)
+      // matters most; also drop the per-user ssh trust dir, avatar image, and the
+      // per-conversation chat image/file stores. (store-03)
       try {
         fs.rmSync(knowledgeClonePath(req.params.id, config), { recursive: true, force: true });
         fs.rmSync(path.dirname(knownHostsPath(req.params.id, config)), { recursive: true, force: true });
@@ -190,6 +199,10 @@ export function createAdminRouter(deps: RouterDeps): Router {
               fs.rmSync(path.join(avatarsDir, f), { force: true });
             }
           }
+        }
+        for (const conversationId of conversationIds) {
+          deleteConversationImages(config, conversationId);
+          deleteConversationFiles(config, conversationId);
         }
       } catch (err) {
         logger.warn({ err, targetId: req.params.id }, "post-delete disk cleanup failed");

@@ -324,6 +324,7 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     const onFile = vi.fn(async () => ({
       behavior: "shown" as const,
       attachment: { id: "out-1", kind: "image" as const, mediaType: "image/png" as const },
+      url: "/api/conversations/c1/images/out-1",
     }));
 
     await runAgentStream(baseRequest, [], config, store, makeEvents({ onFile }));
@@ -331,6 +332,7 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     const options = sdkMock.calls[0].options;
     expect(Object.keys(options.mcpServers as Record<string, unknown>)).toContain("file_output");
     expect(options.allowedTools as string[]).toContain("mcp__file_output__show_file");
+    expect(options.allowedTools as string[]).toContain("mcp__file_output__share_file");
     expect(JSON.stringify(options.systemPrompt)).toContain("mcp__file_output__show_file");
   });
 

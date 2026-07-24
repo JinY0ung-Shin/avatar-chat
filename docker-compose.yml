@@ -9,6 +9,8 @@ services:
         # Set these in your shell before building when your network requires a mirror.
         APT_MIRROR_HOST: ${APT_MIRROR_HOST:-}
         NPM_CONFIG_REGISTRY: ${NPM_CONFIG_REGISTRY:-}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
         # Corporate proxy CA to trust for HTTPS clones (path within the build
         # context). Override in your shell: export CA_CERT_FILE=docker/tls-fullchain.crt
         CA_CERT_FILE: ${CA_CERT_FILE:-docker/extra-ca.crt.example}

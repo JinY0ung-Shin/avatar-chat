@@ -2070,6 +2070,26 @@ describe("system tools (avatar system management)", () => {
     expect(res.content[0].text).toContain("Remote SSH tools: enabled");
   });
 
+  it("describe_system reports deck-generation availability honestly", async () => {
+    const s = setup("st-deck");
+    // Default context: no toolchain probe result → honest UNAVAILABLE + admin redirect.
+    const off = await callTool(toolsFor(s), "describe_system", {});
+    expect(off.isError).toBeFalsy();
+    expect(off.content[0].text).toContain("Document deck generation (PPTX): UNAVAILABLE");
+    expect(off.content[0].text).toContain("rebuild the server image");
+
+    const onTools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: true,
+      deckRenderingAvailable: true,
+      fileOutputEnabled: true,
+    });
+    const on = await callTool(onTools, "describe_system", {});
+    expect(on.content[0].text).toContain("Document deck generation (PPTX): toolchain available");
+    expect(on.content[0].text).toContain("`pptx` skill");
+    expect(on.content[0].text).toContain("mcp__file_output__share_file");
+  });
+
   it("describe_system reports admin-disabled builtin tools and skills", async () => {
     const s = setup("st-toolskill");
     const noPolicy = await callTool(toolsFor(s), "describe_system", {});
@@ -2604,30 +2624,84 @@ describe("canvas tools (experimental, #50)", () => {
 });
 
 describe("file output tools", () => {
+  const shownImage = (over: Record<string, unknown> = {}) =>
+    vi.fn(async () => ({
+      behavior: "shown" as const,
+      attachment: { id: "img-1", kind: "image" as const, mediaType: "image/png", name: "result.png" },
+      url: "/api/conversations/c1/images/img-1",
+      ...over,
+    }));
+  const noShare = async () => ({ behavior: "error" as const, message: "unused" });
+
   it("exposes show_file and forwards its path + caption to the host", async () => {
     expect(FILE_OUTPUT_SERVER_NAME).toBe("file_output");
     expect(FILE_OUTPUT_TOOL_NAMES).toContain("mcp__file_output__show_file");
-    const showFile = vi.fn(async () => ({
-      behavior: "shown" as const,
-      attachment: { id: "img-1", kind: "image" as const, mediaType: "image/png" as const, name: "result.png" },
-    }));
-    const result = await callTool(buildFileOutputTools({ showFile }), "show_file", {
+    const showFile = shownImage();
+    const result = await callTool(buildFileOutputTools({ showFile, shareFile: noShare }), "show_file", {
       path: "out/result.png",
       caption: "결과",
     });
     expect(result.isError).toBeFalsy();
-    expect(showFile).toHaveBeenCalledWith({ path: "out/result.png", caption: "결과" });
+    expect(showFile).toHaveBeenCalledWith({ path: "out/result.png", caption: "결과", hidden: undefined });
     expect(result.content[0].text).toContain("img-1");
+    // A visible show never leaks the embed URL (that's the hidden-publish flow).
+    expect(result.content[0].text).not.toContain("/api/conversations/");
+  });
+
+  it("hidden show_file returns the embeddable same-origin URL", async () => {
+    const showFile = shownImage();
+    const result = await callTool(buildFileOutputTools({ showFile, shareFile: noShare }), "show_file", {
+      path: "slides/slide-01.png",
+      hidden: true,
+    });
+    expect(result.isError).toBeFalsy();
+    expect(showFile).toHaveBeenCalledWith({ path: "slides/slide-01.png", caption: undefined, hidden: true });
+    expect(result.content[0].text).toContain("without being shown");
+    expect(result.content[0].text).toContain("/api/conversations/c1/images/img-1");
   });
 
   it("returns host validation failures as tool errors", async () => {
     const result = await callTool(
-      buildFileOutputTools({ showFile: async () => ({ behavior: "error", message: "outside workspace" }) }),
+      buildFileOutputTools({
+        showFile: async () => ({ behavior: "error", message: "outside workspace" }),
+        shareFile: noShare,
+      }),
       "show_file",
       { path: "/etc/secret.png" },
     );
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("outside workspace");
+  });
+
+  it("exposes share_file and reports the download card to the model", async () => {
+    expect(FILE_OUTPUT_TOOL_NAMES).toContain("mcp__file_output__share_file");
+    const shareFile = vi.fn(async () => ({
+      behavior: "shown" as const,
+      attachment: { id: "file-1", kind: "file" as const, mediaType: "application/pdf", name: "보고서.pdf", size: 1234 },
+      url: "/api/conversations/c1/files/file-1",
+    }));
+    const result = await callTool(
+      buildFileOutputTools({ showFile: async () => ({ behavior: "error", message: "unused" }), shareFile }),
+      "share_file",
+      { path: "out/보고서.pdf", name: "보고서.pdf" },
+    );
+    expect(result.isError).toBeFalsy();
+    expect(shareFile).toHaveBeenCalledWith({ path: "out/보고서.pdf", name: "보고서.pdf" });
+    expect(result.content[0].text).toContain("보고서.pdf");
+    expect(result.content[0].text).toContain("download card");
+  });
+
+  it("passes share_file host failures through as tool errors", async () => {
+    const result = await callTool(
+      buildFileOutputTools({
+        showFile: async () => ({ behavior: "error", message: "unused" }),
+        shareFile: async () => ({ behavior: "error", message: "Unsupported file type." }),
+      }),
+      "share_file",
+      { path: "out/evil.exe" },
+    );
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Unsupported file type.");
   });
 });
 

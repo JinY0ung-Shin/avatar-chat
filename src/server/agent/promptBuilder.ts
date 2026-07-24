@@ -386,7 +386,24 @@ function fileOutputSection(request: AgentRequest): string | null {
     "**Local image output**: when you generate or download a PNG, JPEG, WebP, or GIF that the user should see, call `mcp__file_output__show_file` with its local path. " +
     "Use the optional `caption` for a short user-facing description. Local filesystem paths and `file://` URLs in Markdown are not visible to the browser, so never use those as a substitute. " +
     "Do NOT call Read to inspect or verify an image before showing it: `show_file` validates the bytes itself, while Read may fail when the active model cannot accept image input. If an image is outside the allowed roots (such as `/tmp`), copy it into the current directory with Bash (`cp /tmp/image.png \"$PWD/image.png\"`) and retry `show_file` with `./image.png`. " +
-    "Only files inside your current working directory or conversation scratch workspace can be shown; the file must be at most 5 MB, and one turn can show at most 6 images."
+    "Only files inside your current working directory or conversation scratch workspace can be shown; the file must be at most 5 MB, and one turn can show at most 6 images inline. " +
+    "**File delivery**: when you produce a document the user should KEEP (pptx/pdf/docx/xlsx/zip/csv/md/txt), hand it over with `mcp__file_output__share_file` — it renders a download card in the chat. There is no Bash or Markdown workaround for delivering files."
+  );
+}
+
+/**
+ * Standing guidance for PowerPoint deck work. Present only when the deployment
+ * image carries the toolchain (LibreOffice + pdftoppm + python-pptx) AND this
+ * turn can publish files — `request.deckRenderingEnabled` bundles both (see
+ * `claudeAgent.ts`). The `pptx` skill holds the detailed workflow; this note is
+ * the per-turn action trigger.
+ */
+function deckSection(request: AgentRequest): string | null {
+  if (!request.deckRenderingEnabled) return null;
+  return (
+    "**PowerPoint decks**: when the user asks for a presentation/PPT/slide deck (or to edit a .pptx you can reach), use the `pptx` skill — it covers authoring with python-pptx, rendering slide previews (soffice → pdftoppm), and delivery. " +
+    "Preview slides for the user as you iterate: publish each rendered slide PNG with `show_file` + `hidden:true` and embed the returned URLs in ONE canvas artifact (when the canvas tool is available) so the deck is reviewable in the side panel; without the canvas tool, show key slides inline with `show_file`. " +
+    "Always finish by sharing the .pptx itself with `mcp__file_output__share_file` so the user can download it."
   );
 }
 
@@ -539,6 +556,10 @@ export function buildSystemPromptAppend(
   const fileOutputBlock = fileOutputSection(request);
   if (fileOutputBlock) {
     lines.push(fileOutputBlock);
+  }
+  const deckBlock = deckSection(request);
+  if (deckBlock) {
+    lines.push(deckBlock);
   }
   // Who is on the other side decides the knowledge-backfill behavior (see the
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.

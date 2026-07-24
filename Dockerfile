@@ -13,6 +13,10 @@ ARG NPM_CONFIG_REGISTRY=
 # python3-paramiko back app-managed SSH key generation + known_hosts
 # registration (the image has no ssh-keygen/ssh-keyscan); installed via apt to
 # avoid PEP 668 pip restrictions on Debian and to resolve through the apt mirror.
+#
+# libreoffice-impress + poppler-utils back the pptx skill's slide rendering:
+# soffice --headless converts pptx->pdf, then pdftoppm renders pdf->png, with
+# fonts-nanum supplying Korean fonts so Hangul renders in headless conversions.
 COPY docker/apt_mirror_sources.sh /usr/local/bin/apt_mirror_sources.sh
 RUN sh /usr/local/bin/apt_mirror_sources.sh \
   && apt-get update \
@@ -20,8 +24,11 @@ RUN sh /usr/local/bin/apt_mirror_sources.sh \
     build-essential \
     ca-certificates \
     curl \
+    fonts-nanum \
     git \
     gh \
+    libreoffice-impress \
+    poppler-utils \
     python3 \
     python3-pip \
     python3-cryptography \
@@ -92,6 +99,25 @@ RUN case "$TARGETARCH" in \
   && chmod +x /usr/local/bin/uv /usr/local/bin/uvx \
   && uv --version \
   && uvx --version
+
+# python-pptx is the library the pptx skill uses to build .pptx decks. It is
+# NOT packaged in Debian bookworm, so apt can't provide it, hence pip with
+# --break-system-packages, which overrides PEP 668's externally-managed guard
+# for this ONE library (system python; no venv in this image).
+# PIP_INDEX_URL / PIP_TRUSTED_HOST follow the NPM_CONFIG_REGISTRY pattern above
+# (empty = upstream PyPI); --trusted-host is added only when set, for an HTTP
+# mirror with a self-signed cert. The trailing self-test asserts soffice,
+# pdftoppm, and the pptx module are present so a broken mirror fails the build.
+ARG PIP_INDEX_URL=
+ARG PIP_TRUSTED_HOST=
+RUN if [ -n "$PIP_INDEX_URL" ]; then \
+      pip3 install --break-system-packages --index-url "$PIP_INDEX_URL" ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} python-pptx; \
+    else \
+      pip3 install --break-system-packages python-pptx; \
+    fi \
+  && soffice --version \
+  && command -v pdftoppm \
+  && python3 -c "import pptx"
 
 # Always use npm install (not npm ci) so the build doesn't fail when the lock
 # file drifts out of sync with package.json, and so a corporate mirror can

@@ -46,6 +46,7 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__confluence__list_attachments: "Confluence 첨부 조회",
   mcp__confluence__get_attachment: "Confluence 첨부 가져오기",
   mcp__file_output__show_file: "이미지 표시",
+  mcp__file_output__share_file: "파일 공유",
   mcp__confluence__extract_page_assets: "Confluence 자산 추출",
   mcp__confluence__create_page: "Confluence 페이지 생성",
   mcp__confluence__update_page: "Confluence 페이지 수정",

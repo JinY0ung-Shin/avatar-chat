@@ -473,21 +473,31 @@ export type ImageMediaType =
   | "image/gif";
 
 /**
- * An image attached to a user or assistant chat message. The bytes live on disk under
- * `dataDir/chat-images/<conversationId>/<id>.<ext>` (see `chatImages.ts`); this
- * is the metadata persisted on the message so the bubble can render the image
- * (`GET /api/conversations/:id/images/:imageId`) after reload. The model is fed
- * the bytes as an image content block on the turn — see {@link AgentImageInput}.
+ * A file attached to a user or assistant chat message. Images live on disk under
+ * `dataDir/chat-images/<conversationId>/<id>.<ext>` (see `chatImages.ts`) and are
+ * served by `GET /api/conversations/:id/images/:imageId`; generated documents
+ * (`kind:"file"`, see `chatFiles.ts`) live under `dataDir/chat-files/…` and are
+ * served as downloads by `GET /api/conversations/:id/files/:fileId`. This is the
+ * metadata persisted on the message so the bubble can rebuild after reload. The
+ * model is fed image bytes as content blocks on the turn — see {@link AgentImageInput}.
  */
 export interface MessageAttachment {
   /** Stable id; also the on-disk filename stem and the serving-URL segment. */
   id: string;
-  kind: "image";
-  mediaType: ImageMediaType;
+  kind: "image" | "file";
+  /** MIME type: one of {@link ImageMediaType} for images; document MIME for files. */
+  mediaType: string;
   /** Original filename, for the alt text / download name (optional). */
   name?: string;
   /** Optional agent-provided description shown below the image. */
   caption?: string;
+  /** File size in bytes (`kind:"file"` only) — shown on the download card. */
+  size?: number;
+  /**
+   * Published for URL use only (e.g. slide PNGs embedded in a canvas): the
+   * serving route works, but the bubble does not render it.
+   */
+  hidden?: boolean;
 }
 
 export interface StoredMessage {
@@ -969,9 +979,17 @@ export interface AgentRequest {
   canvasEnabled?: boolean;
   /**
    * This interactive turn can publish PNG/JPEG/WebP/GIF files from its allowed
-   * working directories into the assistant bubble with `show_file`.
+   * working directories into the assistant bubble with `show_file`, and share
+   * generated documents as download cards with `share_file`.
    */
   fileOutputEnabled?: boolean;
+  /**
+   * The deployment image carries the PPTX rendering toolchain (LibreOffice +
+   * pdftoppm + python-pptx) AND this turn can publish files. Drives the deck
+   * standing guidance (pptx skill → slide preview → share_file). Mirrored by
+   * describe_system (META-COGNITION).
+   */
+  deckRenderingEnabled?: boolean;
   /**
    * Experimental (beta) feature keys enabled for the avatar owner. Surfaced in
    * the owner/routine self-state (META-COGNITION) so the avatar knows which beta

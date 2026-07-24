@@ -13,6 +13,7 @@ import type {
 import type { Store } from "../store.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
 import type { AgentEvents } from "./events.js";
+import { probeDeckRendering } from "../deckRender.js";
 import logger from "../logger.js";
 import { knownHostsPath } from "../sshTrust.js";
 import {
@@ -600,6 +601,10 @@ export async function runClaudeAgent(
     config,
   });
   const fileOutputActive = Boolean(request.cwd && events?.onFile);
+  // Deployment-level PPTX toolchain (LibreOffice/pdftoppm/python-pptx) probe —
+  // memoized per process. Deck guidance additionally needs a turn that can
+  // publish files (the preview/download path), hence the && below.
+  const deckRenderingAvailable = probeDeckRendering();
   const systemServer = buildSystemServer(store, {
     avatarUserId: request.avatar.id,
     owner,
@@ -612,6 +617,7 @@ export async function runClaudeAgent(
     // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
     activeRepoName: request.activeRepoName,
     fileOutputEnabled: fileOutputActive,
+    deckRenderingAvailable,
     toolSkillPolicy,
   });
   // Cross-avatar discovery (read-only): lets the avatar look up OTHER visible
@@ -676,11 +682,21 @@ export async function runClaudeAgent(
   const canvasServer = canvasActive
     ? buildCanvasServer({ emitCanvas: events!.onCanvas! })
     : null;
-  // Local image output is available only for an interactive run with an
+  // Local file output is available only for an interactive run with an
   // explicit working directory and a host sink that validates + persists the
-  // file. Headless runs have nobody to show a bubble to, so the tool stays out.
+  // file. Headless runs have nobody to show a bubble to, so the tools stay out.
+  // `shareFile` (download cards) arrives with `onFile` from the chat route; the
+  // fallback keeps an onFile-only caller working with an honest tool error.
   const fileOutputServer = fileOutputActive
-    ? buildFileOutputServer({ showFile: events!.onFile! })
+    ? buildFileOutputServer({
+        showFile: events!.onFile!,
+        shareFile:
+          events!.onShareFile ??
+          (async () => ({
+            behavior: "error" as const,
+            message: "File sharing is unavailable in this run.",
+          })),
+      })
     : null;
 
   // SSH host-trust tools (add/list/remove the hosts hex-ssh will connect to).
@@ -1118,6 +1134,9 @@ export async function runClaudeAgent(
     // owner-driven only (META-COGNITION), matching describe_system's gating.
     canvasEnabled: canvasActive,
     fileOutputEnabled: fileOutputActive,
+    // Deck standing guidance needs BOTH the deployment toolchain and a turn
+    // that can publish files (preview embeds + the download card).
+    deckRenderingEnabled: deckRenderingAvailable && fileOutputActive,
     experimentalFeatures: ownerToolAccess
       ? ownerState.experimentalFeatures
       : [],

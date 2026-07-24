@@ -605,6 +605,37 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   prior user turn's stored attachments from disk (`readChatImages`). `express.json` limit was bumped
   3mb→40mb. Conversation delete sweeps the image dir (`deleteConversationImages`).
 
+### Generated-file delivery + PPTX deck pipeline (`share_file`, hidden publishes)
+- **`chatFiles.ts` mirrors `chatImages.ts` for agent-GENERATED documents** (there is deliberately NO
+  upload path): `mcp__file_output__share_file` → `onShareFile` (routes/chat.ts) → `publishWorkspaceFile`
+  (same realpath+roots containment; extension allowlist pptx/docx/xlsx/zip/pdf/csv/md/txt with
+  magic-byte checks for the container formats; 30 MB cap) → bytes at
+  `dataDir/chat-files/<conversationId>/<id>.<ext>`, metadata on `messages.attachments_json` as
+  `kind:"file"` (+`size`). Download route `GET /api/conversations/:id/files/:fileId` is owner-scoped and
+  ALWAYS `Content-Disposition: attachment` (never inline; `?name=` only picks the sanitized save-dialog
+  name — the client card passes it). Sweeps: conversation bulk/single delete + regenerate mirror the
+  image sweeps, and **user-delete (routes/admin.ts) snapshots the owner's conversation ids BEFORE
+  `store.deleteUser`** to rm both chat-images and chat-files dirs (the rows are gone afterwards).
+- **`MessageAttachment.hidden`** = published for URL use only: `show_file` with `hidden:true` stores the
+  image + returns its serving URL to the model (for canvas markdown embeds), but every ChatView render
+  loop filters hidden entries. Per-turn caps: 6 visible images (unchanged), 30 hidden, 3 files —
+  enforced in the `onFile`/`onShareFile` handlers, counted per kind off `shownAttachments`.
+- **Deck (PPTX) pipeline**: bundled `pptx` skill = python-pptx authoring (NanumGothic — 맑은 고딕 is not
+  in the image, LibreOffice would silently substitute) → `scripts/render_deck.sh` (`soffice --headless`
+  pptx→pdf with a per-run `-env:UserInstallation` profile so parallel conversions don't fight the lock,
+  then `pdftoppm` pdf→PNG; **direct pptx→png converts only the FIRST slide**) → hidden `show_file`
+  publishes → ONE canvas markdown embedding the returned same-origin URLs (falls back to inline
+  `show_file` when canvas is off) → `share_file`. **Availability = boot-time probe** (`deckRender.ts`,
+  memoized `spawnSync` soffice/pdftoppm/python-pptx — a NEW pattern, nothing else probes at boot),
+  threaded per-run like `fileOutputEnabled`: `AgentRequest.deckRenderingEnabled` (probe && fileOutput)
+  drives the promptBuilder `deckSection`, `SystemToolsContext.deckRenderingAvailable` the
+  describe_system line (UNAVAILABLE → "admin must rebuild the image"). Docker: `libreoffice-impress` +
+  `fonts-nanum` + `poppler-utils` via apt mirror; `python-pptx` is NOT in Debian → pip at build with
+  `PIP_INDEX_URL`/`PIP_TRUSTED_HOST` build-args (compose passthrough).
+- **Regenerate caveat:** replacing the last assistant turn deletes its attachments (images AND files),
+  so a canvas from the REPLACED turn loses its embedded slide images — accepted (regenerate means
+  "redo the turn"; the new run re-renders and re-shows).
+
 ### Visual canvas (`mcp__canvas__show`, experimental `canvas` feature)
 - CSP-SAFE port of Superpowers' visual companion: the avatar DECLARES content
   (`markdown`/`vega`/`mermaid`/`svg`/`html`) + optional `controls` (buttons/text); the CLIENT renders

@@ -81,10 +81,30 @@ export interface FileOutputRequest {
   path: string;
   /** Optional user-facing description displayed below the image. */
   caption?: string;
+  /**
+   * Publish WITHOUT rendering in the chat bubble: the image is stored and
+   * servable by URL (for embedding in a canvas, e.g. rendered slide previews)
+   * but stays out of the visible message. Hidden publishes have their own,
+   * larger per-turn cap.
+   */
+  hidden?: boolean;
+}
+
+/** A generated document the avatar wants to hand to the user as a download. */
+export interface ShareFileRequest {
+  /** Relative to the run cwd, or an absolute path inside one of the allowed roots. */
+  path: string;
+  /** Download filename shown to the user; defaults to the file's basename. */
+  name?: string;
 }
 
 export type FileOutputResult =
-  | { behavior: "shown"; attachment: import("../types.js").MessageAttachment }
+  | {
+      behavior: "shown";
+      attachment: import("../types.js").MessageAttachment;
+      /** Same-origin serving URL (e.g. for canvas markdown embeds / download cards). */
+      url: string;
+    }
   | { behavior: "error"; message: string };
 
 /** A concrete tool call (NOT a subagent spawn — those use AgentSpawnEvent). */
@@ -249,7 +269,13 @@ export interface AgentEvents {
   onCanvas?: (request: CanvasRequest) => Promise<CanvasResult>;
   /**
    * Publish a local raster image into the live assistant bubble. If omitted,
-   * the file-output tool is not registered (headless runs have no viewer).
+   * the file-output tools are not registered (headless runs have no viewer).
    */
   onFile?: (request: FileOutputRequest) => Promise<FileOutputResult>;
+  /**
+   * Publish a generated document (pptx/pdf/…) as a download card on the live
+   * assistant bubble. Registered together with `onFile` — the chat route
+   * provides both or neither.
+   */
+  onShareFile?: (request: ShareFileRequest) => Promise<FileOutputResult>;
 }

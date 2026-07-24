@@ -23,6 +23,9 @@ plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
 - **Delegation loop**: grow your avatar by turning repeated work, project rules, runbooks,
   and answers to teammate questions into skills / knowledge files / routines, then delegate
   more of that work back to the avatar over time.
+- **PowerPoint decks**: the avatar can generate PowerPoint (`.pptx`) presentations, preview the
+  rendered slides in the chat (in the canvas side panel when enabled, inline otherwise), and hand
+  over the finished deck as a download card.
 - **Scheduled routines**: owners can create one-time or recurring chat jobs (`/api/me/routines`)
   for a specific KST date/time, daily/weekly slots, or a fixed interval. The avatar executes
   them headlessly and keeps each run's result in a dedicated routine conversation.
@@ -122,8 +125,17 @@ cp .env.example .env
 docker compose up --build
 ```
 
-The image includes Node.js, git, GitHub CLI (`gh`), Python 3, ripgrep, `jq`, and `uv`. SQLite data and
-uploaded avatar images persist under `APP_DATA_DIR`. The container runs as the non-root `node` user.
+The image includes Node.js, git, GitHub CLI (`gh`), Python 3, ripgrep, `jq`, `uv`, LibreOffice,
+poppler-utils, Korean (Nanum) fonts, and `python-pptx` (backing the avatar's PowerPoint generation).
+SQLite data and uploaded avatar images persist under `APP_DATA_DIR`. The container runs as the
+non-root `node` user.
+
+On a closed corporate network, optional build args (in `docker-compose.yml`, all empty by default =
+public upstreams) route installs through internal mirrors. Alongside the existing `APT_MIRROR_HOST`,
+`NPM_CONFIG_REGISTRY`, and `CA_CERT_FILE`, two cover the PyPI fetch of `python-pptx`:
+
+- `PIP_INDEX_URL` — internal PyPI index URL used by `pip install` at build time.
+- `PIP_TRUSTED_HOST` — host to trust when that PyPI mirror uses HTTP or a self-signed cert.
 
 ## Configuration
 

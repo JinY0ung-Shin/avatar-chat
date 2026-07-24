@@ -7,6 +7,7 @@ import type { AgentRequest, AgentResponse, AppConfig } from "../src/server/types
 import type { AgentEvents } from "../src/server/agent/events.js";
 import type { Store } from "../src/server/store.js";
 import { parseSse, signup, withTempDir } from "./helpers.js";
+import { chatFilesDir } from "../src/server/chatFiles.js";
 
 // Shared control surface for the mocked agent layer. `impl`, when set, fully
 // drives a turn (fires the events callbacks the route wires); otherwise a default
@@ -452,6 +453,33 @@ describe("chat-stream request validation", () => {
     await owner.post("/api/chat/stream").send({ avatarId: ownerId, conversationId: "conv-img", message: "hi" }).expect(200);
     // Owner matches, but the image id doesn't resolve to a stored file.
     await owner.get("/api/conversations/conv-img/images/ghost").expect(404);
+  });
+
+  it("serves a stored generated file as an owner-only attachment download", async () => {
+    const { app, config } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "filedl").expect(201)).body.user.id as string;
+    await owner.post("/api/chat/stream").send({ avatarId: ownerId, conversationId: "conv-file", message: "hi" }).expect(200);
+
+    // Seed the on-disk store the way onShareFile would (metadata rides the message row).
+    const dir = chatFilesDir(config, "conv-file");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "deck-1.pdf"), "%PDF-1.4 test");
+
+    await owner.get("/api/conversations/conv-file/files/ghost").expect(404);
+    const res = await owner
+      .get("/api/conversations/conv-file/files/deck-1")
+      .query({ name: "주간 보고.pdf" })
+      .expect(200);
+    expect(res.headers["content-type"]).toContain("application/pdf");
+    expect(res.headers["content-disposition"]).toContain("attachment;");
+    expect(res.headers["content-disposition"]).toContain(encodeURIComponent("주간 보고.pdf"));
+    expect(res.headers["x-content-type-options"]).toBe("nosniff");
+
+    // Another user never reaches the bytes — same 404 shape as the image route.
+    const bob = request.agent(app);
+    await signup(bob, "filedl2").expect(201);
+    await bob.get("/api/conversations/conv-file/files/deck-1").expect(404);
   });
 });
 

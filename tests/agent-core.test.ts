@@ -2914,6 +2914,22 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("file://");
     expect(prompt).toContain("Do NOT call Read");
     expect(prompt).toContain('cp /tmp/image.png "$PWD/image.png"');
+    // File delivery (share_file) rides the same section.
+    expect(prompt).toContain("mcp__file_output__share_file");
+    expect(prompt).toContain("download card");
+  });
+
+  it("injects deck (PPTX) guidance only when the toolchain and file output are both active", () => {
+    // File output alone is not enough — the deployment must carry the toolchain.
+    expect(buildPrompt(req({ viewerIsOwner: true, fileOutputEnabled: true }), 0)).not.toContain("PowerPoint decks");
+    const prompt = buildPrompt(
+      req({ viewerIsOwner: true, fileOutputEnabled: true, deckRenderingEnabled: true }),
+      0,
+    );
+    expect(prompt).toContain("PowerPoint decks");
+    expect(prompt).toContain("`pptx` skill");
+    expect(prompt).toContain("hidden:true");
+    expect(prompt).toContain("mcp__file_output__share_file");
   });
 
   it("lists enabled experimental features only for owner-driven turns", () => {

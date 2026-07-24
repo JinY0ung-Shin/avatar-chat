@@ -33,11 +33,13 @@ const EXT_MIME: Record<string, ImageMediaType> = {
 
 // Accept only safe id segments (UUID-ish) so a client-supplied id can't escape
 // the conversation's image directory or collide with another file kind.
-const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
+// Shared with the sibling chat-files store (`chatFiles.ts`) so the two
+// conversation-scoped attachment stores can't drift on path safety.
+export const SAFE_ID = /^[A-Za-z0-9_-]{1,64}$/;
 const SAFE_CONVERSATION_DIR = /^[A-Za-z0-9_-]{1,128}$/;
 const DATA_URL = /^data:(image\/(?:png|jpeg|webp|gif));base64,(.+)$/;
 
-function isInside(root: string, candidate: string): boolean {
+export function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
@@ -63,7 +65,7 @@ function detectImageMediaType(buffer: Buffer): ImageMediaType | null {
   return null;
 }
 
-function safeConversationDir(conversationId: string): string {
+export function safeConversationDir(conversationId: string): string {
   if (SAFE_CONVERSATION_DIR.test(conversationId)) return conversationId;
   const hash = crypto.createHash("sha256").update(conversationId).digest("hex");
   return `conversation-${hash}`;

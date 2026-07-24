@@ -37,6 +37,17 @@ import {
   saveChatImages,
   MAX_CHAT_IMAGES_PER_MESSAGE,
 } from "../chatImages.js";
+import {
+  deleteChatFileAttachments,
+  deleteConversationFiles,
+  publishWorkspaceFile,
+  resolveStoredFile,
+  MAX_CHAT_FILES_PER_MESSAGE,
+  MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE,
+  SHAREABLE_EXTENSIONS,
+  MAX_CHAT_FILE_BYTES,
+  sanitizeDownloadName,
+} from "../chatFiles.js";
 import { runAgentStream, isRetryableModelError } from "../agent/index.js";
 import {
   probeExternalAgentGateway,
@@ -658,6 +669,7 @@ export function createChatRouter({
       const deletedIds = store.deleteChatConversations(ownerId);
       for (const id of deletedIds) {
         deleteConversationImages(config, id);
+        deleteConversationFiles(config, id);
       }
       res.json({
         ok: true,
@@ -683,8 +695,9 @@ export function createChatRouter({
         apiError(res, 404, "대화를 찾을 수 없습니다.");
         return;
       }
-      // Sweep the conversation's uploaded chat images (best effort).
+      // Sweep the conversation's uploaded chat images + generated files (best effort).
       deleteConversationImages(config, req.params.id);
+      deleteConversationFiles(config, req.params.id);
       res.json({ ok: true });
     },
   );
@@ -707,6 +720,40 @@ export function createChatRouter({
         return;
       }
       res.type(resolved.mediaType);
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
+      res.sendFile(resolved.path);
+    },
+  );
+
+  // Serve a generated chat file (agent-shared document) as a DOWNLOAD. Same
+  // owner-scoped gate as the image route; `Content-Disposition: attachment`
+  // (never inline) so a shared document can't render in-origin. The optional
+  // `name` query only picks the save-dialog filename (owner-supplied, sanitized).
+  router.get(
+    "/api/conversations/:conversationId/files/:fileId",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const { conversationId, fileId } = req.params;
+      if (store.conversationOwner(conversationId) !== req.user!.id) {
+        apiError(res, 404, "파일을 찾을 수 없습니다.");
+        return;
+      }
+      const resolved = resolveStoredFile(config, conversationId, fileId);
+      if (!resolved) {
+        apiError(res, 404, "파일을 찾을 수 없습니다.");
+        return;
+      }
+      const requestedName = sanitizeDownloadName(
+        typeof req.query.name === "string" ? req.query.name : undefined,
+      );
+      const downloadName = requestedName ?? `file.${resolved.ext}`;
+      const asciiFallback = downloadName.replace(/[^ -~]+/g, "_").replace(/"/g, "'") || `file.${resolved.ext}`;
+      res.type(resolved.mediaType);
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename="${asciiFallback}"; filename*=UTF-8''${encodeURIComponent(downloadName)}`,
+      );
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.setHeader("Cache-Control", "private, max-age=31536000, immutable");
       res.sendFile(resolved.path);
@@ -1028,6 +1075,7 @@ export function createChatRouter({
           store.dropLastAssistant(req.user!.id, conversationId);
           if (last?.role === "assistant") {
             deleteChatImageAttachments(config, conversationId, last.attachments);
+            deleteChatFileAttachments(config, conversationId, last.attachments);
           }
         }
         const imageTurn = !regenerate && decodedImages.length > 0;
@@ -1569,7 +1617,22 @@ export function createChatRouter({
                 return { behavior: "submitted", values: reply?.values ?? {} };
               },
               onFile: async (requestData) => {
-                if (shownAttachments.length >= MAX_CHAT_IMAGES_PER_MESSAGE) {
+                // Separate per-turn caps: visible images guard the bubble from
+                // spam; hidden publishes (canvas slide embeds) only cost disk,
+                // so a whole deck fits in one turn.
+                const visibleImages = shownAttachments.filter(
+                  (a) => a.kind === "image" && !a.hidden,
+                ).length;
+                const hiddenImages = shownAttachments.filter(
+                  (a) => a.kind === "image" && a.hidden,
+                ).length;
+                if (requestData.hidden && hiddenImages >= MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE) {
+                  return {
+                    behavior: "error",
+                    message: `This turn already published ${MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE} hidden images. Reuse the URLs you already have or continue in the next turn.`,
+                  };
+                }
+                if (!requestData.hidden && visibleImages >= MAX_CHAT_IMAGES_PER_MESSAGE) {
                   return {
                     behavior: "error",
                     message: `This turn already showed ${MAX_CHAT_IMAGES_PER_MESSAGE} images. Do not show more in the same response.`,
@@ -1600,12 +1663,64 @@ export function createChatRouter({
                   } as const;
                   return { behavior: "error", message: messages[result.error] };
                 }
+                const attachment = requestData.hidden
+                  ? { ...result.attachment, hidden: true }
+                  : result.attachment;
+                shownAttachments.push(attachment);
+                emitRunEvent(runId, "file", {
+                  runId,
+                  attachment,
+                });
+                return {
+                  behavior: "shown",
+                  attachment,
+                  url: `/api/conversations/${encodeURIComponent(conversationId)}/images/${encodeURIComponent(attachment.id)}`,
+                };
+              },
+              onShareFile: async (requestData) => {
+                const sharedFiles = shownAttachments.filter((a) => a.kind === "file").length;
+                if (sharedFiles >= MAX_CHAT_FILES_PER_MESSAGE) {
+                  return {
+                    behavior: "error",
+                    message: `This turn already shared ${MAX_CHAT_FILES_PER_MESSAGE} files. Do not share more in the same response.`,
+                  };
+                }
+                if (store.conversationOwner(conversationId) !== req.user!.id) {
+                  return {
+                    behavior: "error",
+                    message: "The conversation no longer exists, so the file cannot be shared.",
+                  };
+                }
+                const result = publishWorkspaceFile(
+                  config,
+                  conversationId,
+                  requestData.path,
+                  [activeRepoCwd ?? workspaceDir, ...(activeRepoCwd ? [workspaceDir] : [])],
+                  requestData.name,
+                );
+                if ("error" in result) {
+                  const maxMb = Math.round(MAX_CHAT_FILE_BYTES / (1024 * 1024));
+                  const messages = {
+                    OUTSIDE_WORKSPACE: "The file path must stay inside the current working directory or conversation scratch workspace. Copy it into the current directory with Bash (for example: cp /tmp/deck.pptx \"$PWD/deck.pptx\"), then retry share_file with ./deck.pptx.",
+                    NOT_FOUND: "The file does not exist.",
+                    NOT_FILE: "The supplied path is not a regular file.",
+                    EMPTY: "The file is empty.",
+                    TOO_LARGE: `The file is larger than the ${maxMb} MB limit.`,
+                    UNSUPPORTED: `Unsupported file type. share_file accepts: ${SHAREABLE_EXTENSIONS.map((e) => `.${e}`).join(", ")} — and the content must match the extension. There is no Bash or Markdown workaround for delivering other file types.`,
+                    READ_FAILED: "The file could not be read.",
+                  } as const;
+                  return { behavior: "error", message: messages[result.error] };
+                }
                 shownAttachments.push(result.attachment);
                 emitRunEvent(runId, "file", {
                   runId,
                   attachment: result.attachment,
                 });
-                return { behavior: "shown", attachment: result.attachment };
+                return {
+                  behavior: "shown",
+                  attachment: result.attachment,
+                  url: `/api/conversations/${encodeURIComponent(conversationId)}/files/${encodeURIComponent(result.attachment.id)}`,
+                };
               },
             },
             abortController,
