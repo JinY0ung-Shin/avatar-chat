@@ -87,6 +87,9 @@ Each item lists: files · why · risk · effort · breaking.
 ## Coverage gaps (not refactors — flagged)
 - **`rateLimit.ts` ~26% covered; ZERO tests assert a 429.** Security-adjacent, can silently regress. Add an integration test (hammer an endpoint past the window → expect 429). low/M.
 - **`scheduler.ts` tick / due-job selection loop is untested.** Add a due-selection unit test. low/M.
+  Partially addressed (2026-07): `tests/scheduler.test.ts` now covers the FAILURE path (timeout-cause
+  substitution, partial-output persistence, non-timeout errors) by mocking `runAgentStream` so a run can
+  hang until the deadline aborts it. The **tick / due-job selection loop itself is still untested.**
 - `claudeAgent.ts` ~36% is expected (the SDK subprocess path); the pure helpers are covered — lower priority.
 
 ---

@@ -12,8 +12,28 @@ import { DEFAULT_MCP_TOOL_GROUPS } from "../shared/mcpToolGroups.js";
 const schedLogger = logger.child({ module: "scheduler" });
 
 const DEFAULT_TICK_MS = 30_000;
-/** Hard deadline per unattended run: a hung SDK call must not wedge the job forever. */
+/**
+ * Hard deadline per unattended run: a hung SDK call must not wedge the job forever.
+ *
+ * NOTE this is a budget for the WHOLE run, including every model-fallback attempt
+ * (`modelFallback: true` retries opus→sonnet→haiku INSIDE runClaudeAgent) and the
+ * resume self-heal retry — the controller is created here, outside that loop. A
+ * slow first attempt therefore starves the rest of the chain.
+ */
 const RUN_TIMEOUT_MS = 10 * 60 * 1000;
+
+/**
+ * User-facing note stored on a timed-out routine.
+ *
+ * The SDK labels EVERY abort as "Claude Code process aborted by user" regardless of
+ * cause (it just checks `signal.aborted`), so storing its message verbatim told the
+ * owner a user cancelled a run that nothing but this deadline touched — routines have
+ * no cancel route and are not in the run registry, so `cancelAllRuns()` can't reach
+ * them either. Derived from RUN_TIMEOUT_MS so the two can't drift.
+ */
+function routineTimeoutMessage(): string {
+  return `실행 제한 시간(${Math.round(RUN_TIMEOUT_MS / 60_000)}분)을 초과해 중단되었습니다. 작업을 더 작은 단계로 나누거나 예약 작업의 프롬프트를 줄여 보세요.`;
+}
 
 /**
  * Jobs currently executing. Module-level on purpose: the scheduler tick and
@@ -41,7 +61,17 @@ async function runRoutineJobNow(
 ): Promise<{ ok: boolean; error?: string }> {
   const { config, store } = services;
   const abortController = new AbortController();
-  const deadline = setTimeout(() => abortController.abort(), RUN_TIMEOUT_MS);
+  // Distinguishes OUR deadline from any other abort, so the catch below can replace
+  // the SDK's misleading "aborted by user" with the real cause.
+  let timedOut = false;
+  const deadline = setTimeout(() => {
+    timedOut = true;
+    abortController.abort();
+  }, RUN_TIMEOUT_MS);
+  // Text streamed before a failure. Routines have no live view, but persisting the
+  // partial is what makes an interrupted run diagnosable at all — otherwise the only
+  // trace is a one-line lastError. Mirrors the chat route's cancel/error paths.
+  let streamedText = "";
   // Frees the per-clone serialization lock if this run opened a working repo.
   let releaseActiveRepoLock: (() => void) | null = null;
   try {
@@ -129,8 +159,15 @@ async function runRoutineJobNow(
       pluginRoots,
       config,
       store,
-      // No callbacks: headless runs cannot ask questions or wait for approvals.
-      {},
+      // Headless runs cannot ask questions or wait for approvals, so there is no
+      // onQuestion/onPermission here. onDelta is purely an accumulator: it keeps the
+      // partial answer so a timed-out/failed run can still persist what it produced
+      // (the success path uses `response.text`, which never arrives on abort).
+      {
+        onDelta: (text) => {
+          streamedText += text;
+        },
+      },
       abortController,
     );
 
@@ -152,7 +189,35 @@ async function runRoutineJobNow(
     });
     return { ok: true };
   } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
+    // Our deadline wins the message: the SDK's abort text names a "user" that was
+    // never involved in an unattended run.
+    const detail = timedOut
+      ? routineTimeoutMessage()
+      : error instanceof Error
+        ? error.message
+        : String(error);
+    // Keep whatever the run produced before dying, alongside the cause — otherwise an
+    // interrupted routine leaves NOTHING in its thread (this path never wrote a
+    // message at all) and the owner can't tell how far it got. Best-effort: a failure
+    // here must not mask the original error.
+    try {
+      const content = streamedText ? `${streamedText}\n\n${detail}` : detail;
+      store.touchConversation(
+        job.avatarUserId,
+        job.conversationId,
+        job.avatarUserId,
+        `[예약 작업] ${job.prompt}`,
+        { isRoutine: true },
+      );
+      store.addMessage(job.conversationId, { role: "user", content: job.prompt });
+      store.addMessage(job.conversationId, { role: "assistant", content });
+      store.pruneRoutineMessages(job.conversationId);
+    } catch (persistError) {
+      schedLogger.error(
+        { jobId: job.id, err: persistError },
+        "routine failed to persist partial output",
+      );
+    }
     try {
       store.audit({
         actorUserId: job.avatarUserId,

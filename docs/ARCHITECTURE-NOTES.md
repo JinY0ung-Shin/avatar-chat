@@ -458,6 +458,25 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   NOT `error_max_turns`/auth/bad-request, NOT on abort). An env-pinned `ANTHROPIC_MODEL` is a hard lock →
   no fallback. In-band error *results* (e.g. max_turns) don't fall back. The completed-run log carries
   `model` + `modelFellBack`.
+- **A routine has a 10-minute HARD deadline, and it is the budget for the WHOLE run** —
+  `scheduler.ts` `RUN_TIMEOUT_MS`, one `AbortController` created per run OUTSIDE `runClaudeAgent`. So all
+  model-fallback attempts (opus→sonnet→haiku) plus the resume self-heal retry SHARE those 10 minutes; a
+  slow first attempt starves the rest of the chain. Note the mismatch with `maxTurns` (default 1000) —
+  the turn budget is far larger than the wall-clock one, so a work-heavy routine hits the deadline, not
+  max_turns.
+- **Never surface the SDK's abort message to the owner.** The SDK labels EVERY abort
+  `"Claude Code process aborted by user"` (it only checks `signal.aborted`), so storing it verbatim blamed
+  a user for a run nothing but the deadline touched — routines have no cancel route and are NOT in the run
+  registry, so `cancelAllRuns()` on shutdown can't reach them either; that message could ONLY have meant a
+  timeout. The scheduler now tracks its own `timedOut` flag and substitutes a Korean
+  `routineTimeoutMessage()` (derived from `RUN_TIMEOUT_MS` so they can't drift). When adding another abort
+  trigger, give it its own flag + message rather than letting the SDK text through.
+- **A failed routine persists its PARTIAL output into the thread.** The catch path accumulates `onDelta`
+  into `streamedText` (the only reason routines pass an events sink at all — they still take no
+  `onQuestion`/`onPermission`) and writes `partial + "\n\n" + cause` as the assistant turn, mirroring the
+  chat route's cancel/error paths. Before this, a failed run wrote NOTHING to its conversation and the
+  sole trace was the one-line `last_error` in the routines list. The persist is best-effort and wrapped so
+  it can never mask the original failure. `response.text` is NOT usable here — it never arrives on abort.
 
 ---
 
