@@ -38,12 +38,38 @@ export function gitHostFromSource(source: string): string | null {
   return null;
 }
 
+/**
+ * Is this repo source hosted on the configured internal GitHub host?
+ *
+ * Used by the knowledge-repo and group-knowledge-repo entry points, which tell
+ * the user the repo "must live on the internal GitHub host". Enforcing that means
+ * failing CLOSED on anything whose host we cannot parse.
+ *
+ * It previously returned true when `gitHostFromSource` yielded null. That branch
+ * was dead for `owner/repo` (handled above it), so its only real effect was to
+ * admit values with NO parseable host — bare filesystem paths and `scheme::`
+ * remote-helper syntax — straight past the one check meant to stop them. A path
+ * like `/data/knowledge/<otherUserId>/.git` also satisfies `looksLikeRepo` (it
+ * ends in `.git`), so any authenticated user could point their knowledge repo at
+ * another user's clone, or at a group repo they are not a member of, and then read
+ * it back through the knowledge-repo endpoints and the agent's repo/brain read
+ * tools.
+ *
+ * Arg-safety (leading dash, remote-helper syntax) is a SEPARATE concern handled at
+ * every clone path by `assertSafeGitValue` — that layer must keep accepting local
+ * paths, which are a legitimate repo source for `register_repo` and the offline
+ * tests. This function is the source/host POLICY gate, and only these two callers
+ * impose that policy.
+ */
 export function isInternalGitSource(source: string, githubHost: string): boolean {
-  if (/^[\w.-]+\/[\w.-]+$/.test(source.trim())) {
+  const raw = source.trim();
+  // `owner/repo` shorthand is resolved against the internal host by
+  // `marketplaceCloneUrl`, so it is internal by construction.
+  if (/^[\w.-]+\/[\w.-]+$/.test(raw)) {
     return true;
   }
-  const host = gitHostFromSource(source);
-  return host === null || host === normalizeGithubHost(githubHost);
+  const host = gitHostFromSource(raw);
+  return host !== null && host === normalizeGithubHost(githubHost);
 }
 
 /**

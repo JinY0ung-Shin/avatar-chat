@@ -872,6 +872,28 @@ describe("groups self-service: knowledge repo settings", () => {
     expect(res.body.error).toContain("사내 GitHub host(github.enterprise.local)");
   });
 
+  // Regression (sec): the internal-host check used to pass anything whose host it
+  // could not parse, so a local path (or `scheme::` syntax) ending in `.git` slipped
+  // through — pointing a GROUP repo at another user's clone would expose it to every
+  // group member. Same root cause as the personal knowledge-repo route.
+  it("rejects a local path or remote-helper syntax as a group knowledge repo", async () => {
+    const { app, services } = boot({ githubHost: "github.enterprise.local" });
+    const admin = await mkUser(app, "admin");
+    const groupId = await createGroup(admin, "team");
+
+    for (const repo of [
+      "/data/knowledge/other-user-id/.git",
+      "ext::sh -c evil .git",
+    ]) {
+      const res = await admin.agent
+        .put(`/api/me/groups/${groupId}/knowledge-repo`)
+        .send({ repo, branch: "main" })
+        .expect(400);
+      expect(res.body.error).toContain("사내 GitHub host");
+    }
+    expect(services.store.getGroupKnowledgeRepo(groupId).repo).toBeNull();
+  });
+
   it("sets and clears the group repo plugin selection", async () => {
     const { app, services } = boot();
     const admin = await mkUser(app, "admin");

@@ -13,7 +13,7 @@ import {
 } from "./marketplace.js";
 import { tokenForGitUrl } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
-import { safeIdentity, safePushBranch } from "./repoGitGuards.js";
+import { assertSafeGitValue, safeIdentity, safePushBranch } from "./repoGitGuards.js";
 import { git, currentBranch, dirtyPaths, originUrl } from "./repoGitCore.js";
 import logger from "./logger.js";
 import {
@@ -45,25 +45,6 @@ export interface GitRepoStatus {
   dirty: string[];
   ahead: number | null;
   behind: number | null;
-}
-
-// `scheme::` remote-helper syntax (e.g. `ext::sh -c …`, `fd::`) makes git run an
-// arbitrary transport helper — a command-execution vector. The pattern is a
-// run of scheme chars followed by `::`; no legitimate branch, path, repo
-// shorthand, or https/ssh URL we accept contains `::`, so rejecting it is safe
-// across every value kind assertSafeGitValue guards (sec-03).
-const REMOTE_HELPER_RE = /^[a-z0-9+.-]*::/i;
-
-function assertSafeGitValue(value: string | null, what: string): void {
-  if (value == null) {
-    return;
-  }
-  if (value.startsWith("-")) {
-    throw new Error(`Invalid ${what}: must not start with "-"`);
-  }
-  if (REMOTE_HELPER_RE.test(value)) {
-    throw new Error(`Invalid ${what}: remote-helper syntax ("<scheme>::") is not allowed`);
-  }
 }
 
 export function normalizeGitRepoName(name: string): string {

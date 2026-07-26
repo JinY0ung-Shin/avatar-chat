@@ -12,6 +12,7 @@ import {
   originUrl,
   alignBranch,
   commitAndPushClone,
+  assertSafeGitValue,
 } from "./repoGitCore.js";
 import type { AppConfig } from "./types.js";
 import type { Store } from "./store.js";
@@ -75,10 +76,11 @@ async function ensureGroupCloneLocked(
   repoRoot: string,
 ): Promise<string> {
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
-  // Reject values git would read as options (e.g. `--upload-pack=…` → RCE).
-  if (url.startsWith("-") || (ctx.branch && ctx.branch.startsWith("-"))) {
-    throw new Error("Invalid repo or branch");
-  }
+  // Reject values git would read as options (e.g. `--upload-pack=…` → RCE) and
+  // `scheme::` remote-helper syntax (`ext::sh -c …` → command execution). Mirrors
+  // ensureClone in knowledgeRepo.ts — ONE shared validator (T3.8).
+  assertSafeGitValue(url, "repo");
+  assertSafeGitValue(ctx.branch, "branch");
   const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
 
   // A settings change to a different repo leaves the old `origin` in

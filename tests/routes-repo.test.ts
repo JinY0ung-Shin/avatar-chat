@@ -23,6 +23,10 @@ import {
   removeGitRepoClone,
   writeGitRepoFile,
 } from "../src/server/gitRepos.js";
+import {
+  type KnowledgeRepoContext,
+  ensureClone,
+} from "../src/server/knowledgeRepo.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../src/server/activeRepoLock.js";
 import { resolveActiveWorkspaceRepo } from "../src/server/activeRepoResolve.js";
 import { setWorkspaceRepo } from "../src/server/repoWorkspace.js";
@@ -204,6 +208,52 @@ describe("PUT /api/me/knowledge-repo", () => {
       .send({ repo: null })
       .expect(200);
     expect(clearedNull.body.user.knowledgeRepo).toBeNull();
+  });
+
+  // Regression (sec): `isInternalGitSource` used to return true when it could not
+  // parse a host, and `looksLikeRepo` accepts anything ending in `.git`. Together
+  // that let any authenticated user connect their knowledge repo to a LOCAL path —
+  // e.g. another user's knowledge clone under dataDir/knowledge/<otherUserId> or a
+  // group repo they are not a member of — and then read it back through
+  // /contents, /note, /graph and the agent's repo/brain read tools.
+  it("rejects a local filesystem path as a knowledge repo source", async () => {
+    const { app, config, store } = bootstrap();
+    const { agent, userId } = await newUser(app, "kblocalpath");
+    const victim = await newUser(app, "kbvictim");
+
+    // A real, clonable local repo standing in for another user's clone. Ends in
+    // `.git`, so it satisfies looksLikeRepo.
+    const victimClone = seedRemote(config.dataDir, "victim-brain", {
+      "wiki/secret.md": "victim private note",
+    });
+    expect(victimClone.endsWith(".git")).toBe(true);
+
+    const rejected = await agent
+      .put("/api/me/knowledge-repo")
+      .send({ repo: victimClone, branch: "main" })
+      .expect(400);
+    expect(rejected.body.error).toContain("사내 GitHub host");
+
+    // The exact shape of the cross-user read: the path of another user's clone.
+    await agent
+      .put("/api/me/knowledge-repo")
+      .send({ repo: `${path.join(config.dataDir, "knowledge", victim.userId)}/.git` })
+      .expect(400);
+
+    // Nothing was persisted, so no clone can be triggered later.
+    expect(store.getUserById(userId)?.knowledgeRepo ?? null).toBeNull();
+  });
+
+  it("rejects remote-helper (scheme::) syntax as a knowledge repo source", async () => {
+    const { app } = bootstrap();
+    const { agent } = await newUser(app, "kbexthelper");
+
+    // `ext::sh -c …` makes git run an arbitrary command. It ends in `.git` here so
+    // it clears looksLikeRepo, and it has no parseable host.
+    await agent
+      .put("/api/me/knowledge-repo")
+      .send({ repo: "ext::sh -c evil .git" })
+      .expect(400);
   });
 });
 
@@ -535,6 +585,54 @@ describe("gitRepos clone safety guards", () => {
     await expect(
       ensureGitRepoClone(ctx({ repo: remote, branch: "-x", name: "gb" })),
     ).rejects.toThrow(/must not start with/);
+  });
+});
+
+// The knowledge/group clone paths used to check only for a leading dash, so
+// `ext::sh -c …` reached `git clone` and only git's own default protocol policy
+// refused it (T3.8). Both now share ONE validator with gitRepos above. Local
+// paths must STILL clone — they are how these suites run offline.
+describe("knowledge repo clone safety guards", () => {
+  function kbCtx(over: Partial<KnowledgeRepoContext>): KnowledgeRepoContext {
+    const config = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "t",
+    }).config;
+    return {
+      userId: "kbguard",
+      repo: "owner/repo",
+      branch: null,
+      token: null,
+      selected: null,
+      config,
+      ...over,
+    };
+  }
+
+  it("rejects remote-helper (scheme::) syntax on the personal clone path", async () => {
+    await expect(ensureClone(kbCtx({ repo: "ext::sh -c evil" }))).rejects.toThrow(
+      /remote-helper/,
+    );
+  });
+
+  it("rejects a repo git would read as an option", async () => {
+    await expect(ensureClone(kbCtx({ repo: "-oProxyCommand=evil" }))).rejects.toThrow(
+      /must not start with/,
+    );
+  });
+
+  it("rejects a remote-helper branch", async () => {
+    const remote = seedRemote(tempDir, "kbguardbranch", { "README.md": "x" });
+    await expect(
+      ensureClone(kbCtx({ repo: remote, branch: "ext::sh -c evil", userId: "kbguard2" })),
+    ).rejects.toThrow(/remote-helper/);
+  });
+
+  it("still clones a legitimate local bare remote (offline test pattern)", async () => {
+    const remote = seedRemote(tempDir, "kbguardok", { "README.md": "ok" });
+    const root = await ensureClone(kbCtx({ repo: remote, branch: "main", userId: "kbguard3" }));
+    expect(fs.readFileSync(path.join(root, "README.md"), "utf8")).toBe("ok");
   });
 });
 

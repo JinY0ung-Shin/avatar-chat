@@ -35,8 +35,10 @@ import {
 import {
   EXTERNAL_GIT_TOKEN_SECRET_NAME,
   INTERNAL_GIT_TOKEN_SECRET_NAME,
+  isInternalGitSource,
   tokenForGitUrl,
 } from "../src/server/gitCredentials.js";
+import { assertSafeGitValue } from "../src/server/repoGitGuards.js";
 import {
   APP_MANAGED_MCP_SERVERS,
   inspectRepoContents,
@@ -554,6 +556,74 @@ describe("secret encryption", () => {
   });
 });
 
+
+// The source/host POLICY gate for the knowledge + group knowledge repo entry
+// points. It must fail CLOSED: it used to return true whenever it could not parse
+// a host, which admitted bare filesystem paths and `scheme::` remote-helper
+// syntax past the one check meant to require the internal host.
+describe("isInternalGitSource (source/host policy)", () => {
+  const HOST = "github.enterprise.local";
+
+  it("accepts owner/repo shorthand (resolved against the internal host)", () => {
+    expect(isInternalGitSource("owner/knowledge", HOST)).toBe(true);
+    expect(isInternalGitSource("  owner/knowledge  ", HOST)).toBe(true);
+  });
+
+  it("accepts explicit remotes on the internal host", () => {
+    expect(isInternalGitSource(`https://${HOST}/owner/kb.git`, HOST)).toBe(true);
+    expect(isInternalGitSource(`git@${HOST}:owner/kb.git`, HOST)).toBe(true);
+  });
+
+  it("rejects remotes on any other host", () => {
+    expect(isInternalGitSource("https://github.com/owner/kb.git", HOST)).toBe(false);
+    expect(isInternalGitSource("git@evil.example:owner/kb.git", HOST)).toBe(false);
+  });
+
+  it("fails CLOSED on sources with no parseable host", () => {
+    // Absolute paths — the cross-user disclosure vector. Each ends in `.git`, so
+    // `looksLikeRepo` accepts them and this is the only gate left.
+    expect(isInternalGitSource("/data/knowledge/other-user-id/.git", HOST)).toBe(false);
+    expect(isInternalGitSource("/data/group-knowledge/some-group/.git", HOST)).toBe(false);
+    expect(isInternalGitSource("./relative/path.git", HOST)).toBe(false);
+    // Remote-helper syntax (command execution if it reaches git).
+    expect(isInternalGitSource("ext::sh -c evil .git", HOST)).toBe(false);
+    expect(isInternalGitSource("fd::7 .git", HOST)).toBe(false);
+  });
+});
+
+// ONE arg-safety validator shared by every clone path (knowledge, group
+// knowledge, registered git repos, plugins). Deliberately transport-agnostic:
+// a bare local path is a legitimate repo source, so host policy is NOT its job.
+describe("assertSafeGitValue (shared clone arg guard)", () => {
+  it("passes benign values, including local paths", () => {
+    for (const ok of [
+      "owner/repo",
+      "https://github.enterprise.local/owner/repo.git",
+      "git@github.enterprise.local:owner/repo.git",
+      "/tmp/some/bare-remote.git",
+      "main",
+      null,
+      undefined,
+    ]) {
+      expect(() => assertSafeGitValue(ok, "repo")).not.toThrow();
+    }
+  });
+
+  it("rejects values git would read as an option", () => {
+    expect(() => assertSafeGitValue("-oProxyCommand=evil", "repo")).toThrow(
+      /must not start with/,
+    );
+    expect(() => assertSafeGitValue("--upload-pack=evil", "repo")).toThrow(
+      /must not start with/,
+    );
+  });
+
+  it("rejects scheme:: remote-helper syntax regardless of git's own policy", () => {
+    for (const bad of ["ext::sh -c evil", "EXT::sh -c evil", "fd::7", "::plain"]) {
+      expect(() => assertSafeGitValue(bad, "repo")).toThrow(/remote-helper/);
+    }
+  });
+});
 
 describe("git token secret storage", () => {
   function makeStore(dir: string) {

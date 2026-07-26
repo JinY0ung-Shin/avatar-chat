@@ -5,7 +5,7 @@
 // share one definition rather than copy-paste. Everything is keyed off a single
 // `repoRoot`, matching the per-clone working-tree model the callers use.
 //
-// The leading-dash arg guards (`safeIdentity`/`safePushBranch`) live in
+// The arg guards (`assertSafeGitValue`/`safeIdentity`/`safePushBranch`) live in
 // repoGitGuards.ts; this module re-exports them so a caller can pull all the
 // shared git primitives from one place. Behavior is byte-for-byte identical to
 // the inlined versions it replaces.
@@ -21,7 +21,7 @@ import type { AppConfig } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
-export { safeIdentity, safePushBranch } from "./repoGitGuards.js";
+export { assertSafeGitValue, safeIdentity, safePushBranch } from "./repoGitGuards.js";
 
 /**
  * Run `git -C <repoRoot> <args>` and resolve with `{stdout, stderr}`. The

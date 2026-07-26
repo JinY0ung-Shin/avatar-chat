@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { assertSafeGitValue } from "./repoGitGuards.js";
 
 const execFileAsync = promisify(execFile);
 export const DEFAULT_GITHUB_HOST = "github.com";
@@ -48,13 +49,13 @@ export function scrubGitError(err: unknown): string {
 
 /**
  * Reject a source that git would interpret as an option (leading `-`) rather
- * than a repo. Combined with a `--` separator before positionals, this blocks
- * argument-injection (e.g. `--upload-pack=…` → RCE).
+ * than a repo, plus `scheme::` remote-helper syntax. Combined with a `--`
+ * separator before positionals, this blocks argument-injection
+ * (e.g. `--upload-pack=…` → RCE). Delegates to the ONE shared validator so the
+ * plugin clone path can't drift from the knowledge/git-repo clone paths (T3.8).
  */
 function assertSafeArg(value: string, what: string): void {
-  if (value.startsWith("-")) {
-    throw new Error(`Invalid ${what}: must not start with "-"`);
-  }
+  assertSafeGitValue(value, what);
 }
 
 /**

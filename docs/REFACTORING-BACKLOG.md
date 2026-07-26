@@ -54,10 +54,16 @@ Each item lists: files · why · risk · effort · breaking.
 - **The issue:** the knowledge-repo "any changes?" short-circuit currently **misses files inside otherwise-untracked directories**. This looks like a **latent bug, not intent** — but switching to `-uall` everywhere **changes when commits fire**. Confirm it's a bug, add explicit test coverage, then change deliberately.
 - **risk:** high (behavior) · **effort:** S
 
-### T3.8 — Close the `ext::sh` arg-injection asymmetry 🔒 SECURITY
-- **Files:** `knowledgeRepo.ts`/`groupKnowledgeRepo.ts` vs `gitRepos.ts`
-- **The issue:** the `REMOTE_HELPER_RE` (`scheme::`) guard exists ONLY in `gitRepos.assertSafeGitValue`. The knowledge-repo clone paths only check leading dashes, so `ext::sh -c …` isn't blocked there. Consolidate arg-safety into ONE audited validator used by all clone paths.
-- **Action:** route through a single validator and run `/security-review`. **Do NOT fold into a routine dedupe PR.**
+### T3.8 — Close the `ext::sh` arg-injection asymmetry 🔒 SECURITY — ✅ DONE (2026-07)
+- **Done:** `assertSafeGitValue` (leading dash + `scheme::` remote-helper) now lives in `repoGitGuards.ts` as the SINGLE arg-safety validator, re-exported through `repoGitCore.ts` and used by **all four** clone paths: `gitRepos.ts` (unchanged behavior), `knowledgeRepo.ts` + `groupKnowledgeRepo.ts` (previously leading-dash only), and `marketplace.ts` `assertSafeArg` (the plugin clone path, also previously leading-dash only). Unit matrix in `infra.test.ts`, clone-path tests in `routes-repo.test.ts`.
+- **Measured while fixing:** `ext::` was never actually reachable — git refuses it by default (`fatal: transport 'ext' not allowed`, verified on git 2.43.0). The defense was git's default protocol policy, NOT app code, so `protocol.ext.allow`/`GIT_ALLOW_PROTOCOL` or a differently-built git would have re-opened it. The validator no longer depends on that default.
+- **Deliberately NOT changed:** the validator stays transport-agnostic. Local paths must keep cloning — `register_repo` accepts them by design and every offline repo test clones from a local bare remote. Source/host POLICY is a separate layer (see the `isInternalGitSource` note below).
+
+### T3.11 — `isInternalGitSource` failed open on unparseable hosts 🔒 SECURITY — ✅ DONE (2026-07)
+- **Files:** `gitCredentials.ts`, entry points `routes/knowledgeRepo.ts` + `routes/groups.ts`
+- **The issue:** `isInternalGitSource` returned `true` when `gitHostFromSource` yielded `null`. That branch was already dead for `owner/repo` shorthand (handled above it), so its only effect was to admit values with NO parseable host — bare filesystem paths and `scheme::` syntax — past the single check that enforces "the knowledge repo must live on the internal GitHub host". `looksLikeRepo` accepts anything ending in `.git`, and `marketplaceCloneUrl` passes non-shorthand values through unchanged, so `/data/knowledge/<otherUserId>/.git` cleared every gate.
+- **Impact (verified by reproducing the clone):** any authenticated user could connect their knowledge repo to another user's clone under `dataDir/knowledge/<id>`, or a group repo under `dataDir/group-knowledge/<id>` they were not a member of, then read it back via `/api/me/knowledge-repo/{contents,note,graph}` and the agent's `mcp__repo__read_file` / `mcp__brain__search`. No tool access required — plain HTTP. Group admins had the same path for group repos, exposing the target to every member.
+- **Done:** the `host === null` fail-open is gone — a non-shorthand source must have a PARSEABLE host equal to the internal host. Regression tests at both route entry points plus an `isInternalGitSource` unit matrix.
 - **risk:** high (security) · **effort:** S
 
 ### T3.9 — zod-ify HTTP bodies + `asyncHandler`

@@ -13,6 +13,7 @@ import {
   dirtyPaths as coreDirtyPaths,
   alignBranch,
   commitAndPushClone,
+  assertSafeGitValue,
 } from "./repoGitCore.js";
 import fsSync from "node:fs";
 import type { AppConfig, KnowledgeRepoStatus, KnowledgeRepoTreeEntry } from "./types.js";
@@ -154,10 +155,13 @@ export async function ensureClone(ctx: KnowledgeRepoContext): Promise<string> {
 
 async function ensureCloneLocked(ctx: KnowledgeRepoContext, repoRoot: string): Promise<string> {
   const url = marketplaceCloneUrl(ctx.repo, ctx.config.githubHost);
-  // Reject values git would read as options (e.g. `--upload-pack=…` → RCE).
-  if (url.startsWith("-") || (ctx.branch && ctx.branch.startsWith("-"))) {
-    throw new Error("Invalid repo or branch");
-  }
+  // Reject values git would read as options (e.g. `--upload-pack=…` → RCE) and
+  // `scheme::` remote-helper syntax (`ext::sh -c …` → command execution). ONE
+  // shared validator across every clone path — this path used to check only for
+  // a leading dash, so it relied on git's own default protocol policy to refuse
+  // `ext` (T3.8).
+  assertSafeGitValue(url, "repo");
+  assertSafeGitValue(ctx.branch, "branch");
   const auth = gitAuthArgs(url, tokenForGitUrl(url, ctx.config, repoTokens(ctx)));
 
   // If the connected repo was changed in settings, the existing clone's `origin`

@@ -202,9 +202,23 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   `gitRepos` uses `--porcelain -uall`, threaded via the `extraStatusArgs` param. The knowledge-repo
   variant misses files inside otherwise-untracked dirs — a **latent bug flagged for a deliberate
   decision** (T3.7), NOT something to "fix" incidentally.
-- **`ext::sh`/remote-helper arg-injection guard exists ONLY in `gitRepos.assertSafeGitValue`** — the
-  knowledge-repo clone paths still only check leading dashes. This asymmetry is a **security item pending
-  review** (T3.8); consolidate arg-safety into one validator, don't paper over it.
+- **Git safety is TWO separate layers — don't merge them.**
+  1. **Arg-safety: ONE validator, every clone path.** `assertSafeGitValue` (`repoGitGuards.ts`,
+     re-exported via `repoGitCore.ts`) rejects leading-dash values and `scheme::` remote-helper syntax
+     (`ext::sh -c …`). Used by `gitRepos.ts`, `knowledgeRepo.ts`, `groupKnowledgeRepo.ts`, and
+     `marketplace.ts`'s `assertSafeArg` (plugin clones). It is deliberately **transport-agnostic**: a bare
+     local path is a LEGITIMATE repo source (`register_repo` accepts one by design, and every offline repo
+     test clones from a local bare remote), so this layer must never reject one. Was T3.8 — the three
+     non-`gitRepos` paths used to check only for a leading dash and leaned on git's own default protocol
+     policy (`fatal: transport 'ext' not allowed`) to stop `ext::`.
+  2. **Source/host POLICY: `isInternalGitSource` (`gitCredentials.ts`), knowledge + group repos only.**
+     It answers "is this on the internal GitHub host?" and **must fail CLOSED** — a non-shorthand source
+     needs a PARSEABLE host matching `config.githubHost`. It used to return `true` for `host === null`,
+     which (since `looksLikeRepo` accepts anything ending in `.git`) let any authenticated user point their
+     knowledge repo at `dataDir/knowledge/<otherUserId>/.git` and read another user's private repo back
+     through `/contents`, `/note`, `/graph` and the agent read tools. Was T3.11.
+  When you add a repo entry point, decide which layer it needs: arg-safety ALWAYS, host policy only if the
+  feature promises an internal-host-only source.
 - **`withRepoLock` (`gitMutex.ts`) is NOT reentrant by key** — a fn running under `withRepoLock(key,…)`
   must never call it again for the same key (deadlock). Outer ops call the `*Locked` internals directly.
 - **`commitAndPushClone` self-heals around the remote:** before pushing it fetches and REBASES local
