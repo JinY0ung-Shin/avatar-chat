@@ -470,17 +470,39 @@ describe("dom.enhanceMarkdown", () => {
     node.innerHTML = "<pre><code>const x = 1;</code></pre><table><tr><td>c</td></tr></table>";
     document.body.append(node);
 
-    const action = enhanceMarkdown(node);
+    const action = enhanceMarkdown(node, "source-v1");
     const wrapper = node.querySelector(".code-block");
     expect(wrapper).not.toBeNull();
     expect(wrapper!.querySelector("pre")).not.toBeNull();
     expect(wrapper!.querySelector("button.code-copy")).not.toBeNull();
     expect(node.querySelector(".table-wrap table")).not.toBeNull();
 
-    action.update();
+    action.update("source-v2");
     expect(node.querySelectorAll(".code-block")).toHaveLength(1);
     expect(node.querySelectorAll(".table-wrap")).toHaveLength(1);
     action.destroy();
+  });
+
+  it("skips the sweep when the source text is unchanged", () => {
+    // Svelte re-runs update() on every appState emission (one per SSE token), so
+    // an unchanged body must not re-query the DOM once per message per token.
+    const node = document.createElement("div");
+    node.innerHTML = "<pre><code>const x = 1;</code></pre>";
+    document.body.append(node);
+    const querySpy = vi.spyOn(node, "querySelectorAll");
+
+    const action = enhanceMarkdown(node, "same-source");
+    const afterMount = querySpy.mock.calls.length;
+    expect(afterMount).toBeGreaterThan(0);
+
+    action.update("same-source");
+    action.update("same-source");
+    expect(querySpy.mock.calls.length).toBe(afterMount);
+
+    action.update("changed-source");
+    expect(querySpy.mock.calls.length).toBeGreaterThan(afterMount);
+    action.destroy();
+    querySpy.mockRestore();
   });
 
   it("the injected copy button copies through the clipboard", () => {

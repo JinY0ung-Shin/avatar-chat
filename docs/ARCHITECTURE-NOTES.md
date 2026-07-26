@@ -818,6 +818,24 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   DIRECTLY. Functions that read only their ARGUMENTS (e.g. `canSendMessage(item)`) are fine — the arg is
   the tracked dep. Known latent same-class instances (masked by coincident list refreshes, unverified):
   `Shell.isConversationBusy`/`isConversationStreaming`, `ChatView.canPickModel` — see REFACTORING-BACKLOG.
+- **One `updateState` re-evaluates EVERY each-block item's template expressions — and streaming calls it
+  once per SSE token.** `$: panes = $appState.chatPanes` re-emits the same array, but `safe_not_equal` is
+  always true for objects, so the dirt propagates down to each keyed item. Measured with a probe component
+  matching ChatView's shape: a 200-message pane ran 200 template evaluations *per token* (2,000 over 10
+  tokens). In the transcript that expression is `renderMarkdown(...)` — 57 ms of `marked` + `DOMPurify` per
+  token, all thrown away because the html was identical. Two mitigations are in place, keep them:
+  `renderMarkdownCached` (`lib/format.ts`) memoizes PERSISTED message bodies on their source text — live
+  streaming text must keep the plain `renderMarkdown` or it just churns the map; and `enhanceMarkdown`
+  (`lib/dom.ts`) skips its two `querySelectorAll` sweeps when the param is identity-equal, which is why
+  every call site MUST pass the same source string its sibling `{@html}` renders. The real fix is runes
+  for this subtree (REFACTORING-BACKLOG T3.10); until then, assume anything in a chat `{#each}` runs at
+  token rate and keep it cheap or memoized.
+- **`<details>` hides its children, it does not skip rendering them.** A body left in the template costs a
+  full markdown parse / component mount for every message on load, on a card most users never open. The
+  transcript's "생각 과정" and "작업 내역" cards therefore render on first open, driven by an
+  `expandedCards` set fed from `on:toggle` (`ChatView`). Note `toggle` fires as a TASK after `open` flips
+  (spec behavior, jsdom matches) — a test must await a macrotask, not just `tick()`. Trade-off accepted:
+  Chrome's find-in-page can no longer reach inside an unopened card.
 
 ### Chat transcript auto-scroll (stick-to-bottom)
 - **User intent is read from INPUT events (wheel/touch/pointer), never inferred from scroll deltas.**

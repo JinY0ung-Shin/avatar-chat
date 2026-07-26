@@ -25,7 +25,7 @@
   import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { goView, routeFromHash } from "../lib/nav";
-  import { formatUsageLabel, renderMarkdown, timeLabel } from "../lib/format";
+  import { formatUsageLabel, renderMarkdown, renderMarkdownCached, timeLabel } from "../lib/format";
   import { createStickController, type StickController } from "../lib/autoscroll";
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
   import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
@@ -888,6 +888,24 @@
     const agentCount = activity.agents.filter((a) => !a.isMain).length;
     return activityCountLabel(toolCount, taskCount, agentCount, "사용함", "작업 내역");
   }
+
+  // Which collapsed "생각 과정" / "작업 내역" cards the user has opened, keyed by
+  // `${messageKey}:${card}`. <details> only HIDES its children, so a body left in
+  // the template still costs a full markdown parse (thinking) or an ActivityTree
+  // mount (activity) for every message in the transcript, on a card almost nobody
+  // opens. Rendering on first open keeps a long transcript's mount cost flat.
+  // Trade-off: Chrome's find-in-page can no longer reach inside an unopened card.
+  let expandedCards = new Set<string>();
+  function cardKey(message: StoredMessage, card: "thinking" | "activity"): string {
+    return `${message.id || message.createdAt}:${card}`;
+  }
+  function toggleCard(key: string, event: Event): void {
+    const open = (event.currentTarget as HTMLDetailsElement).open;
+    if (open === expandedCards.has(key)) return;
+    if (open) expandedCards.add(key);
+    else expandedCards.delete(key);
+    expandedCards = expandedCards;
+  }
 </script>
 
 {#snippet transcript(item: ChatPane)}
@@ -931,26 +949,32 @@
                   <div class="response-meta"><span class="meta-badge">{runtimeBadge(message)}</span></div>
                 {/if}
                 {#if message.response?.thinking}
-                  <details class="thinking-card">
+                  {@const thinkingKey = cardKey(message, "thinking")}
+                  <details class="thinking-card" on:toggle={(event) => toggleCard(thinkingKey, event)}>
                     <summary class="thinking-card-head"><span class="thinking-card-badge">생각 과정</span></summary>
-                    <div class="md thinking-card-body" use:enhanceMarkdown={message.response.thinking}>{@html renderMarkdown(message.response.thinking)}</div>
+                    {#if expandedCards.has(thinkingKey)}
+                      <div class="md thinking-card-body" use:enhanceMarkdown={message.response.thinking}>{@html renderMarkdownCached(message.response.thinking)}</div>
+                    {/if}
                   </details>
                 {/if}
                 {#if activity}
-                  <details class="activity-live activity-done">
+                  {@const activityKey = cardKey(message, "activity")}
+                  <details class="activity-live activity-done" on:toggle={(event) => toggleCard(activityKey, event)}>
                     <summary><span class="activity-summary-text">{completedActivityLabel(activity)}</span></summary>
-                    <div class="agent-activity">
-                      <ActivityTree agentId="main" agents={activity.agents} tools={activity.tools} tasks={activity.tasks || []} />
-                    </div>
+                    {#if expandedCards.has(activityKey)}
+                      <div class="agent-activity">
+                        <ActivityTree agentId="main" agents={activity.agents} tools={activity.tools} tasks={activity.tasks || []} />
+                      </div>
+                    {/if}
                   </details>
                 {/if}
                 {#if message.response?.plan}
                   <details class="plan-card" open>
                     <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
-                    <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdown(message.response.plan)}</div>
+                    <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdownCached(message.response.plan)}</div>
                   </details>
                 {/if}
-                <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdown(messageText(message))}</div>
+                <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdownCached(messageText(message))}</div>
                 {#if visibleAttachments(message.attachments).length}
                   <div class="msg-images">
                     {#each visibleAttachments(message.attachments) as att (att.id)}

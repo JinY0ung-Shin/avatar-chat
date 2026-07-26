@@ -170,9 +170,16 @@ export function clickOutside(
 }
 
 // Wrap each <pre> in a .code-block with a copy button, and each <table> in a
-// .table-wrap scroller. Idempotent. Use as `<div use:enhanceMarkdown>{@html …}</div>`;
+// .table-wrap scroller. Idempotent. Use as `<div use:enhanceMarkdown={source}>{@html …}</div>`;
 // re-runs after the html updates because Svelte calls update() on dependency change.
-export function enhanceMarkdown(node: HTMLElement, _param?: unknown) {
+//
+// Pass the SAME source text the sibling {@html} renders, so an unchanged param
+// can skip the sweep: Svelte re-runs update() whenever the each-block item is
+// re-emitted, and `updateState` re-emits the whole appState on every SSE token.
+// Without the identity check, each message already in a long transcript paid two
+// querySelectorAll passes per streamed token (see renderMarkdownCached).
+export function enhanceMarkdown(node: HTMLElement, param?: unknown) {
+  let last = param;
   const run = () => {
     node.querySelectorAll("pre").forEach((pre) => {
       if (pre.parentElement?.classList.contains("code-block")) return;
@@ -202,7 +209,11 @@ export function enhanceMarkdown(node: HTMLElement, _param?: unknown) {
   };
   run();
   return {
-    update: run,
+    update(next?: unknown) {
+      if (next === last) return;
+      last = next;
+      run();
+    },
     destroy() {
       /* nothing to tear down */
     },

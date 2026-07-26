@@ -64,6 +64,7 @@ import {
   minuteToTime,
   normalizeTags,
   renderMarkdown,
+  renderMarkdownCached,
   repoToHref,
   routineTitle,
   timeLabel,
@@ -854,6 +855,22 @@ describe("format helpers", () => {
     const out = renderMarkdown("<script>alert(1)</script>");
     expect(out).toContain("<pre>");
     expect(out).not.toContain("<script>");
+  });
+
+  it("renderMarkdownCached returns the same html and reuses it for repeated source text", () => {
+    // The transcript re-evaluates every message's body on each SSE token, so the
+    // cache is what keeps a long thread from re-parsing all of it per token.
+    const source = `**bold** ${Math.random()}`;
+    const first = renderMarkdownCached(source);
+    expect(first).toBe(renderMarkdown(source));
+    expect(renderMarkdownCached(source)).toBe(first); // same string instance, not just equal
+  });
+
+  it("renderMarkdownCached evicts the oldest entries instead of growing without bound", () => {
+    // Rendering far past the cap must stay correct; only the memo is dropped.
+    for (let i = 0; i < 600; i += 1) renderMarkdownCached(`entry ${i}`);
+    expect(renderMarkdownCached("entry 599")).toContain("entry 599");
+    expect(renderMarkdownCached("entry 0")).toContain("entry 0");
   });
 
   it("formatDate returns '' for empty/invalid and a ko-KR label otherwise", () => {

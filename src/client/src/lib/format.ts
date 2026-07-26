@@ -37,6 +37,39 @@ export function renderMarkdown(text: string | null | undefined): string {
   return html;
 }
 
+// Rendered-markdown cache for PERSISTED message bodies.
+//
+// Svelte 5 legacy reactivity (this client uses no runes) re-evaluates every
+// each-block item's template expressions on any appState emission, and
+// `updateState` emits once per SSE token — so a streaming turn re-parsed the
+// markdown of every message already in the transcript on every token. Measured
+// at 200 messages: 200 renderMarkdown calls per token, all discarded because the
+// html was identical. renderMarkdown is pure in its source text, so caching on
+// that text makes the parse cost O(new text) instead of O(transcript × tokens).
+//
+// Streaming text (liveText / liveThinking / livePlan) must keep using the plain
+// renderMarkdown: it changes every token, so caching it only churns the map.
+const MARKDOWN_CACHE_LIMIT = 500;
+const markdownCache = new Map<string, string>();
+
+export function renderMarkdownCached(text: string | null | undefined): string {
+  const source = text || "";
+  const hit = markdownCache.get(source);
+  if (hit !== undefined) {
+    // Re-insert so the map's insertion order stays least-recently-used-first.
+    markdownCache.delete(source);
+    markdownCache.set(source, hit);
+    return hit;
+  }
+  const html = renderMarkdown(source);
+  markdownCache.set(source, html);
+  if (markdownCache.size > MARKDOWN_CACHE_LIMIT) {
+    const oldest = markdownCache.keys().next().value;
+    if (oldest !== undefined) markdownCache.delete(oldest);
+  }
+  return html;
+}
+
 export function formatDate(value: string | null | undefined): string {
   if (!value) return "";
   const date = new Date(value);

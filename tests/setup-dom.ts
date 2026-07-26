@@ -29,3 +29,15 @@ if (typeof Element !== "undefined" && !(Element.prototype as Element & { animate
     },
   });
 }
+
+// jsdom has no ResizeObserver, and the transcript's stick-to-bottom controller
+// (lib/autoscroll.ts) constructs one on attach — so ANY component test that
+// mounts the chat transcript throws without this. Layout never changes in jsdom,
+// so a no-op observer is honest here; real re-pin behavior is Playwright's job.
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe(): void {}
+    unobserve(): void {}
+    disconnect(): void {}
+  } as unknown as typeof ResizeObserver;
+}
