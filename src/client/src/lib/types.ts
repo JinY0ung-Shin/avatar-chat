@@ -35,8 +35,21 @@ export type {
   User,
 } from "../../../server/types.js";
 
-import type { CanvasArtifact } from "../../../server/types.js";
+import type { CanvasArtifact, RoutineJob } from "../../../server/types.js";
 import type { McpToolGroupId } from "../../../shared/mcpToolGroups";
+
+/**
+ * Seed values for a NEW routine, used by the routines empty-state starter
+ * cards to open the create modal pre-filled. Client-only: the server never
+ * sees a preset, only the routine the user ends up saving.
+ */
+export interface RoutinePreset {
+  name?: string;
+  prompt?: string;
+  scheduleKind?: RoutineJob["scheduleKind"];
+  time?: string;
+  daysOfWeek?: number[];
+}
 
 export type ViewName =
   | "explore"

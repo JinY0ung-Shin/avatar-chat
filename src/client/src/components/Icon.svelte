@@ -11,6 +11,7 @@
     close: '<path d="M18 6 6 18M6 6l12 12"/>',
     send: '<path d="m22 2-7 20-4-9-9-4 20-7Z"/><path d="M22 2 11 13"/>',
     stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+    play: '<path d="M7 4.5v15l13-7.5-13-7.5Z"/>',
     refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
     menu: '<path d="M3 12h18M3 6h18M3 18h18"/>',

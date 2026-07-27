@@ -174,6 +174,18 @@ export interface AppConfig {
    */
   maxTurns: number;
   /**
+   * Hard wall-clock deadline for ONE unattended routine run (env
+   * `ROUTINE_RUN_TIMEOUT_MINUTES`, default 30 minutes, floor 1 minute — the
+   * deadline can't be disabled, or a hung SDK call would wedge the job forever).
+   *
+   * This is the budget for the WHOLE run, `maxTurns` notwithstanding: every
+   * model-fallback attempt and the resume self-heal retry share it. It is also
+   * how long `POST /api/me/routines/:id/run` ("지금 실행") can hold its HTTP
+   * request open, so raising it past a fronting proxy's read timeout makes the
+   * manual-run button fail even while the run itself keeps going.
+   */
+  routineRunTimeoutMs: number;
+  /**
    * Optional override for the SDK autocompact trigger: the working context
    * window (in tokens) the agent compacts near the top of. Maps to the SDK
    * `autoCompactWindow` option. Unset (the default) → the CLI uses the model's

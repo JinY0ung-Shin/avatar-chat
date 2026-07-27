@@ -56,8 +56,10 @@ import {
 import {
   avatarGradient,
   avatarImageUrl,
+  countdownLabel,
   formatDate,
   formatRoutineSchedule,
+  relativeDayTimeLabel,
   formatTokenCount,
   hashHue,
   initials,
@@ -910,6 +912,29 @@ describe("format helpers", () => {
     const thisYear = new Date().getFullYear();
     expect(timeLabel(`${thisYear}-07-06T09:30:00`)).not.toMatch(/\d{2,}\. \d{2}\. \d{2}\./);
     expect(timeLabel("2001-07-06T09:30:00")).not.toBe("");
+  });
+
+  it("relativeDayTimeLabel spells out near days and weekday-tags the rest", () => {
+    const now = new Date("2026-07-27T12:00:00+09:00");
+    expect(relativeDayTimeLabel("2026-07-27T09:00:00+09:00", now)).toBe("오늘 오전 9:00");
+    expect(relativeDayTimeLabel("2026-07-28T09:00:00+09:00", now)).toBe("내일 오전 9:00");
+    expect(relativeDayTimeLabel("2026-07-26T18:00:00+09:00", now)).toBe("어제 오후 6:00");
+    expect(relativeDayTimeLabel("2026-07-31T18:00:00+09:00", now)).toBe("7. 31. (금) 오후 6:00");
+    // A different year keeps a 2-digit year so the date isn't ambiguous.
+    expect(relativeDayTimeLabel("2027-01-04T09:00:00+09:00", now)).toBe("27. 1. 4. (월) 오전 9:00");
+    expect(relativeDayTimeLabel(null, now)).toBe("");
+    expect(relativeDayTimeLabel("nope", now)).toBe("");
+  });
+
+  it("countdownLabel bucketises future instants and skips past ones", () => {
+    const now = new Date("2026-07-27T12:00:00+09:00");
+    expect(countdownLabel("2026-07-27T12:00:20+09:00", now)).toBe("곧");
+    expect(countdownLabel("2026-07-27T12:12:00+09:00", now)).toBe("12분 후");
+    expect(countdownLabel("2026-07-27T15:00:00+09:00", now)).toBe("3시간 후");
+    expect(countdownLabel("2026-07-29T12:00:00+09:00", now)).toBe("2일 후");
+    expect(countdownLabel("2026-07-27T11:00:00+09:00", now)).toBe("");
+    expect(countdownLabel(null, now)).toBe("");
+    expect(countdownLabel("nope", now)).toBe("");
   });
 
 it("formatRoutineSchedule renders once/interval/weekly/daily variants (server-mirrored)", () => {

@@ -71,32 +71,55 @@
   display: grid;
   gap: var(--s-1);
 }
-.routine-preview-wrap .field-hint {
+.routine-preview-head {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--muted);
   font-size: var(--t-xs);
   font-weight: 600;
 }
 .routine-prompt-preview {
-  border: 1px dashed var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  padding: var(--s-2) var(--s-3);
+  border-left: 2px solid var(--line);
+  padding: 0 0 0 var(--s-2-5);
   max-height: 160px;
   overflow-y: auto;
   font-size: var(--t-sm);
 }
+/* Flattened: the modal card is already a surface, so the schedule fields sit on
+   it directly instead of inside a second bordered box. */
 .schedule-builder {
   display: flex;
   flex-direction: column;
-  gap: var(--s-2);
-  padding: var(--s-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
+  gap: var(--s-2-5);
 }
 .schedule-row {
   display: flex;
   align-items: center;
   gap: var(--s-3);
+}
+.schedule-row.kinds {
+  align-items: center;
+}
+.schedule-kinds {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+.schedule-kinds .seg-btn {
+  flex: 1;
+  min-width: 0;
+}
+/* Plain-language confirmation of the four inputs above it. */
+.schedule-echo {
+  margin: 0;
+  padding: var(--s-2) var(--s-2-5);
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: var(--t-xs);
+}
+.schedule-echo strong {
+  font-weight: 700;
 }
 .schedule-row[hidden] {
   display: none;

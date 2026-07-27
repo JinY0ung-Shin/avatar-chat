@@ -20,6 +20,7 @@ import type {
   AvatarSummary,
   CanvasArtifact,
   ChatPane,
+  ConversationSummary,
   LiveTaskRow,
   LiveToolRow,
   PaneCanvas,
@@ -204,9 +205,14 @@ export async function startChatWith(
 }
 
 // Open a fresh chat with the owner's own avatar and seed the composer with text
-// (not sent — the owner reviews first). Used by the inbox notification handoff
-// and "ask my avatar" actions. Mirrors the old chatAboutTopic().
-export async function openSeededChat(seedText: string): Promise<void> {
+// (not sent — the owner reviews first). Used by the inbox notification handoff,
+// "ask my avatar" actions, and the routines "지금 실행" handoff. Mirrors the old
+// chatAboutTopic(). `notice` is overridable because the default names a "주제",
+// which is wrong for callers seeding something other than a discussion topic.
+export async function openSeededChat(
+  seedText: string,
+  notice = "입력창에 주제를 채웠습니다. 검토 후 보내기를 누르세요.",
+): Promise<void> {
   const me = readState().user;
   if (!me) return;
   if (
@@ -227,7 +233,33 @@ export async function openSeededChat(seedText: string): Promise<void> {
   });
   syncHash();
   void loadConversations();
-  notify("입력창에 주제를 채웠습니다. 검토 후 보내기를 누르세요.", "info");
+  notify(notice, "info");
+}
+
+// A routine's thread IS a real conversation, but it lives in a SEPARATE state
+// array: loadRoutinesData fetches it with kind:"routine" into routineConversations,
+// and /api/conversations defaults to kind:"chat", which EXCLUDES routine threads.
+// So a lookup that reads only state.conversations misses every routine handoff
+// (the routines view's "일반 대화로 열기") and reports a misleading "대화를 찾을 수
+// 없습니다". Both arrays are consulted before refetching, and the refetch keeps the
+// two lists SEPARATE instead of pulling routine threads into state.conversations —
+// the chat sidebar and startChatWith both treat that array as chat-only.
+async function findConversationSummary(
+  conversationId: string,
+): Promise<ConversationSummary | null> {
+  const local = readState();
+  const cached =
+    local.conversations.find((item) => item.id === conversationId) ??
+    local.routineConversations.find((item) => item.id === conversationId);
+  if (cached) return cached;
+  const chat = await loadConversations();
+  return (
+    chat.find((item) => item.id === conversationId) ??
+    (await loadConversations("routine")).find(
+      (item) => item.id === conversationId,
+    ) ??
+    null
+  );
 }
 
 export async function selectConversation(
@@ -245,9 +277,7 @@ export async function selectConversation(
     syncHash();
     return;
   }
-  const conv =
-    state.conversations.find((item) => item.id === conversationId) ??
-    (await loadConversations()).find((item) => item.id === conversationId);
+  const conv = await findConversationSummary(conversationId);
   if (!conv) {
     notify("대화를 찾을 수 없습니다.", "warn");
     return;
@@ -299,9 +329,7 @@ export async function addConversationToSplit(
     notify("분할 대화는 최대 4개까지 가능합니다.", "warn");
     return;
   }
-  const conv =
-    state.conversations.find((item) => item.id === conversationId) ??
-    (await loadConversations()).find((item) => item.id === conversationId);
+  const conv = await findConversationSummary(conversationId);
   if (!conv) {
     notify("대화를 찾을 수 없습니다.", "warn");
     return;

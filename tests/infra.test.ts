@@ -166,6 +166,41 @@ afterEach(() => {
 });
 
 
+describe("routine run timeout config", () => {
+  function withEnv(value: string | undefined, fn: () => void) {
+    const saved = process.env.ROUTINE_RUN_TIMEOUT_MINUTES;
+    try {
+      if (value === undefined) delete process.env.ROUTINE_RUN_TIMEOUT_MINUTES;
+      else process.env.ROUTINE_RUN_TIMEOUT_MINUTES = value;
+      fn();
+    } finally {
+      if (saved === undefined) delete process.env.ROUTINE_RUN_TIMEOUT_MINUTES;
+      else process.env.ROUTINE_RUN_TIMEOUT_MINUTES = saved;
+    }
+  }
+
+  const load = () => loadConfig({ dataDir: tempDir, sessionSecret: "test" }).routineRunTimeoutMs;
+
+  it("defaults to 30 minutes", () => {
+    withEnv(undefined, () => expect(load()).toBe(30 * 60_000));
+  });
+
+  it("takes ROUTINE_RUN_TIMEOUT_MINUTES when set", () => {
+    withEnv("90", () => expect(load()).toBe(90 * 60_000));
+  });
+
+  it("clamps to a 1-minute floor so the deadline can never abort runs instantly", () => {
+    // "0" disables the plugin-refresh interval, but here it would mean a 0ms deadline
+    // that kills every run before it starts — the deadline is deliberately not disablable.
+    withEnv("0", () => expect(load()).toBe(60_000));
+    withEnv("-5", () => expect(load()).toBe(30 * 60_000));
+  });
+
+  it("falls back to the default on a non-numeric value", () => {
+    withEnv("soon", () => expect(load()).toBe(30 * 60_000));
+  });
+});
+
 describe("model tiers", () => {
   it("registers the opus/sonnet/haiku aliases with user-facing labels", () => {
     expect(MODEL_TIER_IDS).toEqual(["opus", "sonnet", "haiku"]);

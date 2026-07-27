@@ -442,9 +442,55 @@ describe("opening + resuming conversations", () => {
   });
 
   it("selectConversation warns when the conversation cannot be found", async () => {
-    useFetch((url) => (url === "/api/conversations" ? jsonRes({ conversations: [] }) : undefined));
+    // Both lists must come back empty: a miss in the chat list falls through to
+    // the routine list before the lookup gives up.
+    useFetch((url) =>
+      url === "/api/conversations" || url === "/api/conversations?kind=routine"
+        ? jsonRes({ conversations: [] })
+        : undefined,
+    );
     await selectConversation("missing");
     expect(get(toasts).some((t) => t.message.includes("대화를 찾을 수 없습니다"))).toBe(true);
+  });
+
+  // Routine threads are fetched with kind:"routine" into a SEPARATE state array,
+  // and /api/conversations defaults to kind:"chat" — so a lookup that reads only
+  // state.conversations reported "대화를 찾을 수 없습니다" for every routine
+  // handoff ("일반 대화로 열기") even though the thread exists.
+  it("selectConversation opens a routine thread held in routineConversations", async () => {
+    replaceState({
+      conversations: [],
+      routineConversations: [{ id: "r1", avatarUserId: "av1", isRoutine: true } as any],
+    });
+    const fetchFn = useFetch((url) => {
+      if (url.startsWith("/api/messages"))
+        return jsonRes({ messages: [], groupKnowledgeOff: [], canvases: [] });
+      if (url === "/api/avatars/av1") return jsonRes({ avatar: { id: "av1", alias: "노아", isOwn: true } });
+      if (url.startsWith("/api/chat/runs")) return jsonRes({ run: null });
+      return undefined;
+    });
+    await selectConversation("r1");
+    expect(readState()).toMatchObject({ view: "chat" });
+    expect(readState().chatPanes[0]).toMatchObject({ conversationId: "r1" });
+    // Cached locally, so neither conversation list is refetched.
+    expect(fetchFn.mock.calls.every(([url]) => !String(url).startsWith("/api/conversations"))).toBe(true);
+  });
+
+  it("selectConversation refetches the routine list when neither cache has the thread", async () => {
+    replaceState({ conversations: [], routineConversations: [] });
+    useFetch((url) => {
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      if (url === "/api/conversations?kind=routine")
+        return jsonRes({ conversations: [{ id: "r2", avatarUserId: "av1", isRoutine: true }] });
+      if (url.startsWith("/api/messages"))
+        return jsonRes({ messages: [], groupKnowledgeOff: [], canvases: [] });
+      if (url === "/api/avatars/av1") return jsonRes({ avatar: { id: "av1", alias: "노아", isOwn: true } });
+      if (url.startsWith("/api/chat/runs")) return jsonRes({ run: null });
+      return undefined;
+    });
+    await selectConversation("r2");
+    expect(readState().chatPanes[0]).toMatchObject({ conversationId: "r2" });
+    expect(get(toasts).some((t) => t.message.includes("대화를 찾을 수 없습니다"))).toBe(false);
   });
 
   it("addConversationToSplit focuses an already-open pane", async () => {

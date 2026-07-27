@@ -143,6 +143,53 @@ export function timeLabel(iso: string | null | undefined): string {
   }
 }
 
+function startOfDay(d: Date): number {
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+}
+
+// Schedule-friendly timestamp: near dates read as words ("오늘 오전 9:00",
+// "내일", "어제"), everything else as a weekday-tagged date ("7. 31. (금) 오후
+// 6:00"). Absolute stamps alone ("07. 31. 오후 06:00") force the reader to do
+// calendar arithmetic, which is exactly the question a scheduling screen should
+// answer for them. `now` is injectable so tests don't depend on the wall clock.
+export function relativeDayTimeLabel(iso: string | null | undefined, now: Date = new Date()): string {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const time = d.toLocaleTimeString("ko-KR", { hour: "numeric", minute: "2-digit" });
+    const dayDiff = Math.round((startOfDay(d) - startOfDay(now)) / 86_400_000);
+    if (dayDiff === 0) return `오늘 ${time}`;
+    if (dayDiff === 1) return `내일 ${time}`;
+    if (dayDiff === -1) return `어제 ${time}`;
+    const opts: Intl.DateTimeFormatOptions = { month: "numeric", day: "numeric", weekday: "short" };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = "2-digit";
+    return `${d.toLocaleDateString("ko-KR", opts)} ${time}`;
+  } catch {
+    return "";
+  }
+}
+
+// Coarse "how far away" for a FUTURE instant, e.g. "곧" / "12분 후" / "3시간 후"
+// / "2일 후". Returns "" for past/invalid instants so callers can skip the chip
+// entirely rather than render a nonsense countdown.
+export function countdownLabel(iso: string | null | undefined, now: Date = new Date()): string {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return "";
+    const minutes = Math.round((d.getTime() - now.getTime()) / 60_000);
+    if (minutes < 0) return "";
+    if (minutes < 1) return "곧";
+    if (minutes < 60) return `${minutes}분 후`;
+    const hours = Math.round(minutes / 60);
+    if (hours < 24) return `${hours}시간 후`;
+    return `${Math.round(hours / 24)}일 후`;
+  } catch {
+    return "";
+  }
+}
+
 export const WEEKDAY_NAMES = ["일", "월", "화", "수", "목", "금", "토"];
 
 // Human routine schedule label, e.g. "한 번 · 2026. 07. 15. 09:00 (KST)",

@@ -324,6 +324,7 @@
   .stream-status .spinner,
   .tool-row[data-status="running"] .tool-spinner,
   .task-row[data-status="running"] .task-spinner,
+  .routine-spinner,
   .agent-node[data-status="running"] > .agent-head > .agent-spinner {
     animation: spin 0.7s linear infinite !important;
   }

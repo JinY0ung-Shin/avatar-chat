@@ -12,15 +12,6 @@ import { DEFAULT_MCP_TOOL_GROUPS } from "../shared/mcpToolGroups.js";
 const schedLogger = logger.child({ module: "scheduler" });
 
 const DEFAULT_TICK_MS = 30_000;
-/**
- * Hard deadline per unattended run: a hung SDK call must not wedge the job forever.
- *
- * NOTE this is a budget for the WHOLE run, including every model-fallback attempt
- * (`modelFallback: true` retries opus→sonnet→haiku INSIDE runClaudeAgent) and the
- * resume self-heal retry — the controller is created here, outside that loop. A
- * slow first attempt therefore starves the rest of the chain.
- */
-const RUN_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * User-facing note stored on a timed-out routine.
@@ -29,10 +20,11 @@ const RUN_TIMEOUT_MS = 10 * 60 * 1000;
  * cause (it just checks `signal.aborted`), so storing its message verbatim told the
  * owner a user cancelled a run that nothing but this deadline touched — routines have
  * no cancel route and are not in the run registry, so `cancelAllRuns()` can't reach
- * them either. Derived from RUN_TIMEOUT_MS so the two can't drift.
+ * them either. Derived from the SAME config value that armed the deadline so the two
+ * can't drift.
  */
-function routineTimeoutMessage(): string {
-  return `실행 제한 시간(${Math.round(RUN_TIMEOUT_MS / 60_000)}분)을 초과해 중단되었습니다. 작업을 더 작은 단계로 나누거나 예약 작업의 프롬프트를 줄여 보세요.`;
+function routineTimeoutMessage(timeoutMs: number): string {
+  return `실행 제한 시간(${Math.round(timeoutMs / 60_000)}분)을 초과해 중단되었습니다. 작업을 더 작은 단계로 나누거나 예약 작업의 프롬프트를 줄여 보세요.`;
 }
 
 /**
@@ -61,13 +53,21 @@ async function runRoutineJobNow(
 ): Promise<{ ok: boolean; error?: string }> {
   const { config, store } = services;
   const abortController = new AbortController();
+  // Hard deadline per unattended run: a hung SDK call must not wedge the job forever
+  // (nothing else can reach it — routines have no cancel route).
+  //
+  // NOTE this is a budget for the WHOLE run, including every model-fallback attempt
+  // (`modelFallback: true` retries opus→sonnet→haiku INSIDE runClaudeAgent) and the
+  // resume self-heal retry — the controller is created here, outside that loop. A
+  // slow first attempt therefore starves the rest of the chain.
+  const timeoutMs = config.routineRunTimeoutMs;
   // Distinguishes OUR deadline from any other abort, so the catch below can replace
   // the SDK's misleading "aborted by user" with the real cause.
   let timedOut = false;
   const deadline = setTimeout(() => {
     timedOut = true;
     abortController.abort();
-  }, RUN_TIMEOUT_MS);
+  }, timeoutMs);
   // Text streamed before a failure. Routines have no live view, but persisting the
   // partial is what makes an interrupted run diagnosable at all — otherwise the only
   // trace is a one-line lastError. Mirrors the chat route's cancel/error paths.
@@ -192,7 +192,7 @@ async function runRoutineJobNow(
     // Our deadline wins the message: the SDK's abort text names a "user" that was
     // never involved in an unattended run.
     const detail = timedOut
-      ? routineTimeoutMessage()
+      ? routineTimeoutMessage(timeoutMs)
       : error instanceof Error
         ? error.message
         : String(error);

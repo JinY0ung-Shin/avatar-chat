@@ -8,20 +8,26 @@
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
   import { enhanceMarkdown } from "../lib/dom";
-  import { renderMarkdown, WEEKDAY_NAMES } from "../lib/format";
+  import { formatRoutineSchedule, renderMarkdown, WEEKDAY_NAMES } from "../lib/format";
   import { loadRoutinesData } from "../lib/loaders";
   import { notify } from "../lib/state";
-  import type { RoutineJob } from "../lib/types";
+  import type { RoutineJob, RoutinePreset } from "../lib/types";
 
   export let routine: RoutineJob | null = null;
+  /**
+   * Create-mode seed (from the empty-state starter cards). Only consulted when
+   * `routine` is null — an edit always wins over a preset.
+   */
+  export let preset: RoutinePreset | null = null;
 
   const dispatch = createEventDispatcher<{ close: void; saved: void; runNow: { routine: RoutineJob }; deleted: { routine: RoutineJob } }>();
   const isEdit = Boolean(routine);
+  const seed = isEdit ? null : preset;
 
-  let name = routine?.name || "";
-  let prompt = routine?.prompt || "";
-  let scheduleKind: RoutineJob["scheduleKind"] = routine?.scheduleKind || "daily";
-  let time = routine?.time || "09:00";
+  let name = routine?.name || seed?.name || "";
+  let prompt = routine?.prompt || seed?.prompt || "";
+  let scheduleKind: RoutineJob["scheduleKind"] = routine?.scheduleKind || seed?.scheduleKind || "daily";
+  let time = routine?.time || seed?.time || "09:00";
   const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
   function kstDateString(offsetDays = 0): string {
     const shifted = new Date(Date.now() + KST_OFFSET_MS + offsetDays * 24 * 60 * 60 * 1000);
@@ -38,7 +44,8 @@
   }
   const todayKst = kstDateString();
   let runDate = routine?.runDate || kstDateString(1);
-  const selectedDays = new Set<number>(Array.isArray(routine?.daysOfWeek) ? routine!.daysOfWeek! : []);
+  const initialDays = Array.isArray(routine?.daysOfWeek) ? routine!.daysOfWeek! : seed?.daysOfWeek;
+  const selectedDays = new Set<number>(Array.isArray(initialDays) ? initialDays : []);
 
   // Interval: split the stored minutes into a value + unit (hour/minute).
   const initialInterval = Number(routine?.intervalMinutes) || 0;
@@ -110,6 +117,17 @@
       : scheduleKind === "once"
         ? Boolean(runDate && timeReady && ((onceTimestamp ?? 0) > Date.now() || (isEdit && !scheduleDirty)))
         : timeReady;
+  // Plain-language echo of the schedule under construction, so the user can
+  // confirm intent ("매주 금 18:00") without mentally re-assembling four inputs.
+  $: schedulePreview = scheduleReady
+    ? formatRoutineSchedule({
+        scheduleKind,
+        time,
+        daysOfWeek: [...dayList].sort((a, b) => a - b),
+        intervalMinutes,
+        runDate,
+      })
+    : "";
   $: routineDirty = !isEdit || nameTrimmed !== initialName || prompt !== initialPrompt || scheduleDirty;
   $: routineCanSave = Boolean(!busy && promptTrimmed && scheduleReady && routineDirty);
   $: saveButtonLabel = busy ? "저장 중…" : isEdit ? "변경 저장" : "예약 작업 추가";
@@ -144,6 +162,36 @@
     intervalInvalid = false;
     dateInvalid = false;
     errorMessage = "";
+  }
+
+  // How often a routine fires is the decision this modal is really about, so it
+  // gets a visible segmented control rather than a collapsed <select> whose
+  // options you have to open to even know exist.
+  const SCHEDULE_KINDS: { id: RoutineJob["scheduleKind"]; label: string }[] = [
+    { id: "once", label: "한 번만" },
+    { id: "daily", label: "매일" },
+    { id: "weekly", label: "매주" },
+    { id: "interval", label: "간격" },
+  ];
+
+  function pickKind(id: RoutineJob["scheduleKind"]): void {
+    scheduleKind = id;
+    onScheduleKindChange();
+  }
+
+  function onKindKeydown(event: KeyboardEvent, currentId: RoutineJob["scheduleKind"]): void {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
+    event.preventDefault();
+    const index = SCHEDULE_KINDS.findIndex((k) => k.id === currentId);
+    const nextIndex =
+      event.key === "Home"
+        ? 0
+        : event.key === "End"
+          ? SCHEDULE_KINDS.length - 1
+          : (index + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + SCHEDULE_KINDS.length) % SCHEDULE_KINDS.length;
+    const next = SCHEDULE_KINDS[nextIndex].id;
+    pickKind(next);
+    requestAnimationFrame(() => document.getElementById(`routine-kind-${next}`)?.focus());
   }
 
   function clearDateError(): void {
@@ -336,24 +384,34 @@
       ></textarea>
     </label>
 
-    <div class="routine-preview-wrap">
-      <span class="field-hint muted">미리보기</span>
-      {#if prompt.trim()}
+    <!-- Markdown preview only exists once there's markdown to preview, and stays
+         folded: an always-open empty box doubled the modal's height for nothing. -->
+    {#if promptTrimmed}
+      <details class="routine-preview-wrap">
+        <summary class="routine-preview-head">미리보기</summary>
         <div class="routine-prompt-preview md" use:enhanceMarkdown={prompt}>{@html renderMarkdown(prompt)}</div>
-      {:else}
-        <div class="routine-prompt-preview md"><span class="muted">프롬프트 미리보기가 여기에 표시됩니다.</span></div>
-      {/if}
-    </div>
+      </details>
+    {/if}
 
     <div class="schedule-builder">
-      <div class="schedule-row">
-        <label class="schedule-label" for="routine-kind">실행 방식</label>
-        <select id="routine-kind" aria-label="실행 방식" disabled={busy} bind:value={scheduleKind} on:change={onScheduleKindChange}>
-          <option value="once">한 번만</option>
-          <option value="daily">매일</option>
-          <option value="weekly">매주</option>
-          <option value="interval">간격</option>
-        </select>
+      <div class="schedule-row kinds">
+        <span class="schedule-label" id="routine-kind-label">실행 방식</span>
+        <div class="schedule-kinds seg-control" role="radiogroup" aria-labelledby="routine-kind-label">
+          {#each SCHEDULE_KINDS as k}
+            {@const on = scheduleKind === k.id}
+            <button
+              id={`routine-kind-${k.id}`}
+              class="seg-btn"
+              class:active={on}
+              type="button"
+              role="radio"
+              aria-checked={on ? "true" : "false"}
+              tabindex={on ? 0 : -1}
+              disabled={busy}
+              on:click={() => pickKind(k.id)}
+              on:keydown={(event) => onKindKeydown(event, k.id)}>{k.label}</button>
+          {/each}
+        </div>
       </div>
 
       {#if scheduleKind === "once"}
@@ -419,6 +477,10 @@
             </select>
           </div>
         </div>
+      {/if}
+
+      {#if schedulePreview}
+        <p class="schedule-echo">이렇게 실행돼요 — <strong>{schedulePreview}</strong></p>
       {/if}
     </div>
 

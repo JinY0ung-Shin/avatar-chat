@@ -47,8 +47,12 @@ const getTempDir = withTempDir("scheduler", () => {
   tempDir = getTempDir();
 });
 
-/** The deadline the scheduler enforces per unattended run. */
-const RUN_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Deadline these tests configure per run. Deliberately NOT the shipped 30-minute
+ * default: the timeout text must be derived from the configured value, so a test
+ * that reused the default couldn't tell derivation from a hardcoded number.
+ */
+const RUN_TIMEOUT_MS = 3 * 60 * 1000;
 
 /**
  * Fail the way the SDK does on abort: it labels EVERY abort as user-initiated, and it
@@ -71,6 +75,7 @@ function boot(label: string) {
     dataDir: path.join(tempDir, label),
     agentRuntime: "claude",
     sessionSecret: "t",
+    routineRunTimeoutMs: RUN_TIMEOUT_MS,
   });
   const owner = services.store.createUser({
     username: "owner",
@@ -102,13 +107,13 @@ describe("routine failure handling", () => {
       const result = await pending;
 
       expect(result.ok).toBe(false);
-      expect(result.error).toContain("실행 제한 시간(10분)");
+      expect(result.error).toContain("실행 제한 시간(3분)");
       expect(result.error).not.toContain("aborted by user");
 
       // The stored lastError (rendered verbatim in RoutinesView) says the same.
       const after = services.store.listRoutineJobs(owner.id)[0];
       expect(after.lastStatus).toBe("error");
-      expect(after.lastError).toContain("실행 제한 시간(10분)");
+      expect(after.lastError).toContain("실행 제한 시간(3분)");
       expect(after.lastError).not.toContain("aborted by user");
     } finally {
       vi.useRealTimers();
@@ -141,7 +146,7 @@ describe("routine failure handling", () => {
     expect(messages[1].role).toBe("assistant");
     expect(messages[1].content).toContain("1단계: 저장소 동기화 완료");
     expect(messages[1].content).toContain("2단계: 테스트 실행 중");
-    expect(messages[1].content).toContain("실행 제한 시간(10분)");
+    expect(messages[1].content).toContain("실행 제한 시간(3분)");
   });
 
   it("records a non-timeout failure with its own message, not the timeout text", async () => {

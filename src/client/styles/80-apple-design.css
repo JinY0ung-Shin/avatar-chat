@@ -406,8 +406,6 @@ button:disabled {
 .admin-user,
 .admin-row,
 .notification-row,
-.routine-manage-row,
-.routine-card,
 .canvas-card,
 .cap-section,
 .sys-card,
@@ -434,8 +432,6 @@ button:disabled {
 .stat-card,
 .admin-user,
 .notification-row,
-.routine-manage-row,
-.routine-card,
 .canvas-card,
 .sys-card,
 .knowledge-row,
@@ -479,7 +475,6 @@ button:disabled {
 .seg-control,
 .settings-tabs,
 .inbox-filter,
-.routine-filter,
 .split-controls {
   border-color: var(--line-soft);
   background: var(--bg-subtle);
@@ -498,14 +493,12 @@ button:disabled {
 
 .settings-tab,
 .seg-btn,
-.routine-filter button,
 .inbox-filter button {
   border-radius: var(--r-md);
 }
 
 .settings-tab.active,
 .seg-btn.active,
-.routine-filter button.active,
 .inbox-filter button.active,
 .split-btn.active {
   border-color: var(--line-soft);

@@ -458,12 +458,21 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   NOT `error_max_turns`/auth/bad-request, NOT on abort). An env-pinned `ANTHROPIC_MODEL` is a hard lock →
   no fallback. In-band error *results* (e.g. max_turns) don't fall back. The completed-run log carries
   `model` + `modelFellBack`.
-- **A routine has a 10-minute HARD deadline, and it is the budget for the WHOLE run** —
-  `scheduler.ts` `RUN_TIMEOUT_MS`, one `AbortController` created per run OUTSIDE `runClaudeAgent`. So all
-  model-fallback attempts (opus→sonnet→haiku) plus the resume self-heal retry SHARE those 10 minutes; a
-  slow first attempt starves the rest of the chain. Note the mismatch with `maxTurns` (default 1000) —
-  the turn budget is far larger than the wall-clock one, so a work-heavy routine hits the deadline, not
-  max_turns.
+- **A routine has a HARD wall-clock deadline (default 30 min), and it is the budget for the WHOLE run** —
+  `config.routineRunTimeoutMs` (env `ROUTINE_RUN_TIMEOUT_MINUTES`, clamped to a 1-minute floor; `0` does
+  NOT disable it, unlike `PLUGIN_AUTO_REFRESH_MINUTES`), armed by one `AbortController` created per run
+  OUTSIDE `runClaudeAgent`. So all model-fallback attempts (opus→sonnet→haiku) plus the resume self-heal
+  retry SHARE that budget; a slow first attempt starves the rest of the chain. Note the mismatch with
+  `maxTurns` (default 1000) — the turn budget is far larger than the wall-clock one, so a work-heavy
+  routine hits the deadline, not max_turns.
+- **The deadline doubles as the max hang of the manual-run HTTP request.** `POST /api/me/routines/:id/run`
+  (`routes/routines.ts`) `await`s the entire run and the "지금 실행" button awaits that fetch
+  (`RoutinesView.svelte`), so the practical ceiling on `ROUTINE_RUN_TIMEOUT_MINUTES` is whatever read
+  timeout a fronting reverse proxy allows — past it the button reports a network failure while the run
+  keeps going server-side. Making run-now return 202 + poll is the prerequisite for a much larger value.
+  Two more costs scale with the deadline: a wedged job stays un-runnable for the whole window (the
+  `runningJobs` overlap guard makes the scheduler skip its ticks), and it holds the active-repo lock,
+  which REFUSES (409) rather than queues any other conversation opening the same clone.
 - **Never surface the SDK's abort message to the owner.** The SDK labels EVERY abort
   `"Claude Code process aborted by user"` (it only checks `signal.aborted`), so storing it verbatim blamed
   a user for a run nothing but the deadline touched — routines have no cancel route and are NOT in the run

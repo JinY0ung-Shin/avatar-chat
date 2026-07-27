@@ -1,10 +1,12 @@
 <script lang="ts">
-  // One routine "run" rendered as a collapsible <details>: a run header (number +
-  // timestamp), an optional per-run prompt (when it differs from the routine's
-  // current prompt), and the assistant result message(s). Mirrors the old
-  // buildRoutineRunBlock()/buildRoutineMessageNode().
+  // One routine "run" rendered as a collapsible <details>: a header (run number,
+  // outcome chip, relative timestamp), an optional per-run prompt (when it
+  // differs from the routine's current prompt), and the result message(s).
+  //
+  // The header states the OUTCOME, not just an index — scanning a run history is
+  // about finding the run that went wrong, and "실행 #7" alone can't answer that.
   import { enhanceMarkdown } from "../lib/dom";
-  import { renderMarkdown, timeLabel } from "../lib/format";
+  import { relativeDayTimeLabel, renderMarkdown, timeLabel } from "../lib/format";
   import { appState } from "../lib/state";
   import type { StoredMessage } from "../lib/types";
 
@@ -14,11 +16,16 @@
   export let currentPrompt = "";
   export let onRun: (() => void) | null = null;
   export let runBusy = false;
+  /** Reference instant for relative labels; injected so the whole pane agrees. */
+  export let now: Date = new Date();
 
-  $: time = run.at ? timeLabel(run.at) : "";
+  $: time = run.at ? relativeDayTimeLabel(run.at, now) : "";
   $: runPrompt = (run.prompt?.content || "").trim();
   $: showRunPrompt = Boolean(runPrompt) && runPrompt !== currentPrompt;
   $: authorName = $appState.user?.displayName || "아바타";
+  $: failed = run.responses.some((m) => isErrored(m));
+  $: outcome = !run.responses.length ? "결과 없음" : failed ? "실패" : "성공";
+  $: outcomeKind = !run.responses.length ? "idle" : failed ? "err" : "ok";
 
   function assistantText(message: StoredMessage): string {
     return message.response?.text || message.response?.summary || message.content;
@@ -35,10 +42,12 @@
   }
 </script>
 
-<details class="routine-run-block" open={expanded}>
+<details class="routine-run-block" class:failed open={expanded}>
   <summary class="routine-run-summary">
     <span class="routine-run-chevron" aria-hidden="true"></span>
+    <span class={`routine-mark ${outcomeKind}`} aria-hidden="true"></span>
     <span class="routine-run-num">실행 #{runNumber}</span>
+    <span class="routine-run-outcome">{outcome}</span>
     {#if time}<span class="routine-run-time muted">{time}</span>{/if}
   </summary>
   <div class="routine-run-body">
@@ -68,9 +77,9 @@
         </div>
       {/each}
     {:else}
-      <div class="empty-note">
-        이 실행에는 결과 메시지가 없습니다.{" "}
-        {#if onRun}<button class="linkish small" type="button" disabled={runBusy} on:click={onRun}>{runBusy ? "실행 중…" : "현재 예약 작업 다시 실행"}</button>{/if}
+      <div class="routine-run-empty">
+        이 실행에는 결과 메시지가 없습니다.
+        {#if onRun}<button class="linkish small" type="button" disabled={runBusy} on:click={onRun}>{runBusy ? "실행 중…" : "다시 실행"}</button>{/if}
       </div>
     {/if}
   </div>

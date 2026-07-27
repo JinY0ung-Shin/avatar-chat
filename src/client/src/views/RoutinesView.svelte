@@ -1,8 +1,19 @@
 <script lang="ts">
-  // The routines tab is the single home for routines: a two-panel workspace whose
-  // left side MANAGES them (add/edit/toggle/run/delete + filter/search) and whose
-  // right side shows the selected routine's per-run result transcript. Mirrors the
-  // old routines.js renderRoutinesView()/buildRoutineManagePanel()/buildRoutineResultPanel().
+  // The routines tab is the single home for routines: a two-pane workspace whose
+  // left side MANAGES them (add/edit/toggle/run + search/filter) and whose right
+  // side shows the selected routine's per-run result transcript.
+  //
+  // Layout direction (2026-07 redesign): the panes are FLAT — no card-in-card.
+  // The old screen nested view-body → settings-card → bordered box → run block →
+  // bubble, so every level added its own border+padding and the content ended up
+  // adrift in unexplained gutters. Now each pane owns one padded surface and the
+  // rows/runs sit directly on it.
+  //
+  // Information direction: a scheduler's job is to answer "무엇이 언제?" at a
+  // glance, so the row leads with the schedule + a RELATIVE next-run ("내일 오전
+  // 9:00", "3시간 후") and demotes the last outcome to a second, quieter line.
+  // Grouping (예정 / 일시 정지 / 지난 실행) is always on and replaces the old
+  // 반복/1회성 type filter, which duplicated what the groups already say.
   import { onMount } from "svelte";
   import Icon from "../components/Icon.svelte";
   import Toggle from "../components/Toggle.svelte";
@@ -10,20 +21,19 @@
   import RoutineRunBlock from "../components/RoutineRunBlock.svelte";
   import { api } from "../lib/api";
   import { enhanceMarkdown } from "../lib/dom";
-  import { formatRoutineSchedule, renderMarkdown, routineTitle, timeLabel } from "../lib/format";
-  import { loadConversations, loadRoutineMessages, loadRoutinesData, refreshNotificationStatus } from "../lib/loaders";
-  import { selectConversation } from "../lib/chat";
+  import {
+    countdownLabel,
+    formatRoutineSchedule,
+    relativeDayTimeLabel,
+    renderMarkdown,
+    routineTitle,
+  } from "../lib/format";
+  import { loadRoutineMessages, loadRoutinesData } from "../lib/loaders";
+  import { openSeededChat, selectConversation } from "../lib/chat";
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
-  import type { RoutineJob, StoredMessage } from "../lib/types";
+  import type { RoutineJob, RoutinePreset, StoredMessage } from "../lib/types";
 
-  type TypeFilterId = "all" | "recurring" | "once";
   type FilterId = "all" | "enabled" | "paused" | "completed" | "error";
-
-  const TYPE_FILTER_DEFS: { id: TypeFilterId; label: string; match: (r: RoutineJob) => boolean }[] = [
-    { id: "all", label: "전체", match: () => true },
-    { id: "recurring", label: "반복", match: (r) => r.scheduleKind !== "once" },
-    { id: "once", label: "1회성", match: (r) => r.scheduleKind === "once" },
-  ];
 
   const FILTER_DEFS: { id: FilterId; label: string; match: (r: RoutineJob) => boolean }[] = [
     { id: "all", label: "전체", match: () => true },
@@ -33,17 +43,59 @@
     { id: "error", label: "실패", match: (r) => r.lastStatus === "error" },
   ];
 
+  // Starter cards on the zero-routine empty state. An empty scheduler can't show
+  // what it's for, so it offers three concrete jobs that open the create modal
+  // pre-filled instead of a blank form.
+  const PRESETS: { label: string; hint: string; preset: RoutinePreset }[] = [
+    {
+      label: "아침 브리핑",
+      hint: "매일 오전 9시",
+      preset: {
+        name: "아침 브리핑",
+        prompt: "오늘 확인해야 할 일정과 어제 이후 달라진 것들을 3줄로 요약해줘.",
+        scheduleKind: "daily",
+        time: "09:00",
+      },
+    },
+    {
+      label: "주간 회고 초안",
+      hint: "매주 금요일 오후 6시",
+      preset: {
+        name: "주간 회고 초안",
+        prompt: "이번 주에 한 일과 남은 일을 훑어서 회고 초안을 만들어줘.",
+        scheduleKind: "weekly",
+        daysOfWeek: [5],
+        time: "18:00",
+      },
+    },
+    {
+      label: "한 번만 리마인더",
+      hint: "지정한 날짜에 한 번",
+      preset: {
+        name: "",
+        prompt: "이날 확인해야 할 일을 정리해서 알려줘.",
+        scheduleKind: "once",
+        time: "09:00",
+      },
+    },
+  ];
+
   let loading = true;
   let loadBusy = false;
   let error = "";
   let messageLoadError = "";
   let modalRoutine: RoutineJob | null = null;
+  let modalPreset: RoutinePreset | null = null;
   let modalOpen = false;
   let busyRoutineId = "";
   let resultBusyId = "";
   let routineActionStatus = "";
   const routineActionStatusId = "routine-action-status";
   let openingConversation = false;
+  let resultEl: HTMLElement | null = null;
+  // Re-derived on every load/run so relative labels ("3시간 후") don't go stale
+  // while the tab sits open; recomputed cheaply, never on a timer.
+  let now = new Date();
 
   // Draggable split between the manage list (left) and the result panel (right).
   // The width is a per-browser preference persisted to localStorage; CSS clamps it
@@ -120,13 +172,10 @@
   });
 
   $: routines = $appState.routines;
-  $: typeFilterId = (TYPE_FILTER_DEFS.some((f) => f.id === $appState.routineTypeFilter) ? $appState.routineTypeFilter : "all") as TypeFilterId;
-  $: activeTypeFilter = TYPE_FILTER_DEFS.find((f) => f.id === typeFilterId) ?? TYPE_FILTER_DEFS[0];
   $: filterId = (FILTER_DEFS.some((f) => f.id === $appState.routineFilter) ? $appState.routineFilter : "all") as FilterId;
   $: activeFilter = FILTER_DEFS.find((f) => f.id === filterId) ?? FILTER_DEFS[0];
   $: query = $appState.routineSearch.trim().toLowerCase();
-  $: filteredByType = routines.filter(activeTypeFilter.match);
-  $: filteredByTab = filteredByType.filter(activeFilter.match);
+  $: filteredByTab = routines.filter(activeFilter.match);
   $: filtered = query
     ? filteredByTab.filter((r) => {
         const haystack = [
@@ -141,30 +190,66 @@
         return haystack.includes(query);
       })
     : filteredByTab;
-  $: listGroups = typeFilterId === "once"
-    ? [
-        {
-          id: "upcoming",
-          label: "예정",
-          routines: filtered
-            .filter((r) => !r.completedAt)
-            .sort((a, b) => (a.nextRunAt || "9999").localeCompare(b.nextRunAt || "9999")),
-        },
-        {
-          id: "history",
-          label: "지난 실행",
-          routines: filtered
-            .filter((r) => Boolean(r.completedAt))
-            .sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || "")),
-        },
-      ]
-    : [{ id: "all", label: "", routines: filtered }];
-  $: countLabel = filtered.length === routines.length ? `총 ${routines.length}개` : `표시 ${filtered.length}개 / 전체 ${routines.length}개`;
+
+  // Always-on grouping. 예정 is ordered by when it actually fires next (the
+  // question the group answers); 지난 실행 by most recently finished.
+  $: listGroups = [
+    {
+      id: "upcoming",
+      label: "예정",
+      collapsible: false,
+      routines: filtered
+        .filter((r) => !r.completedAt && r.enabled)
+        .sort((a, b) => (a.nextRunAt || "9999").localeCompare(b.nextRunAt || "9999")),
+    },
+    {
+      id: "paused",
+      label: "일시 정지",
+      collapsible: false,
+      routines: filtered.filter((r) => !r.completedAt && !r.enabled),
+    },
+    {
+      id: "history",
+      label: "지난 실행",
+      collapsible: true,
+      routines: filtered
+        .filter((r) => Boolean(r.completedAt))
+        .sort((a, b) => (b.completedAt || "").localeCompare(a.completedAt || "")),
+    },
+  ].filter((g) => g.routines.length);
+
+  // Counts must be derived IN the reactive statement: Svelte only tracks the
+  // identifiers a `$:` line names directly, so calling a helper that closes over
+  // `routines` would leave the chips frozen at their first-render values.
+  $: filterCounts = FILTER_DEFS.reduce(
+    (acc, f) => {
+      acc[f.id] = routines.filter(f.match).length;
+      return acc;
+    },
+    {} as Record<FilterId, number>,
+  );
+  // 실패/완료 only earn a chip once they can actually match something — a filter
+  // for an empty set is chrome, and dropping it keeps the row on one line.
+  $: visibleFilters = FILTER_DEFS.filter(
+    (f) => (f.id !== "completed" && f.id !== "error") || f.id === filterId || filterCounts[f.id] > 0,
+  );
+  $: enabledCount = routines.filter((r) => r.enabled && !r.completedAt).length;
+  $: errorCount = routines.filter((r) => r.lastStatus === "error").length;
+  $: nextUp = routines
+    .filter((r) => r.enabled && !r.completedAt && r.nextRunAt)
+    .sort((a, b) => (a.nextRunAt || "").localeCompare(b.nextRunAt || ""))[0] || null;
+  // The header subtitle carries the whole screen's state in one line, which is
+  // what a scheduler is actually asked most often ("뭐가 언제 돌지?").
+  $: headerSummary = !routines.length
+    ? "한 번만 또는 반복해서 아바타가 스스로 실행할 작업과 결과를 관리하세요"
+    : [`사용 중 ${enabledCount}개`, nextUp ? `다음 실행 ${relativeDayTimeLabel(nextUp.nextRunAt, now)}` : "예정된 실행 없음"].join(" · ");
+  $: countLabel = filtered.length === routines.length ? `${routines.length}개` : `${filtered.length} / ${routines.length}개`;
   $: filterLabel = (id: FilterId) => FILTER_DEFS.find((f) => f.id === id)?.label || "전체";
 
   $: selectedConv = $appState.routineConversations.find((c) => c.id === $appState.routineConversationId) || null;
   $: selectedRoutine = selectedConv ? routines.find((r) => r.conversationId === selectedConv.id) || null : null;
   $: currentPrompt = (selectedRoutine?.prompt || "").trim();
+  $: promptOneLine = currentPrompt.replace(/\s+/g, " ").trim();
   $: runs = groupRoutineRuns($appState.routineMessages);
 
   async function load() {
@@ -181,6 +266,7 @@
       loadBusy = false;
       return;
     }
+    now = new Date();
     // Pin a sensible selection: keep the current one if still present, else first.
     const convs = readState().routineConversations;
     let convId = readState().routineConversationId;
@@ -204,64 +290,41 @@
   function setFilter(id: FilterId) {
     updateState((state) => (state.routineFilter = id));
   }
-  function setTypeFilter(id: TypeFilterId) {
-    updateState((state) => (state.routineTypeFilter = id));
-  }
   function focusFilter(id: FilterId): void {
     requestAnimationFrame(() => document.getElementById(`routine-filter-${id}`)?.focus());
   }
+  // Roving tabindex over the RENDERED chips — walking FILTER_DEFS would land
+  // focus on a chip that isn't in the DOM.
   function onFilterKeydown(event: KeyboardEvent, currentId: FilterId): void {
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
     event.preventDefault();
-    const currentIndex = FILTER_DEFS.findIndex((item) => item.id === currentId);
+    const defs = visibleFilters;
+    const currentIndex = defs.findIndex((item) => item.id === currentId);
     const nextIndex =
       event.key === "Home"
         ? 0
         : event.key === "End"
-          ? FILTER_DEFS.length - 1
-          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + FILTER_DEFS.length) % FILTER_DEFS.length;
-    const next = FILTER_DEFS[nextIndex].id;
+          ? defs.length - 1
+          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + defs.length) % defs.length;
+    const next = defs[nextIndex].id;
     setFilter(next);
     focusFilter(next);
-  }
-
-  function filterCount(id: FilterId): number {
-    const def = FILTER_DEFS.find((f) => f.id === id);
-    return def ? filteredByType.filter(def.match).length : 0;
-  }
-
-  function typeFilterCount(id: TypeFilterId): number {
-    const def = TYPE_FILTER_DEFS.find((f) => f.id === id);
-    return def ? routines.filter(def.match).length : 0;
-  }
-
-  function onTypeFilterKeydown(event: KeyboardEvent, currentId: TypeFilterId): void {
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(event.key)) return;
-    event.preventDefault();
-    const currentIndex = TYPE_FILTER_DEFS.findIndex((item) => item.id === currentId);
-    const nextIndex =
-      event.key === "Home"
-        ? 0
-        : event.key === "End"
-          ? TYPE_FILTER_DEFS.length - 1
-          : (currentIndex + (event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : -1) + TYPE_FILTER_DEFS.length) % TYPE_FILTER_DEFS.length;
-    const next = TYPE_FILTER_DEFS[nextIndex].id;
-    setTypeFilter(next);
-    requestAnimationFrame(() => document.getElementById(`routine-type-filter-${next}`)?.focus());
   }
 
   function clearSearch() {
     updateState((state) => (state.routineSearch = ""));
   }
 
-  function openModal(routine: RoutineJob | null) {
+  function openModal(routine: RoutineJob | null, preset: RoutinePreset | null = null) {
     modalRoutine = routine;
+    modalPreset = routine ? null : preset;
     modalOpen = true;
   }
 
   function closeModal() {
     modalOpen = false;
     modalRoutine = null;
+    modalPreset = null;
   }
 
   // Group the alternating user/assistant transcript into runs: each user message
@@ -285,6 +348,14 @@
     return out;
   }
 
+  // Stacked (narrow) layout puts the result pane below the fold, so a selection
+  // that only changes off-screen content reads as "nothing happened".
+  function revealResultWhenStacked(): void {
+    if (typeof window === "undefined" || !resultEl) return;
+    if (!window.matchMedia?.("(max-width: 980px)").matches) return;
+    resultEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
   async function selectResult(routine: RoutineJob) {
     if (resultBusyId || busyRoutineId === routine.id) return;
     const wasActive = $appState.routineConversationId === routine.conversationId;
@@ -306,8 +377,8 @@
     const title = routineTitle(routine);
     if (loaded) {
       routineActionStatus = wasActive ? `"${title}" 예약 작업 결과를 보고 있습니다.` : `"${title}" 예약 작업 결과를 표시했습니다.`;
-      notify(routineActionStatus, "info");
     }
+    revealResultWhenStacked();
   }
 
   function routineDomId(routine: RoutineJob, part: string): string {
@@ -329,6 +400,7 @@
     }
     try {
       await loadRoutinesData();
+      now = new Date();
       routineActionStatus = `"${title}" 예약 작업을 ${next ? "사용" : "일시 정지"}했습니다.`;
       notify(routineActionStatus, "ok");
     } catch (err) {
@@ -337,44 +409,23 @@
     }
   }
 
-  async function runRoutineNow(routine: RoutineJob) {
-    routineActionStatus = `"${routineTitle(routine)}" 예약 작업을 실행하는 중입니다.`;
-    const res = await api<{ ok?: boolean; error?: string }>(`/api/me/routines/${encodeURIComponent(routine.id)}/run`, { method: "POST" });
-    let refreshError: Error | null = null;
-    try {
-      await loadRoutinesData();
-      // A run may have left the owner a notification — surface it immediately.
-      await refreshNotificationStatus();
-    } catch (err) {
-      refreshError = err as Error;
-    }
-    if (res && res.ok === false) {
-      routineActionStatus = `예약 작업 실행 실패: ${res.error || "알 수 없는 오류"}`;
-      notify(routineActionStatus);
-    } else if (refreshError) {
-      routineActionStatus = `예약 작업은 실행했지만 상태 새로고침에 실패했습니다: ${refreshError.message}`;
-      notify(routineActionStatus, "warn");
-    } else {
-      routineActionStatus = `"${routineTitle(routine)}" 예약 작업을 실행했습니다.`;
-      notify(routineActionStatus, "ok");
-    }
-    // Jump straight to the result this run just produced.
-    updateState((state) => (state.routineConversationId = routine.conversationId));
-    messageLoadError = "";
-    try {
-      await loadRoutineMessages(routine.conversationId);
-    } catch {
-      replaceState({ routineMessages: [] });
-    }
-  }
-
+  // "지금 실행" hands the routine's prompt to a NORMAL chat instead of firing the
+  // headless run (POST /api/me/routines/:id/run). A headless run streams to
+  // nobody and only persists its messages when it finishes, so the old behavior
+  // left the owner watching a spinner for as long as the run took, with no
+  // output, no activity tree, and no way to answer a permission prompt. Seeded
+  // and NOT sent, so the prompt can be edited for this one-off run first.
   async function runFromButton(routine: RoutineJob) {
     if (busyRoutineId) return;
     busyRoutineId = routine.id;
+    routineActionStatus = `"${routineTitle(routine)}" 예약 작업 프롬프트로 대화를 여는 중입니다.`;
     try {
-      await runRoutineNow(routine);
+      await openSeededChat(
+        routine.prompt,
+        "예약 작업 프롬프트를 입력창에 넣었습니다. 검토 후 보내기를 누르세요.",
+      );
     } catch (err) {
-      routineActionStatus = `예약 작업 실행 실패: ${(err as Error).message}`;
+      routineActionStatus = `대화를 열지 못했습니다: ${(err as Error).message}`;
       notify(routineActionStatus);
     } finally {
       busyRoutineId = "";
@@ -409,16 +460,65 @@
       openingConversation = false;
     }
   }
+
+  // One row's derived display state, kept in one place so the markup stays flat.
+  // `sched` + `tail` are split so the recurrence can stay bold while the whole
+  // line remains ONE non-wrapping text run that truncates instead of breaking
+  // mid-value.
+  function rowView(routine: RoutineJob, at: Date) {
+    const completed = Boolean(routine.completedAt);
+    const errored = routine.lastStatus === "error";
+    const nextAt = !completed && routine.enabled ? routine.nextRunAt : null;
+    const schedule = formatRoutineSchedule(routine).replace(" (KST)", "");
+    const next = nextAt ? relativeDayTimeLabel(nextAt, at) : "";
+    const once = routine.scheduleKind === "once";
+    // A one-time job's schedule IS its next run, so printing both would say the
+    // same date twice in one line.
+    const rest = once
+      ? next || schedule.replace(/^한 번 · /, "")
+      : next
+        ? `다음 ${next}`
+        : routine.enabled
+          ? ""
+          : "일시 정지됨";
+    // The countdown only earns its space when the date label can't be read as a
+    // distance: "내일 오전 9:00" already says "about a day", but "8. 14. (금)"
+    // doesn't. Sub-hour runs always get it — that's when urgency matters.
+    const soon = nextAt ? countdownLabel(nextAt, at) : "";
+    const spelledDay = next.startsWith("오늘") || next.startsWith("내일");
+    return {
+      completed,
+      errored,
+      title: routineTitle(routine),
+      sched: once ? "한 번" : schedule,
+      // Carried WITH its separator: Svelte collapses literal whitespace sitting
+      // between a tag and an {#if}, which silently ate the space before the "·".
+      tail: rest ? ` · ${rest}` : "",
+      countdown: !spelledDay || /^곧$|분 후$/.test(soon) ? soon : "",
+      last: routine.lastRunAt || routine.completedAt || "",
+      lastLabel: relativeDayTimeLabel(routine.lastRunAt || routine.completedAt || "", at),
+    };
+  }
 </script>
 
 <header class="view-header">
-  <div>
+  <div class="title">
     <h1>예약 작업</h1>
-    <p>한 번만 또는 반복해서 아바타가 스스로 실행할 작업과 결과를 관리하세요</p>
+    <p>{headerSummary}{#if errorCount}<span class="routine-head-alert">{` · 실패 ${errorCount}개`}</span>{/if}</p>
+  </div>
+  <div class="head-actions">
+    <button class="primary small routine-add-btn" type="button" on:click={() => openModal(null)}>
+      <Icon name="plus" size={16} /><span>예약 작업 추가</span>
+    </button>
   </div>
 </header>
 
 <div class="view-body routines-body">
+  <!-- Progress/outcome narration lives in one off-screen live region; the
+       visible feedback is the toast + each control's own busy label, so the
+       list never reflows because a status line appeared above it. -->
+  <div id={routineActionStatusId} class="sr-only" role="status" aria-live="polite">{routineActionStatus}</div>
+
   {#if loading}
     <div class="muted pad" role="status">불러오는 중…</div>
   {:else if error}
@@ -427,281 +527,330 @@
       <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
     </div>
   {:else}
-    <div class="routine-workspace" style={`--routine-side-w: ${sideWidth}px`}>
-      <!-- ===== Left: manage panel ===== -->
-      <div class="routine-side scroll-thin">
-        <section class="settings-card routine-card">
-          <div class="panel-section-head">
-            <div>
-              <h3>내 예약 작업</h3>
-              <p class="muted">특정 날짜에 한 번만 또는 매일·매주·일정 간격(KST)으로 아바타가 스스로 실행합니다. 카드를 누르면 결과가 오른쪽에 표시돼요.</p>
+    <!-- With zero routines there is nothing to manage, so the split disappears
+         and the whole width goes to onboarding instead of parking an empty
+         list column next to an empty result column. -->
+    <div class="routine-workspace" class:solo={!routines.length} style={`--routine-side-w: ${sideWidth}px`}>
+      <!-- ===== Left: manage pane ===== -->
+      {#if routines.length}
+        <section class="routine-pane routine-side" aria-label="내 예약 작업">
+          <div class="routine-side-tools">
+            <div class="routine-search-row">
+              <span class="routine-search-wrap">
+                <input
+                  class="routine-search"
+                  type="search"
+                  placeholder="이름·프롬프트·주기 검색"
+                  aria-label="예약 작업 검색"
+                  value={$appState.routineSearch}
+                  on:input={(event) => updateState((state) => (state.routineSearch = event.currentTarget.value))} />
+              </span>
+              <span class="routine-count muted nowrap">{countLabel}</span>
             </div>
-            <button class="primary small routine-add-btn" type="button" on:click={() => openModal(null)}>
-              <Icon name="plus" size={16} /><span>예약 작업 추가</span>
-            </button>
-          </div>
-
-          <div class="routine-tools">
-            <input
-              class="routine-search"
-              type="search"
-              placeholder="예약 작업 검색"
-              aria-label="예약 작업 검색"
-              disabled={!routines.length}
-              value={$appState.routineSearch}
-              on:input={(event) => updateState((state) => (state.routineSearch = event.currentTarget.value))} />
-            <span class="muted nowrap">{routines.length ? countLabel : "총 0개"}</span>
-          </div>
-          {#if routineActionStatus}
-            <div
-              id={routineActionStatusId}
-              class="settings-save-status"
-              class:dirty={Boolean(busyRoutineId || resultBusyId || routineActionStatus.includes("실패"))}
-              role="status"
-              aria-live="polite"
-            >{routineActionStatus}</div>
-          {/if}
-
-          {#if routines.length}
-            <div class="routine-filter routine-type-filter seg-control" role="radiogroup" aria-label="예약 작업 유형">
-              {#each TYPE_FILTER_DEFS as f}
-                {@const active = typeFilterId === f.id}
-                <button
-                  id={`routine-type-filter-${f.id}`}
-                  class={`seg-btn ${active ? "active" : ""}`}
-                  type="button"
-                  role="radio"
-                  aria-checked={active ? "true" : "false"}
-                  tabindex={active ? 0 : -1}
-                  on:click={() => setTypeFilter(f.id)}
-                  on:keydown={(event) => onTypeFilterKeydown(event, f.id)}>{f.label} {typeFilterCount(f.id)}</button>
-              {/each}
-            </div>
-            <div class="routine-filter seg-control" role="radiogroup" aria-label="예약 작업 상태">
-              {#each FILTER_DEFS as f}
+            <!-- Each chip spells its own aria-label: the count lives in an
+                 inline span the accname algorithm would glue on as "완료1". -->
+            <div class="routine-filter-chips" role="radiogroup" aria-label="예약 작업 상태">
+              {#each visibleFilters as f (f.id)}
                 {@const active = filterId === f.id}
+                {@const count = filterCounts[f.id]}
                 <button
                   id={`routine-filter-${f.id}`}
-                  class={`seg-btn ${active ? "active" : ""}`}
+                  class="routine-chip"
+                  class:active
+                  class:danger={f.id === "error" && count > 0}
                   type="button"
                   role="radio"
                   aria-checked={active ? "true" : "false"}
+                  aria-label={`${f.label} ${count}`}
                   tabindex={active ? 0 : -1}
                   data-value={f.id}
                   on:click={() => setFilter(f.id)}
-                  on:keydown={(event) => onFilterKeydown(event, f.id)}>{f.label} {filterCount(f.id)}</button>
+                  on:keydown={(event) => onFilterKeydown(event, f.id)}>{f.label}<span class="routine-chip-n">{count}</span></button>
               {/each}
             </div>
-          {/if}
+          </div>
 
-          <div class="routine-manage-list">
-            {#if !routines.length}
-              <div class="empty-note">아직 등록한 예약 작업이 없습니다. 위의 ‘예약 작업 추가’로 첫 작업을 만들어 보세요.</div>
-            {:else if !filtered.length}
-              <div class="empty-note">
-                {#if query}
-                  "{$appState.routineSearch.trim()}"에 맞는 예약 작업이 없습니다.{" "}
-                  <button class="linkish small" type="button" on:click={clearSearch}>검색어 지우기</button>
-                {:else}
-                  {typeFilterId === "once" ? "1회성" : typeFilterId === "recurring" ? "반복" : filterLabel(filterId)} 예약 작업이 없습니다.{" "}
-                {/if}
-                {#if filterId !== "all"}
-                  <button class="linkish small" type="button" on:click={() => setFilter("all")}>전체 상태 보기</button>
-                {/if}
+          <div class="routine-manage-list scroll-thin">
+            {#if !filtered.length}
+              <div class="routine-empty tall">
+                <h3>{query ? "검색 결과가 없어요" : `${filterLabel(filterId)} 작업이 없어요`}</h3>
+                <p>
+                  {#if query}"{$appState.routineSearch.trim()}"에 맞는 예약 작업을 찾지 못했습니다.{:else}다른 상태를 골라 보세요.{/if}
+                </p>
+                <div class="routine-empty-actions">
+                  {#if query}<button class="ghost-sm" type="button" on:click={clearSearch}>검색어 지우기</button>{/if}
+                  {#if filterId !== "all"}<button class="ghost-sm" type="button" on:click={() => setFilter("all")}>전체 보기</button>{/if}
+                </div>
               </div>
             {:else}
               {#each listGroups as group (group.id)}
-                {#if group.routines.length}
-                  {#if group.id === "history"}
-                    <details class="routine-list-group" open={filterId === "completed" || filterId === "error" || Boolean(query)}>
-                      <summary class="routine-list-group-head"><span>{group.label}</span><span class="muted">{group.routines.length}</span></summary>
-                      <div class="routine-list-group-items">
-                        {#each group.routines as routine (routine.id)}
-                          {@const active = $appState.routineConversationId === routine.conversationId}
-                          {@const errored = routine.lastStatus === "error"}
-                          {@const completed = Boolean(routine.completedAt)}
-                          {@const dotClass = errored ? "err" : completed ? "done" : !routine.enabled ? "off" : "on"}
-                          {@const title = routineTitle(routine)}
-                          {@const rowLabel = active ? `선택된 예약 작업 결과: ${title}` : `예약 작업 결과 보기: ${title}`}
-                          <div
-                            class={`routine-manage-row ${active ? "active" : ""}`}
-                            role="group"
-                            aria-label={`예약 작업: ${title}`}
-                            aria-current={active ? "true" : undefined}
-                          >
-                            <div class="routine-manage-head">
-                              <button class="routine-manage-main" type="button" aria-label={rowLabel} on:click={() => selectResult(routine)}>
-                                <span class="routine-manage-title-line"><span class={`routine-dot ${dotClass}`} aria-hidden="true"></span><strong class="routine-manage-title">{title}</strong><span class="tag">1회</span></span>
-                                <span class="routine-manage-meta">{formatRoutineSchedule(routine)} · 최근 실행 {timeLabel(routine.lastRunAt || routine.completedAt || "")} · {errored ? "실패" : "완료"}</span>
-                              </button>
-                              <span class="meta-badge">{errored ? "실패" : "완료"}</span>
+                {#if group.collapsible}
+                  <details class="routine-group" open={filterId === "completed" || Boolean(query)}>
+                    <summary class="routine-group-head">
+                      <span class="routine-group-chevron" aria-hidden="true"></span>
+                      <span>{group.label}</span>
+                      <span class="routine-group-n">{group.routines.length}</span>
+                    </summary>
+                    <div class="routine-group-items">
+                      {#each group.routines as routine (routine.id)}
+                        {@const v = rowView(routine, now)}
+                        {@const active = $appState.routineConversationId === routine.conversationId}
+                        <div class="routine-row is-done" class:active aria-current={active ? "true" : undefined}>
+                          <button
+                            class="routine-row-main"
+                            type="button"
+                            aria-label={`예약 작업 결과 보기: ${v.title}`}
+                            disabled={Boolean(resultBusyId)}
+                            on:click={() => selectResult(routine)}>
+                            <span class="routine-row-title">
+                              <span class="routine-row-name">{v.title}</span>
+                              <span class="tag">1회</span>
+                            </span>
+                            <span class="routine-row-when">
+                              <span class="routine-row-when-text" title={v.sched + v.tail}><span class="routine-row-sched">{v.sched}</span>{v.tail}</span>
+                            </span>
+                            <span class="routine-row-last">
+                              <span class={`routine-mark ${v.errored ? "err" : "ok"}`} aria-hidden="true"></span>
+                              {v.errored ? "실패" : "완료"} · {v.lastLabel}
+                            </span>
+                          </button>
+                          <div class="routine-row-side">
+                            <div class="routine-row-acts">
+                              <button
+                                class="routine-icon-btn"
+                                type="button"
+                                title="편집"
+                                aria-label={`예약 작업 편집: ${v.title}`}
+                                on:click|stopPropagation={() => openModal(routine)}><Icon name="edit" size={15} /></button>
                             </div>
-                            <div class="routine-manage-actions"><button class="ghost-sm" type="button" aria-label={`예약 작업 편집: ${title}`} on:click|stopPropagation={() => openModal(routine)}><Icon name="edit" size={16} /><span>편집</span></button></div>
                           </div>
-                        {/each}
-                      </div>
-                    </details>
-                  {:else}
-                    {#if group.label}<div class="routine-list-group-head static"><span>{group.label}</span><span class="muted">{group.routines.length}</span></div>{/if}
-                    {#each group.routines as routine (routine.id)}
-                {@const active = $appState.routineConversationId === routine.conversationId}
-                {@const errored = routine.lastStatus === "error"}
-                {@const completed = Boolean(routine.completedAt)}
-                {@const dotClass = errored ? "err" : completed ? "done" : !routine.enabled ? "off" : "on"}
-                {@const title = routineTitle(routine)}
-                {@const rowLabel = active ? `선택된 예약 작업 결과: ${title}` : `예약 작업 결과 보기: ${title}`}
-                <div
-                  class={`routine-manage-row ${active ? "active" : ""} ${!routine.enabled && !completed ? "paused" : ""}`}
-                  role="group"
-                  aria-label={`예약 작업: ${title}`}
-                  aria-current={active ? "true" : undefined}
-                  aria-busy={busyRoutineId === routine.id || resultBusyId === routine.id ? "true" : undefined}
-                >
-                  <div class="routine-manage-head">
-                    <button
-                      class="routine-manage-main"
-                      type="button"
-                      aria-label={rowLabel}
-                      aria-current={active ? "true" : undefined}
-                      aria-describedby={`${routineDomId(routine, "meta")}${errored && routine.lastError ? ` ${routineDomId(routine, "error")}` : ""}${routineActionStatus ? ` ${routineActionStatusId}` : ""}`}
-                      title={rowLabel}
-                      disabled={busyRoutineId === routine.id || Boolean(resultBusyId)}
-                      on:click={() => selectResult(routine)}
-                    >
-                      <span class="routine-manage-title-line">
-                        <span class={`routine-dot ${dotClass}`} aria-hidden="true"></span>
-                        <strong class="routine-manage-title">{title}</strong>
-                        {#if routine.scheduleKind === "once"}<span class="tag">1회</span>{/if}
-                      </span>
-                      <span class="routine-manage-meta" id={routineDomId(routine, "meta")}>
-                        {formatRoutineSchedule(routine)}{#if completed} · <span class="routine-next">한 번 실행 완료</span>{:else if routine.enabled && routine.nextRunAt} · <span class="routine-next">다음 실행 {timeLabel(routine.nextRunAt)}</span>{/if} · {routine.lastRunAt
-                          ? `최근 실행 ${timeLabel(routine.lastRunAt)} · ${errored ? "실패" : "완료"}`
-                          : "아직 실행되지 않음"}
-                      </span>
-                      {#if errored && routine.lastError}
-                        <span class="error-note routine-manage-error" id={routineDomId(routine, "error")}>{routine.lastError}</span>
-                      {/if}
-                    </button>
-                    {#if completed}
-                      <span class="meta-badge">완료</span>
-                    {:else}
-                      <Toggle
-                        on={routine.enabled}
-                        label={`예약 작업 사용: ${title}`}
-                        onChange={(next) => toggleRoutine(routine, next)} />
-                    {/if}
+                        </div>
+                      {/each}
+                    </div>
+                  </details>
+                {:else}
+                  <div class="routine-group">
+                    <div class="routine-group-head static">
+                      <span>{group.label}</span>
+                      <span class="routine-group-n">{group.routines.length}</span>
+                    </div>
+                    <div class="routine-group-items">
+                      {#each group.routines as routine (routine.id)}
+                        {@const v = rowView(routine, now)}
+                        {@const active = $appState.routineConversationId === routine.conversationId}
+                        {@const busy = busyRoutineId === routine.id || resultBusyId === routine.id}
+                        <div
+                          class="routine-row"
+                          class:active
+                          class:paused={!routine.enabled}
+                          class:failed={v.errored}
+                          aria-current={active ? "true" : undefined}
+                          aria-busy={busy ? "true" : undefined}
+                        >
+                          <button
+                            class="routine-row-main"
+                            type="button"
+                            aria-label={active ? `선택된 예약 작업 결과: ${v.title}` : `예약 작업 결과 보기: ${v.title}`}
+                            aria-describedby={`${routineDomId(routine, "meta")}${v.errored && routine.lastError ? ` ${routineDomId(routine, "error")}` : ""} ${routineActionStatusId}`}
+                            disabled={busyRoutineId === routine.id || Boolean(resultBusyId)}
+                            on:click={() => selectResult(routine)}
+                          >
+                            <span class="routine-row-title">
+                              <span class="routine-row-name">{v.title}</span>
+                              {#if routine.scheduleKind === "once"}<span class="tag">1회</span>{/if}
+                            </span>
+                            <span class="routine-row-when" id={routineDomId(routine, "meta")}>
+                              <span class="routine-row-when-text" title={v.sched + v.tail}><span class="routine-row-sched">{v.sched}</span>{v.tail}</span>
+                              {#if v.countdown}<span class="routine-row-in">{v.countdown}</span>{/if}
+                            </span>
+                            <span class="routine-row-last">
+                              {#if v.last}
+                                <span class={`routine-mark ${v.errored ? "err" : "ok"}`} aria-hidden="true"></span>
+                                최근 {v.lastLabel} · {v.errored ? "실패" : "성공"}
+                              {:else}
+                                <span class="routine-mark idle" aria-hidden="true"></span>
+                                아직 실행되지 않음
+                              {/if}
+                            </span>
+                            {#if v.errored && routine.lastError}
+                              <span class="routine-row-error" id={routineDomId(routine, "error")}>{routine.lastError}</span>
+                            {/if}
+                          </button>
+                          <div class="routine-row-side">
+                            <div class="routine-row-acts">
+                              <button
+                                class="routine-icon-btn"
+                                type="button"
+                                title="지금 실행 — 대화창에 프롬프트를 넣어 엽니다"
+                                aria-label={`예약 작업 지금 실행: ${v.title}`}
+                                aria-describedby={routineActionStatusId}
+                                disabled={busyRoutineId === routine.id}
+                                on:click|stopPropagation={() => runFromButton(routine)}>
+                                {#if busyRoutineId === routine.id}
+                                  <span class="routine-spinner" aria-hidden="true"></span>
+                                {:else}
+                                  <Icon name="play" size={14} />
+                                {/if}
+                              </button>
+                              <button
+                                class="routine-icon-btn"
+                                type="button"
+                                title="편집"
+                                aria-label={`예약 작업 편집: ${v.title}`}
+                                on:click|stopPropagation={() => openModal(routine)}><Icon name="edit" size={15} /></button>
+                            </div>
+                            <Toggle
+                              on={routine.enabled}
+                              label={`예약 작업 사용: ${v.title}`}
+                              onChange={(next) => toggleRoutine(routine, next)} />
+                          </div>
+                        </div>
+                      {/each}
+                    </div>
                   </div>
-                  <div class="routine-manage-actions">
-                    <button class="ghost-sm" type="button" aria-label={`예약 작업 편집: ${title}`} on:click|stopPropagation={() => openModal(routine)}>
-                      <Icon name="edit" size={16} /><span>편집</span>
-                    </button>
-                    {#if !completed}
-                      <button
-                        class="ghost-sm"
-                        type="button"
-                        aria-label={`예약 작업 지금 실행: ${title}`}
-                        aria-describedby={routineActionStatus ? routineActionStatusId : undefined}
-                        disabled={busyRoutineId === routine.id}
-                        on:click|stopPropagation={() => runFromButton(routine)}>
-                        {busyRoutineId === routine.id ? "실행 중…" : "지금 실행"}
-                      </button>
-                    {/if}
-                  </div>
-                </div>
-                    {/each}
-                  {/if}
                 {/if}
               {/each}
             {/if}
           </div>
         </section>
-      </div>
 
-      <!-- Drag to resize the two panels; double-click (or Home) to reset.
-           role="separator" + tabindex + arrow keys IS the WAI-ARIA window-splitter
-           pattern, so the noninteractive-element a11y warnings are false positives. -->
-      <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
-      <div
-        class="routine-splitter"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="패널 너비 조절"
-        aria-valuenow={Math.round(sideWidth)}
-        aria-valuemin={SIDE_MIN}
-        aria-valuemax={SIDE_MAX}
-        aria-valuetext={`${Math.round(sideWidth)}px`}
-        tabindex="0"
-        title="드래그해서 너비 조절 · 더블클릭으로 초기화"
-        on:pointerdown={onSplitterPointerDown}
-        on:keydown={onSplitterKeydown}
-        on:dblclick={resetSideWidth}>
-        <span class="routine-splitter-grip" aria-hidden="true"></span>
-      </div>
-
-      <!-- ===== Right: result panel ===== -->
-      <section class="settings-card routine-result-card">
-        <div class="panel-section-head">
-          <div>
-            <h3>{selectedRoutine ? routineTitle(selectedRoutine) : selectedConv?.title || "예약 작업 결과"}</h3>
-            <p class="muted">
-              {#if selectedConv}{selectedConv.avatarDisplayName} · {timeLabel(selectedConv.updatedAt)}{:else}예약 작업 실행 기록을 선택하세요.{/if}
-            </p>
-          </div>
-          {#if selectedConv}
-            <button class="ghost-sm" type="button" disabled={openingConversation} on:click={openAsConversation}>
-              {openingConversation ? "여는 중…" : "일반 대화로 열기"}
-            </button>
-          {/if}
+        <!-- Drag to resize the two panels; double-click (or Home) to reset.
+             role="separator" + tabindex + arrow keys IS the WAI-ARIA window-splitter
+             pattern, so the noninteractive-element a11y warnings are false positives. -->
+        <!-- svelte-ignore a11y_no_noninteractive_tabindex a11y_no_noninteractive_element_interactions -->
+        <div
+          class="routine-splitter"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="패널 너비 조절"
+          aria-valuenow={Math.round(sideWidth)}
+          aria-valuemin={SIDE_MIN}
+          aria-valuemax={SIDE_MAX}
+          aria-valuetext={`${Math.round(sideWidth)}px`}
+          tabindex="0"
+          title="드래그해서 너비 조절 · 더블클릭으로 초기화"
+          on:pointerdown={onSplitterPointerDown}
+          on:keydown={onSplitterKeydown}
+          on:dblclick={resetSideWidth}>
+          <span class="routine-splitter-grip" aria-hidden="true"></span>
         </div>
-
-        {#if selectedRoutine}
-          <div class="routine-result-prompt">
-            <div class="routine-result-prompt-label muted">지시 프롬프트</div>
-            {#if currentPrompt}
-              <div class="routine-result-prompt-body md scroll-thin" use:enhanceMarkdown={currentPrompt}>{@html renderMarkdown(currentPrompt)}</div>
-            {:else}
-              <div class="routine-result-prompt-body md scroll-thin"><span class="muted">(프롬프트 없음)</span></div>
-            {/if}
-          </div>
         {/if}
 
-        <div class="routine-result-transcript transcript scroll-thin">
-          <div class="transcript-inner">
-            {#if !selectedConv}
-              {#if routines.length}
-                <div class="empty-note" role="status">
-                  아직 확인할 실행 결과가 없습니다. 바로 실행하거나 다음 예약 실행 후 결과가 표시됩니다.{" "}
-                  <button class="linkish small" type="button" aria-describedby={routineActionStatus ? routineActionStatusId : undefined} disabled={busyRoutineId === routines[0].id} on:click={() => runFromButton(routines[0])}>첫 예약 작업 지금 실행</button>
-                </div>
-              {:else}
-                <div class="empty-note" role="status">예약 작업을 추가하면 실행 기록과 결과가 여기에 쌓입니다.</div>
-              {/if}
-            {:else if messageLoadError}
-              <div class="warn-box" role="alert">
-                예약 작업 결과를 불러오지 못했습니다: {messageLoadError}
-                <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
-              </div>
-            {:else if !$appState.routineMessages.length}
-              <div class="empty-note" role="status">
-                아직 실행 메시지가 없습니다.{" "}
+      <!-- ===== Right: result pane ===== -->
+      <section class="routine-pane routine-result" aria-label="예약 작업 결과" bind:this={resultEl}>
+        {#if selectedConv}
+          <div class="routine-result-head">
+            <div class="routine-result-id">
+              <h2>{selectedRoutine ? routineTitle(selectedRoutine) : selectedConv.title}</h2>
+              <p class="muted">
                 {#if selectedRoutine}
-                  <button class="linkish small" type="button" aria-describedby={routineActionStatus ? routineActionStatusId : undefined} disabled={busyRoutineId === selectedRoutine.id} on:click={() => runFromButton(selectedRoutine)}>지금 다시 실행</button>
-                {/if}
+                  {formatRoutineSchedule(selectedRoutine).replace(" (KST)", "")}
+                  {#if selectedRoutine.enabled && selectedRoutine.nextRunAt} · 다음 {relativeDayTimeLabel(selectedRoutine.nextRunAt, now)}{/if}
+                {:else}{selectedConv.avatarDisplayName}{/if}
+              </p>
+            </div>
+            <div class="head-actions">
+              {#if selectedRoutine && !selectedRoutine.completedAt}
+                <button
+                  class="ghost-sm"
+                  type="button"
+                  disabled={busyRoutineId === selectedRoutine.id}
+                  on:click={() => selectedRoutine && runFromButton(selectedRoutine)}>
+                  {busyRoutineId === selectedRoutine.id ? "여는 중…" : "지금 실행"}
+                </button>
+              {/if}
+              <button class="ghost-sm" type="button" disabled={openingConversation} on:click={openAsConversation}>
+                {openingConversation ? "여는 중…" : "일반 대화로 열기"}
+              </button>
+            </div>
+          </div>
+
+          {#if currentPrompt}
+            <!-- The instruction is context, not content: one clamped line by
+                 default, expandable when the reader actually wants it. -->
+            <details class="routine-prompt">
+              <summary class="routine-prompt-head">
+                <span class="routine-prompt-chevron" aria-hidden="true"></span>
+                <span class="routine-prompt-label">지시</span>
+                <span class="routine-prompt-peek">{promptOneLine}</span>
+              </summary>
+              <div class="routine-prompt-body md" use:enhanceMarkdown={currentPrompt}>{@html renderMarkdown(currentPrompt)}</div>
+            </details>
+          {/if}
+        {/if}
+
+        <div class="routine-runs scroll-thin">
+          {#if !selectedConv}
+            {#if routines.length}
+              <div class="routine-empty tall">
+                <span class="routine-empty-icon" aria-hidden="true"><Icon name="activity" size={20} /></span>
+                <h3>확인할 실행 결과가 없어요</h3>
+                <p>왼쪽에서 예약 작업을 고르거나, 하나를 지금 실행하면 결과가 여기에 표시됩니다.</p>
+                <div class="routine-empty-actions">
+                  <button
+                    class="ghost-sm"
+                    type="button"
+                    aria-describedby={routineActionStatusId}
+                    disabled={busyRoutineId === routines[0].id}
+                    on:click={() => runFromButton(routines[0])}>첫 예약 작업 지금 실행</button>
+                </div>
               </div>
             {:else}
-              {#each runs as run, i (i)}
-                {@const reverseIndex = runs.length - 1 - i}
-                {@const r = runs[reverseIndex]}
-                <RoutineRunBlock
-                  run={r}
-                  runNumber={reverseIndex + 1}
-                  expanded={reverseIndex === runs.length - 1}
-                  {currentPrompt}
-                  runBusy={Boolean(selectedRoutine && busyRoutineId === selectedRoutine.id)}
-                  onRun={selectedRoutine ? () => runFromButton(selectedRoutine) : null} />
-              {/each}
+              <!-- Zero routines: the pane earns its space by teaching what a
+                   routine IS, with one-click starting points. -->
+              <div class="routine-onboard">
+                <span class="routine-empty-icon" aria-hidden="true"><Icon name="clock" size={20} /></span>
+                <h3>아바타에게 반복 업무를 맡겨 보세요</h3>
+                <p>정해진 시각이 되면 아바타가 스스로 실행하고, 결과를 이 화면에 쌓아 둡니다. 예시를 고르면 내용이 채워진 채로 열려요.</p>
+                <div class="routine-preset-grid">
+                  {#each PRESETS as item}
+                    <button class="routine-preset" type="button" on:click={() => openModal(null, item.preset)}>
+                      <span class="routine-preset-label">{item.label}</span>
+                      <span class="routine-preset-hint">{item.hint}</span>
+                      <span class="routine-preset-body">{item.preset.prompt}</span>
+                    </button>
+                  {/each}
+                </div>
+                <button class="primary small" type="button" on:click={() => openModal(null)}>
+                  <Icon name="plus" size={16} /><span>직접 만들기</span>
+                </button>
+              </div>
             {/if}
-          </div>
+          {:else if messageLoadError}
+            <div class="warn-box" role="alert">
+              예약 작업 결과를 불러오지 못했습니다: {messageLoadError}
+              <button class="linkish" type="button" disabled={loadBusy} on:click={load}>다시 시도</button>
+            </div>
+          {:else if !$appState.routineMessages.length}
+            <div class="routine-empty tall">
+              <span class="routine-empty-icon" aria-hidden="true"><Icon name="activity" size={20} /></span>
+              <h3>아직 실행 기록이 없어요</h3>
+              <p>예정된 시각이 되면 자동으로 실행됩니다. 지금 바로 확인하고 싶다면 한 번 실행해 보세요.</p>
+              {#if selectedRoutine}
+                <div class="routine-empty-actions">
+                  <button
+                    class="ghost-sm"
+                    type="button"
+                    aria-describedby={routineActionStatusId}
+                    disabled={busyRoutineId === selectedRoutine.id}
+                    on:click={() => selectedRoutine && runFromButton(selectedRoutine)}>지금 실행</button>
+                </div>
+              {/if}
+            </div>
+          {:else}
+            {#each runs as run, i (i)}
+              {@const reverseIndex = runs.length - 1 - i}
+              {@const r = runs[reverseIndex]}
+              <RoutineRunBlock
+                run={r}
+                runNumber={reverseIndex + 1}
+                expanded={reverseIndex === runs.length - 1}
+                {currentPrompt}
+                {now}
+                runBusy={Boolean(selectedRoutine && busyRoutineId === selectedRoutine.id)}
+                onRun={selectedRoutine ? () => runFromButton(selectedRoutine) : null} />
+            {/each}
+          {/if}
         </div>
       </section>
     </div>
@@ -711,6 +860,7 @@
 {#if modalOpen}
   <RoutineModal
     routine={modalRoutine}
+    preset={modalPreset}
     on:close={closeModal}
     on:saved={onModalSaved}
     on:deleted={onModalDeleted}

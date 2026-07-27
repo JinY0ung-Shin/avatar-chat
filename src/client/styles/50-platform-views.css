@@ -650,24 +650,54 @@ button.linkish {
 }
 
 /* ---- Routines view ---- */
-/* The routines tab fills the viewport: the page itself does NOT scroll —
-   the routine list (left) and the result transcript (right) each scroll
-   independently so neither one ever pushes the whole layout taller. */
+/* The routines tab fills the viewport: the page itself does NOT scroll — the
+   routine list (left) and the run transcript (right) each scroll independently
+   so neither one ever pushes the whole layout taller.
+   Density (DESIGN.md §3): a work list — tighter than settings, looser than admin. */
 .routines-body {
+  --pad-card: var(--s-4);
+  --gap-stack: var(--s-3);
   padding: var(--s-4);
   overflow: hidden;
   display: flex;
 }
 .routine-workspace {
+  /* max-width, not width: this is a flex item with flex-basis 0, so a `width`
+     is ignored during flex resolution while max-width still clamps it — and the
+     auto margins then absorb the leftover to keep it centered. */
   flex: 1;
-  width: min(1280px, 100%);
+  max-width: 1360px;
   margin: 0 auto;
   height: 100%;
   min-height: 0;
-  /* Flexbox (not a fixed grid) so the divider can resize the two panels and
+  /* Flexbox (not a fixed grid) so the divider can resize the two panes and
      min-width:0 on both sides guarantees they shrink instead of ever overlapping. */
   display: flex;
   align-items: stretch;
+}
+/* ONE surface per pane. The pre-2026-07 screen wrapped each pane in a
+   .settings-card and then nested more bordered boxes inside it, so every level
+   contributed its own border+padding and the content drifted in unexplained
+   gutters. Rows and run blocks now sit directly on this surface. */
+.routine-pane {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-stack);
+  padding: var(--pad-card);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-sm), 0 1px 0 var(--material-edge) inset;
+}
+/* Zero routines: no list to manage, so the single remaining pane narrows to a
+   readable measure instead of stretching onboarding text across 1360px. */
+.routine-workspace.solo {
+  max-width: 920px;
+  /* Content-height instead of stretched: a full-viewport pane holding one short
+     onboarding block reads as the same dead space this redesign set out to fix. */
+  align-items: center;
 }
 .routine-side {
   /* Width driven by the draggable splitter via --routine-side-w; clamp is the
@@ -675,15 +705,13 @@ button.linkish {
   flex-grow: 0;
   flex-shrink: 0;
   flex-basis: clamp(280px, var(--routine-side-w, 360px), 620px);
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-4);
-  min-height: 0;
-  overflow-y: auto;
-  padding-right: var(--s-0-5);
 }
-/* Vertical drag handle between the two panels; its width preserves the old gap. */
+.routine-result {
+  flex: 1 1 0;
+}
+/* Vertical drag handle between the two panes; its width preserves the old gap.
+   The grip is a short centered pill rather than a full-height line — the panes
+   already draw their own edges, so a second one only added visual noise. */
 .routine-splitter {
   flex: none;
   align-self: stretch;
@@ -696,15 +724,20 @@ button.linkish {
   background: transparent;
 }
 .routine-splitter-grip {
-  width: 2px;
-  height: 100%;
-  border-radius: 2px;
+  width: 3px;
+  height: 40px;
+  border-radius: var(--r-pill);
   background: var(--line);
-  transition: background 0.12s ease;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease;
 }
-.routine-splitter:hover .routine-splitter-grip,
+.routine-splitter:hover .routine-splitter-grip {
+  opacity: 1;
+}
 .routine-splitter:focus-visible .routine-splitter-grip {
-  background: var(--accent);
+  opacity: 1;
+  height: 100%;
+  background: var(--focus-ring);
 }
 .routine-splitter:focus-visible {
   outline: none;
@@ -713,9 +746,6 @@ button.linkish {
 body.col-resizing {
   cursor: col-resize;
   user-select: none;
-}
-.routine-card {
-  margin: 0;
 }
 .routine-add-btn {
   display: inline-flex;
@@ -728,6 +758,27 @@ body.col-resizing {
   width: 15px;
   height: 15px;
 }
+/* A failing routine is the one thing on this screen that wants the reader's
+   eye, so the header summary carries the alert rather than a banner. */
+.view-header .title p.routine-head-alert {
+  color: var(--danger);
+}
+
+.routine-side-tools {
+  flex: none;
+  display: grid;
+  gap: var(--s-2);
+}
+.routine-search-row {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+}
+.routine-search-wrap {
+  flex: 1;
+  min-width: 0;
+  display: block;
+}
 .routine-search {
   width: 100%;
   border: 1px solid var(--line);
@@ -735,63 +786,109 @@ body.col-resizing {
   background: var(--bg-elevated);
   color: inherit;
   font-size: var(--t-sm);
-  padding: var(--s-2-5) var(--s-3);
+  padding: var(--s-2) var(--s-2-5);
 }
 .routine-search:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-ring);
 }
-.routine-search:disabled {
-  opacity: 0.6;
+.routine-count {
+  font-size: var(--t-xs);
+  font-variant-numeric: tabular-nums;
 }
-.routine-tools {
+/* Status filters are wrapping chips, not a scrolling segmented track: five
+   options never fit a 280px pane on one line, and a hidden overflow scroll is
+   a worse answer than a second row. */
+.routine-filter-chips {
   display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-1-5);
+}
+.routine-chip {
+  display: inline-flex;
   align-items: center;
-  gap: var(--s-2);
+  gap: var(--s-1);
+  padding: var(--s-1) var(--s-2);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-pill);
+  background: var(--bg-subtle);
+  color: var(--muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  white-space: nowrap;
 }
-.routine-tools .routine-search {
-  min-width: 0;
-  flex: 1;
-}
-.routine-filter {
-  max-width: 100%;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior-x: contain;
-  scrollbar-width: thin;
-}
-.routine-filter .seg-btn {
-  flex: 0 0 auto;
-}
-.routine-type-filter {
-  margin-top: var(--s-1);
-}
-.routine-manage-list {
-  display: grid;
-  gap: var(--s-2);
-}
-.routine-list-group {
-  display: grid;
-  gap: var(--s-2);
-}
-.routine-list-group-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--s-2);
+.routine-chip:hover {
   color: var(--text);
-  font-size: var(--t-sm);
+}
+.routine-chip.active {
+  border-color: transparent;
+  background: var(--accent);
+  color: var(--on-accent);
+}
+.routine-chip.danger:not(.active) {
+  border-color: var(--danger-line);
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.routine-chip-n {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+}
+
+.routine-manage-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-3);
+  /* Bleed so hover backgrounds and focus rings aren't clipped by the scroller. */
+  margin-inline: calc(var(--s-1) * -1);
+  padding-inline: var(--s-1);
+}
+.routine-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1-5);
+}
+.routine-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  padding: 0 var(--s-1-5);
+  color: var(--muted);
+  font-size: var(--t-2xs);
   font-weight: 700;
-  padding: var(--s-1) var(--s-1-5);
+  letter-spacing: 0.06em;
 }
-summary.routine-list-group-head {
+summary.routine-group-head {
   cursor: pointer;
+  list-style: none;
 }
-.routine-list-group-items {
-  display: grid;
-  gap: var(--s-2);
-  margin-top: var(--s-1);
+summary.routine-group-head::-webkit-details-marker {
+  display: none;
+}
+.routine-group-chevron {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid currentColor;
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  transition: transform 0.15s ease;
+}
+details.routine-group[open] > .routine-group-head .routine-group-chevron {
+  transform: rotate(90deg);
+}
+.routine-group-n {
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+}
+.routine-group-items {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-1-5);
 }
 .notification-row {
   width: 100%;
@@ -920,42 +1017,60 @@ summary.routine-list-group-head {
   background: var(--warn-soft);
 }
 
-/* Routine management rows: the main button selects results; row actions stay
-   separate controls instead of nesting buttons inside a role=button card. */
-.routine-manage-row {
-  width: 100%;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  padding: var(--s-3);
+/* Routine rows are LIST ITEMS, not cards: the pane behind them is already a
+   surface, so a bordered+shadowed row would be a card inside a card. The main
+   button selects results; the toggle and row actions stay separate controls
+   instead of nesting buttons inside a role=button card. */
+.routine-row {
+  position: relative;
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
   gap: var(--s-2);
-  text-align: left;
+  padding: var(--s-2-5) var(--s-3);
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
   color: var(--text);
-  transition: border-color 0.12s ease, background 0.12s ease;
+  transition: background-color 0.16s var(--ease-out), box-shadow 0.16s var(--ease-out), opacity 0.16s var(--ease-out);
 }
-.routine-manage-row:hover,
-.routine-manage-row:focus-within {
-  border-color: var(--accent-soft-strong);
+@media (hover: hover) {
+  .routine-row:hover {
+    background: var(--panel-strong);
+  }
 }
-.routine-manage-row.active {
-  border-color: var(--accent-soft-strong);
-  background: var(--panel-strong);
+.routine-row.active {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 26%, transparent) inset;
 }
-.routine-manage-row.paused {
-  opacity: 0.66;
+.routine-row.paused {
+  opacity: 0.62;
 }
-.routine-manage-row[aria-busy="true"] {
+.routine-row.paused:hover,
+.routine-row.paused:focus-within {
+  opacity: 1;
+}
+.routine-row[aria-busy="true"] {
   cursor: progress;
-  opacity: 0.72;
 }
-.routine-manage-head {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--s-2);
+/* Only failure gets a colored edge. Painting every healthy row green would make
+   the color carry no information at all. */
+.routine-row.failed::before {
+  content: "";
+  position: absolute;
+  inset: var(--s-2) auto var(--s-2) 0;
+  width: 3px;
+  border-radius: var(--r-pill);
+  background: var(--danger);
 }
-.routine-manage-main {
-  flex: 1;
+.routine-row.failed {
+  background: color-mix(in srgb, var(--danger) 7%, transparent);
+}
+/* Selection has to stay legible on top of the failure wash, which would
+   otherwise repaint over the accent tint and leave the row looking unselected. */
+.routine-row.active.failed {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 45%, transparent) inset;
+}
+.routine-row-main {
   min-width: 0;
   display: grid;
   gap: var(--s-1);
@@ -966,113 +1081,254 @@ summary.routine-list-group-head {
   text-align: left;
   cursor: pointer;
 }
-.routine-manage-main:disabled {
+.routine-row-main:disabled {
   cursor: progress;
 }
-.routine-manage-main:focus-visible {
-  outline: 2px solid var(--accent);
+.routine-row-main:focus-visible {
+  outline: 2px solid var(--focus-ring);
   outline-offset: 3px;
   border-radius: var(--r-sm);
 }
-.routine-manage-title-line {
+.routine-row-title {
   display: flex;
   align-items: center;
-  gap: var(--s-2);
+  gap: var(--s-1-5);
   min-width: 0;
 }
-.routine-manage-title {
-  flex: 1;
+.routine-row-name {
   min-width: 0;
   font-size: var(--t-base);
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+/* Line 2 answers "when does this run?" — the reason the screen exists — so it
+   keeps body contrast while the outcome line below stays muted. It is ONE
+   non-wrapping run that ellipsises: letting it wrap put a bare "·" at the start
+   of the second line and split timestamps mid-value. */
+.routine-row-when {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  min-width: 0;
+  font-size: var(--t-sm);
+  line-height: 1.35;
+  color: var(--text-soft);
+}
+.routine-row-when-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.routine-row-sched {
+  font-weight: 600;
+}
+.routine-row-in {
+  flex: none;
+  padding: 0 var(--s-1-5);
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  line-height: 1.6;
+}
+.routine-row-last {
+  font-size: var(--t-xs);
+  line-height: 1.35;
+  color: var(--muted);
+}
+.routine-row-error {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  font-size: var(--t-xs);
+  line-height: 1.4;
+  color: var(--danger);
   overflow-wrap: anywhere;
 }
-.routine-dot {
+/* Tiny outcome glyph, inline with the text it describes. */
+.routine-mark {
+  display: inline-block;
+  vertical-align: 0.05em;
   flex: none;
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--s-1);
   border-radius: 50%;
   background: var(--muted);
 }
-.routine-dot.on {
+.routine-mark.ok {
   background: var(--ok);
 }
-.routine-dot.err {
+.routine-mark.err {
   background: var(--danger);
 }
-.routine-dot.done {
-  background: var(--accent);
-}
-.routine-dot.off {
+.routine-mark.idle {
   background: var(--line);
 }
-.routine-manage-meta {
-  color: var(--muted);
-  font-size: var(--t-sm);
-  overflow-wrap: anywhere;
-}
-.routine-manage-meta .routine-next {
-  color: var(--text);
-  font-weight: 500;
-}
-.routine-manage-error {
-  display: block;
-}
-.routine-manage-actions {
-  display: flex;
-  gap: var(--s-2);
-  margin-top: var(--s-0-5);
-}
-.routine-manage-actions .ghost-sm {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-1-5);
-}
-.routine-manage-actions .ghost-sm svg {
-  width: 13px;
-  height: 13px;
-}
-.routine-result-card {
-  flex: 1 1 0;
-  min-width: 0;
-  height: 100%;
-  min-height: 0;
+/* Controls stack in their own column so a narrow pane never squeezes the title
+   down to a few characters to fit three side-by-side controls. */
+.routine-row-side {
   display: flex;
   flex-direction: column;
-  margin: 0;
-}
-/* The routine's instruction, pinned above the transcript with its own scroll so
-   a long prompt never pushes the results out of view. */
-.routine-result-prompt {
+  align-items: flex-end;
+  gap: var(--s-0-5);
   flex: none;
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--panel);
-  padding: var(--s-2) var(--s-3);
-  display: grid;
-  gap: var(--s-1);
 }
-.routine-result-prompt-label {
+.routine-row-acts {
+  display: flex;
+  align-items: center;
+  gap: var(--s-0-5);
+}
+.routine-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--muted);
+  opacity: 0.6;
+  transition: opacity 0.16s var(--ease-out), color 0.16s var(--ease-out), background-color 0.16s var(--ease-out);
+}
+.routine-row:hover .routine-icon-btn,
+.routine-row:focus-within .routine-icon-btn {
+  opacity: 1;
+}
+.routine-icon-btn:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.routine-icon-btn:disabled {
+  opacity: 1;
+  cursor: progress;
+}
+.routine-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.routine-row.is-done .routine-row-side {
+  justify-content: flex-start;
+}
+
+/* Result pane */
+.routine-result-head {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s-3);
+}
+.routine-result-id {
+  min-width: 0;
+}
+.routine-result-id h2 {
+  margin: 0;
+  font-size: var(--t-md);
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  overflow-wrap: anywhere;
+}
+.routine-result-id p {
+  margin: var(--s-0-5) 0 0;
   font-size: var(--t-xs);
-  font-weight: 600;
-  text-transform: uppercase;
+}
+/* The standing instruction is context, not content: one clamped line by
+   default, expandable when the reader actually wants it. Pinning the full
+   prompt above every transcript pushed the results themselves out of view. */
+.routine-prompt {
+  flex: none;
+  border-radius: var(--r-md);
+  background: var(--bg-subtle);
+}
+.routine-prompt-head {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  padding: var(--s-1-5) var(--s-2-5);
+  cursor: pointer;
+  list-style: none;
+  font-size: var(--t-xs);
+  min-width: 0;
+}
+.routine-prompt-head::-webkit-details-marker {
+  display: none;
+}
+.routine-prompt-chevron {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 4px solid var(--muted);
+  border-top: 3px solid transparent;
+  border-bottom: 3px solid transparent;
+  transition: transform 0.15s ease;
+}
+.routine-prompt[open] .routine-prompt-chevron {
+  transform: rotate(90deg);
+}
+.routine-prompt-label {
+  flex: none;
+  font-weight: 700;
+  color: var(--muted);
   letter-spacing: 0.04em;
 }
-.routine-result-prompt-body {
+.routine-prompt-peek {
+  min-width: 0;
+  flex: 1;
+  color: var(--text-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.routine-prompt[open] .routine-prompt-peek {
+  visibility: hidden;
+}
+.routine-prompt-body {
+  padding: 0 var(--s-2-5) var(--s-2-5) var(--s-5);
   color: var(--text);
   font-size: var(--t-sm);
   line-height: 1.55;
   overflow-wrap: anywhere;
-  max-height: 22vh;
+  max-height: 30vh;
   overflow-y: auto;
 }
+/* No border and no background: the pane behind is the surface. */
+.routine-runs {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
 
-/* Per-run collapsible blocks inside the routine transcript: newest expanded,
-   older runs fold to a one-line header so the thread stays scannable. */
+/* Per-run collapsible blocks: newest expanded, older runs fold to a one-line
+   header that STATES ITS OUTCOME — scanning a run history is about finding the
+   run that went wrong, which a bare "실행 #7" can't answer. */
 .routine-run-block {
-  border: 1px solid var(--line);
+  flex: none;
+  border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
-  background: var(--panel);
+  background: var(--bg);
   overflow: hidden;
+}
+.routine-run-block.failed {
+  border-color: var(--danger-line);
 }
 .routine-run-summary {
   display: flex;
@@ -1102,17 +1358,30 @@ summary.routine-list-group-head {
 .routine-run-block[open] .routine-run-chevron {
   transform: rotate(90deg);
 }
+.routine-run-summary .routine-mark {
+  margin-right: 0;
+}
 .routine-run-num {
   font-weight: 700;
   color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.routine-run-outcome {
+  color: var(--muted);
+  font-size: var(--t-xs);
+}
+.routine-run-block.failed .routine-run-outcome {
+  color: var(--danger);
+  font-weight: 600;
 }
 .routine-run-time {
   margin-left: auto;
   font-size: var(--t-xs);
+  white-space: nowrap;
 }
 .routine-run-body {
   padding: var(--s-3);
-  border-top: 1px solid var(--line);
+  border-top: 1px solid var(--line-soft);
   display: grid;
   gap: var(--s-2);
 }
@@ -1126,52 +1395,163 @@ summary.routine-list-group-head {
   border-left: 2px solid var(--line);
   padding-left: var(--s-2);
 }
-.routine-result-card .routine-result-transcript {
+.routine-run-empty {
+  color: var(--muted);
+  font-size: var(--t-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  flex-wrap: wrap;
+}
+
+/* Empty states are CENTERED IN THEIR PANE instead of a dashed box pinned to the
+   top of an otherwise blank column — that box was the single biggest source of
+   dead space on this screen. */
+.routine-empty {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--s-2);
+  padding: var(--s-6) var(--s-4);
+  text-align: center;
+  color: var(--muted);
+}
+.routine-empty.tall {
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  border: 1px solid var(--line);
+}
+.routine-empty h3 {
+  margin: 0;
+  font-size: var(--t-md);
+  color: var(--text);
+}
+.routine-empty p {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.5;
+  max-width: 44ch;
+}
+.routine-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--s-2);
+  margin-top: var(--s-1);
+}
+.routine-empty-icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: var(--r-pill);
+  background: var(--accent-soft);
+  color: var(--accent);
+  margin-bottom: var(--s-1);
+}
+/* Zero routines: the result pane earns its space by teaching what a routine is,
+   with one-click starting points instead of an empty rectangle. */
+.routine-onboard {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  gap: var(--s-2);
+  padding: var(--s-6) var(--s-4);
+  text-align: center;
+  color: var(--muted);
+}
+.routine-onboard h3 {
+  margin: 0;
+  font-size: var(--t-lg);
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.routine-onboard p {
+  margin: 0;
+  font-size: var(--t-sm);
+  line-height: 1.55;
+  max-width: 52ch;
+}
+.routine-preset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: var(--s-2);
+  width: min(680px, 100%);
+  margin: var(--s-2) 0;
+  text-align: left;
+}
+.routine-preset {
+  display: grid;
+  align-content: start;
+  gap: var(--s-1);
+  padding: var(--s-3);
+  border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
-  background: var(--bg);
+  background: var(--bg-subtle);
+  text-align: left;
+  cursor: pointer;
+}
+.routine-preset:hover {
+  border-color: var(--accent-soft-strong);
+  background: var(--accent-soft);
+}
+.routine-preset-label {
+  font-size: var(--t-sm);
+  font-weight: 700;
+  color: var(--text);
+}
+.routine-preset-hint {
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  color: var(--accent-strong);
+}
+.routine-preset-body {
+  font-size: var(--t-xs);
+  line-height: 1.45;
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
 }
 
 @media (max-width: 980px) {
-  /* Stack the columns and let the page scroll again on narrow screens. */
+  /* Stack the panes and let the page scroll again on narrow screens. */
   .routines-body {
     overflow-y: auto;
     display: block;
+    padding: var(--s-3);
   }
   .routine-workspace {
     flex-direction: column;
+    gap: var(--s-3);
     height: auto;
   }
   .routine-side {
     /* Full width, natural height when stacked; the splitter is hidden below. */
     flex-basis: auto;
+  }
+  .routine-manage-list {
     overflow: visible;
   }
   .routine-splitter {
     display: none;
   }
-  .routine-result-card {
-    height: auto;
-    min-height: 420px;
-  }
-  .routine-result-card .routine-result-transcript {
-    min-height: 320px;
+  .routine-result {
+    min-height: 60vh;
   }
 }
-@media (max-width: 640px) {
-  .routine-filter.seg-control {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    width: 100%;
-    overflow: visible;
-    border-radius: var(--r-lg);
+@media (pointer: coarse) {
+  /* Hover can't reveal anything on touch, so row actions stay at full strength. */
+  .routine-icon-btn {
+    opacity: 1;
+    width: 44px;
+    height: 44px;
   }
-  .routine-filter .seg-btn {
-    min-width: 0;
-    padding-inline: var(--s-2);
+  .routine-row.paused {
+    opacity: 0.72;
   }
 }
 .chat-pane.compact .transcript {

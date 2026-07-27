@@ -87,6 +87,10 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // Generous default: tool/skill/subagent-heavy replies blow past a handful of
     // turns. Override via MAX_TURNS; values <1 fall back to the default.
     maxTurns: Math.max(1, Number(env("MAX_TURNS", "1000")) || 1000),
+    // Whole-run budget for an unattended routine (see AppConfig). Clamped to >=1
+    // minute: parseMinutes maps "0" to 0ms, which here would abort every run
+    // instantly instead of meaning "no deadline" as it does for plugin refresh.
+    routineRunTimeoutMs: Math.max(60_000, parseMinutes(env("ROUTINE_RUN_TIMEOUT_MINUTES"), 30)),
     // Optional: compact the conversation near this many context tokens instead
     // of waiting for the model's full window. Unset → SDK/CLI default.
     autoCompactWindow: parseAutoCompactWindow(env("AUTO_COMPACT_WINDOW")),
