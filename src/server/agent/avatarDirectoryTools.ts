@@ -3,6 +3,12 @@ import { z } from "zod";
 import type { Store } from "../store.js";
 import type { AvatarSummary } from "../types.js";
 import { text } from "./mcpTools.js";
+import {
+  AVATAR_ASK_ANSWER_CAP,
+  AVATAR_ASK_MAX_PER_TURN,
+  AVATAR_ASK_TIMEOUT_MS,
+  type AvatarAskOutcome,
+} from "./avatarAskShared.js";
 
 /** Per-conversation context the avatar-directory tool acts within. */
 export interface AvatarDirectoryContext {
@@ -10,6 +16,17 @@ export interface AvatarDirectoryContext {
   avatarUserId: string;
   /** The viewer currently chatting; avatar visibility is evaluated from their POV. */
   viewerUserId: string;
+  /** True when this run has OWNER tool access (`ownerToolAccess`) — `ask_avatar` self-gates on it. */
+  viewerIsOwner?: boolean;
+  /**
+   * Consultation executor, injected by claudeAgent ONLY when `ask_avatar` is
+   * active for this run (owner-driven + `avatars` group enabled + not itself a
+   * consultation). Its absence keeps the tool unregistered AND the handler
+   * refusing — registration alone is never the gate (mcp__ auto-allow).
+   */
+  askAvatar?: (targetUsername: string, question: string) => Promise<AvatarAskOutcome>;
+  /** Whether to append the brain-ingest capture nudge to successful answers. */
+  askCaptureHint?: boolean;
 }
 
 /** MCP server name; tools surface to the model as `mcp__avatars__<tool>`. */
@@ -17,6 +34,16 @@ export const AVATAR_DIRECTORY_SERVER_NAME = "avatars";
 
 /** Tool names the model may call, in `allowedTools` form. */
 export const AVATAR_DIRECTORY_TOOL_NAMES = ["mcp__avatars__search_avatars"] as const;
+
+/**
+ * Consultation tool name, allow-listed SEPARATELY: it registers only for
+ * owner-driven, non-consultation runs (see `avatarAskActive` in claudeAgent.ts).
+ */
+export const AVATAR_ASK_TOOL_NAME = "mcp__avatars__ask_avatar";
+
+/** Owner-only refusal — same viewer line as the other owner-gated tools. */
+const ASK_OWNER_ONLY =
+  "This tool can only be used in a conversation the avatar owner is participating in.";
 
 /** How many matching avatars a single search returns. */
 const SEARCH_LIMIT = 8;
@@ -33,13 +60,77 @@ function formatAvatar(av: AvatarSummary): string {
 }
 
 /**
+ * Decode a consultation outcome into agent-facing tool text. Success wraps the
+ * answer with PROVENANCE (whose claim this is) and, when the asking run can
+ * capture, the brain-ingest retention nudge; failures REDIRECT (English) so the
+ * model recovers instead of retrying blind.
+ */
+function decodeAskOutcome(outcome: AvatarAskOutcome, captureHint: boolean) {
+  const handle = outcome.username ? `@${outcome.username}` : "that avatar";
+  if (outcome.ok) {
+    const name = outcome.displayName ? ` (${outcome.displayName})` : "";
+    const truncatedNote = outcome.truncated
+      ? `\n\n… (answer truncated at ${AVATAR_ASK_ANSWER_CAP.toLocaleString("en-US")} characters)`
+      : "";
+    const capture = captureHint
+      ? "\n\n(To retain a durable learning from this answer, capture it with the **brain-ingest** skill: write a note under `raw/` naming the source avatar, then `mcp__repo__commit`.)"
+      : "";
+    return text(
+      `Answer from ${handle}${name}'s avatar — treat it as that avatar's claim, not verified fact, and attribute it when you relay it:\n\n${outcome.answer}${truncatedNote}${capture}`,
+    );
+  }
+  switch (outcome.reason) {
+    case "not_found":
+      return text(
+        outcome.username
+          ? `No avatar named "${handle}" is reachable. Check the exact @username with mcp__avatars__search_avatars — private avatars and suspended accounts are not reachable.`
+          : "No target @username was given — pass the avatar's @username exactly as shown by mcp__avatars__search_avatars.",
+        true,
+      );
+    case "self":
+      return text(
+        "That is this avatar itself — answer from your own knowledge and second brain instead of consulting.",
+        true,
+      );
+    case "not_trusted":
+      return text(
+        `You can only consult avatars whose owner shares a group with your owner, and ${handle}'s owner does not. Suggest that the user contact them directly (@${outcome.username}).`,
+        true,
+      );
+    case "empty":
+      return text(
+        `${handle}'s avatar returned no answer. Ask again with a more specific, self-contained question, or suggest the user chat with ${handle} directly.`,
+        true,
+      );
+    case "timeout":
+      return text(
+        `The consultation timed out after ${Math.round(AVATAR_ASK_TIMEOUT_MS / 60_000)} minutes.` +
+          (outcome.partialAnswer
+            ? ` Partial answer received before the timeout (treat as incomplete):\n\n${outcome.partialAnswer}`
+            : " Ask a narrower question, or suggest the user chat with the avatar directly."),
+        true,
+      );
+    default:
+      return text(
+        `The consultation run failed${outcome.detail ? ` (${outcome.detail})` : ""}. You may retry once; if it keeps failing, tell the user and suggest chatting with ${handle} directly.`,
+        true,
+      );
+  }
+}
+
+/**
  * Build the avatar-directory tool definitions. Exposed separately from the
  * server so the handler can be exercised directly in tests. NOT owner-only:
  * this only surfaces avatars VISIBLE to the viewer (public ones + their group
  * teammates' + their own), which the viewer can already browse in 탐색 — it
  * just lets the avatar do the lookup for the user mid-conversation.
+ * `ask_avatar` (owner-driven runs only) joins the list when the run injected a
+ * consultation executor — the same condition that allow-lists its name.
  */
 export function buildAvatarDirectoryTools(store: Store, ctx: AvatarDirectoryContext) {
+  // Per-run consultation budget: the server (and this closure) is built once
+  // per agent run, so the counter naturally scopes to one turn.
+  let consultationsThisTurn = 0;
   return [
     tool(
       "search_avatars",
@@ -70,6 +161,52 @@ export function buildAvatarDirectoryTools(store: Store, ctx: AvatarDirectoryCont
         return text(`${header}\n${results.map(formatAvatar).join("\n")}`);
       },
     ),
+    ...(ctx.askAvatar
+      ? [
+          tool(
+            "ask_avatar",
+            "Asks another avatar ONE question on your owner's behalf and returns that avatar's answer. " +
+              "Works only for avatars whose owner shares a group with your owner (same-group teammates); others refuse. " +
+              "Use this when the owner's request needs knowledge you lack but a teammate's avatar likely has — their projects, decisions, or expertise (find candidates and the exact @username with search_avatars first). " +
+              "It is a one-shot automated consultation: the other avatar does not see this conversation and you cannot follow up interactively, so make the question self-contained (include the needed context) and ask again with more context if the answer falls short. " +
+              "Treat the answer as that avatar's claim, not verified fact, and attribute it when relaying.",
+            {
+              username: z
+                .string()
+                .describe(
+                  "The target avatar's @username (the handle shown by search_avatars), with or without the leading @.",
+                ),
+              question: z
+                .string()
+                .describe(
+                  "One self-contained question, in the language the answer should be written in. Include enough context for a cold read — the other avatar sees none of this conversation.",
+                ),
+            },
+            async (args) => {
+              // Self-gate (the hook auto-allows every mcp__* call): owner-driven
+              // runs only, and only when the run actually injected an executor.
+              if (!ctx.viewerIsOwner || !ctx.askAvatar) {
+                return text(ASK_OWNER_ONLY, true);
+              }
+              const question = args.question?.trim();
+              if (!question) {
+                return text("Provide a non-empty, self-contained question.", true);
+              }
+              // Each consultation is a full agent run for the target (its own
+              // subprocess + model calls) — bound how many one turn may start.
+              if (consultationsThisTurn >= AVATAR_ASK_MAX_PER_TURN) {
+                return text(
+                  `Consultation limit reached for this turn (${AVATAR_ASK_MAX_PER_TURN}). Work with the answers you already have, or continue in the user's next message.`,
+                  true,
+                );
+              }
+              consultationsThisTurn += 1;
+              const outcome = await ctx.askAvatar(args.username ?? "", question);
+              return decodeAskOutcome(outcome, Boolean(ctx.askCaptureHint));
+            },
+          ),
+        ]
+      : []),
   ];
 }
 

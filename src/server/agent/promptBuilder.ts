@@ -214,7 +214,7 @@ function gitRepoSection(): string {
  */
 function brainSection(
   request: AgentRequest,
-  mode: "owner" | "teammate" | "routine",
+  mode: "owner" | "teammate" | "routine" | "consultation",
 ): string | null {
   if (request.knowledgeRepoConfigured === false) {
     return null;
@@ -223,6 +223,11 @@ function brainSection(
     "**Second brain**: your knowledge repository is a vault — `wiki/` holds curated, durable notes and `raw/` holds unprocessed captures. Use `mcp__brain__search` to recall what you already know BEFORE answering from memory or asking the user to repeat themselves; `mcp__brain__get_note` reads one note in full.";
   const migrate =
     " If `mcp__brain__search` reports the vault is missing (NO_VAULT), the repository predates the vault layout — run the `brain-migrate` skill ONCE (it never overwrites existing files), then retry.";
+  if (mode === "consultation") {
+    // A consultation run cannot write anything (repo writes are withheld even
+    // on a shared account, so brain-migrate can't run either): recall only.
+    return `${base} (Recall is read-only in this consultation; capturing or editing notes is unavailable.)`;
+  }
   if (mode === "teammate") {
     // On a shared (communal) account the teammate's writes go through the same
     // repo-write tools the capture skills use, so capture is open to them too.
@@ -560,6 +565,27 @@ export function buildSystemPromptAppend(
       "Finding other avatars: if you judge that the user's request falls outside your capabilities (skills, knowledge, capability hashtags), first try to help directly, then use `mcp__avatars__search_avatars` to find other public avatars suited to that topic. " +
         "If a better-suited avatar exists, suggest that the user try talking to that avatar (@username).",
     );
+    // Standing consultation guidance (#ask-avatar), OWNER-DRIVEN turns only —
+    // the same derivation as claudeAgent's `avatarAskActive` registration gate
+    // (incl. the ≥1-group requirement: no group → no reachable target),
+    // re-derived here like the owner/teammate/routine branches are.
+    const avatarAskEnabled =
+      Boolean(request.viewerIsOwner) &&
+      !(Boolean(request.headless) && !request.allowHeadlessTools) &&
+      !request.avatarConsultation &&
+      (request.groupMemberships ?? []).length > 0;
+    if (avatarAskEnabled) {
+      const captureNote =
+        mcpToolGroupEnabled(request, "personal_knowledge") &&
+        request.knowledgeRepoConfigured !== false
+          ? " Capture a durable learning from an answer with the **brain-ingest** skill (note the source avatar, then commit)."
+          : "";
+      lines.push(
+        "Consulting teammate avatars: when the owner needs knowledge you lack but a same-group teammate's avatar likely has (their projects, decisions, expertise), ask that avatar directly with `mcp__avatars__ask_avatar` — one self-contained question per call; only avatars whose owner shares a group with your owner will answer. " +
+          "Find candidates and their exact @username with `mcp__avatars__search_avatars` first. Present answers as the other avatar's claims and attribute them." +
+          captureNote,
+      );
+    }
   }
   // Standing canvas guidance for any non-headless turn where the owner enabled
   // the experimental canvas feature (visible to all viewer classes).
@@ -583,7 +609,47 @@ export function buildSystemPromptAppend(
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
   // A headless run has NO ONE on the other side: never claim the owner is
   // present and state read-only.
-  if (request.headless) {
+  if (request.headless && request.avatarConsultation) {
+    // Avatar-to-avatar consultation (#ask-avatar): a one-shot headless turn
+    // another avatar started on its owner's behalf. Framed as a TEAMMATE
+    // exchange — the asker passed the same-group trust gate (avatarAsk.ts) and
+    // this run holds teammate-level tools — never as a routine, which would
+    // wrongly claim owner-level permissions.
+    const consultAskerName = request.viewerName?.trim();
+    const consultViaGroups = (request.trustedViaGroups ?? []).filter(Boolean);
+    lines.push(
+      `This is an **automated avatar-to-avatar consultation**: the avatar of ${consultAskerName ? `"${consultAskerName}"` : "a teammate"}${
+        consultViaGroups.length > 0
+          ? ` — a member of your owner's group(s) ${consultViaGroups.map((g) => `'${g}'`).join(", ")} —`
+          : " — a trusted same-group teammate of your owner —"
+      } is asking you ONE question on its owner's behalf. ` +
+        "Answer as this avatar, from your persona and accumulated knowledge. No human is watching this exchange and follow-up questions are impossible, so give one self-contained, concise answer. " +
+        "If you do not have the information, say so plainly instead of guessing" +
+        (mcpToolGroupEnabled(request, "personal_knowledge")
+          ? ", and record the gap with `mcp__knowledge__request_info` so your owner can fill it later."
+          : "."),
+    );
+    // State the tool level explicitly (every sibling branch does): the hook
+    // denies file/command tools here, and the recall tools it DOES have would
+    // otherwise go unused.
+    lines.push(
+      "Tool access in this consultation is READ-ONLY" +
+        (mcpToolGroupEnabled(request, "personal_knowledge") &&
+        request.knowledgeRepoConfigured !== false
+          ? ": recall what you know with `mcp__brain__search`/`get_note` and `mcp__repo__list_files`/`read_file`."
+          : ".") +
+        " File editing, command execution, and repository writes are unavailable here — do not attempt them.",
+    );
+    const consultationBrainBlock = mcpToolGroupEnabled(
+      request,
+      "personal_knowledge",
+    )
+      ? brainSection(request, "consultation")
+      : null;
+    if (consultationBrainBlock) {
+      lines.push(consultationBrainBlock);
+    }
+  } else if (request.headless) {
     lines.push(
       request.allowHeadlessTools
         ? "This is the **automated execution** of a scheduled routine task. No one is watching the response in real time, so do not ask questions — carry the given task through to completion and report the result."

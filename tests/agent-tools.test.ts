@@ -20,7 +20,13 @@ import {
   buildAvatarDirectoryTools,
   AVATAR_DIRECTORY_SERVER_NAME,
   AVATAR_DIRECTORY_TOOL_NAMES,
+  AVATAR_ASK_TOOL_NAME,
 } from "../src/server/agent/avatarDirectoryTools.js";
+import {
+  askAvatar,
+  AVATAR_ASK_ANSWER_CAP,
+  type AvatarAskOutcome,
+} from "../src/server/agent/avatarAsk.js";
 import {
   gitAuthArgs,
   marketplaceCloneUrl,
@@ -62,6 +68,7 @@ import {
   buildPreToolUseHook,
   buildPrompt,
   deriveAgentToolAccess,
+  EMPTY_SDK_RESPONSE_MESSAGE,
   interpretResult,
   resultErrorMessage,
   rewriteBashCommandWithRtk,
@@ -164,7 +171,7 @@ import {
 } from "../src/server/agent/webFetchTools.js";
 import { generateSshKeyPair } from "../src/server/sshIdentity.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
-import type { AppConfig, Plugin } from "../src/server/types.js";
+import type { AgentRequest, AgentResponse, AppConfig, Plugin } from "../src/server/types.js";
 import {
   DEFAULT_HEX_SSH_TOOL_POLICY,
   normalizeHexSshToolPolicy,
@@ -2401,6 +2408,375 @@ describe("avatar directory tools (cross-avatar search)", () => {
     const tools = buildAvatarDirectoryTools(store, { avatarUserId: meId, viewerUserId: meId });
     const res = await callTool(tools, "search_avatars", { query: "존재하지않는역량xyz" });
     expect(res.content[0].text).toContain("Could not find any visible avatar matching");
+  });
+});
+
+
+describe("avatar consultation tool (mcp__avatars__ask_avatar)", () => {
+  function setup() {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, "ask-tool"),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
+    return { store, meId: me.id };
+  }
+  const okOutcome: AvatarAskOutcome = {
+    ok: true,
+    username: "peer",
+    displayName: "동료박사",
+    answer: "쿠버네티스 업그레이드는 1.29에서 멈춰 있습니다.",
+    truncated: false,
+  };
+
+  it("registers ask_avatar ONLY when the run injected an executor", () => {
+    expect(AVATAR_ASK_TOOL_NAME).toBe("mcp__avatars__ask_avatar");
+    const { store, meId } = setup();
+    const withAsk = buildAvatarDirectoryTools(store, {
+      avatarUserId: meId,
+      viewerUserId: meId,
+      viewerIsOwner: true,
+      askAvatar: async () => okOutcome,
+    }).map((t) => t.name);
+    expect(withAsk).toEqual(["search_avatars", "ask_avatar"]);
+  });
+
+  it("self-gates on viewerIsOwner even when an executor is present", async () => {
+    const { store, meId } = setup();
+    const executor = vi.fn(async () => okOutcome);
+    const tools = buildAvatarDirectoryTools(store, {
+      avatarUserId: meId,
+      viewerUserId: meId,
+      viewerIsOwner: false,
+      askAvatar: executor,
+    });
+    const res = await callTool(tools, "ask_avatar", { username: "peer", question: "질문" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("avatar owner");
+    expect(executor).not.toHaveBeenCalled();
+  });
+
+  it("rejects an empty question before running anything", async () => {
+    const { store, meId } = setup();
+    const executor = vi.fn(async () => okOutcome);
+    const tools = buildAvatarDirectoryTools(store, {
+      avatarUserId: meId,
+      viewerUserId: meId,
+      viewerIsOwner: true,
+      askAvatar: executor,
+    });
+    const res = await callTool(tools, "ask_avatar", { username: "peer", question: "   " });
+    expect(res.isError).toBe(true);
+    expect(executor).not.toHaveBeenCalled();
+  });
+
+  it("wraps a successful answer with provenance and the capture nudge", async () => {
+    const { store, meId } = setup();
+    const tools = buildAvatarDirectoryTools(store, {
+      avatarUserId: meId,
+      viewerUserId: meId,
+      viewerIsOwner: true,
+      askAvatar: async () => okOutcome,
+      askCaptureHint: true,
+    });
+    const res = await callTool(tools, "ask_avatar", { username: "@peer", question: "업그레이드 상태?" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("Answer from @peer (동료박사)'s avatar");
+    expect(res.content[0].text).toContain("not verified fact");
+    expect(res.content[0].text).toContain("1.29에서 멈춰");
+    expect(res.content[0].text).toContain("brain-ingest");
+  });
+
+  it("omits the capture nudge when the asking run cannot capture", async () => {
+    const { store, meId } = setup();
+    const tools = buildAvatarDirectoryTools(store, {
+      avatarUserId: meId,
+      viewerUserId: meId,
+      viewerIsOwner: true,
+      askAvatar: async () => okOutcome,
+      askCaptureHint: false,
+    });
+    const res = await callTool(tools, "ask_avatar", { username: "peer", question: "업그레이드 상태?" });
+    expect(res.content[0].text).not.toContain("brain-ingest");
+  });
+
+  it("caps consultations per turn and refuses the overflow with guidance", async () => {
+    const { store, meId } = setup();
+    const executor = vi.fn(async () => okOutcome);
+    const tools = buildAvatarDirectoryTools(store, {
+      avatarUserId: meId,
+      viewerUserId: meId,
+      viewerIsOwner: true,
+      askAvatar: executor,
+    });
+    for (let i = 0; i < 5; i += 1) {
+      const res = await callTool(tools, "ask_avatar", { username: "peer", question: `q${i}` });
+      expect(res.isError).toBeFalsy();
+    }
+    const overflow = await callTool(tools, "ask_avatar", { username: "peer", question: "q6" });
+    expect(overflow.isError).toBe(true);
+    expect(overflow.content[0].text).toContain("Consultation limit reached");
+    expect(executor).toHaveBeenCalledTimes(5);
+  });
+
+  it("decodes failure outcomes into redirecting errors", async () => {
+    const { store, meId } = setup();
+    const decode = async (outcome: AvatarAskOutcome) => {
+      const tools = buildAvatarDirectoryTools(store, {
+        avatarUserId: meId,
+        viewerUserId: meId,
+        viewerIsOwner: true,
+        askAvatar: async () => outcome,
+      });
+      return callTool(tools, "ask_avatar", { username: "peer", question: "q" });
+    };
+
+    const notFound = await decode({ ok: false, reason: "not_found", username: "peer" });
+    expect(notFound.isError).toBe(true);
+    expect(notFound.content[0].text).toContain("search_avatars");
+
+    const notTrusted = await decode({
+      ok: false,
+      reason: "not_trusted",
+      username: "peer",
+      displayName: "동료박사",
+    });
+    expect(notTrusted.isError).toBe(true);
+    expect(notTrusted.content[0].text).toContain("shares a group with your owner");
+
+    const timedOut = await decode({
+      ok: false,
+      reason: "timeout",
+      username: "peer",
+      partialAnswer: "여기까지는 답했",
+    });
+    expect(timedOut.isError).toBe(true);
+    expect(timedOut.content[0].text).toContain("timed out");
+    expect(timedOut.content[0].text).toContain("여기까지는 답했");
+  });
+});
+
+
+describe("askAvatar (avatar-to-avatar consultation core)", () => {
+  function setup(dir: string) {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const asker = store.createUser({ username: "asker", displayName: "질문자", password: "password123" });
+    const peer = store.createUser({ username: "peer", displayName: "동료박사", password: "password123" });
+    // Reachable (public) but NOT same-group → the trust gate must refuse it.
+    const outsider = store.createUser({ username: "outsider", displayName: "외부인", password: "password123" });
+    store.updateProfile(outsider.id, { visibility: "public" });
+    const group = store.createGroup({ name: "Team", createdBy: null });
+    store.addGroupMember(group.id, asker.id, "member");
+    store.addGroupMember(group.id, peer.id, "member");
+    return { store, config, askerId: asker.id, peerId: peer.id };
+  }
+  const respond = (text: string): AgentResponse => ({
+    kind: "text",
+    runtime: "local",
+    summary: text,
+    text,
+  });
+
+  it("refuses an unknown username as not_found", async () => {
+    const { store, config, askerId } = setup("ask-unknown");
+    const outcome = await askAvatar(store, config, {
+      askerUserId: askerId,
+      askerName: "질문자",
+      targetUsername: "@nobody",
+      question: "q",
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: "not_found", username: "nobody" });
+  });
+
+  it("hides an INVISIBLE avatar behind the same not_found (no existence probe)", async () => {
+    const { store, config, askerId } = setup("ask-invisible");
+    // Default visibility is `group`; sharing no group with the asker → invisible.
+    store.createUser({ username: "hidden", displayName: "숨김", password: "password123" });
+    const outcome = await askAvatar(store, config, {
+      askerUserId: askerId,
+      askerName: "질문자",
+      targetUsername: "hidden",
+      question: "q",
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: "not_found" });
+  });
+
+  it("refuses a reachable but non-teammate avatar as not_trusted", async () => {
+    const { store, config, askerId } = setup("ask-untrusted");
+    const outcome = await askAvatar(store, config, {
+      askerUserId: askerId,
+      askerName: "질문자",
+      targetUsername: "outsider",
+      question: "q",
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: "not_trusted", username: "outsider" });
+  });
+
+  it("refuses consulting the asking avatar itself", async () => {
+    const { store, config, askerId } = setup("ask-self");
+    const outcome = await askAvatar(store, config, {
+      askerUserId: askerId,
+      askerName: "질문자",
+      targetUsername: "asker",
+      question: "q",
+    });
+    expect(outcome).toMatchObject({ ok: false, reason: "self" });
+  });
+
+  it("runs a same-group target as the trusted-colleague viewer class with the depth guard set", async () => {
+    const { store, config, askerId, peerId } = setup("ask-ok");
+    let seen: AgentRequest | undefined;
+    const outcome = await askAvatar(
+      store,
+      config,
+      { askerUserId: askerId, askerName: "질문자", targetUsername: "@peer", question: "업그레이드 상태?" },
+      {
+        run: async (request) => {
+          seen = request;
+          return respond("1.29에서 멈춰 있습니다.");
+        },
+      },
+    );
+    expect(outcome).toMatchObject({
+      ok: true,
+      username: "peer",
+      displayName: "동료박사",
+      answer: "1.29에서 멈춰 있습니다.",
+      truncated: false,
+    });
+    expect(seen).toBeDefined();
+    expect(seen!.avatar.id).toBe(peerId);
+    expect(seen!.message).toBe("업그레이드 상태?");
+    expect(seen!.viewerUserId).toBe(askerId);
+    // The trusted-colleague class: elevated READ recall, never owner tools.
+    expect(seen!.viewerIsOwner).toBe(false);
+    expect(seen!.elevated).toBe(true);
+    expect(seen!.headless).toBe(true);
+    expect(seen!.allowHeadlessTools).toBe(true);
+    expect(seen!.avatarConsultation).toBe(true);
+    expect(seen!.mcpToolGroups).toEqual(["personal_knowledge"]);
+    expect(seen!.trustedViaGroups).toEqual(["Team"]);
+  });
+
+  it("caps an oversized answer and flags the truncation", async () => {
+    const { store, config, askerId } = setup("ask-cap");
+    const outcome = await askAvatar(
+      store,
+      config,
+      { askerUserId: askerId, askerName: "질문자", targetUsername: "peer", question: "q" },
+      { run: async () => respond("가".repeat(AVATAR_ASK_ANSWER_CAP + 50)) },
+    );
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) {
+      expect(outcome.truncated).toBe(true);
+      expect(outcome.answer).toHaveLength(AVATAR_ASK_ANSWER_CAP);
+    }
+  });
+
+  it("reports an empty reply as empty (not a fake answer)", async () => {
+    const { store, config, askerId } = setup("ask-empty");
+    const outcome = await askAvatar(
+      store,
+      config,
+      { askerUserId: askerId, askerName: "질문자", targetUsername: "peer", question: "q" },
+      { run: async () => respond("   ") },
+    );
+    expect(outcome).toMatchObject({ ok: false, reason: "empty" });
+  });
+
+  it("treats the empty-run sentinel text as empty, not as an answer", async () => {
+    const { store, config, askerId } = setup("ask-sentinel");
+    const outcome = await askAvatar(
+      store,
+      config,
+      { askerUserId: askerId, askerName: "질문자", targetUsername: "peer", question: "q" },
+      { run: async () => respond(EMPTY_SDK_RESPONSE_MESSAGE) },
+    );
+    expect(outcome).toMatchObject({ ok: false, reason: "empty" });
+  });
+
+  it("maps an in-band error result to failed instead of relaying the fallback text", async () => {
+    // error_max_turns doesn't throw — runClaudeAgent substitutes a Korean
+    // fallback into `text` and sets `resultError`. That must never come back
+    // to the asker as the teammate's "answer".
+    const { store, config, askerId } = setup("ask-error-result");
+    const outcome = await askAvatar(
+      store,
+      config,
+      { askerUserId: askerId, askerName: "질문자", targetUsername: "peer", question: "q" },
+      {
+        run: async () => ({
+          ...respond(resultErrorMessage("error_max_turns")),
+          resultError: "error_max_turns",
+        }),
+      },
+    );
+    expect(outcome).toMatchObject({ ok: false, reason: "failed" });
+    if (!outcome.ok) {
+      expect(outcome.detail).toContain("error_max_turns");
+    }
+  });
+
+  it("maps a thrown run to failed with the detail", async () => {
+    const { store, config, askerId } = setup("ask-fail");
+    const outcome = await askAvatar(
+      store,
+      config,
+      { askerUserId: askerId, askerName: "질문자", targetUsername: "peer", question: "q" },
+      {
+        run: async () => {
+          throw new Error("model exploded");
+        },
+      },
+    );
+    expect(outcome).toMatchObject({ ok: false, reason: "failed", detail: "model exploded" });
+  });
+
+  it("returns timeout WITH the partial text streamed before the deadline", async () => {
+    const { store, config, askerId } = setup("ask-timeout");
+    const outcome = await askAvatar(
+      store,
+      config,
+      { askerUserId: askerId, askerName: "질문자", targetUsername: "peer", question: "q" },
+      {
+        timeoutMs: 30,
+        run: (request, roots, cfg, st, events, abortController) => {
+          events.onDelta?.("부분 답변");
+          return new Promise((_resolve, reject) => {
+            abortController?.signal.addEventListener("abort", () => reject(new Error("aborted")), {
+              once: true,
+            });
+          });
+        },
+      },
+    );
+    expect(outcome).toMatchObject({ ok: false, reason: "timeout", partialAnswer: "부분 답변" });
+  });
+
+  it("never starts the run when the asking turn was already cancelled", async () => {
+    const { store, config, askerId } = setup("ask-cancelled");
+    const parent = new AbortController();
+    parent.abort();
+    const run = vi.fn(async () => respond("답"));
+    const outcome = await askAvatar(
+      store,
+      config,
+      {
+        askerUserId: askerId,
+        askerName: "질문자",
+        targetUsername: "peer",
+        question: "q",
+        parentSignal: parent.signal,
+      },
+      { run },
+    );
+    expect(outcome).toMatchObject({ ok: false, reason: "failed" });
+    expect(run).not.toHaveBeenCalled();
   });
 });
 

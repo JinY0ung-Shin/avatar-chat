@@ -688,6 +688,24 @@ describe("deriveAgentToolAccess", () => {
     expect(a.elevated).toBe(false);
     expect(a.hexSshViewerClass).toBe("colleague");
   });
+
+  it("avatar consultation (headless trusted non-owner + opt-in) → elevated recall, NEVER owner tools", () => {
+    // The inner run avatarAsk.ts constructs: allowHeadlessTools only lifts the
+    // headless read-restriction so second-brain recall registers; owner-only
+    // tools must stay locked because the viewer is not the owner.
+    const a = deriveAgentToolAccess({
+      ...base,
+      viewerIsOwner: false,
+      elevated: true,
+      headless: true,
+      allowHeadlessTools: true,
+      avatarConsultation: true,
+    });
+    expect(a.ownerToolAccess).toBe(false);
+    expect(a.elevatedToolAccess).toBe(true);
+    expect(a.elevated).toBe(true);
+    expect(a.hexSshViewerClass).toBe("trusted");
+  });
 });
 
 describe("loadAvatarPluginRoots", () => {
@@ -2275,6 +2293,90 @@ describe("buildPrompt", () => {
     expect(p).toContain('"신진영"');
   });
 
+  const teamMembership = {
+    id: "g1",
+    name: "Team",
+    role: "member" as const,
+    knowledgeRepoConfigured: false,
+    allowedMcpToolGroups: null,
+  };
+
+  it("gives owner-driven turns with a group the ask_avatar standing guidance", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        groupMemberships: [teamMembership],
+      }),
+      0,
+    );
+    expect(p).toContain("Consulting teammate avatars");
+    expect(p).toContain("mcp__avatars__ask_avatar");
+  });
+
+  it("keeps ask_avatar guidance OUT of teammate, restricted-headless, and group-less turns", () => {
+    const teammate = buildPrompt(
+      req({ viewerIsOwner: false, elevated: true, viewerName: "동료" }),
+      0,
+    );
+    expect(teammate).not.toContain("mcp__avatars__ask_avatar");
+    // Restricted headless (intro/hashtag generation) has no ask executor either.
+    const restricted = buildPrompt(
+      req({ viewerIsOwner: true, headless: true, groupMemberships: [teamMembership] }),
+      0,
+    );
+    expect(restricted).not.toContain("mcp__avatars__ask_avatar");
+    // No groups → no reachable target → no guidance (mirrors avatarAskActive).
+    const groupless = buildPrompt(
+      req({ viewerIsOwner: true, groupMemberships: [] }),
+      0,
+    );
+    expect(groupless).not.toContain("mcp__avatars__ask_avatar");
+  });
+
+  it("keeps ask_avatar guidance for owner routines (they can consult too)", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        headless: true,
+        allowHeadlessTools: true,
+        groupMemberships: [teamMembership],
+      }),
+      0,
+    );
+    expect(p).toContain("Consulting teammate avatars");
+  });
+
+  it("frames a consultation run as a read-only teammate exchange, never a routine", () => {
+    const p = buildPrompt(
+      req({
+        headless: true,
+        allowHeadlessTools: true,
+        avatarConsultation: true,
+        viewerIsOwner: false,
+        elevated: true,
+        viewerName: "질문자",
+        trustedViaGroups: ["Team"],
+        // Even on a shared (communal) account the consultation must not invite
+        // capture-on-behalf: writes are withheld for machine-initiated runs.
+        sharedAccount: true,
+      }),
+      0,
+    );
+    expect(p).toContain("automated avatar-to-avatar consultation");
+    expect(p).toContain('"질문자"');
+    expect(p).toContain("'Team'");
+    expect(p).toContain("mcp__knowledge__request_info");
+    expect(p).toContain("READ-ONLY");
+    expect(p).toContain("Recall is read-only in this consultation");
+    expect(p).not.toContain("you may also capture");
+    expect(p).not.toContain("brain-ingest");
+    // NOT the routine framing (which would claim owner-level permissions)...
+    expect(p).not.toContain("scheduled routine task");
+    // ...and no self-referential consultation guidance (the depth guard).
+    expect(p).not.toContain("Consulting teammate avatars");
+  });
+
   it("injects system awareness and owner system-management tool guidance", () => {
     const p = buildPrompt(
       req({ viewerIsOwner: true, viewerName: "신진영" }),
@@ -2318,7 +2420,7 @@ describe("buildPrompt", () => {
     // The user-deselected sentence lists exactly the user's own picks — the
     // admin-blocked pair is never (mis)attributed to the user...
     expect(p).toContain(
-      "in the chat composer: personal knowledge, group knowledge, Confluence, avatar discovery, visual canvas, system management.",
+      "in the chat composer: personal knowledge, group knowledge, Confluence, avatar discovery & consultation, visual canvas, system management.",
     );
     // ...and the policy itself is never mentioned: the avatar only knows the
     // tools it has (owner decision — no policy meta-cognition).

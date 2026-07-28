@@ -269,6 +269,12 @@ export async function* buildImageQueryPrompt(
 // retrying on a different model (overload/rate-limit/5xx/timeout).
 const RETRYABLE_MODEL_STATUS = new Set([408, 429, 500, 502, 503, 504, 529]);
 
+// Fallback `response.text` when a run ends with no streamed text, no result
+// text, and no error subtype. Exported so programmatic consumers (avatar
+// consultation) can recognize "no real model output" without string drift;
+// the chat UI keeps rendering it as-is (user-facing → Korean).
+export const EMPTY_SDK_RESPONSE_MESSAGE = "Claude Agent SDK 응답이 비어 있습니다.";
+
 // Appended to the prompt on the one-shot empty-turn retry (see emptyTurnRetryTried).
 // Agent-facing → English. Steers the model to emit a visible text answer after a
 // turn that produced only an (invisible) thinking block.
@@ -397,6 +403,7 @@ export async function runClaudeAgent(
     buildAvatarDirectoryServer,
     AVATAR_DIRECTORY_SERVER_NAME,
     AVATAR_DIRECTORY_TOOL_NAMES,
+    AVATAR_ASK_TOOL_NAME,
   } = await import("./avatarDirectoryTools.js");
   const { buildGitRepoServer, GIT_REPO_SERVER_NAME, GIT_REPO_TOOL_NAMES } =
     await import("./gitRepoTools.js");
@@ -430,6 +437,12 @@ export async function runClaudeAgent(
     autoApprove,
     hexSshViewerClass,
   } = deriveAgentToolAccess(request);
+  // Avatar consultation runs (#ask-avatar) are MACHINE-initiated: no human sees
+  // the request or its effects, so the widenings a HUMAN teammate turn gets —
+  // shared-account repo writes, plugin MCP servers with the owner's secret
+  // vault, shell secret exposure — are withheld below. The run stays personal-
+  // knowledge READ + request_info (see avatarAsk.ts and ARCHITECTURE-NOTES).
+  const consultationRun = Boolean(request.avatarConsultation);
   const hexSshPolicy = store.getHexSshToolPolicy();
   const hexSshAllowedTools = allowedHexSshToolsForViewer(
     hexSshPolicy,
@@ -573,7 +586,8 @@ export async function runClaudeAgent(
   // owner-only tool keep requiring the owner.
   const sharedAccount = ownerState.sharedAccount;
   const repoWriteAccess =
-    ownerToolAccess || (sharedAccount && elevatedToolAccess);
+    ownerToolAccess ||
+    (sharedAccount && elevatedToolAccess && !consultationRun);
   const repoServer = buildRepoServer(
     store,
     {
@@ -635,9 +649,45 @@ export async function runClaudeAgent(
   // avatars by capability so it can point the user at a teammate avatar for
   // things outside its own expertise. Visibility is from the VIEWER's POV (the
   // person chatting), and the current avatar is excluded from its own results.
+  //
+  // Avatar consultation (#ask-avatar) rides the same server: OWNER-DRIVEN runs
+  // (owner chats + owner routines) may ask a same-group teammate's avatar one
+  // question. `avatarConsultation` is the depth guard — a consultation run never
+  // re-registers the tool, so ask chains cannot nest. avatarAskActive is the
+  // SINGLE boolean used byte-identically in allowedTools + the ctx injection
+  // below (the executor's absence unregisters the tool; the handler still
+  // self-gates on viewerIsOwner).
+  const avatarAskActive =
+    avatarDirectoryToolsEnabled &&
+    ownerToolAccess &&
+    !consultationRun &&
+    // No groups → no reachable target (trust = shared group membership), so
+    // keep the tool out of the prompt entirely.
+    ownerState.groups.length > 0;
   const avatarDirectoryServer = buildAvatarDirectoryServer(store, {
     avatarUserId: request.avatar.id,
     viewerUserId: request.viewerUserId ?? request.avatar.id,
+    viewerIsOwner: ownerToolAccess,
+    ...(avatarAskActive
+      ? {
+          askAvatar: async (targetUsername: string, question: string) => {
+            // Loaded lazily like the tool modules above: avatarAsk drags in the
+            // full agent runner, which only a run that actually consults needs.
+            const { askAvatar } = await import("./avatarAsk.js");
+            return askAvatar(store, config, {
+              // Owner-driven by gate (ownerToolAccess), so the asker IS the owner.
+              askerUserId: request.avatar.id,
+              askerName: owner.displayName,
+              targetUsername,
+              question,
+              // Cancelling the asking turn cancels the consultation too.
+              parentSignal: abortController?.signal,
+            });
+          },
+          askCaptureHint:
+            personalKnowledgeToolsEnabled && knowledgeRepoConfigured,
+        }
+      : {}),
   });
   const sshIdentityServer = buildSshIdentityServer(store, {
     avatarUserId: request.avatar.id,
@@ -748,7 +798,7 @@ export async function runClaudeAgent(
   // colleague's Bash stays secret-free. Reserved git/SSH names are already
   // absent from injectableSecretEnv regardless of the flag.
   const shellSecretEnv: Record<string, string> = {};
-  if (elevatedToolAccess) {
+  if (elevatedToolAccess && !consultationRun) {
     for (const name of ownerState.shellExposedSecretNames) {
       const value = injectableSecretEnv[name];
       if (value !== undefined) {
@@ -774,7 +824,9 @@ export async function runClaudeAgent(
       // gate: a plain colleague or a restricted headless run still gets the
       // servers, but credential-less (the pre-lift CLI behavior).
       secretWrapper:
-        elevatedToolAccess && Object.keys(injectableSecretEnv).length > 0
+        elevatedToolAccess &&
+        !consultationRun &&
+        Object.keys(injectableSecretEnv).length > 0
           ? {
               scriptPath: mcpSecretWrapperPath,
               secretsDir: mcpSecretsDir,
@@ -886,6 +938,7 @@ export async function runClaudeAgent(
       ...(confluenceToolsEnabled ? CONFLUENCE_TOOL_NAMES : []),
       ...(webFetchToolsEnabled ? WEB_FETCH_TOOL_NAMES : []),
       ...(avatarDirectoryToolsEnabled ? AVATAR_DIRECTORY_TOOL_NAMES : []),
+      ...(avatarAskActive ? [AVATAR_ASK_TOOL_NAME] : []),
       ...(sshToolsEnabled ? SSH_IDENTITY_TOOL_NAMES : []),
       ...(gitRepoToolsEnabled ? GIT_REPO_TOOL_NAMES : []),
       ...(groupRepoActive ? GROUP_REPO_TOOL_NAMES : []),
@@ -934,8 +987,10 @@ export async function runClaudeAgent(
     // without a server to connect.
     mcpServers: {
       // Plugin-provided servers first: every app-managed name spread after
-      // this wins a collision, so a plugin can't shadow an app server.
-      ...liftedPluginMcpServers,
+      // this wins a collision, so a plugin can't shadow an app server. A
+      // consultation run gets NO plugin servers at all — third-party servers
+      // can't self-gate per viewer, so registration is their only gate.
+      ...(consultationRun ? {} : liftedPluginMcpServers),
       ...(personalKnowledgeToolsEnabled
         ? { [KNOWLEDGE_SERVER_NAME]: knowledgeServer }
         : {}),
@@ -1405,7 +1460,7 @@ export async function runClaudeAgent(
     resultText ||
     (resultErrorSubtype
       ? resultErrorMessage(resultErrorSubtype)
-      : "Claude Agent SDK 응답이 비어 있습니다.");
+      : EMPTY_SDK_RESPONSE_MESSAGE);
   agentLogger.info(
     {
       avatarId: request.avatar.id,
@@ -1422,6 +1477,11 @@ export async function runClaudeAgent(
     runtime: "claude",
     summary: "Claude Agent SDK 실행이 완료되었습니다.",
     text,
+    // In-band error subtype (text is then a fallback message, not model output)
+    // — set only when nothing real streamed, so a partial answer stays usable.
+    ...(resultErrorSubtype && !partialText && !resultText
+      ? { resultError: resultErrorSubtype }
+      : {}),
     ...(runUsage ? { usage: runUsage } : {}),
   };
 }

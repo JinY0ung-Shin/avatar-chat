@@ -352,6 +352,105 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(serverNames).toContain("group_brain");
   });
 
+  it("allows ask_avatar ONLY on owner-driven runs and never inside a consultation", async () => {
+    const { config, store, baseRequest, owner } = setup();
+    const group = store.createGroup({ name: "팀" });
+    store.addGroupMember(group.id, owner.id, "member");
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    // Owner chat with a group → the consultation tool is allow-listed.
+    await runAgentStream(baseRequest, [], config, store, makeEvents());
+    expect(sdkMock.calls[0].options.allowedTools as string[]).toContain(
+      "mcp__avatars__ask_avatar",
+    );
+
+    // A consultation run must never re-register it (the depth guard)...
+    await runAgentStream(
+      { ...baseRequest, avatarConsultation: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(sdkMock.calls[1].options.allowedTools as string[]).not.toContain(
+      "mcp__avatars__ask_avatar",
+    );
+
+    // ...nor a teammate turn (not owner-driven)...
+    await runAgentStream(
+      { ...baseRequest, viewerUserId: "someone-else", viewerIsOwner: false, elevated: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(sdkMock.calls[2].options.allowedTools as string[]).not.toContain(
+      "mcp__avatars__ask_avatar",
+    );
+
+    // ...nor a restricted headless run (intro/hashtag generation).
+    await runAgentStream(
+      { ...baseRequest, headless: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(sdkMock.calls[3].options.allowedTools as string[]).not.toContain(
+      "mcp__avatars__ask_avatar",
+    );
+  });
+
+  it("keeps ask_avatar out when the owner belongs to no group (no reachable target)", async () => {
+    const { config, store, baseRequest } = setup();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    await runAgentStream(baseRequest, [], config, store, makeEvents());
+
+    const allowedTools = sdkMock.calls[0].options.allowedTools as string[];
+    expect(allowedTools).not.toContain("mcp__avatars__ask_avatar");
+    // The discovery tool itself stays available.
+    expect(allowedTools).toContain("mcp__avatars__search_avatars");
+  });
+
+  it("suppresses plugin MCP servers for consultation runs (registration is their only gate)", async () => {
+    const { config, store, baseRequest } = setup();
+    const rootDir = path.join(tempDir, "consult-plugin-root");
+    fs.mkdirSync(rootDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDir, ".mcp.json"),
+      JSON.stringify({ mcpServers: { corp: { command: "node", args: ["server.js"] } } }),
+    );
+    const roots = [{ type: "local" as const, path: rootDir }];
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    // Control: a normal owner run lifts the plugin server.
+    await runAgentStream(baseRequest, roots, config, store, makeEvents());
+    expect(
+      Object.keys(sdkMock.calls[0].options.mcpServers as Record<string, unknown>),
+    ).toContain("corp");
+
+    // A consultation run (trusted-colleague viewer class) gets NO plugin servers.
+    await runAgentStream(
+      {
+        ...baseRequest,
+        avatarConsultation: true,
+        viewerUserId: "asker-id",
+        viewerIsOwner: false,
+        elevated: true,
+        headless: true,
+        allowHeadlessTools: true,
+      },
+      roots,
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(
+      Object.keys(sdkMock.calls[1].options.mcpServers as Record<string, unknown>),
+    ).not.toContain("corp");
+  });
+
   it("emits tool / progress / blocked activity events across the run loop", async () => {
     const { config, store, baseRequest } = setup();
     const events = makeEvents();

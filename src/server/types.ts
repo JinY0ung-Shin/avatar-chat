@@ -767,6 +767,14 @@ export interface AgentResponse {
   runtime: "local" | "claude" | "external";
   summary: string;
   text: string;
+  /**
+   * SDK result error subtype (e.g. `error_max_turns`) when the run ended in an
+   * in-band error instead of throwing — `text` then carries a Korean fallback
+   * message, NOT model output. Programmatic consumers (avatar consultation)
+   * check this to fail instead of relaying the fallback as an answer; the chat
+   * route keeps rendering `text` unchanged.
+   */
+  resultError?: string;
   /** Per-turn token usage (Claude runtime only; omitted for local runs). */
   usage?: AgentUsage;
   /**
@@ -1054,6 +1062,15 @@ export interface AgentRequest {
    * Unused for headless turns.
    */
   images?: AgentImageInput[];
+  /**
+   * True when this run IS an avatar-to-avatar consultation (#ask-avatar): a
+   * headless one-shot turn another avatar started via `mcp__avatars__ask_avatar`.
+   * Doubles as the DEPTH GUARD (a consultation run never registers the ask tool,
+   * so chains like A→B→C are impossible) and as the prompt discriminator (the
+   * headless branch frames the turn as a teammate consultation, not a routine).
+   * Set only by `askAvatar` (avatarAsk.ts); callers never set it.
+   */
+  avatarConsultation?: boolean;
 }
 
 /**

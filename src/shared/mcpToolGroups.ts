@@ -38,8 +38,8 @@ export const MCP_TOOL_GROUPS = [
   {
     id: "avatars",
     labelKo: "아바타 찾기",
-    labelEn: "avatar discovery",
-    descriptionKo: "다른 아바타 검색과 추천",
+    labelEn: "avatar discovery & consultation",
+    descriptionKo: "다른 아바타 검색·추천, 같은 그룹 아바타에게 질문",
   },
   {
     id: "canvas",

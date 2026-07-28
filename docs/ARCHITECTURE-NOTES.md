@@ -555,8 +555,10 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `ctx.viewerIsOwner` (= `ownerToolAccess` = owner chat OR owner routine); `repoTools` (personal knowledge
   repo) splits READ (`list_files`/`read_file`, gated on `ctx.elevated` = owner OR trusted same-group
   teammate) vs WRITE/commit/create (owner-only); `gitRepoTools` splits owner vs elevated; `confluenceTools`
-  and `webFetchTools` gate on `ctx.elevated`; `sshTrustTools`/`avatarDirectoryTools` are intentionally
-  UNGATED (fingerprints aren't secrets; directory search is all-viewer read-only). Don't "normalize" these.
+  and `webFetchTools` gate on `ctx.elevated`; `sshTrustTools` and `search_avatars` are intentionally
+  UNGATED (fingerprints aren't secrets; directory search is all-viewer read-only) while its sibling
+  `ask_avatar` in the SAME file is owner-driven (see the consultation section below). Don't "normalize"
+  these.
 - **Second-brain read tools (`brainTools`/`groupBrainTools`):** read-only RECALL servers
   (`search`/`get_note`) over the same knowledge-repo clones. `brainTools` (personal) gates reads on
   `ctx.elevated`; `groupBrainTools` gates reads on group-MEMBERship. There is NO brain WRITE tool — route
@@ -585,6 +587,56 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   it via the builtin-tool policy toggle.
 - **The `mcp__`-prefix auto-allow in the PreToolUse hook fires BEFORE the owner check**, so every tool
   MUST self-gate in its handler. Don't rely on the hook.
+
+### Avatar consultation (`mcp__avatars__ask_avatar`, #ask-avatar)
+
+- **What it is:** an OWNER-DRIVEN turn (owner chat or owner routine) may ask a **same-group teammate's
+  avatar** one question and get its answer back as tool text. Core in `agent/avatarAsk.ts`
+  (`askAvatar`), tool + outcome decoding beside `search_avatars` in `avatarDirectoryTools.ts` (same
+  `avatars` server + tool group).
+- **Gates (in order):** `store.getUserByUsername` → self-refusal → `resolveChatAvatar` (visibility:
+  unknown, `private`, group-invisible, and suspended all return the SAME `not_found` so the tool can't
+  probe existence) → `isTrustedFor` (= `shareAnyGroup`, the single trust choke point). So a consult
+  grants exactly what the asking USER could already get by chatting with that avatar directly — no new
+  trust surface.
+- **The inner run is the trusted-colleague viewer class**, constructed only in `avatarAsk.ts`:
+  `viewerIsOwner: false, elevated: true, headless: true, allowHeadlessTools: true` — `allowHeadlessTools`
+  only lifts the headless read-restriction so the target's second-brain recall registers; owner-only
+  tools stay locked because `viewerIsOwner` is false (combo pinned in `deriveAgentToolAccess` tests).
+  Plus `mcpToolGroups: ["personal_knowledge"]` (recall + `request_info` — the target can escalate a true
+  unknown to ITS owner with the asker attributed), the TARGET's plugin roots + knowledge memory,
+  `modelFallback: true`, a 3-min wall clock (`AVATAR_ASK_TIMEOUT_MS`), an 8k-char answer cap
+  (`AVATAR_ASK_ANSWER_CAP` — the answer is another user's model output entering the asker's context, so
+  it's bounded like the directory bio), and the OUTER run's abort signal propagated in.
+- **Machine-initiated ⇒ STRICTLY read-only, beyond what a human teammate turn gets** (`consultationRun`
+  in claudeAgent.ts): the shared-account write-widening is withheld (`repoWriteAccess`'s
+  `sharedAccount && elevatedToolAccess` arm adds `&& !consultationRun` — no human sees the request, so
+  no unattended write+commit into a communal repo), plugin MCP servers are NOT lifted at all
+  (third-party servers can't self-gate per viewer; registration is their only gate) and neither
+  plugin-secret injection nor shell secret exposure happens. The target keeps skills (prompt-level) but
+  answers with recall tools only; the consultation prompt branch states the read-only level and the
+  `brainSection` "consultation" mode never invites capture, even on a shared account.
+- **Per-turn budget:** the tool closure in `avatarDirectoryTools.ts` counts consultations and refuses
+  past `AVATAR_ASK_MAX_PER_TURN` (5) — each consult is a full agent subprocess with its own model calls,
+  so an unbounded loop would be a cost amplifier on the shared deployment credentials.
+- **In-band error results never masquerade as answers:** `runClaudeAgent` doesn't throw on an error
+  *result* — it substitutes a Korean fallback into `response.text` (`resultErrorMessage(subtype)`, or
+  `EMPTY_SDK_RESPONSE_MESSAGE` for an empty success). `AgentResponse.resultError` now carries the error
+  subtype (set only when nothing real streamed), and `askAvatar` maps it to a `failed` outcome — and the
+  exported empty sentinel to `empty` — instead of relaying user-facing Korean as the teammate's claim.
+- **Depth guard = `AgentRequest.avatarConsultation`:** set only by `askAvatar`. A consultation run never
+  registers `ask_avatar` (no A→B→C chains) and takes a dedicated prompt branch — the headless
+  consultation framing in `promptBuilder.ts`, NOT the routine one (which would claim owner-level
+  permissions this run doesn't have).
+- **Registration:** `avatarAskActive` (= `avatars` group enabled && `ownerToolAccess` &&
+  `!avatarConsultation`) drives the `allowedTools` entry AND the ctx executor injection byte-identically;
+  the tool joins the server's tool list only when the executor is present, and the handler still
+  self-gates on `viewerIsOwner`. Timeout on a busy model returns the PARTIAL streamed text in the error.
+- **Nothing persists on the target's side** — deliberate: a teammate chatting with your avatar in the UI
+  leaves you no transcript either, and the intro/hashtag headless runs persist nothing. The exchange
+  lives in the ASKER's conversation; durable retention is the asker's own `brain-ingest` capture (the
+  success text nudges it when the asking run has a connected repo). Revisit as an `is_routine`-style
+  tagged conversation if target-side auditability is ever wanted.
 
 ### Shared helpers (don't re-copy)
 - **`mcpTools.ts`** — `text(message, isError?)` (the MCP result wrapper), `decodeRepoFsError`
