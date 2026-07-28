@@ -1342,6 +1342,9 @@ textarea::placeholder {
   border-radius: var(--r-md);
   padding: var(--s-2-5) var(--s-3);
   font-size: var(--t-sm);
+  /* Server error strings may embed long unbroken URLs/tokens; never let them
+     widen the surrounding layout. */
+  overflow-wrap: anywhere;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }

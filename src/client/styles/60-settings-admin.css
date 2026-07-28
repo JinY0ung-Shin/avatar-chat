@@ -522,12 +522,17 @@
   padding: var(--s-3);
   background: var(--bg-elevated);
 }
+/* Question/meta carry colleague-typed text: one unbreakable token here widens
+   the shared inbox list, pushing every sibling notification's ✕ off-screen
+   (same failure .notification-main guards against). */
 .kr-q {
   font-size: var(--t-sm);
   font-weight: 600;
+  overflow-wrap: anywhere;
 }
 .kr-meta {
   font-size: var(--t-xs);
+  overflow-wrap: anywhere;
 }
 .kr-actions {
   display: flex;
