@@ -907,6 +907,12 @@ details.routine-group[open] > .routine-group-head .routine-group-chevron {
 .notification-main {
   display: block;
   width: 100%;
+  /* A single unbreakable token (commit URL, SHA, path) must not widen this grid
+     item past the card: every sibling row then stretches with the list and the
+     absolute ✕ lands outside the viewport. Emergency-break instead, overriding
+     the button reset's overflow-wrap: normal; mirrors .pr-main on request rows. */
+  min-width: 0;
+  overflow-wrap: anywhere;
   border: 0;
   background: transparent;
   color: inherit;
