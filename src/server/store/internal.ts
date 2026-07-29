@@ -135,6 +135,7 @@ export interface UserRow {
   mcp_tool_groups_default: string | null;
   experimental_features: string | null;
   onboarded_at: string | null;
+  last_seen_release: string | null;
 }
 
 export interface PluginRow {
@@ -530,6 +531,13 @@ export class StoreBase {
     // login (the old localStorage flag re-fired on each new browser / cleared store).
     // Existing accounts are backfilled to created_at below so only NEW signups see it.
     this.addColumnIfMissing("users", "onboarded_at", "TEXT");
+    // Latest release-notes entry (releaseNotes.ts id) the user has SEEN, stamped
+    // via POST /api/me/release-seen when the "what's new" dialog is dismissed.
+    // NULL = never seen — deliberately NOT backfilled for existing accounts
+    // (opposite of onboarded_at): existing users are exactly the audience that
+    // should get the one-time notice on their first load after a deploy. New
+    // signups are seeded with the current release at creation instead (createUser).
+    this.addColumnIfMissing("users", "last_seen_release", "TEXT");
     // SDK session id of the conversation's last turn, used to resume context on
     // the next turn (see claudeAgent resume). Null until the first turn completes.
     this.addColumnIfMissing("conversations", "agent_session_id", "TEXT");

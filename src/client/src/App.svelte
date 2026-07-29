@@ -6,6 +6,7 @@
   import ConfirmationDialog from "./components/ConfirmationDialog.svelte";
   import OnboardingModal from "./components/OnboardingModal.svelte";
   import PromptModal from "./components/PromptModal.svelte";
+  import WhatsNewModal from "./components/WhatsNewModal.svelte";
   import { api, setSessionExpiredHandler } from "./lib/api";
   import { selectConversation } from "./lib/chat";
   import { loadRailCollapsed, persistRailCollapsed } from "./lib/layout";
@@ -13,10 +14,13 @@
   import { applyInitialRoute, installRouteListener, syncHash } from "./lib/nav";
   import { appState, notify, readState, replaceState, updateState } from "./lib/state";
   import { applyTheme, getThemePref, watchSystemTheme } from "./lib/theme";
+  import { unseenReleases, type ReleaseNote } from "../../server/releaseNotes";
   import type { BootstrapInfo, User } from "./lib/types";
   import type { ViewName } from "./lib/types";
 
   let showOnboarding = false;
+  let showWhatsNew = false;
+  let whatsNewReleases: ReleaseNote[] = [];
   let themeWatcherInstalled = false;
   let railCollapsed = loadRailCollapsed();
   let mobileRailOpen = false;
@@ -96,6 +100,12 @@
     // (server-persisted onboardedAt). Set once on signup, so a returning login
     // — even on a new browser — never re-fires it.
     if (!user.onboardedAt) showOnboarding = true;
+    // One-time "what's new" after a deploy: releases newer than the account's
+    // server-persisted lastSeenRelease. Signup seeds the then-current id, so
+    // this fires only for accounts that predate a deploy — onboarding (new
+    // accounts) never stacks with it in practice; the guard is belt-and-braces.
+    whatsNewReleases = unseenReleases(user.lastSeenRelease);
+    if (!showOnboarding && whatsNewReleases.length > 0) showWhatsNew = true;
   }
 
   function dismissOnboarding() {
@@ -103,6 +113,16 @@
     // Persist server-side so it never re-appears; optimistically reflect it in
     // state. Fire-and-forget — a failed mark just means it may show once more.
     api<{ user: User }>("/api/me/onboarded", { method: "POST" })
+      .then(({ user }) => replaceState({ user }))
+      .catch(() => {});
+  }
+
+  function dismissWhatsNew() {
+    showWhatsNew = false;
+    // Persist server-side (the server stamps ITS current release id — no body);
+    // optimistic, fire-and-forget — a failed mark just means it may show once
+    // more. Mirrors dismissOnboarding.
+    api<{ user: User }>("/api/me/release-seen", { method: "POST" })
       .then(({ user }) => replaceState({ user }))
       .catch(() => {});
   }
@@ -123,6 +143,7 @@
       state.promptQueue = [];
     });
     showOnboarding = false;
+    showWhatsNew = false;
     notify("세션이 만료되었습니다. 다시 로그인해 주세요.", "warn");
     history.replaceState(null, "", location.pathname);
   }
@@ -209,6 +230,10 @@
     githubHost={$appState.bootstrap?.githubHost ?? "github.com"}
     on:close={dismissOnboarding}
   />
+{/if}
+
+{#if showWhatsNew && $appState.user}
+  <WhatsNewModal releases={whatsNewReleases} on:close={dismissWhatsNew} />
 {/if}
 
 <!-- Mounted at the app root (not inside ChatView) so input-needed prompts surface

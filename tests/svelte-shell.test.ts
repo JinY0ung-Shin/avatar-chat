@@ -36,6 +36,7 @@ const user = {
   experimentalFeatures: [],
   sharedAccount: false,
   onboardedAt: null,
+  lastSeenRelease: null,
 } satisfies User;
 
 function setDesktopViewport(matches: boolean): void {

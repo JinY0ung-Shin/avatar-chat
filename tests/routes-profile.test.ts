@@ -3,6 +3,7 @@ import path from "node:path";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
+import { CURRENT_RELEASE_ID } from "../src/server/releaseNotes.js";
 import { signup, withTempDir } from "./helpers.js";
 
 // Coverage target: src/server/routes/profile.ts — the owner's profile + settings
@@ -128,6 +129,28 @@ describe("PUT /api/me/group-knowledge-default", () => {
       .send({ off: [] })
       .expect(200);
     expect(cleared.body.user.groupKnowledgeOffDefault).toEqual([]);
+  });
+});
+
+describe("POST /api/me/release-seen", () => {
+  it("seeds signups as caught-up and stamps the server-current release id", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "release-owner");
+
+    // Signup seeds the then-current release, so a day-one account sees no
+    // "what's new" dialog for features that predate it.
+    const me = await agent.get("/api/me").expect(200);
+    expect(me.body.user.lastSeenRelease).toBe(CURRENT_RELEASE_ID);
+
+    // Stamping takes no body — the server writes ITS current id (a stale
+    // client bundle can neither skip ahead nor store an arbitrary value).
+    const seen = await agent.post("/api/me/release-seen").expect(200);
+    expect(seen.body.user.lastSeenRelease).toBe(CURRENT_RELEASE_ID);
+  });
+
+  it("requires auth", async () => {
+    const app = testApp();
+    await request(app).post("/api/me/release-seen").expect(401);
   });
 });
 

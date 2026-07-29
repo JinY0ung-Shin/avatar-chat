@@ -89,6 +89,19 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     },
   );
 
+  // Mark the current release-notes entry (releaseNotes.ts) as seen — the client
+  // posts this when the one-time "새로운 기능" (what's new) dialog is dismissed.
+  // No body: the server stamps ITS current release id, so a stale client bundle
+  // can neither skip ahead nor store an arbitrary value.
+  router.post(
+    "/api/me/release-seen",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const user = store.markReleaseSeen(req.user!.id);
+      res.json({ user });
+    },
+  );
+
   // Owner's DEFAULT group-knowledge OFF-set (group ids turned off). The composer
   // toggle writes here so the choice seeds every NEW conversation — the
   // per-conversation value (chat POST `groupKnowledgeOff`) still overrides it for

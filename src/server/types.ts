@@ -318,6 +318,14 @@ export interface User {
    * across devices and surviving a localStorage clear — instead of every login.
    */
   onboardedAt: string | null;
+  /**
+   * Id of the latest release-notes entry (`releaseNotes.ts`) the user has seen,
+   * or null for never (pre-feature accounts). Drives the one-time "새로운 기능"
+   * dialog: the client shows entries newer than this after load, then stamps the
+   * server-current id via `POST /api/me/release-seen`. New signups are seeded
+   * with the then-current id at creation, so day-one accounts see nothing.
+   */
+  lastSeenRelease: string | null;
 }
 
 export interface Plugin {

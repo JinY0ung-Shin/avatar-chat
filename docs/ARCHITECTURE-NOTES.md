@@ -137,6 +137,18 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   fall back to the hardcoded server/SDK default; for MCP, `[]` = explicitly all-off as a remembered
   choice). The client seeds new panes from these in `makePane`; the per-conversation `selected_*` value
   still overrides them when resuming an existing thread.
+- **What's-new (release notes) notice (#whats-new):** `src/server/releaseNotes.ts` is the shared registry
+  (dependency-free leaf in `tsconfig.client.json`, like `experimentalFeatures.ts`) — **PREPEND an entry**
+  (Korean `items`, date-based unique `id`, e.g. `2026-07-29` / same-day `2026-07-29.2`) when deploying
+  user-visible changes; ordering comes from array position, never id parsing. Tracking:
+  `users.last_seen_release` (NULL = never seen — deliberately NOT backfilled, unlike `onboarded_at`:
+  existing accounts are exactly the audience for the one-time notice) → `User.lastSeenRelease`;
+  `createUser` seeds signups with the then-current id so day-one accounts see nothing. Client: `App.svelte`
+  `enterApp` computes `unseenReleases(user.lastSeenRelease)` (≤`MAX_RELEASES_SHOWN`; an UNKNOWN stored id
+  — pruned entry / rollback — counts as never-seen, else it would silence every future note) →
+  `WhatsNewModal` (root-mounted next to `OnboardingModal`, which takes precedence) → every dismissal path
+  fires `POST /api/me/release-seen` (no body; the SERVER stamps its current id via `markReleaseSeen`)
+  fire-and-forget, mirroring onboarding. Don't hand-copy the registry client-side.
 
 ### Avatar visibility (3-state) — mechanics
 - `users.visibility` = `public` | `group` | `private`; `AvatarVisibility` type in types.ts, default

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { hashPassword, hashToken, verifyPassword } from "../auth.js";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
 import { normalizeExperimentalFeatures } from "../experimentalFeatures.js";
+import { CURRENT_RELEASE_ID } from "../releaseNotes.js";
 import {
   type McpToolGroupId,
   normalizeMcpToolGroups,
@@ -76,6 +77,7 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         ),
         sharedAccount: Boolean(row.shared_account),
         onboardedAt: row.onboarded_at ?? null,
+        lastSeenRelease: row.last_seen_release ?? null,
       };
     }
 
@@ -98,6 +100,20 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
           "UPDATE users SET onboarded_at = ? WHERE id = ? AND onboarded_at IS NULL",
         )
         .run(now(), userId);
+      const row = this.userRowById(userId);
+      if (!row) throw new Error("USER_NOT_FOUND");
+      return this.toUser(row);
+    }
+
+    /** Stamp the CURRENT release-notes entry as seen (the "what's new" dialog was
+     *  dismissed). Always moves forward to the latest id, so re-posting after a
+     *  newer deploy re-arms nothing and a stale value self-heals. */
+    markReleaseSeen(userId: string): User {
+      if (CURRENT_RELEASE_ID) {
+        this.db
+          .prepare("UPDATE users SET last_seen_release = ? WHERE id = ?")
+          .run(CURRENT_RELEASE_ID, userId);
+      }
       const row = this.userRowById(userId);
       if (!row) throw new Error("USER_NOT_FOUND");
       return this.toUser(row);
@@ -127,8 +143,8 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const isFirstUser = this.count("SELECT COUNT(*) AS c FROM users") === 0;
 
       const insertUser = this.db.prepare(`
-        INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, published, visibility, created_at, last_seen_at)
-        VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 1, 'group', @created_at, @created_at)
+        INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, published, visibility, created_at, last_seen_at, last_seen_release)
+        VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 1, 'group', @created_at, @created_at, @last_seen_release)
       `);
       const grantRole = this.db.prepare(
         "INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",
@@ -141,6 +157,9 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
           password_hash: hashPassword(input.password),
           display_name: input.displayName.trim() || username,
           created_at: timestamp,
+          // Seed new accounts as caught-up: the "what's new" dialog is for
+          // updates that land AFTER signup, not for a brand-new user's day one.
+          last_seen_release: CURRENT_RELEASE_ID,
         });
         const memberId = this.getRoleId("member");
         if (memberId) grantRole.run(id, memberId);

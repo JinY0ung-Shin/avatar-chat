@@ -591,6 +591,54 @@
   border-top: 1px solid var(--line);
   background: var(--bg-elevated);
 }
+/* What's-new (release notes) dialog — shown once after a deploy (#whats-new). */
+.whats-new-card {
+  width: min(560px, 100%);
+}
+.whats-new-release {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2);
+}
+.whats-new-release + .whats-new-release {
+  margin-top: var(--s-2);
+  padding-top: var(--s-3);
+  border-top: 1px solid var(--line-soft);
+}
+.whats-new-release h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-xs);
+  font-weight: 600;
+}
+.whats-new-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-2-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.whats-new-list li {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-0-5);
+}
+.whats-new-list li strong {
+  color: var(--text);
+  font-size: var(--t-sm);
+}
+.whats-new-list li span {
+  color: var(--text-soft);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+.whats-new-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: var(--s-1);
+}
+
 @media (max-width: 860px) {
   .onboard-quick {
     grid-template-columns: 1fr;

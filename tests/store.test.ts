@@ -16,6 +16,7 @@ import {
   type KnowledgeToolsContext,
 } from "../src/server/agent/knowledgeTools.js";
 import { normalizeHashtags } from "../src/server/store.js";
+import { CURRENT_RELEASE_ID } from "../src/server/releaseNotes.js";
 import {
   buildAvatarDirectoryTools,
   AVATAR_DIRECTORY_SERVER_NAME,
@@ -546,6 +547,20 @@ describe("store agent session resume", () => {
     expect(store.getUserById(ownerId)?.groupKnowledgeOffDefault).toEqual(["g1", "g2"]);
     expect(store.setGroupKnowledgeOffDefault(ownerId, []).groupKnowledgeOffDefault).toEqual([]);
     expect(store.getUserById(ownerId)?.groupKnowledgeOffDefault).toEqual([]);
+  });
+
+  it("seeds signups with the current release and re-stamps it via markReleaseSeen", () => {
+    const { store, ownerId } = makeStore();
+    // New accounts are caught up from day one (no what's-new for signups).
+    expect(store.getUserById(ownerId)?.lastSeenRelease).toBe(CURRENT_RELEASE_ID);
+    // Simulate a pre-feature account: the additive migration leaves NULL, which
+    // is what makes existing deployments show the notice exactly once.
+    (store as unknown as { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } }).db
+      .prepare("UPDATE users SET last_seen_release = NULL WHERE id = ?")
+      .run(ownerId);
+    expect(store.getUserById(ownerId)?.lastSeenRelease).toBeNull();
+    // Dismissing the what's-new dialog stamps the server-current id.
+    expect(store.markReleaseSeen(ownerId).lastSeenRelease).toBe(CURRENT_RELEASE_ID);
   });
 });
 
