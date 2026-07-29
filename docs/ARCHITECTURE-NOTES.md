@@ -30,7 +30,9 @@ Companion docs: [`DESIGN.md`](DESIGN.md) (design language), [`REFACTORING-BACKLO
   suites are split agent-core/agent-tools/store/infra/app/chat-history.
 - `docker compose config` — validate compose/env wiring before Docker changes.
 - `CA_CERT_FILE=docker/tls-fullchain.crt docker compose build` — build with a local on-prem CA file.
-- **Release = version bump + tag + GitHub release** (since v1.0.0, 2026-07-29):
+- **Release = version bump + tag + GitHub release** (since v1.0.0, 2026-07-29; the full procedure
+  is encoded as the project **`/release` skill** in `.claude/skills/release/SKILL.md` — keep the two
+  in sync):
   `npm version <x.y.z> --no-git-tag-version` (package.json + lock), commit `chore(release): vX.Y.Z`,
   push main, `gh release create vX.Y.Z --target main --title "Noah Almighty vX.Y.Z" --notes-file <f>`
   (gh is authed on this box; origin = github.com/JinY0ung-Shin/noah-almighty). App semver is
