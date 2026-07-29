@@ -32,7 +32,8 @@ Companion docs: [`DESIGN.md`](DESIGN.md) (design language), [`REFACTORING-BACKLO
 - `CA_CERT_FILE=docker/tls-fullchain.crt docker compose build` — build with a local on-prem CA file.
 - **Release = version bump + tag + GitHub release** (since v1.0.0, 2026-07-29; the full procedure
   is encoded as the project **`/release` skill** in `.claude/skills/release/SKILL.md` — keep the two
-  in sync):
+  in sync; user-facing patch notes (what's-new entry + GitHub notes) require the user's explicit
+  sign-off before commit/publish):
   `npm version <x.y.z> --no-git-tag-version` (package.json + lock), commit `chore(release): vX.Y.Z`,
   push main, `gh release create vX.Y.Z --target main --title "Noah Almighty vX.Y.Z" --notes-file <f>`
   (gh is authed on this box; origin = github.com/JinY0ung-Shin/noah-almighty). App semver is

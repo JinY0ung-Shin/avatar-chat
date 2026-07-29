@@ -21,16 +21,23 @@ a separate internal corporate server; end by reminding the user to deploy the ta
   (`git log $(git describe --tags --abbrev=0)..HEAD --oneline`):
   breaking change → major, any `feat` → minor, else patch. Ask if ambiguous.
 
-## 3. Sync the what's-new registry (user-visible changes only)
+## 3. Draft the patch notes and get the user's sign-off (MANDATORY GATE)
 
-- If the range contains USER-VISIBLE changes, PREPEND an entry to
-  `src/server/releaseNotes.ts`: date-based unique `id` (`YYYY-MM-DD`, same-day
-  second release `YYYY-MM-DD.2`), Korean 해요체 `items` (`{title, body, example?}`
-  — `example` renders as a highlighted "try this" hint; write one for features
-  users must act on to discover). Ordering = array position, newest first; never
-  reuse or re-sort ids.
-- Skip for internal-only releases (refactor/docs/perf) — keep the dialog meaningful.
-- App semver and these date ids are INDEPENDENT — don't unify them.
+- Draft BOTH user-facing artifacts:
+  - **What's-new entry** for `src/server/releaseNotes.ts` (only if the range has
+    USER-VISIBLE changes): date-based unique `id` (`YYYY-MM-DD`, same-day second
+    release `YYYY-MM-DD.2`), Korean 해요체 `items` (`{title, body, example?}` —
+    `example` renders as a highlighted "try this" hint; write one for features
+    users must act on to discover). Ordering = array position, newest first;
+    never reuse or re-sort ids. Skip for internal-only releases (refactor/docs/
+    perf) — keep the dialog meaningful.
+  - **GitHub release notes** (Korean, template below) — always drafted.
+- Present both drafts VERBATIM in chat and WAIT for the user's explicit approval.
+  Apply requested edits and re-present until approved. Until then: no registry
+  edit is committed and `gh release create` must not run. Silence ≠ approval.
+- After approval, prepend the approved entry to `releaseNotes.ts` exactly as
+  signed off; any later wording change re-requires approval.
+- App semver and the registry's date ids are INDEPENDENT — don't unify them.
 
 ## 4. Verification gate (all must pass before tagging)
 
@@ -54,8 +61,8 @@ npm run build
 
 ## 6. Publish the GitHub release
 
-- Write Korean, user-facing notes to a scratch file (template below); lead with
-  what users get, reuse the `releaseNotes.ts` entry wording where it fits.
+- Write the step-3 APPROVED notes to a scratch file — publish them as signed off;
+  new or changed wording goes back through the step-3 review.
 - `gh release create vX.Y.Z --target main --title "Noah Almighty vX.Y.Z" --notes-file <file>`
   (gh is authed on this box; origin = github.com/JinY0ung-Shin/noah-almighty).
 
@@ -72,6 +79,9 @@ npm run build
   with no consumers must absorb one more commit, prefer a patch bump; only with the
   user's explicit approval recreate in place:
   `gh release delete vX.Y.Z --cleanup-tag --yes` → `gh release create` at new HEAD.
+- **User-facing patch notes ship only with the user's sign-off** (step 3) — never
+  commit a what's-new entry or publish GitHub notes the user hasn't approved in
+  this conversation, including "small" wording tweaks.
 - Language split: this skill, commit messages, code comments → English; GitHub
   release notes and every what's-new string → Korean.
 
