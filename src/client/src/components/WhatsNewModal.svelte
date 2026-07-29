@@ -28,6 +28,9 @@
           <li>
             <strong>{item.title}</strong>
             <span>{item.body}</span>
+            {#if item.example}
+              <span class="whats-new-example">{item.example}</span>
+            {/if}
           </li>
         {/each}
       </ul>

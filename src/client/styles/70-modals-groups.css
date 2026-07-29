@@ -633,6 +633,16 @@
   font-size: var(--t-sm);
   line-height: 1.5;
 }
+.whats-new-example {
+  margin-top: var(--s-0-5);
+  padding: var(--s-1-5) var(--s-2-5);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--r-xs);
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: var(--t-xs);
+  line-height: 1.5;
+}
 .whats-new-actions {
   display: flex;
   justify-content: flex-end;

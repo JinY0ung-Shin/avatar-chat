@@ -20,6 +20,7 @@ describe("release notes registry", () => {
       for (const item of note.items) {
         expect(item.title.trim()).not.toBe("");
         expect(item.body.trim()).not.toBe("");
+        if (item.example !== undefined) expect(item.example.trim()).not.toBe("");
       }
     }
     expect(CURRENT_RELEASE_ID).toBe(RELEASE_NOTES[0]?.id ?? null);

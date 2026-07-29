@@ -23,6 +23,8 @@ export interface ReleaseNoteItem {
   title: string;
   /** User-facing one-line description (Korean). */
   body: string;
+  /** Optional usage example (Korean) — rendered as a highlighted hint line. */
+  example?: string;
 }
 
 export interface ReleaseNote {
@@ -38,7 +40,8 @@ export const RELEASE_NOTES: ReleaseNote[] = [
     items: [
       {
         title: "아바타 간 상담",
-        body: "아바타가 같은 그룹 동료의 아바타에게 직접 질문하고, 받은 답변을 대화에 활용해요.",
+        body: "같은 그룹 동료의 아바타에게 필요한 정보를 요청해 보세요. 내 아바타가 대신 질문하고, 받은 답변을 정리해 대화에 활용해요.",
+        example: "예: “민수님 아바타에게 이번 배포 체크리스트를 물어봐 줘.”",
       },
       {
         title: "예약 작업 실시간 보기",
