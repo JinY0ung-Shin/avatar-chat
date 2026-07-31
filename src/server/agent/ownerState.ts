@@ -128,14 +128,15 @@ export function emptyOwnerState(store: Store, config: AppConfig): OwnerState {
 export function summarizeGroupAgentState(
   store: Store,
   config: AppConfig,
-  groupId: string,
+  agentId: string,
   actingUserId: string,
 ): GroupAgentState | null {
-  const agent = store.getGroupAgent(groupId);
-  const group = store.getGroup(groupId);
+  const agent = store.getGroupAgentById(agentId);
+  const group = agent ? store.getGroup(agent.groupId) : null;
   if (!agent || !group) {
     return null;
   }
+  const groupId = agent.groupId;
   // Live role — null once the member has been removed mid-turn. FAIL CLOSED
   // (never default to "member"): describe_system must not report capture as
   // allowed while the group-repo tools are already refusing the same user.
@@ -143,6 +144,8 @@ export function summarizeGroupAgentState(
   const repo = store.getGroupKnowledgeRepo(groupId);
   return {
     groupId,
+    agentId: agent.id,
+    displayName: agent.displayName,
     groupName: group.name,
     enabled: agent.enabled,
     captureScope: agent.captureScope,

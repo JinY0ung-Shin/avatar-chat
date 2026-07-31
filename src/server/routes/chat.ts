@@ -73,7 +73,6 @@ import {
   groupAgentAvatarDetail,
   groupAgentCaptureAllowed,
   listGroupAgentAvatarSummaries,
-  parseGroupAgentGroupId,
 } from "../groupAgents.js";
 import {
   isModelTier,
@@ -1531,6 +1530,7 @@ export function createChatRouter({
               groupAgent: groupAgentHit
                 ? {
                     groupId: groupAgentHit.groupId,
+                    agentId: groupAgentHit.agent.id,
                     groupName: groupAgentHit.groupName,
                     viewerRole: groupAgentHit.viewerRole,
                     captureAllowed: groupAgentCaptureAllowed(

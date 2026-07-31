@@ -86,7 +86,7 @@ export interface SystemToolsContext {
    * branch gets) instead of an owner block. Management tools keep refusing via
    * viewerIsOwner (false on these runs).
    */
-  groupAgent?: { groupId: string; actingUserId: string };
+  groupAgent?: { agentId: string; actingUserId: string };
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -214,7 +214,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           const ga = summarizeGroupAgentState(
             store,
             ctx.config,
-            ctx.groupAgent.groupId,
+            ctx.groupAgent.agentId,
             ctx.groupAgent.actingUserId,
           );
           if (!ga) {
@@ -248,7 +248,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               ...publicGuide,
               "",
               "Current GROUP SHARED-AGENT state:",
-              `- Kind: shared agent of the group '${ga.groupName}' (a team resource, not a personal avatar)`,
+              `- Kind: shared agent '${ga.displayName}' of the group '${ga.groupName}' (a team resource, not a personal avatar; the group may have other shared agents)`,
               `- Enabled: ${ga.enabled ? "yes" : "no — disabled by a group admin"}`,
               `- Capture policy: ${ga.captureScope === "members" ? "all group members may capture" : "group admins only"}; the member in this conversation (role: ${ga.viewerRole ?? "removed — no longer a group member"}) ${ga.captureAllowed ? "MAY capture (write + commit)" : "may NOT capture (recall/read only)"}`,
               `- Team second brain (shared knowledge repository): ${ga.knowledgeRepoConfigured ? `${ga.knowledgeRepo.repo}${ga.knowledgeRepo.branch ? ` @ ${ga.knowledgeRepo.branch}` : ""}` : "(none — ask a group admin to connect one in group settings)"}`,

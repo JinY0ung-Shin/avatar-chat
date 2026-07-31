@@ -404,6 +404,9 @@ export function buildGroupRepoServer(store: Store, ctx: GroupRepoToolsContext) {
  */
 export interface GroupAgentRepoToolsContext {
   groupId: string;
+  /** WHICH shared agent this run is (a group may have several); the capture
+   *  policy and enabled flag are re-read from THIS agent's row per call. */
+  agentId: string;
   groupName: string;
   /** The acting member: token source, commit identity, audit actor. */
   actingUser: { id: string; username: string; displayName: string };
@@ -444,8 +447,10 @@ export function buildGroupAgentRepoTools(store: Store, ctx: GroupAgentRepoToolsC
   // Live per-call gate: disabled agent / removed member / missing repo all
   // refuse mid-conversation, not just at chat start.
   const resolve = (write: boolean): Resolved<GroupKnowledgeRepoContext> => {
-    const agent = store.getGroupAgent(ctx.groupId);
-    if (!agent?.enabled) return { ok: false, result: text(AGENT_DISABLED, true) };
+    const agent = store.getGroupAgentById(ctx.agentId);
+    if (!agent || agent.groupId !== ctx.groupId || !agent.enabled) {
+      return { ok: false, result: text(AGENT_DISABLED, true) };
+    }
     const role = store.groupRoleFor(ctx.actingUser.id, ctx.groupId);
     if (!role) return { ok: false, result: text(NOT_A_MEMBER, true) };
     if (write && !(agent.captureScope === "members" || role === "admin")) {

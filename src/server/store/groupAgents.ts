@@ -1,9 +1,10 @@
+import crypto from "node:crypto";
 import type {
   GroupAgent,
   GroupAgentCaptureScope,
   GroupRole,
 } from "../types.js";
-import { GROUP_AGENT_AVATAR_PREFIX } from "../groupAgents.js";
+import { parseGroupAgentRef } from "../groupAgents.js";
 import {
   type Constructor,
   type GroupAgentRow,
@@ -18,22 +19,36 @@ function normalizeCaptureScope(raw: string | null): GroupAgentCaptureScope {
   return raw === "admins" ? "admins" : "members";
 }
 
+export interface GroupAgentInput {
+  displayName: string;
+  alias?: string;
+  bio?: string;
+  intro?: string;
+  persona?: string;
+  hashtags?: string[];
+  captureScope?: GroupAgentCaptureScope;
+  enabled?: boolean;
+  createdBy?: string | null;
+}
+
 export function withGroupAgents<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class GroupAgents extends Base {
     // ---- Group shared agents ----------------------------------------------
-    // At most ONE per group (group_id PK), managed by group admins via the
-    // groups router. Not a users row; conversations store its namespaced
-    // avatar id ("group:<groupId>"). deleteGroup cascades the row + its
-    // conversations (store/groups.ts).
+    // Several per group allowed (rows keyed by uuid, group_id indexed), managed
+    // by group admins via the groups router. Not users rows; conversations
+    // store the namespaced avatar id ("group:<groupId>:<agentId>").
+    // deleteGroup cascades every agent + its conversations (store/groups.ts);
+    // deleteGroupAgent below cascades ONE agent's conversations.
 
-    private groupAgentRowById(groupId: string): GroupAgentRow | undefined {
+    private groupAgentRow(agentId: string): GroupAgentRow | undefined {
       return this.db
-        .prepare("SELECT * FROM group_agents WHERE group_id = ?")
-        .get(groupId) as GroupAgentRow | undefined;
+        .prepare("SELECT * FROM group_agents WHERE id = ?")
+        .get(agentId) as GroupAgentRow | undefined;
     }
 
     private toGroupAgent(row: GroupAgentRow): GroupAgent {
       return {
+        id: row.id,
         groupId: row.group_id,
         displayName: row.display_name,
         alias: row.alias ?? "",
@@ -50,30 +65,34 @@ export function withGroupAgents<TBase extends Constructor<StoreBase>>(Base: TBas
       };
     }
 
-    getGroupAgent(groupId: string): GroupAgent | null {
-      const row = this.groupAgentRowById(groupId);
+    getGroupAgentById(agentId: string): GroupAgent | null {
+      const row = this.groupAgentRow(agentId);
       return row ? this.toGroupAgent(row) : null;
     }
 
+    /** Every agent of one group (disabled included — managers re-enable here). */
+    listGroupAgents(groupId: string): GroupAgent[] {
+      const rows = this.db
+        .prepare(
+          "SELECT * FROM group_agents WHERE group_id = ? ORDER BY display_name COLLATE NOCASE ASC, created_at ASC",
+        )
+        .all(groupId) as GroupAgentRow[];
+      return rows.map((row) => this.toGroupAgent(row));
+    }
+
+    /** Every agent of every group — startup disk-artifact sweeps only. */
+    listAllGroupAgents(): GroupAgent[] {
+      const rows = this.db
+        .prepare("SELECT * FROM group_agents ORDER BY created_at ASC")
+        .all() as GroupAgentRow[];
+      return rows.map((row) => this.toGroupAgent(row));
+    }
+
     /**
-     * Create or update the group's shared agent (group-admin action; the route
-     * gates). Insert seeds created_*; update never touches them. Returns null
-     * when the group itself doesn't exist (fail closed on ghost groups).
+     * Create a NEW shared agent for the group (group-admin action; the route
+     * gates). Returns null when the group itself doesn't exist (fail closed).
      */
-    upsertGroupAgent(
-      groupId: string,
-      input: {
-        displayName: string;
-        alias?: string;
-        bio?: string;
-        intro?: string;
-        persona?: string;
-        hashtags?: string[];
-        captureScope?: GroupAgentCaptureScope;
-        enabled?: boolean;
-        createdBy?: string | null;
-      },
-    ): GroupAgent | null {
+    createGroupAgent(groupId: string, input: GroupAgentInput): GroupAgent | null {
       if (!this.groupRowById(groupId)) {
         return null;
       }
@@ -82,80 +101,127 @@ export function withGroupAgents<TBase extends Constructor<StoreBase>>(Base: TBas
         throw new Error("INVALID_GROUP_AGENT_NAME");
       }
       const timestamp = now();
-      const existing = this.groupAgentRowById(groupId);
-      const hashtags =
-        input.hashtags !== undefined
-          ? JSON.stringify(normalizeHashtags(input.hashtags))
-          : (existing?.hashtags ?? null);
-      const merged = {
-        group_id: groupId,
-        display_name: displayName,
-        alias: (input.alias ?? existing?.alias ?? "").trim(),
-        bio: (input.bio ?? existing?.bio ?? "").trim(),
-        intro: (input.intro ?? existing?.intro ?? "").trim(),
-        persona: input.persona ?? existing?.persona ?? "",
-        hashtags,
-        enabled:
-          (input.enabled ?? (existing ? existing.enabled === 1 : true)) ? 1 : 0,
-        capture_scope: normalizeCaptureScope(
-          input.captureScope ?? existing?.capture_scope ?? null,
-        ),
-        created_by: existing
-          ? existing.created_by
-          : (input.createdBy ?? null),
-        created_at: existing ? existing.created_at : timestamp,
-        updated_at: timestamp,
-      };
+      const id = crypto.randomUUID();
       this.db
         .prepare(
-          `INSERT INTO group_agents (group_id, display_name, alias, bio, intro, persona, hashtags, enabled, capture_scope, created_by, created_at, updated_at)
-           VALUES (@group_id, @display_name, @alias, @bio, @intro, @persona, @hashtags, @enabled, @capture_scope, @created_by, @created_at, @updated_at)
-           ON CONFLICT(group_id) DO UPDATE SET
-             display_name = @display_name, alias = @alias, bio = @bio,
-             intro = @intro, persona = @persona, hashtags = @hashtags,
-             enabled = @enabled, capture_scope = @capture_scope,
-             updated_at = @updated_at`,
+          `INSERT INTO group_agents (id, group_id, display_name, alias, bio, intro, persona, hashtags, enabled, capture_scope, created_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
-        .run(merged);
-      return this.toGroupAgent(this.groupAgentRowById(groupId)!);
+        .run(
+          id,
+          groupId,
+          displayName,
+          (input.alias ?? "").trim(),
+          (input.bio ?? "").trim(),
+          (input.intro ?? "").trim(),
+          input.persona ?? "",
+          JSON.stringify(normalizeHashtags(input.hashtags ?? [])),
+          (input.enabled ?? true) ? 1 : 0,
+          normalizeCaptureScope(input.captureScope ?? null),
+          input.createdBy ?? null,
+          timestamp,
+          timestamp,
+        );
+      return this.toGroupAgent(this.groupAgentRow(id)!);
     }
 
-    /** Disable blocks the next turn but preserves threads; there is no delete
-     *  short of deleting the group (history-bearing, external precedent). */
-    setGroupAgentEnabled(groupId: string, enabled: boolean): GroupAgent | null {
-      const row = this.groupAgentRowById(groupId);
-      if (!row) {
+    /**
+     * Patch one agent (fields omitted stay; displayName must stay non-empty
+     * when provided). created_* never change. Null when the agent is gone.
+     */
+    updateGroupAgent(
+      agentId: string,
+      patch: Partial<GroupAgentInput>,
+    ): GroupAgent | null {
+      const existing = this.groupAgentRow(agentId);
+      if (!existing) {
         return null;
+      }
+      const displayName = (patch.displayName ?? existing.display_name).trim();
+      if (!displayName) {
+        throw new Error("INVALID_GROUP_AGENT_NAME");
       }
       this.db
         .prepare(
-          "UPDATE group_agents SET enabled = ?, updated_at = ? WHERE group_id = ?",
+          `UPDATE group_agents SET
+             display_name = ?, alias = ?, bio = ?, intro = ?, persona = ?,
+             hashtags = ?, enabled = ?, capture_scope = ?, updated_at = ?
+           WHERE id = ?`,
         )
-        .run(enabled ? 1 : 0, now(), groupId);
-      return this.toGroupAgent(this.groupAgentRowById(groupId)!);
+        .run(
+          displayName,
+          (patch.alias ?? existing.alias ?? "").trim(),
+          (patch.bio ?? existing.bio ?? "").trim(),
+          (patch.intro ?? existing.intro ?? "").trim(),
+          patch.persona ?? existing.persona ?? "",
+          patch.hashtags !== undefined
+            ? JSON.stringify(normalizeHashtags(patch.hashtags))
+            : (existing.hashtags ?? null),
+          (patch.enabled ?? existing.enabled === 1) ? 1 : 0,
+          normalizeCaptureScope(patch.captureScope ?? existing.capture_scope),
+          now(),
+          agentId,
+        );
+      return this.toGroupAgent(this.groupAgentRow(agentId)!);
+    }
+
+    /**
+     * Delete ONE agent and cascade its conversations (messages + canvases) for
+     * every member — manual cascade, mirroring deleteGroup's per-agent slice.
+     * The route snapshots conversation ids BEFORE calling this (disk sweep)
+     * and removes on-disk artifacts. Disabling (updateGroupAgent enabled:false)
+     * remains the thread-preserving alternative.
+     */
+    deleteGroupAgent(agentId: string): boolean {
+      const row = this.groupAgentRow(agentId);
+      if (!row) {
+        return false;
+      }
+      const avatarId = `group:${row.group_id}:${row.id}`;
+      const tx = this.db.transaction(() => {
+        const convRows = this.db
+          .prepare("SELECT id FROM conversations WHERE avatar_user_id = ?")
+          .all(avatarId) as { id: string }[];
+        const delMsgs = this.db.prepare(
+          "DELETE FROM messages WHERE conversation_id = ?",
+        );
+        for (const c of convRows) {
+          this.deleteCanvasArtifactsForConversation(c.id);
+          delMsgs.run(c.id);
+        }
+        this.db
+          .prepare("DELETE FROM conversations WHERE avatar_user_id = ?")
+          .run(avatarId);
+        this.db.prepare("DELETE FROM group_agents WHERE id = ?").run(agentId);
+      });
+      tx();
+      return true;
     }
 
     /** Record the profile-image extension (bytes live on disk, users.avatar_ext pattern). */
-    setGroupAgentImageExt(groupId: string, ext: string | null): void {
+    setGroupAgentImageExt(agentId: string, ext: string | null): void {
       this.db
-        .prepare("UPDATE group_agents SET avatar_ext = ? WHERE group_id = ?")
-        .run(ext, groupId);
+        .prepare("UPDATE group_agents SET avatar_ext = ? WHERE id = ?")
+        .run(ext, agentId);
     }
 
-    /** Image-ext lookup by PUBLIC avatar id ("group:<gid>") for the image route chain. */
+    /** Image-ext lookup by PUBLIC avatar id ("group:<gid>:<aid>") for the image route chain. */
     getGroupAgentImageExtByAvatarId(avatarId: string): string | null {
-      if (!avatarId.startsWith(GROUP_AGENT_AVATAR_PREFIX)) return null;
-      const groupId = avatarId.slice(GROUP_AGENT_AVATAR_PREFIX.length);
-      if (!groupId) return null;
+      const ref = parseGroupAgentRef(avatarId);
+      if (!ref) return null;
       const row = this.db
-        .prepare("SELECT avatar_ext FROM group_agents WHERE group_id = ?")
-        .get(groupId) as { avatar_ext: string | null } | undefined;
+        .prepare(
+          "SELECT avatar_ext FROM group_agents WHERE id = ? AND group_id = ?",
+        )
+        .get(ref.agentId, ref.groupId) as
+        | { avatar_ext: string | null }
+        | undefined;
       return row?.avatar_ext ?? null;
     }
 
     /**
      * ENABLED group agents of the viewer's groups, for discovery concatenation
-     * (GET /api/avatars). Settings reads per-group via getGroupAgent instead
+     * (GET /api/avatars). Settings reads per-group via listGroupAgents instead
      * (managers must see a disabled agent to re-enable it).
      */
     listGroupAgentsForUser(

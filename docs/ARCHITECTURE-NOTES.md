@@ -232,22 +232,26 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   promptBuilder, describe_system — 3 hand-synced sites) require `groups.some(g => g.avatarSharing)`.
   Flipping it off fails the NEXT chat turn closed (history preserved), like leaving the group.
 
-### Group shared agent (그룹 에이전트)
-- **One per group** (`group_agents`, `group_id` PK — CREATE TABLE IF NOT EXISTS is the migration), a
-  team avatar that is NOT a users row: public avatar id `group:<groupId>` (`external:<id>` precedent —
-  `conversations.avatar_user_id` has no FK; conversation summaries COALESCE its display name via a
-  `group_agents` LEFT JOIN). Managed by `canManageGroup` via `PUT /api/me/groups/:id/agent`
-  (+`/image`); GET `/api/me/groups` carries `agent` (disabled included); discovery concatenates
-  `listGroupAgentsForUser` (enabled only) into `GET /api/avatars` with the `AvatarSummary.groupAgent`
-  kind tag (`runtime` stays `"native"` — it runs the full local SDK stack). There is NO delete —
-  disable blocks the next turn and preserves threads; deletion rides `deleteGroup` (cascades agent row
-  + its conversations; the admin route then sweeps disk via `cleanupGroupDataDirs` + the image file).
+### Group shared agents (그룹 에이전트)
+- **Several per group** (`group_agents`, uuid `id` PK + `group_id` index), team avatars that are NOT
+  users rows: public avatar id `group:<groupId>:<agentId>` (`external:<id>` precedent —
+  `conversations.avatar_user_id` has no FK; conversation summaries COALESCE the display name via a
+  `group_agents` LEFT JOIN on the composite id). Pre-multi DBs (`group_id` PK, one agent, avatar id
+  `group:<groupId>`) are rebuilt by `migrateGroupAgentsMulti` (store/internal.ts — fresh uuid per row +
+  conversation-binding rewrite in one transaction) plus `migrateGroupAgentDiskArtifacts` at boot
+  (renames the legacy-named image file/workspace tree; idempotent). Managed by `canManageGroup` via
+  `POST/PATCH/DELETE /api/me/groups/:id/agents(/:agentId)` (+`/image`); GET `/api/me/groups` carries
+  `agents` (disabled included); discovery concatenates `listGroupAgentsForUser` (enabled only) into
+  `GET /api/avatars` with the `AvatarSummary.groupAgent` kind tag (`runtime` stays `"native"` — the
+  full local SDK stack). Per-agent DELETE cascades THAT agent's conversations (+ disk sweep: image,
+  workspace tree, chat image/file dirs from a pre-cascade snapshot); disable stays the
+  thread-preserving alternative. `deleteGroup` cascades every agent the same way.
 - **Reach = owning-group membership ONLY** through `findChattableGroupAgent` (the single gate used by
   detail/skills/models/chat): independent of `avatar_sharing` (a knowledge-only group still reaches its
   agent), no sysadmin bypass, fail-closed 403/404 shapes; a member-visible DISABLED agent gets a
   dedicated 403. Each member's threads are PRIVATE (`owner_user_id` = viewer) — the team shares via the
   SECOND BRAIN, never the conversation stream.
-- **Run kind carries capability** (`AgentRequest.groupAgent {groupId, groupName, viewerRole,
+- **Run kind carries capability** (`AgentRequest.groupAgent {groupId, agentId, groupName, viewerRole,
   captureAllowed}`): `deriveAgentToolAccess` returns the pinned class (ownerToolAccess false, elevated
   built-ins, hex-ssh `colleague`); `claudeAgent` forces every personal-scoped family off
   (`&& !groupAgentRun` on the tool-group booleans), swaps `ownerState` for `emptyOwnerState` +

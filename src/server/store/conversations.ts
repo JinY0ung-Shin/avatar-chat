@@ -84,7 +84,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
                   r.id AS routine_id, r.prompt AS routine_prompt
            FROM conversations c
            LEFT JOIN users u ON u.id = c.avatar_user_id
-           LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id
+           LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id || ':' || ga.id
            LEFT JOIN routine_jobs r ON r.conversation_id = c.id
            WHERE ${where.join(" AND ")}
            ORDER BY c.updated_at DESC`,
@@ -136,7 +136,7 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
                   r.id AS routine_id, r.prompt AS routine_prompt
            FROM conversations c
            LEFT JOIN users u ON u.id = c.avatar_user_id
-           LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id
+           LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id || ':' || ga.id
            LEFT JOIN routine_jobs r ON r.conversation_id = c.id
            WHERE c.owner_user_id = ? AND c.id = ?
            LIMIT 1`,

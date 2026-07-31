@@ -408,8 +408,9 @@ export interface GroupMember {
 export interface AdminGroupSummary extends Group {
   memberCount: number;
   adminCount: number;
-  /** Shared group agent state: true/false = exists (enabled/disabled), null = none. */
-  agentEnabled: boolean | null;
+  /** Shared group agents (a group may have several). */
+  agentCount: number;
+  enabledAgentCount: number;
 }
 
 /** Who may CAPTURE (write + commit) to the shared second brain through the group agent. */
@@ -424,6 +425,9 @@ export type GroupAgentCaptureScope = "members" | "admins";
  */
 export interface GroupAgentState {
   groupId: string;
+  agentId: string;
+  /** The agent's display name — with several agents per group, state names WHICH. */
+  displayName: string;
   groupName: string;
   enabled: boolean;
   captureScope: GroupAgentCaptureScope;
@@ -451,6 +455,8 @@ export interface GroupAgentState {
  * by members of the owning group, independent of the avatar-sharing policy.
  */
 export interface GroupAgent {
+  /** Row id — the agent's identity; its public avatar id is `group:<groupId>:<id>`. */
+  id: string;
   groupId: string;
   displayName: string;
   /** How the agent names itself in chat; empty falls back to displayName. */
@@ -935,15 +941,16 @@ export interface AgentRequest {
   /** True when the viewer IS the avatar's owner (viewer.id === avatar.id). */
   viewerIsOwner?: boolean;
   /**
-   * Set ONLY for group shared-agent runs (avatar id `group:<groupId>`): pins the
-   * run to ONE group's resources. The run kind carries capability — owner-only
-   * tools never unlock (there is no owner), built-in access is elevated-class,
-   * and only the group repo/brain servers register, gated per call on the
-   * ACTING member's live membership/role. `captureAllowed` is the group's
-   * capture_scope policy resolved against `viewerRole` at request time.
+   * Set ONLY for group shared-agent runs (avatar id `group:<groupId>:<agentId>`):
+   * pins the run to ONE group's resources. The run kind carries capability —
+   * owner-only tools never unlock (there is no owner), built-in access is
+   * elevated-class, and only the group repo/brain servers register, gated per
+   * call on the ACTING member's live membership/role. `captureAllowed` is the
+   * AGENT's capture_scope policy resolved against `viewerRole` at request time.
    */
   groupAgent?: {
     groupId: string;
+    agentId: string;
     groupName: string;
     viewerRole: GroupRole;
     captureAllowed: boolean;

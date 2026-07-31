@@ -6,7 +6,8 @@ import { loadConfig } from "./config.js";
 import logger from "./logger.js";
 import { Store } from "./store.js";
 import type { AgentResponse, AppConfig } from "./types.js";
-import { type AppServices, type ObservedModelHolder, type RouterDeps } from "./routes/_shared.js";
+import { avatarDir, type AppServices, type ObservedModelHolder, type RouterDeps } from "./routes/_shared.js";
+import { migrateGroupAgentDiskArtifacts } from "./groupAgents.js";
 import { createAuthRouter } from "./routes/auth.js";
 import { createProfileRouter } from "./routes/profile.js";
 import { createPluginsRouter } from "./routes/plugins.js";
@@ -33,6 +34,15 @@ export function createServices(configOverrides: Partial<AppConfig> = {}): AppSer
     }
   }
   const store = new Store(config);
+  // On-disk half of the multi-agent group_agents migration (the store rebuild
+  // rewrote the DB bindings): rename legacy `group:<gid>`-named image files and
+  // workspace trees to the canonical `group:<gid>:<aid>`. Idempotent, no-op
+  // once the legacy names are gone; never break boot over a rename failure.
+  try {
+    migrateGroupAgentDiskArtifacts(store, config, avatarDir(config));
+  } catch (err) {
+    logger.warn({ err }, "group-agent disk artifact migration failed");
+  }
   return { config, store };
 }
 

@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import Database from "better-sqlite3";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
@@ -205,6 +206,7 @@ export interface GroupMemberRow {
 }
 
 export interface GroupAgentRow {
+  id: string;
   group_id: string;
   display_name: string;
   alias: string | null;
@@ -467,14 +469,16 @@ export class StoreBase {
         external_avatar_id TEXT PRIMARY KEY,
         ext TEXT NOT NULL
       );
-      -- Shared GROUP AGENT (at most one per group, group-admin managed). NOT a
-      -- users row: its public avatar id is "group:<group_id>" (external:<id>
-      -- precedent — conversations.avatar_user_id has no FK). A brand-new table:
-      -- CREATE TABLE IF NOT EXISTS IS the existing-deployment migration.
+      -- Shared GROUP AGENTS (several per group allowed, group-admin managed).
+      -- NOT users rows: the public avatar id is "group:<group_id>:<id>"
+      -- (external:<id> precedent — conversations.avatar_user_id has no FK).
+      -- Pre-multi DBs (group_id PK, no id column) are rebuilt by
+      -- migrateGroupAgentsMulti(), which also rewrites conversation bindings.
       -- capture_scope: who may write+commit to the shared second brain through
       -- the agent ('members' | 'admins'; normalized on read, default members).
       CREATE TABLE IF NOT EXISTS group_agents (
-        group_id TEXT PRIMARY KEY,
+        id TEXT PRIMARY KEY,
+        group_id TEXT NOT NULL,
         display_name TEXT NOT NULL,
         alias TEXT DEFAULT '',
         bio TEXT DEFAULT '',
@@ -488,6 +492,7 @@ export class StoreBase {
         created_at TEXT,
         updated_at TEXT
       );
+      CREATE INDEX IF NOT EXISTS idx_group_agents_group ON group_agents(group_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -662,6 +667,7 @@ export class StoreBase {
     this.migrateVisibility();
     this.migrateOnboarded();
     this.migrateCanvasArtifacts();
+    this.migrateGroupAgentsMulti();
     // Trust is now derived purely from group co-membership; the old per-(avatar,
     // viewer) trust table is dropped (its grants don't survive the migration).
     this.db.exec("DROP TABLE IF EXISTS avatar_trusted_users");
@@ -778,6 +784,70 @@ export class StoreBase {
     this.db.exec(
       "UPDATE users SET onboarded_at = created_at WHERE onboarded_at IS NULL",
     );
+  }
+
+  /**
+   * One-time rebuild for the multi-agent group_agents shape: pre-multi DBs had
+   * `group_id` as PRIMARY KEY (one agent per group) and bound conversations to
+   * `group:<groupId>`. Detected by the missing `id` column (the big CREATE IF
+   * NOT EXISTS above never touches an existing table). Each legacy row gets a
+   * fresh uuid and every conversation binding is rewritten to the canonical
+   * `group:<groupId>:<agentId>` in the SAME transaction. On-disk artifacts
+   * keyed by the old avatar id (profile image file, workspace tree) are
+   * renamed by the startup sweep in ../groupAgents.ts — the store has no
+   * config/dataDir. The renamed legacy table keeps its index, so the index is
+   * dropped and re-created against the rebuilt table.
+   */
+  private migrateGroupAgentsMulti(): void {
+    const cols = this.db
+      .prepare("PRAGMA table_info(group_agents)")
+      .all() as { name: string }[];
+    if (!cols.length || cols.some((c) => c.name === "id")) {
+      return;
+    }
+    const tx = this.db.transaction(() => {
+      this.db.exec("ALTER TABLE group_agents RENAME TO group_agents_legacy");
+      this.db.exec("DROP INDEX IF EXISTS idx_group_agents_group");
+      this.db.exec(`
+        CREATE TABLE group_agents (
+          id TEXT PRIMARY KEY,
+          group_id TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          alias TEXT DEFAULT '',
+          bio TEXT DEFAULT '',
+          intro TEXT DEFAULT '',
+          persona TEXT DEFAULT '',
+          hashtags TEXT,
+          avatar_ext TEXT,
+          enabled INTEGER NOT NULL DEFAULT 1,
+          capture_scope TEXT NOT NULL DEFAULT 'members',
+          created_by TEXT,
+          created_at TEXT,
+          updated_at TEXT
+        );
+        CREATE INDEX idx_group_agents_group ON group_agents(group_id);
+      `);
+      const legacyRows = this.db
+        .prepare("SELECT * FROM group_agents_legacy")
+        .all() as Omit<GroupAgentRow, "id">[];
+      const insert = this.db.prepare(
+        `INSERT INTO group_agents (id, group_id, display_name, alias, bio, intro, persona, hashtags, avatar_ext, enabled, capture_scope, created_by, created_at, updated_at)
+         VALUES (@id, @group_id, @display_name, @alias, @bio, @intro, @persona, @hashtags, @avatar_ext, @enabled, @capture_scope, @created_by, @created_at, @updated_at)`,
+      );
+      const rewrite = this.db.prepare(
+        "UPDATE conversations SET avatar_user_id = ? WHERE avatar_user_id = ?",
+      );
+      for (const row of legacyRows) {
+        const id = crypto.randomUUID();
+        insert.run({ ...row, id });
+        rewrite.run(
+          `group:${row.group_id}:${id}`,
+          `group:${row.group_id}`,
+        );
+      }
+      this.db.exec("DROP TABLE group_agents_legacy");
+    });
+    tx();
   }
 
   /** Backfill is_routine on existing conversations. Linked ones come from the

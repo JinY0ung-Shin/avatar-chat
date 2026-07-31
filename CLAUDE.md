@@ -31,8 +31,9 @@ These are the invariants the project is built around. New work should reinforce 
   `avatar_sharing` policy gates visibility AND trust TOGETHER (one SQL fragment, `SHARING_TEAMMATES`);
   off = knowledge-sharing-only group (repo/brain/tool-policy unaffected). Visibility (`private` opt-out)
   and trust remain separate axes: a teammate reaches your `group` avatar but never your `private` one.
-- **Group shared agent = a team avatar that is NOT a users row** (`group_agents`, one per group, avatar
-  id `group:<groupId>`). Reach = owning-group membership only (`findChattableGroupAgent`), independent of
+- **Group shared agents = team avatars that are NOT users rows** (`group_agents`, several per group
+  allowed, avatar id `group:<groupId>:<agentId>` — the pre-multi `group:<groupId>` form was migrated
+  away). Reach = owning-group membership only (`findChattableGroupAgent`), independent of
   `avatar_sharing`; per-member threads are private and sharing happens ONLY via the group second brain.
   The run kind (`AgentRequest.groupAgent`) carries capability: group resources only — never personal
   secrets/tokens/repos; capture (write+commit) follows the group's `capture_scope` policy with the

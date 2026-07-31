@@ -29,12 +29,14 @@ vi.mock("../src/server/agent/index.js", () => ({
   isRetryableModelError: vi.fn(() => false),
 }));
 
+import Database from "better-sqlite3";
 import { createApp, createServices } from "../src/server/app.js";
+import { Store } from "../src/server/store.js";
 import {
   findChattableGroupAgent,
   groupAgentAvatarId,
   groupAgentCaptureAllowed,
-  parseGroupAgentGroupId,
+  parseGroupAgentRef,
 } from "../src/server/groupAgents.js";
 import {
   buildPrompt,
@@ -61,18 +63,19 @@ function services(dir: string) {
 }
 
 describe("store group agents", () => {
-  it("upserts one agent per group, normalizing capture scope and hashtags", () => {
+  it("creates/updates agents (several per group), normalizing capture scope and hashtags", () => {
     const { store } = services("crud");
     const group = store.createGroup({ name: "Platform" });
-    expect(store.getGroupAgent(group.id)).toBeNull();
+    expect(store.listGroupAgents(group.id)).toEqual([]);
     // Ghost group fails closed.
-    expect(store.upsertGroupAgent("ghost", { displayName: "X" })).toBeNull();
+    expect(store.createGroupAgent("ghost", { displayName: "X" })).toBeNull();
 
-    const created = store.upsertGroupAgent(group.id, {
+    const created = store.createGroupAgent(group.id, {
       displayName: "  플랫폼 도우미  ",
       hashtags: ["#Infra", "infra", "런북"],
       createdBy: "admin-1",
     })!;
+    expect(created.id).toBeTruthy();
     expect(created.displayName).toBe("플랫폼 도우미");
     expect(created.captureScope).toBe("members"); // default
     expect(created.enabled).toBe(true);
@@ -80,28 +83,36 @@ describe("store group agents", () => {
     expect(created.hashtags).toEqual(["Infra", "런북"]);
     expect(created.createdBy).toBe("admin-1");
 
+    // A SECOND agent in the same group.
+    const second = store.createGroupAgent(group.id, { displayName: "회의록 봇" })!;
+    expect(second.id).not.toBe(created.id);
+    expect(store.listGroupAgents(group.id)).toHaveLength(2);
+
     // Update keeps created_*, merges unspecified fields, validates scope on read.
-    const updated = store.upsertGroupAgent(group.id, {
-      displayName: "플랫폼 도우미",
+    const updated = store.updateGroupAgent(created.id, {
       captureScope: "admins",
       persona: "친절하게",
-      createdBy: "someone-else",
     })!;
     expect(updated.captureScope).toBe("admins");
     expect(updated.persona).toBe("친절하게");
     expect(updated.hashtags).toEqual(["Infra", "런북"]); // carried over
     expect(updated.createdBy).toBe("admin-1"); // insert-only
+    expect(store.updateGroupAgent("ghost", { enabled: false })).toBeNull();
 
-    expect(store.setGroupAgentEnabled(group.id, false)?.enabled).toBe(false);
-    expect(store.setGroupAgentEnabled("ghost", false)).toBeNull();
+    expect(store.updateGroupAgent(created.id, { enabled: false })?.enabled).toBe(false);
+    // The sibling agent is untouched.
+    expect(store.getGroupAgentById(second.id)?.enabled).toBe(true);
 
-    store.setGroupAgentImageExt(group.id, "png");
-    expect(store.getGroupAgentImageExtByAvatarId(groupAgentAvatarId(group.id))).toBe("png");
+    store.setGroupAgentImageExt(created.id, "png");
+    expect(
+      store.getGroupAgentImageExtByAvatarId(groupAgentAvatarId(group.id, created.id)),
+    ).toBe("png");
+    expect(store.getGroupAgentImageExtByAvatarId(`group:${group.id}`)).toBeNull(); // legacy form
     expect(store.getGroupAgentImageExtByAvatarId("group:")).toBeNull();
     expect(store.getGroupAgentImageExtByAvatarId("not-a-group-id")).toBeNull();
   });
 
-  it("lists ENABLED agents of the viewer's groups only", () => {
+  it("lists ENABLED agents of the viewer's groups only (several per group)", () => {
     const { store } = services("list");
     const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
     const g1 = store.createGroup({ name: "Mine" });
@@ -109,37 +120,64 @@ describe("store group agents", () => {
     const g3 = store.createGroup({ name: "MineDisabled" });
     store.addGroupMember(g1.id, me.id, "admin");
     store.addGroupMember(g3.id, me.id, "member");
-    store.upsertGroupAgent(g1.id, { displayName: "A1" });
-    store.upsertGroupAgent(g2.id, { displayName: "A2" }); // not my group
-    store.upsertGroupAgent(g3.id, { displayName: "A3", enabled: false });
+    store.createGroupAgent(g1.id, { displayName: "A1" });
+    store.createGroupAgent(g1.id, { displayName: "A1-2" }); // second agent, same group
+    store.createGroupAgent(g2.id, { displayName: "A2" }); // not my group
+    store.createGroupAgent(g3.id, { displayName: "A3", enabled: false });
 
     const listed = store.listGroupAgentsForUser(me.id);
-    expect(listed).toHaveLength(1);
+    expect(listed).toHaveLength(2);
+    expect(listed.map((l) => l.agent.displayName)).toEqual(["A1", "A1-2"]);
     expect(listed[0]).toMatchObject({ groupName: "Mine", viewerRole: "admin" });
-    expect(listed[0].agent.displayName).toBe("A1");
   });
 
-  it("deleteGroup cascades the agent row + every member's agent conversations", () => {
+  it("deleteGroup cascades EVERY agent row + every member's agent conversations", () => {
     const { store } = services("cascade");
     const member = store.createUser({ username: "m", displayName: "M", password: "password123" });
     const group = store.createGroup({ name: "Doomed" });
     const other = store.createGroup({ name: "Survivor" });
     store.addGroupMember(group.id, member.id, "member");
-    store.upsertGroupAgent(group.id, { displayName: "Doomed Agent" });
-    store.upsertGroupAgent(other.id, { displayName: "Survivor Agent" });
+    const doomed1 = store.createGroupAgent(group.id, { displayName: "Doomed Agent" })!;
+    const doomed2 = store.createGroupAgent(group.id, { displayName: "Doomed Agent 2" })!;
+    const survivor = store.createGroupAgent(other.id, { displayName: "Survivor Agent" })!;
 
-    const agentId = groupAgentAvatarId(group.id);
-    store.touchConversation(member.id, "ga-conv", agentId, "질문");
+    const avatar1 = groupAgentAvatarId(group.id, doomed1.id);
+    const avatar2 = groupAgentAvatarId(group.id, doomed2.id);
+    store.touchConversation(member.id, "ga-conv", avatar1, "질문");
     store.addMessage("ga-conv", { role: "user", content: "안녕" });
+    store.touchConversation(member.id, "ga-conv-2", avatar2, "질문2");
     // A personal conversation must survive the group deletion.
     store.touchConversation(member.id, "self-conv", member.id, "메모");
 
     expect(store.deleteGroup(group.id)).toBe(true);
-    expect(store.getGroupAgent(group.id)).toBeNull();
-    expect(store.countConversationsForAvatar(agentId)).toBe(0);
+    expect(store.listGroupAgents(group.id)).toEqual([]);
+    expect(store.countConversationsForAvatar(avatar1)).toBe(0);
+    expect(store.countConversationsForAvatar(avatar2)).toBe(0);
     expect(store.listMessages(member.id, "ga-conv")).toEqual([]);
     expect(store.countConversationsForAvatar(member.id)).toBe(1);
-    expect(store.getGroupAgent(other.id)?.displayName).toBe("Survivor Agent");
+    expect(store.getGroupAgentById(survivor.id)?.displayName).toBe("Survivor Agent");
+  });
+
+  it("deleteGroupAgent cascades ONE agent's threads and leaves siblings intact", () => {
+    const { store } = services("del-agent");
+    const member = store.createUser({ username: "m", displayName: "M", password: "password123" });
+    const group = store.createGroup({ name: "Team" });
+    store.addGroupMember(group.id, member.id, "member");
+    const doomed = store.createGroupAgent(group.id, { displayName: "지울 봇" })!;
+    const sibling = store.createGroupAgent(group.id, { displayName: "남는 봇" })!;
+    const doomedAvatar = groupAgentAvatarId(group.id, doomed.id);
+    const siblingAvatar = groupAgentAvatarId(group.id, sibling.id);
+    store.touchConversation(member.id, "d-conv", doomedAvatar, "질문");
+    store.addMessage("d-conv", { role: "user", content: "안녕" });
+    store.touchConversation(member.id, "s-conv", siblingAvatar, "질문");
+
+    expect(store.deleteGroupAgent("ghost")).toBe(false);
+    expect(store.deleteGroupAgent(doomed.id)).toBe(true);
+    expect(store.getGroupAgentById(doomed.id)).toBeNull();
+    expect(store.countConversationsForAvatar(doomedAvatar)).toBe(0);
+    expect(store.listMessages(member.id, "d-conv")).toEqual([]);
+    expect(store.getGroupAgentById(sibling.id)).not.toBeNull();
+    expect(store.countConversationsForAvatar(siblingAvatar)).toBe(1);
   });
 
   it("deleteUser removes their agent threads but not other members'", () => {
@@ -149,14 +187,14 @@ describe("store group agents", () => {
     const group = store.createGroup({ name: "Team" });
     store.addGroupMember(group.id, a.id, "member");
     store.addGroupMember(group.id, b.id, "member");
-    store.upsertGroupAgent(group.id, { displayName: "팀 에이전트" });
-    const agentId = groupAgentAvatarId(group.id);
-    store.touchConversation(a.id, "a-conv", agentId, "a의 질문");
-    store.touchConversation(b.id, "b-conv", agentId, "b의 질문");
+    const agent = store.createGroupAgent(group.id, { displayName: "팀 에이전트" })!;
+    const agentAvatar = groupAgentAvatarId(group.id, agent.id);
+    store.touchConversation(a.id, "a-conv", agentAvatar, "a의 질문");
+    store.touchConversation(b.id, "b-conv", agentAvatar, "b의 질문");
 
     expect(store.deleteUser(a.id)).toBe(true);
-    expect(store.countConversationsForAvatar(agentId)).toBe(1);
-    expect(store.getGroupAgent(group.id)).not.toBeNull();
+    expect(store.countConversationsForAvatar(agentAvatar)).toBe(1);
+    expect(store.getGroupAgentById(agent.id)).not.toBeNull();
   });
 
   it("resolves the agent display name in conversation summaries (no '삭제된 아바타')", () => {
@@ -164,22 +202,87 @@ describe("store group agents", () => {
     const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
     const group = store.createGroup({ name: "Team" });
     store.addGroupMember(group.id, me.id, "member");
-    store.upsertGroupAgent(group.id, { displayName: "팀 비서" });
-    store.touchConversation(me.id, "c1", groupAgentAvatarId(group.id), "안녕");
+    const agent = store.createGroupAgent(group.id, { displayName: "팀 비서" })!;
+    store.touchConversation(me.id, "c1", groupAgentAvatarId(group.id, agent.id), "안녕");
 
     const summaries = store.listConversations(me.id);
     expect(summaries).toHaveLength(1);
     expect(summaries[0].avatarDisplayName).toBe("팀 비서");
   });
+
+  it("rebuilds a pre-multi DB: fresh agent ids + rewritten conversation bindings", () => {
+    // Build a data dir whose DB has the LEGACY shape (group_id PK, no id
+    // column) + one agent row and a conversation bound to "group:<gid>",
+    // then let the Store constructor migrate it.
+    const dir = path.join(tempDir(), "migrate");
+    fs.mkdirSync(dir, { recursive: true });
+    const legacy = services("migrate");
+    const me = legacy.store.createUser({ username: "me", displayName: "나", password: "password123" });
+    const group = legacy.store.createGroup({ name: "Team" });
+    legacy.store.addGroupMember(group.id, me.id, "member");
+    legacy.store.close();
+    // Downgrade the fresh multi-shape table to the LEGACY shape by hand.
+    const raw = new Database(legacy.config.dbPath);
+    raw.exec(`
+      DROP INDEX IF EXISTS idx_group_agents_group;
+      DROP TABLE group_agents;
+      CREATE TABLE group_agents (
+        group_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        alias TEXT DEFAULT '',
+        bio TEXT DEFAULT '',
+        intro TEXT DEFAULT '',
+        persona TEXT DEFAULT '',
+        hashtags TEXT,
+        avatar_ext TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        capture_scope TEXT NOT NULL DEFAULT 'members',
+        created_by TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+    `);
+    raw
+      .prepare(
+        "INSERT INTO group_agents (group_id, display_name, capture_scope, enabled, created_at) VALUES (?, ?, 'admins', 1, ?)",
+      )
+      .run(group.id, "레거시 비서", "2026-01-01T00:00:00.000Z");
+    raw
+      .prepare(
+        "INSERT INTO conversations (id, owner_user_id, avatar_user_id, title, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+      )
+      .run("legacy-conv", me.id, `group:${group.id}`, "옛 대화", "2026-01-01T00:00:00.000Z", "2026-01-01T00:00:00.000Z");
+    raw.close();
+
+    // Re-open: the constructor migration rebuilds the table + bindings.
+    const migrated = new Store(legacy.config);
+    const agents = migrated.listGroupAgents(group.id);
+    expect(agents).toHaveLength(1);
+    expect(agents[0]).toMatchObject({ displayName: "레거시 비서", captureScope: "admins" });
+    expect(agents[0].id).toBeTruthy();
+    const canonical = groupAgentAvatarId(group.id, agents[0].id);
+    expect(migrated.countConversationsForAvatar(`group:${group.id}`)).toBe(0);
+    expect(migrated.countConversationsForAvatar(canonical)).toBe(1);
+    expect(migrated.listConversations(me.id)[0].avatarDisplayName).toBe("레거시 비서");
+    // Idempotent: a third open changes nothing.
+    const again = new Store(legacy.config);
+    expect(again.listGroupAgents(group.id)).toHaveLength(1);
+    expect(again.listGroupAgents(group.id)[0].id).toBe(agents[0].id);
+  });
 });
 
 describe("group-agent helpers", () => {
   it("round-trips the avatar id namespace", () => {
-    expect(groupAgentAvatarId("g-1")).toBe("group:g-1");
-    expect(parseGroupAgentGroupId("group:g-1")).toBe("g-1");
-    expect(parseGroupAgentGroupId("group:")).toBeNull();
-    expect(parseGroupAgentGroupId("external:g-1")).toBeNull();
-    expect(parseGroupAgentGroupId("plain-uuid")).toBeNull();
+    expect(groupAgentAvatarId("g-1", "a-1")).toBe("group:g-1:a-1");
+    expect(parseGroupAgentRef("group:g-1:a-1")).toEqual({ groupId: "g-1", agentId: "a-1" });
+    // The pre-multi single-agent form fails closed (migration rewrote it away).
+    expect(parseGroupAgentRef("group:g-1")).toBeNull();
+    expect(parseGroupAgentRef("group:g-1:")).toBeNull();
+    expect(parseGroupAgentRef("group::a-1")).toBeNull();
+    expect(parseGroupAgentRef("group:g-1:a-1:extra")).toBeNull();
+    expect(parseGroupAgentRef("group:")).toBeNull();
+    expect(parseGroupAgentRef("external:g-1")).toBeNull();
+    expect(parseGroupAgentRef("plain-uuid")).toBeNull();
   });
 
   it("captureAllowed = members-scope OR admin role", () => {
@@ -189,14 +292,15 @@ describe("group-agent helpers", () => {
     expect(groupAgentCaptureAllowed({ captureScope: "admins" }, "admin")).toBe(true);
   });
 
-  it("findChattableGroupAgent gates on prefix, existence, enabled, membership", () => {
+  it("findChattableGroupAgent gates on ref, existence, group match, enabled, membership", () => {
     const { store } = services("gate");
     const member = store.createUser({ username: "m", displayName: "M", password: "password123" });
     const outsider = store.createUser({ username: "o", displayName: "O", password: "password123" });
     const group = store.createGroup({ name: "Team" });
+    const otherGroup = store.createGroup({ name: "Other" });
     store.addGroupMember(group.id, member.id, "admin");
-    store.upsertGroupAgent(group.id, { displayName: "팀 에이전트" });
-    const id = groupAgentAvatarId(group.id);
+    const agent = store.createGroupAgent(group.id, { displayName: "팀 에이전트" })!;
+    const id = groupAgentAvatarId(group.id, agent.id);
 
     expect(findChattableGroupAgent(store, member.id, id)).toMatchObject({
       groupId: group.id,
@@ -204,10 +308,14 @@ describe("group-agent helpers", () => {
       viewerRole: "admin",
     });
     expect(findChattableGroupAgent(store, outsider.id, id)).toBeNull();
-    expect(findChattableGroupAgent(store, member.id, "group:ghost")).toBeNull();
+    expect(findChattableGroupAgent(store, member.id, "group:ghost:ghost")).toBeNull();
     expect(findChattableGroupAgent(store, member.id, member.id)).toBeNull();
+    // A real agent id under the WRONG group id fails closed.
+    expect(
+      findChattableGroupAgent(store, member.id, groupAgentAvatarId(otherGroup.id, agent.id)),
+    ).toBeNull();
 
-    store.setGroupAgentEnabled(group.id, false);
+    store.updateGroupAgent(agent.id, { enabled: false });
     expect(findChattableGroupAgent(store, member.id, id)).toBeNull();
     expect(
       findChattableGroupAgent(store, member.id, id, { includeDisabled: true })?.agent.enabled,
@@ -218,8 +326,8 @@ describe("group-agent helpers", () => {
 describe("deriveAgentToolAccess (group-agent class)", () => {
   const base = {
     message: "m",
-    avatar: { id: "group:g", displayName: "팀", alias: "", persona: "" },
-    groupAgent: { groupId: "g", groupName: "팀", viewerRole: "member" as const, captureAllowed: true },
+    avatar: { id: "group:g:a", displayName: "팀", alias: "", persona: "" },
+    groupAgent: { groupId: "g", agentId: "a", groupName: "팀", viewerRole: "member" as const, captureAllowed: true },
   };
 
   it("pins the interactive class: elevated built-ins, never owner tools", () => {
@@ -286,11 +394,13 @@ describe("planMcpToolFamilies (run-kind tool containment)", () => {
 describe("group-agent prompt branch", () => {
   const req = (over: Partial<AgentRequest> = {}): AgentRequest => ({
     message: "안녕",
-    avatar: { id: "group:g", displayName: "팀 에이전트", alias: "", persona: "" },
+    avatar: { id: "group:g:a", displayName: "팀 에이전트", alias: "", persona: "" },
     viewerName: "지영",
-    groupAgent: { groupId: "g", groupName: "플랫폼팀", viewerRole: "member", captureAllowed: true },
+    groupAgent: { groupId: "g", agentId: "a", groupName: "플랫폼팀", viewerRole: "member", captureAllowed: true },
     groupAgentState: {
       groupId: "g",
+      agentId: "a",
+      displayName: "팀 에이전트",
       groupName: "플랫폼팀",
       enabled: true,
       captureScope: "members",
@@ -335,7 +445,7 @@ describe("group-agent prompt branch", () => {
   it("switches to the capture-denied guidance under the admins-only policy", () => {
     const p = buildPrompt(
       req({
-        groupAgent: { groupId: "g", groupName: "플랫폼팀", viewerRole: "member", captureAllowed: false },
+        groupAgent: { groupId: "g", agentId: "a", groupName: "플랫폼팀", viewerRole: "member", captureAllowed: false },
         groupAgentState: {
           ...req().groupAgentState!,
           captureScope: "admins",
@@ -391,21 +501,22 @@ describe("group-agent tool factories", () => {
     const member = store.createUser({ username: "member", displayName: "멤버", password: "password123" });
     const group = store.createGroup({ name: "팀" });
     store.addGroupMember(group.id, member.id, "member");
-    store.upsertGroupAgent(group.id, {
+    const agent = store.createGroupAgent(group.id, {
       displayName: "팀 에이전트",
       captureScope: opts.captureScope ?? "members",
-    });
+    })!;
     if (opts.repo !== false) {
       const remote = makeBareRemote(path.join(tempDir(), dir, "team.git"));
       store.setGroupKnowledgeRepo(group.id, remote, null);
     }
     const ctx = {
       groupId: group.id,
+      agentId: agent.id,
       groupName: "팀",
       actingUser: { id: member.id, username: "member", displayName: "멤버" },
       config,
     };
-    return { store, config, group, member, ctx };
+    return { store, config, group, agent, member, ctx };
   }
 
   it("exposes the pinned subset (no list_groups / create_repo)", () => {
@@ -452,14 +563,23 @@ describe("group-agent tool factories", () => {
   });
 
   it("refuses mid-run when the agent is disabled or the member was removed", async () => {
-    const { store, ctx, group, member } = setup("live-gates");
+    const { store, ctx, agent, group, member } = setup("live-gates");
     const tools = buildGroupAgentRepoTools(store, ctx);
-    store.setGroupAgentEnabled(group.id, false);
+    store.updateGroupAgent(agent.id, { enabled: false });
     const disabled = await callTool(tools, "list_files", {});
     expect(disabled.isError).toBe(true);
     expect(disabled.content[0].text).toContain("disabled by a group admin");
 
-    store.setGroupAgentEnabled(group.id, true);
+    store.updateGroupAgent(agent.id, { enabled: true });
+    // A SIBLING agent being enabled must not satisfy THIS agent's gate.
+    const sibling = store.createGroupAgent(group.id, { displayName: "다른 봇" })!;
+    const siblingTools = buildGroupAgentRepoTools(store, { ...ctx, agentId: sibling.id });
+    store.updateGroupAgent(sibling.id, { enabled: false });
+    const siblingDisabled = await callTool(siblingTools, "list_files", {});
+    expect(siblingDisabled.isError).toBe(true);
+    const stillOk = await callTool(tools, "list_files", {});
+    expect(stillOk.isError).toBeFalsy();
+
     store.removeGroupMember(group.id, member.id);
     const removed = await callTool(tools, "list_files", {});
     expect(removed.isError).toBe(true);
@@ -470,6 +590,7 @@ describe("group-agent tool factories", () => {
     const noRepo = setup("brain-norepo", { repo: false });
     const brainNoRepo = buildGroupAgentBrainTools(noRepo.store, {
       groupId: noRepo.group.id,
+      agentId: noRepo.agent.id,
       groupName: "팀",
       actingUserId: noRepo.member.id,
       config: noRepo.config,
@@ -481,6 +602,7 @@ describe("group-agent tool factories", () => {
     const withRepo = setup("brain-novault");
     const brain = buildGroupAgentBrainTools(withRepo.store, {
       groupId: withRepo.group.id,
+      agentId: withRepo.agent.id,
       groupName: "팀",
       actingUserId: withRepo.member.id,
       config: withRepo.config,
@@ -494,19 +616,20 @@ describe("group-agent tool factories", () => {
   });
 
   it("describe_system reports the group self-state for group-agent runs", async () => {
-    const { store, config, group, member } = setup("describe");
+    const { store, config, group, agent, member } = setup("describe");
+    const avatarId = groupAgentAvatarId(group.id, agent.id);
     const tools = buildSystemTools(store, {
-      avatarUserId: groupAgentAvatarId(group.id),
-      owner: { id: groupAgentAvatarId(group.id), username: "", displayName: "팀 에이전트", alias: "" },
+      avatarUserId: avatarId,
+      owner: { id: avatarId, username: "", displayName: "팀 에이전트", alias: "" },
       viewerIsOwner: false,
       config,
-      groupAgent: { groupId: group.id, actingUserId: member.id },
+      groupAgent: { agentId: agent.id, actingUserId: member.id },
     });
     const res = await callTool(tools, "describe_system", {});
     expect(res.isError).toBeFalsy();
     const body = res.content[0].text;
     expect(body).toContain("Current GROUP SHARED-AGENT state:");
-    expect(body).toContain("shared agent of the group '팀'");
+    expect(body).toContain("shared agent '팀 에이전트' of the group '팀'");
     expect(body).toContain("all group members may capture");
     expect(body).toContain("(role: member) MAY capture");
     expect(body).toContain("not set — capture's commit/push will fail");
@@ -514,14 +637,15 @@ describe("group-agent tool factories", () => {
   });
 
   it("describe_system lists only the REGISTERED tool groups and fails closed on a removed member", async () => {
-    const { store, config, group, member } = setup("describe-registered");
+    const { store, config, group, agent, member } = setup("describe-registered");
+    const avatarId = groupAgentAvatarId(group.id, agent.id);
     const plan = planMcpToolFamilies(MCP_TOOL_GROUPS.map((g) => g.id), true);
     const tools = buildSystemTools(store, {
-      avatarUserId: groupAgentAvatarId(group.id),
-      owner: { id: groupAgentAvatarId(group.id), username: "", displayName: "팀 에이전트", alias: "" },
+      avatarUserId: avatarId,
+      owner: { id: avatarId, username: "", displayName: "팀 에이전트", alias: "" },
       viewerIsOwner: false,
       config,
-      groupAgent: { groupId: group.id, actingUserId: member.id },
+      groupAgent: { agentId: agent.id, actingUserId: member.id },
       enabledMcpToolGroups: plan.registered,
     });
     const res = await callTool(tools, "describe_system", {});
@@ -537,7 +661,7 @@ describe("group-agent tool factories", () => {
 
     // Removed mid-turn: the state report must fail closed, matching the tools.
     store.removeGroupMember(group.id, member.id);
-    const gone = summarizeGroupAgentState(store, config, group.id, member.id);
+    const gone = summarizeGroupAgentState(store, config, agent.id, member.id);
     expect(gone).toMatchObject({ viewerRole: null, captureAllowed: false });
     const res2 = await callTool(tools, "describe_system", {});
     expect(res2.content[0].text).toContain(
@@ -554,7 +678,7 @@ describe("group-agent routes", () => {
     return { ...svc, app };
   }
 
-  it("manages the agent via canManageGroup and echoes it on GET /api/me/groups", async () => {
+  it("manages agents via canManageGroup and echoes them on GET /api/me/groups", async () => {
     const { app } = boot("routes-manage");
     const admin = request.agent(app);
     await signup(admin, "sys-admin").expect(201);
@@ -568,32 +692,56 @@ describe("group-agent routes", () => {
     await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "lead", role: "admin" }).expect(200);
     await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "plain" }).expect(200);
 
-    await lead.put("/api/me/groups/ghost/agent").send({ displayName: "X" }).expect(404);
-    await plain.put(`/api/me/groups/${groupId}/agent`).send({ displayName: "X" }).expect(403);
-    await lead.put(`/api/me/groups/${groupId}/agent`).send({}).expect(400);
+    await lead.post("/api/me/groups/ghost/agents").send({ displayName: "X" }).expect(404);
+    await plain.post(`/api/me/groups/${groupId}/agents`).send({ displayName: "X" }).expect(403);
+    await lead.post(`/api/me/groups/${groupId}/agents`).send({}).expect(400);
     await lead
-      .put(`/api/me/groups/${groupId}/agent`)
+      .post(`/api/me/groups/${groupId}/agents`)
       .send({ displayName: "팀 비서", captureScope: "sideways" })
       .expect(400);
 
     const saved = await lead
-      .put(`/api/me/groups/${groupId}/agent`)
+      .post(`/api/me/groups/${groupId}/agents`)
       .send({ displayName: "팀 비서", persona: "간결하게", captureScope: "admins" })
       .expect(200);
+    const agentId = saved.body.agent.id as string;
     expect(saved.body.agent).toMatchObject({
       displayName: "팀 비서",
       captureScope: "admins",
       enabled: true,
     });
 
+    // A SECOND agent in the same group; members see both on /api/me/groups.
+    const second = await lead
+      .post(`/api/me/groups/${groupId}/agents`)
+      .send({ displayName: "회의록 봇" })
+      .expect(200);
     const mine = await plain.get("/api/me/groups").expect(200);
-    expect(mine.body.groups[0].agent).toMatchObject({ displayName: "팀 비서" });
+    expect(mine.body.groups[0].agents.map((a: { displayName: string }) => a.displayName)).toEqual([
+      "팀 비서",
+      "회의록 봇",
+    ]);
+
+    // PATCH gates: wrong group / non-manager / empty name / bad scope.
+    await lead.patch(`/api/me/groups/ghost/agents/${agentId}`).send({ enabled: false }).expect(404);
+    await lead.patch(`/api/me/groups/${groupId}/agents/ghost`).send({ enabled: false }).expect(404);
+    await plain.patch(`/api/me/groups/${groupId}/agents/${agentId}`).send({ enabled: false }).expect(403);
+    await lead.patch(`/api/me/groups/${groupId}/agents/${agentId}`).send({ displayName: "  " }).expect(400);
 
     // A NON-member system admin may manage too (canManageGroup).
-    await admin
-      .put(`/api/me/groups/${groupId}/agent`)
-      .send({ displayName: "팀 비서", enabled: false })
+    const disabled = await admin
+      .patch(`/api/me/groups/${groupId}/agents/${agentId}`)
+      .send({ enabled: false })
       .expect(200);
+    expect(disabled.body.agent).toMatchObject({ enabled: false, displayName: "팀 비서" });
+
+    // DELETE removes one agent, leaving the sibling.
+    await plain.delete(`/api/me/groups/${groupId}/agents/${agentId}`).expect(403);
+    await lead.delete(`/api/me/groups/${groupId}/agents/${agentId}`).expect(200);
+    await lead.delete(`/api/me/groups/${groupId}/agents/${agentId}`).expect(404);
+    const afterDelete = await plain.get("/api/me/groups").expect(200);
+    expect(afterDelete.body.groups[0].agents).toHaveLength(1);
+    expect(afterDelete.body.groups[0].agents[0].id).toBe(second.body.agent.id);
   });
 
   it("shows the agent to members only, across list/detail/skills/models", async () => {
@@ -608,8 +756,8 @@ describe("group-agent routes", () => {
     const created = await admin.post("/api/admin/groups").send({ name: "Team" }).expect(200);
     const groupId = created.body.group.id as string;
     await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "member" }).expect(200);
-    const agentId = `group:${groupId}`;
-    store.upsertGroupAgent(groupId, { displayName: "팀 비서", bio: "팀 공용" });
+    const agentRow = store.createGroupAgent(groupId, { displayName: "팀 비서", bio: "팀 공용" })!;
+    const agentId = groupAgentAvatarId(groupId, agentRow.id);
 
     const list = await member.get("/api/avatars").expect(200);
     const card = list.body.avatars.find((a: { id: string }) => a.id === agentId);
@@ -635,7 +783,7 @@ describe("group-agent routes", () => {
     await outsider.get(`/api/avatars/${encodeURIComponent(agentId)}/models`).expect(404);
 
     // Disabling hides it from discovery entirely.
-    store.setGroupAgentEnabled(groupId, false);
+    store.updateGroupAgent(agentRow.id, { enabled: false });
     const hidden = await member.get("/api/avatars").expect(200);
     expect(hidden.body.avatars.some((a: { id: string }) => a.id === agentId)).toBe(false);
     await member.get(`/api/avatars/${encodeURIComponent(agentId)}`).expect(404);
@@ -653,8 +801,8 @@ describe("group-agent routes", () => {
     const created = await admin.post("/api/admin/groups").send({ name: "Team" }).expect(200);
     const groupId = created.body.group.id as string;
     await admin.post(`/api/admin/groups/${groupId}/members`).send({ username: "member" }).expect(200);
-    store.upsertGroupAgent(groupId, { displayName: "팀 비서", captureScope: "members" });
-    const agentId = `group:${groupId}`;
+    const agentRow = store.createGroupAgent(groupId, { displayName: "팀 비서", captureScope: "members" })!;
+    const agentId = groupAgentAvatarId(groupId, agentRow.id);
 
     // Reach is MEMBERSHIP-only: even with avatar sharing OFF the agent works.
     await admin
@@ -674,6 +822,7 @@ describe("group-agent routes", () => {
       trustedViaGroups: [],
       groupAgent: {
         groupId,
+        agentId: agentRow.id,
         groupName: "Team",
         viewerRole: "member",
         captureAllowed: true,
@@ -695,7 +844,7 @@ describe("group-agent routes", () => {
       .expect(403);
 
     // Member-visible DISABLED agent gets the dedicated message on the next turn.
-    store.setGroupAgentEnabled(groupId, false);
+    store.updateGroupAgent(agentRow.id, { enabled: false });
     const disabled = await member
       .post("/api/chat/stream")
       .send({ avatarId: agentId, conversationId: "ga-c1", message: "계속" })
@@ -711,22 +860,23 @@ describe("group-agent routes", () => {
     await signup(admin, "sys-admin").expect(201);
     const created = await admin.post("/api/admin/groups").send({ name: "Team" }).expect(200);
     const groupId = created.body.group.id as string;
-    store.upsertGroupAgent(groupId, { displayName: "팀 비서" });
-    const agentId = `group:${groupId}`;
+    const agentRow = store.createGroupAgent(groupId, { displayName: "팀 비서" })!;
+    const agentId = groupAgentAvatarId(groupId, agentRow.id);
+    const imagePath = `/api/me/groups/${groupId}/agents/${agentRow.id}/image`;
     const png =
       "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
-    await admin.put(`/api/me/groups/${groupId}/agent/image`).send({ image: png }).expect(200);
+    await admin.put(imagePath).send({ image: png }).expect(200);
     const image = await admin.get(`/api/users/${encodeURIComponent(agentId)}/avatar-image`).expect(200);
     expect(image.headers["content-type"]).toContain("image/png");
 
-    await admin.delete(`/api/me/groups/${groupId}/agent/image`).expect(200);
+    await admin.delete(imagePath).expect(200);
     await admin.get(`/api/users/${encodeURIComponent(agentId)}/avatar-image`).expect(404);
 
     // Group deletion sweeps the on-disk leftovers: clone dir + image file +
     // every member's chat-image/file dirs for the agent's conversations (the
     // ids are snapshotted BEFORE the row cascade erases them).
-    await admin.put(`/api/me/groups/${groupId}/agent/image`).send({ image: png }).expect(200);
+    await admin.put(imagePath).send({ image: png }).expect(200);
     const cloneDir = groupKnowledgeClonePath(groupId, config);
     fs.mkdirSync(cloneDir, { recursive: true });
     const sysAdminId = store.getUserByUsername("sys-admin")!.id;
@@ -743,6 +893,6 @@ describe("group-agent routes", () => {
     expect(fs.existsSync(imgDir)).toBe(false);
     expect(fs.existsSync(fileDir)).toBe(false);
     await admin.get(`/api/users/${encodeURIComponent(agentId)}/avatar-image`).expect(404);
-    expect(store.getGroupAgent(groupId)).toBeNull();
+    expect(store.listGroupAgents(groupId)).toEqual([]);
   });
 });

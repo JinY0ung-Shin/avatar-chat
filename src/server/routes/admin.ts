@@ -429,28 +429,40 @@ export function createAdminRouter(deps: RouterDeps): Router {
   );
 
   router.delete("/api/admin/groups/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
-    // Capture the agent's image ext AND its conversation ids BEFORE the row
-    // cascade removes them — the per-conversation chat-image/file dirs are
-    // keyed by ids the cascade erases (mirrors the user-delete snapshot).
-    const agentAvatarId = groupAgentAvatarId(req.params.id);
-    const agentImageExt = store.getGroupAgentImageExtByAvatarId(agentAvatarId);
-    const conversationIds = store.listConversationIdsForAvatar(agentAvatarId);
+    // Snapshot EVERY agent's artifacts BEFORE the row cascade removes them —
+    // the per-conversation chat-image/file dirs, image files, and workspace
+    // trees are keyed by ids the cascade erases (mirrors the user-delete
+    // snapshot). A group may have several shared agents.
+    const agentArtifacts = store.listGroupAgents(req.params.id).map((agent) => {
+      const avatarId = groupAgentAvatarId(req.params.id, agent.id);
+      return {
+        avatarId,
+        imageExt: store.getGroupAgentImageExtByAvatarId(avatarId),
+        conversationIds: store.listConversationIdsForAvatar(avatarId),
+      };
+    });
     const removed = store.deleteGroup(req.params.id);
     if (!removed) {
       apiError(res, 404, "그룹을 찾을 수 없습니다.");
       return;
     }
     // Best-effort disk cleanup after the DB cascade: the group-knowledge clone
-    // (pre-existing leak — possibly a private repo), the agent's workspaces,
-    // its profile-image file, and every member's chat image/file dirs for the
-    // agent's now-deleted conversations. Never throw — a cleanup failure must
+    // (pre-existing leak — possibly a private repo), each agent's workspaces,
+    // profile-image file, and every member's chat image/file dirs for the
+    // agents' now-deleted conversations. Never throw — a cleanup failure must
     // not turn a successful deletion into a 500.
     try {
-      cleanupGroupDataDirs(config, req.params.id);
-      deleteAvatarImageFile(config, agentAvatarId, agentImageExt);
-      for (const conversationId of conversationIds) {
-        deleteConversationImages(config, conversationId);
-        deleteConversationFiles(config, conversationId);
+      cleanupGroupDataDirs(
+        config,
+        req.params.id,
+        agentArtifacts.map((artifact) => artifact.avatarId),
+      );
+      for (const artifact of agentArtifacts) {
+        deleteAvatarImageFile(config, artifact.avatarId, artifact.imageExt);
+        for (const conversationId of artifact.conversationIds) {
+          deleteConversationImages(config, conversationId);
+          deleteConversationFiles(config, conversationId);
+        }
       }
     } catch (err) {
       logger.warn({ err, groupId: req.params.id }, "post-delete disk cleanup failed");

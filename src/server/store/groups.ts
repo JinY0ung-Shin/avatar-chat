@@ -80,13 +80,7 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const rows = this.db
         .prepare("SELECT * FROM groups ORDER BY name COLLATE NOCASE ASC")
         .all() as GroupRow[];
-      const agentEnabledStmt = this.db.prepare(
-        "SELECT enabled FROM group_agents WHERE group_id = ?",
-      );
       return rows.map((row) => {
-        const agentRow = agentEnabledStmt.get(row.id) as
-          | { enabled: number }
-          | undefined;
         return {
           ...this.toGroup(row),
           memberCount: this.count("SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?", row.id),
@@ -94,7 +88,14 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
             "SELECT COUNT(*) AS c FROM group_members WHERE group_id = ? AND role = 'admin'",
             row.id,
           ),
-          agentEnabled: agentRow ? agentRow.enabled === 1 : null,
+          agentCount: this.count(
+            "SELECT COUNT(*) AS c FROM group_agents WHERE group_id = ?",
+            row.id,
+          ),
+          enabledAgentCount: this.count(
+            "SELECT COUNT(*) AS c FROM group_agents WHERE group_id = ? AND enabled = 1",
+            row.id,
+          ),
         };
       });
     }
@@ -157,21 +158,30 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       if (!this.groupRowById(id)) {
         return false;
       }
-      const agentAvatarId = groupAgentAvatarId(id);
+      // EVERY shared agent's avatar id (a group may have several).
+      const agentAvatarIds = (
+        this.db
+          .prepare("SELECT id FROM group_agents WHERE group_id = ?")
+          .all(id) as { id: string }[]
+      ).map((row) => groupAgentAvatarId(id, row.id));
       const tx = this.db.transaction(() => {
-        const convRows = this.db
-          .prepare("SELECT id FROM conversations WHERE avatar_user_id = ?")
-          .all(agentAvatarId) as { id: string }[];
+        const convStmt = this.db.prepare(
+          "SELECT id FROM conversations WHERE avatar_user_id = ?",
+        );
         const delMsgs = this.db.prepare(
           "DELETE FROM messages WHERE conversation_id = ?",
         );
-        for (const c of convRows) {
-          this.deleteCanvasArtifactsForConversation(c.id);
-          delMsgs.run(c.id);
+        const delConvs = this.db.prepare(
+          "DELETE FROM conversations WHERE avatar_user_id = ?",
+        );
+        for (const agentAvatarId of agentAvatarIds) {
+          const convRows = convStmt.all(agentAvatarId) as { id: string }[];
+          for (const c of convRows) {
+            this.deleteCanvasArtifactsForConversation(c.id);
+            delMsgs.run(c.id);
+          }
+          delConvs.run(agentAvatarId);
         }
-        this.db
-          .prepare("DELETE FROM conversations WHERE avatar_user_id = ?")
-          .run(agentAvatarId);
         this.db.prepare("DELETE FROM group_agents WHERE group_id = ?").run(id);
         this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(id);
         this.db.prepare("DELETE FROM groups WHERE id = ?").run(id);

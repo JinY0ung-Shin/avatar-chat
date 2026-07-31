@@ -498,7 +498,9 @@
       {#if group.knowledgeRepo}<span class="tag accent">공용 저장소</span>{/if}
       {#if group.allowedMcpToolGroups}<span class="tag danger">도구 제한 {group.allowedMcpToolGroups.length}/{MCP_TOOL_GROUPS.length}</span>{/if}
       {#if !group.avatarSharing}<span class="tag read">아바타 상호 공개 꺼짐</span>{/if}
-      {#if group.agentEnabled === true}<span class="tag write">그룹 에이전트</span>{:else if group.agentEnabled === false}<span class="tag read">그룹 에이전트 비활성</span>{/if}
+      {#if group.agentCount > 0}
+        <span class="tag {group.enabledAgentCount > 0 ? 'write' : 'read'}">그룹 에이전트 {group.enabledAgentCount}/{group.agentCount}</span>
+      {/if}
     </div>
     <div class="ar-actions">
       <button

@@ -137,6 +137,8 @@ export function buildGroupBrainServer(store: Store, ctx: GroupBrainToolsContext)
 /** Context for a GROUP SHARED-AGENT run's team-brain recall tools. */
 export interface GroupAgentBrainToolsContext {
   groupId: string;
+  /** WHICH shared agent this run is; the enabled flag is re-read per call. */
+  agentId: string;
   groupName: string;
   /** The acting member (their token clones; their membership gates reads). */
   actingUserId: string;
@@ -160,7 +162,8 @@ const AGENT_NO_REPO =
  */
 export function buildGroupAgentBrainTools(store: Store, ctx: GroupAgentBrainToolsContext) {
   const resolveRead = (): Resolved<GroupKnowledgeRepoContext> => {
-    if (!store.getGroupAgent(ctx.groupId)?.enabled) {
+    const agent = store.getGroupAgentById(ctx.agentId);
+    if (!agent || agent.groupId !== ctx.groupId || !agent.enabled) {
       return { ok: false, result: text(AGENT_DISABLED, true) };
     }
     if (!store.groupRoleFor(ctx.actingUserId, ctx.groupId)) {

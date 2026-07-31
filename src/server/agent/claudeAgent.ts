@@ -674,7 +674,7 @@ export async function runClaudeAgent(
     ? summarizeGroupAgentState(
         store,
         config,
-        groupAgentRun.groupId,
+        groupAgentRun.agentId,
         request.viewerUserId ?? "",
       )
     : null;
@@ -761,7 +761,7 @@ export async function runClaudeAgent(
     // (summarizeGroupAgentState) instead of an owner block; management tools
     // keep refusing via viewerIsOwner.
     groupAgent: groupAgentRun
-      ? { groupId: groupAgentRun.groupId, actingUserId: actingMember.id }
+      ? { agentId: groupAgentRun.agentId, actingUserId: actingMember.id }
       : undefined,
     // The working repo opened for this conversation (NAME only — the clone path is
     // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
@@ -847,6 +847,7 @@ export async function runClaudeAgent(
   const groupRepoServer = groupAgentRun
     ? buildGroupAgentRepoServer(store, {
         groupId: groupAgentRun.groupId,
+        agentId: groupAgentRun.agentId,
         groupName: groupAgentRun.groupName,
         actingUser: actingMember,
         config,
@@ -871,6 +872,7 @@ export async function runClaudeAgent(
   const groupBrainServer = groupAgentRun
     ? buildGroupAgentBrainServer(store, {
         groupId: groupAgentRun.groupId,
+        agentId: groupAgentRun.agentId,
         groupName: groupAgentRun.groupName,
         actingUserId: actingMember.id,
         config,
