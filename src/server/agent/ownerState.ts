@@ -1,4 +1,9 @@
-import type { AppConfig, UserGroupMembership } from "../types.js";
+import type {
+  AppConfig,
+  GroupAgentState,
+  UserGroupMembership,
+} from "../types.js";
+import { groupAgentCaptureAllowed } from "../groupAgents.js";
 import type { Store } from "../store.js";
 
 /**
@@ -87,5 +92,63 @@ export function summarizeOwnerState(
     modelOverride: store.getModelOverride(),
     experimentalFeatures: store.getExperimentalFeatures(avatarUserId),
     sharedAccount: store.isSharedAccount(avatarUserId),
+  };
+}
+
+/**
+ * Inert OwnerState for runs that have NO owner (group shared agents): every
+ * user-scoped fact reads empty/false, so no personal capability can leak into
+ * a gate or prompt even by accident — the group-agent run derives its actual
+ * state from `summarizeGroupAgentState` below, never from this. Config-scoped
+ * model facts stay real (they aren't personal).
+ */
+export function emptyOwnerState(store: Store, config: AppConfig): OwnerState {
+  return {
+    knowledgeRepoConfigured: false,
+    knowledgeRepo: { repo: null, branch: null },
+    gitTokenSet: false,
+    secretNames: [],
+    shellExposedSecretNames: [],
+    groups: [],
+    gitRepoCount: 0,
+    openRequestCount: 0,
+    anthropicModel: config.anthropicModel,
+    modelOverride: store.getModelOverride(),
+    experimentalFeatures: [],
+    sharedAccount: false,
+  };
+}
+
+/** Read the group agent's current self-state (`GroupAgentState`, types.ts — the
+ *  group analogue of OwnerState with the same both-consumers invariant: it feeds
+ *  BOTH the group-agent prompt branch AND describe_system's group ctx). Repo
+ *  facts come from the GROUP row; the git token is the ACTING member's (groups
+ *  own no credentials — capture pushes borrow it). Null when the agent/group is
+ *  gone. */
+export function summarizeGroupAgentState(
+  store: Store,
+  config: AppConfig,
+  groupId: string,
+  actingUserId: string,
+): GroupAgentState | null {
+  const agent = store.getGroupAgent(groupId);
+  const group = store.getGroup(groupId);
+  if (!agent || !group) {
+    return null;
+  }
+  const viewerRole = store.groupRoleFor(actingUserId, groupId) ?? "member";
+  const repo = store.getGroupKnowledgeRepo(groupId);
+  return {
+    groupId,
+    groupName: group.name,
+    enabled: agent.enabled,
+    captureScope: agent.captureScope,
+    viewerRole,
+    captureAllowed: groupAgentCaptureAllowed(agent, viewerRole),
+    knowledgeRepoConfigured: Boolean(repo.repo),
+    knowledgeRepo: { repo: repo.repo, branch: repo.branch },
+    viewerGitTokenSet: Boolean(store.getGitToken(actingUserId)),
+    anthropicModel: config.anthropicModel,
+    modelOverride: store.getModelOverride(),
   };
 }

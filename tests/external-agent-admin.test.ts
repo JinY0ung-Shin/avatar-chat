@@ -265,9 +265,14 @@ describe("external agent admin API", () => {
     const app = createApp(services);
     const admin = request.agent(app);
     await signup(admin, "external-tamper-admin").expect(201);
+    const group = services.store.createGroup({ name: "tamper-group" });
     await admin
       .post("/api/admin/external-agents")
-      .send({ agent: input("https://gateway.example/v1/agents/messages") })
+      .send({
+        agent: input("https://gateway.example/v1/agents/messages", {
+          visibleToGroupIds: [group.id],
+        }),
+      })
       .expect(201);
     await admin.get("/api/admin/external-agents").expect(200);
 
@@ -349,6 +354,7 @@ describe("external agent admin API", () => {
     await signup(member, "external-policy-member").expect(201);
 
     await member.get("/api/admin/external-agents").expect(403);
+    const group = services.store.createGroup({ name: "policy-group" });
     const envList = await admin.get("/api/admin/external-agents").expect(200);
     expect(envList.body.agents[0]).toMatchObject({
       id: "environment-agent",
@@ -393,7 +399,11 @@ describe("external agent admin API", () => {
 
     await admin
       .post("/api/admin/external-agents")
-      .send({ agent: input("https://new.example/v1/agents/messages") })
+      .send({
+        agent: input("https://new.example/v1/agents/messages", {
+          visibleToGroupIds: [group.id],
+        }),
+      })
       .expect(201);
     await admin
       .put("/api/admin/external-agents/research")
@@ -402,6 +412,7 @@ describe("external agent admin API", () => {
           apiKeyMode: "keep",
           apiKey: undefined,
           system: "updated system",
+          visibleToGroupIds: [group.id],
         }),
       })
       .expect(200);
@@ -436,6 +447,7 @@ describe("external agent admin API", () => {
         agent: input("https://new.example/v1/agents/messages", {
           apiKeyMode: "clear",
           apiKey: undefined,
+          visibleToGroupIds: [group.id],
         }),
       })
       .expect(200);
@@ -455,9 +467,12 @@ describe("external agent admin API", () => {
       .body.user.id as string;
     const firstEndpoint = "https://gateway.example/v1/agents/messages";
     const nextEndpoint = "https://gateway-next.example/v1/agents/messages";
+    const group = services.store.createGroup({ name: "history-group" });
+    services.store.addGroupMember(group.id, adminId);
+    const grouped = { visibleToGroupIds: [group.id] };
     await admin
       .post("/api/admin/external-agents")
-      .send({ agent: input(firstEndpoint) })
+      .send({ agent: input(firstEndpoint, { ...grouped }) })
       .expect(201);
     services.store.touchConversation(
       adminId,
@@ -483,6 +498,7 @@ describe("external agent admin API", () => {
         agent: input(nextEndpoint, {
           apiKeyMode: "set",
           apiKey: "replacement-key",
+          ...grouped,
         }),
         confirmEndpointChange: true,
       })
@@ -504,6 +520,7 @@ describe("external agent admin API", () => {
         agent: input(nextEndpoint, {
           apiKeyMode: "set",
           apiKey: "replacement-key",
+          ...grouped,
         }),
         confirmEndpointChange: true,
       })
@@ -520,6 +537,9 @@ describe("external agent admin API", () => {
         ...envAgent("https://env-shadow.example/v1/agents/messages"),
         id: "research",
         displayName: "Shadowing Environment Agent",
+        // Visible to the viewer so the ENDPOINT-BINDING 409 (not the ACL 403)
+        // is what blocks the turn.
+        visibleToGroupIds: [group.id],
       },
     ];
     const blocked = await admin
@@ -541,6 +561,7 @@ describe("external agent admin API", () => {
           enabled: false,
           apiKeyMode: "keep",
           apiKey: undefined,
+          ...grouped,
         }),
       })
       .expect(200);
@@ -565,6 +586,11 @@ describe("external agent admin API", () => {
     const user = request.agent(app);
     const userId = (await signup(user, "external-legacy-user").expect(201)).body
       .user.id as string;
+    // Group-bind the env agent so the BINDING check (409), not the ACL gate
+    // (403), is what the turn hits.
+    const group = services.store.createGroup({ name: "legacy-group" });
+    services.store.addGroupMember(group.id, userId);
+    external.visibleToGroupIds = [group.id];
     const conversationId = "legacy-external-history";
     services.store.touchConversation(
       userId,

@@ -21,6 +21,17 @@ export { conversationHistoryForPrompt, expandChatSlashCommand };
 
 export function createServices(configOverrides: Partial<AppConfig> = {}): AppServices {
   const config = loadConfig(configOverrides);
+  // Group binding is required for external avatars to be visible; a legacy env
+  // entry without one still parses (never break boot over it) but is dark until
+  // the operator adds `visibleToGroupIds` to EXTERNAL_AGENTS_JSON.
+  for (const agent of config.externalAgents ?? []) {
+    if (!agent.visibleToGroupIds?.length) {
+      logger.warn(
+        { externalAgentId: agent.id },
+        "external agent has no visibleToGroupIds and is visible to no one",
+      );
+    }
+  }
   const store = new Store(config);
   return { config, store };
 }

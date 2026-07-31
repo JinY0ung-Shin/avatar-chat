@@ -1,5 +1,5 @@
 <script lang="ts" context="module">
-  import type { GroupMember } from "../lib/types";
+  import type { GroupAgent, GroupMember } from "../lib/types";
   import type { McpToolGroupId } from "../../../shared/mcpToolGroups";
 
   // The richer per-group shape returned by GET /api/me/groups (members + repo),
@@ -13,6 +13,10 @@
     knowledgeSelected: string[] | null;
     /** System-admin tool policy for this group (read-only here); null = none. */
     allowedMcpToolGroups: McpToolGroupId[] | null;
+    /** Group policy: off = knowledge-sharing-only (no avatar reach/trust between members). */
+    avatarSharing: boolean;
+    /** The group's shared agent (disabled included, for managers); null = none. */
+    agent: GroupAgent | null;
     members: GroupMember[];
   }
 </script>
@@ -506,6 +510,201 @@
 
   const listboxId = `group-search-${newId()}`;
 
+  // ---- group shared agent (그룹 에이전트) ----
+  const agentAvatarId = () => `group:${group.id}`;
+  let agentSaving = false;
+  let agentChatBusy = false;
+  let agentPicBusy = false;
+  let agentFormOpen = false;
+  let agentDisplayName = "";
+  let agentAlias = "";
+  let agentBio = "";
+  let agentIntro = "";
+  let agentPersona = "";
+  let agentCaptureScope: "members" | "admins" = "members";
+
+  function openAgentForm(): void {
+    const a = group.agent;
+    agentDisplayName = a?.displayName ?? `${group.name} 에이전트`;
+    agentAlias = a?.alias ?? "";
+    agentBio = a?.bio ?? "";
+    agentIntro = a?.intro ?? "";
+    agentPersona = a?.persona ?? "";
+    agentCaptureScope = a?.captureScope ?? "members";
+    agentFormOpen = true;
+  }
+
+  async function saveAgent(): Promise<void> {
+    if (agentSaving) return;
+    if (!agentDisplayName.trim()) {
+      notify("에이전트 이름을 입력해 주세요.", "warn");
+      return;
+    }
+    agentSaving = true;
+    try {
+      await api(`/api/me/groups/${encodeURIComponent(group.id)}/agent`, {
+        method: "PUT",
+        body: JSON.stringify({
+          displayName: agentDisplayName.trim(),
+          alias: agentAlias,
+          bio: agentBio,
+          intro: agentIntro,
+          persona: agentPersona,
+          captureScope: agentCaptureScope,
+        }),
+      });
+      notify(`"${group.name}" 그룹 에이전트를 저장했습니다.`, "ok");
+      agentFormOpen = false;
+      try {
+        await reload();
+      } catch (err) {
+        notify(`저장은 됐지만 그룹 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+      }
+    } catch (err) {
+      notify(`그룹 에이전트 저장 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      agentSaving = false;
+    }
+  }
+
+  async function toggleAgentEnabled(on: boolean): Promise<void> {
+    if (agentSaving || !group.agent) return;
+    agentSaving = true;
+    try {
+      await api(`/api/me/groups/${encodeURIComponent(group.id)}/agent`, {
+        method: "PUT",
+        body: JSON.stringify({ displayName: group.agent.displayName, enabled: on }),
+      });
+      notify(
+        on
+          ? `"${group.agent.displayName}"을(를) 활성화했습니다.`
+          : `"${group.agent.displayName}"을(를) 비활성화했습니다. 다음 대화부터 차단되며 기존 대화 기록은 유지됩니다.`,
+        "ok",
+      );
+      try {
+        await reload();
+      } catch (err) {
+        notify(`설정은 저장했지만 그룹 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+      }
+    } catch (err) {
+      notify(`그룹 에이전트 설정 변경 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      agentSaving = false;
+    }
+  }
+
+  async function chatWithAgent(): Promise<void> {
+    if (agentChatBusy || !group.agent) return;
+    agentChatBusy = true;
+    try {
+      await startChatWith({
+        id: agentAvatarId(),
+        username: `group-${group.id}`,
+        displayName: group.agent.displayName,
+        alias: group.agent.alias,
+        bio: group.agent.bio,
+        hashtags: group.agent.hashtags,
+        hasImage: group.agent.hasImage,
+        pluginCount: 0,
+        visibility: "group",
+        updatedAt: null,
+        runtime: "native",
+        groupAgent: { groupId: group.id, groupName: group.name },
+      });
+    } catch (err) {
+      notify(`그룹 에이전트와의 대화를 열지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      agentChatBusy = false;
+    }
+  }
+
+  async function uploadAgentImage(event: Event): Promise<void> {
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = "";
+    if (!file || agentPicBusy) return;
+    agentPicBusy = true;
+    try {
+      const image = await resizeImageToDataUrl(file, 256);
+      await api(`/api/me/groups/${encodeURIComponent(group.id)}/agent/image`, {
+        method: "PUT",
+        body: JSON.stringify({ image }),
+      });
+      notify("그룹 에이전트 사진을 변경했습니다.", "ok");
+      await reload();
+    } catch (err) {
+      notify(`사진 업로드 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      agentPicBusy = false;
+    }
+  }
+
+  async function deleteAgentImage(): Promise<void> {
+    if (agentPicBusy) return;
+    agentPicBusy = true;
+    try {
+      await api(`/api/me/groups/${encodeURIComponent(group.id)}/agent/image`, {
+        method: "DELETE",
+      });
+      notify("그룹 에이전트 사진을 삭제했습니다.", "ok");
+      await reload();
+    } catch (err) {
+      notify(`사진 삭제 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      agentPicBusy = false;
+    }
+  }
+
+  /** File → resized square data URL (mirrors SettingsProfileTab's resizeImage). */
+  async function resizeImageToDataUrl(file: File, max: number): Promise<string> {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(new Error("파일을 읽지 못했습니다."));
+      reader.readAsDataURL(file);
+    });
+    const img = new Image();
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve();
+      img.onerror = () => reject(new Error("이미지를 해석하지 못했습니다."));
+      img.src = dataUrl;
+    });
+    const scale = Math.min(1, max / Math.max(img.width, img.height));
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(img.width * scale));
+    canvas.height = Math.max(1, Math.round(img.height * scale));
+    canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/png");
+  }
+
+  // ---- avatar-sharing policy (group admins) ----
+  let sharingSaving = false;
+  async function toggleAvatarSharing(on: boolean): Promise<void> {
+    if (sharingSaving) return;
+    sharingSaving = true;
+    try {
+      await api(`/api/me/groups/${encodeURIComponent(group.id)}/avatar-sharing`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled: on }),
+      });
+      notify(
+        on
+          ? `"${group.name}" 그룹의 멤버 아바타 상호 공개를 켰습니다.`
+          : `"${group.name}" 그룹의 멤버 아바타 상호 공개를 껐습니다. 이제 이 그룹은 지식 공유 전용이에요.`,
+        "ok",
+      );
+      try {
+        await reload();
+      } catch (err) {
+        notify(`설정은 저장했지만 그룹 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+      }
+    } catch (err) {
+      notify(`멤버 아바타 상호 공개 설정을 저장하지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      sharingSaving = false;
+    }
+  }
+
   function summarizeRepoContentsError(message: string): string {
     const lower = message.toLowerCase();
     if (lower.includes("repository not found")) return "저장소를 찾지 못했습니다. 저장소 주소 또는 접근 권한을 확인해 주세요.";
@@ -526,7 +725,111 @@
     {:else}
       <span class="tag read">그룹원</span>
     {/if}
+    {#if !group.avatarSharing}
+      <span class="tag read">지식 공유 전용</span>
+    {/if}
   </div>
+
+  {#if amAdmin}
+    <label class="shared-account-item">
+      <input
+        type="checkbox"
+        checked={group.avatarSharing}
+        disabled={sharingSaving}
+        aria-busy={sharingSaving}
+        on:change={(event) => toggleAvatarSharing(event.currentTarget.checked)}
+      />
+      <span class="shared-account-meta">
+        <strong>멤버 아바타 상호 공개</strong>
+        <span class="muted">켜면 같은 그룹원끼리 서로의 아바타를 찾고 대화할 수 있어요(신뢰 권한 포함). 끄면 이 그룹은 지식 공유 전용이 되어 그룹원 아바타가 서로에게 보이지 않아요. 공용 지식 저장소는 계속 함께 사용합니다.</span>
+      </span>
+    </label>
+  {:else if !group.avatarSharing}
+    <p class="muted">이 그룹은 멤버 아바타 상호 공개가 꺼져 있어요(지식 공유 전용). 그룹원 아바타와의 대화는 그룹 관리자가 다시 켜면 가능해집니다.</p>
+  {/if}
+
+  <h4 class="knowledge-sub">그룹 에이전트</h4>
+  {#if group.agent}
+    <div class="plugin-rows">
+      <div class="plugin-row" class:busy={agentChatBusy || agentSaving} aria-busy={agentChatBusy || agentSaving ? "true" : "false"}>
+        <AvatarImage user={{ id: agentAvatarId(), hasImage: group.agent.hasImage, displayName: group.agent.displayName }} size={32} alt="" />
+        <div class="pr-main">
+          <strong>{group.agent.displayName}</strong>
+          <div class="pr-sub">
+            공유 세컨드브레인: {group.knowledgeRepo ? group.knowledgeRepo : "연결 안 됨"} ·
+            기록 권한: {group.agent.captureScope === "members" ? "그룹원 모두" : "관리자만"}
+          </div>
+        </div>
+        {#if !group.agent.enabled}<span class="tag read">비활성</span>{/if}
+        <div class="pr-actions">
+          {#if group.agent.enabled}
+            <button class="ghost-sm" type="button" disabled={agentChatBusy} on:click={chatWithAgent}>
+              {agentChatBusy ? "여는 중…" : "대화하기"}
+            </button>
+          {/if}
+          {#if amAdmin}
+            <button class="ghost-sm" type="button" disabled={agentSaving} on:click={openAgentForm}>설정</button>
+            <button class="ghost-sm" type="button" disabled={agentSaving} on:click={() => toggleAgentEnabled(!group.agent!.enabled)}>
+              {group.agent.enabled ? "비활성화" : "활성화"}
+            </button>
+          {/if}
+        </div>
+      </div>
+    </div>
+    {#if !group.agent.enabled && !amAdmin}
+      <p class="muted">그룹 에이전트가 비활성화되어 있어요. 그룹 관리자가 다시 켜면 대화할 수 있습니다.</p>
+    {/if}
+  {:else if amAdmin}
+    <p class="muted">이 그룹에는 아직 공유 에이전트가 없어요. 그룹원 누구나 대화할 수 있고, 그룹 지식저장소를 공유 세컨드브레인으로 쓰는 팀 에이전트를 만들 수 있습니다.</p>
+    <button class="ghost-sm" type="button" on:click={openAgentForm}>그룹 에이전트 만들기</button>
+  {:else}
+    <p class="muted">이 그룹에는 아직 공유 에이전트가 없어요. 그룹 관리자가 만들 수 있습니다.</p>
+  {/if}
+
+  {#if agentFormOpen && amAdmin}
+    <div class="group-add-panel" aria-busy={agentSaving}>
+      <label class="field">
+        <span>표시 이름</span>
+        <input type="text" bind:value={agentDisplayName} maxlength="64" placeholder={`${group.name} 에이전트`} disabled={agentSaving} />
+      </label>
+      <label class="field">
+        <span>별칭 (대화에서 스스로를 부르는 이름)</span>
+        <input type="text" bind:value={agentAlias} maxlength="64" disabled={agentSaving} />
+      </label>
+      <label class="field">
+        <span>한 줄 소개</span>
+        <input type="text" bind:value={agentBio} maxlength="200" disabled={agentSaving} />
+      </label>
+      <label class="field">
+        <span>자기소개 (역량 패널에 표시)</span>
+        <textarea rows="2" bind:value={agentIntro} disabled={agentSaving}></textarea>
+      </label>
+      <label class="field">
+        <span>페르소나 / 지침</span>
+        <textarea rows="4" bind:value={agentPersona} disabled={agentSaving} placeholder="이 팀 에이전트의 말투, 역할, 우선순위를 적어 주세요."></textarea>
+      </label>
+      <fieldset class="field">
+        <legend>공유 세컨드브레인 기록 권한</legend>
+        <label><input type="radio" bind:group={agentCaptureScope} value="members" disabled={agentSaving} /> 그룹원 모두 기록 가능</label>
+        <label><input type="radio" bind:group={agentCaptureScope} value="admins" disabled={agentSaving} /> 관리자만 기록 가능</label>
+      </fieldset>
+      {#if group.agent}
+        <div class="pr-actions">
+          <label class="ghost-sm" style="cursor:pointer">
+            사진 업로드
+            <input type="file" accept="image/*" style="display:none" disabled={agentPicBusy} on:change={uploadAgentImage} />
+          </label>
+          {#if group.agent.hasImage}
+            <button class="ghost-sm danger" type="button" disabled={agentPicBusy} on:click={deleteAgentImage}>사진 삭제</button>
+          {/if}
+        </div>
+      {/if}
+      <div class="pr-actions">
+        <button class="ghost-sm" type="button" disabled={agentSaving} on:click={saveAgent}>{agentSaving ? "저장 중…" : "저장"}</button>
+        <button class="ghost-sm" type="button" disabled={agentSaving} on:click={() => (agentFormOpen = false)}>닫기</button>
+      </div>
+    </div>
+  {/if}
 
   {#if group.members.length}
     <div class="admin-users-head group-roster-head">
@@ -556,7 +859,7 @@
           </div>
           {#if m.role === "admin"}<span class="tag write">관리자</span>{/if}
           <div class="pr-actions">
-            {#if m.userId !== meId}
+            {#if m.userId !== meId && group.avatarSharing}
               <button class="ghost-sm" type="button" title={`${m.displayName}의 아바타와 대화`} aria-describedby={memberStatus ? memberStatusId : undefined} disabled={Boolean(chatBusyId)} on:click={() => chatWith(m)}>
                 {chatBusyId === m.userId ? "여는 중…" : "대화"}
               </button>

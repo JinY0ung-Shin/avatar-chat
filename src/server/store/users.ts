@@ -143,8 +143,8 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const isFirstUser = this.count("SELECT COUNT(*) AS c FROM users") === 0;
 
       const insertUser = this.db.prepare(`
-        INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, published, visibility, created_at, last_seen_at, last_seen_release)
-        VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 1, 'group', @created_at, @created_at, @last_seen_release)
+        INSERT INTO users (id, username, password_hash, display_name, bio, persona, avatar_ext, visibility, created_at, last_seen_at, last_seen_release)
+        VALUES (@id, @username, @password_hash, @display_name, '', '', NULL, 'group', @created_at, @created_at, @last_seen_release)
       `);
       const grantRole = this.db.prepare(
         "INSERT OR IGNORE INTO user_roles (user_id, role_id) VALUES (?, ?)",

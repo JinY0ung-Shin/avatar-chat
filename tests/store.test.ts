@@ -1208,11 +1208,14 @@ describe("group trust & visibility", () => {
     expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
   });
 
-  it("new avatars default to group visibility; updateProfile changes it", () => {
+  it("new avatars default to group visibility; updateProfile round-trips the 2 states", () => {
     const { store, ownerId } = makeStore("gt2");
     expect(store.getUserById(ownerId)?.visibility).toBe("group");
-    expect(store.updateProfile(ownerId, { visibility: "public" }).visibility).toBe("public");
     expect(store.updateProfile(ownerId, { visibility: "private" }).visibility).toBe("private");
+    expect(store.getUserById(ownerId)?.visibility).toBe("private");
+    // …and back: `group` and `private` are the only two states.
+    expect(store.updateProfile(ownerId, { visibility: "group" }).visibility).toBe("group");
+    expect(store.getUserById(ownerId)?.visibility).toBe("group");
   });
 
   it("searchUsers matches name or @id (case-insensitive), excludes self", () => {
@@ -1316,6 +1319,99 @@ describe("group trust & visibility", () => {
 });
 
 
+describe("group avatar-sharing policy", () => {
+  function makeStore(dir: string) {
+    const { store } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({ username: "owner", displayName: "Owner", password: "password123" });
+    const friend = store.createUser({ username: "friend", displayName: "Friend", password: "password123" });
+    return { store, ownerId: owner.id, friendId: friend.id };
+  }
+
+  it("sharing OFF removes BOTH visibility and trust for that group; ON restores both", () => {
+    const { store, ownerId, friendId } = makeStore("as1");
+    const group = store.createGroup({ name: "Platform" });
+    store.addGroupMember(group.id, ownerId, "member");
+    store.addGroupMember(group.id, friendId, "member");
+    expect(store.getGroup(group.id)?.avatarSharing).toBe(true); // default on
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
+    expect(store.resolveChatAvatar(friendId, ownerId)?.id).toBe(ownerId);
+    expect(store.listPublishedAvatars(friendId).some((a) => a.id === ownerId)).toBe(true);
+
+    expect(store.setGroupAvatarSharing(group.id, false)?.avatarSharing).toBe(false);
+    // The two axes ride the same SHARING_TEAMMATES fragment: both drop together.
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
+    expect(store.resolveChatAvatar(friendId, ownerId)).toBeNull();
+    expect(store.getAvatar(friendId, ownerId)).toBeNull();
+    expect(store.listPublishedAvatars(friendId).some((a) => a.id === ownerId)).toBe(false);
+    expect(store.searchAvatars(friendId, "").some((a) => a.id === ownerId)).toBe(false);
+    // Own avatar still lists (self-exception is not group-derived).
+    expect(store.listPublishedAvatars(friendId).some((a) => a.id === friendId)).toBe(true);
+
+    store.setGroupAvatarSharing(group.id, true);
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
+    expect(store.resolveChatAvatar(friendId, ownerId)?.id).toBe(ownerId);
+  });
+
+  it("any avatar-sharing group suffices; sharedGroupNames names only sharing groups", () => {
+    const { store, ownerId, friendId } = makeStore("as2");
+    const g1 = store.createGroup({ name: "Alpha" });
+    const g2 = store.createGroup({ name: "Beta" });
+    for (const g of [g1, g2]) {
+      store.addGroupMember(g.id, ownerId, "member");
+      store.addGroupMember(g.id, friendId, "member");
+    }
+    store.setGroupAvatarSharing(g1.id, false);
+    // g2 still shares → reach + trust survive; the why-elevated list is exact.
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
+    expect(store.resolveChatAvatar(friendId, ownerId)?.id).toBe(ownerId);
+    expect(store.sharedGroupNames(friendId, ownerId)).toEqual(["Beta"]);
+    store.setGroupAvatarSharing(g2.id, false);
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
+    expect(store.sharedGroupNames(friendId, ownerId)).toEqual([]);
+  });
+
+  it("a sharing-off group still shares its knowledge repo and its admin tool policy", () => {
+    const { store, ownerId, friendId } = makeStore("as3");
+    const group = store.createGroup({ name: "Workshop" });
+    store.addGroupMember(group.id, ownerId, "admin");
+    store.addGroupMember(group.id, friendId, "member");
+    store.setGroupKnowledgeRepo(group.id, "acme/wiki", null);
+    store.setGroupAllowedMcpToolGroups(group.id, ["personal_knowledge"]);
+    store.setGroupAvatarSharing(group.id, false);
+    // Knowledge-sharing-only: repo membership + tool clamp are policy-independent.
+    expect(
+      store.listGroupKnowledgeReposForUser(friendId).some((g) => g.groupId === group.id),
+    ).toBe(true);
+    expect(store.listUserGroups(friendId)[0]).toMatchObject({
+      knowledgeRepoConfigured: true,
+      avatarSharing: false,
+    });
+    expect(store.allowedMcpToolGroupsForUser(friendId)).toEqual(["personal_knowledge"]);
+    expect(store.listGroupMembers(group.id)).toHaveLength(2);
+  });
+
+  it("NULL (pre-policy rows) reads as ON; only an explicit 0 turns it off", () => {
+    const { store, ownerId, friendId } = makeStore("as4");
+    const group = store.createGroup({ name: "Legacy" });
+    store.addGroupMember(group.id, ownerId, "member");
+    store.addGroupMember(group.id, friendId, "member");
+    // Simulate a pre-policy row (the addColumnIfMissing migration leaves NULL).
+    const db = (store as unknown as { db: { prepare: (sql: string) => { run: (...v: unknown[]) => unknown } } }).db;
+    db.prepare("UPDATE groups SET avatar_sharing = NULL WHERE id = ?").run(group.id);
+    expect(store.getGroup(group.id)?.avatarSharing).toBe(true);
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(true);
+    expect(store.resolveChatAvatar(friendId, ownerId)?.id).toBe(ownerId);
+    store.setGroupAvatarSharing(group.id, false);
+    expect(store.getGroup(group.id)?.avatarSharing).toBe(false);
+    expect(store.isTrustedFor(friendId, ownerId)).toBe(false);
+  });
+});
+
+
 describe("normalizeHashtags", () => {
   it("strips leading #/markers, trims, hyphenates spaces, dedupes case-insensitively", () => {
     expect(normalizeHashtags(["#코드리뷰", "코드리뷰", "  - 파이썬 ", "데이터 분석"])).toEqual([
@@ -1356,9 +1452,14 @@ describe("searchAvatars (cross-avatar discovery)", () => {
     const reviewer = store.createUser({ username: "reviewer", displayName: "리뷰어", password: "password123" });
     const analyst = store.createUser({ username: "analyst", displayName: "분석가", password: "password123" });
     const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
-    // Public so `me` (sharing no group) can discover them cross-avatar.
-    store.updateProfile(reviewer.id, { hashtags: ["코드리뷰", "파이썬"], visibility: "public" });
-    store.updateProfile(analyst.id, { hashtags: ["데이터분석"], bio: "코드리뷰도 가끔 합니다", visibility: "public" });
+    // Both keep the default `group` visibility; a shared group is what makes them
+    // discoverable by `me` cross-avatar (there is no wider "public" state).
+    store.updateProfile(reviewer.id, { hashtags: ["코드리뷰", "파이썬"] });
+    store.updateProfile(analyst.id, { hashtags: ["데이터분석"], bio: "코드리뷰도 가끔 합니다" });
+    const group = store.createGroup({ name: "Search", createdBy: null });
+    store.addGroupMember(group.id, me.id, "member");
+    store.addGroupMember(group.id, reviewer.id, "member");
+    store.addGroupMember(group.id, analyst.id, "member");
 
     const hits = store.searchAvatars(me.id, "코드리뷰", { excludeId: me.id });
     expect(hits.map((a) => a.username)).toEqual(["reviewer", "analyst"]);
@@ -1381,8 +1482,11 @@ describe("searchAvatars (cross-avatar discovery)", () => {
     const store = makeStore();
     const a = store.createUser({ username: "a", displayName: "A", password: "password123" });
     const b = store.createUser({ username: "b", displayName: "B", password: "password123" });
-    // b must be public to be discoverable by a (who shares no group with b).
-    store.updateProfile(b.id, { visibility: "public" });
+    // b keeps the default `group` visibility, so a shared group is what makes b
+    // discoverable by a.
+    const group = store.createGroup({ name: "Empty Query", createdBy: null });
+    store.addGroupMember(group.id, a.id, "member");
+    store.addGroupMember(group.id, b.id, "member");
     expect(store.searchAvatars(a.id, "", { excludeId: a.id }).map((x) => x.username)).toEqual(["b"]);
   });
 });
@@ -1492,10 +1596,10 @@ describe("store groups", () => {
     expect(store.listGroupKnowledgeReposForUser(bobId)).toEqual([]);
   });
 
-  it("listPublishedAvatars surfaces group-visible teammates with sharesGroup", () => {
+  it("listPublishedAvatars surfaces group-visible teammates with sharesGroup, and nobody else", () => {
     const { store, aliceId, bobId, carolId } = makeStore("g-explore");
-    // bob keeps default `group` visibility; carol is public, in no shared group.
-    store.updateProfile(carolId, { visibility: "public" });
+    // bob and carol both keep the default `group` visibility; only bob shares a
+    // group with alice.
     const g = store.createGroup({ name: "T", createdBy: null });
     store.addGroupMember(g.id, aliceId);
     store.addGroupMember(g.id, bobId);
@@ -1503,8 +1607,11 @@ describe("store groups", () => {
     const bobCard = forAlice.find((a) => a.id === bobId);
     // bob is group-visible AND a teammate → visible + flagged.
     expect(bobCard?.sharesGroup).toBe(true);
-    // carol (public, no shared group) is visible but not flagged.
-    expect(forAlice.find((a) => a.id === carolId)?.sharesGroup).toBe(false);
+    // carol shares no group with alice, so she is not listed AT ALL — group
+    // co-membership is the only thing that grants reach now, and a `sharesGroup:
+    // false` card (the old "public but not a teammate" state) can no longer exist.
+    expect(forAlice.some((a) => a.id === carolId)).toBe(false);
+    expect(forAlice.every((a) => a.id === aliceId || a.sharesGroup)).toBe(true);
   });
 });
 
@@ -1770,9 +1877,9 @@ describe("store avatar directory aggregates (N+1 reshape)", () => {
 
   it("directory pluginCount counts only ENABLED avatar_plugins, and getAvatar agrees", () => {
     const store = makeStore("dir-plugins");
-    // Public so the same store user (no shared group) is its own viewer and is listable.
+    // The owner is its own viewer here, so the discovery queries' self-exception
+    // lists it regardless of visibility — no group scaffold needed.
     const owner = store.createUser({ username: "dirowner", displayName: "Dir Owner", password: "password123" });
-    store.updateProfile(owner.id, { visibility: "public" });
 
     // Two enabled + one disabled plugin → directory count must be 2.
     const p1 = store.addPlugin(owner.id, { repo: "owner/one" });
@@ -1804,8 +1911,8 @@ describe("store avatar directory aggregates (N+1 reshape)", () => {
 
   it("directory updatedAt reflects MAX(updated_at) over the owner's own-avatar conversations; getAvatar agrees", () => {
     const store = makeStore("dir-updated");
+    // Own-viewer again: the self-exception is what makes the card listable.
     const owner = store.createUser({ username: "updowner", displayName: "Upd Owner", password: "password123" });
-    store.updateProfile(owner.id, { visibility: "public" });
 
     // No own-avatar conversations yet → MAX over an empty set is NULL.
     expect(store.listPublishedAvatars(owner.id).find((a) => a.id === owner.id)?.updatedAt).toBeNull();
@@ -1893,6 +2000,99 @@ describe("store avatar visibility scope parity (shared VISIBILITY_WHERE)", () =>
     expect(strangerList).toBe(false);
     expect(strangerSearch).toBe(false);
     expect(strangerSearch).toBe(strangerList);
+  });
+});
+
+
+describe("store visibility migration (retired `public` state)", () => {
+  // Reach the raw SQLite handle to plant pre-migration rows and to read the
+  // stored column back — asserting on getUserById alone would pass on
+  // rowVisibility()'s defensive mapping even if migrateVisibility() never ran.
+  type WithDb = {
+    db: {
+      prepare(sql: string): {
+        run(...params: unknown[]): unknown;
+        get(...params: unknown[]): unknown;
+      };
+    };
+  };
+  const dbOf = (store: unknown): WithDb["db"] => (store as unknown as WithDb).db;
+  const rawVisibility = (store: unknown, id: string) =>
+    (dbOf(store).prepare("SELECT visibility FROM users WHERE id = ?").get(id) as {
+      visibility: string | null;
+    }).visibility;
+
+  it("folds legacy 'public', NULL and '' rows into 'group' on reopen, leaving 'private' alone", () => {
+    const dataDir = path.join(tempDir, "vis-migration");
+    const open = () =>
+      createServices({ dataDir, agentRuntime: "local", sessionSecret: "vis" }).store;
+
+    const first = open();
+    const legacy = first.createUser({ username: "legacypub", displayName: "Legacy Public", password: "password123" });
+    const blank = first.createUser({ username: "blankvis", displayName: "Blank", password: "password123" });
+    const empty = first.createUser({ username: "emptyvis", displayName: "Empty", password: "password123" });
+    const secret = first.createUser({ username: "secretvis", displayName: "Secret", password: "password123" });
+    const stranger = first.createUser({ username: "strangervis", displayName: "Stranger", password: "password123" });
+    const teammate = first.createUser({ username: "teammatevis", displayName: "Teammate", password: "password123" });
+    // A group that spans the migrated avatars + teammate, so we can prove the
+    // migrated rows are reachable through the normal group path afterwards.
+    const group = first.createGroup({ name: "Migrated", createdBy: null });
+    for (const id of [teammate.id, legacy.id, blank.id, empty.id, secret.id]) {
+      first.addGroupMember(group.id, id, "member");
+    }
+    // The fresh schema declares `visibility TEXT NOT NULL DEFAULT 'group'`, so a
+    // NULL is only reachable on an EXISTING deployment, where the column was added
+    // by addColumnIfMissing's nullable ALTER TABLE. Reproduce that exact shape:
+    // drop the column and re-add it nullable, which is the state a pre-enum
+    // deployment's DB is in the moment it first boots this build.
+    dbOf(first).prepare("ALTER TABLE users DROP COLUMN visibility").run();
+    dbOf(first).prepare("ALTER TABLE users ADD COLUMN visibility TEXT").run();
+    // Plant the three pre-migration states the 2-state enum retired ('public',
+    // NULL, ''), plus an explicit 'private' row that migration must never touch.
+    dbOf(first).prepare("UPDATE users SET visibility = 'public' WHERE id = ?").run(legacy.id);
+    dbOf(first).prepare("UPDATE users SET visibility = '' WHERE id = ?").run(empty.id);
+    dbOf(first).prepare("UPDATE users SET visibility = 'private' WHERE id = ?").run(secret.id);
+    expect(rawVisibility(first, legacy.id)).toBe("public");
+    expect(rawVisibility(first, blank.id)).toBeNull();
+    expect(rawVisibility(first, empty.id)).toBe("");
+    first.close();
+
+    // Reopen the SAME dataDir → migrate() runs migrateVisibility().
+    const second = open();
+    // The rows were REWRITTEN, not just normalized on read.
+    expect(rawVisibility(second, legacy.id)).toBe("group");
+    expect(rawVisibility(second, blank.id)).toBe("group");
+    expect(rawVisibility(second, empty.id)).toBe("group");
+    expect(rawVisibility(second, secret.id)).toBe("private");
+    expect(second.getUserById(legacy.id)?.visibility).toBe("group");
+    expect(second.getUserById(blank.id)?.visibility).toBe("group");
+    expect(second.getUserById(empty.id)?.visibility).toBe("group");
+    expect(second.getUserById(secret.id)?.visibility).toBe("private");
+
+    // Folding into 'group' is not a privacy regression: a stranger who shares no
+    // group still cannot reach any migrated avatar.
+    for (const id of [legacy.id, blank.id, empty.id, secret.id]) {
+      expect(second.getAvatar(stranger.id, id)).toBeNull();
+      expect(second.resolveChatAvatar(stranger.id, id)).toBeNull();
+      expect(second.listPublishedAvatars(stranger.id).some((a) => a.id === id)).toBe(false);
+    }
+    // …and the migrated rows now match the SQL `visibility = 'group'` predicate,
+    // so a co-member reaches them (a literal 'public'/NULL row would NOT have).
+    expect(second.getAvatar(teammate.id, legacy.id)?.id).toBe(legacy.id);
+    expect(second.getAvatar(teammate.id, blank.id)?.id).toBe(blank.id);
+    expect(second.getAvatar(teammate.id, empty.id)?.id).toBe(empty.id);
+    expect(second.listPublishedAvatars(teammate.id).map((a) => a.id).sort()).toEqual(
+      [teammate.id, legacy.id, blank.id, empty.id].sort(),
+    );
+    // 'private' stays owner-only even for a co-member.
+    expect(second.getAvatar(teammate.id, secret.id)).toBeNull();
+    second.close();
+
+    // Idempotent: a third open changes nothing.
+    const third = open();
+    expect(rawVisibility(third, legacy.id)).toBe("group");
+    expect(rawVisibility(third, secret.id)).toBe("private");
+    third.close();
   });
 });
 

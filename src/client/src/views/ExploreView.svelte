@@ -37,10 +37,15 @@
   $: profileReady = Boolean($appState.user?.alias || $appState.user?.bio || $appState.user?.intro || $appState.user?.hashtags?.length);
   $: knowledgeReady = Boolean($appState.user?.knowledgeRepo);
   $: accessReady = Boolean($appState.user?.gitTokenSet || $appState.user?.sshPublicKey || $appState.user?.secretNames?.includes("SSH_PRIVATE_KEY"));
+  // 아바타는 같은 그룹원에게만 보이므로, 그룹이 없는 사용자에게는 자기 아바타(와 외부
+  // Agent)만 남습니다. 빈 목록처럼 보이는 이유를 카드 아래에서 설명해 줍니다.
+  $: hasPeerAvatars = $appState.avatars.some((av) => av.id !== $appState.user?.id && av.runtime !== "external");
+  const GROUP_HINT = "그룹에 소속되면 동료의 아바타가 여기에 보여요. 그룹 참여는 관리자에게 문의하세요.";
 
   function rank(av: AvatarSummary) {
     if (av.id === $appState.user?.id) return 0;
-    if (av.sharesGroup) return 1;
+    // Group shared agents sort with same-group teammates (both are group-scoped).
+    if (av.sharesGroup || av.groupAgent) return 1;
     return 2;
   }
 
@@ -75,7 +80,7 @@
     : error
       ? `아바타 목록을 불러오지 못했습니다: ${error}`
       : !$appState.avatars.length
-        ? "공개된 아바타가 아직 없습니다."
+        ? "같은 그룹의 아바타가 아직 없습니다."
         : !avatars.length
           ? `${displayQuery} 검색 결과가 없습니다.`
           : displayQuery
@@ -103,7 +108,7 @@
 <header class="view-header">
   <div>
     <h1>탐색</h1>
-    <p>공개된 아바타와 대화를 시작하세요</p>
+    <p>같은 그룹의 아바타와 대화를 시작하세요</p>
   </div>
 </header>
 
@@ -165,8 +170,9 @@
     </div>
   {:else if !$appState.avatars.length}
     <div class="empty-note">
-      공개된 아바타가 아직 없습니다.
-      <button class="linkish small" type="button" on:click={() => goView("settings", "profile")}>내 아바타 공개 설정</button>
+      같은 그룹의 아바타가 아직 없습니다.
+      {GROUP_HINT}
+      <button class="linkish small" type="button" on:click={() => goView("settings", "profile")}>내 아바타 공개 범위 설정</button>
     </div>
   {:else if !avatars.length}
     <div class="empty-note">
@@ -194,11 +200,10 @@
                 <span class="tag accent">나</span>
               {:else if av.runtime === "external"}
                 <span class="tag accent">외부 Agent</span>
+              {:else if av.groupAgent}
+                <span class="tag write">그룹 에이전트 · {av.groupAgent.groupName}</span>
               {:else if av.sharesGroup}
                 <span class="tag write">같은 그룹</span>
-              {/if}
-              {#if av.visibility === "group"}
-                <span class="tag">그룹 공개</span>
               {/if}
               {#if av.visibility === "private"}
                 <span class="tag">비공개</span>
@@ -218,6 +223,9 @@
           </div>
         </button>
       {/each}
+      {#if !hasPeerAvatars && !displayQuery}
+        <div class="empty-note">{GROUP_HINT}</div>
+      {/if}
     </div>
   {/if}
 </div>

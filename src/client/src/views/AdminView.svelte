@@ -68,7 +68,7 @@
     { id: "all", label: "전체", match: () => true },
     { id: "admins", label: "관리자", match: (u) => u.roles?.includes("admin") },
     { id: "suspended", label: "정지", match: (u) => u.suspended },
-    { id: "public", label: "공개", match: (u) => u.visibility === "public" },
+    { id: "group", label: "그룹 공개", match: (u) => u.visibility === "group" },
     { id: "sessions", label: "활성 세션", match: (u) => (u.activeSessions || 0) > 0 },
   ];
 
@@ -194,7 +194,7 @@
   $: statCards = [
     { label: "전체 사용자", value: stats?.users, sub: stats?.suspended ? `정지 ${stats.suspended}명 포함` : "", target: "users", filter: "all" },
     { label: "관리자", value: stats?.admins, sub: "", target: "users", filter: "admins" },
-    { label: "공개 아바타", value: stats?.publicAvatars, sub: "", target: "users", filter: "public" },
+    { label: "그룹 공개 아바타", value: stats?.groupAvatars, sub: "", target: "users", filter: "group" },
     { label: "대화", value: stats?.conversations, sub: "", target: "", filter: "all" },
     { label: "메시지", value: stats?.messages, sub: "", target: "", filter: "all" },
     { label: "활성 예약 작업", value: stats?.activeRoutines, sub: "", target: "", filter: "all" },

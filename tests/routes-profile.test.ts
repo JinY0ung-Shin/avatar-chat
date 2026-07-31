@@ -53,7 +53,7 @@ describe("PATCH /api/me profile fields", () => {
         persona: "helpful and terse",
         intro: "hi there",
         hashtags: ["#Alpha", "beta", "beta"],
-        visibility: "public",
+        visibility: "private",
         // "bogus" is not a registered experimental key and must be dropped.
         experimentalFeatures: ["canvas", "bogus"],
         sharedAccount: true,
@@ -66,7 +66,7 @@ describe("PATCH /api/me profile fields", () => {
     expect(user.bio).toBe("my bio");
     expect(user.persona).toBe("helpful and terse");
     expect(user.intro).toBe("hi there");
-    expect(user.visibility).toBe("public");
+    expect(user.visibility).toBe("private");
     // hashtags: normalized (no leading "#") and de-duplicated.
     expect(user.hashtags).toContain("beta");
     expect(user.hashtags.some((t: string) => t.startsWith("#"))).toBe(false);
@@ -92,7 +92,9 @@ describe("PATCH /api/me profile fields", () => {
         hashtags: "not-an-array",
         experimentalFeatures: { canvas: true },
         sharedAccount: "yes",
-        visibility: "invisible",
+        // "public" is a RETIRED visibility state — the guard skips it silently
+        // (unlike the admin override PUT, which 400s), same as any invalid value.
+        visibility: "public",
       })
       .expect(200);
     expect(res.body.user.displayName).toBe("Base");

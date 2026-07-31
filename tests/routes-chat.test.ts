@@ -349,11 +349,17 @@ describe("slash-command expansion at the route boundary", () => {
     const { store, app } = boot();
     const owner = request.agent(app);
     const ownerId = (await signup(owner, "owner-learn").expect(201)).body.user.id as string;
-    store.updateProfile(ownerId, { visibility: "public" }); // reachable by a stranger
 
-    const stranger = request.agent(app);
-    await signup(stranger, "stranger-learn").expect(201);
-    const res = await stranger.post("/api/chat/stream").send({ avatarId: ownerId, conversationId: "c", message: "/learn" }).expect(403);
+    const teammate = request.agent(app);
+    const teammateId = (await signup(teammate, "teammate-learn").expect(201)).body.user.id as string;
+    // Group co-membership is the only reach to someone else's avatar now (it
+    // also elevates the viewer — irrelevant here: the ownerOnly slash guard
+    // keys on IDENTITY, not elevation).
+    const group = store.createGroup({ name: "learn-group" });
+    store.addGroupMember(group.id, ownerId);
+    store.addGroupMember(group.id, teammateId);
+
+    const res = await teammate.post("/api/chat/stream").send({ avatarId: ownerId, conversationId: "c", message: "/learn" }).expect(403);
     expect(res.body.error).toContain("내 아바타");
     expect(H.requests).toHaveLength(0);
   });

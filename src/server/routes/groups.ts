@@ -13,11 +13,15 @@ import { buildKnowledgeGraph, isVaultNotePath } from "../knowledgeGraph.js";
 import type { Response } from "express";
 import {
   apiError,
+  decodeAvatarImage,
+  deleteAvatarImageFile,
   looksLikeRepo,
   respondNoteFsError,
   safeString,
+  saveAvatarImageFile,
   type RouterDeps,
 } from "./_shared.js";
+import { groupAgentAvatarId } from "../groupAgents.js";
 
 /**
  * ensureGroupClone → inspectRepoContents → res.json, shared by the group repo's
@@ -55,6 +59,8 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
 
   // The current user's groups, each with its member roster — members discover &
   // chat with teammates' avatars (now auto-trusted via group co-membership).
+  // `agent` carries the group's shared agent (null = none), disabled included,
+  // so managers can re-enable it and members see its status.
   router.get("/api/me/groups", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const groups = store.listUserGroups(req.user!.id).map((g) => {
       const repo = store.getGroupKnowledgeRepo(g.id);
@@ -64,9 +70,103 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
         knowledgeBranch: repo.branch,
         knowledgeSelected: repo.selected,
         members: store.listGroupMembers(g.id),
+        agent: store.getGroupAgent(g.id),
       };
     });
     res.json({ groups });
+  });
+
+  // Create/update the group's SHARED AGENT (group admin or system admin). One
+  // per group; disabling (enabled:false) blocks the next turn but preserves
+  // every member's threads — there is no delete short of deleting the group.
+  router.put("/api/me/groups/:id/agent", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!store.getGroup(groupId)) {
+      apiError(res, 404, "그룹을 찾을 수 없습니다.");
+      return;
+    }
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "그룹 관리자만 그룹 에이전트를 관리할 수 있습니다.");
+      return;
+    }
+    const displayName = safeString(req.body?.displayName);
+    if (!displayName) {
+      apiError(res, 400, "에이전트 이름(displayName)이 필요합니다.");
+      return;
+    }
+    const captureScopeRaw = req.body?.captureScope;
+    if (
+      captureScopeRaw !== undefined &&
+      captureScopeRaw !== "members" &&
+      captureScopeRaw !== "admins"
+    ) {
+      apiError(res, 400, "captureScope는 'members' 또는 'admins'여야 합니다.");
+      return;
+    }
+    const agent = store.upsertGroupAgent(groupId, {
+      displayName,
+      alias: typeof req.body?.alias === "string" ? req.body.alias : undefined,
+      bio: typeof req.body?.bio === "string" ? req.body.bio : undefined,
+      intro: typeof req.body?.intro === "string" ? req.body.intro : undefined,
+      persona:
+        typeof req.body?.persona === "string" ? req.body.persona : undefined,
+      hashtags: Array.isArray(req.body?.hashtags)
+        ? (req.body.hashtags as unknown[]).filter(
+            (t): t is string => typeof t === "string",
+          )
+        : undefined,
+      captureScope: captureScopeRaw,
+      enabled:
+        typeof req.body?.enabled === "boolean" ? req.body.enabled : undefined,
+      createdBy: req.user!.id,
+    });
+    auditAs(req, "group_agent_upsert", `group=${groupId} agent=${displayName}`);
+    res.json({ agent });
+  });
+
+  // Group agent profile image (group admin or system admin) — the users
+  // avatar-image pattern with the namespaced id; bytes on disk, ext on the row.
+  router.put("/api/me/groups/:id/agent/image", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!store.getGroupAgent(groupId)) {
+      apiError(res, 404, "그룹 에이전트를 찾을 수 없습니다.");
+      return;
+    }
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "그룹 관리자만 그룹 에이전트를 관리할 수 있습니다.");
+      return;
+    }
+    const decoded = decodeAvatarImage(req.body?.image);
+    if ("error" in decoded) {
+      apiError(res, 400, decoded.error);
+      return;
+    }
+    const avatarId = groupAgentAvatarId(groupId);
+    saveAvatarImageFile(config, avatarId, decoded.ext, decoded.buffer);
+    store.setGroupAgentImageExt(groupId, decoded.ext);
+    auditAs(req, "group_agent_image", `group=${groupId}`);
+    res.json({ ok: true, hasImage: true });
+  });
+
+  router.delete("/api/me/groups/:id/agent/image", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!store.getGroupAgent(groupId)) {
+      apiError(res, 404, "그룹 에이전트를 찾을 수 없습니다.");
+      return;
+    }
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "그룹 관리자만 그룹 에이전트를 관리할 수 있습니다.");
+      return;
+    }
+    const avatarId = groupAgentAvatarId(groupId);
+    deleteAvatarImageFile(
+      config,
+      avatarId,
+      store.getGroupAgentImageExtByAvatarId(avatarId),
+    );
+    store.setGroupAgentImageExt(groupId, null);
+    auditAs(req, "group_agent_image", `group=${groupId} image removed`);
+    res.json({ ok: true, hasImage: false });
   });
 
   // Group admin (or system admin) adds a member by username.
@@ -122,6 +222,28 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     const removed = store.removeGroupMember(groupId, req.params.userId);
     auditAs(req, "group_member_remove", `group=${groupId} -${req.params.userId}`);
     res.json({ ok: removed });
+  });
+
+  // Group policy: avatar sharing (group admin or system admin). Off = this
+  // group's co-membership grants neither avatar visibility nor trust/elevation
+  // (knowledge-sharing-only group); the shared repo/brain are unaffected.
+  router.put("/api/me/groups/:id/avatar-sharing", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    const groupId = req.params.id;
+    if (!store.getGroup(groupId)) {
+      apiError(res, 404, "그룹을 찾을 수 없습니다.");
+      return;
+    }
+    if (!canManageGroup(req.user!.id, groupId)) {
+      apiError(res, 403, "그룹 관리자만 설정할 수 있습니다.");
+      return;
+    }
+    if (typeof req.body?.enabled !== "boolean") {
+      apiError(res, 400, "enabled는 boolean이어야 합니다.");
+      return;
+    }
+    const group = store.setGroupAvatarSharing(groupId, req.body.enabled);
+    auditAs(req, "group_avatar_sharing", `group=${groupId} enabled=${req.body.enabled}`);
+    res.json({ group });
   });
 
   // Connect/clear the group's shared knowledge repo (group admin only). Validated

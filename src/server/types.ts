@@ -35,9 +35,11 @@ export interface ExternalAgentConfig {
   /** Hard cap for one external turn. Defaults to 30 minutes. */
   totalTimeoutMs?: number;
   /**
-   * Optional Noah group ACL. Omitted means public; a non-empty list means only
-   * members of at least one listed group may discover or chat with this avatar.
-   * This controls Noah visibility only and never grants Gateway tool privileges.
+   * Noah group ACL — REQUIRED for the avatar to be visible: only members of at
+   * least one listed group may discover or chat with it. An entry without a
+   * list stays parseable (legacy env/registry) but is visible to NO ONE (fail
+   * closed); the admin UI requires a non-empty list on create/update. This
+   * controls Noah visibility only and never grants Gateway tool privileges.
    */
   visibleToGroupIds?: string[];
 }
@@ -209,13 +211,14 @@ export interface AppConfig {
 
 /**
  * Who can discover and chat with an avatar:
- * - `public`  — everyone (visible in 탐색 to all users)
  * - `group`   — only the owner's group teammates (also mutually elevated)
  * - `private` — only the owner
- * Trust/elevation is a SEPARATE axis derived purely from group co-membership
- * (see `Store.isTrustedFor`); visibility only controls reach/discovery.
+ * There is deliberately NO wider state: avatars never reach beyond the owner's
+ * groups, so a user in no group sees (and is seen by) no one but themselves.
+ * Trust/elevation still derives from group co-membership (`Store.isTrustedFor`),
+ * which for non-owners now coincides with reach on native avatars.
  */
-export type AvatarVisibility = "public" | "group" | "private";
+export type AvatarVisibility = "group" | "private";
 
 /**
  * Public user shape returned to clients. NEVER includes password_hash or secret
@@ -377,6 +380,13 @@ export interface Group {
    * `Store.allowedMcpToolGroupsForUser`. Group admins can read but not set it.
    */
   allowedMcpToolGroups: McpToolGroupId[] | null;
+  /**
+   * GROUP-ADMIN policy: whether co-membership in THIS group shares avatars —
+   * mutual visibility and mutual trust/elevation together (they ride the same
+   * SQL fragment). `false` makes the group knowledge-sharing-only; group
+   * repo/brain access and `allowedMcpToolGroups` are unaffected. Default on.
+   */
+  avatarSharing: boolean;
   /** User id of the system admin who created the group (may be gone). */
   createdBy: string | null;
   createdAt: string;
@@ -398,6 +408,61 @@ export interface GroupMember {
 export interface AdminGroupSummary extends Group {
   memberCount: number;
   adminCount: number;
+  /** Shared group agent state: true/false = exists (enabled/disabled), null = none. */
+  agentEnabled: boolean | null;
+}
+
+/** Who may CAPTURE (write + commit) to the shared second brain through the group agent. */
+export type GroupAgentCaptureScope = "members" | "admins";
+
+/**
+ * Structured, UNFORMATTED self-state for a GROUP SHARED-AGENT run — the group
+ * analogue of `OwnerState` (agent/ownerState.ts builds it), with the same
+ * metacognition invariant: consumed by BOTH `buildSystemPromptAppend` (group-
+ * agent prompt branch) AND `describe_system` (group-agent ctx). Add a fact
+ * here and to both consumers together.
+ */
+export interface GroupAgentState {
+  groupId: string;
+  groupName: string;
+  enabled: boolean;
+  captureScope: GroupAgentCaptureScope;
+  /** The acting member's role in the owning group (live, this turn). */
+  viewerRole: GroupRole;
+  /** capture_scope resolved against viewerRole — may THIS member capture. */
+  captureAllowed: boolean;
+  knowledgeRepoConfigured: boolean;
+  knowledgeRepo: { repo: string | null; branch: string | null };
+  /** ACTING member's internal git token — capture's commit/push depends on it. */
+  viewerGitTokenSet: boolean;
+  anthropicModel?: string;
+  modelOverride: string | null;
+}
+
+/**
+ * A group's SHARED AGENT (at most one per group, group-admin managed): a team
+ * avatar whose second brain is the group's shared knowledge repository. It is
+ * NOT a users row — its public avatar id is `group:<groupId>` — and it uses
+ * group resources only (never personal secrets/tokens/repos). Reachable solely
+ * by members of the owning group, independent of the avatar-sharing policy.
+ */
+export interface GroupAgent {
+  groupId: string;
+  displayName: string;
+  /** How the agent names itself in chat; empty falls back to displayName. */
+  alias: string;
+  bio: string;
+  intro: string;
+  persona: string;
+  hashtags: string[];
+  hasImage: boolean;
+  /** Disabled blocks the NEXT turn but preserves every member's threads. */
+  enabled: boolean;
+  captureScope: GroupAgentCaptureScope;
+  /** Acting manager who created it (may dangle, like groups.createdBy). */
+  createdBy: string | null;
+  createdAt: string;
+  updatedAt: string | null;
 }
 
 /** A group the current user belongs to — surfaced on `User` and the roster. */
@@ -409,6 +474,8 @@ export interface UserGroupMembership {
   knowledgeRepoConfigured: boolean;
   /** This group's admin tool policy (see {@link Group.allowedMcpToolGroups}); `null` = none. */
   allowedMcpToolGroups: McpToolGroupId[] | null;
+  /** This group's avatar-sharing policy (see {@link Group.avatarSharing}). */
+  avatarSharing: boolean;
 }
 
 /** A plugin found inside a cloned repo, surfaced to the UI for selection. */
@@ -462,6 +529,12 @@ export interface AvatarSummary {
    * "같은 그룹" badge + group-priority ordering. Undefined where not computed.
    */
   sharesGroup?: boolean;
+  /**
+   * Set ONLY for group shared agents (avatar id `group:<groupId>`): the kind
+   * tag plus the owning group's name for badges/labels. Runtime stays "native"
+   * — a group agent runs the full local SDK stack, unlike external avatars.
+   */
+  groupAgent?: { groupId: string; groupName: string };
 }
 
 export interface AvatarDetail extends AvatarSummary {
@@ -588,8 +661,8 @@ export interface AdminStats {
   users: number;
   admins: number;
   suspended: number;
-  /** Count of avatars with `public` visibility (discoverable by everyone). */
-  publicAvatars: number;
+  /** Count of avatars with `group` visibility (discoverable by group teammates). */
+  groupAvatars: number;
   conversations: number;
   messages: number;
   openRequests: number;
@@ -858,6 +931,20 @@ export interface AgentRequest {
   /** True when the viewer IS the avatar's owner (viewer.id === avatar.id). */
   viewerIsOwner?: boolean;
   /**
+   * Set ONLY for group shared-agent runs (avatar id `group:<groupId>`): pins the
+   * run to ONE group's resources. The run kind carries capability — owner-only
+   * tools never unlock (there is no owner), built-in access is elevated-class,
+   * and only the group repo/brain servers register, gated per call on the
+   * ACTING member's live membership/role. `captureAllowed` is the group's
+   * capture_scope policy resolved against `viewerRole` at request time.
+   */
+  groupAgent?: {
+    groupId: string;
+    groupName: string;
+    viewerRole: GroupRole;
+    captureAllowed: boolean;
+  };
+  /**
    * True when the viewer may use tools at the OWNER's permission level — i.e. the
    * owner themselves OR a designated trusted user. Gates the tool hook (write/Bash
    * run instead of read-only). DISTINCT from viewerIsOwner: the owner-only knowledge
@@ -1047,6 +1134,13 @@ export interface AgentRequest {
    */
   adminDisabledTools?: string[];
   adminDisabledSkills?: string[];
+  /**
+   * GROUP-AGENT self-state (META-COGNITION), set by `runClaudeAgent` for
+   * group-agent runs only: feeds the group-agent prompt branch the same facts
+   * `describe_system` reports (see {@link GroupAgentState}). Null when the
+   * agent/group vanished mid-run (the branch then renders a minimal identity).
+   */
+  groupAgentState?: GroupAgentState | null;
   /**
    * The registered git repo the avatar opened as this conversation's **working
    * repository** (`mcp__git_repo__open_repo`): the repo's registered name. Its

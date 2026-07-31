@@ -35,9 +35,8 @@
   let model = agent?.model || "";
   let system = agent?.system || "";
   let enabled = agent?.enabled ?? true;
-  let visibility: "public" | "group" = agent?.visibleToGroupIds?.length
-    ? "group"
-    : "public";
+  // 외부 아바타는 그룹 바인딩이 필수입니다. 그룹이 비어 있는 기존 항목은 아무에게도
+  // 보이지 않으므로, 편집할 때 선택 없이 열려 요구 사항 안내를 바로 띄웁니다.
   let selectedGroupIds = [...(agent?.visibleToGroupIds || [])];
   let apiKeyMode: "keep" | "set" | "clear" = "keep";
   let apiKey = "";
@@ -68,7 +67,7 @@
   $: missingGroupIds = selectedGroupIds.filter((groupId) => !knownGroupIds.has(groupId));
   $: idReady = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(id.trim());
   $: endpointReady = validEndpoint(endpoint);
-  $: groupsReady = visibility === "public" || selectedGroupIds.length > 0;
+  $: groupsReady = selectedGroupIds.length > 0;
   $: storedKeyNeedsReplacement = Boolean(
     agent?.apiKeySet &&
       apiKeyMode === "keep" &&
@@ -124,7 +123,7 @@
           : !endpointReady
             ? "쿼리 없이 /v1/agents/messages로 끝나는 http(s) Gateway endpoint를 입력해 주세요."
             : !groupsReady
-              ? "그룹 공개를 선택했다면 한 개 이상의 그룹을 선택해 주세요."
+              ? "공개할 그룹을 1개 이상 선택해 주세요."
               : missingGroupIds.length
                 ? "삭제되었거나 알 수 없는 그룹 선택을 먼저 해제해 주세요."
                 : !apiKeyReady
@@ -272,9 +271,7 @@
       enabled,
       model: model.trim(),
       system: system.trim(),
-      ...(visibility === "group"
-        ? { visibleToGroupIds: selectedGroupIds }
-        : {}),
+      visibleToGroupIds: selectedGroupIds,
       ...(optionalSeconds(connectTimeout) !== undefined
         ? { connectTimeoutSeconds: optionalSeconds(connectTimeout) }
         : {}),
@@ -571,47 +568,40 @@
     </fieldset>
 
     <fieldset class="external-agent-section" disabled={busy || testBusy} aria-describedby={statusId}>
-      <legend>공개 범위</legend>
-      <div class="radio-cards compact" role="radiogroup" aria-label="외부 아바타 공개 범위">
-        <label class="radio-card">
-          <input type="radio" bind:group={visibility} value="public" />
-          <div class="radio-card-body"><strong>모든 사용자</strong><div class="muted">로그인한 모든 Noah 사용자에게 표시</div></div>
-        </label>
-        <label class="radio-card">
-          <input
-            type="radio"
-            bind:group={visibility}
-            value="group"
-            aria-describedby={statusId}
-          />
-          <div class="radio-card-body"><strong>지정 그룹</strong><div class="muted">선택한 그룹의 현재 구성원에게만 표시</div></div>
-        </label>
+      <legend>공개 그룹</legend>
+      <p class="muted external-agent-acl-note">
+        선택한 그룹의 현재 구성원에게만 표시됩니다. 그룹을 1개 이상 지정해야 하며, 지정하지 않으면 아무에게도 보이지 않습니다.
+      </p>
+      <div class="external-agent-group-picker" role="group" aria-label="공개 그룹" aria-describedby={statusId}>
+        {#if !groups.length && !missingGroupIds.length}
+          <div class="empty-note">먼저 관리자 ▸ 그룹에서 그룹을 만들어 주세요.</div>
+        {:else}
+          {#each groups as group (group.id)}
+            <label class="external-agent-group-option">
+              <input
+                type="checkbox"
+                checked={selectedGroupIds.includes(group.id)}
+                aria-describedby={statusId}
+                on:change={(event) => toggleGroup(group.id, event.currentTarget.checked)}
+              />
+              <span><strong>{group.name}</strong><small class="muted">그룹원 {group.memberCount}명</small></span>
+            </label>
+          {/each}
+          {#each missingGroupIds as groupId (groupId)}
+            <label class="external-agent-group-option invalid">
+              <input type="checkbox" checked on:change={(event) => toggleGroup(groupId, event.currentTarget.checked)} />
+              <span><strong>알 수 없는 그룹</strong><small class="muted mono">{groupId}</small></span>
+            </label>
+          {/each}
+        {/if}
       </div>
-      {#if visibility === "group"}
-        <div class="external-agent-group-picker" role="group" aria-label="허용 그룹" aria-describedby={statusId}>
-          {#if !groups.length && !missingGroupIds.length}
-            <div class="empty-note">먼저 관리자 ▸ 그룹에서 그룹을 만들어 주세요.</div>
-          {:else}
-            {#each groups as group (group.id)}
-              <label class="external-agent-group-option">
-                <input
-                  type="checkbox"
-                  checked={selectedGroupIds.includes(group.id)}
-                  on:change={(event) => toggleGroup(group.id, event.currentTarget.checked)}
-                />
-                <span><strong>{group.name}</strong><small class="muted">그룹원 {group.memberCount}명</small></span>
-              </label>
-            {/each}
-            {#each missingGroupIds as groupId (groupId)}
-              <label class="external-agent-group-option invalid">
-                <input type="checkbox" checked on:change={(event) => toggleGroup(groupId, event.currentTarget.checked)} />
-                <span><strong>알 수 없는 그룹</strong><small class="muted mono">{groupId}</small></span>
-              </label>
-            {/each}
-          {/if}
+      {#if validationVisible && !groupsReady}
+        <!-- .warn 색상은 `.field .field-hint.warn`에만 걸려 있어 .field 래퍼가 필요합니다. -->
+        <div class="field">
+          <small class="field-hint warn" role="alert">공개할 그룹을 1개 이상 선택해 주세요.</small>
         </div>
-        <p class="muted external-agent-acl-note">이 설정은 Noah에서의 노출만 제한하며 Gateway 도구 권한이나 신뢰 권한을 부여하지 않습니다.</p>
       {/if}
+      <p class="muted external-agent-acl-note">이 설정은 Noah에서의 노출만 제한하며 Gateway 도구 권한이나 신뢰 권한을 부여하지 않습니다.</p>
     </fieldset>
 
     <div

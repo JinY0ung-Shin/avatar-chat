@@ -17,23 +17,37 @@ interface AvatarSummaryRow extends UserRow {
   updated_at?: string | null;
 }
 
+/**
+ * Shared FROM/JOIN fragment for "users m1 and m2 share an avatar-sharing
+ * group" — the SINGLE source of the co-membership SQL (T3.2). Every
+ * visibility/trust/badge query below builds on it, so reach and elevation can
+ * never drift apart. A group whose `avatar_sharing` policy is off (explicit 0;
+ * NULL = on for pre-policy rows — keep in lockstep with the TS `!== 0` reads)
+ * grants NEITHER: it becomes knowledge-sharing-only and drops out of this
+ * relation entirely. Binds NO params; consumers append their WHERE over m1/m2/g.
+ */
+const SHARING_TEAMMATES = `FROM group_members m1
+                JOIN group_members m2 ON m1.group_id = m2.group_id
+                JOIN groups g ON g.id = m1.group_id
+                 AND (g.avatar_sharing IS NULL OR g.avatar_sharing != 0)`;
+
 export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class Avatars extends Base {
     // ---- Avatars (discovery) ---------------------------------------------
 
     /**
      * Shared visibility WHERE predicate for the discovery queries
-     * (listPublishedAvatars + searchAvatars): suspended owners are hidden;
-     * `public` avatars show to everyone, the viewer's own always shows, and
-     * `group` avatars show to group teammates. Binds TWO positional params, both
-     * the viewer id, in order: the `id = ?` self-exception, then the group-teammate
-     * subquery's `m1.user_id = ?`. Callers must pass `(viewerId, viewerId, ...)`.
+     * (listPublishedAvatars + searchAvatars): suspended owners are hidden; the
+     * viewer's own avatar always shows, and `group` avatars show to group
+     * teammates only (`private` to no one else — there is no wider state).
+     * Binds TWO positional params, both the viewer id, in order: the `id = ?`
+     * self-exception, then the teammate subquery's `m1.user_id = ?`. Callers
+     * must pass `(viewerId, viewerId, ...)`.
      */
     private static readonly VISIBILITY_WHERE = `suspended = 0
-             AND (visibility = 'public' OR id = ?
+             AND (id = ?
               OR (visibility = 'group' AND id IN (
-                SELECT m2.user_id FROM group_members m1
-                JOIN group_members m2 ON m1.group_id = m2.group_id
+                SELECT m2.user_id ${SHARING_TEAMMATES}
                 WHERE m1.user_id = ?
               )))`;
 
@@ -59,8 +73,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
     private groupTeammateIds(viewerId: string): Set<string> {
       const rows = this.db
         .prepare(
-          `SELECT DISTINCT m2.user_id AS id FROM group_members m1
-           JOIN group_members m2 ON m1.group_id = m2.group_id
+          `SELECT DISTINCT m2.user_id AS id ${SHARING_TEAMMATES}
            WHERE m1.user_id = ? AND m2.user_id != ?`,
         )
         .all(viewerId, viewerId) as { id: string }[];
@@ -68,10 +81,11 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
     }
 
     listPublishedAvatars(viewerId: string): AvatarSummary[] {
-      // Visibility model: `public` avatars are visible to everyone; `group`
-      // avatars only to group teammates; `private` only to the owner. The viewer's
-      // own avatar always shows regardless of visibility. (Group co-membership is
-      // also what makes teammates mutually elevated — see isTrustedFor.)
+      // Visibility model: `group` avatars are visible to group teammates only;
+      // `private` only to the owner. The viewer's own avatar always shows
+      // regardless of visibility; nothing reaches beyond the viewer's groups.
+      // (Group co-membership is also what makes teammates mutually elevated —
+      // see isTrustedFor, built on the same SHARING_TEAMMATES fragment.)
       const rows = this.db
         .prepare(
           `SELECT *,
@@ -116,7 +130,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
     }
 
     /**
-     * Find avatars visible to the viewer (public + own + group teammates') whose capabilities match a
+     * Find avatars visible to the viewer (own + group teammates') whose capabilities match a
      * free-text query, ranked. Matches across hashtags, bio, intro, name, alias,
      * and username; a hashtag hit outranks a body hit. An empty query lists all
      * (capped). Backs the cross-avatar `mcp__avatars__search_avatars` tool, so an
@@ -132,10 +146,10 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         Math.max(opts.limit ?? DEFAULT_SEARCH_LIMIT, 1),
         50,
       );
-      // Visibility mirrors listPublishedAvatars: `public` avatars, the viewer's
-      // own, and `group` avatars of group teammates (`private` ones stay
-      // owner-only). Suspended users are never discoverable. Keeping this in sync
-      // with listPublishedAvatars is what the avatar-directory MCP tool relies on
+      // Visibility mirrors listPublishedAvatars: the viewer's own avatar plus
+      // `group` avatars of group teammates (`private` ones stay owner-only).
+      // Suspended users are never discoverable. Keeping this in sync with
+      // listPublishedAvatars is what the avatar-directory MCP tool relies on
       // to surface the same teammates the viewer can browse.
       const rows = this.db
         .prepare(
@@ -225,8 +239,8 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
 
     /**
      * Resolve a chat target avatar: reachable if it's the viewer's own, or visible
-     * to the viewer per its visibility — `public` (anyone), `group` (group
-     * teammates), or `private` (owner only). See `isVisibleTo`.
+     * to the viewer per its visibility — `group` (group teammates) or `private`
+     * (owner only). See `isVisibleTo`.
      */
     resolveChatAvatar(
       viewerId: string,
@@ -280,16 +294,13 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
 
     /**
      * Whether an avatar row is discoverable/reachable by `viewerId` (NOT counting
-     * the self-exception, which callers handle). `public` → everyone; `group` →
-     * group teammates only; `private` → no one. Suspended owners are filtered by
-     * the callers before this is consulted.
+     * the self-exception, which callers handle). `group` → group teammates only;
+     * `private` → no one. TS mirror of the SQL VISIBILITY_WHERE — both are built
+     * on the same teammate relation, so keep them in lockstep. Suspended owners
+     * are filtered by the callers before this is consulted.
      */
     private isVisibleTo(row: UserRow, viewerId: string): boolean {
-      const visibility = this.rowVisibility(row);
-      if (visibility === "public") {
-        return true;
-      }
-      if (visibility === "group") {
+      if (this.rowVisibility(row) === "group") {
         return this.shareAnyGroup(viewerId, row.id);
       }
       return false; // private
@@ -297,8 +308,9 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
 
     /**
      * True when two distinct users share at least one group. Group co-membership
-     * is the second source of trust (members of the same group are mutually
-     * elevated), OR'd into `isTrustedFor`. Indexed on group_members(user_id).
+     * is the sole source of trust (members of the same group are mutually
+     * elevated) via `isTrustedFor`, and the same relation gates `group`
+     * visibility. Indexed on group_members(user_id).
      */
     private shareAnyGroup(userA: string, userB: string): boolean {
       if (!userA || !userB || userA === userB) {
@@ -306,8 +318,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       }
       const row = this.db
         .prepare(
-          `SELECT 1 FROM group_members m1
-           JOIN group_members m2 ON m1.group_id = m2.group_id
+          `SELECT 1 ${SHARING_TEAMMATES}
            WHERE m1.user_id = ? AND m2.user_id = ? LIMIT 1`,
         )
         .get(userA, userB);
@@ -325,9 +336,8 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       }
       const rows = this.db
         .prepare(
-          `SELECT g.name AS name FROM groups g
-           JOIN group_members m1 ON m1.group_id = g.id AND m1.user_id = ?
-           JOIN group_members m2 ON m2.group_id = g.id AND m2.user_id = ?
+          `SELECT DISTINCT g.name AS name ${SHARING_TEAMMATES}
+           WHERE m1.user_id = ? AND m2.user_id = ?
            ORDER BY g.name COLLATE NOCASE ASC`,
         )
         .all(userA, userB) as { name: string }[];

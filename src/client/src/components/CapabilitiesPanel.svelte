@@ -171,6 +171,9 @@
     <div class="cap-head">
       <h3>이 아바타의 역량</h3>
       <p class="cap-sub">{avatar.displayName} 아바타가 사용할 수 있는 도구</p>
+      {#if avatar.groupAgent}
+        <p class="cap-sub">그룹 공유 에이전트 · {avatar.groupAgent.groupName} — 대화는 개인별로 비공개이며, 팀 공유는 그룹 지식저장소(공유 세컨드브레인)를 통해 이뤄져요.</p>
+      {/if}
     </div>
 
     {#if avatar.intro}

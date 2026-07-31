@@ -19,10 +19,11 @@ Each item lists: files · why · risk · effort · breaking.
 - **Done:** `src/server/store.ts` is now a barrel re-exporting an UNCHANGED public surface. The single `Store` facade is preserved via mixin composition (`store/index.ts` `Store extends ComposedStore`); shared base + schema/migrations live in `store/internal.ts` (`StoreBase`); per-domain method groups + `*Row` interfaces moved into `store/{users,avatars,conversations,groups,routines,knowledgeRepo,secrets,admin}.ts`. All ~110 call sites + `createServices` keep `new Store(config)` + `store.foo()`. Verified by full lint/test/build.
 
 ### T3.2 — Centralize the avatar-visibility SQL predicate
-- **Files:** `src/server/store.ts`
-- **Why:** The `visibility='public' OR id=? OR (visibility='group' AND id IN (teammate subquery))` predicate is duplicated char-for-char in `listPublishedAvatars` + `searchAvatars`, and the teammate join runs a 3rd time in `groupTeammateIds` (every list runs it twice). A shared `visibleAvatarsPredicate()` would enforce the sync the root CLAUDE.md mandates (the `search_avatars` MCP scope must match the browse scope).
-- **Why deferred:** Touches discovery + the MCP search scope — verify against the discovery/MCP tests deliberately.
-- **risk:** med · **effort:** M · **breaking:** no
+- **Done** (with the `public`-removal + avatar-sharing work): the co-membership join now lives in ONE
+  module-scope fragment, `SHARING_TEAMMATES` in `src/server/store/avatars.ts` (incl. the
+  `groups.avatar_sharing` gate), shared by `VISIBILITY_WHERE` (list + search), `groupTeammateIds`,
+  `shareAnyGroup`, and `sharedGroupNames`. Parity is pinned by the store scope-parity + avatar-sharing
+  matrix tests.
 
 ### T3.3 — Dedupe the knowledge-repo MCP tool family (3-way, incl. `create_repo`)
 - **Files:** `src/server/agent/repoTools.ts`, `groupRepoTools.ts`

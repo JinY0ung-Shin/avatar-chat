@@ -54,7 +54,7 @@ export interface ClientState {
   routineFilter: "all" | "enabled" | "paused" | "completed" | "error";
   adminUsers: AdminUserSummary[];
   adminGroups: AdminGroupSummary[];
-  adminUserFilter: "all" | "admins" | "suspended" | "public" | "sessions";
+  adminUserFilter: "all" | "admins" | "suspended" | "group" | "sessions";
   adminUserSearch: string;
   adminGroupSearch: string;
   adminStats: AdminStats | null;

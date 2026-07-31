@@ -114,7 +114,6 @@ export interface UserRow {
   persona: string;
   intro: string;
   avatar_ext: string | null;
-  published: number;
   visibility: string | null;
   auto_approve: number;
   suspended: number;
@@ -189,6 +188,8 @@ export interface GroupRow {
   knowledge_selected: string | null;
   /** Admin tool policy: JSON array of MCP tool-group ids; NULL = no restriction. */
   allowed_mcp_tool_groups: string | null;
+  /** Group policy: member avatars visible/trusted to each other. NULL/1 = on, 0 = off. */
+  avatar_sharing: number | null;
   created_by: string | null;
   created_at: string;
 }
@@ -199,9 +200,24 @@ export interface GroupMemberRow {
   display_name: string;
   avatar_ext: string | null;
   visibility: string | null;
-  published: number;
   role: string;
   created_at: string | null;
+}
+
+export interface GroupAgentRow {
+  group_id: string;
+  display_name: string;
+  alias: string | null;
+  bio: string | null;
+  intro: string | null;
+  persona: string | null;
+  hashtags: string | null;
+  avatar_ext: string | null;
+  enabled: number;
+  capture_scope: string | null;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string | null;
 }
 
 export interface RoutineJobRow {
@@ -451,6 +467,27 @@ export class StoreBase {
         external_avatar_id TEXT PRIMARY KEY,
         ext TEXT NOT NULL
       );
+      -- Shared GROUP AGENT (at most one per group, group-admin managed). NOT a
+      -- users row: its public avatar id is "group:<group_id>" (external:<id>
+      -- precedent — conversations.avatar_user_id has no FK). A brand-new table:
+      -- CREATE TABLE IF NOT EXISTS IS the existing-deployment migration.
+      -- capture_scope: who may write+commit to the shared second brain through
+      -- the agent ('members' | 'admins'; normalized on read, default members).
+      CREATE TABLE IF NOT EXISTS group_agents (
+        group_id TEXT PRIMARY KEY,
+        display_name TEXT NOT NULL,
+        alias TEXT DEFAULT '',
+        bio TEXT DEFAULT '',
+        intro TEXT DEFAULT '',
+        persona TEXT DEFAULT '',
+        hashtags TEXT,
+        avatar_ext TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        capture_scope TEXT NOT NULL DEFAULT 'members',
+        created_by TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
       CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id);
@@ -555,10 +592,10 @@ export class StoreBase {
     // avatar generates from its skills/persona, shown in discovery (탐색) and queried
     // by the cross-avatar `mcp__avatars__search_avatars` tool. Null/[] = none.
     this.addColumnIfMissing("users", "hashtags", "TEXT");
-    // Three-state avatar visibility (public / group / private) replacing the
-    // binary `published` flag. Added nullable on existing DBs, then backfilled
-    // from `published` below (1→public, 0→group). The `published` column is kept
-    // for migration only and is no longer read by any visibility decision.
+    // Two-state avatar visibility (group / private). Added nullable on existing
+    // DBs, then normalized by migrateVisibility() below (NULL/''/legacy 'public'
+    // → 'group'). The legacy `published` column survives in old DBs but is no
+    // longer read or written by any visibility decision.
     this.addColumnIfMissing("users", "visibility", "TEXT");
     // Flexible routine scheduling: an optional human label plus the schedule
     // shape. schedule_kind defaults to "daily" (legacy rows have it NULL → read
@@ -613,6 +650,13 @@ export class StoreBase {
     // System-admin-only (PUT /api/admin/groups/:id/tool-policy); a user in
     // several policy-bearing groups gets the INTERSECTION of the allowlists.
     this.addColumnIfMissing("groups", "allowed_mcp_tool_groups", "TEXT");
+    // Per-group AVATAR-SHARING policy (group-admin managed): whether this
+    // group's co-membership makes members' avatars mutually visible AND
+    // mutually trusted (the two ride the same TEAMMATES SQL fragment). NULL
+    // (pre-policy rows) and 1 = on; only an explicit 0 turns it off — keep the
+    // SQL `!= 0` / TS `!== 0` reads in lockstep. Group repo/brain tools and the
+    // admin tool policy are NOT affected by this knob.
+    this.addColumnIfMissing("groups", "avatar_sharing", "INTEGER");
     this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
@@ -749,13 +793,15 @@ export class StoreBase {
       .run();
   }
 
-  /** Backfill the visibility enum from the legacy `published` flag. Idempotent:
-   *  only touches rows where visibility hasn't been set yet. */
+  /** Normalize visibility to the 2-state enum. Idempotent: backfills rows that
+   *  predate the column AND folds the retired `public` state into `group` (the
+   *  closest surviving reach — group teammates). The legacy `published` flag is
+   *  no longer consulted; 'private' rows are never touched. */
   private migrateVisibility(): void {
     this.db
       .prepare(
-        "UPDATE users SET visibility = CASE WHEN published = 1 THEN 'public' ELSE 'group' END " +
-          "WHERE visibility IS NULL OR visibility = ''",
+        "UPDATE users SET visibility = 'group' " +
+          "WHERE visibility IS NULL OR visibility = '' OR visibility = 'public'",
       )
       .run();
   }
@@ -802,18 +848,12 @@ export class StoreBase {
     return (this.db.prepare(sql).get(...params) as { c: number }).c;
   }
 
-  /** Resolve a row's avatar visibility, falling back to the legacy `published`
-   *  flag for any row that predates the backfill (defensive — migrate() backfills
-   *  all rows on startup, so this normally just reads the column). */
-  protected rowVisibility(row: {
-    visibility?: string | null;
-    published?: number;
-  }): AvatarVisibility {
-    const v = row.visibility;
-    if (v === "public" || v === "group" || v === "private") {
-      return v;
-    }
-    return row.published === 1 ? "public" : "group";
+  /** Resolve a row's avatar visibility. Anything other than an explicit
+   *  'private' reads as 'group' — migrate() folds legacy states ('public',
+   *  NULL/empty, the pre-enum `published` flag) into 'group' on startup, so
+   *  this is just a defensive normalization, never a data source. */
+  protected rowVisibility(row: { visibility?: string | null }): AvatarVisibility {
+    return row.visibility === "private" ? "private" : "group";
   }
 
   protected getRoleId(name: string): number | null {

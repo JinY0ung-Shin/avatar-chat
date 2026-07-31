@@ -12,7 +12,6 @@
   export let active = false;
 
   const VISIBILITY_OPTIONS: { value: AvatarVisibility; label: string; desc: string }[] = [
-    { value: "public", label: "모두 공개", desc: "모든 사용자가 탐색에서 찾아 대화할 수 있어요." },
     { value: "group", label: "그룹 공개", desc: "같은 그룹원만 탐색에서 찾아 대화할 수 있어요." },
     { value: "private", label: "비공개", desc: "나만 볼 수 있어요." },
   ];

@@ -73,7 +73,7 @@ export function isSafePathId(value: string): boolean {
 }
 
 export function isAvatarVisibility(value: unknown): value is AvatarVisibility {
-  return value === "public" || value === "group" || value === "private";
+  return value === "group" || value === "private";
 }
 
 export function apiError(res: Response, status: number, message: string): void {

@@ -14,6 +14,29 @@ export function signup(
   return agent.post("/api/auth/signup").send({ username, displayName: username, password });
 }
 
+/**
+ * Put users in one group so they become co-members. Group co-membership is the
+ * ONLY thing that grants reach to someone else's `group`-visibility avatar, and
+ * the SAME relation makes them mutually trusted/elevated — there is no way to be
+ * reachable-but-read-only anymore. `admin` must be an agent with the system
+ * admin role (the first signup on a fresh app). Returns the new group's id.
+ */
+export async function shareGroup(
+  admin: ReturnType<typeof request.agent>,
+  usernames: string[],
+  name = "Shared",
+): Promise<string> {
+  const created = await admin.post("/api/admin/groups").send({ name }).expect(200);
+  const groupId = created.body.group.id as string;
+  for (const username of usernames) {
+    await admin
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username })
+      .expect(200);
+  }
+  return groupId;
+}
+
 /** Parse SSE text into a list of {event, data} frames. */
 export function parseSse(raw: string): { event: string; data: unknown }[] {
   const frames: { event: string; data: unknown }[] = [];

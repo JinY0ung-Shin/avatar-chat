@@ -18,6 +18,8 @@ export type {
   CanvasControl,
   ConversationSummary,
   Group,
+  GroupAgent,
+  GroupAgentCaptureScope,
   GroupMember,
   ImageMediaType,
   KnowledgeGraph,

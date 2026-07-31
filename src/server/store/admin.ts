@@ -84,7 +84,7 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         users: this.count("SELECT COUNT(*) AS c FROM users"),
         admins: this.countAdmins(),
         suspended: this.count("SELECT COUNT(*) AS c FROM users WHERE suspended = 1"),
-        publicAvatars: this.count("SELECT COUNT(*) AS c FROM users WHERE visibility = 'public'"),
+        groupAvatars: this.count("SELECT COUNT(*) AS c FROM users WHERE visibility = 'group'"),
         conversations: this.count("SELECT COUNT(*) AS c FROM conversations"),
         messages: this.count("SELECT COUNT(*) AS c FROM messages"),
         openRequests: this.count("SELECT COUNT(*) AS c FROM knowledge_requests WHERE status = 'open'"),

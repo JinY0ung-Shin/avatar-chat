@@ -125,7 +125,7 @@ describe("admin: stats and user detail", () => {
     expect(stats.suspended).toBe(0);
     // Shape is fully populated (no undefined counters).
     for (const key of [
-      "publicAvatars",
+      "groupAvatars",
       "conversations",
       "messages",
       "openRequests",
@@ -134,6 +134,8 @@ describe("admin: stats and user detail", () => {
     ]) {
       expect(typeof stats[key]).toBe("number");
     }
+    // Both fresh accounts default to `group` visibility.
+    expect(stats.groupAvatars).toBe(2);
   });
 
   it("returns a per-user breakdown and 404s an unknown id", async () => {
@@ -324,6 +326,14 @@ describe("admin: avatar visibility override", () => {
       .send({ visibility: "sideways" })
       .expect(400);
 
+    // The retired "public" state is rejected like any invalid value (the
+    // owner-facing PATCH /api/me silently skips it instead — asymmetry pinned
+    // in routes-profile.test.ts).
+    await admin.agent
+      .put(`/api/admin/users/${bob.id}/visibility`)
+      .send({ visibility: "public" })
+      .expect(400);
+
     const res = await admin.agent
       .put(`/api/admin/users/${bob.id}/visibility`)
       .send({ visibility: "private" })
@@ -333,7 +343,7 @@ describe("admin: avatar visibility override", () => {
 
     await admin.agent
       .put("/api/admin/users/ghost/visibility")
-      .send({ visibility: "public" })
+      .send({ visibility: "group" })
       .expect(404);
   });
 });
@@ -732,6 +742,59 @@ describe("groups self-service: roster", () => {
     const carol = await mkUser(app, "carol");
     const none = await carol.agent.get("/api/me/groups").expect(200);
     expect(none.body.groups).toEqual([]);
+  });
+});
+
+describe("groups self-service: avatar-sharing policy", () => {
+  it("gates the toggle on canManageGroup, validates the body, and echoes the state", async () => {
+    const { app, services } = boot();
+    const admin = await mkUser(app, "admin");
+    const lead = await mkUser(app, "lead");
+    const plain = await mkUser(app, "plain");
+    const groupId = await createGroup(admin, "team");
+    await admin.agent
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "lead", role: "admin" })
+      .expect(200);
+    await admin.agent
+      .post(`/api/admin/groups/${groupId}/members`)
+      .send({ username: "plain", role: "member" })
+      .expect(200);
+
+    // Unknown group → 404 before the permission check.
+    await lead.agent
+      .put("/api/me/groups/ghost/avatar-sharing")
+      .send({ enabled: false })
+      .expect(404);
+    // Plain member → 403.
+    await plain.agent
+      .put(`/api/me/groups/${groupId}/avatar-sharing`)
+      .send({ enabled: false })
+      .expect(403);
+    // Non-boolean body → 400.
+    await lead.agent
+      .put(`/api/me/groups/${groupId}/avatar-sharing`)
+      .send({ enabled: "off" })
+      .expect(400);
+
+    // Group admin turns it off; the Group echo + GET /api/me/groups carry it.
+    const off = await lead.agent
+      .put(`/api/me/groups/${groupId}/avatar-sharing`)
+      .send({ enabled: false })
+      .expect(200);
+    expect(off.body.group.avatarSharing).toBe(false);
+    const mine = await plain.agent.get("/api/me/groups").expect(200);
+    expect(mine.body.groups[0].avatarSharing).toBe(false);
+    // Reach/trust dropped with it (the store matrix covers the full semantics).
+    expect(services.store.isTrustedFor(plain.id, lead.id)).toBe(false);
+
+    // A NON-member system admin may also manage it (canManageGroup).
+    const on = await admin.agent
+      .put(`/api/me/groups/${groupId}/avatar-sharing`)
+      .send({ enabled: true })
+      .expect(200);
+    expect(on.body.group.avatarSharing).toBe(true);
+    expect(services.store.isTrustedFor(plain.id, lead.id)).toBe(true);
   });
 });
 

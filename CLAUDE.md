@@ -23,11 +23,20 @@ These are the invariants the project is built around. New work should reinforce 
   slash-command expansions, bundled `SKILL.md` body + frontmatter); else Korean (UI, `apiError`,
   status/activity labels, conversation titles). The avatar always REPLIES in the user's language (default
   Korean), anchored in `buildSystemPromptAppend`. A string used on BOTH channels is split.
-- **Trust/elevation is GROUP-ONLY.** `isTrustedFor` IS `shareAnyGroup` (symmetric group co-membership) —
-  the single choke point every elevated/trust check flows through. Add new trust sources THERE, not at
-  call sites. There is no per-avatar trust list anymore.
-- **Avatar visibility is a 3-state enum** (`public` | `group` | `private`), NOT a boolean. Visibility and
-  trust are SEPARATE axes (a group teammate reaches your `group` avatars but not your `private` ones).
+- **Trust/elevation is GROUP-ONLY.** `isTrustedFor` IS `shareAnyGroup` (symmetric co-membership in an
+  AVATAR-SHARING group) — the single choke point every elevated/trust check flows through. Add new trust
+  sources THERE, not at call sites. There is no per-avatar trust list anymore.
+- **Avatar visibility is a 2-state enum** (`group` | `private`) — the `public` state is RETIRED: avatars
+  never reach beyond the owner's groups (a group-less user reaches only their own avatar). The per-group
+  `avatar_sharing` policy gates visibility AND trust TOGETHER (one SQL fragment, `SHARING_TEAMMATES`);
+  off = knowledge-sharing-only group (repo/brain/tool-policy unaffected). Visibility (`private` opt-out)
+  and trust remain separate axes: a teammate reaches your `group` avatar but never your `private` one.
+- **Group shared agent = a team avatar that is NOT a users row** (`group_agents`, one per group, avatar
+  id `group:<groupId>`). Reach = owning-group membership only (`findChattableGroupAgent`), independent of
+  `avatar_sharing`; per-member threads are private and sharing happens ONLY via the group second brain.
+  The run kind (`AgentRequest.groupAgent`) carries capability: group resources only — never personal
+  secrets/tokens/repos; capture (write+commit) follows the group's `capture_scope` policy with the
+  ACTING member's git token/identity.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the
   subprocess env), so Bash `git push`/`gh` can never authenticate. Route every git-ish capability through
   an in-process MCP bridge (`mcp__repo__*`/`mcp__git_repo__*`/`mcp__group_repo__*`) and keep the
@@ -55,9 +64,12 @@ These are the invariants the project is built around. New work should reinforce 
   Preserve stateless semantics: send the complete stored text history each turn, ignore upstream
   `session_id`, and propagate aborts. Run Noah's `tests/external-agent.test.ts` together with the
   gateway endpoint and `/v1/responses` regression tests. `visibleToGroupIds` is a Noah-only visibility
-  ACL: omission means public, a non-empty list means membership in any listed group, and unknown/deleted
-  group IDs fail closed. Enforce it through the shared external-agent visibility helper on list, detail,
-  skills, and every new chat turn; never treat it as trust/elevation or a Gateway tool policy. System
+  ACL and group binding is REQUIRED: an entry without a non-empty list is visible to NO ONE (fail
+  closed — legacy env/registry entries stay parseable but dark until an operator assigns groups; the
+  admin UI refuses to save without one), a non-empty list means membership in any listed group, and
+  unknown/deleted group IDs fail closed. Enforce it through the shared external-agent visibility helper
+  on list, detail, skills, and every new chat turn; never treat it as trust/elevation or a Gateway tool
+  policy, and never let `avatar_sharing` gate it (it is an admin ACL, not peer sharing). System
   admins do not bypass membership. Revocation blocks the next request but preserves user-owned history
   and does not interrupt a run that already passed its start-time authorization check. Admin-managed
   entries live as one versioned, AES-GCM-encrypted registry under `app_config`; environment entries are

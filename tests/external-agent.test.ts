@@ -3,6 +3,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { runExternalAgent } from "../src/server/agent/externalAgent.js";
 import {
+  externalAgentVisibleTo,
   externalAvatarDetail,
   parseExternalAgents,
 } from "../src/server/externalAgents.js";
@@ -235,8 +236,12 @@ describe("external agent registry", () => {
     expect(agent.connectTimeoutMs).toBe(12_500);
     expect(agent.idleTimeoutMs).toBe(90_000);
     expect(agent.totalTimeoutMs).toBe(900_000);
+    // No visibleToGroupIds: the entry parses (legacy env JSON must not break
+    // boot) but is visible to NO ONE until groups are assigned (fail closed).
+    expect(externalAgentVisibleTo(agent, new Set())).toBe(false);
+    expect(externalAgentVisibleTo(agent, new Set(["any-group"]))).toBe(false);
     const publicAvatar = externalAvatarDetail(agent);
-    expect(publicAvatar.visibility).toBe("public");
+    expect(publicAvatar.visibility).toBe("group");
     const publicJson = JSON.stringify(publicAvatar);
     expect(publicJson).toContain('"runtime":"external"');
     expect(publicJson).not.toContain("gateway.example");
@@ -615,6 +620,11 @@ describe("external avatar chat routes", () => {
         const viewer = request.agent(app);
         const viewerId = (await signup(viewer, "external-viewer").expect(201))
           .body.user.id as string;
+        // Group binding is mandatory now: bind the agent to a group the viewer
+        // is in (config objects are read live, so mutating the entry works).
+        const group = services.store.createGroup({ name: "ext-viewers" });
+        services.store.addGroupMember(group.id, viewerId);
+        external.visibleToGroupIds = [group.id];
         const avatarId = "external:research";
         const conversationId = "external-conversation";
 
@@ -711,6 +721,9 @@ describe("external avatar chat routes", () => {
         const viewerId = (
           await signup(viewer, "external-model-viewer").expect(201)
         ).body.user.id as string;
+        const group = services.store.createGroup({ name: "ext-model-viewers" });
+        services.store.addGroupMember(group.id, viewerId);
+        external.visibleToGroupIds = [group.id];
         const avatarId = "external:research";
         const conversationId = "external-model-conversation";
 
@@ -802,7 +815,11 @@ describe("external avatar chat routes", () => {
         const admin = request.agent(app);
         const viewer = request.agent(app);
         await signup(admin, "image-admin").expect(201); // first user = admin
-        await signup(viewer, "image-viewer").expect(201);
+        const viewerId = (await signup(viewer, "image-viewer").expect(201))
+          .body.user.id as string;
+        const group = services.store.createGroup({ name: "ext-image-viewers" });
+        services.store.addGroupMember(group.id, viewerId);
+        external.visibleToGroupIds = [group.id];
         const avatarId = "external:research";
         const png =
           "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
@@ -869,6 +886,7 @@ describe("external avatar chat routes", () => {
         ).toMatchObject({ hasImage: false });
 
         // Deleting a managed agent cascades its image row + file away.
+        // (Managed writes require a group binding now.)
         await admin
           .post("/api/admin/external-agents")
           .send({
@@ -879,6 +897,7 @@ describe("external avatar chat routes", () => {
               agent: "claude",
               enabled: true,
               apiKeyMode: "clear",
+              visibleToGroupIds: [group.id],
             },
           })
           .expect(201);

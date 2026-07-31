@@ -2299,6 +2299,7 @@ describe("buildPrompt", () => {
     role: "member" as const,
     knowledgeRepoConfigured: false,
     allowedMcpToolGroups: null,
+    avatarSharing: true,
   };
 
   it("gives owner-driven turns with a group the ask_avatar standing guidance", () => {
@@ -2499,6 +2500,7 @@ describe("buildPrompt", () => {
             name: "플랫폼팀",
             role: "member",
             knowledgeRepoConfigured: true,
+            avatarSharing: true,
           },
         ],
       }),
@@ -2802,6 +2804,7 @@ describe("buildPrompt", () => {
             name: "플랫폼팀",
             role: "admin",
             knowledgeRepoConfigured: true,
+            avatarSharing: true,
           },
         ],
       }),

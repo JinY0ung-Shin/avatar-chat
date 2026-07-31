@@ -8,6 +8,7 @@ import { withAvatars } from "./avatars.js";
 import { withConversations } from "./conversations.js";
 import { withAdmin } from "./admin.js";
 import { withGroups } from "./groups.js";
+import { withGroupAgents } from "./groupAgents.js";
 
 // Re-export the non-Store public symbols identically to the pre-split module so
 // `../store` / `./store` imports keep resolving. Behavior-preserving: the only
@@ -32,11 +33,13 @@ export {
  * disjoint, so nothing shadows anything); it only feeds TS `this`-typing, which
  * the `declare`d cross-domain method signatures on StoreBase already cover.
  */
-const ComposedStore = withGroups(
-  withAdmin(
-    withConversations(
-      withAvatars(
-        withRoutines(withKnowledgeRepo(withSecrets(withUsers(StoreBase)))),
+const ComposedStore = withGroupAgents(
+  withGroups(
+    withAdmin(
+      withConversations(
+        withAvatars(
+          withRoutines(withKnowledgeRepo(withSecrets(withUsers(StoreBase)))),
+        ),
       ),
     ),
   ),

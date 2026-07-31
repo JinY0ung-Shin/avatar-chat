@@ -59,7 +59,13 @@ export function registerAdminExternalAgentRoutes(
     agent: ExternalAgentConfig,
     res: Response,
   ): boolean => {
-    const missing = agent.visibleToGroupIds?.find(
+    // Group binding is mandatory for managed writes: without at least one
+    // group the avatar would be visible to no one (fail-closed runtime rule).
+    if (!agent.visibleToGroupIds?.length) {
+      apiError(res, 400, "외부 아바타는 공개할 그룹을 1개 이상 지정해야 합니다.");
+      return false;
+    }
+    const missing = agent.visibleToGroupIds.find(
       (groupId) => !store.getGroup(groupId),
     );
     if (!missing) return true;
@@ -142,12 +148,15 @@ export function registerAdminExternalAgentRoutes(
         inputError(res, error);
         return;
       }
-      if (!validateGroups(agent, res)) return;
       const state = managedState();
+      // Identity conflicts (incl. read-only env ids) outrank payload semantics:
+      // report the 409 before demanding a group binding for an id that can't
+      // be created anyway.
       if (effectiveAgents().some((item) => item.id === agent.id)) {
         apiError(res, 409, "같은 ID의 외부 아바타가 이미 있습니다.");
         return;
       }
+      if (!validateGroups(agent, res)) return;
       if (effectiveAgents().length >= MAX_EXTERNAL_AGENTS) {
         apiError(res, 400, `외부 아바타는 최대 ${MAX_EXTERNAL_AGENTS}개까지 등록할 수 있습니다.`);
         return;

@@ -10,9 +10,8 @@
   export let user: AdminUserSummary;
   export let reload: () => Promise<void>;
 
-  // Mirrors the owner-facing selector in SettingsProfileTab (모두 공개/그룹 공개/비공개).
+  // Mirrors the owner-facing selector in SettingsProfileTab (그룹 공개/비공개).
   const VISIBILITY_OPTIONS: { value: AvatarVisibility; label: string; desc: string }[] = [
-    { value: "public", label: "모두 공개", desc: "모든 사용자가 탐색에서 찾아 대화할 수 있습니다." },
     { value: "group", label: "그룹 공개", desc: "같은 그룹원만 탐색에서 찾아 대화할 수 있습니다." },
     { value: "private", label: "비공개", desc: "본인만 볼 수 있습니다." },
   ];
@@ -179,8 +178,7 @@
     </div>
     <div class="ar-tags">
       <span class="tag {isAdmin ? 'write' : 'read'}">{isAdmin ? "관리자" : "일반 사용자"}</span>
-      {#if user.visibility === "public"}<span class="tag accent">공개</span>{/if}
-      {#if user.visibility === "group"}<span class="tag">그룹 공개</span>{/if}
+      <!-- 그룹 공개가 기본값이라 태그를 달지 않고, 비공개일 때만 표시합니다. -->
       {#if user.visibility === "private"}<span class="tag">비공개</span>{/if}
       {#if user.suspended}<span class="tag danger">정지</span>{/if}
       {#if user.activeSessions}<span class="tag read">세션 {user.activeSessions}</span>{/if}

@@ -20,12 +20,14 @@ import { discoverGlobalSkills } from "../agent/skillDiscovery.js";
 import {
   apiError,
   avatarDir,
+  deleteAvatarImageFile,
   isAvatarVisibility,
   safeString,
   MIN_PASSWORD_LENGTH,
   type RouterDeps,
 } from "./_shared.js";
 import { registerAdminExternalAgentRoutes } from "./adminExternalAgents.js";
+import { cleanupGroupDataDirs, groupAgentAvatarId } from "../groupAgents.js";
 
 // ---- Admin -----------------------------------------------------------
 export function createAdminRouter(deps: RouterDeps): Router {
@@ -427,11 +429,19 @@ export function createAdminRouter(deps: RouterDeps): Router {
   );
 
   router.delete("/api/admin/groups/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    // Capture the agent's image ext BEFORE the row cascade removes it.
+    const agentAvatarId = groupAgentAvatarId(req.params.id);
+    const agentImageExt = store.getGroupAgentImageExtByAvatarId(agentAvatarId);
     const removed = store.deleteGroup(req.params.id);
     if (!removed) {
       apiError(res, 404, "그룹을 찾을 수 없습니다.");
       return;
     }
+    // Best-effort disk cleanup after the DB cascade: the group-knowledge clone
+    // (pre-existing leak — possibly a private repo), the agent's workspaces,
+    // and its profile-image file.
+    cleanupGroupDataDirs(config, req.params.id);
+    deleteAvatarImageFile(config, agentAvatarId, agentImageExt);
     auditAs(req, "group_delete", `deleted group ${req.params.id}`);
     logger.warn({ actorId: req.user!.id, groupId: req.params.id }, "group deleted");
     res.json({ ok: true });

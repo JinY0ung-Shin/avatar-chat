@@ -11,7 +11,7 @@ import type { AgentOwner, AppConfig, Plugin, RoutineJob, RoutineSchedulePatch } 
 import { text } from "./mcpTools.js";
 import { DEFAULT_MODEL_TIER } from "../modelTiers.js";
 import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
-import { summarizeOwnerState } from "./ownerState.js";
+import { summarizeGroupAgentState, summarizeOwnerState } from "./ownerState.js";
 import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
 import type { ToolSkillPolicy } from "../toolSkillPolicy.js";
 import { webFetchProxyState } from "./webFetchTools.js";
@@ -80,6 +80,13 @@ export interface SystemToolsContext {
    * treated as supported.
    */
   visionEnabled?: boolean;
+  /**
+   * Set ONLY for GROUP SHARED-AGENT runs: describe_system then reports the
+   * group's self-state (summarizeGroupAgentState — the same facts the prompt
+   * branch gets) instead of an owner block. Management tools keep refusing via
+   * viewerIsOwner (false on these runs).
+   */
+  groupAgent?: { groupId: string; actingUserId: string };
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -200,6 +207,60 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           "- Secret values are not exposed; only their names are revealed to the avatar.",
           "- Remote git operations (clone/push, etc.) are performed only through dedicated MCP tools. The shell has no git credentials.",
         ];
+        // GROUP SHARED-AGENT runs: report the GROUP's self-state (the same
+        // facts the group-agent prompt branch carries — GroupAgentState) and
+        // stop; there is no owner block to build.
+        if (ctx.groupAgent) {
+          const ga = summarizeGroupAgentState(
+            store,
+            ctx.config,
+            ctx.groupAgent.groupId,
+            ctx.groupAgent.actingUserId,
+          );
+          if (!ga) {
+            return text(
+              `${publicGuide.join("\n")}\n\nThis shared group agent's group no longer exists, so no state can be reported.`,
+            );
+          }
+          // Model/effort/tool-group lines mirror the owner block below (small
+          // deliberate duplication — the owner strings are test-pinned).
+          const gaTier = ctx.selectedModelTier;
+          const gaTierModel = gaTier ? ctx.config.defaultTierModels[gaTier] : undefined;
+          const gaDefaultModel = ctx.config.defaultTierModels[DEFAULT_MODEL_TIER];
+          const gaModelLine = ga.anthropicModel
+            ? `${ga.anthropicModel} (pinned via environment variable)`
+            : gaTier
+              ? `${gaTierModel ? `${gaTierModel} (${gaTier})` : gaTier} (chosen for this conversation in the composer)`
+              : ga.modelOverride
+                ? `${ga.modelOverride} (admin setting)`
+                : `${gaDefaultModel ? `${gaDefaultModel} (${DEFAULT_MODEL_TIER})` : DEFAULT_MODEL_TIER} (default)`;
+          const gaEffort = ctx.selectedEffort;
+          const gaEffortLabel = (id: string) => EFFORT_LEVELS.find((e) => e.id === id)?.label;
+          const gaEffortLine = gaEffort
+            ? `${gaEffortLabel(gaEffort) ? `${gaEffort} (${gaEffortLabel(gaEffort)})` : gaEffort} (chosen for this conversation)`
+            : `${gaEffortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${gaEffortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;
+          const gaEnabled = ctx.enabledMcpToolGroups ?? MCP_TOOL_GROUPS.map((group) => group.id);
+          const gaLabels = MCP_TOOL_GROUPS
+            .filter((group) => gaEnabled.includes(group.id))
+            .map((group) => group.labelEn);
+          return text(
+            [
+              ...publicGuide,
+              "",
+              "Current GROUP SHARED-AGENT state:",
+              `- Kind: shared agent of the group '${ga.groupName}' (a team resource, not a personal avatar)`,
+              `- Enabled: ${ga.enabled ? "yes" : "no — disabled by a group admin"}`,
+              `- Capture policy: ${ga.captureScope === "members" ? "all group members may capture" : "group admins only"}; the member in this conversation (role: ${ga.viewerRole}) ${ga.captureAllowed ? "MAY capture (write + commit)" : "may NOT capture (recall/read only)"}`,
+              `- Team second brain (shared knowledge repository): ${ga.knowledgeRepoConfigured ? `${ga.knowledgeRepo.repo}${ga.knowledgeRepo.branch ? ` @ ${ga.knowledgeRepo.branch}` : ""}` : "(none — ask a group admin to connect one in group settings)"}`,
+              `- This member's internal Git token (GIT_TOKEN): ${ga.viewerGitTokenSet ? "set" : "not set — capture's commit/push will fail until they register one in Settings"}`,
+              `- Model in use: ${gaModelLine}`,
+              `- Reasoning effort: ${gaEffortLine}`,
+              `- MCP tool groups enabled for this conversation: ${gaLabels.length ? gaLabels.join(", ") : "(none)"}`,
+              "- Capability boundary: NO personal knowledge repository/brain, secrets, SSH, routines, notifications, personal git repositories, or plugins beyond the group repository.",
+              "- Group admins manage this agent under Settings → Groups.",
+            ].join("\n"),
+          );
+        }
         if (!ctx.viewerIsOwner) {
           return text(
             `${publicGuide.join("\n")}\n\nThe current conversation partner is not the owner, so changes to plugin/routine/knowledge-repository settings cannot be made.`,
@@ -252,11 +313,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           .map((group) => group.labelEn);
         const hashtags = user?.hashtags ?? [];
         const visibilityLabel =
-          user?.visibility === "public"
-            ? "public (discoverable by everyone)"
-            : user?.visibility === "private"
-              ? "private (owner only)"
-              : "group (discoverable by group teammates only)";
+          user?.visibility === "private"
+            ? "private (owner only)"
+            : "group (discoverable by group teammates only)";
         const lines = [
           ...publicGuide,
           "",
@@ -289,8 +348,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") + " (custom secrets are injected as env into MCP servers from your own plugins/knowledge repo; git/SSH credentials go only to their dedicated tools)" : "(none)"}`,
           `- Shell-exposed secrets: ${state.shellExposedSecretNames.length ? state.shellExposedSecretNames.map((name) => `\`${name}\``).join(", ") + " — usable as `$NAME` in Bash on elevated runs; values are redacted from tool outputs (per-secret 셸 노출 toggle in Settings)" : "(none — every secret stays out of the agent shell; enable per-secret with the 셸 노출 toggle in Settings)"}`,
           `- Remote SSH tools: ${secretNames.includes("SSH_PRIVATE_KEY") ? "enabled (SSH_PRIVATE_KEY set)" : "disabled (no SSH_PRIVATE_KEY secret)"}`,
-          `- Groups: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`).join(", ") : "(none)"} — members of the same group automatically trust each other mutually (this is the ONLY source of elevated access; manage trust by managing group membership).`,
-          `- Avatar consultation (mcp__avatars__ask_avatar): ${enabledMcpToolGroups.includes("avatars") ? (groups.length > 0 ? "available — you can ask a same-group teammate's avatar one question on the owner's behalf; it answers from its persona + personal-knowledge recall. Attribute answers to that avatar and capture durable learnings with brain-ingest." : "enabled, but the owner belongs to no groups, so no teammate avatar is reachable (consultation requires shared group membership)") : "OFF for this conversation (avatars tool group deselected)"}`,
+          `- Groups: ${groups.length ? groups.map((g) => `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"}${g.avatarSharing ? "" : ", avatar sharing off"})`).join(", ") : "(none)"} — members of the same group automatically trust each other mutually (this is the ONLY source of elevated access; manage trust by managing group membership).${groups.some((g) => !g.avatarSharing) ? ' Groups marked "avatar sharing off" are knowledge-sharing-only: their co-membership grants neither avatar visibility nor mutual trust.' : ""}`,
+          `- Avatar consultation (mcp__avatars__ask_avatar): ${enabledMcpToolGroups.includes("avatars") ? (groups.some((g) => g.avatarSharing) ? "available — you can ask a same-group teammate's avatar one question on the owner's behalf; it answers from its persona + personal-knowledge recall. Attribute answers to that avatar and capture durable learnings with brain-ingest." : groups.length > 0 ? "enabled, but none of the owner's groups share avatars (avatar sharing off), so no teammate avatar is reachable" : "enabled, but the owner belongs to no groups, so no teammate avatar is reachable (consultation requires shared group membership)") : "OFF for this conversation (avatars tool group deselected)"}`,
           `- Experimental features: ${state.experimentalFeatures.length ? state.experimentalFeatures.join(", ") + " (beta — behavior may change)" : "(none enabled)"}`,
           `- Plugins: ${plugins.length} (${plugins.filter((p) => p.enabled).length} enabled)`,
           `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)`,

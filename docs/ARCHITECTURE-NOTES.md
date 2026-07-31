@@ -108,10 +108,12 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
 - **`count(sql, …)` is the only count path** (in the base). Don't hand-roll `(… .get() as {c:number}).c`.
 - **Row mappers each have a named `*Row` interface** (`UserRow`/`GroupRow`/`PluginRow`/`GroupMemberRow`/
   `RoutineJobRow`). New mappers follow that — don't use reflective `Parameters<Store["toX"]>[0]`.
-- **The avatar-visibility SQL predicate** (`public` OR self OR group-teammate subquery) is still
-  hand-duplicated in `listPublishedAvatars` and `searchAvatars` (both in `store/avatars.ts`) and MUST
-  stay in sync — the `search_avatars` MCP scope depends on matching the browse scope. No shared
-  constant enforces it yet (deferred, T3.2).
+- **The co-membership SQL lives in ONE fragment** (T3.2 done): `SHARING_TEAMMATES` in
+  `store/avatars.ts` (group_members self-join + `groups.avatar_sharing` gate: NULL/1 = on, only an
+  explicit 0 is off — keep the TS `!== 0` reads in lockstep). ALL four consumers build on it —
+  `VISIBILITY_WHERE` (list + search share it), `groupTeammateIds`, `shareAnyGroup` (= `isTrustedFor`),
+  `sharedGroupNames` — so reach and elevation can never drift apart, and the `search_avatars` MCP
+  scope automatically matches the browse scope.
 - **Schedule decode lives in ONE place:** `scheduleFromRow` (via `parseDaysOfWeek`, which try/catches
   the `JSON.parse` so a corrupt `days_of_week` row can't abort a scheduler tick). `toRoutineJob` reuses
   it. `create/updateRoutineJob` accept either the legacy flat fields OR a full `RoutineSchedule` object
@@ -160,15 +162,20 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   fires `POST /api/me/release-seen` (no body; the SERVER stamps its current id via `markReleaseSeen`)
   fire-and-forget, mirroring onboarding. Don't hand-copy the registry client-side.
 
-### Avatar visibility (3-state) — mechanics
-- `users.visibility` = `public` | `group` | `private`; `AvatarVisibility` type in types.ts, default
-  `group` for new avatars. The legacy `published` INTEGER column is migration-only: `migrateVisibility()`
-  backfills `1→public / 0→group` on startup, then nothing reads `published` again (`rowVisibility()` is
-  the accessor, with a published fallback for un-backfilled rows). The discovery SQL predicate
-  (`listPublishedAvatars`/`searchAvatars`) and `isVisibleTo` (used by `getAvatar`/`resolveChatAvatar`)
-  all gate on `visibility`. Owner-self always bypasses the check. UI: a `seg-control` segmented
-  radiogroup in `SettingsProfileTab.svelte` (`PATCH /api/me {visibility}`); admin moderation =
-  `PUT /api/admin/users/:id/visibility`.
+### Avatar visibility (2-state) — mechanics
+- `users.visibility` = `group` | `private` (the `public` state is RETIRED — avatars never reach beyond
+  the owner's avatar-sharing groups); `AvatarVisibility` type in types.ts, default `group` for new
+  avatars. `migrateVisibility()` folds legacy states (`'public'`, NULL/`''`, the pre-enum `published`
+  flag) into `'group'` idempotently on startup; `rowVisibility()` reads anything non-`'private'` as
+  `'group'` and no longer consults `published` (the column survives in old DBs, unread). The discovery
+  SQL predicate (`VISIBILITY_WHERE`) and `isVisibleTo` (used by `getAvatar`/`resolveChatAvatar`) gate on
+  `visibility` over the `SHARING_TEAMMATES` fragment. Owner-self always bypasses the check. Consequence
+  of retiring `public`: for native avatars non-owner reach ⇔ trust — the "visible but read-only
+  stranger" viewer class survives only for external avatars; the non-elevated code paths stay as a
+  fail-closed floor. UI: a 2-option `seg-control` in `SettingsProfileTab.svelte`
+  (`PATCH /api/me {visibility}` silently skips invalid values); admin moderation =
+  `PUT /api/admin/users/:id/visibility` (400s invalid values incl. the retired `public` — intentional
+  asymmetry, both pinned in tests). Admin stats count `groupAvatars` (was `publicAvatars`).
 
 ### Trust / elevation — mechanics
 - **Trust/elevation is GROUP-ONLY — no per-avatar trust list.** `isTrustedFor` is exactly
@@ -205,15 +212,55 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
 ### Groups
 - `groups` + `group_members(role admin|member)` tables (always-run schema). System admin
   creates/deletes groups + assigns group admins (`/api/admin/groups*`); group admins self-serve their
-  group's members + repo (`/api/me/groups*`, gated by `canManageGroup` = system admin OR group admin).
-  **`isTrustedFor` IS `shareAnyGroup`** → group co-members are mutually + SYMMETRICALLY elevated and
-  reach each other's `group`-visible avatars (but NOT each other's `private` ones — visibility is a
-  separate axis). Each group has ONE shared **knowledge repo** (`groupKnowledgeRepo.ts` mirrors
-  `knowledgeRepo.ts`: full clone at `dataDir/group-knowledge/<groupId>`, REUSES its repo-relative file
-  ops; `token` = acting user's `getGitToken`). Members' avatars auto-load its skills
-  (`loadGroupKnowledgeRepoRoots`); only group admins edit via the OWNER-ONLY `mcp__group_repo__*` server
-  (per-tool role check: member reads, admin writes/deletes/moves/commits/`create_repo`). Discovery:
-  `listPublishedAvatars` also returns `group`-visible group teammates flagged `sharesGroup`.
+  group's members + repo + policies (`/api/me/groups*`, gated by `canManageGroup` = system admin OR
+  group admin). **`isTrustedFor` IS `shareAnyGroup`** → co-members of an AVATAR-SHARING group are
+  mutually + SYMMETRICALLY elevated and reach each other's `group`-visible avatars (but NOT each
+  other's `private` ones — visibility is a separate axis). Each group has ONE shared **knowledge repo**
+  (`groupKnowledgeRepo.ts` mirrors `knowledgeRepo.ts`: full clone at `dataDir/group-knowledge/<groupId>`,
+  REUSES its repo-relative file ops; `token` = acting user's `getGitToken`). Members' avatars auto-load
+  its skills (`loadGroupKnowledgeRepoRoots`); only group admins edit via the OWNER-ONLY
+  `mcp__group_repo__*` server (per-tool role check: member reads, admin
+  writes/deletes/moves/commits/`create_repo`). Discovery: `listPublishedAvatars` also returns
+  `group`-visible group teammates flagged `sharesGroup`.
+- **Per-group avatar-sharing policy** (`groups.avatar_sharing`, `addColumnIfMissing`; NULL/1 = on, 0 =
+  off): off makes the group **knowledge-sharing-only** — its co-membership grants NEITHER avatar
+  visibility NOR trust/elevation (both ride `SHARING_TEAMMATES`), while the shared repo/brain, tool
+  policy (`allowedMcpToolGroupsForUser`), and rosters are untouched. Set via
+  `PUT /api/me/groups/:id/avatar-sharing` (`canManageGroup`); echoed on `Group`/`UserGroupMembership`
+  (`avatarSharing`). Meta-cognition rides the membership list: groupsSection/describe_system append an
+  ", avatar sharing off" marker per group, and the ask_avatar gates (`claudeAgent` `avatarAskActive`,
+  promptBuilder, describe_system — 3 hand-synced sites) require `groups.some(g => g.avatarSharing)`.
+  Flipping it off fails the NEXT chat turn closed (history preserved), like leaving the group.
+
+### Group shared agent (그룹 에이전트)
+- **One per group** (`group_agents`, `group_id` PK — CREATE TABLE IF NOT EXISTS is the migration), a
+  team avatar that is NOT a users row: public avatar id `group:<groupId>` (`external:<id>` precedent —
+  `conversations.avatar_user_id` has no FK; conversation summaries COALESCE its display name via a
+  `group_agents` LEFT JOIN). Managed by `canManageGroup` via `PUT /api/me/groups/:id/agent`
+  (+`/image`); GET `/api/me/groups` carries `agent` (disabled included); discovery concatenates
+  `listGroupAgentsForUser` (enabled only) into `GET /api/avatars` with the `AvatarSummary.groupAgent`
+  kind tag (`runtime` stays `"native"` — it runs the full local SDK stack). There is NO delete —
+  disable blocks the next turn and preserves threads; deletion rides `deleteGroup` (cascades agent row
+  + its conversations; the admin route then sweeps disk via `cleanupGroupDataDirs` + the image file).
+- **Reach = owning-group membership ONLY** through `findChattableGroupAgent` (the single gate used by
+  detail/skills/models/chat): independent of `avatar_sharing` (a knowledge-only group still reaches its
+  agent), no sysadmin bypass, fail-closed 403/404 shapes; a member-visible DISABLED agent gets a
+  dedicated 403. Each member's threads are PRIVATE (`owner_user_id` = viewer) — the team shares via the
+  SECOND BRAIN, never the conversation stream.
+- **Run kind carries capability** (`AgentRequest.groupAgent {groupId, groupName, viewerRole,
+  captureAllowed}`): `deriveAgentToolAccess` returns the pinned class (ownerToolAccess false, elevated
+  built-ins, hex-ssh `colleague`); `claudeAgent` forces every personal-scoped family off
+  (`&& !groupAgentRun` on the tool-group booleans), swaps `ownerState` for `emptyOwnerState` +
+  `summarizeGroupAgentState` (BOTH consumers: the group-agent prompt branch AND `describe_system`'s
+  `groupAgent` ctx — the metacognition invariant), empties `ownerSecrets` explicitly, and loads only
+  default + owning-group plugin roots/memory (`loadGroupAgentPluginRoots`/`loadGroupAgentKnowledgeMemory`).
+- **Group tools come from SEPARATE pinned factories** (`buildGroupAgentRepoServer/BrainServer`, same
+  server names, no `group` arg, no `list_groups`/`create_repo`; allowedTools uses
+  `GROUP_AGENT_REPO_TOOL_NAMES`). Handlers re-check LIVE per call: agent enabled → acting member's
+  membership → (writes) `groupAgentCaptureAllowed` = `capture_scope` (`'members'` default | `'admins'`)
+  vs role → repo exists. Commits push with the ACTING member's token and identity, audited with a
+  `(via group agent)` marker — direct `mcp__group_repo__` writes from personal runs stay admin-only,
+  unchanged. The personal-avatar factories are byte-untouched (test-pinned strings).
 
 ### Repo plumbing (`knowledgeRepo.ts` / `groupKnowledgeRepo.ts` / `gitRepos.ts` / `repoGitCore.ts` / `repoGitGuards.ts`)
 - **Low-level git is shared in `repoGitCore.ts`** (exec wrapper, `currentBranch`, dirty-status) and arg

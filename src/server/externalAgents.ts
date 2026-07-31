@@ -227,7 +227,7 @@ function visibleToGroupIdsFor(value: unknown, index: number): string[] | undefin
   }
   if (value.length === 0) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds must not be empty; omit it for public access.`,
+      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds must not be empty; an external avatar is visible only to members of the listed groups.`,
     );
   }
   if (value.length > MAX_VISIBLE_GROUPS) {
@@ -555,10 +555,12 @@ export function externalAgentVisibleTo(
   viewerGroupIds: ReadonlySet<string>,
 ): boolean {
   if (agent.enabled === false) return false;
+  // Group binding is REQUIRED: an entry without a group ACL is visible to no
+  // one (fail closed) — there is no "public to all users" state. Legacy env/
+  // registry entries stay parseable but dark until an operator adds groups.
   const restrictedTo = agent.visibleToGroupIds;
-  return (
-    !restrictedTo ||
-    restrictedTo.some((groupId) => viewerGroupIds.has(groupId))
+  return Boolean(
+    restrictedTo?.some((groupId) => viewerGroupIds.has(groupId)),
   );
 }
 
@@ -581,7 +583,7 @@ export function externalAvatarSummary(agent: ExternalAgentConfig): AvatarSummary
     hashtags: [...agent.hashtags],
     hasImage: false,
     pluginCount: 0,
-    visibility: agent.visibleToGroupIds ? "group" : "public",
+    visibility: "group",
     updatedAt: null,
     runtime: "external",
     sharesGroup: false,

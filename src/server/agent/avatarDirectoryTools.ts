@@ -121,9 +121,9 @@ function decodeAskOutcome(outcome: AvatarAskOutcome, captureHint: boolean) {
 /**
  * Build the avatar-directory tool definitions. Exposed separately from the
  * server so the handler can be exercised directly in tests. NOT owner-only:
- * this only surfaces avatars VISIBLE to the viewer (public ones + their group
- * teammates' + their own), which the viewer can already browse in 탐색 — it
- * just lets the avatar do the lookup for the user mid-conversation.
+ * this only surfaces avatars VISIBLE to the viewer (their group teammates' +
+ * their own), which the viewer can already browse in 탐색 — it just lets the
+ * avatar do the lookup for the user mid-conversation.
  * `ask_avatar` (owner-driven runs only) joins the list when the run injected a
  * consultation executor — the same condition that allow-lists its name.
  */
@@ -137,7 +137,7 @@ export function buildAvatarDirectoryTools(store: Store, ctx: AvatarDirectoryCont
       "Searches what other avatars (colleagues' avatars visible to this user) can do, by capability hashtags, intro, and name. " +
         "Use this when the task the user requested is outside your capabilities, or when there is likely another avatar better suited to that topic. " +
         "If an avatar in the search results is a better fit, guide the user to chat with that avatar (@username). " +
-        "Only avatars visible to the user are searched (= the scope they can see in discovery: public avatars plus their group teammates'), and you yourself are excluded from the results.",
+        "Only avatars visible to the user are searched (= the scope they can see in discovery: their group teammates' avatars), and you yourself are excluded from the results.",
       {
         query: z
           .string()

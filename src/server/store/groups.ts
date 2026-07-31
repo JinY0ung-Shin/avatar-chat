@@ -18,6 +18,7 @@ import {
   normalizeMcpToolGroups,
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
+import { groupAgentAvatarId } from "../groupAgents.js";
 
 /**
  * Stored group tool policy → typed allowlist. NULL/blank/malformed = no
@@ -46,6 +47,9 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
         knowledgeBranch: row.knowledge_branch ?? null,
         knowledgeSelected: parseNameList(row.knowledge_selected),
         allowedMcpToolGroups: parseAllowedMcpToolGroups(row.allowed_mcp_tool_groups),
+        // Off only when explicitly 0 (NULL = pre-policy rows = on) — mirrors the
+        // SQL SHARING_TEAMMATES gate in store/avatars.ts.
+        avatarSharing: row.avatar_sharing !== 0,
         createdBy: row.created_by ?? null,
         createdAt: row.created_at,
       };
@@ -71,19 +75,28 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       return row ? this.toGroup(row) : null;
     }
 
-    /** All groups with member/admin counts, for the admin dashboard. */
+    /** All groups with member/admin counts + shared-agent state, for the admin dashboard. */
     listGroups(): AdminGroupSummary[] {
       const rows = this.db
         .prepare("SELECT * FROM groups ORDER BY name COLLATE NOCASE ASC")
         .all() as GroupRow[];
-      return rows.map((row) => ({
-        ...this.toGroup(row),
-        memberCount: this.count("SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?", row.id),
-        adminCount: this.count(
-          "SELECT COUNT(*) AS c FROM group_members WHERE group_id = ? AND role = 'admin'",
-          row.id,
-        ),
-      }));
+      const agentEnabledStmt = this.db.prepare(
+        "SELECT enabled FROM group_agents WHERE group_id = ?",
+      );
+      return rows.map((row) => {
+        const agentRow = agentEnabledStmt.get(row.id) as
+          | { enabled: number }
+          | undefined;
+        return {
+          ...this.toGroup(row),
+          memberCount: this.count("SELECT COUNT(*) AS c FROM group_members WHERE group_id = ?", row.id),
+          adminCount: this.count(
+            "SELECT COUNT(*) AS c FROM group_members WHERE group_id = ? AND role = 'admin'",
+            row.id,
+          ),
+          agentEnabled: agentRow ? agentRow.enabled === 1 : null,
+        };
+      });
     }
 
     updateGroup(id: string, patch: { name?: string; description?: string }): Group | null {
@@ -115,12 +128,51 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       return this.toGroup(this.groupRowById(id)!);
     }
 
-    /** Delete a group and all its memberships. Returns false if it didn't exist. */
+    /**
+     * GROUP-ADMIN policy: whether this group's co-membership shares avatars
+     * (mutual visibility AND mutual trust/elevation ride the same SQL fragment —
+     * see SHARING_TEAMMATES in store/avatars.ts). Off makes the group
+     * knowledge-sharing-only; group repo/brain access and the admin tool policy
+     * are unaffected. Managed via PUT /api/me/groups/:id/avatar-sharing
+     * (canManageGroup), unlike the system-admin-only tool policy above.
+     */
+    setGroupAvatarSharing(id: string, enabled: boolean): Group | null {
+      if (!this.groupRowById(id)) {
+        return null;
+      }
+      this.db
+        .prepare("UPDATE groups SET avatar_sharing = ? WHERE id = ?")
+        .run(enabled ? 1 : 0, id);
+      return this.toGroup(this.groupRowById(id)!);
+    }
+
+    /**
+     * Delete a group, its memberships, and its shared agent (row + every
+     * member's conversations with it — manual cascade, no ON DELETE CASCADE).
+     * On-disk leftovers (group-knowledge clone, agent image, workspaces) are
+     * the route's job: see cleanupGroupDataDirs in ../groupAgents.ts.
+     * Returns false if it didn't exist.
+     */
     deleteGroup(id: string): boolean {
       if (!this.groupRowById(id)) {
         return false;
       }
+      const agentAvatarId = groupAgentAvatarId(id);
       const tx = this.db.transaction(() => {
+        const convRows = this.db
+          .prepare("SELECT id FROM conversations WHERE avatar_user_id = ?")
+          .all(agentAvatarId) as { id: string }[];
+        const delMsgs = this.db.prepare(
+          "DELETE FROM messages WHERE conversation_id = ?",
+        );
+        for (const c of convRows) {
+          this.deleteCanvasArtifactsForConversation(c.id);
+          delMsgs.run(c.id);
+        }
+        this.db
+          .prepare("DELETE FROM conversations WHERE avatar_user_id = ?")
+          .run(agentAvatarId);
+        this.db.prepare("DELETE FROM group_agents WHERE group_id = ?").run(id);
         this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(id);
         this.db.prepare("DELETE FROM groups WHERE id = ?").run(id);
       });
@@ -195,7 +247,7 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const row = this.db
         .prepare(
           `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
-                  u.avatar_ext AS avatar_ext, u.visibility AS visibility, u.published AS published,
+                  u.avatar_ext AS avatar_ext, u.visibility AS visibility,
                   m.role AS role, m.created_at AS created_at
            FROM group_members m JOIN users u ON u.id = m.user_id
            WHERE m.group_id = ? AND m.user_id = ?`,
@@ -209,7 +261,7 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const rows = this.db
         .prepare(
           `SELECT u.id AS id, u.username AS username, u.display_name AS display_name,
-                  u.avatar_ext AS avatar_ext, u.visibility AS visibility, u.published AS published,
+                  u.avatar_ext AS avatar_ext, u.visibility AS visibility,
                   m.role AS role, m.created_at AS created_at
            FROM group_members m JOIN users u ON u.id = m.user_id
            WHERE m.group_id = ?
@@ -237,7 +289,8 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const rows = this.db
         .prepare(
           `SELECT g.id AS id, g.name AS name, m.role AS role, g.knowledge_repo AS knowledge_repo,
-                  g.allowed_mcp_tool_groups AS allowed_mcp_tool_groups
+                  g.allowed_mcp_tool_groups AS allowed_mcp_tool_groups,
+                  g.avatar_sharing AS avatar_sharing
            FROM group_members m JOIN groups g ON g.id = m.group_id
            WHERE m.user_id = ? ORDER BY g.name COLLATE NOCASE ASC`,
         )
@@ -247,6 +300,7 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
         role: string;
         knowledge_repo: string | null;
         allowed_mcp_tool_groups: string | null;
+        avatar_sharing: number | null;
       }[];
       return rows.map((r) => ({
         id: r.id,
@@ -254,6 +308,7 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
         role: this.normalizeRole(r.role),
         knowledgeRepoConfigured: Boolean(r.knowledge_repo),
         allowedMcpToolGroups: parseAllowedMcpToolGroups(r.allowed_mcp_tool_groups),
+        avatarSharing: r.avatar_sharing !== 0,
       }));
     }
 

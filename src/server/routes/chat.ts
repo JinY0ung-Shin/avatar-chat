@@ -4,10 +4,14 @@ import { Router, type Response } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
 import {
+  groupKnowledgeRepoSkillSources,
   listSkillsInRoots,
   loadAgentPluginRoots,
+  loadGroupAgentKnowledgeMemory,
+  loadGroupAgentPluginRoots,
   loadKnowledgeRepoMemory,
 } from "../plugins.js";
+import { groupKnowledgeRepoContextFor } from "../groupKnowledgeRepo.js";
 import { scrubGitError } from "../marketplace.js";
 import { resolveActiveWorkspaceRepo } from "../activeRepoResolve.js";
 import type {
@@ -64,6 +68,13 @@ import {
   listExternalAvatarSummaries,
   mergeExternalAgentRegistries,
 } from "../externalAgents.js";
+import {
+  findChattableGroupAgent,
+  groupAgentAvatarDetail,
+  groupAgentCaptureAllowed,
+  listGroupAgentAvatarSummaries,
+  parseGroupAgentGroupId,
+} from "../groupAgents.js";
 import {
   isModelTier,
   modelTierLabel,
@@ -364,6 +375,9 @@ export function createChatRouter({
       const externalImageIds = store.listExternalAvatarImageIds();
       const avatars = [
         ...store.listPublishedAvatars(req.user!.id),
+        // Shared group agents of the viewer's groups (enabled only) — reach is
+        // membership-scoped by the store query, like the native list above.
+        ...listGroupAgentAvatarSummaries(store, req.user!.id),
         ...listExternalAvatarSummaries(
           effectiveExternalAgents(),
           viewerGroupIds(req),
@@ -386,9 +400,14 @@ export function createChatRouter({
         req.params.id,
         viewerGroupIds(req),
       );
+      const groupAgentHit = external
+        ? null
+        : findChattableGroupAgent(store, req.user!.id, req.params.id);
       const avatar = external
         ? externalAvatarDetail(external)
-        : store.getAvatar(req.user!.id, req.params.id);
+        : groupAgentHit
+          ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
+          : store.getAvatar(req.user!.id, req.params.id);
       if (!avatar) {
         apiError(res, 404, "아바타를 찾을 수 없습니다.");
         return;
@@ -415,9 +434,14 @@ export function createChatRouter({
         req.params.id,
         viewerGroupIds(req),
       );
+      const groupAgentHit = external
+        ? null
+        : findChattableGroupAgent(store, req.user!.id, req.params.id);
       const avatar = external
         ? externalAvatarDetail(external)
-        : store.getAvatar(req.user!.id, req.params.id);
+        : groupAgentHit
+          ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
+          : store.getAvatar(req.user!.id, req.params.id);
       if (!avatar) {
         apiError(res, 404, "아바타를 찾을 수 없습니다.");
         return;
@@ -429,6 +453,20 @@ export function createChatRouter({
       // The local runtime loads no plugins/skills, so there's nothing to list.
       if (config.agentRuntime === "local") {
         res.json({ skills: [] });
+        return;
+      }
+      if (groupAgentHit) {
+        // A group agent's skills come from the owning group's shared repo only,
+        // cloned with the VIEWER's tokens (the standing group-repo pattern).
+        const ctx = groupKnowledgeRepoContextFor(
+          store,
+          groupAgentHit.groupId,
+          req.user!.id,
+          config,
+          groupAgentHit.groupName,
+        );
+        const sources = await groupKnowledgeRepoSkillSources(ctx ? [ctx] : []);
+        res.json({ skills: await listSkillsInRoots(sources) });
         return;
       }
       const { sourced } = await resolveAvatarSkillSources(
@@ -456,11 +494,14 @@ export function createChatRouter({
         viewerGroupIds(req),
       );
       if (!external) {
-        const avatar = store.getAvatar(req.user!.id, req.params.id);
+        const avatar =
+          findChattableGroupAgent(store, req.user!.id, req.params.id) ??
+          store.getAvatar(req.user!.id, req.params.id);
         if (!avatar) {
           apiError(res, 404, "아바타를 찾을 수 없습니다.");
           return;
         }
+        // Native + group agents both use the bootstrap model-tier picker.
         res.json({ models: [], defaultModel: null });
         return;
       }
@@ -837,9 +878,28 @@ export function createChatRouter({
         avatarId,
         viewerGroupIds(req),
       );
+      // Group shared agent: member-only reach; a member-visible DISABLED agent
+      // gets its own 403 (they already know it exists — no leak), everything
+      // else collapses into the generic 403 below (external precedent). Images
+      // are allowed: unlike externals, group agents run the full local stack.
+      const groupAgentHit = externalAgent
+        ? null
+        : findChattableGroupAgent(store, req.user!.id, avatarId, {
+            includeDisabled: true,
+          });
+      if (groupAgentHit && !groupAgentHit.agent.enabled) {
+        apiError(
+          res,
+          403,
+          "그룹 에이전트가 비활성화되어 있습니다. 그룹 관리자에게 문의해 주세요.",
+        );
+        return;
+      }
       const avatar = externalAgent
         ? externalAvatarDetail(externalAgent)
-        : store.resolveChatAvatar(req.user!.id, avatarId);
+        : groupAgentHit
+          ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
+          : store.resolveChatAvatar(req.user!.id, avatarId);
       if (!avatar) {
         apiError(res, 403, "이 아바타와 대화할 수 없습니다.");
         return;
@@ -863,7 +923,8 @@ export function createChatRouter({
         );
         return;
       }
-      const viewerIsOwner = !externalAgent && req.user!.id === avatar.id;
+      const viewerIsOwner =
+        !externalAgent && !groupAgentHit && req.user!.id === avatar.id;
       // Owner-only per-conversation group-knowledge selection, chosen in the UI and
       // sent with the turn: the group ids turned OFF (skills + CLAUDE.md). The client
       // owns this state from the moment a chat starts, so no separate persist step is
@@ -1049,11 +1110,14 @@ export function createChatRouter({
       // changed since the repo was opened.
       const elevatedViewer =
         !externalAgent &&
+        !groupAgentHit &&
         (viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id));
       let activeRepoCwd: string | null = null;
       let activeRepoName: string | null = null;
       let releaseActiveRepoLock: (() => void) | null = null;
-      if (!externalAgent) {
+      // Group-agent runs skip the whole block: no isTrustedFor on a synthetic
+      // id, no personal work-repo workspace (the run kind carries capability).
+      if (!externalAgent && !groupAgentHit) {
         const repoResolution = await resolveActiveWorkspaceRepo({
           store,
           config,
@@ -1387,23 +1451,34 @@ export function createChatRouter({
             requestedEffort === null
               ? store.getConversationEffort(req.user!.id, conversationId)
               : requestedEffort || null;
-          const pluginRoots = await loadAgentPluginRoots(
-            store,
-            avatar.id,
-            config,
-            (warn) => pluginWarnings.push(warn),
-            { disabledGroupIds },
-          );
+          // Group-agent runs load ONLY the owning group's repo (with the acting
+          // member's tokens) + defaults; native runs load the avatar's full set.
+          const pluginRoots = groupAgentHit
+            ? await loadGroupAgentPluginRoots(
+                store,
+                groupAgentHit.groupId,
+                req.user!.id,
+                config,
+                (warn) => pluginWarnings.push(warn),
+              )
+            : await loadAgentPluginRoots(
+                store,
+                avatar.id,
+                config,
+                (warn) => pluginWarnings.push(warn),
+                { disabledGroupIds },
+              );
           // Standing CLAUDE.md memory (personal repo always; group repos gated by the
           // toggle). Read after plugin roots ensured the clones for this turn.
-          const knowledgeMemory = await loadKnowledgeRepoMemory(
-            store,
-            avatar.id,
-            config,
-            {
-              disabledGroupIds,
-            },
-          );
+          const knowledgeMemory = groupAgentHit
+            ? await loadGroupAgentKnowledgeMemory(
+                store,
+                groupAgentHit.groupId,
+                config,
+              )
+            : await loadKnowledgeRepoMemory(store, avatar.id, config, {
+                disabledGroupIds,
+              });
 
           // Per-conversation workspace: each chat session gets an isolated cwd, scoped
           // under the avatar so sessions cannot mix files by accident.
@@ -1443,13 +1518,27 @@ export function createChatRouter({
               knowledgeMemory,
               // Elevated tool permissions for the owner OR a trusted user. The tool
               // gate denies everyone else, so auto-approving the elevated path is safe.
+              // (Group-agent runs carry capability via `groupAgent` instead.)
               elevated: elevatedViewer,
               // WHY a non-owner viewer is elevated, when group co-membership is the
               // source: the shared group names surface in the prompt (META-COGNITION).
               trustedViaGroups:
-                req.user!.id === avatar.id
+                groupAgentHit || req.user!.id === avatar.id
                   ? []
                   : store.sharedGroupNames(req.user!.id, avatar.id),
+              // Group shared-agent run kind: pins the run to ONE group's
+              // resources and carries the acting member's role/capture right.
+              groupAgent: groupAgentHit
+                ? {
+                    groupId: groupAgentHit.groupId,
+                    groupName: groupAgentHit.groupName,
+                    viewerRole: groupAgentHit.viewerRole,
+                    captureAllowed: groupAgentCaptureAllowed(
+                      groupAgentHit.agent,
+                      groupAgentHit.viewerRole,
+                    ),
+                  }
+                : undefined,
               autoApprove: true,
             },
             pluginRoots,

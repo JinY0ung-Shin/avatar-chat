@@ -255,13 +255,23 @@ function groupsSection(request: AgentRequest): string | null {
     return null;
   }
   const describe = (g: (typeof groups)[number]) =>
-    `${g.name}(${g.role === "admin" ? "admin" : "member"}${g.knowledgeRepoConfigured ? ", shared repository connected" : ", no shared repository"})`;
+    `${g.name}(${g.role === "admin" ? "admin" : "member"}${g.knowledgeRepoConfigured ? ", shared repository connected" : ", no shared repository"}${g.avatarSharing ? "" : ", avatar sharing off"})`;
   const adminNoRepo = groups.filter(
     (g) => g.role === "admin" && !g.knowledgeRepoConfigured,
   );
+  const anySharing = groups.some((g) => g.avatarSharing);
+  // Kept byte-identical for the common all-sharing case (prompt tests pin the
+  // sentence); groups with avatar sharing OFF get an appended qualifier, and
+  // the all-off case swaps in an accurate replacement instead.
+  const trustSentence = anySharing
+    ? "Members of the same group **automatically trust each other (elevated)** — group co-membership is the ONLY source of elevated (owner-level tool) access. So when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and group-visible avatars can find and talk to each other." +
+      (groups.some((g) => !g.avatarSharing)
+        ? ' Exception: groups marked "avatar sharing off" are knowledge-sharing-only — their co-membership grants NO avatar visibility and NO mutual trust/elevation; only avatar-sharing groups do.'
+        : "")
+    : 'Every group of this owner has avatar sharing OFF (knowledge-sharing-only): co-membership grants NO avatar visibility and NO mutual trust/elevation, so no teammate can reach this avatar and no teammate avatar is reachable. Shared group repositories still work normally.';
   const groupLines = [
     `The owner belongs to the following groups: ${groups.map(describe).join(", ")}. ` +
-      "Members of the same group **automatically trust each other (elevated)** — group co-membership is the ONLY source of elevated (owner-level tool) access. So when you talk to a same-group colleague's avatar you gain owner-level tool permissions, and group-visible avatars can find and talk to each other.",
+      trustSentence,
     "Each group may have a **shared knowledge repository**, handled with the `mcp__group_repo__*` tools: use `list_groups` to check groups/roles; all group members can `list_files`/`read_file`, while only **group admins** can `write_file`/`edit_file`/`delete_file`/`move_file`/`scaffold_skill`/`commit`. Skills organized in a group's shared repository are used by every group member's avatar starting from the next conversation.",
   ];
   if (adminNoRepo.length > 0) {
@@ -562,7 +572,7 @@ export function buildSystemPromptAppend(
   // no user to redirect, but the search tool stays useful for the work itself.
   if (mcpToolGroupEnabled(request, "avatars")) {
     lines.push(
-      "Finding other avatars: if you judge that the user's request falls outside your capabilities (skills, knowledge, capability hashtags), first try to help directly, then use `mcp__avatars__search_avatars` to find other public avatars suited to that topic. " +
+      "Finding other avatars: if you judge that the user's request falls outside your capabilities (skills, knowledge, capability hashtags), first try to help directly, then use `mcp__avatars__search_avatars` to find other avatars visible to this user suited to that topic. " +
         "If a better-suited avatar exists, suggest that the user try talking to that avatar (@username).",
     );
     // Standing consultation guidance (#ask-avatar), OWNER-DRIVEN turns only —
@@ -573,7 +583,10 @@ export function buildSystemPromptAppend(
       Boolean(request.viewerIsOwner) &&
       !(Boolean(request.headless) && !request.allowHeadlessTools) &&
       !request.avatarConsultation &&
-      (request.groupMemberships ?? []).length > 0;
+      // Only avatar-sharing groups make teammates reachable (a sharing-off
+      // group grants neither visibility nor trust) — same derivation as
+      // claudeAgent's avatarAskActive registration gate.
+      (request.groupMemberships ?? []).some((g) => g.avatarSharing);
     if (avatarAskEnabled) {
       const captureNote =
         mcpToolGroupEnabled(request, "personal_knowledge") &&
@@ -609,7 +622,46 @@ export function buildSystemPromptAppend(
   // knowledge-backfill skill): the owner reviews gaps, colleagues create them.
   // A headless run has NO ONE on the other side: never claim the owner is
   // present and state read-only.
-  if (request.headless && request.avatarConsultation) {
+  if (request.groupAgent) {
+    // GROUP SHARED-AGENT run: a team resource with NO owner. Its identity,
+    // privacy rule, and second-brain triggers all come from the run kind +
+    // GroupAgentState (the describe_system group ctx reports the same facts).
+    const ga = request.groupAgent;
+    const gaState = request.groupAgentState ?? null;
+    lines.push(
+      `You are the SHARED agent of the group '${ga.groupName}' — a team resource, not a personal avatar. The person you are talking to is group member "${request.viewerName ?? ""}" (role: ${ga.viewerRole === "admin" ? "admin" : "member"}).`,
+    );
+    lines.push(
+      "Each member's conversation with you is PRIVATE to that member. What the team shares is the group's SECOND BRAIN (the shared knowledge repository) — never assume another member can read this conversation; share knowledge by capturing it there.",
+    );
+    if (mcpToolGroupEnabled(request, "group_knowledge")) {
+      if (gaState?.knowledgeRepoConfigured) {
+        lines.push(
+          `Team second brain: '${gaState.knowledgeRepo.repo}'${gaState.knowledgeRepo.branch ? ` @ ${gaState.knowledgeRepo.branch}` : ""} is connected. BEFORE answering questions about team rules, decisions, runbooks, or shared context, recall with \`mcp__group_brain__search\`/\`get_note\` (wiki/ notes); use \`mcp__group_repo__list_files\`/\`read_file\` for other files.`,
+        );
+        if (ga.captureAllowed) {
+          lines.push(
+            "When the member shares a durable, team-relevant fact/decision/lesson (or asks you to remember something), CAPTURE it: write it with `mcp__group_repo__write_file`/`edit_file` following the second-brain convention (raw/ for quick captures, wiki/ for consolidated notes), then push with `mcp__group_repo__commit` — uncommitted changes are NOT persisted or shared." +
+              (gaState.viewerGitTokenSet
+                ? ""
+                : " Note: this member has no internal Git token (GIT_TOKEN) registered, so commit will fail — stage the note if useful, but tell them to register a token in Settings to persist it."),
+          );
+        } else {
+          lines.push(
+            "Under this group's capture policy only group ADMINS may write to the shared repository. You can search/read for this member; when they want something recorded, draft the note text in chat and point them to a group admin.",
+          );
+        }
+      } else {
+        lines.push(
+          "This group has NO shared knowledge repository connected, so team-brain recall/capture is unavailable. Ask a group admin to connect one in group settings.",
+        );
+      }
+      lines.push(GIT_MCP_ONLY_GUIDANCE);
+    }
+    lines.push(
+      "You have NO personal-avatar capabilities: no personal knowledge repository or second brain, no secrets, no SSH, no scheduled routines, no notifications, and no plugins beyond the group repository. If asked about those, explain that a member's personal avatar handles them.",
+    );
+  } else if (request.headless && request.avatarConsultation) {
     // Avatar-to-avatar consultation (#ask-avatar): a one-shot headless turn
     // another avatar started on its owner's behalf. Framed as a TEAMMATE
     // exchange — the asker passed the same-group trust gate (avatarAsk.ts) and
@@ -703,7 +755,7 @@ export function buildSystemPromptAppend(
           `Owner's groups: ${routineGroups
             .map(
               (g) =>
-                `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"})`,
+                `${g.name}(${g.role === "admin" ? "admin" : "member"}, shared repository ${g.knowledgeRepoConfigured ? "connected" : "none"}${g.avatarSharing ? "" : ", avatar sharing off"})`,
             )
             .join(
               ", ",

@@ -2164,6 +2164,24 @@ describe("system tools (avatar system management)", () => {
     expect(body).toContain("Pending information requests: 1");
   });
 
+  it("describe_system marks avatar-sharing-off groups and flips the consultation line", async () => {
+    const s = setup("st-avatar-sharing");
+    const group = s.store.createGroup({ name: "지식전용팀" });
+    s.store.addGroupMember(group.id, s.owner.id, "member");
+    const before = await callTool(toolsFor(s), "describe_system", {});
+    expect(before.content[0].text).toContain("지식전용팀(member, shared repository none)");
+    expect(before.content[0].text).toContain("Avatar consultation (mcp__avatars__ask_avatar): available");
+
+    s.store.setGroupAvatarSharing(group.id, false);
+    const after = await callTool(toolsFor(s), "describe_system", {});
+    const body = after.content[0].text;
+    // Per-group marker + the standing explanation of what "off" means.
+    expect(body).toContain("지식전용팀(member, shared repository none, avatar sharing off)");
+    expect(body).toContain('Groups marked "avatar sharing off" are knowledge-sharing-only');
+    // Every group sharing-off ⇒ no teammate avatar is reachable for consultation.
+    expect(body).toContain("none of the owner's groups share avatars");
+  });
+
   it("refuses routine and plugin mutations for non-owner viewers", async () => {
     const s = setup("st-deny");
     const nonOwner = toolsFor(s, false);
@@ -2380,8 +2398,11 @@ describe("avatar directory tools (cross-avatar search)", () => {
     });
     const me = store.createUser({ username: "me", displayName: "나", password: "password123" });
     const k8s = store.createUser({ username: "kuber", displayName: "쿠버박사", password: "password123" });
-    // Public so `me` (sharing no group) can discover it cross-avatar.
-    store.updateProfile(k8s.id, { hashtags: ["쿠버네티스", "데브옵스"], bio: "클러스터 운영", visibility: "public" });
+    store.updateProfile(k8s.id, { hashtags: ["쿠버네티스", "데브옵스"], bio: "클러스터 운영" });
+    // Cross-avatar discovery reaches group teammates only — share a group.
+    const group = store.createGroup({ name: "DirTeam", createdBy: null });
+    store.addGroupMember(group.id, me.id, "member");
+    store.addGroupMember(group.id, k8s.id, "member");
     return { store, meId: me.id };
   }
 
@@ -2567,9 +2588,8 @@ describe("askAvatar (avatar-to-avatar consultation core)", () => {
     });
     const asker = store.createUser({ username: "asker", displayName: "질문자", password: "password123" });
     const peer = store.createUser({ username: "peer", displayName: "동료박사", password: "password123" });
-    // Reachable (public) but NOT same-group → the trust gate must refuse it.
-    const outsider = store.createUser({ username: "outsider", displayName: "외부인", password: "password123" });
-    store.updateProfile(outsider.id, { visibility: "public" });
+    // In no shared group → invisible to the asker (there is no wider state).
+    store.createUser({ username: "outsider", displayName: "외부인", password: "password123" });
     const group = store.createGroup({ name: "Team", createdBy: null });
     store.addGroupMember(group.id, asker.id, "member");
     store.addGroupMember(group.id, peer.id, "member");
@@ -2606,15 +2626,19 @@ describe("askAvatar (avatar-to-avatar consultation core)", () => {
     expect(outcome).toMatchObject({ ok: false, reason: "not_found" });
   });
 
-  it("refuses a reachable but non-teammate avatar as not_trusted", async () => {
+  it("refuses a non-teammate avatar as not_found (visibility gate fires first)", async () => {
     const { store, config, askerId } = setup("ask-untrusted");
+    // With `public` retired, reach and trust are the same group relation for
+    // native avatars: a non-teammate never gets past the visibility gate, so
+    // the answer is not_found, not not_trusted. (The not_trusted branch stays
+    // in avatarAsk as a fail-closed defense should the axes ever diverge.)
     const outcome = await askAvatar(store, config, {
       askerUserId: askerId,
       askerName: "질문자",
       targetUsername: "outsider",
       question: "q",
     });
-    expect(outcome).toMatchObject({ ok: false, reason: "not_trusted", username: "outsider" });
+    expect(outcome).toMatchObject({ ok: false, reason: "not_found", username: "outsider" });
   });
 
   it("refuses consulting the asking avatar itself", async () => {

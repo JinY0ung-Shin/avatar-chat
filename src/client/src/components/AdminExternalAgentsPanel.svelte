@@ -175,6 +175,12 @@
 
   async function toggleEnabled(agent: AdminExternalAgent): Promise<void> {
     if (agent.source !== "managed" || rowBusy[agent.id]) return;
+    // 서버는 그룹이 없는 managed 항목의 저장을 거부합니다(400). 활성 토글로는 그룹을
+    // 채울 수 없으니 편집으로 유도합니다.
+    if (!agent.visibleToGroupIds?.length) {
+      notify("공개할 그룹이 없어 상태를 변경할 수 없습니다. ‘편집’에서 그룹을 1개 이상 지정해 주세요.", "warn");
+      return;
+    }
     const nextEnabled = !agent.enabled;
     if (
       !nextEnabled &&
@@ -250,8 +256,8 @@
         <div>
           <h3>외부 아바타</h3>
           <p class="muted">
-            oh-my-gateway 호환 stateless Agent를 Noah 아바타로 노출합니다. 공개 범위는 Noah가,
-            시스템 지침과 도구 권한은 Gateway가 관리합니다.
+            oh-my-gateway 호환 stateless Agent를 Noah 아바타로 노출합니다. 공개할 그룹은 Noah가,
+            시스템 지침과 도구 권한은 Gateway가 관리합니다. 그룹을 1개 이상 지정해야 구성원에게 보입니다.
           </p>
         </div>
         <div class="ar-actions">
@@ -336,7 +342,12 @@
                       {agent.source === "environment" ? "환경 변수" : "UI 관리"}
                     </span>
                     <span class="tag {agent.enabled ? 'read' : 'danger'}">{agent.enabled ? "활성" : "비활성"}</span>
-                    <span class="tag">{agent.visibleToGroupIds?.length ? `그룹 ${agent.visibleToGroupIds.length}개` : "모든 사용자"}</span>
+                    <!-- 그룹 바인딩은 필수입니다. 비어 있으면 노출 대상이 0명이므로 경고로 표시합니다. -->
+                    {#if agent.visibleToGroupIds?.length}
+                      <span class="tag">그룹 {agent.visibleToGroupIds.length}개</span>
+                    {:else}
+                      <span class="tag danger">그룹 미지정 — 아무에게도 표시되지 않음</span>
+                    {/if}
                     {#if agent.apiKeySet}<span class="tag write">API 키 설정됨</span>{/if}
                     {#if agent.model}<span class="tag mono">{agent.model}</span>{/if}
                     {#if agent.conversationCount}<span class="tag">대화 {agent.conversationCount}</span>{/if}
@@ -360,9 +371,16 @@
                     {/if}
                   </div>
                 </div>
-                {#if agent.source === "environment" || rowStatus[agent.id] || agent.conversationCount > 0}
+                {#if agent.source === "environment" || rowStatus[agent.id] || agent.conversationCount > 0 || !agent.visibleToGroupIds?.length}
                   <div class="external-agent-row-note muted" id={`external-agent-status-${agent.id}`} role="status" aria-live="polite">
                     {#if rowStatus[agent.id]}<span>{rowStatus[agent.id]}</span>{/if}
+                    {#if !agent.visibleToGroupIds?.length}
+                      <span>
+                        {agent.source === "environment"
+                          ? "EXTERNAL_AGENTS_JSON의 visibleToGroupIds에 그룹을 1개 이상 지정해야 구성원에게 보입니다."
+                          : "‘편집’에서 공개할 그룹을 1개 이상 지정해야 구성원에게 보입니다."}
+                      </span>
+                    {/if}
                     {#if agent.source === "environment"}<span>이 항목은 EXTERNAL_AGENTS_JSON에서 관리되어 연결 확인만 할 수 있습니다.</span>{/if}
                     {#if agent.conversationCount > 0 && agent.source === "managed"}<span>기존 대화 기록이 있어 완전 삭제 대신 비활성화할 수 있습니다.</span>{/if}
                   </div>
