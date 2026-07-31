@@ -39,7 +39,12 @@ import {
 import {
   buildPrompt,
   deriveAgentToolAccess,
+  planMcpToolFamilies,
 } from "../src/server/agent/claudeAgent.js";
+import { summarizeGroupAgentState } from "../src/server/agent/ownerState.js";
+import { chatImagesDir } from "../src/server/chatImages.js";
+import { chatFilesDir } from "../src/server/chatFiles.js";
+import { MCP_TOOL_GROUPS } from "../src/shared/mcpToolGroups.js";
 import { buildGroupAgentRepoTools, GROUP_AGENT_REPO_TOOL_NAMES } from "../src/server/agent/groupRepoTools.js";
 import { buildGroupAgentBrainTools } from "../src/server/agent/groupBrainTools.js";
 import { buildSystemTools } from "../src/server/agent/systemTools.js";
@@ -244,6 +249,40 @@ describe("deriveAgentToolAccess (group-agent class)", () => {
   });
 });
 
+describe("planMcpToolFamilies (run-kind tool containment)", () => {
+  const ALL = MCP_TOOL_GROUPS.map((g) => g.id);
+
+  it("personal run: registered mirrors the selection, nothing run-kind-blocked", () => {
+    const plan = planMcpToolFamilies(ALL, false);
+    expect(plan.registered).toEqual(ALL);
+    expect(plan.runKindBlocked).toEqual([]);
+    expect(plan.confluence).toBe(true);
+    const partial = planMcpToolFamilies(["web", "system"], false);
+    expect(partial.registered).toEqual(["web", "system"]);
+    expect(partial.personalKnowledge).toBe(false);
+  });
+
+  it("group-agent run: personal families are stripped and reported as run-kind-blocked", () => {
+    const plan = planMcpToolFamilies(ALL, true);
+    expect(plan.registered).toEqual(["group_knowledge", "web", "system"]);
+    expect(plan.runKindBlocked).toEqual([
+      "personal_knowledge",
+      "git_repo",
+      "confluence",
+      "ssh",
+      "avatars",
+      "canvas",
+    ]);
+    expect(plan.groupKnowledge).toBe(true);
+    expect(plan.confluence).toBe(false);
+    expect(plan.avatars).toBe(false);
+    // Deselecting group_knowledge in the composer still applies on a group run.
+    const noBrain = planMcpToolFamilies(["web", "system"], true);
+    expect(noBrain.groupKnowledge).toBe(false);
+    expect(noBrain.registered).toEqual(["web", "system"]);
+  });
+});
+
 describe("group-agent prompt branch", () => {
   const req = (over: Partial<AgentRequest> = {}): AgentRequest => ({
     message: "안녕",
@@ -322,6 +361,27 @@ describe("group-agent prompt branch", () => {
     );
     expect(p).toContain("NO shared knowledge repository connected");
     expect(p).not.toContain("CAPTURE it:");
+  });
+
+  it("with the run-kind plan, stripped families leave no ghost guidance or misattribution", () => {
+    // The run assembly passes planMcpToolFamilies' registered/runKindBlocked —
+    // rebuild the same inputs here and pin the consumer behavior.
+    const plan = planMcpToolFamilies(MCP_TOOL_GROUPS.map((g) => g.id), true);
+    const p = buildPrompt(
+      req({
+        mcpToolGroups: plan.registered,
+        adminBlockedMcpToolGroups: plan.runKindBlocked,
+      }),
+      0,
+    );
+    // No ACTIONABLE guidance for servers that never register on a group-agent
+    // run (the generic MCP-only-git POLICY paragraph may still name the
+    // mcp__git_repo__ family as taxonomy — that's a rule, not an offer).
+    expect(p).not.toContain("mcp__confluence__");
+    expect(p).not.toContain("mcp__avatars__search_avatars");
+    expect(p).not.toContain("General **git repo work");
+    // …and the forcing is not misattributed to the member's composer choice.
+    expect(p).not.toContain("the user disabled these MCP tool groups");
   });
 });
 
@@ -451,6 +511,38 @@ describe("group-agent tool factories", () => {
     expect(body).toContain("(role: member) MAY capture");
     expect(body).toContain("not set — capture's commit/push will fail");
     expect(body).toContain("Capability boundary: NO personal knowledge repository");
+  });
+
+  it("describe_system lists only the REGISTERED tool groups and fails closed on a removed member", async () => {
+    const { store, config, group, member } = setup("describe-registered");
+    const plan = planMcpToolFamilies(MCP_TOOL_GROUPS.map((g) => g.id), true);
+    const tools = buildSystemTools(store, {
+      avatarUserId: groupAgentAvatarId(group.id),
+      owner: { id: groupAgentAvatarId(group.id), username: "", displayName: "팀 에이전트", alias: "" },
+      viewerIsOwner: false,
+      config,
+      groupAgent: { groupId: group.id, actingUserId: member.id },
+      enabledMcpToolGroups: plan.registered,
+    });
+    const res = await callTool(tools, "describe_system", {});
+    const body = res.content[0].text;
+    const registeredLabels = MCP_TOOL_GROUPS.filter((g) => plan.registered.includes(g.id))
+      .map((g) => g.labelEn)
+      .join(", ");
+    expect(body).toContain(
+      `MCP tool groups enabled for this conversation: ${registeredLabels}`,
+    );
+    const confluenceLabel = MCP_TOOL_GROUPS.find((g) => g.id === "confluence")!.labelEn;
+    expect(body).not.toContain(confluenceLabel);
+
+    // Removed mid-turn: the state report must fail closed, matching the tools.
+    store.removeGroupMember(group.id, member.id);
+    const gone = summarizeGroupAgentState(store, config, group.id, member.id);
+    expect(gone).toMatchObject({ viewerRole: null, captureAllowed: false });
+    const res2 = await callTool(tools, "describe_system", {});
+    expect(res2.content[0].text).toContain(
+      "(role: removed — no longer a group member) may NOT capture",
+    );
   });
 });
 
@@ -631,12 +723,25 @@ describe("group-agent routes", () => {
     await admin.delete(`/api/me/groups/${groupId}/agent/image`).expect(200);
     await admin.get(`/api/users/${encodeURIComponent(agentId)}/avatar-image`).expect(404);
 
-    // Group deletion sweeps the on-disk leftovers (clone dir + image file).
+    // Group deletion sweeps the on-disk leftovers: clone dir + image file +
+    // every member's chat-image/file dirs for the agent's conversations (the
+    // ids are snapshotted BEFORE the row cascade erases them).
     await admin.put(`/api/me/groups/${groupId}/agent/image`).send({ image: png }).expect(200);
     const cloneDir = groupKnowledgeClonePath(groupId, config);
     fs.mkdirSync(cloneDir, { recursive: true });
+    const sysAdminId = store.getUserByUsername("sys-admin")!.id;
+    store.addGroupMember(groupId, sysAdminId, "member");
+    store.touchConversation(sysAdminId, "ga-del-conv", agentId, "질문");
+    const imgDir = chatImagesDir(config, "ga-del-conv");
+    const fileDir = chatFilesDir(config, "ga-del-conv");
+    fs.mkdirSync(imgDir, { recursive: true });
+    fs.mkdirSync(fileDir, { recursive: true });
+    fs.writeFileSync(path.join(imgDir, "img.png"), "x");
+    fs.writeFileSync(path.join(fileDir, "doc.pdf"), "x");
     await admin.delete(`/api/admin/groups/${groupId}`).expect(200);
     expect(fs.existsSync(cloneDir)).toBe(false);
+    expect(fs.existsSync(imgDir)).toBe(false);
+    expect(fs.existsSync(fileDir)).toBe(false);
     await admin.get(`/api/users/${encodeURIComponent(agentId)}/avatar-image`).expect(404);
     expect(store.getGroupAgent(groupId)).toBeNull();
   });

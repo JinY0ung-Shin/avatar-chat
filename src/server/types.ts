@@ -427,8 +427,12 @@ export interface GroupAgentState {
   groupName: string;
   enabled: boolean;
   captureScope: GroupAgentCaptureScope;
-  /** The acting member's role in the owning group (live, this turn). */
-  viewerRole: GroupRole;
+  /**
+   * The acting member's role in the owning group (live, this turn). Null when
+   * they were removed after the turn started — FAIL CLOSED: the state report
+   * must never claim more than the tool gates that re-check membership allow.
+   */
+  viewerRole: GroupRole | null;
   /** capture_scope resolved against viewerRole — may THIS member capture. */
   captureAllowed: boolean;
   knowledgeRepoConfigured: boolean;

@@ -250,14 +250,14 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               "Current GROUP SHARED-AGENT state:",
               `- Kind: shared agent of the group '${ga.groupName}' (a team resource, not a personal avatar)`,
               `- Enabled: ${ga.enabled ? "yes" : "no — disabled by a group admin"}`,
-              `- Capture policy: ${ga.captureScope === "members" ? "all group members may capture" : "group admins only"}; the member in this conversation (role: ${ga.viewerRole}) ${ga.captureAllowed ? "MAY capture (write + commit)" : "may NOT capture (recall/read only)"}`,
+              `- Capture policy: ${ga.captureScope === "members" ? "all group members may capture" : "group admins only"}; the member in this conversation (role: ${ga.viewerRole ?? "removed — no longer a group member"}) ${ga.captureAllowed ? "MAY capture (write + commit)" : "may NOT capture (recall/read only)"}`,
               `- Team second brain (shared knowledge repository): ${ga.knowledgeRepoConfigured ? `${ga.knowledgeRepo.repo}${ga.knowledgeRepo.branch ? ` @ ${ga.knowledgeRepo.branch}` : ""}` : "(none — ask a group admin to connect one in group settings)"}`,
               `- This member's internal Git token (GIT_TOKEN): ${ga.viewerGitTokenSet ? "set" : "not set — capture's commit/push will fail until they register one in Settings"}`,
               `- Model in use: ${gaModelLine}`,
               `- Reasoning effort: ${gaEffortLine}`,
               `- MCP tool groups enabled for this conversation: ${gaLabels.length ? gaLabels.join(", ") : "(none)"}`,
               "- Capability boundary: NO personal knowledge repository/brain, secrets, SSH, routines, notifications, personal git repositories, or plugins beyond the group repository.",
-              "- Group admins manage this agent under Settings → Groups.",
+              "- Group admins manage this agent in the 그룹 (Groups) view on the left rail.",
             ].join("\n"),
           );
         }

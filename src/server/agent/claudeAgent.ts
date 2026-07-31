@@ -60,6 +60,7 @@ import {
 import {
   DEFAULT_MCP_TOOL_GROUPS,
   effectiveMcpToolGroups,
+  type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
 import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
 import { disallowedEntriesForPolicy } from "../toolSkillPolicy.js";
@@ -240,6 +241,8 @@ export function deriveAgentToolAccess(request: AgentRequest): AgentToolAccess {
     elevated: elevatedToolAccess,
     headless: headlessRestricted,
   });
+  // (planMcpToolFamilies below is this function's sibling for TOOL-GROUP
+  // families: pure, exported, unit-pinned for the same regression reason.)
   return {
     viewerIsOwner,
     headless,
@@ -249,6 +252,63 @@ export function deriveAgentToolAccess(request: AgentRequest): AgentToolAccess {
     elevated,
     autoApprove,
     hexSshViewerClass,
+  };
+}
+
+/**
+ * Which MCP tool-group FAMILIES a run registers, from the composer/admin
+ * selection + the run kind. A group shared-agent run forces every
+ * personal-scoped family off (capability containment); `registered` — not the
+ * raw selection — is what the prompt and describe_system must report, or the
+ * avatar advertises tools that don't exist (meta-cognition invariant).
+ * `runKindBlocked` joins the admin-blocked prompt exclusion so the "user
+ * deselected" note can't misattribute the forcing to the member's own choice.
+ * Pure and unit-pinned like deriveAgentToolAccess: the run assembly consumes
+ * THESE booleans for server registration, so report and reality can't drift.
+ */
+export interface McpToolFamilyPlan {
+  personalKnowledge: boolean;
+  groupKnowledge: boolean;
+  gitRepo: boolean;
+  confluence: boolean;
+  web: boolean;
+  ssh: boolean;
+  avatars: boolean;
+  canvas: boolean;
+  system: boolean;
+  registered: McpToolGroupId[];
+  runKindBlocked: McpToolGroupId[];
+}
+
+export function planMcpToolFamilies(
+  enabled: McpToolGroupId[],
+  groupAgentRun: boolean,
+): McpToolFamilyPlan {
+  const has = (id: McpToolGroupId) => enabled.includes(id);
+  const byId: Record<McpToolGroupId, boolean> = {
+    personal_knowledge: has("personal_knowledge") && !groupAgentRun,
+    group_knowledge: has("group_knowledge"),
+    git_repo: has("git_repo") && !groupAgentRun,
+    confluence: has("confluence") && !groupAgentRun,
+    web: has("web"),
+    ssh: has("ssh") && !groupAgentRun,
+    avatars: has("avatars") && !groupAgentRun,
+    canvas: has("canvas") && !groupAgentRun,
+    system: has("system"),
+  };
+  const registered = enabled.filter((id) => byId[id]);
+  return {
+    personalKnowledge: byId.personal_knowledge,
+    groupKnowledge: byId.group_knowledge,
+    gitRepo: byId.git_repo,
+    confluence: byId.confluence,
+    web: byId.web,
+    ssh: byId.ssh,
+    avatars: byId.avatars,
+    canvas: byId.canvas,
+    system: byId.system,
+    registered,
+    runKindBlocked: enabled.filter((id) => !registered.includes(id)),
   };
 }
 
@@ -500,26 +560,29 @@ export async function runClaudeAgent(
         (id) => !adminAllowedMcpToolGroups.includes(id),
       )
     : [];
-  const mcpToolGroupEnabled = (id: (typeof enabledMcpToolGroups)[number]) =>
-    enabledMcpToolGroups.includes(id);
   // GROUP SHARED-AGENT run: a hard capability boundary on top of the composer's
   // tool-group picks — every PERSONAL-scoped server family is forced off so it
   // never registers (personal repo/brain, inbox, ssh, git repos, confluence,
   // avatars directory, canvas). What remains: system, web, and the OWNING
-  // group's repo/brain via the pinned group-agent factories below.
+  // group's repo/brain via the pinned group-agent factories below. The plan is
+  // the SINGLE source for the family booleans AND for `registered` — the set
+  // the prompt and describe_system report — so report and reality can't drift.
   const groupAgentRun = request.groupAgent ?? null;
-  const personalKnowledgeToolsEnabled =
-    mcpToolGroupEnabled("personal_knowledge") && !groupAgentRun;
-  const groupKnowledgeToolsEnabled = mcpToolGroupEnabled("group_knowledge");
-  const gitRepoToolsEnabled = mcpToolGroupEnabled("git_repo") && !groupAgentRun;
-  const confluenceToolsEnabled =
-    mcpToolGroupEnabled("confluence") && !groupAgentRun;
-  const webFetchToolsEnabled = mcpToolGroupEnabled("web");
-  const sshToolsEnabled = mcpToolGroupEnabled("ssh") && !groupAgentRun;
-  const avatarDirectoryToolsEnabled =
-    mcpToolGroupEnabled("avatars") && !groupAgentRun;
-  const canvasToolsEnabled = mcpToolGroupEnabled("canvas") && !groupAgentRun;
-  const systemToolsEnabled = mcpToolGroupEnabled("system");
+  const familyPlan = planMcpToolFamilies(
+    enabledMcpToolGroups,
+    Boolean(groupAgentRun),
+  );
+  const personalKnowledgeToolsEnabled = familyPlan.personalKnowledge;
+  const groupKnowledgeToolsEnabled = familyPlan.groupKnowledge;
+  const gitRepoToolsEnabled = familyPlan.gitRepo;
+  const confluenceToolsEnabled = familyPlan.confluence;
+  const webFetchToolsEnabled = familyPlan.web;
+  const sshToolsEnabled = familyPlan.ssh;
+  const avatarDirectoryToolsEnabled = familyPlan.avatars;
+  const canvasToolsEnabled = familyPlan.canvas;
+  const systemToolsEnabled = familyPlan.system;
+  const registeredMcpToolGroups = familyPlan.registered;
+  const runKindBlockedMcpToolGroups = familyPlan.runKindBlocked;
   // Effective model: an env-pinned ANTHROPIC_MODEL wins (mirrors the API-key vs.
   // subscription rule) and is a HARD lock; otherwise the user's per-conversation
   // tier pick (a Claude alias, resolved to a concrete model by the operator's
@@ -691,7 +754,9 @@ export async function runClaudeAgent(
     config,
     selectedModelTier: userModelTier,
     selectedEffort: userEffort,
-    enabledMcpToolGroups,
+    // The REGISTERED set (not the raw selection): a group-agent run's forced-off
+    // personal families must not show as "enabled for this conversation".
+    enabledMcpToolGroups: registeredMcpToolGroups,
     // Group-agent runs: describe_system answers with the GROUP's self-state
     // (summarizeGroupAgentState) instead of an owner block; management tools
     // keep refusing via viewerIsOwner.
@@ -1288,11 +1353,18 @@ export async function runClaudeAgent(
     // reachable through the corporate proxy. Mirrored by describe_system.
     webFetchProxy: webFetchProxyState(),
     groupMemberships: ownerToolAccess ? ownerGroups : [],
-    mcpToolGroups: enabledMcpToolGroups,
+    // The REGISTERED set (see registeredMcpToolGroups): standing tool guidance
+    // must match the servers this run actually mounts.
+    mcpToolGroups: registeredMcpToolGroups,
     // Rides to the prompt ONLY so admin-blocked groups are excluded from the
     // "user deselected" standing note — the avatar is deliberately NOT told
     // that a policy exists or what it blocks (it only knows its enabled set).
-    adminBlockedMcpToolGroups,
+    // Run-kind-stripped families (group-agent forcing) are excluded the same
+    // way: absent, but never misattributed to the member's composer choice.
+    adminBlockedMcpToolGroups: [
+      ...adminBlockedMcpToolGroups,
+      ...runKindBlockedMcpToolGroups,
+    ],
     // Canvas standing guidance fires for ALL viewer classes of a canvas-enabled
     // turn (colleagues see canvases too). Experimental-feature self-state is
     // owner-driven only (META-COGNITION), matching describe_system's gating.

@@ -429,9 +429,12 @@ export function createAdminRouter(deps: RouterDeps): Router {
   );
 
   router.delete("/api/admin/groups/:id", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
-    // Capture the agent's image ext BEFORE the row cascade removes it.
+    // Capture the agent's image ext AND its conversation ids BEFORE the row
+    // cascade removes them — the per-conversation chat-image/file dirs are
+    // keyed by ids the cascade erases (mirrors the user-delete snapshot).
     const agentAvatarId = groupAgentAvatarId(req.params.id);
     const agentImageExt = store.getGroupAgentImageExtByAvatarId(agentAvatarId);
+    const conversationIds = store.listConversationIdsForAvatar(agentAvatarId);
     const removed = store.deleteGroup(req.params.id);
     if (!removed) {
       apiError(res, 404, "그룹을 찾을 수 없습니다.");
@@ -439,9 +442,19 @@ export function createAdminRouter(deps: RouterDeps): Router {
     }
     // Best-effort disk cleanup after the DB cascade: the group-knowledge clone
     // (pre-existing leak — possibly a private repo), the agent's workspaces,
-    // and its profile-image file.
-    cleanupGroupDataDirs(config, req.params.id);
-    deleteAvatarImageFile(config, agentAvatarId, agentImageExt);
+    // its profile-image file, and every member's chat image/file dirs for the
+    // agent's now-deleted conversations. Never throw — a cleanup failure must
+    // not turn a successful deletion into a 500.
+    try {
+      cleanupGroupDataDirs(config, req.params.id);
+      deleteAvatarImageFile(config, agentAvatarId, agentImageExt);
+      for (const conversationId of conversationIds) {
+        deleteConversationImages(config, conversationId);
+        deleteConversationFiles(config, conversationId);
+      }
+    } catch (err) {
+      logger.warn({ err, groupId: req.params.id }, "post-delete disk cleanup failed");
+    }
     auditAs(req, "group_delete", `deleted group ${req.params.id}`);
     logger.warn({ actorId: req.user!.id, groupId: req.params.id }, "group deleted");
     res.json({ ok: true });

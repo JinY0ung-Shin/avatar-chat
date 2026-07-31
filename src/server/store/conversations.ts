@@ -101,6 +101,18 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       );
     }
 
+    /**
+     * Every conversation id bound to an avatar id, across ALL owners. Snapshot
+     * input for pre-cascade disk sweeps (group deletion removes the rows the
+     * per-conversation chat-image/file dirs are keyed by).
+     */
+    listConversationIdsForAvatar(avatarId: string): string[] {
+      const rows = this.db
+        .prepare("SELECT id FROM conversations WHERE avatar_user_id = ?")
+        .all(avatarId) as { id: string }[];
+      return rows.map((r) => r.id);
+    }
+
     /** Map a conversation join row (see listConversations / conversationSummaryById) to a summary. */
     private toConversationSummary(r: ConversationSummaryRow): ConversationSummary {
       return {

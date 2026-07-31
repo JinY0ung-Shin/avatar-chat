@@ -136,7 +136,10 @@ export function summarizeGroupAgentState(
   if (!agent || !group) {
     return null;
   }
-  const viewerRole = store.groupRoleFor(actingUserId, groupId) ?? "member";
+  // Live role — null once the member has been removed mid-turn. FAIL CLOSED
+  // (never default to "member"): describe_system must not report capture as
+  // allowed while the group-repo tools are already refusing the same user.
+  const viewerRole = store.groupRoleFor(actingUserId, groupId);
   const repo = store.getGroupKnowledgeRepo(groupId);
   return {
     groupId,
@@ -144,7 +147,8 @@ export function summarizeGroupAgentState(
     enabled: agent.enabled,
     captureScope: agent.captureScope,
     viewerRole,
-    captureAllowed: groupAgentCaptureAllowed(agent, viewerRole),
+    captureAllowed:
+      viewerRole !== null && groupAgentCaptureAllowed(agent, viewerRole),
     knowledgeRepoConfigured: Boolean(repo.repo),
     knowledgeRepo: { repo: repo.repo, branch: repo.branch },
     viewerGitTokenSet: Boolean(store.getGitToken(actingUserId)),

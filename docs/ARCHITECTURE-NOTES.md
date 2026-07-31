@@ -261,6 +261,17 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   vs role → repo exists. Commits push with the ACTING member's token and identity, audited with a
   `(via group agent)` marker — direct `mcp__group_repo__` writes from personal runs stay admin-only,
   unchanged. The personal-avatar factories are byte-untouched (test-pinned strings).
+- **`capture_scope` is an MCP-LAYER policy, not a filesystem boundary.** The group-knowledge clone is
+  one shared tree (`dataDir/group-knowledge/<groupId>`) that any elevated run's Bash/file tools can
+  touch, `ensureGroupClone` fast-forwards without hard-reset, and `commitAndPushClone` does
+  `git add -A` (locally planted changes can ride along on the next authorized capture). Remote push
+  still requires an MCP commit + a member token — but don't describe the capture policy as airtight
+  below the tool layer.
+- **Group-agent elevation is a DELIBERATE carve-out outside `isTrustedFor`.** Every member of the
+  owning group runs the elevated built-in class (auto-approved workspace Bash/Edit) regardless of the
+  group's `avatar_sharing` policy — membership itself is the gate (`findChattableGroupAgent`), and the
+  practical delta over the member's own always-elevated avatar is small. Keep it justified here rather
+  than routed through `isTrustedFor` (which stays the single choke point for PEER trust).
 
 ### Repo plumbing (`knowledgeRepo.ts` / `groupKnowledgeRepo.ts` / `gitRepos.ts` / `repoGitCore.ts` / `repoGitGuards.ts`)
 - **Low-level git is shared in `repoGitCore.ts`** (exec wrapper, `currentBranch`, dirty-status) and arg
