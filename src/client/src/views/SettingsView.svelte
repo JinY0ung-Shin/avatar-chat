@@ -4,17 +4,15 @@
   import SettingsProfileTab from "../components/SettingsProfileTab.svelte";
   import SettingsAccessTab from "../components/SettingsAccessTab.svelte";
   import SettingsKnowledgeTab from "../components/SettingsKnowledgeTab.svelte";
-  import SettingsGroupCard from "../components/SettingsGroupCard.svelte";
-  import type { SettingsGroup } from "../components/SettingsGroupCard.svelte";
-  import { api } from "../lib/api";
   import { loadSettingsData } from "../lib/loaders";
   import { appState, updateState } from "../lib/state";
 
+  // 그룹 moved to its own left-rail view (GroupsView) — #/settings/groups
+  // redirects there (lib/nav.ts).
   const tabs = [
     { id: "profile", label: "프로필", icon: "user" },
     { id: "access", label: "권한·연결", icon: "shield" },
     { id: "knowledge", label: "지식·플러그인", icon: "book" },
-    { id: "groups", label: "그룹", icon: "users" },
   ] as const;
   type SettingsTabId = (typeof tabs)[number]["id"];
 
@@ -22,28 +20,10 @@
   let loadBusy = false;
   let error = "";
 
-  // groups
-  let groups: SettingsGroup[] = [];
-  let groupsLoading = false;
-  let groupsError = "";
-  let groupsLoadedFor = "";
-
   $: user = $appState.user;
-  $: githubHost = $appState.bootstrap?.githubHost || "github.com";
   $: settingsTab = $appState.settingsTab;
 
   onMount(load);
-
-  $: if (user?.id && groupsLoadedFor && groupsLoadedFor !== user.id) {
-    groups = [];
-    groupsError = "";
-    groupsLoadedFor = "";
-  }
-
-  // Load groups when the groups tab is first opened for this user.
-  $: if (settingsTab === "groups" && !loading && user && !groupsLoading && groupsLoadedFor !== user.id) {
-    void loadGroups();
-  }
 
   async function load(): Promise<void> {
     if (loadBusy) return;
@@ -57,22 +37,6 @@
     } finally {
       loading = false;
       loadBusy = false;
-    }
-  }
-
-  async function loadGroups(): Promise<void> {
-    if (groupsLoading) return;
-    groupsLoading = true;
-    groupsError = "";
-    try {
-      const { groups: next } = await api<{ groups: SettingsGroup[] }>("/api/me/groups");
-      groups = next;
-      groupsLoadedFor = user?.id || groupsLoadedFor;
-    } catch (err) {
-      groupsError = (err as Error).message;
-      groupsLoadedFor = user?.id || groupsLoadedFor;
-    } finally {
-      groupsLoading = false;
     }
   }
 
@@ -103,7 +67,7 @@
 <header class="view-header">
   <div class="title">
     <h1>내 아바타</h1>
-    <p>프로필·권한·지식·그룹을 관리하세요</p>
+    <p>프로필·권한·지식을 관리하세요</p>
   </div>
 </header>
 
@@ -146,36 +110,6 @@
       <SettingsProfileTab active={settingsTab === "profile"} />
       <SettingsAccessTab active={settingsTab === "access"} />
       <SettingsKnowledgeTab active={settingsTab === "knowledge"} />
-      {#if settingsTab === "groups"}
-        <section class="settings-card">
-          <div class="panel-section-head">
-            <div>
-              <h3>그룹</h3>
-              <p class="muted">
-                내가 속한 그룹과 그룹원입니다. 같은 그룹원끼리는 자동으로 서로 신뢰해 아바타에 권한이 부여됩니다. 그룹 관리자는 그룹원과 공용 지식 저장소를 관리할 수
-                있어요. 그룹 생성·삭제는 시스템 관리자가 합니다.
-              </p>
-            </div>
-            <div class="head-actions">
-              <span class="muted small nowrap">{groupsError ? "조회 실패" : groupsLoading ? "새로고침 중" : `총 ${groups.length}개`}</span>
-              <button class="linkish small" type="button" disabled={groupsLoading} on:click={loadGroups}>새로고침</button>
-            </div>
-          </div>
-          <div class="groups-body">
-            {#if groupsLoading}
-              <div class="muted" role="status">불러오는 중…</div>
-            {:else if groupsError}
-              <div class="warn-box" role="alert">그룹을 불러오지 못했습니다: {groupsError} <button class="linkish" type="button" disabled={groupsLoading} on:click={loadGroups}>다시 시도</button></div>
-            {:else if !groups.length}
-              <div class="empty-note">아직 속한 그룹이 없습니다. 그룹은 시스템 관리자가 만들고 그룹원을 추가합니다.</div>
-            {:else}
-              {#each groups as group (group.id)}
-                <SettingsGroupCard {group} {githubHost} reload={loadGroups} />
-              {/each}
-            {/if}
-          </div>
-        </section>
-      {/if}
     </div>
   {/if}
 </div>

@@ -59,13 +59,13 @@ export type ViewName =
   | "brain"
   | "inbox"
   | "routines"
+  | "groups"
   | "settings"
   | "admin";
-export type SettingsTab = "profile" | "access" | "knowledge" | "groups";
+export type SettingsTab = "profile" | "access" | "knowledge";
 export type AdminTab =
   | "overview"
   | "users"
-  | "groups"
   | "external-agents"
   | "access"
   | "system"

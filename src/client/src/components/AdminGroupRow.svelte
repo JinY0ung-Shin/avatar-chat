@@ -136,6 +136,25 @@
   // so a stray Enter can't add someone unintentionally.
   $: activeIndex = addQueryFilter && shownCandidates.length ? 0 : -1;
 
+  // The same group can render in two sections at once (the 그룹 view's 내 그룹
+  // card + this admin row): when an outside mutation refreshes the summary
+  // list, refetch the expanded roster so both agree. Members only — the edit
+  // form keeps its unsaved text.
+  let syncedGroup = group;
+  $: if (group !== syncedGroup) {
+    syncedGroup = group;
+    if (expanded && !loading) void refreshRoster();
+  }
+
+  async function refreshRoster(): Promise<void> {
+    try {
+      const d = await api<{ members: GroupMember[] }>(`/api/admin/groups/${encodeURIComponent(group.id)}`);
+      members = d.members;
+    } catch {
+      /* keep the current roster; the next interaction reloads it */
+    }
+  }
+
   async function toggle() {
     if (expanded) {
       expanded = false;

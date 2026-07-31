@@ -574,7 +574,7 @@
       </p>
       <div class="external-agent-group-picker" role="group" aria-label="공개 그룹" aria-describedby={statusId}>
         {#if !groups.length && !missingGroupIds.length}
-          <div class="empty-note">먼저 관리자 ▸ 그룹에서 그룹을 만들어 주세요.</div>
+          <div class="empty-note">먼저 왼쪽 '그룹' 탭에서 그룹을 만들어 주세요.</div>
         {:else}
           {#each groups as group (group.id)}
             <label class="external-agent-group-option">

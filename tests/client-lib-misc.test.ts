@@ -506,6 +506,11 @@ describe("nav routing", () => {
     // malformed percent-encoding decodes to null rather than throwing
     history.replaceState(null, "", "#/chat/%E0%A4%A");
     expect(routeFromHash()).toEqual({ view: "chat", arg: null });
+    // legacy 그룹-tab hashes redirect to the merged 그룹 view
+    history.replaceState(null, "", "#/settings/groups");
+    expect(routeFromHash()).toEqual({ view: "groups", arg: null });
+    history.replaceState(null, "", "#/admin/groups");
+    expect(routeFromHash()).toEqual({ view: "groups", arg: null });
   });
 
   it("currentRoute renders the per-view hash from store state", () => {
@@ -551,8 +556,11 @@ describe("nav routing", () => {
     goView("admin", "system");
     expect(readState()).toMatchObject({ view: "admin", adminTab: "system" });
 
-    goView("settings", "groups");
-    expect(readState()).toMatchObject({ view: "settings", settingsTab: "groups" });
+    goView("settings", "knowledge");
+    expect(readState()).toMatchObject({ view: "settings", settingsTab: "knowledge" });
+
+    goView("groups");
+    expect(readState().view).toBe("groups");
   });
 
   it("applyInitialRoute hydrates the store from the current hash", () => {
@@ -560,6 +568,18 @@ describe("nav routing", () => {
     history.replaceState(null, "", "#/routines/conv9");
     applyInitialRoute();
     expect(readState()).toMatchObject({ view: "routines", routineConversationId: "conv9" });
+  });
+
+  it("applyInitialRoute rewrites a legacy groups alias in place", () => {
+    replaceState({ user: { id: "u", roles: [] } as any });
+    history.replaceState(null, "", "#/settings/groups");
+    applyInitialRoute();
+    expect(readState().view).toBe("groups");
+    expect(location.hash).toBe("#/groups");
+    // non-alias hashes are left untouched (chat deep-links stay intact)
+    history.replaceState(null, "", "#/chat/conv7");
+    applyInitialRoute();
+    expect(location.hash).toBe("#/chat/conv7");
   });
 
   it("installRouteListener updates state on hashchange and invokes the chat callback", () => {

@@ -1061,7 +1061,10 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   components UNCONDITIONALLY (always mounted) and pass `active={settingsTab === "…"}`; each child gates only
   its own template (`{#if active && user}`) and initializes form state ONCE at script-init from
   `readState().user`. `SettingsView.svelte` is the worked example (1,013→130 lines; tabs in
-  `components/Settings{Profile,Access,Knowledge}Tab.svelte`); the groups tab stays inline.
+  `components/Settings{Profile,Access,Knowledge}Tab.svelte`). The former inline groups tab moved to its
+  own left-rail view (`views/GroupsView.svelte`, 2026-08): my-groups cards + the system-admin group
+  management that used to be the admin view's 그룹 tab; legacy `#/settings/groups`·`#/admin/groups`
+  hashes normalize to `#/groups` in `lib/nav.ts` `routeFromHash`.
 - **Admin external avatars are independently lazy-loaded.** `AdminExternalAgentsPanel.svelte` stays
   mounted with an `active` prop so its API cannot blank the existing admin overview and unsaved editor
   state is not coupled to tab switches. Its modal uses explicit `keep|set|clear` API-key intent and

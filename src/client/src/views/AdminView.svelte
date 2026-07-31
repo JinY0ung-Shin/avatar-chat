@@ -3,26 +3,19 @@
   import Icon from "../components/Icon.svelte";
   import RevealableInput from "../components/RevealableInput.svelte";
   import AdminUserRow from "../components/AdminUserRow.svelte";
-  import AdminGroupRow from "../components/AdminGroupRow.svelte";
   import AdminExternalAgentsPanel from "../components/AdminExternalAgentsPanel.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
   import { loadAdminGroups, loadAdminOverview } from "../lib/loaders";
+  import { goView } from "../lib/nav";
   import { appState, notify, replaceState, updateState } from "../lib/state";
   import { timeLabel } from "../lib/format";
   import { MODEL_TIERS } from "../../../server/modelTiers";
-  import type { AdminGroupSummary, AdminTab, AdminUserSummary, SignupMode } from "../lib/types";
+  import type { AdminTab, AdminUserSummary, SignupMode } from "../lib/types";
 
   let loading = true;
   let loadBusy = false;
   let error = "";
-
-  // group create form
-  let newGroupName = "";
-  let newGroupDescription = "";
-  let creatingGroup = false;
-  let groupCreateError = "";
-  let groupCreateMessage = "";
 
   // system tab field state
   let modelInput = "";
@@ -53,11 +46,13 @@
   const hexStatusId = "admin-hex-policy-status";
   const toolSkillStatusId = "admin-tool-skill-status";
 
+  // 그룹 관리 moved to the shared 그룹 view (GroupsView) — #/admin/groups
+  // redirects there (lib/nav.ts); adminGroups stays loaded for the
+  // external-agents panel's visibility picker.
   type AdminTabDef = { id: AdminTab; label: string; icon: string };
   const tabs: AdminTabDef[] = [
     { id: "overview", label: "개요", icon: "activity" },
     { id: "users", label: "사용자", icon: "users" },
-    { id: "groups", label: "그룹", icon: "users" },
     { id: "external-agents", label: "외부 아바타", icon: "globe" },
     { id: "access", label: "가입·접근", icon: "key" },
     { id: "system", label: "시스템", icon: "server" },
@@ -106,30 +101,9 @@
         (!q || (u.displayName || "").toLowerCase().includes(q) || (u.username || "").toLowerCase().includes(q)),
     );
   })();
-  $: groupQuery = $appState.adminGroupSearch.trim().toLowerCase();
-  $: shownGroups = groupQuery
-    ? $appState.adminGroups.filter((g) =>
-        [g.name, g.description || "", g.knowledgeRepo ? "공용 저장소" : "", `그룹원 ${g.memberCount}`, `관리자 ${g.adminCount}`]
-          .join(" ")
-          .toLowerCase()
-          .includes(groupQuery),
-      )
-    : $appState.adminGroups;
   $: auditActions = [...new Set(($appState.audit || []).map((r) => r.action))].sort();
   $: shownAudit = auditAction ? ($appState.audit || []).filter((r) => r.action === auditAction) : $appState.audit || [];
   $: stats = $appState.adminStats;
-  $: newGroupNameTrimmed = newGroupName.trim();
-  $: canCreateGroup = Boolean(!creatingGroup && newGroupNameTrimmed);
-  $: groupCreateStatusId = "admin-group-create-status";
-  $: groupCreateStatus = creatingGroup
-    ? "그룹을 만드는 중입니다."
-    : groupCreateError
-      ? `그룹 생성 실패: ${groupCreateError}`
-      : groupCreateMessage
-        ? groupCreateMessage
-        : newGroupNameTrimmed
-          ? "그룹을 만들 준비가 됐습니다."
-          : "그룹 이름을 입력해 주세요.";
   $: savedModelOverride = String(sys.modelOverride || "");
   $: modelValueTrimmed = modelInput.trim();
   $: modelDirty = modelValueTrimmed !== savedModelOverride;
@@ -247,6 +221,11 @@
 
   function goOverviewTarget(target: string, filter: typeof $appState.adminUserFilter) {
     if (!target) return;
+    if (target === "groups") {
+      // Group management lives on the shared 그룹 view now.
+      goView("groups");
+      return;
+    }
     updateState((state) => {
       state.adminTab = target as AdminTab;
       if (target === "users") state.adminUserFilter = filter;
@@ -278,44 +257,6 @@
 
   function userFilterCount(f: (u: AdminUserSummary) => boolean): number {
     return $appState.adminUsers.filter(f).length;
-  }
-
-  // ---- groups ----
-  async function createGroup() {
-    if (creatingGroup) return;
-    const name = newGroupNameTrimmed;
-    groupCreateMessage = "";
-    if (!name) {
-      groupCreateError = "그룹 이름을 입력하세요.";
-      notify("그룹 이름을 입력하세요.", "warn");
-      return;
-    }
-    creatingGroup = true;
-    groupCreateError = "";
-    try {
-      await api("/api/admin/groups", {
-        method: "POST",
-        body: JSON.stringify({ name, description: newGroupDescription.trim() }),
-      });
-    } catch (err) {
-      creatingGroup = false;
-      groupCreateError = (err as Error).message;
-      notify(`그룹 생성 실패: ${groupCreateError}`);
-      return;
-    }
-    newGroupName = "";
-    newGroupDescription = "";
-    updateState((state) => (state.adminGroupSearch = ""));
-    try {
-      await loadAdminGroups();
-      groupCreateMessage = `그룹 "${name}"을 만들었습니다.`;
-      notify(groupCreateMessage, "ok");
-    } catch (err) {
-      groupCreateError = `그룹은 만들었지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`;
-      notify(groupCreateError, "warn");
-    } finally {
-      creatingGroup = false;
-    }
   }
 
   // ---- access ----
@@ -635,7 +576,7 @@
 <header class="view-header">
   <div class="title">
     <h1>관리자</h1>
-    <p>사용자·그룹·외부 아바타·접근·시스템을 관리하세요</p>
+    <p>사용자·외부 아바타·접근·시스템을 관리하세요</p>
   </div>
   {#if $appState.adminTab !== "external-agents"}
     <button class="ghost-sm" type="button" disabled={loadBusy} on:click={load}>{loadBusy ? "새로고침 중…" : "새로고침"}</button>
@@ -757,86 +698,6 @@
               {/each}
             {/if}
           </div>
-        </div>
-      {:else if $appState.adminTab === "groups"}
-        <div class="admin-list">
-          <section class="settings-card">
-            <div class="panel-section-head">
-              <div>
-                <h3>그룹</h3>
-                <p class="muted">같은 그룹원끼리는 자동으로 서로 신뢰해 권한을 얻고, 그룹 공용 지식 저장소를 공유합니다. 그룹 생성·삭제와 그룹 관리자 지정은 시스템 관리자만 합니다. 공용 저장소 편집은 각 그룹 관리자가 ‘내 아바타 ▸ 그룹’에서 합니다.</p>
-              </div>
-            </div>
-            <form class="settings-form" aria-busy={creatingGroup} aria-describedby={groupCreateStatusId} on:submit|preventDefault={createGroup}>
-              <div class="field-row-2col">
-                <label class="field">
-                  <span>그룹 이름</span>
-                  <input
-                    bind:value={newGroupName}
-                    name="name"
-                    placeholder="예: 플랫폼개발팀"
-                    aria-describedby={groupCreateStatusId}
-                    aria-invalid={groupCreateError ? "true" : undefined}
-                    required
-                    disabled={creatingGroup}
-                    on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
-                  />
-                </label>
-                <label class="field">
-                  <span>설명 (선택)</span>
-                  <input
-                    bind:value={newGroupDescription}
-                    name="description"
-                    placeholder="그룹을 한 줄로 소개"
-                    aria-describedby={groupCreateStatusId}
-                    disabled={creatingGroup}
-                    on:input={() => { groupCreateError = ""; groupCreateMessage = ""; }}
-                  />
-                </label>
-              </div>
-              <div class="settings-save-row">
-                <span
-                  id={groupCreateStatusId}
-                  class="settings-save-status"
-                  class:dirty={Boolean(newGroupNameTrimmed && !creatingGroup && !groupCreateError && !groupCreateMessage)}
-                  class:pending={creatingGroup}
-                  class:success={Boolean(groupCreateMessage)}
-                  class:invalid={Boolean(groupCreateError)}
-                  role="status"
-                  aria-live="polite"
-                >{groupCreateStatus}</span>
-                <button class="primary" type="submit" aria-describedby={groupCreateStatusId} disabled={!canCreateGroup}>{creatingGroup ? "생성 중…" : "그룹 만들기"}</button>
-              </div>
-            </form>
-            <div class="admin-users-head">
-              <input
-                type="search"
-                class="admin-search"
-                placeholder="그룹 이름·설명 검색"
-                aria-label="그룹 검색"
-                value={$appState.adminGroupSearch}
-                disabled={!$appState.adminGroups.length}
-                on:input={(e) => updateState((s) => (s.adminGroupSearch = e.currentTarget.value))}
-              />
-              <span class="muted nowrap">
-                {#if shownGroups.length === $appState.adminGroups.length}총 {$appState.adminGroups.length}개{:else}표시 {shownGroups.length}개 / 전체 {$appState.adminGroups.length}개{/if}
-              </span>
-            </div>
-            <div class="admin-list">
-              {#if !$appState.adminGroups.length}
-                <div class="muted pad">아직 그룹이 없습니다.</div>
-              {:else if !shownGroups.length}
-                <div class="muted pad">
-                  "{$appState.adminGroupSearch.trim()}"에 맞는 그룹이 없습니다.
-                  <button class="linkish small" type="button" on:click={() => updateState((s) => (s.adminGroupSearch = ""))}>검색어 지우기</button>
-                </div>
-              {:else}
-                {#each shownGroups as group (group.id)}
-                  <AdminGroupRow {group} reload={reloadGroups} />
-                {/each}
-              {/if}
-            </div>
-          </section>
         </div>
       {:else if $appState.adminTab === "access"}
         <div class="admin-list">

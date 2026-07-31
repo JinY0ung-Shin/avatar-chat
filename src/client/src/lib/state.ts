@@ -217,6 +217,7 @@ export function setDocumentTitle(): void {
     brain: "지식 그래프",
     inbox: "알림",
   routines: "예약 작업",
+    groups: "그룹",
     settings: "내 아바타",
     admin: "관리자",
   };

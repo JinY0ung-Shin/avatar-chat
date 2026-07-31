@@ -2,12 +2,11 @@ import { get } from "svelte/store";
 import { appState, updateState } from "./state";
 import type { AdminTab, SettingsTab, ViewName } from "./types";
 
-const VIEW_ROUTES: ViewName[] = ["explore", "chat", "brain", "inbox", "routines", "settings", "admin"];
-const SETTINGS_TABS: SettingsTab[] = ["profile", "access", "knowledge", "groups"];
+const VIEW_ROUTES: ViewName[] = ["explore", "chat", "brain", "inbox", "routines", "groups", "settings", "admin"];
+const SETTINGS_TABS: SettingsTab[] = ["profile", "access", "knowledge"];
 const ADMIN_TABS: AdminTab[] = [
   "overview",
   "users",
-  "groups",
   "external-agents",
   "access",
   "system",
@@ -18,6 +17,11 @@ let applyingRoute = false;
 
 export function routeFromHash(): { view: ViewName | null; arg: string | null } {
   const [view, arg] = location.hash.replace(/^#\/?/, "").split("/");
+  // Legacy: the 그룹 tab moved out of 내 아바타/관리자 into its own left-rail
+  // view — old bookmarks land on the merged #/groups view.
+  if ((view === "settings" || view === "admin") && arg === "groups") {
+    return { view: "groups", arg: null };
+  }
   let decoded: string | null = null;
   try {
     decoded = arg ? decodeURIComponent(arg) : null;
@@ -81,6 +85,12 @@ export function applyInitialRoute(): void {
     if (view === "routines" && arg) state.routineConversationId = arg;
     if (view === "brain") state.brainSource = arg || "personal";
   });
+  // Rewrite a legacy groups alias in place so it never enters history (Back
+  // would otherwise bounce through #/settings/groups → same view).
+  const [rawView, rawArg] = location.hash.replace(/^#\/?/, "").split("/");
+  if ((rawView === "settings" || rawView === "admin") && rawArg === "groups") {
+    history.replaceState(null, "", "#/groups");
+  }
 }
 
 export function installRouteListener(onChatRoute?: (conversationId: string) => void): () => void {
