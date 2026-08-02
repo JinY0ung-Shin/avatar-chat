@@ -43,7 +43,8 @@ export const SDK_HIDDEN_ACTIVITY_TOOLS = [
  * does NOT use: they're absent from `allowedTools`, duplicate an app feature
  * (Cron* vs. `mcp__system__*_routine`, PushNotification vs. `mcp__system__notify_user`,
  * Enter/ExitWorktree vs. `mcp__git_repo__open_repo`), or are interactive-CLI-only
- * (Workflow / Monitor / DesignSync / ScheduleWakeup / SendMessage / RemoteTrigger).
+ * (Workflow / Monitor / DesignSync / ClaudeDesign / ScheduleWakeup / SendMessage /
+ * RemoteTrigger / ReportFindings / SendFeedback / ProposeSkills).
  * Fed to the SDK `disallowedTools` option so they're dropped from the advertised
  * `tools` array on every request — ~10k tokens of tool descriptions (Workflow's
  * description alone is ~4.7k tokens). Unknown names are harmless no-ops, so the
@@ -62,6 +63,10 @@ export const UNUSED_SDK_BUILTIN_TOOLS = [
   "SendMessage",
   "PushNotification",
   "RemoteTrigger",
+  "ReportFindings",
+  "SendFeedback",
+  "ClaudeDesign",
+  "ProposeSkills",
 ] as const;
 
 export const SDK_TOOL_LABELS: Record<string, string> = {
@@ -69,6 +74,7 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
   Artifact: "아티팩트 게시",
   AskUserQuestion: "사용자 질문",
   Bash: "명령 실행",
+  ClaudeDesign: "디자인 작업",
   CronCreate: "예약 생성",
   CronDelete: "예약 삭제",
   CronList: "예약 목록",
@@ -87,12 +93,17 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
   Monitor: "모니터링 시작",
   NotebookEdit: "노트북 편집",
   Projects: "프로젝트 지식",
+  ProposeSkills: "스킬 제안",
   PushNotification: "푸시 알림",
   Read: "파일 읽기",
   ReadMcpResource: "MCP 리소스 읽기",
+  ReadMcpResourceDir: "MCP 리소스 폴더 읽기",
+  RefreshMcpTools: "MCP 도구 새로고침",
   RemoteTrigger: "원격 트리거",
   REPL: "REPL 실행",
+  ReportFindings: "리뷰 결과 보고",
   ScheduleWakeup: "후속 실행 예약",
+  SendFeedback: "피드백 전송",
   Skill: "스킬 실행",
   Task: "하위 작업",
   TaskComplete: "태스크 완료",
