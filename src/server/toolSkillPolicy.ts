@@ -57,7 +57,26 @@ export const TOGGLABLE_BUILTIN_TOOLS: TogglableBuiltinTool[] = [
     labelKo: "하위 에이전트 (Task/Agent)",
     descriptionKo: "아바타가 병렬 하위 에이전트를 띄우는 기능. 토큰 사용량 제어용.",
   },
+  {
+    id: "agent_teams",
+    names: ["SendMessage"],
+    labelKo: "에이전트 팀 (SendMessage)",
+    descriptionKo:
+      "아바타가 이름 붙인 하위 에이전트(팀원)를 띄워 협업시키는 실험 기능. 끄면 SendMessage 도구와 CLI 팀 런타임이 함께 비활성화됩니다.",
+  },
 ];
+
+/**
+ * The agent-teams FEATURE switch, derived from the same stored policy: the
+ * `agent_teams` toggle disables the `SendMessage` tool, and `runClaudeAgent`
+ * additionally turns the CLI teams runtime off (CLAUDE_CODE_EXPERIMENTAL_
+ * AGENT_TEAMS="0" via `agentSubprocessEnv`) when this returns true — one admin
+ * toggle drives BOTH layers. Keep the semantic here, next to the catalog entry,
+ * so call sites never hard-code the tool name.
+ */
+export function isAgentTeamsDisabled(policy: ToolSkillPolicy): boolean {
+  return policy.disabledTools.includes("SendMessage");
+}
 
 const TOGGLABLE_TOOL_NAME_SET = new Set<string>(
   TOGGLABLE_BUILTIN_TOOLS.flatMap((tool) => tool.names),

@@ -13,6 +13,7 @@ import { asString, isRecord, truncate, TOOL_TRACE_ENABLED } from "./agentUtils.j
 import {
   SDK_INTERNAL_HIDDEN_TOOLS,
   SDK_ORCHESTRATION_TOOLS,
+  SDK_TEAM_TOOLS,
 } from "../../shared/sdkToolPresentation.js";
 import {
   DEFAULT_TOOL_SKILL_POLICY,
@@ -29,8 +30,18 @@ const RTK_REWRITE_TIMEOUT_MS = 1_000;
  */
 const NO_VISION_READ_BLOCKED = /\.(png|jpe?g|gif|webp|bmp|ico|tiff?|heic|heif|avif|pdf)$/i;
 
-/** SDK orchestration tools that should never trigger the user permission modal. */
-export const TASK_ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set(SDK_ORCHESTRATION_TOOLS);
+/**
+ * SDK orchestration tools that should never trigger the user permission modal.
+ * Includes the agent-teams coordination tools (SendMessage): messaging a
+ * teammate is meta-work like spawning one (Agent is already here) — the
+ * teammate's OWN tool calls still hit this hook individually. The admin
+ * disabledTools policy check runs BEFORE the auto-allow, so an admin can still
+ * turn team messaging off.
+ */
+export const TASK_ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set([
+  ...SDK_ORCHESTRATION_TOOLS,
+  ...SDK_TEAM_TOOLS,
+]);
 const AUTO_ALLOWED_META_TOOLS: ReadonlySet<string> = new Set(["Skill", ...SDK_INTERNAL_HIDDEN_TOOLS]);
 
 export function rewriteBashCommandWithRtk(command: string, rtkCommand = "rtk"): string | null {

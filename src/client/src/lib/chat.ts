@@ -809,9 +809,11 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "agent":
       if (data?.agentId) {
         markTextBreak(paneId);
+        // Named (agent-teams) teammates lead with their addressable identity.
         const label =
-          [data.subagentType, data.description].filter(Boolean).join(" · ") ||
-          "하위 작업";
+          [data.name ? `@${data.name}` : "", data.subagentType, data.description]
+            .filter(Boolean)
+            .join(" · ") || "하위 작업";
         ensureAgent(
           paneId,
           data.agentId,

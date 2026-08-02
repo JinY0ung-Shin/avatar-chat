@@ -63,7 +63,10 @@ import {
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
 import { UNUSED_SDK_BUILTIN_TOOLS } from "../../shared/sdkToolPresentation.js";
-import { disallowedEntriesForPolicy } from "../toolSkillPolicy.js";
+import {
+  disallowedEntriesForPolicy,
+  isAgentTeamsDisabled,
+} from "../toolSkillPolicy.js";
 import { computeSkillsOption, freshSkillDiscoveryCache } from "./skillDiscovery.js";
 import {
   buildFileOutputServer,
@@ -110,6 +113,7 @@ const SENSITIVE_APP_ENV_NAMES = ["SESSION_SECRET"] as const;
 export function agentSubprocessEnv(
   baseEnv: Record<string, string | undefined>,
   agentSessionsDir: string,
+  agentTeamsDisabled = false,
 ): Record<string, string | undefined> {
   const env = withoutGitCredentialEnv(baseEnv);
   for (const name of SENSITIVE_APP_ENV_NAMES) {
@@ -118,6 +122,15 @@ export function agentSubprocessEnv(
   return {
     ...env,
     CLAUDE_CONFIG_DIR: agentSessionsDir,
+    // Agent teams (experimental CLI feature): lets the avatar spawn ADDRESSABLE
+    // subagents (Agent tool with `name:`) and coordinate them via SendMessage.
+    // Default-on. Precedence: the admin's `agent_teams` toggle
+    // (isAgentTeamsDisabled — governance) wins over everything; otherwise an
+    // operator value set in the deploy environment (e.g. "0") wins over the
+    // default.
+    CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: agentTeamsDisabled
+      ? "0"
+      : (env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? "1"),
   };
 }
 
@@ -1196,7 +1209,14 @@ export async function runClaudeAgent(
   // through the app-managed in-process MCP bridge.
   fs.mkdirSync(config.agentSessionsDir, { recursive: true });
   options.env = {
-    ...agentSubprocessEnv(process.env, config.agentSessionsDir),
+    ...agentSubprocessEnv(
+      process.env,
+      config.agentSessionsDir,
+      // The admin `agent_teams` toggle turns off the CLI teams runtime too,
+      // not just the SendMessage tool (read fresh per run like the rest of
+      // the policy).
+      isAgentTeamsDisabled(toolSkillPolicy),
+    ),
     // Per-key OPT-IN shell exposure (elevated runs only): `$NAME` works in
     // Bash and in anything the CLI spawns. The PostToolUse hook below redacts
     // these values from every tool output before the model sees it, and

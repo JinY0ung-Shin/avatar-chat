@@ -528,6 +528,8 @@ describe("marketplace helpers", () => {
     expect(env.PATH).toBe("/usr/bin");
     expect(env.ANTHROPIC_API_KEY).toBe("sk-test");
     expect(env.CLAUDE_CONFIG_DIR).toBe("/tmp/agent-sessions");
+    // Agent teams is default-on for every SDK run (named subagents + SendMessage).
+    expect(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe("1");
     // SESSION_SECRET is the AES master key for every at-rest secret — it must
     // never reach the subprocess env where the agent's Bash/`env` could read it.
     expect(env.SESSION_SECRET).toBeUndefined();
@@ -536,6 +538,23 @@ describe("marketplace helpers", () => {
     expect(env.GH_TOKEN).toBeUndefined();
     expect(env.GH_ENTERPRISE_TOKEN).toBeUndefined();
     expect(env.GITHUB_ENTERPRISE_TOKEN).toBeUndefined();
+  });
+
+  it("lets an operator-set agent-teams flag win over the default", () => {
+    const env = agentSubprocessEnv(
+      { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "0" },
+      "/tmp/agent-sessions",
+    );
+    expect(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe("0");
+  });
+
+  it("lets the admin agent-teams switch win over even an operator-set flag", () => {
+    const env = agentSubprocessEnv(
+      { CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1" },
+      "/tmp/agent-sessions",
+      true,
+    );
+    expect(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS).toBe("0");
   });
 
   it("only forwards SSH-specific secrets to the SSH MCP subprocess", () => {
@@ -1628,6 +1647,20 @@ describe("sdk message handlers", () => {
     expect(summarizeToolInput("Ask", { prompt: "x".repeat(200) })).toHaveLength(
       161,
     );
+    // Agent-teams SendMessage: recipient + content preview, summary preferred.
+    expect(
+      summarizeToolInput("SendMessage", {
+        recipient: "reviewer",
+        content: "PR 리뷰를 시작해 주세요",
+      }),
+    ).toBe("reviewer · PR 리뷰를 시작해 주세요");
+    expect(
+      summarizeToolInput("SendMessage", {
+        recipient: "reviewer",
+        summary: "리뷰 요청",
+        content: "긴 본문…",
+      }),
+    ).toBe("reviewer · 리뷰 요청");
   });
 
   it("keeps SDK built-in tool presentation coverage in sync", () => {
@@ -1678,7 +1711,7 @@ describe("sdk message handlers", () => {
               type: "tool_use",
               id: "agent-1",
               name: "Task",
-              input: { subagent_type: "research", prompt: "find" },
+              input: { subagent_type: "research", prompt: "find", name: "reviewer" },
             },
             {
               type: "tool_use",
@@ -1710,6 +1743,7 @@ describe("sdk message handlers", () => {
     expect(sink.onAgentStart).toHaveBeenCalledWith({
       agentId: "agent-1",
       parentId: "main",
+      name: "reviewer",
       subagentType: "research",
       description: "find",
     });
@@ -3421,6 +3455,12 @@ exit 1
       { tool_name: "TaskList", tool_input: {} },
       { tool_name: "EnterPlanMode", tool_input: {} },
       { tool_name: "ExitPlanMode", tool_input: { allowedPrompts: [] } },
+      // Agent-teams coordination: messaging a spawned teammate is meta-work
+      // like spawning it, so it must not prompt either.
+      {
+        tool_name: "SendMessage",
+        tool_input: { to: "reviewer", message: "리뷰를 시작해 주세요" },
+      },
     ];
 
     for (const [idx, tool] of tools.entries()) {

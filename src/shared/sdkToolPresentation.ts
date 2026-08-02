@@ -17,6 +17,15 @@ export const SDK_TASK_INSPECTION_TOOLS = [
 
 export const SDK_PLAN_TOOLS = ["EnterPlanMode", "ExitPlanMode"] as const;
 
+/**
+ * Agent-teams coordination tools (CLI's experimental agent teams, enabled via
+ * CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS in `agentSubprocessEnv`): `Agent` with a
+ * `name:` spawns an addressable teammate; `SendMessage` messages it. Auto-allowed
+ * like the orchestration set but deliberately NOT in SDK_HIDDEN_ACTIVITY_TOOLS —
+ * teammate coordination should show as activity rows, not look like dead air.
+ */
+export const SDK_TEAM_TOOLS = ["SendMessage"] as const;
+
 export const SDK_INTERNAL_HIDDEN_TOOLS = [
   "ToolSearch",
   "TodoWrite",
@@ -43,8 +52,10 @@ export const SDK_HIDDEN_ACTIVITY_TOOLS = [
  * does NOT use: they're absent from `allowedTools`, duplicate an app feature
  * (Cron* vs. `mcp__system__*_routine`, PushNotification vs. `mcp__system__notify_user`,
  * Enter/ExitWorktree vs. `mcp__git_repo__open_repo`), or are interactive-CLI-only
- * (Workflow / Monitor / DesignSync / ClaudeDesign / ScheduleWakeup / SendMessage /
+ * (Workflow / Monitor / DesignSync / ClaudeDesign / ScheduleWakeup /
  * RemoteTrigger / ReportFindings / SendFeedback / ProposeSkills).
+ * `SendMessage` is NOT here: it powers agent teams (SDK_TEAM_TOOLS) and an admin
+ * can turn it off via the togglable-tool policy instead.
  * Fed to the SDK `disallowedTools` option so they're dropped from the advertised
  * `tools` array on every request — ~10k tokens of tool descriptions (Workflow's
  * description alone is ~4.7k tokens). Unknown names are harmless no-ops, so the
@@ -60,7 +71,6 @@ export const UNUSED_SDK_BUILTIN_TOOLS = [
   "EnterWorktree",
   "ExitWorktree",
   "ScheduleWakeup",
-  "SendMessage",
   "PushNotification",
   "RemoteTrigger",
   "ReportFindings",
@@ -104,6 +114,7 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
   ReportFindings: "리뷰 결과 보고",
   ScheduleWakeup: "후속 실행 예약",
   SendFeedback: "피드백 전송",
+  SendMessage: "팀원 메시지 전송",
   Skill: "스킬 실행",
   Task: "하위 작업",
   TaskComplete: "태스크 완료",

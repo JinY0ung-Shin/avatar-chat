@@ -259,6 +259,14 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(options.cwd).toBe(baseRequest.cwd);
     expect(options.model).toBe(DEFAULT_MODEL_TIER);
     expect(options.disallowedTools).toContain("Workflow");
+    // Agent teams: SendMessage stays advertised (auto-allowed) and the CLI
+    // feature flag rides in the subprocess env.
+    expect(options.disallowedTools).not.toContain("SendMessage");
+    expect(options.allowedTools).toContain("SendMessage");
+    expect(
+      (options.env as Record<string, string | undefined>)
+        .CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS,
+    ).toBe("1");
     expect(options.systemPrompt).toMatchObject({
       type: "preset",
       preset: "claude_code",
@@ -280,6 +288,22 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(serverNames).not.toContain("ssh_trust");
     // No extra writable dirs (empty plugin roots, no additionalDirs).
     expect(options.additionalDirectories).toBeUndefined();
+  });
+
+  it("admin agent-teams toggle turns off the CLI flag AND the SendMessage tool", async () => {
+    const { config, store, baseRequest } = setup();
+    store.setToolSkillPolicy({ disabledTools: ["SendMessage"], disabledSkills: [] });
+    const events = makeEvents();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    await runAgentStream(baseRequest, [], config, store, events);
+
+    const { options } = sdkMock.calls[0];
+    expect(
+      (options.env as Record<string, string | undefined>)
+        .CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS,
+    ).toBe("0");
+    expect(options.disallowedTools).toContain("SendMessage");
   });
 
   it("plumbs the model tier, effort, and MCP tool-group selection into the query options", async () => {

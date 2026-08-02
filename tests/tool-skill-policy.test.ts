@@ -9,6 +9,7 @@ import {
   DEFAULT_TOOL_SKILL_POLICY,
   TOGGLABLE_BUILTIN_TOOLS,
   disallowedEntriesForPolicy,
+  isAgentTeamsDisabled,
   isToolSkillPolicyEmpty,
   normalizeSkillDiscoveryCache,
   normalizeToolSkillPolicy,
@@ -40,7 +41,9 @@ afterAll(() => {
 describe("tool/skill policy validators", () => {
   it("keeps the core tools out of the togglable catalog", () => {
     const names = TOGGLABLE_BUILTIN_TOOLS.flatMap((tool) => tool.names);
-    expect(names).toEqual(expect.arrayContaining(["WebFetch", "WebSearch"]));
+    expect(names).toEqual(
+      expect.arrayContaining(["WebFetch", "WebSearch", "SendMessage"]),
+    );
     for (const core of ["Bash", "Read", "Glob", "Grep", "Edit", "Write", "Skill", "AskUserQuestion"]) {
       expect(names).not.toContain(core);
     }
@@ -91,6 +94,16 @@ describe("tool/skill policy validators", () => {
     expect(disallowedEntriesForPolicy(policy)).toEqual(["WebFetch", "Skill(code-review)"]);
     expect(isToolSkillPolicyEmpty(policy)).toBe(false);
     expect(isToolSkillPolicyEmpty(DEFAULT_TOOL_SKILL_POLICY)).toBe(true);
+  });
+
+  it("derives the agent-teams feature switch from the SendMessage toggle", () => {
+    expect(isAgentTeamsDisabled(DEFAULT_TOOL_SKILL_POLICY)).toBe(false);
+    expect(
+      isAgentTeamsDisabled({ disabledTools: ["WebFetch"], disabledSkills: [] }),
+    ).toBe(false);
+    expect(
+      isAgentTeamsDisabled({ disabledTools: ["SendMessage"], disabledSkills: [] }),
+    ).toBe(true);
   });
 
   it("reads the discovery cache leniently", () => {
@@ -220,6 +233,18 @@ describe("PreToolUse hook admin tool/skill policy", () => {
     const out = await hook(
       { tool_name: "WebFetch", tool_input: { url: "https://example.com" }, tool_use_id: "t5" },
       "t5",
+    );
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(out.hookSpecificOutput.permissionDecisionReason).toContain("disabled by the system administrator");
+  });
+
+  it("denies admin-disabled team messaging (SendMessage) despite its auto-allow", async () => {
+    // SendMessage is in the orchestration auto-allow set; the admin policy
+    // check runs BEFORE the auto-allow, so the kill-switch must still win.
+    const hook = policyHook({ disabledTools: ["SendMessage"], disabledSkills: [] });
+    const out = await hook(
+      { tool_name: "SendMessage", tool_input: { to: "reviewer", message: "hi" }, tool_use_id: "t6" },
+      "t6",
     );
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
     expect(out.hookSpecificOutput.permissionDecisionReason).toContain("disabled by the system administrator");

@@ -148,6 +148,8 @@ export interface TaskUpdateEvent {
 /** A subagent was spawned via the Task/Agent tool. `agentId` === its tool_use id. */
 export interface AgentSpawnEvent {
   agentId: string;
+  /** Teammate name for addressable agent-teams spawns (`Agent` with `name:`). */
+  name?: string;
   subagentType?: string;
   description?: string;
   /** The parent agent that spawned it (MAIN_AGENT_ID for top-level spawns). */

@@ -597,8 +597,8 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
 
 ### Admin builtin tool/skill on-off policy (`toolSkillPolicy.ts` + `agent/skillDiscovery.ts`)
 - **What it is:** the admin panel (system tab → "내장 도구·스킬 정책") disables SDK BUILT-IN tools
-  (WebFetch/WebSearch/NotebookEdit/Task+Agent — the `TOGGLABLE_BUILTIN_TOOLS` catalog; core tools are
-  deliberately NOT togglable and the strict parser rejects them) and individual SKILLS (CLI built-ins
+  (WebFetch/WebSearch/NotebookEdit/Task+Agent/SendMessage — the `TOGGLABLE_BUILTIN_TOOLS` catalog; core
+  tools are deliberately NOT togglable and the strict parser rejects them) and individual SKILLS (CLI built-ins
   like code-review/deep-research AND app/plugin skills) deployment-wide. Storage mirrors the hex-ssh
   policy: one JSON blob in `app_config` (`getToolSkillPolicy`/`setToolSkillPolicy` in `store/secrets.ts`,
   lenient `normalize*` on read / strict `parse*` at `PUT /api/admin/tool-skill-policy`), read FRESH per
@@ -628,6 +628,32 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
 - **Beware `*/` in JSDoc:** a glob like `skills/*/SKILL.md` inside a block comment TERMINATES it and the
   rest of the file parses as code (surfaced as bizarre TS1443/TS1160 errors far below). Write
   `skills/<dir>/SKILL.md` in block comments; `//` line comments are safe.
+
+### Agent teams (experimental — named subagents + SendMessage)
+- **Enablement is three-legged** (2026-08): `agentSubprocessEnv` sets
+  `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`; `SendMessage` is exposed via `SDK_TEAM_TOOLS` (removed from
+  `UNUSED_SDK_BUILTIN_TOOLS`) and folded into the hook's `TASK_ORCHESTRATION_TOOLS` auto-allow +
+  `allowedTools`; and ONE admin toggle (`agent_teams` in the togglable-tool catalog) switches the WHOLE
+  feature: it disallows the `SendMessage` tool AND (via `isAgentTeamsDisabled` →
+  `agentSubprocessEnv`'s third arg) forces the CLI flag to "0". **Precedence:** admin toggle (off wins
+  over everything) > operator-set env value in the deploy environment > default-on. The CLI-side gate
+  (`isAgentSwarmsEnabled` in the bundled CLI) also consults a statsig gate that DEFAULTS TRUE offline.
+  Keep the tool-name→feature semantic in `isAgentTeamsDisabled` (next to the catalog), never inline
+  `includes("SendMessage")` at call sites.
+- **Usage shape in CLI ≥2.1.x:** there are NO TeamCreate/TeamDelete tools and `Agent.team_name` is
+  deprecated — a session has ONE implicit team; `Agent` with `name:` spawns an addressable teammate and
+  `SendMessage({to: name})` messages it. Teammates' own tool calls still hit the PreToolUse hook
+  individually, so per-viewer gating is unchanged.
+- **Presentation:** `SendMessage` is deliberately NOT in `SDK_HIDDEN_ACTIVITY_TOOLS` — coordination
+  renders as a visible tool row ("팀원 메시지 전송", detail = `recipient · summary|content` via the
+  `summarizeToolInput` special case; CLI input keys are recipient/content/summary). Teammate lifecycles
+  surface through the existing subagent/task event paths (`SUBAGENT_TOOLS`, `task_started` system
+  events); the teammate's addressable identity rides on `AgentSpawnEvent.name` (from `input.name` /
+  `teammate_name`) and the client prefixes the agent node label with `@<name>`. The persisted activity
+  snapshot needs no schema change — it stores the rendered label.
+- **Headless caveat:** `teammateMode` ('auto'|'tmux'|'iterm2'|'in-process') comes from settings files,
+  which Noah never loads (`settingSources: []`) — runs rely on 'auto' resolving to in-process in a
+  TTY-less server. Verified only at the unit level; watch the first live runs on the deploy server.
 
 ### Adding / changing an MCP tool server
 - **One template per `*Tools.ts`:** `buildXTools` (handler-level owner/elevated guards) + `buildXServer`

@@ -114,7 +114,15 @@ export function summarizeToolInput(name: string, input: Record<string, unknown>)
   const url = asString(input.url);
   const query = asString(input.query) || asString(input.prompt);
   let summary = "";
-  if (name === "Bash" && cmd) summary = cmd;
+  if (name === "SendMessage") {
+    // Agent-teams coordination: show WHO is being messaged and a content
+    // preview (the CLI's input keys are recipient/content/summary; to/message
+    // kept as fallbacks across CLI versions).
+    const recipient = asString(input.recipient) || asString(input.to);
+    const preview =
+      asString(input.summary) || asString(input.content) || asString(input.message);
+    summary = [recipient, preview].filter(Boolean).join(" · ");
+  } else if (name === "Bash" && cmd) summary = cmd;
   else if (pattern) summary = pattern + (path ? ` · ${path}` : "");
   else if (path) summary = path;
   else if (url) summary = url;
@@ -338,6 +346,10 @@ export function handleAssistantMessage(
         events.onAgentStart?.({
           agentId: toolUseId,
           parentId: agentId,
+          // Agent-teams spawn: `name` is the teammate's addressable identity
+          // (SendMessage({to: name})) — surface it so the activity tree can
+          // label the node.
+          name: asString(input.name) || undefined,
           subagentType: asString(input.subagent_type) || undefined,
           description: (asString(input.description) || asString(input.prompt) || "").slice(0, 200) || undefined,
         });
@@ -648,6 +660,9 @@ function handleTaskSystemEvent(message: Record<string, unknown>, events: AgentEv
       events.onAgentStart?.({
         agentId: uiId,
         parentId: MAIN_AGENT_ID,
+        // Background teammate spawns announce via task_started; carry the
+        // teammate name when the event provides it.
+        name: asString(message.teammate_name) || undefined,
         subagentType: asString(message.subagent_type) || undefined,
         description: asString(message.description) || asString(message.prompt) || undefined,
       });

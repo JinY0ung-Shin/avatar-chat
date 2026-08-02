@@ -66,11 +66,14 @@ entry in the request `tools` array — sent on **every** request, cacheable like
 
 `UNUSED_SDK_BUILTIN_TOOLS` (`src/shared/sdkToolPresentation.ts`) → `options.disallowedTools`
 removes full-CLI harness tools the avatar never uses (Workflow, Monitor, DesignSync,
-Cron*, Enter/ExitWorktree, ScheduleWakeup, SendMessage, PushNotification, RemoteTrigger;
-they duplicate app features or are interactive-CLI-only). Measured effect: 72→61 tools,
-~74k→33k chars (**~10,200 tokens/request saved**). Built-ins kept: Read/Glob/Grep/Bash/
-Edit/Write/WebFetch/WebSearch/NotebookEdit/AskUserQuestion/Skill + Task*/Agent/
-Enter|ExitPlanMode (the orchestration set).
+Cron*, Enter/ExitWorktree, ScheduleWakeup, PushNotification, RemoteTrigger;
+they duplicate app features or are interactive-CLI-only). Measured effect (when the list
+also included SendMessage): 72→61 tools, ~74k→33k chars (**~10,200 tokens/request saved**).
+Built-ins kept: Read/Glob/Grep/Bash/Edit/Write/WebFetch/WebSearch/NotebookEdit/
+AskUserQuestion/Skill + Task*/Agent/Enter|ExitPlanMode (the orchestration set).
+Update (2026-08): `SendMessage` was taken OFF this list to enable agent teams
+(`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` — see ARCHITECTURE-NOTES §Agent teams); its
+description rides along again, and an admin can re-remove it via the tool policy.
 
 ## How to capture the real thing
 
