@@ -859,11 +859,25 @@
         <span>페르소나 / 지침</span>
         <textarea rows="4" bind:value={agentPersona} disabled={agentSaving} placeholder="이 팀 에이전트의 말투, 역할, 우선순위를 적어 주세요."></textarea>
       </label>
-      <fieldset class="field">
-        <legend>공유 세컨드브레인 기록 권한</legend>
-        <label><input type="radio" bind:group={agentCaptureScope} value="members" disabled={agentSaving} /> 그룹원 모두 기록 가능</label>
-        <label><input type="radio" bind:group={agentCaptureScope} value="admins" disabled={agentSaving} /> 관리자만 기록 가능</label>
-      </fieldset>
+      <div class="field">
+        <span>공유 세컨드브레인 기록 권한</span>
+        <div class="radio-cards" role="radiogroup" aria-label="공유 세컨드브레인 기록 권한">
+          <label class="radio-card">
+            <input type="radio" bind:group={agentCaptureScope} value="members" disabled={agentSaving} />
+            <div class="radio-card-body">
+              <strong>그룹원 모두 기록 가능</strong>
+              <div class="muted">모든 그룹원이 대화로 팀 세컨드브레인에 기록(커밋)할 수 있어요.</div>
+            </div>
+          </label>
+          <label class="radio-card">
+            <input type="radio" bind:group={agentCaptureScope} value="admins" disabled={agentSaving} />
+            <div class="radio-card-body">
+              <strong>관리자만 기록 가능</strong>
+              <div class="muted">그 외 그룹원은 조회·검색만 할 수 있어요.</div>
+            </div>
+          </label>
+        </div>
+      </div>
       {#if editingAgent}
         <div class="pr-actions">
           <label class="ghost-sm" style="cursor:pointer">

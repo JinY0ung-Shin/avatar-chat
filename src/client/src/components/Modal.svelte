@@ -160,7 +160,12 @@
     const previous = document.activeElement as HTMLElement | null;
     const restoreOutside = inertOutside(overlayEl);
     const preferred = cardEl.querySelector<HTMLElement>("[data-modal-autofocus]");
-    (preferred && focusables().includes(preferred) ? preferred : focusables()[0] || cardEl).focus();
+    // preventScroll: an autofocus target below the fold (e.g. the what's-new
+    // confirm button under a long release list) must not open the card
+    // pre-scrolled past its heading.
+    (preferred && focusables().includes(preferred) ? preferred : focusables()[0] || cardEl).focus({
+      preventScroll: true,
+    });
     return () => {
       cancelSheetSpring();
       restoreOutside();

@@ -1005,6 +1005,11 @@
 .radio-card input {
   margin-top: var(--s-1);
   accent-color: var(--accent);
+  /* Neutralize the generic `.field input` stretch (20-shell-chat.css) when a
+     radio-card group sits inside a .field, e.g. the group-agent capture-scope
+     picker — a 100%-wide radio floats detached from its label text. */
+  width: auto;
+  flex: none;
 }
 .radio-card-body strong {
   font-size: var(--t-sm);

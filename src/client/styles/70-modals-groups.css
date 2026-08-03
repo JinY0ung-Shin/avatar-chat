@@ -595,6 +595,11 @@
 .whats-new-card {
   width: min(560px, 100%);
 }
+/* Announcement dialog: its heading steps up to keep rank above the enlarged
+   item titles below (other modals keep the shared .modal-card h2 size). */
+.whats-new-card h2 {
+  font-size: var(--t-xl);
+}
 .whats-new-release {
   display: flex;
   flex-direction: column;
@@ -626,7 +631,8 @@
 }
 .whats-new-list li strong {
   color: var(--text);
-  font-size: var(--t-sm);
+  font-size: var(--t-lg);
+  font-weight: 700;
 }
 .whats-new-list li span {
   color: var(--text-soft);
