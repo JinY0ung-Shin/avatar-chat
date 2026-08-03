@@ -49,6 +49,10 @@ import { chatFilesDir } from "../src/server/chatFiles.js";
 import { MCP_TOOL_GROUPS } from "../src/shared/mcpToolGroups.js";
 import { buildGroupAgentRepoTools, GROUP_AGENT_REPO_TOOL_NAMES } from "../src/server/agent/groupRepoTools.js";
 import { buildGroupAgentBrainTools } from "../src/server/agent/groupBrainTools.js";
+import {
+  buildGroupAgentProfileTools,
+  GROUP_AGENT_PROFILE_TOOL_NAMES,
+} from "../src/server/agent/groupAgentProfileTools.js";
 import { buildSystemTools } from "../src/server/agent/systemTools.js";
 import { groupKnowledgeClonePath } from "../src/server/groupKnowledgeRepo.js";
 
@@ -409,6 +413,8 @@ describe("group-agent prompt branch", () => {
       knowledgeRepoConfigured: true,
       knowledgeRepo: { repo: "acme/team-brain", branch: null },
       viewerGitTokenSet: true,
+      personaSet: false,
+      selfConfigAllowed: false,
       modelOverride: null,
     },
     ...over,
@@ -473,6 +479,28 @@ describe("group-agent prompt branch", () => {
     expect(p).not.toContain("CAPTURE it:");
   });
 
+  it("self-config guidance follows the admin/member split", () => {
+    // Member: redirect to a group admin, never an action trigger.
+    const member = buildPrompt(req(), 0);
+    expect(member).toContain("only group ADMINS may change your persona/profile");
+    expect(member).toContain("point them to a group admin");
+    // Admin: confirm-then-call trigger with the team-wide warning.
+    const admin = buildPrompt(
+      req({
+        groupAgent: { groupId: "g", agentId: "a", groupName: "플랫폼팀", viewerRole: "admin", captureAllowed: true },
+        groupAgentState: {
+          ...req().groupAgentState!,
+          viewerRole: "admin",
+          selfConfigAllowed: true,
+        },
+      }),
+      0,
+    );
+    expect(admin).toContain("applies to EVERY member's conversations");
+    expect(admin).toContain("mcp__group_agent__update_profile");
+    expect(admin).toContain("takes effect from the next turn");
+  });
+
   it("with the run-kind plan, stripped families leave no ghost guidance or misattribution", () => {
     // The run assembly passes planMcpToolFamilies' registered/runKindBlocked —
     // rebuild the same inputs here and pin the consumer behavior.
@@ -498,6 +526,10 @@ describe("group-agent prompt branch", () => {
 describe("group-agent tool factories", () => {
   function setup(dir: string, opts: { captureScope?: "members" | "admins"; repo?: boolean } = {}) {
     const { store, config } = services(dir);
+    // The FIRST user of a fresh store is auto-granted system admin — burn that
+    // on a decoy so `member` is a PLAIN user (the self-config gate has a
+    // system-admin carve-out that would otherwise fire).
+    store.createUser({ username: "root", displayName: "루트", password: "password123" });
     const member = store.createUser({ username: "member", displayName: "멤버", password: "password123" });
     const group = store.createGroup({ name: "팀" });
     store.addGroupMember(group.id, member.id, "member");
@@ -615,6 +647,74 @@ describe("group-agent tool factories", () => {
     expect(badPath.content[0].text).toContain("only reads notes under `wiki/`");
   });
 
+  it("update_profile: live admin gate, patch + audit, next-turn wording", async () => {
+    const { store, group, agent, member } = setup("self-config");
+    expect([...GROUP_AGENT_PROFILE_TOOL_NAMES]).toEqual([
+      "mcp__group_agent__update_profile",
+    ]);
+    const tools = buildGroupAgentProfileTools(store, {
+      groupId: group.id,
+      agentId: agent.id,
+      groupName: "팀",
+      actingUser: { id: member.id, username: "member", displayName: "멤버" },
+    });
+    // Plain member → refused with the ask-an-admin redirect; row untouched.
+    const denied = await callTool(tools, "update_profile", { persona: "새 역할" });
+    expect(denied.isError).toBe(true);
+    expect(denied.content[0].text).toContain("Only group ADMINS");
+    expect(store.getGroupAgentById(agent.id)!.persona).toBe("");
+    // Group admin → patch applies, team-wide + next-turn wording, audit row.
+    store.setGroupMemberRole(group.id, member.id, "admin");
+    const ok = await callTool(tools, "update_profile", {
+      persona: "리뷰 게이트키퍼",
+      alias: "게이트",
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content[0].text).toContain("EVERY group member");
+    expect(ok.content[0].text).toContain("NEXT turn");
+    const updated = store.getGroupAgentById(agent.id)!;
+    expect(updated.persona).toBe("리뷰 게이트키퍼");
+    expect(updated.alias).toBe("게이트");
+    expect(updated.displayName).toBe("팀 에이전트");
+    const audit = store
+      .listAudit(member.id, true)
+      .find((e) => e.action === "group_agent_update");
+    expect(audit?.detail).toContain("self-config via update_profile (persona, alias)");
+    // A SYSTEM admin who is a plain member passes (canManageGroup parity).
+    store.setGroupMemberRole(group.id, member.id, "member");
+    store.setRole(member.id, "admin", true);
+    const sysAdmin = await callTool(tools, "update_profile", { bio: "팀 리뷰 봇" });
+    expect(sysAdmin.isError).toBeFalsy();
+    expect(store.getGroupAgentById(agent.id)!.bio).toBe("팀 리뷰 봇");
+  });
+
+  it("update_profile: refuses empty patches, over-cap fields, disabled agents, removed members", async () => {
+    const { store, group, agent, member } = setup("self-config-gates");
+    store.setGroupMemberRole(group.id, member.id, "admin");
+    const tools = buildGroupAgentProfileTools(store, {
+      groupId: group.id,
+      agentId: agent.id,
+      groupName: "팀",
+      actingUser: { id: member.id, username: "member", displayName: "멤버" },
+    });
+    const empty = await callTool(tools, "update_profile", {});
+    expect(empty.isError).toBe(true);
+    expect(empty.content[0].text).toContain("at least one field");
+    const overCap = await callTool(tools, "update_profile", { alias: "가".repeat(65) });
+    expect(overCap.isError).toBe(true);
+    expect(overCap.content[0].text).toContain("limited to 64 characters");
+    store.updateGroupAgent(agent.id, { enabled: false });
+    const disabled = await callTool(tools, "update_profile", { persona: "x" });
+    expect(disabled.isError).toBe(true);
+    expect(disabled.content[0].text).toContain("disabled by a group admin");
+    store.updateGroupAgent(agent.id, { enabled: true });
+    store.removeGroupMember(group.id, member.id);
+    const removed = await callTool(tools, "update_profile", { persona: "x" });
+    expect(removed.isError).toBe(true);
+    expect(removed.content[0].text).toContain("no longer a member");
+    expect(store.getGroupAgentById(agent.id)!.persona).toBe("");
+  });
+
   it("describe_system reports the group self-state for group-agent runs", async () => {
     const { store, config, group, agent, member } = setup("describe");
     const avatarId = groupAgentAvatarId(group.id, agent.id);
@@ -633,6 +733,8 @@ describe("group-agent tool factories", () => {
     expect(body).toContain("all group members may capture");
     expect(body).toContain("(role: member) MAY capture");
     expect(body).toContain("not set — capture's commit/push will fail");
+    expect(body).toContain("Self-configuration: persona/instructions NOT set");
+    expect(body).toContain("may NOT update them — only group admins may");
     expect(body).toContain("Capability boundary: NO personal knowledge repository");
   });
 
@@ -662,7 +764,11 @@ describe("group-agent tool factories", () => {
     // Removed mid-turn: the state report must fail closed, matching the tools.
     store.removeGroupMember(group.id, member.id);
     const gone = summarizeGroupAgentState(store, config, agent.id, member.id);
-    expect(gone).toMatchObject({ viewerRole: null, captureAllowed: false });
+    expect(gone).toMatchObject({
+      viewerRole: null,
+      captureAllowed: false,
+      selfConfigAllowed: false,
+    });
     const res2 = await callTool(tools, "describe_system", {});
     expect(res2.content[0].text).toContain(
       "(role: removed — no longer a group member) may NOT capture",

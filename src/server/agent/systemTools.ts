@@ -253,6 +253,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               `- Capture policy: ${ga.captureScope === "members" ? "all group members may capture" : "group admins only"}; the member in this conversation (role: ${ga.viewerRole ?? "removed — no longer a group member"}) ${ga.captureAllowed ? "MAY capture (write + commit)" : "may NOT capture (recall/read only)"}`,
               `- Team second brain (shared knowledge repository): ${ga.knowledgeRepoConfigured ? `${ga.knowledgeRepo.repo}${ga.knowledgeRepo.branch ? ` @ ${ga.knowledgeRepo.branch}` : ""}` : "(none — ask a group admin to connect one in group settings)"}`,
               `- This member's internal Git token (GIT_TOKEN): ${ga.viewerGitTokenSet ? "set" : "not set — capture's commit/push will fail until they register one in Settings"}`,
+              `- Self-configuration: persona/instructions ${ga.personaSet ? "SET" : "NOT set"}; this member ${ga.selfConfigAllowed ? "MAY update the agent's persona/alias/bio/intro via mcp__group_agent__update_profile (applies to every member, from the next turn)" : "may NOT update them — only group admins may (mcp__group_agent__update_profile refuses others)"}`,
               `- Model in use: ${gaModelLine}`,
               `- Reasoning effort: ${gaEffortLine}`,
               `- MCP tool groups enabled for this conversation: ${gaLabels.length ? gaLabels.join(", ") : "(none)"}`,

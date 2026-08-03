@@ -155,6 +155,12 @@ export function summarizeGroupAgentState(
     knowledgeRepoConfigured: Boolean(repo.repo),
     knowledgeRepo: { repo: repo.repo, branch: repo.branch },
     viewerGitTokenSet: Boolean(store.getGitToken(actingUserId)),
+    personaSet: Boolean(agent.persona.trim()),
+    // Live membership REQUIRED even for system admins (every in-run group tool
+    // fails closed on removal); the update_profile handler applies the same gate.
+    selfConfigAllowed:
+      viewerRole !== null &&
+      (viewerRole === "admin" || store.isAdmin(actingUserId)),
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
   };

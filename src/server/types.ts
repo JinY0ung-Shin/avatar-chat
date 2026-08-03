@@ -443,16 +443,25 @@ export interface GroupAgentState {
   knowledgeRepo: { repo: string | null; branch: string | null };
   /** ACTING member's internal git token — capture's commit/push depends on it. */
   viewerGitTokenSet: boolean;
+  /** Whether a persona/instructions text is currently set on the agent. */
+  personaSet: boolean;
+  /**
+   * May the ACTING member reconfigure this agent (persona/alias/bio/intro) via
+   * `mcp__group_agent__update_profile` — live group-admin role (or system
+   * admin), membership REQUIRED. Fails closed with viewerRole once removed.
+   */
+  selfConfigAllowed: boolean;
   anthropicModel?: string;
   modelOverride: string | null;
 }
 
 /**
- * A group's SHARED AGENT (at most one per group, group-admin managed): a team
- * avatar whose second brain is the group's shared knowledge repository. It is
- * NOT a users row — its public avatar id is `group:<groupId>` — and it uses
- * group resources only (never personal secrets/tokens/repos). Reachable solely
- * by members of the owning group, independent of the avatar-sharing policy.
+ * A group's SHARED AGENT (several per group allowed, group-admin managed): a
+ * team avatar whose second brain is the group's shared knowledge repository. It
+ * is NOT a users row — its public avatar id is `group:<groupId>:<id>` — and it
+ * uses group resources only (never personal secrets/tokens/repos). Reachable
+ * solely by members of the owning group, independent of the avatar-sharing
+ * policy.
  */
 export interface GroupAgent {
   /** Row id — the agent's identity; its public avatar id is `group:<groupId>:<id>`. */

@@ -40,6 +40,10 @@ These are the invariants the project is built around. New work should reinforce 
   ACTING member's git token/identity. Group-agent runs grant elevated built-ins to EVERY member BY
   DESIGN — a deliberate membership-gated carve-out OUTSIDE `isTrustedFor` (which stays the choke point
   for PEER trust only); `capture_scope` is enforced at the MCP tool layer, not the filesystem.
+  Group agents SELF-CONFIGURE persona/alias/bio/intro mid-chat via `mcp__group_agent__update_profile`
+  (live group-admin gate, membership required even for sysadmins, audited as `group_agent_update`,
+  applies to every member from the NEXT turn); its state rides `GroupAgentState.personaSet`/
+  `selfConfigAllowed` into BOTH the prompt branch and `describe_system`.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the
   subprocess env), so Bash `git push`/`gh` can never authenticate. Route every git-ish capability through
   an in-process MCP bridge (`mcp__repo__*`/`mcp__git_repo__*`/`mcp__group_repo__*`) and keep the

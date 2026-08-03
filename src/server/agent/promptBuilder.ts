@@ -675,6 +675,17 @@ export function buildSystemPromptAppend(
       }
       lines.push(GIT_MCP_ONLY_GUIDANCE);
     }
+    // Self-configuration trigger — the admin/member split mirrors the tool's
+    // live gate (GroupAgentState.selfConfigAllowed; request-time role fallback).
+    if (gaState?.selfConfigAllowed ?? ga.viewerRole === "admin") {
+      lines.push(
+        "Self-configuration: this member is a group ADMIN. When they ask you to change your role, persona, or profile (alias/bio/intro), CONFIRM that the change applies to EVERY member's conversations with you, then apply it with `mcp__group_agent__update_profile`. It takes effect from the next turn.",
+      );
+    } else {
+      lines.push(
+        "Self-configuration: only group ADMINS may change your persona/profile (`mcp__group_agent__update_profile` refuses everyone else). If this member asks you to change your role or persona, draft the wording they want and point them to a group admin.",
+      );
+    }
     lines.push(
       "You have NO personal-avatar capabilities: no personal knowledge repository or second brain, no secrets, no SSH, no scheduled routines, no notifications, and no plugins beyond the group repository. If asked about those, explain that a member's personal avatar handles them.",
     );

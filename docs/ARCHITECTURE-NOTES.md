@@ -265,6 +265,16 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   vs role → repo exists. Commits push with the ACTING member's token and identity, audited with a
   `(via group agent)` marker — direct `mcp__group_repo__` writes from personal runs stay admin-only,
   unchanged. The personal-avatar factories are byte-untouched (test-pinned strings).
+- **Self-configuration tool** (`agent/groupAgentProfileTools.ts`, server `group_agent`): group-agent
+  runs also register `mcp__group_agent__update_profile` — the agent patches its OWN
+  persona/alias/bio/intro through `store.updateGroupAgent` (never displayName/enabled/captureScope;
+  caps alias 64 / bio 200 / intro 2k / persona 8k). Live per-call gate mirrors the settings route's
+  `canManageGroup` (group-admin role OR system admin) **but membership stays REQUIRED even for
+  sysadmins** (every in-run group tool fails closed on removal); audited as `group_agent_update`
+  (`self-config via update_profile`). Changes bind at the NEXT turn (the prompt is assembled at run
+  start) and hit EVERY member's conversations — the prompt branch instructs the agent to confirm that
+  before calling. State facts (`GroupAgentState.personaSet`/`selfConfigAllowed`, ownerState.ts) feed
+  BOTH the prompt branch and `describe_system` (the metacognition invariant).
 - **`capture_scope` is an MCP-LAYER policy, not a filesystem boundary.** The group-knowledge clone is
   one shared tree (`dataDir/group-knowledge/<groupId>`) that any elevated run's Bash/file tools can
   touch, `ensureGroupClone` fast-forwards without hard-reset, and `commitAndPushClone` does

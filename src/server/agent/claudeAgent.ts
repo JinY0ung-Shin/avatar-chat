@@ -518,6 +518,11 @@ export async function runClaudeAgent(
     GROUP_BRAIN_SERVER_NAME,
     GROUP_BRAIN_TOOL_NAMES,
   } = await import("./groupBrainTools.js");
+  const {
+    buildGroupAgentProfileServer,
+    GROUP_AGENT_PROFILE_SERVER_NAME,
+    GROUP_AGENT_PROFILE_TOOL_NAMES,
+  } = await import("./groupAgentProfileTools.js");
 
   const streaming = Boolean(events);
   // Tool-access derivation lives in deriveAgentToolAccess (a pure, unit-tested
@@ -895,6 +900,20 @@ export async function runClaudeAgent(
         viewerIsOwner: ownerToolAccess,
         config,
       });
+  // Self-configuration (update_profile): group-agent runs only — the agent
+  // edits its OWN persona/profile. Registration is not the boundary (mcp__
+  // auto-allow): the handler re-gates per call on the acting member's LIVE
+  // group-admin role. Single boolean used byte-identically in allowedTools +
+  // mcpServers below.
+  const groupAgentProfileActive = Boolean(groupAgentRun);
+  const groupAgentProfileServer = groupAgentRun
+    ? buildGroupAgentProfileServer(store, {
+        groupId: groupAgentRun.groupId,
+        agentId: groupAgentRun.agentId,
+        groupName: groupAgentRun.groupName,
+        actingUser: actingMember,
+      })
+    : null;
 
   // Visual canvas (experimental `canvas` feature, #50): registered only when the
   // avatar OWNER enabled it AND this is an interactive turn with a canvas sink
@@ -1118,6 +1137,7 @@ export async function runClaudeAgent(
         : []),
       ...(brainActive ? BRAIN_TOOL_NAMES : []),
       ...(groupBrainActive ? GROUP_BRAIN_TOOL_NAMES : []),
+      ...(groupAgentProfileActive ? GROUP_AGENT_PROFILE_TOOL_NAMES : []),
       ...(canvasActive ? CANVAS_TOOL_NAMES : []),
       ...(fileOutputActive ? FILE_OUTPUT_TOOL_NAMES : []),
       ...(sshActive ? SSH_TRUST_TOOL_NAMES : []),
@@ -1189,6 +1209,9 @@ export async function runClaudeAgent(
       ...(brainActive ? { [BRAIN_SERVER_NAME]: brainServer } : {}),
       ...(groupBrainActive
         ? { [GROUP_BRAIN_SERVER_NAME]: groupBrainServer }
+        : {}),
+      ...(groupAgentProfileServer
+        ? { [GROUP_AGENT_PROFILE_SERVER_NAME]: groupAgentProfileServer }
         : {}),
       ...(canvasServer ? { [CANVAS_SERVER_NAME]: canvasServer } : {}),
       ...(fileOutputServer
