@@ -2112,6 +2112,24 @@ describe("system tools (avatar system management)", () => {
     expect(on.content[0].text).toContain("mcp__file_output__share_file");
   });
 
+  it("describe_system reports the drawio viewer with file-output gating", async () => {
+    const s = setup("st-drawio");
+    // No file output this run → the viewer exists but sharing does not.
+    const off = await callTool(toolsFor(s), "describe_system", {});
+    expect(off.isError).toBeFalsy();
+    expect(off.content[0].text).toContain("Diagram files (.drawio):");
+    expect(off.content[0].text).toContain("sharing files is unavailable in this run");
+
+    const onTools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: true,
+      fileOutputEnabled: true,
+    });
+    const on = await callTool(onTools, "describe_system", {});
+    expect(on.content[0].text).toContain("Diagram files (.drawio): supported");
+    expect(on.content[0].text).toContain("`drawio` skill");
+  });
+
   it("describe_system reports admin-disabled builtin tools and skills", async () => {
     const s = setup("st-toolskill");
     const noPolicy = await callTool(toolsFor(s), "describe_system", {});

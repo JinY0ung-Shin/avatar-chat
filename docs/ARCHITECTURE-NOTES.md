@@ -825,7 +825,7 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
 ### Generated-file delivery + PPTX deck pipeline (`share_file`, hidden publishes)
 - **`chatFiles.ts` mirrors `chatImages.ts` for agent-GENERATED documents** (there is deliberately NO
   upload path): `mcp__file_output__share_file` → `onShareFile` (routes/chat.ts) → `publishWorkspaceFile`
-  (same realpath+roots containment; extension allowlist pptx/docx/xlsx/zip/pdf/csv/md/txt with
+  (same realpath+roots containment; extension allowlist pptx/docx/xlsx/zip/pdf/csv/md/txt/drawio with
   magic-byte checks for the container formats; 30 MB cap) → bytes at
   `dataDir/chat-files/<conversationId>/<id>.<ext>`, metadata on `messages.attachments_json` as
   `kind:"file"` (+`size`). Download route `GET /api/conversations/:id/files/:fileId` is owner-scoped and
@@ -851,6 +851,21 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   the describe_system line (UNAVAILABLE → "admin must rebuild the image"). Docker: `libreoffice-impress` +
   `fonts-nanum` + `poppler-utils` via apt mirror; `python-pptx` is NOT in Debian → pip at build with
   `PIP_INDEX_URL`/`PIP_TRUSTED_HOST` build-args (compose passthrough).
+- **draw.io viewer (.drawio share): preview is CLIENT-side, not a deckRender format.** `drawio` sits in
+  the `chatFiles.ts` allowlist (mediaType `application/vnd.jgraph.mxfile`, no magic — text like csv/md/txt)
+  but deliberately NOT in `PREVIEWABLE_EXTENSIONS`: `FilePreviewPanel.svelte` fetches the file and renders
+  it with the **vendored draw.io viewer** (`src/client/public/drawio/`, pinned upstream tag — see its
+  README for provenance/upgrade). The ~4 MB global script is NOT in the Vite bundle; `lib/drawioViewer.ts`
+  injects a same-origin `<script>` on first use. **Verified under the app CSP: no `unsafe-eval`, no
+  iframe.** Gotchas: (1) the `window.*_PATH` asset globals MUST be set before the script evaluates (the
+  loader does) or they default to diagrams.net URLs; (2) only the basic/arrows/flowchart/bpmn stencil sets
+  are vendored — other `shape=mxgraph.*` sets render as labeled placeholder boxes; drop more XMLs from the
+  SAME upstream tag into `stencils/` to extend (no code change); (3) expected noise: one
+  `/drawio/math/startup.js` request that 404s/nosniff-blocks per session (MathJax intentionally not
+  vendored); (4) the render target div must NOT have the `mxgraph` class (the script's load-time auto-scan
+  would double-process it); (5) the viewer lays out for the width it was created at — the panel repaints
+  (debounced) on resize; (6) compressed `<diagram>` payloads render fine (the viewer inflates them), but
+  the `drawio` skill tells the agent to AUTHOR uncompressed so later turns can edit the XML.
 - **Regenerate caveat:** replacing the last assistant turn deletes its attachments (images AND files),
   so a canvas from the REPLACED turn loses its embedded slide images — accepted (regenerate means
   "redo the turn"; the new run re-renders and re-shows).

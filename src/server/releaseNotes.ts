@@ -36,6 +36,16 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    id: "2026-08-03",
+    items: [
+      {
+        title: "draw.io 다이어그램 그리기와 보기",
+        body: "아바타가 draw.io(.drawio) 다이어그램을 직접 그려서 전달할 수 있어요. 파일 카드를 누르면 옆 패널에서 확대/이동, 페이지 전환이 되는 다이어그램으로 바로 보고, 내려받아 draw.io에서 이어서 편집할 수 있습니다. Confluence 페이지에 첨부된 .drawio 파일도 같은 방식으로 볼 수 있어요.",
+        example: "예: “우리 배포 파이프라인 구성도를 draw.io로 그려 줘.”",
+      },
+    ],
+  },
+  {
     id: "2026-07-31",
     items: [
       {

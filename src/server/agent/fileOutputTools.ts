@@ -1,5 +1,6 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { DRAWIO_MEDIA_TYPE } from "../chatFiles.js";
 import type { FileOutputRequest, FileOutputResult, ShareFileRequest } from "./events.js";
 import { text } from "./mcpTools.js";
 
@@ -54,8 +55,9 @@ export function buildFileOutputTools(ctx: FileOutputToolsContext) {
     tool(
       "share_file",
       "Hand a generated document to the user as a DOWNLOAD CARD in the chat. " +
-        "Use this whenever you finish producing a file the user should keep — a PPTX deck, PDF, DOCX, XLSX, ZIP, CSV, or Markdown/text file. " +
+        "Use this whenever you finish producing a file the user should keep — a PPTX deck, PDF, DOCX, XLSX, ZIP, CSV, Markdown/text file, or draw.io diagram (.drawio). " +
         "For PPTX/DOCX/XLSX/PDF the server AUTOMATICALLY renders page previews into the card's side panel — do NOT render or publish slide images yourself for delivery. " +
+        "A shared .drawio file renders as an INTERACTIVE diagram in that same panel (client-side) — never export a diagram to PNG just to deliver it. " +
         "Pass the local file path from your working directory; never paste a local path or file:// URL into Markdown, because the browser cannot reach your filesystem and there is NO Bash workaround for delivering files. " +
         "The file must be inside the run's working directory or scratch workspace, at most 30 MB, and its content must match its extension. A turn can share at most 3 files.",
       {
@@ -72,7 +74,9 @@ export function buildFileOutputTools(ctx: FileOutputToolsContext) {
         }
         const previewNote = result.previews
           ? ` ${result.previews} page preview(s) were rendered automatically into the card's side panel — do not publish slide images yourself.`
-          : "";
+          : result.attachment.mediaType === DRAWIO_MEDIA_TYPE
+            ? " The card's side panel renders the diagram interactively — do not publish separate preview images."
+            : "";
         return text(
           `The file "${result.attachment.name}" is now available to the user as a download card (attachment id: ${result.attachment.id}).${previewNote} ` +
             "Do not also paste its local path; briefly tell the user the file is ready to download.",

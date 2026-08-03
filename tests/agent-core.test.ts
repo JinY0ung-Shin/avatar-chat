@@ -3080,6 +3080,16 @@ describe("buildPrompt", () => {
     expect(prompt).toContain("mcp__file_output__share_file");
   });
 
+  it("injects draw.io diagram guidance whenever file output is active", () => {
+    // No toolchain gate (the client renders .drawio itself) — file output alone decides.
+    expect(buildPrompt(req({ viewerIsOwner: true }), 0)).not.toContain("draw.io diagrams");
+    const prompt = buildPrompt(req({ viewerIsOwner: true, fileOutputEnabled: true }), 0);
+    expect(prompt).toContain("draw.io diagrams");
+    expect(prompt).toContain("`drawio` skill");
+    expect(prompt).toContain("UNCOMPRESSED mxfile XML");
+    expect(prompt).toContain("mcp__file_output__share_file");
+  });
+
   it("lists enabled experimental features only for owner-driven turns", () => {
     const owner = buildPrompt(
       req({ viewerIsOwner: true, experimentalFeatures: ["canvas"] }),

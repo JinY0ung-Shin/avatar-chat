@@ -27,6 +27,10 @@ plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
 - **PowerPoint decks**: the avatar can generate PowerPoint (`.pptx`) presentations, preview the
   rendered slides in the chat (in the canvas side panel when enabled, inline otherwise), and hand
   over the finished deck as a download card.
+- **draw.io diagrams**: the avatar can author `.drawio` diagrams (or pass along ones it fetched,
+  e.g. Confluence attachments) and hand them over as download cards; the chat renders them as
+  interactive diagrams (zoom/pan/pages) in the file side panel, fully offline via a vendored
+  draw.io viewer.
 - **Scheduled routines**: owners can create one-time or recurring chat jobs (`/api/me/routines`)
   for a specific KST date/time, daily/weekly slots, or a fixed interval. The avatar executes
   them headlessly and keeps each run's result in a dedicated routine conversation.

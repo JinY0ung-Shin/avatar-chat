@@ -402,7 +402,20 @@ function fileOutputSection(request: AgentRequest): string | null {
     "Use the optional `caption` for a short user-facing description. Local filesystem paths and `file://` URLs in Markdown are not visible to the browser, so never use those as a substitute. " +
     "Do NOT call Read to inspect or verify an image before showing it: `show_file` validates the bytes itself, while Read may fail when the active model cannot accept image input. If an image is outside the allowed roots (such as `/tmp`), copy it into the current directory with Bash (`cp /tmp/image.png \"$PWD/image.png\"`) and retry `show_file` with `./image.png`. " +
     "Only files inside your current working directory or conversation scratch workspace can be shown; the file must be at most 5 MB, and one turn can show at most 6 images inline. " +
-    "**File delivery**: when you produce a document the user should KEEP (pptx/pdf/docx/xlsx/zip/csv/md/txt), hand it over with `mcp__file_output__share_file` — it renders a download card in the chat. There is no Bash or Markdown workaround for delivering files."
+    "**File delivery**: when you produce a document the user should KEEP (pptx/pdf/docx/xlsx/zip/csv/md/txt/drawio), hand it over with `mcp__file_output__share_file` — it renders a download card in the chat. There is no Bash or Markdown workaround for delivering files."
+  );
+}
+
+/**
+ * Standing guidance for draw.io diagram work. Unlike decks there is no
+ * per-deployment toolchain gate: the client renders shared .drawio files
+ * itself, so this only needs the run to be able to publish files.
+ */
+function drawioSection(request: AgentRequest): string | null {
+  if (!request.fileOutputEnabled) return null;
+  return (
+    "**draw.io diagrams**: when the user asks for a diagram they can keep editing (architecture, flowchart, sequence, org chart, …) or wants to SEE a .drawio file you can reach (e.g. downloaded from a Confluence page), use the `drawio` skill — author UNCOMPRESSED mxfile XML, save it as a `.drawio` file, and deliver it with `mcp__file_output__share_file`. " +
+    "The file card's side panel renders the diagram interactively on the client (zoom/pan/pages, no server toolchain involved), so do NOT export or publish PNG previews just for delivery, and never paste raw mxfile XML into the chat as a substitute."
   );
 }
 
@@ -613,6 +626,10 @@ export function buildSystemPromptAppend(
   const deckBlock = deckSection(request);
   if (deckBlock) {
     lines.push(deckBlock);
+  }
+  const drawioBlock = drawioSection(request);
+  if (drawioBlock) {
+    lines.push(drawioBlock);
   }
   const noVisionBlock = noVisionSection(request);
   if (noVisionBlock) {

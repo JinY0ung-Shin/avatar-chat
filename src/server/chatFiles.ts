@@ -26,6 +26,13 @@ export const MAX_CHAT_FILES_PER_MESSAGE = 3;
 export const MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE = 30;
 
 /**
+ * Media type of shared .drawio attachments — the marker the client's
+ * FilePreviewPanel (and the share_file result note) key their diagram
+ * rendering on. `src/client/src/lib/drawioViewer.ts` hand-mirrors the value.
+ */
+export const DRAWIO_MEDIA_TYPE = "application/vnd.jgraph.mxfile";
+
+/**
  * Downloadable document types the agent may share. Extension is the lookup key
  * (from the SOURCE file's basename); `magic` is a byte-prefix check applied to
  * the actual content where the format has one (OOXML containers are zip, pdf is
@@ -49,6 +56,10 @@ const FILE_TYPES: Record<string, { mediaType: string; magic?: Buffer[] }> = {
   csv: { mediaType: "text/csv" },
   md: { mediaType: "text/markdown" },
   txt: { mediaType: "text/plain" },
+  // draw.io diagram (mxfile XML, possibly with deflate-compressed <diagram>
+  // payloads — still a text file, so no magic prefix like csv/md/txt). This
+  // mediaType is what FilePreviewPanel keys on to render the diagram client-side.
+  drawio: { mediaType: DRAWIO_MEDIA_TYPE },
 };
 
 export function chatFilesDir(config: AppConfig, conversationId: string): string {

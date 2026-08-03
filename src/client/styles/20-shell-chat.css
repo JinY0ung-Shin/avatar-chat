@@ -1588,6 +1588,18 @@ body.col-resizing {
 .file-preview-slide figcaption {
   font-size: var(--t-xs);
 }
+/* Interactive draw.io render (FilePreviewPanel). White like the slide PNGs so
+   diagrams stay readable in dark theme; the viewer manages its own inner DOM. */
+.file-preview-drawio {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: #fff;
+  padding: var(--s-2);
+  overflow: auto;
+}
+.file-preview-drawio:empty {
+  display: none;
+}
 
 .message.assistant .bubble {
   border-bottom-left-radius: var(--r-sm);

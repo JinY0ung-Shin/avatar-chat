@@ -32,7 +32,9 @@ When you need an image or draw.io diagram, first use `extract_page_assets` to fi
 `ri:attachment`, and `ac:structured-macro ac:name="drawio"` references in the page storage body, then
 fetch the needed attachments with `get_attachment`. PNG/JPEG/GIF/WebP attachments may be returned as
 image blocks. When a draw.io diagram is stored only as `.drawio` XML, you can read the XML to
-understand its structure, but without a separate renderer you cannot convert it into a new image.
+understand its structure, but you cannot convert it into an image yourself. To let the USER see the
+diagram, save it as a `.drawio` file and hand it over with `mcp__file_output__share_file` — the chat's
+file panel renders it interactively (see the `drawio` skill).
 
 ## Write operations
 

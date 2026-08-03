@@ -73,6 +73,20 @@ describe("chatFiles", () => {
       expect("attachment" in result && result.attachment.mediaType).toBe("text/markdown");
     });
 
+    it("publishes a .drawio diagram with the mxfile media type", () => {
+      const ws = workspace();
+      const xml = `<mxfile host="test"><diagram id="d1" name="Page-1"><mxGraphModel><root><mxCell id="0"/></root></mxGraphModel></diagram></mxfile>`;
+      fs.writeFileSync(path.join(ws, "flow.drawio"), xml);
+      const result = publishWorkspaceFile(config(), "conv1", "flow.drawio", [ws]);
+      expect("attachment" in result).toBe(true);
+      if (!("attachment" in result)) return;
+      expect(result.attachment).toMatchObject({
+        kind: "file",
+        mediaType: "application/vnd.jgraph.mxfile",
+        name: "flow.drawio",
+      });
+    });
+
     it("refuses paths that escape the allowed roots", () => {
       const ws = workspace();
       fs.writeFileSync(path.join(dir(), "outside.pptx"), PPTX_BYTES);
