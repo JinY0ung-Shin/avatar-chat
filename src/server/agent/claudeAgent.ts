@@ -12,7 +12,7 @@ import type {
 } from "../types.js";
 import type { Store } from "../store.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../store.js";
-import type { AgentEvents } from "./events.js";
+import type { AgentEvents, FileOutputResult } from "./events.js";
 import { probeDeckRendering } from "../deckRender.js";
 import { visionForModel } from "../modelVisionPolicy.js";
 import logger from "../logger.js";
@@ -932,15 +932,29 @@ export async function runClaudeAgent(
   // file. Headless runs have nobody to show a bubble to, so the tools stay out.
   // `shareFile` (download cards) arrives with `onFile` from the chat route; the
   // fallback keeps an onFile-only caller working with an honest tool error.
+  //
+  // Each published attachment is stamped with its text ANCHOR — the length of
+  // the assistant text accumulated when the tool ran (`assistantChunks` already
+  // holds every block preceding this tool call, joined exactly like the final
+  // persisted text) — so the bubble can render the card inline at the point it
+  // was created instead of below the still-growing text. Stamping mutates the
+  // SAME object the route pushed into its attachments list, so the anchor rides
+  // into persistence without widening the events contract.
+  const stampAttachmentAnchor = (result: FileOutputResult): FileOutputResult => {
+    if (result.behavior === "shown" && result.attachment.anchor === undefined) {
+      result.attachment.anchor = assistantChunks.join("\n\n").length;
+    }
+    return result;
+  };
   const fileOutputServer = fileOutputActive
     ? buildFileOutputServer({
-        showFile: events!.onFile!,
-        shareFile:
-          events!.onShareFile ??
-          (async () => ({
-            behavior: "error" as const,
-            message: "File sharing is unavailable in this run.",
-          })),
+        showFile: async (request) => stampAttachmentAnchor(await events!.onFile!(request)),
+        shareFile: events!.onShareFile
+          ? async (request) => stampAttachmentAnchor(await events!.onShareFile!(request))
+          : async () => ({
+              behavior: "error" as const,
+              message: "File sharing is unavailable in this run.",
+            }),
       })
     : null;
 

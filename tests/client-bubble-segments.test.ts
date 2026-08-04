@@ -1,0 +1,88 @@
+import { describe, expect, it } from "vitest";
+import { segmentAttachments } from "../src/client/src/lib/bubbleSegments.js";
+import type { MessageAttachment } from "../src/server/types.js";
+
+function att(id: string, extra: Partial<MessageAttachment> = {}): MessageAttachment {
+  return { id, kind: "file", mediaType: "application/pdf", name: `${id}.pdf`, ...extra };
+}
+
+describe("segmentAttachments", () => {
+  it("returns the whole text as a single tail segment when there are no attachments", () => {
+    expect(segmentAttachments("안녕하세요", undefined)).toEqual([
+      { text: "안녕하세요", atts: [], tail: true },
+    ]);
+    expect(segmentAttachments("안녕하세요", [])).toEqual([
+      { text: "안녕하세요", atts: [], tail: true },
+    ]);
+  });
+
+  it("keeps un-anchored (legacy) attachments after the full text", () => {
+    const legacy = att("a");
+    expect(segmentAttachments("본문", [legacy])).toEqual([
+      { text: "본문", atts: [legacy], tail: true },
+    ]);
+  });
+
+  it("splits the text at an anchor so the card sits where it was created", () => {
+    // Anchor as stamped in practice: the joined text length when the tool ran,
+    // i.e. right after "첫 단락" and before the next chunk's "\n\n" separator.
+    const a = att("a", { anchor: "첫 단락".length });
+    const segments = segmentAttachments("첫 단락\n\n둘째 단락", [a]);
+    expect(segments).toEqual([
+      { text: "첫 단락", atts: [a] },
+      { text: "\n\n둘째 단락", atts: [], tail: true },
+    ]);
+  });
+
+  it("renders an anchor-0 card before any text", () => {
+    const a = att("a", { anchor: 0 });
+    expect(segmentAttachments("본문", [a])).toEqual([
+      { text: "", atts: [a] },
+      { text: "본문", atts: [], tail: true },
+    ]);
+  });
+
+  it("groups attachments sharing an anchor into one card block", () => {
+    const a = att("a", { anchor: 2 });
+    const b = att("b", { anchor: 2 });
+    expect(segmentAttachments("가나다라", [a, b])).toEqual([
+      { text: "가나", atts: [a, b] },
+      { text: "다라", atts: [], tail: true },
+    ]);
+  });
+
+  it("clamps an anchor beyond the text (stopped turns persist shorter delta-joined text)", () => {
+    const a = att("a", { anchor: 999 });
+    expect(segmentAttachments("짧은 답", [a])).toEqual([
+      { text: "짧은 답", atts: [a] },
+      { text: "", atts: [], tail: true },
+    ]);
+  });
+
+  it("keeps positions monotonic when anchors arrive out of order", () => {
+    const late = att("late", { anchor: 4 });
+    const early = att("early", { anchor: 1 });
+    expect(segmentAttachments("abcdef", [late, early])).toEqual([
+      { text: "a", atts: [early] },
+      { text: "bcd", atts: [late] },
+      { text: "ef", atts: [], tail: true },
+    ]);
+  });
+
+  it("never renders hidden attachments, anchored or not", () => {
+    const hidden = att("h", { anchor: 1, hidden: true, kind: "image", mediaType: "image/png" });
+    const legacyHidden = att("h2", { hidden: true });
+    expect(segmentAttachments("본문", [hidden, legacyHidden])).toEqual([
+      { text: "본문", atts: [], tail: true },
+    ]);
+  });
+
+  it("mixes anchored and legacy attachments: anchored inline, legacy after the text", () => {
+    const inline = att("inline", { anchor: 2 });
+    const legacy = att("legacy");
+    expect(segmentAttachments("가나다", [legacy, inline])).toEqual([
+      { text: "가나", atts: [inline] },
+      { text: "다", atts: [legacy], tail: true },
+    ]);
+  });
+});

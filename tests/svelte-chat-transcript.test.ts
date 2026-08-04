@@ -110,6 +110,67 @@ beforeEach(() => {
 });
 
 describe("ChatView transcript", () => {
+  it("renders an anchored file card inline at its creation point, not below the text", () => {
+    const first = "다이어그램을 만들었습니다.";
+    const rest = "이어서 구조를 설명합니다.";
+    const message = {
+      ...assistantMessage(),
+      content: `${first}\n\n${rest}`,
+      attachments: [
+        {
+          id: "f-1",
+          kind: "file",
+          mediaType: "application/vnd.jgraph.mxfile",
+          name: "diagram.drawio",
+          size: 1234,
+          anchor: first.length,
+        },
+      ],
+      response: { kind: "text", runtime: "claude", summary: "완료", text: `${first}\n\n${rest}` },
+    } as unknown as StoredMessage;
+    replaceState({ avatars: [], chatPanes: [pane([message])], activePaneId: "pane-1" });
+
+    const { container } = render(ChatView);
+    const flow = Array.from(
+      container.querySelectorAll(".message.assistant .bubble > .md, .message.assistant .bubble > .msg-images"),
+    );
+    expect(flow).toHaveLength(3);
+    expect(flow[0].className).toContain("md");
+    expect(flow[0].textContent).toContain(first);
+    expect(flow[0].textContent).not.toContain(rest);
+    expect(flow[1].className).toContain("msg-images");
+    expect(flow[1].textContent).toContain("diagram.drawio");
+    expect(flow[2].textContent).toContain(rest);
+  });
+
+  it("keeps a live card pinned between text segments and the caret on the tail", () => {
+    const first = "첫 문단";
+    const live = pane([]);
+    (live as unknown as Record<string, unknown>).streaming = true;
+    live.liveText = `${first}\n\n다음 문단`;
+    live.liveAttachments = [
+      {
+        id: "f-live",
+        kind: "file",
+        mediaType: "application/pdf",
+        name: "report.pdf",
+        anchor: first.length,
+      },
+    ];
+    replaceState({ avatars: [], chatPanes: [live], activePaneId: "pane-1" });
+
+    const { container } = render(ChatView);
+    const bubble = container.querySelector(".message.assistant .bubble")!;
+    const flow = Array.from(bubble.querySelectorAll(":scope > .md, :scope > .msg-images"));
+    expect(flow).toHaveLength(3);
+    expect(flow[0].textContent).toContain(first);
+    expect(flow[1].textContent).toContain("report.pdf");
+    expect(flow[2].textContent).toContain("다음 문단");
+    // The stream caret rides the tail segment (below the card), never the first.
+    expect(flow[0].querySelector(".stream-caret")).toBeNull();
+    expect(flow[2].querySelector(".stream-caret")).not.toBeNull();
+  });
+
   it("renders the answer body but defers the thinking / activity cards until opened", async () => {
     const { container } = render(ChatView);
 

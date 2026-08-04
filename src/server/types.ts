@@ -618,6 +618,13 @@ export interface MessageAttachment {
    * serving route works, but the bubble does not render it.
    */
   hidden?: boolean;
+  /**
+   * Character offset into the message text at the moment the attachment was
+   * shown/shared, so the bubble renders the card inline AT that point instead
+   * of below the text (where later streaming would keep pushing it down).
+   * Absent (legacy rows, user uploads) → the card renders after the text.
+   */
+  anchor?: number;
 }
 
 export interface StoredMessage {

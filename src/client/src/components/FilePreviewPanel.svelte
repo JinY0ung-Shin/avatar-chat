@@ -2,10 +2,12 @@
   import { onDestroy, tick } from "svelte";
   import Icon from "./Icon.svelte";
   import { updateState } from "../lib/state";
+  import { copyText } from "../lib/dom";
   import { getGraphViewer, isDrawioAttachment, loadGraphViewer } from "../lib/drawioViewer";
   import type { ChatPane, MessageAttachment } from "../lib/types";
 
-  // Right-side preview for a shared file attachment (msg-file-card click).
+  // Right-side preview for a shared file attachment (msg-file-card click;
+  // .drawio shares also auto-open it on live arrival — chat.ts "file" event).
   // Slides are the hidden image attachments on the SAME assistant message
   // (server-auto-rendered on share_file, or skill-published); .drawio files
   // render as an interactive diagram via the vendored viewer (lib/drawioViewer);
@@ -225,6 +227,16 @@
         {/if}
       </div>
       <div class="file-preview-actions">
+        {#if drawioAtt}
+          <button
+            class="btn btn-ghost btn-sm"
+            type="button"
+            aria-label="XML 텍스트 복사"
+            title="다이어그램 XML을 텍스트로 복사"
+            disabled={drawioStatus !== "ready"}
+            on:click={(event) => copyText(drawioXml, event.currentTarget as HTMLButtonElement)}
+          >복사</button>
+        {/if}
         <a
           class="btn btn-primary btn-sm"
           href={downloadHref(preview.attachment)}

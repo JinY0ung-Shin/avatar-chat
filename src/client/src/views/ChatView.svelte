@@ -27,6 +27,7 @@
   import { goView, routeFromHash } from "../lib/nav";
   import { formatUsageLabel, renderMarkdown, renderMarkdownCached, timeLabel } from "../lib/format";
   import { createStickController, type StickController } from "../lib/autoscroll";
+  import { segmentAttachments } from "../lib/bubbleSegments";
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
   import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
@@ -908,6 +909,29 @@
   }
 </script>
 
+{#snippet attachmentCards(item: ChatPane, atts: MessageAttachment[], source: MessageAttachment[] | undefined)}
+  <div class="msg-images">
+    {#each atts as att (att.id)}
+      {#if att.kind === "file"}
+        <button class="msg-file-card" type="button" on:click={() => openFilePreview(item, att, source)}>
+          <span class="msg-file-icon" aria-hidden="true"><Icon name="file" /></span>
+          <span class="msg-file-meta">
+            <span class="msg-file-name">{att.name || "파일"}</span>
+            <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>
+          </span>
+        </button>
+      {:else}
+        <figure class="msg-image-item">
+          <a class="msg-image-link" href={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} target="_blank" rel="noopener noreferrer">
+            <img class="msg-image" src={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
+          </a>
+          {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
+        </figure>
+      {/if}
+    {/each}
+  </div>
+{/snippet}
+
 {#snippet transcript(item: ChatPane)}
   <div class="chat-body">
     <div
@@ -974,29 +998,14 @@
                     <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdownCached(message.response.plan)}</div>
                   </details>
                 {/if}
-                <div class="md" use:enhanceMarkdown={messageText(message)}>{@html renderMarkdownCached(messageText(message))}</div>
-                {#if visibleAttachments(message.attachments).length}
-                  <div class="msg-images">
-                    {#each visibleAttachments(message.attachments) as att (att.id)}
-                      {#if att.kind === "file"}
-                        <button class="msg-file-card" type="button" on:click={() => openFilePreview(item, att, message.attachments)}>
-                          <span class="msg-file-icon" aria-hidden="true"><Icon name="file" /></span>
-                          <span class="msg-file-meta">
-                            <span class="msg-file-name">{att.name || "파일"}</span>
-                            <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>
-                          </span>
-                        </button>
-                      {:else}
-                        <figure class="msg-image-item">
-                          <a class="msg-image-link" href={imageSrc(message, att, item)} target="_blank" rel="noopener noreferrer">
-                            <img class="msg-image" src={imageSrc(message, att, item)} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
-                          </a>
-                          {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
-                        </figure>
-                      {/if}
-                    {/each}
-                  </div>
-                {/if}
+                {#each segmentAttachments(messageText(message), message.attachments) as seg, segIndex (segIndex)}
+                  {#if seg.text}
+                    <div class="md" use:enhanceMarkdown={seg.text}>{@html renderMarkdownCached(seg.text)}</div>
+                  {/if}
+                  {#if seg.atts.length}
+                    {@render attachmentCards(item, seg.atts, message.attachments)}
+                  {/if}
+                {/each}
               {:else}
                 {#if visibleAttachments(message.attachments).length}
                   <div class="msg-images">
@@ -1090,31 +1099,14 @@
                   <div class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획을 작성하는 중…</span><span class="plan-card-spin" aria-hidden="true"></span></div>
                 </div>
               {/if}
-              {#if item.liveText}
-                <div class="md" use:enhanceMarkdown={item.liveText}>{@html renderMarkdown(item.liveText)}<span class="stream-caret" aria-hidden="true"></span></div>
-              {/if}
-              {#if visibleAttachments(item.liveAttachments).length}
-                <div class="msg-images">
-                  {#each visibleAttachments(item.liveAttachments) as att (att.id)}
-                    {#if att.kind === "file"}
-                      <button class="msg-file-card" type="button" on:click={() => openFilePreview(item, att, item.liveAttachments)}>
-                        <span class="msg-file-icon" aria-hidden="true"><Icon name="file" /></span>
-                        <span class="msg-file-meta">
-                          <span class="msg-file-name">{att.name || "파일"}</span>
-                          <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>
-                        </span>
-                      </button>
-                    {:else}
-                      <figure class="msg-image-item">
-                        <a class="msg-image-link" href={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} target="_blank" rel="noopener noreferrer">
-                          <img class="msg-image" src={`/api/conversations/${encodeURIComponent(item.conversationId)}/images/${encodeURIComponent(att.id)}`} alt={att.caption || att.name || "생성된 이미지"} loading="lazy" />
-                        </a>
-                        {#if att.caption}<figcaption class="msg-image-caption">{att.caption}</figcaption>{/if}
-                      </figure>
-                    {/if}
-                  {/each}
-                </div>
-              {/if}
+              {#each segmentAttachments(item.liveText, item.liveAttachments) as seg, segIndex (segIndex)}
+                {#if seg.text || (seg.tail && item.liveText)}
+                  <div class="md" use:enhanceMarkdown={seg.text}>{@html renderMarkdown(seg.text)}{#if seg.tail}<span class="stream-caret" aria-hidden="true"></span>{/if}</div>
+                {/if}
+                {#if seg.atts.length}
+                  {@render attachmentCards(item, seg.atts, item.liveAttachments)}
+                {/if}
+              {/each}
               <div class="stream-status">
                 <span class="spinner"></span>
                 <span class="label">{item.liveStatus || "응답 생성 중…"}</span>

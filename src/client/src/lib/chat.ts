@@ -5,6 +5,7 @@ import { syncHash } from "./nav";
 import { consumeSse, type SseFrame } from "./sse";
 import { ensureNotificationPermission, osNotify } from "./notifications";
 import { newId, notify, readState, updateState } from "./state";
+import { isDrawioAttachment } from "./drawioViewer";
 import { resolveTypedSlashCommand } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
@@ -915,12 +916,29 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "file":
       if (data?.attachment?.id) {
         markTextBreak(paneId);
-        updatePane(paneId, (pane) => {
+        updateState((state) => {
+          const pane = state.chatPanes.find((item) => item.id === paneId);
+          if (!pane) return;
           if (!pane.liveAttachments.some((item) => item.id === data.attachment.id)) {
-            pane.liveAttachments.push(data.attachment);
+            // Anchor the card at the CURRENT text length so it stays put while
+            // later text streams in below it (the persisted message carries the
+            // server-stamped equivalent). The event payload never has an anchor
+            // (it's stamped after the emit), so this never overwrites one.
+            pane.liveAttachments.push({ ...data.attachment, anchor: pane.liveText.length });
+          }
+          // A live .drawio share pops the side preview panel open by itself —
+          // single-pane layout only: split view has no side-panel slot, so the
+          // preview would invisibly hijack the slot for later. Other formats
+          // keep click-to-open via the file card.
+          if (
+            !data.attachment.hidden &&
+            isDrawioAttachment(data.attachment) &&
+            state.chatPanes.length === 1
+          ) {
+            pane.filePreview = { attachment: data.attachment, slides: [] };
           }
         });
-        setStatus(paneId, "이미지를 표시했습니다.", true);
+        setStatus(paneId, data.attachment.kind === "file" ? "파일을 공유했습니다." : "이미지를 표시했습니다.", true);
       }
       return;
     case "plan":
