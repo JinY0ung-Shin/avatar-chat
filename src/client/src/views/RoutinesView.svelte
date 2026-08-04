@@ -29,6 +29,7 @@
     routineTitle,
   } from "../lib/format";
   import { loadRoutineMessages, loadRoutinesData } from "../lib/loaders";
+  import { prefersReducedMotion } from "../lib/motion";
   import { openSeededChat, selectConversation } from "../lib/chat";
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
   import type { RoutineJob, RoutinePreset, StoredMessage } from "../lib/types";
@@ -353,7 +354,7 @@
   function revealResultWhenStacked(): void {
     if (typeof window === "undefined" || !resultEl) return;
     if (!window.matchMedia?.("(max-width: 980px)").matches) return;
-    resultEl.scrollIntoView({ behavior: "smooth", block: "start" });
+    resultEl.scrollIntoView({ behavior: prefersReducedMotion() ? "auto" : "smooth", block: "start" });
   }
 
   async function selectResult(routine: RoutineJob) {
@@ -573,9 +574,9 @@
           <div class="routine-manage-list scroll-thin">
             {#if !filtered.length}
               <div class="routine-empty tall">
-                <h3>{query ? "검색 결과가 없어요" : `${filterLabel(filterId)} 작업이 없어요`}</h3>
+                <h3>{query ? "검색 결과가 없습니다" : `${filterLabel(filterId)} 작업이 없습니다`}</h3>
                 <p>
-                  {#if query}"{$appState.routineSearch.trim()}"에 맞는 예약 작업을 찾지 못했습니다.{:else}다른 상태를 골라 보세요.{/if}
+                  {#if query}“{$appState.routineSearch.trim()}”에 맞는 예약 작업을 찾지 못했습니다.{:else}다른 상태를 골라 보세요.{/if}
                 </p>
                 <div class="routine-empty-actions">
                   {#if query}<button class="ghost-sm" type="button" on:click={clearSearch}>검색어 지우기</button>{/if}
@@ -784,7 +785,7 @@
             {#if routines.length}
               <div class="routine-empty tall">
                 <span class="routine-empty-icon" aria-hidden="true"><Icon name="activity" size={20} /></span>
-                <h3>확인할 실행 결과가 없어요</h3>
+                <h3>확인할 실행 결과가 없습니다</h3>
                 <p>왼쪽에서 예약 작업을 고르거나, 하나를 지금 실행하면 결과가 여기에 표시됩니다.</p>
                 <div class="routine-empty-actions">
                   <button
@@ -824,7 +825,7 @@
           {:else if !$appState.routineMessages.length}
             <div class="routine-empty tall">
               <span class="routine-empty-icon" aria-hidden="true"><Icon name="activity" size={20} /></span>
-              <h3>아직 실행 기록이 없어요</h3>
+              <h3>아직 실행 기록이 없습니다</h3>
               <p>예정된 시각이 되면 자동으로 실행됩니다. 지금 바로 확인하고 싶다면 한 번 실행해 보세요.</p>
               {#if selectedRoutine}
                 <div class="routine-empty-actions">

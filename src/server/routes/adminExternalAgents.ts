@@ -25,9 +25,13 @@ import {
 
 function inputError(res: Response, error: unknown): void {
   const raw = error instanceof Error ? error.message : "설정 형식이 올바르지 않습니다.";
+  // Strip the env-var JSON path: the admin edits ONE entry through a form, so
+  // `EXTERNAL_AGENTS_JSON[0]` names nothing they can see. Trim after stripping —
+  // an entry-level message separates the path with a space, not a dot.
   const detail = raw
     .replace(/^EXTERNAL_AGENTS_JSON\[0\]\.?/, "")
-    .replace(/^EXTERNAL_AGENTS_JSON\[0\]\s+/, "");
+    .replace(/^EXTERNAL_AGENTS_JSON\[0\]\s+/, "")
+    .trim();
   apiError(res, 400, `외부 아바타 설정을 확인해 주세요: ${detail}`);
 }
 
@@ -403,11 +407,16 @@ export function registerAdminExternalAgentRoutes(
           { actorId: req.user!.id, externalAgentId: agent.id },
           "external agent gateway probe failed",
         );
-        const message =
-          error instanceof Error
-            ? error.message
-            : "Gateway 연결 확인에 실패했습니다.";
-        apiError(res, 502, message);
+        // The detail can be a raw fetch/DNS failure, so keep it for diagnosis
+        // but never let the response start in English.
+        const detail = error instanceof Error ? error.message.trim() : "";
+        apiError(
+          res,
+          502,
+          detail
+            ? `외부 아바타 연결 확인에 실패했습니다: ${detail}`
+            : "외부 아바타 연결 확인에 실패했습니다.",
+        );
       }
     },
   );

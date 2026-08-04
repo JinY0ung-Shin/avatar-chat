@@ -84,7 +84,7 @@
     </div>
   {:else if graph?.noVault}
     <div class="graph-state muted" role="status">
-      이 저장소는 아직 vault 구조(<code>wiki/</code>·<code>raw/</code>)가 없습니다. 아바타에게
+      이 저장소는 아직 세컨드브레인 구조(<code>wiki/</code>·<code>raw/</code>)가 없습니다. 아바타에게
       <strong>brain-migrate</strong>를 한 번 실행해 달라고 하면 구조를 만들어 줍니다.
     </div>
   {:else if !graph?.nodes.length}
@@ -95,7 +95,7 @@
       {#if selected}
         <div class="graph-info">
           <strong>{selected.label}</strong>
-          {#if !selected.dangling}<code class="muted">{selected.id}</code>{:else}<span class="muted">미연결 링크 — 아직 노트 없음</span>{/if}
+          {#if !selected.dangling}<code class="muted">{selected.id}</code>{:else}<span class="muted">미연결 링크 — 이 제목의 노트가 아직 없습니다.</span>{/if}
           {#if selected.tags.length}<span class="muted">#{selected.tags.join(" #")}</span>{/if}
         </div>
       {:else}

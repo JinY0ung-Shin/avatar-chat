@@ -37,13 +37,13 @@ export const TOGGLABLE_BUILTIN_TOOLS: TogglableBuiltinTool[] = [
     id: "web_fetch",
     names: ["WebFetch"],
     labelKo: "웹 페이지 읽기 (WebFetch)",
-    descriptionKo: "URL 내용을 가져오는 내장 도구. 사내망에서 동작하지 않으면 꺼 두세요.",
+    descriptionKo: "URL 내용을 가져오는 내장 도구. 사내망에서 동작하지 않으면 끄기 권장.",
   },
   {
     id: "web_search",
     names: ["WebSearch"],
     labelKo: "웹 검색 (WebSearch)",
-    descriptionKo: "웹 검색 내장 도구. 사내망에서 동작하지 않으면 꺼 두세요.",
+    descriptionKo: "웹 검색 내장 도구. 사내망에서 동작하지 않으면 끄기 권장.",
   },
   {
     id: "notebook_edit",
@@ -62,7 +62,7 @@ export const TOGGLABLE_BUILTIN_TOOLS: TogglableBuiltinTool[] = [
     names: ["SendMessage"],
     labelKo: "에이전트 팀 (SendMessage)",
     descriptionKo:
-      "아바타가 이름 붙인 하위 에이전트(팀원)를 띄워 협업시키는 실험 기능. 끄면 SendMessage 도구와 CLI 팀 런타임이 함께 비활성화됩니다.",
+      "아바타가 이름 붙인 하위 에이전트(팀원)를 띄워 협업시키는 실험 기능. 끄면 SendMessage 도구와 CLI 팀 런타임도 함께 비활성화.",
   },
 ];
 

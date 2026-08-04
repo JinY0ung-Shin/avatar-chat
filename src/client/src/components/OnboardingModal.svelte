@@ -106,7 +106,7 @@
       <span class="onboard-step-icon"><Icon name={profileReady ? "check" : "user"} /></span>
       <span class="onboard-step-copy">
         <strong>프로필</strong>
-        <span>{profileReady ? "기본 소개가 준비됨" : "이름, 소개, 역량 태그"}</span>
+        <span>{profileReady ? "기본 소개가 준비됨" : "이름·소개·역량 해시태그"}</span>
       </span>
     </button>
     <button class="onboard-step" class:done={knowledgeReady} type="button" disabled={busy || sshBusy} on:click={() => jumpToSettings("knowledge")}>

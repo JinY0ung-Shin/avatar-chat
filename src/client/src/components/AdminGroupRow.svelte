@@ -540,7 +540,7 @@
             </div>
             <div class="settings-save-row">
               <span id={editStatusId} class="settings-save-status" class:dirty={Boolean(editDirty && !busy && editNameTrimmed && !editError)} class:pending={busy} class:invalid={Boolean(editError || !editNameTrimmed)} role="status" aria-live="polite">{editStatus}</span>
-              <button class="primary small" type="submit" disabled={!editCanSave}>{busy ? "저장 중…" : "수정"}</button>
+              <button class="primary small" type="submit" disabled={!editCanSave}>{busy ? "저장 중…" : "저장"}</button>
             </div>
           </form>
 

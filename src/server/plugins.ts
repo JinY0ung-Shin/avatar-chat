@@ -508,18 +508,18 @@ export async function resolvePluginRoots(
           roots.push(dir.abs);
           continue;
         }
-        onWarn?.(`${label}: marketplace plugin "${entry?.name ?? dir.source}" has no .claude-plugin/plugin.json`);
+        onWarn?.(`${label}: 마켓플레이스 플러그인 "${entry?.name ?? dir.source}"에 .claude-plugin/plugin.json이 없습니다`);
       } else {
-        onWarn?.(`${label}: marketplace plugin "${entry?.name ?? "?"}" uses an unsupported source`);
+        onWarn?.(`${label}: 마켓플레이스 플러그인 "${entry?.name ?? "?"}"의 소스 형식을 지원하지 않습니다`);
       }
     }
     if (roots.length === 0) {
-      onWarn?.(`${label}: marketplace contained no loadable plugins`);
+      onWarn?.(`${label}: 마켓플레이스에 불러올 수 있는 플러그인이 없습니다`);
     }
     return roots;
   }
 
-  onWarn?.(`${label}: not a Claude plugin (no .claude-plugin/plugin.json or marketplace.json)`);
+  onWarn?.(`${label}: Claude 플러그인이 아닙니다 (.claude-plugin/plugin.json 또는 marketplace.json 없음)`);
   return [];
 }
 
@@ -897,16 +897,16 @@ export async function loadAvatarPluginRoots(
       // Scrub the error: the git auth header (token) is embedded in its argv.
       const detail = scrubGitError(error);
       if (!(await pathExists(destination))) {
-        onWarn?.(`${plugin.repo}: clone failed (${detail})`);
+        onWarn?.(`${plugin.repo}: 복제 실패 (${detail})`);
         logger.warn({ repo: plugin.repo, detail }, "plugin clone failed");
         continue;
       }
-      onWarn?.(`${plugin.repo}: refresh failed, using cached clone`);
+      onWarn?.(`${plugin.repo}: 새로고침 실패, 캐시된 복제본 사용`);
       logger.warn({ repo: plugin.repo, detail }, "plugin refresh failed, using cache");
     }
 
     if (!(await pathExists(destination))) {
-      onWarn?.(`${plugin.repo}: plugin path not found after clone`);
+      onWarn?.(`${plugin.repo}: 복제 후 플러그인 경로를 찾을 수 없습니다`);
       continue;
     }
     for (const root of await resolvePluginRoots(destination, plugin.repo, onWarn, plugin.selected)) {

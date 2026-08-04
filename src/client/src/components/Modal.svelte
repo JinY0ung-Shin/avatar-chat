@@ -1,7 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher, onMount } from "svelte";
-  import { cubicOut } from "svelte/easing";
+  import { quartOut } from "svelte/easing";
   import { fade, fly } from "svelte/transition";
+  import { openModalFocus, trapTab } from "../lib/modalBehavior";
   import { prefersReducedMotion, project, rubberband, springValue } from "../lib/motion";
 
   export let cardClass = "";
@@ -24,8 +25,10 @@
     return { duration: prefersReducedMotion() ? 120 : 180 };
   }
 
+  // quartOut is the svelte/easing curve closest to the CSS `--ease-out`
+  // (cubic-bezier(0.16, 1, 0.3, 1)); 240ms is the top of the DESIGN §2.5 range.
   function cardMotion() {
-    return { y: prefersReducedMotion() ? 0 : 18, duration: prefersReducedMotion() ? 120 : 260, easing: cubicOut };
+    return { y: prefersReducedMotion() ? 0 : 18, duration: prefersReducedMotion() ? 120 : 240, easing: quartOut };
   }
 
   function close() {
@@ -107,69 +110,20 @@
     handle.addEventListener("pointercancel", onCancel);
   }
 
-  function focusables(): HTMLElement[] {
-    return [
-      ...cardEl.querySelectorAll<HTMLElement>(
-        "button:not(:disabled), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
-      ),
-    ].filter((el) => {
-      if (el.getAttribute("aria-hidden") === "true" || el.hidden) return false;
-      const style = getComputedStyle(el);
-      return style.display !== "none" && style.visibility !== "hidden";
-    });
-  }
-
   function onKeydown(event: KeyboardEvent) {
     if (event.key === "Escape") {
       event.stopPropagation();
       close();
     } else if (event.key === "Tab") {
-      const items = focusables();
-      if (!items.length) return;
-      const first = items[0];
-      const last = items[items.length - 1];
-      if (event.shiftKey && (document.activeElement === first || !cardEl.contains(document.activeElement))) {
-        last.focus();
-        event.preventDefault();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        first.focus();
-        event.preventDefault();
-      }
+      trapTab(event, cardEl);
     }
-  }
-
-  function inertOutside(root: HTMLElement): () => void {
-    const changed: HTMLElement[] = [];
-    let branch: HTMLElement = root;
-    while (branch.parentElement) {
-      const parent = branch.parentElement;
-      for (const sibling of parent.children) {
-        if (sibling === branch || !(sibling instanceof HTMLElement) || sibling.inert) continue;
-        sibling.inert = true;
-        changed.push(sibling);
-      }
-      if (parent === document.body) break;
-      branch = parent;
-    }
-    return () => {
-      for (const element of changed) element.inert = false;
-    };
   }
 
   onMount(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    const restoreOutside = inertOutside(overlayEl);
-    const preferred = cardEl.querySelector<HTMLElement>("[data-modal-autofocus]");
-    // preventScroll: an autofocus target below the fold (e.g. the what's-new
-    // confirm button under a long release list) must not open the card
-    // pre-scrolled past its heading.
-    (preferred && focusables().includes(preferred) ? preferred : focusables()[0] || cardEl).focus({
-      preventScroll: true,
-    });
+    const releaseFocus = openModalFocus(overlayEl, cardEl);
     return () => {
       cancelSheetSpring();
-      restoreOutside();
-      previous?.focus?.();
+      releaseFocus();
     };
   });
 </script>

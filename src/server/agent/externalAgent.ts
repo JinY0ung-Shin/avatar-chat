@@ -119,22 +119,33 @@ function decodeJson(data: string, event: string): unknown {
   }
 }
 
+/**
+ * Korean-lead an upstream gateway message. The detail is kept for diagnosis but
+ * never becomes the whole user-facing text — upstream sends English.
+ */
+function upstreamFailure(text: string): string {
+  const detail = text.trim().slice(0, MAX_ERROR_TEXT);
+  return detail
+    ? `외부 에이전트 실행에 실패했습니다: ${detail}`
+    : "외부 에이전트 실행에 실패했습니다.";
+}
+
 function externalError(data: string): string {
   let decoded: unknown;
   try {
     decoded = JSON.parse(data);
   } catch {
-    return data.trim().slice(0, MAX_ERROR_TEXT) || "외부 에이전트 실행에 실패했습니다.";
+    return upstreamFailure(data);
   }
-  if (typeof decoded === "string") return decoded.slice(0, MAX_ERROR_TEXT);
-  if (!isRecord(decoded)) return "외부 에이전트 실행에 실패했습니다.";
+  if (typeof decoded === "string") return upstreamFailure(decoded);
+  if (!isRecord(decoded)) return upstreamFailure("");
   const nested = isRecord(decoded.error) ? decoded.error : undefined;
   const message =
     (typeof decoded.error === "string" && decoded.error) ||
     (typeof decoded.message === "string" && decoded.message) ||
     (typeof nested?.message === "string" && nested.message) ||
-    "외부 에이전트 실행에 실패했습니다.";
-  return message.slice(0, MAX_ERROR_TEXT);
+    "";
+  return upstreamFailure(message);
 }
 
 function gatewayModelsUrl(endpoint: string): string {
@@ -406,8 +417,8 @@ export async function runExternalAgent(
           (typeof decoded.error_message === "string" &&
             decoded.error_message) ||
           (typeof decoded.message === "string" && decoded.message) ||
-          "외부 에이전트 실행에 실패했습니다.";
-        throw new Error(message.slice(0, MAX_ERROR_TEXT));
+          "";
+        throw new Error(upstreamFailure(message));
       }
       const dispatched = dispatchSdkMessage(decoded, externalEvents, loopState);
       if (dispatched.delta) deltaChunks.push(dispatched.delta);

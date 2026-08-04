@@ -95,6 +95,52 @@ Each item lists: files · why · risk · effort · breaking.
 
 ---
 
+## UI consistency pass (2026-08-04) — deferred remainder
+
+The 5-axis UI audit + fix pass landed (see DESIGN.md §5 item 9). Deliberately NOT done, in order of value:
+
+### U1 — Rename legacy button/chip class names in markup
+- **What:** `.primary`→`.btn.primary`, `.ghost-sm`→`.btn.ghost.sm`, `.linkish`→`.btn.link`,
+  `.meta-badge`/`.plugin-chip`→`.tag` variants — ~180 markup sites.
+- **Why deferred:** the classes are TRUE aliases now (grouped selectors), so renaming is zero visual
+  gain + churn risk without a browser. Converge per-file when touching a file anyway. After the last
+  usage of a legacy name is gone, delete its alias entry from the grouped selectors.
+- **risk:** low · **effort:** M · **breaking:** no
+
+### U2 — Remaining bespoke chips onto `.tag`
+- **What:** `.weekday-chip`(36px square — genuinely different interaction), `.nav-badge`(fixed 18px h),
+  `.q-chip`, `.agent-badge`, `.task-badge`, `.setup-badge`, `.routine-chip`, `.inbox-chip`,
+  `.canvas-answered-badge`, `.group-add-chip`, `.slash-option-tag`, GraphCanvas legend/node chips.
+- **Why deferred:** several are structurally different (fixed geometry, interactive), not just styled
+  differently — each needs a per-case call, some may stay documented exceptions.
+- **risk:** low · **effort:** M · **breaking:** no
+
+### U3 — `.workspace` rail collapse animates `grid-template-columns` (layout property)
+- **Where:** `80-apple-design.css` (§2.5-deviation comment on site). Convert to transform/opacity
+  choreography. Needs a browser to tune; Playwright fixture recommended.
+- **risk:** med (visual) · **effort:** M · **breaking:** no
+
+### U4 — Empty-state base family
+- 7 empty-state classes (`.empty-note`, `.empty-state`, `.conv-empty`, `.cap-empty`, `.routine-empty`,
+  `.routine-run-empty`, `.brain-empty`) share no base; two carry icon+heading+action treatment.
+  Define `.empty` base + modifier like §4.2. Low value until a new empty state is added.
+- **risk:** low · **effort:** S · **breaking:** no
+
+### U5 — CanvasPanel remaining glyph buttons
+- `›` `‹` (collapse/expand), `⤢` (fullscreen), `−`/`+` (zoom) are text glyphs; Icon set lacks
+  maximize/zoom icons. Add icons to `lib/icons.ts`, swap, and verify the 28px boxes optically.
+- **risk:** low · **effort:** S · **breaking:** no
+
+### U6 — Odds and ends
+- `--ease` token now has ZERO CSS consumers (gesture handoff is JS springs) — delete it and its
+  DESIGN.md §2.5 reservation, or keep as documented reserve. Decide once U3 lands.
+- `.small` doubles as text-span modifier and button size — consider splitting (`.btn.sm` only).
+- `knowledgeRepo.ts` scaffolded document templates use 하세요체 — out of UI scope; align if the
+  template ever becomes user-visible copy.
+- Playwright smoke for the a11y-critical paths (PromptModal trap/Escape=deny, theme-toggle restyle,
+  focus-ring visibility in `prefers-contrast: more`) — the 2026-08 pass was verified by gate + review
+  agents only; DESIGN.md §5 still calls for a human browser sweep (light/dark × 채팅/탐색/설정/관리자).
+
 ## Recommended order when picking this up
 1. Cheap + independent: the two coverage-gap tests, T3.9(a).
 2. After Tier-1/2 settle: T3.2 → T3.5 (test-guarded, medium).

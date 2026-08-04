@@ -159,14 +159,18 @@ describe("routine failure handling", () => {
     const result = await executeRoutineJob(services, job);
 
     expect(result.ok).toBe(false);
-    expect(result.error).toBe("Bad Request: model not found");
+    expect(result.error).toBe(
+      "예약 작업 실행에 실패했습니다: Bad Request: model not found",
+    );
     expect(result.error).not.toContain("실행 제한 시간");
 
     // The partial is still kept, with the real cause appended.
     const messages = services.store.listMessages(owner.id, job.conversationId);
-    expect(messages[1].content).toBe("부분 출력\n\nBad Request: model not found");
+    expect(messages[1].content).toBe(
+      "부분 출력\n\n예약 작업 실행에 실패했습니다: Bad Request: model not found",
+    );
     expect(services.store.listRoutineJobs(owner.id)[0].lastError).toBe(
-      "Bad Request: model not found",
+      "예약 작업 실행에 실패했습니다: Bad Request: model not found",
     );
   });
 
@@ -180,7 +184,7 @@ describe("routine failure handling", () => {
 
     const messages = services.store.listMessages(owner.id, job.conversationId);
     expect(messages).toHaveLength(2);
-    expect(messages[1].content).toBe("boom");
+    expect(messages[1].content).toBe("예약 작업 실행에 실패했습니다: boom");
   });
 
   it("still records a successful run the normal way", async () => {

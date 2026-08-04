@@ -25,7 +25,7 @@
   import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { goView, routeFromHash } from "../lib/nav";
-  import { formatUsageLabel, renderMarkdown, renderMarkdownCached, timeLabel } from "../lib/format";
+  import { formatFileSize, formatUsageLabel, renderMarkdown, renderMarkdownCached, timeLabel } from "../lib/format";
   import { createStickController, type StickController } from "../lib/autoscroll";
   import { segmentAttachments } from "../lib/bubbleSegments";
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
@@ -479,13 +479,6 @@
     return att.name ? `${base}?name=${encodeURIComponent(att.name)}` : base;
   }
 
-  function formatFileSize(size: number | undefined): string {
-    if (!size || size <= 0) return "";
-    if (size < 1024) return `${size} B`;
-    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  }
-
   // Slide PNGs published (hidden) on the same message as a shared file — the
   // deck preview the pptx skill rendered.
   function hiddenSlides(attachments: MessageAttachment[] | undefined): MessageAttachment[] {
@@ -575,7 +568,7 @@
         const target = state.chatPanes.find((p) => p.id === item.id);
         if (target) target.externalModels = null;
       });
-      notify("Gateway 모델 목록을 가져오지 못했습니다. 기본 모델로 대화할 수 있어요.", "warn");
+      notify("Gateway 모델 목록을 가져오지 못했습니다. 기본 모델로 대화를 계속합니다.", "warn");
     } finally {
       externalModelsInFlight.delete(item.id);
     }
@@ -793,7 +786,7 @@
       if (state.user) state.user.modelDefault = tier;
     });
     const label = $appState.bootstrap?.modelSelection?.tiers.find((t) => t.id === tier)?.label;
-    notify(`모델을 ${label ?? tier}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`, "info");
+    notify(`모델을 ${label ?? tier}(으)로 변경했습니다. 다음 메시지부터 적용됩니다.`, "info");
     api("/api/me/chat-defaults", { method: "PUT", body: JSON.stringify({ model: tier }) }).catch((err) =>
       notify(`기본 모델을 저장하지 못했습니다: ${(err as Error).message}`, "warn"),
     );
@@ -810,8 +803,8 @@
     });
     notify(
       modelId
-        ? `모델을 ${modelId}(으)로 바꿨어요. 다음 메시지부터 적용됩니다.`
-        : "기본 모델로 되돌렸어요. 다음 메시지부터 적용됩니다.",
+        ? `모델을 ${modelId}(으)로 변경했습니다. 다음 메시지부터 적용됩니다.`
+        : "기본 모델로 되돌렸습니다. 다음 메시지부터 적용됩니다.",
       "info",
     );
   }
@@ -857,7 +850,7 @@
   function runtimeBadge(message: StoredMessage): string | null {
     const runtime = message.response?.runtime;
     if (runtime === "local") return "로컬";
-    if (runtime === "external") return "외부 Agent";
+    if (runtime === "external") return "외부 아바타";
     if (message.response?.summary === "오류" || message.response?.summary === "중지됨") return message.response.summary;
     return null;
   }
@@ -917,7 +910,7 @@
           <span class="msg-file-icon" aria-hidden="true"><Icon name="file" /></span>
           <span class="msg-file-meta">
             <span class="msg-file-name">{att.name || "파일"}</span>
-            <span class="msg-file-info">{formatFileSize(att.size) ? `${formatFileSize(att.size)} · ` : ""}열기</span>
+            <span class="msg-file-info">{att.size ? `${formatFileSize(att.size)} · ` : ""}열기</span>
           </span>
         </button>
       {:else}
@@ -975,7 +968,7 @@
                 {#if message.response?.thinking}
                   {@const thinkingKey = cardKey(message, "thinking")}
                   <details class="thinking-card" on:toggle={(event) => toggleCard(thinkingKey, event)}>
-                    <summary class="thinking-card-head"><span class="thinking-card-badge">생각 과정</span></summary>
+                    <summary class="thinking-card-head"><span class="tag thinking-card-badge">생각 과정</span></summary>
                     {#if expandedCards.has(thinkingKey)}
                       <div class="md thinking-card-body" use:enhanceMarkdown={message.response.thinking}>{@html renderMarkdownCached(message.response.thinking)}</div>
                     {/if}
@@ -994,7 +987,7 @@
                 {/if}
                 {#if message.response?.plan}
                   <details class="plan-card" open>
-                    <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
+                    <summary class="plan-card-head"><span class="tag plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
                     <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdownCached(message.response.plan)}</div>
                   </details>
                 {/if}
@@ -1043,7 +1036,7 @@
               {#if item.liveThinking}
                 <details class="thinking-card" class:thinking-card-active={item.thinkingActive}>
                   <summary class="thinking-card-head">
-                    <span class="thinking-card-badge">생각 과정</span>
+                    <span class="tag thinking-card-badge">생각 과정</span>
                     {#if item.thinkingActive}
                       <span class="thinking-card-hint">생각 중…</span>
                       <span class="thinking-card-spin" aria-hidden="true"></span>
@@ -1062,7 +1055,7 @@
               {/if}
               {#if item.livePlan}
                 <details class="plan-card" open>
-                  <summary class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">{item.planReview ? "승인 대기 중" : "계획 모드"}</span></summary>
+                  <summary class="plan-card-head"><span class="tag plan-card-badge">계획</span><span class="plan-card-hint">{item.planReview ? "승인 대기 중" : "계획 모드"}</span></summary>
                   <div class="md plan-card-body" use:enhanceMarkdown={item.livePlan}>{@html renderMarkdown(item.livePlan)}</div>
                   {#if item.planReview}
                     {@const planStatus = planReviewStatusText(item)}
@@ -1096,7 +1089,7 @@
                 </details>
               {:else if item.planPending}
                 <div class="plan-card plan-card-pending">
-                  <div class="plan-card-head"><span class="plan-card-badge">계획</span><span class="plan-card-hint">계획을 작성하는 중…</span><span class="plan-card-spin" aria-hidden="true"></span></div>
+                  <div class="plan-card-head"><span class="tag plan-card-badge">계획</span><span class="plan-card-hint">계획을 작성하는 중…</span><span class="plan-card-spin" aria-hidden="true"></span></div>
                 </div>
               {/if}
               {#each segmentAttachments(item.liveText, item.liveAttachments) as seg, segIndex (segIndex)}
@@ -1296,7 +1289,7 @@
                       on:change={(event) => setEffort(item, event.currentTarget.value)}
                     >
                       {#each $appState.bootstrap.effortSelection.levels as level (level.id)}
-                        <option value={level.id} title={level.description}>강도: {level.label}</option>
+                        <option value={level.id} title={level.description}>{level.label}</option>
                       {/each}
                     </select>
                   {/if}
@@ -1423,8 +1416,8 @@
   <div class="view-body" class:drop-active={dropActive} on:dragover={onWorkbenchDragOver} on:dragleave={onWorkbenchDragLeave} on:drop={onWorkbenchDrop}>
     <div class="empty-state">
       <div class="hero">
-        <h3>아직 선택한 아바타가 없어요</h3>
-        <p>탐색 탭에서 대화할 아바타를 골라 보세요. 왼쪽 대화 목록에서 대화를 끌어와 열 수도 있어요.</p>
+        <h3>아직 선택한 아바타가 없습니다</h3>
+        <p>탐색 탭에서 대화할 아바타를 골라 주세요. 왼쪽 대화 목록에서 대화를 끌어와 열 수도 있습니다.</p>
       </div>
       <button class="primary" type="button" on:click={() => goView("explore")}>대화할 아바타 찾기</button>
     </div>
@@ -1541,17 +1534,17 @@
     cursor: pointer;
     list-style: none;
     user-select: none;
-    font-size: 0.85rem;
+    font-size: var(--t-sm);
     min-width: 0;
   }
   .plan-card-head::-webkit-details-marker {
     display: none;
   }
+  /* Composes the global `.tag` base (geometry + type scale); only the colour and
+     weight deltas that make it read as an accent badge live here. */
   .plan-card-badge {
-    font-size: 0.7rem;
     font-weight: 700;
-    padding: 1px 8px;
-    border-radius: 999px;
+    border-color: var(--accent);
     background: var(--accent);
     color: var(--on-accent);
     letter-spacing: 0.02em;
@@ -1562,7 +1555,7 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: var(--t-xs);
   }
   .plan-card-body {
     padding: 0 var(--s-3) var(--s-2);
@@ -1592,7 +1585,7 @@
     color: var(--text);
     padding: var(--s-2);
     font: inherit;
-    font-size: 0.85rem;
+    font-size: var(--t-sm);
   }
   .plan-review-status {
     align-self: flex-end;
@@ -1613,8 +1606,8 @@
   .plan-card-spin {
     margin-left: auto;
     flex: none;
-    width: 13px;
-    height: 13px;
+    width: 12px;
+    height: 12px;
     border: 2px solid var(--line);
     border-top-color: var(--accent);
     border-radius: 50%;
@@ -1641,7 +1634,7 @@
     cursor: pointer;
     list-style: none;
     user-select: none;
-    font-size: 0.85rem;
+    font-size: var(--t-sm);
     min-width: 0;
   }
   .thinking-card-head::-webkit-details-marker {
@@ -1658,16 +1651,15 @@
     border-right: 2px solid var(--muted);
     border-bottom: 2px solid var(--muted);
     transform: rotate(-45deg);
-    transition: transform 0.15s ease;
+    transition: transform 0.15s var(--ease-out);
   }
   .thinking-card[open] .thinking-card-head::after {
     transform: rotate(45deg);
   }
+  /* Composes the global `.tag` base (geometry + type scale); only the colour and
+     weight deltas that make it read as a muted, secondary badge live here. */
   .thinking-card-badge {
-    font-size: 0.7rem;
     font-weight: 700;
-    padding: 1px 8px;
-    border-radius: 999px;
     background: var(--line);
     color: var(--muted);
     letter-spacing: 0.02em;
@@ -1680,38 +1672,31 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     color: var(--muted);
-    font-size: 0.75rem;
+    font-size: var(--t-xs);
   }
   /* Self-contained spinner: the base `.spinner` rule is scoped to `.stream-status`.
      `spin` is a global keyframe. */
   .thinking-card-spin {
     flex: none;
-    width: 11px;
-    height: 11px;
+    width: 12px;
+    height: 12px;
     border: 2px solid var(--line);
     border-top-color: var(--muted);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
   }
-  /* Pulse the left rail while reasoning is active so the collapsed card reads as
-     "working" at a glance; the badge gains a subtle breathing accent too. */
+  /* Dim the card while reasoning is active so a collapsed card reads as
+     "working in the background" rather than as finished content. */
   .thinking-card-active {
     opacity: 0.78;
-  }
-  @keyframes thinking-rail {
-    0%,
-    100% {
-      border-left-color: var(--muted);
-    }
-    50% {
-      border-left-color: var(--accent);
-    }
   }
   .thinking-card-body {
     padding: 0 var(--s-3) var(--s-2);
     min-width: 0;
     max-width: 100%;
     color: var(--muted);
-    font-size: 0.92em;
+    /* One step below the answer prose (.bubble is var(--t-md)) — reasoning stays
+       secondary to the answer. */
+    font-size: var(--t-base);
   }
 </style>

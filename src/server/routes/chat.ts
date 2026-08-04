@@ -1960,10 +1960,11 @@ export function createChatRouter({
           auditAs(req, "chat", detail, "error");
           // When a TRANSIENT model/server failure ends the turn (overload, rate-limit,
           // 5xx, timeout) AND the model isn't env-pinned (so the picker is available),
-          // nudge the user to switch models instead of surfacing the raw English SDK
-          // error. Chat never auto-falls-back (a live viewer is watching the stream —
-          // only headless routines retry on a lower tier), so this is how a stuck model
-          // gets unblocked. The technical `detail` still goes to the logs/audit above.
+          // nudge the user to switch models. Chat never auto-falls-back (a live viewer
+          // is watching the stream — only headless routines retry on a lower tier), so
+          // this is how a stuck model gets unblocked. Every other failure gets a Korean
+          // lead with `detail` appended: the SDK's own text is English, so it can never
+          // be the whole bubble. The technical `detail` still goes to logs/audit above.
           const failedTier =
             store.getConversationModel(req.user!.id, conversationId) ??
             DEFAULT_MODEL_TIER;
@@ -1975,7 +1976,9 @@ export function createChatRouter({
             !config.anthropicModel &&
             isRetryableModelError(error)
               ? `지금 ${modelTierLabel(failedTier)} 모델이 일시적으로 응답하지 못했어요 (서버 과부하 또는 일시적 오류). 입력창의 모델 선택에서 다른 모델(${alternatives})로 바꿔 다시 시도해 보세요.`
-              : detail;
+              : detail.trim()
+                ? `응답 생성 중 오류가 발생했습니다: ${detail}`
+                : "응답 생성 중 오류가 발생했습니다.";
           if (store.conversationOwner(conversationId) === req.user!.id) {
             // Clear the session for the same reason as the cancel path (chat-02), and
             // don't discard the partial the user already watched stream — keep it

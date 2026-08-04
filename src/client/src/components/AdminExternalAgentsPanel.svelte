@@ -256,7 +256,7 @@
         <div>
           <h3>외부 아바타</h3>
           <p class="muted">
-            oh-my-gateway 호환 stateless Agent를 Noah 아바타로 노출합니다. 공개할 그룹은 Noah가,
+            oh-my-gateway 호환 무상태(stateless) 에이전트를 Noah 아바타로 노출합니다. 공개할 그룹은 Noah가,
             시스템 지침과 도구 권한은 Gateway가 관리합니다. 그룹을 1개 이상 지정해야 구성원에게 보입니다.
           </p>
         </div>
@@ -293,7 +293,7 @@
             type="search"
             class="admin-search"
             bind:value={query}
-            placeholder="이름·ID·endpoint·태그 검색"
+            placeholder="이름·ID·주소·태그 검색"
             aria-label="외부 아바타 검색"
             disabled={!agents.length}
           />
@@ -308,12 +308,12 @@
           {:else if configError && !agents.length}
             <div class="empty-note external-agent-empty" role="status">
               <strong>저장된 설정을 복구해야 합니다.</strong>
-              <span class="muted">SESSION_SECRET과 암호화된 registry를 확인한 뒤 새로고침해 주세요. 복구 전에는 설정을 덮어쓰지 않습니다.</span>
+              <span class="muted">SESSION_SECRET과 암호화된 레지스트리를 확인한 뒤 새로고침해 주세요. 복구 전에는 설정을 덮어쓰지 않습니다.</span>
             </div>
           {:else if !agents.length}
             <div class="empty-note external-agent-empty">
               <strong>등록된 외부 아바타가 없습니다.</strong>
-              <span class="muted">Gateway endpoint와 공개 그룹을 설정해 첫 외부 아바타를 추가하세요.</span>
+              <span class="muted">Gateway 주소와 공개 그룹을 설정해 첫 외부 아바타를 추가하세요.</span>
               <button class="primary small" type="button" disabled={Boolean(configError)} on:click={openCreate}>외부 아바타 추가</button>
             </div>
           {:else if !shownAgents.length}

@@ -38,10 +38,10 @@ function infer(message: string): Required<ConfirmOptions> {
           : suspend
             ? "계정을 정지할까요?"
             : remove
-              ? "구성원을 제거할까요?"
+              ? "그룹원을 제거할까요?"
               : destructive
                 ? "계속 진행할까요?"
-                : "변경을 확인해 주세요";
+                : "이대로 진행할까요?";
   return {
     title,
     confirmLabel: disconnect ? "연결 해제" : suspend ? "정지" : remove ? "제거" : destructive ? "삭제" : change ? "변경" : "계속",

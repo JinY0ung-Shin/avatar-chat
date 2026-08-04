@@ -95,12 +95,12 @@ describe("external agent endpoint normalization", () => {
           },
         ]),
       ),
-    ).toThrow("not both");
+    ).toThrow("endpoint와 baseUrl 중 하나만 지정해야 합니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...base, baseUrl: "https://gateway.example?q=1" }]),
       ),
-    ).toThrow("query string");
+    ).toThrow("쿼리 문자열(?)을 포함할 수 없습니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([
@@ -110,14 +110,14 @@ describe("external agent endpoint normalization", () => {
           },
         ]),
       ),
-    ).toThrow("fragment");
+    ).toThrow("URL 프래그먼트(#)를 포함할 수 없습니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([
           { ...base, endpoint: "https://gateway.example/not-the-agent-route" },
         ]),
       ),
-    ).toThrow("must end with /v1/agents/messages");
+    ).toThrow("endpoint는 /v1/agents/messages로 끝나야 합니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([
@@ -127,7 +127,7 @@ describe("external agent endpoint normalization", () => {
           },
         ]),
       ),
-    ).toThrow("query string");
+    ).toThrow("쿼리 문자열(?)을 포함할 수 없습니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([
@@ -138,7 +138,7 @@ describe("external agent endpoint normalization", () => {
           },
         ]),
       ),
-    ).toThrow("agent must be claude");
+    ).toThrow("agent는 claude만 지원합니다.");
   });
 });
 

@@ -17,7 +17,7 @@
     width: min(300px, 85%);
     transform: translateX(-100%);
     visibility: hidden;
-    transition: transform 0.3s var(--ease), visibility 0s 0.3s;
+    transition: transform 240ms var(--ease-out), visibility 0s 240ms;
     z-index: calc(var(--z-rail) + 1);
     box-shadow: var(--shadow-drawer);
     padding-top: calc(var(--s-4) + env(safe-area-inset-top, 0px));
@@ -26,7 +26,7 @@
   .rail.open {
     transform: translateX(0);
     visibility: visible;
-    transition: transform 0.3s var(--ease);
+    transition: transform 240ms var(--ease-out);
   }
   .rail-backdrop.open {
     opacity: 1;

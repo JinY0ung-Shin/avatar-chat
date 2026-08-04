@@ -278,7 +278,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
   router.patch("/api/me/groups/:id/members/:userId", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const groupId = req.params.id;
     if (!canManageGroup(req.user!.id, groupId)) {
-      apiError(res, 403, "이 그룹의 그룹원을 관리할 권한이 없습니다.");
+      apiError(res, 403, "이 그룹의 그룹원을 관리할 권한이 없습니다. (그룹 관리자 전용)");
       return;
     }
     const role = req.body?.role === "admin" ? "admin" : "member";
@@ -295,7 +295,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
   router.delete("/api/me/groups/:id/members/:userId", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const groupId = req.params.id;
     if (!canManageGroup(req.user!.id, groupId)) {
-      apiError(res, 403, "이 그룹의 그룹원을 관리할 권한이 없습니다.");
+      apiError(res, 403, "이 그룹의 그룹원을 관리할 권한이 없습니다. (그룹 관리자 전용)");
       return;
     }
     const removed = store.removeGroupMember(groupId, req.params.userId);

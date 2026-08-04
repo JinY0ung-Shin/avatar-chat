@@ -136,3 +136,19 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
   Workflow: "워크플로 실행",
   Write: "파일 쓰기",
 };
+
+/**
+ * Human-readable label for a tool name, for status lines and activity rows. Raw
+ * ids like `mcp__repo__write_file` are an implementation detail, so an unmapped
+ * name degrades to its bare tool segment — the same fallback the client's
+ * `humanTool` applies, so a status line and its activity row agree.
+ */
+export function sdkToolLabel(name: string | undefined): string | undefined {
+  if (!name) return undefined;
+  const mapped = SDK_TOOL_LABELS[name];
+  if (mapped) return mapped;
+  // Server segments may themselves contain underscores (git_repo, group_agent),
+  // so match the server non-greedily and take the tool segment.
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+  return (mcp ? mcp[2] : name).replace(/_/g, " ");
+}

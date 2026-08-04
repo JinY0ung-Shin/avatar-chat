@@ -48,7 +48,7 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
     const isFirstUser = !store.hasAnyUser();
     const signupMode = store.getSignupMode();
     if (!isFirstUser && signupMode === "closed") {
-      apiError(res, 403, "현재 회원가입이 비활성화되어 있습니다. 관리자에게 문의하세요.");
+      apiError(res, 403, "현재 회원가입이 비활성화되어 있습니다. 관리자에게 문의해 주세요.");
       return;
     }
     let user;

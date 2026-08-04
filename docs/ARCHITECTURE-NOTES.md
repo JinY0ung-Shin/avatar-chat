@@ -1165,6 +1165,29 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   appears twice with console piped.) Playwright can't synthesize scrollbar drags in headless Chromium —
   assert that path via unit tests, and report the browser check as skipped rather than green.
 
+### UI-consistency invariants (2026-08 pass) — load-bearing, don't regress
+- **`00-tokens.css`가 라운드·그림자·이징의 단일 정의처.** `80-apple-design.css`는 재정의 금지
+  (해당 자리에 금지 주석). 과거 이중 정의로 00 값이 전부 죽은 값이 되는 사고가 있었다.
+- **`App.svelte`의 모달 DOM 순서가 스택킹을 결정한다** — 전부 같은 `--z-modal`이라
+  `ConfirmationDialog`가 마지막이어야 다른 모달 위에 그려진다. 순서 변경 금지(DESIGN.md §4.4).
+- **모달 동작(포커스 트랩·inert·초기 포커스·복원)은 `lib/modalBehavior.ts` 공유 모듈** —
+  `Modal.svelte`/`PromptModal.svelte`/`CanvasPanel.svelte`(canvas-fs)가 공용. PromptModal 루트
+  인스턴스는 Escape=거부·백드롭 닫기 없음(의도), pane 인스턴스는 non-modal(aria-modal/inert 없음).
+- **테마 반응성:** `lib/theme.ts`의 `theme` 스토어는 `applyTheme()`만 발행하는 single-writer.
+  캔버스형 렌더러(GraphCanvas의 cytoscape 스타일, CanvasPanel의 Vega/mermaid)는 이 스토어를
+  구독해 재스타일한다 — `data-theme`을 init에서 한 번만 읽는 패턴으로 되돌리면 토글 시 색이 낡는다.
+- **차단 이벤트는 2채널:** `BlockedEvent.uiReason`(한국어, UI 표시용) vs `reason`(영어
+  `decision_reason`, SDK/진단용). 클라이언트 `lib/chat.ts`는 `uiReason` 우선. 모델에 가는
+  영어 텍스트를 한국어로 바꾸지 말 것(반대도 금지) — `preToolUseHook.ts`가 레퍼런스.
+- **admin 외부 아바타 검증 메시지는 `routes/adminExternalAgents.ts`가 `EXTERNAL_AGENTS_JSON[0].`
+  접두사를 정규식으로 벗겨 렌더한다** — `externalAgents.ts`의 한국어 throw는 `.field` 형태를
+  유지해야 조사가 어색하게 잘리지 않는다.
+- **audit log의 status는 `success`/`error` 외에 `ok`도 존재**(`agent/sshIdentityTools.ts`).
+  클라이언트 라벨 매핑(`AdminView.svelte`)은 세 값 모두 처리한다.
+- **아이콘 경로의 단일 출처는 `lib/icons.ts`** (`ICON_PATHS` + `iconSvg`) — `Icon.svelte`와
+  `lib/dom.ts`(imperative innerHTML)가 함께 소비한다. `Icon.svelte`에 경로를 직접 추가하지 말 것.
+  `Icon`의 `name`은 bare string이라 **오타는 조용히 빈 SVG로 렌더**된다 — 이름 추가 시 육안 확인.
+
 ---
 
 ## Cross-cutting gotchas

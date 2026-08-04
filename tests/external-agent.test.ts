@@ -282,32 +282,32 @@ describe("external agent registry", () => {
       parseExternalAgents(
         JSON.stringify([{ ...entry, visibleToGroupIds: [] }]),
       ),
-    ).toThrow("must not be empty");
+    ).toThrow("visibleToGroupIds는 비워 둘 수 없습니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...entry, visibleToGroupIds: "group-a" }]),
       ),
-    ).toThrow("must be an array");
+    ).toThrow("visibleToGroupIds는 배열이어야 합니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...entry, visibleToGroupIds: [123] }]),
       ),
-    ).toThrow("must be a string");
+    ).toThrow("visibleToGroupIds[0]은(는) 문자열이어야 합니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...entry, visibleToGroupIds: null }]),
       ),
-    ).toThrow("must be an array");
+    ).toThrow("visibleToGroupIds는 배열이어야 합니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...entry, visibleToGroupId: ["group-a"] }]),
       ),
-    ).toThrow("unsupported field 'visibleToGroupId'");
+    ).toThrow("지원하지 않는 설정 필드입니다: visibleToGroupId");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...entry, VisibleToGroupIds: ["group-a"] }]),
       ),
-    ).toThrow("unsupported field 'VisibleToGroupIds'");
+    ).toThrow("지원하지 않는 설정 필드입니다: VisibleToGroupIds");
   });
 
   it("rejects unsafe external timeout values", () => {
@@ -321,17 +321,17 @@ describe("external agent registry", () => {
       parseExternalAgents(
         JSON.stringify([{ ...entry, connectTimeoutSeconds: 0 }]),
       ),
-    ).toThrow("connectTimeoutSeconds must be a positive number");
+    ).toThrow("connectTimeoutSeconds은(는) 300초 이하의 양수여야 합니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...entry, idleTimeoutSeconds: "30" }]),
       ),
-    ).toThrow("idleTimeoutSeconds must be a positive number");
+    ).toThrow("idleTimeoutSeconds은(는) 3600초 이하의 양수여야 합니다.");
     expect(() =>
       parseExternalAgents(
         JSON.stringify([{ ...entry, totalTimeoutSeconds: 100_000 }]),
       ),
-    ).toThrow("totalTimeoutSeconds must be a positive number");
+    ).toThrow("totalTimeoutSeconds은(는) 86400초 이하의 양수여야 합니다.");
   });
 });
 

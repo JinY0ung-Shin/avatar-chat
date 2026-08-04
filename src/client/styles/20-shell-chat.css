@@ -1,32 +1,31 @@
 /* ============================================================
    Buttons
-   ============================================================ */
-.primary {
-  border-color: var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-  border-radius: var(--r-md);
-  padding: var(--s-2-5) var(--s-4);
-  font-weight: 700;
-  white-space: nowrap;
-  box-shadow: var(--shadow-sm);
-}
-.primary:hover:not(:disabled) {
-  background: var(--accent-strong);
-  border-color: var(--accent-strong);
-}
 
+   `.primary` is an alias inside the button family — its rule set lives with the
+   family in 30-agent-md-composer.css (grouped with `.btn.primary`/`.btn-primary`),
+   not here.
+   ============================================================ */
+
+/* Generic icon button — also used outside the rail (SettingsGroupCard, BrainView),
+   so the base rides SEMANTIC tokens; the rail restores its own palette below. */
 .icon-button {
   display: inline-grid;
   place-items: center;
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   border-radius: var(--r-md);
   background: transparent;
   border: 1px solid transparent;
-  color: var(--rail-muted);
+  color: var(--muted);
 }
 .icon-button:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.rail .icon-button {
+  color: var(--rail-muted);
+}
+.rail .icon-button:hover:not(:disabled) {
   background: var(--rail-active);
   color: var(--rail-text);
 }
@@ -95,16 +94,14 @@
   border-radius: var(--r-md);
   background: var(--bg-elevated);
   padding: var(--s-2-5) var(--s-3);
-  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
 }
 
 .field input:focus,
 .field select:focus,
 .secret-preset-row > .password-field input:focus,
 .secret-preset-row textarea:focus {
-  outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .field input[aria-invalid="true"] {
   border-color: var(--warn-line);
@@ -121,6 +118,8 @@
 .field .password-field input {
   padding-right: 44px;
 }
+/* 32px field-embedded tier. The §4.1 icon-button tiers are 40px standalone,
+   32px embedded inside a field, 28px inline in a dense row — don't add a fourth. */
 .password-toggle {
   position: absolute;
   top: 50%;
@@ -267,11 +266,7 @@
   font-weight: 600;
   font-size: var(--t-sm);
 }
-.new-chat:hover {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: var(--on-accent);
-}
+/* .new-chat hover is painted by 80-apple-design.css (with :not(:disabled)). */
 .new-chat svg {
   width: 16px;
   height: 16px;
@@ -325,7 +320,7 @@
 .rail-clear-history:hover:not(:disabled) {
   color: var(--rail-text);
   border-color: var(--danger-line);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--rail-active);
 }
 
 .rail-clear-history svg {
@@ -435,8 +430,8 @@
 }
 
 .conv-act {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   display: grid;
   place-items: center;
   border: 0;
@@ -445,12 +440,12 @@
   border-radius: var(--r-xs);
 }
 .conv-act:hover {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--rail-active);
   color: var(--rail-text);
 }
 .conv-act:disabled {
   cursor: not-allowed;
-  opacity: 0.45;
+  opacity: var(--disabled-opacity);
 }
 .conv-act:disabled:hover {
   background: transparent;
@@ -474,7 +469,7 @@
   flex: 1;
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: var(--s-0-5);
   padding: var(--s-1);
 }
 .conv-rename {
@@ -485,13 +480,12 @@
   padding: var(--s-1-5) var(--s-2);
   border-radius: var(--r-xs);
   border: 1px solid var(--accent);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--rail-active);
   color: var(--rail-text);
   font-size: var(--t-sm);
-  outline: none;
 }
 .conv-rename:disabled {
-  opacity: 0.7;
+  opacity: var(--disabled-opacity);
   cursor: progress;
 }
 .conv-edit-status,
@@ -530,7 +524,7 @@
   background: var(--scrim);
   opacity: 0;
   pointer-events: none;
-  transition: opacity 0.28s var(--ease);
+  transition: opacity 240ms var(--ease-out);
   z-index: var(--z-rail);
 }
 /* The `.open` visible state is scoped to the mobile breakpoint (below) so a
@@ -576,6 +570,9 @@
 }
 
 .chat-col {
+  /* Chat = tight density (docs/DESIGN.md §3): many messages, one reading flow. */
+  --pad-card: var(--s-3);
+  --gap-stack: var(--s-2);
   flex: 1;
   min-width: 0;
   min-height: 0;
@@ -655,12 +652,14 @@
   /* Without this, touch drags become pan gestures and the resize never starts. */
   touch-action: none;
 }
-.cap-resize:hover,
-.cap-resize:focus-visible {
+.cap-resize:hover {
   background: linear-gradient(to right, transparent, var(--accent-soft));
 }
+/* A 7px sliver can't carry an offset outline, so focus paints the handle itself
+   solid — deliberately distinct from the hover gradient (cf. .routine-splitter). */
 .cap-resize:focus-visible {
   outline: none;
+  background: var(--focus-ring);
 }
 body.col-resizing {
   cursor: col-resize;
@@ -767,12 +766,12 @@ body.col-resizing {
   z-index: 2;
   touch-action: none;
 }
-.canvas-resize:hover,
-.canvas-resize:focus-visible {
+.canvas-resize:hover {
   background: linear-gradient(to right, transparent, var(--accent-soft));
 }
 .canvas-resize:focus-visible {
   outline: none;
+  background: var(--focus-ring);
 }
 .canvas-collapse {
   position: absolute;
@@ -837,7 +836,7 @@ body.col-resizing {
 }
 .canvas-beta {
   font-size: var(--t-2xs);
-  padding: 1px 6px;
+  padding: 1px var(--s-1-5);
   border-radius: var(--r-pill);
   background: var(--accent-soft);
   color: var(--accent);
@@ -862,7 +861,7 @@ body.col-resizing {
 }
 .canvas-tab {
   font-size: var(--t-xs);
-  padding: 2px 8px;
+  padding: var(--s-0-5) var(--s-2);
   border: 0;
   background: transparent;
   color: var(--muted);
@@ -875,11 +874,16 @@ body.col-resizing {
   color: var(--text);
 }
 .canvas-tab-close {
+  /* Holds an <Icon> SVG (self-sized), so it needs real centering — the box used
+     to rely on a text glyph sitting on the baseline. */
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   border: 0;
   background: transparent;
   color: var(--muted);
   cursor: pointer;
-  padding: 0 6px;
+  padding: 0 var(--s-1-5);
   font-size: var(--t-sm);
   line-height: 1;
   min-width: var(--s-5);
@@ -918,7 +922,7 @@ body.col-resizing {
 }
 .canvas-tool-btn {
   font-size: var(--t-2xs);
-  padding: 2px 6px;
+  padding: var(--s-0-5) var(--s-1-5);
   border: 1px solid var(--line);
   border-radius: var(--r-xs);
   background: var(--panel);
@@ -933,7 +937,7 @@ body.col-resizing {
 .canvas-versions {
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--s-0-5);
   border: 1px solid var(--line);
   border-radius: var(--r-sm);
   padding: var(--s-1);
@@ -957,6 +961,7 @@ body.col-resizing {
   background: var(--surface-2);
 }
 .canvas-version-row:disabled {
+  cursor: progress;
   opacity: 1;
 }
 .canvas-version-row:disabled:hover {
@@ -1040,14 +1045,14 @@ body.col-resizing {
   cursor: pointer;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .canvas-opt.selected {
   border-color: var(--accent);
   background: var(--surface-2);
 }
 .canvas-opt-label {
-  font-weight: 500;
+  font-weight: 600;
 }
 .canvas-opt-desc {
   font-size: var(--t-xs);
@@ -1215,7 +1220,7 @@ body.col-resizing {
   flex: none;
   font-size: var(--t-2xs);
   color: var(--muted);
-  transition: transform 0.15s var(--ease);
+  transition: transform 0.15s var(--ease-out);
 }
 .cap-skill.open .cap-skill-caret {
   transform: rotate(90deg);
@@ -1377,14 +1382,13 @@ body.col-resizing {
   color: var(--text);
   padding: var(--s-2) var(--s-2-5);
   font-size: var(--t-sm);
-  line-height: 1.35;
+  line-height: 1.3;
   text-align: left;
   cursor: pointer;
 }
 .starter-prompt:hover,
 .starter-prompt:focus-visible {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .empty-state > .primary {
   justify-self: start;
@@ -1399,7 +1403,7 @@ body.col-resizing {
   gap: var(--s-2);
   min-width: 0;
   max-width: 100%;
-  animation: bubble-in 0.28s var(--ease) both;
+  animation: bubble-in 240ms var(--ease-out) both;
 }
 
 @keyframes bubble-in {
@@ -1484,7 +1488,7 @@ body.col-resizing {
   margin-top: var(--s-1);
   color: var(--text-soft);
   font-size: var(--t-xs);
-  line-height: 1.35;
+  line-height: 1.3;
   white-space: normal;
 }
 .msg-image {
@@ -1492,7 +1496,7 @@ body.col-resizing {
   max-height: 240px;
   border-radius: var(--r-md);
   object-fit: cover;
-  border: 1px solid var(--accent-ring, rgba(255, 255, 255, 0.25));
+  border: 1px solid var(--line);
 }
 
 /* Generated-file card (kind:"file" attachments, e.g. shared PPTX). A button:
@@ -1504,9 +1508,9 @@ body.col-resizing {
   max-width: 320px;
   min-width: 0;
   padding: var(--s-2) var(--s-3);
-  border: 1px solid var(--accent-ring, rgba(255, 255, 255, 0.25));
+  border: 1px solid var(--line);
   border-radius: var(--r-md);
-  background: var(--material-thin, rgba(255, 255, 255, 0.04));
+  background: var(--material-thin);
   color: inherit;
   text-decoration: none;
   white-space: normal;
@@ -1531,7 +1535,7 @@ body.col-resizing {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .msg-file-name {
   overflow: hidden;
@@ -1559,7 +1563,7 @@ body.col-resizing {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .file-preview-name {
   overflow: hidden;
@@ -1581,9 +1585,9 @@ body.col-resizing {
 .file-preview-slide img {
   width: 100%;
   height: auto;
-  border: 1px solid var(--line);
+  border: 1px solid var(--diagram-line);
   border-radius: var(--r-md);
-  background: #fff;
+  background: var(--diagram-bg);
 }
 .file-preview-slide figcaption {
   font-size: var(--t-xs);
@@ -1591,9 +1595,9 @@ body.col-resizing {
 /* Interactive draw.io render (FilePreviewPanel). White like the slide PNGs so
    diagrams stay readable in dark theme; the viewer manages its own inner DOM. */
 .file-preview-drawio {
-  border: 1px solid var(--line);
+  border: 1px solid var(--diagram-line);
   border-radius: var(--r-md);
-  background: #fff;
+  background: var(--diagram-bg);
   padding: var(--s-2);
   overflow: auto;
 }
@@ -1623,17 +1627,8 @@ body.col-resizing {
   margin-bottom: var(--s-3);
 }
 
-.meta-badge {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  padding: var(--s-0-5) var(--s-2-5);
-  font-size: var(--t-2xs);
-  color: var(--muted);
-  background: var(--bg);
-  font-weight: 600;
-}
+/* Alias of .tag — geometry + deltas live with the chip family in
+   30-agent-md-composer.css; only the runtime status variants stay here. */
 .meta-badge.runtime-blocked {
   color: var(--warn);
   border-color: var(--warn-line);
@@ -1708,17 +1703,7 @@ body.col-resizing {
   margin-top: var(--s-2);
 }
 
-.plugin-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--s-1-5);
-  border: 1px solid var(--line);
-  border-radius: var(--r-pill);
-  padding: var(--s-0-5) var(--s-2-5);
-  font-size: var(--t-2xs);
-  color: var(--text-soft);
-  background: var(--bg);
-}
+/* Alias of .tag — see the chip family in 30-agent-md-composer.css. */
 .plugin-chip[data-status="installed"],
 .plugin-chip[data-status="completed"] {
   color: var(--ok);

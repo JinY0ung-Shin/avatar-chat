@@ -70,18 +70,6 @@ export function renderMarkdownCached(text: string | null | undefined): string {
   return html;
 }
 
-export function formatDate(value: string | null | undefined): string {
-  if (!value) return "";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("ko-KR", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(date);
-}
-
 export function normalizeTags(input: unknown): string[] {
   const parts = Array.isArray(input) ? input : String(input || "").split(/[\s,]+/);
   const out: string[] = [];
@@ -231,6 +219,17 @@ function oneLine(text: string, limit: number): string {
 // else a placeholder. Mirrors the old routines.js routineTitle().
 export function routineTitle(routine: { name?: string | null; prompt?: string }): string {
   return (routine.name || "").trim() || oneLine(routine.prompt || "", 40) || "(이름 없는 예약 작업)";
+}
+
+// Attachment size for a file card / preview header: 812 → "812 B",
+// 20000 → "19.5 KB", 3_500_000 → "3.3 MB". Returns "" for a missing or zero
+// size so callers can drop the label entirely instead of printing "0 B".
+export function formatFileSize(bytes: number | null | undefined): string {
+  const size = Number(bytes);
+  if (!Number.isFinite(size) || size <= 0) return "";
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 // Compact token count: 950 → "950", 17500 → "17.5K", 184000 → "184K".

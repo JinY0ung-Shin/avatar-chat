@@ -161,7 +161,14 @@ export interface BlockedEvent {
   toolUseId?: string;
   toolName: string;
   agentId: string;
+  /**
+   * MODEL-facing deny text, mirroring the SDK's `decision_reason` — English, and
+   * on a hook deny it is this app's own directive prose. Diagnostic only: the
+   * client shows it as a detail, never as the row's label.
+   */
   reason?: string;
+  /** User-facing (Korean) explanation the client labels the blocked row with. */
+  uiReason?: string;
 }
 
 /**

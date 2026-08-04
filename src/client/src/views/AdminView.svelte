@@ -103,6 +103,73 @@
   })();
   $: auditActions = [...new Set(($appState.audit || []).map((r) => r.action))].sort();
   $: shownAudit = auditAction ? ($appState.audit || []).filter((r) => r.action === auditAction) : $appState.audit || [];
+  // Display-only Korean labels for the audit `action`/`status` ids the server
+  // writes (store.audit / auditAs). The raw id stays the filter value and the
+  // `title=`, so an id added server-side without a label here still reads —
+  // it just falls back to the raw string in a mono tag.
+  const AUDIT_ACTION_LABELS: Record<string, string> = {
+    login: "로그인",
+    signup: "회원가입",
+    signup_pending: "가입 승인 대기",
+    force_logout: "강제 로그아웃",
+    reset_password: "비밀번호 초기화",
+    set_role: "역할 변경",
+    delete_user: "사용자 삭제",
+    suspend_user: "사용자 정지",
+    activate_user: "사용자 정지 해제",
+    set_signup_mode: "가입 방식 변경",
+    set_avatar_visibility: "아바타 공개 범위 변경",
+    set_claude_token: "구독 토큰 저장",
+    clear_claude_token: "구독 토큰 해제",
+    set_model_override: "아바타 모델 지정",
+    clear_model_override: "아바타 모델 해제",
+    set_model_vision_policy: "모델 비전 정책 변경",
+    set_hex_ssh_policy: "hex-ssh 도구 정책 변경",
+    set_tool_skill_policy: "도구·스킬 정책 변경",
+    group_create: "그룹 생성",
+    group_delete: "그룹 삭제",
+    group_member_add: "그룹원 추가",
+    group_member_remove: "그룹원 제거",
+    group_member_role: "그룹원 역할 변경",
+    group_repo_set: "그룹 지식 저장소 설정",
+    group_tool_policy: "그룹 도구 정책 변경",
+    group_avatar_sharing: "그룹원 아바타 상호 공개 변경",
+    group_agent_create: "그룹 에이전트 생성",
+    group_agent_delete: "그룹 에이전트 삭제",
+    group_agent_update: "그룹 에이전트 프로필 변경",
+    group_agent_image: "그룹 에이전트 사진 변경",
+    external_agent_create: "외부 아바타 생성",
+    external_agent_update: "외부 아바타 수정",
+    external_agent_delete: "외부 아바타 삭제",
+    external_agent_enable: "외부 아바타 사용",
+    external_agent_disable: "외부 아바타 비활성화",
+    external_agent_image: "외부 아바타 사진 변경",
+    external_agent_test: "외부 아바타 연결 확인",
+    knowledge_repo_create: "지식 저장소 생성",
+    knowledge_repo_push: "지식 저장소 푸시",
+    group_repo_create: "그룹 지식 저장소 생성",
+    group_repo_push: "그룹 지식 저장소 푸시",
+    ssh_identity_generate_key: "SSH 키 생성",
+    system_tool_add_plugin: "플러그인 추가",
+    system_tool_set_plugin_enabled: "플러그인 사용 변경",
+    system_tool_create_routine: "예약 작업 생성",
+    system_tool_update_routine: "예약 작업 수정",
+    system_tool_delete_routine: "예약 작업 삭제",
+    system_tool_notify_user: "알림 발송",
+    routine_run: "예약 작업 실행",
+    chat: "대화",
+  };
+  const AUDIT_STATUS_LABELS: Record<string, string> = {
+    success: "성공",
+    ok: "성공",
+    error: "실패",
+  };
+  function auditActionLabel(action: string): string {
+    return AUDIT_ACTION_LABELS[action] || action;
+  }
+  function auditStatusLabel(status: string): string {
+    return AUDIT_STATUS_LABELS[status] || status;
+  }
   $: stats = $appState.adminStats;
   $: savedModelOverride = String(sys.modelOverride || "");
   $: modelValueTrimmed = modelInput.trim();
@@ -782,7 +849,7 @@
               <div class="panel-section-head">
                 <div>
                   <h3>구독 로그인</h3>
-                  <p class="muted">Claude 구독으로 에이전트를 구동합니다. ① 내 PC에서 claude setup-token 실행 → ② 출력된 sk-ant-oat… 토큰을 아래에 붙여넣고 저장하세요. 토큰은 암호화되어 저장되며 다시 표시되지 않습니다.</p>
+                  <p class="muted">Claude 구독으로 아바타를 구동합니다. ① 내 PC에서 claude setup-token 실행 → ② 출력된 sk-ant-oat… 토큰을 아래에 붙여넣고 저장하세요. 토큰은 암호화되어 저장되며 다시 표시되지 않습니다.</p>
                 </div>
               </div>
               <div class="sys-grid">
@@ -807,7 +874,7 @@
                   <RevealableInput
                     bind:value={claudeToken}
                     name="token"
-                    placeholder="sk-ant-oat01-..."
+                    placeholder="sk-ant-oat01-…"
                     ariaLabel={sys.subscriptionConnected ? "Claude 구독 토큰 교체" : "Claude 구독 토큰"}
                     ariaDescribedby={tokenStatusId}
                     ariaInvalid={Boolean(tokenError)}
@@ -827,7 +894,7 @@
             <section class="settings-card">
               <div class="panel-section-head">
                 <div>
-                  <h3>에이전트 모델</h3>
+                  <h3>아바타 모델</h3>
                   <p class="muted">아바타 대화에 사용할 모델을 지정합니다. 비워 두면 SDK 기본값을 사용합니다. 예: claude-opus-4-8, claude-sonnet-4-6, claude-haiku-4-5-20251001.</p>
                 </div>
               </div>
@@ -1030,7 +1097,7 @@
               <select class="admin-search" aria-label="액션 필터" bind:value={auditAction} disabled={!auditActions.length}>
                 <option value="">{auditActions.length ? "전체 액션" : "필터할 액션 없음"}</option>
                 {#each auditActions as a}
-                  <option value={a}>{a}</option>
+                  <option value={a} title={a}>{auditActionLabel(a)}</option>
                 {/each}
               </select>
               <span class="muted nowrap">
@@ -1044,7 +1111,7 @@
               {#if !shownAudit.length}
                 {#if auditAction}
                   <div class="muted pad">
-                    "{auditAction}" 액션 기록이 없습니다.
+                    “{auditActionLabel(auditAction)}” 액션 기록이 없습니다.
                     <button class="linkish small" type="button" on:click={() => (auditAction = "")}>전체 액션 보기</button>
                   </div>
                 {:else}
@@ -1056,8 +1123,8 @@
                     <div class="audit-row">
                       <span class="audit-time muted">{timeLabel(r.createdAt)}</span>
                       <span class="audit-actor">{r.actorName || "—"}</span>
-                      <span class="tag mono">{r.action}</span>
-                      <span class="tag {r.status === 'success' ? 'read' : 'danger'}">{r.status}</span>
+                      <span class="tag audit-action-tag" class:mono={!AUDIT_ACTION_LABELS[r.action]} title={r.action}>{auditActionLabel(r.action)}</span>
+                      <span class="tag {r.status === 'success' || r.status === 'ok' ? 'read' : 'danger'}" title={r.status}>{auditStatusLabel(r.status)}</span>
                       <span class="audit-detail muted">{r.detail || ""}</span>
                     </div>
                   {/each}
@@ -1070,3 +1137,13 @@
     </div>
   {/if}
 </div>
+
+<style>
+  /* Localized action labels are longer than the raw ids, and only `.tag.mono`
+     truncates in the shared audit-table rule — give the Korean variant the same
+     clipping so a long label can't push the detail column out of the row. */
+  .audit-action-tag {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+</style>

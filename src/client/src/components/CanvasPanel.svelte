@@ -1,7 +1,11 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import DOMPurify from "dompurify";
-  import { renderMarkdown } from "../lib/format";
+  import Icon from "./Icon.svelte";
+  import { renderMarkdown, timeLabel } from "../lib/format";
+  import { openModalFocus, trapTab } from "../lib/modalBehavior";
+  import { cssToken, theme } from "../lib/theme";
+  import type { ResolvedTheme } from "../lib/theme";
   import {
     closeCanvas,
     dismissCanvas,
@@ -147,18 +151,31 @@
   // Token guards async (mermaid/vega) renders so a stale result can't overwrite a newer one.
   let renderToken = 0;
 
-  const VEGA_BASE_CONFIG = { background: "transparent", view: { stroke: "transparent" } };
-  const VEGA_DARK_CONFIG = {
-    ...VEGA_BASE_CONFIG,
-    title: { color: "#e5e7eb", subtitleColor: "#cbd5e1" },
-    axis: { domainColor: "#475569", gridColor: "#334155", tickColor: "#475569", labelColor: "#cbd5e1", titleColor: "#e5e7eb" },
-    legend: { labelColor: "#cbd5e1", titleColor: "#e5e7eb" },
-    style: { "guide-label": { fill: "#cbd5e1" }, "guide-title": { fill: "#e5e7eb" } },
-  };
+  // Chart chrome (axes, labels, legends) is derived from the SAME design tokens
+  // the page uses instead of a second hardcoded palette; the fallbacks cover a
+  // context where the stylesheet isn't loaded. Both themes are spelled out —
+  // leaving light implicit let Vega pick its own near-black.
+  function vegaConfig(dark: boolean): Record<string, unknown> {
+    const text = cssToken("--text", dark ? "#e5e7eb" : "#161b21");
+    const muted = cssToken("--muted", dark ? "#cbd5e1" : "#505b66");
+    const line = cssToken("--line", dark ? "#475569" : "#d6dde4");
+    const grid = cssToken("--line-soft", dark ? "#334155" : "#e3e8ed");
+    return {
+      background: "transparent",
+      view: { stroke: "transparent" },
+      title: { color: text, subtitleColor: muted },
+      axis: { domainColor: line, gridColor: grid, tickColor: line, labelColor: muted, titleColor: text },
+      legend: { labelColor: muted, titleColor: text },
+      style: { "guide-label": { fill: muted }, "guide-title": { fill: text } },
+    };
+  }
 
-  $: void renderActive(active);
+  // `$theme` is a real dependency, not decoration: mermaid and Vega bake their
+  // colors into the SVG at build time, so a theme flip has to re-render or the
+  // chart stays on the old palette.
+  $: void renderActive(active, $theme);
 
-  async function renderActive(canvas: PaneCanvas | null): Promise<void> {
+  async function renderActive(canvas: PaneCanvas | null, resolvedTheme: ResolvedTheme): Promise<void> {
     const token = ++renderToken;
     renderError = "";
     if (!canvas) {
@@ -186,8 +203,7 @@
         ]);
         const spec = JSON.parse(canvas.content);
         assertInlineOnlyVegaSpec(spec);
-        const dark = document.documentElement.getAttribute("data-theme") === "dark";
-        const config = dark ? VEGA_DARK_CONFIG : VEGA_BASE_CONFIG;
+        const config = vegaConfig(resolvedTheme === "dark");
         const vgSpec = vegaLite.compile(spec, { config } as any).spec;
         const runtime = vega.parse(vgSpec as any, null as any, { ast: true } as any);
         const view = new vega.View(runtime, {
@@ -210,8 +226,11 @@
     if (canvas.contentType === "mermaid") {
       try {
         const mermaid = (await import("mermaid")).default;
-        const dark = document.documentElement.getAttribute("data-theme") === "dark";
-        mermaid.initialize({ startOnLoad: false, securityLevel: "strict", theme: dark ? "dark" : "default" });
+        mermaid.initialize({
+          startOnLoad: false,
+          securityLevel: "strict",
+          theme: resolvedTheme === "dark" ? "dark" : "default",
+        });
         const { svg } = await mermaid.render(`canvas-mmd-${canvas.id}-${token}`, canvas.content);
         if (token !== renderToken) return; // a newer render won
         renderedHtml = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
@@ -395,24 +414,38 @@
     showVersions = false;
     void rollbackCanvas(pane.id, active.id, version);
   }
-  function versionTime(iso: string): string {
-    if (!iso) return "";
-    try {
-      return new Date(iso).toLocaleString("ko-KR", { dateStyle: "short", timeStyle: "short" });
-    } catch {
-      return "";
-    }
-  }
 
   // ---- fullscreen ----
   let fullscreen = false;
+  let fsEl: HTMLDivElement | undefined;
+  let releaseFsFocus: (() => void) | null = null;
   let zoom = 1;
+
+  // The stage claims aria-modal, so it owes the matching behavior: contain Tab,
+  // inert the page behind it, and hand focus back to the opener on close.
+  $: syncFullscreenFocus(fsEl);
+
+  function syncFullscreenFocus(el: HTMLElement | undefined): void {
+    if (el) {
+      releaseFsFocus ??= openModalFocus(el);
+      return;
+    }
+    releaseFsFocus?.();
+    releaseFsFocus = null;
+  }
+
+  onDestroy(() => {
+    releaseFsFocus?.();
+    releaseFsFocus = null;
+  });
+
   function openFullscreen(): void {
     zoom = 1;
     fullscreen = true;
   }
   function onFsKey(event: KeyboardEvent): void {
     if (event.key === "Escape") fullscreen = false;
+    else if (event.key === "Tab") trapTab(event, fsEl);
   }
   function onFsWheel(event: WheelEvent): void {
     event.preventDefault();
@@ -458,7 +491,7 @@
                   on:click={() => setActiveCanvas(pane.id, c.id)}
                   on:keydown={(event) => onCanvasTabKeydown(event, c)}
                 >{c.title}</button>
-                <button class="canvas-tab-close" type="button" aria-label={`캔버스 닫기: ${c.title}`} title="캔버스 닫기" on:click={() => closeCanvas(pane.id, c.id)}>×</button>
+                <button class="canvas-tab-close" type="button" aria-label={`캔버스 닫기: ${c.title}`} title="캔버스 닫기" on:click={() => closeCanvas(pane.id, c.id)}><Icon name="close" size={14} /></button>
               </div>
             {/each}
           </div>
@@ -485,7 +518,7 @@
               {/if}
               <button class="canvas-tool-btn" type="button" title="전체화면" aria-label="전체화면" on:click={openFullscreen}>⤢</button>
               {#if canvases.length === 1}
-                <button class="canvas-tool-btn" type="button" title="캔버스 닫기" aria-label="캔버스 닫기" on:click={() => active && closeCanvas(pane.id, active.id)}>×</button>
+                <button class="canvas-tool-btn" type="button" title="캔버스 닫기" aria-label="캔버스 닫기" on:click={() => active && closeCanvas(pane.id, active.id)}><Icon name="close" size={12} /></button>
               {/if}
             </div>
           </div>
@@ -511,7 +544,7 @@
                     on:click={() => doRollback(v.version)}
                   >
                     <span>v{v.version}</span>
-                    <span class="canvas-version-time">{versionTime(v.createdAt)}</span>
+                    <span class="canvas-version-time">{timeLabel(v.createdAt)}</span>
                     {#if v.version === active.currentVersion}<span class="canvas-version-action">현재</span>{:else}<span class="canvas-version-action">되돌리기</span>{/if}
                   </button>
                 {/each}
@@ -693,14 +726,14 @@
 {/if}
 
 {#if fullscreen && active}
-  <div class="canvas-fs" role="dialog" aria-modal="true" aria-label="캔버스 전체화면" on:wheel|nonpassive={onFsWheel}>
+  <div bind:this={fsEl} class="canvas-fs" role="dialog" aria-modal="true" aria-label="캔버스 전체화면" on:wheel|nonpassive={onFsWheel}>
     <div class="canvas-fs-bar">
       <span class="canvas-fs-title">{active.title}</span>
       <div class="canvas-fs-zoom">
         <button class="canvas-tool-btn" type="button" aria-label="축소" on:click={() => (zoom = Math.max(0.4, zoom - 0.2))}>−</button>
         <span>{Math.round(zoom * 100)}%</span>
         <button class="canvas-tool-btn" type="button" aria-label="확대" on:click={() => (zoom = Math.min(4, zoom + 0.2))}>+</button>
-        <button class="canvas-tool-btn" type="button" on:click={() => (fullscreen = false)}>닫기</button>
+        <button class="canvas-tool-btn" type="button" data-modal-autofocus on:click={() => (fullscreen = false)}>닫기</button>
       </div>
     </div>
     <button class="canvas-fs-backdrop" type="button" aria-label="닫기" on:click={() => (fullscreen = false)}></button>

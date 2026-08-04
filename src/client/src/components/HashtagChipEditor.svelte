@@ -6,6 +6,7 @@
   // Chip editor for capability hashtags: type + Enter/comma/space to add, click
   // × or Backspace-on-empty to remove. Ports buildHashtagEditor from explore.js.
   // Bind `tags` for the current value; the parent reads it on save.
+  import Icon from "./Icon.svelte";
   import { normalizeTags } from "../lib/format";
   import { notify } from "../lib/state";
 
@@ -77,7 +78,7 @@
     {#each tags as tag, i (tag + i)}
       <span class="tag accent hashtag-chip" role="listitem">
         <span>#{tag}</span>
-        <button type="button" class="chip-x" aria-label={`${tag} 제거`} disabled={disabled} on:click={() => remove(i)}>×</button>
+        <button type="button" class="chip-x" aria-label={`${tag} 제거`} disabled={disabled} on:click={() => remove(i)}><Icon name="close" size={12} /></button>
       </span>
     {/each}
   </div>
@@ -95,3 +96,12 @@
     on:blur={() => value.trim() && addFromInput()}
   />
 </div>
+
+<style>
+  /* The remove affordance is an Icon SVG, not a `×` glyph — the shared `.chip-x`
+     rule centres it by inline text metrics, so lay it out as a box instead. */
+  .chip-x {
+    display: inline-flex;
+    align-items: center;
+  }
+</style>

@@ -199,7 +199,7 @@
               {#if av.id === $appState.user?.id}
                 <span class="tag accent">나</span>
               {:else if av.runtime === "external"}
-                <span class="tag accent">외부 Agent</span>
+                <span class="tag accent">외부 아바타</span>
               {:else if av.groupAgent}
                 <span class="tag write">그룹 에이전트 · {av.groupAgent.groupName}</span>
               {:else if av.sharesGroup}

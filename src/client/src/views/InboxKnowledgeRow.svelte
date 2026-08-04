@@ -91,7 +91,7 @@
     const stillOpen = readState().knowledgeRequests.some((x) => x.id === request.id && x.status === "open");
     notify(
       stillOpen
-        ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 스레드를 확인해 주세요."
+        ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 대화를 확인해 주세요."
         : "아바타가 답을 지식 저장소에 기록했어요.",
       stillOpen ? "warn" : "info",
     );
@@ -131,7 +131,7 @@
         bind:this={textarea}
         bind:value={answer}
         disabled={disabled}
-        placeholder="이 질문에 대한 답·정보를 적어주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다."
+        placeholder="이 질문에 대한 답·정보를 적어 주세요. 아바타가 지식 저장소에 기록하고 이 요청을 닫습니다"
         aria-label="정보 요청 답변"
         aria-describedby={statusId}
       ></textarea>

@@ -152,7 +152,7 @@ describe("RoutineModal", () => {
     await fireEvent.input(screen.getByLabelText("예약 작업 이름"), {
       target: { value: "지난 작업 이름 변경" },
     });
-    expect((screen.getByRole("button", { name: "변경 저장" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "저장" }) as HTMLButtonElement).disabled).toBe(false);
   });
 });
 

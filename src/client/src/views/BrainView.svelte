@@ -224,7 +224,7 @@
         </div>
       {:else if graph?.noVault}
         <div class="brain-state muted">
-          이 저장소는 아직 vault 구조(<code>wiki/</code>·<code>raw/</code>)가 없습니다. 아바타에게
+          이 저장소는 아직 세컨드브레인 구조(<code>wiki/</code>·<code>raw/</code>)가 없습니다. 아바타에게
           <strong>brain-migrate</strong>를 한 번 실행해 달라고 하면 구조를 만들어 줍니다.
         </div>
       {:else if !graph?.nodes.length}
@@ -253,12 +253,12 @@
         </div>
         {#if selected.tags.length}
           <div class="brain-note-tags">
-            {#each selected.tags as tag}<span class="tag-chip">#{tag}</span>{/each}
+            {#each selected.tags as tag}<span class="tag tag-chip">#{tag}</span>{/each}
           </div>
         {/if}
 
         {#if selected.dangling}
-          <div class="brain-state muted">미연결 링크입니다 — 아직 이 제목의 노트가 없어요.</div>
+          <div class="brain-state muted">미연결 링크 — 이 제목의 노트가 아직 없습니다.</div>
         {:else if noteLoading}
           <div class="brain-state muted">노트를 불러오는 중…</div>
         {:else if noteError}
@@ -313,10 +313,10 @@
     gap: var(--s-4);
     padding: var(--s-6);
     border: 1px solid var(--line-soft);
-    border-radius: var(--r-xl);
+    border-radius: var(--r-lg);
     background: var(--material-regular, var(--panel));
     text-align: center;
-    box-shadow: var(--shadow-md), 0 1px 0 var(--material-edge, transparent) inset;
+    box-shadow: var(--shadow-sm);
   }
   .brain-empty-icon {
     width: var(--s-7);
@@ -348,10 +348,12 @@
     cursor: pointer;
   }
   .brain-source.active {
-    border-color: var(--line-soft);
+    /* Chunk-order tie-break: this lazy route's CSS loads after the main bundle,
+       so the 80-layer `.brain-source.active` (0-2-0) loses `color` to the scoped
+       base above (also 0-2-0 with the svelte hash). Keep the differentiating
+       color scoped; the active shadow/background come from the shared
+       seg-active list in 80-apple-design.css. */
     color: var(--text);
-    background: var(--material-thick, var(--panel));
-    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.13), 0 1px 0 var(--material-edge, transparent) inset;
   }
   .brain-body {
     flex: 1;
@@ -427,13 +429,10 @@
     flex-wrap: wrap;
     gap: var(--s-1);
   }
+  /* Composes the global `.tag` base; note tags run one step larger than a
+     generic tag, which is the only delta left. */
   .tag-chip {
     font-size: var(--t-xs);
-    color: var(--muted);
-    background: var(--bg);
-    border: 1px solid var(--line);
-    border-radius: var(--r-pill);
-    padding: 1px var(--s-2);
   }
   .brain-note-body {
     min-width: 0;

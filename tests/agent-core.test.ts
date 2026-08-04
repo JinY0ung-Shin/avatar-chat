@@ -781,7 +781,7 @@ describe("loadAvatarPluginRoots", () => {
     );
 
     expect(roots).toEqual([]);
-    expect(warns.some((w) => w.includes("clone failed"))).toBe(true);
+    expect(warns.some((w) => w.includes("복제 실패"))).toBe(true);
   });
 });
 
@@ -1804,7 +1804,7 @@ describe("sdk message handlers", () => {
     expect(sink.onStatus).toHaveBeenCalledWith("계획 모드로 전환 중…");
     // Empty ExitPlanMode (no plan submitted) ends the planning phase explicitly so
     // the placeholder clears instead of lingering to the terminal reset.
-    expect(sink.onStatus).toHaveBeenCalledWith("계획 단계를 마쳤습니다.");
+    expect(sink.onStatus).toHaveBeenCalledWith("계획 단계 완료");
     expect(sink.onPlan).toHaveBeenCalledWith({ plan: "", planning: false });
   });
 
@@ -2041,6 +2041,7 @@ describe("sdk message handlers", () => {
       toolName: "Bash",
       agentId: "main",
       reason: "readonly",
+      uiReason: "권한 정책에 따라 자동 거부되었습니다: readonly",
     });
     expect(sink.onStatus).toHaveBeenCalledWith("응답 생성 중…");
     expect(sink.onStatus).toHaveBeenCalledWith("맥락 정리 중…");

@@ -12,10 +12,10 @@
   display: inline-grid;
   place-items: center;
   flex: 0 0 auto;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   overflow: hidden;
   background: var(--surface-2);
-  color: var(--text-muted);
+  color: var(--muted);
   font-weight: 700;
 }
 

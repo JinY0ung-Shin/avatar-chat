@@ -76,6 +76,8 @@
   --danger-soft: #fff3f2;
   --danger-line: #f4b4af;
   --ok: #15803d;
+  --ok-soft: #f1fbf4;
+  --ok-line: #a9dcbc;
   --info: #315467;
   --info-soft: #f2f8fb;
   --info-line: #c7dde9;
@@ -95,19 +97,21 @@
   --s-7: 48px;
   --s-8: 64px;
 
-  /* Radii */
-  --r-xs: 6px;
-  --r-sm: 8px;
-  --r-md: 8px;
-  --r-lg: 8px;
-  --r-xl: 14px;
+  /* Radii — CANONICAL scale (see docs/DESIGN.md §2.3). Defined here only; the
+     apple layer no longer re-declares them. */
+  --r-xs: 8px;
+  --r-sm: 10px;
+  --r-md: 12px;
+  --r-lg: 16px;
+  --r-xl: 22px;
   --r-pill: 999px;
 
-  /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.04);
-  --shadow-md: 0 4px 12px rgba(16, 24, 40, 0.08), 0 2px 4px rgba(16, 24, 40, 0.04);
-  --shadow-lg: 0 16px 40px rgba(16, 24, 40, 0.14);
-  --shadow-drawer: -24px 0 60px rgba(16, 24, 40, 0.22);
+  /* Shadows — CANONICAL elevation ramp; dark overrides live in the dark block
+     below. Defined here only; the apple layer no longer re-declares them. */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 14px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
+  --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.08);
+  --shadow-drawer: 16px 0 50px rgba(0, 0, 0, 0.18);
 
   /* Type scale (see docs/DESIGN.md §2.4). --t-2xs is the readability floor for
      dense meta/badges; do not go below it. */
@@ -145,7 +149,32 @@
   --code-ok: #4ade80;
   --code-danger: #f87171;
 
-  --ease: cubic-bezier(0.32, 0.72, 0, 1);
+  /* Diagram/slide surface — FIXED in both themes for the same reason as
+     --code-*: the artwork is authored on white, so the fill AND its edge must
+     stay constant (a theme-riding --line is near-white on this fill in dark). */
+  --diagram-bg: #ffffff;
+  --diagram-line: #c0c7ce;
+
+  /* Foreground on generated avatar gradients — FIXED white in both themes: the
+     gradients are pinned to 42–52% lightness, so white always reads on them. */
+  --on-avatar: #ffffff;
+
+  /* Foreground on fixed dark scrims (rgba(0,0,0,α) overlays) — the scrim never
+     rides the theme, so neither does the glyph on it. */
+  --on-scrim: #ffffff;
+
+  /* Toggle knob — platform white in both themes (the OS switch knob never
+     inverts), so it can't ride the neutral ramp. */
+  --control-knob: #ffffff;
+
+  /* One dimming level for every disabled control (see docs/DESIGN.md §2.5). */
+  --disabled-opacity: 0.46;
+
+  /* Easing — CANONICAL here (see docs/DESIGN.md §2.5); the apple layer no longer
+     re-declares them. --ease-out is the default for state/enter/exit motion;
+     --ease is the springier curve reserved for drag/gesture handoff. */
+  --ease: cubic-bezier(0.25, 0.8, 0.25, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 /* Dark theme — applied when JS resolves the user's preference to dark (system +
@@ -200,13 +229,15 @@
   --danger-soft: #2e1715;
   --danger-line: #5c2b27;
   --ok: #4ade80;
+  --ok-soft: #12291b;
+  --ok-line: #275336;
   --info: #9ec5da;
   --info-soft: #13242c;
   --info-line: #2a4452;
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 14px rgba(0, 0, 0, 0.45);
-  --shadow-lg: 0 16px 40px rgba(0, 0, 0, 0.6);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.26), 0 4px 18px rgba(0, 0, 0, 0.16);
+  --shadow-md: 0 12px 34px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.2);
+  --shadow-lg: 0 26px 90px rgba(0, 0, 0, 0.58), 0 8px 26px rgba(0, 0, 0, 0.3);
   --shadow-drawer: -24px 0 60px rgba(0, 0, 0, 0.6);
 }
 

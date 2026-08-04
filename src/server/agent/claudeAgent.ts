@@ -1646,7 +1646,7 @@ export async function runClaudeAgent(
         "model fallback after transient error",
       );
       // No live viewer on a routine, but keep the channel consistent.
-      events?.onStatus?.(`모델을 ${nextModel}(으)로 전환해 다시 시도합니다…`);
+      events?.onStatus?.(`모델을 ${nextModel}(으)로 전환해 다시 시도 중…`);
     }
   }
 

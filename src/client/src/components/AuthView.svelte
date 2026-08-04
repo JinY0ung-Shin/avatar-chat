@@ -24,8 +24,8 @@
   $: isLogin = mode === "login";
   $: usernameTrimmed = username.trim();
   $: displayNameTrimmed = displayName.trim();
-  $: usernameIssue = usernameTrimmed.length === 0 ? "사용자명을 입력하세요." : usernameTrimmed.length < 3 ? "사용자명은 3자 이상이어야 합니다." : "";
-  $: passwordIssue = password.length === 0 ? "비밀번호를 입력하세요." : password.length < 8 ? "비밀번호는 8자 이상이어야 합니다." : "";
+  $: usernameIssue = usernameTrimmed.length === 0 ? "사용자명을 입력해 주세요." : usernameTrimmed.length < 3 ? "사용자명은 3자 이상이어야 합니다." : "";
+  $: passwordIssue = password.length === 0 ? "비밀번호를 입력해 주세요." : password.length < 8 ? "비밀번호는 8자 이상이어야 합니다." : "";
   $: canSubmit = Boolean(usernameTrimmed.length >= 3 && password.length >= 8 && !busy);
   $: heading = isSetup ? "관리자 계정 만들기" : isLogin ? "다시 오신 것을 환영합니다" : "Noah Almighty 시작하기";
   $: description = isSetup
@@ -63,7 +63,7 @@
         body: JSON.stringify(payload),
       });
       if (result.pending) {
-        notify("가입 요청이 접수되었습니다. 관리자가 승인하면 로그인할 수 있으며, 그룹 권한은 승인 후 관리자에게 신청하세요.", "info");
+        notify("가입 요청이 접수되었습니다. 관리자가 승인하면 로그인할 수 있으며, 그룹 권한은 승인 후 관리자에게 신청해 주세요.", "info");
         setMode("login", true);
         pending = true;
         return;
@@ -73,7 +73,7 @@
         replaceState({ user: result.user, view: "explore" });
         if (signedUp) {
           notify(
-            "회원가입이 완료되었습니다. 그룹 아바타 이용 등 그룹 권한이 필요하면 관리자에게 그룹 추가를 신청하세요.",
+            "회원가입이 완료되었습니다. 그룹 아바타 이용 등 그룹 권한이 필요하면 관리자에게 그룹 추가를 신청해 주세요.",
             "info",
             { durationMs: 9000 },
           );

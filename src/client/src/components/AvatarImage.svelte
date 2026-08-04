@@ -13,7 +13,7 @@
 
 <span
   class="avatar-img"
-  style={url ? `width:${size}px;height:${size}px;--avatar-size:${size}px` : `width:${size}px;height:${size}px;--avatar-size:${size}px;background:${gradient};color:#fff`}
+  style={url ? `width:${size}px;height:${size}px;--avatar-size:${size}px` : `width:${size}px;height:${size}px;--avatar-size:${size}px;background:${gradient};color:var(--on-avatar)`}
   aria-hidden={alt === "" ? "true" : undefined}
   role={!url && alt ? "img" : undefined}
   aria-label={!url && alt ? alt : undefined}

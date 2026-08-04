@@ -429,7 +429,7 @@
           <span>자기소개 (대화 패널 상단에 표시)</span>
           <button class="ghost-sm" type="button" aria-describedby={profileGenStatus ? profileGenStatusId : undefined} disabled={profileSaving || introGenBusy || allGenBusy} on:click={generateIntro}>{introGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
         </div>
-        <textarea rows="4" bind:value={intro} placeholder="대화 상대에게 보여줄 자기소개. 직접 쓰거나 위의 '아바타가 자동 생성' 버튼으로 만들 수 있어요." aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")}></textarea>
+        <textarea rows="4" bind:value={intro} placeholder="대화 상대에게 보여줄 자기소개. 직접 쓰거나 위의 ‘아바타가 자동 생성’ 버튼으로 만들 수 있어요" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")}></textarea>
       </div>
       <div class="field">
         <div class="field-row">
@@ -452,7 +452,7 @@
   </section>
 
   <section class="settings-card">
-    <h3>공개 설정</h3>
+    <h3>공개 범위</h3>
     <div class="visibility-row">
       <div class="seg-control" role="radiogroup" aria-label="아바타 공개 범위" aria-busy={visSaving}>
         {#each VISIBILITY_OPTIONS as opt}
@@ -494,7 +494,7 @@
 
 <style>
   .pic-paste-hint {
-    font-size: var(--t-xs, 12px);
+    font-size: var(--t-xs);
     text-align: center;
     max-width: 140px;
     line-height: 1.35;
@@ -502,17 +502,17 @@
   .shared-account-item {
     display: flex;
     align-items: flex-start;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
     cursor: pointer;
-    margin-top: var(--s-3, 12px);
+    margin-top: var(--s-3);
   }
   .shared-account-item input {
-    margin-top: 3px;
+    margin-top: var(--s-1);
   }
   .shared-account-meta {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--s-0-5);
     min-width: 0;
     overflow-wrap: anywhere;
   }

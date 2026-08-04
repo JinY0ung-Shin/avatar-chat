@@ -45,21 +45,15 @@
   --danger-soft: #fff0f1;
   --danger-line: rgba(215, 0, 21, 0.24);
   --ok: #248a3d;
+  --ok-soft: #eefaf0;
+  --ok-line: rgba(36, 138, 61, 0.24);
   --control-on: #34c759;
   --info: #0066cc;
   --info-soft: #eef6ff;
   --info-line: rgba(0, 102, 204, 0.24);
 
-  --r-xs: 8px;
-  --r-sm: 10px;
-  --r-md: 12px;
-  --r-lg: 16px;
-  --r-xl: 22px;
-
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 14px rgba(0, 0, 0, 0.04);
-  --shadow-md: 0 10px 30px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 24px 80px rgba(0, 0, 0, 0.2), 0 8px 24px rgba(0, 0, 0, 0.08);
-  --shadow-drawer: 16px 0 50px rgba(0, 0, 0, 0.18);
+  /* --r-* and --shadow-* are CANONICAL in 00-tokens.css — never re-declare them
+     here (the duplicate pair silently made the 00 values dead). */
 
   --material-thin: rgba(255, 255, 255, 0.66);
   --material-regular: rgba(250, 250, 252, 0.82);
@@ -69,8 +63,7 @@
   --material-blur: 28px;
   --material-blur-thick: 42px;
 
-  --ease: cubic-bezier(0.25, 0.8, 0.25, 1);
-  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* --ease/--ease-out are CANONICAL in 00-tokens.css — never re-declare here. */
   --press-scale: 0.97;
 }
 
@@ -112,6 +105,8 @@
   --danger-soft: rgba(255, 69, 58, 0.12);
   --danger-line: rgba(255, 69, 58, 0.28);
   --ok: #30d158;
+  --ok-soft: rgba(48, 209, 88, 0.12);
+  --ok-line: rgba(48, 209, 88, 0.26);
   --control-on: #30d158;
   --info: #64d2ff;
   --info-soft: rgba(100, 210, 255, 0.12);
@@ -122,9 +117,7 @@
   --material-thick: rgba(44, 44, 46, 0.94);
   --material-edge: rgba(255, 255, 255, 0.1);
 
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.26), 0 4px 18px rgba(0, 0, 0, 0.16);
-  --shadow-md: 0 12px 34px rgba(0, 0, 0, 0.38), 0 2px 8px rgba(0, 0, 0, 0.2);
-  --shadow-lg: 0 26px 90px rgba(0, 0, 0, 0.58), 0 8px 26px rgba(0, 0, 0, 0.3);
+  /* Dark --shadow-* overrides are CANONICAL in 00-tokens.css's dark block. */
 }
 
 /* Platform typography and quiet environmental depth. */
@@ -204,7 +197,7 @@ button:active:not(:disabled),
 }
 
 button:disabled {
-  opacity: 0.46;
+  opacity: var(--disabled-opacity);
 }
 
 :focus-visible {
@@ -212,16 +205,20 @@ button:disabled {
   outline-offset: 2px;
 }
 
+.btn.primary,
 .primary,
 .btn-primary,
 .new-chat {
+  /* No border-radius here: the .btn family base (30-agent-md-composer.css) owns
+     geometry, so .btn-sm can size primary and ghost siblings identically.
+     .new-chat carries its own radius in 20-shell-chat.css. */
   border-color: color-mix(in srgb, var(--accent) 84%, #000);
-  border-radius: var(--r-md);
   background: var(--accent);
   color: var(--on-accent);
   box-shadow: 0 1px 1px rgba(255, 255, 255, 0.3) inset, 0 4px 14px color-mix(in srgb, var(--accent) 22%, transparent);
 }
 
+.btn.primary:hover:not(:disabled),
 .primary:hover:not(:disabled),
 .btn-primary:hover:not(:disabled),
 .new-chat:hover:not(:disabled) {
@@ -230,6 +227,7 @@ button:disabled {
   box-shadow: 0 1px 1px rgba(255, 255, 255, 0.24) inset, 0 7px 20px color-mix(in srgb, var(--accent) 28%, transparent);
 }
 
+.btn.ghost,
 .ghost-sm,
 .btn-ghost,
 .msg-act,
@@ -240,6 +238,7 @@ button:disabled {
   border-color: var(--line-soft);
 }
 
+.btn.ghost:hover:not(:disabled),
 .ghost-sm:hover:not(:disabled),
 .btn-ghost:hover:not(:disabled),
 .msg-act:hover:not(:disabled),
@@ -250,6 +249,7 @@ button:disabled {
   border-color: var(--line);
 }
 
+.btn.link:hover,
 .linkish:hover {
   text-decoration: none;
   opacity: 0.74;
@@ -293,7 +293,12 @@ button:disabled {
 .explore-search-bar:focus-within,
 .composer-box:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 4px var(--accent-ring), 0 8px 24px color-mix(in srgb, var(--accent) 8%, transparent);
+  /* One indicator, one token: the wrappers here delegate to inner controls that
+     suppress their own outline, so the ring must be drawn on the wrapper — and
+     it uses the opaque --focus-ring, never the translucent --accent-ring. */
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 /* App chrome: content moves beneath floating, translucent functional layers. */
@@ -307,6 +312,7 @@ button:disabled {
 @media (min-width: 861px) {
   .workspace {
     grid-template-columns: 280px minmax(0, 1fr);
+    /* layout-property transition — known §2.5 deviation, see REFACTORING-BACKLOG */
     transition: grid-template-columns 240ms var(--ease-out);
   }
 
@@ -404,7 +410,6 @@ button:disabled {
 .group-block,
 .stat-card,
 .admin-user,
-.admin-row,
 .notification-row,
 .canvas-card,
 .cap-section,
@@ -441,9 +446,28 @@ button:disabled {
   border-radius: var(--r-lg);
 }
 
+/* Card family (docs/DESIGN.md §4.2). Standalone base — deliberately NOT in the
+   domain lists above: the base is FLAT (no shadow) and elevation is an opt-in
+   intent (.elevated). New cards compose `class="card …"` instead of editing
+   those lists. (`.admin-row` was removed from the lists on purpose: it is a
+   flat row INSIDE the already-elevated .admin-user card — see 60-settings-admin.) */
+.card {
+  border: 1px solid var(--line-soft);
+  background: var(--panel);
+  border-radius: var(--r-lg);
+  padding: var(--pad-card);
+}
+.card.elevated {
+  box-shadow: var(--shadow-sm), 0 1px 0 var(--material-edge) inset;
+}
+.card.flat {
+  border: none;
+  box-shadow: none;
+}
+
 .avatar-card {
   min-height: 124px;
-  padding: var(--s-5);
+  padding: var(--pad-card);
   transition:
     border-color 180ms var(--ease-out),
     background-color 180ms var(--ease-out),
@@ -462,8 +486,8 @@ button:disabled {
 
 .avatar-card::after {
   content: "›";
-  font-size: 1.75rem;
-  font-weight: 300;
+  font-size: var(--t-2xl);
+  font-weight: 400;
 }
 
 .setup-banner {
@@ -500,7 +524,8 @@ button:disabled {
 .settings-tab.active,
 .seg-btn.active,
 .inbox-filter button.active,
-.split-btn.active {
+.split-btn.active,
+.brain-source.active {
   border-color: var(--line-soft);
   background: var(--material-thick);
   color: var(--text);
@@ -542,7 +567,7 @@ button:disabled {
   width: 24px;
   height: 24px;
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.26), 0 1px 1px rgba(0, 0, 0, 0.12);
-  transition: transform 300ms var(--ease-out);
+  transition: transform 180ms var(--ease-out);
 }
 
 .toggle.on {
@@ -571,7 +596,7 @@ button:disabled {
 }
 
 .message {
-  animation: apple-message-in 360ms var(--ease-out) both;
+  animation: apple-message-in 240ms var(--ease-out) both;
 }
 
 @keyframes apple-message-in {
@@ -587,7 +612,7 @@ button:disabled {
 
 .bubble {
   border-color: var(--line-soft);
-  border-radius: 20px;
+  border-radius: var(--r-xl);
   background: var(--panel);
   box-shadow: 0 1px 0 var(--material-edge) inset, 0 3px 14px rgba(0, 0, 0, 0.045);
 }
@@ -613,7 +638,7 @@ button:disabled {
 }
 
 .composer-box {
-  border-radius: 22px;
+  border-radius: var(--r-xl);
   padding: var(--s-2);
   box-shadow: var(--shadow-md), 0 1px 0 var(--material-edge) inset;
 }
@@ -707,7 +732,7 @@ button:disabled {
   border-radius: var(--r-pill);
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 1.45rem;
+  font-size: var(--t-xl);
   font-weight: 700;
   box-shadow: 0 0 0 1px var(--accent-soft-strong) inset;
 }
@@ -888,7 +913,7 @@ button:disabled {
   .modal-card:not(.graph-modal-card) {
     width: 100%;
     max-height: calc(92dvh - env(safe-area-inset-top, 0px));
-    border-radius: 24px 24px 18px 18px;
+    border-radius: var(--r-xl) var(--r-xl) var(--r-lg) var(--r-lg);
     padding-bottom: calc(var(--s-5) + env(safe-area-inset-bottom, 0px));
     transform-origin: center bottom;
   }
@@ -1016,6 +1041,8 @@ button:disabled {
     --line: rgba(0, 0, 0, 0.52);
     --line-soft: rgba(0, 0, 0, 0.34);
     --muted: #3a3a3c;
+    /* The focus ring is the one indicator now, so it gets boosted too. */
+    --focus-ring: #0040a0;
     --material-thin: rgba(255, 255, 255, 0.96);
     --material-regular: rgba(255, 255, 255, 0.98);
     --material-thick: #fff;
@@ -1025,6 +1052,7 @@ button:disabled {
     --line: rgba(255, 255, 255, 0.64);
     --line-soft: rgba(255, 255, 255, 0.4);
     --muted: #e5e5ea;
+    --focus-ring: #a8d1ff;
     --material-thin: rgba(28, 28, 30, 0.98);
     --material-regular: rgba(28, 28, 30, 0.99);
     --material-thick: #2c2c2e;
@@ -1057,7 +1085,9 @@ button:disabled {
   .composer-attach,
   .conv-search-clear,
   .toast-close,
-  .modal-sheet-grabber {
+  .modal-sheet-grabber,
+  .routine-icon-btn,
+  .canvas-tool-btn {
     min-width: 44px;
     min-height: 44px;
   }

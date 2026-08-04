@@ -226,20 +226,20 @@
   async function clearAll() {
     const count = notifications.length;
     if (!count || bulkBusy) return;
-    if (!(await confirmAction(`알림 ${count}개를 모두 삭제할까요? 정보 요청은 삭제되지 않습니다.`))) return;
+    if (!(await confirmAction(`알림 ${count}개를 모두 비울까요? 정보 요청은 삭제되지 않습니다.`))) return;
     bulkBusy = true;
     try {
       await api("/api/me/notifications", { method: "DELETE" });
     } catch (e) {
       bulkBusy = false;
-      notify(`삭제 실패: ${(e as Error).message}`);
+      notify(`비우기 실패: ${(e as Error).message}`);
       return;
     }
     try {
       await refresh();
-      notify(`알림 ${count}개를 삭제했습니다.`, "ok");
+      notify(`알림 ${count}개를 비웠습니다.`, "ok");
     } catch (e) {
-      notify(`알림은 삭제했지만 목록 새로고침에 실패했습니다: ${(e as Error).message}`, "warn");
+      notify(`알림은 비웠지만 목록 새로고침에 실패했습니다: ${(e as Error).message}`, "warn");
     }
     bulkBusy = false;
   }

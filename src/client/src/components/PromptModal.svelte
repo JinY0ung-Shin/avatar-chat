@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { onDestroy } from "svelte";
   import Icon from "./Icon.svelte";
   import { answerPrompt, humanTool, summarizeInput } from "../lib/chat";
+  import { openModalFocus, trapTab } from "../lib/modalBehavior";
   import { appState } from "../lib/state";
   import type { PromptRequest } from "../lib/types";
 
@@ -136,15 +138,73 @@
     if (request.kind === "permission") void respond({ behavior: "deny" });
     else void respond({ cancelled: true });
   }
+
+  /* ---- keyboard + focus management (shared with Modal via lib/modalBehavior) ----
+     Only the app-root instance is a true modal dialog, so only it contains focus
+     and inerts the page; a pane instance sits inside its chat pane and must
+     leave the rest of the app reachable (see the aria-modal note below). */
+  let backdropEl: HTMLDivElement | undefined;
+  let cardEl: HTMLDivElement | undefined;
+  let releaseFocus: (() => void) | null = null;
+  let focusedCard: HTMLElement | null = null;
+  let focusedRequestId: string | undefined;
+
+  $: isRootModal = !paneId;
+  $: if (isRootModal) syncModalFocus(backdropEl, cardEl, request?.id);
+
+  function syncModalFocus(
+    backdrop: HTMLElement | undefined,
+    card: HTMLElement | undefined,
+    requestId?: string,
+  ): void {
+    const target = backdrop && card ? card : null;
+    // Key on the request too, not just the card element: a queued same-kind
+    // prompt swaps `request` WITHOUT remounting the card, and answering the
+    // previous one blurred focus to <body> (the button disables itself) — the
+    // new prompt must re-arm initial focus on its safe action.
+    if (target === focusedCard && requestId === focusedRequestId) return;
+    releaseFocus?.();
+    releaseFocus = null;
+    focusedCard = target;
+    focusedRequestId = requestId;
+    // The autofocus target is the SAFE action (거부 / 건너뛰기): a permission gate
+    // must never put approval under a stray Enter.
+    if (target && backdrop) releaseFocus = openModalFocus(backdrop, target);
+  }
+
+  onDestroy(() => {
+    releaseFocus?.();
+    releaseFocus = null;
+  });
+
+  function onKeydown(event: KeyboardEvent): void {
+    if (!request) return;
+    if (event.key === "Escape") {
+      // A permission gate must not be silently dismissible, so Escape maps to
+      // the same SAFE decision as the 거부/건너뛰기 button rather than to a
+      // no-answer close. A pane instance only answers for its own card so that
+      // one Escape can't resolve several panes' prompts at once.
+      if (!isRootModal && !cardEl?.contains(document.activeElement)) return;
+      event.stopPropagation();
+      cancel();
+    } else if (event.key === "Tab" && isRootModal) {
+      trapTab(event, cardEl);
+    }
+  }
 </script>
 
+<svelte:window on:keydown={onKeydown} />
+
 {#if request}
-  <div class="prompt-modal-backdrop" class:in-pane={!!paneId} role="presentation">
+  <!-- No backdrop-click dismiss on purpose: this is a blocking gate, and a stray
+       click outside must not answer for the owner. Escape maps to 거부/건너뛰기. -->
+  <div bind:this={backdropEl} class="prompt-modal-backdrop" class:in-pane={!!paneId} role="presentation">
     {#if request.kind === "permission"}
       <!-- aria-modal only on the app-root fallback (paneId=null): an in-pane modal
            doesn't make the rest of the page inert, and several aria-modal="true"
            dialogs on screen at once (one per split pane) is invalid ARIA. -->
       <div
+        bind:this={cardEl}
         class="prompt-card permission"
         role="dialog"
         aria-modal={paneId ? undefined : "true"}
@@ -165,12 +225,13 @@
         {#if request.data?.description}<div class="prompt-desc" id={permissionDescId}>{request.data.description}</div>{/if}
         {#if error}<div class="error-note prompt-error" id={permissionErrorId} role="alert">{error}</div>{/if}
         <div class="prompt-actions">
-          <button class="btn btn-ghost btn-sm" type="button" disabled={busy} on:click={cancel}>거부</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-modal-autofocus disabled={busy} on:click={cancel}>거부</button>
           <button class="btn btn-primary btn-sm" type="button" disabled={busy} on:click={() => respond({ behavior: "allow" })}>승인</button>
         </div>
       </div>
     {:else}
       <div
+        bind:this={cardEl}
         class="prompt-card question"
         role="dialog"
         aria-modal={paneId ? undefined : "true"}
@@ -237,7 +298,7 @@
         {/if}
         {#if error}<div class="error-note prompt-error" id={questionErrorId} role="alert">{error}</div>{/if}
         <div class="prompt-actions">
-          <button class="btn btn-ghost btn-sm" type="button" disabled={busy} on:click={cancel}>건너뛰기</button>
+          <button class="btn btn-ghost btn-sm" type="button" data-modal-autofocus disabled={busy} on:click={cancel}>건너뛰기</button>
           {#if questions}
             <button class="btn btn-primary btn-sm" type="button" disabled={busy || !canSubmit} on:click={submitQuestions}>보내기</button>
           {:else}

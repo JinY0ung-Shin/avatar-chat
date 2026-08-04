@@ -194,7 +194,7 @@ describe("PreToolUse hook admin tool/skill policy", () => {
     const blocked: string[] = [];
     const hook = policyHook(
       { disabledTools: [], disabledSkills: ["code-review"] },
-      { onBlocked: (info) => void blocked.push(info.reason ?? "") },
+      { onBlocked: (info) => void blocked.push(info.uiReason ?? "") },
     );
     const out = await hook(
       { tool_name: "Skill", tool_input: { skill: "code-review" }, tool_use_id: "t1" },

@@ -609,7 +609,7 @@
     if (agentRowBusyId) return;
     if (
       !(await confirmAction(
-        `"${agent.displayName}" 그룹 에이전트를 삭제할까요?\n모든 그룹원의 이 에이전트 대화 기록이 함께 삭제되며 되돌릴 수 없습니다. 기록을 남기려면 대신 '비활성화'를 사용하세요.`,
+        `"${agent.displayName}" 그룹 에이전트를 삭제할까요?\n모든 그룹원의 이 에이전트 대화 기록이 함께 삭제되며 되돌릴 수 없습니다. 기록을 남기려면 대신 ‘비활성화’를 사용하세요.`,
       ))
     )
       return;
@@ -729,8 +729,8 @@
       });
       notify(
         on
-          ? `"${group.name}" 그룹의 멤버 아바타 상호 공개를 켰습니다.`
-          : `"${group.name}" 그룹의 멤버 아바타 상호 공개를 껐습니다. 이제 이 그룹은 지식 공유 전용이에요.`,
+          ? `"${group.name}" 그룹의 그룹원 아바타 상호 공개를 켰습니다.`
+          : `"${group.name}" 그룹의 그룹원 아바타 상호 공개를 껐습니다. 이제 이 그룹은 지식 공유 전용이에요.`,
         "ok",
       );
       try {
@@ -739,7 +739,7 @@
         notify(`설정은 저장했지만 그룹 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
       }
     } catch (err) {
-      notify(`멤버 아바타 상호 공개 설정을 저장하지 못했습니다: ${(err as Error).message}`, "warn");
+      notify(`그룹원 아바타 상호 공개 설정을 저장하지 못했습니다: ${(err as Error).message}`, "warn");
     } finally {
       sharingSaving = false;
     }
@@ -749,7 +749,7 @@
     const lower = message.toLowerCase();
     if (lower.includes("repository not found")) return "저장소를 찾지 못했습니다. 저장소 주소 또는 접근 권한을 확인해 주세요.";
     if (lower.includes("command failed") || lower.includes("git clone")) return "저장소 내용을 가져오지 못했습니다.";
-    return message.length > 140 ? `${message.slice(0, 140)}...` : message;
+    return message.length > 140 ? `${message.slice(0, 140)}…` : message;
   }
 
   function shouldShowRepoErrorDetails(message: string): boolean {
@@ -780,12 +780,12 @@
         on:change={(event) => toggleAvatarSharing(event.currentTarget.checked)}
       />
       <span class="shared-account-meta">
-        <strong>멤버 아바타 상호 공개</strong>
+        <strong>그룹원 아바타 상호 공개</strong>
         <span class="muted">켜면 같은 그룹원끼리 서로의 아바타를 찾고 대화할 수 있어요(신뢰 권한 포함). 끄면 이 그룹은 지식 공유 전용이 되어 그룹원 아바타가 서로에게 보이지 않아요. 공용 지식 저장소는 계속 함께 사용합니다.</span>
       </span>
     </label>
   {:else if !group.avatarSharing}
-    <p class="muted">이 그룹은 멤버 아바타 상호 공개가 꺼져 있어요(지식 공유 전용). 그룹원 아바타와의 대화는 그룹 관리자가 다시 켜면 가능해집니다.</p>
+    <p class="muted">이 그룹은 그룹원 아바타 상호 공개가 꺼져 있어요(지식 공유 전용). 그룹원 아바타와의 대화는 그룹 관리자가 다시 켜면 가능해집니다.</p>
   {/if}
 
   <h4 class="knowledge-sub">그룹 에이전트</h4>
@@ -827,9 +827,9 @@
       <p class="muted">그룹 에이전트가 모두 비활성화되어 있어요. 그룹 관리자가 다시 켜면 대화할 수 있습니다.</p>
     {/if}
   {:else if amAdmin}
-    <p class="muted">이 그룹에는 아직 공유 에이전트가 없어요. 그룹원 누구나 대화할 수 있고, 그룹 지식저장소를 공유 세컨드브레인으로 쓰는 팀 에이전트를 여러 개 만들 수 있습니다.</p>
+    <p class="muted">이 그룹에는 아직 그룹 에이전트가 없어요. 그룹원 누구나 대화할 수 있고, 그룹 지식 저장소를 공유 세컨드브레인으로 쓰는 그룹 에이전트를 여러 개 만들 수 있어요.</p>
   {:else}
-    <p class="muted">이 그룹에는 아직 공유 에이전트가 없어요. 그룹 관리자가 만들 수 있습니다.</p>
+    <p class="muted">이 그룹에는 아직 그룹 에이전트가 없어요. 그룹 관리자가 만들 수 있습니다.</p>
   {/if}
   {#if amAdmin && !agentFormOpen}
     <button class="ghost-sm" type="button" on:click={() => openAgentForm(null)}>
@@ -856,8 +856,8 @@
         <textarea rows="2" bind:value={agentIntro} disabled={agentSaving}></textarea>
       </label>
       <label class="field">
-        <span>페르소나 / 지침</span>
-        <textarea rows="4" bind:value={agentPersona} disabled={agentSaving} placeholder="이 팀 에이전트의 말투, 역할, 우선순위를 적어 주세요."></textarea>
+        <span>페르소나 · 지침</span>
+        <textarea rows="4" bind:value={agentPersona} disabled={agentSaving} placeholder="이 그룹 에이전트의 말투, 역할, 우선순위를 적어 주세요"></textarea>
       </label>
       <div class="field">
         <span>공유 세컨드브레인 기록 권한</span>
@@ -866,7 +866,7 @@
             <input type="radio" bind:group={agentCaptureScope} value="members" disabled={agentSaving} />
             <div class="radio-card-body">
               <strong>그룹원 모두 기록 가능</strong>
-              <div class="muted">모든 그룹원이 대화로 팀 세컨드브레인에 기록(커밋)할 수 있어요.</div>
+              <div class="muted">모든 그룹원이 대화로 공유 세컨드브레인에 기록(커밋)할 수 있어요.</div>
             </div>
           </label>
           <label class="radio-card">
@@ -1064,7 +1064,7 @@
         </div>
         <div class="settings-save-row">
           <span id={repoStatusId} class="settings-save-status" class:dirty={repoDirty && !repoBusy && !repoError} class:pending={repoBusy} class:invalid={Boolean(repoError)} role="status" aria-live="polite">{repoStatus}</span>
-          <button class="primary" type="submit" disabled={!repoCanSave}>{repoBusy ? "저장 중…" : savedGroupRepo ? "변경 저장" : "연결"}</button>
+          <button class="primary" type="submit" disabled={!repoCanSave}>{repoBusy ? "저장 중…" : savedGroupRepo ? "저장" : "연결"}</button>
         </div>
       </form>
       {#if !group.knowledgeRepo}

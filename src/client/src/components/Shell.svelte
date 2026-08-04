@@ -5,7 +5,7 @@
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
   import { addConversationToSplit, clearChatHistory, newChat, selectConversation, startNewChat } from "../lib/chat";
-  import { formatDate } from "../lib/format";
+  import { timeLabel } from "../lib/format";
   import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { prefersReducedMotion, project, rubberband, springValue } from "../lib/motion";
   import { goView } from "../lib/nav";
@@ -231,13 +231,21 @@
       notify("응답 중인 대화가 있습니다. 먼저 응답을 중지해 주세요.", "warn");
       return;
     }
-    if (!(await confirmAction("저장된 모든 일반 대화 기록을 삭제할까요? 삭제하면 되돌릴 수 없습니다."))) return;
+    // The visible button says 비우기, so the confirm, the toast and the
+    // aria-label all say 비우기 too — a screen-reader user must hear the same
+    // verb the button shows.
+    const confirmed = await confirmAction("저장된 모든 일반 대화 기록을 비울까요? 비우면 되돌릴 수 없습니다.", {
+      title: "대화 기록을 비울까요?",
+      confirmLabel: "비우기",
+      tone: "danger",
+    });
+    if (!confirmed) return;
     clearingConversations = true;
     try {
       const deleted = await clearChatHistory();
-      notify(deleted ? `${deleted}개의 대화를 삭제했습니다.` : "삭제할 대화가 없습니다.", "ok");
+      notify(deleted ? `${deleted}개의 대화를 비웠습니다.` : "비울 대화가 없습니다.", "ok");
     } catch (err) {
-      notify(`전체 삭제 실패: ${(err as Error).message}`, "warn");
+      notify(`전체 비우기 실패: ${(err as Error).message}`, "warn");
     } finally {
       clearingConversations = false;
     }
@@ -651,13 +659,13 @@
       <button
         class="rail-clear-history"
         type="button"
-        aria-label="모든 일반 대화 삭제"
-        title="모든 일반 대화 삭제"
+        aria-label="모든 일반 대화 비우기"
+        title="모든 일반 대화 비우기"
         disabled={conversationsLoading || clearingConversations || chatConversationCount === 0}
         on:click={clearConversations}
       >
         <Icon name="trash" size={13} />
-        <span>{clearingConversations ? "삭제 중" : "비우기"}</span>
+        <span>{clearingConversations ? "비우는 중…" : "비우기"}</span>
       </button>
     </div>
     <div class="conv-list-wrap">
@@ -759,7 +767,7 @@
                   on:click={() => openConversation(conversation)}
                 >
                   <span class="conv-name">{conversationTitle(conversation)}</span>
-                  <span class="conv-time">{conversation.avatarDisplayName} · {formatDate(conversation.updatedAt)}</span>
+                  <span class="conv-time">{conversation.avatarDisplayName} · {timeLabel(conversation.updatedAt)}</span>
                 </button>
                 <div class="conv-acts">
                   <button

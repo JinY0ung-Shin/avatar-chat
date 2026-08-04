@@ -87,13 +87,13 @@ function optionalText(
 ): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string") {
-    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].${field} must be a string.`);
+    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].${field}은(는) 문자열이어야 합니다.`);
   }
   const text = value.trim();
   if (!text) return undefined;
   if (text.length > max) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}].${field} exceeds ${max} characters.`,
+      `EXTERNAL_AGENTS_JSON[${index}].${field}은(는) ${max}자를 초과할 수 없습니다.`,
     );
   }
   return text;
@@ -107,7 +107,7 @@ function requiredText(
 ): string {
   const text = optionalText(value, field, index, max);
   if (!text) {
-    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].${field} is required.`);
+    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].${field}은(는) 필수입니다.`);
   }
   return text;
 }
@@ -119,7 +119,7 @@ function optionalBoolean(
 ): boolean | undefined {
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "boolean") {
-    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].${field} must be a boolean.`);
+    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].${field}은(는) true 또는 false여야 합니다.`);
   }
   return value;
 }
@@ -138,7 +138,7 @@ function optionalDurationMs(
     value > maxSeconds
   ) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}].${field} must be a positive number up to ${maxSeconds} seconds.`,
+      `EXTERNAL_AGENTS_JSON[${index}].${field}은(는) ${maxSeconds}초 이하의 양수여야 합니다.`,
     );
   }
   return Math.max(1, Math.round(value * 1_000));
@@ -149,38 +149,38 @@ function endpointFor(raw: Record<string, unknown>, index: number): string {
   const base = optionalText(raw.baseUrl, "baseUrl", index, 2_048);
   if (exact && base) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}] must use endpoint or baseUrl, not both.`,
+      `EXTERNAL_AGENTS_JSON[${index}] endpoint와 baseUrl 중 하나만 지정해야 합니다. 둘 다 지정할 수 없습니다.`,
     );
   }
   if (!exact && !base) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}] requires endpoint or baseUrl.`,
+      `EXTERNAL_AGENTS_JSON[${index}] endpoint 또는 baseUrl이 필요합니다.`,
     );
   }
   let parsed: URL;
   try {
     parsed = new URL(exact ?? base!);
   } catch {
-    throw new Error(`EXTERNAL_AGENTS_JSON[${index}] has an invalid endpoint URL.`);
+    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].endpoint URL 형식이 올바르지 않습니다.`);
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}] endpoint must use http or https.`,
+      `EXTERNAL_AGENTS_JSON[${index}].endpoint는 http 또는 https여야 합니다.`,
     );
   }
   if (parsed.username || parsed.password) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}] endpoint must not contain credentials.`,
+      `EXTERNAL_AGENTS_JSON[${index}].endpoint에는 인증 정보를 포함할 수 없습니다.`,
     );
   }
   if (parsed.hash) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}] endpoint must not contain a URL fragment.`,
+      `EXTERNAL_AGENTS_JSON[${index}].endpoint에는 URL 프래그먼트(#)를 포함할 수 없습니다.`,
     );
   }
   if (parsed.search) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}] endpoint must not contain a query string.`,
+      `EXTERNAL_AGENTS_JSON[${index}].endpoint에는 쿼리 문자열(?)을 포함할 수 없습니다.`,
     );
   }
   const normalizedPath = parsed.pathname.replace(/\/+$/, "");
@@ -191,7 +191,7 @@ function endpointFor(raw: Record<string, unknown>, index: number): string {
   } else {
     if (!normalizedPath.endsWith("/v1/agents/messages")) {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].endpoint must end with /v1/agents/messages.`,
+        `EXTERNAL_AGENTS_JSON[${index}].endpoint는 /v1/agents/messages로 끝나야 합니다.`,
       );
     }
     parsed.pathname = normalizedPath;
@@ -202,14 +202,14 @@ function endpointFor(raw: Record<string, unknown>, index: number): string {
 function hashtagsFor(value: unknown, index: number): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value)) {
-    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].hashtags must be an array.`);
+    throw new Error(`EXTERNAL_AGENTS_JSON[${index}].hashtags는 배열이어야 합니다.`);
   }
   return [
     ...new Set(
       value.map((tag, tagIndex) => {
         if (typeof tag !== "string") {
           throw new Error(
-            `EXTERNAL_AGENTS_JSON[${index}].hashtags[${tagIndex}] must be a string.`,
+            `EXTERNAL_AGENTS_JSON[${index}].hashtags[${tagIndex}]은(는) 문자열이어야 합니다.`,
           );
         }
         return tag.trim().replace(/^#+/, "").slice(0, 40);
@@ -222,29 +222,29 @@ function visibleToGroupIdsFor(value: unknown, index: number): string[] | undefin
   if (value === undefined) return undefined;
   if (!Array.isArray(value)) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds must be an array.`,
+      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds는 배열이어야 합니다.`,
     );
   }
   if (value.length === 0) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds must not be empty; an external avatar is visible only to members of the listed groups.`,
+      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds는 비워 둘 수 없습니다. 외부 아바타는 여기에 지정한 그룹의 그룹원에게만 보입니다.`,
     );
   }
   if (value.length > MAX_VISIBLE_GROUPS) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds supports at most ${MAX_VISIBLE_GROUPS} groups.`,
+      `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds는 최대 ${MAX_VISIBLE_GROUPS}개 그룹까지 지정할 수 있습니다.`,
     );
   }
   const groupIds = value.map((groupId, groupIndex) => {
     if (typeof groupId !== "string") {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds[${groupIndex}] must be a string.`,
+        `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds[${groupIndex}]은(는) 문자열이어야 합니다.`,
       );
     }
     const normalized = groupId.trim();
     if (!normalized || normalized.length > 128) {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds[${groupIndex}] must contain a group id of at most 128 characters.`,
+        `EXTERNAL_AGENTS_JSON[${index}].visibleToGroupIds[${groupIndex}]에는 128자 이하의 그룹 ID를 입력해야 합니다.`,
       );
     }
     return normalized;
@@ -266,14 +266,14 @@ export function parseExternalAgents(
   try {
     decoded = JSON.parse(value);
   } catch {
-    throw new Error("EXTERNAL_AGENTS_JSON must be valid JSON.");
+    throw new Error("EXTERNAL_AGENTS_JSON은 올바른 JSON이어야 합니다.");
   }
   if (!Array.isArray(decoded)) {
-    throw new Error("EXTERNAL_AGENTS_JSON must be a JSON array.");
+    throw new Error("EXTERNAL_AGENTS_JSON은 JSON 배열이어야 합니다.");
   }
   if (decoded.length > MAX_EXTERNAL_AGENTS) {
     throw new Error(
-      `EXTERNAL_AGENTS_JSON supports at most ${MAX_EXTERNAL_AGENTS} agents.`,
+      `EXTERNAL_AGENTS_JSON에는 최대 ${MAX_EXTERNAL_AGENTS}개의 외부 아바타만 등록할 수 있습니다.`,
     );
   }
 
@@ -281,38 +281,38 @@ export function parseExternalAgents(
   return decoded.map((entry, index) => {
     const raw = record(entry);
     if (!raw) {
-      throw new Error(`EXTERNAL_AGENTS_JSON[${index}] must be an object.`);
+      throw new Error(`EXTERNAL_AGENTS_JSON[${index}] 항목은 객체여야 합니다.`);
     }
     const unknownField = Object.keys(raw).find(
       (field) => !EXTERNAL_AGENT_FIELDS.has(field),
     );
     if (unknownField) {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}] contains unsupported field '${unknownField}'.`,
+        `EXTERNAL_AGENTS_JSON[${index}] 지원하지 않는 설정 필드입니다: ${unknownField}`,
       );
     }
     const id = requiredText(raw.id, "id", index, 64);
     if (!ID_RE.test(id)) {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].id must use letters, numbers, _ or -.`,
+        `EXTERNAL_AGENTS_JSON[${index}].id는 영문/숫자/_/- 만 사용할 수 있습니다.`,
       );
     }
     if (seen.has(id)) {
-      throw new Error(`EXTERNAL_AGENTS_JSON contains duplicate id '${id}'.`);
+      throw new Error(`EXTERNAL_AGENTS_JSON에 중복된 id가 있습니다: ${id}`);
     }
     seen.add(id);
 
     const apiKeyEnv = optionalText(raw.apiKeyEnv, "apiKeyEnv", index, 128);
     if (apiKeyEnv && !ENV_NAME_RE.test(apiKeyEnv)) {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].apiKeyEnv is not a valid environment variable name.`,
+        `EXTERNAL_AGENTS_JSON[${index}].apiKeyEnv는 올바른 환경 변수 이름이 아닙니다.`,
       );
     }
     const inlineApiKey = optionalText(raw.apiKey, "apiKey", index, 8_192);
     const apiKey = apiKeyEnv ? lookupEnv(apiKeyEnv)?.trim() : inlineApiKey;
     if (apiKeyEnv && !apiKey) {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].apiKeyEnv points to an unset variable.`,
+        `EXTERNAL_AGENTS_JSON[${index}].apiKeyEnv가 가리키는 환경 변수가 설정되지 않았습니다.`,
       );
     }
 
@@ -338,7 +338,7 @@ export function parseExternalAgents(
     const agent = optionalText(raw.agent, "agent", index, 64) ?? "claude";
     if (agent !== "claude") {
       throw new Error(
-        `EXTERNAL_AGENTS_JSON[${index}].agent must be claude.`,
+        `EXTERNAL_AGENTS_JSON[${index}].agent는 claude만 지원합니다.`,
       );
     }
     return {
@@ -383,7 +383,7 @@ export function parseAdminExternalAgentInput(
     throw new Error(`지원하지 않는 설정 필드입니다: ${unknownField}`);
   }
   if (raw.agent !== undefined && raw.agent !== "claude") {
-    throw new Error("현재 외부 아바타 agent는 claude만 지원합니다.");
+    throw new Error("외부 아바타는 현재 Claude만 지원합니다. (agent: claude)");
   }
   const apiKeyMode = raw.apiKeyMode;
   if (
@@ -422,7 +422,7 @@ export function parseAdminExternalAgentInput(
     parsed.endpoint !== existing.endpoint
   ) {
     throw new Error(
-      "Gateway endpoint를 변경할 때는 새 API 키를 등록하거나 저장된 키를 삭제해야 합니다.",
+      "Gateway 주소를 변경할 때는 새 API 키를 등록하거나 저장된 키를 삭제해야 합니다.",
     );
   }
   return parsed;

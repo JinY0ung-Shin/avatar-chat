@@ -1,5 +1,8 @@
 <script lang="ts">
   import { createEventDispatcher, onDestroy } from "svelte";
+  import type { StylesheetJson } from "cytoscape";
+  import { cssToken, currentTheme, theme } from "../lib/theme";
+  import type { ResolvedTheme } from "../lib/theme";
   import type { KnowledgeGraph, KnowledgeGraphNode } from "../lib/types";
 
   // Reusable interactive knowledge-graph canvas (Obsidian-style). Renders a
@@ -17,6 +20,10 @@
   const dispatch = createEventDispatcher<{ select: KnowledgeGraphNode | null }>();
 
   // Vault-section colors (chosen to read on both light and dark themes).
+  // DELIBERATE token-system exemption: this is a categorical data-viz palette
+  // encoding a node's section, not UI chrome. It needs 8 mutually distinguishable
+  // hues, which the semantic token set doesn't provide — so it stays raw hex and
+  // stays theme-independent (the same hue must mean the same section in both).
   const SECTION_COLORS: Record<string, string> = {
     raw: "#f59e0b",
     sources: "#3b82f6",
@@ -66,6 +73,54 @@
   // when the parent clears the panel or selects from outside the canvas).
   $: if (cy) syncSelection(selectedId);
 
+  // Theme the live graph is currently styled for. cytoscape bakes stylesheet
+  // colors in at creation, so a `data-theme` flip would otherwise strand the
+  // graph on the old palette; `fromJson().update()` swaps them in place, which
+  // keeps the cose layout and the viewer's pan/zoom instead of remounting.
+  let styledTheme: ResolvedTheme | null = null;
+  $: if (cy && styledTheme && styledTheme !== $theme) restyleGraph($theme);
+
+  function restyleGraph(next: ResolvedTheme): void {
+    styledTheme = next;
+    cy?.style().fromJson(buildStyle(next === "dark")).update();
+  }
+
+  function buildStyle(dark: boolean): StylesheetJson {
+    const labelColor = dark ? "#e5e7eb" : "#1e293b";
+    const edgeColor = dark ? "#475569" : "#cbd5e1";
+    // Selection ring = the design accent, read live so it follows the theme.
+    return [
+      {
+        selector: "node",
+        style: {
+          label: "data(label)",
+          "font-size": 9,
+          color: labelColor,
+          "text-valign": "bottom",
+          "text-halign": "center",
+          "text-margin-y": 3,
+          "min-zoomed-font-size": 7,
+          width: 14,
+          height: 14,
+          "border-width": 0,
+        },
+      },
+      ...Object.entries(SECTION_COLORS).map(([section, color]) => ({
+        selector: `node[section = "${section}"]`,
+        style: { "background-color": color },
+      })),
+      {
+        selector: 'node[section = "unresolved"]',
+        style: { "background-opacity": 0.25, "border-width": 1, "border-color": edgeColor, "border-style": "dashed" },
+      },
+      {
+        selector: "edge",
+        style: { width: 1, "line-color": edgeColor, "curve-style": "haystack", opacity: 0.6 },
+      },
+      { selector: "node:selected", style: { "border-width": 3, "border-color": cssToken("--accent", "#0f766e") } },
+    ];
+  }
+
   function syncSelection(id: string | null): void {
     if (!cy) return;
     cy.batch(() => {
@@ -87,9 +142,6 @@
     try {
       const cytoscape = (await import("cytoscape")).default;
       if (!containerEl || token !== renderToken) return; // unmounted or replaced while the chunk loaded
-      const dark = document.documentElement.getAttribute("data-theme") === "dark";
-      const labelColor = dark ? "#e5e7eb" : "#1e293b";
-      const edgeColor = dark ? "#475569" : "#cbd5e1";
 
       const nodeById = new Map(g.nodes.map((n) => [n.id, n]));
       const elements = [
@@ -97,42 +149,13 @@
         ...g.edges.map((e, i) => ({ data: { id: `e${i}`, source: e.source, target: e.target } })),
       ];
 
-      const sectionStyles = Object.entries(SECTION_COLORS).map(([section, color]) => ({
-        selector: `node[section = "${section}"]`,
-        style: { "background-color": color },
-      }));
-
+      // Read the theme AFTER the await: it may have flipped while the chunk loaded.
+      styledTheme = currentTheme();
       cy = cytoscape({
         container,
         elements,
         layout: { name: "cose", animate: false, padding: 30, nodeRepulsion: 8000, idealEdgeLength: 80 },
-        style: [
-          {
-            selector: "node",
-            style: {
-              label: "data(label)",
-              "font-size": 9,
-              color: labelColor,
-              "text-valign": "bottom",
-              "text-halign": "center",
-              "text-margin-y": 3,
-              "min-zoomed-font-size": 7,
-              width: 14,
-              height: 14,
-              "border-width": 0,
-            },
-          },
-          ...sectionStyles,
-          {
-            selector: 'node[section = "unresolved"]',
-            style: { "background-opacity": 0.25, "border-width": 1, "border-color": edgeColor, "border-style": "dashed" },
-          },
-          {
-            selector: "edge",
-            style: { width: 1, "line-color": edgeColor, "curve-style": "haystack", opacity: 0.6 },
-          },
-          { selector: "node:selected", style: { "border-width": 3, "border-color": "#0ea5e9" } },
-        ],
+        style: buildStyle(styledTheme === "dark"),
       });
 
       cy.on("tap", "node", (evt: { target: { id(): string } }) => {

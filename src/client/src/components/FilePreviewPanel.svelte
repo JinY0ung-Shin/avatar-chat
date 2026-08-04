@@ -3,6 +3,7 @@
   import Icon from "./Icon.svelte";
   import { updateState } from "../lib/state";
   import { copyText } from "../lib/dom";
+  import { formatFileSize } from "../lib/format";
   import { getGraphViewer, isDrawioAttachment, loadGraphViewer } from "../lib/drawioViewer";
   import type { ChatPane, MessageAttachment } from "../lib/types";
 
@@ -195,12 +196,6 @@
     return att.name ? `${base}?name=${encodeURIComponent(att.name)}` : base;
   }
 
-  function formatFileSize(size: number | undefined): string {
-    if (!size || size <= 0) return "";
-    if (size < 1024) return `${size} B`;
-    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  }
 </script>
 
 {#if preview}
@@ -237,10 +232,13 @@
             on:click={(event) => copyText(drawioXml, event.currentTarget as HTMLButtonElement)}
           >복사</button>
         {/if}
+        <!-- draggable=false: a link styled as a button must not start a native
+             link-drag when the pointer moves during the press. -->
         <a
           class="btn btn-primary btn-sm"
           href={downloadHref(preview.attachment)}
           download={preview.attachment.name || undefined}
+          draggable="false"
         >다운로드</a>
         <button class="msg-act" type="button" aria-label="미리보기 닫기" title="닫기" on:click={close}>
           <Icon name="close" />

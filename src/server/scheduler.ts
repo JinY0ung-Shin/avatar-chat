@@ -28,6 +28,18 @@ function routineTimeoutMessage(timeoutMs: number): string {
 }
 
 /**
+ * Korean-lead a non-timeout routine failure. The cause is usually a raw English
+ * SDK/git error, and this text is persisted BOTH as the assistant message in the
+ * routine thread and as `lastError` (rendered verbatim in RoutinesView).
+ */
+function routineFailureMessage(error: unknown): string {
+  const cause = (error instanceof Error ? error.message : String(error)).trim();
+  return cause
+    ? `예약 작업 실행에 실패했습니다: ${cause}`
+    : "예약 작업 실행에 실패했습니다.";
+}
+
+/**
  * Jobs currently executing. Module-level on purpose: the scheduler tick and
  * the HTTP "run now" route must share ONE overlap guard, or the same job can
  * run twice concurrently.
@@ -193,9 +205,7 @@ async function runRoutineJobNow(
     // never involved in an unattended run.
     const detail = timedOut
       ? routineTimeoutMessage(timeoutMs)
-      : error instanceof Error
-        ? error.message
-        : String(error);
+      : routineFailureMessage(error);
     // Keep whatever the run produced before dying, alongside the cause — otherwise an
     // interrupted routine leaves NOTHING in its thread (this path never wrote a
     // message at all) and the owner can't tell how far it got. Best-effort: a failure

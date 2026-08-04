@@ -4,6 +4,7 @@
 
 <script lang="ts">
   import { onMount } from "svelte";
+  import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
   import { renderMarkdown } from "../lib/format";
   import type { AvatarDetail, SkillInfo } from "../lib/types";
@@ -165,14 +166,16 @@
     on:pointerdown={startResize}
     on:keydown={onResizeKeydown}
   ></div>
-  <button class="cap-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} aria-controls={bodyId} on:click={() => setCollapsed(true)}>›</button>
+  <button class="cap-collapse" type="button" aria-label="패널 접기" title="패널 접기" aria-expanded={!collapsed} aria-controls={bodyId} on:click={() => setCollapsed(true)}>
+    <Icon name="chevron-right" size={14} />
+  </button>
 
   <div id={bodyId} class="cap-body scroll-thin">
     <div class="cap-head">
       <h3>이 아바타의 역량</h3>
       <p class="cap-sub">{avatar.displayName} 아바타가 사용할 수 있는 도구</p>
       {#if avatar.groupAgent}
-        <p class="cap-sub">그룹 공유 에이전트 · {avatar.groupAgent.groupName} — 대화는 개인별로 비공개이며, 팀 공유는 그룹 지식저장소(공유 세컨드브레인)를 통해 이뤄져요.</p>
+        <p class="cap-sub">그룹 에이전트 · {avatar.groupAgent.groupName} — 대화는 개인별로 비공개이며, 그룹 공유는 그룹 지식 저장소(공유 세컨드브레인)를 통해 이뤄져요.</p>
       {/if}
     </div>
 
@@ -232,7 +235,7 @@
                 aria-describedby={hasDescription ? descId : undefined}
                 on:click={() => toggleSkill(key)}
               >
-                {#if hasDescription}<span class="cap-skill-caret" aria-hidden="true">▸</span>{/if}
+                {#if hasDescription}<span class="cap-skill-caret" aria-hidden="true"><Icon name="chevron-right" size={12} /></span>{/if}
                 <span class="cap-skill-name">{skill.name}</span>
                 {#if fromPlugin}<span class="cap-skill-src">{skill.source}</span>{/if}
               </button>
@@ -246,7 +249,22 @@
   </div>
 
   <button class="cap-expand" type="button" aria-label="역량 패널 펼치기" title="역량 패널 펼치기" aria-expanded={!collapsed} aria-controls={bodyId} on:click={() => setCollapsed(false)}>
-    <span aria-hidden="true">‹</span>
+    <span class="cap-expand-icon" aria-hidden="true"><Icon name="chevron-left" size={14} /></span>
     <span class="cap-expand-label">아바타 역량 보기</span>
   </button>
 </aside>
+
+<style>
+  /* The three chevrons are Icon SVGs, not text glyphs — their hosts were laid out
+     by inline text metrics, so centre the SVG explicitly. `.cap-expand` itself is
+     off-limits: global rules flip its `display` between none/block/flex. */
+  .cap-collapse {
+    display: grid;
+    place-items: center;
+  }
+  .cap-skill-caret,
+  .cap-expand-icon {
+    display: inline-flex;
+    align-items: center;
+  }
+</style>

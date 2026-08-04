@@ -20,7 +20,7 @@
       name: "SSH_PRIVATE_KEY",
       label: "SSH 개인키",
       description: "원격 SSH 도구가 사용할 OpenSSH/PEM 개인키입니다. 아래 'SSH 키' 생성 시 자동으로 채워져요.",
-      placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----\n...",
+      placeholder: "-----BEGIN OPENSSH PRIVATE KEY-----\n…",
       rows: 4,
     },
     {
@@ -82,7 +82,7 @@
       replaceState({ user: next });
       notify(
         on
-          ? `${name} 시크릿을 에이전트 셸에 노출합니다. 다음 대화부터 명령에서 $${name}으로 쓸 수 있어요.`
+          ? `${name} 시크릿을 아바타 셸에 노출합니다. 다음 대화부터 명령에서 $${name}으로 쓸 수 있습니다.`
           : `${name} 시크릿의 셸 노출을 껐습니다.`,
         "ok",
       );
@@ -443,7 +443,7 @@
             on:change={(event) => toggleExperimental(feature.key, event.currentTarget.checked)}
           />
           <span class="experimental-meta">
-            <strong>{feature.name} <span class="experimental-badge">실험</span></strong>
+            <strong>{feature.name} <span class="tag accent experimental-badge">실험</span></strong>
             <span class="muted">{feature.description}</span>
           </span>
         </label>
@@ -514,7 +514,7 @@
     <div class="panel-section-head">
       <div>
         <h3>시크릿</h3>
-        <p class="muted">내 아바타의 도구에만 주입되는 비밀값입니다. 암호화되어 저장되고 다시 표시되지 않습니다.</p>
+        <p class="muted">내 아바타의 도구에만 주입되는 시크릿 값입니다. 암호화되어 저장되고 다시 표시되지 않습니다.</p>
       </div>
     </div>
     <ul class="hint-list">
@@ -551,7 +551,7 @@
           <div class="secret-preset-actions">
             <span id={presetStatusId} class="settings-save-status" class:dirty={Boolean(presetFilled[preset.name] && !presetBusy[preset.name] && !presetErrors[preset.name])} class:pending={Boolean(presetBusy[preset.name])} class:invalid={Boolean(presetErrors[preset.name])} role="status" aria-live="polite">{presetStatusText[preset.name]}</span>
             {#if isSet && isShellExposableSecret(preset.name)}
-              <label class="shell-expose-toggle" title="켜면 이 값이 아바타의 셸(Bash) 환경변수로도 주입됩니다 (본인·신뢰 팀원 대화에서만, 도구 출력에서는 자동 가려짐)">
+              <label class="shell-expose-toggle" title="켜면 이 값이 아바타 셸(Bash) 환경변수로도 주입됩니다 (본인·신뢰하는 그룹원 대화에서만, 도구 출력에서는 자동 가려짐)">
                 <input
                   type="checkbox"
                   checked={shellExposed.has(preset.name)}
@@ -604,7 +604,7 @@
             <code>{name}</code>
             <span class="muted token-set">● 설정됨</span>
             {#if isShellExposableSecret(name)}
-              <label class="shell-expose-toggle" title="켜면 이 값이 아바타의 셸(Bash) 환경변수로도 주입됩니다 (본인·신뢰 팀원 대화에서만, 도구 출력에서는 자동 가려짐)">
+              <label class="shell-expose-toggle" title="켜면 이 값이 아바타 셸(Bash) 환경변수로도 주입됩니다 (본인·신뢰하는 그룹원 대화에서만, 도구 출력에서는 자동 가려짐)">
                 <input
                   type="checkbox"
                   checked={shellExposed.has(name)}
@@ -634,37 +634,35 @@
   .experimental-list {
     display: flex;
     flex-direction: column;
-    gap: var(--s-3, 12px);
+    gap: var(--s-3);
   }
   .experimental-item {
     display: flex;
     align-items: flex-start;
-    gap: var(--s-2, 8px);
+    gap: var(--s-2);
     cursor: pointer;
   }
   .experimental-item input {
-    margin-top: 3px;
+    margin-top: var(--s-1);
   }
   .experimental-meta {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--s-0-5);
     min-width: 0;
     overflow-wrap: anywhere;
   }
   .shell-expose-toggle {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
+    gap: var(--s-1);
     cursor: pointer;
     white-space: nowrap;
     min-height: 32px;
   }
+  /* Composes the global `.tag accent` base; only the deltas that make it read as
+     a label riding inside a <strong> heading live here. */
   .experimental-badge {
-    font-size: 0.65rem;
-    padding: 1px 6px;
-    border-radius: 999px;
-    background: var(--surface-2, #eee);
     font-weight: 600;
     vertical-align: middle;
   }

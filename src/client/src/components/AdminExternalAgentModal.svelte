@@ -121,14 +121,14 @@
         : !displayName.trim()
           ? "표시 이름을 입력해 주세요."
           : !endpointReady
-            ? "쿼리 없이 /v1/agents/messages로 끝나는 http(s) Gateway endpoint를 입력해 주세요."
+            ? "쿼리 없이 /v1/agents/messages로 끝나는 http(s) Gateway 주소를 입력해 주세요."
             : !groupsReady
               ? "공개할 그룹을 1개 이상 선택해 주세요."
               : missingGroupIds.length
                 ? "삭제되었거나 알 수 없는 그룹 선택을 먼저 해제해 주세요."
                 : !apiKeyReady
                   ? storedKeyNeedsReplacement
-                    ? "Gateway endpoint를 변경하려면 새 API 키를 등록하거나 저장된 키를 삭제해 주세요."
+                    ? "Gateway 주소를 변경하려면 새 API 키를 등록하거나 저장된 키를 삭제해 주세요."
                     : "교체할 Gateway API 키를 입력해 주세요."
                   : !timeoutsReady
                     ? "고급 시간 제한은 허용 범위 안의 양수여야 합니다."
@@ -398,7 +398,7 @@
     <div>
       <h2 id={titleId}>{agent ? "외부 아바타 편집" : "외부 아바타 추가"}</h2>
       <p class="muted" id={descriptionId}>
-        Noah가 stateless `/v1/agents/messages` Gateway를 통해 호출할 아바타를 설정합니다.
+        Noah가 무상태(stateless) `/v1/agents/messages` Gateway를 통해 호출할 아바타를 설정합니다.
       </p>
     </div>
     <label class="external-agent-enabled">
@@ -463,17 +463,17 @@
             {imageBusy ? "불러오는 중…" : imageSet ? "사진 변경" : "사진 선택"}
           </button>
           {#if imageSet}
-            <button class="ghost-sm" type="button" disabled={imageBusy} on:click={removeImage}>제거</button>
+            <button class="ghost-sm" type="button" disabled={imageBusy} on:click={removeImage}>사진 삭제</button>
           {/if}
         </div>
-        <small class="field-hint">탐색 카드와 대화 화면에 표시됩니다. 이미지를 복사한 뒤 Ctrl+V로 붙여넣어도 되고, 저장을 누르면 적용돼요.</small>
+        <small class="field-hint">탐색 카드와 대화 화면에 표시됩니다. 이미지를 복사한 뒤 Ctrl+V로 붙여넣어도 되며, 저장을 누르면 적용됩니다.</small>
       </div>
     </fieldset>
 
     <fieldset class="external-agent-section" disabled={busy || testBusy}>
       <legend>Gateway</legend>
       <label class="field">
-        <span>메시지 endpoint</span>
+        <span>메시지 주소</span>
         <input bind:value={endpoint} on:input={() => (endpointTouched = true)} type="url" placeholder="https://gateway.example/v1/agents/messages" autocomplete="url" required aria-invalid={endpointTouched && !endpointReady} aria-describedby={statusId} />
         <small class="field-hint">리디렉션은 허용하지 않으며 API 키는 Authorization: Bearer 헤더로만 전송됩니다.</small>
       </label>
@@ -481,7 +481,7 @@
         <label class="field">
           <span>Agent</span>
           <input value="claude" disabled />
-          <small class="field-hint">v1 계약은 Claude agent만 지원합니다.</small>
+          <small class="field-hint">v1 계약은 Claude Agent만 지원합니다.</small>
         </label>
         <!-- div + aria-labelledby (not a wrapping label): the hint text must not
              leak into the field's accessible label. -->
@@ -543,7 +543,7 @@
         <small class="field-hint">값은 암호화해 저장하고, 저장 후에는 다시 표시하지 않습니다.</small>
         {#if storedKeyNeedsReplacement}
           <small class="field-hint warn" role="alert">
-            endpoint가 바뀌면 기존 키를 새 주소로 전달하지 않습니다. 새 키 등록 또는 저장된 키 삭제를 선택하세요.
+            주소가 바뀌면 기존 키를 새 주소로 전달하지 않습니다. 새 키 등록 또는 저장된 키 삭제를 선택해 주세요.
           </small>
         {/if}
       </div>
@@ -574,7 +574,7 @@
       </p>
       <div class="external-agent-group-picker" role="group" aria-label="공개 그룹" aria-describedby={statusId}>
         {#if !groups.length && !missingGroupIds.length}
-          <div class="empty-note">먼저 왼쪽 '그룹' 탭에서 그룹을 만들어 주세요.</div>
+          <div class="empty-note">먼저 왼쪽 ‘그룹’ 탭에서 그룹을 만들어 주세요.</div>
         {:else}
           {#each groups as group (group.id)}
             <label class="external-agent-group-option">
@@ -625,7 +625,7 @@
       </div>
       <div class="routine-modal-actions-right">
         <button class="ghost-sm" type="button" disabled={busy || testBusy} on:click={() => dispatch("close")}>취소</button>
-        <button class="primary" type="submit" disabled={!canSubmit}>{busy ? "저장 중…" : agent ? "변경 저장" : "아바타 추가"}</button>
+        <button class="primary" type="submit" disabled={!canSubmit}>{busy ? "저장 중…" : agent ? "저장" : "아바타 추가"}</button>
       </div>
     </div>
   </form>

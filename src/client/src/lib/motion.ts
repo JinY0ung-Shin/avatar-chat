@@ -25,6 +25,11 @@ export function prefersReducedMotion(): boolean {
 /**
  * Display-synchronised scalar spring. Retargeting callers can cancel this and
  * feed the current presentation value and velocity into the next spring.
+ *
+ * The default `dampingRatio` is critically damped (1.0) per DESIGN §2.5: a
+ * programmatic settle must not overshoot. Underdamping (~0.8) is reserved for
+ * springs continuing a user's flick momentum, and those callers pass it
+ * explicitly.
  */
 export function springValue(options: SpringValueOptions): () => void {
   const {
@@ -32,7 +37,7 @@ export function springValue(options: SpringValueOptions): () => void {
     to,
     velocity: initialVelocity = 0,
     response = 0.3,
-    dampingRatio = 0.86,
+    dampingRatio = 1,
     onUpdate,
     onComplete,
   } = options;

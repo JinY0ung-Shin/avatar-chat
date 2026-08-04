@@ -57,7 +57,6 @@ import {
   avatarGradient,
   avatarImageUrl,
   countdownLabel,
-  formatDate,
   formatRoutineSchedule,
   relativeDayTimeLabel,
   formatTokenCount,
@@ -893,12 +892,6 @@ describe("format helpers", () => {
     for (let i = 0; i < 600; i += 1) renderMarkdownCached(`entry ${i}`);
     expect(renderMarkdownCached("entry 599")).toContain("entry 599");
     expect(renderMarkdownCached("entry 0")).toContain("entry 0");
-  });
-
-  it("formatDate returns '' for empty/invalid and a ko-KR label otherwise", () => {
-    expect(formatDate(null)).toBe("");
-    expect(formatDate("not-a-date")).toBe("");
-    expect(formatDate("2026-07-06T09:30:00Z")).not.toBe("");
   });
 
   it("normalizeTags strips markers, dedupes case-insensitively, caps length and count", () => {

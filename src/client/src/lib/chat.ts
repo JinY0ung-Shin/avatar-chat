@@ -66,8 +66,10 @@ export const PLUGIN_STATUS_LABELS: Record<string, string> = {
 export function humanTool(name: string | undefined): string {
   if (!name) return "도구";
   if (TOOL_LABELS[name]) return TOOL_LABELS[name];
-  const mcp = /^mcp__[^_]+__(.+)$/.exec(name);
-  return (mcp ? mcp[1] : name).replace(/_/g, " ");
+  // Keep in lockstep with sdkToolLabel (src/shared/sdkToolPresentation.ts):
+  // server segments may contain underscores (git_repo, group_agent).
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+  return (mcp ? mcp[2] : name).replace(/_/g, " ");
 }
 
 // Intelligent one-line summary of a tool's input: prefer a recognizable key
@@ -1021,9 +1023,18 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
 }
 
 function handleBlocked(paneId: string, data: any): void {
-  const reason = data.reason
-    ? `차단됨 · ${data.reason}`
-    : "읽기 전용이라 차단됨";
+  // `uiReason` is the server's Korean, user-facing explanation. `reason` mirrors
+  // the SDK's `decision_reason`, which is model-facing text and may still be
+  // English on paths the server hasn't phrased yet — show it only when there is
+  // nothing Korean, and tag it as a detail rather than pass it off as the label.
+  const ui = String(data.uiReason || "").trim();
+  const raw = String(data.reason || "").trim();
+  const korean = ui || (/[가-힣]/.test(raw) ? raw : "");
+  const reason = korean
+    ? `차단됨 · ${korean}`
+    : raw
+      ? `차단됨 (상세: ${raw})`
+      : "읽기 전용이라 차단됨";
   updatePane(paneId, (pane) => {
     const existing = data.toolUseId
       ? pane.liveTools.find((t) => t.id === data.toolUseId)

@@ -6,6 +6,15 @@ const API_ERROR_KO: Record<string, string> = {
   "Admin access required": "관리자 권한이 필요합니다.",
 };
 
+// The server phrases `apiError` in Korean, but an unmapped English string can
+// still reach us (legacy rows, an unexpected path, a proxy's own error body).
+// Raw English in a Korean UI reads as a crash, so wrap it in a Korean sentence
+// and keep the original as the detail instead of hiding it.
+function localizeApiError(raw: string): string {
+  if (!raw) return "";
+  return /[가-힣]/.test(raw) ? raw : `서버 오류가 발생했습니다. (상세: ${raw})`;
+}
+
 let sessionExpiredHandler: (() => void) | null = null;
 
 export function setSessionExpiredHandler(handler: () => void): void {
@@ -37,7 +46,11 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
   const body = await response.json().catch(() => ({}));
   if (!response.ok) {
     const raw = typeof body.error === "string" ? body.error.trim() : "";
-    throw new Error(API_ERROR_KO[raw] || raw || `서버 오류가 발생했습니다. (코드 ${response.status}) 잠시 후 다시 시도해 주세요.`);
+    throw new Error(
+      API_ERROR_KO[raw] ||
+        localizeApiError(raw) ||
+        `서버 오류가 발생했습니다. (코드 ${response.status}) 잠시 후 다시 시도해 주세요.`,
+    );
   }
   return body as T;
 }

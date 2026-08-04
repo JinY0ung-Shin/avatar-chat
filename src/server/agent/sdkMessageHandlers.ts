@@ -10,7 +10,9 @@ import {
   SDK_TASK_END_TOOLS,
   SDK_TASK_INSPECTION_TOOLS,
   SDK_TASK_UPDATE_TOOLS,
+  SDK_TOOL_LABELS,
   SDK_UI_HANDLED_TOOLS,
+  sdkToolLabel,
 } from "../../shared/sdkToolPresentation.js";
 
 /** Tools that spawn a subagent (shown as an agent node, not a tool row). */
@@ -228,7 +230,14 @@ function emitTaskUpdate(
     if (statusIsTerminal(update.status || "")) {
       events.onAgentEnd?.({ agentId: record.uiId, ok: taskOk(update.status || "") });
     } else {
-      const detail = update.summary || update.description || update.lastToolName;
+      // A mapped Korean tool label outranks the SDK's summary/description, which
+      // it writes in English; an unmapped name still gets humanized rather than
+      // shown as a raw id.
+      const detail =
+        (update.lastToolName && SDK_TOOL_LABELS[update.lastToolName]) ||
+        update.summary ||
+        update.description ||
+        sdkToolLabel(update.lastToolName);
       if (detail) {
         events.onStatus?.(`에이전트 작업 중: ${truncate(detail.replace(/\s+/g, " ").trim(), 120)}`);
       }
@@ -260,7 +269,7 @@ function handleTaskToolUse(
       // plan…" placeholder right away instead of letting it linger until the turn's
       // terminal reset and then vanish with no trace.
       events.onPlan?.(plan ? { plan } : { plan: "", planning: false });
-      events.onStatus?.(plan ? "계획을 확인하는 중…" : "계획 단계를 마쳤습니다.");
+      events.onStatus?.(plan ? "계획을 확인하는 중…" : "계획 단계 완료");
     } else {
       // EnterPlanMode: no plan exists yet. Signal the UI to show a "writing plan…"
       // placeholder so the planning phase (which suppresses tool rows) doesn't look
@@ -761,11 +770,20 @@ export function handleSystemEvent(message: Record<string, unknown>, events: Agen
   if (subtype === "permission_denied") {
     // A tool was auto-denied without an interactive prompt (read-only colleague,
     // dontAsk, or a deny rule). Surface it so the client can show "blocked".
+    // `decision_reason` is MODEL-facing text (English — on our own hook denies it
+    // is the directive prose from hookDeny), and this event arrives with the SAME
+    // toolUseId the hook already reported, so it would overwrite the hook's Korean
+    // row label. Carry a Korean `uiReason` so the row stays Korean either way.
+    const decisionReason =
+      asString(message.decision_reason) || asString(message.message);
     events.onBlocked?.({
       toolUseId: asString(message.tool_use_id) || undefined,
       toolName: asString(message.tool_name),
       agentId: asString(message.agent_id) || MAIN_AGENT_ID,
-      reason: asString(message.decision_reason) || asString(message.message) || undefined,
+      reason: decisionReason || undefined,
+      uiReason: decisionReason
+        ? `권한 정책에 따라 자동 거부되었습니다: ${truncate(decisionReason.replace(/\s+/g, " ").trim(), 120)}`
+        : "권한 정책에 따라 자동 거부되었습니다.",
     });
     return;
   }
@@ -852,9 +870,12 @@ export function dispatchSdkMessage(
   }
   if (message.type === "tool_progress") {
     if (events) {
-      const toolName =
-        asString(message.tool_name) || asString(message.toolName);
-      events.onStatus?.(toolName ? `실행 중: ${toolName}` : "실행 중…");
+      // Raw ids (`mcp__repo__write_file`) are an implementation detail — show the
+      // same label the activity row uses.
+      const label = sdkToolLabel(
+        asString(message.tool_name) || asString(message.toolName),
+      );
+      events.onStatus?.(label ? `실행 중: ${label}` : "실행 중…");
     }
     return { kind: "tool_progress" };
   }

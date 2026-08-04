@@ -1,6 +1,10 @@
+import { writable } from "svelte/store";
+
 const THEME_KEY = "noah-theme";
 
 export type ThemePref = "system" | "light" | "dark";
+/** The theme actually in effect — "system" already resolved against the OS. */
+export type ResolvedTheme = "light" | "dark";
 
 const media = typeof window !== "undefined" && window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
 
@@ -13,9 +17,42 @@ export function getThemePref(): ThemePref {
   }
 }
 
+function resolve(pref: ThemePref): ResolvedTheme {
+  return pref === "system" ? (media?.matches ? "dark" : "light") : pref;
+}
+
+/** The theme in effect right now, for one-shot imperative reads. */
+export function currentTheme(): ResolvedTheme {
+  if (typeof document === "undefined") return resolve(getThemePref());
+  return document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+}
+
+const resolvedTheme = writable<ResolvedTheme>(currentTheme());
+
+/**
+ * Resolved theme as a subscribable store. Canvas-style renderers (cytoscape,
+ * Vega, mermaid) read their colors imperatively at build time, so a `data-theme`
+ * flip alone leaves them stranded on the old palette — they subscribe here and
+ * re-derive. `applyTheme` is the single writer.
+ */
+export const theme = { subscribe: resolvedTheme.subscribe };
+
+/**
+ * A design-token value resolved against the theme in effect — e.g.
+ * `cssToken("--accent")` → "#0f766e". Custom properties are substituted in the
+ * computed style, so the `var()` chains resolve; `fallback` covers a context
+ * with no stylesheet loaded. For canvas/chart renderers that need a real color
+ * string instead of a CSS reference.
+ */
+export function cssToken(name: string, fallback = ""): string {
+  if (typeof document === "undefined" || typeof getComputedStyle !== "function") return fallback;
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback;
+}
+
 export function applyTheme(pref = getThemePref()): ThemePref {
-  const resolved = pref === "system" ? (media?.matches ? "dark" : "light") : pref;
+  const resolved = resolve(pref);
   document.documentElement.dataset.theme = resolved;
+  resolvedTheme.set(resolved);
   return pref;
 }
 

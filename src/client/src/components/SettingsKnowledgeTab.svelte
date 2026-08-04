@@ -95,7 +95,7 @@
     const lower = message.toLowerCase();
     if (lower.includes("repository not found")) return "저장소를 찾지 못했습니다. 저장소 주소 또는 접근 권한을 확인해 주세요.";
     if (lower.includes("command failed") || lower.includes("git clone")) return "저장소 내용을 가져오지 못했습니다.";
-    return message.length > 140 ? `${message.slice(0, 140)}...` : message;
+    return message.length > 140 ? `${message.slice(0, 140)}…` : message;
   }
 
   function shouldShowRepoErrorDetails(message: string): boolean {
@@ -382,7 +382,7 @@
     <div class="panel-section-head">
       <div>
         <h3>지식 저장소</h3>
-        <p class="muted">내 아바타가 일하며 쌓는 지식·스킬을 담는 사내 GitHub({githubHost}) 저장소입니다.</p>
+        <p class="muted">내 아바타가 일하며 쌓는 지식·스킬을 담는 사내 GitHub({githubHost}) 저장소예요.</p>
       </div>
       {#if user.knowledgeRepo}
         <div class="head-actions">
@@ -406,7 +406,7 @@
       </div>
       <div class="settings-save-row">
         <span id={knowledgeStatusId} class="settings-save-status" class:dirty={knowledgeDirty && !krBusy && !knowledgeError} class:pending={krBusy} class:invalid={Boolean(knowledgeError)} role="status" aria-live="polite">{knowledgeStatus}</span>
-        <button class="primary" type="submit" disabled={!knowledgeCanSave}>{krBusy ? "저장 중…" : savedKnowledgeRepo ? "변경 저장" : "연결"}</button>
+        <button class="primary" type="submit" disabled={!knowledgeCanSave}>{krBusy ? "저장 중…" : savedKnowledgeRepo ? "저장" : "연결"}</button>
       </div>
     </form>
 
@@ -429,7 +429,7 @@
           <span class="token-set">● GIT_TOKEN 연결됨 · 아바타가 커밋·푸시할 수 있어요</span>
         {:else}
           <span>
-            GIT_TOKEN이 없어 읽기만 가능합니다.
+            GIT_TOKEN이 없어 읽기만 가능해요.
             <button class="linkish" type="button" on:click={() => updateState((s) => (s.settingsTab = "access"))}>권한·연결 탭의 Git 자격증명</button>
             에서 사내 Git 토큰을 설정하면 아바타가 커밋·푸시할 수 있어요.
           </span>
@@ -523,7 +523,7 @@
                   disabled={refSaveBusy}
                   on:input={() => (refSaveError = "")}
                 />
-                <button class="primary" type="submit" disabled={refSaveBusy}>{refSaveBusy ? "적용 중…" : "저장"}</button>
+                <button class="primary" type="submit" disabled={refSaveBusy}>{refSaveBusy ? "저장 중…" : "저장"}</button>
               </form>
               {#if refSaveError}
                 <div class="error-note" role="alert">{refSaveError}</div>

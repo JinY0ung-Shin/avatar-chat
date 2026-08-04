@@ -1,19 +1,22 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import Icon from "./Icon.svelte";
   import { dismissToast, pauseToast, resumeToast, toasts } from "../lib/state";
-  import { cubicOut } from "svelte/easing";
+  import { quartOut } from "svelte/easing";
   import { fly } from "svelte/transition";
   import { prefersReducedMotion } from "../lib/motion";
 
   type PauseReason = "pointer" | "focus" | "document";
   const pauseReasons = new Map<string, Set<PauseReason>>();
 
+  // quartOut is the svelte/easing curve closest to the CSS `--ease-out`
+  // (cubic-bezier(0.16, 1, 0.3, 1)); 240ms is the top of the DESIGN §2.5 range.
   function toastIn() {
-    return { y: prefersReducedMotion() ? 0 : 14, duration: prefersReducedMotion() ? 120 : 260, easing: cubicOut };
+    return { y: prefersReducedMotion() ? 0 : 14, duration: prefersReducedMotion() ? 120 : 240, easing: quartOut };
   }
 
   function toastOut() {
-    return { y: prefersReducedMotion() ? 0 : 10, duration: prefersReducedMotion() ? 100 : 180, easing: cubicOut };
+    return { y: prefersReducedMotion() ? 0 : 10, duration: prefersReducedMotion() ? 100 : 180, easing: quartOut };
   }
 
   function setPaused(id: string, reason: PauseReason, paused: boolean): void {
@@ -81,7 +84,7 @@
           {toast.actionLabel}
         </button>
       {/if}
-      <button type="button" class="toast-close" aria-label="알림 닫기" on:click={() => dismissToast(toast.id)}>×</button>
+      <button type="button" class="toast-close" aria-label="알림 닫기" on:click={() => dismissToast(toast.id)}><Icon name="close" size={14} /></button>
     </div>
   {/each}
 </div>

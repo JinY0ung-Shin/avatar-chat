@@ -1,4 +1,7 @@
 /* ---- Onboarding modal + knowledge-repo link ---- */
+/* `.overlay` is the generic name (docs/DESIGN.md §4.4); `.modal-overlay` is its
+   long-standing alias. The blur lives in 80-apple-design.css, not here. */
+.overlay,
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -8,7 +11,6 @@
   justify-content: center;
   padding: var(--s-4);
   background: var(--scrim);
-  backdrop-filter: blur(2px);
 }
 .modal-card {
   width: min(460px, 100%);
@@ -60,12 +62,10 @@
   padding: var(--s-2-5) var(--s-3);
   font: inherit;
   line-height: 1.5;
-  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
 }
 .routine-modal-form textarea:focus {
-  outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .routine-preview-wrap {
   display: grid;
@@ -140,9 +140,7 @@
 }
 .schedule-row select:focus,
 .schedule-row input:focus {
-  outline: none;
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 .weekday-chips {
   display: flex;
@@ -159,7 +157,7 @@
   font-size: var(--t-sm);
   font-weight: 600;
   cursor: pointer;
-  transition: border-color 0.15s var(--ease), background 0.15s var(--ease), color 0.15s var(--ease);
+  transition: border-color 0.15s var(--ease-out), background 0.15s var(--ease-out), color 0.15s var(--ease-out);
 }
 .weekday-chip:hover {
   border-color: var(--accent-soft-strong);
@@ -425,7 +423,7 @@
 .onboard-connect h3 {
   margin: 0;
   font-size: var(--t-md);
-  line-height: 1.35;
+  line-height: 1.3;
 }
 .onboard-quick {
   display: grid;
@@ -480,7 +478,7 @@
 .onboard-step-copy {
   min-width: 0;
   display: grid;
-  gap: 2px;
+  gap: var(--s-0-5);
 }
 .onboard-step-copy strong {
   color: var(--text);
@@ -493,7 +491,7 @@
 .onboard-step-copy span {
   color: var(--text-soft);
   font-size: var(--t-xs);
-  line-height: 1.35;
+  line-height: 1.3;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -643,7 +641,7 @@
   margin-top: var(--s-0-5);
   padding: var(--s-1-5) var(--s-2-5);
   border-left: 2px solid var(--accent);
-  border-radius: var(--r-xs);
+  border-radius: var(--r-sm);
   background: var(--accent-soft);
   color: var(--text);
   font-size: var(--t-xs);
@@ -711,7 +709,7 @@
   padding: var(--s-3);
   border: 1px solid var(--line);
   border-radius: var(--r-md);
-  background: var(--surface-2, rgba(127, 127, 127, 0.04));
+  background: var(--surface-2);
 }
 .group-block-head {
   display: flex;
@@ -771,7 +769,8 @@
   background: var(--bg-elevated);
 }
 .group-add-pick:disabled {
-  opacity: 0.55;
+  cursor: not-allowed;
+  opacity: var(--disabled-opacity);
 }
 .group-add .primary {
   flex: none;
@@ -909,11 +908,10 @@
   color: var(--rail-muted);
 }
 .conv-search:disabled {
-  opacity: 0.65;
+  opacity: var(--disabled-opacity);
   cursor: not-allowed;
 }
 .conv-search:focus {
-  outline: none;
   border-color: var(--accent);
 }
 .conv-search-clear {

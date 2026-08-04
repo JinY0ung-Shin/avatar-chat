@@ -2,35 +2,117 @@
    Agent activity tree + interactive prompts
    ============================================================ */
 
-/* Small buttons used inside prompt cards. */
-.btn {
+/* ============================================================
+   Button family (docs/DESIGN.md §4.1) — ONE home for every button.
+
+   The legacy spellings (`primary`, `ghost-sm`, `linkish`) are TRUE aliases:
+   they are grouped INTO these rule sets rather than kept as parallel copies,
+   so `class="primary"` and `class="btn primary"` resolve identically. When you
+   add a variant, extend the grouped selector list — never fork a second block.
+   Resting paint for primary/ghost is finished in 80-apple-design.css, whose
+   selector lists must be extended in lockstep.
+   ============================================================ */
+.btn,
+.primary,
+.ghost-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s-1-5);
   border: 1px solid var(--line);
   background: var(--panel);
-  border-radius: var(--r-sm);
-  font-weight: 600;
-  cursor: pointer;
   color: var(--text);
+  border-radius: var(--r-md);
+  padding: var(--s-2-5) var(--s-4);
+  font-weight: 600;
   white-space: nowrap;
+  cursor: pointer;
 }
 .btn:disabled {
-  opacity: 0.55;
-  cursor: default;
+  opacity: var(--disabled-opacity);
+  cursor: not-allowed;
 }
-.btn-sm {
+
+/* Sizes. `.small` is NOT grouped here on purpose: it is also used on plain text
+   spans (`class="muted small"`), where button padding would be wrong — the
+   button-side `.small` lives on `.primary.small` / `.linkish.small`. */
+.btn.sm,
+.btn-sm,
+.ghost-sm {
+  border-radius: var(--r-sm);
   padding: var(--s-1-5) var(--s-3);
   font-size: var(--t-xs);
 }
-.btn-ghost:hover:not(:disabled) {
-  background: var(--panel-strong);
+.btn.lg {
+  padding: var(--s-3) var(--s-5);
+  font-size: var(--t-md);
 }
-.btn-primary {
+/* Square icon buttons follow the §4.1 tiers: 40px standalone, 28px row-inline. */
+.btn.icon {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+}
+.btn.icon.sm {
+  width: 28px;
+  height: 28px;
+}
+
+/* Variants. */
+.btn.primary,
+.btn-primary,
+.primary {
   border-color: var(--accent);
   background: var(--accent);
   color: var(--on-accent);
+  font-weight: 700;
+  box-shadow: var(--shadow-sm);
 }
-.btn-primary:hover:not(:disabled) {
+.btn.primary:hover:not(:disabled),
+.btn-primary:hover:not(:disabled),
+.primary:hover:not(:disabled) {
   background: var(--accent-strong);
   border-color: var(--accent-strong);
+}
+.btn.secondary {
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.btn.ghost,
+.btn-ghost,
+.ghost-sm {
+  background: transparent;
+}
+.btn.ghost:hover:not(:disabled),
+.btn-ghost:hover:not(:disabled) {
+  background: var(--panel-strong);
+}
+.btn.danger,
+.ghost-sm.danger {
+  color: var(--danger);
+  border-color: var(--danger-line);
+}
+/* :not(:disabled) lifts specificity above the 80-layer ghost hover (equal
+   specificity, later file) so danger buttons hover red, not grey — and the
+   border-color repeat keeps the danger edge the grey hover would overwrite. */
+.btn.danger:hover:not(:disabled),
+.ghost-sm.danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+  border-color: var(--danger-line);
+}
+.btn.link,
+.linkish {
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-weight: 600;
+  padding: 0;
+  cursor: pointer;
+  white-space: nowrap;
+}
+/* Sits inside flex rows that must not squeeze it. */
+.ghost-sm {
+  flex: none;
 }
 
 /* ---- Activity tree ---- */
@@ -95,7 +177,7 @@
 .activity-live > summary::before {
   content: "▸";
   font-size: var(--t-2xs);
-  transition: transform 0.15s var(--ease);
+  transition: transform 0.15s var(--ease-out);
 }
 .activity-done[open] > summary::before,
 .activity-live[open] > summary::before {
@@ -361,6 +443,9 @@
   animation: none;
   position: relative;
 }
+/* line-height matches the 11px spinner box exactly: the settled failed/blocked
+   states keep the plain box (only "done" switches to grid centering), so the
+   line box IS what centers the glyph vertically. Not an off-scale value to fix. */
 .tool-row[data-status="failed"] .tool-spinner::after {
   content: "✕";
   color: var(--warn);
@@ -429,9 +514,10 @@
 }
 
 /* ---- Permission modal (standalone, centered overlay) ----
-   z-index sits ABOVE the onboarding overlay (70) AND toasts (90): a blocking
-   prompt must stay answerable and must not have its action buttons covered by a
-   transient toast (which is pointer-events:auto and would steal the click). */
+   --z-prompt (110) must beat --z-modal (100) and --z-toast (90): a blocking
+   prompt must stay answerable above the onboarding/modal overlay, and must not
+   have its action buttons covered by a transient toast (which is
+   pointer-events:auto and would steal the click). */
 .prompt-modal-backdrop {
   position: fixed;
   inset: 0;
@@ -466,7 +552,7 @@
   max-height: calc(100dvh - 2 * var(--s-4));
   overflow-y: auto;
   box-shadow: var(--shadow-lg);
-  animation: prompt-modal-in 0.16s var(--ease, ease-out);
+  animation: prompt-modal-in 0.16s var(--ease-out);
 }
 @keyframes prompt-modal-in {
   from { opacity: 0; transform: translateY(8px) scale(0.98); }
@@ -618,11 +704,11 @@
   cursor: pointer;
 }
 .q-option:hover:not(:disabled) {
-  border-color: var(--accent-ring);
+  border-color: var(--accent);
 }
 .q-option:disabled {
   cursor: not-allowed;
-  opacity: 0.72;
+  opacity: var(--disabled-opacity);
 }
 .q-option.selected {
   border-color: var(--accent);
@@ -654,7 +740,6 @@
   resize: vertical;
 }
 .q-custom-input:focus {
-  outline: none;
   border-color: var(--accent);
 }
 .q-custom-input[hidden] {
@@ -677,6 +762,8 @@
 .md > :last-child {
   margin-bottom: 0;
 }
+/* .md prose scale is deliberately relative (em) to the chat reading context —
+   exempt from --t-* tokens (DESIGN.md §2.4 decision) */
 .md h1,
 .md h2,
 .md h3,
@@ -763,7 +850,7 @@
   color: var(--code-fg-muted);
   border-radius: var(--r-xs);
   opacity: 0;
-  transition: opacity 0.15s var(--ease), background 0.15s var(--ease);
+  transition: opacity 0.15s var(--ease-out), background 0.15s var(--ease-out);
 }
 .code-block:hover .code-copy,
 .code-block .code-copy:focus-visible {
@@ -897,7 +984,7 @@ tbody tr:hover td {
   background: var(--bg-elevated);
   padding: var(--s-2);
   box-shadow: var(--shadow-sm);
-  transition: border-color 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
 }
 
 /* Panes without the image-attach button (external avatars) render only the
@@ -918,14 +1005,14 @@ tbody tr:hover td {
   flex: none;
   cursor: pointer;
   color: var(--muted);
-  transition: background 0.15s var(--ease), color 0.15s var(--ease);
+  transition: background 0.15s var(--ease-out), color 0.15s var(--ease-out);
 }
 .composer-attach:hover {
-  background: var(--n-100);
+  background: var(--panel-strong);
   color: var(--text);
 }
 .composer-attach.disabled {
-  opacity: 0.5;
+  opacity: var(--disabled-opacity);
   pointer-events: none;
 }
 .composer-attach svg {
@@ -961,11 +1048,11 @@ tbody tr:hover td {
   right: 2px;
   width: 20px;
   height: 20px;
-  border-radius: 999px;
+  border-radius: var(--r-pill);
   display: grid;
   place-items: center;
   background: rgba(0, 0, 0, 0.6);
-  color: #fff;
+  color: var(--on-scrim);
   border: none;
 }
 .composer-thumb-remove svg {
@@ -974,7 +1061,6 @@ tbody tr:hover td {
 }
 .composer-box.focused {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-ring);
 }
 
 .composer textarea {
@@ -1012,8 +1098,8 @@ textarea::placeholder {
   background: var(--accent-strong);
 }
 .send-button:disabled {
-  cursor: default;
-  opacity: 0.45;
+  cursor: not-allowed;
+  opacity: var(--disabled-opacity);
 }
 .send-button.is-stop {
   background: var(--danger);
@@ -1191,7 +1277,7 @@ textarea::placeholder {
 }
 .composer-tools-item small {
   color: var(--muted);
-  line-height: 1.35;
+  line-height: 1.3;
 }
 
 .slash-menu {
@@ -1249,7 +1335,7 @@ textarea::placeholder {
   display: inline-block;
   margin-top: var(--s-0-5);
   padding: 0 var(--s-1);
-  border-radius: var(--r-xs, 4px);
+  border-radius: var(--r-xs);
   background: var(--accent-soft);
   color: var(--accent-strong);
   font-family: var(--font-sans);
@@ -1268,7 +1354,7 @@ textarea::placeholder {
 .slash-option-main span {
   color: var(--muted);
   font-size: var(--t-xs);
-  line-height: 1.35;
+  line-height: 1.3;
   overflow-wrap: anywhere;
 }
 
@@ -1305,7 +1391,13 @@ textarea::placeholder {
   color: var(--muted);
 }
 
-.tag {
+/* Chip/badge family (docs/DESIGN.md §4.3). `.meta-badge` and `.plugin-chip` are
+   TRUE aliases — one geometry here, only their deltas below. Their domain status
+   variants stay in 20-shell-chat.css (higher specificity, so order-independent);
+   the deltas must sit HERE, right after the base, to win the cascade. */
+.tag,
+.meta-badge,
+.plugin-chip {
   display: inline-flex;
   align-items: center;
   border: 1px solid var(--line);
@@ -1315,6 +1407,13 @@ textarea::placeholder {
   font-size: var(--t-2xs);
   background: var(--bg);
   white-space: nowrap;
+}
+.meta-badge {
+  font-weight: 600;
+}
+.plugin-chip {
+  gap: var(--s-1-5);
+  color: var(--text-soft);
 }
 .tag.accent {
   color: var(--accent-strong);
@@ -1392,14 +1491,14 @@ textarea::placeholder {
    ============================================================ */
 .msg-time {
   color: var(--muted);
-  font-weight: 500;
+  font-weight: 600;
 }
 .msg-actions {
   display: flex;
   gap: var(--s-0-5);
   padding: 0 var(--s-0-5);
   opacity: 0;
-  transition: opacity 0.15s var(--ease);
+  transition: opacity 0.15s var(--ease-out);
 }
 .message.user .msg-actions {
   justify-content: flex-end;
@@ -1478,8 +1577,8 @@ textarea::placeholder {
   position: absolute;
   right: var(--s-5);
   bottom: var(--s-4);
-  width: 38px;
-  height: 38px;
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -1537,23 +1636,5 @@ textarea::placeholder {
 /* ============================================================
    Small ghost buttons
    ============================================================ */
-.ghost-sm {
-  border: 1px solid var(--line);
-  background: var(--panel);
-  border-radius: var(--r-sm);
-  padding: var(--s-1-5) var(--s-3);
-  font-size: var(--t-xs);
-  font-weight: 600;
-  flex: none;
-  white-space: nowrap;
-}
-.ghost-sm:hover {
-  background: var(--panel-strong);
-}
-.ghost-sm.danger {
-  color: var(--danger);
-  border-color: var(--danger-line);
-}
-.ghost-sm.danger:hover {
-  background: var(--danger-soft);
-}
+/* .ghost-sm is an alias of `.btn.ghost.sm` — see the button family at the top of
+   this file; its hover comes from the 80-layer ghost list. */

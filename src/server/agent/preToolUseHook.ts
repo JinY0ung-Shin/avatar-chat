@@ -273,8 +273,8 @@ export function buildPreToolUseHook(
       if (activeRepoMode) {
         const gitSub = stateChangingGitInBash(asString(toolInput.command));
         if (gitSub) {
-          const reason = `'git ${gitSub}'은(는) 활성 저장소 작업공간에서 셸로 실행할 수 없습니다. 원격/동기화 작업은 mcp__git_repo__* 도구를 사용하고, 위험한 로컬 git 작업은 피하세요.`;
-          events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+          const uiReason = `'git ${gitSub}'은(는) 활성 저장소 작업공간에서 셸로 실행할 수 없습니다. 원격/동기화 작업은 mcp__git_repo__* 도구를 사용하고, 위험한 로컬 git 작업은 피하세요.`;
+          events.onBlocked?.({ toolUseId, toolName, agentId, uiReason });
           agentLogger.info({ toolName, agentId, gitSub }, "active-repo bash git blocked");
           return trace(hookDeny(
             `Running 'git ${gitSub}' via Bash is not allowed in the active repo workspace. ` +
@@ -293,8 +293,8 @@ export function buildPreToolUseHook(
     if (!visionEnabled && toolName === "Read") {
       const filePath = asString(toolInput.file_path);
       if (NO_VISION_READ_BLOCKED.test(filePath)) {
-        const reason = "현재 모델은 이미지 입력을 지원하지 않아 이미지/PDF 읽기가 차단되었습니다.";
-        events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+        const uiReason = "현재 모델은 이미지 입력을 지원하지 않아 이미지/PDF 읽기가 차단되었습니다.";
+        events.onBlocked?.({ toolUseId, toolName, agentId, uiReason });
         agentLogger.info({ toolName, agentId, filePath }, "no-vision image read blocked");
         return trace(
           hookDeny(
@@ -320,8 +320,8 @@ export function buildPreToolUseHook(
         (toolSkillPolicy.disabledSkills.includes(skillName) ||
           toolSkillPolicy.disabledSkills.includes(bareName))
       ) {
-        const reason = `관리자가 비활성화한 스킬입니다: ${skillName}`;
-        events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+        const uiReason = `관리자가 비활성화한 스킬입니다: ${skillName}`;
+        events.onBlocked?.({ toolUseId, toolName, agentId, uiReason });
         agentLogger.info({ toolName, agentId, skillName }, "admin-disabled skill blocked");
         return trace(
           hookDeny(
@@ -332,8 +332,8 @@ export function buildPreToolUseHook(
       }
     }
     if (toolSkillPolicy.disabledTools.includes(toolName)) {
-      const reason = `관리자가 비활성화한 도구입니다: ${toolName}`;
-      events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+      const uiReason = `관리자가 비활성화한 도구입니다: ${toolName}`;
+      events.onBlocked?.({ toolUseId, toolName, agentId, uiReason });
       agentLogger.info({ toolName, agentId }, "admin-disabled tool blocked");
       return trace(
         hookDeny(
@@ -347,8 +347,8 @@ export function buildPreToolUseHook(
       if (isHexSshToolAllowed(toolName, hexSshViewerClass, hexSshPolicy)) {
         return trace(hookAllow(updatedToolInput));
       }
-      const reason = `현재 권한에서는 hex-ssh 도구 '${hexSshTool}' 사용이 허용되지 않습니다.`;
-      events.onBlocked?.({ toolUseId, toolName, agentId, reason });
+      const uiReason = `현재 권한에서는 hex-ssh 도구 '${hexSshTool}' 사용이 허용되지 않습니다.`;
+      events.onBlocked?.({ toolUseId, toolName, agentId, uiReason });
       agentLogger.info({ toolName, agentId, viewerClass: hexSshViewerClass }, "hex-ssh tool blocked");
       return trace(hookDeny(`The hex-ssh tool '${hexSshTool}' is not permitted at your current permission level.`));
     }
@@ -381,7 +381,7 @@ export function buildPreToolUseHook(
       );
     }
 
-    events.onBlocked?.({ toolUseId, toolName, agentId, reason: "읽기 전용 대화에서는 쓸 수 없는 도구입니다." });
+    events.onBlocked?.({ toolUseId, toolName, agentId, uiReason: "읽기 전용 대화에서는 쓸 수 없는 도구입니다." });
     agentLogger.info({ toolName, agentId, reason: "read-only" }, "tool blocked");
     return trace(
       hookDeny(

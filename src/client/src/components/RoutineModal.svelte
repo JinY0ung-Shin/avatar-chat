@@ -130,7 +130,7 @@
     : "";
   $: routineDirty = !isEdit || nameTrimmed !== initialName || prompt !== initialPrompt || scheduleDirty;
   $: routineCanSave = Boolean(!busy && promptTrimmed && scheduleReady && routineDirty);
-  $: saveButtonLabel = busy ? "저장 중…" : isEdit ? "변경 저장" : "예약 작업 추가";
+  $: saveButtonLabel = busy ? "저장 중…" : isEdit ? "저장" : "예약 작업 추가";
   $: {
     if (busy) routineStatus = "저장 중…";
     else if (!promptTrimmed) routineStatus = "작업 프롬프트를 입력해 주세요.";

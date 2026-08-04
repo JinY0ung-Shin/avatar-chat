@@ -138,7 +138,7 @@ describe("external avatar admin UI", () => {
     await fireEvent.input(screen.getByLabelText("Gateway API 키"), {
       target: { value: "new-gateway-secret" },
     });
-    await fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
+    await fireEvent.click(screen.getByRole("button", { name: "저장" }));
 
     // calls[0] is the editor's quiet model-catalog fetch on open; find the save.
     await waitFor(() =>
@@ -325,15 +325,15 @@ describe("external avatar admin UI", () => {
       },
     );
     expect(
-      await screen.findByText(/endpoint가 바뀌면 기존 키를 새 주소로 전달하지 않습니다/),
+      await screen.findByText(/주소가 바뀌면 기존 키를 새 주소로 전달하지 않습니다/),
     ).toBeTruthy();
     expect(
-      (screen.getByRole("button", { name: "변경 저장" }) as HTMLButtonElement)
+      (screen.getByRole("button", { name: "저장" }) as HTMLButtonElement)
         .disabled,
     ).toBe(true);
 
     await fireEvent.click(screen.getByRole("radio", { name: "저장된 키 삭제" }));
-    await fireEvent.click(screen.getByRole("button", { name: "변경 저장" }));
+    await fireEvent.click(screen.getByRole("button", { name: "저장" }));
 
     // calls[0] is the editor's quiet model-catalog fetch on open; find the save.
     await waitFor(() =>

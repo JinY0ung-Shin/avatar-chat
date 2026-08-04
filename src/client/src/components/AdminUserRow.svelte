@@ -103,8 +103,8 @@
           method: "PUT",
           body: JSON.stringify({ visibility }),
         }).then(() => undefined),
-      "공개 설정 실패",
-      `${user.displayName}님의 공개 범위를 '${label}'(으)로 변경했습니다.`,
+      "공개 범위 변경 실패",
+      `${user.displayName}님의 공개 범위를 ‘${label}’(으)로 변경했습니다.`,
     );
   }
 
