@@ -12,7 +12,7 @@ export const MAIN_AGENT_ID = "main";
  * The model asked to use a tool that is NOT pre-approved. The host decides
  * whether to run it. Only ever raised for the avatar's OWNER (colleagues stay
  * read-only and get an `onBlocked` notice instead). The returned decision is
- * fed straight back to the SDK's `canUseTool`.
+ * fed back to the SDK as the PreToolUse hook's permission decision.
  */
 export interface PermissionRequest {
   toolUseId: string;
@@ -27,7 +27,18 @@ export interface PermissionRequest {
   /** Which agent wants the tool: MAIN_AGENT_ID or a subagent's id. */
   agentId: string;
 }
-export type PermissionDecision = { behavior: "allow" } | { behavior: "deny" };
+export type PermissionDecision =
+  | { behavior: "allow" }
+  | {
+      behavior: "deny";
+      /**
+       * True when the prompt expired (TTL) or the run ended before ANY answer,
+       * as opposed to the owner explicitly clicking 거부. The hook words the
+       * deny reason differently so the model never mistakes an unattended
+       * prompt for a refusal.
+       */
+      unanswered?: boolean;
+    };
 
 /**
  * The model invoked AskUserQuestion (or another `request_user_dialog` kind).

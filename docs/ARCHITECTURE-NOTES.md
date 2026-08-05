@@ -802,6 +802,14 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `!headless && elevated && autoApprove` path — **`elevated` = owner OR trusted user**, not owner-only;
   headless routines and plain colleague chats stay read-only. But `isAutoAllowed` auto-allows EVERY
   `mcp__*` tool at the hook BEFORE that check, so any in-process MCP server MUST self-gate in its handlers.
+- **The CLI bounds SDK callback hooks with a per-hook abort (10 min default, `hh=600000` in the CLI;
+  CLIs before 2.1.218 misreport the abort to the model as a USER REJECTION).** Our gate legitimately
+  parks awaiting the owner's modal answer, so the PreToolUse matcher pins `timeout` (SECONDS) to
+  `PROMPT_TTL_MS/1000 + 60` — the run registry always settles a parked prompt (answer / 30-min TTL /
+  run end) BEFORE the CLI gives up. This bit since CLI 2.1.212 made subagents background-by-default:
+  their prompts now arrive after the visible turn, i.e. typically unattended. When the prompt resolves
+  with NO answer (TTL/stop), `onPermission` returns `{behavior:"deny", unanswered:true}` and the hook
+  words the deny as "went unanswered — not a refusal" (+ an `onBlocked` notice), never as a user refusal.
 - **Background phase (`run_in_background` tasks outliving the visible reply).** A `query()` is NOT one
   model turn: with live background tasks (Bash/Agent `run_in_background`) the SDK emits the first
   `result` but KEEPS the process alive, wakes the model when a task settles (`task_notification`), and

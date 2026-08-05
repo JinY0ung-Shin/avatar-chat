@@ -919,6 +919,10 @@ describe("cancellation + run registry", () => {
     for (const name of ["plan_review", "permission", "question", "canvas", "cancelled"]) {
       expect(frames.map((f) => f.event)).toContain(name);
     }
+    // The stop resolved the permission prompt WITHOUT an answer — the decision
+    // must say so (unanswered), not read as an explicit user refusal.
+    const delta = frames.find((f) => f.event === "delta")!.data as { text: string };
+    expect(JSON.parse(delta.text).perm).toEqual({ behavior: "deny", unanswered: true });
   }, LIVE);
 
   it("cancels the in-flight run when its conversation is deleted", async () => {

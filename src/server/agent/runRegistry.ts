@@ -23,9 +23,12 @@ export const CANCELLED = Symbol("cancelled");
  * How long an interactive prompt waits before auto-cancelling. Without this an
  * abandoned prompt (user closed the tab mid-permission) parks the run, its SDK
  * subprocess, and the conversation lock forever. Generous — the user may simply
- * be away from the tab.
+ * be away from the tab. Exported because the PreToolUse hook matcher's CLI-side
+ * budget (`timeout` in claudeAgent.ts) must stay ABOVE this: the CLI aborts SDK
+ * callback hooks after its own timeout, and this registry must always settle a
+ * parked prompt (answer / TTL / run end) before the CLI gives up on the hook.
  */
-const PROMPT_TTL_MS = 30 * 60 * 1000;
+export const PROMPT_TTL_MS = 30 * 60 * 1000;
 
 interface Pending {
   resolve: (value: unknown) => void;

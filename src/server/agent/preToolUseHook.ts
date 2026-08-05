@@ -374,11 +374,27 @@ export function buildPreToolUseHook(
         input: safeToolInput(toolInput),
         agentId,
       });
-      return trace(
-        decision.behavior === "allow"
-          ? hookAllow(updatedToolInput)
-          : hookDeny("The user denied the use of this tool."),
-      );
+      if (decision.behavior === "allow") {
+        return trace(hookAllow(updatedToolInput));
+      }
+      if (decision.unanswered) {
+        // The prompt expired (TTL) or the run ended before anyone clicked —
+        // common when a background subagent asks after the visible turn ended.
+        // Never word this as a refusal: the owner likely never saw the prompt.
+        events.onBlocked?.({
+          toolUseId,
+          toolName,
+          agentId,
+          uiReason: "권한 요청이 응답 없이 만료되어 도구를 실행하지 않았습니다.",
+        });
+        return trace(
+          hookDeny(
+            "The permission prompt went unanswered (the owner may not have seen it) — do NOT treat this as a refusal. " +
+              "Retry the tool call when the owner is available (it raises a fresh prompt), or continue without it and note that approval is still pending.",
+          ),
+        );
+      }
+      return trace(hookDeny("The user denied the use of this tool."));
     }
 
     events.onBlocked?.({ toolUseId, toolName, agentId, uiReason: "읽기 전용 대화에서는 쓸 수 없는 도구입니다." });

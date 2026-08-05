@@ -50,6 +50,7 @@ import {
   TASK_ORCHESTRATION_TOOLS,
 } from "./preToolUseHook.js";
 import { buildPostToolUseHook } from "./postToolUseHook.js";
+import { PROMPT_TTL_MS } from "./runRegistry.js";
 import {
   createLoopState,
   dispatchSdkMessage,
@@ -434,6 +435,11 @@ export function buildModelFallbackChain(primary: string): string[] {
  * (Empirically, the SDK's interactive control callbacks `canUseTool`/`onUserDialog`
  * do NOT fire in this headless `query()` setup — verified against v0.3.169 — but
  * PreToolUse hooks DO fire and can block asynchronously, so the hook is our gate.)
+ * The bundled CLI bounds every SDK callback hook with a per-hook abort (10 min
+ * default; CLIs before 2.1.218 then misreport the abort to the model as a USER
+ * REJECTION), so the PreToolUse matcher pins `timeout` ABOVE the run registry's
+ * PROMPT_TTL_MS: the server always settles a parked prompt (answer, TTL
+ * auto-cancel, or run end) before the CLI gives up on the hook.
  *
  *  - Read-only tools / knowledge MCP / orchestration meta-tools → allowed silently.
  *  - AskUserQuestion → intercepted: we surface the question, await the user's
@@ -1350,6 +1356,14 @@ export async function runClaudeAgent(
               runVisionEnabled,
             ),
           ],
+          // CLI-side budget for this hook, in SECONDS. The CLI aborts an SDK
+          // callback hook after 10 minutes by default, and CLIs before 2.1.218
+          // misreport that abort to the model as a USER REJECTION — fatal here,
+          // because this hook legitimately parks while the owner answers the
+          // permission/question/plan modal. Pin the budget just above the run
+          // registry's PROMPT_TTL_MS so the server always settles the prompt
+          // first; the CLI timeout remains only a dead-man's switch.
+          timeout: Math.ceil(PROMPT_TTL_MS / 1000) + 60,
         },
       ],
       ...(Object.keys(redactSecretEnv).length > 0

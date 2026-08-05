@@ -3385,6 +3385,30 @@ exit 1
     expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
   });
 
+  it("words an unanswered prompt as pending, never as a user refusal", async () => {
+    const blocked = vi.fn();
+    const timedOut = await decide(
+      { elevated: true, headless: false, autoApprove: false },
+      {
+        onPermission: async () => ({ behavior: "deny", unanswered: true }),
+        onBlocked: blocked,
+      },
+    );
+    expect(timedOut.hookSpecificOutput.permissionDecision).toBe("deny");
+    expect(timedOut.hookSpecificOutput.permissionDecisionReason).toContain("do NOT treat this as a refusal");
+    expect(timedOut.hookSpecificOutput.permissionDecisionReason).not.toContain("The user denied");
+    expect(blocked).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: "Bash", uiReason: expect.stringContaining("응답 없이") }),
+    );
+
+    // An explicit 거부 click keeps the plain refusal wording.
+    const denied = await decide(
+      { elevated: true, headless: false, autoApprove: false },
+      { onPermission: async () => ({ behavior: "deny" }) },
+    );
+    expect(denied.hookSpecificOutput.permissionDecisionReason).toBe("The user denied the use of this tool.");
+  });
+
   it("NEVER auto-approves a headless run, even with autoApprove=true", async () => {
     const out = await decide({
       elevated: true,

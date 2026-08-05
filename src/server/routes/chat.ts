@@ -1749,7 +1749,9 @@ export function createChatRouter({
                 });
                 const answer = await awaitResponse(runId, requestId);
                 if (answer === CANCELLED) {
-                  return { behavior: "deny" };
+                  // TTL expiry / stop / run end — nobody clicked anything.
+                  // Marked so the hook doesn't misreport it as a user refusal.
+                  return { behavior: "deny", unanswered: true };
                 }
                 return (answer as { behavior: "allow" }).behavior === "allow"
                   ? { behavior: "allow" }
