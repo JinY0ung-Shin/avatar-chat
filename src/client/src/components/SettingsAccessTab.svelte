@@ -1,5 +1,6 @@
 <script lang="ts">
   import Icon from "./Icon.svelte";
+  import BrowserBridgeGuideModal from "./BrowserBridgeGuideModal.svelte";
   import RevealableInput from "./RevealableInput.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
@@ -33,6 +34,60 @@
   ];
 
   const u0 = readState().user;
+
+  // Browser bridge (admin-only capability, so the card is admin-only too).
+  let guideOpen = false;
+  let extensionBusy = false;
+  let extensionId: string | null = null;
+  let extensionOrigins: string[] = [];
+  let extensionMetaLoaded = false;
+
+  $: isAdmin = Boolean($appState.user?.roles?.includes("admin"));
+
+  // The id is pinned by the manifest `key`, so it is the same on every install —
+  // fetched rather than hardcoded so the guide can never drift from the bundle
+  // the button actually hands out.
+  async function loadExtensionMeta(): Promise<void> {
+    if (extensionMetaLoaded) return;
+    extensionMetaLoaded = true;
+    try {
+      const meta = await api<{ extensionId: string | null; origins: string[] }>(
+        "/api/admin/browser-extension",
+      );
+      extensionId = meta.extensionId;
+      extensionOrigins = meta.origins ?? [];
+    } catch {
+      // Non-fatal: the guide falls back to "id unavailable" text.
+    }
+  }
+
+  // Fetched as a blob rather than navigating: the endpoint is admin-gated, and a
+  // plain link would drop the session's fetch credentials handling and turn a
+  // 403 into a broken-looking download.
+  async function downloadExtension(): Promise<void> {
+    if (extensionBusy) return;
+    extensionBusy = true;
+    try {
+      const res = await fetch("/api/admin/browser-extension.zip", { credentials: "same-origin" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "noah-browser-bridge.zip";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      notify("확장 프로그램을 내려받았습니다. 압축을 풀고 설치 방법을 따라주세요.", "ok");
+    } catch (err) {
+      notify(`다운로드 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      extensionBusy = false;
+    }
+  }
+
+  $: if (active && isAdmin) void loadExtensionMeta();
 
   // git identity
   let gitIdentityName = u0?.gitIdentityName || "";
@@ -425,6 +480,37 @@
 </script>
 
 {#if active && user}
+  <!-- 브라우저 브릿지: 관리자 전용 기능이므로 카드도 관리자에게만 -->
+  {#if isAdmin}
+    <section class="settings-card">
+      <div class="panel-section-head">
+        <div>
+          <h3>브라우저 브릿지 <span class="tag accent experimental-badge">관리자</span></h3>
+          <p class="muted">
+            확장 프로그램을 설치하면 아바타가 <strong>내 브라우저의 탭</strong>을 직접 열고 클릭할 수 있습니다.
+            이미 로그인된 세션 그대로 동작하므로, 허용 사이트를 신중하게 정하세요.
+          </p>
+        </div>
+      </div>
+      <div class="browser-bridge-actions">
+        <button type="button" class="btn primary" disabled={extensionBusy} on:click={downloadExtension}>
+          <Icon name="file" />
+          <span>{extensionBusy ? "준비 중…" : "확장 프로그램 다운로드"}</span>
+        </button>
+        <button type="button" class="btn ghost" on:click={() => (guideOpen = true)}>설치 방법 보기</button>
+      </div>
+    </section>
+    {#if guideOpen}
+      <BrowserBridgeGuideModal
+        extensionId={extensionId}
+        origins={extensionOrigins}
+        downloading={extensionBusy}
+        on:download={downloadExtension}
+        on:close={() => (guideOpen = false)}
+      />
+    {/if}
+  {/if}
+
   <!-- 실험 기능 (#50) -->
   <section class="settings-card">
     <div class="panel-section-head">
@@ -662,6 +748,13 @@
   }
   /* Composes the global `.tag accent` base; only the deltas that make it read as
      a label riding inside a <strong> heading live here. */
+  .browser-bridge-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    flex-wrap: wrap;
+    margin-top: 0.9rem;
+  }
   .experimental-badge {
     font-weight: 600;
     vertical-align: middle;

@@ -16,6 +16,11 @@ import {
   normalizeMcpToolGroups,
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
+import {
+  browserExtensionId,
+  browserExtensionOrigins,
+  buildBrowserExtensionZip,
+} from "../browserExtensionBundle.js";
 import { discoverGlobalSkills } from "../agent/skillDiscovery.js";
 import {
   apiError,
@@ -151,6 +156,39 @@ export function createAdminRouter(deps: RouterDeps): Router {
   router.get("/api/admin/stats", requireAuth(store), requireAdmin, (_req, res) => {
     res.json({ stats: store.adminStats() });
   });
+
+  // Browser-bridge extension: the install package plus the id it will register
+  // under. Admin-gated to match the capability itself — browser control is
+  // operator-only, so handing the bundle to everyone would only invite installs
+  // that can never be used.
+  router.get("/api/admin/browser-extension", requireAuth(store), requireAdmin, (_req, res) => {
+    res.json({
+      extensionId: browserExtensionId(),
+      // The pinned manifest `key` makes the id identical on every unpacked
+      // install, so the client's bridge target needs no per-user configuration.
+      origins: browserExtensionOrigins(),
+    });
+  });
+
+  router.get(
+    "/api/admin/browser-extension.zip",
+    requireAuth(store),
+    requireAdmin,
+    (_req: AuthenticatedRequest, res) => {
+      let zip: Buffer;
+      try {
+        zip = buildBrowserExtensionZip();
+      } catch (error) {
+        logger.error({ err: error }, "browser extension bundle failed");
+        apiError(res, 500, "확장 프로그램 패키지를 만들지 못했습니다. 서버 로그를 확인하세요.");
+        return;
+      }
+      res.setHeader("Content-Type", "application/zip");
+      res.setHeader("Content-Disposition", 'attachment; filename="noah-browser-bridge.zip"');
+      res.setHeader("Content-Length", String(zip.length));
+      res.end(zip);
+    },
+  );
 
   // Live presence for the rail badge. Polled from every admin's open tab, so it
   // stays ONE users scan with no per-user subqueries — unlike /stats, which is

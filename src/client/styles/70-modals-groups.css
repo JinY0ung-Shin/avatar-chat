@@ -1015,3 +1015,87 @@
     justify-content: center;
   }
 }
+
+/* ---- Browser bridge install guide ---------------------------------- */
+/* Numbered because installing the extension IS an ordered procedure: each
+   step is only doable once the previous one succeeded. */
+.browser-guide-card {
+  max-width: 44rem;
+}
+.guide-steps {
+  list-style: none;
+  counter-reset: guide;
+  margin: 1.1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.guide-steps > li {
+  counter-increment: guide;
+  position: relative;
+  padding-left: 2.25rem;
+}
+.guide-steps > li::before {
+  content: counter(guide);
+  position: absolute;
+  left: 0;
+  top: 0.05rem;
+  width: 1.6rem;
+  height: 1.6rem;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--accent-strong);
+}
+.guide-step-title {
+  font-weight: 600;
+  margin-bottom: 0.2rem;
+}
+.guide-steps p {
+  margin: 0 0 0.5rem;
+}
+.guide-steps .btn {
+  margin-top: 0.15rem;
+}
+.guide-note {
+  font-size: 0.86rem;
+}
+.guide-id {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+.guide-id code {
+  word-break: break-all;
+}
+.guide-origins {
+  margin: 0.1rem 0 0;
+  padding-left: 1.1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.86rem;
+}
+.guide-warn {
+  display: flex;
+  gap: 0.7rem;
+  align-items: flex-start;
+  margin-top: 1.4rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  border-radius: 8px;
+  font-size: 0.88rem;
+  line-height: 1.65;
+}
+.guide-warn svg {
+  flex: none;
+  margin-top: 0.15rem;
+  color: var(--warn);
+}

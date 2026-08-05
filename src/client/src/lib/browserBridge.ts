@@ -10,7 +10,7 @@
 /** The published extension id. Overridable for a locally loaded unpacked build. */
 const EXTENSION_ID =
   (import.meta.env?.VITE_BROWSER_EXTENSION_ID as string | undefined) ||
-  "noahalmightybrowserbridgeaaaaaaaa";
+  "fbohmmepjdncddcieglnblnlfiblbhbo";
 
 /** Wire shape the extension answers with. `ok:false` carries a model-facing reason. */
 export interface BridgeReply {

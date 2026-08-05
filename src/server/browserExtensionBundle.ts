@@ -1,0 +1,179 @@
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import zlib from "node:zlib";
+
+/**
+ * Packages `extension/` as a downloadable zip so an operator can install the
+ * browser bridge from the settings page instead of cloning the repo.
+ *
+ * Hand-rolled rather than pulling in an archiver dependency: this writes seven
+ * small text files, and the ZIP container for that case is a local header per
+ * entry plus a central directory. Deflate comes from node's zlib.
+ *
+ * Only files that ship in the extension are included, by an explicit ALLOWLIST
+ * rather than a directory walk — the folder sits in the repo, and a stray
+ * key/note dropped there must never end up in a file we hand to users.
+ */
+
+const BUNDLE_FILES = [
+  "manifest.json",
+  "background.js",
+  "options.html",
+  "options.js",
+  "options.css",
+  "policy-schema.json",
+  "README.md",
+] as const;
+
+export const BROWSER_EXTENSION_DIR = path.join(process.cwd(), "extension");
+
+/** Zip entries carry a DOS timestamp; pin it so the bytes are reproducible. */
+const DOS_TIME = 0;
+const DOS_DATE = 0x2821; // 2020-01-01
+
+let crcTable: Uint32Array | null = null;
+
+function crc32(buf: Buffer): number {
+  if (!crcTable) {
+    crcTable = new Uint32Array(256);
+    for (let i = 0; i < 256; i += 1) {
+      let c = i;
+      for (let k = 0; k < 8; k += 1) {
+        c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      }
+      crcTable[i] = c >>> 0;
+    }
+  }
+  let crc = 0xffffffff;
+  for (const byte of buf) {
+    crc = (crc >>> 8) ^ crcTable[(crc ^ byte) & 0xff];
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+interface Entry {
+  name: Buffer;
+  crc: number;
+  deflated: Buffer;
+  rawSize: number;
+  offset: number;
+}
+
+function localHeader(entry: Entry): Buffer {
+  const head = Buffer.alloc(30);
+  head.writeUInt32LE(0x04034b50, 0); // local file header signature
+  head.writeUInt16LE(20, 4); // version needed
+  head.writeUInt16LE(0, 6); // flags
+  head.writeUInt16LE(8, 8); // method: deflate
+  head.writeUInt16LE(DOS_TIME, 10);
+  head.writeUInt16LE(DOS_DATE, 12);
+  head.writeUInt32LE(entry.crc, 14);
+  head.writeUInt32LE(entry.deflated.length, 18);
+  head.writeUInt32LE(entry.rawSize, 22);
+  head.writeUInt16LE(entry.name.length, 26);
+  head.writeUInt16LE(0, 28); // extra field length
+  return head;
+}
+
+function centralHeader(entry: Entry): Buffer {
+  const head = Buffer.alloc(46);
+  head.writeUInt32LE(0x02014b50, 0); // central directory signature
+  head.writeUInt16LE(20, 4); // version made by
+  head.writeUInt16LE(20, 6); // version needed
+  head.writeUInt16LE(0, 8); // flags
+  head.writeUInt16LE(8, 10); // method: deflate
+  head.writeUInt16LE(DOS_TIME, 12);
+  head.writeUInt16LE(DOS_DATE, 14);
+  head.writeUInt32LE(entry.crc, 16);
+  head.writeUInt32LE(entry.deflated.length, 20);
+  head.writeUInt32LE(entry.rawSize, 24);
+  head.writeUInt16LE(entry.name.length, 28);
+  head.writeUInt16LE(0, 30); // extra
+  head.writeUInt16LE(0, 32); // comment
+  head.writeUInt16LE(0, 34); // disk number
+  head.writeUInt16LE(0, 36); // internal attrs
+  head.writeUInt32LE(0, 38); // external attrs
+  head.writeUInt32LE(entry.offset, 42);
+  return head;
+}
+
+/**
+ * Build the extension zip. Throws when a required file is missing — a partial
+ * bundle would install and then fail in ways that are hard to diagnose, so it
+ * is better for the download to fail loudly.
+ */
+export function buildBrowserExtensionZip(dir: string = BROWSER_EXTENSION_DIR): Buffer {
+  const chunks: Buffer[] = [];
+  const entries: Entry[] = [];
+  let offset = 0;
+
+  for (const name of BUNDLE_FILES) {
+    const full = path.join(dir, name);
+    const raw = fs.readFileSync(full);
+    const deflated = zlib.deflateRawSync(raw, { level: 9 });
+    const entry: Entry = {
+      name: Buffer.from(`noah-browser-bridge/${name}`, "utf8"),
+      crc: crc32(raw),
+      deflated,
+      rawSize: raw.length,
+      offset,
+    };
+    entries.push(entry);
+    const head = localHeader(entry);
+    chunks.push(head, entry.name, deflated);
+    offset += head.length + entry.name.length + deflated.length;
+  }
+
+  const centralStart = offset;
+  let centralSize = 0;
+  for (const entry of entries) {
+    const head = centralHeader(entry);
+    chunks.push(head, entry.name);
+    centralSize += head.length + entry.name.length;
+  }
+
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); // end of central directory
+  end.writeUInt16LE(0, 4); // disk
+  end.writeUInt16LE(0, 6); // disk with central dir
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(centralStart, 16);
+  end.writeUInt16LE(0, 20); // comment length
+  chunks.push(end);
+
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Origins the extension will accept bridge messages from. Shown in the install
+ * guide so an operator can tell immediately whether the Noah address they use
+ * is covered — a mismatch here is the most likely reason a correct-looking
+ * install never connects, and it fails silently.
+ */
+export function browserExtensionOrigins(dir: string = BROWSER_EXTENSION_DIR): string[] {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    const matches = manifest?.externally_connectable?.matches;
+    return Array.isArray(matches) ? matches.filter((m: unknown) => typeof m === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** The pinned extension id, derived from the manifest `key`. Shown in the install guide. */
+export function browserExtensionId(dir: string = BROWSER_EXTENSION_DIR): string | null {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    if (typeof manifest.key !== "string") return null;
+    // Chrome derives the id from sha256 of the DER public key: first 16 bytes,
+    // each nibble mapped into a-p.
+    const der = Buffer.from(manifest.key, "base64");
+    const hash = crypto.createHash("sha256").update(der).digest("hex").slice(0, 32);
+    return [...hash].map((c) => String.fromCharCode(parseInt(c, 16) + 97)).join("");
+  } catch {
+    return null;
+  }
+}

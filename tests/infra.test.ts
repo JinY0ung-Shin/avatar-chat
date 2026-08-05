@@ -1,4 +1,5 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,6 +7,11 @@ import tls from "node:tls";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextFunction, Request, Response } from "express";
 import { createServices, expandChatSlashCommand } from "../src/server/app.js";
+import {
+  browserExtensionId,
+  browserExtensionOrigins,
+  buildBrowserExtensionZip,
+} from "../src/server/browserExtensionBundle.js";
 import { loadConfig } from "../src/server/config.js";
 import { applyCustomGithubCa } from "../src/server/tlsCa.js";
 import { loadDotEnv } from "../src/server/loadEnv.js";
@@ -993,5 +999,58 @@ describe("loadDotEnv (.env auto-load)", () => {
     if (prevFile === undefined) delete process.env.NOAH_TEST_FROM_FILE;
     else process.env.NOAH_TEST_FROM_FILE = prevFile;
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("browser extension bundle", () => {
+  it("produces a zip the OS unzip accepts, containing every shipped file", () => {
+    const zip = buildBrowserExtensionZip();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-ext-"));
+    const zipPath = path.join(dir, "bundle.zip");
+    fs.writeFileSync(zipPath, zip);
+
+    // Validate with a real unzip rather than our own reader: the writer is
+    // hand-rolled, so a self-consistent bug would pass a self-written parser.
+    execFileSync("unzip", ["-t", zipPath], { stdio: "pipe" });
+    execFileSync("unzip", ["-q", zipPath, "-d", dir], { stdio: "pipe" });
+
+    const root = path.join(dir, "noah-browser-bridge");
+    const manifest = JSON.parse(fs.readFileSync(path.join(root, "manifest.json"), "utf8"));
+    expect(manifest.manifest_version).toBe(3);
+    // The pinned key is what makes the extension id stable across installs; a
+    // bundle without it would install under a random id the client can't reach.
+    expect(typeof manifest.key).toBe("string");
+    expect(manifest.permissions).toContain("debugger");
+
+    // Round-trips byte-for-byte, so deflate/CRC are right, not just parseable.
+    for (const name of ["background.js", "options.js", "policy-schema.json"]) {
+      expect(fs.readFileSync(path.join(root, name)).equals(
+        fs.readFileSync(path.join(process.cwd(), "extension", name)),
+      )).toBe(true);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("derives the same extension id Chrome would, and reports the bridge origins", () => {
+    const id = browserExtensionId();
+    // 32 chars drawn from a-p — Chrome's base-16-shifted-into-letters encoding.
+    expect(id).toMatch(/^[a-p]{32}$/);
+
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), "extension", "manifest.json"), "utf8"),
+    );
+    const der = Buffer.from(manifest.key, "base64");
+    const hash = crypto.createHash("sha256").update(der).digest("hex").slice(0, 32);
+    const expected = [...hash].map((c) => String.fromCharCode(parseInt(c, 16) + 97)).join("");
+    expect(id).toBe(expected);
+
+    // The client's default target must match, or a correct install never connects.
+    const bridge = fs.readFileSync(
+      path.join(process.cwd(), "src/client/src/lib/browserBridge.ts"),
+      "utf8",
+    );
+    expect(bridge).toContain(`"${id}"`);
+
+    expect(browserExtensionOrigins().length).toBeGreaterThan(0);
   });
 });

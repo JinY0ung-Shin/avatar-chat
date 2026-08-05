@@ -13,18 +13,23 @@
 새 인바운드 포트도 새 인증 체계도 없습니다. 인가는 **이미 로그인된 Noah 탭 세션**이 담당하고,
 확장은 `externally_connectable`에 선언된 Noah origin에서 온 메시지만 받습니다.
 
-## 설치 (개발용)
+## 설치
 
-1. `chrome://extensions` → 개발자 모드 켜기 → **압축해제된 확장 프로그램을 로드** → 이 `extension/` 폴더 선택
-2. 표시된 **확장 ID를 복사**해서 클라이언트에 알려줍니다:
-   ```bash
-   # .env 또는 셸에
-   VITE_BROWSER_EXTENSION_ID=<복사한 32자 ID>
-   ```
-   지정하지 않으면 `browserBridge.ts`의 자리표시자 ID를 쓰므로 연결되지 않습니다.
+Noah 관리자는 **설정 → 접근/보안 → 브라우저 브릿지**에서 zip을 내려받고 안내 모달을 볼 수 있습니다.
+아래는 같은 내용의 수동 절차입니다.
+
+1. `chrome://extensions` → 개발자 모드 켜기 → **압축해제된 확장 프로그램을 로드** → 이 `extension/` 폴더
+   (또는 내려받은 zip을 푼 폴더) 선택
+2. 표시된 ID가 `fbohmmepjdncddcieglnblnlfiblbhbo` 인지 확인합니다. 매니페스트의 `key` 필드가 ID를
+   고정하므로 **어디에 설치해도 같은 ID**가 나오고, 별도 설정이 필요 없습니다.
+   (다른 ID를 쓰려면 `VITE_BROWSER_EXTENSION_ID`로 덮어쓸 수 있습니다.)
 3. Noah를 여는 주소가 `manifest.json`의 `externally_connectable.matches`에 있어야 합니다.
    기본값은 `https://noah.corp.local/*`와 로컬 개발 포트입니다. **경로 끝 `/*`는 필수** —
    빠뜨리면 루트 외 모든 경로에서 조용히 실패합니다.
+
+> **키에 대해:** 커밋된 `key`는 PoC용으로 생성한 것이고 대응하는 개인키는 보관하지 않았습니다.
+> 서명된 `.crx`를 배포하거나 웹스토어에 올릴 계획이라면 **새 키페어를 만들고 `.pem`을 보관**하세요
+> (`openssl genrsa 2048`). ID가 바뀌므로 `browserBridge.ts`의 기본값도 함께 갱신해야 합니다.
 
 ## 허용 사이트 설정 — 기본은 전면 거부
 
