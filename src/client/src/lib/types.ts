@@ -119,6 +119,12 @@ export interface ChatPane {
   livePlugins: LivePluginChip[];
   /** ms timestamp until which a sticky status label resists a generic overwrite. */
   liveStatusStickyUntil?: number;
+  /** True between done{background:true} and bg_end/cancelled: the visible turn is finalized but the SDK session is still running background work. Drives the background chip + keeps the live activity tree mounted. */
+  backgroundPhase?: boolean;
+  /** Live background tasks (SDK level signal, REPLACE semantics). */
+  backgroundTasks?: BackgroundTaskChip[];
+  /** Persisted message id of the finalized turn, so the final activity snapshot lands on it at bg_end/cancel. */
+  backgroundMessageId?: string | null;
   groupKnowledgeOff: string[];
   /** Installed skills for this pane's avatar, lazily fetched the first time the slash menu opens (#slash-skills). Drives skill entries in the "/" menu. */
   skills?: import("../../../server/types.js").SkillInfo[];
@@ -211,6 +217,13 @@ export interface LiveTaskRow {
 export interface LivePluginChip {
   name: string;
   status: string;
+}
+
+/** One live background task (SDK level signal), for the background-phase chip. */
+export interface BackgroundTaskChip {
+  taskId: string;
+  taskType?: string;
+  description?: string;
 }
 
 /** An interactive prompt (permission / AskUserQuestion) awaiting the owner. */

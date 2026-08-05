@@ -90,6 +90,7 @@ import {
   getActiveRun,
   getActiveRunForConversation,
   isRunCancelled,
+  markRunBackground,
   openRun,
   submitResponse,
   CANCELLED,
@@ -1092,7 +1093,9 @@ export function createChatRouter({
         apiError(
           res,
           409,
-          "이미 이 대화의 응답을 생성 중입니다. 잠시 후 다시 시도해 주세요.",
+          activeRun.background
+            ? "아바타가 이 대화의 백그라운드 작업을 진행 중입니다. 작업이 끝나면 메시지를 보낼 수 있어요. 기다리지 않으려면 중지 버튼으로 백그라운드 작업을 중단해 주세요."
+            : "이미 이 대화의 응답을 생성 중입니다. 잠시 후 다시 시도해 주세요.",
         );
         return;
       }
@@ -1286,6 +1289,19 @@ export function createChatRouter({
         // Persisted on the assistant response so the plan card rebuilds on reload, and
         // mirrored on the cancel/error paths like canvases. Latest plan of the turn wins.
         let latestPlan: string | null = null;
+        // Background phase (SDK-native): when the model hands work to a background
+        // task/subagent, the SDK holds the session open past the first `result`,
+        // wakes the model when a task settles, and streams follow-up turns. We
+        // finalize the VISIBLE turn at that first result (persist + done with
+        // `background: true`, run kept open) and deliver each wake-up turn as a
+        // NEW assistant message (`bg_message`). `turnFinalized` marks the phase;
+        // the offsets remember how much of the accumulated stream text/thinking/
+        // attachments was already persisted, so wake-up and cancel/error paths
+        // only carry their own tail.
+        let turnFinalized = false;
+        let persistedTextOffset = 0;
+        let persistedThinkingOffset = 0;
+        let persistedAttachmentsOffset = 0;
         logger.info(
           {
             userId: req.user!.id,
@@ -1595,6 +1611,96 @@ export function createChatRouter({
               onAgentEnd: (event) => {
                 emitRunEvent(runId, "agent_end", event);
               },
+              // Live background-task set (REPLACE semantics). Relayed so the
+              // client can show a "백그라운드 작업 진행 중" indicator, and mirrored
+              // onto the run snapshot so reloads/new-POST 409s know the state.
+              onBackgroundTasks: (event) => {
+                if (turnFinalized) {
+                  markRunBackground(runId, event.tasks.length);
+                }
+                emitRunEvent(runId, "bg_tasks", { tasks: event.tasks });
+              },
+              // Result boundary. First boundary with live background tasks →
+              // finalize the visible turn NOW (persist + done{background:true})
+              // while the SDK session keeps running underneath; every later
+              // boundary is a wake-up turn delivered as a NEW assistant message.
+              onTurnResult: (segment) => {
+                if (!turnFinalized) {
+                  if (segment.backgroundTasks.length === 0) {
+                    return; // normal turn — the post-await done path handles it
+                  }
+                  turnFinalized = true;
+                  markRunBackground(runId, segment.backgroundTasks.length);
+                  // Persist the session id NOW: the phase can outlive tab
+                  // closes, and the next turn must resume this transcript.
+                  if (runSessionId) {
+                    store.setAgentSessionId(
+                      req.user!.id,
+                      conversationId,
+                      runSessionId,
+                    );
+                  }
+                  const segResponse: AgentResponse = {
+                    kind: "text",
+                    runtime: config.agentRuntime,
+                    summary: "Claude Agent SDK 실행이 완료되었습니다.",
+                    text: segment.text || "백그라운드 작업을 진행 중입니다.",
+                    ...(latestPlan ? { plan: latestPlan } : {}),
+                    ...(streamedThinking ? { thinking: streamedThinking } : {}),
+                    ...(segment.usage ? { usage: segment.usage } : {}),
+                  };
+                  const message =
+                    store.conversationOwner(conversationId) === req.user!.id
+                      ? store.addMessage(conversationId, {
+                          role: "assistant",
+                          content: segResponse.text,
+                          response: segResponse,
+                          attachments: shownAttachments.slice(),
+                        })
+                      : null;
+                  persistedTextOffset = streamedText.length;
+                  persistedThinkingOffset = streamedThinking.length;
+                  persistedAttachmentsOffset = shownAttachments.length;
+                  emitRunEvent(runId, "done", {
+                    message,
+                    response: segResponse,
+                    background: true,
+                    tasks: segment.backgroundTasks,
+                  });
+                  return;
+                }
+                // Wake-up turn finished → its own assistant message. Skip pure
+                // bookkeeping boundaries (no text, no new attachments).
+                const text = segment.text.trim();
+                const thinkingTail = streamedThinking.slice(persistedThinkingOffset);
+                const attachmentsTail = shownAttachments.slice(persistedAttachmentsOffset);
+                persistedTextOffset = streamedText.length;
+                persistedThinkingOffset = streamedThinking.length;
+                persistedAttachmentsOffset = shownAttachments.length;
+                if (!text && attachmentsTail.length === 0) {
+                  return;
+                }
+                const segResponse: AgentResponse = {
+                  kind: "text",
+                  runtime: config.agentRuntime,
+                  summary: "백그라운드 작업 보고",
+                  text: text || "(백그라운드 작업이 종료되었습니다.)",
+                  ...(thinkingTail ? { thinking: thinkingTail } : {}),
+                  ...(segment.usage ? { usage: segment.usage } : {}),
+                };
+                const message =
+                  store.conversationOwner(conversationId) === req.user!.id
+                    ? store.addMessage(conversationId, {
+                        role: "assistant",
+                        content: segResponse.text,
+                        response: segResponse,
+                        attachments: attachmentsTail,
+                      })
+                    : null;
+                if (message) {
+                  emitRunEvent(runId, "bg_message", { message });
+                }
+              },
               onBlocked: (event) => {
                 emitRunEvent(runId, "blocked", event);
               },
@@ -1883,17 +1989,6 @@ export function createChatRouter({
           if (runSessionId) {
             store.setAgentSessionId(req.user!.id, conversationId, runSessionId);
           }
-          // The conversation may have been deleted mid-run; skip persistence (the FK
-          // on messages would reject the insert) and just signal completion.
-          const assistantMessage =
-            store.conversationOwner(conversationId) === req.user!.id
-              ? store.addMessage(conversationId, {
-                  role: "assistant",
-                  content: response.text || response.summary,
-                  response,
-                  attachments: shownAttachments,
-                })
-              : null;
           auditAs(
             req,
             "chat",
@@ -1905,12 +2000,31 @@ export function createChatRouter({
               avatarId: avatar.id,
               conversationId,
               runtime: response.runtime,
+              background: turnFinalized,
               durationMs: Date.now() - chatStart,
             },
             "chat completed",
           );
-
-          emitRunEvent(runId, "done", { message: assistantMessage, response });
+          if (turnFinalized) {
+            // Background phase over: the visible turn and every wake-up report
+            // were already persisted at their result boundaries — persisting the
+            // aggregate `response` here would duplicate them. Just signal the
+            // end of the phase; the run closes in the finally below.
+            emitRunEvent(runId, "bg_end", {});
+          } else {
+            // The conversation may have been deleted mid-run; skip persistence (the FK
+            // on messages would reject the insert) and just signal completion.
+            const assistantMessage =
+              store.conversationOwner(conversationId) === req.user!.id
+                ? store.addMessage(conversationId, {
+                    role: "assistant",
+                    content: response.text || response.summary,
+                    response,
+                    attachments: shownAttachments,
+                  })
+                : null;
+            emitRunEvent(runId, "done", { message: assistantMessage, response });
+          }
         } catch (error) {
           if (isRunCancelled(runId)) {
             // Clear the persisted SDK session: the aborted run's transcript is
@@ -1923,25 +2037,38 @@ export function createChatRouter({
             // Keep whatever the model already streamed before the stop. The client's
             // finalizeStopped keeps it on screen, so the persisted record must carry
             // it too — otherwise the visible answer is gone on the next reload/revisit.
+            // In a background phase, only the TAIL since the last persisted result
+            // boundary belongs here (earlier segments are already stored messages);
+            // an empty tail still persists a notice so the kill is visible on reload.
+            const cancelledText = streamedText.slice(persistedTextOffset);
+            const cancelledThinking = streamedThinking.slice(persistedThinkingOffset);
             const response: AgentResponse = {
               kind: "text",
               runtime: externalAgent ? "external" : config.agentRuntime,
               summary: "중지됨",
-              text: streamedText,
-              ...(latestPlan ? { plan: latestPlan } : {}),
-              ...(streamedThinking ? { thinking: streamedThinking } : {}),
+              text: cancelledText,
+              ...(latestPlan && !turnFinalized ? { plan: latestPlan } : {}),
+              ...(cancelledThinking ? { thinking: cancelledThinking } : {}),
             };
             // Skip the insert if the conversation was deleted mid-run (FK would reject).
             const stopped =
               store.conversationOwner(conversationId) === req.user!.id
                 ? store.addMessage(conversationId, {
                     role: "assistant",
-                    content: streamedText || "(중지됨)",
+                    content:
+                      cancelledText ||
+                      (turnFinalized
+                        ? "(진행 중이던 백그라운드 작업이 중지되었습니다.)"
+                        : "(중지됨)"),
                     response,
-                    attachments: shownAttachments,
+                    attachments: shownAttachments.slice(persistedAttachmentsOffset),
                   })
                 : null;
-            emitRunEvent(runId, "cancelled", { message: stopped, response });
+            emitRunEvent(runId, "cancelled", {
+              message: stopped,
+              response,
+              background: turnFinalized,
+            });
             return;
           }
           // Scrub before logging too: a git auth failure carries the token in its
@@ -1986,8 +2113,12 @@ export function createChatRouter({
             if (!externalAgent) {
               store.setAgentSessionId(req.user!.id, conversationId, null);
             }
-            const content = streamedText
-              ? `${streamedText}\n\n${userFacing}`
+            // Background phase: earlier segments are already stored messages, so
+            // only the tail since the last result boundary rides the error bubble.
+            const erroredText = streamedText.slice(persistedTextOffset);
+            const erroredThinking = streamedThinking.slice(persistedThinkingOffset);
+            const content = erroredText
+              ? `${erroredText}\n\n${userFacing}`
               : userFacing;
             // Any canvas shown before the error is already persisted to the canvas
             // tables by the onCanvas handler. If a plan and/or reasoning was produced,
@@ -1997,21 +2128,24 @@ export function createChatRouter({
             store.addMessage(conversationId, {
               role: "assistant",
               content,
-              attachments: shownAttachments,
+              attachments: shownAttachments.slice(persistedAttachmentsOffset),
               response:
-                latestPlan || streamedThinking
+                (latestPlan && !turnFinalized) || erroredThinking
                   ? {
                       kind: "text",
                       runtime: externalAgent ? "external" : config.agentRuntime,
                       summary: "오류",
                       text: content,
-                      ...(latestPlan ? { plan: latestPlan } : {}),
-                      ...(streamedThinking ? { thinking: streamedThinking } : {}),
+                      ...(latestPlan && !turnFinalized ? { plan: latestPlan } : {}),
+                      ...(erroredThinking ? { thinking: erroredThinking } : {}),
                     }
                   : undefined,
             });
           }
-          emitRunEvent(runId, "error", { error: userFacing });
+          emitRunEvent(runId, "error", {
+            error: userFacing,
+            background: turnFinalized,
+          });
         } finally {
           closeRun(runId);
         }

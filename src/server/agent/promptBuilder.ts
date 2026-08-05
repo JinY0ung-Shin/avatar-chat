@@ -513,6 +513,16 @@ export function buildSystemPromptAppend(
     "System meta-cognition: this service is Noah Almighty (avatar-chat). An avatar operates from a combination of its profile/persona, default skills, owner plugins, a personal knowledge repository, scheduled routines, secret names, and trusted-user settings. " +
       "When you describe system state or what changes are possible, do not guess — base your answer on the provided tools and the current configuration.",
   );
+  // Background execution (META-COGNITION of host behavior): the SDK keeps the
+  // session alive past the visible reply while background tasks run, and this
+  // host delivers wake-up turns as NEW chat messages. Without this note the
+  // model either promises follow-ups it assumes are impossible, or hands quick
+  // work to the background and silently locks the conversation.
+  lines.push(
+    "Background execution (`run_in_background` on Bash/Agent): background tasks keep running after your visible reply ends — the session stays alive, you are woken when a task settles, and your follow-up reply reaches the user as a NEW chat message (the user sees a live background-task indicator meanwhile). " +
+      "Caveats: the user CANNOT send a new message in this conversation until the background work finishes (their only alternative is cancelling, which kills the tasks), and a server restart also kills pending background work. " +
+      "Therefore run quick work in the foreground, reserve `run_in_background` for genuinely long tasks, and when you do hand work to the background, tell the user what is running and roughly how long it should take.",
+  );
   const disabledToolGroupsBlock = disabledMcpToolGroupsSection(request);
   if (disabledToolGroupsBlock) {
     lines.push(disabledToolGroupsBlock);

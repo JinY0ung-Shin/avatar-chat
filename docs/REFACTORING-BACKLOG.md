@@ -141,6 +141,29 @@ The 5-axis UI audit + fix pass landed (see DESIGN.md §5 item 9). Deliberately N
   focus-ring visibility in `prefers-contrast: more`) — the 2026-08 pass was verified by gate + review
   agents only; DESIGN.md §5 still calls for a human browser sweep (light/dark × 채팅/탐색/설정/관리자).
 
+## Background phase (2026-08) — deferred hardening
+
+The SDK-native background-task continuation (visible turn finalized at the first `result` while the
+session keeps running; wake-ups delivered as new messages — see ARCHITECTURE-NOTES §Chat/SSE) shipped
+with two deliberate v1 limits worth revisiting:
+
+### BG1 — New user message during a background phase still 409s
+- **Files:** `src/server/routes/chat.ts` (active-run 409), `runRegistry.ts`
+- **Why:** Concurrent turns would resume the SAME SDK session transcript from a second process while
+  the first is still appending wake-up turns — unresolved write/fork semantics. v1 keeps the lock and
+  tells the user (background-specific 409 + prompt guidance to the avatar). Options: queue the message
+  for after `bg_end`, or cancel-with-confirm from the composer.
+- **risk:** med · **effort:** M · **breaking:** no
+
+### BG2 — Server restart kills pending background work silently
+- **Files:** `runRegistry.ts` (in-memory), `routes/chat.ts`
+- **Why:** The phase lives in the run registry + SDK subprocess; a restart drops both. The transcript
+  keeps the "started in background" tool_result, so the NEXT turn's model may believe work is pending.
+  Options: persist a `background_pending` marker per conversation and, on restart, append a Korean
+  notice message ("서버 재시작으로 백그라운드 작업이 중단되었습니다") + a prompt fact so the avatar
+  knows the work died.
+- **risk:** low · **effort:** M · **breaking:** no
+
 ## Recommended order when picking this up
 1. Cheap + independent: the two coverage-gap tests, T3.9(a).
 2. After Tier-1/2 settle: T3.2 → T3.5 (test-guarded, medium).

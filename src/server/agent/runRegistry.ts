@@ -55,6 +55,15 @@ interface Run {
   nextEventId: number;
   ended: boolean;
   cancelled: boolean;
+  /**
+   * True once the visible turn was finalized (done emitted) while the SDK
+   * session keeps running background work. The run stays open and attachable;
+   * a new POST for the conversation still 409s, with a background-specific
+   * message.
+   */
+  background: boolean;
+  /** Live background task count (from the SDK level signal), for snapshots. */
+  backgroundTasks: number;
 }
 
 interface RunMeta {
@@ -70,6 +79,10 @@ export interface RunSnapshot {
   eventCount: number;
   pendingCount: number;
   cancelled: boolean;
+  /** The visible turn is done but background work keeps the run alive. */
+  background: boolean;
+  /** Live background task count while `background` is true. */
+  backgroundTasks: number;
 }
 
 const runs = new Map<string, Run>();
@@ -91,6 +104,8 @@ export function openRun(runId: string, userId: string, meta: RunMeta = {}): void
     nextEventId: 0,
     ended: false,
     cancelled: false,
+    background: false,
+    backgroundTasks: 0,
   });
   if (meta.conversationId) {
     conversationRuns.set(conversationKey(userId, meta.conversationId), runId);
@@ -196,14 +211,7 @@ export function getActiveRunForConversation(userId: string, conversationId: stri
     conversationRuns.delete(conversationKey(userId, conversationId));
     return null;
   }
-  return {
-    runId,
-    conversationId: run.conversationId,
-    avatarId: run.avatarId,
-    eventCount: run.events.length,
-    pendingCount: run.pending.size,
-    cancelled: run.cancelled,
-  };
+  return snapshotRun(runId, run);
 }
 
 export function getActiveRun(runId: string, userId: string): RunSnapshot | null {
@@ -211,6 +219,10 @@ export function getActiveRun(runId: string, userId: string): RunSnapshot | null 
   if (!run || run.ended || run.userId !== userId) {
     return null;
   }
+  return snapshotRun(runId, run);
+}
+
+function snapshotRun(runId: string, run: Run): RunSnapshot {
   return {
     runId,
     conversationId: run.conversationId,
@@ -218,7 +230,24 @@ export function getActiveRun(runId: string, userId: string): RunSnapshot | null 
     eventCount: run.events.length,
     pendingCount: run.pending.size,
     cancelled: run.cancelled,
+    background: run.background,
+    backgroundTasks: run.backgroundTasks,
   };
+}
+
+/**
+ * Mark a run as having entered (or progressed through) its background phase:
+ * the visible turn is finalized but the SDK session keeps running background
+ * tasks. Called by the chat route at the first result boundary and on every
+ * background-task level update.
+ */
+export function markRunBackground(runId: string, taskCount: number): void {
+  const run = runs.get(runId);
+  if (!run || run.ended) {
+    return;
+  }
+  run.background = true;
+  run.backgroundTasks = Math.max(0, taskCount);
 }
 
 export function cancelRun(runId: string, userId: string): boolean {

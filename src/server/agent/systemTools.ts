@@ -206,6 +206,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Routines run headlessly once at a specified KST date/time or recur on a daily, weekly, or interval schedule, work with the same tool permissions as the owner, and leave their results in the routines tab. A routine can also open one registered git repository as its working directory (open_repo) — the selection persists and takes effect from the routine's next scheduled run. Each run has a hard wall-clock limit of ${Math.round(ctx.config.routineRunTimeoutMs / 60_000)} minutes covering the ENTIRE run; when it is hit the run is aborted and only the text produced so far is kept. Scope a routine to fit that budget, and split work that cannot into several routines.`,
           "- Secret values are not exposed; only their names are revealed to the avatar.",
           "- Remote git operations (clone/push, etc.) are performed only through dedicated MCP tools. The shell has no git credentials.",
+          "- Background execution: `run_in_background` tasks keep running after the visible reply ends — the session stays alive, the avatar is woken when a task settles, and its follow-up arrives as a NEW chat message (the user sees a live indicator meanwhile). The user cannot send new messages in that conversation until the background work finishes or is cancelled (cancelling kills it).",
         ];
         // GROUP SHARED-AGENT runs: report the GROUP's self-state (the same
         // facts the group-agent prompt branch carries — GroupAgentState) and

@@ -802,6 +802,27 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `!headless && elevated && autoApprove` path — **`elevated` = owner OR trusted user**, not owner-only;
   headless routines and plain colleague chats stay read-only. But `isAutoAllowed` auto-allows EVERY
   `mcp__*` tool at the hook BEFORE that check, so any in-process MCP server MUST self-gate in its handlers.
+- **Background phase (`run_in_background` tasks outliving the visible reply).** A `query()` is NOT one
+  model turn: with live background tasks (Bash/Agent `run_in_background`) the SDK emits the first
+  `result` but KEEPS the process alive, wakes the model when a task settles (`task_notification`), and
+  streams follow-up turns, each ending in another `result`; the iterator only ends when everything
+  settled (empirically verified on SDK 0.3.220). Background-task state is **per-process** — a `resume`
+  in a new process cannot recover it, which is why the phase must ride the ORIGINAL run. Wiring:
+  `background_tasks_changed` (level signal, REPLACE semantics) → `LoopState.backgroundTasks` +
+  `onBackgroundTasks` → SSE `bg_tasks`; every `result` fires `onTurnResult` with the text SINCE the last
+  boundary (`segment*Start` indexes in `claudeAgent.ts`). The chat route finalizes the visible turn at
+  the FIRST boundary that has live tasks (persist + `done{background:true}`, run kept open,
+  `markRunBackground` → 409s get a background-specific message), persists each wake-up turn as a NEW
+  assistant message (`bg_message`, tail-sliced via `persisted*Offset`), and emits `bg_end` when the
+  iterator drains. Cancel during the phase KILLS the tasks (abort → subprocess dies): the cancel/error
+  paths persist only the tail past the last boundary, and the client seals still-running activity rows
+  as **failed** (not "done") via `snapshotActivity(pane, terminal)` before the stopped bubble. Client
+  keeps `streaming=true` through the phase (stop button = the kill switch), renders the `bg-task-note`
+  chip from `pane.backgroundTasks`, keeps the live tree mounted until `bg_end`, then re-PUTs the sealed
+  snapshot onto the first message (`backgroundMessageId`). Replay-safety: every message push dedupes by
+  id (a reattach replays the whole event log). Known v1 limits (deliberate): a new user message still
+  409s during the phase, and a server restart kills pending background work — both stated in the
+  standing prompt guidance (`promptBuilder.ts`) and `describe_system`.
 
 ### Image attachments
 - The user message can carry images. The composer stages images (`ChatPane.pendingImages`, downscaled to

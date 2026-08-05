@@ -1,4 +1,4 @@
-import type { AgentEvents } from "./events.js";
+import type { AgentEvents, BackgroundTaskSummary } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
 import type { AgentUsage } from "../types.js";
 import logger from "../logger.js";
@@ -150,10 +150,21 @@ export interface LoopState {
   tasks: Map<string, TaskRecord>;
   /** Ambient SDK tasks that should not render in the inline transcript. */
   hiddenTasks: Set<string>;
+  /**
+   * Live background tasks, mirrored from the SDK's `background_tasks_changed`
+   * level signal (REPLACE semantics). Consulted at each `result` boundary to
+   * tell "turn over" from "turn over BUT background work still running".
+   */
+  backgroundTasks: Map<string, BackgroundTaskSummary>;
 }
 
 export function createLoopState(): LoopState {
-  return { spawnedAgentIds: new Set(), tasks: new Map(), hiddenTasks: new Set() };
+  return {
+    spawnedAgentIds: new Set(),
+    tasks: new Map(),
+    hiddenTasks: new Set(),
+    backgroundTasks: new Map(),
+  };
 }
 
 function taskDescription(input: Record<string, unknown>): string {
@@ -726,6 +737,29 @@ function handleTaskSystemEvent(message: Record<string, unknown>, events: AgentEv
 
 export function handleSystemEvent(message: Record<string, unknown>, events: AgentEvents, state: LoopState): void {
   const subtype = asString(message.subtype);
+  // Level signal: the FULL set of live background tasks after a membership
+  // change (start/completion/kill/backgrounding). Replace — never pair edges —
+  // so a missed bookend can't wedge a stale running indicator.
+  if (subtype === "background_tasks_changed") {
+    state.backgroundTasks.clear();
+    const tasks = Array.isArray(message.tasks) ? message.tasks : [];
+    for (const entry of tasks) {
+      if (!isRecord(entry)) {
+        continue;
+      }
+      const taskId = asString(entry.task_id);
+      if (!taskId) {
+        continue;
+      }
+      state.backgroundTasks.set(taskId, {
+        taskId,
+        taskType: asString(entry.task_type) || undefined,
+        description: asString(entry.description) || undefined,
+      });
+    }
+    events.onBackgroundTasks?.({ tasks: [...state.backgroundTasks.values()] });
+    return;
+  }
   if (handleTaskSystemEvent(message, events, state)) {
     return;
   }

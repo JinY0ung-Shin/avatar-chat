@@ -1008,15 +1008,38 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         });
       }
       return;
+    case "bg_tasks":
+      // Live background-task set (REPLACE semantics): swap, never merge.
+      updatePane(paneId, (pane) => {
+        pane.backgroundTasks = Array.isArray(data?.tasks) ? data.tasks : [];
+      });
+      return;
+    case "bg_message":
+      // A background wake-up turn was persisted server-side → its own bubble.
+      if (data?.message?.role === "assistant")
+        appendBackgroundMessage(paneId, data.message as StoredMessage);
+      return;
+    case "bg_end":
+      finalizeBackgroundPhase(paneId, "done");
+      return;
     case "done":
       finalizeDone(paneId, data);
       return;
-    case "cancelled":
+    case "cancelled": {
+      // A stop during the background phase KILLS the pending background work:
+      // seal the tree with "failed" rows (and persist that) before the normal
+      // stopped-bubble handling.
+      const pane = readState().chatPanes.find((p) => p.id === paneId);
+      if (pane?.backgroundPhase) finalizeBackgroundPhase(paneId, "failed");
       finalizePane(paneId, "중지됨", true);
       return;
-    case "error":
+    }
+    case "error": {
+      const pane = readState().chatPanes.find((p) => p.id === paneId);
+      if (pane?.backgroundPhase) finalizeBackgroundPhase(paneId, "failed");
       finalizeError(paneId, data?.error || "오류가 발생했습니다.");
       return;
+    }
     default:
       return;
   }
@@ -1184,27 +1207,35 @@ function resetLive(pane: ChatPane): void {
   pane.liveTasks = [];
   pane.livePlugins = [];
   pane.liveStatusStickyUntil = 0;
+  pane.backgroundPhase = false;
+  pane.backgroundTasks = [];
+  pane.backgroundMessageId = null;
 }
 
 /* ---------- finalizers ---------- */
 
 // Snapshot the live activity tree so the COMPLETED bubble keeps showing what ran
 // (otherwise the tree vanishes the instant the run finishes). Normalize any still
-// "running" node to "done" so it doesn't render a perpetual spinner.
-function snapshotActivity(pane: ChatPane): AgentActivity | undefined {
+// "running" node to the terminal status so it doesn't render a perpetual spinner:
+// "done" on a natural finish, "failed" when the run was killed with background
+// work still in flight (those tasks really died — "done" would be a lie).
+function snapshotActivity(
+  pane: ChatPane,
+  terminal: "done" | "failed" = "done",
+): AgentActivity | undefined {
   if (!pane.liveTools.length && !pane.liveTasks.length) return undefined;
   return {
     agents: pane.liveAgents.map((a) => ({
       ...a,
-      status: a.status === "running" ? "done" : a.status,
+      status: a.status === "running" ? terminal : a.status,
     })),
     tools: pane.liveTools.map((t) => ({
       ...t,
-      status: t.status === "running" ? "done" : t.status,
+      status: t.status === "running" ? terminal : t.status,
     })),
     tasks: pane.liveTasks.map((t) => ({
       ...t,
-      status: t.status === "running" ? "done" : t.status,
+      status: t.status === "running" ? terminal : t.status,
     })),
   };
 }
@@ -1238,6 +1269,12 @@ function attachThinking(
 }
 
 function finalizeDone(paneId: string, data: any): void {
+  // done{background:true}: the SDK session keeps running background work past
+  // this point — finalize the bubble but keep the live tree until bg_end.
+  if (data?.background) {
+    finalizeBackgroundTurn(paneId, data);
+    return;
+  }
   // A persisted server message id + its activity → persist the
   // snapshot so the completed tool/agent tree survives reload.
   let persistMessageId: string | null = null;
@@ -1245,6 +1282,16 @@ function finalizeDone(paneId: string, data: any): void {
   updatePane(paneId, (pane) => {
     const activity = snapshotActivity(pane);
     const message = data?.message as StoredMessage | undefined;
+    // Dedupe by id: a reattach replays the whole event log, and the loaded
+    // conversation may already contain this persisted message.
+    if (
+      message?.role === "assistant" &&
+      message.id &&
+      pane.messages.some((m) => m.id === message.id)
+    ) {
+      clearLive(pane);
+      return;
+    }
     if (message?.role === "assistant") {
       attachActivity(message.response, activity);
       attachPlan(message.response, pane.livePlan);
@@ -1302,6 +1349,111 @@ function notifyTurnComplete(paneId: string): void {
     body,
     `done-${paneId}`,
   );
+}
+
+/* ---------- background phase (SDK keeps running after the visible turn) ---------- */
+
+// done{background:true}: push the finalized turn's message, keep the live
+// activity tree mounted (its rows keep updating until bg_end), and flip the
+// pane into its background phase — the chip renders and the send button stays
+// a stop button (killing the run kills the background work).
+function finalizeBackgroundTurn(paneId: string, data: any): void {
+  updatePane(paneId, (pane) => {
+    const message = data?.message as StoredMessage | undefined;
+    if (
+      message?.role === "assistant" &&
+      !(message.id && pane.messages.some((m) => m.id === message.id))
+    ) {
+      attachPlan(message.response, pane.livePlan);
+      attachThinking(message.response, pane.liveThinking);
+      pane.messages.push(message);
+      pane.usage = message.response?.usage ?? pane.usage;
+    }
+    pane.backgroundMessageId = message?.id || null;
+    pane.backgroundPhase = true;
+    if (Array.isArray(data?.tasks)) pane.backgroundTasks = data.tasks;
+    // Clear only the text-ish live state (it moved into the pushed message);
+    // agents/tools/tasks/plugins stay so the running rows remain visible.
+    pane.liveText = "";
+    pane.liveAttachments = [];
+    pane.liveTextBreakPending = false;
+    pane.liveThinking = "";
+    pane.thinkingActive = false;
+    pane.livePlan = "";
+    pane.planPending = false;
+    pane.liveStatus = "백그라운드 작업 진행 중…";
+  });
+  notifyTurnComplete(paneId);
+}
+
+// A background wake-up turn was persisted server-side: append it as its own
+// assistant bubble. Dedupe by id — a reattach replays the whole event log.
+function appendBackgroundMessage(paneId: string, message: StoredMessage): void {
+  let appended = false;
+  updatePane(paneId, (pane) => {
+    if (message.id && pane.messages.some((m) => m.id === message.id)) return;
+    pane.messages.push(message);
+    pane.usage = message.response?.usage ?? pane.usage;
+    // The wake-up turn's streamed tail (text/thinking/attachments) is embodied
+    // in the pushed message — reset the live state for the next wake-up so the
+    // same content doesn't render twice (live cards + message cards).
+    pane.liveText = "";
+    pane.liveTextBreakPending = false;
+    pane.liveThinking = "";
+    pane.thinkingActive = false;
+    pane.liveAttachments = [];
+    appended = true;
+  });
+  if (!appended) return;
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  const name = pane?.avatar?.alias || pane?.avatar?.displayName || "아바타";
+  const text = (message.content || "").replace(/\s+/g, " ").trim();
+  osNotify(
+    `${name} · 백그라운드 작업 보고`,
+    text ? (text.length > 140 ? `${text.slice(0, 140)}…` : text) : "백그라운드 작업이 완료되었습니다.",
+    `bg-${paneId}`,
+  );
+}
+
+// The background phase ended — naturally (bg_end → terminal "done") or by a
+// kill (cancelled/error → "failed"). Seal the live tree onto the finalized
+// turn's message with that terminal status, persist the snapshot, and drop the
+// live rows. A kill keeps the streamed text tail: the caller's finalizePane /
+// finalizeError persists it as the terminal bubble right after this.
+function finalizeBackgroundPhase(
+  paneId: string,
+  terminal: "done" | "failed",
+): void {
+  let patchId: string | null = null;
+  let patchActivity: AgentActivity | undefined;
+  updatePane(paneId, (pane) => {
+    if (!pane.backgroundPhase) return;
+    const activity = snapshotActivity(pane, terminal);
+    if (activity && pane.backgroundMessageId) {
+      const target = pane.messages.find(
+        (m) => m.id === pane.backgroundMessageId,
+      );
+      if (target?.response) target.response.activity = activity;
+      patchId = pane.backgroundMessageId;
+      patchActivity = activity;
+    }
+    pane.backgroundPhase = false;
+    pane.backgroundTasks = [];
+    pane.backgroundMessageId = null;
+    pane.liveAgents = [];
+    pane.liveTools = [];
+    pane.liveTasks = [];
+    pane.livePlugins = [];
+    if (terminal === "done") clearLive(pane);
+  });
+  if (patchId && patchActivity) {
+    // Best effort, like finalizeDone: display already works without it — this
+    // only adds reload durability for the sealed tree.
+    api(`/api/messages/${encodeURIComponent(patchId)}/activity`, {
+      method: "PUT",
+      body: JSON.stringify({ activity: patchActivity }),
+    }).catch(() => {});
+  }
 }
 
 // Build a client-side terminal (stop/error) assistant message: a text

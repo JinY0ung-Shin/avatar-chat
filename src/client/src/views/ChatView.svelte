@@ -869,6 +869,13 @@
     const agentCount = item.liveAgents.filter((a) => !a.isMain).length;
     return activityCountLabel(toolCount, taskCount, agentCount, "진행 중", "작업 중…");
   }
+  // One-line description list for the background-phase note ("빌드 실행, 리포 조사").
+  function bgTaskSummary(item: ChatPane): string {
+    return (item.backgroundTasks || [])
+      .map((t) => t.description || t.taskType || t.taskId)
+      .filter(Boolean)
+      .join(", ");
+  }
 
   // Activity-tree snapshot kept on a COMPLETED assistant message, so the tool/agent
   // runs stay visible after the response finishes (collapsed by default).
@@ -1100,6 +1107,18 @@
                   {@render attachmentCards(item, seg.atts, item.liveAttachments)}
                 {/if}
               {/each}
+              {#if item.backgroundPhase}
+                <!-- The visible turn is finalized (bubble above), but SDK background
+                     tasks keep the session alive; the stop button cancels them. -->
+                <div class="bg-task-note" role="status">
+                  <span class="bg-task-dot" aria-hidden="true"></span>
+                  <span class="bg-task-text">
+                    {item.backgroundTasks?.length
+                      ? `백그라운드 작업 ${item.backgroundTasks.length}개 진행 중 · ${bgTaskSummary(item)}`
+                      : "백그라운드 작업 마무리 중…"}
+                  </span>
+                </div>
+              {/if}
               <div class="stream-status">
                 <span class="spinner"></span>
                 <span class="label">{item.liveStatus || "응답 생성 중…"}</span>

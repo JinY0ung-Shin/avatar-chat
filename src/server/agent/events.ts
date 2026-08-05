@@ -156,6 +156,34 @@ export interface AgentSpawnEvent {
   parentId: string;
 }
 
+/**
+ * One live background task, relayed from the SDK's `background_tasks_changed`
+ * level signal (REPLACE semantics: each event carries the FULL set).
+ */
+export interface BackgroundTaskSummary {
+  taskId: string;
+  /** SDK task-type label, e.g. "local_bash", "subagent". */
+  taskType?: string;
+  description?: string;
+}
+
+/**
+ * A turn boundary: the SDK emitted a `result` message. When background tasks
+ * are still live at this point the query keeps running (the SDK holds the
+ * session open, wakes the model when a task settles, and streams follow-up
+ * turns) — each of those follow-ups ends in another TurnResultEvent.
+ */
+export interface TurnResultEvent {
+  /** Main-agent text streamed since the previous result boundary. */
+  text: string;
+  /** Usage carried by this result message, if any. */
+  usage?: import("../types.js").AgentUsage;
+  /** In-band error subtype on this result (e.g. error_max_turns), if any. */
+  errorSubtype?: string;
+  /** Live background tasks at this boundary (empty = the run is truly over). */
+  backgroundTasks: BackgroundTaskSummary[];
+}
+
 /** A tool was denied without an interactive prompt (read-only colleague, deny rule, dontAsk). */
 export interface BlockedEvent {
   toolUseId?: string;
@@ -251,6 +279,17 @@ export interface AgentEvents {
   onAgentStart?: (event: AgentSpawnEvent) => void;
   /** A subagent finished. */
   onAgentEnd?: (event: { agentId: string; ok: boolean }) => void;
+  /**
+   * The full set of live background tasks changed (SDK level signal).
+   * REPLACE semantics: swap any kept set for this payload — never pair edges.
+   */
+  onBackgroundTasks?: (event: { tasks: BackgroundTaskSummary[] }) => void;
+  /**
+   * A `result` boundary passed. With live background tasks the SDK session
+   * stays open past this point, so the host can finalize the visible turn here
+   * and treat later boundaries as background follow-up reports.
+   */
+  onTurnResult?: (event: TurnResultEvent) => void;
   /** A tool was auto-denied (no interactive prompt). */
   onBlocked?: (event: BlockedEvent) => void;
   /** The model submitted a plan via ExitPlanMode (plan mode) — display card. */

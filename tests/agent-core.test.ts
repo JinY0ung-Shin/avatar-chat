@@ -1631,6 +1631,8 @@ describe("sdk message handlers", () => {
       onAgentEnd: vi.fn(),
       onBlocked: vi.fn(),
       onPlan: vi.fn(),
+      onBackgroundTasks: vi.fn(),
+      onTurnResult: vi.fn(),
     };
   }
 
@@ -2046,6 +2048,40 @@ describe("sdk message handlers", () => {
     expect(sink.onStatus).toHaveBeenCalledWith("응답 생성 중…");
     expect(sink.onStatus).toHaveBeenCalledWith("맥락 정리 중…");
     expect(sink.onStatus).toHaveBeenCalledWith("처리 중…");
+  });
+
+  it("mirrors background_tasks_changed with replace semantics", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent(
+      {
+        subtype: "background_tasks_changed",
+        tasks: [
+          { task_id: "bg-1", task_type: "local_bash", description: "Long build" },
+          { task_id: "bg-2", task_type: "subagent" },
+          { not_a_task: true },
+        ],
+      },
+      sink,
+      state,
+    );
+    expect(sink.onBackgroundTasks).toHaveBeenLastCalledWith({
+      tasks: [
+        { taskId: "bg-1", taskType: "local_bash", description: "Long build" },
+        { taskId: "bg-2", taskType: "subagent" },
+      ],
+    });
+    expect(state.backgroundTasks.size).toBe(2);
+
+    // Level signal: each payload REPLACES the set (empty = everything settled).
+    handleSystemEvent(
+      { subtype: "background_tasks_changed", tasks: [] },
+      sink,
+      state,
+    );
+    expect(sink.onBackgroundTasks).toHaveBeenLastCalledWith({ tasks: [] });
+    expect(state.backgroundTasks.size).toBe(0);
   });
 
   it("handles system task events, hidden tasks, and subagent task state", () => {
@@ -2813,6 +2849,10 @@ describe("buildPrompt", () => {
 
     expect(systemAppend).toContain("Noah Almighty (avatar-chat)");
     expect(systemAppend).toContain("mcp__system__describe_system");
+    // Standing background-execution guidance: wake-ups arrive as NEW messages,
+    // and backgrounding blocks the conversation until the work settles.
+    expect(systemAppend).toContain("Background execution");
+    expect(systemAppend).toContain("NEW chat message");
     expect(systemAppend).not.toContain("Earlier conversation history");
     expect(systemAppend).not.toContain(
       "User message:\n방금 말한 내용을 이어서 처리해줘",

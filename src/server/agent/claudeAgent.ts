@@ -1485,6 +1485,20 @@ export async function runClaudeAgent(
   // it (otherwise the kept turn's reasoning would render glued to the throwaway).
   let emptyTurnRetryTried = false;
 
+  // Result-boundary segmentation (streaming runs only). A query is NOT one
+  // model turn: with live background tasks the SDK holds the session open past
+  // the first `result`, wakes the model when a task settles, and streams
+  // follow-up turns that each end in another `result`. onTurnResult hands the
+  // host each boundary's text slice so it can finalize the visible turn early
+  // and deliver wake-up turns as separate messages. Indexes mark where the
+  // previous segment ended in the chunk accumulators.
+  let segmentAssistantStart = 0;
+  let segmentDeltaStart = 0;
+  // True once any result boundary passed with live background tasks. Blocks the
+  // empty-turn retry: re-running the whole query after a background phase would
+  // duplicate work the host already delivered as messages.
+  let backgroundTurnSeen = false;
+
   // Run the SDK query, walking the model fallback chain (single-element unless a
   // routine opted in). A retry re-runs from scratch on a fresh attempt, so it is
   // only safe for headless routines (no live stream consuming partial output);
@@ -1505,6 +1519,8 @@ export async function runClaudeAgent(
     runUsage = undefined;
     contextTokens = undefined;
     contextUsage = undefined;
+    segmentAssistantStart = 0;
+    segmentDeltaStart = 0;
     // Build the prompt fresh each attempt: the image path is a single-use async
     // generator, so a retry needs a new one (the string path is reused as-is).
     const queryPrompt =
@@ -1561,6 +1577,32 @@ export async function runClaudeAgent(
             }
           }
         }
+
+        if (dispatched.kind === "result" && events?.onTurnResult) {
+          // Result boundary: hand the host this segment's text (chunks since
+          // the previous boundary; the boundary's own resultText is only a
+          // fallback — it duplicates the last assistant turn's text) plus the
+          // live background-task set, so it can finalize the visible turn while
+          // the SDK keeps running background work underneath.
+          const segmentText =
+            assistantChunks.slice(segmentAssistantStart).join("\n\n").trim() ||
+            deltaChunks.slice(segmentDeltaStart).join("").trim() ||
+            (dispatched.resultText || "").trim();
+          segmentAssistantStart = assistantChunks.length;
+          segmentDeltaStart = deltaChunks.length;
+          const backgroundTasks = [...state.backgroundTasks.values()];
+          if (backgroundTasks.length > 0) {
+            backgroundTurnSeen = true;
+          }
+          events.onTurnResult({
+            text: segmentText,
+            ...(dispatched.usage ? { usage: dispatched.usage } : {}),
+            ...(dispatched.errorSubtype
+              ? { errorSubtype: dispatched.errorSubtype }
+              : {}),
+            backgroundTasks,
+          });
+        }
       }
       // Attempt finished (success or an in-band error result, e.g. max_turns) —
       // those are not transient model-server failures, so don't fall back.
@@ -1580,6 +1622,7 @@ export async function runClaudeAgent(
         !producedText &&
         !resultErrorSubtype &&
         !emptyTurnRetryTried &&
+        !backgroundTurnSeen &&
         !abortController?.signal.aborted
       ) {
         emptyTurnRetryTried = true;
