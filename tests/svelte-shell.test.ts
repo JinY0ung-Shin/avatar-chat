@@ -184,7 +184,7 @@ describe("Shell admin presence badge", () => {
 
   it("stays hidden for a non-admin even when presence is in state", () => {
     setDesktopViewport(true);
-    replaceState({ adminPresence: { windowMinutes: 3, users: [other] } });
+    replaceState({ adminPresence: { windowMinutes: 60, users: [other] } });
     render(Shell, { props: { user, view: "explore" } });
     expect(screen.queryByText(/^접속 /)).toBeNull();
   });
@@ -193,7 +193,7 @@ describe("Shell admin presence badge", () => {
     setDesktopViewport(true);
     replaceState({
       adminPresence: {
-        windowMinutes: 3,
+        windowMinutes: 60,
         // The viewer's own row must not inflate the count.
         users: [other, { ...adminUser, lastSeenAt: new Date().toISOString() }],
       },
@@ -215,13 +215,36 @@ describe("Shell admin presence badge", () => {
   it("shows a muted alone state when the admin is the only one present", async () => {
     setDesktopViewport(true);
     replaceState({
-      adminPresence: { windowMinutes: 3, users: [{ ...adminUser, lastSeenAt: new Date().toISOString() }] },
+      adminPresence: { windowMinutes: 60, users: [{ ...adminUser, lastSeenAt: new Date().toISOString() }] },
     });
     render(Shell, { props: { user: adminUser, view: "explore" } });
 
     const toggle = screen.getByRole("button", { name: /접속 0/ });
     expect(toggle.querySelector(".rail-presence-dot.alone")).toBeTruthy();
     await fireEvent.click(toggle);
-    expect(document.getElementById("rail-presence-list")?.textContent).toContain("나 혼자");
+    // The window is rendered in whole hours; "60분" / "1시간분" would both be wrong.
+    expect(document.getElementById("rail-presence-list")?.textContent).toBe(
+      "최근 1시간 동안 나 혼자 있었습니다.",
+    );
+  });
+
+  it("labels the window in whole hours, falling back to minutes below an hour", async () => {
+    setDesktopViewport(true);
+    const self = { ...adminUser, lastSeenAt: new Date().toISOString() };
+
+    replaceState({ adminPresence: { windowMinutes: 60, users: [self] } });
+    const hour = render(Shell, { props: { user: adminUser, view: "explore" } });
+    expect(screen.getByRole("button", { name: /접속 0/ }).getAttribute("title")).toContain("최근 1시간 안에");
+    hour.unmount();
+
+    replaceState({ adminPresence: { windowMinutes: 120, users: [self] } });
+    const twoHours = render(Shell, { props: { user: adminUser, view: "explore" } });
+    expect(screen.getByRole("button", { name: /접속 0/ }).getAttribute("title")).toContain("최근 2시간 안에");
+    twoHours.unmount();
+
+    // A sub-hour (or non-whole-hour) window must still read in minutes.
+    replaceState({ adminPresence: { windowMinutes: 3, users: [self] } });
+    render(Shell, { props: { user: adminUser, view: "explore" } });
+    expect(screen.getByRole("button", { name: /접속 0/ }).getAttribute("title")).toContain("최근 3분 안에");
   });
 });

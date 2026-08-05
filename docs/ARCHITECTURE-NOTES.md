@@ -1136,14 +1136,21 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   - repo-href building ↔ server `githubHost` resolution
   - the schedule builder (`RoutineModal.svelte` + `formatRoutineSchedule`/`timeToMinute`/`minuteToTime` in
     `lib/format.ts`) ↔ server `routineSchedule.ts` (once/daily/weekly/interval semantics)
-- **Admin presence badge: the client poll interval and the server window are coupled.** `users.last_seen_at`
-  is stamped by EVERY authenticated request, and `startKnowledgeWatch` (`lib/loaders.ts`) is what keeps it
-  warm for an idle-but-open tab — it polls once a minute and ONLY while `document.hidden` is false (that
-  visibility gate is what makes presence mean "at the screen" instead of "logged in"). `PRESENCE_WINDOW_MS`
-  (`store/internal.ts`, 3 min) must therefore stay above that interval with room for one missed tick.
-  Shortening the window, lengthening the interval, or dropping the visibility gate each break presence
-  independently. `sessions` rows are NOT presence — they live 14 days; `AdminStats.activeSessions` counts
-  those and answers a different question.
+- **Admin presence badge: the client poll interval bounds the server window from BELOW.**
+  `users.last_seen_at` is stamped by EVERY authenticated request, and `startKnowledgeWatch`
+  (`lib/loaders.ts`) is what keeps it warm for an idle-but-open tab — it polls once a minute and ONLY while
+  `document.hidden` is false. `PRESENCE_WINDOW_MS` (`store/internal.ts`) must therefore stay above that
+  interval with room for one missed tick, so ~2 min is the floor; shortening the window below it, or
+  lengthening the poll interval, makes the badge flicker to zero for people who are right there.
+- **The window is currently 1 hour, which means "around recently", NOT "at the screen now."** At that width
+  the visibility gate stops being load-bearing (one visible moment in the hour is enough) and someone who
+  closed the tab 59 minutes ago still counts. It was widened from 3 min deliberately — 3 min emptied the
+  badge whenever people switched tabs. Consequences to respect: never relabel the badge as live presence,
+  always surface `AdminPresence.windowMinutes` in the UI (the tooltip and empty state do), and expect the
+  per-row ages to carry the real signal. Still not `AdminStats.activeSessions`, which counts 14-DAY login
+  cookies and so never decays within a workday. If the window ever changes, the two `windowMinutes`
+  assertions (`tests/store.test.ts` straddles the boundary at 59/61 min, `tests/app.test.ts`) fail loudly by
+  design.
 
 ### Behavior gotchas (don't "fix" these)
 - **Group-knowledge toggle saves a per-USER default, fire-and-forget with NO readback.** A new chat pane

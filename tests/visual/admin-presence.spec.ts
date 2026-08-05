@@ -56,7 +56,7 @@ async function mockApp(page: Page, { isAdmin }: { isAdmin: boolean }): Promise<v
       }
       body = {
         presence: {
-          windowMinutes: 3,
+          windowMinutes: 60,
           users: [
             // The viewer's own row must never reach the list or the count.
             { id: "user-1", username: "jinyoung", displayName: "김진영", hasImage: false, lastSeenAt: minutesAgo(0) },

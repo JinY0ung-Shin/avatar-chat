@@ -564,7 +564,12 @@
   let presenceOpen = false;
   $: isAdmin = Boolean(user.roles?.includes("admin"));
   $: presentOthers = ($appState.adminPresence?.users ?? []).filter((u) => u.id !== user.id);
-  $: presenceWindow = $appState.adminPresence?.windowMinutes ?? 3;
+  // Server-owned window, rendered in whole hours once it reaches one — "최근 60분"
+  // is not how anyone says it.
+  $: presenceWindow = (() => {
+    const minutes = $appState.adminPresence?.windowMinutes ?? 60;
+    return minutes >= 60 && minutes % 60 === 0 ? `${minutes / 60}시간` : `${minutes}분`;
+  })();
 
   // Minute-granularity only — the window is a few minutes wide, so anything
   // finer would just flicker.
@@ -835,7 +840,7 @@
           type="button"
           aria-expanded={presenceOpen}
           aria-controls="rail-presence-list"
-          title={`최근 ${presenceWindow}분 안에 활동한 다른 사용자 ${presentOthers.length}명 (관리자만 보입니다)`}
+          title={`최근 ${presenceWindow} 안에 활동한 다른 사용자 ${presentOthers.length}명 (관리자만 보입니다)`}
           on:click={() => (presenceOpen = !presenceOpen)}
         >
           <span class="rail-presence-dot" class:alone={presentOthers.length === 0} aria-hidden="true"></span>
@@ -845,7 +850,7 @@
         {#if presenceOpen}
           <div id="rail-presence-list" class="rail-presence-list scroll-thin">
             {#if !presentOthers.length}
-              <div class="rail-presence-empty">최근 {presenceWindow}분 동안 나 혼자 있었습니다.</div>
+              <div class="rail-presence-empty">최근 {presenceWindow} 동안 나 혼자 있었습니다.</div>
             {:else}
               {#each presentOthers as person (person.id)}
                 <div class="rail-presence-item">

@@ -2288,18 +2288,20 @@ describe("store adminPresence (admin rail badge)", () => {
     }).store;
   }
 
+  // Straddle the hour boundary with a minute of slack on each side, so the
+  // assertion pins PRESENCE_WINDOW_MS rather than merely "some window".
   it("lists only users seen inside the window, freshest first", () => {
     const store = makeStore("presence-window");
     const here = store.createUser({ username: "here", displayName: "Here", password: "password123" });
-    const alsoHere = store.createUser({ username: "also", displayName: "Also", password: "password123" });
+    const edge = store.createUser({ username: "edge", displayName: "Edge", password: "password123" });
     const gone = store.createUser({ username: "gone", displayName: "Gone", password: "password123" });
     seenAgo(store, here.id, 0);
-    seenAgo(store, alsoHere.id, 2);
-    seenAgo(store, gone.id, 30);
+    seenAgo(store, edge.id, 59);
+    seenAgo(store, gone.id, 61);
 
     const presence = store.adminPresence();
-    expect(presence.windowMinutes).toBe(3);
-    expect(presence.users.map((u) => u.username)).toEqual(["here", "also"]);
+    expect(presence.windowMinutes).toBe(60);
+    expect(presence.users.map((u) => u.username)).toEqual(["here", "edge"]);
     expect(presence.users[0].displayName).toBe("Here");
     expect(presence.users[0].hasImage).toBe(false);
   });

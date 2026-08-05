@@ -813,7 +813,7 @@ describe("noah-almighty platform", () => {
 
     // Both agents just authenticated, so both stamps are inside the window.
     const res = await admin.get("/api/admin/presence").expect(200);
-    expect(res.body.presence.windowMinutes).toBe(3);
+    expect(res.body.presence.windowMinutes).toBe(60);
     expect(res.body.presence.users.map((u: { username: string }) => u.username).sort()).toEqual([
       "boss",
       "member-user",

@@ -17,13 +17,20 @@ const SESSION_DAYS = 14;
 
 /**
  * How recently `users.last_seen_at` must have been stamped for a user to count
- * as present. Every authenticated request refreshes that column and an open tab
- * polls once a minute while VISIBLE (`startKnowledgeWatch` on the client), so
- * this window must clear one missed tick — hence 3 minutes, not 1. Widening it
- * blurs "at the screen now" back toward "logged in sometime", which is what the
- * `sessions` table already reports.
+ * as present. Every authenticated request refreshes that column, and an open tab
+ * polls once a minute while VISIBLE (`startKnowledgeWatch` on the client), so the
+ * floor is 2+ minutes: the window must clear one missed tick.
+ *
+ * At an hour this deliberately reads as "around recently", NOT "at the screen
+ * now": someone who closed the tab 59 minutes ago still counts, and the client's
+ * visibility gate stops being load-bearing (one visible moment in the hour is
+ * enough). That is the intended trade — a 3-minute window made the badge flicker
+ * to zero whenever people switched tabs. It still differs from
+ * `AdminStats.activeSessions`, which counts 14-DAY login cookies and so never
+ * decays within a workday. Callers must surface the window (see
+ * `AdminPresence.windowMinutes`) rather than implying live presence.
  */
-const PRESENCE_WINDOW_MS = 3 * 60 * 1000;
+const PRESENCE_WINDOW_MS = 60 * 60 * 1000;
 
 /** Loosely-typed shape of a legacy persisted canvas, for the one-time backfill. */
 type CanvasArtifactBackfill = Partial<CanvasArtifact> & { id?: unknown };
