@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { CURRENT_RELEASE_ID } from "../../src/server/releaseNotes.js";
+
 const user = {
   id: "user-1",
   username: "jinyoung",
@@ -9,6 +11,9 @@ const user = {
   intro: "함께 더 좋은 답을 찾습니다.",
   hashtags: ["design", "agent"],
   onboardedAt: "2026-07-01T00:00:00.000Z",
+  // Track the newest release, not a literal: an unseen release opens the
+  // what's-new modal, whose overlay silently swallows every click in this suite.
+  lastSeenRelease: CURRENT_RELEASE_ID,
   knowledgeRepo: "knowledge/repo",
   gitTokenSet: true,
   secretNames: [],
@@ -200,7 +205,7 @@ test("mobile rail and destructive confirmation remain spatially connected", asyn
   await expect(page.getByRole("button", { name: "메뉴 열기" })).toHaveAttribute("aria-expanded", "true");
   await expect(page).toHaveScreenshot("mobile-rail.png", { fullPage: true });
 
-  await page.getByRole("button", { name: "모든 일반 대화 삭제", exact: true }).click();
+  await page.getByRole("button", { name: "모든 일반 대화 비우기", exact: true }).click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByRole("button", { name: "취소", exact: true })).toBeFocused();
   await expect(page).toHaveScreenshot("mobile-confirmation-sheet.png", { fullPage: true });
@@ -254,7 +259,7 @@ test("chat chrome and bubbles retain the Apple hierarchy", async ({ page }) => {
 test("empty chat provides a direct path back to avatar discovery", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "대화", exact: true }).click();
-  await expect(page.getByRole("heading", { name: "아직 선택한 아바타가 없어요" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "아직 선택한 아바타가 없습니다" })).toBeVisible();
   await expect(page.locator('[role="status"]', { hasText: "대화 화면" })).toBeAttached();
   await page.getByRole("button", { name: "대화할 아바타 찾기" }).click();
   await expect(page.getByRole("heading", { name: "탐색" })).toBeVisible();

@@ -1,5 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
+import { CURRENT_RELEASE_ID } from "../../src/server/releaseNotes.js";
+
 // External avatars hide the image-attach button and swap the native composer
 // settings for a gateway model picker. These are geometry/structure checks (no
 // screenshots): the send button must hug the composer's right edge with the
@@ -16,6 +18,8 @@ const user = {
   intro: "함께 더 좋은 답을 찾습니다.",
   hashtags: ["design", "agent"],
   onboardedAt: "2026-07-01T00:00:00.000Z",
+  // See apple-ui.spec.ts — an unseen release opens a click-blocking modal.
+  lastSeenRelease: CURRENT_RELEASE_ID,
   knowledgeRepo: "knowledge/repo",
   gitTokenSet: true,
   secretNames: [],
