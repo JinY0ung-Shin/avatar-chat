@@ -697,6 +697,26 @@ export interface AdminStats {
   groups: number;
 }
 
+/** One user counted as "here right now" by the admin presence badge. */
+export interface AdminPresenceUser {
+  id: string;
+  username: string;
+  displayName: string;
+  hasImage: boolean;
+  lastSeenAt: string;
+}
+
+/**
+ * Who is actually using the deployment at this moment (admin-only). Distinct
+ * from `AdminStats.activeSessions`, which counts 14-day login cookies and so
+ * says nothing about whether anyone is at the screen.
+ */
+export interface AdminPresence {
+  /** Freshness window the list was computed with, so the UI can label it. */
+  windowMinutes: number;
+  users: AdminPresenceUser[];
+}
+
 /** Per-user breakdown shown when an admin expands a row. */
 export interface AdminUserDetail extends AdminUserSummary {
   /** Conversations this user started (as an owner talking to avatars). */

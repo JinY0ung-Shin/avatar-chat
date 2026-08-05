@@ -167,3 +167,61 @@ describe("Shell rail controls", () => {
     expect(screen.getByRole("button", { name: "대화 삭제: Alpha 계획" })).toBeTruthy();
   });
 });
+
+describe("Shell admin presence badge", () => {
+  const adminUser = { ...user, roles: ["admin"] } satisfies User;
+  const other = {
+    id: "mate-1",
+    username: "mate",
+    displayName: "정민",
+    hasImage: false,
+    lastSeenAt: new Date().toISOString(),
+  };
+
+  afterEach(() => {
+    replaceState({ adminPresence: null });
+  });
+
+  it("stays hidden for a non-admin even when presence is in state", () => {
+    setDesktopViewport(true);
+    replaceState({ adminPresence: { windowMinutes: 3, users: [other] } });
+    render(Shell, { props: { user, view: "explore" } });
+    expect(screen.queryByText(/^접속 /)).toBeNull();
+  });
+
+  it("counts other people only and lists them when expanded", async () => {
+    setDesktopViewport(true);
+    replaceState({
+      adminPresence: {
+        windowMinutes: 3,
+        // The viewer's own row must not inflate the count.
+        users: [other, { ...adminUser, lastSeenAt: new Date().toISOString() }],
+      },
+    });
+    render(Shell, { props: { user: adminUser, view: "explore" } });
+
+    const toggle = screen.getByRole("button", { name: /접속 1/ });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(document.getElementById("rail-presence-list")).toBeNull();
+
+    await fireEvent.click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const list = document.getElementById("rail-presence-list")!;
+    expect(within(list).getByText("정민")).toBeTruthy();
+    expect(within(list).getByText("방금")).toBeTruthy();
+    expect(within(list).queryByText("Owner")).toBeNull();
+  });
+
+  it("shows a muted alone state when the admin is the only one present", async () => {
+    setDesktopViewport(true);
+    replaceState({
+      adminPresence: { windowMinutes: 3, users: [{ ...adminUser, lastSeenAt: new Date().toISOString() }] },
+    });
+    render(Shell, { props: { user: adminUser, view: "explore" } });
+
+    const toggle = screen.getByRole("button", { name: /접속 0/ });
+    expect(toggle.querySelector(".rail-presence-dot.alone")).toBeTruthy();
+    await fireEvent.click(toggle);
+    expect(document.getElementById("rail-presence-list")?.textContent).toContain("나 혼자");
+  });
+});

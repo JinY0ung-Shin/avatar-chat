@@ -557,6 +557,21 @@
   }
 
   $: railExpanded = desktopRail ? !railCollapsed : railOpen;
+
+  // ---- Admin presence badge (rail footer) ----------------------------------
+  // Deliberately the smallest possible surface: one line that expands in place.
+  // The count excludes the viewer, so "접속 2" means two OTHER people are here.
+  let presenceOpen = false;
+  $: isAdmin = Boolean(user.roles?.includes("admin"));
+  $: presentOthers = ($appState.adminPresence?.users ?? []).filter((u) => u.id !== user.id);
+  $: presenceWindow = $appState.adminPresence?.windowMinutes ?? 3;
+
+  // Minute-granularity only — the window is a few minutes wide, so anything
+  // finer would just flicker.
+  function presenceAge(iso: string): string {
+    const minutes = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+    return minutes < 1 ? "방금" : `${minutes}분 전`;
+  }
 </script>
 
 <svelte:window on:keydown={handleKeydown} />
@@ -812,6 +827,37 @@
   <div class="rail-footer">
     {#if streaming}
       <div class="svelte-rail-streaming"><span class="spinner"></span><span>응답 중</span></div>
+    {/if}
+    {#if isAdmin && $appState.adminPresence}
+      <div class="rail-presence">
+        <button
+          class="rail-presence-toggle"
+          type="button"
+          aria-expanded={presenceOpen}
+          aria-controls="rail-presence-list"
+          title={`최근 ${presenceWindow}분 안에 활동한 다른 사용자 ${presentOthers.length}명 (관리자만 보입니다)`}
+          on:click={() => (presenceOpen = !presenceOpen)}
+        >
+          <span class="rail-presence-dot" class:alone={presentOthers.length === 0} aria-hidden="true"></span>
+          <span>접속 {presentOthers.length}</span>
+          <Icon name={presenceOpen ? "chevron-down" : "chevron-right"} size={13} />
+        </button>
+        {#if presenceOpen}
+          <div id="rail-presence-list" class="rail-presence-list scroll-thin">
+            {#if !presentOthers.length}
+              <div class="rail-presence-empty">최근 {presenceWindow}분 동안 나 혼자 있었습니다.</div>
+            {:else}
+              {#each presentOthers as person (person.id)}
+                <div class="rail-presence-item">
+                  <AvatarImage user={person} size={20} />
+                  <span class="rail-presence-name">{person.displayName || person.username}</span>
+                  <span class="rail-presence-age">{presenceAge(person.lastSeenAt)}</span>
+                </div>
+              {/each}
+            {/if}
+          </div>
+        {/if}
+      </div>
     {/if}
     <div class="rail-user-row">
       <button class="rail-me" type="button" title="내 아바타 설정" on:click={() => navigate("settings")}>

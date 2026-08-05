@@ -2,6 +2,8 @@ export type {
   AdminGroupSummary,
   AdminExternalAgent,
   AdminExternalAgentInput,
+  AdminPresence,
+  AdminPresenceUser,
   AdminStats,
   AdminUserDetail,
   AdminUserSummary,

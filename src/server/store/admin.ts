@@ -6,6 +6,7 @@ import {
   serializeManagedExternalAgents,
 } from "../externalAgents.js";
 import type {
+  AdminPresence,
   AdminStats,
   AdminUserDetail,
   AdminUserSummary,
@@ -18,6 +19,7 @@ import {
   type StoreBase,
   type UserRow,
   MODEL_OVERRIDE_KEY,
+  PRESENCE_WINDOW_MS,
   SIGNUP_MODE_KEY,
   now,
 } from "./internal.js";
@@ -91,6 +93,35 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         activeRoutines: this.count("SELECT COUNT(*) AS c FROM routine_jobs WHERE enabled = 1"),
         activeSessions: this.count("SELECT COUNT(*) AS c FROM sessions WHERE expires_at > ?", current),
         groups: this.count("SELECT COUNT(*) AS c FROM groups"),
+      };
+    }
+
+    /**
+     * Who is at the screen right now, freshest first. Suspended accounts are
+     * excluded: suspending drops their sessions, so a stamp left behind from
+     * just before the suspension is not presence.
+     */
+    adminPresence(): AdminPresence {
+      const since = new Date(Date.now() - PRESENCE_WINDOW_MS).toISOString();
+      const rows = this.db
+        .prepare(
+          `SELECT id, username, display_name, avatar_ext, last_seen_at FROM users
+           WHERE suspended = 0 AND last_seen_at IS NOT NULL AND last_seen_at > ?
+           ORDER BY last_seen_at DESC`,
+        )
+        .all(since) as Pick<
+        UserRow,
+        "id" | "username" | "display_name" | "avatar_ext" | "last_seen_at"
+      >[];
+      return {
+        windowMinutes: Math.round(PRESENCE_WINDOW_MS / 60_000),
+        users: rows.map((row) => ({
+          id: row.id,
+          username: row.username,
+          displayName: row.display_name,
+          hasImage: Boolean(row.avatar_ext),
+          lastSeenAt: row.last_seen_at!,
+        })),
       };
     }
 

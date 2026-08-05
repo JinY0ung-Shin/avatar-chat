@@ -152,6 +152,13 @@ export function createAdminRouter(deps: RouterDeps): Router {
     res.json({ stats: store.adminStats() });
   });
 
+  // Live presence for the rail badge. Polled from every admin's open tab, so it
+  // stays ONE users scan with no per-user subqueries — unlike /stats, which is
+  // fine to keep heavy because only the admin view asks for it.
+  router.get("/api/admin/presence", requireAuth(store), requireAdmin, (_req, res) => {
+    res.json({ presence: store.adminPresence() });
+  });
+
   router.get("/api/admin/users", requireAuth(store), requireAdmin, (_req, res) => {
     res.json({ users: store.listUsers() });
   });

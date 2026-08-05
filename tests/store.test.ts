@@ -2269,3 +2269,59 @@ describe("store deleteUser canvas cascade (no orphans)", () => {
     expect(countRows(store, "SELECT COUNT(*) AS n FROM canvas_versions")).toBe(0);
   });
 });
+
+describe("store adminPresence (admin rail badge)", () => {
+  // last_seen_at is normally stamped by getUserBySessionToken; poke it directly
+  // so the window boundary is testable without faking clocks.
+  type WithDb = { db: { prepare(sql: string): { run(...params: unknown[]): unknown } } };
+  const seenAgo = (store: unknown, userId: string, minutesAgo: number): void => {
+    (store as unknown as WithDb).db
+      .prepare("UPDATE users SET last_seen_at = ? WHERE id = ?")
+      .run(new Date(Date.now() - minutesAgo * 60_000).toISOString(), userId);
+  };
+
+  function makeStore(dir: string) {
+    return createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "presence",
+    }).store;
+  }
+
+  it("lists only users seen inside the window, freshest first", () => {
+    const store = makeStore("presence-window");
+    const here = store.createUser({ username: "here", displayName: "Here", password: "password123" });
+    const alsoHere = store.createUser({ username: "also", displayName: "Also", password: "password123" });
+    const gone = store.createUser({ username: "gone", displayName: "Gone", password: "password123" });
+    seenAgo(store, here.id, 0);
+    seenAgo(store, alsoHere.id, 2);
+    seenAgo(store, gone.id, 30);
+
+    const presence = store.adminPresence();
+    expect(presence.windowMinutes).toBe(3);
+    expect(presence.users.map((u) => u.username)).toEqual(["here", "also"]);
+    expect(presence.users[0].displayName).toBe("Here");
+    expect(presence.users[0].hasImage).toBe(false);
+  });
+
+  it("excludes suspended accounts even with a fresh stamp", () => {
+    const store = makeStore("presence-suspended");
+    const admin = store.createUser({ username: "boss", displayName: "Boss", password: "password123" });
+    const banned = store.createUser({ username: "banned", displayName: "Banned", password: "password123" });
+    seenAgo(store, admin.id, 0);
+    seenAgo(store, banned.id, 0);
+    store.setSuspended(banned.id, true);
+
+    expect(store.adminPresence().users.map((u) => u.username)).toEqual(["boss"]);
+  });
+
+  it("omits users who have never been seen", () => {
+    const store = makeStore("presence-never");
+    const user = store.createUser({ username: "fresh", displayName: "Fresh", password: "password123" });
+    (store as unknown as WithDb).db
+      .prepare("UPDATE users SET last_seen_at = NULL WHERE id = ?")
+      .run(user.id);
+
+    expect(store.adminPresence().users).toEqual([]);
+  });
+});

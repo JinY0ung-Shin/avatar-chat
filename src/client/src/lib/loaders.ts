@@ -3,6 +3,7 @@ import { goView } from "./nav";
 import { notify, readState, replaceState, updateState } from "./state";
 import type {
   AdminGroupSummary,
+  AdminPresence,
   AdminStats,
   AdminUserSummary,
   AuditEvent,
@@ -146,19 +147,41 @@ export async function refreshNotificationStatus({ announce = false } = {}): Prom
   lastAnnouncedNotificationCount = unread;
 }
 
+/**
+ * Live "who's here now" for the admin rail badge. Non-admins skip the request
+ * entirely (the route would 403). Failures are swallowed: the badge keeps its
+ * last value rather than flashing an error at someone who didn't ask for it.
+ */
+export async function refreshAdminPresence(): Promise<void> {
+  if (!readState().user?.roles?.includes("admin")) return;
+  try {
+    const { presence } = await api<{ presence: AdminPresence }>("/api/admin/presence");
+    replaceState({ adminPresence: presence });
+  } catch {
+    /* ignore */
+  }
+}
+
 // Poll while the tab is visible (cheap once/min) and refresh the moment the owner
 // returns to the tab, so a colleague's new question surfaces without a reload.
+// This same tick is what keeps `users.last_seen_at` warm for an idle-but-open
+// tab, which is exactly what the presence window above is measured against —
+// so presence rides along here instead of adding a second timer.
 let knowledgeWatchTimer: number | null = null;
 function onKnowledgeVisible(): void {
   if (!document.hidden) {
     void refreshKnowledgeStatus({ announce: true });
     void refreshNotificationStatus({ announce: true });
+    void refreshAdminPresence();
   }
 }
 export function startKnowledgeWatch(): void {
   stopKnowledgeWatch();
   knowledgeWatchTimer = window.setInterval(onKnowledgeVisible, 60000);
   document.addEventListener("visibilitychange", onKnowledgeVisible);
+  // Knowledge/notification counts arrive with loadInboxData at boot; presence has
+  // no such loader, so seed it here instead of leaving the badge blank for a minute.
+  void refreshAdminPresence();
 }
 export function stopKnowledgeWatch(): void {
   if (knowledgeWatchTimer != null) {
@@ -168,6 +191,8 @@ export function stopKnowledgeWatch(): void {
   document.removeEventListener("visibilitychange", onKnowledgeVisible);
   lastAnnouncedRequestCount = 0;
   lastAnnouncedNotificationCount = 0;
+  // Logout runs through here — don't leave another account's presence list in state.
+  replaceState({ adminPresence: null });
 }
 
 export async function loadRoutinesData(): Promise<void> {

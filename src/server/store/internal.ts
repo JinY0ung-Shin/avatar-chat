@@ -15,6 +15,16 @@ import type { McpToolGroupId } from "../../shared/mcpToolGroups.js";
 
 const SESSION_DAYS = 14;
 
+/**
+ * How recently `users.last_seen_at` must have been stamped for a user to count
+ * as present. Every authenticated request refreshes that column and an open tab
+ * polls once a minute while VISIBLE (`startKnowledgeWatch` on the client), so
+ * this window must clear one missed tick — hence 3 minutes, not 1. Widening it
+ * blurs "at the screen now" back toward "logged in sometime", which is what the
+ * `sessions` table already reports.
+ */
+const PRESENCE_WINDOW_MS = 3 * 60 * 1000;
+
 /** Loosely-typed shape of a legacy persisted canvas, for the one-time backfill. */
 type CanvasArtifactBackfill = Partial<CanvasArtifact> & { id?: unknown };
 
@@ -103,6 +113,7 @@ export {
   MAX_HASHTAG_LEN,
   DEFAULT_SEARCH_LIMIT,
   SESSION_DAYS,
+  PRESENCE_WINDOW_MS,
 };
 
 export interface UserRow {

@@ -514,6 +514,89 @@
   gap: var(--s-2);
 }
 
+/* Admin-only presence badge: collapsed it is one muted line, so it reads as
+   ambient status rather than a control competing with the nav above it. */
+.rail-presence {
+  display: grid;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.rail-presence-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  justify-self: start;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--rail-muted);
+  padding: var(--s-1) var(--s-1-5);
+  font-size: var(--t-2xs);
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.rail-presence-toggle:hover {
+  color: var(--rail-text);
+  background: var(--rail-active);
+}
+
+.rail-presence-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+  flex: none;
+}
+
+/* Nobody else here — same line, no green claim. */
+.rail-presence-dot.alone {
+  background: var(--rail-line);
+  box-shadow: none;
+}
+
+.rail-presence-list {
+  display: grid;
+  gap: 1px;
+  max-height: 132px;
+  overflow-y: auto;
+  padding: var(--s-1) 0 var(--s-1) var(--s-1-5);
+  border-left: 1px solid var(--rail-line);
+  margin-left: var(--s-2);
+}
+
+.rail-presence-item {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1-5);
+  min-width: 0;
+  font-size: var(--t-2xs);
+  color: var(--rail-text);
+}
+
+.rail-presence-name {
+  /* `overflow: hidden` is load-bearing beyond the ellipsis: it zeroes this flex
+     item's automatic minimum size. Without it a long name can't shrink, the grid
+     row widens to fit it, and every timestamp is pushed outside the rail (measured
+     at 133px out — tests/visual/admin-presence.spec.ts guards this). */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-presence-age {
+  margin-left: auto;
+  color: var(--rail-muted);
+  white-space: nowrap;
+}
+
+.rail-presence-empty {
+  font-size: var(--t-2xs);
+  color: var(--rail-muted);
+}
+
 /* Mobile rail toggle (hamburger) — hidden on desktop */
 .rail-toggle {
   display: none;

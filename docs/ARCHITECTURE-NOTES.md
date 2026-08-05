@@ -1136,6 +1136,14 @@ Companion to the client-area philosophy in [`../src/client/CLAUDE.md`](../src/cl
   - repo-href building ↔ server `githubHost` resolution
   - the schedule builder (`RoutineModal.svelte` + `formatRoutineSchedule`/`timeToMinute`/`minuteToTime` in
     `lib/format.ts`) ↔ server `routineSchedule.ts` (once/daily/weekly/interval semantics)
+- **Admin presence badge: the client poll interval and the server window are coupled.** `users.last_seen_at`
+  is stamped by EVERY authenticated request, and `startKnowledgeWatch` (`lib/loaders.ts`) is what keeps it
+  warm for an idle-but-open tab — it polls once a minute and ONLY while `document.hidden` is false (that
+  visibility gate is what makes presence mean "at the screen" instead of "logged in"). `PRESENCE_WINDOW_MS`
+  (`store/internal.ts`, 3 min) must therefore stay above that interval with room for one missed tick.
+  Shortening the window, lengthening the interval, or dropping the visibility gate each break presence
+  independently. `sessions` rows are NOT presence — they live 14 days; `AdminStats.activeSessions` counts
+  those and answers a different question.
 
 ### Behavior gotchas (don't "fix" these)
 - **Group-knowledge toggle saves a per-USER default, fire-and-forget with NO readback.** A new chat pane

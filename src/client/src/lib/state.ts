@@ -1,6 +1,7 @@
 import { get, writable } from "svelte/store";
 import type {
   AdminGroupSummary,
+  AdminPresence,
   AdminStats,
   AdminTab,
   AdminUserSummary,
@@ -59,6 +60,8 @@ export interface ClientState {
   adminGroupSearch: string;
   adminStats: AdminStats | null;
   adminSystem: Record<string, unknown> | null;
+  /** Live "who's here now" for the admin-only rail badge; null until first poll. */
+  adminPresence: AdminPresence | null;
   audit: AuditEvent[];
   /** Interactive permission/question prompts awaiting the owner (one shown at a time). */
   promptQueue: PromptRequest[];
@@ -103,6 +106,7 @@ export const appState = writable<ClientState>({
   adminGroupSearch: "",
   adminStats: null,
   adminSystem: null,
+  adminPresence: null,
   audit: [],
   promptQueue: [],
   splitAvatarId: "",

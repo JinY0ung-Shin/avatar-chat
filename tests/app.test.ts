@@ -802,6 +802,24 @@ describe("noah-almighty platform", () => {
     expect(res.body.users[0].activeSessions).toBe(1);
   });
 
+  it("reports live presence to an admin and 403s a member", async () => {
+    const app = testApp();
+    const admin = request.agent(app);
+    await signup(admin, "boss").expect(201); // first → admin
+    const member = request.agent(app);
+    await signup(member, "member-user").expect(201);
+
+    await member.get("/api/admin/presence").expect(403);
+
+    // Both agents just authenticated, so both stamps are inside the window.
+    const res = await admin.get("/api/admin/presence").expect(200);
+    expect(res.body.presence.windowMinutes).toBe(3);
+    expect(res.body.presence.users.map((u: { username: string }) => u.username).sort()).toEqual([
+      "boss",
+      "member-user",
+    ]);
+  });
+
   it("stores/clears a subscription token and reflects it in system status", async () => {
     const app = testApp(); // no ANTHROPIC_API_KEY → subscription mode
     const { agent: admin } = await newUser(app, "boss"); // first → admin
