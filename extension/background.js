@@ -404,12 +404,44 @@ async function perform(message) {
 // `externally_connectable` restricts senders to the Noah origins declared in the
 // manifest, and `sender.origin` is filled in by the browser, so the page cannot
 // forge it. Re-check anyway: the manifest is the gate, this is the assertion.
+/**
+ * Read/write the local allowlist from the Noah page, so an operator can manage
+ * it where they already are instead of hunting for the extension's options
+ * page. Deliberately NOT a way around policy: when managed policy is present it
+ * still wins in readPolicy(), and `setAllowedOrigins` refuses outright rather
+ * than writing a list that would be silently ignored.
+ */
+async function handleConfig(message) {
+  const { patterns, source } = await readPolicy();
+  if (message.op === "getAllowedOrigins") {
+    return { ok: true, patterns, source };
+  }
+  if (message.op === "setAllowedOrigins") {
+    if (source === "managed") {
+      return {
+        ok: false,
+        message:
+          "An administrator policy controls the allowed sites for this browser; it cannot be changed from here.",
+      };
+    }
+    const next = Array.isArray(message.patterns)
+      ? [...new Set(message.patterns.map((p) => String(p).trim().toLowerCase()).filter(Boolean))]
+      : [];
+    await chrome.storage.local.set({ [POLICY_KEY]: next });
+    policyCache = null;
+    return { ok: true, patterns: next, source: next.length ? "local" : "empty" };
+  }
+  return null;
+}
+
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
   if (!message || message.source !== "noah" || !sender.origin) {
     sendResponse({ ok: false, message: "Rejected: unrecognized sender." });
     return false;
   }
-  perform(message)
+  const config = handleConfig(message);
+  config
+    .then((reply) => (reply ? reply : perform(message)))
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, message: String(error?.message || error) }));
   // Keep the channel open for the async reply.

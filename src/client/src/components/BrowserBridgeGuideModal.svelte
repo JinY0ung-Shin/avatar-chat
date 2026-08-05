@@ -11,7 +11,12 @@
   const dispatch = createEventDispatcher<{ close: void; download: void }>();
 </script>
 
-<Modal cardClass="browser-guide-card" ariaLabelledby="browser-guide-title" on:close={() => dispatch("close")}>
+<Modal
+  cardClass="browser-guide-card"
+  ariaLabelledby="browser-guide-title"
+  portal
+  on:close={() => dispatch("close")}
+>
   <h2 id="browser-guide-title">브라우저 브릿지 설치</h2>
   <p class="muted">
     설치하면 아바타가 <strong>이 브라우저의 탭</strong>을 직접 조작할 수 있습니다. 서버에 있는 별도

@@ -6,6 +6,11 @@
   import { confirmAction } from "../lib/confirm";
   import { appState, notify, readState, replaceState } from "../lib/state";
   import { copyText } from "../lib/dom";
+  import {
+    readAllowedOrigins,
+    writeAllowedOrigins,
+    type AllowlistSource,
+  } from "../lib/browserBridge";
   import { EXPERIMENTAL_FEATURES } from "../../../server/experimentalFeatures";
   import { isShellExposableSecret } from "../../../server/secretPolicy";
   import type { User } from "../lib/types";
@@ -88,6 +93,60 @@
   }
 
   $: if (active && isAdmin) void loadExtensionMeta();
+
+  // The allowlist lives in the EXTENSION, not the server — it governs this one
+  // browser. Loaded on demand rather than on mount so a page without the
+  // extension installed doesn't show an editor it can't save.
+  let allowLoaded = false;
+  let allowBusy = false;
+  let allowPatterns: string[] = [];
+  let allowSource: AllowlistSource = "empty";
+  let allowDraft = "";
+
+  async function loadAllowlist(): Promise<void> {
+    allowBusy = true;
+    try {
+      const reply = await readAllowedOrigins();
+      if (!reply.ok) {
+        notify(reply.message || "확장 프로그램에 연결하지 못했습니다.", "warn");
+        return;
+      }
+      allowPatterns = reply.patterns ?? [];
+      allowSource = reply.source ?? "empty";
+      allowDraft = allowPatterns.join("\n");
+      allowLoaded = true;
+    } finally {
+      allowBusy = false;
+    }
+  }
+
+  async function saveAllowlist(): Promise<void> {
+    allowBusy = true;
+    try {
+      const patterns = allowDraft
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#"));
+      const reply = await writeAllowedOrigins(patterns);
+      if (!reply.ok) {
+        notify(reply.message || "허용 사이트를 저장하지 못했습니다.", "warn");
+        return;
+      }
+      allowPatterns = reply.patterns ?? patterns;
+      allowSource = reply.source ?? "empty";
+      // Normalize the box to exactly what the extension stored, so what the
+      // admin sees is what will actually be enforced.
+      allowDraft = allowPatterns.join("\n");
+      notify(
+        allowPatterns.length
+          ? `허용 사이트 ${allowPatterns.length}개를 저장했습니다.`
+          : "허용 사이트를 비웠습니다. 모든 조작이 거부됩니다.",
+        "ok",
+      );
+    } finally {
+      allowBusy = false;
+    }
+  }
 
   // git identity
   let gitIdentityName = u0?.gitIdentityName || "";
@@ -498,7 +557,46 @@
           <span>{extensionBusy ? "준비 중…" : "확장 프로그램 다운로드"}</span>
         </button>
         <button type="button" class="btn ghost" on:click={() => (guideOpen = true)}>설치 방법 보기</button>
+        <button type="button" class="btn ghost" disabled={allowBusy} on:click={loadAllowlist}>
+          {allowLoaded ? "허용 사이트 새로고침" : "허용 사이트 불러오기"}
+        </button>
       </div>
+
+      {#if allowLoaded}
+        <div class="browser-allowlist">
+          {#if allowSource === "managed"}
+            <p class="muted">
+              <strong>관리자 정책이 적용 중입니다.</strong> 이 브라우저의 허용 사이트는 조직에서 배포한
+              목록이며 여기서 바꿀 수 없습니다.
+            </p>
+            <ul class="guide-origins">
+              {#each allowPatterns as pattern (pattern)}
+                <li><code>{pattern}</code></li>
+              {/each}
+            </ul>
+          {:else}
+            <label class="field">
+              <span>아바타가 조작해도 되는 사이트 (한 줄에 하나)</span>
+              <textarea
+                bind:value={allowDraft}
+                rows="4"
+                spellcheck="false"
+                placeholder={"intra.example.com\n*.corp.local"}
+              ></textarea>
+            </label>
+            <p class="muted">
+              정확한 호스트 또는 <code>*.도메인</code> 형태의 하위 도메인 와일드카드를 씁니다
+              (<code>*.corp.local</code>은 <code>corp.local</code> 자체에는 적용되지 않아요).
+              비워두면 모든 사이트가 거부됩니다.
+            </p>
+            <div class="browser-bridge-actions">
+              <button type="button" class="btn primary" disabled={allowBusy} on:click={saveAllowlist}>
+                {allowBusy ? "저장 중…" : "허용 사이트 저장"}
+              </button>
+            </div>
+          {/if}
+        </div>
+      {/if}
     </section>
     {#if guideOpen}
       <BrowserBridgeGuideModal
@@ -748,6 +846,19 @@
   }
   /* Composes the global `.tag accent` base; only the deltas that make it read as
      a label riding inside a <strong> heading live here. */
+  .browser-allowlist {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-3);
+    margin-top: var(--s-4);
+    padding-top: var(--s-4);
+    border-top: 1px solid var(--line-soft);
+  }
+  .browser-allowlist textarea {
+    width: 100%;
+    resize: vertical;
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
   .browser-bridge-actions {
     display: flex;
     align-items: center;

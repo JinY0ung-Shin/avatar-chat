@@ -10,6 +10,8 @@
   export let ariaDescribedby: string | undefined = undefined;
   export let closeOnBackdrop = true;
   export let closeDisabled = false;
+  /** Reparent the overlay to <body> — see adoptIntoBody below for when to set it. */
+  export let portal = false;
 
   const dispatch = createEventDispatcher<{ close: void }>();
   let overlayEl: HTMLDivElement;
@@ -120,12 +122,31 @@
   }
 
   onMount(() => {
+    // Reparent to <body> when the caller asks. A modal mounted deep in a view
+    // is a fixed-position element inside whatever stacking contexts that view
+    // built (the rail's backdrop-filter is one), so the overlay can end up
+    // painted UNDER chrome it is supposed to cover — the scrim stops at the
+    // content column and the dialog's edge disappears behind the sidebar.
+    // Modals mounted at the App root never hit this; portalling gives the same
+    // footing to one mounted inside a settings tab.
+    const restore = portal ? adoptIntoBody(overlayEl) : () => {};
     const releaseFocus = openModalFocus(overlayEl, cardEl);
     return () => {
       cancelSheetSpring();
       releaseFocus();
+      restore();
     };
   });
+
+  /** Move `el` to <body>, returning a teardown that removes it again. */
+  function adoptIntoBody(el: HTMLElement): () => void {
+    document.body.appendChild(el);
+    return () => {
+      // Svelte's own transition/destroy also removes the node; guard so the
+      // teardown is safe in either order.
+      if (el.parentElement === document.body) el.remove();
+    };
+  }
 </script>
 
 <svelte:window on:keydown={onKeydown} />

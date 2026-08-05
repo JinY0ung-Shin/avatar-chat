@@ -29,6 +29,14 @@ export interface BridgeOperation {
   submit?: boolean;
 }
 
+/** Where the effective allowlist comes from; `managed` cannot be edited here. */
+export type AllowlistSource = "managed" | "local" | "empty";
+
+export interface AllowlistReply extends BridgeReply {
+  patterns?: string[];
+  source?: AllowlistSource;
+}
+
 type ChromeRuntime = {
   sendMessage: (
     extensionId: string,
@@ -110,4 +118,22 @@ export function sendToExtension(operation: BridgeOperation): Promise<BridgeReply
       finish(NOT_INSTALLED);
     }
   });
+}
+
+/**
+ * Read the allowlist the extension is currently enforcing. `source` matters as
+ * much as the list: a `managed` list is pushed by policy and the editor must
+ * present it read-only rather than offering a control that silently does
+ * nothing.
+ */
+export function readAllowedOrigins(): Promise<AllowlistReply> {
+  return sendToExtension({ op: "getAllowedOrigins" } as unknown as BridgeOperation);
+}
+
+/** Replace the local allowlist. Refused by the extension when policy governs it. */
+export function writeAllowedOrigins(patterns: string[]): Promise<AllowlistReply> {
+  return sendToExtension({
+    op: "setAllowedOrigins",
+    patterns,
+  } as unknown as BridgeOperation);
 }

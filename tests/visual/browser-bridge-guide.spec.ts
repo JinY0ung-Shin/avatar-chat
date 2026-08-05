@@ -103,11 +103,26 @@ test("the guide renders as a full-width dialog, not a nested box", async ({ page
         return title ? title.getBoundingClientRect().left < li.getBoundingClientRect().left + 20 : false;
       }).length,
       horizontalOverflow: card.scrollWidth > card.clientWidth + 1,
+      overlayParent: (card.closest(".modal-overlay") as HTMLElement).parentElement?.tagName ?? "",
+      // Sample the card's own left edge: whatever the browser actually paints
+      // there must belong to the dialog, not to chrome layered above it.
+      railCoversCard: (() => {
+        const hit = document.elementFromPoint(cardBox.left + 4, cardBox.top + cardBox.height / 2);
+        return !hit || !hit.closest(".modal-overlay");
+      })(),
     };
   });
 
   // Wider than the 460px default, which is the bug this test was written for.
   expect(measured.cardWidth).toBeGreaterThan(560);
+  // The overlay must sit at the top of the document, not inside the settings
+  // view. Mounted in place it is a fixed element inside the view's stacking
+  // contexts, so the scrim stopped at the content column and the rail — which
+  // has its own backdrop-filter — painted over the dialog's left edge.
+  // Measuring rects does NOT catch this (they stayed full-viewport the whole
+  // time); only the parent does.
+  expect(measured.overlayParent).toBe("BODY");
+  expect(measured.railCoversCard).toBe(false);
   expect(measured.stepCount).toBe(5);
   expect(measured.stepsOutside).toBe(0);
   expect(measured.markersOverlapText).toBe(0);
