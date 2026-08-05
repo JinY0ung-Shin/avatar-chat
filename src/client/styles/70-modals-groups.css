@@ -1019,80 +1019,82 @@
 /* ---- Browser bridge install guide ---------------------------------- */
 /* Numbered because installing the extension IS an ordered procedure: each
    step is only doable once the previous one succeeded. */
+/* `.modal-card` pins width to min(460px, 100%), so a max-width alone leaves the
+   guide squeezed into the default dialog width — override `width` itself. */
 .browser-guide-card {
-  max-width: 44rem;
+  width: min(40rem, 100%);
 }
+/* `.modal-card` is a flex column with a gap, so these blocks set no outer
+   margins of their own — spacing comes from the container. */
 .guide-steps {
   list-style: none;
   counter-reset: guide;
-  margin: 1.1rem 0 0;
+  margin: 0;
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 1.25rem;
+  gap: var(--s-4);
 }
 .guide-steps > li {
   counter-increment: guide;
   position: relative;
-  padding-left: 2.25rem;
+  padding-left: var(--s-6, 2.25rem);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s-2);
 }
 .guide-steps > li::before {
   content: counter(guide);
   position: absolute;
   left: 0;
-  top: 0.05rem;
+  top: 0;
   width: 1.6rem;
   height: 1.6rem;
   display: grid;
   place-items: center;
   border: 1px solid var(--line);
   border-radius: 50%;
-  font-size: 0.78rem;
+  font-size: var(--t-xs);
   font-variant-numeric: tabular-nums;
   color: var(--accent-strong);
 }
 .guide-step-title {
   font-weight: 600;
-  margin-bottom: 0.2rem;
 }
 .guide-steps p {
-  margin: 0 0 0.5rem;
-}
-.guide-steps .btn {
-  margin-top: 0.15rem;
+  margin: 0;
 }
 .guide-note {
-  font-size: 0.86rem;
+  font-size: var(--t-xs);
 }
 .guide-id {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
+  gap: var(--s-2);
   flex-wrap: wrap;
-  margin-bottom: 0.5rem;
 }
 .guide-id code {
   word-break: break-all;
 }
 .guide-origins {
-  margin: 0.1rem 0 0;
-  padding-left: 1.1rem;
+  margin: 0;
+  padding-left: var(--s-4);
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
-  font-size: 0.86rem;
+  gap: var(--s-0-5);
+  font-size: var(--t-xs);
 }
 .guide-warn {
   display: flex;
-  gap: 0.7rem;
+  gap: var(--s-3);
   align-items: flex-start;
-  margin-top: 1.4rem;
-  padding: 0.9rem 1rem;
+  padding: var(--s-3) var(--s-4);
   border: 1px solid var(--warn-line);
   background: var(--warn-soft);
-  border-radius: 8px;
-  font-size: 0.88rem;
-  line-height: 1.65;
+  border-radius: var(--r-md);
+  font-size: var(--t-sm, 0.88rem);
+  line-height: 1.6;
 }
 .guide-warn svg {
   flex: none;

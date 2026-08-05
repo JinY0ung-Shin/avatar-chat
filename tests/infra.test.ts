@@ -11,6 +11,7 @@ import {
   browserExtensionId,
   browserExtensionOrigins,
   buildBrowserExtensionZip,
+  matchPatternForOrigin,
 } from "../src/server/browserExtensionBundle.js";
 import { loadConfig } from "../src/server/config.js";
 import { applyCustomGithubCa } from "../src/server/tlsCa.js";
@@ -1029,6 +1030,37 @@ describe("browser extension bundle", () => {
       )).toBe(true);
     }
     fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("stamps the downloading Noah address into the bundle's manifest", () => {
+    // An origin missing from externally_connectable fails SILENTLY — the page
+    // simply has no chrome.runtime — so the bundle carries the address it was
+    // downloaded from instead of leaving a manual manifest edit per install.
+    const pattern = matchPatternForOrigin("https://noah.internal.example:8443");
+    expect(pattern).toBe("https://noah.internal.example:8443/*");
+
+    const zip = buildBrowserExtensionZip(undefined, [pattern!]);
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-ext-origin-"));
+    fs.writeFileSync(path.join(dir, "b.zip"), zip);
+    execFileSync("unzip", ["-q", path.join(dir, "b.zip"), "-d", dir], { stdio: "pipe" });
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(dir, "noah-browser-bridge", "manifest.json"), "utf8"),
+    );
+
+    expect(manifest.externally_connectable.matches).toContain(pattern);
+    // The shipped defaults survive, and the pinned key must not be disturbed —
+    // rewriting the manifest would otherwise change the extension id.
+    expect(manifest.externally_connectable.matches).toContain("https://noah.corp.local/*");
+    expect(manifest.key).toBe(
+      JSON.parse(fs.readFileSync(path.join(process.cwd(), "extension", "manifest.json"), "utf8")).key,
+    );
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("refuses to stamp anything that is not an http(s) origin", () => {
+    expect(matchPatternForOrigin("file:///etc/passwd")).toBeNull();
+    expect(matchPatternForOrigin("not a url")).toBeNull();
+    expect(matchPatternForOrigin("javascript:alert(1)")).toBeNull();
   });
 
   it("derives the same extension id Chrome would, and reports the bridge origins", () => {

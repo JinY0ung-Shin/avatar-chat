@@ -12,15 +12,11 @@
 </script>
 
 <Modal cardClass="browser-guide-card" ariaLabelledby="browser-guide-title" on:close={() => dispatch("close")}>
-  <div class="panel-section-head">
-    <div>
-      <h3 id="browser-guide-title">브라우저 브릿지 설치</h3>
-      <p class="muted">
-        설치하면 아바타가 <strong>이 브라우저의 탭</strong>을 직접 조작할 수 있습니다. 서버에 있는 별도
-        브라우저가 아니라, 지금 로그인해 둔 세션 그대로예요.
-      </p>
-    </div>
-  </div>
+  <h2 id="browser-guide-title">브라우저 브릿지 설치</h2>
+  <p class="muted">
+    설치하면 아바타가 <strong>이 브라우저의 탭</strong>을 직접 조작할 수 있습니다. 서버에 있는 별도
+    브라우저가 아니라, 지금 로그인해 둔 세션 그대로예요.
+  </p>
 
   <ol class="guide-steps">
     <li>
@@ -56,13 +52,19 @@
       {/if}
       {#if origins.length}
         <p class="muted guide-note">
-          이 확장은 다음 주소의 Noah에서만 동작합니다. 지금 쓰는 주소가 목록에 없으면 연결되지 않아요.
+          이 확장은 다음 주소의 Noah에서만 동작합니다. <strong>지금 접속한 주소는 자동으로 포함</strong>되므로
+          따로 손댈 필요는 없어요.
         </p>
         <ul class="guide-origins">
           {#each origins as origin (origin)}
             <li><code>{origin}</code></li>
           {/each}
         </ul>
+        <p class="muted guide-note">
+          다른 주소로도 접속한다면 압축 푼 폴더의 <code>manifest.json</code> →
+          <code>externally_connectable.matches</code> 에 <code>https://주소/*</code> 형태로 추가하고,
+          <code>chrome://extensions</code> 에서 새로고침(↻)하세요.
+        </p>
       {/if}
     </li>
 

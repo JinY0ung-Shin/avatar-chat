@@ -99,18 +99,62 @@ function centralHeader(entry: Entry): Buffer {
 }
 
 /**
+ * A Noah address to add to the manifest's `externally_connectable.matches`.
+ * The extension only answers pages whose origin is listed there, and a mismatch
+ * fails SILENTLY — `chrome.runtime` is simply undefined on the page, with no
+ * error anywhere. Since the download request itself proves which address the
+ * operator reaches Noah on, the bundle is stamped with it rather than leaving a
+ * manual edit as the last step of every install.
+ */
+export function matchPatternForOrigin(origin: string): string | null {
+  try {
+    const url = new URL(origin);
+    if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+    return `${url.protocol}//${url.host}/*`;
+  } catch {
+    return null;
+  }
+}
+
+/** Manifest bytes with `extraOrigins` merged into externally_connectable. */
+function manifestWithOrigins(raw: Buffer, extraOrigins: string[]): Buffer {
+  if (!extraOrigins.length) return raw;
+  try {
+    const manifest = JSON.parse(raw.toString("utf8"));
+    const existing: string[] = Array.isArray(manifest?.externally_connectable?.matches)
+      ? manifest.externally_connectable.matches
+      : [];
+    const merged = [...existing];
+    for (const pattern of extraOrigins) {
+      if (!merged.includes(pattern)) merged.push(pattern);
+    }
+    manifest.externally_connectable = { ...manifest.externally_connectable, matches: merged };
+    return Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  } catch {
+    // An unparseable manifest is a packaging bug, not a reason to ship a
+    // silently unstamped bundle — let the original bytes through and let the
+    // install fail visibly in Chrome instead.
+    return raw;
+  }
+}
+
+/**
  * Build the extension zip. Throws when a required file is missing — a partial
  * bundle would install and then fail in ways that are hard to diagnose, so it
  * is better for the download to fail loudly.
  */
-export function buildBrowserExtensionZip(dir: string = BROWSER_EXTENSION_DIR): Buffer {
+export function buildBrowserExtensionZip(
+  dir: string = BROWSER_EXTENSION_DIR,
+  extraOrigins: string[] = [],
+): Buffer {
   const chunks: Buffer[] = [];
   const entries: Entry[] = [];
   let offset = 0;
 
   for (const name of BUNDLE_FILES) {
     const full = path.join(dir, name);
-    const raw = fs.readFileSync(full);
+    const onDisk = fs.readFileSync(full);
+    const raw = name === "manifest.json" ? manifestWithOrigins(onDisk, extraOrigins) : onDisk;
     const deflated = zlib.deflateRawSync(raw, { level: 9 });
     const entry: Entry = {
       name: Buffer.from(`noah-browser-bridge/${name}`, "utf8"),
