@@ -1,6 +1,6 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import type { BrowserRequest, BrowserResult } from "./events.js";
+import type { BrowserRequest, BrowserResult, BrowserTab } from "./events.js";
 import { text } from "./mcpTools.js";
 
 /** MCP server name; tools surface to the model as `mcp__browser__<tool>`. */
@@ -12,6 +12,10 @@ export const BROWSER_TOOL_NAMES = [
   "mcp__browser__navigate",
   "mcp__browser__click",
   "mcp__browser__type",
+  "mcp__browser__list_tabs",
+  "mcp__browser__new_tab",
+  "mcp__browser__select_tab",
+  "mcp__browser__close_tab",
 ] as const;
 
 /**
@@ -66,14 +70,27 @@ export function wrapUntrustedPageContent(raw: string): string {
   ].join("\n");
 }
 
+/**
+ * Tab lines are page-derived (titles come from the site), so they ride the same
+ * untrusted framing as a snapshot rather than being presented as trusted prose.
+ */
+function formatTabs(tabs: BrowserTab[]): string {
+  return tabs
+    .map((tab) => `${tab.current ? "*" : "-"} [${tab.tabId}] ${tab.title || "(untitled)"} — ${tab.url}`)
+    .join("\n");
+}
+
 /** Render a bridge outcome as model-facing text; errors redirect to a next step. */
 function report(result: BrowserResult, okNote: string): ReturnType<typeof text> {
   if (result.behavior === "error") {
     return text(result.message, true);
   }
   const where = result.url ? ` Current page: ${result.title || "(untitled)"} — ${result.url}.` : "";
+  const tabs = result.tabs?.length
+    ? `\n\nTabs you may use (* = current):\n${wrapUntrustedPageContent(formatTabs(result.tabs))}`
+    : "";
   const body = result.snapshot ? `\n\n${wrapUntrustedPageContent(result.snapshot)}` : "";
-  return text(`${okNote}${where}${body}`);
+  return text(`${okNote}${where}${tabs}${body}`);
 }
 
 export function buildBrowserTools(ctx: BrowserToolsContext) {
@@ -131,6 +148,64 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         return report(
           await ctx.execute({ op: "click", uid: args.uid }),
           `Clicked ${args.uid}.`,
+        );
+      },
+    ),
+    tool(
+      "list_tabs",
+      "List the browser tabs you are allowed to use. These are the tabs the user placed in the Noah tab " +
+        "group (plus any you opened with new_tab); every other tab in their browser is off limits and " +
+        "cannot be reached. `*` marks the tab your other tools currently act on.",
+      {},
+      async () => {
+        const denied = gate();
+        if (denied) return denied;
+        return report(await ctx.execute({ op: "list_tabs" }), "Tabs available to you.");
+      },
+    ),
+    tool(
+      "new_tab",
+      "Open a URL in a NEW tab and make it the tab your other tools act on. Prefer this over `navigate` " +
+        "when you need to keep the current page — navigate replaces it. The new tab joins the Noah tab " +
+        "group so the user can see and revoke it like any other.",
+      {
+        url: z.string().min(1).max(2048).describe("Absolute http(s) URL to open."),
+      },
+      async (args) => {
+        const denied = gate();
+        if (denied) return denied;
+        return report(await ctx.execute({ op: "new_tab", url: args.url }), "Opened a new tab.");
+      },
+    ),
+    tool(
+      "select_tab",
+      "Switch which tab your other tools act on, using a tabId from list_tabs. Element uids belong to the " +
+        "snapshot that produced them, so take a fresh snapshot after switching.",
+      {
+        tabId: z.string().min(1).max(64).describe("tabId from mcp__browser__list_tabs."),
+      },
+      async (args) => {
+        const denied = gate();
+        if (denied) return denied;
+        return report(
+          await ctx.execute({ op: "select_tab", tabId: args.tabId }),
+          `Switched to tab ${args.tabId}.`,
+        );
+      },
+    ),
+    tool(
+      "close_tab",
+      "Close one of the tabs you may use. Only close tabs YOU opened unless the user asked — closing a tab " +
+        "the user put in the group may discard work they cared about.",
+      {
+        tabId: z.string().min(1).max(64).describe("tabId from mcp__browser__list_tabs."),
+      },
+      async (args) => {
+        const denied = gate();
+        if (denied) return denied;
+        return report(
+          await ctx.execute({ op: "close_tab", tabId: args.tabId }),
+          `Closed tab ${args.tabId}.`,
         );
       },
     ),

@@ -1535,14 +1535,16 @@ function handleBrowserOp(paneId: string, data: any): void {
     handledBrowserOps.delete(handledBrowserOps.values().next().value as string);
   }
 
-  const label =
-    data.op === "navigate"
-      ? "브라우저를 이동하는 중…"
-      : data.op === "click"
-        ? "브라우저를 클릭하는 중…"
-        : data.op === "type"
-          ? "브라우저에 입력하는 중…"
-          : "브라우저 화면을 읽는 중…";
+  const BROWSER_OP_LABELS: Record<string, string> = {
+    navigate: "브라우저를 이동하는 중…",
+    click: "브라우저를 클릭하는 중…",
+    type: "브라우저에 입력하는 중…",
+    list_tabs: "브라우저 탭을 확인하는 중…",
+    new_tab: "새 탭을 여는 중…",
+    select_tab: "탭을 전환하는 중…",
+    close_tab: "탭을 닫는 중…",
+  };
+  const label = BROWSER_OP_LABELS[String(data.op)] ?? "브라우저 화면을 읽는 중…";
   setStatus(paneId, label, false);
 
   void sendToExtension({
@@ -1551,6 +1553,7 @@ function handleBrowserOp(paneId: string, data: any): void {
     uid: data.uid,
     text: data.text,
     submit: Boolean(data.submit),
+    tabId: data.tabId,
   })
     .then((reply) =>
       api("/api/chat/respond", {

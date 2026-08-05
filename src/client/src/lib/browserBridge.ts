@@ -19,14 +19,24 @@ export interface BridgeReply {
   snapshot?: string;
   url?: string;
   title?: string;
+  tabs?: { tabId: string; title: string; url: string; current: boolean }[];
 }
 
 export interface BridgeOperation {
-  op: "snapshot" | "navigate" | "click" | "type";
+  op:
+    | "snapshot"
+    | "navigate"
+    | "click"
+    | "type"
+    | "list_tabs"
+    | "new_tab"
+    | "select_tab"
+    | "close_tab";
   url?: string | null;
   uid?: string | null;
   text?: string | null;
   submit?: boolean;
+  tabId?: string | null;
 }
 
 /** Where the effective allowlist comes from; `managed` cannot be edited here. */

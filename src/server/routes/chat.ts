@@ -21,7 +21,7 @@ import type {
   MessageAttachment,
   StoredMessage,
 } from "../types.js";
-import type { AgentEvents } from "../agent/events.js";
+import type { AgentEvents, BrowserTab } from "../agent/events.js";
 import {
   formatSubmission,
   MAX_CANVAS_CONTENT_CHARS,
@@ -1882,6 +1882,7 @@ export function createChatRouter({
                   uid: requestData.uid ?? null,
                   text: requestData.text ?? null,
                   submit: Boolean(requestData.submit),
+                  tabId: requestData.tabId ?? null,
                 });
                 const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
                 if (answer === CANCELLED) {
@@ -1898,6 +1899,7 @@ export function createChatRouter({
                   snapshot?: string;
                   url?: string;
                   title?: string;
+                  tabs?: BrowserTab[];
                 };
                 if (!reply?.ok) {
                   return {
@@ -1930,6 +1932,7 @@ export function createChatRouter({
                   snapshot: typeof reply.snapshot === "string" ? reply.snapshot : undefined,
                   url: typeof reply.url === "string" ? reply.url : undefined,
                   title: typeof reply.title === "string" ? reply.title : undefined,
+                  tabs: Array.isArray(reply.tabs) ? reply.tabs : undefined,
                 };
               },
               onFile: async (requestData) => {

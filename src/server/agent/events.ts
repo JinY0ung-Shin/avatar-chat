@@ -251,8 +251,16 @@ export type PlanReviewDecision =
  * a closed set and elements are addressed by snapshot `uid` only.
  */
 export interface BrowserRequest {
-  op: "snapshot" | "navigate" | "click" | "type";
-  /** navigate only: absolute http(s) URL. */
+  op:
+    | "snapshot"
+    | "navigate"
+    | "click"
+    | "type"
+    | "list_tabs"
+    | "new_tab"
+    | "select_tab"
+    | "close_tab";
+  /** navigate/new_tab: absolute http(s) URL. */
   url?: string;
   /** click/type only: element uid minted by the previous snapshot. */
   uid?: string;
@@ -260,6 +268,16 @@ export interface BrowserRequest {
   text?: string;
   /** type only: press Enter afterwards. */
   submit?: boolean;
+  /** select_tab/close_tab: a tab id from a previous list_tabs. */
+  tabId?: string;
+}
+
+/** One tab inside the consented group — the only tabs that exist to the agent. */
+export interface BrowserTab {
+  tabId: string;
+  title: string;
+  url: string;
+  current: boolean;
 }
 
 export type BrowserResult =
@@ -269,6 +287,7 @@ export type BrowserResult =
       snapshot?: string;
       url?: string;
       title?: string;
+      tabs?: BrowserTab[];
     }
   | { behavior: "error"; message: string };
 

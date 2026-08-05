@@ -175,28 +175,66 @@ chrome.tabs.onRemoved.addListener((tabId) => attached.delete(tabId));
 
 // ------------------------------------------------------------------- scoping
 
-async function groupedTabIds() {
+/** The Noah tab group, or null when the user has not made one yet. */
+async function noahGroup() {
   const groups = await chrome.tabGroups.query({ title: GROUP_TITLE });
-  if (!groups.length) return [];
-  const tabs = await chrome.tabs.query({ groupId: groups[0].id });
-  return tabs.map((tab) => tab.id).filter((id) => id != null);
+  return groups.length ? groups[0] : null;
 }
 
 /**
- * The single tab the bridge may drive: the first tab in the Noah group. Scope
- * is deliberately the GROUP and not "whatever is active" — an agent that
- * follows the user's focus can act on a tab the user never consented to.
+ * Every tab inside the Noah group. THE scope boundary — nothing outside this
+ * list is reachable, which is what keeps the agent away from the user's other
+ * logged-in tabs. `chrome.tabs.query` by groupId is the only lookup used; there
+ * is deliberately no path that resolves a tab by index, title, or activity.
  */
+async function groupedTabs() {
+  const group = await noahGroup();
+  if (!group) return [];
+  const tabs = await chrome.tabs.query({ groupId: group.id });
+  return tabs.filter((tab) => tab.id != null);
+}
+
+const NO_TAB_MESSAGE =
+  `No tab is attached. Ask the user to put the tab you should drive into a tab group named "${GROUP_TITLE}" ` +
+  "(right-click a tab → add to new group → name it Noah), or open one yourself with mcp__browser__new_tab. " +
+  "Dragging a tab out of that group revokes access immediately.";
+
+/**
+ * Which grouped tab subsequent operations act on. Sticky so a multi-step task
+ * doesn't silently hop tabs, but always re-validated against the group: if the
+ * user dragged the current tab out, the pointer is stale and must not be used.
+ */
+let currentTabId = null;
+
 async function targetTab() {
-  const ids = await groupedTabIds();
-  if (!ids.length) {
+  const tabs = await groupedTabs();
+  if (!tabs.length) throw new Error(NO_TAB_MESSAGE);
+  const picked = tabs.find((tab) => tab.id === currentTabId) || tabs[0];
+  currentTabId = picked.id;
+  return picked;
+}
+
+/** Resolve a caller-supplied tab id, refusing anything outside the group. */
+async function groupedTabById(tabId) {
+  const tabs = await groupedTabs();
+  if (!tabs.length) throw new Error(NO_TAB_MESSAGE);
+  const found = tabs.find((tab) => String(tab.id) === String(tabId));
+  if (!found) {
     throw new Error(
-      `No tab is attached. Ask the user to put the tab you should drive into a tab group named "${GROUP_TITLE}" — ` +
-        "dragging a tab out of that group revokes access immediately.",
+      `Tab ${tabId} is not in the "${GROUP_TITLE}" group. Call mcp__browser__list_tabs for the tabs you may use — ` +
+        "tabs outside the group are off limits and cannot be reached by any other means.",
     );
   }
-  const tab = await chrome.tabs.get(ids[0]);
-  return tab;
+  return found;
+}
+
+function describeTab(tab) {
+  return {
+    tabId: String(tab.id),
+    title: tab.title || "",
+    url: tab.url || "",
+    current: tab.id === currentTabId,
+  };
 }
 
 function originAllowed(rawUrl, patterns) {
@@ -367,8 +405,66 @@ function waitForLoad(tabId, timeoutMs = 15000) {
 
 // -------------------------------------------------------------- message entry
 
+/**
+ * A ref carries the tab that minted it, which may not be the current one after
+ * a tab switch. Re-check THAT tab: still in the group, still on an allowed
+ * origin. Without this, a uid captured on an allowed page could be actioned
+ * after the tab left the group or navigated somewhere denied.
+ */
+async function assertRefTabUsable(uid, patterns, source) {
+  const ref = refMap.get(uid);
+  if (!ref) return null;
+  const tab = await groupedTabById(ref.tabId);
+  if (tab.url && !originAllowed(tab.url, patterns)) return refuseOrigin(tab.url, source);
+  return null;
+}
+
 async function perform(message) {
   const { patterns, source } = await readPolicy();
+
+  // Tab management runs before the current-tab origin check: listing and
+  // switching must work even when the tab you are on is not allowlisted,
+  // otherwise a single denied tab strands the agent with no way to move.
+  if (message.op === "list_tabs") {
+    const tabs = await groupedTabs();
+    if (!tabs.length) return { ok: false, message: NO_TAB_MESSAGE };
+    await targetTab(); // settle `current` before describing
+    return { ok: true, tabs: (await groupedTabs()).map(describeTab) };
+  }
+
+  if (message.op === "new_tab") {
+    if (!originAllowed(message.url, patterns)) return refuseOrigin(message.url, source);
+    const created = await chrome.tabs.create({ url: message.url, active: false });
+    const group = await noahGroup();
+    // Join the existing group, or start one — a tab the agent opened carries
+    // none of the user's other state, and it stays visible and revocable in the
+    // same green group as everything else.
+    const groupId = await chrome.tabs.group(
+      group ? { tabIds: [created.id], groupId: group.id } : { tabIds: [created.id] },
+    );
+    if (!group) {
+      await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: "green" });
+    }
+    currentTabId = created.id;
+    await waitForLoad(created.id);
+  }
+
+  if (message.op === "select_tab") {
+    const picked = await groupedTabById(message.tabId);
+    currentTabId = picked.id;
+  }
+
+  if (message.op === "close_tab") {
+    const picked = await groupedTabById(message.tabId);
+    await chrome.tabs.remove(picked.id);
+    attached.delete(picked.id);
+    if (currentTabId === picked.id) currentTabId = null;
+    const left = await groupedTabs();
+    if (!left.length) {
+      return { ok: true, tabs: [], url: "", title: "", snapshot: "" };
+    }
+  }
+
   const tab = await targetTab();
   // Check the tab we are ABOUT to read as well as any URL we are asked to open:
   // an allowed navigation can land somewhere else via a redirect, and a tab the
@@ -382,12 +478,16 @@ async function perform(message) {
     await sendCdp({ tabId: tab.id }, "Page.navigate", { url: message.url });
     await waitForLoad(tab.id);
   } else if (message.op === "click") {
+    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    if (refused) return refused;
     await clickRef(message.uid);
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "type") {
+    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    if (refused) return refused;
     await typeRef(message.uid, message.text || "", Boolean(message.submit));
     if (message.submit) await waitForLoad(tab.id, 5000);
-  } else if (message.op !== "snapshot") {
+  } else if (!["snapshot", "new_tab", "select_tab", "close_tab"].includes(message.op)) {
     return { ok: false, message: `Unsupported operation "${message.op}".` };
   }
 
@@ -398,7 +498,15 @@ async function perform(message) {
   if (fresh.url && !originAllowed(fresh.url, patterns)) return refuseOrigin(fresh.url, source);
 
   const snapshot = await buildSnapshot(fresh);
-  return { ok: true, snapshot, url: fresh.url, title: fresh.title };
+  // Always report the group's tabs: the agent needs to know a new tab appeared
+  // (or that several are open) without spending a separate list_tabs round trip.
+  return {
+    ok: true,
+    snapshot,
+    url: fresh.url,
+    title: fresh.title,
+    tabs: (await groupedTabs()).map(describeTab),
+  };
 }
 
 // `externally_connectable` restricts senders to the Noah origins declared in the
