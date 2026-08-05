@@ -244,6 +244,35 @@ export type PlanReviewDecision =
   | { behavior: "rejected"; feedback?: string };
 
 /**
+ * One operation shipped to the VIEWER's own browser through the extension
+ * bridge. The chat route emits it over the run's SSE stream and parks; the
+ * Noah tab relays it to the extension, which performs the CDP calls and posts
+ * the outcome back. No executable string ever crosses this boundary — `op` is
+ * a closed set and elements are addressed by snapshot `uid` only.
+ */
+export interface BrowserRequest {
+  op: "snapshot" | "navigate" | "click" | "type";
+  /** navigate only: absolute http(s) URL. */
+  url?: string;
+  /** click/type only: element uid minted by the previous snapshot. */
+  uid?: string;
+  /** type only: the literal text to enter. */
+  text?: string;
+  /** type only: press Enter afterwards. */
+  submit?: boolean;
+}
+
+export type BrowserResult =
+  | {
+      behavior: "ok";
+      /** Serialized accessibility tree — UNTRUSTED page content. */
+      snapshot?: string;
+      url?: string;
+      title?: string;
+    }
+  | { behavior: "error"; message: string };
+
+/**
  * Streaming sink passed into the agent runners. Every callback is optional so a
  * caller can subscribe to only the events it cares about. When NO events sink
  * is supplied, the runners must behave exactly like the original non-streaming
@@ -343,4 +372,12 @@ export interface AgentEvents {
    * provides both or neither.
    */
   onShareFile?: (request: ShareFileRequest) => Promise<FileOutputResult>;
+  /**
+   * BLOCKING: drive the viewer's own browser through the extension bridge and
+   * resolve with the outcome. Parks the run for seconds (not the interactive
+   * prompt TTL) — the responder is software, so a slow answer means the bridge
+   * is gone, not that a human is thinking. If omitted, the browser tools are
+   * not registered (a headless run has no browser to drive).
+   */
+  onBrowser?: (request: BrowserRequest) => Promise<BrowserResult>;
 }

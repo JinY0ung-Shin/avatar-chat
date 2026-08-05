@@ -1,0 +1,13 @@
+{
+  "type": "object",
+  "properties": {
+    "allowedOrigins": {
+      "title": "Hostnames the avatar may drive",
+      "description": "Hostnames the Noah avatar is allowed to read and act on. Exact host (intra.example.com) or a subdomain wildcard (*.corp.local, which does NOT match the apex). \"*\" permits every site and exposes every session the user is logged into. An absent or empty list denies everything. When this policy is set it fully replaces the browser's local allowlist.",
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

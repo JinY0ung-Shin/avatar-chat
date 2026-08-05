@@ -289,6 +289,7 @@ export interface McpToolFamilyPlan {
   ssh: boolean;
   avatars: boolean;
   canvas: boolean;
+  browser: boolean;
   system: boolean;
   registered: McpToolGroupId[];
   runKindBlocked: McpToolGroupId[];
@@ -297,6 +298,7 @@ export interface McpToolFamilyPlan {
 export function planMcpToolFamilies(
   enabled: McpToolGroupId[],
   groupAgentRun: boolean,
+  viewerIsAdmin: boolean = false,
 ): McpToolFamilyPlan {
   const has = (id: McpToolGroupId) => enabled.includes(id);
   const byId: Record<McpToolGroupId, boolean> = {
@@ -308,6 +310,13 @@ export function planMcpToolFamilies(
     ssh: has("ssh") && !groupAgentRun,
     avatars: has("avatars") && !groupAgentRun,
     canvas: has("canvas") && !groupAgentRun,
+    // Browser control drives the VIEWER's own logged-in browser, so it is the
+    // narrowest family here. Blocked for a group agent (configured by the team,
+    // not by the person whose session would be acted with) and for anyone
+    // without the system admin role while the capability is trialled. Stripping
+    // it HERE — rather than only at the handler — keeps `registered` honest, so
+    // the avatar never advertises a tool it cannot call.
+    browser: has("browser") && !groupAgentRun && viewerIsAdmin,
     system: has("system"),
   };
   const registered = enabled.filter((id) => byId[id]);
@@ -320,6 +329,7 @@ export function planMcpToolFamilies(
     ssh: byId.ssh,
     avatars: byId.avatars,
     canvas: byId.canvas,
+    browser: byId.browser,
     system: byId.system,
     registered,
     runKindBlocked: enabled.filter((id) => !registered.includes(id)),
@@ -514,6 +524,8 @@ export async function runClaudeAgent(
     GROUP_REPO_TOOL_NAMES,
     GROUP_AGENT_REPO_TOOL_NAMES,
   } = await import("./groupRepoTools.js");
+  const { buildBrowserServer, BROWSER_SERVER_NAME, BROWSER_TOOL_NAMES } =
+    await import("./browserTools.js");
   const { buildCanvasServer, CANVAS_SERVER_NAME, CANVAS_TOOL_NAMES } =
     await import("./canvasTools.js");
   const { buildBrainServer, BRAIN_SERVER_NAME, BRAIN_TOOL_NAMES } =
@@ -595,6 +607,7 @@ export async function runClaudeAgent(
   const familyPlan = planMcpToolFamilies(
     enabledMcpToolGroups,
     Boolean(groupAgentRun),
+    Boolean(request.viewerIsAdmin),
   );
   const personalKnowledgeToolsEnabled = familyPlan.personalKnowledge;
   const groupKnowledgeToolsEnabled = familyPlan.groupKnowledge;
@@ -604,6 +617,7 @@ export async function runClaudeAgent(
   const sshToolsEnabled = familyPlan.ssh;
   const avatarDirectoryToolsEnabled = familyPlan.avatars;
   const canvasToolsEnabled = familyPlan.canvas;
+  const browserToolsEnabled = familyPlan.browser;
   const systemToolsEnabled = familyPlan.system;
   const registeredMcpToolGroups = familyPlan.registered;
   const runKindBlockedMcpToolGroups = familyPlan.runKindBlocked;
@@ -760,6 +774,19 @@ export async function runClaudeAgent(
     personalKnowledgeToolsEnabled &&
     knowledgeRepoConfigured &&
     elevatedToolAccess;
+  // Browser bridge: the tools drive the VIEWER's own browser through the
+  // extension, so they need an interactive run carrying a bridge sink. Computed
+  // HERE (ahead of the server build below) because describe_system's context is
+  // assembled first and must report the same capability as the prompt.
+  //
+  // The identity half is kept separate because the handler restates it: the
+  // `mcp__` auto-allow means the tool callback is the last line of defence if
+  // registration ever drifts. Owner AND admin — an admin chatting with someone
+  // else's avatar must not let that owner's instructions drive the admin's own
+  // logged-in browser.
+  const browserViewerAllowed = ownerToolAccess && Boolean(request.viewerIsAdmin);
+  const browserActive =
+    browserToolsEnabled && Boolean(events?.onBrowser) && browserViewerAllowed;
   const brainServer = buildBrainServer(store, {
     avatarUserId: request.avatar.id,
     viewerIsOwner: ownerToolAccess,
@@ -791,6 +818,7 @@ export async function runClaudeAgent(
     // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
     activeRepoName: request.activeRepoName,
     fileOutputEnabled: fileOutputActive,
+    browserEnabled: browserActive,
     deckRenderingAvailable,
     visionEnabled: runVisionEnabled,
     toolSkillPolicy,
@@ -932,6 +960,16 @@ export async function runClaudeAgent(
     ownerState.experimentalFeatures.includes("canvas");
   const canvasServer = canvasActive
     ? buildCanvasServer({ emitCanvas: events!.onCanvas! })
+    : null;
+  // The handler self-gates on `allowed` in addition to `browserActive`: the
+  // `mcp__` auto-allow in the PreToolUse hook fires before any owner check, and
+  // a colleague must never drive their own logged-in session through someone
+  // else's avatar prompt.
+  const browserServer = browserActive
+    ? buildBrowserServer({
+        execute: events!.onBrowser!,
+        allowed: browserViewerAllowed,
+      })
     : null;
   // Local file output is available only for an interactive run with an
   // explicit working directory and a host sink that validates + persists the
@@ -1159,6 +1197,7 @@ export async function runClaudeAgent(
       ...(groupBrainActive ? GROUP_BRAIN_TOOL_NAMES : []),
       ...(groupAgentProfileActive ? GROUP_AGENT_PROFILE_TOOL_NAMES : []),
       ...(canvasActive ? CANVAS_TOOL_NAMES : []),
+      ...(browserActive ? BROWSER_TOOL_NAMES : []),
       ...(fileOutputActive ? FILE_OUTPUT_TOOL_NAMES : []),
       ...(sshActive ? SSH_TRUST_TOOL_NAMES : []),
       "Skill",
@@ -1234,6 +1273,7 @@ export async function runClaudeAgent(
         ? { [GROUP_AGENT_PROFILE_SERVER_NAME]: groupAgentProfileServer }
         : {}),
       ...(canvasServer ? { [CANVAS_SERVER_NAME]: canvasServer } : {}),
+      ...(browserServer ? { [BROWSER_SERVER_NAME]: browserServer } : {}),
       ...(fileOutputServer
         ? { [FILE_OUTPUT_SERVER_NAME]: fileOutputServer }
         : {}),
@@ -1442,6 +1482,7 @@ export async function runClaudeAgent(
     // turn (colleagues see canvases too). Experimental-feature self-state is
     // owner-driven only (META-COGNITION), matching describe_system's gating.
     canvasEnabled: canvasActive,
+    browserEnabled: browserActive,
     fileOutputEnabled: fileOutputActive,
     // Deck standing guidance needs BOTH the deployment toolchain and a turn
     // that can publish files (preview embeds + the download card).

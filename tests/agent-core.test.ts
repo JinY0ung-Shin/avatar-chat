@@ -2492,7 +2492,7 @@ describe("buildPrompt", () => {
     // The user-deselected sentence lists exactly the user's own picks — the
     // admin-blocked pair is never (mis)attributed to the user...
     expect(p).toContain(
-      "in the chat composer: personal knowledge, group knowledge, Confluence, avatar discovery & consultation, visual canvas, system management.",
+      "in the chat composer: personal knowledge, group knowledge, Confluence, avatar discovery & consultation, visual canvas, browser control, system management.",
     );
     // ...and the policy itself is never mentioned: the avatar only knows the
     // tools it has (owner decision — no policy meta-cognition).
@@ -2510,6 +2510,7 @@ describe("buildPrompt", () => {
           "confluence",
           "avatars",
           "canvas",
+          "browser",
           "system",
         ],
         adminBlockedMcpToolGroups: ["ssh", "web"],

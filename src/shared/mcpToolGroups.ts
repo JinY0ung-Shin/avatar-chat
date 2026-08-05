@@ -48,6 +48,12 @@ export const MCP_TOOL_GROUPS = [
     descriptionKo: "차트, 다이어그램, 선택 UI 표시",
   },
   {
+    id: "browser",
+    labelKo: "브라우저 조작",
+    labelEn: "browser control",
+    descriptionKo: "내 브라우저에서 페이지 열기·클릭·입력 (확장 프로그램 필요)",
+  },
+  {
     id: "system",
     labelKo: "시스템",
     labelEn: "system management",

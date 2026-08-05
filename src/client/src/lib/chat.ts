@@ -6,6 +6,7 @@ import { consumeSse, type SseFrame } from "./sse";
 import { ensureNotificationPermission, osNotify } from "./notifications";
 import { newId, notify, readState, updateState } from "./state";
 import { isDrawioAttachment } from "./drawioViewer";
+import { sendToExtension } from "./browserBridge";
 import { resolveTypedSlashCommand } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
@@ -915,6 +916,9 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "canvas":
       if (data?.artifactId) handleCanvas(paneId, data);
       return;
+    case "browser":
+      if (data?.requestId && data?.op) handleBrowserOp(paneId, data);
+      return;
     case "file":
       if (data?.attachment?.id) {
         markTextBreak(paneId);
@@ -1515,6 +1519,51 @@ function clearLive(pane: ChatPane): void {
 // A canvas artifact arrived over SSE: upsert by artifact id and bring it to the
 // front. `pending` (the run is parked, awaiting the user) is true ONLY for a
 // BLOCKING canvas — an async canvas's controls render but don't park the run.
+// Browser bridge: the run is PARKED on this operation. Hand it to the
+// extension and POST whatever comes back — including failures, so the run
+// resumes with a usable reason instead of waiting out its TTL. Replayed frames
+// are deduped on requestId: reattaching to a run replays the whole event log,
+// and re-executing a click would act on the page twice.
+const handledBrowserOps = new Set<string>();
+
+function handleBrowserOp(paneId: string, data: any): void {
+  const requestId = String(data.requestId);
+  if (handledBrowserOps.has(requestId)) return;
+  handledBrowserOps.add(requestId);
+  if (handledBrowserOps.size > 500) {
+    // Bound the dedupe set; ids are consumed in order, so the oldest is safe to drop.
+    handledBrowserOps.delete(handledBrowserOps.values().next().value as string);
+  }
+
+  const label =
+    data.op === "navigate"
+      ? "브라우저를 이동하는 중…"
+      : data.op === "click"
+        ? "브라우저를 클릭하는 중…"
+        : data.op === "type"
+          ? "브라우저에 입력하는 중…"
+          : "브라우저 화면을 읽는 중…";
+  setStatus(paneId, label, false);
+
+  void sendToExtension({
+    op: data.op,
+    url: data.url,
+    uid: data.uid,
+    text: data.text,
+    submit: Boolean(data.submit),
+  })
+    .then((reply) =>
+      api("/api/chat/respond", {
+        method: "POST",
+        body: JSON.stringify({ runId: data.runId, requestId, value: reply }),
+      }),
+    )
+    .catch(() => {
+      // The answer POST itself failed (run ended, network). Nothing to retry —
+      // the server's park TTL settles the run on its own.
+    });
+}
+
 function handleCanvas(paneId: string, data: any): void {
   const controls = Array.isArray(data.controls) ? data.controls : undefined;
   const interaction =

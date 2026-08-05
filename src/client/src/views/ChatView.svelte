@@ -255,9 +255,17 @@
     );
   })();
 
+  // Browser control acts with the viewer's own live logins, so it is
+  // operator-only while it is being trialled — the server strips it from every
+  // non-admin run. Hiding it here keeps the picker honest rather than offering
+  // a switch that silently does nothing. Mirrors claudeAgent's planMcpToolFamilies.
+  $: visibleMcpToolGroups = MCP_TOOL_GROUPS.filter(
+    (group) => group.id !== "browser" || Boolean($appState.user?.roles?.includes("admin")),
+  );
+
   function mcpToolsLabel(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
     const effective = selectedMcpToolGroups(item).filter((id) => !adminBlocked.has(id));
-    return `도구 ${effective.length}/${MCP_TOOL_GROUPS.length}`;
+    return `도구 ${effective.length}/${visibleMcpToolGroups.length}`;
   }
 
   function composerSettingsSummary(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
@@ -1372,7 +1380,7 @@
           use:clickOutside={{ onOutside: () => (mcpToolsOpenPaneId = ""), ignore: ".composer-tools-btn" }}
         >
           <div class="composer-tools-title">이 대화에서 사용할 MCP 도구</div>
-          {#each MCP_TOOL_GROUPS as group (group.id)}
+          {#each visibleMcpToolGroups as group (group.id)}
             {@const adminBlocked = adminBlockedMcpToolGroupSet.has(group.id)}
             <label class="composer-tools-item">
               <input

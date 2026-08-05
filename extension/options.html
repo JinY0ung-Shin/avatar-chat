@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>Noah 브라우저 브릿지 설정</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main>
+      <h1>허용 사이트</h1>
+      <p class="lead">
+        아바타가 읽고 조작할 수 있는 사이트입니다. 여기 없는 주소는 전부 거부됩니다.
+      </p>
+
+      <section id="managed" class="banner" hidden>
+        <strong>관리자 정책이 적용 중입니다.</strong>
+        <p>
+          아래 목록은 조직에서 배포한 정책이며 이 화면에서 바꿀 수 없습니다. 변경이 필요하면
+          시스템 관리자에게 요청하세요.
+        </p>
+        <ul id="managed-list"></ul>
+      </section>
+
+      <section id="editor">
+        <label for="origins">한 줄에 하나씩 입력</label>
+        <textarea
+          id="origins"
+          rows="8"
+          spellcheck="false"
+          placeholder="intra.example.com&#10;*.corp.local"
+        ></textarea>
+        <p class="hint">
+          정확한 호스트(<code>intra.example.com</code>) 또는 하위 도메인 와일드카드(<code>*.corp.local</code>)를
+          씁니다. 와일드카드는 <code>corp.local</code> 자체에는 적용되지 않습니다.
+        </p>
+        <div class="actions">
+          <button id="save" type="button">저장</button>
+          <span id="status" role="status" aria-live="polite"></span>
+        </div>
+      </section>
+
+      <section class="warn">
+        <h2>주의</h2>
+        <p>
+          아바타는 <strong>이미 로그인된 세션</strong>으로 이 사이트들에 접근합니다. 목록을 넓히는 것은
+          곧 아바타에게 그 사이트에서의 내 권한을 주는 일입니다. <code>*</code>를 넣으면 로그인해 둔
+          모든 사이트가 대상이 됩니다.
+        </p>
+        <p>
+          범위를 확실히 좁히려면, 필요한 사이트에만 로그인해 둔 <strong>전용 Chrome 프로필</strong>에
+          이 확장을 설치하세요.
+        </p>
+      </section>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>

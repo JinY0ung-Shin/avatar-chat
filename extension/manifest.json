@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Noah Almighty Browser Bridge",
+  "version": "0.1.0",
+  "description": "Lets your Noah avatar drive a tab in this browser, using the sessions you are already logged into.",
+  "minimum_chrome_version": "116",
+  "permissions": ["debugger", "tabs", "tabGroups", "storage"],
+  "storage": {
+    "managed_schema": "policy-schema.json"
+  },
+  "options_page": "options.html",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "externally_connectable": {
+    "matches": ["https://noah.corp.local/*", "http://localhost:5173/*", "http://localhost:48787/*"]
+  },
+  "action": {
+    "default_title": "Noah Browser Bridge"
+  }
+}

@@ -288,8 +288,17 @@ export function isRunCancelled(runId: string): boolean {
  * Park until the user answers `requestId` (or the run ends → resolves with
  * CANCELLED). Safe to call even if the run was already closed (resolves
  * CANCELLED immediately).
+ *
+ * `ttlMs` defaults to the interactive PROMPT_TTL_MS. Pass a SHORT ttl when the
+ * responder is software rather than a person (the browser bridge): a machine
+ * that hasn't answered in seconds is gone, and parking such a request for half
+ * an hour would pin the run, its subprocess, and the conversation lock.
  */
-export function awaitResponse(runId: string, requestId: string): Promise<unknown> {
+export function awaitResponse(
+  runId: string,
+  requestId: string,
+  ttlMs: number = PROMPT_TTL_MS,
+): Promise<unknown> {
   const run = runs.get(runId);
   if (!run || run.ended) {
     return Promise.resolve(CANCELLED);
@@ -305,7 +314,7 @@ export function awaitResponse(runId: string, requestId: string): Promise<unknown
       regLogger.warn({ runId, requestId }, "interactive prompt timed out — auto-cancelling");
       emitRunEvent(runId, "prompt_resolved", { requestId });
       pending.resolve(CANCELLED);
-    }, PROMPT_TTL_MS);
+    }, ttlMs);
     timeout.unref?.();
     run.pending.set(requestId, { resolve, timeout });
   });

@@ -274,6 +274,28 @@ const CHAT_IMAGE_ERROR: Record<string, string> = {
   TOO_LARGE: "이미지 한 장의 크기는 5MB 이하여야 합니다.",
 };
 
+/**
+ * How long a browser-bridge operation parks. Deliberately seconds, not the
+ * interactive PROMPT_TTL_MS: the responder is the extension, so silence means
+ * the bridge is gone (tab closed, extension missing, tab detached) rather than
+ * a user still deciding. Generous enough for a slow page load to finish.
+ */
+const BROWSER_OP_TTL_MS = 45 * 1000;
+
+/**
+ * Reduce a URL to scheme://host/path for an audit row: credentials in userinfo
+ * and tokens in the query string must not land in a table admins can read.
+ */
+function scrubAuditUrl(raw: string | null | undefined): string {
+  if (!raw) return "(unknown)";
+  try {
+    const url = new URL(raw);
+    return `${url.protocol}//${url.host}${url.pathname}`;
+  } catch {
+    return "(unparseable)";
+  }
+}
+
 function prepareSse(res: Response): void {
   res.status(200);
   res.setHeader("Content-Type", "text/event-stream");
@@ -1530,6 +1552,8 @@ export function createChatRouter({
               viewerUserId: req.user!.id,
               viewerName: req.user!.displayName,
               viewerIsOwner,
+              // Browser control is operator-only for now (see AgentRequest).
+              viewerIsAdmin: req.user!.roles.includes("admin"),
               knowledgeMemory,
               // Elevated tool permissions for the owner OR a trusted user. The tool
               // gate denies everyone else, so auto-approving the elevated path is safe.
@@ -1843,6 +1867,70 @@ export function createChatRouter({
                 }
                 record(reply?.values ?? {});
                 return { behavior: "submitted", values: reply?.values ?? {} };
+              },
+              // Browser bridge. Same emit-and-park shape as onCanvas, but the
+              // responder is the user's browser extension, not a person: park
+              // for BROWSER_OP_TTL_MS, and read a silent timeout as "the bridge
+              // isn't there" rather than "the user declined".
+              onBrowser: async (requestData) => {
+                const requestId = crypto.randomUUID();
+                emitRunEvent(runId, "browser", {
+                  runId,
+                  requestId,
+                  op: requestData.op,
+                  url: requestData.url ?? null,
+                  uid: requestData.uid ?? null,
+                  text: requestData.text ?? null,
+                  submit: Boolean(requestData.submit),
+                });
+                const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
+                if (answer === CANCELLED) {
+                  return {
+                    behavior: "error",
+                    message:
+                      "The browser bridge did not respond. The Noah tab may be closed, the extension may not be installed, or no tab is attached. " +
+                      "Ask the user to open Noah in the browser you should drive and attach a tab, then retry — there is no other way to reach their browser.",
+                  };
+                }
+                const reply = answer as {
+                  ok?: boolean;
+                  message?: string;
+                  snapshot?: string;
+                  url?: string;
+                  title?: string;
+                };
+                if (!reply?.ok) {
+                  return {
+                    behavior: "error",
+                    message:
+                      reply?.message ||
+                      "The browser extension refused the operation without a reason. Report this to the user rather than retrying.",
+                  };
+                }
+                // Audit every ACTION against the user's live session. `snapshot`
+                // is skipped: it fires between every step and would bury the
+                // rows that matter. URLs are scrubbed of userinfo and query
+                // string — an audit row is admin-visible and a query string
+                // routinely carries tokens.
+                if (requestData.op !== "snapshot") {
+                  auditAs(
+                    req,
+                    `browser_${requestData.op}`,
+                    [
+                      `op=${requestData.op}`,
+                      requestData.uid ? `uid=${requestData.uid}` : "",
+                      `url=${scrubAuditUrl(reply.url || requestData.url)}`,
+                    ]
+                      .filter(Boolean)
+                      .join(" "),
+                  );
+                }
+                return {
+                  behavior: "ok",
+                  snapshot: typeof reply.snapshot === "string" ? reply.snapshot : undefined,
+                  url: typeof reply.url === "string" ? reply.url : undefined,
+                  title: typeof reply.title === "string" ? reply.title : undefined,
+                };
               },
               onFile: async (requestData) => {
                 // Separate per-turn caps: visible images guard the bubble from
