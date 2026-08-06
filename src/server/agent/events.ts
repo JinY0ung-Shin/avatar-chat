@@ -292,10 +292,14 @@ export interface BrowserRequest {
   text?: string;
   /** type only: press Enter afterwards. */
   submit?: boolean;
+  /** type only: enter per-character as real key events instead of one insert. */
+  keystrokes?: boolean;
   /** press_key only: W3C key value ("Enter", "Escape", "ArrowDown", "a", …). */
   key?: string;
   /** press_key only: held modifier keys. */
   modifiers?: ("Alt" | "Control" | "Meta" | "Shift")[];
+  /** press_key only: press the key this many times in one operation. */
+  repeat?: number;
   /** scroll only: which way to scroll. */
   direction?: "up" | "down" | "left" | "right";
   /** scroll only: distance in CSS pixels (defaults to ~one viewport). */

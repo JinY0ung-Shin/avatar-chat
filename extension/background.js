@@ -37,6 +37,7 @@ const CDP_ALLOWLIST = new Set([
   "DOM.scrollIntoViewIfNeeded",
   "Input.dispatchKeyEvent",
   "Input.dispatchMouseEvent",
+  "Input.imeSetComposition",
   "Input.insertText",
   "Page.enable",
   "Page.getLayoutMetrics",
@@ -581,6 +582,31 @@ function modifierMask(names) {
   return mask;
 }
 
+/** True when the text is what a real keyboard would produce via an IME (한글 등). */
+function needsComposition(text) {
+  return /[^\x00-\x7F]/.test(text);
+}
+
+/**
+ * Insert text the way an IME does: composition events bracket the commit.
+ * Korean-aware editors often sync their model on compositionend and ignore a
+ * bare insertText — without this, Hangul lands in the DOM but the editor's
+ * state never learns about it.
+ */
+async function insertTextAsIme(target, text) {
+  try {
+    await sendCdp(target, "Input.imeSetComposition", {
+      text,
+      selectionStart: text.length,
+      selectionEnd: text.length,
+    });
+  } catch {
+    // No IME-capable focus (or an older Chrome): the plain commit below still
+    // inserts the text, which is exactly the previous behavior.
+  }
+  await sendCdp(target, "Input.insertText", { text });
+}
+
 /** Dispatch one full key press (down+up) with proper text/code/keyCode. */
 async function dispatchKey(target, key, modifiers) {
   const def = KEY_DEFS[key];
@@ -593,6 +619,14 @@ async function dispatchKey(target, key, modifiers) {
       ...(def.text ? { text: def.text } : {}),
     };
   } else if ([...key].length === 1) {
+    if (needsComposition(key)) {
+      // A real IME key press: keydown "Process" (vk 229), composition, commit.
+      const proc = { key: "Process", windowsVirtualKeyCode: 229 };
+      await sendCdp(target, "Input.dispatchKeyEvent", { type: "rawKeyDown", modifiers, ...proc });
+      await insertTextAsIme(target, key);
+      await sendCdp(target, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, ...proc });
+      return;
+    }
     const upper = key.toUpperCase();
     params = {
       key,
@@ -624,12 +658,25 @@ async function dispatchKey(target, key, modifiers) {
   await sendCdp(target, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, ...upParams });
 }
 
-async function typeRef(uid, value, submit) {
+async function typeRef(uid, value, submit, keystrokes) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
   await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
-  await sendCdp(target, "Input.insertText", { text: value });
+  if (keystrokes) {
+    // Replay as real per-character key events, ONE bridge operation for the
+    // whole string — for editors that only listen to keyboard input. Server
+    // caps the length; the dialog check keeps a mid-string alert() from
+    // queueing keystrokes into a frozen renderer.
+    for (const ch of [...value]) {
+      if (pendingDialogs.has(ref.tabId)) return;
+      await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
+    }
+  } else if (needsComposition(value)) {
+    await insertTextAsIme(target, value);
+  } else {
+    await sendCdp(target, "Input.insertText", { text: value });
+  }
   if (submit) {
     await dispatchKey(target, "Enter", 0);
   }
@@ -789,7 +836,10 @@ async function perform(message) {
   } else if (message.op === "type") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
-    await raceDialogOpen(tab.id, typeRef(message.uid, message.text || "", Boolean(message.submit)));
+    await raceDialogOpen(
+      tab.id,
+      typeRef(message.uid, message.text || "", Boolean(message.submit), Boolean(message.keystrokes)),
+    );
     if (message.submit) await waitForLoad(tab.id, 5000);
   } else if (message.op === "press_key") {
     let target = { tabId: tab.id };
@@ -801,9 +851,15 @@ async function perform(message) {
       await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
       await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
     }
+    const repeat = Math.min(Math.max(Math.round(Number(message.repeat) || 1), 1), 50);
     await raceDialogOpen(
       tab.id,
-      dispatchKey(target, String(message.key || ""), modifierMask(message.modifiers)),
+      (async () => {
+        for (let i = 0; i < repeat; i += 1) {
+          if (pendingDialogs.has(tab.id)) return;
+          await dispatchKey(target, String(message.key || ""), modifierMask(message.modifiers));
+        }
+      })(),
     );
     // Enter and shortcuts can submit or navigate, same as a click.
     await waitForLoad(tab.id, 5000);

@@ -1897,8 +1897,10 @@ export function createChatRouter({
                   uid: requestData.uid ?? null,
                   text: requestData.text ?? null,
                   submit: Boolean(requestData.submit),
+                  keystrokes: Boolean(requestData.keystrokes),
                   key: requestData.key ?? null,
                   modifiers: requestData.modifiers ?? null,
+                  repeat: requestData.repeat ?? null,
                   direction: requestData.direction ?? null,
                   pixels: requestData.pixels ?? null,
                   accept: typeof requestData.accept === "boolean" ? requestData.accept : null,
@@ -1951,7 +1953,7 @@ export function createChatRouter({
                       `op=${requestData.op}`,
                       requestData.uid ? `uid=${requestData.uid}` : "",
                       requestData.key
-                        ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}`
+                        ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`
                         : "",
                       `url=${scrubAuditUrl(reply.url || requestData.url)}`,
                     ]

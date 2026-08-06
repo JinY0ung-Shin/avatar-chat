@@ -44,8 +44,10 @@ export interface BridgeOperation {
   uid?: string | null;
   text?: string | null;
   submit?: boolean;
+  keystrokes?: boolean;
   key?: string | null;
   modifiers?: string[] | null;
+  repeat?: number | null;
   direction?: string | null;
   pixels?: number | null;
   accept?: boolean | null;

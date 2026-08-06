@@ -120,6 +120,21 @@ PoC에서 실측할 것들입니다. 아키텍처를 바꾸지는 않습니다.
 - 의미 단위 명령 14개로 실제 사내 업무가 커버되는지 (부족하면 명령을 추가하되, 임의 JS 탈출구는 열지 않습니다)
 - OOPIF 안에서 뜬 JS 대화상자가 자식 세션의 `javascriptDialogOpening`으로 실제 잡히는지
 
+## 텍스트 입력 경로
+
+`type`은 문자열 전체를 **한 번에** 넣습니다. 세 갈래로 갈립니다:
+
+- 기본: `Input.insertText` — 표준 입력/에디터에 가장 빠른 경로
+- 비ASCII(한글 등) 포함: `Input.imeSetComposition` → `insertText` 커밋 — 실제 IME처럼
+  composition 이벤트(compositionstart/update/end)를 발생시켜, compositionend에서만 상태를
+  동기화하는 한글 인식 에디터에서도 입력이 반영됩니다
+- `keystrokes: true`: 글자별 실제 키 이벤트 재생(한 번의 브릿지 호출 안에서 루프, 서버에서
+  300자 제한) — `input` 이벤트를 무시하고 keydown만 듣는 에디터용. 한글 글자는 실제 IME처럼
+  `Process`(vk 229) keydown + composition으로 재생됩니다
+
+`press_key`는 특수키·단축키용이고 `repeat`(최대 50)로 같은 키 연타를 한 호출에 담습니다.
+텍스트를 press_key로 한 글자씩 넣는 것은 안티패턴입니다 (호출당 스냅샷 왕복 비용).
+
 ## JS 대화상자 (alert/confirm/prompt)
 
 대화상자는 렌더러를 얼립니다 — 스냅샷 순회는 물론, 대화상자를 유발한 입력 이벤트의 ack조차

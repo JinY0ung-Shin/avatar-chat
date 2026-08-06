@@ -231,6 +231,10 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
     tool(
       "type",
       "Type text into a field in the user's browser, addressed by a `uid` from the most recent snapshot. " +
+        "The WHOLE string is entered in this one call — never enter text by pressing keys one at a time. " +
+        "If the page visibly ignored a normal type (the field stayed empty), retry ONCE with " +
+        "`keystrokes: true`, which replays the text as real per-character key events for editors that only " +
+        "listen to keyboard input. " +
         "NEVER type credentials, one-time codes, or payment details — if a page asks for them, stop and " +
         "hand control back to the user.",
       {
@@ -240,16 +244,30 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           .boolean()
           .optional()
           .describe("Press Enter after typing (submits most forms). Defaults to false."),
+        keystrokes: z
+          .boolean()
+          .optional()
+          .describe(
+            "Replay the text as individual key events (slower; max 300 chars). Only when a normal type was ignored.",
+          ),
       },
       async (args) => {
         const denied = gate();
         if (denied) return denied;
+        if (args.keystrokes && [...args.value].length > 300) {
+          return text(
+            "keystrokes mode replays every character as key events and is capped at 300 characters per call. " +
+              "Split the text into smaller chunks, or use a normal type without keystrokes for long content.",
+            true,
+          );
+        }
         return report(
           await ctx.execute({
             op: "type",
             uid: args.uid,
             text: args.value,
             submit: args.submit || undefined,
+            keystrokes: args.keystrokes || undefined,
           }),
           `Typed into ${args.uid}.`,
         );
@@ -275,6 +293,13 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           .max(4)
           .optional()
           .describe("Modifier keys held while pressing, e.g. [\"Control\"] for Ctrl+A."),
+        repeat: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe("Press the key this many times in ONE call (e.g. ArrowDown ×5). Defaults to 1."),
         uid: z
           .string()
           .min(1)
@@ -290,9 +315,10 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
             op: "press_key",
             key: args.key,
             modifiers: args.modifiers?.length ? args.modifiers : undefined,
+            repeat: args.repeat && args.repeat > 1 ? args.repeat : undefined,
             uid: args.uid || undefined,
           }),
-          `Pressed ${args.modifiers?.length ? `${args.modifiers.join("+")}+` : ""}${args.key}.`,
+          `Pressed ${args.modifiers?.length ? `${args.modifiers.join("+")}+` : ""}${args.key}${args.repeat && args.repeat > 1 ? ` ×${args.repeat}` : ""}.`,
         );
       },
     ),

@@ -3765,6 +3765,30 @@ describe("browser bridge interaction ops", () => {
 
     await callTool(tools, "handle_dialog", { accept: true, promptText: "메모" });
     expect(execute).toHaveBeenLastCalledWith({ op: "handle_dialog", accept: true, promptText: "메모" });
+
+    await callTool(tools, "press_key", { key: "ArrowDown", repeat: 5 });
+    expect(execute).toHaveBeenLastCalledWith({ op: "press_key", key: "ArrowDown", repeat: 5 });
+
+    await callTool(tools, "type", { uid: "e2", value: "안녕", keystrokes: true });
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "type",
+      uid: "e2",
+      text: "안녕",
+      keystrokes: true,
+    });
+  });
+
+  it("caps keystrokes replay length before reaching the bridge", async () => {
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "type", {
+      uid: "e2",
+      value: "가".repeat(301),
+      keystrokes: true,
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("300");
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("rejects a wait_for with no condition before reaching the bridge", async () => {
