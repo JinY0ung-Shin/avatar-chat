@@ -1926,12 +1926,17 @@ export function createChatRouter({
                   dialog?: { type?: string; message?: string; defaultPrompt?: string };
                 };
                 if (!reply?.ok) {
-                  return {
-                    behavior: "error",
-                    message:
-                      reply?.message ||
-                      "The browser extension refused the operation without a reason. Report this to the user rather than retrying.",
-                  };
+                  const raw =
+                    reply?.message ||
+                    "The browser extension refused the operation without a reason. Report this to the user rather than retrying.";
+                  // "Unsupported operation" is the OLD extension build's
+                  // catch-all for an op it predates. The old build cannot
+                  // explain itself, so translate here: without this the model
+                  // retries other new ops and fails the same way.
+                  const message = /unsupported operation/i.test(raw)
+                    ? `${raw} The browser extension installed in the user's browser is an OLDER build than this server, so it does not know this operation (and will refuse every other recently added one too). Tell the user to update it: download the extension zip again from 설정 → 접근/보안 → 브라우저 브릿지, replace the previously loaded folder's contents, then press the reload (↻) button on that extension's card in chrome://extensions — the card must show the new version number afterwards. Until then, use only snapshot/navigate/click/type and the tab tools.`
+                    : raw;
+                  return { behavior: "error", message };
                 }
                 // Audit every ACTION against the user's live session. `snapshot`
                 // and `wait_for` are skipped: both are read-only and fire

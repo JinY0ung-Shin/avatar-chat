@@ -476,9 +476,11 @@ async function buildSnapshot(tab) {
       if (!role || role === "none" || role === "generic" || role === "InlineTextBox") continue;
       const name = (node.name?.value || "").trim();
       const value = (node.value?.value || "").trim();
-      if (!name && !value) continue;
-
       const interactive = INTERACTIVE_ROLES.has(role);
+      // Nameless NON-interactive nodes are noise, but a nameless interactive
+      // element (an unlabeled rich-text editor, an icon-only button) still
+      // needs a uid — dropping those made such editors unreachable entirely.
+      if (!name && !value && !interactive) continue;
       if (interactive && node.backendDOMNodeId != null) {
         const uid = `e${++refSeq}`;
         refMap.set(uid, {
