@@ -196,7 +196,8 @@ async function groupedTabs() {
 
 const NO_TAB_MESSAGE =
   `No tab is attached. Ask the user to put the tab you should drive into a tab group named "${GROUP_TITLE}" ` +
-  "(right-click a tab → add to new group → name it Noah), or open one yourself with mcp__browser__new_tab. " +
+  "(right-click a tab → add to new group → name it Noah), or open one yourself with mcp__browser__new_tab — " +
+  "the user will be asked to approve creating the group. " +
   "Dragging a tab out of that group revokes access immediately.";
 
 /**
@@ -269,6 +270,97 @@ function refuseOrigin(rawUrl, source) {
       "do not try a different URL to reach the same content.",
   };
 }
+
+// ------------------------------------------------- group-creation consent
+
+/**
+ * Creating the "Noah" group is what switches browser control ON in a browser
+ * that has none, so it must not happen as a silent side effect of new_tab.
+ * The question is asked in EXTENSION UI (a popup window): consent granted in
+ * browser chrome cannot be forged, auto-clicked, or restyled by anything the
+ * bridge drives. An existing group needs no prompt — its presence IS the
+ * consent, and dragging tabs out remains the revocation.
+ *
+ * The budget is deliberately tight: the Noah client gives the whole operation
+ * 40s before it reports a bridge timeout, and a confirmed new_tab still has to
+ * create the tab and wait for it to load (up to 15s). 20s to answer keeps the
+ * worst case inside the client's window.
+ */
+const CONSENT_TIMEOUT_MS = 20 * 1000;
+
+const CONSENT_DECLINED =
+  `The user declined to create the "${GROUP_TITLE}" tab group, so no tab was opened and browser control stays off. ` +
+  "Do not retry — tell the user what you wanted to open and let them decide how to proceed.";
+const CONSENT_UNANSWERED =
+  "The user did not answer the tab-group prompt in time, so no tab was opened. " +
+  "Tell the user a confirmation popup appears in their browser when you open a tab, and retry when they are ready.";
+
+let consentSeq = 0;
+/** The single in-flight consent: { token, windowId, timer, settle }. */
+let pendingConsent = null;
+
+function settleConsent(token, outcome) {
+  if (!pendingConsent || pendingConsent.token !== token) return;
+  const { windowId, timer, settle } = pendingConsent;
+  pendingConsent = null;
+  clearTimeout(timer);
+  chrome.windows.remove(windowId).catch(() => {
+    // Already closed — the user's click and our cleanup can race; both are fine.
+  });
+  settle(outcome);
+}
+
+/** Ask the user, in extension UI, whether to create the Noah group for `url`. */
+async function requestGroupConsent(url) {
+  if (pendingConsent) {
+    return {
+      granted: false,
+      reason:
+        "A tab-group confirmation popup is already open in the user's browser. Wait for their answer instead of calling new_tab again.",
+    };
+  }
+  const token = String(++consentSeq);
+  const page = `${chrome.runtime.getURL("consent.html")}?token=${token}&url=${encodeURIComponent(url)}`;
+  let win;
+  try {
+    win = await chrome.windows.create({ url: page, type: "popup", width: 440, height: 400, focused: true });
+  } catch (error) {
+    return {
+      granted: false,
+      reason:
+        `The consent popup could not be opened (${String(error?.message || error)}). Ask the user to create the ` +
+        `"${GROUP_TITLE}" tab group themselves: right-click a tab → add to new group → name it ${GROUP_TITLE}.`,
+    };
+  }
+  return new Promise((resolve) => {
+    pendingConsent = {
+      token,
+      windowId: win.id,
+      timer: setTimeout(
+        () => settleConsent(token, { granted: false, reason: CONSENT_UNANSWERED }),
+        CONSENT_TIMEOUT_MS,
+      ),
+      settle: resolve,
+    };
+  });
+}
+
+// Internal channel only — the consent page is part of this extension. Web
+// pages land on onMessageExternal instead, so no site content can answer.
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "noah-group-consent") return;
+  settleConsent(
+    String(message.token),
+    message.allow ? { granted: true } : { granted: false, reason: CONSENT_DECLINED },
+  );
+});
+
+// Closing the popup without clicking is an answer too: not granted.
+chrome.windows.onRemoved.addListener((windowId) => {
+  if (pendingConsent && pendingConsent.windowId === windowId) {
+    settleConsent(pendingConsent.token, { granted: false, reason: CONSENT_DECLINED });
+  }
+});
 
 // ------------------------------------------------------------------ snapshot
 
@@ -434,11 +526,20 @@ async function perform(message) {
 
   if (message.op === "new_tab") {
     if (!originAllowed(message.url, patterns)) return refuseOrigin(message.url, source);
+    let group = await noahGroup();
+    // No group = browser control is currently OFF in this browser. Turning it
+    // on must be the user's click, not a tab-creation side effect, so ask
+    // first — and on refusal, leave nothing behind.
+    if (!group) {
+      const consent = await requestGroupConsent(message.url);
+      if (!consent.granted) return { ok: false, message: consent.reason };
+      // The user may have created the group by hand while the popup was open.
+      group = await noahGroup();
+    }
     const created = await chrome.tabs.create({ url: message.url, active: false });
-    const group = await noahGroup();
-    // Join the existing group, or start one — a tab the agent opened carries
-    // none of the user's other state, and it stays visible and revocable in the
-    // same green group as everything else.
+    // Join the existing group, or start the one just approved — a tab the
+    // agent opened carries none of the user's other state, and it stays
+    // visible and revocable in the same green group as everything else.
     const groupId = await chrome.tabs.group(
       group ? { tabIds: [created.id], groupId: group.id } : { tabIds: [created.id] },
     );

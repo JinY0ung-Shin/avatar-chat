@@ -7,7 +7,7 @@ import zlib from "node:zlib";
  * Packages `extension/` as a downloadable zip so an operator can install the
  * browser bridge from the settings page instead of cloning the repo.
  *
- * Hand-rolled rather than pulling in an archiver dependency: this writes seven
+ * Hand-rolled rather than pulling in an archiver dependency: this writes ten
  * small text files, and the ZIP container for that case is a local header per
  * entry plus a central directory. Deflate comes from node's zlib.
  *
@@ -22,6 +22,9 @@ const BUNDLE_FILES = [
   "options.html",
   "options.js",
   "options.css",
+  "consent.html",
+  "consent.js",
+  "consent.css",
   "policy-schema.json",
   "README.md",
 ] as const;

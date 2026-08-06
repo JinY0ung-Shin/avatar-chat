@@ -167,7 +167,9 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
       "new_tab",
       "Open a URL in a NEW tab and make it the tab your other tools act on. Prefer this over `navigate` " +
         "when you need to keep the current page — navigate replaces it. The new tab joins the Noah tab " +
-        "group so the user can see and revoke it like any other.",
+        "group so the user can see and revoke it like any other. If that group does not exist yet, the " +
+        "user is asked to approve creating it via a popup in their browser — when the call fails because " +
+        "the prompt went unanswered, tell the user to watch for the popup, then retry.",
       {
         url: z.string().min(1).max(2048).describe("Absolute http(s) URL to open."),
       },

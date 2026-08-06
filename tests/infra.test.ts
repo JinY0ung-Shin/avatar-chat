@@ -1023,7 +1023,9 @@ describe("browser extension bundle", () => {
     expect(manifest.permissions).toContain("debugger");
 
     // Round-trips byte-for-byte, so deflate/CRC are right, not just parseable.
-    for (const name of ["background.js", "options.js", "policy-schema.json"]) {
+    // consent.js doubles as a regression pin: dropping the consent page from
+    // BUNDLE_FILES would ship a bundle whose new_tab popup 404s.
+    for (const name of ["background.js", "options.js", "consent.js", "policy-schema.json"]) {
       expect(fs.readFileSync(path.join(root, name)).equals(
         fs.readFileSync(path.join(process.cwd(), "extension", name)),
       )).toBe(true);
