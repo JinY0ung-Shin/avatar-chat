@@ -7,9 +7,9 @@ import zlib from "node:zlib";
  * Packages `extension/` as a downloadable zip so an operator can install the
  * browser bridge from the settings page instead of cloning the repo.
  *
- * Hand-rolled rather than pulling in an archiver dependency: this writes ten
- * small text files, and the ZIP container for that case is a local header per
- * entry plus a central directory. Deflate comes from node's zlib.
+ * Hand-rolled rather than pulling in an archiver dependency: this writes a
+ * handful of small text files, and the ZIP container for that case is a local
+ * header per entry plus a central directory. Deflate comes from node's zlib.
  *
  * Only files that ship in the extension are included, by an explicit ALLOWLIST
  * rather than a directory walk — the folder sits in the repo, and a stray
@@ -19,6 +19,8 @@ import zlib from "node:zlib";
 const BUNDLE_FILES = [
   "manifest.json",
   "background.js",
+  // background.js imports this at load; omitting it bricks the worker outright.
+  "axtree.js",
   "options.html",
   "options.js",
   "options.css",

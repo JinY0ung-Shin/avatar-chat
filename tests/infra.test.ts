@@ -1039,8 +1039,9 @@ describe("browser extension bundle", () => {
 
     // Round-trips byte-for-byte, so deflate/CRC are right, not just parseable.
     // consent.js doubles as a regression pin: dropping the consent page from
-    // BUNDLE_FILES would ship a bundle whose new_tab popup 404s.
-    for (const name of ["background.js", "options.js", "consent.js", "policy-schema.json"]) {
+    // BUNDLE_FILES would ship a bundle whose new_tab popup 404s. axtree.js is a
+    // harder one — background.js imports it, so losing it breaks every op.
+    for (const name of ["background.js", "axtree.js", "options.js", "consent.js", "policy-schema.json"]) {
       expect(fs.readFileSync(path.join(root, name)).equals(
         fs.readFileSync(path.join(process.cwd(), "extension", name)),
       )).toBe(true);

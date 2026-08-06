@@ -19,6 +19,8 @@
 // out detaches it. That makes consent a live, visible surface the user can
 // revoke without a settings screen.
 
+import { renderAxTree } from "./axtree.js";
+
 const GROUP_TITLE = "Noah";
 const CDP_VERSION = "1.3";
 
@@ -471,50 +473,16 @@ async function buildSnapshot(tab) {
     } catch {
       continue; // A frame can vanish mid-walk; the rest of the page still renders.
     }
-    for (const node of nodes || []) {
-      if (node.ignored) continue;
-      const role = node.role?.value;
-      if (!role || role === "none" || role === "generic" || role === "InlineTextBox") continue;
-      const name = (node.name?.value || "").trim();
-      const value = (node.value?.value || "").trim();
-      const interactive = INTERACTIVE_ROLES.has(role);
-      // Nameless NON-interactive nodes are noise, but a nameless interactive
-      // element (an unlabeled rich-text editor, an icon-only button) still
-      // needs a uid — dropping those made such editors unreachable entirely.
-      if (!name && !value && !interactive) continue;
-      if (interactive && node.backendDOMNodeId != null) {
+    lines.push(
+      ...renderAxTree(nodes || [], (backendNodeId) => {
         const uid = `e${++refSeq}`;
-        refMap.set(uid, {
-          tabId: tab.id,
-          sessionId: session.sessionId,
-          backendNodeId: node.backendDOMNodeId,
-        });
-        lines.push(`[${uid}] ${role} "${name}"${value ? ` = "${value}"` : ""}`);
-      } else {
-        lines.push(`${role} "${name || value}"`);
-      }
-    }
+        refMap.set(uid, { tabId: tab.id, sessionId: session.sessionId, backendNodeId });
+        return uid;
+      }),
+    );
   }
   return lines.join("\n");
 }
-
-const INTERACTIVE_ROLES = new Set([
-  "button",
-  "link",
-  "textbox",
-  "searchbox",
-  "combobox",
-  "checkbox",
-  "radio",
-  "switch",
-  "slider",
-  "menuitem",
-  "menuitemcheckbox",
-  "menuitemradio",
-  "option",
-  "tab",
-  "spinbutton",
-]);
 
 // -------------------------------------------------------------------- actions
 
