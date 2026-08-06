@@ -1897,6 +1897,14 @@ export function createChatRouter({
                   uid: requestData.uid ?? null,
                   text: requestData.text ?? null,
                   submit: Boolean(requestData.submit),
+                  key: requestData.key ?? null,
+                  modifiers: requestData.modifiers ?? null,
+                  direction: requestData.direction ?? null,
+                  pixels: requestData.pixels ?? null,
+                  accept: typeof requestData.accept === "boolean" ? requestData.accept : null,
+                  promptText: requestData.promptText ?? null,
+                  textGone: requestData.textGone ?? null,
+                  timeoutS: requestData.timeoutS ?? null,
                   tabId: requestData.tabId ?? null,
                 });
                 const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
@@ -1915,6 +1923,7 @@ export function createChatRouter({
                   url?: string;
                   title?: string;
                   tabs?: BrowserTab[];
+                  dialog?: { type?: string; message?: string; defaultPrompt?: string };
                 };
                 if (!reply?.ok) {
                   return {
@@ -1925,17 +1934,20 @@ export function createChatRouter({
                   };
                 }
                 // Audit every ACTION against the user's live session. `snapshot`
-                // is skipped: it fires between every step and would bury the
-                // rows that matter. URLs are scrubbed of userinfo and query
-                // string — an audit row is admin-visible and a query string
-                // routinely carries tokens.
-                if (requestData.op !== "snapshot") {
+                // and `wait_for` are skipped: both are read-only and fire
+                // between every step, so they would bury the rows that matter.
+                // URLs are scrubbed of userinfo and query string — an audit row
+                // is admin-visible and a query string routinely carries tokens.
+                if (requestData.op !== "snapshot" && requestData.op !== "wait_for") {
                   auditAs(
                     req,
                     `browser_${requestData.op}`,
                     [
                       `op=${requestData.op}`,
                       requestData.uid ? `uid=${requestData.uid}` : "",
+                      requestData.key
+                        ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}`
+                        : "",
                       `url=${scrubAuditUrl(reply.url || requestData.url)}`,
                     ]
                       .filter(Boolean)
@@ -1948,6 +1960,17 @@ export function createChatRouter({
                   url: typeof reply.url === "string" ? reply.url : undefined,
                   title: typeof reply.title === "string" ? reply.title : undefined,
                   tabs: Array.isArray(reply.tabs) ? reply.tabs : undefined,
+                  dialog:
+                    reply.dialog && typeof reply.dialog.message === "string"
+                      ? {
+                          type: typeof reply.dialog.type === "string" ? reply.dialog.type : "alert",
+                          message: reply.dialog.message,
+                          defaultPrompt:
+                            typeof reply.dialog.defaultPrompt === "string"
+                              ? reply.dialog.defaultPrompt
+                              : undefined,
+                        }
+                      : undefined,
                 };
               },
               onFile: async (requestData) => {

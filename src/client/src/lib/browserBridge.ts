@@ -20,6 +20,8 @@ export interface BridgeReply {
   url?: string;
   title?: string;
   tabs?: { tabId: string; title: string; url: string; current: boolean }[];
+  /** A JS dialog is open on the tab (page frozen, no snapshot possible). */
+  dialog?: { type: string; message: string; defaultPrompt?: string };
 }
 
 export interface BridgeOperation {
@@ -28,6 +30,12 @@ export interface BridgeOperation {
     | "navigate"
     | "click"
     | "type"
+    | "press_key"
+    | "scroll"
+    | "hover"
+    | "navigate_back"
+    | "handle_dialog"
+    | "wait_for"
     | "list_tabs"
     | "new_tab"
     | "select_tab"
@@ -36,6 +44,14 @@ export interface BridgeOperation {
   uid?: string | null;
   text?: string | null;
   submit?: boolean;
+  key?: string | null;
+  modifiers?: string[] | null;
+  direction?: string | null;
+  pixels?: number | null;
+  accept?: boolean | null;
+  promptText?: string | null;
+  textGone?: string | null;
+  timeoutS?: number | null;
   tabId?: string | null;
 }
 

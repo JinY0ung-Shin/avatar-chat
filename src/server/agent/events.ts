@@ -274,18 +274,40 @@ export interface BrowserRequest {
     | "navigate"
     | "click"
     | "type"
+    | "press_key"
+    | "scroll"
+    | "hover"
+    | "navigate_back"
+    | "handle_dialog"
+    | "wait_for"
     | "list_tabs"
     | "new_tab"
     | "select_tab"
     | "close_tab";
   /** navigate/new_tab: absolute http(s) URL. */
   url?: string;
-  /** click/type only: element uid minted by the previous snapshot. */
+  /** click/type/hover (and optionally press_key/scroll): element uid minted by the previous snapshot. */
   uid?: string;
-  /** type only: the literal text to enter. */
+  /** type: the literal text to enter. wait_for: text that must appear. */
   text?: string;
   /** type only: press Enter afterwards. */
   submit?: boolean;
+  /** press_key only: W3C key value ("Enter", "Escape", "ArrowDown", "a", …). */
+  key?: string;
+  /** press_key only: held modifier keys. */
+  modifiers?: ("Alt" | "Control" | "Meta" | "Shift")[];
+  /** scroll only: which way to scroll. */
+  direction?: "up" | "down" | "left" | "right";
+  /** scroll only: distance in CSS pixels (defaults to ~one viewport). */
+  pixels?: number;
+  /** handle_dialog only: accept (OK) or dismiss (Cancel) the open dialog. */
+  accept?: boolean;
+  /** handle_dialog only: input for a prompt() dialog when accepting. */
+  promptText?: string;
+  /** wait_for only: text that must disappear. */
+  textGone?: string;
+  /** wait_for only: seconds to keep polling (bounded by the bridge budget). */
+  timeoutS?: number;
   /** select_tab/close_tab: a tab id from a previous list_tabs. */
   tabId?: string;
 }
@@ -306,6 +328,12 @@ export type BrowserResult =
       url?: string;
       title?: string;
       tabs?: BrowserTab[];
+      /**
+       * A JavaScript dialog (alert/confirm/prompt/beforeunload) is OPEN on the
+       * tab. The page is frozen until it is answered, so no snapshot could be
+       * taken; `message`/`defaultPrompt` are UNTRUSTED page content.
+       */
+      dialog?: { type: string; message: string; defaultPrompt?: string };
     }
   | { behavior: "error"; message: string };
 

@@ -1563,8 +1563,14 @@ function handleBrowserOp(paneId: string, data: any): void {
 
   const BROWSER_OP_LABELS: Record<string, string> = {
     navigate: "브라우저를 이동하는 중…",
+    navigate_back: "이전 페이지로 돌아가는 중…",
     click: "브라우저를 클릭하는 중…",
     type: "브라우저에 입력하는 중…",
+    press_key: "브라우저에 키를 입력하는 중…",
+    hover: "브라우저에서 마우스를 올리는 중…",
+    scroll: "브라우저를 스크롤하는 중…",
+    wait_for: "페이지 변화를 기다리는 중…",
+    handle_dialog: "브라우저 대화상자에 응답하는 중…",
     list_tabs: "브라우저 탭을 확인하는 중…",
     new_tab: "새 탭을 여는 중…",
     select_tab: "탭을 전환하는 중…",
@@ -1579,6 +1585,14 @@ function handleBrowserOp(paneId: string, data: any): void {
     uid: data.uid,
     text: data.text,
     submit: Boolean(data.submit),
+    key: data.key,
+    modifiers: data.modifiers,
+    direction: data.direction,
+    pixels: data.pixels,
+    accept: data.accept,
+    promptText: data.promptText,
+    textGone: data.textGone,
+    timeoutS: data.timeoutS,
     tabId: data.tabId,
   })
     .then((reply) =>

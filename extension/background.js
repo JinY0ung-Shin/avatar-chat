@@ -39,7 +39,11 @@ const CDP_ALLOWLIST = new Set([
   "Input.dispatchMouseEvent",
   "Input.insertText",
   "Page.enable",
+  "Page.getLayoutMetrics",
+  "Page.getNavigationHistory",
+  "Page.handleJavaScriptDialog",
   "Page.navigate",
+  "Page.navigateToHistoryEntry",
   "Target.setAutoAttach",
 ]);
 
@@ -143,6 +147,9 @@ async function ensureAttached(tabId) {
   });
   await sendCdp({ tabId }, "DOM.enable", {});
   await sendCdp({ tabId }, "Accessibility.enable", {});
+  // Page powers navigation history, layout metrics and — critically — the
+  // javascriptDialogOpening events the dialog tracking below depends on.
+  await sendCdp({ tabId }, "Page.enable", {});
 }
 
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
@@ -160,6 +167,8 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
     });
     await sendCdp(child, "DOM.enable", {});
     await sendCdp(child, "Accessibility.enable", {});
+    // A dialog raised from inside an OOPIF surfaces on the child's session.
+    await sendCdp(child, "Page.enable", {});
   } catch {
     // A frame can die between attach and configure; the next snapshot re-walks.
   }
@@ -168,10 +177,91 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
 // Clicking Chrome's own "cancel" on the debugging banner, or any other detach,
 // must drop our state rather than leave stale sessions that fail confusingly.
 chrome.debugger.onDetach.addListener((source) => {
-  if (source.tabId != null) attached.delete(source.tabId);
+  if (source.tabId != null) {
+    attached.delete(source.tabId);
+    pendingDialogs.delete(source.tabId);
+  }
 });
 
-chrome.tabs.onRemoved.addListener((tabId) => attached.delete(tabId));
+chrome.tabs.onRemoved.addListener((tabId) => {
+  attached.delete(tabId);
+  pendingDialogs.delete(tabId);
+});
+
+// ------------------------------------------------------------------- dialogs
+//
+// A JavaScript dialog (alert/confirm/prompt/beforeunload) BLOCKS the renderer:
+// any CDP command that needs the page — a snapshot walk, even the ack of the
+// input event that triggered the dialog — hangs until it is answered. So the
+// open dialog is tracked here, input sends RACE against it, and perform()
+// reports the dialog instead of freezing the bridge. The user answering the
+// native dialog by hand lands in javascriptDialogClosed like any other path.
+
+/** tabId -> { type, message, defaultPrompt, target } while a dialog is open. */
+const pendingDialogs = new Map();
+/** tabId -> Set<wake> for in-flight input sends racing dialog-open. */
+const dialogWaiters = new Map();
+
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (source.tabId == null) return;
+  if (method === "Page.javascriptDialogOpening") {
+    pendingDialogs.set(source.tabId, {
+      type: params?.type || "alert",
+      message: params?.message || "",
+      defaultPrompt: params?.defaultPrompt || "",
+      // Answer on the session that raised it — an OOPIF's dialog belongs to
+      // the child session, not the root.
+      target: source.sessionId
+        ? { tabId: source.tabId, sessionId: source.sessionId }
+        : { tabId: source.tabId },
+    });
+    for (const wake of dialogWaiters.get(source.tabId) || []) wake();
+  } else if (method === "Page.javascriptDialogClosed") {
+    pendingDialogs.delete(source.tabId);
+  }
+});
+
+/**
+ * Await `work`, but stop waiting the moment a JS dialog opens on the tab —
+ * the send that triggered it will not ack until the dialog is answered.
+ */
+async function raceDialogOpen(tabId, work) {
+  if (pendingDialogs.has(tabId)) {
+    work.catch(() => {});
+    return;
+  }
+  let wake;
+  const opened = new Promise((resolve) => {
+    wake = resolve;
+  });
+  let waiters = dialogWaiters.get(tabId);
+  if (!waiters) dialogWaiters.set(tabId, (waiters = new Set()));
+  waiters.add(wake);
+  try {
+    await Promise.race([work, opened]);
+  } finally {
+    waiters.delete(wake);
+    if (!waiters.size) dialogWaiters.delete(tabId);
+    // When the dialog won, the blocked send settles whenever the dialog is
+    // answered — keep that from becoming an unhandled rejection.
+    work.catch(() => {});
+  }
+}
+
+/** Result for "a dialog is open": everything but a snapshot, which would hang. */
+async function dialogBlockedResult(tab) {
+  const dialog = pendingDialogs.get(tab.id);
+  return {
+    ok: true,
+    dialog: dialog
+      ? { type: dialog.type, message: dialog.message, defaultPrompt: dialog.defaultPrompt }
+      : undefined,
+    url: tab.url || "",
+    title: tab.title || "",
+    snapshot: "",
+    tabs: (await groupedTabs()).map(describeTab),
+  };
+}
 
 // ------------------------------------------------------------------- scoping
 
@@ -456,6 +546,82 @@ async function clickRef(uid) {
   await sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
 }
 
+/**
+ * Key descriptors for Input.dispatchKeyEvent. `text` is what makes a key REAL
+ * to the page: a keyDown without text is a rawKeyDown, which never produces a
+ * keypress — an Enter without text:"\r" does not trigger implicit form submit.
+ */
+const KEY_DEFS = {
+  Enter: { code: "Enter", keyCode: 13, text: "\r" },
+  Tab: { code: "Tab", keyCode: 9 },
+  Escape: { code: "Escape", keyCode: 27 },
+  Backspace: { code: "Backspace", keyCode: 8 },
+  Delete: { code: "Delete", keyCode: 46 },
+  ArrowUp: { code: "ArrowUp", keyCode: 38 },
+  ArrowDown: { code: "ArrowDown", keyCode: 40 },
+  ArrowLeft: { code: "ArrowLeft", keyCode: 37 },
+  ArrowRight: { code: "ArrowRight", keyCode: 39 },
+  Home: { code: "Home", keyCode: 36 },
+  End: { code: "End", keyCode: 35 },
+  PageUp: { code: "PageUp", keyCode: 33 },
+  PageDown: { code: "PageDown", keyCode: 34 },
+  Space: { key: " ", code: "Space", keyCode: 32, text: " " },
+  " ": { code: "Space", keyCode: 32, text: " " },
+};
+
+const MODIFIER_BITS = { Alt: 1, Control: 2, Meta: 4, Shift: 8 };
+
+function modifierMask(names) {
+  let mask = 0;
+  for (const name of Array.isArray(names) ? names : []) {
+    mask |= MODIFIER_BITS[name] || 0;
+  }
+  return mask;
+}
+
+/** Dispatch one full key press (down+up) with proper text/code/keyCode. */
+async function dispatchKey(target, key, modifiers) {
+  const def = KEY_DEFS[key];
+  let params;
+  if (def) {
+    params = {
+      key: def.key || key,
+      code: def.code,
+      windowsVirtualKeyCode: def.keyCode,
+      ...(def.text ? { text: def.text } : {}),
+    };
+  } else if ([...key].length === 1) {
+    const upper = key.toUpperCase();
+    params = {
+      key,
+      text: key,
+      windowsVirtualKeyCode: upper.charCodeAt(0),
+      ...(/^[A-Z]$/.test(upper)
+        ? { code: `Key${upper}` }
+        : /^[0-9]$/.test(key)
+          ? { code: `Digit${key}` }
+          : {}),
+    };
+  } else {
+    throw new Error(
+      `Unsupported key "${key}". Use one of ${Object.keys(KEY_DEFS)
+        .filter((name) => name !== " ")
+        .join(", ")}, or a single printable character.`,
+    );
+  }
+  // With Ctrl/Alt/Meta held the press is a shortcut, not text entry.
+  if (modifiers & (MODIFIER_BITS.Alt | MODIFIER_BITS.Control | MODIFIER_BITS.Meta)) {
+    delete params.text;
+  }
+  await sendCdp(target, "Input.dispatchKeyEvent", {
+    type: params.text ? "keyDown" : "rawKeyDown",
+    modifiers,
+    ...params,
+  });
+  const { text: _text, ...upParams } = params;
+  await sendCdp(target, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, ...upParams });
+}
+
 async function typeRef(uid, value, submit) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
@@ -463,14 +629,7 @@ async function typeRef(uid, value, submit) {
   await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
   await sendCdp(target, "Input.insertText", { text: value });
   if (submit) {
-    for (const type of ["keyDown", "keyUp"]) {
-      await sendCdp(target, "Input.dispatchKeyEvent", {
-        type,
-        key: "Enter",
-        code: "Enter",
-        windowsVirtualKeyCode: 13,
-      });
-    }
+    await dispatchKey(target, "Enter", 0);
   }
 }
 
@@ -573,21 +732,151 @@ async function perform(message) {
   if (tab.url && !originAllowed(tab.url, patterns)) return refuseOrigin(tab.url, source);
   await ensureAttached(tab.id);
 
-  if (message.op === "navigate") {
+  // An open JS dialog freezes the renderer: every page-touching command below
+  // would hang. Surface the dialog instead — only handle_dialog may proceed.
+  if (message.op !== "handle_dialog" && pendingDialogs.has(tab.id)) {
+    return dialogBlockedResult(tab);
+  }
+
+  if (message.op === "handle_dialog") {
+    const dialog = pendingDialogs.get(tab.id);
+    if (!dialog) {
+      return {
+        ok: false,
+        message:
+          "No JavaScript dialog is open on this tab, so there is nothing to answer. Take a snapshot to see the current page state.",
+      };
+    }
+    await sendCdp(dialog.target, "Page.handleJavaScriptDialog", {
+      accept: Boolean(message.accept),
+      ...(message.promptText != null ? { promptText: String(message.promptText) } : {}),
+    });
+    pendingDialogs.delete(tab.id);
+    // Answering can resume a submit or navigation the dialog was holding up.
+    await waitForLoad(tab.id, 5000);
+  } else if (message.op === "navigate") {
     if (!originAllowed(message.url, patterns)) return refuseOrigin(message.url, source);
-    await sendCdp({ tabId: tab.id }, "Page.enable", {});
     await sendCdp({ tabId: tab.id }, "Page.navigate", { url: message.url });
+    await waitForLoad(tab.id);
+  } else if (message.op === "navigate_back") {
+    const { currentIndex, entries } = await sendCdp(
+      { tabId: tab.id },
+      "Page.getNavigationHistory",
+      {},
+    );
+    const previous = currentIndex > 0 ? (entries || [])[currentIndex - 1] : null;
+    if (!previous) {
+      return {
+        ok: false,
+        message:
+          "This tab has no earlier history entry to go back to. Open a page explicitly with mcp__browser__navigate instead.",
+      };
+    }
+    // The destination is known BEFORE moving — refuse a back step into a
+    // denied origin instead of visiting it and refusing afterwards.
+    if (previous.url && !originAllowed(previous.url, patterns)) {
+      return refuseOrigin(previous.url, source);
+    }
+    await sendCdp({ tabId: tab.id }, "Page.navigateToHistoryEntry", { entryId: previous.id });
     await waitForLoad(tab.id);
   } else if (message.op === "click") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
-    await clickRef(message.uid);
+    await raceDialogOpen(tab.id, clickRef(message.uid));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "type") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
-    await typeRef(message.uid, message.text || "", Boolean(message.submit));
+    await raceDialogOpen(tab.id, typeRef(message.uid, message.text || "", Boolean(message.submit)));
     if (message.submit) await waitForLoad(tab.id, 5000);
+  } else if (message.op === "press_key") {
+    let target = { tabId: tab.id };
+    if (message.uid) {
+      const refused = await assertRefTabUsable(message.uid, patterns, source);
+      if (refused) return refused;
+      const ref = resolveRef(message.uid);
+      target = { tabId: ref.tabId, sessionId: ref.sessionId };
+      await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+      await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+    }
+    await raceDialogOpen(
+      tab.id,
+      dispatchKey(target, String(message.key || ""), modifierMask(message.modifiers)),
+    );
+    // Enter and shortcuts can submit or navigate, same as a click.
+    await waitForLoad(tab.id, 5000);
+  } else if (message.op === "hover") {
+    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    if (refused) return refused;
+    const { target, x, y } = await centerOf(resolveRef(message.uid));
+    await raceDialogOpen(
+      tab.id,
+      sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y }),
+    );
+  } else if (message.op === "scroll") {
+    const direction = ["up", "down", "left", "right"].includes(message.direction)
+      ? message.direction
+      : "down";
+    const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
+    const viewport = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
+    const viewWidth = viewport.clientWidth || 800;
+    const viewHeight = viewport.clientHeight || 600;
+    let target = { tabId: tab.id };
+    let x = viewWidth / 2;
+    let y = viewHeight / 2;
+    if (message.uid) {
+      const refused = await assertRefTabUsable(message.uid, patterns, source);
+      if (refused) return refused;
+      ({ target, x, y } = await centerOf(resolveRef(message.uid)));
+    }
+    const span = direction === "left" || direction === "right" ? viewWidth : viewHeight;
+    const requested = Number(message.pixels);
+    const amount = Math.min(Math.max(Math.round(requested > 0 ? requested : span * 0.8), 1), 20000);
+    await raceDialogOpen(
+      tab.id,
+      sendCdp(target, "Input.dispatchMouseEvent", {
+        type: "mouseWheel",
+        x,
+        y,
+        deltaX: direction === "left" ? -amount : direction === "right" ? amount : 0,
+        deltaY: direction === "up" ? -amount : direction === "down" ? amount : 0,
+      }),
+    );
+  } else if (message.op === "wait_for") {
+    const wantText = typeof message.text === "string" && message.text ? message.text : null;
+    const goneText =
+      typeof message.textGone === "string" && message.textGone ? message.textGone : null;
+    if (!wantText && !goneText) {
+      return {
+        ok: false,
+        message:
+          "wait_for needs `text` (wait until it appears), `textGone` (wait until it disappears), or both.",
+      };
+    }
+    // Bounded well inside the Noah client's 40s bridge budget, leaving room
+    // for the final snapshot walk on a big page.
+    const timeoutMs = Math.min(Math.max(Number(message.timeoutS) || 10, 1), 25) * 1000;
+    const started = Date.now();
+    for (;;) {
+      if (pendingDialogs.has(tab.id)) break; // frozen page — reported below
+      const view = await buildSnapshot(tab);
+      if ((!wantText || view.includes(wantText)) && (!goneText || !view.includes(goneText))) break;
+      if (Date.now() - started >= timeoutMs) {
+        return {
+          ok: false,
+          message:
+            `Timed out after ${Math.round(timeoutMs / 1000)}s: ` +
+            [
+              wantText ? `"${wantText}" did not appear` : "",
+              goneText ? `"${goneText}" did not disappear` : "",
+            ]
+              .filter(Boolean)
+              .join(" and ") +
+            ". Take a snapshot to inspect the current page state before deciding what to do next.",
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
   } else if (!["snapshot", "new_tab", "select_tab", "close_tab"].includes(message.op)) {
     return { ok: false, message: `Unsupported operation "${message.op}".` };
   }
@@ -597,6 +886,10 @@ async function perform(message) {
   // that matters (reading a logged-in page is the risk, not just acting on it).
   const fresh = await chrome.tabs.get(tab.id);
   if (fresh.url && !originAllowed(fresh.url, patterns)) return refuseOrigin(fresh.url, source);
+
+  // A dialog may have opened as a RESULT of the action (click → confirm). The
+  // snapshot walk would hang on the frozen renderer — report the dialog instead.
+  if (pendingDialogs.has(tab.id)) return dialogBlockedResult(fresh);
 
   const snapshot = await buildSnapshot(fresh);
   // Always report the group's tabs: the agent needs to know a new tab appeared
