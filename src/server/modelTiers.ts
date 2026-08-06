@@ -1,12 +1,13 @@
 /**
  * Registry of model TIERS a user can pick per conversation in the chat composer.
  *
- * Each tier `id` is a Claude model ALIAS (`opus`/`sonnet`/`haiku`) passed straight
- * to the SDK as `options.model`. Which concrete model an alias resolves to is the
- * OPERATOR's call, controlled via the `ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`
- * environment variables (forwarded into the SDK subprocess by `agentSubprocessEnv`,
- * since it starts from `process.env`). So the picker offers tiers; the deployment
- * pins the versions. An unset alias falls back to the account/tier default.
+ * Each tier `id` is a Claude model ALIAS (`fable`/`opus`/`sonnet`/`haiku`) passed
+ * straight to the SDK as `options.model`. Which concrete model an alias resolves to
+ * is the OPERATOR's call, controlled via the `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,
+ * HAIKU}_MODEL` environment variables (forwarded into the SDK subprocess by
+ * `agentSubprocessEnv`, since it starts from `process.env`). So the picker offers
+ * tiers; the deployment pins the versions. An unset alias falls back to the
+ * account/tier default.
  *
  * Precedence in `claudeAgent.ts`: env pin (`ANTHROPIC_MODEL`) > user tier (this) >
  * admin override > SDK default. The env pin is a HARD lock — when set, the
@@ -29,6 +30,11 @@ export interface ModelTier {
 }
 
 export const MODEL_TIERS: ModelTier[] = [
+  {
+    id: "fable",
+    label: "Fable",
+    description: "Opus를 넘어서는 최상위 모델 — 가장 까다로운 추론·장기 작업에 적합 (가장 느리고 비쌈)",
+  },
   {
     id: "opus",
     label: "Opus",

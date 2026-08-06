@@ -979,6 +979,17 @@ async function handleConfig(message) {
     // (they simply answer without a version, which reads as "outdated").
     return { ok: true, patterns, source, version: chrome.runtime.getManifest().version };
   }
+  if (message.op === "reloadExtension") {
+    // One-click update: the Noah page rewrote this extension's folder (File
+    // System Access) and asks for the equivalent of the chrome://extensions ↻
+    // button, which re-reads every file for an unpacked install. Reply first,
+    // reload on a delay — reload() tears this worker down, and an unanswered
+    // message would read as failure on a page whose update actually succeeded.
+    // Benign by design: it grants nothing and reads nothing, so any
+    // externally_connectable Noah page may ask.
+    setTimeout(() => chrome.runtime.reload(), 50);
+    return { ok: true, version: chrome.runtime.getManifest().version };
+  }
   if (message.op === "setAllowedOrigins") {
     if (source === "managed") {
       return {

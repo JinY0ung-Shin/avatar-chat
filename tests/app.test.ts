@@ -94,6 +94,77 @@ describe("noah-almighty platform", () => {
     expect(res.body.modelSelection.defaultVision).toBe(true);
   });
 
+  it("hides the browser-bridge Multimedia notice by default and gates the endpoint to admins", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "bridge-admin");
+    const res = await agent.get("/api/admin/browser-extension").expect(200);
+    expect(res.body.multimediaNotice).toBe(false);
+    // Sanity: the id the guide renders still comes with it.
+    expect(typeof res.body.extensionId).toBe("string");
+
+    const { agent: member } = await newUser(app, "bridge-member");
+    await member.get("/api/admin/browser-extension").expect(403);
+  });
+
+  it("publishes a compatibility floor at or below the bundled extension version", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "bridge-floor-admin");
+    const res = await agent.get("/api/admin/browser-extension").expect(200);
+    const version = res.body.version as string;
+    const floor = res.body.minCompatibleVersion as string;
+    const nums = (v: string) => v.split(".").map(Number);
+    expect(nums(floor).every(Number.isFinite)).toBe(true);
+    expect(nums(version).every(Number.isFinite)).toBe(true);
+    // floor <= bundled version, or every fresh install reads as outdated forever.
+    const [a, b] = [nums(floor), nums(version)];
+    let cmp = 0;
+    for (let i = 0; i < Math.max(a.length, b.length) && cmp === 0; i += 1) {
+      cmp = (a[i] ?? 0) - (b[i] ?? 0);
+    }
+    expect(cmp).toBeLessThanOrEqual(0);
+  });
+
+  it("serves the extension as individual files with the request origin stamped into the manifest", async () => {
+    const app = testApp();
+    const { agent } = await newUser(app, "bridge-files-admin");
+    const res = await agent
+      .get("/api/admin/browser-extension.files")
+      .set("X-Forwarded-Host", "noah.test.local:8443")
+      .set("X-Forwarded-Proto", "https")
+      .expect(200);
+    const files = res.body.files as { name: string; content: string }[];
+    const names = files.map((f) => f.name);
+    // The full unpacked install, not a subset — a partial write would produce
+    // an extension that loads and then fails in undiagnosable ways.
+    expect(names).toEqual(
+      expect.arrayContaining(["manifest.json", "background.js", "options.html", "policy-schema.json"]),
+    );
+    const manifest = JSON.parse(files.find((f) => f.name === "manifest.json")!.content) as {
+      version: string;
+      externally_connectable: { matches: string[] };
+    };
+    // Same origin stamping as the zip: the address the admin downloads from is
+    // the address the extension must accept messages from.
+    expect(manifest.externally_connectable.matches).toContain("https://noah.test.local:8443/*");
+    expect(res.body.version).toBe(manifest.version);
+
+    const { agent: member } = await newUser(app, "bridge-files-member");
+    await member.get("/api/admin/browser-extension.files").expect(403);
+  });
+
+  it("surfaces the browser-bridge Multimedia notice when the operator enables it", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+      browserBridgeMultimediaNotice: true,
+    });
+    const app = createApp(services);
+    const { agent } = await newUser(app, "bridge-admin");
+    const res = await agent.get("/api/admin/browser-extension").expect(200);
+    expect(res.body.multimediaNotice).toBe(true);
+  });
+
   it("restricts knowledge repos to the configured internal GitHub host", async () => {
     const services = createServices({
       dataDir: tempDir,

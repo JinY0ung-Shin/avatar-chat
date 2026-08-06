@@ -17,10 +17,12 @@ import {
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
 import {
+  BROWSER_EXTENSION_MIN_COMPATIBLE,
   browserExtensionId,
   browserExtensionOrigins,
   browserExtensionVersion,
   buildBrowserExtensionZip,
+  listBrowserExtensionFiles,
   matchPatternForOrigin,
 } from "../browserExtensionBundle.js";
 import { discoverGlobalSkills } from "../agent/skillDiscovery.js";
@@ -196,8 +198,35 @@ export function createAdminRouter(deps: RouterDeps): Router {
       // The bundled build's version: what the chat composer badge compares the
       // INSTALLED extension against to say "재다운로드 필요".
       version: browserExtensionVersion(),
+      // Installs at or above this floor stay green even when they differ from
+      // `version` — the badge only demands an update on a real contract break.
+      minCompatibleVersion: BROWSER_EXTENSION_MIN_COMPATIBLE,
+      // Corp-policy install-location notice, opt-in via
+      // BROWSER_BRIDGE_MULTIMEDIA_NOTICE (default hidden).
+      multimediaNotice: config.browserBridgeMultimediaNotice,
     });
   });
+
+  // The bundle as individual files for the page-driven one-click update: the
+  // settings page writes these into the user's unpacked-extension folder via
+  // File System Access, then asks the extension to reload itself — no zip, no
+  // manual folder swap. Stamped with the request origin like the zip.
+  router.get(
+    "/api/admin/browser-extension.files",
+    requireAuth(store),
+    requireAdmin,
+    (req: AuthenticatedRequest, res) => {
+      try {
+        res.json({
+          version: browserExtensionVersion(),
+          files: listBrowserExtensionFiles(undefined, requestOriginPatterns(req)),
+        });
+      } catch (error) {
+        logger.error({ err: error }, "browser extension file listing failed");
+        apiError(res, 500, "확장 프로그램 파일을 준비하지 못했습니다. 서버 로그를 확인하세요.");
+      }
+    },
+  );
 
   router.get(
     "/api/admin/browser-extension.zip",

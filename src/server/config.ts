@@ -102,6 +102,12 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // image/PDF Read, and Confluence image blocks are all cut off BEFORE they
     // can 400 a whole turn at the API layer.
     visionEnabled: env("MODEL_VISION", "on").trim().toLowerCase() !== "off",
+    // Corp-policy line in the browser-bridge install guide pointing the unzip
+    // step at the upload-approved "Multimedia" folder. Hidden unless the
+    // operator opts in.
+    browserBridgeMultimediaNotice: ["true", "1", "on"].includes(
+      env("BROWSER_BRIDGE_MULTIMEDIA_NOTICE").toLowerCase(),
+    ),
     // Static, server-only external avatar registry. Credentials stay in config
     // and are never projected into the public avatar API.
     externalAgents: parseExternalAgents(process.env.EXTERNAL_AGENTS_JSON),

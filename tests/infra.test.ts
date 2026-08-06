@@ -209,8 +209,8 @@ describe("routine run timeout config", () => {
 });
 
 describe("model tiers", () => {
-  it("registers the opus/sonnet/haiku aliases with user-facing labels", () => {
-    expect(MODEL_TIER_IDS).toEqual(["opus", "sonnet", "haiku"]);
+  it("registers the fable/opus/sonnet/haiku aliases with user-facing labels", () => {
+    expect(MODEL_TIER_IDS).toEqual(["fable", "opus", "sonnet", "haiku"]);
     for (const tier of MODEL_TIERS) {
       expect(tier.label.trim()).not.toBe("");
       expect(tier.description.trim()).not.toBe("");
@@ -218,14 +218,21 @@ describe("model tiers", () => {
   });
 
   it("maps each tier to its ANTHROPIC_DEFAULT_<TIER>_MODEL env (omits unset)", () => {
-    const keys = ["ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL"];
+    const keys = [
+      "ANTHROPIC_DEFAULT_FABLE_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    ];
     const saved = keys.map((k) => process.env[k]);
     try {
+      process.env.ANTHROPIC_DEFAULT_FABLE_MODEL = "claude-fable-5";
       process.env.ANTHROPIC_DEFAULT_OPUS_MODEL = "claude-opus-4-8";
       process.env.ANTHROPIC_DEFAULT_SONNET_MODEL = "claude-sonnet-4-6";
       delete process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL;
       const config = loadConfig({ dataDir: tempDir, sessionSecret: "test" });
       expect(config.defaultTierModels).toEqual({
+        fable: "claude-fable-5",
         opus: "claude-opus-4-8",
         sonnet: "claude-sonnet-4-6",
       });
@@ -240,6 +247,7 @@ describe("model tiers", () => {
   });
 
   it("isModelTier accepts only known aliases", () => {
+    expect(isModelTier("fable")).toBe(true);
     expect(isModelTier("opus")).toBe(true);
     expect(isModelTier("sonnet")).toBe(true);
     expect(isModelTier("haiku")).toBe(true);

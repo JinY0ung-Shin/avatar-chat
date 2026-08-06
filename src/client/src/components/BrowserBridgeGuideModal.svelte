@@ -7,6 +7,8 @@
   export let extensionId: string | null = null;
   export let origins: string[] = [];
   export let downloading = false;
+  /** Corp-policy install-location line, opt-in via BROWSER_BRIDGE_MULTIMEDIA_NOTICE. */
+  export let multimediaNotice = false;
 
   const dispatch = createEventDispatcher<{ close: void; download: void }>();
 </script>
@@ -27,10 +29,19 @@
     <li>
       <div class="guide-step-title">확장 프로그램 내려받기</div>
       <p class="muted">zip을 받아 원하는 폴더에 <strong>압축을 풉니다.</strong> 이 폴더는 지우면 안 됩니다 — Chrome이 계속 참조해요.</p>
+      {#if multimediaNotice}
+        <p class="muted guide-note">
+          사내 내규에 따라 파일 업로드가 가능한 <strong>Multimedia</strong> 폴더를 사용해 주세요.
+        </p>
+      {/if}
       <button type="button" class="btn primary" disabled={downloading} on:click={() => dispatch("download")}>
         <Icon name="file" />
         <span>{downloading ? "준비 중…" : "zip 다운로드"}</span>
       </button>
+      <p class="muted guide-note">
+        팁: 설치 후 설정 → 접근/보안에서 압축 푼 폴더를 <strong>한 번 연결</strong>해 두면,
+        이후 버전 업데이트는 버튼 한 번입니다.
+      </p>
     </li>
 
     <li>

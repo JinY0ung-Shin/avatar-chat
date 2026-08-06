@@ -41,6 +41,17 @@ import {
 } from "../src/client/src/lib/nav.js";
 import { recordKnowledgeViaAvatar } from "../src/client/src/lib/knowledge.js";
 import {
+  bridgeVersionVerdict,
+  compareBridgeVersions,
+} from "../src/client/src/lib/browserBridge.js";
+import {
+  extensionIdFromManifestKey,
+  mergeManifestOrigins,
+  updateExtensionInPlace,
+  verifyExtensionDir,
+  writeExtensionFiles,
+} from "../src/client/src/lib/browserBridgeInstall.js";
+import {
   loadAdminGroups,
   loadAdminOverview,
   loadAvatars,
@@ -977,5 +988,247 @@ it("formatRoutineSchedule renders once/interval/weekly/daily variants (server-mi
     expect(formatTokenCount(950)).toBe("950");
     expect(formatTokenCount(17500)).toBe("17.5K");
     expect(formatTokenCount(184000)).toBe("184K");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* browserBridge.ts — version verdict for the composer badge           */
+/* ------------------------------------------------------------------ */
+
+describe("browser bridge versioning", () => {
+  it("compareBridgeVersions compares numerically, not lexicographically", () => {
+    expect(compareBridgeVersions("0.10.0", "0.9.0")).toBeGreaterThan(0);
+    expect(compareBridgeVersions("0.4.0", "0.4.0")).toBe(0);
+    expect(compareBridgeVersions("0.4", "0.4.0")).toBe(0);
+    expect(compareBridgeVersions("1.0.0", "1.0.1")).toBeLessThan(0);
+    expect(compareBridgeVersions("beta", "1.0.0")).toBeNull();
+    expect(compareBridgeVersions("1.0.0", "")).toBeNull();
+  });
+
+  it("bridgeVersionVerdict: exact = current, at/above floor = compatible, else outdated", () => {
+    expect(bridgeVersionVerdict("0.5.0", "0.5.0", "0.4.0")).toBe("current");
+    expect(bridgeVersionVerdict("0.4.0", "0.5.0", "0.4.0")).toBe("compatible");
+    // Newer than the bundle (server rollback) still satisfies the floor.
+    expect(bridgeVersionVerdict("0.6.0", "0.5.0", "0.4.0")).toBe("compatible");
+    expect(bridgeVersionVerdict("0.3.9", "0.5.0", "0.4.0")).toBe("outdated");
+    // Pre-0.4.0 builds answer without a version.
+    expect(bridgeVersionVerdict("", "0.5.0", "0.4.0")).toBe("outdated");
+    // No/unparseable floor → nothing vouches for a difference: exact match only.
+    expect(bridgeVersionVerdict("0.4.0", "0.5.0", null)).toBe("outdated");
+    expect(bridgeVersionVerdict("0.4.0", "0.5.0", "beta")).toBe("outdated");
+    // String equality precedes parsing, so odd-but-equal versions stay green.
+    expect(bridgeVersionVerdict("beta", "beta", null)).toBe("current");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* browserBridgeInstall.ts — one-click update plumbing                 */
+/* ------------------------------------------------------------------ */
+
+describe("browser bridge one-click install lib", () => {
+  /** In-memory stand-in for a FileSystemDirectoryHandle. */
+  function fakeDir(initial: Record<string, string> = {}) {
+    const files = new Map(Object.entries(initial));
+    const writeOrder: string[] = [];
+    const handle = {
+      name: "noah-browser-bridge",
+      getFileHandle: async (name: string, opts?: { create?: boolean }) => {
+        if (!files.has(name) && !opts?.create) throw new Error("NotFoundError");
+        return {
+          getFile: async () => ({ text: async () => files.get(name) ?? "" }),
+          createWritable: async () => {
+            let buf = "";
+            return {
+              write: async (data: string) => {
+                buf += data;
+              },
+              close: async () => {
+                files.set(name, buf);
+                writeOrder.push(name);
+              },
+            };
+          },
+        };
+      },
+    };
+    return { files, writeOrder, handle };
+  }
+
+  // The pinned key from extension/manifest.json (a known vector for the
+  // derivation algorithm). The repo pins the same pair elsewhere — the guide
+  // spec asserts the id literal — so drift cannot pass unnoticed.
+  const REAL_KEY =
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqsBbKXHSkylQwXXuHOu6WWaQXlcztvTU07CYs5ZG+9FN0ovo4MRVTkBON7Kf4ulobizJZg1VDTEU+lAr0WcDXfH3fQby1934rdEWmT9CELlZolwGPVBZxM+G8lvImMlShAntmzkWTdpmkrUx0VMkDgjBKYuH5RO5JidXdT0LZU4Tfz16hClf1nd/ZyMNsGFqnKCnplyigJDgfFq2sqUYSUKVQAn849FDzYqcOeSQp23a1F8FwVbOB9FI3GIaZtm937qXcEriyHu+pgCGpZFrnH5dhF68rjKERCtfRNzeRAjDODkpc0v68K+ULXStqrtGKD1gq00pv1gDMDIYpZqMCQIDAQAB";
+
+  beforeEach(async () => {
+    // jsdom's crypto may lack subtle; the id derivation needs real WebCrypto.
+    // The specifier is computed so the CLIENT tsconfig (no node types) does not
+    // try to resolve the node builtin — vitest resolves it fine at runtime.
+    if (!globalThis.crypto?.subtle) {
+      const mod = (await import(["node", "crypto"].join(":"))) as { webcrypto: Crypto };
+      vi.stubGlobal("crypto", mod.webcrypto);
+    }
+  });
+
+  it("derives the pinned extension id from the bundled manifest key (server rule mirrored)", async () => {
+    expect(await extensionIdFromManifestKey(REAL_KEY)).toBe("fbohmmepjdncddcieglnblnlfiblbhbo");
+    expect(await extensionIdFromManifestKey("not base64!!")).toBeNull();
+  });
+
+  it("verifyExtensionDir accepts only a folder holding OUR extension", async () => {
+    const ours = fakeDir({ "manifest.json": JSON.stringify({ key: REAL_KEY }) });
+    expect(await verifyExtensionDir(ours.handle)).toBe("ok");
+
+    const empty = fakeDir();
+    expect(await verifyExtensionDir(empty.handle)).toBe("not-extension");
+
+    const foreign = fakeDir({ "manifest.json": JSON.stringify({ key: btoa("someone else") }) });
+    expect(await verifyExtensionDir(foreign.handle)).toBe("different-extension");
+
+    // Keyless manifests fail closed: nothing to verify against.
+    const keyless = fakeDir({ "manifest.json": JSON.stringify({ name: "x" }) });
+    expect(await verifyExtensionDir(keyless.handle)).toBe("different-extension");
+
+    const broken = fakeDir({ "manifest.json": "{nope" });
+    expect(await verifyExtensionDir(broken.handle)).toBe("not-extension");
+  });
+
+  it("writeExtensionFiles writes manifest.json last and refuses path-like names", async () => {
+    const dir = fakeDir();
+    await writeExtensionFiles(dir.handle, [
+      { name: "manifest.json", content: "{}" },
+      { name: "background.js", content: "// sw" },
+      { name: "policy-schema.json", content: "{}" },
+    ]);
+    expect(dir.files.get("background.js")).toBe("// sw");
+    expect(dir.writeOrder[dir.writeOrder.length - 1]).toBe("manifest.json");
+
+    await expect(
+      writeExtensionFiles(dir.handle, [{ name: "../evil.js", content: "x" }]),
+    ).rejects.toThrow(/unexpected bundle filename/);
+    await expect(
+      writeExtensionFiles(dir.handle, [{ name: ".ssh", content: "x" }]),
+    ).rejects.toThrow(/unexpected bundle filename/);
+  });
+
+  it("mergeManifestOrigins keeps hand-added origins across an update", () => {
+    const incoming = JSON.stringify({
+      version: "0.5.0",
+      externally_connectable: { matches: ["https://a/*"] },
+    });
+    const existing = JSON.stringify({
+      version: "0.4.0",
+      externally_connectable: { matches: ["https://a/*", "https://hand-added/*"] },
+    });
+    const merged = JSON.parse(mergeManifestOrigins(existing, incoming)) as {
+      version: string;
+      externally_connectable: { matches: string[] };
+    };
+    expect(merged.externally_connectable.matches).toEqual(["https://a/*", "https://hand-added/*"]);
+    expect(merged.version).toBe("0.5.0");
+    expect(mergeManifestOrigins(null, incoming)).toBe(incoming);
+    expect(mergeManifestOrigins("{broken", incoming)).toBe(incoming);
+  });
+
+  function stubBridgeChrome(opts: { reloadSupported: boolean; versionAfterReload: string }) {
+    let reloaded = false;
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: (_id: string, message: { op: string }, cb: (r: unknown) => void) => {
+          if (message.op === "reloadExtension") {
+            if (opts.reloadSupported) {
+              reloaded = true;
+              cb({ ok: true, version: "0.4.0" });
+            } else {
+              cb({ ok: false, message: `Unsupported operation "reloadExtension".` });
+            }
+            return;
+          }
+          if (message.op === "getAllowedOrigins") {
+            cb({
+              ok: true,
+              patterns: [],
+              source: "empty",
+              version: reloaded ? opts.versionAfterReload : "0.4.0",
+            });
+            return;
+          }
+          cb({ ok: false, message: `Unsupported operation "${message.op}".` });
+        },
+      },
+    });
+  }
+
+  function stubFilesEndpoint() {
+    useFetch((url) =>
+      url.includes("/api/admin/browser-extension.files")
+        ? jsonRes({
+            version: "0.5.0",
+            files: [
+              { name: "background.js", content: "// v0.5.0" },
+              {
+                name: "manifest.json",
+                content: JSON.stringify({
+                  version: "0.5.0",
+                  externally_connectable: { matches: ["https://a/*"] },
+                }),
+              },
+            ],
+          })
+        : undefined,
+    );
+  }
+
+  it("updateExtensionInPlace overwrites, reloads, and confirms the running build end-to-end", async () => {
+    stubFilesEndpoint();
+    stubBridgeChrome({ reloadSupported: true, versionAfterReload: "0.5.0" });
+    const dir = fakeDir({
+      "manifest.json": JSON.stringify({
+        version: "0.4.0",
+        externally_connectable: { matches: ["https://a/*", "https://hand-added/*"] },
+      }),
+    });
+
+    vi.useFakeTimers();
+    const pending = updateExtensionInPlace(dir.handle);
+    await vi.runAllTimersAsync();
+    const outcome = await pending;
+
+    expect(outcome).toEqual({ status: "updated", version: "0.5.0" });
+    expect(dir.files.get("background.js")).toBe("// v0.5.0");
+    const written = JSON.parse(dir.files.get("manifest.json") ?? "{}") as {
+      externally_connectable: { matches: string[] };
+    };
+    // Hand-added origin survived the rewrite.
+    expect(written.externally_connectable.matches).toContain("https://hand-added/*");
+    expect(dir.writeOrder[dir.writeOrder.length - 1]).toBe("manifest.json");
+  });
+
+  it("updateExtensionInPlace falls back to one manual reload on a pre-0.5.0 build", async () => {
+    stubFilesEndpoint();
+    stubBridgeChrome({ reloadSupported: false, versionAfterReload: "0.4.0" });
+    const dir = fakeDir({ "manifest.json": JSON.stringify({ version: "0.4.0" }) });
+
+    vi.useFakeTimers();
+    const pending = updateExtensionInPlace(dir.handle);
+    await vi.runAllTimersAsync();
+    const outcome = await pending;
+
+    // Files are already swapped; the old worker just can't reload itself.
+    expect(outcome).toEqual({ status: "manual-reload", version: "0.5.0" });
+    expect(dir.files.get("background.js")).toBe("// v0.5.0");
+  });
+
+  it("updateExtensionInPlace flags a copy folder when the running build never changes", async () => {
+    stubFilesEndpoint();
+    stubBridgeChrome({ reloadSupported: true, versionAfterReload: "0.4.0" });
+    const dir = fakeDir({ "manifest.json": JSON.stringify({ version: "0.4.0" }) });
+
+    vi.useFakeTimers();
+    const pending = updateExtensionInPlace(dir.handle);
+    await vi.runAllTimersAsync();
+    const outcome = await pending;
+
+    expect(outcome).toEqual({ status: "wrong-folder" });
   });
 });

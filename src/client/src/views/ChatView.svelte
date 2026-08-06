@@ -22,7 +22,12 @@
     stopPane,
   } from "../lib/chat";
   import { api } from "../lib/api";
-  import { browserBridgeReachable, readAllowedOrigins } from "../lib/browserBridge";
+  import {
+    browserBridgeReachable,
+    bridgeVersionVerdict,
+    readAllowedOrigins,
+    type BridgeVersionVerdict,
+  } from "../lib/browserBridge";
   import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { goView, routeFromHash } from "../lib/nav";
@@ -265,31 +270,43 @@
   );
 
   // Browser-bridge compatibility badge for the composer hint row: compares the
-  // INSTALLED extension build against the version the server bundles, so a
-  // stale install shows up before the avatar hits "Unsupported operation".
-  // Probed once per app load — both sides only change with a deploy or an
-  // extension reload, and either reloads this page in practice. `bridgeCompat`
-  // stays null for non-admins: the probe is gated on the same condition that
-  // makes browser tools runnable at all.
-  let bridgeCompat: { status: "ok" | "outdated" | "unreachable"; installed: string; expected: string } | null =
-    null;
+  // INSTALLED extension build against the server bundle AND the server's
+  // min-compatible floor, so a stale install shows up before the avatar hits
+  // "Unsupported operation" — but an install that merely differs while staying
+  // at/above the floor keeps working (green) instead of demanding a re-download
+  // on every extension-folder touch. Probed once per app load — both sides only
+  // change with a deploy or an extension reload, and either reloads this page in
+  // practice. `bridgeCompat` stays null for non-admins: the probe is gated on
+  // the same condition that makes browser tools runnable at all.
+  let bridgeCompat:
+    | {
+        status: "ok" | "outdated" | "unreachable";
+        verdict: BridgeVersionVerdict;
+        installed: string;
+        expected: string;
+      }
+    | null = null;
   let bridgeCompatStarted = false;
 
   async function probeBridgeCompat(): Promise<void> {
     try {
       const [meta, reply] = await Promise.all([
-        api<{ version?: string | null }>("/api/admin/browser-extension"),
+        api<{ version?: string | null; minCompatibleVersion?: string | null }>(
+          "/api/admin/browser-extension",
+        ),
         // getAllowedOrigins exists in every extension build, so it is the one
         // probe that cannot side-effect an old install; pre-0.4.0 builds
         // answer without `version`, which reads as "outdated".
         browserBridgeReachable() ? readAllowedOrigins() : Promise.resolve(null),
       ]);
       const expected = typeof meta.version === "string" ? meta.version : "";
+      const floor = typeof meta.minCompatibleVersion === "string" ? meta.minCompatibleVersion : null;
       const installed = reply?.ok && typeof reply.version === "string" ? reply.version : "";
+      const verdict = bridgeVersionVerdict(installed, expected, floor);
       bridgeCompat =
         !reply || !reply.ok
-          ? { status: "unreachable", installed: "", expected }
-          : { status: installed && installed === expected ? "ok" : "outdated", installed, expected };
+          ? { status: "unreachable", verdict: "outdated", installed: "", expected }
+          : { status: verdict === "outdated" ? "outdated" : "ok", verdict, installed, expected };
     } catch {
       bridgeCompatStarted = false; // transient failure — retry on the next trigger
     }
@@ -306,16 +323,21 @@
 
   function bridgeBadge(compat: NonNullable<typeof bridgeCompat>): { text: string; title: string } {
     if (compat.status === "ok") {
-      return {
-        text: `브라우저 확장 v${compat.installed}`,
-        title: "설치된 브라우저 확장이 서버가 배포하는 버전과 일치합니다.",
-      };
+      return compat.verdict === "current"
+        ? {
+            text: `브라우저 확장 v${compat.installed}`,
+            title: "설치된 브라우저 확장이 서버가 배포하는 버전과 일치합니다.",
+          }
+        : {
+            text: `브라우저 확장 v${compat.installed}`,
+            title: `서버 번들(v${compat.expected || "?"})과 다르지만 호환되는 버전이라 그대로 쓸 수 있습니다. 설정 → 접근/보안의 원클릭 업데이트로 편할 때 올리세요.`,
+          };
     }
     if (compat.status === "outdated") {
       return {
         text: `확장 업데이트 필요 (${compat.installed ? `v${compat.installed}` : "구버전"} → v${compat.expected || "?"})`,
         title:
-          "설치된 브라우저 확장이 서버 버전과 다릅니다. 설정 → 접근/보안에서 zip을 다시 받아 폴더를 교체한 뒤 chrome://extensions에서 리로드(↻)하세요.",
+          "설치된 브라우저 확장이 이 서버와 호환되지 않는 버전입니다. 설정 → 접근/보안에서 원클릭 업데이트를 누르거나, zip을 다시 받아 폴더를 교체한 뒤 chrome://extensions에서 리로드(↻)하세요.",
       };
     }
     return {

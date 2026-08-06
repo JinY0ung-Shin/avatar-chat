@@ -127,9 +127,10 @@ export interface AppConfig {
   /**
    * Concrete model id each composer TIER alias maps to, from the operator's
    * `ANTHROPIC_DEFAULT_<TIER>_MODEL` env, keyed by the modelTiers alias
-   * (`opus`/`sonnet`/`haiku`). A tier with no env mapping is omitted (the SDK then
-   * resolves the alias to the account default, which the app can't know). Surfaced
-   * to the chat composer + describe_system so the user/avatar sees the real model.
+   * (`fable`/`opus`/`sonnet`/`haiku`). A tier with no env mapping is omitted (the
+   * SDK then resolves the alias to the account default, which the app can't know).
+   * Surfaced to the chat composer + describe_system so the user/avatar sees the
+   * real model.
    */
   defaultTierModels: Record<string, string>;
   readOnlyTools: string[];
@@ -141,6 +142,13 @@ export interface AppConfig {
    * standing prompt + describe_system (META-COGNITION).
    */
   visionEnabled: boolean;
+  /**
+   * Show the corporate install-location line in the browser-bridge install
+   * guide (env `BROWSER_BRIDGE_MULTIMEDIA_NOTICE`, `true`/`1`/`on` enables;
+   * default off). Site policy restricts where users may put files, so the
+   * guide's unzip step points at the upload-approved "Multimedia" folder.
+   */
+  browserBridgeMultimediaNotice: boolean;
   /** Default host used when a repo is entered as owner/repo. */
   githubHost: string;
   /**

@@ -150,6 +150,63 @@ export function sendToExtension(operation: BridgeOperation): Promise<BridgeReply
   });
 }
 
+/** The extension id this page targets (manifest-`key`-pinned, env-overridable). */
+export function bridgeExtensionId(): string {
+  return EXTENSION_ID;
+}
+
+/**
+ * Numeric dotted-version compare ("0.10.0" > "0.9.1", unlike a string compare):
+ * negative when a<b, 0 when equal, positive when a>b — null when either side is
+ * not dotted-numeric, so callers fail toward "not vouched for".
+ */
+export function compareBridgeVersions(a: string, b: string): number | null {
+  const parse = (v: string): number[] | null => {
+    const parts = v.trim().split(".");
+    return parts.length && parts.every((p) => /^\d+$/.test(p)) ? parts.map(Number) : null;
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return null;
+  for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+export type BridgeVersionVerdict = "current" | "compatible" | "outdated";
+
+/**
+ * Badge verdict for the INSTALLED extension build against the server bundle.
+ * "current" = exact match; "compatible" = differs but at/above the server's
+ * min-compatible floor (works now, update optional); "outdated" = below the
+ * floor, no reported version (pre-0.4.0 builds), or no parseable floor to
+ * vouch for the difference.
+ */
+export function bridgeVersionVerdict(
+  installed: string,
+  expected: string,
+  minCompatible?: string | null,
+): BridgeVersionVerdict {
+  if (!installed) return "outdated";
+  if (installed === expected) return "current";
+  if (minCompatible) {
+    const cmp = compareBridgeVersions(installed, minCompatible);
+    if (cmp !== null && cmp >= 0) return "compatible";
+  }
+  return "outdated";
+}
+
+/**
+ * Ask the extension to reload itself after the one-click update rewrote its
+ * folder (the chrome://extensions ↻ equivalent). Builds before 0.5.0 answer
+ * `Unsupported operation` — the caller falls back to asking for one manual ↻.
+ */
+export function requestExtensionReload(): Promise<BridgeReply> {
+  return sendToExtension({ op: "reloadExtension" } as unknown as BridgeOperation);
+}
+
 /**
  * Read the allowlist the extension is currently enforcing. `source` matters as
  * much as the list: a `managed` list is pushed by policy and the editor must

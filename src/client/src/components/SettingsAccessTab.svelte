@@ -11,6 +11,16 @@
     writeAllowedOrigins,
     type AllowlistSource,
   } from "../lib/browserBridge";
+  import {
+    clearExtensionDir,
+    ensureDirPermission,
+    fsaSupported,
+    loadSavedExtensionDir,
+    pickExtensionDir,
+    saveExtensionDir,
+    updateExtensionInPlace,
+    verifyExtensionDir,
+  } from "../lib/browserBridgeInstall";
   import { EXPERIMENTAL_FEATURES } from "../../../server/experimentalFeatures";
   import { isShellExposableSecret } from "../../../server/secretPolicy";
   import type { User } from "../lib/types";
@@ -45,7 +55,89 @@
   let extensionBusy = false;
   let extensionId: string | null = null;
   let extensionOrigins: string[] = [];
+  let extensionMultimediaNotice = false;
   let extensionMetaLoaded = false;
+
+  // One-click updater (File System Access): the folder handle picked at setup
+  // lives in IndexedDB; permission is re-confirmed inside each button gesture.
+  const updateDirSupported = fsaSupported();
+  let updateDirName: string | null = null;
+  let updateDirLoaded = false;
+  let updateBusy = false;
+
+  async function loadUpdateDirState(): Promise<void> {
+    if (updateDirLoaded || !updateDirSupported) return;
+    updateDirLoaded = true;
+    const handle = await loadSavedExtensionDir();
+    updateDirName = handle ? (handle.name ?? "연결된 폴더") : null;
+  }
+
+  async function connectUpdateDir(): Promise<void> {
+    const handle = await pickExtensionDir();
+    if (!handle) return; // cancelled
+    const verdict = await verifyExtensionDir(handle);
+    if (verdict === "not-extension") {
+      notify("확장 폴더가 아닙니다 (manifest.json 없음). 압축을 푼 확장 폴더를 선택하세요.", "warn");
+      return;
+    }
+    if (verdict === "different-extension") {
+      notify("이 폴더의 확장은 Noah 브릿지가 아니거나 ID가 다릅니다. 압축을 푼 확장 폴더를 선택하세요.", "warn");
+      return;
+    }
+    try {
+      await saveExtensionDir(handle);
+    } catch {
+      notify("폴더 연결을 저장하지 못했습니다 (브라우저 저장소 오류). 다시 시도해 주세요.", "warn");
+      return;
+    }
+    updateDirName = handle.name ?? "연결된 폴더";
+    notify("확장 폴더를 연결했습니다. 이제 버전 업데이트는 버튼 한 번입니다.", "ok");
+  }
+
+  async function runOneClickUpdate(): Promise<void> {
+    if (updateBusy) return;
+    updateBusy = true;
+    try {
+      const handle = await loadSavedExtensionDir();
+      if (!handle) {
+        updateDirName = null;
+        notify("연결된 폴더가 없습니다. 확장 폴더를 다시 연결해 주세요.", "warn");
+        return;
+      }
+      if (!(await ensureDirPermission(handle))) {
+        notify("폴더 쓰기 권한이 거부됐습니다. 확장 폴더를 다시 연결해 주세요.", "warn");
+        return;
+      }
+      if ((await verifyExtensionDir(handle)) !== "ok") {
+        notify("연결된 폴더가 더 이상 확장 폴더가 아닙니다. 다시 연결해 주세요.", "warn");
+        return;
+      }
+      const outcome = await updateExtensionInPlace(handle);
+      if (outcome.status === "updated") {
+        notify(`확장이 v${outcome.version}(으)로 업데이트됐습니다.`, "ok");
+      } else if (outcome.status === "manual-reload") {
+        notify(
+          `파일은 v${outcome.version}(으)로 교체했습니다. chrome://extensions에서 이 확장의 리로드(↻)를 한 번 눌러주세요 — 다음부터는 여기 버튼 한 번으로 끝납니다.`,
+          "warn",
+        );
+      } else if (outcome.status === "wrong-folder") {
+        notify(
+          "리로드 후에도 실행 중인 버전이 그대로입니다. 연결한 폴더가 Chrome에 로드된 폴더가 아닌 것 같습니다 — chrome://extensions의 위치와 같은 폴더를 다시 연결해 주세요.",
+          "warn",
+        );
+      } else {
+        notify(`업데이트 실패: ${outcome.reason}`, "warn");
+      }
+    } finally {
+      updateBusy = false;
+    }
+  }
+
+  async function disconnectUpdateDir(): Promise<void> {
+    await clearExtensionDir();
+    updateDirName = null;
+    notify("폴더 연결을 해제했습니다.", "ok");
+  }
 
   $: isAdmin = Boolean($appState.user?.roles?.includes("admin"));
 
@@ -56,11 +148,14 @@
     if (extensionMetaLoaded) return;
     extensionMetaLoaded = true;
     try {
-      const meta = await api<{ extensionId: string | null; origins: string[] }>(
-        "/api/admin/browser-extension",
-      );
+      const meta = await api<{
+        extensionId: string | null;
+        origins: string[];
+        multimediaNotice?: boolean;
+      }>("/api/admin/browser-extension");
       extensionId = meta.extensionId;
       extensionOrigins = meta.origins ?? [];
+      extensionMultimediaNotice = Boolean(meta.multimediaNotice);
     } catch {
       // Non-fatal: the guide falls back to "id unavailable" text.
     }
@@ -92,7 +187,10 @@
     }
   }
 
-  $: if (active && isAdmin) void loadExtensionMeta();
+  $: if (active && isAdmin) {
+    void loadExtensionMeta();
+    void loadUpdateDirState();
+  }
 
   // The allowlist lives in the EXTENSION, not the server — it governs this one
   // browser. Loaded on demand rather than on mount so a page without the
@@ -562,6 +660,30 @@
         </button>
       </div>
 
+      {#if updateDirSupported}
+        <div class="browser-bridge-actions">
+          {#if updateDirName}
+            <button type="button" class="btn primary" disabled={updateBusy} on:click={runOneClickUpdate}>
+              {updateBusy ? "업데이트 중…" : "확장 원클릭 업데이트"}
+            </button>
+            <button type="button" class="btn ghost" disabled={updateBusy} on:click={disconnectUpdateDir}>
+              폴더 연결 해제
+            </button>
+          {:else}
+            <button type="button" class="btn ghost" on:click={connectUpdateDir}>
+              확장 폴더 연결 (원클릭 업데이트)
+            </button>
+          {/if}
+        </div>
+        <p class="muted">
+          {#if updateDirName}
+            연결된 폴더: <code>{updateDirName}</code> — 버튼 한 번이면 파일 교체와 확장 리로드까지 끝납니다.
+          {:else}
+            압축을 푼 확장 폴더를 한 번 연결해 두면, 이후 버전 업데이트는 버튼 한 번입니다.
+          {/if}
+        </p>
+      {/if}
+
       {#if allowLoaded}
         <div class="browser-allowlist">
           {#if allowSource === "managed"}
@@ -603,6 +725,7 @@
         extensionId={extensionId}
         origins={extensionOrigins}
         downloading={extensionBusy}
+        multimediaNotice={extensionMultimediaNotice}
         on:download={downloadExtension}
         on:close={() => (guideOpen = false)}
       />

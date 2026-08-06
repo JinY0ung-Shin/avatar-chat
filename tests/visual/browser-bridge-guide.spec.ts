@@ -36,7 +36,10 @@ const admin = {
 
 const EXTENSION_ID = "fbohmmepjdncddcieglnblnlfiblbhbo";
 
-async function mockApp(page: Page, { isAdmin }: { isAdmin: boolean }): Promise<void> {
+async function mockApp(
+  page: Page,
+  { isAdmin, multimediaNotice = false }: { isAdmin: boolean; multimediaNotice?: boolean },
+): Promise<void> {
   await page.route("**/api/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
     let body: Record<string, unknown> = {};
@@ -51,7 +54,11 @@ async function mockApp(page: Page, { isAdmin }: { isAdmin: boolean }): Promise<v
         await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "nope" }) });
         return;
       }
-      body = { extensionId: EXTENSION_ID, origins: ["https://noah.corp.local/*", "http://localhost:5173/*"] };
+      body = {
+        extensionId: EXTENSION_ID,
+        origins: ["https://noah.corp.local/*", "http://localhost:5173/*"],
+        multimediaNotice,
+      };
     } else if (path === "/api/admin/presence") {
       body = { presence: { windowMinutes: 60, users: [] } };
     } else if (path === "/api/conversations") {
@@ -138,6 +145,27 @@ test("the guide shows the pinned extension id and the origins it will accept", a
   // the difference between a working install and a silent no-op.
   await expect(page.locator(".guide-id code")).toHaveText(EXTENSION_ID);
   await expect(page.locator(".guide-origins li")).toHaveCount(2);
+  // The corp install-location notice is opt-in; a default server must not show it.
+  await expect(page.getByText("사내 내규에 따라")).toHaveCount(0);
+});
+
+test("the corp Multimedia-folder notice renders when the server enables it", async ({ page }) => {
+  await mockApp(page, { isAdmin: true, multimediaNotice: true });
+  await openGuide(page);
+
+  await expect(
+    page.getByText("사내 내규에 따라 파일 업로드가 가능한 Multimedia 폴더를 사용해 주세요."),
+  ).toBeVisible();
+});
+
+test("admin gets the one-click update connector in the bridge card", async ({ page }) => {
+  await mockApp(page, { isAdmin: true });
+  await page.goto("/#/settings");
+  await page.getByRole("tab", { name: "권한·연결" }).click();
+
+  // Chromium exposes File System Access, so the connector button must render;
+  // its absence would mean the whole update path silently vanished.
+  await expect(page.getByRole("button", { name: "확장 폴더 연결 (원클릭 업데이트)" })).toBeVisible();
 });
 
 test("a non-admin never sees the browser bridge card", async ({ page }) => {

@@ -31,6 +31,23 @@ const BUNDLE_FILES = [
 
 export const BROWSER_EXTENSION_DIR = path.join(process.cwd(), "extension");
 
+/**
+ * Oldest installed extension build the CURRENT server can still drive
+ * correctly. The composer badge shows an install at or above this as green
+ * (compatible) even when it differs from the bundled version, so users are
+ * only pushed through a re-download when the agent-facing op contract
+ * actually broke — not on every extension-folder touch.
+ *
+ * Bump this ONLY when the server starts emitting a bridge op/field an older
+ * build would answer with `Unsupported operation` (or silently mishandle).
+ * Do NOT bump for page-facing additions (e.g. `reloadExtension`) or
+ * extension-internal fixes old builds merely lack. Deliberately bumping it to
+ * the bundled version is also the lever to force a fleet-wide update when an
+ * extension-side fix is critical. Must never exceed the bundled manifest
+ * version — a test enforces this.
+ */
+export const BROWSER_EXTENSION_MIN_COMPATIBLE = "0.4.0";
+
 /** Zip entries carry a DOS timestamp; pin it so the bytes are reproducible. */
 const DOS_TIME = 0;
 const DOS_DATE = 0x2821; // 2020-01-01
@@ -192,6 +209,29 @@ export function buildBrowserExtensionZip(
   chunks.push(end);
 
   return Buffer.concat(chunks);
+}
+
+export interface BrowserExtensionFile {
+  name: string;
+  content: string;
+}
+
+/**
+ * The same bundle as individual files, for the page-driven one-click update:
+ * the settings page writes these straight into the user's unpacked-extension
+ * folder via File System Access instead of handing over a zip. Same allowlist
+ * and origin stamping as the zip; every bundled file is text, so utf8 strings
+ * are lossless. Throws on a missing file for the same reason the zip does.
+ */
+export function listBrowserExtensionFiles(
+  dir: string = BROWSER_EXTENSION_DIR,
+  extraOrigins: string[] = [],
+): BrowserExtensionFile[] {
+  return BUNDLE_FILES.map((name) => {
+    const onDisk = fs.readFileSync(path.join(dir, name));
+    const raw = name === "manifest.json" ? manifestWithOrigins(onDisk, extraOrigins) : onDisk;
+    return { name, content: raw.toString("utf8") };
+  });
 }
 
 /**
