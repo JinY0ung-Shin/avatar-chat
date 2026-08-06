@@ -10,6 +10,7 @@ import { createServices, expandChatSlashCommand } from "../src/server/app.js";
 import {
   browserExtensionId,
   browserExtensionOrigins,
+  browserExtensionVersion,
   buildBrowserExtensionZip,
   matchPatternForOrigin,
 } from "../src/server/browserExtensionBundle.js";
@@ -1003,6 +1004,12 @@ describe("loadDotEnv (.env auto-load)", () => {
 });
 
 describe("browser extension bundle", () => {
+  it("reports the bundled manifest version for the compatibility badge", () => {
+    // The chat composer badge compares the installed extension against this;
+    // a null here would render every install as incomparable.
+    expect(browserExtensionVersion()).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
   it("produces a zip the OS unzip accepts, containing every shipped file", () => {
     const zip = buildBrowserExtensionZip();
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-ext-"));

@@ -210,6 +210,16 @@ export function browserExtensionOrigins(dir: string = BROWSER_EXTENSION_DIR): st
   }
 }
 
+/** The bundled extension's manifest version — the build the server expects installed. */
+export function browserExtensionVersion(dir: string = BROWSER_EXTENSION_DIR): string | null {
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(dir, "manifest.json"), "utf8"));
+    return typeof manifest.version === "string" ? manifest.version : null;
+  } catch {
+    return null;
+  }
+}
+
 /** The pinned extension id, derived from the manifest `key`. Shown in the install guide. */
 export function browserExtensionId(dir: string = BROWSER_EXTENSION_DIR): string | null {
   try {

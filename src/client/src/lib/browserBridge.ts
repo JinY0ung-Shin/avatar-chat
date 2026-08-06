@@ -63,6 +63,8 @@ export type AllowlistSource = "managed" | "local" | "empty";
 export interface AllowlistReply extends BridgeReply {
   patterns?: string[];
   source?: AllowlistSource;
+  /** Installed extension build (manifest version). Absent on pre-0.4.0 builds. */
+  version?: string;
 }
 
 type ChromeRuntime = {

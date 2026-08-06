@@ -974,7 +974,10 @@ async function perform(message) {
 async function handleConfig(message) {
   const { patterns, source } = await readPolicy();
   if (message.op === "getAllowedOrigins") {
-    return { ok: true, patterns, source };
+    // `version` doubles as the compatibility probe for the chat status badge:
+    // this op exists in every build, so asking costs nothing on old installs
+    // (they simply answer without a version, which reads as "outdated").
+    return { ok: true, patterns, source, version: chrome.runtime.getManifest().version };
   }
   if (message.op === "setAllowedOrigins") {
     if (source === "managed") {

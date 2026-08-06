@@ -19,6 +19,7 @@ import {
 import {
   browserExtensionId,
   browserExtensionOrigins,
+  browserExtensionVersion,
   buildBrowserExtensionZip,
   matchPatternForOrigin,
 } from "../browserExtensionBundle.js";
@@ -192,6 +193,9 @@ export function createAdminRouter(deps: RouterDeps): Router {
       // The pinned manifest `key` makes the id identical on every unpacked
       // install, so the client's bridge target needs no per-user configuration.
       origins: effectiveExtensionOrigins(req),
+      // The bundled build's version: what the chat composer badge compares the
+      // INSTALLED extension against to say "재다운로드 필요".
+      version: browserExtensionVersion(),
     });
   });
 

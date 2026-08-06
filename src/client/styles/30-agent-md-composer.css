@@ -1189,6 +1189,40 @@ textarea::placeholder {
   content: "🪙 ";
 }
 
+/* Browser-bridge version badge (admin viewers with the browser tool group on):
+   installed extension build vs the version the server bundles. The dot carries
+   the state; outdated/unreachable also tint the text so a stale install is
+   noticed before an operation fails. */
+.composer-bridge {
+  white-space: nowrap;
+  cursor: default;
+}
+.composer-bridge::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: var(--s-1-5);
+  vertical-align: 1px;
+  background: var(--muted);
+}
+.composer-bridge[data-status="ok"]::before {
+  background: var(--accent);
+}
+.composer-bridge[data-status="outdated"] {
+  color: var(--warn);
+}
+.composer-bridge[data-status="outdated"]::before {
+  background: var(--warn);
+}
+.composer-bridge[data-status="unreachable"] {
+  color: var(--danger);
+}
+.composer-bridge[data-status="unreachable"]::before {
+  background: var(--danger);
+}
+
 /* Per-conversation model tier picker (all viewers). Styled to match the
    group-knowledge button since the global input chrome only applies inside a
    `.field` ancestor (see src/client/CLAUDE.md). */

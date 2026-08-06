@@ -22,6 +22,7 @@
     stopPane,
   } from "../lib/chat";
   import { api } from "../lib/api";
+  import { browserBridgeReachable, readAllowedOrigins } from "../lib/browserBridge";
   import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { goView, routeFromHash } from "../lib/nav";
@@ -262,6 +263,67 @@
   $: visibleMcpToolGroups = MCP_TOOL_GROUPS.filter(
     (group) => group.id !== "browser" || Boolean($appState.user?.roles?.includes("admin")),
   );
+
+  // Browser-bridge compatibility badge for the composer hint row: compares the
+  // INSTALLED extension build against the version the server bundles, so a
+  // stale install shows up before the avatar hits "Unsupported operation".
+  // Probed once per app load — both sides only change with a deploy or an
+  // extension reload, and either reloads this page in practice. `bridgeCompat`
+  // stays null for non-admins: the probe is gated on the same condition that
+  // makes browser tools runnable at all.
+  let bridgeCompat: { status: "ok" | "outdated" | "unreachable"; installed: string; expected: string } | null =
+    null;
+  let bridgeCompatStarted = false;
+
+  async function probeBridgeCompat(): Promise<void> {
+    try {
+      const [meta, reply] = await Promise.all([
+        api<{ version?: string | null }>("/api/admin/browser-extension"),
+        // getAllowedOrigins exists in every extension build, so it is the one
+        // probe that cannot side-effect an old install; pre-0.4.0 builds
+        // answer without `version`, which reads as "outdated".
+        browserBridgeReachable() ? readAllowedOrigins() : Promise.resolve(null),
+      ]);
+      const expected = typeof meta.version === "string" ? meta.version : "";
+      const installed = reply?.ok && typeof reply.version === "string" ? reply.version : "";
+      bridgeCompat =
+        !reply || !reply.ok
+          ? { status: "unreachable", installed: "", expected }
+          : { status: installed && installed === expected ? "ok" : "outdated", installed, expected };
+    } catch {
+      bridgeCompatStarted = false; // transient failure — retry on the next trigger
+    }
+  }
+
+  $: browserBridgeSelected =
+    Boolean($appState.user?.roles?.includes("admin")) &&
+    !adminBlockedMcpToolGroupSet.has("browser") &&
+    $appState.chatPanes.some((p) => !isExternalPane(p) && selectedMcpToolGroups(p).includes("browser"));
+  $: if (browserBridgeSelected && !bridgeCompatStarted) {
+    bridgeCompatStarted = true;
+    void probeBridgeCompat();
+  }
+
+  function bridgeBadge(compat: NonNullable<typeof bridgeCompat>): { text: string; title: string } {
+    if (compat.status === "ok") {
+      return {
+        text: `브라우저 확장 v${compat.installed}`,
+        title: "설치된 브라우저 확장이 서버가 배포하는 버전과 일치합니다.",
+      };
+    }
+    if (compat.status === "outdated") {
+      return {
+        text: `확장 업데이트 필요 (${compat.installed ? `v${compat.installed}` : "구버전"} → v${compat.expected || "?"})`,
+        title:
+          "설치된 브라우저 확장이 서버 버전과 다릅니다. 설정 → 접근/보안에서 zip을 다시 받아 폴더를 교체한 뒤 chrome://extensions에서 리로드(↻)하세요.",
+      };
+    }
+    return {
+      text: "브라우저 확장 연결 안 됨",
+      title:
+        "이 브라우저에서 Noah 확장에 연결할 수 없습니다. 설정 → 접근/보안의 안내대로 설치했는지, Noah 주소가 확장의 허용 origin에 있는지 확인하세요.",
+    };
+  }
 
   function mcpToolsLabel(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
     const effective = selectedMcpToolGroups(item).filter((id) => !adminBlocked.has(id));
@@ -1367,6 +1429,10 @@
               {/if}
               {#if formatUsageLabel(item.usage)}
                 <span class="composer-usage">{formatUsageLabel(item.usage)}</span>
+              {/if}
+              {#if bridgeCompat && !isExternalPane(item) && selectedMcpToolGroups(item).includes("browser") && !adminBlockedMcpToolGroupSet.has("browser")}
+                {@const badge = bridgeBadge(bridgeCompat)}
+                <span class="composer-bridge" data-status={bridgeCompat.status} title={badge.title}>{badge.text}</span>
               {/if}
             </span>
           {/if}
