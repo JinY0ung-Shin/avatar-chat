@@ -98,9 +98,6 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // the image at build time and exposed under this fixed name (see Dockerfile).
     // Override with HEX_SSH_COMMAND when the global bin isn't available.
     hexSshCommand: env("HEX_SSH_COMMAND", "hex-ssh-mcp"),
-    // RTK is optional: if the command is unavailable, Bash tool calls run
-    // unchanged. Override when the binary is mounted outside PATH.
-    rtkCommand: env("RTK_COMMAND", "rtk"),
     // MODEL_VISION=off marks the serving backend as text-only: image uploads,
     // image/PDF Read, and Confluence image blocks are all cut off BEFORE they
     // can 400 a whole turn at the API layer.

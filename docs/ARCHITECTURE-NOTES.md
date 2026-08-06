@@ -63,10 +63,10 @@ Companion docs: [`DESIGN.md`](DESIGN.md) (design language), [`REFACTORING-BACKLO
   lives in the `base` stage and covers ONLY that stage — an HTTPS fetch (curl/npm/cargo) in a
   *different* earlier stage hits the corporate intercepting proxy with no trusted CA and dies
   `SSL peer certificate ... was not ok`. Put any network step in `base`, AFTER that block.
-  (rtk was a `FROM rust` `cargo install` builder stage with no CA block — exactly this trap — so
-  it now downloads a pinned prebuilt binary: `RTK_VERSION` arg, `rtk-ai/rtk` releases, musl/amd64
-  + gnu/arm64. Upgrade = bump `RTK_VERSION` + confirm the `rtk rewrite 'git status && git diff'`
-  self-test still equals `rtk git status && rtk git diff`.) Test one RUN step without a full
+  (uv is fetched as a pinned prebuilt GitHub-release binary in `base` for exactly this reason;
+  rtk — removed 2026-08 along with the whole Bash-rewrite feature, it stalled the single-process
+  server with a blocking `spawnSync` per Bash call — originally hit this trap as a `FROM rust`
+  `cargo install` builder stage.) Test one RUN step without a full
   build: `docker run --rm node:22-bookworm-slim bash -c '<step>'`.
 
 ---
@@ -600,8 +600,7 @@ moved symbols so importers keep their paths:
   safe; only changing an EXISTING string (or its presence per viewer class) breaks a test.
 - `sdkMessageHandlers.ts` — SDK-message→`AgentEvents` translation (`handle*` + Task helpers + `LoopState`
   + `interpretResult`/`resultErrorMessage`).
-- `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput` +
-  `rewriteBashCommandWithRtk`.
+- `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput`.
 - `agentUtils.ts` — small shared helpers.
 Keep the re-export set in `claudeAgent.ts` minimal to the original public surface.
 
@@ -811,7 +810,7 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   with NO answer (TTL/stop), `onPermission` returns `{behavior:"deny", unanswered:true}` and the hook
   words the deny as "went unanswered — not a refusal" (+ an `onBlocked` notice), never as a user refusal.
 - **Background SUBAGENTS bypass the permission gate entirely — the hook forces every Task/Agent spawn
-  foreground** (`run_in_background:true` rewritten to `false` via `updatedInput`, like the rtk rewrite).
+  foreground** (`run_in_background:true` rewritten to `false` via `updatedInput`).
   Verified on the bundled CLI 2.1.222 (subagents background-by-default since ~2.1.198): a background
   subagent's tool calls consult NEITHER SDK-callback hooks NOR `canUseTool` NOR even bare `allowedTools`
   entries, and every permission-needing call is auto-denied with user-refusal wording ("The user doesn't

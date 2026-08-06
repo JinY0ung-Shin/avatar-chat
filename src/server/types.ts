@@ -203,8 +203,6 @@ export interface AppConfig {
    * on a closed network. Override via `HEX_SSH_COMMAND` for local dev.
    */
   hexSshCommand: string;
-  /** Command used to rewrite Bash tool calls through RTK when available. */
-  rtkCommand: string;
   /** Server-only static registry loaded from `EXTERNAL_AGENTS_JSON`. */
   externalAgents?: ExternalAgentConfig[];
 }

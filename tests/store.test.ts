@@ -66,7 +66,6 @@ import {
   deriveAgentToolAccess,
   interpretResult,
   resultErrorMessage,
-  rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
 } from "../src/server/agent/claudeAgent.js";
 import { executeRoutineJob, startRoutineScheduler } from "../src/server/scheduler.js";

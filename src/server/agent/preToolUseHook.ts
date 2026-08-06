@@ -1,4 +1,3 @@
-import { spawnSync } from "node:child_process";
 import type { AgentEvents } from "./events.js";
 import { MAIN_AGENT_ID } from "./events.js";
 import logger from "../logger.js";
@@ -22,7 +21,6 @@ import {
 } from "../toolSkillPolicy.js";
 
 const agentLogger = logger.child({ module: "agent" });
-const RTK_REWRITE_TIMEOUT_MS = 1_000;
 
 /**
  * File types the SDK `Read` tool turns into image content blocks (rasters, and
@@ -60,29 +58,6 @@ const AUTO_ALLOWED_META_TOOLS: ReadonlySet<string> = new Set(["Skill", ...SDK_IN
  * the parent session's permission wiring.
  */
 const SUBAGENT_SPAWN_TOOLS: ReadonlySet<string> = new Set(SDK_SUBAGENT_TOOLS);
-
-export function rewriteBashCommandWithRtk(command: string, rtkCommand = "rtk"): string | null {
-  const trimmedCommand = command.trim();
-  const trimmedRtkCommand = rtkCommand.trim();
-  if (!trimmedCommand || !trimmedRtkCommand) {
-    return null;
-  }
-
-  const result = spawnSync(trimmedRtkCommand, ["rewrite", command], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-    timeout: RTK_REWRITE_TIMEOUT_MS,
-  });
-  if (result.error) {
-    return null;
-  }
-
-  const rewritten = result.stdout.trim();
-  if (!rewritten || rewritten === trimmedCommand) {
-    return null;
-  }
-  return rewritten;
-}
 
 /**
  * Tools that run without a permission prompt: read-only built-ins, any MCP tool
@@ -194,7 +169,6 @@ export function buildPreToolUseHook(
   autoApprove: boolean,
   hexSshViewerClass: HexSshViewerClass = "colleague",
   hexSshPolicy: HexSshToolPolicy = DEFAULT_HEX_SSH_TOOL_POLICY,
-  rtkCommand = "rtk",
   activeRepoMode = false,
   toolSkillPolicy: ToolSkillPolicy = DEFAULT_TOOL_SKILL_POLICY,
   visionEnabled = true,
@@ -287,11 +261,6 @@ export function buildPreToolUseHook(
       agentLogger.info({ toolName, agentId }, "background subagent spawn forced foreground");
     }
     if (toolName === "Bash") {
-      const rewrittenCommand = rewriteBashCommandWithRtk(asString(toolInput.command), rtkCommand);
-      if (rewrittenCommand) {
-        updatedToolInput = { ...toolInput, command: rewrittenCommand };
-        toolInput = updatedToolInput;
-      }
       // Active repo workspace (#47): block remote/branch/destructive Bash git so
       // sync/push stay app-managed. Read-only git and local add/commit are allowed.
       if (activeRepoMode) {

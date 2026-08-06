@@ -90,7 +90,6 @@ import {
   isRetryableModelError,
   mcpInjectableSecretEnv,
   resultErrorMessage,
-  rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
 } from "../src/server/agent/claudeAgent.js";
 import {
@@ -3187,34 +3186,6 @@ describe("buildPrompt", () => {
 
 describe("buildPreToolUseHook auto-approve safety contract", () => {
   const READONLY = ["Read", "Glob", "Grep"];
-  const fakeRtk = () => {
-    const script = path.join(tempDir, "fake-rtk.sh");
-    fs.writeFileSync(
-      script,
-      `#!/bin/sh
-if [ "$1" = "rewrite" ]; then
-  shift
-  case "$*" in
-    "git status && git diff")
-      printf '%s\\n' 'rtk git status && rtk git diff'
-      exit 3
-      ;;
-    "npm run build")
-      printf '%s\\n' 'rtk npm run build'
-      exit 3
-      ;;
-    "rtk git status")
-      printf '%s\\n' 'rtk git status'
-      exit 3
-      ;;
-  esac
-fi
-exit 1
-`,
-    );
-    fs.chmodSync(script, 0o755);
-    return script;
-  };
 
   // Invoke the hook for a non-read-only tool and return the permission decision.
   // `elevated` = owner OR trusted user (the tool-permission level).
@@ -3255,7 +3226,6 @@ exit 1
       false,
       "owner",
       DEFAULT_HEX_SSH_TOOL_POLICY,
-      "rtk",
       false,
       undefined,
       false, // visionEnabled
@@ -3294,81 +3264,6 @@ exit 1
     );
     expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
     expect(prompted).toBe(false); // auto-approve must short-circuit the prompt
-  });
-
-  it("rewrites supported Bash commands through rtk before allowing execution", async () => {
-    const hook = buildPreToolUseHook(
-      {},
-      true,
-      READONLY,
-      false,
-      false,
-      true,
-      "owner",
-      DEFAULT_HEX_SSH_TOOL_POLICY,
-      fakeRtk(),
-    );
-    const out = await hook(
-      {
-        tool_name: "Bash",
-        tool_input: {
-          command: "git status && git diff",
-          description: "Inspect local changes",
-        },
-        tool_use_id: "t-rtk",
-      },
-      "t-rtk",
-    );
-
-    expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
-    expect(out.hookSpecificOutput.updatedInput).toEqual({
-      command: "rtk git status && rtk git diff",
-      description: "Inspect local changes",
-    });
-  });
-
-  it("surfaces the rewritten Bash command in the permission prompt", async () => {
-    let promptedInput: Record<string, unknown> | undefined;
-    const hook = buildPreToolUseHook(
-      {
-        onPermission: async ({ input }) => {
-          promptedInput = input;
-          return { behavior: "allow" };
-        },
-      },
-      true,
-      READONLY,
-      false,
-      false,
-      false,
-      "owner",
-      DEFAULT_HEX_SSH_TOOL_POLICY,
-      fakeRtk(),
-    );
-    const out = await hook(
-      {
-        tool_name: "Bash",
-        tool_input: { command: "npm run build" },
-        tool_use_id: "t-rtk-prompt",
-      },
-      "t-rtk-prompt",
-    );
-
-    expect(promptedInput?.command).toBe("rtk npm run build");
-    expect(out.hookSpecificOutput.updatedInput).toEqual({
-      command: "rtk npm run build",
-    });
-  });
-
-  it("leaves Bash commands unchanged when rtk has no rewrite", () => {
-    expect(rewriteBashCommandWithRtk("echo hi", fakeRtk())).toBeNull();
-    expect(rewriteBashCommandWithRtk("rtk git status", fakeRtk())).toBeNull();
-    expect(
-      rewriteBashCommandWithRtk(
-        "git status",
-        path.join(tempDir, "missing-rtk"),
-      ),
-    ).toBeNull();
   });
 
   // Background subagents bypass the hook entirely (CLI 2.1.198+: no hooks, no
@@ -3701,9 +3596,6 @@ exit 1
   });
 
   // ---- active repo workspace Bash-git integrity policy (#47) ----
-  // rtkCommand "/nonexistent-rtk" makes the rtk rewrite a no-op (spawn fails),
-  // so the command reaches the git policy verbatim. activeRepoMode is the 10th arg.
-  const NO_RTK = "/nonexistent-rtk-xyz";
   const activeRepoHook = (activeRepoMode: boolean) =>
     buildPreToolUseHook(
       {},
@@ -3714,7 +3606,6 @@ exit 1
       true,
       "owner",
       DEFAULT_HEX_SSH_TOOL_POLICY,
-      NO_RTK,
       activeRepoMode,
     );
 

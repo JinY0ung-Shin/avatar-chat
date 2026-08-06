@@ -46,7 +46,6 @@ import {
 } from "./promptBuilder.js";
 import {
   buildPreToolUseHook,
-  rewriteBashCommandWithRtk,
   TASK_ORCHESTRATION_TOOLS,
 } from "./preToolUseHook.js";
 import { buildPostToolUseHook } from "./postToolUseHook.js";
@@ -83,10 +82,7 @@ export {
   buildSystemPromptAppend,
   buildUserPrompt,
 } from "./promptBuilder.js";
-export {
-  buildPreToolUseHook,
-  rewriteBashCommandWithRtk,
-} from "./preToolUseHook.js";
+export { buildPreToolUseHook } from "./preToolUseHook.js";
 export { interpretResult, resultErrorMessage } from "./sdkMessageHandlers.js";
 
 const agentLogger = logger.child({ module: "agent" });
@@ -1391,7 +1387,6 @@ export async function runClaudeAgent(
               autoApprove,
               hexSshViewerClass,
               hexSshPolicy,
-              config.rtkCommand,
               // Active repo workspace (#47): block remote/branch/destructive Bash
               // git so sync/push stay app-managed; local add/commit is allowed.
               Boolean(request.activeRepoName),

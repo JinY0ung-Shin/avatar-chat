@@ -71,7 +71,6 @@ import {
   EMPTY_SDK_RESPONSE_MESSAGE,
   interpretResult,
   resultErrorMessage,
-  rewriteBashCommandWithRtk,
   sshMcpSecretEnv,
 } from "../src/server/agent/claudeAgent.js";
 import { executeRoutineJob } from "../src/server/scheduler.js";

@@ -184,7 +184,6 @@ describe("PreToolUse hook admin tool/skill policy", () => {
       true,
       "owner",
       DEFAULT_HEX_SSH_TOOL_POLICY,
-      "rtk",
       false,
       policy,
     );

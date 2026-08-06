@@ -62,27 +62,11 @@ RUN if grep -q "BEGIN CERTIFICATE" /tmp/extra-ca.crt; then \
 
 WORKDIR /app
 
-# RTK (Rust Token Killer) rewrites Bash commands into token-optimized equivalents
-# in the Claude SDK PreToolUse hook. Download the prebuilt static binary instead
-# of `cargo install`-ing from source: a single HTTPS fetch through the
-# already-trusted corporate proxy CA above — no Rust toolchain and no crates.io
-# dependency tree to resolve on a closed network. Pinned for reproducibility;
-# bump RTK_VERSION (and re-run the self-test) to upgrade.
-ARG RTK_VERSION=0.42.4
 ARG TARGETARCH
-RUN case "$TARGETARCH" in \
-      amd64|"") RTK_TARGET=x86_64-unknown-linux-musl ;; \
-      arm64)    RTK_TARGET=aarch64-unknown-linux-gnu ;; \
-      *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
-    esac \
-  && curl -fsSL "https://github.com/rtk-ai/rtk/releases/download/v${RTK_VERSION}/rtk-${RTK_TARGET}.tar.gz" \
-       | tar -xz -C /usr/local/bin rtk \
-  && chmod +x /usr/local/bin/rtk \
-  && rtk --version \
-  && test "$(rtk rewrite 'git status && git diff')" = "rtk git status && rtk git diff"
 
-# uv/uvx (Python package + venv manager) for agent shell workflows. Same
-# pinned-GitHub-release pattern as RTK above (the previous install.sh attempt
+# uv/uvx (Python package + venv manager) for agent shell workflows. Pinned
+# prebuilt GitHub-release binary — a single HTTPS fetch through the
+# already-trusted corporate proxy CA above (the previous install.sh attempt
 # silently skipped on closed networks, leaving images without uv). At RUNTIME,
 # point uv at a corporate PyPI mirror via UV_DEFAULT_INDEX / UV_INDEX in .env —
 # the whole .env reaches the container (compose env_file) and flows through the
