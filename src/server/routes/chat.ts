@@ -147,7 +147,12 @@ function sanitizeActivity(raw: unknown): AgentResponse["activity"] | null {
       return {
         id: cap(row.id, 80),
         agentId: cap(row.agentId, 80) || "main",
-        kind: (kind === "blocked" ? kind : "tool") as "tool" | "blocked",
+        // "memory" must survive the round-trip: the 기억 summary chip is
+        // rebuilt from persisted kind:"memory" rows after reload.
+        kind: (kind === "blocked" || kind === "memory" ? kind : "tool") as
+          | "tool"
+          | "blocked"
+          | "memory",
         label: cap(row.label, 300),
         detail: row.detail ? cap(row.detail, 400) : undefined,
         status: (["done", "failed", "blocked"].includes(status)

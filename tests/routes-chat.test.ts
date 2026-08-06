@@ -275,6 +275,7 @@ describe("activity-snapshot persistence (PUT /api/messages/:id/activity)", () =>
         { id: "t2", agentId: "", kind: "blocked", label: "Bash", status: "blocked" }, // agentId → main
         { id: "t3", agentId: "a1", kind: "task", label: "legacy task row", status: "running" }, // legacy → tasks
         { id: "t4", kind: "weird", label: "w", status: "weird" }, // kind → tool, status → done, agentId → main
+        { id: "t5", agentId: "main", kind: "memory", label: "기억 추가됨", detail: "wiki/people/kim.md", status: "done" }, // 기억 chip source — kind survives
       ],
       tasks: [
         { id: "k1", agentId: "a1", label: "task1", detail: "d", status: "running" },
@@ -291,9 +292,16 @@ describe("activity-snapshot persistence (PUT /api/messages/:id/activity)", () =>
     expect(stored.agents[1].status).toBe("failed");
     expect(stored.agents[2].status).toBe("done"); // unknown normalized
     // The legacy `kind:"task"` tool row is filtered out of tools and merged into tasks.
-    expect(stored.tools.map((t) => t.id).sort()).toEqual(["t1", "t2", "t4"]);
+    expect(stored.tools.map((t) => t.id).sort()).toEqual(["t1", "t2", "t4", "t5"]);
     expect(stored.tools.find((t) => t.id === "t2")).toMatchObject({ kind: "blocked", agentId: "main" });
     expect(stored.tools.find((t) => t.id === "t4")).toMatchObject({ kind: "tool", agentId: "main", status: "done" });
+    // kind:"memory" must survive the round-trip — the reload-time 기억 summary
+    // chip is rebuilt from these persisted rows.
+    expect(stored.tools.find((t) => t.id === "t5")).toMatchObject({
+      kind: "memory",
+      label: "기억 추가됨",
+      detail: "wiki/people/kim.md",
+    });
     expect(stored.tasks!.map((t) => t.id).sort()).toEqual(["k1", "k2", "k3", "t3"]);
     expect(stored.tasks!.find((t) => t.id === "k1")).toMatchObject({ status: "running", agentId: "a1" });
     expect(stored.tasks!.find((t) => t.id === "k2")).toMatchObject({ status: "failed", agentId: "main" });
