@@ -517,11 +517,15 @@ export function buildSystemPromptAppend(
   // session alive past the visible reply while background tasks run, and this
   // host delivers wake-up turns as NEW chat messages. Without this note the
   // model either promises follow-ups it assumes are impossible, or hands quick
-  // work to the background and silently locks the conversation.
+  // work to the background and silently locks the conversation. Subagents are
+  // Bash-excluded here BY DESIGN: background subagents bypass the PreToolUse
+  // permission gate (their tool calls get auto-denied as a user refusal), so
+  // the hook force-rewrites Task/Agent spawns to the foreground.
   lines.push(
-    "Background execution (`run_in_background` on Bash/Agent): background tasks keep running after your visible reply ends — the session stays alive, you are woken when a task settles, and your follow-up reply reaches the user as a NEW chat message (the user sees a live background-task indicator meanwhile). " +
+    "Background execution (`run_in_background` on Bash): background commands keep running after your visible reply ends — the session stays alive, you are woken when a task settles, and your follow-up reply reaches the user as a NEW chat message (the user sees a live background-task indicator meanwhile). " +
       "Caveats: the user CANNOT send a new message in this conversation until the background work finishes (their only alternative is cancelling, which kills the tasks), and a server restart also kills pending background work. " +
-      "Therefore run quick work in the foreground, reserve `run_in_background` for genuinely long tasks, and when you do hand work to the background, tell the user what is running and roughly how long it should take.",
+      "Therefore run quick work in the foreground, reserve `run_in_background` for genuinely long commands, and when you do hand work to the background, tell the user what is running and roughly how long it should take. " +
+      "Subagents (Task/Agent) ALWAYS run in the foreground in this host — a `run_in_background` request on a subagent spawn is downgraded, so never promise the user that a subagent is working in the background.",
   );
   const disabledToolGroupsBlock = disabledMcpToolGroupsSection(request);
   if (disabledToolGroupsBlock) {

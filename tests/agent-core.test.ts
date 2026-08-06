@@ -3371,6 +3371,58 @@ exit 1
     ).toBeNull();
   });
 
+  // Background subagents bypass the hook entirely (CLI 2.1.198+: no hooks, no
+  // canUseTool, no allowedTools — auto-denied as a user refusal), so the gate
+  // must downgrade every spawn to the foreground where it verifiably applies.
+  it("forces a background subagent spawn to the foreground", async () => {
+    const hook = buildPreToolUseHook({}, true, READONLY, false, false, true);
+    for (const toolName of ["Task", "Agent"]) {
+      const out = await hook(
+        {
+          tool_name: toolName,
+          tool_input: {
+            description: "Long research",
+            prompt: "dig in",
+            subagent_type: "general-purpose",
+            run_in_background: true,
+          },
+          tool_use_id: "t-bg",
+        },
+        "t-bg",
+      );
+      expect(out.hookSpecificOutput.permissionDecision).toBe("allow");
+      expect(out.hookSpecificOutput.updatedInput).toEqual({
+        description: "Long research",
+        prompt: "dig in",
+        subagent_type: "general-purpose",
+        run_in_background: false,
+      });
+    }
+  });
+
+  it("applies the foreground downgrade for read-only viewers too, and leaves foreground spawns untouched", async () => {
+    // Colleague (non-elevated): their subagents' inner calls rely on the hook
+    // firing to be denied read-only, so the downgrade must apply here as well.
+    const hook = buildPreToolUseHook({}, false, READONLY, false, false, false);
+    const spawn = (tool_input: Record<string, unknown>) =>
+      hook({ tool_name: "Agent", tool_input, tool_use_id: "t-fg" }, "t-fg");
+
+    const bg = await spawn({ prompt: "quick check", run_in_background: true });
+    expect(bg.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(bg.hookSpecificOutput.updatedInput).toEqual({
+      prompt: "quick check",
+      run_in_background: false,
+    });
+
+    const explicit = await spawn({ prompt: "quick check", run_in_background: false });
+    expect(explicit.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(explicit.hookSpecificOutput.updatedInput).toBeUndefined();
+
+    const omitted = await spawn({ prompt: "quick check" });
+    expect(omitted.hookSpecificOutput.permissionDecision).toBe("allow");
+    expect(omitted.hookSpecificOutput.updatedInput).toBeUndefined();
+  });
+
   it("still prompts an elevated viewer when auto-approve is off", async () => {
     let prompted = false;
     const out = await decide(

@@ -450,6 +450,10 @@ export function buildModelFallbackChain(primary: string): string[] {
  * REJECTION), so the PreToolUse matcher pins `timeout` ABOVE the run registry's
  * PROMPT_TTL_MS: the server always settles a parked prompt (answer, TTL
  * auto-cancel, or run end) before the CLI gives up on the hook.
+ * BACKGROUND subagents would escape this gate entirely (the CLI consults no
+ * hooks/canUseTool/allowedTools for their tool calls and auto-denies them as a
+ * user refusal), so the hook rewrites every Task/Agent spawn to the foreground
+ * (see SUBAGENT_SPAWN_TOOLS in preToolUseHook.ts).
  *
  *  - Read-only tools / knowledge MCP / orchestration meta-tools → allowed silently.
  *  - AskUserQuestion → intercepted: we surface the question, await the user's

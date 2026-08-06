@@ -810,8 +810,21 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   their prompts now arrive after the visible turn, i.e. typically unattended. When the prompt resolves
   with NO answer (TTL/stop), `onPermission` returns `{behavior:"deny", unanswered:true}` and the hook
   words the deny as "went unanswered — not a refusal" (+ an `onBlocked` notice), never as a user refusal.
+- **Background SUBAGENTS bypass the permission gate entirely — the hook forces every Task/Agent spawn
+  foreground** (`run_in_background:true` rewritten to `false` via `updatedInput`, like the rtk rewrite).
+  Verified on the bundled CLI 2.1.222 (subagents background-by-default since ~2.1.198): a background
+  subagent's tool calls consult NEITHER SDK-callback hooks NOR `canUseTool` NOR even bare `allowedTools`
+  entries, and every permission-needing call is auto-denied with user-refusal wording ("The user doesn't
+  want to take this action right now"), which the avatar relays as the user having refused. Upstream
+  treats the subagent-hook gap as known/unplanned (claude-code #34692, #27661). Bash KEEPS
+  `run_in_background` (a running shell makes no further tool calls, and timeout auto-backgrounding is
+  Bash-only), so the background phase below still exists — it is just Bash-fed now. Re-verify on every
+  SDK bump and drop the rewrite once bg subagents inherit the session's permission wiring.
+  (`CLAUDE_CODE_DISABLE_BACKGROUND_TASKS=1` is the blunt alternative — strips `run_in_background` from
+  tool schemas entirely, but kills Bash background tasks too.)
 - **Background phase (`run_in_background` tasks outliving the visible reply).** A `query()` is NOT one
-  model turn: with live background tasks (Bash/Agent `run_in_background`) the SDK emits the first
+  model turn: with live background tasks (Bash `run_in_background` — subagent spawns are forced
+  foreground, see above) the SDK emits the first
   `result` but KEEPS the process alive, wakes the model when a task settles (`task_notification`), and
   streams follow-up turns, each ending in another `result`; the iterator only ends when everything
   settled (empirically verified on SDK 0.3.220). Background-task state is **per-process** — a `resume`

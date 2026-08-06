@@ -13,6 +13,7 @@ import { asString, isRecord, truncate, TOOL_TRACE_ENABLED } from "./agentUtils.j
 import {
   SDK_INTERNAL_HIDDEN_TOOLS,
   SDK_ORCHESTRATION_TOOLS,
+  SDK_SUBAGENT_TOOLS,
   SDK_TEAM_TOOLS,
 } from "../../shared/sdkToolPresentation.js";
 import {
@@ -43,6 +44,22 @@ export const TASK_ORCHESTRATION_TOOLS: ReadonlySet<string> = new Set([
   ...SDK_TEAM_TOOLS,
 ]);
 const AUTO_ALLOWED_META_TOOLS: ReadonlySet<string> = new Set(["Skill", ...SDK_INTERNAL_HIDDEN_TOOLS]);
+
+/**
+ * Subagent spawns (Task/Agent) are forced to the FOREGROUND. A background
+ * subagent's tool calls run outside this gate entirely: the CLI (2.1.198+
+ * backgrounds subagents by default; verified on the bundled 2.1.222) consults
+ * neither SDK-callback hooks nor canUseTool nor even `allowedTools` for them,
+ * and auto-denies every permission-needing call with user-refusal wording
+ * ("The user doesn't want to take this action right now"), which the model
+ * relays as the user having rejected the tool. Upstream treats the subagent
+ * hook gap as known/unplanned (claude-code #34692, #27661), so we rewrite the
+ * spawn input instead. Bash keeps `run_in_background`: a running shell makes
+ * no further tool calls, so backgrounding it never bypasses the gate.
+ * Re-verify on SDK bumps — drop the rewrite once background subagents inherit
+ * the parent session's permission wiring.
+ */
+const SUBAGENT_SPAWN_TOOLS: ReadonlySet<string> = new Set(SDK_SUBAGENT_TOOLS);
 
 export function rewriteBashCommandWithRtk(command: string, rtkCommand = "rtk"): string | null {
   const trimmedCommand = command.trim();
@@ -262,6 +279,13 @@ export function buildPreToolUseHook(
     }
 
     let updatedToolInput: Record<string, unknown> | undefined;
+    // Force subagent spawns foreground — see SUBAGENT_SPAWN_TOOLS for why a
+    // background subagent would escape this gate and read as a user rejection.
+    if (SUBAGENT_SPAWN_TOOLS.has(toolName) && toolInput.run_in_background === true) {
+      updatedToolInput = { ...toolInput, run_in_background: false };
+      toolInput = updatedToolInput;
+      agentLogger.info({ toolName, agentId }, "background subagent spawn forced foreground");
+    }
     if (toolName === "Bash") {
       const rewrittenCommand = rewriteBashCommandWithRtk(asString(toolInput.command), rtkCommand);
       if (rewrittenCommand) {
