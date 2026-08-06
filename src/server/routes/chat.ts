@@ -1418,6 +1418,11 @@ export function createChatRouter({
                 onBlocked: (event) => {
                   emitRunEvent(runId, "blocked", event);
                 },
+                onMemory: (event) => {
+                  // Stable id: an SSE reattach replays the whole event log, and
+                  // the client dedupes 기억 rows by this id.
+                  emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
+                },
                 onPlan: (event) => {
                   if (event.plan) latestPlan = event.plan;
                   emitRunEvent(runId, "plan", {
@@ -1727,6 +1732,11 @@ export function createChatRouter({
               },
               onBlocked: (event) => {
                 emitRunEvent(runId, "blocked", event);
+              },
+              onMemory: (event) => {
+                // Stable id: an SSE reattach replays the whole event log, and
+                // the client dedupes 기억 rows by this id.
+                emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
               },
               // Plan mode: the avatar submitted a plan via ExitPlanMode. Surface it as
               // a dedicated plan card (display-only) and keep the latest one to persist

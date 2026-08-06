@@ -761,6 +761,9 @@ export async function runClaudeAgent(
         ? { id: request.viewerUserId, name: request.viewerName ?? "" }
         : null,
       config,
+      // A successful wiki/ write is a second-brain capture — surface it as a
+      // dedicated "기억" notice in the activity tree (no-op headless).
+      onMemory: (e) => events?.onMemory?.({ ...e, scope: "personal" }),
     },
     { allowCreate: allowRepoCreate },
   );
@@ -896,6 +899,9 @@ export async function runClaudeAgent(
     (groupAgentRun
       ? true
       : ownerToolAccess && ownerGroups.length > 0);
+  // Group second-brain capture notice, mirroring the personal repo's onMemory.
+  const onGroupMemory = (e: { action: "add" | "update"; path: string; groupName: string }) =>
+    events?.onMemory?.({ ...e, scope: "group" });
   const groupRepoServer = groupAgentRun
     ? buildGroupAgentRepoServer(store, {
         groupId: groupAgentRun.groupId,
@@ -903,12 +909,14 @@ export async function runClaudeAgent(
         groupName: groupAgentRun.groupName,
         actingUser: actingMember,
         config,
+        onMemory: onGroupMemory,
       })
     : buildGroupRepoServer(store, {
         avatarUserId: request.avatar.id,
         owner,
         viewerIsOwner: ownerToolAccess,
         config,
+        onMemory: onGroupMemory,
       });
   // Group (team) second brain: read-only `wiki/` recall over a group's shared
   // repo, scoped per-group to the OWNER's memberships inside the tools. Owner-only

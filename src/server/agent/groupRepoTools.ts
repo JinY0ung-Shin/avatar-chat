@@ -33,6 +33,7 @@ import {
   resolveOwnerGroup,
   runDeleteFile,
   runEditFile,
+  isBrainNotePath,
   runListFiles,
   runMoveFile,
   runReadFile,
@@ -56,6 +57,11 @@ export interface GroupRepoToolsContext {
   /** True only when the present viewer IS the owner and the run is interactive. */
   viewerIsOwner: boolean;
   config: AppConfig;
+  /**
+   * Fired after a SUCCESSFUL write/edit under `wiki/` (a group second-brain
+   * note): the host shows a "그룹 기억 추가/갱신" notice in the activity tree.
+   */
+  onMemory?: (event: { action: "add" | "update"; path: string; groupName: string }) => void;
 }
 
 /** MCP server name; tools surface to the model as `mcp__group_repo__<tool>`. */
@@ -188,14 +194,23 @@ export function buildGroupRepoTools(
         path: z.string().describe("Path relative to the repository root"),
         content: z.string().describe("The full file content"),
       },
-      (args) =>
-        runWriteFile(
+      async (args) => {
+        const out = await runWriteFile(
           resolveWrite(args.group),
           cloneResolved,
           writeRepoFile,
           args,
           (path) => `Saved the file ${path}. (Not committed yet — push it with commit.)`,
-        ),
+        );
+        if (!out.isError && isBrainNotePath(args.path)) {
+          ctx.onMemory?.({
+            action: "add",
+            path: args.path,
+            groupName: resolveGroup(args.group)?.name ?? args.group,
+          });
+        }
+        return out;
+      },
     ),
     tool(
       "edit_file",
@@ -210,15 +225,24 @@ export function buildGroupRepoTools(
           .optional()
           .describe("Replace every occurrence instead of requiring a unique match (default false)"),
       },
-      (args) =>
-        runEditFile(
+      async (args) => {
+        const out = await runEditFile(
           resolveWrite(args.group),
           cloneResolved,
           editRepoFile,
           args,
           (path, count) =>
             `Edited ${path} (${count} replacement${count === 1 ? "" : "s"}). (Not committed yet — push it with commit.)`,
-        ),
+        );
+        if (!out.isError && isBrainNotePath(args.path)) {
+          ctx.onMemory?.({
+            action: "update",
+            path: args.path,
+            groupName: resolveGroup(args.group)?.name ?? args.group,
+          });
+        }
+        return out;
+      },
     ),
     tool(
       "delete_file",
@@ -411,6 +435,8 @@ export interface GroupAgentRepoToolsContext {
   /** The acting member: token source, commit identity, audit actor. */
   actingUser: { id: string; username: string; displayName: string };
   config: AppConfig;
+  /** Same notice as GroupRepoToolsContext.onMemory, pinned to THIS group. */
+  onMemory?: (event: { action: "add" | "update"; path: string; groupName: string }) => void;
 }
 
 /** Tool names for group-agent runs (allowedTools form) — no list_groups/create_repo. */
@@ -493,14 +519,19 @@ export function buildGroupAgentRepoTools(store: Store, ctx: GroupAgentRepoToolsC
         path: z.string().describe("Path relative to the repository root"),
         content: z.string().describe("The full file content"),
       },
-      (args) =>
-        runWriteFile(
+      async (args) => {
+        const out = await runWriteFile(
           resolveWrite(),
           clone,
           writeRepoFile,
           args,
           (path) => `Saved the file ${path}. (Not committed yet — push it with commit.)`,
-        ),
+        );
+        if (!out.isError && isBrainNotePath(args.path)) {
+          ctx.onMemory?.({ action: "add", path: args.path, groupName: ctx.groupName });
+        }
+        return out;
+      },
     ),
     tool(
       "edit_file",
@@ -514,15 +545,20 @@ export function buildGroupAgentRepoTools(store: Store, ctx: GroupAgentRepoToolsC
           .optional()
           .describe("Replace every occurrence instead of requiring a unique match (default false)"),
       },
-      (args) =>
-        runEditFile(
+      async (args) => {
+        const out = await runEditFile(
           resolveWrite(),
           clone,
           editRepoFile,
           args,
           (path, count) =>
             `Edited ${path} (${count} replacement${count === 1 ? "" : "s"}). (Not committed yet — push it with commit.)`,
-        ),
+        );
+        if (!out.isError && isBrainNotePath(args.path)) {
+          ctx.onMemory?.({ action: "update", path: args.path, groupName: ctx.groupName });
+        }
+        return out;
+      },
     ),
     tool(
       "delete_file",

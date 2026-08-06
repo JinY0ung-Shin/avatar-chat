@@ -211,6 +211,24 @@ export interface BlockedEvent {
 }
 
 /**
+ * The avatar saved a note into a second brain: a successful repo write under
+ * `wiki/` (personal knowledge repo or a group's shared repo). Surfaced as a
+ * dedicated "기억" row in the activity tree — separate from the raw tool rows —
+ * so the viewer sees at a glance that a memory was captured. Fired per note
+ * write, before the commit that persists it (the standing prompt already
+ * drives the avatar to commit right after capturing).
+ */
+export interface MemoryEvent {
+  scope: "personal" | "group";
+  /** write_file → "add", edit_file → "update". */
+  action: "add" | "update";
+  /** Repo-relative note path (always under wiki/). */
+  path: string;
+  /** The group whose brain was written (scope "group" only). */
+  groupName?: string;
+}
+
+/**
  * The model submitted a plan via ExitPlanMode (plan mode). The host forwards the
  * plan markdown to the client to render as a dedicated plan card. This is the
  * DISPLAY signal (always fires); a PRESENT owner additionally gets an interactive
@@ -351,6 +369,8 @@ export interface AgentEvents {
   onTurnResult?: (event: TurnResultEvent) => void;
   /** A tool was auto-denied (no interactive prompt). */
   onBlocked?: (event: BlockedEvent) => void;
+  /** A second-brain note was saved (repo write under wiki/) — display notice. */
+  onMemory?: (event: MemoryEvent) => void;
   /** The model submitted a plan via ExitPlanMode (plan mode) — display card. */
   onPlan?: (event: PlanEvent) => void;
 

@@ -873,7 +873,7 @@ export interface AgentActivity {
   tools: {
     id: string;
     agentId: string;
-    kind: "tool" | "task" | "blocked";
+    kind: "tool" | "task" | "blocked" | "memory";
     label: string;
     detail?: string;
     status: "running" | "done" | "failed" | "blocked";

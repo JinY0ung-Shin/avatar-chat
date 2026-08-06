@@ -260,6 +260,14 @@ export async function runReadFile<C>(
   }
 }
 
+/**
+ * True when a repo-relative path lands in the second-brain vault (`wiki/`) —
+ * the write then raises a "기억" notice (MemoryEvent) on top of the tool row.
+ */
+export function isBrainNotePath(path: string): boolean {
+  return /^(\.\/)*wiki\//.test(path.trim());
+}
+
 /** Run the shared write_file body; `success` builds the caller-specific message. */
 export async function runWriteFile<C>(
   resolved: Resolved<C>,

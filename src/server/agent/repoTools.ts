@@ -29,6 +29,7 @@ import {
   commitFailureMessage,
   createRepoCatchMessage,
   createRepoFailureMessage,
+  isBrainNotePath,
   runDeleteFile,
   runEditFile,
   runListFiles,
@@ -86,6 +87,12 @@ export interface RepoToolsContext {
    */
   viewer?: { id: string; name: string } | null;
   config: AppConfig;
+  /**
+   * Fired after a SUCCESSFUL write/edit under `wiki/` (a second-brain note):
+   * the host shows a "기억 추가/갱신" notice in the activity tree. Optional —
+   * headless runs have no viewer to notify.
+   */
+  onMemory?: (event: { action: "add" | "update"; path: string }) => void;
 }
 
 /** MCP server name; tools surface to the model as `mcp__repo__<tool>`. */
@@ -310,14 +317,19 @@ export function buildRepoTools(
         path: z.string().describe("Path relative to the repository root"),
         content: z.string().describe("The full file content"),
       },
-      (args) =>
-        runWriteFile(
+      async (args) => {
+        const out = await runWriteFile(
           resolve(),
           ensureClone,
           writeRepoFile,
           args,
           (path) => `Saved the file ${path}. (Not committed yet — push it with the commit tool.)`,
-        ),
+        );
+        if (!out.isError && isBrainNotePath(args.path)) {
+          ctx.onMemory?.({ action: "add", path: args.path });
+        }
+        return out;
+      },
     ),
     tool(
       "edit_file",
@@ -331,15 +343,20 @@ export function buildRepoTools(
           .optional()
           .describe("Replace every occurrence instead of requiring a unique match (default false)"),
       },
-      (args) =>
-        runEditFile(
+      async (args) => {
+        const out = await runEditFile(
           resolve(),
           ensureClone,
           editRepoFile,
           args,
           (path, count) =>
             `Edited ${path} (${count} replacement${count === 1 ? "" : "s"}). (Not committed yet — push it with the commit tool.)`,
-        ),
+        );
+        if (!out.isError && isBrainNotePath(args.path)) {
+          ctx.onMemory?.({ action: "update", path: args.path });
+        }
+        return out;
+      },
     ),
     tool(
       "delete_file",

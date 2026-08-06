@@ -984,6 +984,40 @@ describe("repo tools (knowledge-repo management)", () => {
     expect(names).toEqual(["list_files", "read_file", "write_file", "edit_file", "delete_file", "move_file", "scaffold_skill", "commit"]);
   });
 
+  it("raises a memory notice only for successful writes under wiki/", async () => {
+    const s = setup("rt-memory");
+    const events: Array<{ action: string; path: string }> = [];
+    const tools = buildRepoTools(s.store, {
+      avatarUserId: s.ownerId,
+      owner: s.owner,
+      viewerIsOwner: true,
+      config: s.config,
+      onMemory: (e) => void events.push(e),
+    });
+
+    // wiki/ write → "add"; wiki/ edit → "update".
+    await callTool(tools, "write_file", { path: "wiki/people/kim.md", content: "# Kim\n" });
+    await callTool(tools, "edit_file", {
+      path: "wiki/people/kim.md",
+      old_string: "# Kim",
+      new_string: "# Kim (dev)",
+    });
+    // Outside wiki/ → no notice (a skill edit is not a memory).
+    await callTool(tools, "write_file", { path: "notes/misc.md", content: "x" });
+    // Failed edit under wiki/ (no match) → no notice.
+    const miss = await callTool(tools, "edit_file", {
+      path: "wiki/people/kim.md",
+      old_string: "does-not-exist",
+      new_string: "y",
+    });
+    expect(miss.isError).toBe(true);
+
+    expect(events).toEqual([
+      { action: "add", path: "wiki/people/kim.md" },
+      { action: "update", path: "wiki/people/kim.md" },
+    ]);
+  });
+
   it("edit_file replaces an exact snippet without resending the whole file, and reports the recovery path on misses", async () => {
     const s = setup("rt-edit");
     const tools = ownerTools(s);

@@ -907,6 +907,9 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "blocked":
       if (data?.toolName) handleBlocked(paneId, data);
       return;
+    case "memory":
+      if (data?.path) handleMemory(paneId, data);
+      return;
     case "permission":
       enqueuePrompt(paneId, "permission", data);
       return;
@@ -1078,6 +1081,29 @@ function handleBlocked(paneId: string, data: any): void {
       label: humanTool(data.toolName),
       detail: reason,
       status: "blocked",
+    });
+  });
+}
+
+// A second-brain capture (successful repo write under wiki/): render a
+// dedicated "기억" row next to the tool rows so the saved memory is visible at
+// a glance. The server mints the event id, so a reattach's replay dedupes here.
+function handleMemory(paneId: string, data: any): void {
+  const id = String(data.id || "") || newId();
+  const action = data.action === "update" ? "갱신됨" : "추가됨";
+  const label = data.scope === "group" ? `그룹 기억 ${action}` : `기억 ${action}`;
+  const groupName = String(data.groupName || "").trim();
+  const path = String(data.path || "").trim();
+  const detail = groupName ? `${groupName} · ${path}` : path;
+  updatePane(paneId, (pane) => {
+    if (pane.liveTools.some((t) => t.id === id)) return;
+    pane.liveTools.push({
+      id,
+      agentId: "main",
+      kind: "memory",
+      label,
+      detail,
+      status: "done",
     });
   });
 }
