@@ -373,4 +373,18 @@ describe("ActivityTree", () => {
     expect(mainNode.contains(row)).toBe(true); // rendered as a TASK row, not a tool row
     expect(row.getAttribute("aria-label")).toBe("태스크 · 백그라운드 빌드 · 진행 중");
   });
+
+  it("keeps kind==='memory' rows out of the tree (they render as summary chips instead)", () => {
+    const withMemory: LiveToolRow[] = [
+      ...tools,
+      { id: "m1", agentId: "main", kind: "memory", label: "기억 추가됨", detail: "wiki/people/kim.md", status: "done" },
+    ];
+    const { container } = render(ActivityTree, {
+      props: { agentId: "main", agents, tools: withMemory, tasks: [] },
+    });
+
+    // The capture is summary-line UI (ChatView), invisible inside the expanded tree.
+    expect(screen.queryByText("기억 추가됨")).toBeNull();
+    expect(container.querySelectorAll(".tool-row")).toHaveLength(1);
+  });
 });

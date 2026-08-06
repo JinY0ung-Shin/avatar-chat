@@ -8,7 +8,12 @@
   export let tasks: LiveTaskRow[] = [];
 
   $: node = agents.find((a) => a.id === agentId);
-  $: ownTools = tools.filter((t) => t.agentId === agentId && t.kind !== "task");
+  // kind "memory" rows (second-brain captures) are summary-line chips, not tree
+  // rows: they must be visible while the disclosure is COLLAPSED, so ChatView
+  // renders them on the <summary> and the tree skips them here.
+  $: ownTools = tools.filter(
+    (t) => t.agentId === agentId && t.kind !== "task" && t.kind !== "memory",
+  );
   $: ownTasks = [
     ...tasks.filter((t) => t.agentId === agentId),
     ...tools
@@ -64,10 +69,8 @@
     {#if ownTools.length}
       <div class="agent-tools" role="list" aria-label={`${node.label} 도구 실행`}>
         {#each ownTools as row (row.id)}
-          <div class={`tool-row ${row.kind === "blocked" ? "blocked" : ""} ${row.kind === "memory" ? "memory" : ""}`} data-status={row.status} role="listitem" title={rowLabel(row.kind === "memory" ? "기억" : "도구", row.label, row.status, row.detail || "")} aria-label={rowLabel(row.kind === "memory" ? "기억" : "도구", row.label, row.status, row.detail || "")}>
-            {#if row.kind === "memory"}
-              <span class="memory-glyph" aria-hidden="true">🧠</span>
-            {:else if row.status === "blocked"}
+          <div class={`tool-row ${row.kind === "blocked" ? "blocked" : ""}`} data-status={row.status} role="listitem" title={rowLabel("도구", row.label, row.status, row.detail || "")} aria-label={rowLabel("도구", row.label, row.status, row.detail || "")}>
+            {#if row.status === "blocked"}
               <span class="tool-dot"></span>
             {:else}
               <span class="tool-spinner"></span>

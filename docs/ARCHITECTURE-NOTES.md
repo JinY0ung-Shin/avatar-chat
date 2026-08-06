@@ -387,11 +387,14 @@ HTTP glue, store, repo plumbing, secrets. Companion to the server-area philosoph
   `mcp__group_repo__write_file` (group) + `commit` — there is NO separate "brain write" tool, so a
   capture is a repo write plus a commit (uncommitted = not persisted). It composes with the backfill
   loop: `request_info` ESCALATES a true unknown to the owner, `brain-ingest` RETAINS the answer.
-- **Capture notice ("기억" row):** a SUCCESSFUL `write_file`/`edit_file` under `wiki/` (personal or
+- **Capture notice ("기억" chip):** a SUCCESSFUL `write_file`/`edit_file` under `wiki/` (personal or
   group repo, incl. group-agent runs) fires `AgentEvents.onMemory` (`MemoryEvent`, gated in the tool
   handlers via `isBrainNotePath`) → SSE `memory` (server-minted `id` so reattach replays dedupe) → a
-  distinct `kind:"memory"` activity row (🧠 + accent, label "기억/그룹 기억 추가·갱신됨", detail =
-  note path) that persists through the normal activity snapshot. `raw/` writes stay silent BY DESIGN
+  `kind:"memory"` activity row (label "기억/그룹 기억 추가·갱신됨", detail = note path) that persists
+  through the normal activity snapshot. **Rendering is summary-line-only:** `ActivityTree` EXCLUDES
+  memory rows from the tree; `ChatView.memoryChip` renders them as a 🧠 chip on the activity
+  disclosure's `<summary>` (live + completed cards), so the capture is visible while COLLAPSED —
+  the whole point, since the tool list is folded by default. `raw/` writes stay silent BY DESIGN
   (a brain-ingest capture writes raw + wiki — one notice per capture, not two). Fires on write, not
   commit: the capture skills commit immediately after, and per-write is what maps 1:1 to notes.
 

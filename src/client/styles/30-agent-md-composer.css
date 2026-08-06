@@ -193,6 +193,23 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Second-brain capture chip (kind:"memory" activity rows): lives on the
+   summary line so a saved 기억 is visible while the disclosure is COLLAPSED —
+   the rows themselves are deliberately excluded from the tree (ActivityTree).
+   flex:none keeps the chip visible when the summary text truncates. */
+.activity-memory-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  white-space: nowrap;
+}
 .activity-done > .agent-activity {
   margin: 0;
   padding: 0 var(--s-2-5) var(--s-2-5);
@@ -360,17 +377,6 @@
 .tool-row[data-status="failed"] .tool-name,
 .tool-row.blocked .tool-name {
   color: var(--warn);
-}
-/* Second-brain capture notice (kind "memory"): a saved 기억 stands out from
-   plain tool rows via the accent color; the 🧠 glyph replaces the spinner. */
-.tool-row.memory .tool-name,
-.tool-row.memory[data-status="done"] .tool-name {
-  color: var(--accent);
-}
-.memory-glyph {
-  font-size: 11px;
-  line-height: 1;
-  flex: none;
 }
 
 /* SDK task rows are tracked separately from tool calls. */

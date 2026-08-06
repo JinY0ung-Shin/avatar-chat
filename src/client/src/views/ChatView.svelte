@@ -898,6 +898,20 @@
     return activityCountLabel(toolCount, taskCount, agentCount, "사용함", "작업 내역");
   }
 
+  // Second-brain captures ride the activity rows as kind:"memory", but render
+  // as a chip on the SUMMARY line — visible while the disclosure is collapsed
+  // (ActivityTree deliberately skips them, so they never appear inside).
+  function memoryChip(
+    tools: Array<{ kind: string; label: string; detail?: string }>,
+  ): { label: string; title: string } | null {
+    const rows = tools.filter((t) => t.kind === "memory");
+    if (!rows.length) return null;
+    return {
+      label: rows.length === 1 ? rows[0].label : `기억 ${rows.length}건 저장됨`,
+      title: rows.map((r) => [r.label, r.detail].filter(Boolean).join(" · ")).join("\n"),
+    };
+  }
+
   // Which collapsed "생각 과정" / "작업 내역" cards the user has opened, keyed by
   // `${messageKey}:${card}`. <details> only HIDES its children, so a body left in
   // the template still costs a full markdown parse (thinking) or an ActivityTree
@@ -991,8 +1005,12 @@
                 {/if}
                 {#if activity}
                   {@const activityKey = cardKey(message, "activity")}
+                  {@const memChip = memoryChip(activity.tools)}
                   <details class="activity-live activity-done" on:toggle={(event) => toggleCard(activityKey, event)}>
-                    <summary><span class="activity-summary-text">{completedActivityLabel(activity)}</span></summary>
+                    <summary>
+                      <span class="activity-summary-text">{completedActivityLabel(activity)}</span>
+                      {#if memChip}<span class="activity-memory-chip" title={memChip.title}><span aria-hidden="true">🧠</span>{memChip.label}</span>{/if}
+                    </summary>
                     {#if expandedCards.has(activityKey)}
                       <div class="agent-activity">
                         <ActivityTree agentId="main" agents={activity.agents} tools={activity.tools} tasks={activity.tasks || []} />
@@ -1061,8 +1079,12 @@
                 </details>
               {/if}
               {#if item.liveAgents.length}
+                {@const liveMemChip = memoryChip(item.liveTools)}
                 <details class="activity-live" open>
-                  <summary><span class="activity-summary-text">{activitySummary(item)}</span></summary>
+                  <summary>
+                    <span class="activity-summary-text">{activitySummary(item)}</span>
+                    {#if liveMemChip}<span class="activity-memory-chip" title={liveMemChip.title}><span aria-hidden="true">🧠</span>{liveMemChip.label}</span>{/if}
+                  </summary>
                   <div class="agent-activity">
                     <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
                   </div>
