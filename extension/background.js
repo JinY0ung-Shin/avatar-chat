@@ -542,11 +542,50 @@ async function centerOf(ref) {
   return { target, x: (x1 + x3) / 2, y: (y1 + y3) / 2, width: Math.abs(x2 - x1) };
 }
 
+/**
+ * Ops whose events go through the BROWSER-side input router, which only
+ * delivers to a renderer whose view is visible. A tab that sits in the group
+ * but is not selected in its window is hidden, and every one of these is
+ * dropped on the floor — while Input.insertText still lands, because that path
+ * talks to the renderer's input method directly. That split is exactly what
+ * made click and press_key look like successful no-ops.
+ */
+const INPUT_OPS = new Set(["click", "type", "press_key", "hover", "scroll"]);
+
+/** Make the tab actually visible, so dispatched input reaches its renderer. */
+async function showTab(tab) {
+  if (!tab.active) await chrome.tabs.update(tab.id, { active: true });
+  // A minimized window hides the view no matter which tab is selected. Restore
+  // it, but never take OS focus: the user is usually in another app, and
+  // stealing focus mid-task is worse than the agent working out of sight.
+  try {
+    const win = await chrome.windows.get(tab.windowId);
+    if (win.state === "minimized") {
+      await chrome.windows.update(tab.windowId, { state: "normal", focused: false });
+    }
+  } catch {
+    // The window can close between the read and the update; the operation below
+    // then fails on its own with a better message than anything invented here.
+  }
+}
+
 async function clickRef(uid) {
   const { target, x, y } = await centerOf(resolveRef(uid));
-  const base = { x, y, button: "left", clickCount: 1 };
-  await sendCdp(target, "Input.dispatchMouseEvent", { type: "mousePressed", ...base });
-  await sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseReleased", ...base });
+  const base = { x, y, button: "left", clickCount: 1, pointerType: "mouse" };
+  // Hit-testing starts from the last known pointer position, so a press with no
+  // preceding move can resolve against a stale target; and `buttons` carries the
+  // pressed-button bitmask that pointer-events handlers read instead of
+  // `button`. Either omission yields a press the page may legitimately ignore.
+  await sendCdp(target, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x,
+    y,
+    button: "none",
+    buttons: 0,
+    pointerType: "mouse",
+  });
+  await sendCdp(target, "Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...base });
+  await sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...base });
 }
 
 /**
@@ -780,6 +819,7 @@ async function perform(message) {
   // user dragged in may already be sitting on a denied site.
   if (tab.url && !originAllowed(tab.url, patterns)) return refuseOrigin(tab.url, source);
   await ensureAttached(tab.id);
+  if (INPUT_OPS.has(message.op)) await showTab(tab);
 
   // An open JS dialog freezes the renderer: every page-touching command below
   // would hang. Surface the dialog instead — only handle_dialog may proceed.
@@ -869,7 +909,14 @@ async function perform(message) {
     const { target, x, y } = await centerOf(resolveRef(message.uid));
     await raceDialogOpen(
       tab.id,
-      sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseMoved", x, y }),
+      sendCdp(target, "Input.dispatchMouseEvent", {
+        type: "mouseMoved",
+        x,
+        y,
+        button: "none",
+        buttons: 0,
+        pointerType: "mouse",
+      }),
     );
   } else if (message.op === "scroll") {
     const direction = ["up", "down", "left", "right"].includes(message.direction)
