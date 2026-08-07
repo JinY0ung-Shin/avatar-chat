@@ -52,13 +52,22 @@ function logLine(text) {
   els.log.textContent += `${text}\n`;
 }
 
+/**
+ * The button is live as soon as there is something verified to install — it
+ * does NOT wait for a connected folder. Requiring the folder first left a dead
+ * button under a "새 버전이 있습니다" message with nothing saying why, so the
+ * missing folder is now just the button's first step (the click is the user
+ * gesture the directory picker needs anyway).
+ */
 function refreshUpdateButton() {
-  const ready = Boolean(latestPayload && dirHandle);
-  els.update.disabled = !ready;
-  if (latestPayload) {
-    const cmp = compareDottedVersions(latestPayload.version, manifest.version);
-    els.update.textContent = cmp !== null && cmp <= 0 ? "다시 설치" : "업데이트";
+  els.update.disabled = !latestPayload;
+  if (!latestPayload) return;
+  if (!dirHandle) {
+    els.update.textContent = "폴더 연결하고 업데이트";
+    return;
   }
+  const cmp = compareDottedVersions(latestPayload.version, manifest.version);
+  els.update.textContent = cmp !== null && cmp <= 0 ? "다시 설치" : "업데이트";
 }
 
 // ------------------------------------------------------------ handle storage
@@ -286,7 +295,19 @@ async function connectFolder() {
 // -------------------------------------------------------------------- update
 
 async function runUpdate() {
-  if (!latestPayload || !dirHandle) return;
+  if (!latestPayload) return;
+  // No folder yet: connect it as the first step of this same click. The picker
+  // needs a user gesture, and this click is one.
+  if (!dirHandle) {
+    setStatus(els.status, "설치 폴더를 먼저 지정해 주세요…");
+    await connectFolder();
+    if (!dirHandle) {
+      // connectFolder already explained why (cancelled, wrong folder, blocked).
+      setStatus(els.status, "");
+      refreshUpdateButton();
+      return;
+    }
+  }
   els.update.disabled = true;
   els.log.textContent = "";
   setStatus(els.status, "권한 확인 중…");
