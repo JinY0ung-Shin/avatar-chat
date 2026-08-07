@@ -47,6 +47,16 @@ export interface ReleaseNote {
 
 export const RELEASE_NOTES: ReleaseNote[] = [
   {
+    id: "2026-08-07.3",
+    items: [
+      {
+        title: "Confluence는 이제 읽기 전용이에요",
+        body: "아바타가 Confluence 페이지를 직접 만들거나 고치지 않아요. 검색·조회·첨부 가져오기는 그대로예요. 페이지를 쓰거나 고쳐야 할 때는 브라우저 조작으로 내 브라우저에서 직접 편집하니까, 편집 이력이 내 계정으로 남고 무엇이 바뀌는지 눈으로 보면서 되돌릴 수 있어요.",
+        example: "예: “이 위키 페이지에 회의 결과 추가해 줘.” (브라우저 조작 도구가 켜져 있어야 해요)",
+      },
+    ],
+  },
+  {
     id: "2026-08-07.2",
     items: [
       {
