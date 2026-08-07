@@ -647,6 +647,22 @@
   font-size: var(--t-xs);
   line-height: 1.5;
 }
+/* Deep-link button under a note item (ReleaseNoteItem.action). */
+.whats-new-action {
+  align-self: flex-start;
+  margin-top: var(--s-0-5);
+  padding: var(--s-1) var(--s-2);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--accent);
+  font-size: var(--t-xs);
+  font-weight: 600;
+  cursor: pointer;
+}
+.whats-new-action:hover {
+  background: var(--accent-soft);
+}
 .whats-new-actions {
   display: flex;
   justify-content: flex-end;

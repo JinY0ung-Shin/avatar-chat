@@ -4,7 +4,7 @@
   import RevealableInput from "./RevealableInput.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
-  import { appState, notify, readState, replaceState } from "../lib/state";
+  import { appState, notify, readState, replaceState, updateState } from "../lib/state";
   import { copyText } from "../lib/dom";
   import {
     readAllowedOrigins,
@@ -188,6 +188,13 @@
   $: if (active) {
     void loadExtensionMeta();
     void loadUpdateDirState();
+  }
+
+  // Deep link from the what's-new dialog: open the install guide as soon as
+  // this tab is showing, then clear the one-shot flag.
+  $: if (active && $appState.browserGuideRequested) {
+    guideOpen = true;
+    updateState((state) => (state.browserGuideRequested = false));
   }
 
   // The allowlist lives in the EXTENSION, not the server — it governs this one

@@ -10,6 +10,7 @@ import ActivityTree from "../src/client/src/components/ActivityTree.svelte";
 import RoutineModal from "../src/client/src/components/RoutineModal.svelte";
 import Toasts from "../src/client/src/components/Toasts.svelte";
 import Toggle from "../src/client/src/components/Toggle.svelte";
+import WhatsNewModal from "../src/client/src/components/WhatsNewModal.svelte";
 import RoutinesView from "../src/client/src/views/RoutinesView.svelte";
 import { readState, replaceState, toasts } from "../src/client/src/lib/state.js";
 import type {
@@ -386,5 +387,42 @@ describe("ActivityTree", () => {
     // The capture is summary-line UI (ChatView), invisible inside the expanded tree.
     expect(screen.queryByText("기억 추가됨")).toBeNull();
     expect(container.querySelectorAll(".tool-row")).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* WhatsNewModal — release-note deep links                             */
+/* ------------------------------------------------------------------ */
+
+describe("WhatsNewModal", () => {
+  it("renders a deep-link button only for actioned items, and clicking it jumps to the guide", async () => {
+    render(WhatsNewModal, {
+      props: {
+        releases: [
+          {
+            id: "2026-08-07",
+            items: [
+              { title: "브라우저 조작", body: "설명", action: "browser-guide" as const },
+              { title: "액션 없는 항목", body: "버튼이 없어야 해요" },
+            ],
+          },
+        ],
+      },
+    });
+
+    // Exactly one deep-link button: the action-less item renders none.
+    const buttons = screen.getAllByRole("button", { name: /설치 가이드 열기/ });
+    expect(buttons).toHaveLength(1);
+
+    await fireEvent.click(buttons[0]);
+
+    // The click routes to 설정 → 권한·연결 and arms the one-shot flag the
+    // access tab consumes to open the install guide.
+    const state = readState();
+    expect(state.view).toBe("settings");
+    expect(state.settingsTab).toBe("access");
+    expect(state.browserGuideRequested).toBe(true);
+
+    replaceState({ view: "explore", settingsTab: "profile", browserGuideRequested: false });
   });
 });

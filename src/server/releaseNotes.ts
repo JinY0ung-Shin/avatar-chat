@@ -18,6 +18,15 @@
  * so it can be imported by BOTH the server and the Svelte client (it is listed
  * in `tsconfig.client.json` includes), mirroring `experimentalFeatures.ts`.
  */
+/**
+ * In-app deep link a note item can offer (rendered as a button under the
+ * item). Resolved by the CLIENT (WhatsNewModal maps the id to a label and a
+ * navigation); an id a build doesn't know renders nothing, so an older client
+ * showing a newer note degrades gracefully. This module stays dependency-free,
+ * hence ids instead of callbacks.
+ */
+export type ReleaseNoteAction = "browser-guide";
+
 export interface ReleaseNoteItem {
   /** User-facing feature name (Korean). */
   title: string;
@@ -25,6 +34,8 @@ export interface ReleaseNoteItem {
   body: string;
   /** Optional usage example (Korean) — rendered as a highlighted hint line. */
   example?: string;
+  /** Optional in-app deep link (see ReleaseNoteAction). */
+  action?: ReleaseNoteAction;
 }
 
 export interface ReleaseNote {
@@ -35,6 +46,30 @@ export interface ReleaseNote {
 }
 
 export const RELEASE_NOTES: ReleaseNote[] = [
+  {
+    id: "2026-08-07",
+    items: [
+      {
+        title: "아바타가 내 브라우저를 직접 조작해요",
+        body: "이번 업데이트의 핵심 기능이에요. 브라우저 브릿지 확장을 설치하면 아바타가 내가 로그인해 둔 세션 그대로 탭을 열고 읽고 클릭하고 입력해요. 한글 입력, 스크롤, 대화상자 처리, 탭 관리까지 되고, 허용한 사이트의 Noah 탭 그룹 안에서만 · 내 아바타와의 대화에서만 움직여요.",
+        example: "예: 입력창의 도구 선택에서 '브라우저 조작'을 켜고 “사내 위키 열어서 오늘 공지 요약해 줘”라고 해보세요.",
+        action: "browser-guide",
+      },
+      {
+        title: "브라우저 확장은 버튼 한 번으로 업데이트돼요",
+        body: "압축을 푼 확장 폴더를 한 번 연결해 두면, 새 버전이 나왔을 때 파일 교체부터 확장 리로드까지 버튼 한 번에 끝나요. 입력창의 버전 배지가 업데이트할 시점을 알려줘요.",
+        example: "예: 설정 → 권한·연결 → 확장 폴더 연결 (원클릭 업데이트)",
+      },
+      {
+        title: "모델 선택에 Fable 티어가 생겼어요",
+        body: "Opus를 넘어서는 최상위 Fable 모델을 대화별로 고를 수 있어요. 가장 까다로운 추론과 긴 작업에 적합해요.",
+      },
+      {
+        title: "두 번째 뇌 저장이 활동 내역에 '기억'으로 보여요",
+        body: "아바타가 대화 중에 지식 저장소로 기록한 내용이 활동 트리에 전용 '기억' 줄로 표시돼요. 무엇이 저장됐는지 대화 안에서 바로 확인할 수 있어요.",
+      },
+    ],
+  },
   {
     id: "2026-08-03",
     items: [

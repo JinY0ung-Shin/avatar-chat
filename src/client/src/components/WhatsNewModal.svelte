@@ -1,7 +1,12 @@
 <script lang="ts">
   import { createEventDispatcher } from "svelte";
   import Modal from "./Modal.svelte";
-  import { releaseDateLabel, type ReleaseNote } from "../../../server/releaseNotes";
+  import { updateState } from "../lib/state";
+  import {
+    releaseDateLabel,
+    type ReleaseNote,
+    type ReleaseNoteAction,
+  } from "../../../server/releaseNotes";
 
   /** Unseen release entries, newest first (App computes via unseenReleases). */
   export let releases: ReleaseNote[];
@@ -10,6 +15,27 @@
 
   function done() {
     dispatch("close");
+  }
+
+  // The dependency-free registry carries semantic action IDS; the label and the
+  // navigation live here. An id this build doesn't know simply renders no
+  // button (an older client can safely show a newer note).
+  const ACTION_LABELS: Partial<Record<ReleaseNoteAction, string>> = {
+    "browser-guide": "브라우저 확장 설치 가이드 열기 →",
+  };
+
+  function runAction(action: ReleaseNoteAction | undefined): void {
+    if (!action || !ACTION_LABELS[action]) return;
+    // Dismiss through the normal close path first (App marks the release seen),
+    // THEN jump — the flag is one-shot state the target tab consumes.
+    done();
+    if (action === "browser-guide") {
+      updateState((state) => {
+        state.view = "settings";
+        state.settingsTab = "access";
+        state.browserGuideRequested = true;
+      });
+    }
   }
 </script>
 
@@ -30,6 +56,15 @@
             <span>{item.body}</span>
             {#if item.example}
               <span class="whats-new-example">{item.example}</span>
+            {/if}
+            {#if item.action && ACTION_LABELS[item.action]}
+              <button
+                type="button"
+                class="whats-new-action"
+                on:click={() => runAction(item.action)}
+              >
+                {ACTION_LABELS[item.action]}
+              </button>
             {/if}
           </li>
         {/each}

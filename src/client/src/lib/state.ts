@@ -65,6 +65,11 @@ export interface ClientState {
   audit: AuditEvent[];
   /** Interactive permission/question prompts awaiting the owner (one shown at a time). */
   promptQueue: PromptRequest[];
+  /**
+   * One-shot deep link from the what's-new dialog: the 권한·연결 tab opens the
+   * browser-bridge install guide on its next activation, then clears this.
+   */
+  browserGuideRequested: boolean;
   splitAvatarId: string;
   streaming: boolean;
   themePref: "system" | "light" | "dark";
@@ -109,6 +114,7 @@ export const appState = writable<ClientState>({
   adminPresence: null,
   audit: [],
   promptQueue: [],
+  browserGuideRequested: false,
   splitAvatarId: "",
   streaming: false,
   themePref: "system",
