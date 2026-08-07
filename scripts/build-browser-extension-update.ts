@@ -1,13 +1,23 @@
-// Build the browser-bridge self-update assets: noah-bridge-update.json (every
-// bundled file + version) and noah-bridge-update.sig (detached RSA signature).
+// Build every browser-bridge update artifact from ONE signing key:
+//
+//   noah-bridge-update.json / .sig   in-page updater (File System Access)
+//   noah-browser-bridge.crx          policy install channel (Chrome auto-update)
+//   updates.xml                      Omaha manifest the policy's update_url names
+//
+// Two channels because one of them dies on a managed fleet: where a DLP agent
+// intercepts file dialogs, the in-page updater cannot even open a folder
+// picker, while the policy channel never opens one (Chrome downloads and
+// installs by itself). Both verify against the same key.
+//
 // Release-machine only — the signing key never touches the server or the repo.
 //
 //   BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem \
-//     npx tsx scripts/build-browser-extension-update.ts [--out dist/extension]
+//     npx tsx scripts/build-browser-extension-update.ts --tag v1.3.0 \
+//     [--origin "https://noah.internal.example/*"]... [--out dist/extension]
 //
-// The extension's updater page fetches both from the stable alias
-//   https://github.com/<repo>/releases/latest/download/<asset>
-// so once the channel is live, EVERY release must attach both assets.
+// The extension's updater page and the policy's update_url both read the
+// stable "latest release" alias, so once a channel is live EVERY release must
+// attach its assets.
 //
 // No key yet? Generate one and KEEP THE .pem FOREVER (the extension id and the
 // pinned verify key derive from it; losing it orphans every install):
@@ -17,7 +27,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { BROWSER_EXTENSION_DIR } from "../src/server/browserExtensionBundle.js";
+import {
+  BROWSER_EXTENSION_DIR,
+  buildBrowserExtensionZip,
+} from "../src/server/browserExtensionBundle.js";
+import { buildUpdatesXml, packCrx3 } from "../src/server/browserExtensionCrx.js";
 import {
   UPDATE_PAYLOAD_ASSET,
   UPDATE_SIGNATURE_ASSET,
@@ -27,13 +41,24 @@ import {
   signUpdatePayload,
 } from "../src/server/browserExtensionUpdate.js";
 
+const DEFAULT_REPO = "JinY0ung-Shin/noah-almighty";
+const CRX_ASSET = "noah-browser-bridge.crx";
+const UPDATES_XML_ASSET = "updates.xml";
+
 function fail(message: string): never {
   console.error(`\n[build-browser-extension-update] ${message}\n`);
   process.exit(1);
 }
 
 function parseArgs(argv: string[]) {
-  const args: { key?: string; out?: string } = {};
+  const args = { origins: [] as string[] } as {
+    key?: string;
+    out?: string;
+    tag?: string;
+    repo?: string;
+    crxUrl?: string;
+    origins: string[];
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     const next = () => {
@@ -43,7 +68,11 @@ function parseArgs(argv: string[]) {
     };
     if (flag === "--key") args.key = next();
     else if (flag === "--out") args.out = next();
-    else fail(`Unknown flag ${flag}. Flags: --key --out`);
+    else if (flag === "--tag") args.tag = next();
+    else if (flag === "--repo") args.repo = next();
+    else if (flag === "--crx-url") args.crxUrl = next();
+    else if (flag === "--origin") args.origins.push(next());
+    else fail(`Unknown flag ${flag}. Flags: --key --out --tag --repo --crx-url --origin`);
   }
   return args;
 }
@@ -66,44 +95,100 @@ if (!fs.existsSync(resolvedKeyPath)) {
 }
 const privateKeyPem = fs.readFileSync(resolvedKeyPath, "utf8");
 
-// The manifest `key` IS the verify key every installed extension checks this
-// signature against — a mismatch means shipping updates no install accepts
-// (and, once installs migrate, a fleet split across two extension ids).
+// The manifest `key` is BOTH the verify key installed extensions check the
+// payload signature against AND the source of the extension id a policy pins.
+// A mismatch ships updates nobody accepts under an id nobody installed.
 const manifestPath = path.join(BROWSER_EXTENSION_DIR, "manifest.json");
 const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as {
   version?: string;
   key?: string;
+  minimum_chrome_version?: string;
 };
 const expectedManifestKey = manifestKeyFromPrivateKey(privateKeyPem);
-const derivedId = extensionIdFromPublicKey(Buffer.from(expectedManifestKey, "base64"));
+const extensionId = extensionIdFromPublicKey(Buffer.from(expectedManifestKey, "base64"));
 if (manifest.key !== expectedManifestKey) {
   fail(
-    "extension/manifest.json `key` does not match the signing key — no installed extension would accept this signature.\n" +
+    "extension/manifest.json `key` does not match the signing key — no installed extension would accept\n" +
+      "this signature, and the policy channel would install under a different id.\n" +
       "One-time bootstrap for a new keypair — update ALL of these to the new key/id, commit, then re-run:\n" +
       `  1. extension/manifest.json  "key": "${expectedManifestKey}"\n` +
-      `  2. src/client/src/lib/browserBridge.ts default extension id → "${derivedId}"\n` +
-      "  3. extension/README.md 설치 안내의 예시 id, and the administrator allowedOrigins policy path\n" +
-      "     (HKLM\\...\\3rdparty\\extensions\\<id>\\policy) — the id CHANGES with the key,\n" +
-      "     so every existing install must be reloaded from a fresh zip once.",
+      `  2. src/client/src/lib/browserBridge.ts default extension id → "${extensionId}"\n` +
+      "  3. extension/README.md 설치 안내의 예시 id, and the administrator policy paths that name the id\n" +
+      "     (allowedOrigins: HKLM\\...\\3rdparty\\extensions\\<id>\\policy, plus ExtensionSettings) —\n" +
+      "     the id CHANGES with the key, so every existing install must be reloaded from a fresh zip once.",
   );
 }
+if (!manifest.version) fail(`No version in ${manifestPath}.`);
+
+// Origins baked into the RELEASED manifest. This matters most for the policy
+// channel: a policy-installed extension cannot be hand-edited, so if the Noah
+// address is not in externally_connectable the bridge fails SILENTLY on every
+// machine. Note the tradeoff — a GitHub release asset is PUBLIC, so an
+// internal hostname stamped here is visible to the world; serve the crx from
+// the Noah server (--crx-url) when that is not acceptable.
+for (const origin of args.origins) {
+  if (!/^https?:\/\/.+\/\*$/.test(origin)) {
+    fail(`--origin must be a match pattern like https://host/* (got: ${origin})`);
+  }
+}
+
+const repo = args.repo || DEFAULT_REPO;
+if (!args.tag && !args.crxUrl) {
+  fail(
+    "Pass --tag vX.Y.Z (the release these assets attach to) so updates.xml can point at this exact\n" +
+      "release's crx, or --crx-url to host it elsewhere (e.g. on the Noah server).",
+  );
+}
+const crxUrl = args.crxUrl || `https://github.com/${repo}/releases/download/${args.tag}/${CRX_ASSET}`;
 
 const outDir = args.out || path.join("dist", "extension");
 fs.mkdirSync(outDir, { recursive: true });
 
+// In-page updater assets (generic: the updater merges each install's own
+// externally_connectable back in at write time, so no origin stamping here).
 const payload = buildUpdatePayload();
 const signature = signUpdatePayload(payload, privateKeyPem);
-const payloadPath = path.join(outDir, UPDATE_PAYLOAD_ASSET);
-const signaturePath = path.join(outDir, UPDATE_SIGNATURE_ASSET);
-fs.writeFileSync(payloadPath, payload);
-fs.writeFileSync(signaturePath, `${signature}\n`);
+fs.writeFileSync(path.join(outDir, UPDATE_PAYLOAD_ASSET), payload);
+fs.writeFileSync(path.join(outDir, UPDATE_SIGNATURE_ASSET), `${signature}\n`);
 
-console.log(`extension id : ${derivedId}`);
+// Policy-channel assets. Root-level zip: Chrome requires manifest.json at the
+// crx archive root.
+const crxZip = buildBrowserExtensionZip(undefined, args.origins, "");
+const packed = packCrx3(crxZip, privateKeyPem);
+fs.writeFileSync(path.join(outDir, CRX_ASSET), packed.crx);
+fs.writeFileSync(
+  path.join(outDir, UPDATES_XML_ASSET),
+  buildUpdatesXml({
+    extensionId,
+    version: manifest.version,
+    crxUrl,
+    minChromeVersion: manifest.minimum_chrome_version,
+  }),
+);
+
+const updateUrl = `https://github.com/${repo}/releases/latest/download/${UPDATES_XML_ASSET}`;
+console.log(`extension id : ${extensionId}`);
 console.log(`version      : ${manifest.version}`);
-console.log(`payload      : ${payloadPath} (${payload.length} bytes)`);
-console.log(`signature    : ${signaturePath}`);
+console.log(`out dir      : ${outDir}`);
+console.log(`  ${UPDATE_PAYLOAD_ASSET} (${payload.length} bytes) + ${UPDATE_SIGNATURE_ASSET}`);
+console.log(`  ${CRX_ASSET} (${packed.crx.length} bytes) + ${UPDATES_XML_ASSET} → ${crxUrl}`);
+if (!args.origins.length) {
+  console.log("");
+  console.log(
+    `NOTE: no --origin given, so the crx accepts only the shipped origins. A policy install cannot be\n` +
+      "hand-edited: if the real Noah address is missing, the bridge fails silently on every machine.",
+  );
+}
 console.log("");
-console.log("Attach BOTH files to the GitHub release. The extension's updater fetches:");
+console.log("Attach ALL FOUR files to the GitHub release, then hand IT this policy (once):");
 console.log(
-  `  https://github.com/JinY0ung-Shin/noah-almighty/releases/latest/download/${UPDATE_PAYLOAD_ASSET}`,
+  JSON.stringify(
+    {
+      ExtensionSettings: {
+        [extensionId]: { installation_mode: "force_installed", update_url: updateUrl },
+      },
+    },
+    null,
+    2,
+  ),
 );

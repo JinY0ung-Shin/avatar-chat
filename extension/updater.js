@@ -11,7 +11,9 @@ import {
   base64ToBytes,
   compareDottedVersions,
   mergeManifestPreservingMatches,
+  noahOriginsFromMatches,
   validateUpdatePayload,
+  zipUrlForOrigin,
 } from "./updater-core.js";
 
 /** Stable "latest release" alias — each release attaches both assets. */
@@ -28,6 +30,8 @@ const els = {
   update: document.getElementById("update"),
   status: document.getElementById("update-status"),
   log: document.getElementById("log"),
+  manual: document.getElementById("manual"),
+  manualLinks: document.getElementById("manual-links"),
 };
 
 const manifest = chrome.runtime.getManifest();
@@ -193,13 +197,40 @@ async function reflectStoredHandle() {
   refreshUpdateButton();
 }
 
+/**
+ * Reveal the no-file-dialog path. Called whenever the picker proves
+ * unavailable — an absent API, but also a DLP agent that intercepts the dialog
+ * and answers with its own refusal. The user is stuck otherwise: the failure
+ * they see comes from software we do not control and says nothing about what
+ * to do next.
+ */
+function revealManualPath() {
+  els.manual.hidden = false;
+  const origins = noahOriginsFromMatches(manifest.externally_connectable?.matches);
+  if (origins.length) {
+    els.manualLinks.textContent = "";
+    origins.forEach((origin, index) => {
+      if (index) els.manualLinks.append(" · ");
+      const link = document.createElement("a");
+      link.href = zipUrlForOrigin(origin);
+      link.textContent = new URL(origin).host;
+      els.manualLinks.append(link);
+    });
+    els.manualLinks.append(
+      document.createTextNode(" (Noah에 로그인된 상태여야 내려받아집니다)"),
+    );
+  }
+  els.manual.scrollIntoView({ block: "nearest" });
+}
+
 async function connectFolder() {
   if (typeof window.showDirectoryPicker !== "function") {
     setStatus(
       els.folder,
-      "이 브라우저에서 폴더 접근 API를 쓸 수 없습니다 (회사 정책 차단 가능성). 수동 zip 교체를 이용하세요.",
+      "이 브라우저에서 폴더 접근 API를 쓸 수 없습니다 (회사 정책 차단 가능성). 아래 수동 방법을 이용하세요.",
       "bad",
     );
+    revealManualPath();
     return;
   }
   let handle;
@@ -209,9 +240,10 @@ async function connectFolder() {
     if (error?.name === "AbortError") return; // user cancelled — not an error
     setStatus(
       els.folder,
-      `폴더를 열 수 없습니다 (${error?.name || "오류"}). 회사 정책이 파일 접근을 막고 있다면 수동 zip 교체만 가능합니다.`,
+      `폴더를 열 수 없습니다 (${error?.name || "오류"}). 보안 정책이 파일 선택 창을 막고 있다면 아래 수동 방법만 가능합니다.`,
       "bad",
     );
+    revealManualPath();
     return;
   }
   if (!(await folderIsThisExtension(handle))) {
@@ -290,5 +322,8 @@ els.connect.addEventListener("click", connectFolder);
 els.update.addEventListener("click", runUpdate);
 
 els.current.textContent = manifest.version;
+// An absent API is knowable without a click; a DLP-intercepted dialog is not,
+// so the manual path also appears the moment a connect attempt fails.
+if (typeof window.showDirectoryPicker !== "function") revealManualPath();
 void reflectStoredHandle();
 void checkLatest();

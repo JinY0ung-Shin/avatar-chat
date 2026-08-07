@@ -169,10 +169,15 @@ function manifestWithOrigins(raw: Buffer, extraOrigins: string[]): Buffer {
  * Build the extension zip. Throws when a required file is missing — a partial
  * bundle would install and then fail in ways that are hard to diagnose, so it
  * is better for the download to fail loudly.
+ *
+ * `prefix` is the in-archive folder. The user-facing download keeps the
+ * friendly folder name; a CRX payload passes "" because Chrome requires
+ * manifest.json at the archive ROOT.
  */
 export function buildBrowserExtensionZip(
   dir: string = BROWSER_EXTENSION_DIR,
   extraOrigins: string[] = [],
+  prefix = "noah-browser-bridge/",
 ): Buffer {
   const chunks: Buffer[] = [];
   const entries: Entry[] = [];
@@ -184,7 +189,7 @@ export function buildBrowserExtensionZip(
     const raw = name === "manifest.json" ? manifestWithOrigins(onDisk, extraOrigins) : onDisk;
     const deflated = zlib.deflateRawSync(raw, { level: 9 });
     const entry: Entry = {
-      name: Buffer.from(`noah-browser-bridge/${name}`, "utf8"),
+      name: Buffer.from(`${prefix}${name}`, "utf8"),
       crc: crc32(raw),
       deflated,
       rawSize: raw.length,

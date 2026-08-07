@@ -24,6 +24,7 @@ import {
   manifestKeyFromPrivateKey,
   signUpdatePayload,
 } from "../src/server/browserExtensionUpdate.js";
+import { buildUpdatesXml, packCrx3 } from "../src/server/browserExtensionCrx.js";
 import { loadConfig } from "../src/server/config.js";
 import { applyCustomGithubCa } from "../src/server/tlsCa.js";
 import { loadDotEnv } from "../src/server/loadEnv.js";
@@ -1302,6 +1303,65 @@ describe("browser extension self-update artifacts", () => {
         bytes(tampered),
       ),
     ).toBe(false);
+  });
+
+  it("packs a crx3 Chrome can verify, carrying the zip byte-for-byte", async () => {
+    // Chrome reads manifest.json at the crx archive ROOT; the friendly
+    // noah-browser-bridge/ folder of the manual download would brick it.
+    const zip = buildBrowserExtensionZip(undefined, [], "");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-crx-"));
+    fs.writeFileSync(path.join(dir, "b.zip"), zip);
+    execFileSync("unzip", ["-q", path.join(dir, "b.zip"), "-d", dir], { stdio: "pipe" });
+    expect(fs.existsSync(path.join(dir, "manifest.json"))).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+
+    const packed = packCrx3(zip, pem);
+    expect(packed.crx.subarray(0, 4).toString("latin1")).toBe("Cr24");
+    expect(packed.crx.readUInt32LE(4)).toBe(3);
+    const headerLen = packed.crx.readUInt32LE(8);
+    expect(packed.crx.subarray(12 + headerLen).equals(zip)).toBe(true);
+
+    // The signature must cover EXACTLY what Chrome hashes: magic, the
+    // signed-header length, the header, then the archive.
+    const shdLength = Buffer.alloc(4);
+    shdLength.writeUInt32LE(packed.signedHeaderData.length, 0);
+    const signed = Buffer.concat([
+      Buffer.from("CRX3 SignedData\x00", "latin1"),
+      shdLength,
+      packed.signedHeaderData,
+      zip,
+    ]);
+    expect(
+      crypto.verify(
+        "sha256",
+        signed,
+        crypto.createPublicKey({ key: packed.publicKeyDer, format: "der", type: "spki" }),
+        packed.signature,
+      ),
+    ).toBe(true);
+    // crx_id inside signed_header_data is what ties the payload to the id a
+    // policy pinned (field 1, so the first two bytes are the proto tag+len).
+    expect(
+      packed.signedHeaderData
+        .subarray(2)
+        .equals(crypto.createHash("sha256").update(packed.publicKeyDer).digest().subarray(0, 16)),
+    ).toBe(true);
+  });
+
+  it("escapes updates.xml attributes and pins appid, version, and codebase", () => {
+    const xml = buildUpdatesXml({
+      extensionId: "abcdefghijklmnopabcdefghijklmnop",
+      version: "0.8.0",
+      crxUrl: "https://github.com/o/r/releases/download/v1.3.0/bridge.crx?a=1&b='x'",
+      minChromeVersion: "116",
+    });
+    expect(xml).toContain("appid='abcdefghijklmnopabcdefghijklmnop'");
+    expect(xml).toContain("version='0.8.0'");
+    expect(xml).toContain("prodversionmin='116'");
+    // An unescaped apostrophe would end the attribute and hand Chrome a
+    // malformed manifest — the whole fleet's update check then fails.
+    expect(xml).toContain("&amp;b=&apos;x&apos;");
+    expect(xml).not.toContain("b='x'");
   });
 
   it("derives extension ids exactly like the bundle helper (Chrome's a-p mapping)", () => {

@@ -3,7 +3,9 @@ import {
   base64ToBytes,
   compareDottedVersions,
   mergeManifestPreservingMatches,
+  noahOriginsFromMatches,
   validateUpdatePayload,
+  zipUrlForOrigin,
   // @ts-expect-error — plain JS module that ships inside the extension bundle.
 } from "../extension/updater-core.js";
 
@@ -83,6 +85,38 @@ describe("mergeManifestPreservingMatches", () => {
 
   it("throws on unparseable manifest bytes rather than writing them", () => {
     expect(() => mergeManifestPreservingMatches("not json", [])).toThrow();
+  });
+});
+
+describe("noahOriginsFromMatches", () => {
+  it("orders the real deployment ahead of the dev entries every build ships", () => {
+    expect(
+      noahOriginsFromMatches([
+        "http://localhost:5173/*",
+        "https://noah.corp.local/*",
+        "http://127.0.0.1:48787/*",
+      ]),
+    ).toEqual(["https://noah.corp.local", "http://localhost:5173", "http://127.0.0.1:48787"]);
+  });
+
+  it("drops junk and duplicates rather than rendering a broken link", () => {
+    expect(
+      noahOriginsFromMatches([
+        "https://noah.corp.local/*",
+        "https://noah.corp.local/other/*", // same origin, different path
+        "not a pattern",
+        "file:///etc/*",
+        42,
+        null,
+      ]),
+    ).toEqual(["https://noah.corp.local"]);
+    expect(noahOriginsFromMatches(undefined)).toEqual([]);
+  });
+
+  it("points at the server's zip endpoint", () => {
+    expect(zipUrlForOrigin("https://noah.corp.local")).toBe(
+      "https://noah.corp.local/api/browser-extension.zip",
+    );
   });
 });
 

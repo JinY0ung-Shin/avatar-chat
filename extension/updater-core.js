@@ -91,6 +91,33 @@ export function mergeManifestPreservingMatches(newManifestJson, currentMatches) 
   return `${JSON.stringify(manifest, null, 2)}\n`;
 }
 
+/**
+ * Noah addresses this install talks to, derived from its OWN
+ * `externally_connectable.matches` — the manual fallback links to the zip on
+ * the server the user actually reaches. Localhost sorts last: a dev entry
+ * ships in every build, and it must never outrank the real deployment.
+ */
+export function noahOriginsFromMatches(matches) {
+  const origins = [];
+  for (const pattern of Array.isArray(matches) ? matches : []) {
+    if (typeof pattern !== "string") continue;
+    try {
+      const url = new URL(pattern.replace(/\*$/, ""));
+      if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+      if (!origins.includes(url.origin)) origins.push(url.origin);
+    } catch {
+      // A malformed match pattern is not worth failing the page over.
+    }
+  }
+  const local = (origin) => /^https?:\/\/(localhost|127\.0\.0\.1)(:|$)/.test(origin);
+  return [...origins.filter((o) => !local(o)), ...origins.filter(local)];
+}
+
+/** Where a given Noah server hands out the extension zip (cookie-authenticated). */
+export function zipUrlForOrigin(origin) {
+  return `${origin}/api/browser-extension.zip`;
+}
+
 /** base64 → bytes, for the manifest `key` (SPKI) and the detached signature. */
 export function base64ToBytes(b64) {
   const binary = atob(String(b64).replace(/\s+/g, ""));

@@ -67,6 +67,13 @@ unpacked 확장의 업데이트는 "폴더 파일 교체 + 리로드"가 전부�
    → 확장을 스스로 리로드합니다. 손으로 추가한 `externally_connectable.matches`는
    원클릭과 동일하게 **병합 유지**됩니다.
 
+**사내 DLP가 파일 선택 창을 가로채면 이 버튼은 쓸 수 없습니다.** "허용된 업로드 URL이
+아니다" 류의 메시지는 확장이 아니라 보안 에이전트가 낸 것이고, 코드로 우회할 수 없습니다
+(우회해서도 안 됩니다). 그 경우 업데이트 페이지가 **파일 선택 창이 없는 수동 경로**를
+자동으로 펼쳐 보여줍니다 — zip 내려받기 → 탐색기에서 폴더에 덮어쓰기 → `chrome://extensions`
+새로고침(↻). 압축 해제는 브라우저 밖에서 일어나고 ↻는 선택 창을 열지 않으므로 정책과
+무관합니다. 근본 해결은 아래 **정책 설치 채널**입니다.
+
 전제와 한계:
 
 - **서명 키 부트스트랩이 선행돼야 합니다.** 커밋된 기존 `key`는 개인키가 없으므로, 새
@@ -84,6 +91,53 @@ unpacked 확장의 업데이트는 "폴더 파일 교체 + 리로드"가 전부�
 - 회사 정책이 File System Access를 **확장 페이지에서도** 막으면(전역 차단) 이 버튼도
   같은 이유로 동작하지 않습니다 — 그 경우 남는 건 수동 zip 교체뿐이고, 업데이트 페이지가
   그 상황을 감지해 안내합니다.
+
+## 정책 설치 채널 — 사용자 조작 0회 자동 갱신 (0.8.0)
+
+파일 선택 창이 정책으로 막힌 환경의 **근본 해결책**입니다. Chrome이 확장을 자동 설치·갱신해
+주는 경로는 웹스토어 아니면 **관리자 정책이 지정한 `update_url`** 뿐이고, 손으로 로드한
+unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은 Chrome이 직접 내려받아 설치하므로
+파일 선택 창이 등장하지 않습니다.
+
+1. **키 생성 (1회, .pem 영구 보관):**
+   `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out ~/.noah/browser-bridge-key.pem`
+   이어서 `npm run build:extension-update`를 실행하면 manifest `key`/클라이언트 기본 id 등
+   **어디를 새 값으로 바꿔야 하는지 스크립트가 정확히 출력**합니다. id가 바뀌므로 기존 설치는
+   새 zip으로 1회 재설치해야 하고, allowedOrigins 정책의 레지스트리 경로도 새 id를 씁니다.
+2. **빌드:** `BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem npm run build:extension-update -- --tag v1.3.0 --origin "https://noah.사내주소/*"`
+   → `dist/extension/`에 4개 파일(업데이터용 json/sig + 정책용 crx/updates.xml). `/release`
+   워크플로가 릴리즈 에셋으로 첨부합니다.
+3. **IT에 정책 1회 등록** (빌드 스크립트가 그대로 출력합니다):
+
+   ```json
+   {
+     "ExtensionSettings": {
+       "<확장ID>": {
+         "installation_mode": "force_installed",
+         "update_url": "https://github.com/JinY0ung-Shin/noah-almighty/releases/latest/download/updates.xml"
+       }
+     }
+   }
+   ```
+
+   등록은 "최신"을 가리키는 고정 주소를 넣는 것이라 **이후 릴리즈마다 IT가 다시 할 일은
+   없습니다.** 사용자가 확장을 지울 수 있게 하려면 `normal_installed`로 바꿔도 자동 갱신은
+   동일하게 동작합니다.
+
+반드시 알아둘 것:
+
+- **`--origin`으로 실제 Noah 주소를 반드시 구우세요.** 정책 설치본은 사용자가 매니페스트를
+  손댈 수 없어서, `externally_connectable`에 주소가 없으면 **모든 단말에서 브릿지가 조용히
+  실패**합니다(페이지에 `chrome.runtime`이 아예 없어 오류조차 안 납니다).
+- **GitHub 릴리즈 에셋은 공개입니다.** 위처럼 사내 호스트명을 구우면 외부에 노출됩니다.
+  곤란하면 crx를 Noah 서버에서 서빙하고 `--crx-url`로 그 주소를 지정하세요 (updates.xml의
+  `codebase`만 바뀝니다).
+- **사내 단말의 Chrome이 `update_url`에 닿아야 합니다.** GitHub이 막혀 있으면 두 파일을
+  Noah 서버가 서빙하고 정책의 `update_url`도 사내 주소로 바꾸면 됩니다.
+- 정책 설치는 "디버깅 중" 배너를 없앱니다. 배너의 취소 버튼이라는 중단 수단이 사라지므로,
+  **탭을 Noah 그룹 밖으로 끌어내는 것이 즉시 회수 수단**임을 사용자에게 안내해야 합니다.
+- 같은 키를 쓰는 한 정책 설치와 unpacked 설치는 **같은 id**입니다(동시 설치는 불가 — 정책
+  설치가 이깁니다). 개발 장비의 unpacked 설치는 그대로 두어도 됩니다.
 
 ## 허용 사이트 설정 — 기본은 전면 거부
 
