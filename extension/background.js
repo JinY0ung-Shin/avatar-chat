@@ -27,10 +27,11 @@ const CDP_VERSION = "1.3";
 /**
  * Default-deny allowlist of CDP methods. Everything the bridge needs and
  * nothing else — notably no `Runtime.*`, no `Network.*` (which would reach
- * cookies), no `Storage.*`, no `Browser.*`. The two read-only additions stay
+ * cookies), no `Storage.*`, no `Browser.*`. The read-only additions stay
  * inside that line: `DOM.describeNode` reads structure, `Page.captureScreenshot`
  * reads pixels — the same exfiltration class as a snapshot, gated by the same
- * origin allowlist.
+ * origin allowlist — and `DOM.getNodeForLocation` hit-tests a point so a
+ * coordinate click can report what it landed on instead of assuming success.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
@@ -39,6 +40,7 @@ const CDP_ALLOWLIST = new Set([
   "DOM.enable",
   "DOM.getBoxModel",
   "DOM.getContentQuads",
+  "DOM.getNodeForLocation",
   "DOM.focus",
   "DOM.scrollIntoViewIfNeeded",
   "Input.dispatchKeyEvent",
@@ -112,6 +114,17 @@ const attached = new Map();
 /** uid -> { tabId, sessionId, backendNodeId } from the most recent snapshot. */
 let refMap = new Map();
 let refSeq = 0;
+
+/**
+ * Pixel→CSS mapping of the most recent screenshot, so `click_at` can invert
+ * the downscale the capture applied. Coordinates are only valid for the
+ * screenshot that produced them — unlike snapshot uids there is no mint-time
+ * reset, so the click_at branch re-checks tab, URL, scroll origin, and
+ * viewport size at CLICK time and refuses on drift. Non-viewport modes are
+ * recorded too, so the refusal can say WHY those pixels don't map onto input
+ * coordinates.
+ */
+let lastShot = null;
 
 // ---------------------------------------------------------------- CDP plumbing
 
@@ -549,7 +562,7 @@ async function centerOf(ref) {
  * talks to the renderer's input method directly. That split is exactly what
  * made click and press_key look like successful no-ops.
  */
-const INPUT_OPS = new Set(["click", "type", "fill_form", "select_option", "press_key", "hover", "scroll"]);
+const INPUT_OPS = new Set(["click", "click_at", "type", "fill_form", "select_option", "press_key", "hover", "scroll"]);
 
 /**
  * Ops that need the tab VISIBLE even though they dispatch no input: capturing
@@ -575,8 +588,8 @@ async function showTab(tab) {
   }
 }
 
-async function clickNode(ref) {
-  const { target, x, y } = await centerOf(ref);
+/** Dispatch a full left click (move → press → release) at a viewport point. */
+async function clickPoint(target, x, y) {
   const base = { x, y, button: "left", clickCount: 1, pointerType: "mouse" };
   // Hit-testing starts from the last known pointer position, so a press with no
   // preceding move can resolve against a stale target; and `buttons` carries the
@@ -594,8 +607,73 @@ async function clickNode(ref) {
   await sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...base });
 }
 
+async function clickNode(ref) {
+  const { target, x, y } = await centerOf(ref);
+  await clickPoint(target, x, y);
+}
+
 async function clickRef(uid) {
   return clickNode(resolveRef(uid));
+}
+
+/**
+ * Best-effort description of the element at a viewport point — the blind spot
+ * of a coordinate click. Read-only (`DOM.getNodeForLocation` + `describeNode`);
+ * any failure degrades to "no description", never to a failed click. When the
+ * point lands in a cross-origin frame the root session resolves the <iframe>
+ * element itself, which is still an honest answer.
+ */
+async function describePoint(tabId, x, y) {
+  try {
+    // ensureAttached already enabled the DOM domain for this tab.
+    const target = { tabId };
+    const { backendNodeId } = await sendCdp(target, "DOM.getNodeForLocation", {
+      x: Math.round(x),
+      y: Math.round(y),
+    });
+    if (!backendNodeId) return null;
+    // Cross-check: the node's own geometry must contain the point. If the hit
+    // test resolved in a different coordinate space (scroll offset, zoom),
+    // the mismatch surfaces here — describe NOTHING rather than the wrong
+    // element, since this line exists to keep a blind click honest.
+    const { quads } = await sendCdp(target, "DOM.getContentQuads", { backendNodeId });
+    const contains = (quads || []).some((quad) => {
+      const xs = [quad[0], quad[2], quad[4], quad[6]];
+      const ys = [quad[1], quad[3], quad[5], quad[7]];
+      return (
+        x >= Math.min(...xs) - 1 &&
+        x <= Math.max(...xs) + 1 &&
+        y >= Math.min(...ys) - 1 &&
+        y <= Math.max(...ys) + 1
+      );
+    });
+    if (!contains) return null;
+    const { node } = await sendCdp(target, "DOM.describeNode", { backendNodeId, depth: 2 });
+    if (!node) return null;
+    const attrs = {};
+    const flat = node.attributes || [];
+    for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i]] = flat[i + 1];
+    // First non-empty text anywhere in the described subtree, so a wrapper
+    // like <button><span>Save</span></button> still yields a label.
+    const firstText = (nodes) => {
+      for (const child of nodes || []) {
+        if (child.nodeName === "#text" && (child.nodeValue || "").trim()) {
+          return child.nodeValue.trim();
+        }
+        const nested = firstText(child.children);
+        if (nested) return nested;
+      }
+      return "";
+    };
+    const label =
+      attrs["aria-label"] || attrs.title || attrs.alt || attrs.placeholder || firstText(node.children);
+    const tag = String(node.nodeName || "?").toLowerCase();
+    const id = attrs.id ? ` id="${attrs.id}"` : "";
+    const role = attrs.role ? ` role="${attrs.role}"` : "";
+    return `<${tag}${id}${role}>${label ? ` "${label.slice(0, 80)}"` : ""}`.slice(0, 200);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -1066,6 +1144,20 @@ async function captureShot(tab, message) {
   if (!data) {
     throw new Error("The browser returned an empty screenshot. Retry after the page settles.");
   }
+  // Remember this capture's pixel→CSS mapping so click_at can invert it. Only
+  // a viewport capture's origin coincides with the input coordinate space;
+  // element/fullPage clips are page-absolute and must be refused there. URL,
+  // scroll origin, and viewport size anchor the click-time drift check.
+  lastShot = {
+    tabId: tab.id,
+    url: tab.url || "",
+    mode: message.uid ? "element" : message.fullPage ? "fullPage" : "viewport",
+    scale,
+    clipWidth: clip.width,
+    clipHeight: clip.height,
+    pageX: viewport.pageX || 0,
+    pageY: viewport.pageY || 0,
+  };
   return { imageBase64: data, imageMimeType: "image/jpeg" };
 }
 
@@ -1175,6 +1267,10 @@ async function perform(message) {
     return dialogBlockedResult(tab);
   }
 
+  // click_at's pre-click hit-test result, reported alongside the snapshot so a
+  // blind coordinate click states what it actually hit.
+  let landedOn = null;
+
   // Read-only extraction ops answer directly: their payload REPLACES the
   // snapshot, so the common action tail below (which walks the AX tree again)
   // would only double what the agent pays for.
@@ -1254,6 +1350,81 @@ async function perform(message) {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
     await raceDialogOpen(tab.id, clickRef(message.uid));
+    await waitForLoad(tab.id, 5000);
+  } else if (message.op === "click_at") {
+    const x = message.x;
+    const y = message.y;
+    if (
+      typeof x !== "number" ||
+      typeof y !== "number" ||
+      !Number.isFinite(x) ||
+      !Number.isFinite(y) ||
+      x < 0 ||
+      y < 0
+    ) {
+      return {
+        ok: false,
+        message:
+          "click_at needs numeric, non-negative `x` and `y` — pixel coordinates measured on the most recent viewport screenshot.",
+      };
+    }
+    if (!lastShot || lastShot.tabId !== tab.id) {
+      return {
+        ok: false,
+        message:
+          "No screenshot of THIS tab to take coordinates from. Take a fresh mcp__browser__screenshot of the viewport " +
+          "(no uid, no fullPage) first — click_at coordinates are pixel positions measured on that image.",
+      };
+    }
+    if (lastShot.mode !== "viewport") {
+      return {
+        ok: false,
+        message:
+          `The most recent screenshot captured ${lastShot.mode === "fullPage" ? "the full page" : "a single element"}, ` +
+          "whose pixels do not map onto viewport click coordinates. Take a plain viewport screenshot " +
+          "(no uid, no fullPage), then pass pixel positions measured on that image.",
+      };
+    }
+    const imageWidth = Math.round(lastShot.clipWidth * lastShot.scale);
+    const imageHeight = Math.round(lastShot.clipHeight * lastShot.scale);
+    if (x > imageWidth || y > imageHeight) {
+      return {
+        ok: false,
+        message:
+          `(${x}, ${y}) is outside the most recent screenshot image (${imageWidth}×${imageHeight}px). ` +
+          "Coordinates are pixel positions on that image — take a fresh viewport screenshot if the page changed.",
+      };
+    }
+    // Drift check: the mapping is only valid while the page still shows what
+    // the capture showed. A scroll, resize, or navigation moves DIFFERENT
+    // content under the same image pixel — and a stale image size would even
+    // pass the bounds check above — so refuse rather than click something the
+    // model never saw. (±2px absorbs subpixel scroll jitter.)
+    const nowMetrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
+    const nowView = nowMetrics.cssVisualViewport || nowMetrics.cssLayoutViewport || {};
+    const drifted =
+      (tab.url || "") !== lastShot.url ||
+      Math.abs((nowView.pageX || 0) - lastShot.pageX) > 2 ||
+      Math.abs((nowView.pageY || 0) - lastShot.pageY) > 2 ||
+      Math.abs((nowView.clientWidth || 0) - lastShot.clipWidth) > 2 ||
+      Math.abs((nowView.clientHeight || 0) - lastShot.clipHeight) > 2;
+    if (drifted) {
+      return {
+        ok: false,
+        message:
+          "The page has navigated, scrolled, or resized since that screenshot was taken, so its pixel coordinates " +
+          "no longer point at the same content. Take a fresh viewport screenshot and measure the position again.",
+      };
+    }
+    // The capture downscaled CSS pixels by `scale`; invert it to land on the
+    // exact point the model saw, clamped a hair inside the viewport so an
+    // exact-edge coordinate still hits the page. A viewport capture's image
+    // origin IS the viewport origin, so no offset applies (enforced above).
+    // Hit-test BEFORE clicking: the click itself may change what sits there.
+    const cssX = Math.min(x / lastShot.scale, lastShot.clipWidth - 1);
+    const cssY = Math.min(y / lastShot.scale, lastShot.clipHeight - 1);
+    landedOn = await describePoint(tab.id, cssX, cssY);
+    await raceDialogOpen(tab.id, clickPoint({ tabId: tab.id }, cssX, cssY));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "type") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
@@ -1411,8 +1582,12 @@ async function perform(message) {
   if (fresh.url && !originAllowed(fresh.url, patterns)) return refuseOrigin(fresh.url, source);
 
   // A dialog may have opened as a RESULT of the action (click → confirm). The
-  // snapshot walk would hang on the frozen renderer — report the dialog instead.
-  if (pendingDialogs.has(tab.id)) return dialogBlockedResult(fresh);
+  // snapshot walk would hang on the frozen renderer — report the dialog
+  // instead, keeping what a coordinate click landed on: the confirm() case is
+  // exactly when knowing what was clicked matters most.
+  if (pendingDialogs.has(tab.id)) {
+    return { ...(await dialogBlockedResult(fresh)), ...(landedOn ? { landedOn } : {}) };
+  }
 
   const snapshot = await buildSnapshot(fresh);
   // Always report the group's tabs: the agent needs to know a new tab appeared
@@ -1423,6 +1598,7 @@ async function perform(message) {
     url: fresh.url,
     title: fresh.title,
     tabs: (await groupedTabs()).map(describeTab),
+    ...(landedOn ? { landedOn } : {}),
   };
 }
 

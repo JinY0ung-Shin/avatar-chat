@@ -14,6 +14,7 @@ export const BROWSER_TOOL_NAMES = [
   "mcp__browser__navigate",
   "mcp__browser__navigate_back",
   "mcp__browser__click",
+  "mcp__browser__click_at",
   "mcp__browser__type",
   "mcp__browser__fill_form",
   "mcp__browser__select_option",
@@ -46,9 +47,10 @@ export interface BrowserToolsContext {
   allowed: boolean;
   /**
    * Whether the model THIS run resolved to accepts image input (the per-tier
-   * vision policy). Gates `screenshot` only — defaults to false so a caller
-   * that forgets to wire it gets a polite refusal instead of an API error
-   * when an image block reaches a text-only model.
+   * vision policy). Gates `screenshot` AND `click_at` (whose coordinates have
+   * no source without a screenshot) — defaults to false so a caller that
+   * forgets to wire it gets a polite refusal instead of an API error when an
+   * image block reaches a text-only model.
    */
   vision?: boolean;
 }
@@ -123,6 +125,12 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
         `${result.dialog.message || "(no message)"}${result.dialog.defaultPrompt ? `\n(default input: ${result.dialog.defaultPrompt})` : ""}`,
       )
     : "";
+  // click_at reports what sat at the clicked point — the re-read that keeps a
+  // blind coordinate click honest. The description is page-derived (tag,
+  // aria-label, text), so it rides the same quarantine as any page content.
+  const landed = result.landedOn
+    ? `\n\nElement at the clicked point:\n${wrapUntrustedPageContent(result.landedOn)}`
+    : "";
   const tabs = result.tabs?.length
     ? `\n\nTabs you may use (* = current):\n${wrapUntrustedPageContent(formatTabs(result.tabs))}`
     : "";
@@ -136,7 +144,7 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
       }):\n${wrapUntrustedPageContent(page.text)}`
     : "";
   const body = result.snapshot ? `\n\n${wrapUntrustedPageContent(result.snapshot)}` : "";
-  const message = `${okNote}${where}${dialog}${tabs}${pageText}${body}`;
+  const message = `${okNote}${where}${dialog}${landed}${tabs}${pageText}${body}`;
   // A screenshot rides as a real image block. Pixels are page-authored too:
   // rendered text can carry injected instructions exactly like snapshot text,
   // so the caption restates the warning the wrapper gives textual content.
@@ -287,6 +295,54 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         return report(
           await ctx.execute({ op: "click", uid: args.uid }),
           `Clicked ${args.uid}.`,
+        );
+      },
+    ),
+    tool(
+      "click_at",
+      "Click a POINT in the user's browser, by pixel coordinates measured on the most recent viewport " +
+        "screenshot. This is the fallback for targets a snapshot cannot address — canvas editors, maps, " +
+        "drawn charts, custom widgets with no accessibility entry. Prefer `click` with a uid whenever the " +
+        "target appears in the snapshot. Workflow: take a fresh `screenshot` (no uid, no fullPage), locate " +
+        "the target on that image, pass its pixel position here, then CHECK the reported landed-on element " +
+        "actually is what you aimed at. If the page scrolled or changed since the capture, coordinates are " +
+        "stale — re-screenshot first. A consequential click (submitting, deleting, paying, sending) may " +
+        "require the user's explicit confirmation, same as `click`.",
+      {
+        x: z
+          .number()
+          .min(0)
+          .max(20000)
+          .describe("Horizontal pixel position on the most recent viewport screenshot (0 = left edge)."),
+        y: z
+          .number()
+          .min(0)
+          .max(20000)
+          .describe("Vertical pixel position on the most recent viewport screenshot (0 = top edge)."),
+      },
+      async (args) => {
+        const denied = gate();
+        if (denied) return denied;
+        if (!ctx.vision) {
+          return text(
+            "click_at takes its coordinates from a screenshot, and the model serving this conversation " +
+              "cannot receive images. Take a mcp__browser__snapshot and click elements by uid instead.",
+            true,
+          );
+        }
+        const result = await ctx.execute({ op: "click_at", x: args.x, y: args.y });
+        // The landed-on report is the ONE thing keeping a blind coordinate
+        // click honest, so its absence must read as a warning, never blend
+        // into success. A dialog result is exempt: the click plainly landed
+        // (it opened the dialog) and handle_dialog is the only next step.
+        const unidentified =
+          result.behavior === "ok" && !result.landedOn && !result.dialog;
+        return report(
+          result,
+          unidentified
+            ? `Clicked the point (${args.x}, ${args.y}), but the element at that point could NOT be identified. ` +
+                "Do not assume the click hit its target — verify the intended effect in the snapshot below or a fresh screenshot."
+            : `Clicked the point (${args.x}, ${args.y}).`,
         );
       },
     ),

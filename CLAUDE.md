@@ -55,7 +55,8 @@ These are the invariants the project is built around. New work should reinforce 
   `extension/background.js`) plus BOTH metacognition surfaces; nothing type-checks across the gap, so a
   field missed in the middle arrives `undefined`. The security boundary is the extension's default-deny
   `CDP_ALLOWLIST` (no `Runtime.*`/`Network.*`/`Storage.*`), NOT the permission manifest — elements are
-  addressed by `backendNodeId`, so an op that cannot be executed directly must be driven the way a
+  addressed by `backendNodeId` (plus screenshot-pixel `click_at` as the deliberate escape hatch for
+  AX-invisible targets), so an op that cannot be executed directly must be driven the way a
   PERSON would AND re-read what it landed on instead of assuming success. Everything the page returns
   (snapshot text, `read_text` chunks, screenshot pixels) is UNTRUSTED input. Mechanics →
   `docs/ARCHITECTURE-NOTES.md` §Browser bridge.

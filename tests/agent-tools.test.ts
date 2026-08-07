@@ -3683,6 +3683,7 @@ describe("browser bridge tools", () => {
       navigate: { url: "https://intra.example" },
       navigate_back: {},
       click: { uid: "e1" },
+      click_at: { x: 10, y: 20 },
       type: { uid: "e1", value: "hi" },
       fill_form: { fields: [{ uid: "e1", value: "hi" }] },
       select_option: { uid: "e1", option: "A" },
@@ -3815,6 +3816,58 @@ describe("browser bridge interaction ops", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain("300");
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("refuses click_at without vision, before reaching the bridge", async () => {
+    // Coordinates come from a screenshot; a text-only model has no source for
+    // them, so the tool must redirect to uid clicks instead of clicking blind.
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "click_at", { x: 10, y: 20 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("cannot receive images");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("passes click_at coordinates through and quarantines the landed-on description", async () => {
+    const execute = ok({ landedOn: '<button id="save"> "Save"' });
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "click_at", { x: 412, y: 300 });
+    expect(execute).toHaveBeenLastCalledWith({ op: "click_at", x: 412, y: 300 });
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text ?? "";
+    expect(out).toContain("Clicked the point (412, 300)");
+    expect(out).not.toContain("could NOT be identified");
+    // The landed-on element is page-derived text — it must sit inside the
+    // untrusted wrapper, never ride as trusted prose.
+    expect(out).toContain("Element at the clicked point:");
+    expect(out.indexOf("<page_content>")).toBeLessThan(out.indexOf('id="save"'));
+  });
+
+  it("flags a click_at whose landing element could not be identified", async () => {
+    // The hit-test is best-effort; when it yields nothing the absence must
+    // read as a warning, not blend into success — the model was told to CHECK
+    // the landed-on element.
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "click_at", { x: 5, y: 6 });
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text ?? "";
+    expect(out).toContain("could NOT be identified");
+    expect(out).toContain("Do not assume the click hit its target");
+  });
+
+  it("does not flag an unidentified click_at when it opened a dialog", async () => {
+    // A dialog IS proof the click landed; the only next step is handle_dialog.
+    const execute = ok({
+      snapshot: "",
+      dialog: { type: "confirm", message: "정말 삭제할까요?", defaultPrompt: "" },
+    });
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "click_at", { x: 5, y: 6 });
+    const out = res.content[0].text ?? "";
+    expect(out).not.toContain("could NOT be identified");
+    expect(out).toContain('"confirm" dialog is OPEN');
   });
 
   it("rejects a wait_for with no condition before reaching the bridge", async () => {

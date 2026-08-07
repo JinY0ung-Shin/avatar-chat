@@ -815,11 +815,24 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `tests/infra.test.ts` pins it at or below the bundled manifest version: above it, even a
   just-downloaded extension badges orange forever, telling users to update to something no download
   provides.
-- **`screenshot` is gated on the RUN's resolved vision policy** (`runVisionEnabled` →
+- **`screenshot` AND `click_at` are gated on the RUN's resolved vision policy** (`runVisionEnabled` →
   `BrowserToolsContext.vision`, defaulting to `false` so an unwired caller gets a polite refusal rather
-  than an API error). `routes/chat.ts` caps the relayed base64 and whitelists the mime type — the
-  extension is semi-trusted and that string lands in an API image block. The caption restates that the
-  pixels are untrusted page content.
+  than an API error; click_at's coordinates have no source without a screenshot). `routes/chat.ts` caps
+  the relayed base64 and whitelists the mime type — the extension is semi-trusted and that string lands
+  in an API image block. The caption restates that the pixels are untrusted page content.
+- **`click_at` clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** Screenshots are
+  downscaled (`SCREENSHOT_MAX_WIDTH` 1400), so the pixels the model sees ≠ CSS px. The extension
+  remembers the LAST capture's mapping (`lastShot`: tabId/mode/scale/clip dims) and inverts the scale at
+  click time — viewport captures only; element/fullPage clips are page-absolute and refused with a
+  redirect to a plain viewport screenshot. Same lifetime rule as uids: coordinates are only valid for
+  the screenshot that produced them — enforced at CLICK time, not mint time: the branch re-reads
+  `Page.getLayoutMetrics` and refuses on URL/scroll/viewport-size drift (a stale image size would even
+  pass the bounds check). Before dispatching, the point is hit-tested read-only
+  (`DOM.getNodeForLocation` + `describeNode` — the only CDP-allowlist additions, geometry
+  cross-checked via `getContentQuads` so a wrong-space hit degrades to silence, never a lie) and the
+  landed-on element rides back (`landedOn`, quarantined as page content, capped in the relay). An
+  UNIDENTIFIED landing is stated as a warning in the tool result ("could NOT be identified") — absence
+  must never read as success, since the landed-on report is the one thing keeping a blind click honest.
 - **Audit policy: actions PLUS deliberate reads.** `screenshot`/`read_text` get rows (they are the
   exfiltration surface); `snapshot`/`wait_for` never do — they fire between every step and would bury
   the rows that matter. URLs are scrubbed of userinfo and query string.

@@ -25,6 +25,8 @@ export interface BridgeReply {
   /** screenshot: captured image bytes, base64 (no data: prefix). */
   imageBase64?: string;
   imageMimeType?: string;
+  /** click_at: element found at the clicked point (page-derived text). */
+  landedOn?: string;
   /** read_text: one chunk of the page's readable text, plus its range. */
   pageText?: string;
   pageTextOffset?: number;
@@ -36,6 +38,7 @@ export interface BridgeOperation {
     | "snapshot"
     | "navigate"
     | "click"
+    | "click_at"
     | "type"
     | "fill_form"
     | "select_option"
@@ -53,6 +56,9 @@ export interface BridgeOperation {
     | "close_tab";
   url?: string | null;
   uid?: string | null;
+  /** click_at: pixel coordinates on the most recent viewport screenshot. */
+  x?: number | null;
+  y?: number | null;
   text?: string | null;
   submit?: boolean;
   keystrokes?: boolean;

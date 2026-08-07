@@ -1893,6 +1893,8 @@ export function createChatRouter({
                   op: requestData.op,
                   url: requestData.url ?? null,
                   uid: requestData.uid ?? null,
+                  x: typeof requestData.x === "number" ? requestData.x : null,
+                  y: typeof requestData.y === "number" ? requestData.y : null,
                   text: requestData.text ?? null,
                   submit: Boolean(requestData.submit),
                   keystrokes: Boolean(requestData.keystrokes),
@@ -1930,6 +1932,7 @@ export function createChatRouter({
                   dialog?: { type?: string; message?: string; defaultPrompt?: string };
                   imageBase64?: string;
                   imageMimeType?: string;
+                  landedOn?: string;
                   pageText?: string;
                   pageTextOffset?: number;
                   pageTextTotal?: number;
@@ -1961,6 +1964,9 @@ export function createChatRouter({
                     [
                       `op=${requestData.op}`,
                       requestData.uid ? `uid=${requestData.uid}` : "",
+                      typeof requestData.x === "number" && typeof requestData.y === "number"
+                        ? `at=(${requestData.x},${requestData.y})`
+                        : "",
                       requestData.key
                         ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`
                         : "",
@@ -2010,6 +2016,12 @@ export function createChatRouter({
                               ? reply.imageMimeType
                               : "image/jpeg",
                         }
+                      : undefined,
+                  // Bounded: a one-line element description, not a page dump —
+                  // the extension is semi-trusted and this rides into the model.
+                  landedOn:
+                    typeof reply.landedOn === "string" && reply.landedOn
+                      ? reply.landedOn.slice(0, 300)
                       : undefined,
                   pageText:
                     typeof reply.pageText === "string"

@@ -273,6 +273,7 @@ export interface BrowserRequest {
     | "snapshot"
     | "navigate"
     | "click"
+    | "click_at"
     | "type"
     | "fill_form"
     | "select_option"
@@ -292,6 +293,9 @@ export interface BrowserRequest {
   url?: string;
   /** click/type/hover (and optionally press_key/scroll): element uid minted by the previous snapshot. */
   uid?: string;
+  /** click_at only: pixel coordinates measured on the most recent viewport screenshot image. */
+  x?: number;
+  y?: number;
   /** type: the literal text to enter. wait_for: text that must appear. */
   text?: string;
   /** type only: press Enter afterwards. */
@@ -352,6 +356,8 @@ export type BrowserResult =
       dialog?: { type: string; message: string; defaultPrompt?: string };
       /** screenshot: captured image (base64 bytes) — pixels of UNTRUSTED page content. */
       image?: { base64: string; mimeType: string };
+      /** click_at: element found at the clicked point — UNTRUSTED page content. */
+      landedOn?: string;
       /** read_text: one chunk of the page's readable text — UNTRUSTED page content. */
       pageText?: { text: string; offset: number; total: number };
     }
