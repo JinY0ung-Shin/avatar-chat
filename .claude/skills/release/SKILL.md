@@ -63,8 +63,22 @@ npm run build
 
 - Write the step-3 APPROVED notes to a scratch file — publish them as signed off;
   new or changed wording goes back through the step-3 review.
-- `gh release create vX.Y.Z --target main --title "Noah Almighty vX.Y.Z" --notes-file <file>`
-  (gh is authed on this box; origin = github.com/JinY0ung-Shin/noah-almighty).
+- **Browser-extension self-update assets (MANDATORY once the update button is
+  live):** installed extensions fetch
+  `releases/latest/download/noah-bridge-update.json` (+ `.sig`), so EVERY release
+  must attach both assets or the newest release breaks the fleet's update check.
+  - `BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem npm run build:extension-update`
+    → `dist/extension/noah-bridge-update.json` + `.sig`.
+  - The script FAILS on a missing key or a manifest-key mismatch — follow its
+    printed bootstrap instructions rather than bypassing them.
+  - If the key file does not exist on this machine AND the channel was never
+    bootstrapped (no prior release carries `noah-bridge-update.json`), skip with
+    a warning; otherwise STOP and ask the user — publishing without the assets
+    bricks the fleet's update button.
+- `gh release create vX.Y.Z --target main --title "Noah Almighty vX.Y.Z" --notes-file <file> \
+   dist/extension/noah-bridge-update.json dist/extension/noah-bridge-update.sig`
+  (drop the two asset paths only in the never-bootstrapped case above;
+  gh is authed on this box; origin = github.com/JinY0ung-Shin/noah-almighty).
 
 ## 7. Verify + wrap up
 

@@ -17,6 +17,12 @@ import {
   buildBrowserExtensionZip,
   matchPatternForOrigin,
 } from "../src/server/browserExtensionBundle.js";
+import {
+  buildUpdatePayload,
+  extensionIdFromPublicKey,
+  manifestKeyFromPrivateKey,
+  signUpdatePayload,
+} from "../src/server/browserExtensionUpdate.js";
 import { loadConfig } from "../src/server/config.js";
 import { applyCustomGithubCa } from "../src/server/tlsCa.js";
 import { loadDotEnv } from "../src/server/loadEnv.js";
@@ -1216,5 +1222,78 @@ describe("browser extension bundle", () => {
     expect(bridge).toContain(`"${id}"`);
 
     expect(browserExtensionOrigins().length).toBeGreaterThan(0);
+  });
+});
+
+describe("browser extension self-update artifacts", () => {
+  // One keypair for the whole block — 2048-bit generation is the slow part.
+  const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
+
+  it("builds a payload carrying the bundled version and every updater file", () => {
+    const payload = JSON.parse(buildUpdatePayload().toString("utf8"));
+    expect(payload.version).toBe(browserExtensionVersion());
+    const names = payload.files.map((file: { name: string }) => file.name);
+    // updater.js imports updater-core.js — a payload missing either would
+    // brick the very page users update with.
+    for (const required of [
+      "manifest.json",
+      "background.js",
+      "axtree.js",
+      "updater.html",
+      "updater.js",
+      "updater-core.js",
+      "updater.css",
+    ]) {
+      expect(names).toContain(required);
+    }
+  });
+
+  it("signs bytes the extension's WebCrypto verify path accepts, and rejects tampering", async () => {
+    const payload = buildUpdatePayload();
+    const signature = signUpdatePayload(payload, pem);
+    // EXACTLY the updater's verify: manifest `key` (SPKI) + RSASSA-PKCS1-v1_5.
+    const bytes = (buf: Buffer) => new Uint8Array(buf);
+    const verifyKey = await globalThis.crypto.subtle.importKey(
+      "spki",
+      bytes(Buffer.from(manifestKeyFromPrivateKey(pem), "base64")),
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      false,
+      ["verify"],
+    );
+    expect(
+      await globalThis.crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        verifyKey,
+        bytes(Buffer.from(signature, "base64")),
+        bytes(payload),
+      ),
+    ).toBe(true);
+    const tampered = Buffer.from(payload);
+    tampered[tampered.length - 3] ^= 1;
+    expect(
+      await globalThis.crypto.subtle.verify(
+        "RSASSA-PKCS1-v1_5",
+        verifyKey,
+        bytes(Buffer.from(signature, "base64")),
+        bytes(tampered),
+      ),
+    ).toBe(false);
+  });
+
+  it("derives extension ids exactly like the bundle helper (Chrome's a-p mapping)", () => {
+    const fromNewKey = extensionIdFromPublicKey(
+      Buffer.from(manifestKeyFromPrivateKey(pem), "base64"),
+    );
+    expect(fromNewKey).toMatch(/^[a-p]{32}$/);
+    // Same mapping as browserExtensionId over the CURRENT manifest key: the
+    // bootstrap instructions print ids from this helper, and the badge/client
+    // code trusts the bundle helper — they must never disagree.
+    const manifest = JSON.parse(
+      fs.readFileSync(path.join(process.cwd(), "extension", "manifest.json"), "utf8"),
+    );
+    expect(extensionIdFromPublicKey(Buffer.from(manifest.key, "base64"))).toBe(
+      browserExtensionId(),
+    );
   });
 });

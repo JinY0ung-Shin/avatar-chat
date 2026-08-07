@@ -27,6 +27,11 @@ const BUNDLE_FILES = [
   "consent.html",
   "consent.js",
   "consent.css",
+  "updater.html",
+  "updater.js",
+  // updater.js imports this at load; omitting it bricks the updater page.
+  "updater-core.js",
+  "updater.css",
   "policy-schema.json",
   "README.md",
 ] as const;

@@ -453,6 +453,32 @@ chrome.runtime.onMessage.addListener((message) => {
   );
 });
 
+// ---------------------------------------------------------------- self-update
+//
+// The toolbar icon opens the updater page: an extension cannot rewrite its own
+// files, so the page drives File System Access + signature checks and then
+// asks this worker for the reload. Internal channel only — a web page cannot
+// trigger it, and the reload grants nothing (it re-reads the folder on disk).
+
+chrome.action.onClicked.addListener(() => {
+  chrome.tabs.create({ url: chrome.runtime.getURL("updater.html") });
+});
+
+chrome.runtime.onMessage.addListener((message) => {
+  if (message?.type !== "noah-updater-apply") return;
+  const tabId = typeof message.tabId === "number" ? message.tabId : null;
+  // Close the updater tab first — after reload its document is a dead husk —
+  // then swap to the freshly written files.
+  setTimeout(() => {
+    const reload = () => setTimeout(() => chrome.runtime.reload(), 150);
+    if (tabId != null) {
+      chrome.tabs.remove(tabId).then(reload, reload);
+    } else {
+      reload();
+    }
+  }, 400);
+});
+
 // Closing the popup without clicking is an answer too: not granted.
 chrome.windows.onRemoved.addListener((windowId) => {
   if (pendingConsent && pendingConsent.windowId === windowId) {
