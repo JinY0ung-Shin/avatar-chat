@@ -121,18 +121,36 @@ async function checkLatest() {
       fetch(`${UPDATE_BASE}/${SIGNATURE_ASSET}`, { cache: "no-store", credentials: "omit" }),
     ]);
     if (!payloadRes.ok || !sigRes.ok) {
-      throw new Error(`서버 응답 ${payloadRes.ok ? sigRes.status : payloadRes.status}`);
+      // A REPLY means the network is fine — do not send the user hunting for a
+      // proxy problem. 404 in particular is the ordinary "the newest release
+      // carries no update assets" case, which only publishing can fix.
+      const status = payloadRes.ok ? sigRes.status : payloadRes.status;
+      els.latest.textContent = status === 404 ? "게시 안 됨" : "확인 실패";
+      setStatus(
+        els.check,
+        status === 404
+          ? "GitHub에는 연결됐지만, 최신 릴리스에 업데이트 파일이 없습니다. 아직 이 배포 경로로 릴리스가 게시되지 않았다는 뜻입니다 — " +
+              "관리자가 릴리스에 업데이트 에셋을 첨부하면 여기서 바로 잡힙니다. 그때까지는 아래 수동 방법을 쓰세요."
+          : `GitHub이 ${status}로 응답했습니다. 잠시 후 다시 시도하고, 계속되면 관리자에게 알려주세요.`,
+        "bad",
+      );
+      if (status === 404) revealManualPath();
+      refreshUpdateButton();
+      return;
     }
     payloadBytes = new Uint8Array(await payloadRes.arrayBuffer());
     signatureB64 = (await sigRes.text()).trim();
   } catch (error) {
+    // No reply at all: DNS/proxy/TLS. This is the only case where blocked
+    // egress is the likely story.
     els.latest.textContent = "확인 실패";
     setStatus(
       els.check,
-      `GitHub에서 최신 릴리스를 가져오지 못했습니다 (${String(error?.message || error)}). ` +
-        "사내망에서 github.com 접근이 막혀 있으면 이 업데이트 경로는 쓸 수 없습니다.",
+      `GitHub에 연결하지 못했습니다 (${String(error?.message || error)}). ` +
+        "사내망에서 github.com 접근이 막혀 있으면 이 업데이트 경로는 쓸 수 없으니, 아래 수동 방법을 쓰세요.",
       "bad",
     );
+    revealManualPath();
     refreshUpdateButton();
     return;
   }
