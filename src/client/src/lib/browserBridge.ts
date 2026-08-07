@@ -107,6 +107,15 @@ export function browserBridgeReachable(): boolean {
   return runtime() !== null;
 }
 
+/**
+ * The browser's own extension-manager URL, for user-facing guidance. The
+ * bridge itself is Chromium-common; the one thing Edge renames is this page.
+ */
+export function extensionsPageUrl(): string {
+  const ua = typeof navigator === "undefined" ? "" : navigator.userAgent;
+  return /\bEdg\//.test(ua) ? "edge://extensions" : "chrome://extensions";
+}
+
 const NOT_INSTALLED: BridgeReply = {
   ok: false,
   message:

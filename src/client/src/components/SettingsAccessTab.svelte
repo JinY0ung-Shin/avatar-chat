@@ -7,6 +7,7 @@
   import { appState, notify, readState, replaceState, updateState } from "../lib/state";
   import { copyText } from "../lib/dom";
   import {
+    extensionsPageUrl,
     readAllowedOrigins,
     writeAllowedOrigins,
     type AllowlistSource,
@@ -51,6 +52,7 @@
   const u0 = readState().user;
 
   // Browser bridge install/update state.
+  const extensionsPage = extensionsPageUrl();
   let guideOpen = false;
   let extensionBusy = false;
   let extensionId: string | null = null;
@@ -117,12 +119,12 @@
         notify(`확장이 v${outcome.version}(으)로 업데이트됐습니다.`, "ok");
       } else if (outcome.status === "manual-reload") {
         notify(
-          `파일은 v${outcome.version}(으)로 교체했습니다. chrome://extensions에서 이 확장의 리로드(↻)를 한 번 눌러주세요 — 다음부터는 여기 버튼 한 번으로 끝납니다.`,
+          `파일은 v${outcome.version}(으)로 교체했습니다. ${extensionsPage}에서 이 확장의 리로드(↻)를 한 번 눌러주세요 — 다음부터는 여기 버튼 한 번으로 끝납니다.`,
           "warn",
         );
       } else if (outcome.status === "wrong-folder") {
         notify(
-          "리로드 후에도 실행 중인 버전이 그대로입니다. 연결한 폴더가 Chrome에 로드된 폴더가 아닌 것 같습니다 — chrome://extensions의 위치와 같은 폴더를 다시 연결해 주세요.",
+          `리로드 후에도 실행 중인 버전이 그대로입니다. 연결한 폴더가 브라우저에 로드된 폴더가 아닌 것 같습니다 — ${extensionsPage}의 위치와 같은 폴더를 다시 연결해 주세요.`,
           "warn",
         );
       } else {

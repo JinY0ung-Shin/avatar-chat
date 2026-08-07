@@ -3,6 +3,7 @@
   import Modal from "./Modal.svelte";
   import Icon from "./Icon.svelte";
   import { copyText } from "../lib/dom";
+  import { extensionsPageUrl } from "../lib/browserBridge";
 
   export let extensionId: string | null = null;
   export let origins: string[] = [];
@@ -11,6 +12,10 @@
   export let multimediaNotice = false;
 
   const dispatch = createEventDispatcher<{ close: void; download: void }>();
+
+  // chrome://extensions vs edge://extensions — the guide reads better when it
+  // names the page the user's actual browser has.
+  const extensionsPage = extensionsPageUrl();
 </script>
 
 <Modal
@@ -28,7 +33,7 @@
   <ol class="guide-steps">
     <li>
       <div class="guide-step-title">확장 프로그램 내려받기</div>
-      <p class="muted">zip을 받아 원하는 폴더에 <strong>압축을 풉니다.</strong> 이 폴더는 지우면 안 됩니다 — Chrome이 계속 참조해요.</p>
+      <p class="muted">zip을 받아 원하는 폴더에 <strong>압축을 풉니다.</strong> 이 폴더는 지우면 안 됩니다 — 브라우저가 계속 참조해요.</p>
       {#if multimediaNotice}
         <p class="muted guide-note">
           사내 내규에 따라 파일 업로드가 가능한 <strong>Multimedia</strong> 폴더를 사용해 주세요.
@@ -45,13 +50,14 @@
     </li>
 
     <li>
-      <div class="guide-step-title">Chrome에 불러오기</div>
+      <div class="guide-step-title">브라우저에 불러오기</div>
       <p class="muted">
-        주소창에 <code>chrome://extensions</code> 를 열고 → 오른쪽 위 <strong>개발자 모드</strong>를 켠 뒤 →
+        주소창에 <code>{extensionsPage}</code> 를 열고 → 오른쪽 위 <strong>개발자 모드</strong>를 켠 뒤 →
         <strong>압축해제된 확장 프로그램을 로드</strong>에서 압축을 푼 폴더를 선택합니다.
       </p>
       <p class="muted guide-note">
-        Chrome은 웹페이지에서 받은 확장의 바로 설치를 막아두기 때문에 이 과정이 필요합니다.
+        브라우저가 웹페이지에서 받은 확장의 바로 설치를 막아두기 때문에 이 과정이 필요합니다.
+        Chrome과 Edge 모두 같은 방법으로 동작해요.
       </p>
     </li>
 
@@ -79,7 +85,7 @@
         <p class="muted guide-note">
           다른 주소로도 접속한다면 압축 푼 폴더의 <code>manifest.json</code> →
           <code>externally_connectable.matches</code> 에 <code>https://주소/*</code> 형태로 추가하고,
-          <code>chrome://extensions</code> 에서 새로고침(↻)하세요.
+          <code>{extensionsPage}</code> 에서 새로고침(↻)하세요.
         </p>
       {/if}
     </li>
@@ -108,7 +114,7 @@
       <strong>알아두세요.</strong>
       아바타는 이 브라우저에 <strong>이미 로그인된 권한 그대로</strong> 사이트를 열고 클릭합니다. 허용 사이트를
       넓히는 것은 그 사이트에서의 내 권한을 아바타에게 주는 일과 같아요. 범위를 확실히 좁히려면 필요한 곳에만
-      로그인해 둔 <strong>별도 Chrome 프로필</strong>에 설치하는 방법이 있습니다.
+      로그인해 둔 <strong>별도 브라우저 프로필</strong>에 설치하는 방법이 있습니다.
     </div>
   </div>
 

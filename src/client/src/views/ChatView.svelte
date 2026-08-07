@@ -25,6 +25,7 @@
   import {
     browserBridgeReachable,
     bridgeVersionVerdict,
+    extensionsPageUrl,
     readAllowedOrigins,
     type BridgeVersionVerdict,
   } from "../lib/browserBridge";
@@ -327,8 +328,7 @@
     if (compat.status === "outdated") {
       return {
         text: `확장 업데이트 필요 (${compat.installed ? `v${compat.installed}` : "구버전"} → v${compat.expected || "?"})`,
-        title:
-          "설치된 브라우저 확장이 이 서버와 호환되지 않는 버전입니다. 설정 → 접근/보안에서 원클릭 업데이트를 누르거나, zip을 다시 받아 폴더를 교체한 뒤 chrome://extensions에서 리로드(↻)하세요.",
+        title: `설치된 브라우저 확장이 이 서버와 호환되지 않는 버전입니다. 설정 → 접근/보안에서 원클릭 업데이트를 누르거나, zip을 다시 받아 폴더를 교체한 뒤 ${extensionsPageUrl()}에서 리로드(↻)하세요.`,
       };
     }
     return {

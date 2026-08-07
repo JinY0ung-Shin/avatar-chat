@@ -856,6 +856,14 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
 - **Corporate DLP can intercept the browser's file dialog** ("not an allowed upload URL"), which kills
   every File System Access path on managed machines — that is why the policy channel exists. The
   no-dialog interim is "unzip in Explorer + `chrome://extensions` ↻". Don't try to code around it.
+- **Edge is served by the SAME build.** Every API the extension touches (`tabGroups`/`tabs.group`,
+  `debugger`, `storage.managed`, `externally_connectable`) is on Edge's supported-API list, and the id
+  derives from the manifest `key` identically, so one zip/crx covers both browsers. The only per-browser
+  fork is the ADMIN POLICY TREE — the same JSON registered once under `Software\Policies\Google\Chrome`
+  and once under `Software\Policies\Microsoft\Edge` (Linux: `/etc/opt/chrome` vs `/etc/opt/edge`); the
+  build script prints both. User-facing guidance resolves the extensions page at runtime instead of
+  hardcoding `chrome://` (`extensionsPageUrl()` in `lib/browserBridge.ts`; `EXTENSIONS_PAGE` +
+  `.extensions-page` placeholders in `updater.js`).
 - **Verifying extension behavior locally:** Playwright's Chromium loads the unpacked extension
   (`chromium.launchPersistentContext(dir, { channel: "chromium", args: ["--disable-extensions-except=<extension/>",
   "--load-extension=<extension/>"] })`), which drives real `chrome-extension://` pages and settles what a

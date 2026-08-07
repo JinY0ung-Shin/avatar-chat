@@ -226,3 +226,10 @@ console.log(
     2,
   ),
 );
+console.log("");
+console.log(
+  "Edge fleet? Same assets, same JSON — register it once more under Edge's own policy tree\n" +
+    "(HKLM\\Software\\Policies\\Microsoft\\Edge → ExtensionSettings; Chrome's tree does not apply to Edge).\n" +
+    "The allowedOrigins managed policy likewise moves to\n" +
+    `  HKLM\\Software\\Policies\\Microsoft\\Edge\\3rdparty\\extensions\\${extensionId}\\policy`,
+);

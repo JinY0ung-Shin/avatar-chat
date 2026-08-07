@@ -1943,7 +1943,7 @@ export function createChatRouter({
                   // explain itself, so translate here: without this the model
                   // retries other new ops and fails the same way.
                   const message = /unsupported operation/i.test(raw)
-                    ? `${raw} The browser extension installed in the user's browser is an OLDER build than this server, so it does not know this operation (and will refuse every other recently added one too). Tell the user to update it: download the extension zip again from 설정 → 접근/보안 → 브라우저 브릿지, replace the previously loaded folder's contents, then press the reload (↻) button on that extension's card in chrome://extensions — the card must show the new version number afterwards. Until then, use only snapshot/navigate/click/type and the tab tools.`
+                    ? `${raw} The browser extension installed in the user's browser is an OLDER build than this server, so it does not know this operation (and will refuse every other recently added one too). Tell the user to update it: download the extension zip again from 설정 → 접근/보안 → 브라우저 브릿지, replace the previously loaded folder's contents, then press the reload (↻) button on that extension's card in the browser's extensions page (chrome://extensions, or edge://extensions on Edge) — the card must show the new version number afterwards. Until then, use only snapshot/navigate/click/type and the tab tools.`
                     : raw;
                   return { behavior: "error", message };
                 }

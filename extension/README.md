@@ -3,6 +3,12 @@
 아바타가 **사용자 본인의 브라우저**를 조작하도록 하는 MV3 확장입니다. 서버 안의 headless
 브라우저가 아니라, 이미 로그인된 실제 프로필의 탭을 씁니다.
 
+Chrome 기준으로 썼지만 **Edge에서도 같은 빌드가 그대로 동작합니다** — 탭 그룹, CDP(`debugger`),
+관리 정책(`storage.managed`), 정책 설치 채널까지 전부 크로미움 공통이고, ID도 같은 `key`에서
+유도되므로 동일합니다. 이 문서의 `chrome://extensions`는 Edge에선 `edge://extensions`로 읽으면
+됩니다(주소창에 `chrome://…`를 입력해도 Edge가 알아서 넘겨줍니다). Edge가 실제로 다른 유일한
+지점은 **관리자 정책의 등록 경로**로, 아래 각 정책 절에 병기했습니다.
+
 ## 동작 경로
 
 ```
@@ -18,8 +24,8 @@
 Noah 사용자는 **설정 → 접근/보안 → 브라우저 브릿지**에서 zip을 내려받고 안내 모달을 볼 수 있습니다.
 아래는 같은 내용의 수동 절차입니다.
 
-1. `chrome://extensions` → 개발자 모드 켜기 → **압축해제된 확장 프로그램을 로드** → 이 `extension/` 폴더
-   (또는 내려받은 zip을 푼 폴더) 선택
+1. `chrome://extensions`(Edge는 `edge://extensions`) → 개발자 모드 켜기 →
+   **압축해제된 확장 프로그램을 로드** → 이 `extension/` 폴더(또는 내려받은 zip을 푼 폴더) 선택
 2. 표시된 ID가 `gdaheigeedlnhagpmokpmocahgieiobc` 인지 확인합니다. 매니페스트의 `key` 필드가 ID를
    고정하므로 **어디에 설치해도 같은 ID**가 나오고, 별도 설정이 필요 없습니다.
    (다른 ID를 쓰려면 `VITE_BROWSER_EXTENSION_ID`로 덮어쓸 수 있습니다.)
@@ -103,9 +109,9 @@ unpacked 확장의 업데이트는 "폴더 파일 교체 + 리로드"가 전부�
 
 ## 정책 설치 채널 — 사용자 조작 0회 자동 갱신 (0.8.0)
 
-파일 선택 창이 정책으로 막힌 환경의 **근본 해결책**입니다. Chrome이 확장을 자동 설치·갱신해
-주는 경로는 웹스토어 아니면 **관리자 정책이 지정한 `update_url`** 뿐이고, 손으로 로드한
-unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은 Chrome이 직접 내려받아 설치하므로
+파일 선택 창이 정책으로 막힌 환경의 **근본 해결책**입니다. Chrome/Edge가 확장을 자동 설치·갱신해
+주는 경로는 스토어 아니면 **관리자 정책이 지정한 `update_url`** 뿐이고, 손으로 로드한
+unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은 브라우저가 직접 내려받아 설치하므로
 파일 선택 창이 등장하지 않습니다.
 
 1. **키 생성 (1회, .pem 영구 보관):**
@@ -140,6 +146,11 @@ unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은
    없습니다.** 사용자가 확장을 지울 수 있게 하려면 `normal_installed`로 바꿔도 자동 갱신은
    동일하게 동작합니다.
 
+   **Edge 단말도 같은 JSON, 같은 crx/updates.xml로 동작합니다.** 다만 정책 트리가 브라우저별로
+   분리되어 있어 한 번 더 등록해야 합니다 — Chrome은 `HKLM\Software\Policies\Google\Chrome`,
+   Edge는 `HKLM\Software\Policies\Microsoft\Edge` 아래의 `ExtensionSettings`입니다. (빌드
+   스크립트가 두 경로를 모두 출력합니다.)
+
 반드시 알아둘 것:
 
 - **실제 Noah 주소를 반드시 구우세요** (`BROWSER_BRIDGE_ORIGINS` 또는 `--origin`). 정책
@@ -156,7 +167,7 @@ unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은
 - **GitHub 릴리즈 에셋은 공개입니다.** 위처럼 사내 호스트명을 구우면 외부에 노출됩니다.
   곤란하면 crx를 Noah 서버에서 서빙하고 `--crx-url`로 그 주소를 지정하세요 (updates.xml의
   `codebase`만 바뀝니다).
-- **사내 단말의 Chrome이 `update_url`에 닿아야 합니다.** GitHub이 막혀 있으면 두 파일을
+- **사내 단말의 Chrome/Edge가 `update_url`에 닿아야 합니다.** GitHub이 막혀 있으면 두 파일을
   Noah 서버가 서빙하고 정책의 `update_url`도 사내 주소로 바꾸면 됩니다.
 - 정책 설치는 "디버깅 중" 배너를 없앱니다. 배너의 취소 버튼이라는 중단 수단이 사라지므로,
   **탭을 Noah 그룹 밖으로 끌어내는 것이 즉시 회수 수단**임을 사용자에게 안내해야 합니다.
@@ -175,14 +186,16 @@ unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은
 
 `chrome.storage.managed`로 배포합니다. 스키마는 `policy-schema.json`이고 키는 `allowedOrigins`입니다.
 
-Windows 레지스트리 예:
+Windows 레지스트리 예 (Edge는 정책 트리 경로만 다릅니다):
 
 ```
 HKLM\Software\Policies\Google\Chrome\3rdparty\extensions\<확장ID>\policy
+HKLM\Software\Policies\Microsoft\Edge\3rdparty\extensions\<확장ID>\policy   (Edge)
   allowedOrigins = ["intra.example.com", "*.corp.local"]
 ```
 
-Linux (`/etc/opt/chrome/policies/managed/noah-bridge.json`):
+Linux (`/etc/opt/chrome/policies/managed/noah-bridge.json`, Edge는
+`/etc/opt/edge/policies/managed/noah-bridge.json`):
 
 ```json
 {
@@ -233,11 +246,11 @@ Linux (`/etc/opt/chrome/policies/managed/noah-bridge.json`):
 
 - **사용자의 세션이 전부 그대로 쓰입니다.** 새 탭을 열어도 같은 프로필이라 마찬가지입니다.
   범위를 실제로 좁히려면 도메인 allowlist를 쓰거나, 필요한 사이트에만 로그인해 둔
-  **전용 Chrome 프로필**에 이 확장을 설치하세요.
+  **전용 브라우저 프로필**에 이 확장을 설치하세요.
 - **JS 실행 경로가 없습니다.** `CDP_ALLOWLIST`는 기본 거부이고 `Runtime.*`·`Network.*`·
   `Storage.*`가 없습니다. 요소는 접근성 트리의 `backendNodeId`로만 지목합니다.
   이 allowlist가 자격증명 도달 범위를 묶는 실질적 장치입니다 — 권한 매니페스트가 아니라.
-- **Chrome이 "디버깅 중" 배너를 띄웁니다.** 개발 설치에서는 정상이며, 배너의 취소 버튼이
+- **브라우저가 "디버깅 중" 배너를 띄웁니다.** 개발 설치에서는 정상이며, 배너의 취소 버튼이
   곧 사용자의 중단 수단입니다. (정책 강제설치로 배포하면 배너가 사라지는데, 그러면 이 중단
   수단도 함께 사라지므로 별도 중단 UI가 필요합니다.)
 - 조작 명령(`navigate`/`click`/`type`/`fill_form`/`select_option`/`new_tab` 등)과 의도적 읽기

@@ -36,6 +36,15 @@ const els = {
 
 const manifest = chrome.runtime.getManifest();
 
+// Everything here is Chromium-common; the one thing Edge renames is the
+// extensions-manager page, so guidance text resolves it at runtime.
+const EXTENSIONS_PAGE = /\bEdg\//.test(navigator.userAgent)
+  ? "edge://extensions"
+  : "chrome://extensions";
+for (const el of document.querySelectorAll(".extensions-page")) {
+  el.textContent = EXTENSIONS_PAGE;
+}
+
 /** Verified-and-validated payload; null until checkLatest succeeds. */
 let latestPayload = null;
 /** Connected unpacked-folder handle; null until connected. */
@@ -350,7 +359,7 @@ async function runUpdate() {
   } catch (error) {
     setStatus(
       els.status,
-      `실패: ${String(error?.message || error)} — chrome://extensions에서 오류 표시를 확인하거나 수동 zip 교체로 복구할 수 있습니다.`,
+      `실패: ${String(error?.message || error)} — ${EXTENSIONS_PAGE}에서 오류 표시를 확인하거나 수동 zip 교체로 복구할 수 있습니다.`,
       "bad",
     );
     refreshUpdateButton();
