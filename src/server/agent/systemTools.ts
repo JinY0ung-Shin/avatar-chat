@@ -336,7 +336,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- MCP tool groups enabled for this conversation: ${enabledMcpToolGroupLabels.length ? enabledMcpToolGroupLabels.join(", ") : "(none)"}`,
           `- maxTurns: ${ctx.config.maxTurns}`,
           `- Autocompact window: ${ctx.config.autoCompactWindow ? `${ctx.config.autoCompactWindow} tokens (AUTO_COMPACT_WINDOW)` : "model default (full context window)"}`,
-          `- Confluence host: ${ctx.config.confluenceUrl ? "set" : "(none)"}`,
+          `- Confluence host: ${ctx.config.confluenceUrl ? `set (mcp__confluence__* is READ-ONLY — no page creation, editing, or deletion exists; ${ctx.browserEnabled ? "to write, drive Confluence in the user's own browser with mcp__browser__*" : "writing would need browser control, which is unavailable in this run"})` : "(none)"}`,
           `- Confluence PAT: ${secretNames.includes("CONFLUENCE_PAT") || secretNames.includes("CONFLUENCE_PERSONAL_ACCESS_TOKEN") ? "secret set" : "(none)"}`,
           // Mirrors buildSystemPromptAppend's web-fetch proxy self-state (the
           // shared webFetchProxyState helper; values already redacted).

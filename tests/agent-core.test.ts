@@ -2341,6 +2341,24 @@ describe("buildPrompt", () => {
     expect(p).not.toContain("Your name is");
   });
 
+  it("routes Confluence writes to the browser only when the bridge is live", () => {
+    const confluence = {
+      mcpToolGroups: ["confluence"],
+      confluenceUrlConfigured: true,
+      confluencePatConfigured: true,
+    };
+    const withBrowser = buildPrompt(req({ ...confluence, browserEnabled: true }), 0);
+    expect(withBrowser).toContain("READ-ONLY");
+    expect(withBrowser).toContain("mcp__browser__navigate");
+
+    // Without the bridge the same advice would send the model after tools it
+    // does not have, so it must offer the draft/file route instead.
+    const withoutBrowser = buildPrompt(req(confluence), 0);
+    expect(withoutBrowser).toContain("READ-ONLY");
+    expect(withoutBrowser).not.toContain("mcp__browser__navigate");
+    expect(withoutBrowser).toContain("mcp__file_output__share_file");
+  });
+
   it("gives the avatar its alias as a self-name when set", () => {
     const p = buildPrompt(req({ avatar: avatar({ alias: "세바스찬" }) }), 0);
     expect(p).toContain('Your name is "세바스찬"');

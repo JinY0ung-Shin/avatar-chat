@@ -313,9 +313,21 @@ describe("confluence tools", () => {
       "list_attachments",
       "get_attachment",
       "extract_page_assets",
-      "create_page",
-      "update_page",
     ]);
+  });
+
+  it("exposes no tool that can write to Confluence", async () => {
+    // The PAT these tools carry is the OWNER's and holds their full write
+    // access, so read-only is a property to pin, not a coincidence of the
+    // current tool list.
+    const names = buildConfluenceTools({
+      config: makeConfig("https://confluence.internal"),
+      ownerSecrets: { CONFLUENCE_PAT: "pat" },
+      elevated: true,
+    }).map((t) => t.name);
+    for (const forbidden of ["create_page", "update_page", "delete_page", "add_comment"]) {
+      expect(names).not.toContain(forbidden);
+    }
   });
 
   it("reports missing URL/PAT without exposing secret values", async () => {
@@ -564,18 +576,28 @@ describe("confluence tools", () => {
     expect(result.content[0].text).toContain("avatar owner or trusted user conversations");
   });
 
-  it("blocks write tools when the viewer is not elevated", async () => {
-    const result = await callTool(
-      buildConfluenceTools({
-        config: makeConfig("https://confluence.internal"),
-        ownerSecrets: { CONFLUENCE_PAT: "pat" },
-        elevated: false,
-      }),
-      "create_page",
-      { space_key: "DEV", title: "Draft", body_storage: "<p>Hello</p>" },
-    );
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("avatar owner or trusted user conversations");
+  it("blocks every remaining tool when the viewer is not elevated", async () => {
+    // The elevation gate belongs to each handler (the `mcp__` auto-allow fires
+    // first), so it is checked per tool rather than on one sample.
+    const tools = buildConfluenceTools({
+      config: makeConfig("https://confluence.internal"),
+      ownerSecrets: { CONFLUENCE_PAT: "pat" },
+      elevated: false,
+    });
+    const argsByTool: Record<string, Record<string, unknown>> = {
+      describe_config: {},
+      list_spaces: {},
+      search: { text: "auth" },
+      get_page: { page_id: "1" },
+      list_attachments: { page_id: "1" },
+      get_attachment: { attachment_id: "att1" },
+      extract_page_assets: { page_id: "1" },
+    };
+    for (const [name, args] of Object.entries(argsByTool)) {
+      const result = await callTool(tools, name, args);
+      expect(result.isError, name).toBe(true);
+      expect(result.content[0].text, name).toContain("avatar owner or trusted user conversations");
+    }
   });
 });
 

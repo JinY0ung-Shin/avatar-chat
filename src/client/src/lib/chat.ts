@@ -51,8 +51,6 @@ const TOOL_LABELS: Record<string, string> = {
   mcp__file_output__show_file: "이미지 표시",
   mcp__file_output__share_file: "파일 공유",
   mcp__confluence__extract_page_assets: "Confluence 자산 추출",
-  mcp__confluence__create_page: "Confluence 페이지 생성",
-  mcp__confluence__update_page: "Confluence 페이지 수정",
   mcp__system__notify_user: "사용자 알림",
   mcp__web__fetch: "웹 페이지 읽기",
 };

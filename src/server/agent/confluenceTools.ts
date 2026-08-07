@@ -14,8 +14,6 @@ export const CONFLUENCE_TOOL_NAMES = [
   "mcp__confluence__list_attachments",
   "mcp__confluence__get_attachment",
   "mcp__confluence__extract_page_assets",
-  "mcp__confluence__create_page",
-  "mcp__confluence__update_page",
 ] as const;
 
 export interface ConfluenceToolsContext {
@@ -45,7 +43,6 @@ const MAX_BODY_CHARS = 20_000;
 const DEFAULT_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const MAX_ATTACHMENT_TEXT_CHARS = 40_000;
-const WRITE_DENIED = "Confluence write tools can only be used in avatar owner or trusted user conversations.";
 const READ_DENIED =
   "Confluence tools can only be used in avatar owner or trusted user conversations. They read the owner's Confluence using the owner's Personal Access Token, so a non-trusted colleague cannot use them.";
 const SUPPORTED_IMAGE_MEDIA_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
@@ -227,13 +224,17 @@ function credentials(ctx: ConfluenceToolsContext):
   return { ok: true, baseUrl: normalizedUrl, apiBase: apiBase(normalizedUrl), pat };
 }
 
+/**
+ * GET-only by construction. These tools are READ-ONLY: there is no `method` or
+ * `body` option, so a future tool cannot reach a mutating Confluence endpoint
+ * without a deliberate, visible change here. Keep it that way — the PAT this
+ * sends belongs to the avatar's owner and carries their full write access.
+ */
 async function requestJson(
   ctx: ConfluenceToolsContext,
   path: string,
   options: {
-    method?: string;
     query?: Record<string, string | number | boolean | undefined>;
-    body?: unknown;
   } = {},
 ): Promise<{ ok: true; baseUrl: string; data: JsonRecord } | { ok: false; message: string }> {
   const creds = credentials(ctx);
@@ -253,17 +254,7 @@ async function requestJson(
       Accept: "application/json",
       Authorization: `Bearer ${creds.pat}`,
     };
-    let body: string | undefined;
-    if (options.body !== undefined) {
-      headers["Content-Type"] = "application/json";
-      body = JSON.stringify(options.body);
-    }
-    const res = await fetch(url, {
-      method: options.method ?? "GET",
-      headers,
-      body,
-      signal: controller.signal,
-    });
+    const res = await fetch(url, { method: "GET", headers, signal: controller.signal });
     const raw = await res.text();
     let data: JsonRecord = {};
     if (raw) {
@@ -881,72 +872,6 @@ export function buildConfluenceTools(ctx: ConfluenceToolsContext) {
         return {
           content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }, ...imageBlocks],
         };
-      },
-    ),
-    tool(
-      "create_page",
-      "Create a Confluence page. body_storage must be in Confluence storage XHTML format. (owner/trusted only)",
-      {
-        space_key: z.string().describe("space key to create the page in"),
-        title: z.string().describe("Page title"),
-        body_storage: z.string().describe("Confluence storage XHTML body"),
-        parent_id: z.string().optional().describe("Parent page id"),
-      },
-      async (args) => {
-        if (!ctx.elevated) return text(WRITE_DENIED, true);
-        const body: JsonRecord = {
-          type: "page",
-          title: args.title,
-          space: { key: args.space_key },
-          body: { storage: { value: args.body_storage, representation: "storage" } },
-        };
-        if (args.parent_id?.trim()) {
-          body.ancestors = [{ id: args.parent_id.trim() }];
-        }
-        const res = await requestJson(ctx, "/content", { method: "POST", body });
-        if (!res.ok) return text(res.message, true);
-        return text(JSON.stringify(formatPageSummary(res.baseUrl, res.data), null, 2));
-      },
-    ),
-    tool(
-      "update_page",
-      "Update a Confluence page body/title. Fetches the current version, then PUTs with version +1. (owner/trusted only)",
-      {
-        page_id: z.string().describe("page id to update"),
-        body_storage: z.string().describe("New Confluence storage XHTML body"),
-        title: z.string().optional().describe("New title. If omitted, keeps the existing title"),
-        version_message: z.string().optional().describe("Version comment"),
-        minor_edit: z.boolean().optional().describe("Whether this is a minor edit, default false"),
-      },
-      async (args) => {
-        if (!ctx.elevated) return text(WRITE_DENIED, true);
-        const current = await requestJson(ctx, `/content/${encodeURIComponent(args.page_id)}`, {
-          query: { expand: "version,space" },
-        });
-        if (!current.ok) return text(current.message, true);
-        const version = asNumber(asRecord(current.data.version).number);
-        if (!version) {
-          return text("Could not determine the current page version.", true);
-        }
-        const payload: JsonRecord = {
-          id: args.page_id,
-          type: "page",
-          title: args.title?.trim() || asString(current.data.title),
-          version: {
-            number: version + 1,
-            minorEdit: args.minor_edit ?? false,
-          },
-          body: { storage: { value: args.body_storage, representation: "storage" } },
-        };
-        if (args.version_message?.trim()) {
-          (payload.version as JsonRecord).message = args.version_message.trim();
-        }
-        const res = await requestJson(ctx, `/content/${encodeURIComponent(args.page_id)}`, {
-          method: "PUT",
-          body: payload,
-        });
-        if (!res.ok) return text(res.message, true);
-        return text(JSON.stringify(formatPageSummary(res.baseUrl, res.data), null, 2));
       },
     ),
   ];

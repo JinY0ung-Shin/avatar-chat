@@ -36,12 +36,18 @@ understand its structure, but you cannot convert it into an image yourself. To l
 diagram, save it as a `.drawio` file and hand it over with `mcp__file_output__share_file` — the chat's
 file panel renders it interactively (see the `drawio` skill).
 
-## Write operations
+## These tools are READ-ONLY — write through the browser instead
 
-Only create or update pages when you have owner or trusted-user permission.
+No `mcp__confluence__*` tool creates, edits, or deletes anything, and no shell or fetch workaround
+exists.
 
-- New page: `mcp__confluence__create_page`
-- Update an existing page: `mcp__confluence__update_page`
+When the user asks you to create or edit a page, use the BROWSER tools if you have them
+(`mcp__browser__*`): open the page or the Confluence editor with `navigate` / `new_tab`, then
+`snapshot` → `click` / `type` / `fill_form` like any other site. That runs in the user's own logged-in
+session, so the edit is attributed to them and they can watch and undo it. Say what you are about to
+change before you save. If the Confluence host is refused, it is outside the operator's browser
+allowlist — report that rather than looking for another route.
 
-`body_storage` must be Confluence storage XHTML. Write simple documents as safe storage HTML —
-`<p>...</p>` for paragraphs, `<ul><li>...</li></ul>` for lists, `<h1>...</h1>` for headings.
+Without browser control, say plainly that you cannot write to Confluence and offer what you can:
+draft the content in the chat for them to paste, or hand it over as a file with
+`mcp__file_output__share_file`.

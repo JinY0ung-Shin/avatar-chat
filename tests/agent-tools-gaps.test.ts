@@ -406,70 +406,27 @@ describe("confluence tools — request + attachment plumbing", () => {
     expect(res.content.some((c) => c.type === "image")).toBe(true);
   });
 
-  it("create_page posts storage XHTML with a parent, and surfaces a create failure", async () => {
-    let sentBody: unknown = null;
-    let method: string | undefined;
+  it("never sends anything but GET to Confluence", async () => {
+    // The write TOOLS are gone; this pins the layer underneath them, since the
+    // PAT in play is the owner's and carries their full write access.
+    const methods: (string | undefined)[] = [];
     stubFetch((url, init) => {
-      method = init.method;
-      sentBody = init.body ? JSON.parse(String(init.body)) : null;
-      return json({ id: "100", type: "page", title: "Draft", space: { key: "DEV" }, version: { number: 1 }, _links: { webui: "/pages/100" } });
+      methods.push(init.method);
+      return json({ id: "1", type: "page", title: "T", version: { number: 1 }, results: [] });
     });
-    const ok = await callTool(buildConfluenceTools(ctx()), "create_page", {
-      space_key: "DEV",
-      title: "Draft",
-      body_storage: "<p>Hi</p>",
-      parent_id: "9",
-    });
-    expect(ok.isError).toBeFalsy();
-    expect(method).toBe("POST");
-    expect((sentBody as { ancestors?: { id: string }[] }).ancestors).toEqual([{ id: "9" }]);
-
-    stubFetch(() => new Response("bad request", { status: 400 }));
-    const fail = await callTool(buildConfluenceTools(ctx()), "create_page", {
-      space_key: "DEV",
-      title: "Draft",
-      body_storage: "<p>Hi</p>",
-    });
-    expect(fail.isError).toBe(true);
-    expect(fail.content[0].text).toContain("Confluence HTTP 400");
-  });
-
-  it("update_page bumps the version, and errors when the current version is unreadable", async () => {
-    let putBody: { version?: { number?: number; message?: string } } | null = null;
-    stubFetch((url, init) => {
-      if (init.method === "PUT") {
-        putBody = JSON.parse(String(init.body));
-        return json({ id: "55", type: "page", title: "New", space: { key: "DEV" }, version: { number: 8 }, _links: { webui: "/pages/55" } });
-      }
-      return json({ id: "55", type: "page", title: "Old", version: { number: 7 } });
-    });
-    const ok = await callTool(buildConfluenceTools(ctx()), "update_page", {
-      page_id: "55",
-      body_storage: "<p>New</p>",
-      title: "New",
-      version_message: "tidy up",
-    });
-    expect(ok.isError).toBeFalsy();
-    expect(putBody!.version!.number).toBe(8);
-    expect(putBody!.version!.message).toBe("tidy up");
-
-    // Current page fetch has no version.number → cannot determine version.
-    stubFetch(() => json({ id: "55", type: "page", title: "Old" }));
-    const noVersion = await callTool(buildConfluenceTools(ctx()), "update_page", {
-      page_id: "55",
-      body_storage: "<p>x</p>",
-    });
-    expect(noVersion.isError).toBe(true);
-    expect(noVersion.content[0].text).toContain("current page version");
-
-    // The current-page fetch itself fails.
-    stubFetch(() => new Response("nope", { status: 404 }));
-    const fetchFail = await callTool(buildConfluenceTools(ctx()), "update_page", {
-      page_id: "55",
-      body_storage: "<p>x</p>",
-    });
-    expect(fetchFail.isError).toBe(true);
-    expect(fetchFail.content[0].text).toContain("Confluence HTTP 404");
+    const tools = buildConfluenceTools(ctx());
+    const argsByTool: Record<string, Record<string, unknown>> = {
+      list_spaces: {},
+      search: { text: "auth" },
+      get_page: { page_id: "1" },
+      list_attachments: { page_id: "1" },
+      extract_page_assets: { page_id: "1" },
+    };
+    for (const [name, args] of Object.entries(argsByTool)) {
+      await callTool(tools, name, args);
+    }
+    expect(methods.length).toBeGreaterThan(0);
+    expect(methods.every((method) => method === undefined || method === "GET")).toBe(true);
   });
 
   it("buildConfluenceServer exposes the named MCP server", () => {

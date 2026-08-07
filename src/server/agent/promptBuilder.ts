@@ -559,7 +559,15 @@ export function buildSystemPromptAppend(
   if (mcpToolGroupEnabled(request, "confluence")) {
     if (request.confluenceUrlConfigured && request.confluencePatConfigured) {
       lines.push(
-        "The shared Confluence tools are enabled. Use the `mcp__confluence__*` tools for Confluence search / page retrieval / space lookup / attachment and image asset retrieval, and only attempt page creation or updates when you have owner or trusted-user permission.",
+        "The shared Confluence tools are enabled. Use the `mcp__confluence__*` tools for Confluence search / page retrieval / space lookup / attachment and image asset retrieval. " +
+          "They are READ-ONLY: no `mcp__confluence__*` tool creates, edits, or deletes anything, and there is no shell or fetch workaround. " +
+          // Writing is still possible — through the user's OWN browser session,
+          // where they can see and undo it. Offer that route only when the
+          // bridge is actually live this run; promising it otherwise sends the
+          // model looking for tools it does not have.
+          (request.browserEnabled
+            ? "To CREATE or EDIT a page, drive Confluence in the user's own browser instead: open the page or the editor with `mcp__browser__navigate` / `new_tab`, then `snapshot` → `click` / `type` / `fill_form` as with any site. It runs in their session, so the edit is theirs and they can watch it happen — tell them what you are about to change before you save. If the Confluence host is refused, it is outside the operator's browser allowlist: say so instead of retrying."
+            : "If the user asks you to write a page, say so plainly and offer what you can — draft the content in the chat, or hand it over as a file with `mcp__file_output__share_file`. Editing Confluence directly would need browser control (the `browser` tool group, in a chat with their own avatar, with the Noah extension installed)."),
       );
     } else {
       const missing = [
