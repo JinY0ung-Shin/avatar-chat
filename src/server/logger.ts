@@ -1,8 +1,20 @@
+import { createRequire } from "node:module";
 import pino from "pino";
 
 const level =
   process.env.LOG_LEVEL ??
   (process.env.NODE_ENV === "test" ? "silent" : "info");
+
+// pino-pretty is a devDependency; a prod-mode-less run on an --omit=dev install
+// must fall back to JSON logs instead of crashing at module load.
+const prettyAvailable = (() => {
+  try {
+    createRequire(import.meta.url).resolve("pino-pretty");
+    return true;
+  } catch {
+    return false;
+  }
+})();
 
 const logger = pino({
   level,
@@ -21,6 +33,12 @@ const logger = pino({
       "*.sessionSecret",
       "gitToken",
       "*.gitToken",
+      "apiKey",
+      "*.apiKey",
+      "privateKey",
+      "*.privateKey",
+      "passphrase",
+      "*.passphrase",
       "authorization",
       "*.authorization",
       "headers.authorization",
@@ -29,7 +47,7 @@ const logger = pino({
     censor: "[redacted]",
   },
   transport:
-    process.env.NODE_ENV !== "production"
+    process.env.NODE_ENV !== "production" && prettyAvailable
       ? {
           target: "pino-pretty",
           options: { colorize: true, translateTime: "SYS:HH:MM:ss.l" },

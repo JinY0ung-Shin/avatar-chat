@@ -1816,8 +1816,9 @@ describe("store canvas backfill migration (#50)", () => {
     });
     // No table row yet (legacy data only lives in response_json).
     expect(first.listCanvasArtifacts(owner.id, "conv-bf")).toHaveLength(0);
-    // The first open already marked the backfill done (user_version=1). Reset it to
-    // 0 to mimic a real pre-feature DB: legacy canvases present, migration not yet run.
+    // The first open already climbed the backfill ladder (user_version=2). Reset
+    // it to 0 to mimic a real pre-feature DB: legacy canvases present, migration
+    // not yet run.
     dbOf(first).pragma("user_version = 0");
 
     // Reopen the same DB → migrate() runs migrateCanvasArtifacts() and backfills.
@@ -1826,8 +1827,9 @@ describe("store canvas backfill migration (#50)", () => {
     expect(list).toHaveLength(1);
     expect(list[0].id).toBe("legacy-1");
     expect(list[0].content).toBe("# old");
-    // The guard advanced user_version so later boots skip the scan.
-    expect(dbOf(second).pragma("user_version", { simple: true })).toBe(1);
+    // The guard advanced user_version to the top of the backfill ladder so later
+    // boots skip the scan (canvas backfill=1, then onboarded/routine wave=2).
+    expect(dbOf(second).pragma("user_version", { simple: true })).toBe(2);
 
     // Re-running migrate (a third open) must not duplicate.
     const third = createServices({ dataDir, agentRuntime: "local", sessionSecret: "bf" }).store;
@@ -1840,8 +1842,9 @@ describe("store canvas backfill migration (#50)", () => {
     const owner = first.createUser({ username: "bfgowner", displayName: "Owner", password: "password123" });
     const avatar = first.createUser({ username: "bfgavatar", displayName: "Avatar", password: "password123" });
     first.touchConversation(owner.id, "conv-bfg", avatar.id, "hi");
-    // First open already ran the backfill (nothing to do) and set user_version=1.
-    expect(dbOf(first).pragma("user_version", { simple: true })).toBe(1);
+    // First open already ran the backfill (nothing to do) and climbed the ladder
+    // to the top (canvas=1, then onboarded/routine wave=2).
+    expect(dbOf(first).pragma("user_version", { simple: true })).toBe(2);
     // Inject a legacy-shaped canvas AFTER the marker is set.
     first.addMessage("conv-bfg", {
       role: "assistant",

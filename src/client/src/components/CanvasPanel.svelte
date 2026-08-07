@@ -437,6 +437,8 @@
   onDestroy(() => {
     releaseFsFocus?.();
     releaseFsFocus = null;
+    // Never strand the drag cursor/user-select lock if the panel unmounts mid-resize.
+    document.body.classList.remove("col-resizing");
   });
 
   function openFullscreen(): void {

@@ -299,6 +299,12 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
       return;
     }
     const removed = store.removeGroupMember(groupId, req.params.userId);
+    // 404 (like the PATCH-role sibling) when nothing was removed — don't write a
+    // misleading audit row for a no-op, and don't 200 {ok:false}.
+    if (!removed) {
+      apiError(res, 404, "그룹원을 찾을 수 없습니다.");
+      return;
+    }
     auditAs(req, "group_member_remove", `group=${groupId} -${req.params.userId}`);
     res.json({ ok: removed });
   });

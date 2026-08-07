@@ -185,7 +185,11 @@
     paintedWidth = 0;
   }
 
-  onDestroy(() => clearTimeout(repaintTimer));
+  onDestroy(() => {
+    clearTimeout(repaintTimer);
+    // Never strand the drag cursor/user-select lock if the panel unmounts mid-resize.
+    document.body.classList.remove("col-resizing");
+  });
 
   function slideSrc(att: MessageAttachment): string {
     return `/api/conversations/${encodeURIComponent(pane.conversationId)}/images/${encodeURIComponent(att.id)}`;

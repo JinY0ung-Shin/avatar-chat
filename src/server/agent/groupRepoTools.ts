@@ -301,7 +301,10 @@ export function buildGroupRepoTools(
         if (group.role !== "admin") return text(ADMIN_ONLY, true);
         const c = repoCtx(group.id, group.name);
         if (!c) return text(NO_REPO, true);
-        if (!c.token) {
+        // Either token can authenticate: a github.com group repo on a GHES
+        // deployment is covered by the external token (tokenForGitUrl routes by
+        // host), so refuse only when BOTH are absent.
+        if (!c.token && !c.externalToken) {
           return text(NO_GIT_TOKEN, true);
         }
         try {
@@ -610,7 +613,9 @@ export function buildGroupAgentRepoTools(store: Store, ctx: GroupAgentRepoToolsC
         const r = resolveWrite();
         if (!r.ok) return r.result;
         const c = r.repo;
-        if (!c.token) {
+        // Either token can authenticate (external covers a github.com repo on a
+        // GHES deployment); refuse only when BOTH are absent.
+        if (!c.token && !c.externalToken) {
           return text(NO_GIT_TOKEN, true);
         }
         try {

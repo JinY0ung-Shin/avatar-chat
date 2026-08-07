@@ -38,13 +38,21 @@ function commandWorks(command: string, args: string[]): boolean {
 /** True when soffice + pdftoppm + python-pptx are all usable in this deployment. */
 export function probeDeckRendering(): boolean {
   if (cached !== null) return cached;
-  const soffice = commandWorks("soffice", ["--version"]);
+  // `-env:UserInstallation` points soffice at a throwaway profile dir so the
+  // probe doesn't trigger the slow, HOME-writability-dependent default-profile
+  // init (which can blow the 5s timeout and wrongly memoize `false`).
+  const sofficeProfile = path.join(os.tmpdir(), "noah-soffice-probe");
+  const soffice = commandWorks("soffice", [
+    `-env:UserInstallation=file://${sofficeProfile}`,
+    "--version",
+  ]);
   const pdftoppm = commandWorks("pdftoppm", ["-v"]);
   const pythonPptx = commandWorks("python3", ["-c", "import pptx"]);
   cached = soffice && pdftoppm && pythonPptx;
-  logger
-    .child({ module: "deck-render" })
-    .info({ soffice, pdftoppm, pythonPptx, available: cached }, "deck rendering probe");
+  deckLogger.info(
+    { soffice, pdftoppm, pythonPptx, available: cached },
+    "deck rendering probe",
+  );
   return cached;
 }
 

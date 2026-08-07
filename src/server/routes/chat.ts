@@ -41,6 +41,8 @@ import {
   saveChatImages,
   savePreviewImages,
   MAX_CHAT_IMAGES_PER_MESSAGE,
+  MAX_CHAT_IMAGE_BYTES,
+  type DecodeError,
 } from "../chatImages.js";
 import { visionForModel } from "../modelVisionPolicy.js";
 import { isPreviewableExtension, renderDocumentPreviews } from "../deckRender.js";
@@ -272,13 +274,14 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
   }
 }
 
-// User-facing (Korean) messages for image-upload validation failures.
-const CHAT_IMAGE_ERROR: Record<string, string> = {
+// User-facing (Korean) messages for image-upload validation failures. Typed by
+// the DecodeError union so a new variant is a compile error here, not a silent
+// `apiError(res, 400, undefined)`.
+const CHAT_IMAGE_ERROR: Record<DecodeError, string> = {
   TOO_MANY: `이미지는 한 번에 최대 ${MAX_CHAT_IMAGES_PER_MESSAGE}장까지 첨부할 수 있습니다.`,
   BAD_FORMAT: "지원하는 이미지 형식은 png/jpeg/webp/gif 입니다.",
-  DECODE_FAILED: "이미지를 디코드할 수 없습니다.",
   EMPTY: "빈 이미지는 첨부할 수 없습니다.",
-  TOO_LARGE: "이미지 한 장의 크기는 5MB 이하여야 합니다.",
+  TOO_LARGE: `이미지 한 장의 크기는 ${Math.floor(MAX_CHAT_IMAGE_BYTES / 1024 / 1024)}MB 이하여야 합니다.`,
 };
 
 /**

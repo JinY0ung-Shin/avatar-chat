@@ -23,7 +23,7 @@ import {
   type ModelVisionPolicy,
 } from "../modelVisionPolicy.js";
 import type { User } from "../types.js";
-import { type Constructor, type StoreBase } from "./internal.js";
+import { now, type Constructor, type StoreBase } from "./internal.js";
 
 export type AppSecretState =
   | { status: "missing" }
@@ -80,15 +80,10 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
      * is the ONLY path the plaintext token leaves the DB — never via `toUser`.
      */
     getGitToken(userId: string): string | null {
-      const secretToken = this.getUserSecretValue(userId, INTERNAL_GIT_TOKEN_SECRET_NAME);
-      if (secretToken !== null) {
-        return secretToken;
-      }
-      const row = this.userRowById(userId);
-      if (!row?.git_token_enc) {
-        return null;
-      }
-      return decryptSecret(row.git_token_enc, this.secret);
+      // The legacy users.git_token_enc column is migrated into user_secrets and
+      // NULLed at Store construction (migrateGitTokenSecrets), so the vault is
+      // the only live source.
+      return this.getUserSecretValue(userId, INTERNAL_GIT_TOKEN_SECRET_NAME);
     }
 
     getExternalGitToken(userId: string): string | null {
@@ -115,15 +110,20 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
         throw new Error("USER_NOT_FOUND");
       }
       const enc = encryptSecret(value, this.secret);
-      this.db
-        .prepare(
-          "INSERT INTO user_secrets (user_id, name, value_enc, created_at) VALUES (?, ?, ?, ?) " +
-            "ON CONFLICT(user_id, name) DO UPDATE SET value_enc = excluded.value_enc",
-        )
-        .run(userId, name, enc, new Date().toISOString());
-      if (name === "SSH_PRIVATE_KEY") {
-        this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
-      }
+      // Transactional like setSshKeyPair: a failure between the two statements
+      // must not leave a stale public key advertised for a replaced private key.
+      const tx = this.db.transaction(() => {
+        this.db
+          .prepare(
+            "INSERT INTO user_secrets (user_id, name, value_enc, created_at) VALUES (?, ?, ?, ?) " +
+              "ON CONFLICT(user_id, name) DO UPDATE SET value_enc = excluded.value_enc",
+          )
+          .run(userId, name, enc, now());
+        if (name === "SSH_PRIVATE_KEY") {
+          this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
+        }
+      });
+      tx();
     }
 
     /** Store a generated SSH keypair: private key encrypted, public key visible. */
@@ -132,7 +132,7 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
         throw new Error("USER_NOT_FOUND");
       }
       const enc = encryptSecret(privateKey, this.secret);
-      const createdAt = new Date().toISOString();
+      const createdAt = now();
       const tx = this.db.transaction(() => {
         this.db
           .prepare(
@@ -155,12 +155,20 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
       this.db.prepare("UPDATE users SET ssh_public_key = ? WHERE id = ?").run(publicKey, userId);
     }
 
-    /** Remove a named secret. No-op if it doesn't exist. */
-    deleteUserSecret(userId: string, name: string): void {
-      this.db.prepare("DELETE FROM user_secrets WHERE user_id = ? AND name = ?").run(userId, name);
-      if (name === "SSH_PRIVATE_KEY") {
-        this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
-      }
+    /** Remove a named secret. Returns whether a row was actually deleted. */
+    deleteUserSecret(userId: string, name: string): boolean {
+      let removed = false;
+      const tx = this.db.transaction(() => {
+        const res = this.db
+          .prepare("DELETE FROM user_secrets WHERE user_id = ? AND name = ?")
+          .run(userId, name);
+        removed = res.changes > 0;
+        if (name === "SSH_PRIVATE_KEY") {
+          this.db.prepare("UPDATE users SET ssh_public_key = NULL WHERE id = ?").run(userId);
+        }
+      });
+      tx();
+      return removed;
     }
 
     /** Names of the user's stored secrets (for the settings UI; values omitted). */
@@ -235,7 +243,7 @@ export function withSecrets<TBase extends Constructor<StoreBase>>(Base: TBase) {
           "INSERT INTO app_config (key, value_enc, updated_at) VALUES (?, ?, ?) " +
             "ON CONFLICT(key) DO UPDATE SET value_enc = excluded.value_enc, updated_at = excluded.updated_at",
         )
-        .run(key, enc, new Date().toISOString());
+        .run(key, enc, now());
       this.appSecretStateCache.delete(key);
     }
 

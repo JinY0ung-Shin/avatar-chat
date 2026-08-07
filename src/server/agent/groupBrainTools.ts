@@ -145,9 +145,6 @@ export interface GroupAgentBrainToolsContext {
   config: AppConfig;
 }
 
-/** Group-agent runs expose the same two recall tools. */
-export const GROUP_AGENT_BRAIN_TOOL_NAMES = GROUP_BRAIN_TOOL_NAMES;
-
 const AGENT_DISABLED =
   "This shared group agent has been disabled by a group admin.";
 const NOT_A_MEMBER =

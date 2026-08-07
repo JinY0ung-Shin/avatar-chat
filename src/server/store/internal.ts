@@ -38,9 +38,17 @@ type CanvasArtifactBackfill = Partial<CanvasArtifact> & { id?: unknown };
 /** PRAGMA user_version reached once the one-time canvas backfill (#50) has run.
  *  SQLite's user_version is 0 on every pre-existing/fresh DB, so gating the
  *  backfill behind it makes its O(messages) LIKE-scan run ONCE per DB, not on
- *  every boot. Bump (and gate the next migration on) this when a future one-time
- *  backfill is added. */
+ *  every boot. One-time backfills form a version LADDER: each new wave takes the
+ *  next integer, checks `user_version < N`, and stamps N when done. */
 const CANVAS_BACKFILL_VERSION = 1;
+
+/** user_version for the second one-time backfill wave (onboarded_at + routine
+ *  title tagging). Unlike the value-guarded migrations (git token move,
+ *  visibility normalize), these predicates MATCH ROWS THE APP CREATES LATER —
+ *  a fresh signup's NULL onboarded_at, a user-typed "[예약 작업] …" title — so
+ *  re-running them on a later boot silently corrupts live data. The gate is
+ *  what makes them one-time. Next backfill: bump to 3 and gate on it. */
+const ONBOARDED_ROUTINE_BACKFILL_VERSION = 2;
 
 function now(): string {
   return new Date().toISOString();
@@ -117,7 +125,6 @@ export {
   now,
   parseNameList,
   parseHashtags,
-  MAX_HASHTAG_LEN,
   DEFAULT_SEARCH_LIMIT,
   SESSION_DAYS,
   PRESENCE_WINDOW_MS,
@@ -316,7 +323,6 @@ export class StoreBase {
         bio TEXT DEFAULT '',
         persona TEXT DEFAULT '',
         avatar_ext TEXT,
-        published INTEGER DEFAULT 1,
         visibility TEXT NOT NULL DEFAULT 'group',
         auto_approve INTEGER DEFAULT 0,
         ssh_public_key TEXT,
@@ -617,8 +623,8 @@ export class StoreBase {
     this.addColumnIfMissing("users", "hashtags", "TEXT");
     // Two-state avatar visibility (group / private). Added nullable on existing
     // DBs, then normalized by migrateVisibility() below (NULL/''/legacy 'public'
-    // → 'group'). The legacy `published` column survives in old DBs but is no
-    // longer read or written by any visibility decision.
+    // → 'group'). The legacy `published` column survives in old DBs (it is no
+    // longer created fresh) and is never read or written.
     this.addColumnIfMissing("users", "visibility", "TEXT");
     // Flexible routine scheduling: an optional human label plus the schedule
     // shape. schedule_kind defaults to "daily" (legacy rows have it NULL → read
@@ -680,11 +686,10 @@ export class StoreBase {
     // SQL `!= 0` / TS `!== 0` reads in lockstep. Group repo/brain tools and the
     // admin tool policy are NOT affected by this knob.
     this.addColumnIfMissing("groups", "avatar_sharing", "INTEGER");
-    this.migrateRoutineConversations();
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
-    this.migrateOnboarded();
     this.migrateCanvasArtifacts();
+    this.migrateOnboardedAndRoutineFlags();
     this.migrateGroupAgentsMulti();
     // Trust is now derived purely from group co-membership; the old per-(avatar,
     // viewer) trust table is dropped (its grants don't survive the migration).
@@ -794,10 +799,27 @@ export class StoreBase {
     this.db.pragma(`user_version = ${CANVAS_BACKFILL_VERSION}`);
   }
 
-  /** One-time backfill: treat every EXISTING account as already onboarded (set
-   *  onboarded_at = created_at) so the new server-backed welcome modal doesn't
-   *  re-fire for current users — only NEW signups (onboarded_at NULL) see it.
-   *  Idempotent: only touches rows still NULL, and createUser leaves new rows NULL. */
+  /** Wave-2 one-time backfills, gated on the user_version ladder. NOT safe to
+   *  re-run: createUser deliberately leaves onboarded_at NULL until the user
+   *  dismisses the welcome modal, and conversation titles come from user text —
+   *  an ungated re-run marks brand-new signups onboarded at the next restart
+   *  and hides ordinary chats whose title happens to start with a routine
+   *  prefix. (Exactly that happened when these ran per-boot.) */
+  private migrateOnboardedAndRoutineFlags(): void {
+    const schemaVersion =
+      Number(this.db.pragma("user_version", { simple: true })) || 0;
+    if (schemaVersion >= ONBOARDED_ROUTINE_BACKFILL_VERSION) {
+      return;
+    }
+    this.migrateOnboarded();
+    this.migrateRoutineConversations();
+    this.db.pragma(`user_version = ${ONBOARDED_ROUTINE_BACKFILL_VERSION}`);
+  }
+
+  /** One-time backfill: treat every account existing at gate time as already
+   *  onboarded (set onboarded_at = created_at) so the server-backed welcome
+   *  modal doesn't re-fire for current users — only NEW signups (onboarded_at
+   *  NULL) see it. Runs once per DB via migrateOnboardedAndRoutineFlags. */
   private migrateOnboarded(): void {
     this.db.exec(
       "UPDATE users SET onboarded_at = created_at WHERE onboarded_at IS NULL",
@@ -868,9 +890,12 @@ export class StoreBase {
     tx();
   }
 
-  /** Backfill is_routine on existing conversations. Linked ones come from the
-   *  routine_jobs join; already-orphaned ones (scheduled job since deleted) are
-   *  matched by the legacy/current title prefixes. Idempotent. */
+  /** One-time backfill of is_routine on pre-column conversations. Linked ones
+   *  come from the routine_jobs join; already-orphaned ones (scheduled job since
+   *  deleted) are matched by the legacy/current title prefixes. The title match
+   *  is why this must not re-run: titles are user text, so a later chat typed as
+   *  "[예약 작업] …" would silently vanish from the chat list. New routine
+   *  conversations are tagged at creation (touchConversation isRoutine). */
   private migrateRoutineConversations(): void {
     this.db
       .prepare(

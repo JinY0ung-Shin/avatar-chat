@@ -43,10 +43,10 @@ export function withUsers<TBase extends Constructor<StoreBase>>(Base: TBase) {
         visibility: this.rowVisibility(row),
         roles,
         pluginCount,
-        // Never expose the token itself — only whether one is set.
-        gitTokenSet:
-          Boolean(row.git_token_enc) ||
-          secretNames.includes(INTERNAL_GIT_TOKEN_SECRET_NAME),
+        // Never expose the token itself — only whether one is set. (The legacy
+        // users.git_token_enc column is moved into user_secrets and NULLed at
+        // Store construction — migrateGitTokenSecrets — so only the vault counts.)
+        gitTokenSet: secretNames.includes(INTERNAL_GIT_TOKEN_SECRET_NAME),
         gitIdentityName: row.git_identity_name ?? null,
         gitIdentityEmail: row.git_identity_email ?? null,
         knowledgeRepo: row.knowledge_repo ?? null,

@@ -4,7 +4,7 @@ import type {
   GroupAgentCaptureScope,
   GroupRole,
 } from "../types.js";
-import { parseGroupAgentRef } from "../groupAgents.js";
+import { groupAgentAvatarId, parseGroupAgentRef } from "../groupAgents.js";
 import {
   type Constructor,
   type GroupAgentRow,
@@ -177,7 +177,7 @@ export function withGroupAgents<TBase extends Constructor<StoreBase>>(Base: TBas
       if (!row) {
         return false;
       }
-      const avatarId = `group:${row.group_id}:${row.id}`;
+      const avatarId = groupAgentAvatarId(row.group_id, row.id);
       const tx = this.db.transaction(() => {
         const convRows = this.db
           .prepare("SELECT id FROM conversations WHERE avatar_user_id = ?")

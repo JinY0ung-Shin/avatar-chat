@@ -27,7 +27,7 @@ import {
   viewerClassForAgentRequest,
   type HexSshViewerClass,
 } from "../hexSshPolicy.js";
-import { isRecord, asString, asNumber } from "./agentUtils.js";
+import { isRecord, asNumber } from "./agentUtils.js";
 import {
   isModelTier,
   DEFAULT_MODEL_TIER,
@@ -53,7 +53,6 @@ import { PROMPT_TTL_MS } from "./runRegistry.js";
 import {
   createLoopState,
   dispatchSdkMessage,
-  interpretResult,
   finalizeTurnUsage,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
@@ -546,7 +545,6 @@ export async function runClaudeAgent(
   // booleans are the real gate between a headless/colleague run and owner-only
   // tools, so the logic must be testable in isolation.
   const {
-    viewerIsOwner,
     headless,
     allowHeadlessTools,
     ownerToolAccess,

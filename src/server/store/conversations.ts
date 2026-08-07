@@ -39,6 +39,7 @@ interface ConversationSummaryRow {
   avatar_user_id: string;
   title: string;
   updated_at: string;
+  is_routine: number;
   avatar_display_name: string | null;
   routine_id: string | null;
   routine_prompt: string | null;
@@ -79,11 +80,12 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       }
       const rows = this.db
         .prepare(
-          `SELECT c.id, c.avatar_user_id, c.title, c.updated_at,
+          `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, c.is_routine,
                   COALESCE(u.display_name, ga.display_name) AS avatar_display_name,
                   r.id AS routine_id, r.prompt AS routine_prompt
            FROM conversations c
            LEFT JOIN users u ON u.id = c.avatar_user_id
+           -- the concat mirrors groupAgentAvatarId() (../groupAgents.ts); keep in lockstep
            LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id || ':' || ga.id
            LEFT JOIN routine_jobs r ON r.conversation_id = c.id
            WHERE ${where.join(" AND ")}
@@ -121,7 +123,9 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
         avatarDisplayName: r.avatar_display_name ?? "(삭제된 아바타)",
         title: r.title,
         updatedAt: r.updated_at,
-        isRoutine: Boolean(r.routine_id),
+        // The durable flag (is_routine) must win even when the routine_jobs link
+        // is gone — classification doesn't depend on the link still existing.
+        isRoutine: Boolean(r.routine_id) || r.is_routine === 1,
         routineId: r.routine_id,
         routinePrompt: r.routine_prompt,
       };
@@ -131,11 +135,12 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
     private conversationSummaryById(ownerId: string, id: string): ConversationSummary | null {
       const row = this.db
         .prepare(
-          `SELECT c.id, c.avatar_user_id, c.title, c.updated_at,
+          `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, c.is_routine,
                   COALESCE(u.display_name, ga.display_name) AS avatar_display_name,
                   r.id AS routine_id, r.prompt AS routine_prompt
            FROM conversations c
            LEFT JOIN users u ON u.id = c.avatar_user_id
+           -- the concat mirrors groupAgentAvatarId() (../groupAgents.ts); keep in lockstep
            LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id || ':' || ga.id
            LEFT JOIN routine_jobs r ON r.conversation_id = c.id
            WHERE c.owner_user_id = ? AND c.id = ?
@@ -581,10 +586,10 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
     }
 
     private canvasVersionCount(artifactId: string): number {
-      const r = this.db
-        .prepare("SELECT COUNT(*) AS n FROM canvas_versions WHERE artifact_id = ?")
-        .get(artifactId) as { n: number };
-      return r.n;
+      return this.count(
+        "SELECT COUNT(*) AS c FROM canvas_versions WHERE artifact_id = ?",
+        artifactId,
+      );
     }
 
     /** Delete every version + artifact row for one conversation (manual cascade). */

@@ -98,7 +98,15 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
 
   router.delete("/api/me/secrets/:name", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const name = String(req.params.name || "");
-    store.deleteUserSecret(req.user!.id, name);
+    // Validate + 404 like the PATCH sibling, instead of the old always-200 no-op.
+    if (!SECRET_NAME_RE.test(name)) {
+      apiError(res, 400, "secret 이름은 대문자/숫자/밑줄(환경변수 형식)이어야 합니다.");
+      return;
+    }
+    if (!store.deleteUserSecret(req.user!.id, name)) {
+      apiError(res, 404, "등록되지 않은 시크릿입니다.");
+      return;
+    }
     logger.info({ userId: req.user!.id, name }, "user secret cleared");
     res.json({ user: store.getUserById(req.user!.id) });
   });

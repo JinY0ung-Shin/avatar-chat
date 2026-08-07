@@ -14,7 +14,7 @@
   // 9:00", "3시간 후") and demotes the last outcome to a second, quieter line.
   // Grouping (예정 / 일시 정지 / 지난 실행) is always on and replaces the old
   // 반복/1회성 type filter, which duplicated what the groups already say.
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import Icon from "../components/Icon.svelte";
   import Toggle from "../components/Toggle.svelte";
   import RoutineModal from "../components/RoutineModal.svelte";
@@ -141,11 +141,15 @@
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
       document.body.classList.remove("col-resizing");
       persistSideWidth();
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    // A cancelled pointer stream (touch interruption, gesture takeover) must also
+    // release the listeners + the body cursor/user-select lock.
+    window.addEventListener("pointercancel", onUp);
     document.body.classList.add("col-resizing");
   }
   function onSplitterKeydown(event: KeyboardEvent): void {
@@ -171,6 +175,9 @@
   onMount(() => {
     void load();
   });
+
+  // Never strand the drag cursor/user-select lock if the view unmounts mid-resize.
+  onDestroy(() => document.body.classList.remove("col-resizing"));
 
   $: routines = $appState.routines;
   $: filterId = (FILTER_DEFS.some((f) => f.id === $appState.routineFilter) ? $appState.routineFilter : "all") as FilterId;

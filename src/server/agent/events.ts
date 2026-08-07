@@ -405,8 +405,6 @@ export interface AgentEvents {
   onSessionId?: (sessionId: string) => void;
   /** Plugin install lifecycle. */
   onPlugin?: (event: PluginEvent) => void;
-  /** A tool/skill invocation started (legacy coarse signal; superseded by onToolStart). */
-  onTool?: (name: string) => void;
 
   /** A concrete tool call started, attributed to its agent. */
   onToolStart?: (event: ToolEvent) => void;

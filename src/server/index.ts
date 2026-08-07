@@ -7,11 +7,16 @@ import logger from "./logger.js";
 import { startRoutineScheduler } from "./scheduler.js";
 import { cancelAllRuns } from "./agent/runRegistry.js";
 import { applyCustomGithubCa } from "./tlsCa.js";
+import { probeDeckRendering } from "./deckRender.js";
 
 const services = createServices();
 // Trust an on-prem GitHub's internal CA (GITHUB_CA_CERT) for Node fetch and git
 // before anything reaches out over HTTPS. create_repo also passes it to gh.
 applyCustomGithubCa(services.config, logger);
+// Probe the PPTX toolchain now (memoized) so the synchronous spawnSync cost is
+// paid at boot rather than on the first chat turn — the result can't change
+// without a container rebuild.
+probeDeckRendering();
 const app = createApp(services);
 
 const { server, protocol } = createAppServer(app, services.config);

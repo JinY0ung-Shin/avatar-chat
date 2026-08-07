@@ -156,7 +156,7 @@ export function buildGitRepoTools(store: Store, ctx: GitRepoToolsContext) {
           return text(`Synced the git repo: ${repoCtx.name}`);
         } catch (error) {
           return text(
-            `Sync failed: ${errorMessage(error)}\nIf the rebase conflicted, the clone was rolled back to its previous state — reconcile the conflicting changes (re-apply them on top of the latest remote, or discard local work) and sync again. Do not work around this with Bash git.`,
+            `Sync failed: ${errorMessage(error)}\nIf the rebase conflicted, the clone was rolled back to its previous state — reconcile the conflicting changes (re-apply them on top of the latest remote, or discard local work) and sync again. Do not work around this with Bash git — the shell has no git credentials.`,
             true,
           );
         }

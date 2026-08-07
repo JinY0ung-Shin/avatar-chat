@@ -242,7 +242,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
                 ? `${ga.modelOverride} (admin setting)`
                 : `${gaDefaultModel ? `${gaDefaultModel} (${DEFAULT_MODEL_TIER})` : DEFAULT_MODEL_TIER} (default)`;
           const gaEffort = ctx.selectedEffort;
-          const gaEffortLabel = (id: string) => EFFORT_LEVELS.find((e) => e.id === id)?.label;
+          // English label: this is model-facing self-state.
+          const gaEffortLabel = (id: string) => EFFORT_LEVELS.find((e) => e.id === id)?.labelEn;
           const gaEffortLine = gaEffort
             ? `${gaEffortLabel(gaEffort) ? `${gaEffort} (${gaEffortLabel(gaEffort)})` : gaEffort} (chosen for this conversation)`
             : `${gaEffortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${gaEffortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;
@@ -310,7 +311,8 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         // effort chosen for THIS conversation; otherwise the SDK's `high` default.
         // The SDK may silently downgrade an unsupported level for the active model.
         const userEffort = ctx.selectedEffort;
-        const effortLabel = (id: string) => EFFORT_LEVELS.find((e) => e.id === id)?.label;
+        // English label: this is model-facing self-state.
+        const effortLabel = (id: string) => EFFORT_LEVELS.find((e) => e.id === id)?.labelEn;
         const effortLine = userEffort
           ? `${effortLabel(userEffort) ? `${userEffort} (${effortLabel(userEffort)})` : userEffort} (chosen for this conversation)`
           : `${effortLabel(DEFAULT_EFFORT_LEVEL) ? `${DEFAULT_EFFORT_LEVEL} (${effortLabel(DEFAULT_EFFORT_LEVEL)})` : DEFAULT_EFFORT_LEVEL} (default)`;

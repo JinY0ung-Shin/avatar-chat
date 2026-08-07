@@ -39,6 +39,10 @@ export function buildKnowledgeTools(store: Store, ctx: KnowledgeToolsContext) {
         "Records, as a request to relay to the owner, information that only the owner would likely know — when another user asked something the avatar could not answer. This is not a box for the avatar's own questions to the owner.",
         { question: z.string().describe("A one-sentence question with enough context for the owner to answer") },
         async (args) => {
+          // INTENTIONALLY NOT self-gated (unlike the two sibling tools): a
+          // non-owner viewer filing a question FOR the owner is this tool's whole
+          // purpose. The write lands only in the owner's own inbox and is deduped
+          // byte-identical (store.addKnowledgeRequest), so it is not an abuse surface.
           const req = store.addKnowledgeRequest(ctx.avatarUserId, {
             question: args.question,
             askerUserId: ctx.askerUserId ?? null,

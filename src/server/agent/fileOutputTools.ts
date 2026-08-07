@@ -15,6 +15,9 @@ export interface FileOutputToolsContext {
   shareFile: (request: ShareFileRequest) => Promise<FileOutputResult>;
 }
 
+// INTENTIONALLY NOT self-gated (like canvasTools): REGISTRATION is the boundary
+// — the server is only built when fileOutputActive (request.cwd + events.onFile,
+// see claudeAgent.ts), and outputs flow only to the run's own viewer.
 export function buildFileOutputTools(ctx: FileOutputToolsContext) {
   return [
     tool(

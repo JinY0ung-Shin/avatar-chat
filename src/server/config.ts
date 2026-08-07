@@ -63,7 +63,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
   }
 
   return {
-    port: Number(env("PORT", "48787")),
+    // `|| 48787` guards a typo'd PORT (NaN would ERR_SOCKET_BAD_PORT at boot).
+    port: Number(env("PORT", "48787")) || 48787,
     tlsCertFile: env("TLS_CERT_FILE") || undefined,
     tlsKeyFile: env("TLS_KEY_FILE") || undefined,
     dataDir,
@@ -114,14 +115,11 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // and are never projected into the public avatar API.
     externalAgents: parseExternalAgents(process.env.EXTERNAL_AGENTS_JSON),
     ...overrides,
-    // dbPath + agentSessionsDir derive from dataDir; recompute if dataDir was
-    // overridden but they weren't.
-    ...(overrides.dataDir && !overrides.dbPath
-      ? { dbPath: path.join(overrides.dataDir, "noah-almighty.db") }
-      : {}),
-    ...(overrides.dataDir && !overrides.agentSessionsDir
-      ? { agentSessionsDir: path.join(overrides.dataDir, "agent-sessions") }
-      : {}),
+    // dbPath/agentSessionsDir need no re-spread: `dataDir` above is already
+    // `overrides.dataDir ?? env(...)`, so both derive from the overridden value
+    // unless the caller supplied them explicitly (in which case ...overrides
+    // wins). githubHost DOES need it — ...overrides would put the caller's RAW
+    // value back where the normalized one belongs.
     ...(overrides.githubHost !== undefined ? { githubHost } : {}),
   };
 }

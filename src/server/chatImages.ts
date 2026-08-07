@@ -87,7 +87,6 @@ export interface DecodedChatImage {
 export type DecodeError =
   | "TOO_MANY"
   | "BAD_FORMAT"
-  | "DECODE_FAILED"
   | "EMPTY"
   | "TOO_LARGE";
 
@@ -110,15 +109,17 @@ export function decodeChatImages(raw: unknown): { images: DecodedChatImage[] } |
     const rawName = typeof entry === "object" && entry && typeof entry.name === "string" ? entry.name : "";
     const match = DATA_URL.exec(dataUrl);
     if (!match) return { error: "BAD_FORMAT" };
-    const mediaType = match[1] as ImageMediaType;
-    let buffer: Buffer;
-    try {
-      buffer = Buffer.from(match[2], "base64");
-    } catch {
-      return { error: "DECODE_FAILED" };
-    }
+    // Buffer.from never throws on malformed base64 (it stops at the first bad
+    // char), so no decode-failure branch is reachable here.
+    const buffer = Buffer.from(match[2], "base64");
     if (buffer.length === 0) return { error: "EMPTY" };
     if (buffer.length > MAX_CHAT_IMAGE_BYTES) return { error: "TOO_LARGE" };
+    // Trust the BYTES, not the client-declared MIME — the sibling publish paths
+    // (workspace/browser) already sniff, and a lying `image/png` on non-PNG
+    // bytes would otherwise 400 the whole turn at the Claude API instead of
+    // failing here with a clean message.
+    const mediaType = detectImageMediaType(buffer);
+    if (!mediaType) return { error: "BAD_FORMAT" };
     images.push({
       id: SAFE_ID.test(rawId) ? rawId : crypto.randomUUID(),
       mediaType,
@@ -133,7 +134,9 @@ export function decodeChatImages(raw: unknown): { images: DecodedChatImage[] } |
 /**
  * Persist decoded images to the conversation's image directory and return the
  * metadata (for the stored message) plus the model-facing blocks (base64). Ids
- * are de-duplicated against this batch so two uploads can't clobber one file.
+ * are de-duplicated so two uploads can't clobber one file: within the batch via
+ * `seen`, and against a pre-existing file on disk via the `wx` open flag (a
+ * re-POSTed client id from an earlier message gets a fresh UUID on EEXIST).
  */
 export function saveChatImages(
   config: AppConfig,
@@ -150,7 +153,16 @@ export function saveChatImages(
     let id = img.id;
     while (seen.has(id)) id = crypto.randomUUID();
     seen.add(id);
-    fs.writeFileSync(path.join(dir, `${id}.${img.ext}`), img.buffer);
+    for (;;) {
+      try {
+        fs.writeFileSync(path.join(dir, `${id}.${img.ext}`), img.buffer, { flag: "wx" });
+        break;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        id = crypto.randomUUID();
+        seen.add(id);
+      }
+    }
     attachments.push({ id, kind: "image", mediaType: img.mediaType, name: img.name });
     images.push({ mediaType: img.mediaType, data: img.buffer.toString("base64") });
   }
@@ -283,6 +295,7 @@ export function deleteChatImageAttachments(
 ): void {
   if (!attachments?.length) return;
   for (const attachment of attachments) {
+    if (attachment.kind !== "image") continue;
     const resolved = resolveStoredImage(config, conversationId, attachment.id);
     if (!resolved) continue;
     try {

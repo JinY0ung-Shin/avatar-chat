@@ -13,12 +13,11 @@ import { loadAgentPluginRoots, loadKnowledgeRepoMemory } from "../plugins.js";
 import { workspaceDirFor } from "../workspace.js";
 import logger from "../logger.js";
 
-// Compatibility re-exports: the constants/type were born here and tests import
-// them from this module; their real home is the leaf avatarAskShared.ts.
+// Compatibility re-exports: born here and imported from this module by tests;
+// their real home is the leaf avatarAskShared.ts. (MAX_PER_TURN/TIMEOUT_MS are
+// consumed only via that leaf now, so they are not re-exported here.)
 export {
   AVATAR_ASK_ANSWER_CAP,
-  AVATAR_ASK_MAX_PER_TURN,
-  AVATAR_ASK_TIMEOUT_MS,
   type AvatarAskOutcome,
 } from "./avatarAskShared.js";
 

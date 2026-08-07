@@ -1,9 +1,9 @@
 # Noah Almighty
 
-A platform where each user signs up, builds a public **avatar** (profile + GitHub plugins +
-personal knowledge repo), browses coworkers' published avatars, and chats with any avatar.
+A platform where each user signs up, builds an **avatar** (profile + GitHub plugins +
+personal knowledge repo), browses coworkers' avatars, and chats with any avatar they can reach.
 Chats run through the Claude Agent SDK with a tiered permission model — read-only for
-plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
+plain colleagues, elevated (write/SSH/repo) for owners and group co-members.
 
 ## What it does
 
@@ -37,15 +37,13 @@ plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
   The `/routine <task>` chat command creates a routine inline. The avatar itself can manage
   routines via the `mcp__system__*_routine` tools.
 - **Groups**: the system admin creates named teams (`/api/admin/groups*`) and assigns group
-  admins. Group co-members **auto-trust each other symmetrically** — they see each other's
-  unpublished avatars and get elevated tool access when chatting with a co-member's avatar,
-  exactly like a trusted user. Each group has one shared **knowledge repo** whose skills are
-  auto-loaded for all member avatars; group admins can edit it via the `mcp__group_repo__*`
-  tools. Group self-serve (member/repo management) is at `/api/me/groups*`.
-- **Trusted users**: each user can grant individual colleagues elevated access to their avatar
-  (`/api/me/trusted`). Trusted users see unpublished avatars and can run write-capable tools
-  (Write/Edit/Bash, repo commit/push) with a per-tool prompt — the same tool set as the
-  owner, but with interactive confirmation rather than auto-approve.
+  admins. Group co-membership in an avatar-sharing group is the SOLE source of trust/elevation —
+  co-members **auto-trust each other symmetrically**: they see each other's `group`-visibility
+  avatars and get elevated tool access (write-capable tools with a per-tool prompt) when chatting
+  with a co-member's avatar. There is no per-user "trusted users" list anymore — `isTrustedFor` IS
+  group co-membership (`shareAnyGroup`), the single choke point. Each group has one shared
+  **knowledge repo** whose skills are auto-loaded for all member avatars; group admins edit it via
+  the `mcp__group_repo__*` tools. Group self-serve (member/repo management) is at `/api/me/groups*`.
 - **Knowledge-backfill loop**: when the avatar notices a knowledge gap it can file a
   `request_info` gap. The owner sees pending gaps in the **내 아바타** nav badge and receives
   an in-app toast; clicking through lets them answer and feed the answer back to the avatar,
@@ -101,8 +99,8 @@ plain colleagues, elevated (write/SSH/repo) for owners and trusted users.
   A `PreToolUse` hook is the single gate for all tool calls:
   - **Owner** (chatting with own avatar): all tools auto-approved with no prompt, including
     Write/Edit/Bash, repo commit/push, SSH, knowledge-backfill, and routine management.
-  - **Elevated viewer** (trusted user or group co-member): same tool set, but each non-read
-    tool requires an interactive per-tool allow/deny prompt.
+  - **Elevated viewer** (group co-member in an avatar-sharing group): same tool set, but each
+    non-read tool requires an interactive per-tool allow/deny prompt.
   - **Plain colleague / headless routines**: read-only tools only (`READONLY_TOOLS`,
     default `Read,Glob,Grep`), plus in-process MCP tools that self-gate to owner/elevated
     in their handlers.
@@ -175,7 +173,7 @@ public upstreams) route installs through internal mirrors. Alongside the existin
 ## Security note
 
 Avatar plugins are arbitrary GitHub repositories loaded by the Claude Agent SDK. The tool
-permission model is tiered — owners and trusted/group co-members can run elevated tools
+permission model is tiered — owners and group co-members can run elevated tools
 (Write/Edit/Bash, repo commit/push, SSH); plain colleague chats are read-only. The
 `PreToolUse` hook in `src/server/agent/claudeAgent.ts` is the single enforcement gate; all
 in-process MCP server handlers self-gate for owner/elevated checks. Loading a third-party
@@ -190,8 +188,8 @@ npm test
 npm run build
 ```
 
-`npm test` runs `node --check` over every `*.js` under `public/` (recursively, via
-`pretest`) to syntax-check the vanilla-JS frontend before running the Vitest suite.
+`npm test` first runs `pretest` (`npm run build:client -- --mode test`), which builds the
+Svelte/Vite client — a client compile error aborts the run before any Vitest test executes.
 
 Smoke test: sign up (first user = admin) → open **내 아바타**, set a name/picture/bio,
 click **아바타가 자동 생성** under 역량 해시태그, add a plugin → create a group in the admin

@@ -3,7 +3,7 @@
 </script>
 
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onDestroy, onMount } from "svelte";
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
   import { renderMarkdown } from "../lib/format";
@@ -138,6 +138,9 @@
     panelWidth = clampWidth(Number(capPref("capPanelWidth", String(CAP_WIDTH_DEFAULT))) || CAP_WIDTH_DEFAULT);
     if (avatar?.id) void loadSkills(avatar.id);
   });
+
+  // Never strand the drag cursor/user-select lock if the panel unmounts mid-resize.
+  onDestroy(() => document.body.classList.remove("col-resizing"));
 
   function toggleSkill(key: string) {
     const next = new Set(openSkills);

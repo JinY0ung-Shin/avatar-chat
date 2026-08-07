@@ -1,6 +1,7 @@
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { AppConfig } from "../types.js";
+import { asString } from "./agentUtils.js";
 import { text } from "./mcpTools.js";
 
 export const CONFLUENCE_SERVER_NAME = "confluence";
@@ -62,10 +63,6 @@ function asRecord(value: unknown): JsonRecord {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value)
     ? (value as JsonRecord)
     : {};
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function asNumber(value: unknown): number | null {

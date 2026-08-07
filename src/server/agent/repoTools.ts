@@ -408,7 +408,10 @@ export function buildRepoTools(
         if (!c) {
           return text(NO_REPO, true);
         }
-        if (!c.token) {
+        // Either token can authenticate the push: on a GHES deployment a
+        // github.com knowledge repo is covered by the EXTERNAL token
+        // (tokenForGitUrl routes by host), so refuse only when BOTH are absent.
+        if (!c.token && !c.externalToken) {
           return text(NO_GIT_TOKEN, true);
         }
         // Shared-account teammate commits carry a Co-authored-by trailer so git

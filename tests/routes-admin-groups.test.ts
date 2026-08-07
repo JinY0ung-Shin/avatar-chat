@@ -557,15 +557,15 @@ describe("admin: groups CRUD", () => {
       .send({ role: "admin" })
       .expect(404);
 
-    // Remove: real member → ok:true; already-gone → ok:false.
+    // Remove: real member → ok:true; already-gone → 404 (matches the PATCH-role
+    // sibling; a no-op removal writes no audit row and is not a 200).
     const removed = await admin.agent
       .delete(`/api/admin/groups/${groupId}/members/${bob.id}`)
       .expect(200);
     expect(removed.body.ok).toBe(true);
-    const removedAgain = await admin.agent
+    await admin.agent
       .delete(`/api/admin/groups/${groupId}/members/${bob.id}`)
-      .expect(200);
-    expect(removedAgain.body.ok).toBe(false);
+      .expect(404);
     expect(services.store.groupRoleFor(bob.id, groupId)).toBeNull();
   });
 });

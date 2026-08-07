@@ -11,6 +11,10 @@ export interface RunPythonOptions {
   timeout?: number;
   /** Max captured stdout/stderr in bytes (Node default when omitted). */
   maxBuffer?: number;
+  /** Text piped to the child's stdin. SECRET VALUES MUST USE THIS, never
+   *  `args`: argv is world-readable via /proc/<pid>/cmdline for the whole
+   *  process lifetime, and the agent's Bash runs same-uid in this container. */
+  input?: string;
 }
 
 /**
@@ -27,9 +31,17 @@ export async function runPython(
   args: string[] = [],
   options: RunPythonOptions = {},
 ): Promise<string> {
-  const { stdout } = await execFileAsync("python3", ["-c", code, ...args], {
+  const pending = execFileAsync("python3", ["-c", code, ...args], {
     timeout: options.timeout ?? DEFAULT_PYTHON_TIMEOUT_MS,
     ...(options.maxBuffer !== undefined ? { maxBuffer: options.maxBuffer } : {}),
   });
+  if (options.input !== undefined && pending.child.stdin) {
+    // Swallow stream errors (e.g. EPIPE if the child died at spawn) — the
+    // awaited promise below reports the real failure.
+    pending.child.stdin.on("error", () => {});
+    pending.child.stdin.write(options.input);
+    pending.child.stdin.end();
+  }
+  const { stdout } = await pending;
   return stdout;
 }

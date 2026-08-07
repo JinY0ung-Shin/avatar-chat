@@ -111,7 +111,7 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(
       if (!cleanName || !cleanRepo) {
         throw new Error("INVALID_GIT_REPO");
       }
-      const createdAt = new Date().toISOString();
+      const createdAt = now();
       this.db
         .prepare(
           "INSERT INTO git_repositories (user_id, name, repo, branch, last_synced_at, created_at) VALUES (?, ?, ?, ?, NULL, ?) " +
@@ -151,7 +151,7 @@ export function withKnowledgeRepo<TBase extends Constructor<StoreBase>>(
         .prepare(
           "UPDATE git_repositories SET last_synced_at = ? WHERE user_id = ? AND name = ?",
         )
-        .run(new Date().toISOString(), userId, name.trim());
+        .run(now(), userId, name.trim());
       return this.getGitRepo(userId, name);
     }
 

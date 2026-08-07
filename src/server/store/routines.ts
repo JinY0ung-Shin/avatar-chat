@@ -37,24 +37,39 @@ export function withRoutines<TBase extends Constructor<StoreBase>>(Base: TBase) 
       };
     }
 
-    /** Decode the stored days_of_week JSON, tolerating a corrupt value (→ null) so
-     *  one bad row can't throw and abort a scheduler tick. */
+    /** Decode the stored days_of_week JSON, tolerating a corrupt value (→ null)
+     *  so one bad row can't throw and abort a scheduler tick. Elements are
+     *  validated too — a stray non-int/out-of-range entry must not reach the
+     *  next-run math as garbage. */
     private parseDaysOfWeek(raw: string | null): number[] | null {
       if (!raw) {
         return null;
       }
       try {
         const parsed = JSON.parse(raw);
-        return Array.isArray(parsed) ? (parsed as number[]) : null;
+        if (!Array.isArray(parsed)) {
+          return null;
+        }
+        const days = parsed.filter(
+          (d): d is number => Number.isInteger(d) && d >= 0 && d <= 6,
+        );
+        return days.length > 0 ? days : null;
       } catch {
         return null;
       }
     }
 
-    /** Reconstruct a RoutineSchedule from a stored row (legacy NULL kind → daily). */
+    /** Reconstruct a RoutineSchedule from a stored row (legacy NULL / unknown /
+     *  blank kind → daily — `??` alone would let "" through). */
     private scheduleFromRow(row: RoutineJobRow): RoutineSchedule {
+      const kind: ScheduleKind =
+        row.schedule_kind === "weekly" ||
+        row.schedule_kind === "interval" ||
+        row.schedule_kind === "once"
+          ? row.schedule_kind
+          : "daily";
       return {
-        kind: (row.schedule_kind as ScheduleKind) ?? "daily",
+        kind,
         minuteOfDay: row.minute_of_day,
         daysOfWeek: this.parseDaysOfWeek(row.days_of_week),
         intervalMinutes: row.interval_minutes ?? null,

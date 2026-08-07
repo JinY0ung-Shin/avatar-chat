@@ -394,8 +394,13 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         this.db.prepare("DELETE FROM user_roles WHERE user_id = ?").run(id);
         // Personal secret vault (AES-encrypted at rest) + logged knowledge gaps —
         // honour the UI's "permanently deleted" promise, leaving nothing behind.
+        // Both directions: requests INTO this avatar's inbox AND requests this
+        // user filed as the asker (their name would otherwise keep surfacing in
+        // other owners' inboxes).
         this.db.prepare("DELETE FROM user_secrets WHERE user_id = ?").run(id);
-        this.db.prepare("DELETE FROM knowledge_requests WHERE avatar_user_id = ?").run(id);
+        this.db
+          .prepare("DELETE FROM knowledge_requests WHERE avatar_user_id = ? OR asker_user_id = ?")
+          .run(id, id);
         // Group memberships (the group itself survives; created_by may dangle).
         this.db.prepare("DELETE FROM group_members WHERE user_id = ?").run(id);
         // Registered work repos + notifications in either direction — otherwise
@@ -410,6 +415,9 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
           .prepare("DELETE FROM canvas_versions WHERE artifact_id IN (SELECT id FROM canvas_artifacts WHERE owner_user_id = ?)")
           .run(id);
         this.db.prepare("DELETE FROM canvas_artifacts WHERE owner_user_id = ?").run(id);
+        // Audit rows are RETAINED by design: the trail must outlive the account
+        // (actor_user_id/actor_name dangle, like groups.created_by and
+        // group_agents.created_by).
         this.db.prepare("DELETE FROM users WHERE id = ?").run(id);
       });
       tx();

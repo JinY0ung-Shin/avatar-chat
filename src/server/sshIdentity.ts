@@ -85,11 +85,14 @@ export async function deriveSshPublicKey(
   privateKey: string,
   comment = "avatar-chat",
 ): Promise<DerivedSshPublicKey | null> {
+  // The private key rides STDIN, never argv — argv is world-readable via
+  // /proc/<pid>/cmdline (same exposure class the MCP secret-file wrapper
+  // closes); only the non-secret comment stays a positional arg.
   const script = [
     "import sys, json, base64, hashlib",
     "from cryptography.hazmat.primitives import serialization",
-    "data = sys.argv[1].encode()",
-    "comment = sys.argv[2] if len(sys.argv) > 2 else ''",
+    "data = sys.stdin.buffer.read()",
+    "comment = sys.argv[1] if len(sys.argv) > 1 else ''",
     "key = None",
     "try:",
     "    key = serialization.load_ssh_private_key(data, password=None)",
@@ -110,9 +113,10 @@ export async function deriveSshPublicKey(
   ].join("\n");
   let stdout: string;
   try {
-    stdout = await runPython(script, [privateKey, cleanComment(comment)], {
+    stdout = await runPython(script, [cleanComment(comment)], {
       timeout: 15_000,
       maxBuffer: 256 * 1024,
+      input: privateKey,
     });
   } catch {
     return null;

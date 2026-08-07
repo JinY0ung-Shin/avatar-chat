@@ -280,6 +280,10 @@
       }
     | null = null;
   let bridgeCompatStarted = false;
+  // Bounds the transient-failure retry below: the reactive guard subscribes to
+  // bridgeCompatStarted, so resetting it to false on every catch would spin an
+  // unbounded fetch loop while GET /api/browser-extension keeps 5xx-ing.
+  let bridgeCompatFailures = 0;
 
   async function probeBridgeCompat(): Promise<void> {
     try {
@@ -301,7 +305,12 @@
           ? { status: "unreachable", verdict: "outdated", installed: "", expected }
           : { status: verdict === "outdated" ? "outdated" : "ok", verdict, installed, expected };
     } catch {
-      bridgeCompatStarted = false; // transient failure — retry on the next trigger
+      // Transient failure — allow a couple of retries on the next reactive fire,
+      // then give up (until a reload) so a persistent 5xx can't spin forever.
+      bridgeCompatFailures += 1;
+      if (bridgeCompatFailures < 2) {
+        bridgeCompatStarted = false;
+      }
     }
   }
 

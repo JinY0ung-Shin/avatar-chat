@@ -4,6 +4,8 @@ import { Router } from "express";
 import { requireAdmin, requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
 import { knowledgeClonePath } from "../knowledgeRepo.js";
+import { sanitizeName } from "../marketplace.js";
+import { workspaceDirFor } from "../workspace.js";
 import { knownHostsPath } from "../sshTrust.js";
 import { deleteConversationImages } from "../chatImages.js";
 import { deleteConversationFiles } from "../chatFiles.js";
@@ -187,10 +189,17 @@ export function createAdminRouter(deps: RouterDeps): Router {
       }
       // Snapshot conversation ids BEFORE the row cascade: the per-conversation
       // chat-image/file dirs are keyed by these ids, and deleteUser erases the
-      // rows we'd need to find them.
-      const conversationIds = store
-        .listConversations(req.params.id, undefined, "all")
-        .map((conversation) => conversation.id);
+      // rows we'd need to find them. Two directions — conversations the user
+      // OWNS plus colleague-owned threads TARGETING this avatar (deleteUser
+      // removes both, so both sets of media dirs must be swept).
+      const conversationIds = Array.from(
+        new Set([
+          ...store
+            .listConversations(req.params.id, undefined, "all")
+            .map((conversation) => conversation.id),
+          ...store.listConversationIdsForAvatar(req.params.id),
+        ]),
+      );
       const removed = store.deleteUser(req.params.id);
       if (!removed) {
         apiError(res, 404, "사용자를 찾을 수 없습니다.");
@@ -201,10 +210,22 @@ export function createAdminRouter(deps: RouterDeps): Router {
       // Best-effort on-disk cleanup (the DB rows are already gone). Never throw:
       // a cleanup failure must not turn a successful deletion into a 500. The
       // knowledge clone is a full copy of a possibly-private repo, so removing it
-      // matters most; also drop the per-user ssh trust dir, avatar image, and the
+      // matters most; also drop the user's plugin clones (same private-repo
+      // class), workspace trees, ssh trust dir, avatar image, and the
       // per-conversation chat image/file stores. (store-03)
       try {
         fs.rmSync(knowledgeClonePath(req.params.id, config), { recursive: true, force: true });
+        // dataDir/plugins/<userId>/… — full working trees of possibly-private repos.
+        fs.rmSync(path.join(config.dataDir, "plugins", sanitizeName(req.params.id)), {
+          recursive: true,
+          force: true,
+        });
+        // dataDir/workspaces/<avatarSeg>/… — per-conversation scratch workspaces
+        // (dirname of any conversation's dir is the avatar-level parent).
+        fs.rmSync(path.dirname(workspaceDirFor(config, req.params.id, "x")), {
+          recursive: true,
+          force: true,
+        });
         fs.rmSync(path.dirname(knownHostsPath(req.params.id, config)), { recursive: true, force: true });
         const avatarsDir = avatarDir(config);
         if (fs.existsSync(avatarsDir)) {
@@ -526,6 +547,11 @@ export function createAdminRouter(deps: RouterDeps): Router {
     requireAdmin,
     (req: AuthenticatedRequest, res) => {
       const removed = store.removeGroupMember(req.params.id, req.params.userId);
+      // 404 on a no-op instead of a misleading audit row + 200 {ok:false}.
+      if (!removed) {
+        apiError(res, 404, "그룹원을 찾을 수 없습니다.");
+        return;
+      }
       auditAs(req, "group_member_remove", `group=${req.params.id} -${req.params.userId}`);
       res.json({ ok: removed });
     },
