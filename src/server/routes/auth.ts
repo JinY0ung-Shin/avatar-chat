@@ -98,6 +98,16 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
       return;
     }
     if (!user) {
+      // Audit failed logins (username only, never the password) so /api/audit —
+      // not just the pino log — carries the brute-force / spray trail an auth log
+      // exists for. actorUserId is null: the attempt didn't authenticate anyone.
+      store.audit({
+        actorUserId: null,
+        actorName: username || "(unknown)",
+        action: "login",
+        status: "error",
+        detail: "failed login",
+      });
       apiError(res, 401, "사용자명 또는 비밀번호가 올바르지 않습니다.");
       return;
     }
@@ -120,6 +130,14 @@ export function createAuthRouter({ config, store }: RouterDeps): Router {
     clearSessionCookie(res);
     if (user) {
       logger.info({ userId: user.id, username: user.username }, "logout");
+      // Pair with the login audit so /api/audit shows session ends, not just starts.
+      store.audit({
+        actorUserId: user.id,
+        actorName: user.username,
+        action: "logout",
+        status: "success",
+        detail: "logout",
+      });
     }
     res.json({ ok: true });
   });

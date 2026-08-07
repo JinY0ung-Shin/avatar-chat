@@ -46,7 +46,11 @@ const EMPTY_PATCH =
  * fields get generous but bounded caps so a runaway generation cannot balloon
  * the row (persona is injected into every future turn's prompt).
  */
-const FIELD_CAPS = { persona: 8_000, alias: 64, bio: 200, intro: 2_000 } as const;
+// Exported so the HTTP group-agent routes (routes/groups.ts) enforce the SAME
+// caps as this MCP self-config tool — otherwise the admin HTTP path bypasses
+// them and a multi-MB persona lands in every member's prompt each turn.
+export const GROUP_AGENT_FIELD_CAPS = { persona: 8_000, alias: 64, bio: 200, intro: 2_000 } as const;
+const FIELD_CAPS = GROUP_AGENT_FIELD_CAPS;
 type ProfileField = keyof typeof FIELD_CAPS;
 const PROFILE_FIELDS = Object.keys(FIELD_CAPS) as ProfileField[];
 

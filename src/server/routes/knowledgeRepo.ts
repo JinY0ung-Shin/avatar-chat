@@ -54,12 +54,14 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
     }
     const user = store.setGitToken(req.user!.id, token);
     logger.info({ userId: req.user!.id }, "internal git token set");
+    auditAs(req, "git_token_set", "set internal git token"); // name/action only — never the token
     res.json({ user });
   });
 
   router.delete("/api/me/git-token", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const user = store.setGitToken(req.user!.id, null);
     logger.info({ userId: req.user!.id }, "internal git token cleared");
+    auditAs(req, "git_token_clear", "cleared internal git token");
     res.json({ user });
   });
 
@@ -93,6 +95,7 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       }
     }
     logger.info({ userId: req.user!.id, name }, "user secret set");
+    auditAs(req, "secret_set", `set secret ${name}`); // name only — value is write-only
     res.json({ user: store.getUserById(req.user!.id) });
   });
 
@@ -108,6 +111,7 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       return;
     }
     logger.info({ userId: req.user!.id, name }, "user secret cleared");
+    auditAs(req, "secret_delete", `deleted secret ${name}`);
     res.json({ user: store.getUserById(req.user!.id) });
   });
 
@@ -132,6 +136,9 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       { userId: req.user!.id, name, shellExpose: req.body.shellExpose },
       "user secret shell exposure toggled",
     );
+    // Security-relevant: shell exposure is what lets a secret's VALUE into the
+    // agent's Bash env, so it belongs in the queryable audit trail.
+    auditAs(req, "secret_shell_expose", `${req.body.shellExpose ? "exposed" : "hid"} secret ${name} to the shell`);
     res.json({ user: store.getUserById(req.user!.id) });
   });
 

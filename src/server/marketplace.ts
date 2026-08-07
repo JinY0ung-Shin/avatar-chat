@@ -158,11 +158,20 @@ export async function syncGitRepo(
     // `--` stops git from treating a crafted url/destination as an option.
     // `--no-single-branch` keeps every branch's remote-tracking ref (so a
     // non-default `ref` resolves) while staying shallow.
-    await execFileAsync(
-      "git",
-      [...auth, "clone", "--depth", "1", "--no-single-branch", "--", url, destination],
-      { timeout: 120_000 },
-    );
+    try {
+      await execFileAsync(
+        "git",
+        [...auth, "clone", "--depth", "1", "--no-single-branch", "--", url, destination],
+        { timeout: 120_000 },
+      );
+    } catch (error) {
+      // A timeout kills git mid-clone, so its own cleanup doesn't run; a leftover
+      // half-clone makes the NEXT call take the fetch branch against a tree with
+      // no valid target. Remove the partial dir and rethrow (git-06, matching the
+      // knowledge/group clone paths).
+      await fs.rm(destination, { recursive: true, force: true }).catch(() => {});
+      throw error;
+    }
   }
 
   const target = await resolveTarget(destination, ref);

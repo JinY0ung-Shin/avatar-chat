@@ -5,10 +5,14 @@
 // share one definition rather than copy-paste. Everything is keyed off a single
 // `repoRoot`, matching the per-clone working-tree model the callers use.
 //
-// The arg guards (`assertSafeGitValue`/`safeIdentity`/`safePushBranch`) live in
-// repoGitGuards.ts; this module re-exports them so a caller can pull all the
-// shared git primitives from one place. Behavior is byte-for-byte identical to
-// the inlined versions it replaces.
+// The arg guards live in repoGitGuards.ts. `safeIdentity`/`safePushBranch` are
+// used only INTERNALLY here (commitAndPushClone/alignBranch); `assertSafeGitValue`
+// is re-exported below because the knowledge-repo callers pull it through this
+// module. gitRepos.ts imports the guards straight from repoGitGuards.ts.
+// NOTE: the extracted helpers have since diverged from the old inline versions
+// (the scheme:: reject, ff-only preservation, the rebase self-heal + REBASE_
+// CONFLICT sentinel) — do not "restore parity" with logic that was deliberately
+// changed.
 
 import { execFile } from "node:child_process";
 import path from "node:path";
@@ -21,7 +25,7 @@ import type { AppConfig } from "./types.js";
 
 const execFileAsync = promisify(execFile);
 
-export { assertSafeGitValue, safeIdentity, safePushBranch } from "./repoGitGuards.js";
+export { assertSafeGitValue } from "./repoGitGuards.js";
 
 /**
  * Run `git -C <repoRoot> <args>` and resolve with `{stdout, stderr}`. The

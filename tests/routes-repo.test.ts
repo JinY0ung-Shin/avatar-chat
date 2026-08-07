@@ -6,22 +6,14 @@ import { describe, expect, it } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
 import {
   type GitRepoContext,
-  commitGitRepo,
-  configureGitRepoIdentity,
   defaultGitRepoName,
-  deleteGitRepoFile,
   ensureGitRepoClone,
   gitRepoClonePath,
   gitRepoContextFor,
   gitRepoContextFromRecord,
-  gitRepoDiff,
-  gitRepoStatus,
-  listGitRepoTree,
   normalizeGitRepoName,
   pushGitRepo,
-  readGitRepoFile,
   removeGitRepoClone,
-  writeGitRepoFile,
 } from "../src/server/gitRepos.js";
 import {
   type KnowledgeRepoContext,
@@ -29,7 +21,7 @@ import {
 } from "../src/server/knowledgeRepo.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../src/server/activeRepoLock.js";
 import { resolveActiveWorkspaceRepo } from "../src/server/activeRepoResolve.js";
-import { setWorkspaceRepo } from "../src/server/repoWorkspace.js";
+import { getWorkspaceRepo, setWorkspaceRepo } from "../src/server/repoWorkspace.js";
 import { generateSshKeyPair } from "../src/server/sshIdentity.js";
 import { signup, makeBareRemote, withTempDir } from "./helpers.js";
 
@@ -647,90 +639,6 @@ describe("gitRepos clone / status / file operations", () => {
     return { userId: "u", name, repo: remote, branch: "main", token: null, config };
   }
 
-  it("reports not-cloned status before a clone exists", async () => {
-    const c = freshCtx("stat0", { "README.md": "x" });
-    const st = await gitRepoStatus(c);
-    expect(st.cloned).toBe(false);
-    expect(st.head).toBeNull();
-    expect(st.dirty).toEqual([]);
-  });
-
-  it("clones, then reports branch/head/dirty for the working tree", async () => {
-    const c = freshCtx("stat1", { "README.md": "hello" });
-    await ensureGitRepoClone(c);
-    const root = gitRepoClonePath(c.userId, c.name, c.config);
-    fs.writeFileSync(path.join(root, "untracked.txt"), "dirty");
-
-    const st = await gitRepoStatus(c);
-    expect(st.cloned).toBe(true);
-    expect(st.branch).toBe("main");
-    expect(st.head).toBeTruthy();
-    expect(st.dirty).toContain("untracked.txt");
-    expect(st.ahead).toBe(0);
-    expect(st.behind).toBe(0);
-  });
-
-  it("lists the tree and reads/writes/deletes files + sets the commit identity", async () => {
-    const c = freshCtx("files", { "README.md": "hello", "src/app.ts": "orig" });
-    await ensureGitRepoClone(c);
-
-    const tree = await listGitRepoTree(c);
-    expect(tree.some((e) => e.path === "README.md" && e.type === "file")).toBe(true);
-    expect(tree.some((e) => e.path === "src" && e.type === "dir")).toBe(true);
-
-    expect(await readGitRepoFile(c, "README.md")).toBe("hello");
-
-    await writeGitRepoFile(c, "notes/nested.md", "fresh content");
-    expect(await readGitRepoFile(c, "notes/nested.md")).toBe("fresh content");
-
-    await configureGitRepoIdentity(c, { name: "Committer", email: "c@example.io" });
-    const root = gitRepoClonePath(c.userId, c.name, c.config);
-    const cfgName = execFileSync("git", ["-C", root, "config", "user.name"], {
-      encoding: "utf8",
-    }).trim();
-    expect(cfgName).toBe("Committer");
-
-    await deleteGitRepoFile(c, "README.md");
-    await expect(readGitRepoFile(c, "README.md")).rejects.toThrow();
-  });
-
-  it("diffs the working tree, scopes by path, and rejects an escaping path", async () => {
-    const c = freshCtx("diffs", { "src/app.ts": "orig" });
-    await ensureGitRepoClone(c);
-    await writeGitRepoFile(c, "src/app.ts", "changed line");
-
-    const diff = await gitRepoDiff(c);
-    expect(diff).toContain("changed line");
-
-    const scoped = await gitRepoDiff(c, ["src/app.ts"]);
-    expect(scoped).toContain("src/app.ts");
-
-    await expect(gitRepoDiff(c, ["."])).rejects.toThrow("INVALID_PATH");
-    await expect(gitRepoDiff(c, [".."])).rejects.toThrow("INVALID_PATH");
-  });
-
-  it("commits changes (true), reports a clean tree (false), and honors path scope", async () => {
-    const c = freshCtx("commits", { "README.md": "hello" });
-    await ensureGitRepoClone(c);
-    const identity = { name: "C", email: "c@example.io" };
-
-    await writeGitRepoFile(c, "notes.md", "content");
-    expect(await commitGitRepo(c, "add notes", identity)).toBe(true);
-    // Nothing left staged → no commit.
-    expect(await commitGitRepo(c, "again", identity)).toBe(false);
-
-    // Path-scoped commit stages only the named file.
-    await writeGitRepoFile(c, "a.md", "1");
-    await writeGitRepoFile(c, "b.md", "2");
-    expect(await commitGitRepo(c, "scoped", identity, ["a.md"])).toBe(true);
-    const root = gitRepoClonePath(c.userId, c.name, c.config);
-    const status = execFileSync("git", ["-C", root, "status", "--porcelain"], {
-      encoding: "utf8",
-    });
-    expect(status).toContain("b.md"); // b.md still uncommitted
-    expect(status).not.toContain("a.md");
-  });
-
   it("syncs by fetch+rebase on the configured branch", async () => {
     const c = freshCtx("syncbranch", { "README.md": "hello" });
     await ensureGitRepoClone(c);
@@ -760,8 +668,15 @@ describe("gitRepos clone / status / file operations", () => {
     // With no configured branch, sync goes through `git pull --rebase --autostash`.
     await ensureGitRepoClone(c, { sync: true });
 
-    await writeGitRepoFile(c, "pushed.md", "content");
-    await commitGitRepo(c, "add pushed", { name: "C", email: "c@example.io" });
+    // Create a local commit to push. The retired commitGitRepo MCP helper used to
+    // do this; the working surface is now native git in the clone.
+    const nbRoot = gitRepoClonePath(c.userId, c.name, config);
+    const ng = (...a: string[]) => execFileSync("git", ["-C", nbRoot, ...a], { stdio: "pipe" });
+    fs.writeFileSync(path.join(nbRoot, "pushed.md"), "content");
+    ng("config", "user.email", "c@example.io");
+    ng("config", "user.name", "C");
+    ng("add", "-A");
+    ng("commit", "-q", "-m", "add pushed");
     const branch = await pushGitRepo(c);
     expect(branch).toBe("main");
 
@@ -804,7 +719,7 @@ describe("gitRepos clone / status / file operations", () => {
 
     await expect(
       ensureGitRepoClone({ ...c, repo: remoteB }),
-    ).rejects.toThrow(/푸시되지 않은 커밋/);
+    ).rejects.toThrow(/unpushed commits/);
   });
 
   it("re-clones when the remote changed and there are no unpushed commits", async () => {
@@ -944,7 +859,7 @@ describe("resolveActiveWorkspaceRepo", () => {
     if (again.kind === "ok") again.release();
   });
 
-  it("reports not_found for an opened repo that isn't registered", async () => {
+  it("self-heals a dangling working-repo pointer (removed/renamed) to kind:none", async () => {
     const { store, config, avatar } = setup();
     store.touchConversation(avatar.id, "conv-nf", avatar.id, "hi");
     setWorkspaceRepo(store, "conv-nf", "ghost");
@@ -957,8 +872,11 @@ describe("resolveActiveWorkspaceRepo", () => {
       elevated: true,
       gitRepoToolsEnabled: true,
     });
-    expect(res.kind).toBe("error");
-    if (res.kind === "error") expect(res.reason).toBe("not_found");
+    // A repo removed/renamed after open_repo leaves working_repo dangling;
+    // resolving falls back to scratch AND clears the stale pointer rather than
+    // dead-ending the conversation with a hard error.
+    expect(res.kind).toBe("none");
+    expect(getWorkspaceRepo(store, "conv-nf")).toBeNull();
   });
 
   it("reports locked when another conversation already holds the clone", async () => {

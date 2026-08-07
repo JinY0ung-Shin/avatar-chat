@@ -1347,23 +1347,54 @@ export function createChatRouter({
           "chat stream started",
         );
 
+        // The 409 check at the top of the handler ran BEFORE `await
+        // resolveActiveWorkspaceRepo` (a possible git clone), so a concurrent POST
+        // on this same conversation could have slipped past it. Re-check
+        // synchronously here — openRun below is the real reservation, and there
+        // must be NO `await` between this check and openRun or the race reopens.
+        // The response is still plain JSON (prepareSse runs after openRun). Null
+        // the lock release first: the winning run owns this conversation's
+        // (reentrant, per-conversation) active-repo lock and frees it itself —
+        // releasing it here would yank it from under the winner.
+        const racedRun = getActiveRunForConversation(req.user!.id, conversationId);
+        if (racedRun) {
+          releaseActiveRepoLock = null;
+          apiError(
+            res,
+            409,
+            racedRun.background
+              ? "아바타가 이 대화의 백그라운드 작업을 진행 중입니다. 작업이 끝나면 메시지를 보낼 수 있어요. 기다리지 않으려면 중지 버튼으로 백그라운드 작업을 중단해 주세요."
+              : "이미 이 대화의 응답을 생성 중입니다. 잠시 후 다시 시도해 주세요.",
+          );
+          return;
+        }
+
         const abortController = new AbortController();
         openRun(runId, req.user!.id, {
           conversationId,
           avatarId: avatar.id,
           abortController,
         });
-        prepareSse(res);
-        if (!attachRunClient(runId, req.user!.id, res)) {
-          res.end();
+        // openRun sits BEFORE the run's own try/finally { closeRun }, so guard the
+        // SSE handshake: a throw here (headers already sent, client detached) would
+        // otherwise strand the run in the registry and 409 this conversation for
+        // the whole process lifetime.
+        try {
+          prepareSse(res);
+          if (!attachRunClient(runId, req.user!.id, res)) {
+            res.end();
+            closeRun(runId);
+            return;
+          }
+          emitRunEvent(runId, "open", {
+            conversationId,
+            avatarId: avatar.id,
+            runId,
+          });
+        } catch (err) {
           closeRun(runId);
-          return;
+          throw err;
         }
-        emitRunEvent(runId, "open", {
-          conversationId,
-          avatarId: avatar.id,
-          runId,
-        });
 
         try {
           if (externalAgent) {
@@ -1397,13 +1428,13 @@ export function createChatRouter({
                 onStatus: (label) => {
                   emitRunEvent(runId, "status", { label });
                 },
-                // External Gateway telemetry must not overwrite the local SDK
-                // model shown in the administrator system overview.
-                // runExternalAgent deliberately suppresses this callback: a
-                // gateway SDK session id must never become Noah continuation state.
-                onSessionId: (sessionId) => {
-                  runSessionId = sessionId;
-                },
+                // onModel and onSessionId are intentionally OMITTED for external
+                // runs: external Gateway telemetry must not overwrite the local SDK
+                // model shown in the admin system overview, and a gateway SDK
+                // session id must never become Noah continuation state
+                // (runExternalAgent nulls onSessionId regardless). runSessionId
+                // stays null here and the external branch returns before any reader,
+                // so no handler is wired.
                 onPlugin: (event) => {
                   emitRunEvent(runId, "plugin", event);
                 },
@@ -2041,10 +2072,35 @@ export function createChatRouter({
                   behavior: "ok",
                   shareNote,
                   sharedAttachments,
-                  snapshot: typeof reply.snapshot === "string" ? reply.snapshot : undefined,
-                  url: typeof reply.url === "string" ? reply.url : undefined,
-                  title: typeof reply.title === "string" ? reply.title : undefined,
-                  tabs: Array.isArray(reply.tabs) ? reply.tabs : undefined,
+                  // Every field below is UNTRUSTED extension input that rides into
+                  // the model turn, and this route is the ONLY size gate
+                  // (browserTools.report applies none). Bound each explicitly and
+                  // shape-validate tabs[] so a hostile/oversized reply can't blow up
+                  // the turn or smuggle an unbounded payload.
+                  snapshot:
+                    typeof reply.snapshot === "string" ? reply.snapshot.slice(0, 200_000) : undefined,
+                  url: typeof reply.url === "string" ? reply.url.slice(0, 4_000) : undefined,
+                  title: typeof reply.title === "string" ? reply.title.slice(0, 2_000) : undefined,
+                  tabs: Array.isArray(reply.tabs)
+                    ? reply.tabs.slice(0, 100).flatMap((t: unknown) => {
+                        if (!t || typeof t !== "object") return [];
+                        const tab = t as {
+                          tabId?: unknown;
+                          title?: unknown;
+                          url?: unknown;
+                          current?: unknown;
+                        };
+                        if (typeof tab.tabId !== "string") return [];
+                        return [
+                          {
+                            tabId: tab.tabId.slice(0, 200),
+                            title: typeof tab.title === "string" ? tab.title.slice(0, 300) : "",
+                            url: typeof tab.url === "string" ? tab.url.slice(0, 2_000) : "",
+                            current: tab.current === true,
+                          },
+                        ];
+                      })
+                    : undefined,
                   dialog:
                     reply.dialog && typeof reply.dialog.message === "string"
                       ? {
@@ -2077,7 +2133,7 @@ export function createChatRouter({
                   pageText:
                     typeof reply.pageText === "string"
                       ? {
-                          text: reply.pageText,
+                          text: reply.pageText.slice(0, 200_000),
                           offset:
                             typeof reply.pageTextOffset === "number" && reply.pageTextOffset >= 0
                               ? reply.pageTextOffset

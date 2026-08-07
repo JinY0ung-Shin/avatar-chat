@@ -783,13 +783,22 @@ export async function loadKnowledgeRepoMemory(
   const groups: { name: string; content: string }[] = [];
   let totalGroupChars = 0;
   for (const g of store.listGroupKnowledgeReposForUser(avatarId)) {
-    if (disabled?.has(g.groupId) || totalGroupChars >= TOTAL_GROUP_CLAUDE_MD_CAP) {
+    if (disabled?.has(g.groupId)) {
       continue;
+    }
+    // Bound the TOTAL, not just entry: the old `>= CAP` check ran BEFORE the read,
+    // so N groups each under GROUP_CLAUDE_MD_CAP could still sum past the total
+    // (up to ~TOTAL-1 + GROUP_CAP). Truncate the tail entry to the remaining
+    // budget so the injected group memory can never exceed TOTAL_GROUP_CLAUDE_MD_CAP.
+    const remaining = TOTAL_GROUP_CLAUDE_MD_CAP - totalGroupChars;
+    if (remaining <= 0) {
+      break;
     }
     const content = await readRepoClaudeMd(groupKnowledgeClonePath(g.groupId, config), GROUP_CLAUDE_MD_CAP);
     if (content) {
-      groups.push({ name: g.groupName, content });
-      totalGroupChars += content.length;
+      const bounded = content.length > remaining ? content.slice(0, remaining) : content;
+      groups.push({ name: g.groupName, content: bounded });
+      totalGroupChars += bounded.length;
     }
   }
   return { personal, groups };

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
+import { GROUP_AGENT_FIELD_CAPS } from "../agent/groupAgentProfileTools.js";
 import { deleteConversationImages } from "../chatImages.js";
 import { deleteConversationFiles } from "../chatFiles.js";
 import logger from "../logger.js";
@@ -124,6 +125,20 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
       : undefined,
     enabled: typeof body?.enabled === "boolean" ? body.enabled : undefined,
   });
+  // Enforce the SAME length caps as the MCP self-config tool on the HTTP path
+  // (otherwise a multi-MB persona/bio rides into every member's prompt). Returns
+  // false + 400 on the first over-cap field. displayName is bounded at 64 too.
+  const checkAgentFieldCaps = (body: any, res: Response): boolean => {
+    const caps: Record<string, number> = { ...GROUP_AGENT_FIELD_CAPS, displayName: 64 };
+    for (const [field, cap] of Object.entries(caps)) {
+      const value = body?.[field];
+      if (typeof value === "string" && value.length > cap) {
+        apiError(res, 400, `${field}은(는) 최대 ${cap}자까지 입력할 수 있습니다.`);
+        return false;
+      }
+    }
+    return true;
+  };
 
   // Create a NEW shared agent (group admin or system admin). A group may have
   // several; each is addressed as `group:<groupId>:<agentId>`.
@@ -135,6 +150,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
       apiError(res, 400, "에이전트 이름(displayName)이 필요합니다.");
       return;
     }
+    if (!checkAgentFieldCaps(req.body, res)) return;
     if (!validCaptureScope(req.body?.captureScope, res)) return;
     const agent = store.createGroupAgent(groupId, {
       displayName,
@@ -164,6 +180,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
       apiError(res, 400, "에이전트 이름(displayName)은 비울 수 없습니다.");
       return;
     }
+    if (!checkAgentFieldCaps(req.body, res)) return;
     if (!validCaptureScope(req.body?.captureScope, res)) return;
     const agent = store.updateGroupAgent(req.params.agentId, {
       displayName:
@@ -346,6 +363,8 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
     const repoRaw = req.body?.repo;
     if (repoRaw === null || repoRaw === "") {
       const group = store.setGroupKnowledgeRepo(groupId, null, null);
+      // Disconnecting a whole group's shared brain is as audit-worthy as setting it.
+      auditAs(req, "group_repo_set", `group=${groupId} repo=(cleared)`);
       res.json({ group });
       return;
     }
@@ -386,6 +405,7 @@ export function createGroupsRouter({ config, store, auditAs }: RouterDeps): Rout
       return;
     }
     const group = store.setGroupKnowledgeSelected(groupId, selected);
+    auditAs(req, "group_repo_selected", `group=${groupId} selected=${selected ? selected.length : "all"}`);
     res.json({ group });
   });
 

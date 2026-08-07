@@ -768,7 +768,8 @@ describe("group-agent tool factories", () => {
     const confluenceLabel = MCP_TOOL_GROUPS.find((g) => g.id === "confluence")!.labelEn;
     expect(body).not.toContain(confluenceLabel);
 
-    // Removed mid-turn: the state report must fail closed, matching the tools.
+    // Removed mid-turn: the state report must fail closed, matching the tools —
+    // it must NOT keep leaking the group repo / capture policy / identity.
     store.removeGroupMember(group.id, member.id);
     const gone = summarizeGroupAgentState(store, config, agent.id, member.id);
     expect(gone).toMatchObject({
@@ -777,9 +778,12 @@ describe("group-agent tool factories", () => {
       selfConfigAllowed: false,
     });
     const res2 = await callTool(tools, "describe_system", {});
-    expect(res2.content[0].text).toContain(
-      "(role: removed — no longer a group member) may NOT capture",
-    );
+    const body2 = res2.content[0].text;
+    expect(body2).toContain("Current GROUP SHARED-AGENT state: UNAVAILABLE.");
+    expect(body2).toContain("no longer a member of this agent's group");
+    // The leaky fields are gone.
+    expect(body2).not.toContain("Capture policy:");
+    expect(body2).not.toContain("Team second brain");
   });
 });
 

@@ -92,6 +92,14 @@ async function ensureGroupCloneLocked(
     if (origin !== null && origin !== url) {
       logger.info({ groupId: ctx.groupId, repo: ctx.repo, origin }, "group knowledge repo changed; re-cloning");
       await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+      // A failed removal leaves `.git` on the OLD repo; the fetch branch below
+      // would then silently serve it as the newly-configured group repo. Fail
+      // loudly instead (mirrors ensureClone).
+      if (await pathExists(path.join(repoRoot, ".git"))) {
+        throw new Error(
+          "STALE_CLONE_REMOVAL_FAILED: could not discard the previous group knowledge-repo clone; refusing to serve the old repository",
+        );
+      }
     }
   }
 

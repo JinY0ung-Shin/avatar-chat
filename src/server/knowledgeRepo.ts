@@ -10,13 +10,12 @@ import {
   git,
   currentBranch,
   originUrl,
-  dirtyPaths as coreDirtyPaths,
   alignBranch,
   commitAndPushClone,
   assertSafeGitValue,
 } from "./repoGitCore.js";
 import fsSync from "node:fs";
-import type { AppConfig, KnowledgeRepoStatus, KnowledgeRepoTreeEntry } from "./types.js";
+import type { AppConfig, KnowledgeRepoTreeEntry } from "./types.js";
 import type { Store } from "./store.js";
 
 const execFileAsync = promisify(execFile);
@@ -174,6 +173,14 @@ async function ensureCloneLocked(ctx: KnowledgeRepoContext, repoRoot: string): P
     if (origin !== null && origin !== url) {
       logger.info({ userId: ctx.userId, repo: ctx.repo, origin }, "knowledge repo changed; re-cloning");
       await fs.rm(repoRoot, { recursive: true, force: true }).catch(() => {});
+      // If the removal failed, `.git` still points at the OLD repo and the fetch
+      // branch below would silently keep serving it as the newly-configured one.
+      // Fail loudly rather than mistake the stale clone for the new repo.
+      if (await pathExists(path.join(repoRoot, ".git"))) {
+        throw new Error(
+          "STALE_CLONE_REMOVAL_FAILED: could not discard the previous knowledge-repo clone; refusing to serve the old repository",
+        );
+      }
     }
   }
 
@@ -665,23 +672,6 @@ aliases: []
 self-contained. \`tags\`/\`aliases\` improve brain search recall. Reference related
 notes inline as \`[[Note Title]]\` — these links connect the knowledge graph. -->
 `;
-}
-
-/** Relative paths with uncommitted changes (porcelain), excluding nothing. */
-export async function dirtyPaths(repoRoot: string): Promise<string[]> {
-  return coreDirtyPaths(repoRoot);
-}
-
-/** Working-tree status (cloned?, branch, dirty paths). */
-export async function status(ctx: KnowledgeRepoContext): Promise<KnowledgeRepoStatus> {
-  const repoRoot = knowledgeClonePath(ctx.userId, ctx.config);
-  const cloned = await pathExists(path.join(repoRoot, ".git"));
-  return {
-    repo: ctx.repo,
-    branch: ctx.branch || (cloned ? await currentBranch(repoRoot) : null),
-    cloned,
-    dirty: cloned ? await dirtyPaths(repoRoot) : [],
-  };
 }
 
 /**

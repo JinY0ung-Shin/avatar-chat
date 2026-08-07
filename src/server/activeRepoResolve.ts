@@ -6,7 +6,7 @@ import {
 } from "./gitRepos.js";
 import { commitIdentityFor } from "./knowledgeRepo.js";
 import { acquireActiveRepo, releaseActiveRepo } from "./activeRepoLock.js";
-import { getWorkspaceRepo } from "./repoWorkspace.js";
+import { getWorkspaceRepo, setWorkspaceRepo } from "./repoWorkspace.js";
 import { scrubGitError } from "./marketplace.js";
 import type { AppConfig } from "./types.js";
 import type { Store } from "./store.js";
@@ -61,7 +61,14 @@ export async function resolveActiveWorkspaceRepo(opts: {
 
   const repoCtx = gitRepoContextFor(store, avatar.id, requested, config);
   if (!repoCtx) {
-    return { kind: "error", reason: "not_found" };
+    // Dangling pointer: the opened repo was removed or renamed (remove_repo does
+    // not clear working_repo) and this stored name no longer resolves. Hard-
+    // failing here dead-ends the conversation — EVERY later turn would error, and
+    // close_repo (the only other path that clears the pointer) needs a turn to
+    // run. Self-heal: clear the stale pointer and fall back to the scratch
+    // workspace so the turn proceeds.
+    setWorkspaceRepo(store, conversationId, null);
+    return { kind: "none" };
   }
 
   const clonePath = gitRepoClonePath(avatar.id, repoCtx.name, config);

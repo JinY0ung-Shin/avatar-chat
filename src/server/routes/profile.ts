@@ -27,7 +27,7 @@ import {
 } from "./_shared.js";
 
 // ---- Profile ---------------------------------------------------------
-export function createProfileRouter({ config, store }: RouterDeps): Router {
+export function createProfileRouter({ config, store, auditAs }: RouterDeps): Router {
   const router = Router();
 
   router.patch(
@@ -73,6 +73,15 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
       if (typeof req.body?.sharedAccount === "boolean")
         patch.sharedAccount = req.body.sharedAccount;
       const user = store.updateProfile(req.user!.id, patch);
+      // Audit the two security-relevant grants (visible in /api/audit, not just
+      // the pino log): who is reachable, and who gains write access via a shared
+      // account. Names/values only — never secrets.
+      if (patch.visibility !== undefined) {
+        auditAs(req, "set_avatar_visibility", `set own visibility to ${patch.visibility}`);
+      }
+      if (patch.sharedAccount !== undefined) {
+        auditAs(req, "set_shared_account", `${patch.sharedAccount ? "enabled" : "disabled"} shared account`);
+      }
       res.json({ user });
     },
   );
@@ -183,6 +192,12 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
     },
   );
 
+  // One intro/hashtags generation per user at a time: each spawns a ~2-minute
+  // SDK subprocess and they share one workspace dir (workspaceDirFor(…, "intro"/
+  // "hashtags")), so concurrent runs would stomp each other AND let one user fan
+  // out unbounded subprocesses. A per-user in-flight set gates re-entry with 409.
+  const generateInFlight = new Set<string>();
+
   // Generate a first-person self-introduction for the owner's avatar. The
   // avatar inspects its own persona + skills and writes a short blurb the owner
   // then reviews/edits before saving (this endpoint does NOT persist it). Runs
@@ -207,8 +222,17 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         return;
       }
 
+      if (generateInFlight.has(req.user!.id)) {
+        apiError(res, 409, "이미 생성 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.");
+        return;
+      }
+      generateInFlight.add(req.user!.id);
+      try {
       // Resolve plugin roots and their skills exactly like the skills endpoint,
-      // so the intro reflects what the avatar can actually do.
+      // so the intro reflects what the avatar can actually do. (resolveAvatarSkillSources
+      // /listSkillsInRoots can throw — e.g. an unguarded fs write in plugin-root
+      // resolution — so the whole body is wrapped; an unhandled async throw would
+      // otherwise hang the request until the client's timeout in Express 4.)
       const { sourced, enabledPlugins, pluginRoots } =
         await resolveAvatarSkillSources(store, avatar, config, true);
       const skills = await listSkillsInRoots(sourced);
@@ -245,6 +269,11 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         return;
       }
       res.json({ intro });
+      } catch {
+        apiError(res, 502, "소개글 생성 중 오류가 발생했습니다.");
+      } finally {
+        generateInFlight.delete(req.user!.id);
+      }
     },
   );
 
@@ -283,8 +312,15 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         return;
       }
 
+      if (generateInFlight.has(req.user!.id)) {
+        apiError(res, 409, "이미 생성 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.");
+        return;
+      }
+      generateInFlight.add(req.user!.id);
+      try {
       // Resolve plugin roots + skills exactly like intro/generate, so the tags
-      // reflect what the avatar can actually do.
+      // reflect what the avatar can actually do. (Wrapped like intro/generate so a
+      // resolve/list throw becomes a 502 instead of a hung request.)
       const { sourced, enabledPlugins, pluginRoots } =
         await resolveAvatarSkillSources(store, avatar, config, true);
       const skills = await listSkillsInRoots(sourced);
@@ -339,6 +375,11 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
         return;
       }
       res.json({ hashtags });
+      } catch {
+        apiError(res, 502, "해시태그 생성 중 오류가 발생했습니다.");
+      } finally {
+        generateInFlight.delete(req.user!.id);
+      }
     },
   );
 
@@ -369,7 +410,7 @@ export function createProfileRouter({ config, store }: RouterDeps): Router {
 
   router.get("/api/users/:id/avatar-image", (req, res) => {
     // Users first, then the namespaced avatar kinds ("external:<id>",
-    // "group:<groupId>") — the prefixes can't collide with a user UUID, and
+    // "group:<groupId>:<agentId>") — the prefixes can't collide with a user UUID, and
     // every lookup only hits disk when a registered row matched (so an
     // arbitrary :id never becomes a file path).
     const ext =

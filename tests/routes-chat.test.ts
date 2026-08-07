@@ -548,16 +548,18 @@ describe("chat-stream request validation", () => {
 });
 
 describe("working-repo resolution failures (before SSE)", () => {
-  it("400s when the opened working repo is no longer registered", async () => {
+  it("self-heals a dangling working-repo pointer instead of dead-ending the conversation", async () => {
     const { store, app } = boot();
     const owner = request.agent(app);
     const ownerId = (await signup(owner, "reponf").expect(201)).body.user.id as string;
     store.touchConversation(ownerId, "conv-repo", ownerId, "seed");
     store.setConversationWorkingRepo("conv-repo", "ghost-repo"); // not in git_repositories
 
-    const res = await owner.post("/api/chat/stream").send({ avatarId: ownerId, conversationId: "conv-repo", message: "작업" }).expect(400);
-    expect(res.body.error).toContain("등록된 저장소");
-    expect(H.requests).toHaveLength(0);
+    // Removing the opened repo leaves working_repo dangling; the turn must proceed
+    // in the scratch workspace and clear the stale pointer, not 400 forever.
+    await owner.post("/api/chat/stream").send({ avatarId: ownerId, conversationId: "conv-repo", message: "작업" }).expect(200);
+    expect(store.getConversationWorkingRepo("conv-repo")).toBeNull();
+    expect(H.requests).toHaveLength(1);
   });
 
   it("409s when another conversation holds the working-repo clone lock", async () => {

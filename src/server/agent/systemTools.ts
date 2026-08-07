@@ -229,6 +229,23 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               `${publicGuide.join("\n")}\n\nThis shared group agent's group no longer exists, so no state can be reported.`,
             );
           }
+          // FAIL CLOSED on a mid-turn membership loss or disable, matching every
+          // sibling group tool (NOT_A_MEMBER / AGENT_DISABLED). The route
+          // authorized this run at start, but a removal/disable since then must
+          // not keep leaking the group repo name, capture policy, or identity.
+          if (!ga.enabled || ga.viewerRole === null) {
+            return text(
+              [
+                ...publicGuide,
+                "",
+                "Current GROUP SHARED-AGENT state: UNAVAILABLE.",
+                !ga.enabled
+                  ? `- The shared agent '${ga.displayName}' was disabled by a group admin; its group tools now refuse with AGENT_DISABLED.`
+                  : "- You are no longer a member of this agent's group; its group tools now refuse with NOT_A_MEMBER.",
+                "- No group repository, capture policy, or identity can be reported until this is restored.",
+              ].join("\n"),
+            );
+          }
           // Model/effort/tool-group lines mirror the owner block below (small
           // deliberate duplication — the owner strings are test-pinned).
           const gaTier = ctx.selectedModelTier;

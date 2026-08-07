@@ -48,7 +48,7 @@ export interface RouterDeps {
   ): void;
 }
 
-export const AVATAR_MIME_EXT: Record<string, string> = {
+const AVATAR_MIME_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/webp": "webp",
@@ -59,7 +59,7 @@ export const EXT_MIME: Record<string, string> = {
   jpeg: "image/jpeg",
   webp: "image/webp",
 };
-export const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
+const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
 export const MIN_PASSWORD_LENGTH = 8;
 
 export function safeString(value: unknown, fallback = ""): string {
@@ -265,7 +265,7 @@ export async function resolveAvatarSkillSources(
 }
 
 /** A failed (`ok:false`) headless run vs. a successful one carrying the raw reply. */
-export type HeadlessAvatarResult =
+type HeadlessAvatarResult =
   | { ok: true; raw: string }
   | { ok: false };
 

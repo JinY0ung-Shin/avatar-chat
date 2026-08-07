@@ -14,18 +14,10 @@ import {
 import { tokenForGitUrl } from "./gitCredentials.js";
 import { withRepoLock } from "./gitMutex.js";
 import { assertSafeGitValue, safeIdentity, safePushBranch } from "./repoGitGuards.js";
-import { git, currentBranch, dirtyPaths, originUrl } from "./repoGitCore.js";
+import { git, currentBranch, originUrl } from "./repoGitCore.js";
 import logger from "./logger.js";
-import {
-  deleteFile,
-  listTree,
-  readFile,
-  resolveInRepo,
-  writeFile,
-} from "./knowledgeRepo.js";
 
 const execFileAsync = promisify(execFile);
-const MAX_DIFF_CHARS = 60_000;
 
 export interface GitRepoContext {
   userId: string;
@@ -34,17 +26,6 @@ export interface GitRepoContext {
   branch: string | null;
   token: string | null;
   config: AppConfig;
-}
-
-export interface GitRepoStatus {
-  name: string;
-  repo: string;
-  branch: string | null;
-  cloned: boolean;
-  head: string | null;
-  dirty: string[];
-  ahead: number | null;
-  behind: number | null;
 }
 
 export function normalizeGitRepoName(name: string): string {
@@ -121,15 +102,21 @@ async function pullRebase(ctx: GitRepoContext, repoRoot: string, url: string): P
     // NEVER leave the clone mid-rebase: the activeRepoMode PreToolUse guard blocks
     // the native `git rebase`/`reset` the avatar would need to finish or abort it,
     // so a stuck rebase is unrecoverable from chat. Roll back to the pre-sync state
-    // and surface an actionable error instead.
-    await git(repoRoot, ["rebase", "--abort"]).catch(() => {});
+    // and surface an actionable error instead. The abort is best-effort AND the
+    // try also covers checkout/fetch (where no rebase is in progress), so
+    // `git rebase --abort` exits non-zero there — only claim "rolled back" when it
+    // actually ran.
+    const rolledBack = await git(repoRoot, ["rebase", "--abort"]).then(
+      () => true,
+      () => false,
+    );
     const detail =
       (error as { stderr?: string; stdout?: string })?.stderr?.trim() ||
       (error as { stdout?: string })?.stdout?.trim() ||
       (error instanceof Error ? error.message : String(error));
     throw new Error(
       scrubGitError(
-        `rebase onto the upstream failed (the local clone was restored to its previous state). The local commits conflict with the remote, so they could not be replayed automatically. Reconcile the conflicting changes (re-create them on top of the latest remote, or discard the local work) and sync again. Original error: ${detail}`,
+        `Sync failed while updating from the upstream${rolledBack ? " (the local clone was rolled back to its previous state)" : ""}. Reconcile the conflicting changes (re-create them on top of the latest remote, or discard the local work) and sync again. Do not work around this with Bash git — the shell has no git credentials. Original error: ${detail}`,
       ),
     );
   }
@@ -193,7 +180,7 @@ async function ensureGitRepoCloneLocked(
       if (await hasUnpushedCommits(repoRoot, ctx.branch)) {
         throw new Error(
           scrubGitError(
-            `로컬 클론의 원격 주소가 등록된 저장소와 다른데(기존: ${existing}), 푸시되지 않은 커밋이 있어 자동으로 교체하지 않았습니다. 변경사항을 푸시하거나 백업한 뒤 다시 시도해 주세요.`,
+            `The local clone's remote (${existing}) differs from the registered repository, but it has unpushed commits, so it was not replaced automatically. Push or back up those changes and try again.`,
           ),
         );
       }
@@ -232,78 +219,6 @@ export async function removeGitRepoClone(ctx: GitRepoContext): Promise<void> {
   await fs.rm(gitRepoClonePath(ctx.userId, ctx.name, ctx.config), { recursive: true, force: true });
 }
 
-export async function gitRepoStatus(ctx: GitRepoContext): Promise<GitRepoStatus> {
-  const repoRoot = gitRepoClonePath(ctx.userId, ctx.name, ctx.config);
-  const cloned = await pathExists(path.join(repoRoot, ".git"));
-  if (!cloned) {
-    return {
-      name: ctx.name,
-      repo: ctx.repo,
-      branch: ctx.branch,
-      cloned: false,
-      head: null,
-      dirty: [],
-      ahead: null,
-      behind: null,
-    };
-  }
-  let head: string | null = null;
-  try {
-    const { stdout } = await git(repoRoot, ["rev-parse", "--short", "HEAD"]);
-    head = stdout.trim() || null;
-  } catch {
-    head = null;
-  }
-  let ahead: number | null = null;
-  let behind: number | null = null;
-  try {
-    const { stdout } = await git(repoRoot, ["rev-list", "--left-right", "--count", "@{upstream}...HEAD"]);
-    const [behindRaw, aheadRaw] = stdout.trim().split(/\s+/).map(Number);
-    behind = Number.isFinite(behindRaw) ? behindRaw : null;
-    ahead = Number.isFinite(aheadRaw) ? aheadRaw : null;
-  } catch {
-    /* no upstream */
-  }
-  return {
-    name: ctx.name,
-    repo: ctx.repo,
-    branch: await currentBranch(repoRoot),
-    cloned: true,
-    head,
-    dirty: await dirtyPaths(repoRoot, ["-uall"]),
-    ahead,
-    behind,
-  };
-}
-
-function normalizeRepoPaths(repoRoot: string, paths?: string[]): string[] {
-  if (!paths || paths.length === 0) {
-    return [];
-  }
-  return paths.map((relPath) => {
-    const lexical = resolveInRepo(repoRoot, relPath);
-    if (!lexical || lexical === repoRoot) {
-      throw new Error("INVALID_PATH");
-    }
-    return path.relative(repoRoot, lexical).split(path.sep).join("/");
-  });
-}
-
-export async function listGitRepoTree(ctx: GitRepoContext) {
-  const repoRoot = await ensureGitRepoClone(ctx);
-  return listTree(repoRoot);
-}
-
-export async function readGitRepoFile(ctx: GitRepoContext, relPath: string): Promise<string> {
-  const repoRoot = await ensureGitRepoClone(ctx);
-  return readFile(repoRoot, relPath);
-}
-
-export async function writeGitRepoFile(ctx: GitRepoContext, relPath: string, content: string): Promise<void> {
-  const repoRoot = await ensureGitRepoClone(ctx);
-  await writeFile(repoRoot, relPath, content);
-}
-
 export async function configureGitRepoIdentity(
   ctx: GitRepoContext,
   identity: { name: string; email: string },
@@ -319,56 +234,6 @@ async function configureGitRepoIdentityInClone(
   const { name, email } = safeIdentity(identity);
   await git(repoRoot, ["config", "user.name", name]);
   await git(repoRoot, ["config", "user.email", email]);
-}
-
-export async function deleteGitRepoFile(ctx: GitRepoContext, relPath: string): Promise<void> {
-  const repoRoot = await ensureGitRepoClone(ctx);
-  await deleteFile(repoRoot, relPath);
-}
-
-export async function gitRepoDiff(ctx: GitRepoContext, paths?: string[]): Promise<string> {
-  const repoRoot = await ensureGitRepoClone(ctx);
-  const pathArgs = normalizeRepoPaths(repoRoot, paths);
-  const { stdout } = await git(repoRoot, ["diff", "--no-ext-diff", "--", ...pathArgs]);
-  return stdout.length > MAX_DIFF_CHARS
-    ? `${stdout.slice(0, MAX_DIFF_CHARS)}\n\n[truncated ${stdout.length - MAX_DIFF_CHARS} chars]`
-    : stdout;
-}
-
-async function hasStagedChanges(repoRoot: string): Promise<boolean> {
-  try {
-    await git(repoRoot, ["diff", "--cached", "--quiet"]);
-    return false;
-  } catch (error) {
-    const err = error as { code?: unknown };
-    if (err.code === 1) {
-      return true;
-    }
-    throw error;
-  }
-}
-
-export async function commitGitRepo(
-  ctx: GitRepoContext,
-  message: string,
-  identity: { name: string; email: string },
-  paths?: string[],
-): Promise<boolean> {
-  const repoRoot = gitRepoClonePath(ctx.userId, ctx.name, ctx.config);
-  // One lock for the whole ensure+add+commit so the staged state can't be
-  // disturbed mid-commit by a concurrent op on the same clone (git-02). Use the
-  // lock-free clone internal to avoid re-entering the same key.
-  return withRepoLock(repoRoot, async () => {
-    await ensureGitRepoCloneLocked(ctx, repoRoot);
-    const pathArgs = normalizeRepoPaths(repoRoot, paths);
-    await configureGitRepoIdentityInClone(repoRoot, identity);
-    await git(repoRoot, pathArgs.length ? ["add", "-A", "--", ...pathArgs] : ["add", "-A"]);
-    if (!(await hasStagedChanges(repoRoot))) {
-      return false;
-    }
-    await git(repoRoot, ["commit", "-m", message.trim() || "Update repository"]);
-    return true;
-  });
 }
 
 export async function pushGitRepo(ctx: GitRepoContext): Promise<string> {

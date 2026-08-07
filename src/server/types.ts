@@ -1383,13 +1383,3 @@ export interface KnowledgeNote {
   content: string;
 }
 
-/** Working-tree state of a user's knowledge-repo clone. */
-export interface KnowledgeRepoStatus {
-  /** The configured repo (`owner/repo` or URL), or null if none set. */
-  repo: string | null;
-  branch: string | null;
-  /** True once the repo has been cloned to disk. */
-  cloned: boolean;
-  /** Paths (relative) with uncommitted changes. */
-  dirty: string[];
-}

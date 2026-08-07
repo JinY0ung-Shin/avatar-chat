@@ -351,7 +351,8 @@ export function createAdminRouter(deps: RouterDeps): Router {
   );
 
   // Admin override of an avatar's visibility (content moderation): force it to
-  // public / group / private regardless of the owner's own setting.
+  // group / private regardless of the owner's own setting (the legacy `public`
+  // state is retired — isAvatarVisibility rejects it).
   router.put(
     "/api/admin/users/:id/visibility",
     requireAuth(store),
@@ -414,6 +415,9 @@ export function createAdminRouter(deps: RouterDeps): Router {
       apiError(res, 404, "그룹을 찾을 수 없습니다.");
       return;
     }
+    // A rename is a visible-identity change for every member (group_create /
+    // group_delete already audit; keep the trail symmetric).
+    auditAs(req, "group_update", `group=${req.params.id} (${group.name})`);
     res.json({ group });
   });
 

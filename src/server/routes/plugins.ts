@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
@@ -107,10 +108,24 @@ export function createPluginsRouter({ config, store }: RouterDeps): Router {
   });
 
   router.delete("/api/me/plugins/:id", requireAuth(store), (req: AuthenticatedRequest, res) => {
+    // Read the row BEFORE deleting so we can clean up its on-disk clone (a full
+    // working tree of a possibly-private repo) and the clone-once cache — mirrors
+    // the ref-change path above. Otherwise the clone leaks and re-adding the same
+    // repo in-process serves the stale pre-delete tree.
+    const plugin = store.getPlugin(req.user!.id, req.params.id);
     const removed = store.deletePlugin(req.user!.id, req.params.id);
     if (!removed) {
       apiError(res, 404, "플러그인을 찾을 수 없습니다.");
       return;
+    }
+    if (plugin) {
+      const clonePath = pluginClonePath(req.user!.id, plugin.repo, config);
+      forgetClone(clonePath);
+      try {
+        fs.rmSync(clonePath, { recursive: true, force: true });
+      } catch (err) {
+        logger.warn({ err, userId: req.user!.id, pluginId: req.params.id }, "plugin clone cleanup failed");
+      }
     }
     logger.info({ userId: req.user!.id, pluginId: req.params.id }, "plugin removed");
     res.json({ ok: true });

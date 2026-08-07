@@ -27,7 +27,6 @@ export type {
   KnowledgeGraph,
   KnowledgeGraphNode,
   KnowledgeNote,
-  KnowledgeRepoStatus,
   KnowledgeRequest,
   MessageAttachment,
   Plugin,
