@@ -11,6 +11,7 @@ import type { NextFunction, Request, Response } from "express";
 import { createServices, expandChatSlashCommand } from "../src/server/app.js";
 import { createAppServer } from "../src/server/appServer.js";
 import {
+  BROWSER_EXTENSION_MIN_COMPATIBLE,
   browserExtensionId,
   browserExtensionOrigins,
   browserExtensionVersion,
@@ -1137,6 +1138,28 @@ describe("browser extension bundle", () => {
     // The chat composer badge compares the installed extension against this;
     // a null here would render every install as incomparable.
     expect(browserExtensionVersion()).toMatch(/^\d+\.\d+\.\d+$/);
+  });
+
+  it("never demands a build newer than the one it ships", () => {
+    // The floor must stay at or below the bundled version — the invariant
+    // BROWSER_EXTENSION_MIN_COMPATIBLE's own comment claims a test enforces.
+    // Above it, even a just-downloaded install badges orange FOREVER: the
+    // user is told to update to something no download can give them.
+    const parse = (v: string) => v.split(".").map(Number);
+    const min = parse(BROWSER_EXTENSION_MIN_COMPATIBLE);
+    const bundled = parse(browserExtensionVersion()!);
+    expect(BROWSER_EXTENSION_MIN_COMPATIBLE).toMatch(/^\d+\.\d+\.\d+$/);
+    for (let i = 0; i < Math.max(min.length, bundled.length); i += 1) {
+      const diff = (min[i] ?? 0) - (bundled[i] ?? 0);
+      if (diff !== 0) {
+        // Numeric per segment, so 0.10.0 correctly outranks 0.9.1.
+        expect(
+          diff,
+          `min-compatible ${BROWSER_EXTENSION_MIN_COMPATIBLE} exceeds bundled ${browserExtensionVersion()}`,
+        ).toBeLessThan(0);
+        break;
+      }
+    }
   });
 
   it("produces a zip the OS unzip accepts, containing every shipped file", () => {
