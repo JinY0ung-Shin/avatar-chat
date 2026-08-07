@@ -30,6 +30,7 @@ import path from "node:path";
 import {
   BROWSER_EXTENSION_DIR,
   buildBrowserExtensionZip,
+  matchPatternForOrigin,
 } from "../src/server/browserExtensionBundle.js";
 import { buildUpdatesXml, packCrx3 } from "../src/server/browserExtensionCrx.js";
 import {
@@ -126,11 +127,35 @@ if (!manifest.version) fail(`No version in ${manifestPath}.`);
 // machine. Note the tradeoff — a GitHub release asset is PUBLIC, so an
 // internal hostname stamped here is visible to the world; serve the crx from
 // the Noah server (--crx-url) when that is not acceptable.
-for (const origin of args.origins) {
-  if (!/^https?:\/\/.+\/\*$/.test(origin)) {
-    fail(`--origin must be a match pattern like https://host/* (got: ${origin})`);
+//
+// BUILD-TIME only, by necessity: Chrome enforces externally_connectable before
+// any extension code runs, so no server env var can influence it after the
+// fact. The env var below just spares the release machine from restating the
+// address on every release — set it once in the release shell profile.
+//
+// The manual zip path needs none of this: the download route stamps the
+// requesting Noah address into that bundle's manifest by itself.
+const ORIGINS_ENV = "BROWSER_BRIDGE_ORIGINS";
+const rawOrigins = args.origins.length
+  ? args.origins
+  : (process.env[ORIGINS_ENV] || "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+// Accept both a bare origin and a full match pattern: `matchPatternForOrigin`
+// is the same normalizer the download route uses, so the two channels can
+// never disagree about what a Noah address looks like.
+const origins = rawOrigins.map((value) => {
+  const pattern = matchPatternForOrigin(value.replace(/\/\*$/, ""));
+  if (!pattern) {
+    fail(
+      `Not a usable Noah address: ${value}\n` +
+        `Give an http(s) origin ("https://noah.example") or a match pattern ("https://noah.example/*"),\n` +
+        `via --origin or ${ORIGINS_ENV}="https://noah.example,https://alt.example".`,
+    );
   }
-}
+  return pattern;
+});
 
 const repo = args.repo || DEFAULT_REPO;
 if (!args.tag && !args.crxUrl) {
@@ -153,7 +178,7 @@ fs.writeFileSync(path.join(outDir, UPDATE_SIGNATURE_ASSET), `${signature}\n`);
 
 // Policy-channel assets. Root-level zip: Chrome requires manifest.json at the
 // crx archive root.
-const crxZip = buildBrowserExtensionZip(undefined, args.origins, "");
+const crxZip = buildBrowserExtensionZip(undefined, origins, "");
 const packed = packCrx3(crxZip, privateKeyPem);
 fs.writeFileSync(path.join(outDir, CRX_ASSET), packed.crx);
 fs.writeFileSync(
@@ -172,11 +197,14 @@ console.log(`version      : ${manifest.version}`);
 console.log(`out dir      : ${outDir}`);
 console.log(`  ${UPDATE_PAYLOAD_ASSET} (${payload.length} bytes) + ${UPDATE_SIGNATURE_ASSET}`);
 console.log(`  ${CRX_ASSET} (${packed.crx.length} bytes) + ${UPDATES_XML_ASSET} → ${crxUrl}`);
-if (!args.origins.length) {
+if (origins.length) {
+  console.log(`baked origins: ${origins.join(", ")}`);
+} else {
   console.log("");
   console.log(
-    `NOTE: no --origin given, so the crx accepts only the shipped origins. A policy install cannot be\n` +
-      "hand-edited: if the real Noah address is missing, the bridge fails silently on every machine.",
+    "NOTE: no Noah address baked in, so the crx accepts only the shipped defaults. A policy install\n" +
+      "cannot be hand-edited: if the real address is missing, the bridge fails silently on every machine.\n" +
+      `Set ${ORIGINS_ENV}="https://noah.example" on the release machine, or pass --origin.`,
   );
 }
 console.log("");

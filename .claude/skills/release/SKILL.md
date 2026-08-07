@@ -68,11 +68,14 @@ npm run build
   (+ `.sig`) and policy-installed ones read `updates.xml` (→ the `.crx`), so
   EVERY release must attach all four or the newest release breaks the fleet's
   update check.
-  - `BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem npm run build:extension-update -- --tag vX.Y.Z --origin "<deployed Noah origin>/*"`
+  - `BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem npm run build:extension-update -- --tag vX.Y.Z`
     → four files in `dist/extension/`.
-  - `--origin` is not optional in practice: a policy-installed extension cannot
-    be hand-edited, so a missing Noah origin makes the bridge fail SILENTLY on
-    every machine. Ask the user for the deployed address if unknown.
+  - The deployed Noah address must be baked in: normally `BROWSER_BRIDGE_ORIGINS`
+    is already set on the release machine, and the script PRINTS `baked origins:`
+    when it is. If it instead prints the no-address NOTE, stop and ask the user
+    for the address (then `--origin "https://…"`) — a policy-installed extension
+    cannot be hand-edited, so a missing origin makes the bridge fail SILENTLY on
+    every machine.
   - The script FAILS on a missing key or a manifest-key mismatch — follow its
     printed bootstrap instructions rather than bypassing them.
   - If the key file does not exist on this machine AND neither channel was ever

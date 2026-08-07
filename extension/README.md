@@ -109,9 +109,16 @@ unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은
    이어서 `npm run build:extension-update`를 실행하면 manifest `key`/클라이언트 기본 id 등
    **어디를 새 값으로 바꿔야 하는지 스크립트가 정확히 출력**합니다. id가 바뀌므로 기존 설치는
    새 zip으로 1회 재설치해야 하고, allowedOrigins 정책의 레지스트리 경로도 새 id를 씁니다.
-2. **빌드:** `BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem npm run build:extension-update -- --tag v1.3.0 --origin "https://noah.사내주소/*"`
+2. **빌드:** 릴리즈 머신 셸 프로필에 주소를 한 번 넣어두고(권장),
+
+   ```sh
+   export BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem
+   export BROWSER_BRIDGE_ORIGINS="https://noah.사내주소"   # 쉼표로 여러 개, /* 는 생략 가능
+   npm run build:extension-update -- --tag v1.3.0
+   ```
+
    → `dist/extension/`에 4개 파일(업데이터용 json/sig + 정책용 crx/updates.xml). `/release`
-   워크플로가 릴리즈 에셋으로 첨부합니다.
+   워크플로가 릴리즈 에셋으로 첨부합니다. `--origin` 플래그를 주면 환경변수를 덮어씁니다.
 3. **IT에 정책 1회 등록** (빌드 스크립트가 그대로 출력합니다):
 
    ```json
@@ -131,9 +138,17 @@ unpacked 확장은 영원히 자동 갱신 대상이 아닙니다. 이 채널은
 
 반드시 알아둘 것:
 
-- **`--origin`으로 실제 Noah 주소를 반드시 구우세요.** 정책 설치본은 사용자가 매니페스트를
-  손댈 수 없어서, `externally_connectable`에 주소가 없으면 **모든 단말에서 브릿지가 조용히
-  실패**합니다(페이지에 `chrome.runtime`이 아예 없어 오류조차 안 납니다).
+- **실제 Noah 주소를 반드시 구우세요** (`BROWSER_BRIDGE_ORIGINS` 또는 `--origin`). 정책
+  설치본은 사용자가 매니페스트를 손댈 수 없어서, `externally_connectable`에 주소가 없으면
+  **모든 단말에서 브릿지가 조용히 실패**합니다(페이지에 `chrome.runtime`이 아예 없어 오류조차
+  안 납니다). 주소 없이 빌드하면 스크립트가 경고를 찍습니다.
+- **이건 빌드 시점 값이지 런타임 설정이 아닙니다.** Chrome이 확장 코드보다 먼저
+  `externally_connectable`을 강제하므로, 서버 환경변수로는 사후에 바꿀 수 없습니다. 주소가
+  바뀌면 새 릴리즈를 내야 합니다 (도메인 안에서만 움직인다면 `https://*.사내도메인/*`
+  와일드카드를 구워 재빌드를 줄일 수 있지만, 그 도메인 아래 모든 사이트가 확장에 메시지를
+  보낼 수 있게 되므로 신뢰 범위가 넓어집니다).
+- 반대로 **수동 zip 경로는 이 설정이 필요 없습니다** — 서버가 다운로드 요청이 들어온 주소를
+  그 번들의 매니페스트에 자동으로 찍습니다.
 - **GitHub 릴리즈 에셋은 공개입니다.** 위처럼 사내 호스트명을 구우면 외부에 노출됩니다.
   곤란하면 crx를 Noah 서버에서 서빙하고 `--crx-url`로 그 주소를 지정하세요 (updates.xml의
   `codebase`만 바뀝니다).
