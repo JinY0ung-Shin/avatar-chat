@@ -1161,7 +1161,7 @@ describe("browser bridge one-click install lib", () => {
 
   function stubFilesEndpoint() {
     useFetch((url) =>
-      url.includes("/api/admin/browser-extension.files")
+      url.includes("/api/browser-extension.files")
         ? jsonRes({
             version: "0.5.0",
             files: [

@@ -3669,7 +3669,7 @@ describe("browser bridge tools", () => {
     for (const [name, args] of Object.entries(argsByTool)) {
       const res = await callTool(tools, name, args);
       expect(res.isError, name).toBe(true);
-      expect(res.content[0].text).toContain("restricted to system administrators");
+      expect(res.content[0].text).toContain("talking to their OWN avatar");
     }
     // The self-gate must short-circuit: the `mcp__` auto-allow means this
     // handler is the only thing standing between a colleague and the bridge.

@@ -50,7 +50,7 @@
 
   const u0 = readState().user;
 
-  // Browser bridge (admin-only capability, so the card is admin-only too).
+  // Browser bridge install/update state.
   let guideOpen = false;
   let extensionBusy = false;
   let extensionId: string | null = null;
@@ -139,8 +139,6 @@
     notify("폴더 연결을 해제했습니다.", "ok");
   }
 
-  $: isAdmin = Boolean($appState.user?.roles?.includes("admin"));
-
   // The id is pinned by the manifest `key`, so it is the same on every install —
   // fetched rather than hardcoded so the guide can never drift from the bundle
   // the button actually hands out.
@@ -152,7 +150,7 @@
         extensionId: string | null;
         origins: string[];
         multimediaNotice?: boolean;
-      }>("/api/admin/browser-extension");
+      }>("/api/browser-extension");
       extensionId = meta.extensionId;
       extensionOrigins = meta.origins ?? [];
       extensionMultimediaNotice = Boolean(meta.multimediaNotice);
@@ -161,14 +159,14 @@
     }
   }
 
-  // Fetched as a blob rather than navigating: the endpoint is admin-gated, and a
-  // plain link would drop the session's fetch credentials handling and turn a
-  // 403 into a broken-looking download.
+  // Fetched as a blob rather than navigating: the endpoint needs the session,
+  // and a plain link would drop the fetch error handling and turn an auth
+  // failure into a broken-looking download.
   async function downloadExtension(): Promise<void> {
     if (extensionBusy) return;
     extensionBusy = true;
     try {
-      const res = await fetch("/api/admin/browser-extension.zip", { credentials: "same-origin" });
+      const res = await fetch("/api/browser-extension.zip", { credentials: "same-origin" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);
@@ -187,7 +185,7 @@
     }
   }
 
-  $: if (active && isAdmin) {
+  $: if (active) {
     void loadExtensionMeta();
     void loadUpdateDirState();
   }
@@ -637,99 +635,96 @@
 </script>
 
 {#if active && user}
-  <!-- 브라우저 브릿지: 관리자 전용 기능이므로 카드도 관리자에게만 -->
-  {#if isAdmin}
-    <section class="settings-card">
-      <div class="panel-section-head">
-        <div>
-          <h3>브라우저 브릿지 <span class="tag accent experimental-badge">관리자</span></h3>
-          <p class="muted">
-            확장 프로그램을 설치하면 아바타가 <strong>내 브라우저의 탭</strong>을 직접 열고 클릭할 수 있습니다.
-            이미 로그인된 세션 그대로 동작하므로, 허용 사이트를 신중하게 정하세요.
-          </p>
-        </div>
-      </div>
-      <div class="browser-bridge-actions">
-        <button type="button" class="btn primary" disabled={extensionBusy} on:click={downloadExtension}>
-          <Icon name="file" />
-          <span>{extensionBusy ? "준비 중…" : "확장 프로그램 다운로드"}</span>
-        </button>
-        <button type="button" class="btn ghost" on:click={() => (guideOpen = true)}>설치 방법 보기</button>
-        <button type="button" class="btn ghost" disabled={allowBusy} on:click={loadAllowlist}>
-          {allowLoaded ? "허용 사이트 새로고침" : "허용 사이트 불러오기"}
-        </button>
-      </div>
-
-      {#if updateDirSupported}
-        <div class="browser-bridge-actions">
-          {#if updateDirName}
-            <button type="button" class="btn primary" disabled={updateBusy} on:click={runOneClickUpdate}>
-              {updateBusy ? "업데이트 중…" : "확장 원클릭 업데이트"}
-            </button>
-            <button type="button" class="btn ghost" disabled={updateBusy} on:click={disconnectUpdateDir}>
-              폴더 연결 해제
-            </button>
-          {:else}
-            <button type="button" class="btn ghost" on:click={connectUpdateDir}>
-              확장 폴더 연결 (원클릭 업데이트)
-            </button>
-          {/if}
-        </div>
+  <section class="settings-card">
+    <div class="panel-section-head">
+      <div>
+        <h3>브라우저 브릿지</h3>
         <p class="muted">
-          {#if updateDirName}
-            연결된 폴더: <code>{updateDirName}</code> — 버튼 한 번이면 파일 교체와 확장 리로드까지 끝납니다.
-          {:else}
-            압축을 푼 확장 폴더를 한 번 연결해 두면, 이후 버전 업데이트는 버튼 한 번입니다.
-          {/if}
+          확장 프로그램을 설치하면 아바타가 <strong>내 브라우저의 탭</strong>을 직접 열고 클릭할 수 있습니다.
+          이미 로그인된 세션 그대로 동작하므로, 허용 사이트를 신중하게 정하세요.
         </p>
-      {/if}
+      </div>
+    </div>
+    <div class="browser-bridge-actions">
+      <button type="button" class="btn primary" disabled={extensionBusy} on:click={downloadExtension}>
+        <Icon name="file" />
+        <span>{extensionBusy ? "준비 중…" : "확장 프로그램 다운로드"}</span>
+      </button>
+      <button type="button" class="btn ghost" on:click={() => (guideOpen = true)}>설치 방법 보기</button>
+      <button type="button" class="btn ghost" disabled={allowBusy} on:click={loadAllowlist}>
+        {allowLoaded ? "허용 사이트 새로고침" : "허용 사이트 불러오기"}
+      </button>
+    </div>
 
-      {#if allowLoaded}
-        <div class="browser-allowlist">
-          {#if allowSource === "managed"}
-            <p class="muted">
-              <strong>관리자 정책이 적용 중입니다.</strong> 이 브라우저의 허용 사이트는 조직에서 배포한
-              목록이며 여기서 바꿀 수 없습니다.
-            </p>
-            <ul class="guide-origins">
-              {#each allowPatterns as pattern (pattern)}
-                <li><code>{pattern}</code></li>
-              {/each}
-            </ul>
-          {:else}
-            <label class="field">
-              <span>아바타가 조작해도 되는 사이트 (한 줄에 하나)</span>
-              <textarea
-                bind:value={allowDraft}
-                rows="4"
-                spellcheck="false"
-                placeholder={"intra.example.com\n*.corp.local"}
-              ></textarea>
-            </label>
-            <p class="muted">
-              정확한 호스트 또는 <code>*.도메인</code> 형태의 하위 도메인 와일드카드를 씁니다
-              (<code>*.corp.local</code>은 <code>corp.local</code> 자체에는 적용되지 않아요).
-              비워두면 모든 사이트가 거부됩니다.
-            </p>
-            <div class="browser-bridge-actions">
-              <button type="button" class="btn primary" disabled={allowBusy} on:click={saveAllowlist}>
-                {allowBusy ? "저장 중…" : "허용 사이트 저장"}
-              </button>
-            </div>
-          {/if}
-        </div>
-      {/if}
-    </section>
-    {#if guideOpen}
-      <BrowserBridgeGuideModal
-        extensionId={extensionId}
-        origins={extensionOrigins}
-        downloading={extensionBusy}
-        multimediaNotice={extensionMultimediaNotice}
-        on:download={downloadExtension}
-        on:close={() => (guideOpen = false)}
-      />
+    {#if updateDirSupported}
+      <div class="browser-bridge-actions">
+        {#if updateDirName}
+          <button type="button" class="btn primary" disabled={updateBusy} on:click={runOneClickUpdate}>
+            {updateBusy ? "업데이트 중…" : "확장 원클릭 업데이트"}
+          </button>
+          <button type="button" class="btn ghost" disabled={updateBusy} on:click={disconnectUpdateDir}>
+            폴더 연결 해제
+          </button>
+        {:else}
+          <button type="button" class="btn ghost" on:click={connectUpdateDir}>
+            확장 폴더 연결 (원클릭 업데이트)
+          </button>
+        {/if}
+      </div>
+      <p class="muted">
+        {#if updateDirName}
+          연결된 폴더: <code>{updateDirName}</code> — 버튼 한 번이면 파일 교체와 확장 리로드까지 끝납니다.
+        {:else}
+          압축을 푼 확장 폴더를 한 번 연결해 두면, 이후 버전 업데이트는 버튼 한 번입니다.
+        {/if}
+      </p>
     {/if}
+
+    {#if allowLoaded}
+      <div class="browser-allowlist">
+        {#if allowSource === "managed"}
+          <p class="muted">
+            <strong>관리자 정책이 적용 중입니다.</strong> 이 브라우저의 허용 사이트는 조직에서 배포한
+            목록이며 여기서 바꿀 수 없습니다.
+          </p>
+          <ul class="guide-origins">
+            {#each allowPatterns as pattern (pattern)}
+              <li><code>{pattern}</code></li>
+            {/each}
+          </ul>
+        {:else}
+          <label class="field">
+            <span>아바타가 조작해도 되는 사이트 (한 줄에 하나)</span>
+            <textarea
+              bind:value={allowDraft}
+              rows="4"
+              spellcheck="false"
+              placeholder={"intra.example.com\n*.corp.local"}
+            ></textarea>
+          </label>
+          <p class="muted">
+            정확한 호스트 또는 <code>*.도메인</code> 형태의 하위 도메인 와일드카드를 씁니다
+            (<code>*.corp.local</code>은 <code>corp.local</code> 자체에는 적용되지 않아요).
+            비워두면 모든 사이트가 거부됩니다.
+          </p>
+          <div class="browser-bridge-actions">
+            <button type="button" class="btn primary" disabled={allowBusy} on:click={saveAllowlist}>
+              {allowBusy ? "저장 중…" : "허용 사이트 저장"}
+            </button>
+          </div>
+        {/if}
+      </div>
+    {/if}
+  </section>
+  {#if guideOpen}
+    <BrowserBridgeGuideModal
+      extensionId={extensionId}
+      origins={extensionOrigins}
+      downloading={extensionBusy}
+      multimediaNotice={extensionMultimediaNotice}
+      on:download={downloadExtension}
+      on:close={() => (guideOpen = false)}
+    />
   {/if}
 
   <!-- 실험 기능 (#50) -->

@@ -94,22 +94,25 @@ describe("noah-almighty platform", () => {
     expect(res.body.modelSelection.defaultVision).toBe(true);
   });
 
-  it("hides the browser-bridge Multimedia notice by default and gates the endpoint to admins", async () => {
+  it("hides the browser-bridge Multimedia notice by default and serves any signed-in user", async () => {
     const app = testApp();
     const { agent } = await newUser(app, "bridge-admin");
-    const res = await agent.get("/api/admin/browser-extension").expect(200);
+    const res = await agent.get("/api/browser-extension").expect(200);
     expect(res.body.multimediaNotice).toBe(false);
     // Sanity: the id the guide renders still comes with it.
     expect(typeof res.body.extensionId).toBe("string");
 
+    // General capability: a plain member gets the same payload. The session
+    // floor stays — no login, no bundle.
     const { agent: member } = await newUser(app, "bridge-member");
-    await member.get("/api/admin/browser-extension").expect(403);
+    await member.get("/api/browser-extension").expect(200);
+    await request(app).get("/api/browser-extension").expect(401);
   });
 
   it("publishes a compatibility floor at or below the bundled extension version", async () => {
     const app = testApp();
     const { agent } = await newUser(app, "bridge-floor-admin");
-    const res = await agent.get("/api/admin/browser-extension").expect(200);
+    const res = await agent.get("/api/browser-extension").expect(200);
     const version = res.body.version as string;
     const floor = res.body.minCompatibleVersion as string;
     const nums = (v: string) => v.split(".").map(Number);
@@ -128,7 +131,7 @@ describe("noah-almighty platform", () => {
     const app = testApp();
     const { agent } = await newUser(app, "bridge-files-admin");
     const res = await agent
-      .get("/api/admin/browser-extension.files")
+      .get("/api/browser-extension.files")
       .set("X-Forwarded-Host", "noah.test.local:8443")
       .set("X-Forwarded-Proto", "https")
       .expect(200);
@@ -143,13 +146,13 @@ describe("noah-almighty platform", () => {
       version: string;
       externally_connectable: { matches: string[] };
     };
-    // Same origin stamping as the zip: the address the admin downloads from is
+    // Same origin stamping as the zip: the address the user downloads from is
     // the address the extension must accept messages from.
     expect(manifest.externally_connectable.matches).toContain("https://noah.test.local:8443/*");
     expect(res.body.version).toBe(manifest.version);
 
     const { agent: member } = await newUser(app, "bridge-files-member");
-    await member.get("/api/admin/browser-extension.files").expect(403);
+    await member.get("/api/browser-extension.files").expect(200);
   });
 
   it("surfaces the browser-bridge Multimedia notice when the operator enables it", async () => {
@@ -161,7 +164,7 @@ describe("noah-almighty platform", () => {
     });
     const app = createApp(services);
     const { agent } = await newUser(app, "bridge-admin");
-    const res = await agent.get("/api/admin/browser-extension").expect(200);
+    const res = await agent.get("/api/browser-extension").expect(200);
     expect(res.body.multimediaNotice).toBe(true);
   });
 

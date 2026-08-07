@@ -261,14 +261,6 @@
     );
   })();
 
-  // Browser control acts with the viewer's own live logins, so it is
-  // operator-only while it is being trialled — the server strips it from every
-  // non-admin run. Hiding it here keeps the picker honest rather than offering
-  // a switch that silently does nothing. Mirrors claudeAgent's planMcpToolFamilies.
-  $: visibleMcpToolGroups = MCP_TOOL_GROUPS.filter(
-    (group) => group.id !== "browser" || Boolean($appState.user?.roles?.includes("admin")),
-  );
-
   // Browser-bridge compatibility badge for the composer hint row: compares the
   // INSTALLED extension build against the server bundle AND the server's
   // min-compatible floor, so a stale install shows up before the avatar hits
@@ -276,8 +268,8 @@
   // at/above the floor keeps working (green) instead of demanding a re-download
   // on every extension-folder touch. Probed once per app load — both sides only
   // change with a deploy or an extension reload, and either reloads this page in
-  // practice. `bridgeCompat` stays null for non-admins: the probe is gated on
-  // the same condition that makes browser tools runnable at all.
+  // practice. The probe only starts once a pane actually has the browser tool
+  // group selected, so panes that never touch the bridge never ping it.
   let bridgeCompat:
     | {
         status: "ok" | "outdated" | "unreachable";
@@ -292,7 +284,7 @@
     try {
       const [meta, reply] = await Promise.all([
         api<{ version?: string | null; minCompatibleVersion?: string | null }>(
-          "/api/admin/browser-extension",
+          "/api/browser-extension",
         ),
         // getAllowedOrigins exists in every extension build, so it is the one
         // probe that cannot side-effect an old install; pre-0.4.0 builds
@@ -313,7 +305,6 @@
   }
 
   $: browserBridgeSelected =
-    Boolean($appState.user?.roles?.includes("admin")) &&
     !adminBlockedMcpToolGroupSet.has("browser") &&
     $appState.chatPanes.some((p) => !isExternalPane(p) && selectedMcpToolGroups(p).includes("browser"));
   $: if (browserBridgeSelected && !bridgeCompatStarted) {
@@ -349,7 +340,7 @@
 
   function mcpToolsLabel(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
     const effective = selectedMcpToolGroups(item).filter((id) => !adminBlocked.has(id));
-    return `도구 ${effective.length}/${visibleMcpToolGroups.length}`;
+    return `도구 ${effective.length}/${MCP_TOOL_GROUPS.length}`;
   }
 
   function composerSettingsSummary(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
@@ -1490,7 +1481,7 @@
           use:clickOutside={{ onOutside: () => (mcpToolsOpenPaneId = ""), ignore: ".composer-tools-btn" }}
         >
           <div class="composer-tools-title">이 대화에서 사용할 MCP 도구</div>
-          {#each visibleMcpToolGroups as group (group.id)}
+          {#each MCP_TOOL_GROUPS as group (group.id)}
             {@const adminBlocked = adminBlockedMcpToolGroupSet.has(group.id)}
             <label class="composer-tools-item">
               <input

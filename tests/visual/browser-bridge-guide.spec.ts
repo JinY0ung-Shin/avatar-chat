@@ -49,11 +49,9 @@ async function mockApp(
       body = { user: { ...admin, roles: isAdmin ? ["admin"] : [] } };
     } else if (path === "/api/avatars") {
       body = { avatars: [{ ...admin, sharesGroup: false, hasImage: false }] };
-    } else if (path === "/api/admin/browser-extension") {
-      if (!isAdmin) {
-        await route.fulfill({ status: 403, contentType: "application/json", body: JSON.stringify({ error: "nope" }) });
-        return;
-      }
+    } else if (path === "/api/browser-extension") {
+      // Session-gated but NOT admin-gated: every signed-in user installs the
+      // bridge for their own browser.
       body = {
         extensionId: EXTENSION_ID,
         origins: ["https://noah.corp.local/*", "http://localhost:5173/*"],
@@ -158,7 +156,7 @@ test("the corp Multimedia-folder notice renders when the server enables it", asy
   ).toBeVisible();
 });
 
-test("admin gets the one-click update connector in the bridge card", async ({ page }) => {
+test("the one-click update connector renders in the bridge card", async ({ page }) => {
   await mockApp(page, { isAdmin: true });
   await page.goto("/#/settings");
   await page.getByRole("tab", { name: "권한·연결" }).click();
@@ -168,9 +166,9 @@ test("admin gets the one-click update connector in the bridge card", async ({ pa
   await expect(page.getByRole("button", { name: "확장 폴더 연결 (원클릭 업데이트)" })).toBeVisible();
 });
 
-test("a non-admin never sees the browser bridge card", async ({ page }) => {
+test("a plain member sees the browser bridge card too (general capability)", async ({ page }) => {
   await mockApp(page, { isAdmin: false });
   await page.goto("/#/settings");
   await page.getByRole("tab", { name: "권한·연결" }).click();
-  await expect(page.getByRole("button", { name: "설치 방법 보기" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "설치 방법 보기" })).toBeVisible();
 });

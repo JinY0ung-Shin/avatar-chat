@@ -992,13 +992,6 @@ export interface AgentRequest {
   /** True when the viewer IS the avatar's owner (viewer.id === avatar.id). */
   viewerIsOwner?: boolean;
   /**
-   * The viewer holds the system `admin` role. Used ONLY to gate browser control
-   * (`mcp__browser__*`), which acts with the viewer's own live logins and is
-   * therefore restricted to operators while the capability is being trialled.
-   * NOT a general elevation signal — peer trust stays with `elevated`.
-   */
-  viewerIsAdmin?: boolean;
-  /**
    * Set ONLY for group shared-agent runs (avatar id `group:<groupId>:<agentId>`):
    * pins the run to ONE group's resources. The run kind carries capability —
    * owner-only tools never unlock (there is no owner), built-in access is

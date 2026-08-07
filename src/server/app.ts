@@ -16,6 +16,7 @@ import { createGroupsRouter } from "./routes/groups.js";
 import { createRoutinesRouter } from "./routes/routines.js";
 import { createChatRouter, conversationHistoryForPrompt, expandChatSlashCommand } from "./routes/chat.js";
 import { createAdminRouter } from "./routes/admin.js";
+import { createBrowserExtensionRouter } from "./routes/browserExtension.js";
 
 export type { AppServices };
 export { conversationHistoryForPrompt, expandChatSlashCommand };
@@ -168,6 +169,7 @@ export function createApp(services = createServices()) {
   app.use(createGroupsRouter(deps));
   app.use(createRoutinesRouter(deps));
   app.use(createChatRouter(deps));
+  app.use(createBrowserExtensionRouter(deps));
   app.use(createAdminRouter(deps));
 
   // Unknown API requests must stay API-shaped. Without this boundary, GET

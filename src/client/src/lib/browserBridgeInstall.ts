@@ -8,7 +8,7 @@
 // the picker gesture is the entire path disclosure.
 //
 // Trust model unchanged from the zip flow: the files come from the same
-// authenticated admin endpoint the zip does; the page only gains write access
+// authenticated endpoint the zip does; the page only gains write access
 // to the one folder the user pointed at, revocable in site settings.
 
 import { api } from "./api";
@@ -260,7 +260,7 @@ export async function updateExtensionInPlace(handle: DirHandleLike): Promise<Upd
   let payload: { version?: string | null; files?: ExtensionFilePayload[] };
   try {
     payload = await api<{ version?: string | null; files?: ExtensionFilePayload[] }>(
-      "/api/admin/browser-extension.files",
+      "/api/browser-extension.files",
     );
   } catch (err) {
     return { status: "failed", reason: (err as Error).message };

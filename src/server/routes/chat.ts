@@ -1562,8 +1562,6 @@ export function createChatRouter({
               viewerUserId: req.user!.id,
               viewerName: req.user!.displayName,
               viewerIsOwner,
-              // Browser control is operator-only for now (see AgentRequest).
-              viewerIsAdmin: req.user!.roles.includes("admin"),
               knowledgeMemory,
               // Elevated tool permissions for the owner OR a trusted user. The tool
               // gate denies everyone else, so auto-approving the elevated path is safe.

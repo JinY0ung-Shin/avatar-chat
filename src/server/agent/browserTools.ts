@@ -33,9 +33,9 @@ export const BROWSER_TOOL_NAMES = [
  *
  * `allowed` is the self-gate. The PreToolUse hook auto-allows every `mcp__*`
  * call BEFORE any owner check, so an uncleared viewer must be refused HERE.
- * The caller sets it to "system admin AND owner of this avatar": the capability
- * is operator-only while it is trialled, and even an operator must not let
- * SOMEONE ELSE's avatar instructions drive their own logged-in browser.
+ * The caller sets it to "owner of this avatar": the tools act with the
+ * VIEWER's own live logins, and nobody must let SOMEONE ELSE's avatar
+ * instructions drive their own logged-in browser.
  */
 export interface BrowserToolsContext {
   execute: (request: BrowserRequest) => Promise<BrowserResult>;
@@ -43,7 +43,7 @@ export interface BrowserToolsContext {
 }
 
 const DENIED =
-  "Browser control is restricted to system administrators driving their OWN avatar. Tell the user plainly that " +
+  "Browser control only works when the user is talking to their OWN avatar. Tell the user plainly that " +
   "you cannot control their browser in this conversation, and continue with the tools you do have " +
   "(mcp__web__fetch reads a page without controlling the browser). There is no shell or fetch workaround.";
 

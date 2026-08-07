@@ -365,36 +365,19 @@ describe("planMcpToolFamilies (run-kind tool containment)", () => {
   const ALL = MCP_TOOL_GROUPS.map((g) => g.id);
 
   it("personal run: registered mirrors the selection, nothing run-kind-blocked", () => {
-    const plan = planMcpToolFamilies(ALL, false, true);
+    const plan = planMcpToolFamilies(ALL, false);
     expect(plan.registered).toEqual(ALL);
     expect(plan.runKindBlocked).toEqual([]);
     expect(plan.confluence).toBe(true);
-    const partial = planMcpToolFamilies(["web", "system"], false, true);
+    // Browser rides the selection like every other family on a personal run.
+    expect(plan.browser).toBe(true);
+    const partial = planMcpToolFamilies(["web", "system"], false);
     expect(partial.registered).toEqual(["web", "system"]);
     expect(partial.personalKnowledge).toBe(false);
   });
 
-  it("browser control is admin-only, and its absence is never blamed on the user", () => {
-    // A non-admin who selected everything: browser is stripped, and it lands in
-    // runKindBlocked so the prompt can't tell the avatar the USER deselected it.
-    const plain = planMcpToolFamilies(ALL, false, false);
-    expect(plain.browser).toBe(false);
-    expect(plain.registered).not.toContain("browser");
-    expect(plain.runKindBlocked).toEqual(["browser"]);
-    // Every other family is untouched — this gate is narrow by design.
-    expect(plain.registered).toEqual(ALL.filter((id) => id !== "browser"));
-
-    const admin = planMcpToolFamilies(ALL, false, true);
-    expect(admin.browser).toBe(true);
-    expect(admin.registered).toContain("browser");
-
-    // Admin does NOT buy back a group-agent run: that block is about whose
-    // session gets acted with, not about the operator's own privileges.
-    expect(planMcpToolFamilies(ALL, true, true).browser).toBe(false);
-  });
-
   it("group-agent run: personal families are stripped and reported as run-kind-blocked", () => {
-    const plan = planMcpToolFamilies(ALL, true, true);
+    const plan = planMcpToolFamilies(ALL, true);
     expect(plan.registered).toEqual(["group_knowledge", "web", "system"]);
     expect(plan.runKindBlocked).toEqual([
       "personal_knowledge",

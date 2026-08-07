@@ -294,7 +294,6 @@ export interface McpToolFamilyPlan {
 export function planMcpToolFamilies(
   enabled: McpToolGroupId[],
   groupAgentRun: boolean,
-  viewerIsAdmin: boolean = false,
 ): McpToolFamilyPlan {
   const has = (id: McpToolGroupId) => enabled.includes(id);
   const byId: Record<McpToolGroupId, boolean> = {
@@ -306,13 +305,12 @@ export function planMcpToolFamilies(
     ssh: has("ssh") && !groupAgentRun,
     avatars: has("avatars") && !groupAgentRun,
     canvas: has("canvas") && !groupAgentRun,
-    // Browser control drives the VIEWER's own logged-in browser, so it is the
-    // narrowest family here. Blocked for a group agent (configured by the team,
-    // not by the person whose session would be acted with) and for anyone
-    // without the system admin role while the capability is trialled. Stripping
-    // it HERE — rather than only at the handler — keeps `registered` honest, so
-    // the avatar never advertises a tool it cannot call.
-    browser: has("browser") && !groupAgentRun && viewerIsAdmin,
+    // Browser control drives the VIEWER's own logged-in browser. Blocked for a
+    // group agent (configured by the team, not by the person whose session
+    // would be acted with). Stripping it HERE — rather than only at the
+    // handler — keeps `registered` honest, so the avatar never advertises a
+    // tool it cannot call.
+    browser: has("browser") && !groupAgentRun,
     system: has("system"),
   };
   const registered = enabled.filter((id) => byId[id]);
@@ -604,11 +602,7 @@ export async function runClaudeAgent(
   // the SINGLE source for the family booleans AND for `registered` — the set
   // the prompt and describe_system report — so report and reality can't drift.
   const groupAgentRun = request.groupAgent ?? null;
-  const familyPlan = planMcpToolFamilies(
-    enabledMcpToolGroups,
-    Boolean(groupAgentRun),
-    Boolean(request.viewerIsAdmin),
-  );
+  const familyPlan = planMcpToolFamilies(enabledMcpToolGroups, Boolean(groupAgentRun));
   const personalKnowledgeToolsEnabled = familyPlan.personalKnowledge;
   const groupKnowledgeToolsEnabled = familyPlan.groupKnowledge;
   const gitRepoToolsEnabled = familyPlan.gitRepo;
@@ -784,10 +778,10 @@ export async function runClaudeAgent(
   //
   // The identity half is kept separate because the handler restates it: the
   // `mcp__` auto-allow means the tool callback is the last line of defence if
-  // registration ever drifts. Owner AND admin — an admin chatting with someone
-  // else's avatar must not let that owner's instructions drive the admin's own
-  // logged-in browser.
-  const browserViewerAllowed = ownerToolAccess && Boolean(request.viewerIsAdmin);
+  // registration ever drifts. Owner-only — anyone chatting with someone else's
+  // avatar must not let that owner's instructions drive their own logged-in
+  // browser.
+  const browserViewerAllowed = ownerToolAccess;
   const browserActive =
     browserToolsEnabled && Boolean(events?.onBrowser) && browserViewerAllowed;
   const brainServer = buildBrainServer(store, {
