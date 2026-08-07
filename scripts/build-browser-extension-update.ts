@@ -27,6 +27,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+// Same config file the server reads, so the release machine can be configured
+// once in `.env` instead of per-invocation. A real shell variable still wins
+// (loadDotEnv only fills what is unset), matching the app's own precedence.
+import { loadDotEnv } from "../src/server/loadEnv.js";
 import {
   BROWSER_EXTENSION_DIR,
   buildBrowserExtensionZip,
@@ -45,6 +49,8 @@ import {
 const DEFAULT_REPO = "JinY0ung-Shin/noah-almighty";
 const CRX_ASSET = "noah-browser-bridge.crx";
 const UPDATES_XML_ASSET = "updates.xml";
+
+loadDotEnv();
 
 function fail(message: string): never {
   console.error(`\n[build-browser-extension-update] ${message}\n`);

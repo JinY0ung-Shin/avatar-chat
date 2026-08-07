@@ -169,6 +169,8 @@ public upstreams) route installs through internal mirrors. Alongside the existin
 | `PLUGIN_AUTO_REFRESH_MINUTES` | Minutes before an enabled avatar plugin clone is refreshed from git at chat/routine start (default `10`; `0` disables auto refresh after the first clone). |
 | `BROWSER_BRIDGE_MULTIMEDIA_NOTICE` | `true`/`1`/`on` adds a corporate-policy line to the browser-bridge install guide telling users to unpack the extension into the upload-approved **Multimedia** folder. Default: hidden. |
 | `ENV_FILE` | Override the `.env` file path loaded at startup (default `.env` in cwd). |
+| `BROWSER_BRIDGE_ORIGINS` | **Release machine only** (`npm run build:extension-update`, not the server). Noah address(es) baked into the released extension's `externally_connectable`, comma-separated; bare origin or match pattern. Required for the policy install channel — a policy-installed extension missing the real address cannot be fixed on the machine and its bridge fails silently. |
+| `BROWSER_EXTENSION_KEY_FILE` | **Release machine only.** Path to the RSA private key signing extension updates. Keep it outside the repo and back it up — the extension id derives from it. |
 
 ## Security note
 
