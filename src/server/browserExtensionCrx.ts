@@ -1,13 +1,13 @@
 import crypto from "node:crypto";
 
 /**
- * CRX3 packaging for the POLICY install channel.
+ * CRX3 packaging for the POLICY install channel — the one auto-update path.
  *
- * Where the in-page updater needs File System Access, this channel needs
- * nothing from the user at all: an administrator policy names an `update_url`,
- * and Chrome itself fetches the Omaha manifest, downloads the signed `.crx`,
- * and swaps versions in the background. That matters on a managed fleet where
- * a DLP agent intercepts every file dialog — no dialog is ever opened here.
+ * It needs nothing from the user at all: an administrator policy names an
+ * `update_url`, and Chrome itself fetches the Omaha manifest, downloads the
+ * signed `.crx`, and swaps versions in the background. That matters on a
+ * managed fleet where a DLP agent intercepts every file dialog — no dialog is
+ * ever opened here.
  *
  * Hand-rolled for the same reason the extension ZIP is: the CRX header is a
  * small fixed protobuf around bytes we already build, and the SIGNING path is
@@ -25,7 +25,7 @@ import crypto from "node:crypto";
  *   signed_header_data | <zip>
  *
  * Key helpers are NOT redefined here — they live in browserExtensionUpdate.ts
- * so both channels derive ids and manifest keys from one implementation.
+ * so ids and manifest keys derive from one implementation.
  *
  * NOTHING here runs on a server request path: the private key exists only on
  * the release machine, and the server never imports this module.

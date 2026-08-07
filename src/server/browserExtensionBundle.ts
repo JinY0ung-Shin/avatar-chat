@@ -27,14 +27,18 @@ const BUNDLE_FILES = [
   "consent.html",
   "consent.js",
   "consent.css",
-  "updater.html",
-  "updater.js",
-  // updater.js imports this at load; omitting it bricks the updater page.
-  "updater-core.js",
-  "updater.css",
+  // Binary entries — the files list ships these base64 (see BINARY_BUNDLE_FILES);
+  // the manifest references them, so an install missing them fails to load.
+  "icon-16.png",
+  "icon-32.png",
+  "icon-48.png",
+  "icon-128.png",
   "policy-schema.json",
   "README.md",
 ] as const;
+
+/** Bundle entries that are bytes, not utf8 text. */
+const BINARY_BUNDLE_FILES = new Set(["icon-16.png", "icon-32.png", "icon-48.png", "icon-128.png"]);
 
 export const BROWSER_EXTENSION_DIR = path.join(process.cwd(), "extension");
 
@@ -226,14 +230,18 @@ export function buildBrowserExtensionZip(
 export interface BrowserExtensionFile {
   name: string;
   content: string;
+  /** Present on binary entries: `content` is base64, not utf8 text. */
+  encoding?: "base64";
 }
 
 /**
  * The same bundle as individual files, for the page-driven one-click update:
  * the settings page writes these straight into the user's unpacked-extension
  * folder via File System Access instead of handing over a zip. Same allowlist
- * and origin stamping as the zip; every bundled file is text, so utf8 strings
- * are lossless. Throws on a missing file for the same reason the zip does.
+ * and origin stamping as the zip. Text files travel as utf8; binary entries
+ * (the icons) as base64 with an `encoding` marker — pushing a PNG through a
+ * utf8 string corrupts it, and the resulting folder fails to LOAD because the
+ * manifest names the icons. Throws on a missing file like the zip does.
  */
 export function listBrowserExtensionFiles(
   dir: string = BROWSER_EXTENSION_DIR,
@@ -241,6 +249,9 @@ export function listBrowserExtensionFiles(
 ): BrowserExtensionFile[] {
   return BUNDLE_FILES.map((name) => {
     const onDisk = fs.readFileSync(path.join(dir, name));
+    if (BINARY_BUNDLE_FILES.has(name)) {
+      return { name, content: onDisk.toString("base64"), encoding: "base64" as const };
+    }
     const raw = name === "manifest.json" ? manifestWithOrigins(onDisk, extraOrigins) : onDisk;
     return { name, content: raw.toString("utf8") };
   });

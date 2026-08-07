@@ -20,7 +20,7 @@ import { bridgeExtensionId, readAllowedOrigins, requestExtensionReload } from ".
 // also lets unit tests pass plain objects.
 
 export interface WritableLike {
-  write(data: string): Promise<void>;
+  write(data: string | Uint8Array): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -180,6 +180,8 @@ export async function verifyExtensionDir(handle: DirHandleLike): Promise<DirVerd
 export interface ExtensionFilePayload {
   name: string;
   content: string;
+  /** Present on binary entries (icons): `content` is base64, not utf8 text. */
+  encoding?: "base64";
 }
 
 /**
@@ -218,7 +220,9 @@ export function mergeManifestOrigins(existingText: string | null, incomingText: 
  * allowlist, but refuse anything path-like anyway — this function holds a
  * write handle to a real user folder. manifest.json goes LAST as the commit
  * marker: a write that dies midway leaves the old manifest (and thus a
- * loadable extension) in place.
+ * loadable extension) in place. Base64 entries (the icons) are decoded to raw
+ * bytes — written as a utf8 string they would corrupt, and Chrome refuses to
+ * LOAD an extension whose manifest names an unreadable icon.
  */
 export async function writeExtensionFiles(
   handle: DirHandleLike,
@@ -233,7 +237,11 @@ export async function writeExtensionFiles(
     }
     const fh = await handle.getFileHandle(file.name, { create: true });
     const writable = await fh.createWritable();
-    await writable.write(file.content);
+    await writable.write(
+      file.encoding === "base64"
+        ? Uint8Array.from(atob(file.content), (c) => c.charCodeAt(0))
+        : file.content,
+    );
     await writable.close();
   }
 }

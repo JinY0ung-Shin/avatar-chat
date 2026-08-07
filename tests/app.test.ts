@@ -135,13 +135,24 @@ describe("noah-almighty platform", () => {
       .set("X-Forwarded-Host", "noah.test.local:8443")
       .set("X-Forwarded-Proto", "https")
       .expect(200);
-    const files = res.body.files as { name: string; content: string }[];
+    const files = res.body.files as { name: string; content: string; encoding?: string }[];
     const names = files.map((f) => f.name);
     // The full unpacked install, not a subset — a partial write would produce
     // an extension that loads and then fails in undiagnosable ways.
     expect(names).toEqual(
       expect.arrayContaining(["manifest.json", "background.js", "options.html", "policy-schema.json"]),
     );
+
+    // Binary entries travel base64 and must decode back to the exact on-disk
+    // bytes — pushed through utf8 they corrupt, and the manifest NAMES the
+    // icons, so a corrupted one-click write bricks the extension load.
+    const icon = files.find((f) => f.name === "icon-128.png")!;
+    expect(icon.encoding).toBe("base64");
+    expect(
+      Buffer.from(icon.content, "base64").equals(
+        fs.readFileSync(path.join(process.cwd(), "extension", "icon-128.png")),
+      ),
+    ).toBe(true);
     const manifest = JSON.parse(files.find((f) => f.name === "manifest.json")!.content) as {
       version: string;
       externally_connectable: { matches: string[] };

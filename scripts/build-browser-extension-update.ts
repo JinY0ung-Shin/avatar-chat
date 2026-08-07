@@ -1,13 +1,14 @@
-// Build every browser-bridge update artifact from ONE signing key:
+// Build the browser-bridge policy-channel artifacts from ONE signing key:
 //
-//   noah-bridge-update.json / .sig   in-page updater (File System Access)
 //   noah-browser-bridge.crx          policy install channel (Chrome auto-update)
 //   updates.xml                      Omaha manifest the policy's update_url names
 //
-// Two channels because one of them dies on a managed fleet: where a DLP agent
-// intercepts file dialogs, the in-page updater cannot even open a folder
-// picker, while the policy channel never opens one (Chrome downloads and
-// installs by itself). Both verify against the same key.
+// The policy channel is the ONLY auto-update path: Chrome downloads and
+// installs by itself, so it survives managed fleets where a DLP agent
+// intercepts file dialogs (which killed every File System Access approach).
+// The extension deliberately fetches nothing on its own — a self-updater that
+// pulls files from the network and writes them to disk is dropper-shaped, both
+// to AV heuristics and in actual attack surface.
 //
 // Release-machine only — the signing key never touches the server or the repo.
 //
@@ -15,9 +16,8 @@
 //     npx tsx scripts/build-browser-extension-update.ts --tag v1.3.0 \
 //     [--origin "https://noah.internal.example/*"]... [--out dist/extension]
 //
-// The extension's updater page and the policy's update_url both read the
-// stable "latest release" alias, so once a channel is live EVERY release must
-// attach its assets.
+// The policy's update_url reads the stable "latest release" alias, so once the
+// channel is live EVERY release must attach both assets.
 //
 // No key yet? Generate one and KEEP THE .pem FOREVER (the extension id and the
 // pinned verify key derive from it; losing it orphans every install):
@@ -38,12 +38,8 @@ import {
 } from "../src/server/browserExtensionBundle.js";
 import { buildUpdatesXml, packCrx3 } from "../src/server/browserExtensionCrx.js";
 import {
-  UPDATE_PAYLOAD_ASSET,
-  UPDATE_SIGNATURE_ASSET,
-  buildUpdatePayload,
   extensionIdFromPublicKey,
   manifestKeyFromPrivateKey,
-  signUpdatePayload,
 } from "../src/server/browserExtensionUpdate.js";
 
 const DEFAULT_REPO = "JinY0ung-Shin/noah-almighty";
@@ -175,13 +171,6 @@ const crxUrl = args.crxUrl || `https://github.com/${repo}/releases/download/${ar
 const outDir = args.out || path.join("dist", "extension");
 fs.mkdirSync(outDir, { recursive: true });
 
-// In-page updater assets (generic: the updater merges each install's own
-// externally_connectable back in at write time, so no origin stamping here).
-const payload = buildUpdatePayload();
-const signature = signUpdatePayload(payload, privateKeyPem);
-fs.writeFileSync(path.join(outDir, UPDATE_PAYLOAD_ASSET), payload);
-fs.writeFileSync(path.join(outDir, UPDATE_SIGNATURE_ASSET), `${signature}\n`);
-
 // Policy-channel assets. Root-level zip: Chrome requires manifest.json at the
 // crx archive root.
 const crxZip = buildBrowserExtensionZip(undefined, origins, "");
@@ -201,7 +190,6 @@ const updateUrl = `https://github.com/${repo}/releases/latest/download/${UPDATES
 console.log(`extension id : ${extensionId}`);
 console.log(`version      : ${manifest.version}`);
 console.log(`out dir      : ${outDir}`);
-console.log(`  ${UPDATE_PAYLOAD_ASSET} (${payload.length} bytes) + ${UPDATE_SIGNATURE_ASSET}`);
 console.log(`  ${CRX_ASSET} (${packed.crx.length} bytes) + ${UPDATES_XML_ASSET} → ${crxUrl}`);
 if (origins.length) {
   console.log(`baked origins: ${origins.join(", ")}`);
@@ -214,7 +202,7 @@ if (origins.length) {
   );
 }
 console.log("");
-console.log("Attach ALL FOUR files to the GitHub release, then hand IT this policy (once):");
+console.log("Attach BOTH files to the GitHub release, then hand IT this policy (once):");
 console.log(
   JSON.stringify(
     {

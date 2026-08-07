@@ -1028,22 +1028,34 @@ describe("browser bridge versioning", () => {
 describe("browser bridge one-click install lib", () => {
   /** In-memory stand-in for a FileSystemDirectoryHandle. */
   function fakeDir(initial: Record<string, string> = {}) {
-    const files = new Map(Object.entries(initial));
+    const files = new Map<string, string | Uint8Array>(Object.entries(initial));
     const writeOrder: string[] = [];
     const handle = {
       name: "noah-browser-bridge",
       getFileHandle: async (name: string, opts?: { create?: boolean }) => {
         if (!files.has(name) && !opts?.create) throw new Error("NotFoundError");
         return {
-          getFile: async () => ({ text: async () => files.get(name) ?? "" }),
+          getFile: async () => ({
+            text: async () => {
+              const value = files.get(name);
+              return typeof value === "string" ? value : "";
+            },
+          }),
           createWritable: async () => {
-            let buf = "";
+            // Binary writes arrive as a single Uint8Array; text may stream in
+            // pieces. Store bytes as-is so a test can assert no utf8 mangling.
+            const parts: (string | Uint8Array)[] = [];
             return {
-              write: async (data: string) => {
-                buf += data;
+              write: async (data: string | Uint8Array) => {
+                parts.push(data);
               },
               close: async () => {
-                files.set(name, buf);
+                files.set(
+                  name,
+                  parts.length === 1 && typeof parts[0] !== "string"
+                    ? parts[0]
+                    : parts.map((p) => (typeof p === "string" ? p : "")).join(""),
+                );
                 writeOrder.push(name);
               },
             };
@@ -1102,6 +1114,17 @@ describe("browser bridge one-click install lib", () => {
     ]);
     expect(dir.files.get("background.js")).toBe("// sw");
     expect(dir.writeOrder[dir.writeOrder.length - 1]).toBe("manifest.json");
+
+    // Base64 entries (icons) must land as RAW BYTES: written as a utf8 string
+    // they corrupt, and Chrome refuses to load a manifest naming a bad icon.
+    const bytes = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x0d, 0x0a]);
+    const withIcon = fakeDir();
+    await writeExtensionFiles(withIcon.handle, [
+      { name: "icon-16.png", content: btoa(String.fromCharCode(...bytes)), encoding: "base64" },
+    ]);
+    const written = withIcon.files.get("icon-16.png");
+    expect(written).toBeInstanceOf(Uint8Array);
+    expect([...(written as Uint8Array)]).toEqual([...bytes]);
 
     await expect(
       writeExtensionFiles(dir.handle, [{ name: "../evil.js", content: "x" }]),
@@ -1196,7 +1219,7 @@ describe("browser bridge one-click install lib", () => {
 
     expect(outcome).toEqual({ status: "updated", version: "0.5.0" });
     expect(dir.files.get("background.js")).toBe("// v0.5.0");
-    const written = JSON.parse(dir.files.get("manifest.json") ?? "{}") as {
+    const written = JSON.parse((dir.files.get("manifest.json") as string) ?? "{}") as {
       externally_connectable: { matches: string[] };
     };
     // Hand-added origin survived the rewrite.

@@ -145,12 +145,13 @@ These are the invariants the project is built around. New work should reinforce 
 - **Project name diverges by layer:** display "Noah Almighty", code slug `noah-almighty`, working dir
   `avatar-chat`. Grep both old/new slugs when auditing names.
 - **The browser bridge is a SIGNED artifact living on users' machines, not just server code.** The
-  extension id and BOTH update channels derive from ONE RSA key that exists only on the release machine
+  extension id and the policy update channel derive from ONE RSA key that exists only on the release machine
   (`BROWSER_EXTENSION_KEY_FILE`, `BROWSER_BRIDGE_ORIGINS` — release-only `.env` keys the server never
   reads). Losing the key orphans every install; changing it changes the id, which every place naming
   the id must follow. Once a channel is live EVERY release must attach its assets
   (`npm run build:extension-update`, see the `release` skill). Two invariants that fail in the FIELD,
   not in CI: a new file under `extension/` must be added to `BUNDLE_FILES` (`browserExtensionBundle.ts`)
-  or the shipped zip silently bricks, and `BROWSER_EXTENSION_MIN_COMPATIBLE` must never exceed the
-  bundled manifest version (`tests/infra.test.ts` enforces the ceiling). Install/policy detail →
-  `extension/README.md`.
+  or the shipped zip silently bricks (a BINARY file additionally needs `BINARY_BUNDLE_FILES`, or the
+  one-click updater pushes it through utf8 and corrupts it), and `BROWSER_EXTENSION_MIN_COMPATIBLE`
+  must never exceed the bundled manifest version (`tests/infra.test.ts` enforces the ceiling).
+  Install/policy detail → `extension/README.md`.

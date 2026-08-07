@@ -40,11 +40,11 @@ Companion docs: [`DESIGN.md`](DESIGN.md) (design language), [`REFACTORING-BACKLO
   INDEPENDENT of the what's-new registry (`releaseNotes.ts` keeps date-based ids) — prepend a registry
   entry for user-visible changes either way. The `version: "0.1.0"` strings in the in-process MCP
   servers (`agent/*Tools.ts`) are MCP protocol metadata, NOT the app version — don't bump them.
-  **Every release must also attach the four browser-extension assets** (`noah-bridge-update.json`,
-  `.sig`, `noah-browser-bridge.crx`, `updates.xml`, built by
-  `BROWSER_EXTENSION_KEY_FILE=… npm run build:extension-update -- --tag vX.Y.Z`): installed extensions
-  and the enterprise policy both read `releases/latest/download/…`, so a release without them breaks the
-  update check for the whole fleet. See §Browser bridge.
+  **Every release must also attach the two browser-extension assets** (`noah-browser-bridge.crx` +
+  `updates.xml`, built by
+  `BROWSER_EXTENSION_KEY_FILE=… npm run build:extension-update -- --tag vX.Y.Z`): the enterprise
+  policy reads `releases/latest/download/…`, so a release without them breaks the update check for
+  the whole fleet. See §Browser bridge.
 
 ### Verifying the running app / UI
 - Verifying the local server: WHEN a corporate `HTTP_PROXY` is set it intercepts `localhost`
@@ -861,13 +861,17 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   admin policy path naming the id must move together, and every install reloads once (done 2026-08-07:
   `fbohmmep…` → `gdaheigee…`). The build script refuses to run on a manifest/key mismatch and prints the
   exact bootstrap list.
-- **Two update channels, one key.** (a) the toolbar updater (`extension/updater*.js`, File System
-  Access, verifies `noah-bridge-update.json` + `.sig` against the manifest `key`); (b) the POLICY
-  channel (signed `.crx` + Omaha `updates.xml`, Chrome `ExtensionSettings force_installed`, zero user
-  action). `browserExtensionUpdate.ts` / `browserExtensionCrx.ts` are RELEASE-TIME modules — only
+- **One auto-update channel, one key: the POLICY channel** (signed `.crx` + Omaha `updates.xml`,
+  Chrome `ExtensionSettings force_installed`, zero user action). The extension-side GitHub
+  self-updater (0.7.0's `updater*.js`, removed in 0.9.0) is deliberately gone and must not come
+  back: fetch-verify-write-reload is dropper-shaped — Windows Defender quarantined the shipped zip
+  over it (`Trojan:Win32/Fauppod.A!cl`) — and it carried real attack surface (`github.com`
+  host_permissions + a disk-write path). The extension fetches NOTHING on its own.
+  `browserExtensionUpdate.ts` / `browserExtensionCrx.ts` are RELEASE-TIME modules — only
   `scripts/build-browser-extension-update.ts` and tests import them; never pull them onto a request
   path, because a server holding the signing key turns a server compromise into fleet-wide browser
-  control. Both channels read `releases/latest/download/…`, so EVERY release must attach all four assets.
+  control. The policy's update_url reads `releases/latest/download/…`, so EVERY release must attach
+  both assets.
 - **Origins are BUILD-TIME for the policy channel.** Chrome enforces `externally_connectable` before any
   extension code runs and a policy install cannot be hand-edited, so a missing Noah address fails
   SILENTLY on every machine (`chrome.runtime` simply isn't there — no error to see). The manual zip path
@@ -878,7 +882,8 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   extension whose pattern is invalid, dropping the entry as a warning — **"it loaded" is not evidence a
   pattern works; always run a negative control.** GitHub redirects release-asset downloads to
   `release-assets.githubusercontent.com`, not `objects.*` (a 404 probe never redirects, which is why
-  this hid until real assets existed) — hence `host_permissions: https://*.githubusercontent.com/*`.
+  this hid until real assets existed) — it bit the since-removed self-updater's `host_permissions`
+  and applies to any future extension-side GitHub fetch (there is none today, by design).
 - **Corporate DLP can intercept the browser's file dialog** ("not an allowed upload URL"), which kills
   every File System Access path on managed machines — that is why the policy channel exists. The
   no-dialog interim is "unzip in Explorer + `chrome://extensions` ↻". Don't try to code around it.
@@ -888,8 +893,7 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   fork is the ADMIN POLICY TREE — the same JSON registered once under `Software\Policies\Google\Chrome`
   and once under `Software\Policies\Microsoft\Edge` (Linux: `/etc/opt/chrome` vs `/etc/opt/edge`); the
   build script prints both. User-facing guidance resolves the extensions page at runtime instead of
-  hardcoding `chrome://` (`extensionsPageUrl()` in `lib/browserBridge.ts`; `EXTENSIONS_PAGE` +
-  `.extensions-page` placeholders in `updater.js`).
+  hardcoding `chrome://` (`extensionsPageUrl()` in `lib/browserBridge.ts`).
 - **Verifying extension behavior locally:** Playwright's Chromium loads the unpacked extension
   (`chromium.launchPersistentContext(dir, { channel: "chromium", args: ["--disable-extensions-except=<extension/>",
   "--load-extension=<extension/>"] })`), which drives real `chrome-extension://` pages and settles what a

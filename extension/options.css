@@ -1,23 +1,86 @@
+/* Allowlist page, skinned to the APP's Apple-inspired layer so the extension
+   reads as the same product (src/client/styles/80-apple-design.css): iOS
+   system blue, translucent panels over the grouped background, inset-highlight
+   primary button, immediate press feedback, platform typography. Values are
+   transcribed from that layer — this page ships standalone inside the
+   extension and cannot import it. The app resolves dark mode via
+   <html data-theme>; an extension page has no such JS contract, so dark rides
+   prefers-color-scheme instead.
+
+   One stylesheet, two hosts: as the action POPUP the window shrinks to the
+   body, so the body width must be explicit or the popup balloons to Chrome's
+   800px cap; as the options TAB the same fixed column just centers. */
+
 :root {
   color-scheme: light dark;
-  --ink: #1a1d23;
-  --muted: #5c6472;
-  --rule: #dbdfe5;
-  --surface: #ffffff;
-  --ground: #f4f5f7;
-  --accent: #b8710a;
-  --warn-wash: #fbf1de;
+
+  --font-sans:
+    system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Apple SD Gothic Neo",
+    "Noto Sans KR", "Malgun Gothic", "Segoe UI", sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Noto Sans Mono CJK KR", monospace;
+
+  --accent: #006edc;
+  --accent-strong: #0062cc;
+  --focus-ring: #006edc;
+  --on-accent: #fff;
+
+  --bg: #f2f2f7;
+  --panel: rgba(255, 255, 255, 0.88);
+  --panel-strong: rgba(118, 118, 128, 0.12);
+  --material-thick: rgba(255, 255, 255, 0.94);
+  --text: #1d1d1f;
+  --text-soft: #3a3a3c;
+  --muted: #636366;
+  --line: rgba(60, 60, 67, 0.18);
+  --line-soft: rgba(60, 60, 67, 0.1);
+
+  --warn: #9a6700;
+  --warn-line: rgba(154, 103, 0, 0.28);
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 14px rgba(0, 0, 0, 0.04);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --press-scale: 0.97;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --ink: #e7eaef;
-    --muted: #98a1b0;
-    --rule: #2a313a;
-    --surface: #171b21;
-    --ground: #0f1216;
-    --accent: #f2a93b;
-    --warn-wash: #2a2114;
+    --accent: #0a84ff;
+    --accent-strong: #409cff;
+    --focus-ring: #66b2ff;
+    --on-accent: #000;
+
+    --bg: #000;
+    --panel: rgba(36, 36, 38, 0.88);
+    --panel-strong: rgba(118, 118, 128, 0.24);
+    --material-thick: rgba(44, 44, 46, 0.94);
+    --text: #f5f5f7;
+    --text-soft: #e5e5ea;
+    --muted: #aeaeb2;
+    --line: rgba(235, 235, 245, 0.18);
+    --line-soft: rgba(235, 235, 245, 0.1);
+
+    --warn: #ffd60a;
+    --warn-line: rgba(255, 214, 10, 0.26);
+
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.26), 0 4px 18px rgba(0, 0, 0, 0.16);
+  }
+}
+
+/* Frosted surfaces go solid when the user asks for less transparency. */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --panel: #ffffff;
+    --material-thick: #ffffff;
+    --panel-strong: #e5e5ea;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) and (prefers-color-scheme: dark) {
+  :root {
+    --panel: #242426;
+    --material-thick: #2c2c2e;
+    --panel-strong: #3a3a3c;
   }
 }
 
@@ -25,145 +88,278 @@
   box-sizing: border-box;
 }
 
+/* The action-popup WINDOW is a browser-drawn rectangle we cannot reshape, so
+   the page fakes it: everything lives on a rounded floating sheet, and the
+   margin around it shows the renderer's default canvas (html stays unpainted
+   in the popup) — the same color the bubble frame has, so the corners READ
+   rounded whether or not the browser rounds the actual window. */
 body {
-  margin: 0;
-  background: var(--ground);
-  color: var(--ink);
-  font-family: system-ui, -apple-system, "Segoe UI", "Malgun Gothic",
-    "Apple SD Gothic Neo", sans-serif;
-  font-size: 14px;
-  line-height: 1.7;
+  width: 26rem;
+  max-width: 100vw;
+  margin: 0 auto;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  line-height: 1.6;
+  letter-spacing: 0;
 }
 
+/* The sheet carries the app's grouped background and its quiet environmental
+   accent glow; overflow clips the glow to the rounded corners. */
 main {
-  max-width: 34rem;
-  margin: 0 auto;
-  padding: 2.5rem 1.5rem 4rem;
+  margin: 10px;
+  padding: 14px 14px 12px;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
+  gap: 12px;
+  background:
+    radial-gradient(circle at 78% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 42%),
+    var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 16px;
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+
+/* Opened as a full options TAB the viewport is wider than the popup ever is —
+   there the page owns the whole canvas: a flat app ground with the same glowing
+   sheet floating on it, given some air instead of hugging the top edge. */
+@media (min-width: 40rem) {
+  html {
+    background: var(--bg);
+  }
+
+  main {
+    margin: 48px 10px 24px;
+  }
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 42%, transparent);
+}
+
+/* ------------------------------------------------------------- masthead */
+
+.masthead {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.mark {
+  border-radius: 6px;
+  margin-top: 1px;
+}
+
+.masthead-text {
+  min-width: 0;
 }
 
 h1 {
   margin: 0;
-  font-size: 1.4rem;
-  letter-spacing: -0.01em;
-}
-
-h2 {
-  margin: 0 0 0.35rem;
-  font-size: 0.95rem;
-}
-
-p {
-  margin: 0 0 0.6rem;
-}
-
-p:last-child {
-  margin-bottom: 0;
+  font-size: 15px;
+  font-weight: 650;
+  font-optical-sizing: auto;
+  letter-spacing: -0.025em;
+  line-height: 1.35;
+  text-wrap: balance;
 }
 
 .lead {
+  margin: 2px 0 0;
   color: var(--muted);
-  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
 }
 
-section {
-  background: var(--surface);
-  border: 1px solid var(--rule);
-  border-radius: 4px;
-  padding: 1.1rem 1.2rem;
+/* ------------------------------------------------------------- sections */
+
+#editor {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+.managed {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-left: 2px solid var(--accent);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow-sm);
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.managed strong {
+  display: block;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
+.managed p {
+  margin: 2px 0 0;
+}
+
+.managed ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 label {
   display: block;
+  font-size: 12px;
   font-weight: 600;
-  margin-bottom: 0.5rem;
+  color: var(--text-soft);
+  margin-bottom: 6px;
 }
 
+/* Inputs are inset controls: quiet until focused, then unmistakably active. */
 textarea {
   width: 100%;
   resize: vertical;
-  padding: 0.7rem 0.8rem;
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  background: var(--ground);
-  color: var(--ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.6;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--material-thick) 92%, transparent);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.28) inset;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  line-height: 1.7;
+  transition:
+    border-color 160ms var(--ease-out),
+    box-shadow 200ms var(--ease-out);
+}
+
+textarea:focus {
+  border-color: var(--accent);
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
+  box-shadow:
+    0 1px 0 rgba(255, 255, 255, 0.28) inset,
+    0 8px 24px color-mix(in srgb, var(--accent) 8%, transparent);
 }
 
 textarea:disabled {
-  opacity: 0.55;
+  opacity: 0.46;
+  cursor: not-allowed;
 }
 
 .hint {
+  margin: 8px 0 0;
   color: var(--muted);
-  font-size: 13px;
-  margin: 0.6rem 0 0;
+  font-size: 11.5px;
+  letter-spacing: 0.008em;
+  line-height: 1.6;
 }
 
 code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.88em;
-  background: var(--ground);
-  border: 1px solid var(--rule);
-  border-radius: 3px;
-  padding: 0.05em 0.3em;
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--panel-strong);
+  border-radius: 6px;
+  padding: 0.05em 0.35em;
 }
 
 .actions {
   display: flex;
   align-items: center;
-  gap: 0.9rem;
-  margin-top: 1rem;
+  gap: 10px;
+  margin-top: 10px;
 }
 
+/* The app's primary button: accent fill, bright inset top edge, tinted lift. */
 button {
   font: inherit;
+  font-size: 12.5px;
   font-weight: 600;
-  padding: 0.45rem 1.1rem;
-  border: 1px solid var(--accent);
-  border-radius: 3px;
+  padding: 6px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 84%, #000);
+  border-radius: 12px;
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  box-shadow:
+    0 1px 1px rgba(255, 255, 255, 0.3) inset,
+    0 4px 14px color-mix(in srgb, var(--accent) 22%, transparent);
+  transition:
+    background-color 160ms var(--ease-out),
+    border-color 160ms var(--ease-out),
+    box-shadow 200ms var(--ease-out),
+    transform 100ms var(--ease-out),
+    opacity 160ms var(--ease-out);
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  box-shadow:
+    0 1px 1px rgba(255, 255, 255, 0.24) inset,
+    0 7px 20px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+button:active:not(:disabled) {
+  transform: scale(var(--press-scale));
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.5;
-}
-
-button:focus-visible,
-textarea:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
+  opacity: 0.46;
 }
 
 #status {
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
+  letter-spacing: 0.008em;
 }
 
-.banner {
-  border-left: 3px solid var(--accent);
-  background: var(--warn-wash);
+:focus-visible {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
-.banner ul {
-  margin: 0.6rem 0 0;
-  padding-left: 1.1rem;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px;
+/* ------------------------------------------------------------- caution */
+
+/* Deliberately NOT a filled box (hierarchy over decoration): a warn keyline
+   and quiet text carry the weight; only the load-bearing phrase is tinted. */
+.caution {
+  border-left: 2px solid var(--warn-line);
+  padding: 2px 0 2px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-.warn {
-  background: var(--warn-wash);
-  border-color: var(--accent);
+.caution p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.caution strong {
+  color: var(--warn);
+  font-weight: 600;
 }
 
 .disabled {
   opacity: 0.75;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  button,
+  textarea {
+    transition: none;
+  }
+  button:active:not(:disabled) {
+    transform: none;
+  }
 }

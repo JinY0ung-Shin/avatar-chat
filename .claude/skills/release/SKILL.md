@@ -63,13 +63,14 @@ npm run build
 
 - Write the step-3 APPROVED notes to a scratch file — publish them as signed off;
   new or changed wording goes back through the step-3 review.
-- **Browser-extension update assets (MANDATORY once either channel is live):**
-  installed extensions read `releases/latest/download/noah-bridge-update.json`
-  (+ `.sig`) and policy-installed ones read `updates.xml` (→ the `.crx`), so
-  EVERY release must attach all four or the newest release breaks the fleet's
-  update check.
+- **Browser-extension update assets (MANDATORY once the policy channel is live):**
+  policy-installed extensions read `releases/latest/download/updates.xml` (→ the
+  `.crx`), so EVERY release must attach both or the newest release breaks the
+  fleet's update check. (The extension-side GitHub self-updater and its
+  `noah-bridge-update.json`/`.sig` assets were removed in extension 0.9.0 —
+  Defender flagged the fetch-and-write pattern as a dropper; do not resurrect.)
   - `BROWSER_EXTENSION_KEY_FILE=~/.noah/browser-bridge-key.pem npm run build:extension-update -- --tag vX.Y.Z`
-    → four files in `dist/extension/`.
+    → two files in `dist/extension/`.
   - The deployed Noah address must be baked in: normally `BROWSER_BRIDGE_ORIGINS`
     is already set on the release machine, and the script PRINTS `baked origins:`
     when it is. If it instead prints the no-address NOTE, stop and ask the user
@@ -78,11 +79,10 @@ npm run build
     every machine.
   - The script FAILS on a missing key or a manifest-key mismatch — follow its
     printed bootstrap instructions rather than bypassing them.
-  - If the key file does not exist on this machine AND neither channel was ever
+  - If the key file does not exist on this machine AND the channel was never
     bootstrapped (no prior release carries these assets), skip with a warning;
     otherwise STOP and ask the user — publishing without them bricks updates.
 - `gh release create vX.Y.Z --target main --title "Noah Almighty vX.Y.Z" --notes-file <file> \
-   dist/extension/noah-bridge-update.json dist/extension/noah-bridge-update.sig \
    dist/extension/noah-browser-bridge.crx dist/extension/updates.xml`
   (drop the asset paths only in the never-bootstrapped case above;
   gh is authed on this box; origin = github.com/JinY0ung-Shin/noah-almighty).

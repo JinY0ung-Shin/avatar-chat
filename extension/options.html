@@ -7,12 +7,15 @@
   </head>
   <body>
     <main>
-      <h1>허용 사이트</h1>
-      <p class="lead">
-        아바타가 읽고 조작할 수 있는 사이트입니다. 여기 없는 주소는 전부 거부됩니다.
-      </p>
+      <header class="masthead">
+        <img class="mark" src="icon-48.png" width="26" height="26" alt="" />
+        <div class="masthead-text">
+          <h1>허용 사이트</h1>
+          <p class="lead">아바타가 읽고 조작할 수 있는 사이트 — 여기 없는 주소는 전부 거부됩니다.</p>
+        </div>
+      </header>
 
-      <section id="managed" class="banner" hidden>
+      <section id="managed" class="managed" hidden>
         <strong>관리자 정책이 적용 중입니다.</strong>
         <p>
           아래 목록은 조직에서 배포한 정책이며 이 화면에서 바꿀 수 없습니다. 변경이 필요하면
@@ -30,8 +33,8 @@
           placeholder="intra.example.com&#10;*.corp.local"
         ></textarea>
         <p class="hint">
-          정확한 호스트(<code>intra.example.com</code>) 또는 하위 도메인 와일드카드(<code>*.corp.local</code>)를
-          씁니다. 와일드카드는 <code>corp.local</code> 자체에는 적용되지 않습니다.
+          <code>intra.example.com</code>은 그 호스트만, <code>*.corp.local</code>은 하위 도메인만
+          허용합니다 (<code>corp.local</code> 자체는 제외).
         </p>
         <div class="actions">
           <button id="save" type="button">저장</button>
@@ -39,18 +42,16 @@
         </div>
       </section>
 
-      <section class="warn">
-        <h2>주의</h2>
+      <aside class="caution">
         <p>
-          아바타는 <strong>이미 로그인된 세션</strong>으로 이 사이트들에 접근합니다. 목록을 넓히는 것은
-          곧 아바타에게 그 사이트에서의 내 권한을 주는 일입니다. <code>*</code>를 넣으면 로그인해 둔
-          모든 사이트가 대상이 됩니다.
+          아바타는 <strong>이미 로그인된 내 세션</strong>으로 이 사이트들을 씁니다 — 목록을
+          넓히는 만큼 내 권한이 넘어갑니다. <code>*</code>는 로그인해 둔 모든 사이트를 허용합니다.
         </p>
         <p>
-          범위를 확실히 좁히려면, 필요한 사이트에만 로그인해 둔 <strong>전용 브라우저 프로필</strong>에
-          이 확장을 설치하세요.
+          범위를 확실히 좁히려면, 필요한 사이트에만 로그인해 둔 전용 브라우저 프로필에 이 확장을
+          설치하세요.
         </p>
-      </section>
+      </aside>
     </main>
     <script src="options.js"></script>
   </body>

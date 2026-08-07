@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Noah Almighty Browser Bridge",
-  "version": "0.8.6",
+  "version": "0.9.0",
   "description": "Lets your Noah avatar drive a tab in this browser, using the sessions you are already logged into.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzQwjoxQnknlYiuPeAzugRXUYNVYkMgMfVFZSk0leqe8O66qjvzeNVENLXCbmIKlMppj3UcGZOm1NZIYUoQYSMDcunH+6NZQGruq2OPuUCHGHLrkHHFIK1bc+16scU1YMTzqMehPM6VzZ9x1Y6omvPMl8rOTDciW/aVPuaJjVce964Vgte1CRCoUhAPpMecOOitn19gwgCOkai1p4NsjRxu1XppuCOUh6u5StGLa+OE5xG9p/Q2vW/b4C9ucPW/Mj9Ws2XtNWf8zToWm5XnSP1+PmtpwCc89ApjKWxMKpg+HizFDYSS+F5jWHMprvEaIpAn2pKi5ooNLpuSsNAhhXOwIDAQAB",
   "minimum_chrome_version": "116",
@@ -11,14 +11,25 @@
     "tabGroups",
     "storage"
   ],
-  "host_permissions": [
-    "https://github.com/*",
-    "https://*.githubusercontent.com/*"
-  ],
   "storage": {
     "managed_schema": "policy-schema.json"
   },
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "128": "icon-128.png"
+  },
   "options_page": "options.html",
+  "action": {
+    "default_title": "Noah Browser Bridge — 허용 사이트 설정",
+    "default_popup": "options.html",
+    "default_icon": {
+      "16": "icon-16.png",
+      "32": "icon-32.png",
+      "48": "icon-48.png"
+    }
+  },
   "background": {
     "service_worker": "background.js",
     "type": "module"
@@ -29,8 +40,5 @@
       "http://localhost:5173/*",
       "http://localhost:48787/*"
     ]
-  },
-  "action": {
-    "default_title": "Noah Browser Bridge — 클릭하면 업데이트 페이지가 열립니다"
   }
 }

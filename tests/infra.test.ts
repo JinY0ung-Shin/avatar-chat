@@ -19,10 +19,8 @@ import {
   matchPatternForOrigin,
 } from "../src/server/browserExtensionBundle.js";
 import {
-  buildUpdatePayload,
   extensionIdFromPublicKey,
   manifestKeyFromPrivateKey,
-  signUpdatePayload,
 } from "../src/server/browserExtensionUpdate.js";
 import { buildUpdatesXml, packCrx3 } from "../src/server/browserExtensionCrx.js";
 import { loadConfig } from "../src/server/config.js";
@@ -1186,7 +1184,16 @@ describe("browser extension bundle", () => {
     // consent.js doubles as a regression pin: dropping the consent page from
     // BUNDLE_FILES would ship a bundle whose new_tab popup 404s. axtree.js is a
     // harder one — background.js imports it, so losing it breaks every op.
-    for (const name of ["background.js", "axtree.js", "options.js", "consent.js", "policy-schema.json"]) {
+    // icon-128.png pins the BINARY path: the manifest names the icons, so a
+    // bundle that mangles (or drops) them fails to load at install time.
+    for (const name of [
+      "background.js",
+      "axtree.js",
+      "options.js",
+      "consent.js",
+      "policy-schema.json",
+      "icon-128.png",
+    ]) {
       expect(fs.readFileSync(path.join(root, name)).equals(
         fs.readFileSync(path.join(process.cwd(), "extension", name)),
       )).toBe(true);
@@ -1249,61 +1256,10 @@ describe("browser extension bundle", () => {
   });
 });
 
-describe("browser extension self-update artifacts", () => {
+describe("browser extension policy-channel artifacts", () => {
   // One keypair for the whole block — 2048-bit generation is the slow part.
   const { privateKey } = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   const pem = privateKey.export({ type: "pkcs8", format: "pem" }) as string;
-
-  it("builds a payload carrying the bundled version and every updater file", () => {
-    const payload = JSON.parse(buildUpdatePayload().toString("utf8"));
-    expect(payload.version).toBe(browserExtensionVersion());
-    const names = payload.files.map((file: { name: string }) => file.name);
-    // updater.js imports updater-core.js — a payload missing either would
-    // brick the very page users update with.
-    for (const required of [
-      "manifest.json",
-      "background.js",
-      "axtree.js",
-      "updater.html",
-      "updater.js",
-      "updater-core.js",
-      "updater.css",
-    ]) {
-      expect(names).toContain(required);
-    }
-  });
-
-  it("signs bytes the extension's WebCrypto verify path accepts, and rejects tampering", async () => {
-    const payload = buildUpdatePayload();
-    const signature = signUpdatePayload(payload, pem);
-    // EXACTLY the updater's verify: manifest `key` (SPKI) + RSASSA-PKCS1-v1_5.
-    const bytes = (buf: Buffer) => new Uint8Array(buf);
-    const verifyKey = await globalThis.crypto.subtle.importKey(
-      "spki",
-      bytes(Buffer.from(manifestKeyFromPrivateKey(pem), "base64")),
-      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
-      false,
-      ["verify"],
-    );
-    expect(
-      await globalThis.crypto.subtle.verify(
-        "RSASSA-PKCS1-v1_5",
-        verifyKey,
-        bytes(Buffer.from(signature, "base64")),
-        bytes(payload),
-      ),
-    ).toBe(true);
-    const tampered = Buffer.from(payload);
-    tampered[tampered.length - 3] ^= 1;
-    expect(
-      await globalThis.crypto.subtle.verify(
-        "RSASSA-PKCS1-v1_5",
-        verifyKey,
-        bytes(Buffer.from(signature, "base64")),
-        bytes(tampered),
-      ),
-    ).toBe(false);
-  });
 
   it("packs a crx3 Chrome can verify, carrying the zip byte-for-byte", async () => {
     // Chrome reads manifest.json at the crx archive ROOT; the friendly
