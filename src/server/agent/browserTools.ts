@@ -423,7 +423,7 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "hand control back to the user.",
       {
         uid: z.string().min(1).max(120).describe("Element uid from the latest snapshot."),
-        value: z.string().max(4000).describe("Text to enter into the field."),
+        value: z.string().max(32000).describe("Text to enter into the field."),
         submit: z
           .boolean()
           .optional()
@@ -470,7 +470,7 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           .array(
             z.object({
               uid: z.string().min(1).max(120).describe("Element uid from the latest snapshot."),
-              value: z.string().max(4000).describe("Text to enter into the field."),
+              value: z.string().max(32000).describe("Text to enter into the field."),
               clear: z
                 .boolean()
                 .optional()
@@ -705,7 +705,7 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           .describe("true = OK/Accept/Leave, false = Cancel/Dismiss/Stay."),
         promptText: z
           .string()
-          .max(4000)
+          .max(32000)
           .optional()
           .describe("For prompt() dialogs when accepting: the text to enter."),
       },
