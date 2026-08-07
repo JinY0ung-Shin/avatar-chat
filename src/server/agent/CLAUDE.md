@@ -19,8 +19,15 @@ Durable principles for this layer:
   group-member vs intentionally ungated); don't "normalize" them.
 - **A new tool means updating BOTH `mcpServers` AND `allowedTools`** in `claudeAgent.ts` — two hand-synced
   lists. Miss one and the model either sees a tool it can't call or calls one it can't see.
+- **A browser op is a bigger commitment than an MCP tool.** Adding one to `browserTools.ts` also means
+  `BROWSER_TOOL_NAMES`, `events.ts` (`BrowserRequest`/`BrowserResult`), the `routes/chat.ts` relay +
+  audit row, the client `BridgeOperation`/`BridgeReply` (+ its Korean progress label), and
+  `extension/background.js` — five layers with no shared types. Raise
+  `BROWSER_EXTENSION_MIN_COMPATIBLE` ONLY when the op contract actually breaks (it orders every user to
+  reinstall), never merely because the extension folder changed.
 - **Don't re-copy shared helpers.** `mcpTools.ts` (`text()`, `decodeRepoFsError`, `decodeExecError`) and
-  `repoToolKit.ts` (the guard→resolve→ensureClone→decode skeleton) exist so the ~9 servers don't drift.
+  `repoToolKit.ts` (the guard→resolve→ensureClone→decode skeleton) exist so the ~16 servers
+  (`*_SERVER_NAME` consts, plus dynamic per-host ssh servers) don't drift.
 - **Prompt assembly is split:** `buildSystemPromptAppend` holds app/tool/self-state standing guidance and is
   appended to the SDK's default Claude Code system prompt; `buildUserPrompt` holds stored history fallback and
   the current user/task instruction. Compatibility `buildPrompt` returns both for older tests/importers.

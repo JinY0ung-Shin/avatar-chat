@@ -22,8 +22,19 @@ Durable principles for this layer:
 - **A green svelte-check does NOT mean the behavior is correct.** For interaction/layout/timing changes,
   runtime-verify (Playwright fixture). svelte-check catches type/template errors; it shipped a no-op
   `autosize` fix that only a real-DOM measurement caught.
-- **No shared module across the client↔server boundary**, so several server validators are re-implemented
-  by hand (`normalizeTags`, repo-href, the schedule builder). Update them in lockstep with the server.
+- **There IS a shared layer — reach for it before hand-mirroring.** `src/shared/*`
+  (`mcpToolGroups.ts`, `sdkToolPresentation.ts`) is imported by BOTH sides, and `tsconfig.client.json`'s
+  `include` list is the whitelist of server modules the client may import directly (`server/types.ts`,
+  `modelTiers`, `effortLevels`, `experimentalFeatures`, `releaseNotes`). New cross-boundary code goes
+  there, never a second copy. Only LEGACY mirrors remain (`normalizeTags` vs the server's
+  `normalizeHashtags`, repo-href in `lib/format.ts`) — update those in lockstep, don't add more.
+- **A status indicator that only STATES a problem is a dead end — make it the way to the fix.** The
+  composer's browser-bridge badge is an inert `<span>` when healthy and a `<button>` into the install
+  guide when not (a control nobody needs is clutter in an already dense hint row). Same rule for gated
+  buttons: a disabled button whose prerequisite is unstated reads as broken — make the prerequisite the
+  button's FIRST STEP on the same click, which is also the user gesture a file picker needs. Cross-view
+  deep links ride a ONE-SHOT flag in `lib/state.ts` (`browserGuideRequested`, set by the badge and the
+  what's-new dialog, consumed and cleared by `SettingsAccessTab` on activation), not a router param.
 - **Splitting a multi-tab view: ALWAYS-MOUNT children + an `active` prop, never `{#if tab}` around the
   child** — wrapping in `{#if}` unmounts and silently loses typed-but-unsaved form state. Several settings
   cards also save WITHOUT a full reload for the same reason; preserve those in-place updates.

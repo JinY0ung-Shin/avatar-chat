@@ -49,6 +49,22 @@ These are the invariants the project is built around. New work should reinforce 
   an in-process MCP bridge (`mcp__repo__*`/`mcp__git_repo__*`/`mcp__group_repo__*`) and keep the
   no-Bash-fallback line in its error text. Per-user git tokens are used server-side only, never reach the
   agent.
+- **Browser control is a RELAY into the user's own browser, and the extension NEVER runs page JS.** An
+  `mcp__browser__*` op is a wire contract crossing FIVE hand-synced layers (`agent/browserTools.ts` →
+  `agent/events.ts` → `routes/chat.ts` relay+audit → client `lib/browserBridge.ts` →
+  `extension/background.js`) plus BOTH metacognition surfaces; nothing type-checks across the gap, so a
+  field missed in the middle arrives `undefined`. The security boundary is the extension's default-deny
+  `CDP_ALLOWLIST` (no `Runtime.*`/`Network.*`/`Storage.*`), NOT the permission manifest — elements are
+  addressed by `backendNodeId`, so an op that cannot be executed directly must be driven the way a
+  PERSON would AND re-read what it landed on instead of assuming success. Everything the page returns
+  (snapshot text, `read_text` chunks, screenshot pixels) is UNTRUSTED input. Mechanics →
+  `docs/ARCHITECTURE-NOTES.md` §Browser bridge.
+- **A server-held third-party credential stays READ-ONLY; the WRITE path is the user's own browser.**
+  The Confluence tools read only, enforced STRUCTURALLY — `requestJson` has no `method`/`body` option,
+  so a future tool cannot quietly reach a mutating endpoint. Page creation/editing is routed to the
+  browser tools instead: it runs in the user's session, so the edit is attributable, visible, and
+  undoable, and the owner's PAT never mutates anything unattended. Both metacognition surfaces branch on
+  `browserEnabled` — never offer a route the run does not actually have.
 - **Tool permissions go through ONE gate:** the `PreToolUse` hook (`buildPreToolUseHook`). The SDK's
   `canUseTool`/`onUserDialog` don't fire headlessly. The `mcp__`-prefix auto-allow fires BEFORE the owner
   check, so every in-process MCP server MUST self-gate in its handlers.
@@ -93,8 +109,8 @@ These are the invariants the project is built around. New work should reinforce 
 
 ## Module map
 - **HTTP:** `app.ts` is thin glue (`createApp` mounts per-domain routers); handlers in
-  `src/server/routes/{auth,profile,plugins,knowledgeRepo,groups,routines,chat,admin}.ts`, with external
-  avatar admin CRUD registered from `routes/adminExternalAgents.ts` (+ `_shared.ts`).
+  `src/server/routes/{auth,profile,plugins,knowledgeRepo,groups,routines,chat,admin,browserExtension}.ts`,
+  with external avatar admin CRUD registered from `routes/adminExternalAgents.ts` (+ `_shared.ts`).
 - **Agent:** `claudeAgent.ts` re-exports `buildPrompt` / `buildSystemPromptAppend` / `buildUserPrompt`
   (`agent/promptBuilder.ts`), SDK-message handlers (`agent/sdkMessageHandlers.ts`), the PreToolUse hook
   (`agent/preToolUseHook.ts`). Shared self-state in `agent/ownerState.ts`; MCP helpers in
@@ -103,7 +119,11 @@ These are the invariants the project is built around. New work should reinforce 
   `store/*.ts`. Public surface unchanged (`new Store(config)` + `store.foo()`).
 - **Repo git:** low-level plumbing shared via `repoGitCore.ts` + `repoGitGuards.ts`.
 - **Client:** Svelte + Vite under `src/client/` (NOT vanilla `public/`); central store `lib/state.ts`.
-- **Tests:** split agent-core / agent-tools / store / infra / app / chat-history (+ `tests/helpers.ts`).
+- **Shared:** `src/shared/*` is the real client↔server layer (`mcpToolGroups.ts`,
+  `sdkToolPresentation.ts`); `tsconfig.client.json`'s `include` lists the extra server modules the
+  client may import. New cross-boundary code goes there, not into a hand-copy.
+- **Tests:** ~38 vitest files by area — `agent-*`, `client-*`, `svelte-*`, `browser-*`, `store`,
+  `infra`, `app`, `chat-history`, `external-agent` (+ `tests/helpers.ts`).
 - Module-level cautions: [`src/server/CLAUDE.md`](src/server/CLAUDE.md),
   [`src/server/agent/CLAUDE.md`](src/server/agent/CLAUDE.md), [`src/client/CLAUDE.md`](src/client/CLAUDE.md).
   Operational detail: [`docs/ARCHITECTURE-NOTES.md`](docs/ARCHITECTURE-NOTES.md). Design language:
@@ -123,3 +143,13 @@ These are the invariants the project is built around. New work should reinforce 
   EXISTING-deployment migration path, not just fresh-install behavior.
 - **Project name diverges by layer:** display "Noah Almighty", code slug `noah-almighty`, working dir
   `avatar-chat`. Grep both old/new slugs when auditing names.
+- **The browser bridge is a SIGNED artifact living on users' machines, not just server code.** The
+  extension id and BOTH update channels derive from ONE RSA key that exists only on the release machine
+  (`BROWSER_EXTENSION_KEY_FILE`, `BROWSER_BRIDGE_ORIGINS` — release-only `.env` keys the server never
+  reads). Losing the key orphans every install; changing it changes the id, which every place naming
+  the id must follow. Once a channel is live EVERY release must attach its assets
+  (`npm run build:extension-update`, see the `release` skill). Two invariants that fail in the FIELD,
+  not in CI: a new file under `extension/` must be added to `BUNDLE_FILES` (`browserExtensionBundle.ts`)
+  or the shipped zip silently bricks, and `BROWSER_EXTENSION_MIN_COMPATIBLE` must never exceed the
+  bundled manifest version (`tests/infra.test.ts` enforces the ceiling). Install/policy detail →
+  `extension/README.md`.

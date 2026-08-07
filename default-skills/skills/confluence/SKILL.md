@@ -1,6 +1,6 @@
 ---
 name: confluence
-description: Use when you need to search, read, create, or update internal Confluence pages and their attached images / draw.io assets. Uses the app-wide MCP tools `mcp__confluence__*`; the host comes from the server env var `CONFLUENCE_URL` and auth from the owner secret `CONFLUENCE_PAT`.
+description: Use when you need to search or read internal Confluence pages and their attached images / draw.io assets (READ-ONLY — page creation and editing go through the browser tools). Uses the app-wide MCP tools `mcp__confluence__*`; the host comes from the server env var `CONFLUENCE_URL` and auth from the owner secret `CONFLUENCE_PAT`.
 ---
 
 # Confluence

@@ -40,6 +40,11 @@ Companion docs: [`DESIGN.md`](DESIGN.md) (design language), [`REFACTORING-BACKLO
   INDEPENDENT of the what's-new registry (`releaseNotes.ts` keeps date-based ids) — prepend a registry
   entry for user-visible changes either way. The `version: "0.1.0"` strings in the in-process MCP
   servers (`agent/*Tools.ts`) are MCP protocol metadata, NOT the app version — don't bump them.
+  **Every release must also attach the four browser-extension assets** (`noah-bridge-update.json`,
+  `.sig`, `noah-browser-bridge.crx`, `updates.xml`, built by
+  `BROWSER_EXTENSION_KEY_FILE=… npm run build:extension-update -- --tag vX.Y.Z`): installed extensions
+  and the enterprise policy both read `releases/latest/download/…`, so a release without them breaks the
+  update check for the whole fleet. See §Browser bridge.
 
 ### Verifying the running app / UI
 - Verifying the local server: WHEN a corporate `HTTP_PROXY` is set it intercepts `localhost`
@@ -795,6 +800,67 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
 - **Owner identity:** the `AgentOwner` type (`{id, username, displayName, alias?}`) lives in `../types.ts`
   and the descriptor is built ONCE in `runClaudeAgent` and passed to all tool servers. Don't re-declare
   the shape or rebuild the literal per server.
+
+### Browser bridge (`mcp__browser__*` + the Chrome extension)
+- **One op crosses FIVE hand-synced layers**, none of which type-check each other:
+  `agent/browserTools.ts` (tool + `BROWSER_TOOL_NAMES`) → `agent/events.ts`
+  (`BrowserRequest`/`BrowserResult`) → `routes/chat.ts` (parks the op on the SSE run, relays each field,
+  writes the audit row) → `src/client/src/lib/browserBridge.ts` (`BridgeOperation`/`BridgeReply`) →
+  `extension/background.js`. Then the two metacognition surfaces (`promptBuilder.ts` browser paragraph +
+  `systemTools.describe_system`), the Korean progress label in client `lib/chat.ts`, and the tool-group
+  description in `shared/mcpToolGroups.ts`. A field missed in the relay arrives `undefined` at the
+  extension with no error anywhere.
+- **`BROWSER_EXTENSION_MIN_COMPATIBLE` (`browserExtensionBundle.ts`) is a REINSTALL order** — raise it
+  only when the op contract breaks. Below it every install badges orange in the composer.
+  `tests/infra.test.ts` pins it at or below the bundled manifest version: above it, even a
+  just-downloaded extension badges orange forever, telling users to update to something no download
+  provides.
+- **`screenshot` is gated on the RUN's resolved vision policy** (`runVisionEnabled` →
+  `BrowserToolsContext.vision`, defaulting to `false` so an unwired caller gets a polite refusal rather
+  than an API error). `routes/chat.ts` caps the relayed base64 and whitelists the mime type — the
+  extension is semi-trusted and that string lands in an API image block. The caption restates that the
+  pixels are untrusted page content.
+- **Audit policy: actions PLUS deliberate reads.** `screenshot`/`read_text` get rows (they are the
+  exfiltration surface); `snapshot`/`wait_for` never do — they fire between every step and would bury
+  the rows that matter. URLs are scrubbed of userinfo and query string.
+- **No JS execution, and that shapes op design.** `CDP_ALLOWLIST` is default-deny with no
+  `Runtime.*`/`Network.*`/`Storage.*`; elements are AX-tree `backendNodeId`s. So `select_option` clicks a
+  rendered option, or walks a collapsed native `<select>` with arrow keys and then RE-READS the landed
+  value (the keyboard path silently no-ops on some platforms — macOS opens the native popup instead).
+  `read_text` reuses the same `extension/axtree.js` walker as snapshot (`renderAxText` vs
+  `renderAxTree`), is offset-chunked, and mints no uids so it never invalidates a snapshot.
+- **The signing key IS the extension's identity.** It lives off-repo on the release machine only;
+  manifest `key` is its public half and Chrome derives the id from it. Change the key and the id
+  changes — `extension/manifest.json`, the `browserBridge.ts` default id, `extension/README.md`, and any
+  admin policy path naming the id must move together, and every install reloads once (done 2026-08-07:
+  `fbohmmep…` → `gdaheigee…`). The build script refuses to run on a manifest/key mismatch and prints the
+  exact bootstrap list.
+- **Two update channels, one key.** (a) the toolbar updater (`extension/updater*.js`, File System
+  Access, verifies `noah-bridge-update.json` + `.sig` against the manifest `key`); (b) the POLICY
+  channel (signed `.crx` + Omaha `updates.xml`, Chrome `ExtensionSettings force_installed`, zero user
+  action). `browserExtensionUpdate.ts` / `browserExtensionCrx.ts` are RELEASE-TIME modules — only
+  `scripts/build-browser-extension-update.ts` and tests import them; never pull them onto a request
+  path, because a server holding the signing key turns a server compromise into fleet-wide browser
+  control. Both channels read `releases/latest/download/…`, so EVERY release must attach all four assets.
+- **Origins are BUILD-TIME for the policy channel.** Chrome enforces `externally_connectable` before any
+  extension code runs and a policy install cannot be hand-edited, so a missing Noah address fails
+  SILENTLY on every machine (`chrome.runtime` simply isn't there — no error to see). The manual zip path
+  needs none of this: the download route stamps the requesting origin into that bundle's manifest.
+- **Chrome facts verified by experiment, not by docs.** `externally_connectable` match patterns IGNORE
+  the port (a pattern with no port matched a `:48787` page ⇒ writing a port grants EVERY port on that
+  host); the scheme IS matched; IP literals are valid; trailing `/*` is mandatory. Chrome LOADS an
+  extension whose pattern is invalid, dropping the entry as a warning — **"it loaded" is not evidence a
+  pattern works; always run a negative control.** GitHub redirects release-asset downloads to
+  `release-assets.githubusercontent.com`, not `objects.*` (a 404 probe never redirects, which is why
+  this hid until real assets existed) — hence `host_permissions: https://*.githubusercontent.com/*`.
+- **Corporate DLP can intercept the browser's file dialog** ("not an allowed upload URL"), which kills
+  every File System Access path on managed machines — that is why the policy channel exists. The
+  no-dialog interim is "unzip in Explorer + `chrome://extensions` ↻". Don't try to code around it.
+- **Verifying extension behavior locally:** Playwright's Chromium loads the unpacked extension
+  (`chromium.launchPersistentContext(dir, { channel: "chromium", args: ["--disable-extensions-except=<extension/>",
+  "--load-extension=<extension/>"] })`), which drives real `chrome-extension://` pages and settles what a
+  match pattern actually does. Only `@playwright/test` is installed (no `playwright`/`playwright-core`,
+  and `node_modules/.bin` has no `playwright` symlink). Ad-hoc harness — not committed as a test.
 
 ### Chat / SSE / sessions
 - **Chat is SSE, and an owner turn can be driven from anywhere in the client.**
