@@ -16,7 +16,9 @@ import {
   browserExtensionOrigins,
   browserExtensionVersion,
   buildBrowserExtensionZip,
+  listBrowserExtensionFiles,
   matchPatternForOrigin,
+  BROWSER_EXTENSION_DIR,
 } from "../src/server/browserExtensionBundle.js";
 import {
   extensionIdFromPublicKey,
@@ -1157,6 +1159,30 @@ describe("browser extension bundle", () => {
           `min-compatible ${BROWSER_EXTENSION_MIN_COMPATIBLE} exceeds bundled ${browserExtensionVersion()}`,
         ).toBeLessThan(0);
         break;
+      }
+    }
+  });
+
+  it("ships every extension/ file except deliberate dev-only excludes", () => {
+    // Field-bricking invariant: a new file under extension/ that a coder forgets
+    // to add to BUNDLE_FILES silently ships an incomplete zip/install. Diff the
+    // shipped set against the actual directory; only dev-only docs may be absent.
+    const NOT_SHIPPED = new Set(["CLAUDE.md"]);
+    const shipped = new Set(listBrowserExtensionFiles().map((f) => f.name));
+    const onDisk = fs
+      .readdirSync(BROWSER_EXTENSION_DIR, { withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => e.name);
+    const missing = onDisk.filter((name) => !shipped.has(name) && !NOT_SHIPPED.has(name));
+    expect(missing, `add these to BUNDLE_FILES (or NOT_SHIPPED): ${missing.join(", ")}`).toEqual([]);
+  });
+
+  it("flags every shipped binary file as base64 so the updater can't utf8-corrupt it", () => {
+    // A binary file missing from BINARY_BUNDLE_FILES ships as utf8 and the
+    // one-click updater writes a corrupted copy — an install that fails to load.
+    for (const file of listBrowserExtensionFiles()) {
+      if (/\.(png|jpe?g|gif|webp|woff2?|ico)$/i.test(file.name)) {
+        expect(file.encoding, `${file.name} must be a BINARY_BUNDLE_FILES entry`).toBe("base64");
       }
     }
   });

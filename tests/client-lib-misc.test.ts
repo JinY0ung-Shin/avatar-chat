@@ -1019,6 +1019,32 @@ describe("browser bridge versioning", () => {
     // String equality precedes parsing, so odd-but-equal versions stay green.
     expect(bridgeVersionVerdict("beta", "beta", null)).toBe("current");
   });
+
+  it("extensionsPageUrl points Edge at edge://extensions, everyone else at chrome://extensions", async () => {
+    const { extensionsPageUrl } = await import("../src/client/src/lib/browserBridge.js");
+    const original = globalThis.navigator;
+    const withUA = (ua: string | undefined) => {
+      if (ua === undefined) {
+        // @ts-expect-error deleting the global for the no-navigator branch
+        delete globalThis.navigator;
+      } else {
+        Object.defineProperty(globalThis, "navigator", {
+          value: { userAgent: ua },
+          configurable: true,
+        });
+      }
+    };
+    try {
+      withUA("Mozilla/5.0 (Windows NT 10.0) Chrome/120 Edg/120.0.0.0");
+      expect(extensionsPageUrl()).toBe("edge://extensions");
+      withUA("Mozilla/5.0 (Windows NT 10.0) Chrome/120.0.0.0 Safari/537.36");
+      expect(extensionsPageUrl()).toBe("chrome://extensions");
+      withUA(undefined);
+      expect(extensionsPageUrl()).toBe("chrome://extensions");
+    } finally {
+      Object.defineProperty(globalThis, "navigator", { value: original, configurable: true });
+    }
+  });
 });
 
 /* ------------------------------------------------------------------ */
