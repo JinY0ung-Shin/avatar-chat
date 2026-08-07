@@ -67,7 +67,7 @@
         <p class="muted">목록에 나타난 ID가 아래와 같아야 Noah와 연결됩니다.</p>
         <div class="guide-id">
           <code>{extensionId}</code>
-          <button type="button" class="btn ghost btn-sm" on:click={() => copyText(extensionId ?? "")}>복사</button>
+          <button type="button" class="btn ghost btn-sm" on:click={(event) => void copyText(extensionId ?? "", event.currentTarget)}>복사</button>
         </div>
       {:else}
         <p class="muted">서버에서 확장 ID를 읽지 못했습니다. 관리자에게 문의하세요.</p>
@@ -118,7 +118,9 @@
     </div>
   </div>
 
-  <div class="modal-actions">
-    <button type="button" class="btn" on:click={() => dispatch("close")}>닫기</button>
+  <div class="routine-modal-actions">
+    <div class="routine-modal-actions-right">
+      <button type="button" class="btn" on:click={() => dispatch("close")}>닫기</button>
+    </div>
   </div>
 </Modal>

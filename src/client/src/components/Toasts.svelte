@@ -38,22 +38,26 @@
     setPaused(id, "focus", false);
   }
 
+  // One source of truth: the `$toasts` auto-subscription (used by the template)
+  // drives this reactive block on every toast-set change — GC the pause-reason
+  // map for gone toasts AND pause any current toast while the tab is hidden. A
+  // second manual `toasts.subscribe` here was redundant (setPaused is idempotent).
+  $: {
+    const ids = new Set($toasts.map((toast) => toast.id));
+    for (const id of [...pauseReasons.keys()]) {
+      if (!ids.has(id)) pauseReasons.delete(id);
+    }
+    for (const toast of $toasts) setPaused(toast.id, "document", document.hidden);
+  }
+
   onMount(() => {
+    // `document.hidden` is not reactive, so a visibility change with an unchanged
+    // toast set won't re-run the block above — handle it here.
     const syncVisibility = () => {
       for (const toast of $toasts) setPaused(toast.id, "document", document.hidden);
     };
-    const unsubscribe = toasts.subscribe((items) => {
-      const ids = new Set(items.map((toast) => toast.id));
-      for (const id of pauseReasons.keys()) {
-        if (!ids.has(id)) pauseReasons.delete(id);
-      }
-      for (const toast of items) setPaused(toast.id, "document", document.hidden);
-    });
     document.addEventListener("visibilitychange", syncVisibility);
-    return () => {
-      unsubscribe();
-      document.removeEventListener("visibilitychange", syncVisibility);
-    };
+    return () => document.removeEventListener("visibilitychange", syncVisibility);
   });
 </script>
 

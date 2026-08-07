@@ -9,6 +9,7 @@
   import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { prefersReducedMotion, project, rubberband, springValue } from "../lib/motion";
   import { goView } from "../lib/nav";
+  import { trapTab } from "../lib/modalBehavior";
   import { appState, notify, replaceState, updateState } from "../lib/state";
   import { setThemePref } from "../lib/theme";
   import type { ThemePref } from "../lib/theme";
@@ -538,21 +539,9 @@
       return;
     }
     if (!desktopRail && railOpen && event.key === "Tab") {
-      const focusables = [
-        ...(railElement?.querySelectorAll<HTMLElement>(
-          "button:not(:disabled), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])",
-        ) ?? []),
-      ];
-      if (!focusables.length) return;
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      if (event.shiftKey && (document.activeElement === first || !railElement?.contains(document.activeElement))) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      // Shared trap (also applies the aria-hidden/display/visibility + tabindex=-1
+      // filtering the hand-rolled copy lacked).
+      trapTab(event, railElement);
     }
   }
 
@@ -651,7 +640,7 @@
         </button>
       {/each}
 
-      {#if user.roles?.includes("admin")}
+      {#if isAdmin}
         <button class="nav-item" type="button" class:active={view === "admin"} aria-current={view === "admin" ? "page" : undefined} on:click={() => navigate("admin")}>
           <Icon name="shield" />
           <span>관리자</span>

@@ -13,6 +13,11 @@ export function focusables(root: HTMLElement | null | undefined): HTMLElement[] 
   if (!root) return [];
   return [...root.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)].filter((el) => {
     if (el.getAttribute("aria-hidden") === "true" || el.hidden) return false;
+    // Drop tabindex="-1" elements: the FOCUSABLE_SELECTOR excludes them for the
+    // [tabindex] clause but NOT for buttons/inputs, so a decorative
+    // tabindex="-1" button (e.g. the sheet grabber) would otherwise become the
+    // initial-focus target and a Tab-trap edge. A -1 element is not tab-reachable.
+    if (el.tabIndex < 0) return false;
     const style = getComputedStyle(el);
     return style.display !== "none" && style.visibility !== "hidden";
   });

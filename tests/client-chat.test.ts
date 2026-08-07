@@ -725,11 +725,11 @@ describe("canvas flows", () => {
     expect(get(toasts).some((t) => t.message.includes("권한 없음"))).toBe(true);
   });
 
-  it("fetchCanvasVersions returns the versions, or [] on failure", async () => {
+  it("fetchCanvasVersions returns the versions, and throws on failure so the panel can show an error", async () => {
     useFetch((url) => (url.includes("/versions") ? jsonRes({ versions: [{ version: 1, createdAt: "t" }] }) : undefined));
     expect(await fetchCanvasVersions("cv1")).toEqual([{ version: 1, createdAt: "t" }]);
     useFetch(() => jsonRes({}, 500));
-    expect(await fetchCanvasVersions("cv1")).toEqual([]);
+    await expect(fetchCanvasVersions("cv1")).rejects.toThrow();
   });
 
   it("rollbackCanvas merges the returned canvas, and toasts on error", async () => {

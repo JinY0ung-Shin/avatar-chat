@@ -34,6 +34,7 @@
   import { startChatWith, openSeededChat } from "../lib/chat";
   import { notify, readState, newId } from "../lib/state";
   import { repoToHref } from "../lib/format";
+  import { downscaleImageToDataUrl } from "../lib/dom";
   import type { AvatarSummary, RepoPluginContents } from "../lib/types";
   import { MCP_TOOL_GROUPS } from "../../../shared/mcpToolGroups";
   import AvatarImage from "./AvatarImage.svelte";
@@ -414,6 +415,10 @@
       repoBusy = false;
       return;
     }
+    // New repo → different plugins; drop the cached listing + close the picker so
+    // it can't show the old repo's plugin names against the new selection.
+    pickOpen = false;
+    contents = null;
     try {
       await reload();
       notify(`"${group.name}" 공용 지식 저장소 "${repo}"을 연결했습니다.`, "ok");
@@ -665,7 +670,7 @@
     if (!file || agentPicBusy || !editingAgentId) return;
     agentPicBusy = true;
     try {
-      const image = await resizeImageToDataUrl(file, 256);
+      const image = await downscaleImageToDataUrl(file, 256);
       await api(agentPath(`/${encodeURIComponent(editingAgentId)}/image`), {
         method: "PUT",
         body: JSON.stringify({ image }),
@@ -695,27 +700,9 @@
     }
   }
 
-  /** File → resized square data URL (mirrors SettingsProfileTab's resizeImage). */
-  async function resizeImageToDataUrl(file: File, max: number): Promise<string> {
-    const dataUrl = await new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("파일을 읽지 못했습니다."));
-      reader.readAsDataURL(file);
-    });
-    const img = new Image();
-    await new Promise<void>((resolve, reject) => {
-      img.onload = () => resolve();
-      img.onerror = () => reject(new Error("이미지를 해석하지 못했습니다."));
-      img.src = dataUrl;
-    });
-    const scale = Math.min(1, max / Math.max(img.width, img.height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(img.width * scale));
-    canvas.height = Math.max(1, Math.round(img.height * scale));
-    canvas.getContext("2d")?.drawImage(img, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/png");
-  }
+  // Avatar image resize uses the shared lib/dom.downscaleImageToDataUrl (which
+  // REJECTS on a null 2d context and preserves jpeg/webp) — the old hand-rolled
+  // copy silently uploaded a BLANK image when getContext returned null.
 
   // ---- avatar-sharing policy (group admins) ----
   let sharingSaving = false;
@@ -953,8 +940,8 @@
       id={memberStatusId}
       class="settings-save-status"
       class:pending={memberStatus.includes("중입니다")}
-      class:success={memberStatus.includes("했습니다")}
       class:invalid={memberStatus.includes("실패") || memberStatus.includes("못했습니다")}
+      class:success={memberStatus.includes("했습니다") && !memberStatus.includes("실패") && !memberStatus.includes("못했")}
       role="status"
       aria-live="polite"
     >{memberStatus}</div>

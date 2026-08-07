@@ -47,19 +47,16 @@
   async function ignore() {
     if (disabled) return;
     ignoring = true;
+    // Single try/finally so `ignoring` always resets (the success path relied on
+    // the row unmounting, which isn't guaranteed if the refresh returns it).
     try {
       await api(`/api/me/knowledge/requests/${encodeURIComponent(request.id)}`, { method: "DELETE" });
-    } catch (e) {
-      ignoring = false;
-      notify(`무시 처리 실패: ${(e as Error).message}`);
-      return;
-    }
-    try {
       await refresh();
       notify("정보 요청을 무시했습니다.", "ok");
     } catch (e) {
+      notify(`무시 처리에 실패했거나 목록 새로고침에 실패했습니다: ${(e as Error).message}`);
+    } finally {
       ignoring = false;
-      notify(`정보 요청은 무시했지만 목록 새로고침에 실패했습니다: ${(e as Error).message}`, "warn");
     }
   }
 
@@ -72,29 +69,34 @@
     }
     if (disabled) return;
     busy = true;
-    const result = await recordKnowledgeViaAvatar(request, text);
-    if (!result.ok) {
-      busy = false;
-      notify(`기록 요청 실패: ${result.error}`);
-      return;
-    }
-    // The avatar resolves the request itself after committing; a refresh then
-    // drops this row out. If it's still open afterward the recording didn't
-    // complete — say so honestly instead of claiming success.
+    // try/finally so busy ALWAYS resets — the stillOpen branch keeps this row
+    // rendered, so a success path that forgot to reset locked every button at
+    // "기록 중…" until remount.
     try {
-      await refresh();
-    } catch (e) {
+      const result = await recordKnowledgeViaAvatar(request, text);
+      if (!result.ok) {
+        notify(`기록 요청 실패: ${result.error}`);
+        return;
+      }
+      // The avatar resolves the request itself after committing; a refresh then
+      // drops this row out. If it's still open afterward the recording didn't
+      // complete — say so honestly instead of claiming success.
+      try {
+        await refresh();
+      } catch (e) {
+        notify(`기록은 요청했지만 목록 새로고침에 실패했어요: ${(e as Error).message}`, "warn");
+        return;
+      }
+      const stillOpen = readState().knowledgeRequests.some((x) => x.id === request.id && x.status === "open");
+      notify(
+        stillOpen
+          ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 대화를 확인해 주세요."
+          : "아바타가 답을 지식 저장소에 기록했어요.",
+        stillOpen ? "warn" : "info",
+      );
+    } finally {
       busy = false;
-      notify(`기록은 요청했지만 목록 새로고침에 실패했어요: ${(e as Error).message}`, "warn");
-      return;
     }
-    const stillOpen = readState().knowledgeRequests.some((x) => x.id === request.id && x.status === "open");
-    notify(
-      stillOpen
-        ? "아바타가 기록을 완료하지 못한 것 같아요. ‘대화’의 ‘지식 기록’ 대화를 확인해 주세요."
-        : "아바타가 답을 지식 저장소에 기록했어요.",
-      stillOpen ? "warn" : "info",
-    );
   }
 </script>
 

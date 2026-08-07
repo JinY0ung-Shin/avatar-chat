@@ -42,7 +42,15 @@
   $: questionErrorId = `prompt-${promptBase}-question-error`;
   $: questionDescribedBy = joinIds(questions ? questionHintId : questionPayloadId, error ? questionErrorId : null);
   $: questionStates = questions
-    ? questions.map((q: any, qi: number) => questionState(q, qi))
+    ? questions.map((q: any, qi: number) => {
+        // Touch the reactive deps INLINE — questionState reads them only in its
+        // body, so without this the per-question status region never updates
+        // (the same trap canSubmit avoids below).
+        void selections[qi];
+        void customOn[qi];
+        void customText[qi];
+        return questionState(q, qi);
+      })
     : [];
 
   $: if (request && request.id !== activeId) {
@@ -60,9 +68,6 @@
     : "";
   $: permissionArg = request?.kind === "permission" ? summarizeInput(request.data?.input) : "";
 
-  function answeredFor(qi: number): boolean {
-    return selections[qi]?.length > 0 || (customOn[qi] && customText[qi].trim().length > 0);
-  }
   function joinIds(...ids: Array<string | null | undefined | false>): string | undefined {
     const joined = ids.filter(Boolean).join(" ");
     return joined || undefined;

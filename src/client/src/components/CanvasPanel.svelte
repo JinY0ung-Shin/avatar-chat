@@ -147,6 +147,16 @@
   // ---- content rendering (CSP-safe: no avatar-authored JS ever runs) ----
   let renderedHtml = "";
   let renderError = "";
+  // Wrap a raw (English) vega/mermaid library message in a Korean sentence,
+  // keeping the detail — a bare English message reads as a crash in the KO UI.
+  function vegaRenderError(err: unknown): string {
+    const detail = err instanceof Error ? err.message : "";
+    return detail ? `Vega 차트 렌더링에 실패했습니다 (상세: ${detail})` : "Vega 차트 렌더링에 실패했습니다.";
+  }
+  function mermaidRenderError(err: unknown): string {
+    const detail = err instanceof Error ? err.message : "";
+    return detail ? `mermaid 렌더링에 실패했습니다 (상세: ${detail})` : "mermaid 렌더링에 실패했습니다.";
+  }
   let contentEl: HTMLElement; // bound, so export can read the rendered <svg>
   // Token guards async (mermaid/vega) renders so a stale result can't overwrite a newer one.
   let renderToken = 0;
@@ -217,7 +227,9 @@
         renderedHtml = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
       } catch (err) {
         if (token !== renderToken) return;
-        renderError = (err as Error).message || "Vega 차트 렌더링에 실패했습니다.";
+        // Wrap the raw (English) library message in a Korean sentence, keeping the
+        // detail — a bare English message reads as a crash in the Korean UI.
+        renderError = vegaRenderError(err);
         const escaped = canvas.content.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
         renderedHtml = DOMPurify.sanitize(`<pre>${escaped}</pre>`);
       }
@@ -236,7 +248,7 @@
         renderedHtml = DOMPurify.sanitize(svg, { USE_PROFILES: { svg: true, svgFilters: true } });
       } catch (err) {
         if (token !== renderToken) return;
-        renderError = (err as Error).message || "mermaid 렌더링에 실패했습니다.";
+        renderError = mermaidRenderError(err);
         const escaped = canvas.content.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] || c));
         renderedHtml = DOMPurify.sanitize(`<pre>${escaped}</pre>`);
       }

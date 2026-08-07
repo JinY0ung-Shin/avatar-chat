@@ -480,8 +480,12 @@
       await reload();
       notify(`그룹 "${group.name}"을 삭제했습니다.`, "ok");
     } catch (err) {
-      busy = false;
       notify(`그룹은 삭제했지만 목록 새로고침에 실패했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      // The success path never reset busy: it survived only because the reload
+      // unmounts the row. If reload returns a list still containing this group,
+      // the delete button would stay disabled without this.
+      busy = false;
     }
   }
 </script>

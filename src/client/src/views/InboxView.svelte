@@ -14,7 +14,7 @@
   type Filter = "all" | "unread" | "requests" | "notifications";
   type InboxItem =
     | { kind: "request"; at: string; request: KnowledgeRequest }
-    | { kind: "notification"; at: string; notification: AvatarNotification };
+    | { kind: "notification"; at: string; notification: AvatarNotification; isRoutine: boolean };
 
   let loading = true;
   // Per-backend load failures (null when that backend loaded). Partial failures
@@ -38,7 +38,15 @@
   // Merged, reverse-chronological list of both backends.
   $: items = [
     ...openRequests.map((r): InboxItem => ({ kind: "request", at: r.createdAt || "", request: r })),
-    ...notifications.map((n): InboxItem => ({ kind: "notification", at: n.createdAt || "", notification: n })),
+    ...notifications.map((n): InboxItem => ({
+      kind: "notification",
+      at: n.createdAt || "",
+      notification: n,
+      // Compute here (reading routineConversations) so the "결과 보기" button
+      // tracks it; a template call to isRoutineConversation() reads the store
+      // only in its body and would be untracked.
+      isRoutine: Boolean(n.conversationId) && $appState.routineConversations.some((c) => c.id === n.conversationId),
+    })),
   ].sort((a, b) => (b.at || "").localeCompare(a.at || ""));
 
   $: filter = $appState.inboxFilter as Filter;
@@ -351,7 +359,7 @@
                     <div class="pr-sub" id={notificationDomId(n, "meta")}>{n.avatarDisplayName} · {timeLabel(n.createdAt)}</div>
                     <p>{n.message}</p>
                   </button>
-                  {#if isRoutineConversation(n.conversationId)}
+                  {#if item.isRoutine}
                     <div class="kr-actions">
                       <button class="ghost-sm" type="button" aria-label={`예약 작업 결과 보기: ${n.title}`} disabled={busyIds.has(n.id)} on:click={() => openResult(n)}>
                         {busyIds.has(n.id) ? "여는 중…" : "결과 보기"}

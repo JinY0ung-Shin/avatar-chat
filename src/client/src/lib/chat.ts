@@ -1814,14 +1814,13 @@ export async function closeCanvas(
 export async function fetchCanvasVersions(
   canvasId: string,
 ): Promise<{ version: number; createdAt: string }[]> {
-  try {
-    const res = await api<{
-      versions: { version: number; createdAt: string }[];
-    }>(`/api/chat/canvases/${encodeURIComponent(canvasId)}/versions`);
-    return res.versions || [];
-  } catch {
-    return [];
-  }
+  // Let the error PROPAGATE: CanvasPanel has a versionsError branch + a retry
+  // button that only work if a failure actually throws. Swallowing to [] here
+  // rendered a real failure as a silently empty version list.
+  const res = await api<{
+    versions: { version: number; createdAt: string }[];
+  }>(`/api/chat/canvases/${encodeURIComponent(canvasId)}/versions`);
+  return res.versions || [];
 }
 
 // Roll back a canvas to an earlier version (non-destructive) and update the panel.

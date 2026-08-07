@@ -76,7 +76,10 @@ export function normalizeTags(input: unknown): string[] {
   const seen = new Set<string>();
   for (const raw of parts) {
     if (typeof raw !== "string") continue;
-    let tag = raw.trim().replace(/^[#*•·\-\s]+/, "").replace(/\s+/g, "-").replace(/[.,!?]+$/, "");
+    // Char classes MUST match the server's normalizeHashtags (store/internal.ts)
+    // — otherwise a tag with fullwidth punctuation renders as one chip locally
+    // but comes back re-trimmed after save. Keep in lockstep.
+    let tag = raw.trim().replace(/^[#*•·\-\s]+/u, "").replace(/\s+/g, "-").replace(/[.,!?。·…、，]+$/u, "");
     if (!tag) continue;
     if (tag.length > 30) tag = tag.slice(0, 30);
     const key = tag.toLowerCase();

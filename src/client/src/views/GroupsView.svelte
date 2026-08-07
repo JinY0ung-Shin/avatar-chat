@@ -60,17 +60,23 @@
     if (isSystemAdmin) void loadAdminSection();
   });
 
+  // Request-sequence token instead of a `groupsLoading` early-return: a card's
+  // reloadMyGroups() after a mutation must ALWAYS reflect post-mutation data. The
+  // old early-return let a reload no-op against an in-flight PRE-mutation fetch,
+  // which then repopulated the roster with the just-removed member. Every call
+  // starts a fresh fetch; only the latest response is applied.
+  let groupsSeq = 0;
   async function loadMyGroups(): Promise<void> {
-    if (groupsLoading) return;
+    const seq = ++groupsSeq;
     groupsLoading = true;
     groupsError = "";
     try {
       const { groups: next } = await api<{ groups: SettingsGroup[] }>("/api/me/groups");
-      groups = next;
+      if (seq === groupsSeq) groups = next;
     } catch (err) {
-      groupsError = (err as Error).message;
+      if (seq === groupsSeq) groupsError = (err as Error).message;
     } finally {
-      groupsLoading = false;
+      if (seq === groupsSeq) groupsLoading = false;
     }
   }
 

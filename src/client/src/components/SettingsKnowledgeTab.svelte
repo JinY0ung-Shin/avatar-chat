@@ -134,6 +134,12 @@
       const { user: next } = await api<{ user: User }>("/api/me/knowledge-repo", { method: "PUT", body: JSON.stringify({ repo, branch: branch || null }) });
       syncKnowledgeForm(next);
       replaceState({ user: next });
+      // The new repo has different plugins; drop the cached listing + close the
+      // picker so it can't show the OLD repo's plugin names against the new
+      // knowledgeSelected (same reason saveRef/disconnect clear it).
+      krPickOpen = false;
+      krContents = null;
+      krContentsErr = "";
       notify(`지식 저장소 "${repo}"을 연결했습니다.`, "ok");
     } catch (err) {
       knowledgeError = (err as Error).message;

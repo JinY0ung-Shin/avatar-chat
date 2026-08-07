@@ -222,8 +222,14 @@
         profileGenError = `${okIntro ? "자기소개" : "해시태그"} 초안만 채워졌습니다.`;
         notify(`${profileGenError} 나머지는 다시 시도해 주세요. 저장하려면 프로필 저장을 누르세요.`, "warn");
       } else {
+        // Report whichever call actually rejected — the intro might have resolved
+        // empty while the hashtags call threw, so don't hardcode introRes.
         const reason =
-          introRes.status === "rejected" ? (introRes.reason as Error).message : "결과가 비어 있습니다.";
+          introRes.status === "rejected"
+            ? (introRes.reason as Error).message
+            : tagsRes.status === "rejected"
+              ? (tagsRes.reason as Error).message
+              : "결과가 비어 있습니다.";
         profileGenError = `자동 생성 실패: ${reason}`;
         notify(profileGenError, "warn");
       }
@@ -499,21 +505,6 @@
     max-width: 140px;
     line-height: 1.35;
   }
-  .shared-account-item {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--s-2);
-    cursor: pointer;
-    margin-top: var(--s-3);
-  }
-  .shared-account-item input {
-    margin-top: var(--s-1);
-  }
-  .shared-account-meta {
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-0-5);
-    min-width: 0;
-    overflow-wrap: anywhere;
-  }
+  /* .shared-account-item / .shared-account-meta moved to
+     styles/60-settings-admin.css (global) — shared with SettingsGroupCard. */
 </style>

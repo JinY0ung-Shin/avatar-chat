@@ -20,13 +20,21 @@
   function addFromInput(): void {
     if (disabled) return;
     const parts = value
-      .split(/[\s,]+/)
+      // Split on the same separators the server uses (incl. fullwidth , 、).
+      .split(/[\s,，、]+/)
       .map((s) => s.trim())
       .filter(Boolean);
-    const truncated = parts.some((p) => p.replace(/^[#*•·\-\s]+/, "").length > 30);
+    const truncated = parts.some((p) => p.replace(/^[#*•·\-\s]+/u, "").length > 30);
+    const before = tags.length;
     tags = normalizeTags([...tags, ...parts]);
     value = "";
-    if (truncated) notify("해시태그는 최대 30자까지만 사용할 수 있어 일부가 잘렸습니다.", "info");
+    if (truncated) {
+      notify("해시태그는 최대 30자까지만 사용할 수 있어 일부가 잘렸습니다.", "info");
+    } else if (parts.length && tags.length === before) {
+      // normalizeTags caps at 12 and drops duplicates; tell the user when their
+      // input added nothing (the sibling profile-tab path already reports this).
+      notify("해시태그는 최대 12개까지만 추가할 수 있어 더 추가되지 않았습니다.", "info");
+    }
   }
 
   function onKeydown(e: KeyboardEvent): void {

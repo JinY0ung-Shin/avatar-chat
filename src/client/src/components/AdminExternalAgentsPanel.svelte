@@ -208,10 +208,11 @@
       );
       await saved();
     } catch (err) {
-      rowStatus = {
-        ...rowStatus,
-        [agent.id]: `상태 변경 실패: ${(err as Error).message}`,
-      };
+      const message = `상태 변경 실패: ${(err as Error).message}`;
+      rowStatus = { ...rowStatus, [agent.id]: message };
+      // Also toast: the success path toasts, so a failure that only writes inline
+      // rowStatus (possibly scrolled off) reads as silence.
+      notify(message);
     } finally {
       rowBusy = { ...rowBusy, [agent.id]: false };
     }
@@ -239,10 +240,9 @@
       notify(`외부 아바타 "${agent.displayName}"을 삭제했습니다.`, "ok");
       await saved();
     } catch (err) {
-      rowStatus = {
-        ...rowStatus,
-        [agent.id]: `삭제 실패: ${(err as Error).message}`,
-      };
+      const message = `삭제 실패: ${(err as Error).message}`;
+      rowStatus = { ...rowStatus, [agent.id]: message };
+      notify(message);
     } finally {
       rowBusy = { ...rowBusy, [agent.id]: false };
     }

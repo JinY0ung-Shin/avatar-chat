@@ -56,6 +56,17 @@
     }
   }
 
+  // After a mutation (suspend/role/logout/password-reset) the parent refreshes
+  // only the summary row; the expanded detail (sessions/questions/started chats)
+  // would keep stale numbers. Re-fetch it when the user prop identity changes,
+  // mirroring AdminGroupRow's syncedGroup watcher.
+  let syncedUser = user;
+  $: if (user !== syncedUser) {
+    syncedUser = user;
+    detail = null;
+    if (expanded && !loading) void loadDetail();
+  }
+
   async function run(fn: () => Promise<void>, errLabel: string, successLabel = "") {
     if (busy) return;
     busy = true;
@@ -262,5 +273,5 @@
 </div>
 
 {#if showPasswordModal}
-  <AdminPasswordResetModal user={user} on:close={() => (showPasswordModal = false)} on:done={reload} />
+  <AdminPasswordResetModal user={user} on:close={() => (showPasswordModal = false)} on:done={() => reload().catch((err) => notify(`목록 새로고침에 실패했습니다: ${err instanceof Error ? err.message : String(err)}`, "warn"))} />
 {/if}

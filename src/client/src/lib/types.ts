@@ -183,8 +183,6 @@ export interface PaneCanvas extends CanvasArtifact {
   pending?: boolean;
   /** A submit POST is in flight. */
   submitting?: boolean;
-  /** In-panel editor buffer for an `editable` canvas (not persisted; UI-local). */
-  editDraft?: string;
 }
 
 /** One agent in the live activity tree; "main" is the root, others nest under parentId. */

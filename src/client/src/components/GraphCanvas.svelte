@@ -129,8 +129,19 @@
     });
   }
 
+  // cytoscape's default autoResize binds only the WINDOW resize event, so a
+  // container-only size change (desktop rail collapse, note-panel toggle) leaves
+  // the canvas at its stale dimensions. Observe the container and re-fit.
+  let resizeObserver: ResizeObserver | null = null;
+  $: if (containerEl && !resizeObserver && typeof ResizeObserver !== "undefined") {
+    resizeObserver = new ResizeObserver(() => cy?.resize());
+    resizeObserver.observe(containerEl);
+  }
+
   onDestroy(() => {
     renderToken++;
+    resizeObserver?.disconnect();
+    resizeObserver = null;
     cy?.destroy();
     cy = null;
   });

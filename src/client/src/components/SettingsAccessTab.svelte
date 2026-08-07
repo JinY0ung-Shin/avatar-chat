@@ -44,7 +44,7 @@
       name: "CONFLUENCE_PAT",
       label: "Confluence PAT",
       description: "사내 Confluence 공용 도구의 Bearer 인증에 사용해요.",
-      placeholder: "Confluence personal access token",
+      placeholder: "Confluence PAT (CONFLUENCE_PAT)",
       rows: 2,
     },
   ];
@@ -146,7 +146,6 @@
   // the button actually hands out.
   async function loadExtensionMeta(): Promise<void> {
     if (extensionMetaLoaded) return;
-    extensionMetaLoaded = true;
     try {
       const meta = await api<{
         extensionId: string | null;
@@ -156,8 +155,11 @@
       extensionId = meta.extensionId;
       extensionOrigins = meta.origins ?? [];
       extensionMultimediaNotice = Boolean(meta.multimediaNotice);
+      // Mark loaded only on SUCCESS: a transient failure must not permanently pin
+      // extensionId=null (the guide would show "id unavailable" with no retry).
+      extensionMetaLoaded = true;
     } catch {
-      // Non-fatal: the guide falls back to "id unavailable" text.
+      // Non-fatal: leave extensionMetaLoaded false so re-activating the tab retries.
     }
   }
 
@@ -779,7 +781,7 @@
         </div>
         <p class="muted">지식 저장소 생성·푸시와 사내({githubHost}) 비공개 저장소 접근에 사용해요.</p>
       </div>
-      <RevealableInput bind:value={internalToken} name="internalToken" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" ariaDescribedby={internalStatusId} revealLabel="토큰" disabled={internalBusy} onInput={() => (internalError = "")} />
+      <RevealableInput bind:value={internalToken} name="internalToken" placeholder="사내 GitHub PAT (GIT_TOKEN)" ariaLabel="사내 Git 토큰 GIT_TOKEN" ariaDescribedby={internalStatusId} ariaInvalid={Boolean(internalError)} revealLabel="토큰" disabled={internalBusy} onInput={() => (internalError = "")} />
       <div class="secret-preset-actions">
         <span id={internalStatusId} class="settings-save-status" class:dirty={Boolean(internalToken.trim() && !internalBusy && !internalError)} class:pending={internalBusy} class:invalid={Boolean(internalError)} role="status" aria-live="polite">{internalStatus}</span>
         <button class="primary" type="submit" disabled={internalBusy || !internalToken.trim()}>{internalSet ? "교체" : "저장"}</button>
@@ -796,7 +798,7 @@
         </div>
         <p class="muted">github.com HTTPS 저장소 접근에만 사용해요. 지식 저장소 생성·푸시에는 쓰이지 않아요.</p>
       </div>
-      <RevealableInput bind:value={externalToken} name="externalToken" placeholder="github.com PAT (GITHUB_TOKEN)" ariaLabel="외부 GitHub 토큰 GITHUB_TOKEN" ariaDescribedby={externalStatusId} revealLabel="토큰" disabled={externalBusy} onInput={() => (externalError = "")} />
+      <RevealableInput bind:value={externalToken} name="externalToken" placeholder="github.com PAT (GITHUB_TOKEN)" ariaLabel="외부 GitHub 토큰 GITHUB_TOKEN" ariaDescribedby={externalStatusId} ariaInvalid={Boolean(externalError)} revealLabel="토큰" disabled={externalBusy} onInput={() => (externalError = "")} />
       <div class="secret-preset-actions">
         <span id={externalStatusId} class="settings-save-status" class:dirty={Boolean(externalToken.trim() && !externalBusy && !externalError)} class:pending={externalBusy} class:invalid={Boolean(externalError)} role="status" aria-live="polite">{externalStatus}</span>
         <button class="primary" type="submit" disabled={externalBusy || !externalToken.trim()}>{externalSet ? "교체" : "저장"}</button>

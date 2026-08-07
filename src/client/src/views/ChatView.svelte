@@ -63,9 +63,6 @@
   let planFeedback = "";
   let planReviewErrors: Record<string, string> = {};
 
-  function planReviewStatusId(paneId: string): string {
-    return `plan-review-status-${paneId.replace(/[^a-zA-Z0-9_-]/g, "-")}`;
-  }
   function planReviewStatusText(pane: ChatPane): string {
     if (pane.planReviewSubmitting) return "응답을 전송하는 중입니다.";
     return planReviewErrors[pane.id] ? `응답 전송 실패: ${planReviewErrors[pane.id]}` : "";
@@ -220,10 +217,12 @@
   }
 
   function hasComposerControls(item: ChatPane): boolean {
-    // External panes always get the settings row: it hosts the gateway model
-    // picker (the other, local-only controls stay native panes' business).
-    if (isExternalPane(item)) return true;
-    return hasModelPicker() || hasEffortPicker() || eligibleGroups(item).length > 0 || MCP_TOOL_GROUPS.length > 0;
+    // External panes get the settings row for the gateway model picker; native
+    // panes always get it too — the MCP tool-group picker always exists
+    // (MCP_TOOL_GROUPS is a non-empty registry), so the row is never empty. The
+    // per-item argument is kept for call-site clarity and future gating.
+    void item;
+    return true;
   }
 
   function modelTierLabel(item: ChatPane): string {
@@ -395,6 +394,16 @@
     if (!matches.length) return undefined;
     return slashOptionId(item.id, Math.min(slashIndex, matches.length - 1));
   }
+  // Per-pane active slash-option id, derived reactively so aria-activedescendant
+  // tracks ArrowUp/Down: activeSlashOptionId reads slashPaneId/slashIndex only in
+  // its body, so a bare template call is untracked and stays pinned to option 0.
+  $: activeSlashDescendant = (() => {
+    void slashPaneId;
+    void slashIndex;
+    const map: Record<string, string | undefined> = {};
+    for (const p of $appState.chatPanes) map[p.id] = activeSlashOptionId(p);
+    return map;
+  })();
 
   function toggleComposerSettings(item: ChatPane) {
     const closing = composerSettingsOpenPaneId === item.id;
@@ -1187,7 +1196,7 @@
                   <div class="md plan-card-body" use:enhanceMarkdown={item.livePlan}>{@html renderMarkdown(item.livePlan)}</div>
                   {#if item.planReview}
                     {@const planStatus = planReviewStatusText(item)}
-                    <div class="plan-actions" aria-busy={item.planReviewSubmitting ? "true" : "false"} aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined}>
+                    <div class="plan-actions" aria-busy={item.planReviewSubmitting ? "true" : "false"} aria-describedby={planStatus ? paneDomId("plan-review-status", item.id) : undefined}>
                       {#if planRejectPaneId === item.id}
                         <textarea
                           class="plan-feedback"
@@ -1195,22 +1204,22 @@
                           placeholder="수정할 점을 알려주세요 (선택)"
                           bind:value={planFeedback}
                           aria-label="계획 수정 요청 내용"
-                          aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined}
+                          aria-describedby={planStatus ? paneDomId("plan-review-status", item.id) : undefined}
                           aria-invalid={planReviewErrors[item.id] ? "true" : undefined}
                           disabled={item.planReviewSubmitting}
                         ></textarea>
                         <div class="plan-actions-row">
-                          <button class="btn btn-ghost btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={cancelRejectPlan}>취소</button>
-                          <button class="btn btn-primary btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => submitRejectPlan(item)}>수정 요청 보내기</button>
+                          <button class="btn btn-ghost btn-sm" type="button" aria-describedby={planStatus ? paneDomId("plan-review-status", item.id) : undefined} disabled={item.planReviewSubmitting} on:click={cancelRejectPlan}>취소</button>
+                          <button class="btn btn-primary btn-sm" type="button" aria-describedby={planStatus ? paneDomId("plan-review-status", item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => submitRejectPlan(item)}>수정 요청 보내기</button>
                         </div>
                       {:else}
                         <div class="plan-actions-row">
-                          <button class="btn btn-ghost btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => startRejectPlan(item)}>수정 요청</button>
-                          <button class="btn btn-primary btn-sm" type="button" aria-describedby={planStatus ? planReviewStatusId(item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => approvePlan(item)}>승인</button>
+                          <button class="btn btn-ghost btn-sm" type="button" aria-describedby={planStatus ? paneDomId("plan-review-status", item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => startRejectPlan(item)}>수정 요청</button>
+                          <button class="btn btn-primary btn-sm" type="button" aria-describedby={planStatus ? paneDomId("plan-review-status", item.id) : undefined} disabled={item.planReviewSubmitting} on:click={() => approvePlan(item)}>승인</button>
                         </div>
                       {/if}
                       {#if planStatus}
-                        <div id={planReviewStatusId(item.id)} class="plan-review-status" class:invalid={Boolean(planReviewErrors[item.id])} role="status" aria-live="polite">{planStatus}</div>
+                        <div id={paneDomId("plan-review-status", item.id)} class="plan-review-status" class:invalid={Boolean(planReviewErrors[item.id])} role="status" aria-live="polite">{planStatus}</div>
                       {/if}
                     </div>
                   {/if}
@@ -1340,9 +1349,9 @@
             aria-label={`${item.avatar.alias || item.avatar.displayName}에게 보낼 메시지`}
             aria-describedby={paneDomId("composer-hint", item.id)}
             use:autosize={item.draft}
-            aria-controls={activeSlashOptionId(item) ? paneDomId("slash-menu", item.id) : undefined}
+            aria-controls={activeSlashDescendant[item.id] ? paneDomId("slash-menu", item.id) : undefined}
             aria-haspopup="listbox"
-            aria-activedescendant={activeSlashOptionId(item)}
+            aria-activedescendant={activeSlashDescendant[item.id]}
             on:input={(event) => onComposerInput(event, item)}
             on:keydown={(event) => onComposerKeydown(event, item)}
             on:paste={(event) => onComposerPaste(event, item)}

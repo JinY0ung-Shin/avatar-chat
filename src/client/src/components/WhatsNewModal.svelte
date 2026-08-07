@@ -2,6 +2,7 @@
   import { createEventDispatcher } from "svelte";
   import Modal from "./Modal.svelte";
   import { updateState } from "../lib/state";
+  import { goView } from "../lib/nav";
   import {
     releaseDateLabel,
     type ReleaseNote,
@@ -30,11 +31,13 @@
     // THEN jump — the flag is one-shot state the target tab consumes.
     done();
     if (action === "browser-guide") {
+      // Go through goView (like ChatView.openBrowserBridgeGuide) so the hash +
+      // history entry stay consistent — a raw updateState left location.hash on
+      // the previous route, so reload/Back landed on the wrong view.
       updateState((state) => {
-        state.view = "settings";
-        state.settingsTab = "access";
         state.browserGuideRequested = true;
       });
+      goView("settings", "access");
     }
   }
 </script>

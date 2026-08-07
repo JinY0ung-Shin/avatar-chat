@@ -231,6 +231,14 @@
         ? "저장하지 않은 정책 변경 사항이 있습니다."
         : "저장된 정책과 같습니다.";
 
+  // Vision has a draft but no explicit dirty flag; derive one so a manual refresh
+  // can preserve unsaved vision-policy edits (see load()).
+  $: visionDirty = MODEL_TIERS.some((tier) => {
+    const saved = (unwrapSystem($appState.adminSystem).modelVisionPolicy || {}) as Record<string, boolean>;
+    const savedVal = tier.id in saved ? (saved[tier.id] ? "on" : "off") : "default";
+    return (visionPolicyDraft[tier.id] ?? "default") !== savedVal;
+  });
+
   // overview stat cards
   $: statCards = [
     { label: "전체 사용자", value: stats?.users, sub: stats?.suspended ? `정지 ${stats.suspended}명 포함` : "", target: "users", filter: "all" },
@@ -251,10 +259,14 @@
     error = "";
     try {
       await Promise.all([loadAdminOverview(), loadAdminGroups()]);
-      syncHexPolicyFromSys();
-      syncToolSkillFromSys();
-      syncVisionPolicyFromSys();
-      modelInput = String(unwrapSystem($appState.adminSystem).modelOverride || "");
+      // Preserve unsaved policy edits across a manual 새로고침 (the header button
+      // calls load() on every tab): only re-seed a panel from server state when
+      // it has NO pending edits — otherwise the refresh silently discards them,
+      // which contradicts the "저장하지 않은 변경 사항" banner shown right there.
+      if (!hexDirty) syncHexPolicyFromSys();
+      if (!toolSkillDirty) syncToolSkillFromSys();
+      if (!visionDirty) syncVisionPolicyFromSys();
+      if (!modelDirty) modelInput = String(unwrapSystem($appState.adminSystem).modelOverride || "");
     } catch (err) {
       error = (err as Error).message;
     } finally {
@@ -322,9 +334,13 @@
     focusUserFilter(next);
   }
 
-  function userFilterCount(f: (u: AdminUserSummary) => boolean): number {
-    return $appState.adminUsers.filter(f).length;
-  }
+  // Reactive per-filter counts: a template call reading $appState.adminUsers only
+  // in a helper body would freeze the chip counts at first render (userFilters
+  // never changes identity). Reading this map in the template tracks adminUsers,
+  // so counts update after suspend/delete/role change.
+  $: userFilterCounts = new Map(
+    userFilters.map((f) => [f.id, $appState.adminUsers.filter(f.match).length]),
+  );
 
   // ---- access ----
   async function saveSignupMode(mode: SignupMode) {
@@ -740,7 +756,7 @@
                 tabindex={$appState.adminUserFilter === f.id ? 0 : -1}
                 on:click={() => setUserFilter(f.id)}
                 on:keydown={(event) => onUserFilterKeydown(event, f.id)}
-              >{f.label} {userFilterCount(f.match)}</button>
+              >{f.label} {userFilterCounts.get(f.id) ?? 0}</button>
             {/each}
           </div>
           <div class="admin-list">

@@ -136,7 +136,9 @@
     hasStoredCollapsePref = storedCollapse === "0" || storedCollapse === "1";
     collapsed = hasStoredCollapsePref ? storedCollapse === "1" : mobile;
     panelWidth = clampWidth(Number(capPref("capPanelWidth", String(CAP_WIDTH_DEFAULT))) || CAP_WIDTH_DEFAULT);
-    if (avatar?.id) void loadSkills(avatar.id);
+    // Skills load via the `$: if (avatar?.id) void loadSkills(...)` reactive block,
+    // which runs during init (before onMount) and sets loadedFor synchronously —
+    // so an onMount load() call here is always a guarded no-op.
   });
 
   // Never strand the drag cursor/user-select lock if the panel unmounts mid-resize.
