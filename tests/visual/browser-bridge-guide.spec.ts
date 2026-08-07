@@ -34,7 +34,7 @@ const admin = {
   shellExposedSecretNames: [],
 };
 
-const EXTENSION_ID = "fbohmmepjdncddcieglnblnlfiblbhbo";
+const EXTENSION_ID = "gdaheigeedlnhagpmokpmocahgieiobc";
 
 async function mockApp(
   page: Page,

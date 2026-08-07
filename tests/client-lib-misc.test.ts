@@ -1058,7 +1058,7 @@ describe("browser bridge one-click install lib", () => {
   // derivation algorithm). The repo pins the same pair elsewhere — the guide
   // spec asserts the id literal — so drift cannot pass unnoticed.
   const REAL_KEY =
-    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqsBbKXHSkylQwXXuHOu6WWaQXlcztvTU07CYs5ZG+9FN0ovo4MRVTkBON7Kf4ulobizJZg1VDTEU+lAr0WcDXfH3fQby1934rdEWmT9CELlZolwGPVBZxM+G8lvImMlShAntmzkWTdpmkrUx0VMkDgjBKYuH5RO5JidXdT0LZU4Tfz16hClf1nd/ZyMNsGFqnKCnplyigJDgfFq2sqUYSUKVQAn849FDzYqcOeSQp23a1F8FwVbOB9FI3GIaZtm937qXcEriyHu+pgCGpZFrnH5dhF68rjKERCtfRNzeRAjDODkpc0v68K+ULXStqrtGKD1gq00pv1gDMDIYpZqMCQIDAQAB";
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAzQwjoxQnknlYiuPeAzugRXUYNVYkMgMfVFZSk0leqe8O66qjvzeNVENLXCbmIKlMppj3UcGZOm1NZIYUoQYSMDcunH+6NZQGruq2OPuUCHGHLrkHHFIK1bc+16scU1YMTzqMehPM6VzZ9x1Y6omvPMl8rOTDciW/aVPuaJjVce964Vgte1CRCoUhAPpMecOOitn19gwgCOkai1p4NsjRxu1XppuCOUh6u5StGLa+OE5xG9p/Q2vW/b4C9ucPW/Mj9Ws2XtNWf8zToWm5XnSP1+PmtpwCc89ApjKWxMKpg+HizFDYSS+F5jWHMprvEaIpAn2pKi5ooNLpuSsNAhhXOwIDAQAB";
 
   beforeEach(async () => {
     // jsdom's crypto may lack subtle; the id derivation needs real WebCrypto.
@@ -1071,7 +1071,7 @@ describe("browser bridge one-click install lib", () => {
   });
 
   it("derives the pinned extension id from the bundled manifest key (server rule mirrored)", async () => {
-    expect(await extensionIdFromManifestKey(REAL_KEY)).toBe("fbohmmepjdncddcieglnblnlfiblbhbo");
+    expect(await extensionIdFromManifestKey(REAL_KEY)).toBe("gdaheigeedlnhagpmokpmocahgieiobc");
     expect(await extensionIdFromManifestKey("not base64!!")).toBeNull();
   });
 
