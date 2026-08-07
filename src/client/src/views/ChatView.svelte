@@ -338,6 +338,19 @@
     };
   }
 
+  /**
+   * Jump from the composer's problem badge to where the extension is actually
+   * installed. `browserGuideRequested` is the one-shot deep link the 접근/보안
+   * tab consumes on activation (same path the what's-new dialog uses); goView
+   * carries the hash so Back returns to the chat.
+   */
+  function openBrowserBridgeGuide(): void {
+    updateState((state) => {
+      state.browserGuideRequested = true;
+    });
+    goView("settings", "access");
+  }
+
   function mcpToolsLabel(item: ChatPane, adminBlocked: Set<McpToolGroupId>): string {
     const effective = selectedMcpToolGroups(item).filter((id) => !adminBlocked.has(id));
     return `도구 ${effective.length}/${MCP_TOOL_GROUPS.length}`;
@@ -1445,7 +1458,21 @@
               {/if}
               {#if bridgeCompat && !isExternalPane(item) && selectedMcpToolGroups(item).includes("browser") && !adminBlockedMcpToolGroupSet.has("browser")}
                 {@const badge = bridgeBadge(bridgeCompat)}
-                <span class="composer-bridge" data-status={bridgeCompat.status} title={badge.title}>{badge.text}</span>
+                {#if bridgeCompat.status === "ok"}
+                  <span class="composer-bridge" data-status="ok" title={badge.title}>{badge.text}</span>
+                {:else}
+                  <!-- A problem badge is a dead end without a way out: make the
+                       whole line the button to the install guide. Healthy
+                       installs stay a plain span so the hint row keeps no
+                       control nobody needs. -->
+                  <button
+                    class="composer-bridge"
+                    type="button"
+                    data-status={bridgeCompat.status}
+                    title={`${badge.title}\n\n눌러서 설치·업데이트 안내를 엽니다.`}
+                    on:click={openBrowserBridgeGuide}
+                  >{badge.text} →</button>
+                {/if}
               {/if}
             </span>
           {/if}

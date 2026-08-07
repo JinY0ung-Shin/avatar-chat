@@ -1197,6 +1197,22 @@ textarea::placeholder {
   white-space: nowrap;
   cursor: default;
 }
+/* A problem badge renders as a <button> (jumps to the install guide). Strip the
+   UA chrome so it reads as the same badge, then give it the affordances the
+   span must not have. */
+button.composer-bridge {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+button.composer-bridge:hover,
+button.composer-bridge:focus-visible {
+  text-decoration: underline;
+}
 .composer-bridge::before {
   content: "";
   display: inline-block;
