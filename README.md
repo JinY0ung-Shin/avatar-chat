@@ -155,6 +155,7 @@ public upstreams) route installs through internal mirrors. Alongside the existin
 | `ANTHROPIC_MODEL` | Optional. Pin the Claude model (e.g. `claude-opus-4-8`). When set it's a **hard lock**: the per-conversation model picker is hidden. Absent → the resolution chain below (defaulting to Opus). |
 | `ANTHROPIC_DEFAULT_{FABLE,OPUS,SONNET,HAIKU}_MODEL` | Optional. Map each composer model TIER (Fable/Opus/Sonnet/Haiku) to a concrete model id; the picker shows the mapped id. Unset tier → SDK resolves the alias to the account default (shown as just the tier label). Precedence: `ANTHROPIC_MODEL` > user's per-conversation tier > admin override > **Opus** (default). |
 | `PORT` / `APP_DATA_DIR` | Server port (default `48787`) / data directory (SQLite DB + avatar images). |
+| `TLS_CERT_FILE` / `TLS_KEY_FILE` | Optional PEM cert/key paths that switch the app's own listener to HTTPS — set both or the boot refuses (docker-compose mounts `./docker/tls` → `/app/tls`). HTTPS gives pages a secure context, which the browser-bridge one-click update (File System Access) requires. Set `SECURE_COOKIES=true` with it. |
 | `READONLY_TOOLS` | Tool allowlist for unelevated colleague chat sessions (default `Read,Glob,Grep`). |
 | `GITHUB_HOST` | Internal/default GitHub host for shorthand repo values like `owner/repo` (default `github.com`). Knowledge repos must use this host; full github.com URLs can use `GITHUB_TOKEN`. |
 | `GITHUB_CA_CERT` | Optional PEM CA bundle for on-prem GitHub Enterprise (GHES) with a private CA. |

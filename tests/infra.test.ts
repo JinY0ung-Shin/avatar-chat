@@ -1,12 +1,15 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import http from "node:http";
+import https from "node:https";
 import os from "node:os";
 import path from "node:path";
 import tls from "node:tls";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NextFunction, Request, Response } from "express";
 import { createServices, expandChatSlashCommand } from "../src/server/app.js";
+import { createAppServer } from "../src/server/appServer.js";
 import {
   browserExtensionId,
   browserExtensionOrigins,
@@ -905,6 +908,118 @@ describe("knowledge graph (wikilink extraction)", () => {
   });
 });
 
+
+describe("createAppServer (TLS_CERT_FILE/TLS_KEY_FILE → native HTTPS)", () => {
+  // Throwaway self-signed localhost pair (10y), used only to prove the listener
+  // terminates TLS. Trusted by nothing, never used for real traffic.
+  const TEST_TLS_CERT = `-----BEGIN CERTIFICATE-----
+MIIDJTCCAg2gAwIBAgIUA01l/w1ot9BvM7NTf/oN0UTsUAYwDQYJKoZIhvcNAQEL
+BQAwFDESMBAGA1UEAwwJbG9jYWxob3N0MB4XDTI2MDgwNzAxNTAyNloXDTM2MDgw
+NDAxNTAyNlowFDESMBAGA1UEAwwJbG9jYWxob3N0MIIBIjANBgkqhkiG9w0BAQEF
+AAOCAQ8AMIIBCgKCAQEAqY4OA/QMGkl3nVNX6A92KQQxBz3Q6nm7HaugYeD+In4c
+VGxOq8Ec0/gAUt1MLR6FoswRyRkW02H9LETRDfwcs/kQZ90ZSxj+1w6WWYqJfDK8
+XBcb59whAJ1j6qsSbEw7fgwwlBwQHASNR6bFRSWPvi8Zm9uxkqCvBOYnin8VcUyG
++bVPZ0jZewqYnBDHc3bmgoJUcsKH04Yf5idWgUO7LOjPrpGBQIP7Xb+wVbNyIY7K
+3lWLku5E6VBP+AiSk2NPrZEq9e/cb1/U5y3VKRhCmPlYvojq9LVqX2BjZTvr+8JW
+cEXgpmEz0Qxe7e8QKxCTf5rX8O8g4AugJ8DtHYxMuwIDAQABo28wbTAdBgNVHQ4E
+FgQUQv6ajKcx1fdlYNiC3CVusmWsAOQwHwYDVR0jBBgwFoAUQv6ajKcx1fdlYNiC
+3CVusmWsAOQwDwYDVR0TAQH/BAUwAwEB/zAaBgNVHREEEzARgglsb2NhbGhvc3SH
+BH8AAAEwDQYJKoZIhvcNAQELBQADggEBAImUOMyhRMYQ8/6gwcHB+o7MqTiNDSSN
+lf3r2xuREqq+60vhVClAq1qlxWJgipzJck2MA6J9wCeBXyp7p4Ts56kZnyC5gwqc
+7ADpEsx9vde2rm+R68k912otKwdaOTc/j41gWGXSQaKHZmCDfFVEcan9EY01QWb8
+Oj0sLOZgnrK9mjj2xRdiDo4Pj9AUOcrc1aU6+HpJdKj8djsOb71YBvKDEQKD1sYM
+Q/nlEfRwYt5XrR6IvEGG5MCf3IUBjxqu/NgcnR9FwyM4RNT8aJKYRCfP/pKKKZs2
+IjSdm43cc4/e9g73VdbY0hMi5TNbB2ZuG80S7XM+M/RyKoqNqjuXH2U=
+-----END CERTIFICATE-----
+`;
+  const TEST_TLS_KEY = `-----BEGIN PRIVATE KEY-----
+MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCpjg4D9AwaSXed
+U1foD3YpBDEHPdDqebsdq6Bh4P4ifhxUbE6rwRzT+ABS3UwtHoWizBHJGRbTYf0s
+RNEN/Byz+RBn3RlLGP7XDpZZiol8MrxcFxvn3CEAnWPqqxJsTDt+DDCUHBAcBI1H
+psVFJY++Lxmb27GSoK8E5ieKfxVxTIb5tU9nSNl7CpicEMdzduaCglRywofThh/m
+J1aBQ7ss6M+ukYFAg/tdv7BVs3IhjsreVYuS7kTpUE/4CJKTY0+tkSr179xvX9Tn
+LdUpGEKY+Vi+iOr0tWpfYGNlO+v7wlZwReCmYTPRDF7t7xArEJN/mtfw7yDgC6An
+wO0djEy7AgMBAAECggEAFzWdz4a5nWOPHxcIgniTWRv8xhv9HAubxHz40E0nHHuc
+zyWgQzyFALMDAFTQl6CE9HrwuFFZ4YeZS1UENODc4Pnn9/+49aGvSKrzg8BF/51G
+UWjMZhmo3teslLPkKrTos+FhSPTqc5tf5335pPR2T7dMzxvsm8CpFIeYxAmPWtnA
+0/vlx71ZOgOoiG79/vCvuVJxvwk00Q2LrBOosGMrI7L52IlrnQdsF6E9NgonK4cN
+Dmrj/ShBAlLYGUIr+uyCBJmMXznIGMtr0+ndcjHKTm29pKsCfVGfrOz/CeoSe4y5
+XgP33aEL97wuMOedjTPSdDBhbANCgfNYIMWgwNCj+QKBgQDWm9HBhu8YjbgcLuI5
+IaSaNscNOrijxLpuvZ/N7zd5lwOqy/1iZXrirEKic0IJqKq+ZelmJKf7DP0+y3s9
+MzYvfkjuoHKkSNB7AIw4HnmuUe3whpkrTazJ0zK7+cMNWVVGJ1qaHko9S13E5/jH
+9MxZkTcCh/tOdZA68kWT87oRnQKBgQDKQbs14WccD9rCn5c3FfYQT+SgH+Xwb2jZ
+jE/O/ztwuz72Cs6sROeQDz/nwIC55UtVdAA1wJEMk5bi0/enPm6s7FHTIG+DPfHt
+OYnNx6qUKDlR8s2AHv9aXGOlVtZQpe4biR3Jz32BeN1ulqWnW4Y9pAAU3RrJrYSq
+3OltPYdUNwKBgD2q6MtDitDzaEQw9LCWCkaGFwymIwhsL2ZC9vimFLrLujIKC/WK
+U5VvCnbDx+YeoXG0tyyyu9JYGS1CK1ear6dWEn7/e/HZOo8dyS0XFMASqtzC0KCw
+4UXdemapjnL3iJlwFYjTy2FxlrBOOB69KTtTjwsbKAuTnK5Tj8rD7mPBAoGBAMTf
+4MxcwRJGuIlz8SyUuvU7326iPh+hQq1ocBMszH46NdonwO9dDw5iWbFL58GL2Z2v
+kbjA3jAgxeG7tLheBDtcuXVKgGF+/awNsv7UmU0oLkt/jdtl0OfzQKejdHACZFj3
+SkC0MRXDQb+w8kSKyYvcxJuKcdXYimgLK0jDeKRXAoGAE8tX02bFCK4KjBHWvqoa
+nCR2pChnp2ZOd28wYdEBpazKP3Q+iTgm/ueeHMMCsjrBT1PnB6aoz+TFjxsE7e8Z
+0f/jxB8CVMq1tjaDZTIlHF0Wk/ceber6b+OMhNMPELGdmGODKJGA+qZi3FYTMgDn
+o/0YiKsVu64wIJLqb4PGGCM=
+-----END PRIVATE KEY-----
+`;
+
+  function writePemPair(): { cert: string; key: string } {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "noah-tls-"));
+    const cert = path.join(dir, "cert.pem");
+    const key = path.join(dir, "key.pem");
+    fs.writeFileSync(cert, TEST_TLS_CERT);
+    fs.writeFileSync(key, TEST_TLS_KEY);
+    return { cert, key };
+  }
+
+  it("serves plain http when neither var is set", () => {
+    const { server, protocol } = createAppServer(() => {}, {});
+    expect(protocol).toBe("http");
+    expect(server).toBeInstanceOf(http.Server);
+  });
+
+  it("refuses a half-configured pair instead of silently downgrading to http", () => {
+    expect(() => createAppServer(() => {}, { tlsCertFile: "/tls/cert.pem" })).toThrow(/together/);
+    expect(() => createAppServer(() => {}, { tlsKeyFile: "/tls/key.pem" })).toThrow(/together/);
+  });
+
+  it("fails the boot loudly when a PEM path does not exist, naming the path", () => {
+    expect(() =>
+      createAppServer(() => {}, {
+        tlsCertFile: "/no/such/tls-cert.pem",
+        tlsKeyFile: "/no/such/tls-key.pem",
+      }),
+    ).toThrow(/tls-cert\.pem/);
+  });
+
+  it("terminates TLS end-to-end when both PEMs are set", async () => {
+    const { cert, key } = writePemPair();
+    const { server, protocol } = createAppServer((_req, res) => res.end("over-tls"), {
+      tlsCertFile: cert,
+      tlsKeyFile: key,
+    });
+    expect(protocol).toBe("https");
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      const body = await new Promise<string>((resolve, reject) => {
+        const req = https.request(
+          // Self-signed: the point is the handshake + response, not chain trust.
+          { host: "127.0.0.1", port, path: "/api/bootstrap", rejectUnauthorized: false },
+          (res) => {
+            let out = "";
+            res.on("data", (chunk: Buffer) => (out += chunk));
+            res.on("end", () => resolve(out));
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+      expect(body).toBe("over-tls");
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
 
 describe("applyCustomGithubCa (one GITHUB_CA_CERT for fetch + git)", () => {
   // A throwaway self-signed CA (10y) — only used to prove the cert is registered.

@@ -64,6 +64,8 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 
   return {
     port: Number(env("PORT", "48787")),
+    tlsCertFile: env("TLS_CERT_FILE") || undefined,
+    tlsKeyFile: env("TLS_KEY_FILE") || undefined,
     dataDir,
     dbPath: path.join(dataDir, "noah-almighty.db"),
     sessionSecret,

@@ -38,6 +38,10 @@ services:
       APP_DATA_DIR: /app/data
     volumes:
       - noah-almighty-data:/app/data
+      # HTTPS certs (optional): on the deploy host drop PEMs into ./docker/tls
+      # and set TLS_CERT_FILE/TLS_KEY_FILE to /app/tls/<file> in .env. Read-only;
+      # stays empty on plain-HTTP deployments.
+      - ./docker/tls:/app/tls:ro
     restart: unless-stopped
     # PID-1 reaping backstop: tini reaps zombie child processes so the app's
     # graceful-shutdown handlers receive signals reliably even when the node

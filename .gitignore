@@ -9,6 +9,8 @@ test-results/
 playwright-report/
 coverage/
 docker/tls-fullchain.crt
+docker/tls/*
+!docker/tls/.gitkeep
 .claude.local.md
 .claude/worktrees/
 .claude/settings.local.json

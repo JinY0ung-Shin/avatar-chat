@@ -117,6 +117,15 @@ export interface AgentOwner {
 
 export interface AppConfig {
   port: number;
+  /**
+   * PEM paths (env `TLS_CERT_FILE`/`TLS_KEY_FILE`) that switch the app's OWN
+   * listener to HTTPS (`createAppServer`) — TLS ends in the app, no fronting
+   * proxy. Set together or the boot refuses (never a silent HTTP fallback).
+   * HTTPS is what gives pages a secure context (File System Access → the
+   * browser bridge's one-click update). Pair with `SECURE_COOKIES=true`.
+   */
+  tlsCertFile?: string;
+  tlsKeyFile?: string;
   dataDir: string;
   dbPath: string;
   sessionSecret: string;

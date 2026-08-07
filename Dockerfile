@@ -157,8 +157,13 @@ ENV PORT=48787
 ENV APP_DATA_DIR=/app/data
 EXPOSE 48787
 
+# Probe http first, then https with -k: the app serves exactly ONE of the two
+# (TLS_CERT_FILE/TLS_KEY_FILE), and in https mode the cert names the deploy
+# host — not localhost — so chain verification can't be part of the probe.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-  CMD curl -f --noproxy '*' "http://localhost:${PORT:-48787}/api/bootstrap" || exit 1
+  CMD curl -f --noproxy '*' "http://localhost:${PORT:-48787}/api/bootstrap" \
+    || curl -fk --noproxy '*' "https://localhost:${PORT:-48787}/api/bootstrap" \
+    || exit 1
 
 # Drop root privileges: the node:22 base image ships a `node` user (uid 1000).
 # The `node` user only ever WRITES under APP_DATA_DIR (default /app/data): the

@@ -1,8 +1,8 @@
 // MUST be first: loads .env into process.env before any module below reads it
 // at evaluation time (auth's SECURE_COOKIES, logger's LOG_LEVEL).
 import "./loadEnv.js";
-import type { Server } from "node:http";
 import { createApp, createServices } from "./app.js";
+import { createAppServer } from "./appServer.js";
 import logger from "./logger.js";
 import { startRoutineScheduler } from "./scheduler.js";
 import { cancelAllRuns } from "./agent/runRegistry.js";
@@ -14,8 +14,9 @@ const services = createServices();
 applyCustomGithubCa(services.config, logger);
 const app = createApp(services);
 
-const server: Server = app.listen(services.config.port, () => {
-  logger.info({ port: services.config.port }, "noah-almighty listening");
+const { server, protocol } = createAppServer(app, services.config);
+server.listen(services.config.port, () => {
+  logger.info({ port: services.config.port, protocol }, "noah-almighty listening");
   logger.info(
     { dataDir: services.config.dataDir, agentRuntime: services.config.agentRuntime },
     "server started",

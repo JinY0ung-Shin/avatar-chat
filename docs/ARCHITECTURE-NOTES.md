@@ -59,6 +59,16 @@ Companion docs: [`DESIGN.md`](DESIGN.md) (design language), [`REFACTORING-BACKLO
   is REQUIRED to boot (`NODE_ENV=production`), the image runs as non-root `node` (so `uv` /
   global bins must be world-accessible, NOT symlinked into `/root`), and `docker stop` should
   exit in <1s via the SIGTERM handler in `index.ts`.
+- **Native HTTPS mode:** `TLS_CERT_FILE`+`TLS_KEY_FILE` (both, or the boot refuses — never a
+  silent HTTP fallback) switch `createAppServer` to `https.createServer`; TLS ends in the app, so
+  no proxy read-timeout/buffering sits in front of agent SSE. compose mounts `./docker/tls` →
+  `/app/tls` (contents gitignored), HEALTHCHECK probes http then https `-k` (the cert names the
+  deploy host, not localhost). Flipping an EXISTING http deployment: set `SECURE_COOKIES=true`,
+  and every installed browser-bridge extension keeps answering only the old `http://` origin
+  (`externally_connectable` is origin-gated) — users re-download the zip (re-stamped with the
+  https origin) or hand-add it; the one-click updater cannot bridge that gap because it rides the
+  very page↔extension channel that broke. The container runs as `node` (uid 1000): a root-owned
+  mode-600 key in `./docker/tls` reads as EACCES at boot — make the PEMs readable by uid 1000.
 - **Dockerfile CA trust is PER-STAGE.** The `CA_CERT_FILE`→`update-ca-certificates` block
   lives in the `base` stage and covers ONLY that stage — an HTTPS fetch (curl/npm/cargo) in a
   *different* earlier stage hits the corporate intercepting proxy with no trusted CA and dies
