@@ -48,7 +48,7 @@ export const BROWSER_EXTENSION_DIR = path.join(process.cwd(), "extension");
  * extension-side fix is critical. Must never exceed the bundled manifest
  * version — a test enforces this.
  */
-export const BROWSER_EXTENSION_MIN_COMPATIBLE = "0.4.0";
+export const BROWSER_EXTENSION_MIN_COMPATIBLE = "0.6.0";
 
 /** Zip entries carry a DOS timestamp; pin it so the bytes are reproducible. */
 const DOS_TIME = 0;

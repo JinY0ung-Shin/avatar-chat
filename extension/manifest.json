@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Noah Almighty Browser Bridge",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Lets your Noah avatar drive a tab in this browser, using the sessions you are already logged into.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAqsBbKXHSkylQwXXuHOu6WWaQXlcztvTU07CYs5ZG+9FN0ovo4MRVTkBON7Kf4ulobizJZg1VDTEU+lAr0WcDXfH3fQby1934rdEWmT9CELlZolwGPVBZxM+G8lvImMlShAntmzkWTdpmkrUx0VMkDgjBKYuH5RO5JidXdT0LZU4Tfz16hClf1nd/ZyMNsGFqnKCnplyigJDgfFq2sqUYSUKVQAn849FDzYqcOeSQp23a1F8FwVbOB9FI3GIaZtm937qXcEriyHu+pgCGpZFrnH5dhF68rjKERCtfRNzeRAjDODkpc0v68K+ULXStqrtGKD1gq00pv1gDMDIYpZqMCQIDAQAB",
   "minimum_chrome_version": "116",

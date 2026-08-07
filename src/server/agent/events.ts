@@ -274,12 +274,16 @@ export interface BrowserRequest {
     | "navigate"
     | "click"
     | "type"
+    | "fill_form"
+    | "select_option"
     | "press_key"
     | "scroll"
     | "hover"
     | "navigate_back"
     | "handle_dialog"
     | "wait_for"
+    | "read_text"
+    | "screenshot"
     | "list_tabs"
     | "new_tab"
     | "select_tab"
@@ -314,6 +318,14 @@ export interface BrowserRequest {
   timeoutS?: number;
   /** select_tab/close_tab: a tab id from a previous list_tabs. */
   tabId?: string;
+  /** fill_form only: fields to fill, in order. `clear` replaces existing content. */
+  fields?: { uid: string; value: string; clear?: boolean }[];
+  /** select_option only: the option's label exactly as the latest snapshot shows it. */
+  option?: string;
+  /** screenshot only: capture the whole page height instead of the viewport. */
+  fullPage?: boolean;
+  /** read_text only: character offset to continue a previous read from. */
+  offset?: number;
 }
 
 /** One tab inside the consented group — the only tabs that exist to the agent. */
@@ -338,6 +350,10 @@ export type BrowserResult =
        * taken; `message`/`defaultPrompt` are UNTRUSTED page content.
        */
       dialog?: { type: string; message: string; defaultPrompt?: string };
+      /** screenshot: captured image (base64 bytes) — pixels of UNTRUSTED page content. */
+      image?: { base64: string; mimeType: string };
+      /** read_text: one chunk of the page's readable text — UNTRUSTED page content. */
+      pageText?: { text: string; offset: number; total: number };
     }
   | { behavior: "error"; message: string };
 

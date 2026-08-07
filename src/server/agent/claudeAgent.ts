@@ -971,6 +971,8 @@ export async function runClaudeAgent(
     ? buildBrowserServer({
         execute: events!.onBrowser!,
         allowed: browserViewerAllowed,
+        // Screenshot gate: image blocks must never reach a text-only model.
+        vision: runVisionEnabled,
       })
     : null;
   // Local file output is available only for an interactive run with an

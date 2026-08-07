@@ -1906,6 +1906,10 @@ export function createChatRouter({
                   textGone: requestData.textGone ?? null,
                   timeoutS: requestData.timeoutS ?? null,
                   tabId: requestData.tabId ?? null,
+                  fields: requestData.fields ?? null,
+                  option: requestData.option ?? null,
+                  fullPage: typeof requestData.fullPage === "boolean" ? requestData.fullPage : null,
+                  offset: requestData.offset ?? null,
                 });
                 const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
                 if (answer === CANCELLED) {
@@ -1924,6 +1928,11 @@ export function createChatRouter({
                   title?: string;
                   tabs?: BrowserTab[];
                   dialog?: { type?: string; message?: string; defaultPrompt?: string };
+                  imageBase64?: string;
+                  imageMimeType?: string;
+                  pageText?: string;
+                  pageTextOffset?: number;
+                  pageTextTotal?: number;
                 };
                 if (!reply?.ok) {
                   const raw =
@@ -1938,9 +1947,11 @@ export function createChatRouter({
                     : raw;
                   return { behavior: "error", message };
                 }
-                // Audit every ACTION against the user's live session. `snapshot`
-                // and `wait_for` are skipped: both are read-only and fire
-                // between every step, so they would bury the rows that matter.
+                // Audit every ACTION against the user's live session, plus the
+                // DELIBERATE reads (screenshot/read_text — the exfiltration
+                // surface an admin wants rows for). `snapshot` and `wait_for`
+                // are skipped: both fire between every step, so they would
+                // bury the rows that matter.
                 // URLs are scrubbed of userinfo and query string — an audit row
                 // is admin-visible and a query string routinely carries tokens.
                 if (requestData.op !== "snapshot" && requestData.op !== "wait_for") {
@@ -1953,11 +1964,23 @@ export function createChatRouter({
                       requestData.key
                         ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`
                         : "",
+                      requestData.fields ? `fields=${requestData.fields.length}` : "",
+                      requestData.option ? `option=${requestData.option.slice(0, 80)}` : "",
                       `url=${scrubAuditUrl(reply.url || requestData.url)}`,
                     ]
                       .filter(Boolean)
                       .join(" "),
                   );
+                }
+                // The screenshot rides the parked reply as base64. Bound it
+                // here — a runaway payload must fail the one tool call, not
+                // balloon the model turn.
+                if (typeof reply.imageBase64 === "string" && reply.imageBase64.length > 8_000_000) {
+                  return {
+                    behavior: "error",
+                    message:
+                      "The screenshot was too large to relay. Capture a smaller area: the viewport (no fullPage) or a single element via uid.",
+                  };
                 }
                 return {
                   behavior: "ok",
@@ -1974,6 +1997,32 @@ export function createChatRouter({
                             typeof reply.dialog.defaultPrompt === "string"
                               ? reply.dialog.defaultPrompt
                               : undefined,
+                        }
+                      : undefined,
+                  image:
+                    typeof reply.imageBase64 === "string" && reply.imageBase64
+                      ? {
+                          base64: reply.imageBase64,
+                          // Whitelisted mime types only — this string lands in an
+                          // API image block, and the extension is semi-trusted.
+                          mimeType:
+                            reply.imageMimeType === "image/png" || reply.imageMimeType === "image/webp"
+                              ? reply.imageMimeType
+                              : "image/jpeg",
+                        }
+                      : undefined,
+                  pageText:
+                    typeof reply.pageText === "string"
+                      ? {
+                          text: reply.pageText,
+                          offset:
+                            typeof reply.pageTextOffset === "number" && reply.pageTextOffset >= 0
+                              ? reply.pageTextOffset
+                              : 0,
+                          total:
+                            typeof reply.pageTextTotal === "number" && reply.pageTextTotal >= 0
+                              ? reply.pageTextTotal
+                              : reply.pageText.length,
                         }
                       : undefined,
                 };

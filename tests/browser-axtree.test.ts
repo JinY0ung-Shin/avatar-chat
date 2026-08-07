@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree } from "../extension/axtree.js";
+import { renderAxTree, renderAxText } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -131,5 +131,52 @@ describe("renderAxTree", () => {
       node("3", "button", "보임", [], { backendDOMNodeId: 4 }),
     ]);
     expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button "보임"']);
+  });
+});
+
+describe("renderAxText", () => {
+  it("renders plain text lines with no uids or role decoration", () => {
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Docs", ["2", "4"]),
+      node("2", "link", "Parsoid", ["3"], { backendDOMNodeId: 42 }),
+      node("3", "StaticText", "Parsoid"),
+      node("4", "StaticText", "본문 문장입니다"),
+    ]) as string[];
+    // The link name still prints ONCE (echo suppression), just undecorated.
+    expect(lines).toEqual(["Docs", "Parsoid", "본문 문장입니다"]);
+  });
+
+  it("keeps a field's value alongside its label", () => {
+    const lines = renderAxText([
+      node("1", "form", "검색", ["2"]),
+      node("2", "combobox", "검색", [], { backendDOMNodeId: 5, value: { value: "위키백과" } }),
+    ]) as string[];
+    expect(lines).toEqual(["검색", "검색: 위키백과"]);
+  });
+
+  it("drops nameless interactive elements that only exist to carry a uid", () => {
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "textbox", "", [], { backendDOMNodeId: 9 }),
+    ]) as string[];
+    expect(lines).toEqual(["Doc"]);
+  });
+
+  it("renders only the requested subtree when a start node is given", () => {
+    const lines = renderAxText(
+      [
+        node("1", "RootWebArea", "Doc", ["2", "3"]),
+        node("2", "article", "본문", ["4"], { backendDOMNodeId: 10 }),
+        node("3", "StaticText", "사이드바 텍스트"),
+        node("4", "StaticText", "기사 내용"),
+      ],
+      10,
+    ) as string[];
+    expect(lines).toEqual(["본문", "기사 내용"]);
+    expect(lines).not.toContain("사이드바 텍스트");
+  });
+
+  it("returns null for a stale start node so the caller owns the message", () => {
+    expect(renderAxText([node("1", "RootWebArea", "Doc")], 999)).toBeNull();
   });
 });

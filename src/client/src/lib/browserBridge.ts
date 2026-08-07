@@ -22,6 +22,13 @@ export interface BridgeReply {
   tabs?: { tabId: string; title: string; url: string; current: boolean }[];
   /** A JS dialog is open on the tab (page frozen, no snapshot possible). */
   dialog?: { type: string; message: string; defaultPrompt?: string };
+  /** screenshot: captured image bytes, base64 (no data: prefix). */
+  imageBase64?: string;
+  imageMimeType?: string;
+  /** read_text: one chunk of the page's readable text, plus its range. */
+  pageText?: string;
+  pageTextOffset?: number;
+  pageTextTotal?: number;
 }
 
 export interface BridgeOperation {
@@ -30,12 +37,16 @@ export interface BridgeOperation {
     | "navigate"
     | "click"
     | "type"
+    | "fill_form"
+    | "select_option"
     | "press_key"
     | "scroll"
     | "hover"
     | "navigate_back"
     | "handle_dialog"
     | "wait_for"
+    | "read_text"
+    | "screenshot"
     | "list_tabs"
     | "new_tab"
     | "select_tab"
@@ -55,6 +66,10 @@ export interface BridgeOperation {
   textGone?: string | null;
   timeoutS?: number | null;
   tabId?: string | null;
+  fields?: { uid: string; value: string; clear?: boolean }[] | null;
+  option?: string | null;
+  fullPage?: boolean | null;
+  offset?: number | null;
 }
 
 /** Where the effective allowlist comes from; `managed` cannot be edited here. */

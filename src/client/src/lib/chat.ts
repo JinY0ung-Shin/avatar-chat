@@ -1566,10 +1566,14 @@ function handleBrowserOp(paneId: string, data: any): void {
     navigate_back: "이전 페이지로 돌아가는 중…",
     click: "브라우저를 클릭하는 중…",
     type: "브라우저에 입력하는 중…",
+    fill_form: "브라우저 폼을 채우는 중…",
+    select_option: "옵션을 선택하는 중…",
     press_key: "브라우저에 키를 입력하는 중…",
     hover: "브라우저에서 마우스를 올리는 중…",
     scroll: "브라우저를 스크롤하는 중…",
     wait_for: "페이지 변화를 기다리는 중…",
+    read_text: "페이지 본문을 읽는 중…",
+    screenshot: "브라우저 화면을 캡처하는 중…",
     handle_dialog: "브라우저 대화상자에 응답하는 중…",
     list_tabs: "브라우저 탭을 확인하는 중…",
     new_tab: "새 탭을 여는 중…",
@@ -1596,6 +1600,10 @@ function handleBrowserOp(paneId: string, data: any): void {
     textGone: data.textGone,
     timeoutS: data.timeoutS,
     tabId: data.tabId,
+    fields: data.fields,
+    option: data.option,
+    fullPage: data.fullPage,
+    offset: data.offset,
   })
     .then((reply) =>
       api("/api/chat/respond", {

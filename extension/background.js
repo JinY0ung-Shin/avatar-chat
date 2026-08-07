@@ -19,7 +19,7 @@
 // out detaches it. That makes consent a live, visible surface the user can
 // revoke without a settings screen.
 
-import { renderAxTree } from "./axtree.js";
+import { renderAxTree, renderAxText } from "./axtree.js";
 
 const GROUP_TITLE = "Noah";
 const CDP_VERSION = "1.3";
@@ -27,11 +27,15 @@ const CDP_VERSION = "1.3";
 /**
  * Default-deny allowlist of CDP methods. Everything the bridge needs and
  * nothing else — notably no `Runtime.*`, no `Network.*` (which would reach
- * cookies), no `Storage.*`, no `Browser.*`.
+ * cookies), no `Storage.*`, no `Browser.*`. The two read-only additions stay
+ * inside that line: `DOM.describeNode` reads structure, `Page.captureScreenshot`
+ * reads pixels — the same exfiltration class as a snapshot, gated by the same
+ * origin allowlist.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
   "Accessibility.getFullAXTree",
+  "DOM.describeNode",
   "DOM.enable",
   "DOM.getBoxModel",
   "DOM.getContentQuads",
@@ -41,6 +45,7 @@ const CDP_ALLOWLIST = new Set([
   "Input.dispatchMouseEvent",
   "Input.imeSetComposition",
   "Input.insertText",
+  "Page.captureScreenshot",
   "Page.enable",
   "Page.getLayoutMetrics",
   "Page.getNavigationHistory",
@@ -518,7 +523,14 @@ async function centerOf(ref) {
  * talks to the renderer's input method directly. That split is exactly what
  * made click and press_key look like successful no-ops.
  */
-const INPUT_OPS = new Set(["click", "type", "press_key", "hover", "scroll"]);
+const INPUT_OPS = new Set(["click", "type", "fill_form", "select_option", "press_key", "hover", "scroll"]);
+
+/**
+ * Ops that need the tab VISIBLE even though they dispatch no input: capturing
+ * a hidden tab's surface returns stale or empty pixels, so `screenshot` rides
+ * the same show-the-tab path as the input ops.
+ */
+const VISIBLE_OPS = new Set([...INPUT_OPS, "screenshot"]);
 
 /** Make the tab actually visible, so dispatched input reaches its renderer. */
 async function showTab(tab) {
@@ -537,8 +549,8 @@ async function showTab(tab) {
   }
 }
 
-async function clickRef(uid) {
-  const { target, x, y } = await centerOf(resolveRef(uid));
+async function clickNode(ref) {
+  const { target, x, y } = await centerOf(ref);
   const base = { x, y, button: "left", clickCount: 1, pointerType: "mouse" };
   // Hit-testing starts from the last known pointer position, so a press with no
   // preceding move can resolve against a stale target; and `buttons` carries the
@@ -554,6 +566,10 @@ async function clickRef(uid) {
   });
   await sendCdp(target, "Input.dispatchMouseEvent", { type: "mousePressed", buttons: 1, ...base });
   await sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...base });
+}
+
+async function clickRef(uid) {
+  return clickNode(resolveRef(uid));
 }
 
 /**
@@ -665,12 +681,54 @@ async function dispatchKey(target, key, modifiers) {
   await sendCdp(target, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, ...upParams });
 }
 
-async function typeRef(uid, value, submit, keystrokes) {
-  const ref = resolveRef(uid);
+/** The user's OS, for platform-mapped editing shortcuts (⌘A vs Ctrl+A). */
+let cachedPlatformOs = null;
+
+async function platformOs() {
+  if (cachedPlatformOs !== null) return cachedPlatformOs;
+  try {
+    const info = await chrome.runtime.getPlatformInfo();
+    cachedPlatformOs = info?.os || "";
+  } catch {
+    cachedPlatformOs = "";
+  }
+  return cachedPlatformOs;
+}
+
+/**
+ * Focus one field and enter `value` — the shared insert path of type and
+ * fill_form. `clear` first selects the existing content the way a person
+ * would (select-all, then overtype / delete), so edit forms can be REPLACED
+ * rather than appended to.
+ */
+async function fillField(ref, value, clear) {
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
   await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+  if (clear) {
+    // Blink maps the select-all editing command per platform.
+    const mask = (await platformOs()) === "mac" ? MODIFIER_BITS.Meta : MODIFIER_BITS.Control;
+    await dispatchKey(target, "a", mask);
+    if (!value) {
+      await dispatchKey(target, "Delete", 0);
+      return;
+    }
+    // Non-empty value: the insert below replaces the selection, like paste-over.
+  }
+  if (!value) return;
+  if (needsComposition(value)) {
+    await insertTextAsIme(target, value);
+  } else {
+    await sendCdp(target, "Input.insertText", { text: value });
+  }
+}
+
+async function typeRef(uid, value, submit, keystrokes) {
+  const ref = resolveRef(uid);
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   if (keystrokes) {
+    await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+    await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
     // Replay as real per-character key events, ONE bridge operation for the
     // whole string — for editors that only listen to keyboard input. Server
     // caps the length; the dialog check keeps a mid-string alert() from
@@ -679,14 +737,310 @@ async function typeRef(uid, value, submit, keystrokes) {
       if (pendingDialogs.has(ref.tabId)) return;
       await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
     }
-  } else if (needsComposition(value)) {
-    await insertTextAsIme(target, value);
   } else {
-    await sendCdp(target, "Input.insertText", { text: value });
+    await fillField(ref, value, false);
   }
   if (submit) {
     await dispatchKey(target, "Enter", 0);
   }
+}
+
+// ------------------------------------------------------------- select_option
+//
+// CDP has no setter for a <select>'s value short of running page JS, which
+// this worker never does. So selection is driven the way a person drives it:
+// a visibly rendered option is CLICKED; a collapsed native dropdown is walked
+// with arrow keys and the landing value is VERIFIED afterwards — the keyboard
+// path is the one that can silently no-op (macOS opens the native popup
+// instead of moving the selection), and it must never claim success on faith.
+
+async function sessionAxNodes(target) {
+  const { nodes } = await sendCdp(target, "Accessibility.getFullAXTree", {});
+  return nodes || [];
+}
+
+function axProp(node, name) {
+  const hit = (node?.properties || []).find((prop) => prop?.name === name);
+  return hit ? hit.value?.value : undefined;
+}
+
+/** Option descendants of one AX node, in document order, as a uniform shape. */
+function collectAxOptions(nodes, root) {
+  const byId = new Map(nodes.map((node) => [node.nodeId, node]));
+  const seen = new Set();
+  const out = [];
+  const walk = (node) => {
+    if (!node || seen.has(node.nodeId)) return;
+    seen.add(node.nodeId);
+    for (const childId of node.childIds || []) {
+      const child = byId.get(childId);
+      if (!child) continue;
+      if (child.role?.value === "option") {
+        out.push({
+          label: String(child.name?.value || ""),
+          disabled: axProp(child, "disabled") === true,
+          selected: axProp(child, "selected") === true,
+          backendNodeId: child.backendDOMNodeId,
+        });
+      }
+      walk(child);
+    }
+  };
+  walk(root);
+  return out;
+}
+
+/** Text of a described DOM node: its #text descendants, whitespace-collapsed. */
+function domNodeText(node) {
+  const texts = [];
+  const walk = (item) => {
+    if (!item) return;
+    if (item.nodeType === 3 && item.nodeValue) texts.push(item.nodeValue);
+    for (const child of item.children || []) walk(child);
+  };
+  walk(node);
+  return texts.join(" ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * OPTION elements from a described <select> subtree — the fallback when the
+ * AX tree hides a collapsed popup's options. The DOM `selected` attribute
+ * only reflects the markup default, not live state, so it is left undefined
+ * and the caller falls back to the select's accessible value.
+ */
+function collectDomOptions(root) {
+  const out = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (String(node.nodeName || "").toUpperCase() === "OPTION") {
+      const attrs = node.attributes || [];
+      let disabled = false;
+      for (let i = 0; i < attrs.length; i += 2) {
+        if (String(attrs[i]).toLowerCase() === "disabled") disabled = true;
+      }
+      out.push({
+        label: domNodeText(node),
+        disabled,
+        selected: undefined,
+        backendNodeId: node.backendNodeId,
+      });
+      return;
+    }
+    for (const child of node.children || []) walk(child);
+  };
+  walk(root);
+  return out;
+}
+
+/** Exact match first, then trimmed, then case-insensitive — never substring. */
+function matchOptionLabel(options, wanted) {
+  const trimmed = wanted.trim();
+  return (
+    options.find((option) => option.label === wanted) ||
+    options.find((option) => option.label.trim() === trimmed) ||
+    options.find((option) => option.label.trim().toLowerCase() === trimmed.toLowerCase()) ||
+    null
+  );
+}
+
+async function selectOption(uid, wanted) {
+  const ref = resolveRef(uid);
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  const described = await sendCdp(target, "DOM.describeNode", {
+    backendNodeId: ref.backendNodeId,
+    depth: -1,
+  });
+  const tagName = String(described?.node?.nodeName || "").toUpperCase();
+  const domAttrs = described?.node?.attributes || [];
+  let isMultiple = false;
+  for (let i = 0; i < domAttrs.length; i += 2) {
+    if (String(domAttrs[i]).toLowerCase() === "multiple") isMultiple = true;
+  }
+
+  const nodes = await sessionAxNodes(target);
+  const rootAx = nodes.find((node) => node.backendDOMNodeId === ref.backendNodeId) || null;
+  let options = rootAx ? collectAxOptions(nodes, rootAx) : [];
+  if (!options.length && tagName === "SELECT") options = collectDomOptions(described.node);
+  if (!options.length) {
+    throw new Error(
+      "No options were found under this element. If it is a custom dropdown, drive it like any UI: " +
+        "click it open, take a snapshot, then click (or select_option) the option that appears.",
+    );
+  }
+  const picked = matchOptionLabel(options, wanted);
+  if (!picked) {
+    throw new Error(
+      `No option labeled "${wanted}" was found here (${options.length} option${options.length === 1 ? "" : "s"} present). ` +
+        "Take a fresh snapshot and pass the option's label exactly as it is shown.",
+    );
+  }
+  if (picked.disabled) {
+    throw new Error(`The option "${wanted}" is disabled and cannot be selected.`);
+  }
+
+  // A visibly rendered option (expanded dropdown, size>1 list, multi-select,
+  // ARIA listbox) is clicked like real UI, firing the page's own handlers.
+  if (picked.backendNodeId != null) {
+    try {
+      await clickNode({ tabId: ref.tabId, sessionId: ref.sessionId, backendNodeId: picked.backendNodeId });
+      return;
+    } catch {
+      // No geometry — a collapsed native dropdown. Fall through to keys.
+    }
+  }
+  if (tagName !== "SELECT") {
+    throw new Error(
+      `The option "${wanted}" is not currently clickable and this is not a native dropdown. ` +
+        "Click the widget open, take a snapshot, then click the option that appears.",
+    );
+  }
+  if (isMultiple) {
+    throw new Error(
+      `The option "${wanted}" is not currently visible in this multi-select list. ` +
+        "Scroll the list (scroll with its uid), take a snapshot, then click the option.",
+    );
+  }
+
+  // Collapsed native single <select>: arrows move by one ENABLED option.
+  const enabled = options.filter((option) => !option.disabled);
+  const targetIdx = enabled.indexOf(picked);
+  let currentIdx = enabled.findIndex((option) => option.selected === true);
+  if (currentIdx < 0) {
+    const currentLabel = String(rootAx?.value?.value || "").trim();
+    currentIdx = enabled.findIndex((option) => option.label.trim() === currentLabel);
+  }
+  if (currentIdx < 0) currentIdx = 0; // best effort — the verify below is the referee
+  await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+  await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+  const delta = targetIdx - currentIdx;
+  for (let i = 0; i < Math.abs(delta); i += 1) {
+    if (pendingDialogs.has(ref.tabId)) return; // a change handler froze the page
+    await dispatchKey(target, delta > 0 ? "ArrowDown" : "ArrowUp", 0);
+  }
+  const after = (await sessionAxNodes(target)).find(
+    (node) => node.backendDOMNodeId === ref.backendNodeId,
+  );
+  const landed = String(after?.value?.value || "").trim();
+  if (landed !== picked.label.trim()) {
+    throw new Error(
+      `Selecting "${wanted}" did not take: the dropdown now reads "${landed || "(unknown)"}". ` +
+        "This platform's native dropdown may not be keyboard-drivable — ask the user to pick the option themselves, then take a snapshot.",
+    );
+  }
+}
+
+// ------------------------------------------------------------------- reading
+
+/** Characters of page text one read_text call returns; continue via `offset`. */
+const READ_TEXT_MAX = 20000;
+
+/**
+ * Plain readable text of the page (or of one element's subtree), across every
+ * attached session, in the same order the snapshot walks. Mints no uids, so
+ * the previous snapshot's refs stay valid.
+ */
+async function buildPageText(tab, scope) {
+  const entry = attached.get(tab.id);
+  const sessions = scope
+    ? [{ tabId: scope.tabId, sessionId: scope.sessionId }]
+    : [
+        { tabId: tab.id },
+        ...[...(entry?.children || [])].map((sessionId) => ({ tabId: tab.id, sessionId })),
+      ];
+  const parts = [];
+  for (const session of sessions) {
+    let nodes;
+    try {
+      ({ nodes } = await sendCdp(session, "Accessibility.getFullAXTree", {}));
+    } catch {
+      continue; // A frame can vanish mid-walk; the rest of the page still renders.
+    }
+    const lines = renderAxText(nodes || [], scope ? scope.backendNodeId : undefined);
+    if (lines === null) {
+      throw new Error(
+        "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot and retry read_text with a current uid.",
+      );
+    }
+    if (lines.length) parts.push(lines.join("\n"));
+  }
+  return parts.join("\n");
+}
+
+/** Longest horizontal edge of a screenshot after scaling, in CSS px. */
+const SCREENSHOT_MAX_WIDTH = 1400;
+/** fullPage capture height cap, CSS px — beyond this the image is cut off. */
+const SCREENSHOT_MAX_FULL_HEIGHT = 6000;
+
+async function captureShot(tab, message) {
+  const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
+  const viewport = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
+  const content = metrics.cssContentSize || {};
+  let clip;
+  let beyondViewport = false;
+  if (message.uid) {
+    const ref = resolveRef(message.uid);
+    if (ref.sessionId) {
+      throw new Error(
+        "This element lives inside a cross-origin frame, which cannot be captured on its own. " +
+          "Take a screenshot without `uid` to capture the viewport instead.",
+      );
+    }
+    const target = { tabId: ref.tabId };
+    await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+    const { quads } = await sendCdp(target, "DOM.getContentQuads", {
+      backendNodeId: ref.backendNodeId,
+    });
+    if (!quads || !quads.length) {
+      throw new Error("The element is not visible on screen, so it cannot be captured.");
+    }
+    // Quads are viewport-relative; the capture clip is page-absolute.
+    const xs = [];
+    const ys = [];
+    for (const quad of quads) {
+      for (let i = 0; i < quad.length; i += 2) {
+        xs.push(quad[i]);
+        ys.push(quad[i + 1]);
+      }
+    }
+    const pad = 8;
+    clip = {
+      x: Math.max(0, Math.min(...xs) - pad + (viewport.pageX || 0)),
+      y: Math.max(0, Math.min(...ys) - pad + (viewport.pageY || 0)),
+      width: Math.max(...xs) - Math.min(...xs) + pad * 2,
+      height: Math.max(...ys) - Math.min(...ys) + pad * 2,
+    };
+    beyondViewport = true;
+  } else if (message.fullPage) {
+    clip = {
+      x: 0,
+      y: 0,
+      width: content.width || viewport.clientWidth || 1024,
+      height: Math.min(content.height || viewport.clientHeight || 768, SCREENSHOT_MAX_FULL_HEIGHT),
+    };
+    beyondViewport = true;
+  } else {
+    clip = {
+      x: viewport.pageX || 0,
+      y: viewport.pageY || 0,
+      width: viewport.clientWidth || 1024,
+      height: viewport.clientHeight || 768,
+    };
+  }
+  clip.width = Math.max(1, Math.round(clip.width));
+  clip.height = Math.max(1, Math.round(clip.height));
+  // Bound the pixel size for the model: cap the width, and stay inside the
+  // 8000px-per-edge ceiling vision APIs enforce even for tall captures.
+  const scale = Math.min(1, SCREENSHOT_MAX_WIDTH / clip.width, 7900 / clip.height);
+  const { data } = await sendCdp({ tabId: tab.id }, "Page.captureScreenshot", {
+    format: "jpeg",
+    quality: 75,
+    clip: { ...clip, scale },
+    ...(beyondViewport ? { captureBeyondViewport: true } : {}),
+  });
+  if (!data) {
+    throw new Error("The browser returned an empty screenshot. Retry after the page settles.");
+  }
+  return { imageBase64: data, imageMimeType: "image/jpeg" };
 }
 
 /** Wait for the tab to stop loading, so a snapshot reflects the new page. */
@@ -787,12 +1141,46 @@ async function perform(message) {
   // user dragged in may already be sitting on a denied site.
   if (tab.url && !originAllowed(tab.url, patterns)) return refuseOrigin(tab.url, source);
   await ensureAttached(tab.id);
-  if (INPUT_OPS.has(message.op)) await showTab(tab);
+  if (VISIBLE_OPS.has(message.op)) await showTab(tab);
 
   // An open JS dialog freezes the renderer: every page-touching command below
   // would hang. Surface the dialog instead — only handle_dialog may proceed.
   if (message.op !== "handle_dialog" && pendingDialogs.has(tab.id)) {
     return dialogBlockedResult(tab);
+  }
+
+  // Read-only extraction ops answer directly: their payload REPLACES the
+  // snapshot, so the common action tail below (which walks the AX tree again)
+  // would only double what the agent pays for.
+  if (message.op === "read_text") {
+    let scope = null;
+    if (message.uid) {
+      const refused = await assertRefTabUsable(message.uid, patterns, source);
+      if (refused) return refused;
+      scope = resolveRef(message.uid);
+    }
+    const offset = Math.min(Math.max(Math.round(Number(message.offset) || 0), 0), 5_000_000);
+    const full = await buildPageText(tab, scope);
+    return {
+      ok: true,
+      pageText: full.slice(offset, offset + READ_TEXT_MAX),
+      pageTextOffset: Math.min(offset, full.length),
+      pageTextTotal: full.length,
+      url: tab.url || "",
+      title: tab.title || "",
+      tabs: (await groupedTabs()).map(describeTab),
+    };
+  }
+
+  if (message.op === "screenshot") {
+    const shot = await captureShot(tab, message);
+    return {
+      ok: true,
+      ...shot,
+      url: tab.url || "",
+      title: tab.title || "",
+      tabs: (await groupedTabs()).map(describeTab),
+    };
   }
 
   if (message.op === "handle_dialog") {
@@ -849,6 +1237,42 @@ async function perform(message) {
       typeRef(message.uid, message.text || "", Boolean(message.submit), Boolean(message.keystrokes)),
     );
     if (message.submit) await waitForLoad(tab.id, 5000);
+  } else if (message.op === "fill_form") {
+    const fields = Array.isArray(message.fields) ? message.fields : [];
+    if (!fields.length) {
+      return {
+        ok: false,
+        message: "fill_form needs a non-empty `fields` array of { uid, value } entries.",
+      };
+    }
+    for (let i = 0; i < fields.length; i += 1) {
+      if (pendingDialogs.has(tab.id)) break; // frozen — the tail reports the open dialog
+      const field = fields[i] || {};
+      const uid = String(field.uid || "");
+      const refused = await assertRefTabUsable(uid, patterns, source);
+      if (refused) return refused;
+      try {
+        await raceDialogOpen(
+          tab.id,
+          fillField(resolveRef(uid), String(field.value ?? ""), Boolean(field.clear)),
+        );
+      } catch (error) {
+        // Partial progress is real progress: say exactly where it stopped so
+        // the agent re-snapshots and continues instead of re-filling from zero.
+        return {
+          ok: false,
+          message:
+            `Field ${i + 1} of ${fields.length} (uid "${uid}") could not be filled: ${String(error?.message || error)} ` +
+            "Fields before it were already filled — take a fresh snapshot and continue from there.",
+        };
+      }
+    }
+  } else if (message.op === "select_option") {
+    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    if (refused) return refused;
+    await raceDialogOpen(tab.id, selectOption(message.uid, String(message.option ?? "")));
+    // A change handler can submit or navigate, same as a click.
+    await waitForLoad(tab.id, 5000);
   } else if (message.op === "press_key") {
     let target = { tabId: tab.id };
     if (message.uid) {
