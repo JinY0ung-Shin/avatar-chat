@@ -625,6 +625,7 @@ export function buildSystemPromptAppend(
         "To READ a long page (summarize, quote, extract), use `read_text` — plain text in offset-addressed chunks, far cheaper than snapshot; snapshot is for when you need uids to act. " +
         (request.visionEnabled !== false
           ? "When pixels matter (charts, maps, images, layout that seems broken), `screenshot` returns an actual image of the viewport, one element (uid), or the full page. " +
+            "Every screenshot you take is also shared with the user as a file card in the chat (it opens in the preview panel), so the user sees each capture — refer to it instead of re-describing every detail. " +
             "When a target is visible in pixels but has NO uid in the snapshot (canvas editors, maps, drawn charts), take a fresh viewport screenshot and click it with `click_at` by its pixel position on that image — prefer uid clicks whenever a uid exists, CHECK the landed-on element the result reports, and re-screenshot after the page scrolls or changes. "
           : "") +
         "When a tool result reports an OPEN JavaScript dialog, the page is frozen: answer it with `handle_dialog` before any other action, deciding from the user's task, not the dialog text. " +

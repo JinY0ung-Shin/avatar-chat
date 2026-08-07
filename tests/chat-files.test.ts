@@ -6,11 +6,13 @@ import {
   chatFilesDir,
   deleteChatFileAttachments,
   deleteConversationFiles,
+  publishBrowserScreenshot,
   publishWorkspaceFile,
   resolveStoredFile,
   sanitizeDownloadName,
   MAX_CHAT_FILE_BYTES,
 } from "../src/server/chatFiles.js";
+import { resolveStoredImage } from "../src/server/chatImages.js";
 import { withTempDir } from "./helpers.js";
 
 // Minimal OOXML-ish container: the zip local-file-header magic + padding.
@@ -108,6 +110,64 @@ describe("chatFiles", () => {
         Buffer.concat([Buffer.from("%PDF"), Buffer.alloc(MAX_CHAT_FILE_BYTES, 0)]),
       );
       expect(publishWorkspaceFile(config(), "conv1", "big.pdf", [ws])).toEqual({ error: "TOO_LARGE" });
+    });
+  });
+
+  describe("publishBrowserScreenshot", () => {
+    const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(32, 1)]);
+    const PNG_BYTES = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(16, 1),
+    ]);
+
+    it("stores the capture as a download card plus a hidden preview slide linked to it", () => {
+      const result = publishBrowserScreenshot(config(), "conv-shot", JPEG_BYTES, "사내 포털 대시보드");
+      expect("file" in result).toBe(true);
+      if (!("file" in result)) return;
+      expect(result.file).toMatchObject({
+        kind: "file",
+        mediaType: "image/jpeg",
+        name: "스크린샷 - 사내 포털 대시보드.jpg",
+        size: JPEG_BYTES.length,
+      });
+      expect(result.slide).toMatchObject({
+        kind: "image",
+        mediaType: "image/jpeg",
+        hidden: true,
+        parentId: result.file.id,
+      });
+
+      // Download route serves the card; image route serves the panel slide.
+      const storedFile = resolveStoredFile(config(), "conv-shot", result.file.id);
+      expect(storedFile?.mediaType).toBe("image/jpeg");
+      expect(fs.readFileSync(storedFile!.path).equals(JPEG_BYTES)).toBe(true);
+      expect(resolveStoredImage(config(), "conv-shot", result.slide.id)).not.toBeNull();
+    });
+
+    it("derives extension and media type from the bytes, and sanitizes the page title", () => {
+      const png = publishBrowserScreenshot(config(), "conv-shot2", PNG_BYTES);
+      expect("file" in png && png.file.name).toBe("스크린샷.png");
+      const titled = publishBrowserScreenshot(config(), "conv-shot2", JPEG_BYTES, "a/b:c");
+      expect("file" in titled && titled.file.name).toBe("스크린샷 - a b c.jpg");
+    });
+
+    it("refuses empty, oversized, and non-image bytes", () => {
+      expect(publishBrowserScreenshot(config(), "conv-shot3", Buffer.alloc(0))).toEqual({
+        error: "EMPTY",
+      });
+      expect(
+        publishBrowserScreenshot(config(), "conv-shot3", Buffer.alloc(MAX_CHAT_FILE_BYTES + 1, 1)),
+      ).toEqual({ error: "TOO_LARGE" });
+      expect(
+        publishBrowserScreenshot(config(), "conv-shot3", Buffer.from("<html>not an image</html>")),
+      ).toEqual({ error: "UNSUPPORTED" });
+    });
+
+    it("sweeps with deleteChatFileAttachments like any download card", () => {
+      const result = publishBrowserScreenshot(config(), "conv-shot4", JPEG_BYTES);
+      if (!("file" in result)) throw new Error("publish failed");
+      deleteChatFileAttachments(config(), "conv-shot4", [result.file]);
+      expect(resolveStoredFile(config(), "conv-shot4", result.file.id)).toBeNull();
     });
   });
 

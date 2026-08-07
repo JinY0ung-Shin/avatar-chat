@@ -969,7 +969,22 @@ export async function runClaudeAgent(
   // else's avatar prompt.
   const browserServer = browserActive
     ? buildBrowserServer({
-        execute: events!.onBrowser!,
+        // Screenshot auto-share: the route publishes the capture as a file
+        // card + hidden slide and hands the attachments back — stamp the same
+        // text anchor the file-output wrappers stamp (below) so the card
+        // renders inline at the point of capture. Hidden slides never render
+        // in the bubble, so only the visible card needs one.
+        execute: async (request) => {
+          const result = await events!.onBrowser!(request);
+          if (result.behavior === "ok" && result.sharedAttachments) {
+            for (const attachment of result.sharedAttachments) {
+              if (!attachment.hidden && attachment.anchor === undefined) {
+                attachment.anchor = assistantChunks.join("\n\n").length;
+              }
+            }
+          }
+          return result;
+        },
         allowed: browserViewerAllowed,
         // Screenshot gate: image blocks must never reach a text-only model.
         vision: runVisionEnabled,

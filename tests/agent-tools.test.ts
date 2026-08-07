@@ -4005,6 +4005,20 @@ describe("browser bridge reading, forms, and screenshots", () => {
     expect(image).toEqual({ type: "image", data: "QUJDRA==", mimeType: "image/jpeg" });
   });
 
+  it("appends the route's auto-share outcome note to the screenshot report", async () => {
+    // The chat route publishes each capture as a user-facing file card and
+    // reports the outcome via shareNote — report() must surface it verbatim
+    // so the model knows whether the user got a copy.
+    const execute = ok({
+      image: { base64: "QUJDRA==", mimeType: "image/jpeg" },
+      shareNote: "This capture was also shared with the user as a file card in the chat.",
+    });
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "screenshot", {});
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("also shared with the user as a file card");
+  });
+
   it("passes screenshot targeting through and rejects uid+fullPage together", async () => {
     const execute = ok({ image: { base64: "QQ==", mimeType: "image/jpeg" } });
     const tools = buildBrowserTools({ execute, allowed: true, vision: true });

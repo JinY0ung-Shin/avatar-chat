@@ -356,6 +356,18 @@ export type BrowserResult =
       dialog?: { type: string; message: string; defaultPrompt?: string };
       /** screenshot: captured image (base64 bytes) — pixels of UNTRUSTED page content. */
       image?: { base64: string; mimeType: string };
+      /**
+       * screenshot only, SERVER-INTERNAL (set by the chat route's auto-share,
+       * never crosses the extension wire): the outcome note appended to the
+       * model-facing report — whether the user got a file-card copy.
+       */
+      shareNote?: string;
+      /**
+       * screenshot only, SERVER-INTERNAL: the download-card + hidden-slide
+       * attachments the auto-share published, exposed so claudeAgent can stamp
+       * the same text anchor the file-output wrappers stamp.
+       */
+      sharedAttachments?: import("../types.js").MessageAttachment[];
       /** click_at: element found at the clicked point — UNTRUSTED page content. */
       landedOn?: string;
       /** read_text: one chunk of the page's readable text — UNTRUSTED page content. */

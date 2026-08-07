@@ -2,7 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import type { AppConfig, MessageAttachment } from "./types.js";
-import { SAFE_ID, isInside, safeConversationDir } from "./chatImages.js";
+import {
+  MIME_EXT,
+  SAFE_ID,
+  detectImageMediaType,
+  isInside,
+  safeConversationDir,
+  saveHiddenChatImage,
+} from "./chatImages.js";
 
 /**
  * Chat file attachments (agent-GENERATED documents handed to the user as
@@ -18,6 +25,13 @@ import { SAFE_ID, isInside, safeConversationDir } from "./chatImages.js";
 export const MAX_CHAT_FILE_BYTES = 30 * 1024 * 1024;
 /** Max download-card files the agent may share per assistant turn. */
 export const MAX_CHAT_FILES_PER_MESSAGE = 3;
+/**
+ * Max browser screenshots auto-shared to the user per assistant turn. Its own
+ * budget — a browsing loop must not exhaust the share_file cap, and vice
+ * versa. Past the cap the model still receives the image; only the user-facing
+ * card is skipped (the tool result says so).
+ */
+export const MAX_SHARED_SCREENSHOTS_PER_MESSAGE = 12;
 /**
  * Max HIDDEN image publishes per turn (slide previews embedded in a canvas).
  * Separate from the visible-image cap: hidden files never crowd the bubble,
@@ -60,6 +74,19 @@ const FILE_TYPES: Record<string, { mediaType: string; magic?: Buffer[] }> = {
   // payloads — still a text file, so no magic prefix like csv/md/txt). This
   // mediaType is what FilePreviewPanel keys on to render the diagram client-side.
   drawio: { mediaType: DRAWIO_MEDIA_TYPE },
+};
+
+/**
+ * Image extensions the DOWNLOAD route may serve, written ONLY by the
+ * browser-screenshot auto-share (`publishBrowserScreenshot`). Deliberately NOT
+ * in {@link FILE_TYPES}: share_file keeps routing images through show_file
+ * (inline bubble), never a download card.
+ */
+const SERVED_IMAGE_TYPES: Record<string, { mediaType: string }> = {
+  png: { mediaType: "image/png" },
+  jpg: { mediaType: "image/jpeg" },
+  webp: { mediaType: "image/webp" },
+  gif: { mediaType: "image/gif" },
 };
 
 export function chatFilesDir(config: AppConfig, conversationId: string): string {
@@ -183,6 +210,56 @@ export function publishWorkspaceFile(
 }
 
 /**
+ * Persist a browser screenshot (relayed from the user's own browser as raw
+ * bytes) as the SAME card+slides pair the document share path produces: a
+ * visible download card in the chat-files store plus a hidden preview copy in
+ * the chat-images store that the file-preview panel renders when the card is
+ * clicked. MIME comes from the actual bytes — never from the semi-trusted
+ * extension's claim.
+ */
+export type PublishBrowserScreenshotResult =
+  | { file: MessageAttachment; slide: MessageAttachment }
+  | { error: "EMPTY" | "TOO_LARGE" | "UNSUPPORTED" | "WRITE_FAILED" };
+
+export function publishBrowserScreenshot(
+  config: AppConfig,
+  conversationId: string,
+  buffer: Buffer,
+  pageTitle?: string,
+): PublishBrowserScreenshotResult {
+  if (buffer.length === 0) return { error: "EMPTY" };
+  if (buffer.length > MAX_CHAT_FILE_BYTES) return { error: "TOO_LARGE" };
+  const mediaType = detectImageMediaType(buffer);
+  if (!mediaType) return { error: "UNSUPPORTED" };
+  const ext = MIME_EXT[mediaType];
+
+  const id = crypto.randomUUID();
+  const dir = chatFilesDir(config, conversationId);
+  const filePath = path.join(dir, `${id}.${ext}`);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(filePath, buffer, { flag: "wx" });
+  } catch {
+    return { error: "WRITE_FAILED" };
+  }
+  // Card label (user-facing → Korean): the page title is what tells several
+  // captures in one turn apart.
+  const title = sanitizeDownloadName(pageTitle)?.slice(0, 80).trim();
+  const name = `${title ? `스크린샷 - ${title}` : "스크린샷"}.${ext}`;
+  let slide: MessageAttachment;
+  try {
+    slide = saveHiddenChatImage(config, conversationId, buffer, mediaType, name, id);
+  } catch {
+    fs.rmSync(filePath, { force: true });
+    return { error: "WRITE_FAILED" };
+  }
+  return {
+    file: { id, kind: "file", mediaType, name, size: buffer.length },
+    slide,
+  };
+}
+
+/**
  * Locate a stored file by id within a conversation (for the download endpoint).
  * Scans the dir for `<id>.<ext>` so the caller needn't know the extension.
  */
@@ -205,7 +282,7 @@ export function resolveStoredFile(
   });
   if (!file) return null;
   const ext = file.slice(file.lastIndexOf(".") + 1).toLowerCase();
-  const fileType = FILE_TYPES[ext];
+  const fileType = FILE_TYPES[ext] ?? SERVED_IMAGE_TYPES[ext];
   if (!fileType) return null;
   return { path: path.join(dir, file), mediaType: fileType.mediaType, ext };
 }

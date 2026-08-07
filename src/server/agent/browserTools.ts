@@ -114,6 +114,9 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
     return text(result.message, true);
   }
   const where = result.url ? ` Current page: ${result.title || "(untitled)"} — ${result.url}.` : "";
+  // Screenshot auto-share outcome (server-composed): whether the user got a
+  // file-card copy of this capture — keeps the model's self-knowledge honest.
+  const share = result.shareNote ? `\n\n${result.shareNote}` : "";
   // An open JS dialog freezes the page, so this result carries no snapshot and
   // the ONLY useful next call is handle_dialog. The dialog text is authored by
   // the page — quarantine it like any other page content.
@@ -144,7 +147,7 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
       }):\n${wrapUntrustedPageContent(page.text)}`
     : "";
   const body = result.snapshot ? `\n\n${wrapUntrustedPageContent(result.snapshot)}` : "";
-  const message = `${okNote}${where}${dialog}${landed}${tabs}${pageText}${body}`;
+  const message = `${okNote}${where}${share}${dialog}${landed}${tabs}${pageText}${body}`;
   // A screenshot rides as a real image block. Pixels are page-authored too:
   // rendered text can carry injected instructions exactly like snapshot text,
   // so the caption restates the warning the wrapper gives textual content.
@@ -221,7 +224,10 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "snapshot cannot answer: charts, maps, images, canvas apps, or a layout that seems broken. For " +
         "reading or acting on a page, prefer snapshot/read_text — they are cheaper and carry the uids. " +
         "Give `uid` to capture one element from the latest snapshot, or `fullPage` for the whole page " +
-        "(very tall pages are cut off). Unavailable when this conversation's model cannot receive images.",
+        "(very tall pages are cut off). Each capture is ALSO shared with the user as a file card in the " +
+        "chat (it opens in the preview panel), so they can see exactly what you saw — do not re-send it or " +
+        "exhaustively re-describe it for their benefit. " +
+        "Unavailable when this conversation's model cannot receive images.",
       {
         uid: z
           .string()

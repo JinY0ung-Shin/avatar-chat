@@ -47,10 +47,12 @@ import { isPreviewableExtension, renderDocumentPreviews } from "../deckRender.js
 import {
   deleteChatFileAttachments,
   deleteConversationFiles,
+  publishBrowserScreenshot,
   publishWorkspaceFile,
   resolveStoredFile,
   MAX_CHAT_FILES_PER_MESSAGE,
   MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE,
+  MAX_SHARED_SCREENSHOTS_PER_MESSAGE,
   SHAREABLE_EXTENSIONS,
   MAX_CHAT_FILE_BYTES,
   sanitizeDownloadName,
@@ -1309,6 +1311,9 @@ export function createChatRouter({
         // SSE and are attached to the terminal assistant message on every exit
         // path so a reload matches what the user already saw.
         const shownAttachments: MessageAttachment[] = [];
+        // Browser screenshots auto-shared as file cards this run — own budget,
+        // separate from the share_file/show_file caps (see chatFiles.ts).
+        let sharedScreenshotCount = 0;
         // Visual-canvas artifacts (#50) now persist to the dedicated canvas tables as
         // they are shown (see the onCanvas handler), with version history — they no
         // longer ride the assistant message's response JSON.
@@ -1988,8 +1993,51 @@ export function createChatRouter({
                       "The screenshot was too large to relay. Capture a smaller area: the viewport (no fullPage) or a single element via uid.",
                   };
                 }
+                // Screenshot auto-share: the model sees the capture — persist
+                // the SAME bytes for the user as a download card + hidden
+                // preview slide (the card+panel shape share_file produces), so
+                // the user can open exactly what the avatar looked at, live
+                // and after reload. Best-effort BY DESIGN: a publish failure
+                // must not fail the tool call, and the note keeps the model's
+                // self-knowledge honest about whether the user got a copy.
+                let shareNote: string | undefined;
+                let sharedAttachments: MessageAttachment[] | undefined;
+                if (
+                  requestData.op === "screenshot" &&
+                  typeof reply.imageBase64 === "string" &&
+                  reply.imageBase64
+                ) {
+                  if (sharedScreenshotCount >= MAX_SHARED_SCREENSHOTS_PER_MESSAGE) {
+                    shareNote = `This capture was NOT shared with the user — this turn already shared ${MAX_SHARED_SCREENSHOTS_PER_MESSAGE} screenshots. The user has not seen it; continue in the next turn if they need it.`;
+                  } else if (store.conversationOwner(conversationId) !== req.user!.id) {
+                    shareNote =
+                      "This capture was NOT shared with the user: the conversation no longer exists.";
+                  } else {
+                    const published = publishBrowserScreenshot(
+                      config,
+                      conversationId,
+                      Buffer.from(reply.imageBase64, "base64"),
+                      typeof reply.title === "string" ? reply.title : undefined,
+                    );
+                    if ("error" in published) {
+                      shareNote =
+                        "This capture could NOT be shared with the user as a file card — the user has not seen it.";
+                    } else {
+                      sharedScreenshotCount += 1;
+                      sharedAttachments = [published.file, published.slide];
+                      for (const attachment of sharedAttachments) {
+                        shownAttachments.push(attachment);
+                        emitRunEvent(runId, "file", { runId, attachment });
+                      }
+                      shareNote =
+                        "This capture was also shared with the user as a file card in the chat (it opens in the preview panel), so they can already see it — no need to re-send or exhaustively re-describe it.";
+                    }
+                  }
+                }
                 return {
                   behavior: "ok",
+                  shareNote,
+                  sharedAttachments,
                   snapshot: typeof reply.snapshot === "string" ? reply.snapshot : undefined,
                   url: typeof reply.url === "string" ? reply.url : undefined,
                   title: typeof reply.title === "string" ? reply.title : undefined,
@@ -2149,7 +2197,12 @@ export function createChatRouter({
                 if (stored && isPreviewableExtension(stored.ext)) {
                   const pages = await renderDocumentPreviews(stored.path, stored.ext);
                   if (pages.length) {
-                    const previewAttachments = savePreviewImages(config, conversationId, pages);
+                    const previewAttachments = savePreviewImages(
+                      config,
+                      conversationId,
+                      pages,
+                      result.attachment.id,
+                    );
                     previewCount = previewAttachments.length;
                     for (const attachment of previewAttachments) {
                       shownAttachments.push(attachment);

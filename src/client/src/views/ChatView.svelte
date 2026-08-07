@@ -34,7 +34,7 @@
   import { goView, routeFromHash } from "../lib/nav";
   import { formatFileSize, formatUsageLabel, renderMarkdown, renderMarkdownCached, timeLabel } from "../lib/format";
   import { createStickController, type StickController } from "../lib/autoscroll";
-  import { segmentAttachments } from "../lib/bubbleSegments";
+  import { panelSlides, segmentAttachments } from "../lib/bubbleSegments";
   import { menuCommandsForPane, filterSlashCommands, type SlashCommand } from "../lib/slash";
   import type { AgentActivity, AvatarSummary, ChatPane, ImageMediaType, MessageAttachment, PendingImage, SkillInfo, StoredMessage } from "../lib/types";
   import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
@@ -575,12 +575,6 @@
     return att.name ? `${base}?name=${encodeURIComponent(att.name)}` : base;
   }
 
-  // Slide PNGs published (hidden) on the same message as a shared file — the
-  // deck preview the pptx skill rendered.
-  function hiddenSlides(attachments: MessageAttachment[] | undefined): MessageAttachment[] {
-    return (attachments ?? []).filter((att) => att.kind === "image" && att.hidden);
-  }
-
   // File-card click: open the right-side preview panel (slides + download
   // button). Split view has no side-panel slot, so it keeps the direct
   // download instead.
@@ -594,7 +588,7 @@
       a.remove();
       return;
     }
-    const slides = hiddenSlides(source);
+    const slides = panelSlides(source, att);
     updateState((state) => {
       const target = state.chatPanes.find((p) => p.id === item.id);
       if (target) target.filePreview = { attachment: att, slides };

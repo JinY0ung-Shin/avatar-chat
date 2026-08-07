@@ -820,6 +820,19 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   than an API error; click_at's coordinates have no source without a screenshot). `routes/chat.ts` caps
   the relayed base64 and whitelists the mime type — the extension is semi-trusted and that string lands
   in an API image block. The caption restates that the pixels are untrusted page content.
+- **Every screenshot is AUTO-SHARED to the user** as the same card+slides pair share_file produces:
+  `routes/chat.ts` (onBrowser continuation, after the size bound) calls
+  `publishBrowserScreenshot` (`chatFiles.ts`) — one visible `kind:"file"` card (chat-files store; its
+  image extensions live in `SERVED_IMAGE_TYPES`, deliberately NOT in share_file's `FILE_TYPES`) plus one
+  hidden `kind:"image"` slide (chat-images store) linked via `attachment.parentId`, which the client's
+  `panelSlides` (`bubbleSegments.ts`) uses to scope panel slides to their own card. MIME comes from byte
+  sniffing, never the extension's claim. Outcome rides `BrowserResult.shareNote`/`sharedAttachments`
+  (SERVER-INTERNAL fields — not part of the five-layer wire contract): browserTools appends the note to
+  the report so the model knows whether the user saw the capture, and claudeAgent's execute wrapper
+  stamps the text anchor exactly like the file-output wrappers. Own per-turn budget
+  (`MAX_SHARED_SCREENSHOTS_PER_MESSAGE`) so a browsing loop can't exhaust the share_file cap; past it
+  (or on publish failure) the MODEL still gets the image — only the user-facing card is skipped, and the
+  note says so. Best-effort BY DESIGN: publish failure never fails the tool call.
 - **`click_at` clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** Screenshots are
   downscaled (`SCREENSHOT_MAX_WIDTH` 1400), so the pixels the model sees ≠ CSS px. The extension
   remembers the LAST capture's mapping (`lastShot`: tabId/mode/scale/clip dims) and inverts the scale at

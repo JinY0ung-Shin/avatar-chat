@@ -23,6 +23,21 @@ export interface BubbleSegment {
  * persists delta-joined text a few chars shorter than the anchors'
  * chunk-joined accounting, and that must not produce out-of-range slices.
  */
+/**
+ * Hidden preview images belonging to a clicked file card (deck slide renders,
+ * browser-screenshot copies) — what the file-preview panel shows. Slides
+ * stamped with a parentId belong to ONE card; legacy slides (no parentId)
+ * belong to whichever card is clicked — the pre-link behavior.
+ */
+export function panelSlides(
+  attachments: MessageAttachment[] | undefined,
+  parent: MessageAttachment,
+): MessageAttachment[] {
+  return (attachments ?? []).filter(
+    (att) => att.kind === "image" && att.hidden && (!att.parentId || att.parentId === parent.id),
+  );
+}
+
 export function segmentAttachments(
   text: string,
   attachments: MessageAttachment[] | undefined,

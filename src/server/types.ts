@@ -634,6 +634,12 @@ export interface MessageAttachment {
    */
   hidden?: boolean;
   /**
+   * Hidden preview slides only: id of the visible `kind:"file"` card (same
+   * message) they preview, so the file-preview panel shows ONLY that card's
+   * slides. Absent on legacy slides → they belong to whichever card is clicked.
+   */
+  parentId?: string;
+  /**
    * Character offset into the message text at the moment the attachment was
    * shown/shared, so the bubble renders the card inline AT that point instead
    * of below the text (where later streaming would keep pushing it down).

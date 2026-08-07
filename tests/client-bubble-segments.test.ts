@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { segmentAttachments } from "../src/client/src/lib/bubbleSegments.js";
+import { panelSlides, segmentAttachments } from "../src/client/src/lib/bubbleSegments.js";
 import type { MessageAttachment } from "../src/server/types.js";
 
 function att(id: string, extra: Partial<MessageAttachment> = {}): MessageAttachment {
@@ -84,5 +84,33 @@ describe("segmentAttachments", () => {
       { text: "가나", atts: [inline] },
       { text: "다", atts: [legacy], tail: true },
     ]);
+  });
+});
+
+describe("panelSlides", () => {
+  const slide = (id: string, parentId?: string) =>
+    att(id, { kind: "image", mediaType: "image/png", hidden: true, parentId });
+
+  it("collects only hidden images, never visible attachments", () => {
+    const card = att("card");
+    const visibleImage = att("v", { kind: "image", mediaType: "image/png" });
+    expect(panelSlides([card, visibleImage, slide("s1")], card)).toEqual([slide("s1")]);
+    expect(panelSlides(undefined, card)).toEqual([]);
+  });
+
+  it("scopes parentId-stamped slides to their own card (deck + screenshot in one turn)", () => {
+    const deck = att("deck");
+    const shot = att("shot");
+    const deckSlides = [slide("d1", "deck"), slide("d2", "deck")];
+    const shotSlide = slide("s1", "shot");
+    const all = [deck, ...deckSlides, shot, shotSlide];
+    expect(panelSlides(all, deck)).toEqual(deckSlides);
+    expect(panelSlides(all, shot)).toEqual([shotSlide]);
+  });
+
+  it("keeps legacy slides (no parentId) reachable from any card", () => {
+    const card = att("card");
+    const legacy = slide("old");
+    expect(panelSlides([card, legacy], card)).toEqual([legacy]);
   });
 });

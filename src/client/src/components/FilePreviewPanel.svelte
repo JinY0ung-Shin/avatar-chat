@@ -258,8 +258,11 @@
       {:else if slides.length}
         {#each slides as slide, index (slide.id)}
           <figure class="file-preview-slide">
-            <img src={slideSrc(slide)} alt={`슬라이드 ${index + 1}`} loading="lazy" />
-            <figcaption class="muted">슬라이드 {index + 1} / {slides.length}</figcaption>
+            <img src={slideSrc(slide)} alt={slide.name || `슬라이드 ${index + 1}`} loading="lazy" />
+            <!-- A page counter under a single image (screenshot, one-page pdf) is noise. -->
+            {#if slides.length > 1}
+              <figcaption class="muted">슬라이드 {index + 1} / {slides.length}</figcaption>
+            {/if}
           </figure>
         {/each}
       {:else}

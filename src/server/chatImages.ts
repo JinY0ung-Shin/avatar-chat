@@ -17,7 +17,7 @@ export const MAX_CHAT_IMAGE_BYTES = 5 * 1024 * 1024;
 /** Max images per single user message. */
 export const MAX_CHAT_IMAGES_PER_MESSAGE = 6;
 
-const MIME_EXT: Record<ImageMediaType, string> = {
+export const MIME_EXT: Record<ImageMediaType, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/webp": "webp",
@@ -44,7 +44,7 @@ export function isInside(root: string, candidate: string): boolean {
   return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
 }
 
-function detectImageMediaType(buffer: Buffer): ImageMediaType | null {
+export function detectImageMediaType(buffer: Buffer): ImageMediaType | null {
   if (buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
     return "image/png";
   }
@@ -236,31 +236,43 @@ export function publishWorkspaceImage(
 }
 
 /**
+ * Persist one already-validated in-memory image as a HIDDEN attachment (a
+ * file-preview-panel slide) in the conversation store, linked to the visible
+ * download card it previews via `parentId`. The caller owns validation —
+ * bytes here are either our own renderer's output or bytes it already sniffed.
+ */
+export function saveHiddenChatImage(
+  config: AppConfig,
+  conversationId: string,
+  buffer: Buffer,
+  mediaType: ImageMediaType,
+  name: string,
+  parentId?: string,
+): MessageAttachment {
+  const dir = chatImagesDir(config, conversationId);
+  fs.mkdirSync(dir, { recursive: true });
+  const id = crypto.randomUUID();
+  fs.writeFileSync(path.join(dir, `${id}.${MIME_EXT[mediaType]}`), buffer, { flag: "wx" });
+  return { id, kind: "image", mediaType, name, hidden: true, parentId };
+}
+
+/**
  * Persist SERVER-rendered preview pages (share_file's automatic slide
  * rasterization — see deckRender.ts) as HIDDEN image attachments in the
  * conversation store. Trusted input from our own renderer, so no MIME
  * sniffing or byte caps here; hidden keeps them out of the chat bubble while
- * the file-preview panel reads them off the same message.
+ * the file-preview panel reads them off the same message (scoped to the
+ * shared file's card via `parentId`).
  */
 export function savePreviewImages(
   config: AppConfig,
   conversationId: string,
   buffers: Buffer[],
+  parentId?: string,
 ): MessageAttachment[] {
-  if (!buffers.length) return [];
-  const dir = chatImagesDir(config, conversationId);
-  fs.mkdirSync(dir, { recursive: true });
-  return buffers.map((buffer, index) => {
-    const id = crypto.randomUUID();
-    fs.writeFileSync(path.join(dir, `${id}.png`), buffer, { flag: "wx" });
-    return {
-      id,
-      kind: "image",
-      mediaType: "image/png",
-      name: `slide-${index + 1}.png`,
-      hidden: true,
-    };
-  });
+  return buffers.map((buffer, index) =>
+    saveHiddenChatImage(config, conversationId, buffer, "image/png", `slide-${index + 1}.png`, parentId),
+  );
 }
 
 /** Delete selected conversation image files, ignoring already-missing entries. */
