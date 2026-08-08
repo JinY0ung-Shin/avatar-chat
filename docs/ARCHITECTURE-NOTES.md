@@ -799,7 +799,11 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   업데이트 받기; the update path (`learn {updateSlug}` / `learn_skill {update:true}`) replaces the
   learner's copy IN PLACE and is authorized by the origin marker, NOT the directory name — a mismatch
   fails closed (`NOT_LEARNED_FROM_SHARE`). The MCP update resolves the learner's slug from the markers
-  (0 → redirect, >1 → ambiguous, ask the user).
+  (0 → redirect, >1 → ambiguous, ask the user). The marker ALSO records `localHash` (the copy's own
+  post-rewrite hash): an update whose copy no longer matches — i.e. the learner CUSTOMIZED it, or a
+  legacy marker can't prove otherwise — throws `SKILL_LOCALLY_MODIFIED` until the caller passes
+  explicit consent (`overwriteModified` on the route after a danger confirm; `overwrite_modified` on
+  the MCP tool after the model asks the user). Git history retains the overwritten customization.
 - **The feed includes the viewer's OWN shares** (route merges `listSharedSkillsByOwner` ahead of
   `listLearnableSkills`, mirroring 탐색's "나" card): that's how an owner sees their skill's 전수 count
   in context. The client badges them 나 and drops the learn button; `listLearnableSkills` itself stays

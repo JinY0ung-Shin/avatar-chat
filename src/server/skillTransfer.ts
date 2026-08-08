@@ -106,6 +106,14 @@ export interface SkillOrigin {
   ownerUsername: string;
   skillName: string;
   contentHash: string | null;
+  /**
+   * Hash of the LEARNER's copy right after the learn (post identity-rewrite).
+   * Comparing it with the copy's current hash detects local customization —
+   * the guard that keeps an update from silently flattening the learner's own
+   * edits. Null on markers written before this field existed (treated as
+   * "possibly modified": the update path then requires explicit confirmation).
+   */
+  localHash: string | null;
   learnedAt: string;
 }
 
@@ -199,11 +207,30 @@ export function readSkillOrigin(repoRoot: string, slug: string): SkillOrigin | n
       ownerUsername: raw.ownerUsername,
       skillName: raw.skillName,
       contentHash: typeof raw.contentHash === "string" ? raw.contentHash : null,
+      localHash: typeof raw.localHash === "string" ? raw.localHash : null,
       learnedAt: typeof raw.learnedAt === "string" ? raw.learnedAt : "",
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * Whether a learned copy was locally customized since the learn: current dir
+ * hash vs the origin marker's localHash. Returns null when it cannot tell —
+ * no marker, a legacy marker without localHash, or an unhashable dir — which
+ * callers treat as "possibly modified" (fail safe).
+ */
+export function isSkillLocallyModified(repoRoot: string, slug: string): boolean | null {
+  const origin = readSkillOrigin(repoRoot, slug);
+  if (!origin?.localHash) {
+    return null;
+  }
+  const current = hashSkillDir(repoRoot, slug);
+  if (!current) {
+    return null;
+  }
+  return current !== origin.localHash;
 }
 
 interface CopyStats {
@@ -396,6 +423,13 @@ export async function learnSkillIntoRepo(opts: {
   newName?: string;
   /** UPDATE mode: replace this existing learner slug in place (see above). */
   updateSlug?: string;
+  /**
+   * Overwrite even a LOCALLY CUSTOMIZED copy (update mode only). Without it a
+   * copy whose current hash differs from the origin marker's localHash — or
+   * whose marker predates localHash — throws SKILL_LOCALLY_MODIFIED so the
+   * caller can get explicit user confirmation first.
+   */
+  allowModified?: boolean;
   /** The sharer's @username, recorded in the origin marker for display. */
   sharerUsername: string;
   commitMessage: string;
@@ -429,6 +463,12 @@ export async function learnSkillIntoRepo(opts: {
     ) {
       throw new Error("NOT_LEARNED_FROM_SHARE");
     }
+    // A locally customized copy (or one we can't judge — legacy marker) is
+    // only replaced with the caller's explicit go-ahead: the learner's own
+    // edits must never silently flatten under an update.
+    if (!opts.allowModified && isSkillLocallyModified(destRoot, destSlug) !== false) {
+      throw new Error("SKILL_LOCALLY_MODIFIED");
+    }
     const lexical = resolveInRepo(destRoot, `${SKILL_DIR}/${destSlug}`)!;
     const abs = realpathContained(destRoot, lexical, true);
     if (!abs) {
@@ -440,6 +480,8 @@ export async function learnSkillIntoRepo(opts: {
   await rewriteSkillIdentity(destRoot, destSlug, source.description);
   // Provenance marker LAST so it overwrites any origin file the source copy
   // carried (chain-shares record THEIR immediate source, not the first one).
+  // localHash is the DEST dir hash post-rewrite (marker file excluded), so a
+  // later mismatch means the learner customized the copy.
   const originAbs = path.join(
     resolveInRepo(destRoot, `${SKILL_DIR}/${destSlug}`)!,
     SKILL_ORIGIN_FILE,
@@ -449,6 +491,7 @@ export async function learnSkillIntoRepo(opts: {
     ownerUsername: opts.sharerUsername,
     skillName: opts.skillName,
     contentHash: sourceHash,
+    localHash: hashSkillDir(destRoot, destSlug),
     learnedAt: new Date().toISOString(),
   };
   await fsp.writeFile(originAbs, `${JSON.stringify(origin, null, 2)}\n`, "utf8");

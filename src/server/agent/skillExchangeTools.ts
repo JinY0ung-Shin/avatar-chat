@@ -143,6 +143,10 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           .boolean()
           .optional()
           .describe("Replace the copy previously learned from this share with the sharer's current version (mutually exclusive with new_name)."),
+        overwrite_modified: z
+          .boolean()
+          .optional()
+          .describe("With update: also overwrite a copy the owner CUSTOMIZED after learning. Pass ONLY after the user explicitly confirmed losing those local edits (git history keeps them)."),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -210,6 +214,7 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
             skillName: listing.skillName,
             newName: args.new_name?.trim() || undefined,
             updateSlug,
+            allowModified: args.overwrite_modified === true,
             sharerUsername: listing.owner.username,
             commitMessage: `${updateSlug ? "Update" : "Learn"} skill "${listing.skillName}" from @${listing.owner.username}`,
             identity: commitIdentityFor(store, ctx.owner),
@@ -360,6 +365,8 @@ function decodeLearnError(error: unknown, listing: SharedSkillListing): string {
       return `The skill is too large to transfer (per-file 512KB, total 4MB, 200 files max). Tell the user; they can ask @${listing.owner.username} to slim the skill down.`;
     case "NOT_LEARNED_FROM_SHARE":
       return `That copy was not learned from @${listing.owner.username}'s share, so it cannot be overwritten as an update. Learn the shared skill as a NEW copy instead (optionally with new_name).`;
+    case "SKILL_LOCALLY_MODIFIED":
+      return "The learned copy was CUSTOMIZED after learning (or predates modification tracking). Do NOT overwrite silently: tell the user their local edits would be replaced by the sharer's version (git history keeps the old one), and only after they explicitly agree retry with overwrite_modified: true — or learn the new version as a separate copy with new_name to keep both.";
     default:
       return `Learning failed: ${scrubGitError(error)}. You may retry once; if it keeps failing, tell the user what happened.`;
   }

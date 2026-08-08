@@ -97,6 +97,23 @@ function updateRemoteFile(name: string, rel: string, content: string): void {
   g("push", "-q", "origin", "main");
 }
 
+/**
+ * Simulate the learner CUSTOMIZING a learned copy: edit + commit + push inside
+ * their server-side knowledge clone (the flow avatar repo-writes take), so a
+ * later ensureClone keeps the change.
+ */
+function customizeLearnedCopy(userId: string, rel: string, content: string): void {
+  const clone = path.join(tempDir, "knowledge", userId);
+  fs.writeFileSync(path.join(clone, rel), content);
+  const g = (...a: string[]) => execFileSync("git", ["-C", clone, ...a], { stdio: "pipe" });
+  g("config", "user.email", "learner@example.com");
+  g("config", "user.name", "Learner");
+  g("config", "commit.gpgsign", "false");
+  g("add", "-A");
+  g("commit", "-q", "-m", "customize");
+  g("push", "-q", "origin", "main");
+}
+
 // ---- store: shared_skills ---------------------------------------------------
 
 describe("shared_skills store", () => {
@@ -449,6 +466,76 @@ describe("skillTransfer", () => {
     ).rejects.toThrow("NOT_LEARNED_FROM_SHARE");
     expect(fs.existsSync(path.join(learnerRoot, "skills", "handmade", "SKILL.md"))).toBe(true);
   });
+
+  it("protects a customized copy: update refuses without allowModified", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const sharer = await newUser(app, "sharer");
+    const learner = await newUser(app, "learner");
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      learner.userId,
+      seedRemote("learner-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "l", plugins: [] }),
+      }),
+      "main",
+    );
+    const sharerCtx = knowledgeRepoContextFor(store, sharer.userId, config)!;
+    const learnerCtx = knowledgeRepoContextFor(store, learner.userId, config)!;
+    const identity = { name: "Learner", email: "l@example.com" };
+    await learnSkillIntoRepo({
+      sharerCtx,
+      learnerCtx,
+      skillName: "pptx-report",
+      sharerUsername: "sharer",
+      commitMessage: "Learn",
+      identity,
+    });
+
+    // The learner customizes their copy; the sharer ships v2.
+    customizeLearnedCopy(learner.userId, "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## custom\n`);
+    updateRemoteFile("sharer-repo", "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## v2\n`);
+
+    const update = () =>
+      learnSkillIntoRepo({
+        sharerCtx,
+        learnerCtx,
+        skillName: "pptx-report",
+        updateSlug: "pptx-report",
+        sharerUsername: "sharer",
+        commitMessage: "Update",
+        identity,
+      });
+    await expect(update()).rejects.toThrow("SKILL_LOCALLY_MODIFIED");
+    const learnerRoot = await ensureClone(learnerCtx);
+    expect(
+      fs.readFileSync(path.join(learnerRoot, "skills", "pptx-report", "SKILL.md"), "utf8"),
+    ).toContain("## custom");
+
+    // Explicit consent replaces the customization with the sharer's version.
+    const forced = await learnSkillIntoRepo({
+      sharerCtx,
+      learnerCtx,
+      skillName: "pptx-report",
+      updateSlug: "pptx-report",
+      allowModified: true,
+      sharerUsername: "sharer",
+      commitMessage: "Update",
+      identity,
+    });
+    expect(forced.updated).toBe(true);
+    expect(
+      fs.readFileSync(path.join(learnerRoot, "skills", "pptx-report", "SKILL.md"), "utf8"),
+    ).toContain("## v2");
+
+    // A legacy marker without localHash cannot prove the copy is pristine —
+    // fail safe: consent required there too.
+    const markerPath = path.join(learnerRoot, "skills", "pptx-report", ".noah-skill-origin.json");
+    const marker = JSON.parse(fs.readFileSync(markerPath, "utf8")) as Record<string, unknown>;
+    delete marker.localHash;
+    fs.writeFileSync(markerPath, JSON.stringify(marker));
+    customizeLearnedCopy(learner.userId, "skills/pptx-report/.noah-skill-origin.json", JSON.stringify(marker));
+    await expect(update()).rejects.toThrow("SKILL_LOCALLY_MODIFIED");
+  });
 });
 
 // ---- routes/skillShare.ts -----------------------------------------------------
@@ -609,6 +696,20 @@ describe("skill-share routes", () => {
     ).toBe(availAfter.body.skills[0].contentHash);
     // The refresh did NOT inflate 전수된 횟수 — one learn, one count.
     expect(store.countSkillLearnsForOwner(sharer.userId)).toBe(1);
+
+    // A CUSTOMIZED copy needs the second-step consent: 409 with the guard
+    // message the client string-matches, then overwriteModified succeeds.
+    customizeLearnedCopy(mate.userId, "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## custom\n`);
+    updateRemoteFile("sharer-repo", "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## v3\n`);
+    const guarded = await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "pptx-report" })
+      .expect(409);
+    expect(guarded.body.error).toContain("전수 후 수정");
+    await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "pptx-report", overwriteModified: true })
+      .expect(200);
   });
 
   it("learn without a connected learner repo is a 400 with guidance", async () => {
@@ -834,6 +935,27 @@ describe("mcp skill_exchange tools", () => {
     expect(
       fs.readFileSync(path.join(mateRoot, "skills", "pptx-report", "SKILL.md"), "utf8"),
     ).toContain("## v2");
+
+    // A customized copy: refuse without explicit consent, then honor it.
+    customizeLearnedCopy(mate.userId, "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## custom\n`);
+    updateRemoteFile("sharer-repo", "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## v3\n`);
+    const guarded = await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "pptx-report",
+      update: true,
+    });
+    expect(guarded.isError).toBe(true);
+    expect(guarded.content[0].text).toContain("overwrite_modified");
+    const consented = await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "pptx-report",
+      update: true,
+      overwrite_modified: true,
+    });
+    expect(consented.isError).toBeFalsy();
+    expect(
+      fs.readFileSync(path.join(mateRoot, "skills", "pptx-report", "SKILL.md"), "utf8"),
+    ).toContain("## v3");
 
     // A second copy makes the update target ambiguous → redirect, no change.
     await callTool(tools, "learn_skill", {

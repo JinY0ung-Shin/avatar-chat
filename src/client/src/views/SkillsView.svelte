@@ -198,7 +198,7 @@
 
   async function learn(
     skill: SharedSkillListing,
-    opts: { newName?: string; updateSlug?: string } = {},
+    opts: { newName?: string; updateSlug?: string; overwriteModified?: boolean } = {},
   ): Promise<void> {
     if (learningId) return;
     if (!repoConfigured) {
@@ -206,15 +206,18 @@
       goView("settings", "knowledge");
       return;
     }
-    const confirmed = await confirmAction(
-      opts.updateSlug
-        ? `"${opts.updateSlug}" 스킬을 @${skill.owner.username}의 최신 버전으로 업데이트할까요? 기존 내용을 덮어쓰고 커밋됩니다.`
-        : `@${skill.owner.username}의 "${skillTitle(skill)}" 스킬을 전수받을까요? 내 지식 저장소에 복사되고 커밋됩니다.`,
-      opts.updateSlug
-        ? { title: "스킬을 업데이트할까요?", confirmLabel: "업데이트" }
-        : { title: "스킬을 전수받을까요?", confirmLabel: "전수받기" },
-    );
-    if (!confirmed) return;
+    // overwriteModified 재시도는 직전에 이미 danger 확인을 받았으므로 재확인 생략.
+    if (!opts.overwriteModified) {
+      const confirmed = await confirmAction(
+        opts.updateSlug
+          ? `"${opts.updateSlug}" 스킬을 @${skill.owner.username}의 최신 버전으로 업데이트할까요? 기존 내용을 덮어쓰고 커밋됩니다.`
+          : `@${skill.owner.username}의 "${skillTitle(skill)}" 스킬을 전수받을까요? 내 지식 저장소에 복사되고 커밋됩니다.`,
+        opts.updateSlug
+          ? { title: "스킬을 업데이트할까요?", confirmLabel: "업데이트" }
+          : { title: "스킬을 전수받을까요?", confirmLabel: "전수받기" },
+      );
+      if (!confirmed) return;
+    }
     learningId = skill.id;
     try {
       const result = await api<{ slug: string; needsSelection: boolean; updated: boolean }>(
@@ -225,6 +228,7 @@
             id: skill.id,
             ...(opts.newName ? { newName: opts.newName } : {}),
             ...(opts.updateSlug ? { updateSlug: opts.updateSlug } : {}),
+            ...(opts.overwriteModified ? { overwriteModified: true } : {}),
           }),
         },
       );
@@ -242,6 +246,20 @@
       void load();
     } catch (err) {
       const message = (err as Error).message;
+      // 전수 후 커스텀한 사본: 덮어쓸지 사용자에게 danger 확인 후 재시도.
+      if (opts.updateSlug && /전수 후 수정/.test(message)) {
+        learningId = null;
+        const overwrite = await confirmAction(
+          `"${opts.updateSlug}" 스킬은 전수받은 뒤 수정한 스킬입니다. 업데이트하면 수정 내용이 최신 공유 버전으로 덮어써져요 (저장소 이력에는 남습니다). 덮어쓸까요?`,
+          { title: "수정한 스킬을 덮어쓸까요?", confirmLabel: "덮어쓰기", tone: "danger" },
+        );
+        if (overwrite) {
+          await learn(skill, { ...opts, overwriteModified: true });
+        } else {
+          notify("두 버전을 모두 보관하려면 미리보기에서 다른 이름으로 전수받으세요.", "info");
+        }
+        return;
+      }
       notify(`전수 실패: ${message}`, "warn");
       // 이름 충돌은 새 이름으로 바로 재시도할 수 있게 미리보기 모달로 안내.
       if (/이미 있습니다/.test(message) && !preview) {

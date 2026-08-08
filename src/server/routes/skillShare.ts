@@ -52,6 +52,12 @@ const LEARN_ERROR_KO: Record<string, { status: number; message: string }> = {
     status: 409,
     message: "이 공유에서 전수받은 스킬이 아니어서 덮어쓸 수 없습니다. 새 스킬로 전수받아 주세요.",
   },
+  // The client string-matches this message to raise its danger confirm and
+  // retry with overwriteModified — keep "전수 후 수정" stable.
+  SKILL_LOCALLY_MODIFIED: {
+    status: 409,
+    message: "전수 후 수정한 스킬입니다. 덮어쓰면 수정 내용이 사라져요 (저장소 이력에는 남습니다).",
+  },
 };
 
 /** Commit message for a first learn vs. an in-place update. */
@@ -273,6 +279,10 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       // UPDATE mode: overwrite this existing learner slug in place (allowed
       // only for a copy whose origin marker matches the share — fail closed).
       const updateSlug = safeString(req.body?.updateSlug);
+      // Second-step consent for overwriting a LOCALLY CUSTOMIZED copy: the
+      // first attempt 409s with SKILL_LOCALLY_MODIFIED, the client confirms
+      // with the user, then retries with this flag.
+      const overwriteModified = req.body?.overwriteModified === true;
       if (!id) {
         apiError(res, 400, "배울 스킬을 선택해 주세요.");
         return;
@@ -307,6 +317,7 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
           skillName: listing.skillName,
           newName: rawNewName || undefined,
           updateSlug: updateSlug || undefined,
+          allowModified: overwriteModified,
           sharerUsername: listing.owner.username,
           commitMessage: learnCommitMessage(listing, Boolean(updateSlug)),
           identity: commitIdentityFor(store, req.user!),
