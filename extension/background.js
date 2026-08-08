@@ -601,13 +601,47 @@ function policySource(source) {
  */
 function hijackRefusal(rawUrl) {
   if (!String(rawUrl || "").startsWith("chrome-extension://")) return null;
+  // Worded to stay true on BOTH paths refuseOrigin serves: a tab that is already
+  // sitting there, and a destination the agent asked to open. "This tab is
+  // showing…" was false in the second case.
   return (
-    `This tab is showing a page that belongs to ANOTHER browser extension (${rawUrl}) — most often a PDF-viewer ` +
-    "extension that intercepted a PDF link. The bridge cannot read or drive pages inside other extensions, and this " +
-    "is not an allowlist decision, so no policy change would open it. Recover with mcp__browser__navigate to an " +
-    "allowed http(s) URL (that op still works from here) or open a fresh page with mcp__browser__new_tab, and tell " +
-    "the user their PDF opened in their PDF-viewer extension."
+    `${rawUrl} belongs to ANOTHER browser extension — most often a PDF viewer that intercepted a PDF link. ` +
+    "The bridge cannot read or drive pages inside other extensions, and this is not an allowlist decision, so no " +
+    "policy change would open it. Move to an allowed http(s) URL with mcp__browser__navigate (that op works even " +
+    "from a page like this) or open a fresh page with mcp__browser__new_tab; if the user was expecting a PDF, tell " +
+    "them it opened in their PDF-viewer extension."
   );
+}
+
+/**
+ * Surfaces `chrome.debugger` cannot attach to at all, so CDP there is not merely
+ * denied — it is IMPOSSIBLE, and every command built on it is dead on arrival.
+ *
+ * Measured in the field, not assumed: a PDF link navigated a driven tab into
+ * Adobe's viewer (`chrome-extension://…`) and Chrome force-detached us the
+ * instant it committed — onDetach fired, `attached` was swept — after which
+ * every re-attach came back "Cannot access a chrome-extension:// URL of
+ * different extension". navigate, navigate_back and a retry failed 3-for-3 with
+ * that raw error. Exempting those ops from the ORIGIN gate (see
+ * ORIGIN_EXEMPT_OPS) was therefore necessary but NOT sufficient: they cleared
+ * the gate and then exploded on attach. This predicate is what routes them to
+ * the extension-API navigation path instead, which needs no debugger.
+ *
+ * Kept in sync with hijackRefusal, which explains the same situation to the
+ * agent; that text promises navigation still works from here, and the escape
+ * path below is what makes the promise true.
+ */
+const DEBUGGER_UNREACHABLE_PREFIXES = [
+  "chrome-extension://",
+  "chrome://",
+  "devtools://",
+  "edge://",
+  "view-source:",
+];
+
+function debuggerUnreachable(rawUrl) {
+  const url = String(rawUrl || "");
+  return DEBUGGER_UNREACHABLE_PREFIXES.some((prefix) => url.startsWith(prefix));
 }
 
 /** Refusal text is model-facing: say what happened and close off the retry. */
@@ -2315,6 +2349,27 @@ async function assertRefTabUsable(uid, patterns, source) {
  */
 const ORIGIN_EXEMPT_OPS = new Set(["navigate", "navigate_back"]);
 
+/** Shared by both back paths: the CDP one reads it off the history, the escape
+ * path off chrome.tabs.goBack's rejection, and an agent must not be able to tell
+ * which one answered. */
+const NO_HISTORY_MESSAGE =
+  "This tab has no earlier history entry to go back to. Open a page explicitly with mcp__browser__navigate instead.";
+
+/**
+ * Re-attach after an extension-API navigation, best effort. The tail's snapshot
+ * needs CDP and the tab has hopefully landed somewhere attachable; if it has
+ * not, the landing check refuses first and the snapshotError path reports the
+ * rest, so a failure here must not become the op's failure.
+ */
+async function reattachAfterEscape(tabId) {
+  try {
+    await ensureAttached(tabId);
+  } catch {
+    // Still unattachable. Nothing here can fix that, and the caller's own
+    // reporting is more accurate than anything this catch could invent.
+  }
+}
+
 async function performOp(message) {
   const { patterns, source } = await readPolicy();
 
@@ -2389,10 +2444,30 @@ async function performOp(message) {
   // Check the tab we are ABOUT to read as well as any URL we are asked to open:
   // an allowed navigation can land somewhere else via a redirect, and a tab the
   // user dragged in may already be sitting on a denied site.
-  if (!ORIGIN_EXEMPT_OPS.has(message.op) && tab.url && !originAllowed(tab.url, patterns)) {
+  const originExempt = ORIGIN_EXEMPT_OPS.has(message.op);
+  if (!originExempt && tab.url && !originAllowed(tab.url, patterns)) {
     return refuseOrigin(tab.url, source);
   }
-  await ensureAttached(tab.id);
+  // Whether THIS op has to move the tab through the extension API instead of
+  // CDP. Only the exempt ops can escape that way, and only because they are the
+  // way OUT: everything else still requires a debugger session, and silently
+  // running it without one would be the wrong kind of forgiving.
+  let escapeViaTabsApi = false;
+  if (originExempt && debuggerUnreachable(tab.url)) {
+    // A doomed attach buys nothing but its own error, so it is not attempted.
+    escapeViaTabsApi = true;
+  } else {
+    try {
+      await ensureAttached(tab.id);
+    } catch (error) {
+      // Reactive half: catches the surfaces DEBUGGER_UNREACHABLE_PREFIXES does
+      // not enumerate, and the race where the tab moved between the read above
+      // and this attach. Non-exempt ops keep today's behavior exactly — the
+      // error is theirs and it propagates.
+      if (!originExempt) throw error;
+      escapeViaTabsApi = true;
+    }
+  }
   // read_text with `expand` scrolls, and wheel events go through the
   // browser-side input router — dropped unless the tab's view is visible.
   if (VISIBLE_OPS.has(message.op) || (message.op === "read_text" && message.expand)) {
@@ -2481,30 +2556,56 @@ async function performOp(message) {
     // Answering can resume a submit or navigation the dialog was holding up.
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "navigate") {
+    // The destination check is unchanged and still runs BEFORE any movement —
+    // which mechanism carries the tab there does not change WHERE it may go.
     if (!originAllowed(message.url, patterns)) return refuseOrigin(message.url, source);
-    await sendCdp({ tabId: tab.id }, "Page.navigate", { url: message.url });
+    if (escapeViaTabsApi) {
+      // Security-equivalent to the CDP path, and deliberately so: this is the
+      // same call new_tab already makes to open a page, it runs no page JS, and
+      // it passed the identical destination check one line above. The no-page-JS
+      // invariant is untouched and the CDP allowlist is not widened — it is
+      // bypassed only on the surfaces where Chrome itself makes CDP unreachable.
+      await chrome.tabs.update(tab.id, { url: message.url });
+    } else {
+      await sendCdp({ tabId: tab.id }, "Page.navigate", { url: message.url });
+    }
     await waitForLoad(tab.id);
+    if (escapeViaTabsApi) await reattachAfterEscape(tab.id);
   } else if (message.op === "navigate_back") {
-    const { currentIndex, entries } = await sendCdp(
-      { tabId: tab.id },
-      "Page.getNavigationHistory",
-      {},
-    );
-    const previous = currentIndex > 0 ? (entries || [])[currentIndex - 1] : null;
-    if (!previous) {
-      return {
-        ok: false,
-        message:
-          "This tab has no earlier history entry to go back to. Open a page explicitly with mcp__browser__navigate instead.",
-      };
+    if (escapeViaTabsApi) {
+      // Page.getNavigationHistory IS CDP, so on an unattachable page the
+      // destination cannot be read and the pre-check is impossible. Accepted
+      // tradeoff: the step is taken BLIND, but the post-action landing check
+      // still decides what may be READ, and stepping back from a page the bridge
+      // cannot even attach to is at worst neutral — it is already reading
+      // nothing there.
+      try {
+        await chrome.tabs.goBack(tab.id);
+      } catch {
+        // The only failure this call has: nothing to go back to. Answered with
+        // the same text the CDP path uses, so which one ran stays invisible.
+        return { ok: false, message: NO_HISTORY_MESSAGE };
+      }
+      await waitForLoad(tab.id);
+      await reattachAfterEscape(tab.id);
+    } else {
+      const { currentIndex, entries } = await sendCdp(
+        { tabId: tab.id },
+        "Page.getNavigationHistory",
+        {},
+      );
+      const previous = currentIndex > 0 ? (entries || [])[currentIndex - 1] : null;
+      if (!previous) {
+        return { ok: false, message: NO_HISTORY_MESSAGE };
+      }
+      // The destination is known BEFORE moving — refuse a back step into a
+      // denied origin instead of visiting it and refusing afterwards.
+      if (previous.url && !originAllowed(previous.url, patterns)) {
+        return refuseOrigin(previous.url, source);
+      }
+      await sendCdp({ tabId: tab.id }, "Page.navigateToHistoryEntry", { entryId: previous.id });
+      await waitForLoad(tab.id);
     }
-    // The destination is known BEFORE moving — refuse a back step into a
-    // denied origin instead of visiting it and refusing afterwards.
-    if (previous.url && !originAllowed(previous.url, patterns)) {
-      return refuseOrigin(previous.url, source);
-    }
-    await sendCdp({ tabId: tab.id }, "Page.navigateToHistoryEntry", { entryId: previous.id });
-    await waitForLoad(tab.id);
   } else if (message.op === "click") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;

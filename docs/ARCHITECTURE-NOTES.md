@@ -1028,11 +1028,16 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   produces (`chrome-extension://…`, its own error message now). Reading is unchanged: the destination
   still has to pass. And when an ACTION lands outside the allowlist, the error now says the action
   COMPLETED and only the page content is withheld; the old wording read as "nothing happened" and had
-  the agent performing it a second time. Known residual: the escape assumes the debugger is ALREADY
-  attached (true in the field sequence — the tab was being driven when it got hijacked). A cold worker
-  cannot `chrome.debugger.attach` to another extension's page, so that corner still errors raw and
-  recovery is `new_tab`; a `chrome.tabs.update` fallback was considered and deliberately not added —
-  it would open a second navigation mechanism outside the CDP contract this file is built around.
+  the agent performing it a second time. The MOVEMENT itself cannot ride CDP there: Chrome
+  force-detaches the debugger the moment a tab navigates into another extension's page and refuses to
+  re-attach ("Cannot access a chrome-extension:// URL of different extension" — field-measured, 3/3
+  attempts), so "escape via Page.navigate" was structurally unimplementable, not merely a cold-worker
+  corner. From a debugger-unreachable page (`chrome-extension://`, `chrome://`, …, or any attach
+  failure on an exempt op) the two exempt ops move via `chrome.tabs.update` / `chrome.tabs.goBack`
+  instead — no page JS, no new CDP surface, the same destination check before moving (new_tab already
+  navigates through this same extension API). One asymmetry: the tabs-API back step is taken BLIND
+  (`Page.getNavigationHistory` is CDP too), so its destination pre-check is skipped there; the
+  post-action landing check still decides what may be READ.
 - **`type`/`fill_form`'s `clear` is a VERIFIED write with FOUR exhaustive end states, and the only reason
   `Accessibility.getPartialAXTree` is on the allowlist.** On map.naver.com's React combobox, "광교카페거리성남"
   + type("성남", clear) read back as "광교카페거리성남성남" — three times running, across two extension
