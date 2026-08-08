@@ -20,7 +20,24 @@ moved symbols so importers keep their paths:
   + `interpretResult`/`resultErrorMessage`).
 - `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput`.
 - `agentUtils.ts` — small shared helpers.
+- `runPlan.ts` — **everything a run derives BEFORE the SDK stream opens** (2026-08): `buildAgentRunPlan`
+  plus the subprocess-env / tool-access helpers it needs (`withoutGitCredentialEnv`, `agentSubprocessEnv`,
+  `sshMcpSecretEnv`, `mcpInjectableSecretEnv`, `deriveAgentToolAccess`, `planMcpToolFamilies`,
+  `buildModelFallbackChain`, `AgentToolAccess`, `McpToolFamilyPlan` — all re-exported from
+  `claudeAgent.ts`, which is where the test suites import them from). `runClaudeAgent` went 1400 → ~450
+  lines; the split point is exact because the setup half declares **no `let` at all** — it is pure
+  derivation over store/config/plugins, and the loop half owns every accumulator.
 Keep the re-export set in `claudeAgent.ts` minimal to the original public surface.
+
+### The one thing that flows backwards across that seam
+`buildAgentRunPlan` takes a `currentTextAnchor: () => number` **accessor**, not a value or an array.
+File-output (`show_file`/`share_file`) and browser-screenshot attachments are stamped with the length of
+the assistant text accumulated when the tool ran — and that accumulator (`assistantChunks`) lives in the
+run loop AND is **REASSIGNED there on the empty-turn retry**. Passing the array would stamp against a
+stale binding after a retry; the accessor is read at call time, so it always sees the current one.
+`assistantChunks` is therefore declared ABOVE the plan call in `runClaudeAgent`, not with the other
+loop-state `let`s. The returned `options` is likewise a LIVE object the loop still mutates
+(`systemPrompt`, `model`, `resume`) — same object identity as before the split, deliberately.
 
 ## Admin builtin tool/skill on-off policy (`toolSkillPolicy.ts` + `agent/skillDiscovery.ts`)
 - **What it is:** the admin panel (system tab → "내장 도구·스킬 정책") disables SDK BUILT-IN tools

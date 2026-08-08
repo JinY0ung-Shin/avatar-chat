@@ -13,8 +13,14 @@ detailed mechanics live in **[`../../../docs/architecture/`](../../../docs/archi
 Durable principles for this layer:
 
 - **`claudeAgent.ts` is the orchestrator and re-exports the split-out symbols** (`promptBuilder.ts`,
-  `sdkMessageHandlers.ts`, `preToolUseHook.ts`, `agentUtils.ts`) so importer paths stay stable. Keep the
-  re-export set minimal to the original public surface.
+  `sdkMessageHandlers.ts`, `preToolUseHook.ts`, `agentUtils.ts`, `runPlan.ts`) so importer paths stay
+  stable. Keep the re-export set minimal to the original public surface.
+- **A run has TWO halves and they meet at one line.** `runPlan.ts` derives everything BEFORE the stream
+  opens (tool access, MCP servers, model chain, the SDK `options` bag); `claudeAgent.ts` owns the
+  streaming loop and every accumulator. The setup half declares **no `let`** — keep it that way, and
+  put new run-scoped mutable state in the loop half. The one backward flow is deliberate and typed as
+  an accessor (`currentTextAnchor`), because the accumulator it reads is REASSIGNED on the empty-turn
+  retry — see `docs/architecture/agent-core.md`.
 - **`ownerState.ts` is the metacognition sync point.** `summarizeOwnerState` returns UNFORMATTED self-state
   DATA consumed by BOTH `buildSystemPromptAppend` (English prompt appended to the SDK default system prompt) and `describe_system` (tool text); gating +
   formatting stay at each call site. Add a self-state fact to `OwnerState` and BOTH consumers together.
