@@ -25,8 +25,8 @@ const execFileAsync = promisify(execFile);
 // at ${dataDir}/knowledge/${userId}. All file access is constrained to this
 // directory — see `resolveInRepo`, which rejects path traversal.
 
-/** A directory not under version control, holding a hidden git dir per skill. */
-const SKILL_DIR = "skills";
+/** The repo directory holding one sub-directory per skill (skills/<slug>/SKILL.md). */
+export const SKILL_DIR = "skills";
 /** Files/dirs never listed or written through the repo tools. */
 const IGNORED_SEGMENTS = new Set([".git"]);
 /** Cap how much of a file the repo tools will read, to avoid loading huge blobs. */
@@ -96,9 +96,10 @@ export function resolveInRepo(repoRoot: string, relPath: string): string | null 
  * existing ancestor (the target itself for reads; its parent for not-yet-created
  * writes) and confirm it's still under the repo root's realpath. Returns null
  * if it escapes. `mustExist` distinguishes read (target must exist) from write
- * (parent must exist, leaf may not).
+ * (parent must exist, leaf may not). Exported for skillTransfer.ts so the
+ * skill-copy path shares THIS containment logic instead of re-deriving it.
  */
-function realpathContained(repoRoot: string, abs: string, mustExist: boolean): string | null {
+export function realpathContained(repoRoot: string, abs: string, mustExist: boolean): string | null {
   let realRoot: string;
   try {
     realRoot = fsSync.realpathSync(repoRoot);
@@ -461,8 +462,10 @@ Describe what this skill does and when the avatar should use it.
 /**
  * Ensure `.claude-plugin/marketplace.json` exists and lists the given plugin
  * (by relative source). Idempotent: an already-listed plugin is left untouched.
+ * Shared with skillTransfer.ts (a learned skill must be advertised the same
+ * way a scaffolded one is, or it never loads).
  */
-async function ensureMarketplaceManifest(repoRoot: string, slug: string): Promise<void> {
+export async function ensureMarketplaceManifest(repoRoot: string, slug: string): Promise<void> {
   const manifestRel = ".claude-plugin/marketplace.json";
   const abs = resolveInRepo(repoRoot, manifestRel)!;
   interface Entry {

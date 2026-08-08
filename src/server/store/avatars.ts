@@ -1,9 +1,16 @@
-import type { AvatarDetail, AvatarSummary } from "../types.js";
+import crypto from "node:crypto";
+import type {
+  AvatarDetail,
+  AvatarSummary,
+  SharedSkill,
+  SharedSkillListing,
+} from "../types.js";
 import {
   type Constructor,
   type StoreBase,
   type UserRow,
   DEFAULT_SEARCH_LIMIT,
+  now,
   parseHashtags,
 } from "./internal.js";
 
@@ -15,6 +22,21 @@ import {
 interface AvatarSummaryRow extends UserRow {
   plugin_count?: number;
   updated_at?: string | null;
+}
+
+/** A shared_skills row, optionally joined with its owner's users columns. */
+interface SharedSkillRow {
+  id: string;
+  owner_user_id: string;
+  skill_name: string;
+  display_name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+  owner_username?: string;
+  owner_display_name?: string;
+  owner_alias?: string | null;
+  owner_avatar_ext?: string | null;
 }
 
 /**
@@ -384,6 +406,222 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         username: r.username,
         displayName: r.display_name,
       }));
+    }
+
+    // ---- Shared skills (#skill-share) --------------------------------------
+    // An owner shares skills FROM their knowledge repo (`skills/<slug>/`); the
+    // rows here are metadata snapshots for discovery — content is copied from
+    // the owner's clone at learn time (skillTransfer.ts). Reach deliberately
+    // mirrors avatar discovery: a viewer sees a share iff they could see the
+    // owner's avatar in 탐색 (not suspended, visibility='group', and sharing a
+    // group per SHARING_TEAMMATES) — never wider than the avatar itself.
+
+    /**
+     * JOIN/WHERE for shares VISIBLE to a viewer. Keep the predicate in lockstep
+     * with VISIBILITY_WHERE above, minus the self-exception: a viewer's own
+     * shares are managed via listSharedSkillsByOwner, not browsed as learnable.
+     * Binds TWO positional params, both the viewer id.
+     */
+    private static readonly LEARNABLE_SKILLS_FROM = `FROM shared_skills s
+           JOIN users u ON u.id = s.owner_user_id
+           WHERE u.suspended = 0
+             AND s.owner_user_id != ?
+             AND u.visibility = 'group'
+             AND s.owner_user_id IN (
+               SELECT m2.user_id ${SHARING_TEAMMATES}
+               WHERE m1.user_id = ?
+             )`;
+
+    private toSharedSkill(row: SharedSkillRow): SharedSkill {
+      return {
+        id: row.id,
+        ownerUserId: row.owner_user_id,
+        skillName: row.skill_name,
+        displayName: row.display_name,
+        description: row.description ?? "",
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    }
+
+    private toSharedSkillListing(row: SharedSkillRow): SharedSkillListing {
+      return {
+        ...this.toSharedSkill(row),
+        owner: {
+          id: row.owner_user_id,
+          username: row.owner_username ?? "",
+          displayName: row.owner_display_name ?? "",
+          alias: row.owner_alias ?? "",
+          hasImage: Boolean(row.owner_avatar_ext),
+        },
+      };
+    }
+
+    /**
+     * Share (or re-share) one knowledge-repo skill. Upsert: re-sharing an
+     * already-shared slug refreshes the metadata snapshot + updated_at and
+     * keeps the row id. Callers validate that `skills/<skillName>/` actually
+     * exists in the owner's repo BEFORE calling.
+     */
+    shareSkill(
+      ownerUserId: string,
+      skill: { skillName: string; displayName: string; description: string },
+    ): SharedSkill {
+      const timestamp = now();
+      this.db
+        .prepare(
+          `INSERT INTO shared_skills (id, owner_user_id, skill_name, display_name, description, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT (owner_user_id, skill_name) DO UPDATE SET
+             display_name = excluded.display_name,
+             description = excluded.description,
+             updated_at = excluded.updated_at`,
+        )
+        .run(
+          crypto.randomUUID(),
+          ownerUserId,
+          skill.skillName,
+          skill.displayName,
+          skill.description,
+          timestamp,
+          timestamp,
+        );
+      const row = this.db
+        .prepare(
+          "SELECT * FROM shared_skills WHERE owner_user_id = ? AND skill_name = ?",
+        )
+        .get(ownerUserId, skill.skillName) as SharedSkillRow;
+      return this.toSharedSkill(row);
+    }
+
+    /**
+     * Drop EVERY share of one owner — used when their knowledge repo is
+     * disconnected or repointed (the rows advertise `skills/` dirs of the
+     * previous repo, which no longer resolve). Returns how many were dropped.
+     */
+    clearSharedSkills(ownerUserId: string): number {
+      return this.db
+        .prepare("DELETE FROM shared_skills WHERE owner_user_id = ?")
+        .run(ownerUserId).changes;
+    }
+
+    /** Stop sharing one skill. False when it wasn't shared. */
+    unshareSkill(ownerUserId: string, skillName: string): boolean {
+      const res = this.db
+        .prepare(
+          "DELETE FROM shared_skills WHERE owner_user_id = ? AND skill_name = ?",
+        )
+        .run(ownerUserId, skillName);
+      return res.changes > 0;
+    }
+
+    /** Every skill this owner currently shares (settings/mine view + prompt). */
+    listSharedSkillsByOwner(ownerUserId: string): SharedSkill[] {
+      const rows = this.db
+        .prepare(
+          "SELECT * FROM shared_skills WHERE owner_user_id = ? ORDER BY skill_name COLLATE NOCASE ASC",
+        )
+        .all(ownerUserId) as SharedSkillRow[];
+      return rows.map((row) => this.toSharedSkill(row));
+    }
+
+    /**
+     * Skills shared by teammates whose avatar the viewer can see, newest first,
+     * optionally filtered by free-text tokens across the skill name/description
+     * and owner name (a name hit ranks under a skill-field hit). Backs the
+     * 스킬 배우기 tab and the `mcp__skill_exchange__find_shared_skills` tool.
+     */
+    listLearnableSkills(
+      viewerId: string,
+      query = "",
+      opts: { limit?: number } = {},
+    ): SharedSkillListing[] {
+      const limit = Math.min(Math.max(opts.limit ?? DEFAULT_SEARCH_LIMIT, 1), 100);
+      const rows = this.db
+        .prepare(
+          `SELECT s.*, u.username AS owner_username, u.display_name AS owner_display_name,
+                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext
+           ${Avatars.LEARNABLE_SKILLS_FROM}
+           ORDER BY s.updated_at DESC`,
+        )
+        .all(viewerId, viewerId) as SharedSkillRow[];
+      const tokens = query
+        .toLowerCase()
+        .split(/[\s,，、]+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+      if (tokens.length === 0) {
+        return rows.slice(0, limit).map((row) => this.toSharedSkillListing(row));
+      }
+      const scored = rows.map((row) => {
+        const skillHay = [row.skill_name, row.display_name, row.description]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        const ownerHay = [row.owner_display_name, row.owner_alias, row.owner_username]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        let score = 0;
+        // Per token, one tier only: skill name/description (3) > owner (1).
+        for (const token of tokens) {
+          if (skillHay.includes(token)) score += 3;
+          else if (ownerHay.includes(token)) score += 1;
+        }
+        return { row, score };
+      });
+      return scored
+        .filter((s) => s.score > 0)
+        .sort(
+          (a, b) =>
+            b.score - a.score || b.row.updated_at.localeCompare(a.row.updated_at),
+        )
+        .slice(0, limit)
+        .map((s) => this.toSharedSkillListing(s.row));
+    }
+
+    /** One learnable share by row id, visibility-checked for the viewer. */
+    getLearnableSkill(viewerId: string, id: string): SharedSkillListing | null {
+      const row = this.db
+        .prepare(
+          `SELECT s.*, u.username AS owner_username, u.display_name AS owner_display_name,
+                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext
+           ${Avatars.LEARNABLE_SKILLS_FROM}
+             AND s.id = ?`,
+        )
+        .get(viewerId, viewerId, id) as SharedSkillRow | undefined;
+      return row ? this.toSharedSkillListing(row) : null;
+    }
+
+    /**
+     * One learnable share by owner @username + skill slug (the address the
+     * MCP find tool prints), visibility-checked for the viewer.
+     */
+    getLearnableSkillByName(
+      viewerId: string,
+      ownerUsername: string,
+      skillName: string,
+    ): SharedSkillListing | null {
+      const row = this.db
+        .prepare(
+          `SELECT s.*, u.username AS owner_username, u.display_name AS owner_display_name,
+                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext
+           ${Avatars.LEARNABLE_SKILLS_FROM}
+             AND u.username = ? AND s.skill_name = ?`,
+        )
+        .get(viewerId, viewerId, ownerUsername, skillName) as
+        | SharedSkillRow
+        | undefined;
+      return row ? this.toSharedSkillListing(row) : null;
+    }
+
+    /** How many shares are learnable by this viewer (metacognition surfaces). */
+    countLearnableSkills(viewerId: string): number {
+      return this.count(
+        `SELECT COUNT(*) AS c ${Avatars.LEARNABLE_SKILLS_FROM}`,
+        viewerId,
+        viewerId,
+      );
     }
   };
 }

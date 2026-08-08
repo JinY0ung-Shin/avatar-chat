@@ -512,6 +512,11 @@ export async function runClaudeAgent(
     AVATAR_DIRECTORY_TOOL_NAMES,
     AVATAR_ASK_TOOL_NAME,
   } = await import("./avatarDirectoryTools.js");
+  const {
+    buildSkillExchangeServer,
+    SKILL_EXCHANGE_SERVER_NAME,
+    SKILL_EXCHANGE_TOOL_NAMES,
+  } = await import("./skillExchangeTools.js");
   const { buildGitRepoServer, GIT_REPO_SERVER_NAME, GIT_REPO_TOOL_NAMES } =
     await import("./gitRepoTools.js");
   const {
@@ -863,6 +868,21 @@ export async function runClaudeAgent(
         }
       : {}),
   });
+  // Skill exchange (#skill-share): search skills teammates' avatars shared,
+  // learn one into the owner's knowledge repo, (un)share own repo skills.
+  // Rides the `avatars` tool group (it is cross-avatar discovery) and is
+  // OWNER-ONLY end to end: learning writes the owner's repo, and the listing
+  // is the OWNER's group view — a trusted teammate driving this avatar must
+  // not browse it (their own avatar serves their view). Group-agent runs are
+  // excluded via ownerToolAccess=false (no personal repo). skillExchangeActive
+  // is the SINGLE boolean used byte-identically in allowedTools + mcpServers.
+  const skillExchangeActive = avatarDirectoryToolsEnabled && ownerToolAccess;
+  const skillExchangeServer = buildSkillExchangeServer(store, {
+    avatarUserId: request.avatar.id,
+    owner,
+    viewerIsOwner: ownerToolAccess,
+    config,
+  });
   const sshIdentityServer = buildSshIdentityServer(store, {
     avatarUserId: request.avatar.id,
     owner,
@@ -1202,6 +1222,7 @@ export async function runClaudeAgent(
       ...(webFetchToolsEnabled ? WEB_FETCH_TOOL_NAMES : []),
       ...(avatarDirectoryToolsEnabled ? AVATAR_DIRECTORY_TOOL_NAMES : []),
       ...(avatarAskActive ? [AVATAR_ASK_TOOL_NAME] : []),
+      ...(skillExchangeActive ? SKILL_EXCHANGE_TOOL_NAMES : []),
       ...(sshToolsEnabled ? SSH_IDENTITY_TOOL_NAMES : []),
       ...(gitRepoToolsEnabled ? GIT_REPO_TOOL_NAMES : []),
       // Group-agent runs expose the pinned subset (no list_groups/create_repo).
@@ -1276,6 +1297,9 @@ export async function runClaudeAgent(
         : {}),
       ...(avatarDirectoryToolsEnabled
         ? { [AVATAR_DIRECTORY_SERVER_NAME]: avatarDirectoryServer }
+        : {}),
+      ...(skillExchangeActive
+        ? { [SKILL_EXCHANGE_SERVER_NAME]: skillExchangeServer }
         : {}),
       ...(sshToolsEnabled
         ? { [SSH_IDENTITY_SERVER_NAME]: sshIdentityServer }
@@ -1482,6 +1506,13 @@ export async function runClaudeAgent(
     // reachable through the corporate proxy. Mirrored by describe_system.
     webFetchProxy: webFetchProxyState(),
     groupMemberships: ownerToolAccess ? ownerGroups : [],
+    // Skill-exchange self-state (#skill-share): counts ride ONLY runs that
+    // registered the tools (skillExchangeActive), so the standing note and
+    // tool availability can't diverge.
+    learnableSkillCount: skillExchangeActive
+      ? ownerState.learnableSkillCount
+      : 0,
+    sharedSkillCount: skillExchangeActive ? ownerState.sharedSkillCount : 0,
     // The REGISTERED set (see registeredMcpToolGroups): standing tool guidance
     // must match the servers this run actually mounts.
     mcpToolGroups: registeredMcpToolGroups,

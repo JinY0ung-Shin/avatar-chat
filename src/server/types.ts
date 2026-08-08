@@ -541,6 +541,34 @@ export interface SkillInfo {
   source: string;
 }
 
+/**
+ * One skill an owner shares from their avatar's knowledge repo (#skill-share).
+ * Metadata snapshot only — the skill CONTENT stays in the owner's repo and is
+ * copied into the learner's repo at learn time (skillTransfer.ts).
+ */
+export interface SharedSkill {
+  id: string;
+  ownerUserId: string;
+  /** The `skills/<slug>` directory name in the owner's knowledge repo. */
+  skillName: string;
+  /** SKILL.md frontmatter name at share time (falls back to the dir name). */
+  displayName: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** A shared skill as browsed by a viewer, with owner attribution for cards. */
+export interface SharedSkillListing extends SharedSkill {
+  owner: {
+    id: string;
+    username: string;
+    displayName: string;
+    alias: string;
+    hasImage: boolean;
+  };
+}
+
 export interface AvatarSummary {
   id: string;
   username: string;
@@ -1107,6 +1135,15 @@ export interface AgentRequest {
    * the owner to set a token first. Set only for owner, non-headless chat prompts.
    */
   gitTokenSet?: boolean;
+  /**
+   * How many skills teammates' avatars currently share with this owner
+   * (#skill-share). Owner-driven turns only (same gate as the
+   * `mcp__skill_exchange__*` registration); drives the standing skill-exchange
+   * prompt note. Undefined means "unknown" for direct unit calls.
+   */
+  learnableSkillCount?: number;
+  /** How many skills this owner currently shares. Same gating as above. */
+  sharedSkillCount?: number;
   /**
    * GitHub host the server is currently configured to use for shorthand repos
    * and repo creation. Safe to show in prompts/tool descriptions; it is not a

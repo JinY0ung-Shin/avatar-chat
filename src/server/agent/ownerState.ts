@@ -50,6 +50,10 @@ export interface OwnerState {
   gitRepoCount: number;
   /** Pending knowledge (request_info) gaps in the owner's inbox. */
   openRequestCount: number;
+  /** Skills shared by visible teammates that this owner could learn (#skill-share). */
+  learnableSkillCount: number;
+  /** Skills this owner currently shares from their knowledge repo. */
+  sharedSkillCount: number;
   /** Env-pinned model (`ANTHROPIC_MODEL`); wins over the admin override. */
   anthropicModel?: string;
   /** Admin-selected model override; used when no env pin is set. */
@@ -88,6 +92,13 @@ export function summarizeOwnerState(
     get openRequestCount() {
       return store.countOpenKnowledgeRequests(avatarUserId);
     },
+    // Lazy like the counts above: read by owner-driven prompts + describe_system.
+    get learnableSkillCount() {
+      return store.countLearnableSkills(avatarUserId);
+    },
+    get sharedSkillCount() {
+      return store.listSharedSkillsByOwner(avatarUserId).length;
+    },
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
     experimentalFeatures: store.getExperimentalFeatures(avatarUserId),
@@ -112,6 +123,8 @@ export function emptyOwnerState(store: Store, config: AppConfig): OwnerState {
     groups: [],
     gitRepoCount: 0,
     openRequestCount: 0,
+    learnableSkillCount: 0,
+    sharedSkillCount: 0,
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
     experimentalFeatures: [],

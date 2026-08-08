@@ -184,7 +184,9 @@ async function runSkillPreflight(config: AppConfig): Promise<DiscoveredSkill[]> 
 /** Cap for SKILL.md reads — frontmatter sits at the top of the file. */
 const SKILL_MD_READ_BYTES = 4096;
 
-function skillMdMeta(filePath: string): { name?: string; description?: string } {
+/** Read a SKILL.md's frontmatter name/description (capped, tolerant). Also
+ *  used by skillTransfer.ts to snapshot share metadata. */
+export function skillMdMeta(filePath: string): { name?: string; description?: string } {
   let head: string;
   try {
     const fd = fs.openSync(filePath, "r");

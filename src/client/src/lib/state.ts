@@ -228,6 +228,7 @@ export function setDocumentTitle(): void {
     inbox: "알림",
   routines: "예약 작업",
     groups: "그룹",
+    skills: "스킬 배우기",
     settings: "내 아바타",
     admin: "관리자",
   };

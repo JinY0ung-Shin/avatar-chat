@@ -32,6 +32,8 @@ export type {
   Plugin,
   RepoPluginContents,
   RoutineJob,
+  SharedSkill,
+  SharedSkillListing,
   SignupMode,
   SkillInfo,
   StoredMessage,
@@ -61,6 +63,7 @@ export type ViewName =
   | "inbox"
   | "routines"
   | "groups"
+  | "skills"
   | "settings"
   | "admin";
 export type SettingsTab = "profile" | "access" | "knowledge";

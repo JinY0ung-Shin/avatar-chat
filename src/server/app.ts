@@ -14,6 +14,7 @@ import { createPluginsRouter } from "./routes/plugins.js";
 import { createKnowledgeRepoRouter } from "./routes/knowledgeRepo.js";
 import { createGroupsRouter } from "./routes/groups.js";
 import { createRoutinesRouter } from "./routes/routines.js";
+import { createSkillShareRouter } from "./routes/skillShare.js";
 import { createChatRouter, conversationHistoryForPrompt, expandChatSlashCommand } from "./routes/chat.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createBrowserExtensionRouter } from "./routes/browserExtension.js";
@@ -168,6 +169,7 @@ export function createApp(services = createServices()) {
   app.use(createKnowledgeRepoRouter(deps));
   app.use(createGroupsRouter(deps));
   app.use(createRoutinesRouter(deps));
+  app.use(createSkillShareRouter(deps));
   app.use(createChatRouter(deps));
   app.use(createBrowserExtensionRouter(deps));
   app.use(createAdminRouter(deps));

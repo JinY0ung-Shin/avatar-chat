@@ -782,6 +782,50 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   success text nudges it when the asking run has a connected repo). Revisit as an `is_routine`-style
   tagged conversation if target-side auditability is ever wanted.
 
+### Skill sharing between avatars (`mcp__skill_exchange__*` + 스킬 배우기, #skill-share)
+- **What it is:** an owner shares skills FROM their knowledge repo (`skills/<slug>/` dirs); teammates
+  browse them in the 스킬 배우기 left tab or via `mcp__skill_exchange__find_shared_skills`, and LEARN one —
+  the server copies the directory into the learner's repo, registers it in the learner's
+  `.claude-plugin/marketplace.json`, and commits+pushes with the LEARNER's identity. Share rows
+  (`shared_skills`, store/avatars.ts) are METADATA SNAPSHOTS only; content is read from the sharer's
+  clone at preview/learn time (`ensureClone` refresh), so learners always get the current version.
+- **Reach = avatar discovery, exactly.** `LEARNABLE_SKILLS_FROM` (store/avatars.ts) mirrors
+  `VISIBILITY_WHERE` minus the self-exception: not suspended + `visibility='group'` + SHARING_TEAMMATES
+  co-membership. A `private` avatar's shares vanish; an `avatar_sharing`-off group grants nothing; your
+  own shares are never "learnable" (managed via `listSharedSkillsByOwner`). Keep the two SQL fragments in
+  lockstep.
+- **Transfer plumbing lives in `skillTransfer.ts`** (server root, NOT knowledgeRepo.ts — it imports both
+  knowledgeRepo and agent/skillDiscovery without cycles): `listRepoSkills` (scan `skills/<dir>/SKILL.md`),
+  `copySkillDir` (lstat walk — symlinks SKIPPED never followed, 512KB/file + 4MB + 200 files + depth 8
+  caps, containment via the exported `resolveInRepo`/`realpathContained`), `learnSkillIntoRepo`
+  (ensureClone both → copy → rewrite identity → `ensureMarketplaceManifest` → `commitAndPush`).
+  On rename the SKILL.md frontmatter `name:` AND `.claude-plugin/plugin.json` `name` are rewritten (a
+  stale frontmatter name would load the skill under the OLD name and collide); a missing plugin.json is
+  created (the marketplace entry is unloadable without one).
+- **Message-coded errors** in the knowledgeRepo style: `SKILL_NOT_FOUND`/`SKILL_EXISTS`/`INVALID_NAME`/
+  `SKILL_FILE_TOO_LARGE`/`SKILL_TOO_LARGE`/`TOO_MANY_FILES`. Decoded to Korean in `routes/skillShare.ts`
+  (`LEARN_ERROR_KO`, 409 drives the client's rename flow) and to English redirects in
+  `skillExchangeTools.decodeLearnError`.
+- **Registration:** `skillExchangeActive` (= `avatars` group enabled && `ownerToolAccess`) drives
+  `allowedTools` + `mcpServers` byte-identically; every handler ALSO self-gates on `viewerIsOwner`
+  (find included — the listing is the OWNER's group view, and a trusted teammate driving this avatar has
+  their own avatar for their view). Group-agent runs are excluded twice over (avatars family forced off +
+  `ownerToolAccess=false`). Owner routines keep the tools.
+- **Metacognition:** `OwnerState.learnableSkillCount`/`sharedSkillCount` (lazy getters) feed BOTH the
+  standing prompt section (promptBuilder, inside the avatars-group block, re-deriving the registration
+  gate) and `describe_system`'s "Skill exchange" line. A LEARNED skill only LOADS on the NEXT
+  conversation (plugin roots mount at run start), so both surfaces + the learn tool result tell the model
+  to `mcp__repo__read_file` the new SKILL.md to apply it immediately.
+- **Hygiene:** `GET /api/skill-share/mine` reconciles rows against the working tree (dir gone → unshare;
+  drifted name/description → re-snapshot); a learn/preview that finds the dir deleted also prunes the
+  stale row; the knowledge-repo PUT clears ALL of the owner's shares on disconnect or repoint
+  (`clearSharedSkills` — a same-repo re-save keeps them). `deleteUser` cascades `shared_skills` by owner
+  (learned copies are FILES in learners' repos, intentionally untouched — like ask_avatar, what crossed
+  the boundary belongs to the receiver).
+- **Bundled/plugin skills are deliberately NOT shareable** — everyone already has the default bundle, and
+  plugin skills are shared by installing the same plugin; only knowledge-repo skills (what the avatar
+  authored/accumulated, incl. `scaffold_skill` output) are listed by `mine`/`share_skill`.
+
 ### Shared helpers (don't re-copy)
 - **`mcpTools.ts`** — `text(message, isError?)` (the MCP result wrapper), `decodeRepoFsError`
   (INVALID_PATH/FILE_TOO_LARGE/NOT_A_FILE/SKILL_EXISTS sentinels), `decodeExecError(err, {redactToken?,

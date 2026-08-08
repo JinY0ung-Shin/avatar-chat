@@ -188,7 +188,14 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
   // it lives. An empty/null repo clears it.
   router.put("/api/me/knowledge-repo", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const repoRaw = req.body?.repo;
+    // Shared-skill listings (#skill-share) advertise `skills/` dirs of the
+    // CONNECTED repo — after a disconnect or repoint they would offer content
+    // that no longer resolves, so drop them. A same-repo re-save keeps them.
+    const previousRepo = store.getKnowledgeRepo(req.user!.id).repo;
     if (repoRaw === null || repoRaw === "") {
+      if (previousRepo) {
+        store.clearSharedSkills(req.user!.id);
+      }
       const user = store.setKnowledgeRepo(req.user!.id, null, null);
       res.json({ user });
       return;
@@ -203,6 +210,9 @@ export function createKnowledgeRepoRouter({ config, store, auditAs }: RouterDeps
       return;
     }
     const branch = safeString(req.body?.branch) || null;
+    if (previousRepo && previousRepo !== repo) {
+      store.clearSharedSkills(req.user!.id);
+    }
     const user = store.setKnowledgeRepo(req.user!.id, repo, branch);
     res.json({ user });
   });

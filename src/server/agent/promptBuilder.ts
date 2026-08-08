@@ -667,6 +667,28 @@ export function buildSystemPromptAppend(
           captureNote,
       );
     }
+    // Standing skill-exchange guidance (#skill-share), OWNER-DRIVEN turns only —
+    // the same derivation as claudeAgent's `skillExchangeActive` registration
+    // gate (avatars family is already forced off for group-agent runs, so
+    // being inside this block plus owner access mirrors it exactly).
+    const skillExchangeEnabled =
+      Boolean(request.viewerIsOwner) &&
+      !(Boolean(request.headless) && !request.allowHeadlessTools);
+    if (skillExchangeEnabled) {
+      const learnable = request.learnableSkillCount ?? 0;
+      const sharedByMe = request.sharedSkillCount ?? 0;
+      const readNote =
+        mcpToolGroupEnabled(request, "personal_knowledge") &&
+        request.knowledgeRepoConfigured !== false
+          ? " A learned skill LOADS from the next conversation; to apply it immediately, read its SKILL.md with `mcp__repo__read_file` and follow it."
+          : " A learned skill loads from the next conversation.";
+      lines.push(
+        `Skill exchange (스킬 배우기): teammates' avatars currently share ${learnable} skill(s) this avatar could learn; this avatar shares ${sharedByMe} of its own. ` +
+          "When the user asks to learn/adopt a capability from another avatar — or asks for something a teammate's shared skill covers better — search with `mcp__skill_exchange__find_shared_skills`, then (with the user's go-ahead) copy it into the knowledge repository with `mcp__skill_exchange__learn_skill`." +
+          readNote +
+          " Share this avatar's own repo skills with `mcp__skill_exchange__share_skill` (stop with `unshare_skill`) when the user asks; sharing reaches same-group teammates only, and the user can also manage it in the '스킬 배우기' tab.",
+      );
+    }
   }
   // Standing canvas guidance for any non-headless turn where the owner enabled
   // the experimental canvas feature (visible to all viewer classes).

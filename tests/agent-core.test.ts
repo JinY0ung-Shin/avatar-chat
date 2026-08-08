@@ -2436,6 +2436,61 @@ describe("buildPrompt", () => {
     expect(p).toContain("Consulting teammate avatars");
   });
 
+  it("gives owner-driven turns the skill-exchange standing guidance with live counts", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        knowledgeRepoConfigured: true,
+        learnableSkillCount: 3,
+        sharedSkillCount: 1,
+      }),
+      0,
+    );
+    expect(p).toContain("Skill exchange (스킬 배우기)");
+    expect(p).toContain("share 3 skill(s)");
+    expect(p).toContain("shares 1 of its own");
+    expect(p).toContain("mcp__skill_exchange__find_shared_skills");
+    expect(p).toContain("mcp__skill_exchange__learn_skill");
+    // With the personal-knowledge tools available, the apply-it-now redirect
+    // names the repo read tool.
+    expect(p).toContain("mcp__repo__read_file");
+  });
+
+  it("keeps skill-exchange guidance OUT of teammate, restricted-headless, and avatars-off turns", () => {
+    const teammate = buildPrompt(
+      req({ viewerIsOwner: false, elevated: true, viewerName: "동료" }),
+      0,
+    );
+    expect(teammate).not.toContain("mcp__skill_exchange__");
+    const restricted = buildPrompt(req({ viewerIsOwner: true, headless: true }), 0);
+    expect(restricted).not.toContain("mcp__skill_exchange__");
+    // Owner routines keep it (same gate as registration: ownerToolAccess).
+    const routine = buildPrompt(
+      req({ viewerIsOwner: true, headless: true, allowHeadlessTools: true }),
+      0,
+    );
+    expect(routine).toContain("mcp__skill_exchange__find_shared_skills");
+    // The avatars tool group deselected drops the whole section.
+    const avatarsOff = buildPrompt(
+      req({ viewerIsOwner: true, mcpToolGroups: ["personal_knowledge"] }),
+      0,
+    );
+    expect(avatarsOff).not.toContain("mcp__skill_exchange__");
+  });
+
+  it("drops the read-it-now repo redirect when personal knowledge is unavailable", () => {
+    const p = buildPrompt(
+      req({
+        viewerIsOwner: true,
+        mcpToolGroups: ["avatars"],
+        knowledgeRepoConfigured: false,
+      }),
+      0,
+    );
+    expect(p).toContain("Skill exchange (스킬 배우기)");
+    expect(p).not.toContain("mcp__repo__read_file");
+  });
+
   it("frames a consultation run as a read-only teammate exchange, never a routine", () => {
     const p = buildPrompt(
       req({

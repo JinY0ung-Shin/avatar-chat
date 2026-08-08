@@ -54,6 +54,7 @@
     { view: "inbox", label: "알림", icon: "bell" },
     { view: "routines", label: "예약 작업", icon: "clock" },
     { view: "groups", label: "그룹", icon: "users" },
+    { view: "skills", label: "스킬 배우기", icon: "sparkles" },
     { view: "settings", label: "내 아바타", icon: "user" },
   ] as const;
 

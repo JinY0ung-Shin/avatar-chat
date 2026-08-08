@@ -44,6 +44,13 @@ These are the invariants the project is built around. New work should reinforce 
   (live group-admin gate, membership required even for sysadmins, audited as `group_agent_update`,
   applies to every member from the NEXT turn); its state rides `GroupAgentState.personaSet`/
   `selfConfigAllowed` into BOTH the prompt branch and `describe_system`.
+- **Skill sharing rides the avatar-discovery boundary — never wider.** A shared skill (metadata row in
+  `shared_skills`; content stays in the owner's knowledge repo) is browsable/learnable EXACTLY where the
+  owner's avatar is visible in 탐색 (`SHARING_TEAMMATES`; private/suspended owners drop out). Learning
+  COPIES `skills/<slug>/` into the learner's own repo and commits as the learner (`skillTransfer.ts` —
+  symlinks never followed, size-capped); a learned skill LOADS from the next conversation, and both
+  metacognition surfaces + the tool result say so. The `mcp__skill_exchange__*` tools are owner-only end
+  to end. Mechanics → `docs/ARCHITECTURE-NOTES.md` §Skill sharing.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the
   subprocess env), so Bash `git push`/`gh` can never authenticate. Route every git-ish capability through
   an in-process MCP bridge (`mcp__repo__*`/`mcp__git_repo__*`/`mcp__group_repo__*`) and keep the

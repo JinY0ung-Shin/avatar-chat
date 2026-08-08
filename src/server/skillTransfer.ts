@@ -1,0 +1,300 @@
+import fs from "node:fs";
+import fsp from "node:fs/promises";
+import path from "node:path";
+import { sanitizeName } from "./marketplace.js";
+import {
+  SKILL_DIR,
+  ensureClone,
+  ensureMarketplaceManifest,
+  commitAndPush,
+  resolveInRepo,
+  realpathContained,
+  type KnowledgeRepoContext,
+} from "./knowledgeRepo.js";
+import { skillMdMeta } from "./agent/skillDiscovery.js";
+
+// Skill transfer between knowledge repos (#skill-share): the "learn" half of
+// skill sharing. The share rows (store/avatars.ts) are metadata only; THIS
+// module materializes a learned skill by copying `skills/<slug>/` from the
+// sharer's clone into the learner's repo, registering it in the learner's
+// marketplace manifest (like scaffoldSkill), and committing with the learner's
+// identity. All path handling goes through knowledgeRepo's resolveInRepo +
+// realpathContained so the git-safety rules stay single-sourced.
+//
+// The copied tree is TEACHING MATERIAL authored by a teammate: symlinks are
+// never followed (skipped + counted), sizes are capped, and everything lands
+// inside the learner's own repo where their avatar can inspect and adapt it.
+
+/** Per-file cap — mirrors knowledgeRepo's MAX_FILE_BYTES for repo writes. */
+const MAX_SKILL_FILE_BYTES = 512 * 1024;
+/** Whole-skill cap: a skill directory bigger than this refuses to transfer. */
+const MAX_SKILL_TOTAL_BYTES = 4 * 1024 * 1024;
+/** File-count + depth bounds so a pathological tree can't wedge the copy. */
+const MAX_SKILL_FILES = 200;
+const MAX_SKILL_DEPTH = 8;
+
+/** One shareable skill directory in a repo working tree. */
+export interface RepoSkillEntry {
+  /** The `skills/<slug>` directory name — the share identity. */
+  slug: string;
+  /** Frontmatter name (falls back to the slug). */
+  name: string;
+  description: string;
+}
+
+/**
+ * Normalize a human-entered skill name into a `skills/<slug>` directory name.
+ * Byte-for-byte the slug rule scaffoldSkill uses, so learned and scaffolded
+ * skills live under the same naming scheme. Returns "" for an unusable name
+ * (callers decide the error).
+ */
+export function normalizeSkillSlug(name: string): string {
+  return sanitizeName(name.trim()).toLowerCase().replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Enumerate the skills of one repo working tree by scanning
+ * `skills/<dir>/SKILL.md` (the shareable set — bundled/plugin skills are
+ * deliberately NOT included; everyone already has the bundles, and plugins are
+ * shared by installing the same plugin). Tolerant: no skills dir → [].
+ */
+export function listRepoSkills(repoRoot: string): RepoSkillEntry[] {
+  const dir = resolveInRepo(repoRoot, SKILL_DIR);
+  if (!dir) {
+    return [];
+  }
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const out: RepoSkillEntry[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) {
+      continue;
+    }
+    const mdPath = path.join(dir, entry.name, "SKILL.md");
+    if (!fs.existsSync(mdPath)) {
+      continue;
+    }
+    const meta = skillMdMeta(mdPath);
+    out.push({
+      slug: entry.name,
+      name: meta.name || entry.name,
+      description: meta.description ?? "",
+    });
+  }
+  return out.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+/** Read one skill's metadata from a repo, or null when it doesn't exist. */
+export function readRepoSkill(repoRoot: string, slug: string): RepoSkillEntry | null {
+  return listRepoSkills(repoRoot).find((s) => s.slug === slug) ?? null;
+}
+
+interface CopyStats {
+  files: number;
+  bytes: number;
+  skippedSymlinks: number;
+}
+
+/**
+ * Recursively copy one skill directory between repo working trees. Source
+ * entries are lstat'ed: symlinks are SKIPPED (never followed — a committed
+ * link could point anywhere on the server), regular files are size-capped,
+ * anything else (sockets, devices) is skipped. Throws message-coded errors in
+ * the knowledgeRepo style: SKILL_NOT_FOUND, SKILL_EXISTS, INVALID_NAME,
+ * SKILL_FILE_TOO_LARGE, SKILL_TOO_LARGE, TOO_MANY_FILES.
+ */
+export async function copySkillDir(
+  srcRoot: string,
+  srcSlug: string,
+  destRoot: string,
+  destSlug: string,
+): Promise<CopyStats> {
+  // Slugs are single path segments by construction; anything else is unsafe.
+  if (
+    srcSlug !== sanitizeName(srcSlug) ||
+    destSlug !== sanitizeName(destSlug) ||
+    !srcSlug ||
+    !destSlug
+  ) {
+    throw new Error("INVALID_NAME");
+  }
+  const srcLex = resolveInRepo(srcRoot, `${SKILL_DIR}/${srcSlug}`);
+  const destLex = resolveInRepo(destRoot, `${SKILL_DIR}/${destSlug}`);
+  if (!srcLex || !destLex) {
+    throw new Error("INVALID_NAME");
+  }
+  // Source must exist (realpath containment guards symlinked ancestors) and
+  // actually be a skill directory.
+  const src = realpathContained(srcRoot, srcLex, true);
+  if (!src || !fs.existsSync(path.join(src, "SKILL.md"))) {
+    throw new Error("SKILL_NOT_FOUND");
+  }
+  if (fs.lstatSync(src).isSymbolicLink() || !fs.statSync(src).isDirectory()) {
+    throw new Error("SKILL_NOT_FOUND");
+  }
+  // Destination must not exist yet; its (possibly not-yet-created) path must
+  // stay inside the learner's repo after resolving existing ancestors.
+  const dest = realpathContained(destRoot, destLex, false);
+  if (!dest) {
+    throw new Error("INVALID_NAME");
+  }
+  if (fs.existsSync(dest)) {
+    throw new Error("SKILL_EXISTS");
+  }
+  const stats: CopyStats = { files: 0, bytes: 0, skippedSymlinks: 0 };
+  await copyTree(src, dest, stats, 0);
+  return stats;
+}
+
+async function copyTree(
+  srcDir: string,
+  destDir: string,
+  stats: CopyStats,
+  depth: number,
+): Promise<void> {
+  if (depth > MAX_SKILL_DEPTH) {
+    throw new Error("TOO_MANY_FILES");
+  }
+  await fsp.mkdir(destDir, { recursive: true });
+  const entries = await fsp.readdir(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const srcPath = path.join(srcDir, entry.name);
+    const destPath = path.join(destDir, entry.name);
+    const stat = await fsp.lstat(srcPath);
+    if (stat.isSymbolicLink()) {
+      stats.skippedSymlinks += 1;
+      continue;
+    }
+    if (stat.isDirectory()) {
+      await copyTree(srcPath, destPath, stats, depth + 1);
+      continue;
+    }
+    if (!stat.isFile()) {
+      continue; // sockets/FIFOs etc. — never part of a skill
+    }
+    if (stat.size > MAX_SKILL_FILE_BYTES) {
+      throw new Error("SKILL_FILE_TOO_LARGE");
+    }
+    stats.files += 1;
+    stats.bytes += stat.size;
+    if (stats.files > MAX_SKILL_FILES) {
+      throw new Error("TOO_MANY_FILES");
+    }
+    if (stats.bytes > MAX_SKILL_TOTAL_BYTES) {
+      throw new Error("SKILL_TOO_LARGE");
+    }
+    // Raw byte copy (binary-safe — skills may bundle small assets/scripts).
+    await fsp.copyFile(srcPath, destPath);
+  }
+}
+
+/**
+ * Rewrite the copied skill's IDENTITY files so it loads under `slug`:
+ * `.claude-plugin/plugin.json` (created when the source skill lacked one —
+ * without it the marketplace entry is not loadable) and, when the frontmatter
+ * carries a `name:`, the SKILL.md name line (the CLI prefers frontmatter over
+ * the directory name, so a stale name would collide with the source skill).
+ */
+async function rewriteSkillIdentity(
+  destRoot: string,
+  slug: string,
+  description: string,
+): Promise<void> {
+  const dir = resolveInRepo(destRoot, `${SKILL_DIR}/${slug}`)!;
+  const pluginJsonPath = path.join(dir, ".claude-plugin", "plugin.json");
+  let manifest: Record<string, unknown> = {};
+  try {
+    manifest = JSON.parse(await fsp.readFile(pluginJsonPath, "utf8")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    manifest = {};
+  }
+  manifest.name = slug;
+  if (description && !manifest.description) {
+    manifest.description = description;
+  }
+  await fsp.mkdir(path.dirname(pluginJsonPath), { recursive: true });
+  await fsp.writeFile(pluginJsonPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+  const mdPath = path.join(dir, "SKILL.md");
+  try {
+    const raw = await fsp.readFile(mdPath, "utf8");
+    if (raw.startsWith("---")) {
+      const end = raw.indexOf("\n---", 3);
+      if (end > 0) {
+        const frontmatter = raw.slice(0, end);
+        const rewritten = frontmatter.replace(/^name:\s*.+$/m, `name: ${slug}`);
+        if (rewritten !== frontmatter) {
+          await fsp.writeFile(mdPath, rewritten + raw.slice(end), "utf8");
+        }
+      }
+    }
+  } catch {
+    // SKILL.md unreadable — copy already validated it exists; leave as-is.
+  }
+}
+
+/** Everything the learn flow needs to report back to its caller. */
+export interface LearnResult {
+  /** The slug the skill landed under in the learner's repo. */
+  slug: string;
+  /** Repo-relative path of the learned SKILL.md (UI deep-link / tool text). */
+  skillPath: string;
+  /** False when the commit found a clean tree (should not happen in practice). */
+  committed: boolean;
+  /** Symlinks in the source tree that were skipped rather than followed. */
+  skippedSymlinks: number;
+  /**
+   * True when the learner restricts loaded marketplace plugins to a subset
+   * (`selected`) — the learned skill won't LOAD until they enable it there.
+   */
+  needsSelection: boolean;
+}
+
+/**
+ * Learn one shared skill: refresh both clones, copy the skill directory,
+ * rewrite its identity, advertise it in the learner's marketplace manifest,
+ * and commit+push with the learner's git identity. Message-coded errors from
+ * copySkillDir propagate; clone/push failures throw raw git errors (callers
+ * scrub via scrubGitError).
+ */
+export async function learnSkillIntoRepo(opts: {
+  sharerCtx: KnowledgeRepoContext;
+  learnerCtx: KnowledgeRepoContext;
+  /** The sharer's `skills/<slug>` directory name (share row's skillName). */
+  skillName: string;
+  /** Optional different name to learn under (conflict resolution / rebrand). */
+  newName?: string;
+  commitMessage: string;
+  identity: { name: string; email: string };
+}): Promise<LearnResult> {
+  const destSlug = opts.newName ? normalizeSkillSlug(opts.newName) : opts.skillName;
+  if (!destSlug) {
+    throw new Error("INVALID_NAME");
+  }
+  // Refresh the SHARER's clone so the learner gets the current version, then
+  // the learner's own working tree (also creates it on first use).
+  const srcRoot = await ensureClone(opts.sharerCtx);
+  const destRoot = await ensureClone(opts.learnerCtx);
+  const source = readRepoSkill(srcRoot, opts.skillName);
+  if (!source) {
+    throw new Error("SKILL_NOT_FOUND");
+  }
+  const stats = await copySkillDir(srcRoot, opts.skillName, destRoot, destSlug);
+  await rewriteSkillIdentity(destRoot, destSlug, source.description);
+  await ensureMarketplaceManifest(destRoot, destSlug);
+  const committed = await commitAndPush(opts.learnerCtx, opts.commitMessage, opts.identity);
+  return {
+    slug: destSlug,
+    skillPath: `${SKILL_DIR}/${destSlug}/SKILL.md`,
+    committed,
+    skippedSymlinks: stats.skippedSymlinks,
+    needsSelection: opts.learnerCtx.selected !== null,
+  };
+}

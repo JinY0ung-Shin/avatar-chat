@@ -1,0 +1,277 @@
+import { Router } from "express";
+import { requireAuth, type AuthenticatedRequest } from "../auth.js";
+import logger from "../logger.js";
+import { scrubGitError } from "../marketplace.js";
+import {
+  ensureClone,
+  knowledgeRepoContextFor,
+  commitIdentityFor,
+  readFile,
+  SKILL_DIR,
+} from "../knowledgeRepo.js";
+import {
+  learnSkillIntoRepo,
+  listRepoSkills,
+  normalizeSkillSlug,
+  readRepoSkill,
+} from "../skillTransfer.js";
+import { apiError, safeString, type RouterDeps } from "./_shared.js";
+
+// ---- Skill sharing between avatars (#skill-share) ----------------------
+// The owner-side management (share/unshare my repo skills) and the learner
+// side (browse skills visible teammates shared, learn one into my repo).
+// Reach mirrors avatar discovery: you can browse/learn a share iff you could
+// see the owner's avatar in 탐색 (store.listLearnableSkills enforces it).
+
+/** Korean messages for the skillTransfer message-coded errors. */
+const LEARN_ERROR_KO: Record<string, { status: number; message: string }> = {
+  SKILL_EXISTS: {
+    status: 409,
+    message: "같은 이름의 스킬이 내 저장소에 이미 있습니다. 다른 이름을 지정해 주세요.",
+  },
+  SKILL_NOT_FOUND: {
+    status: 404,
+    message: "공유한 아바타의 저장소에서 이 스킬을 찾을 수 없습니다.",
+  },
+  INVALID_NAME: { status: 400, message: "스킬 이름이 올바르지 않습니다." },
+  SKILL_FILE_TOO_LARGE: {
+    status: 413,
+    message: "스킬 파일이 너무 커서 가져올 수 없습니다 (파일당 512KB 제한).",
+  },
+  SKILL_TOO_LARGE: {
+    status: 413,
+    message: "스킬이 너무 커서 가져올 수 없습니다 (전체 4MB 제한).",
+  },
+  TOO_MANY_FILES: {
+    status: 413,
+    message: "스킬에 파일이 너무 많아 가져올 수 없습니다.",
+  },
+};
+
+export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): Router {
+  const router = Router();
+
+  // My avatar's knowledge-repo skills with their shared state. No repo is a
+  // NORMAL state (the tab renders a connect guide), not an error. Serving this
+  // list also reconciles the share rows with the working tree: stale rows
+  // (skill dir deleted) are unshared, drifted metadata is re-snapshotted.
+  router.get(
+    "/api/skill-share/mine",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+      if (!ctx) {
+        res.json({ repoConfigured: false, skills: [] });
+        return;
+      }
+      let repoRoot: string;
+      try {
+        repoRoot = await ensureClone(ctx);
+      } catch (error) {
+        apiError(res, 502, `지식 저장소를 불러오지 못했습니다: ${scrubGitError(error)}`);
+        return;
+      }
+      const repoSkills = listRepoSkills(repoRoot);
+      const bySlug = new Map(repoSkills.map((s) => [s.slug, s]));
+      const sharedRows = store.listSharedSkillsByOwner(req.user!.id);
+      const shared = new Set<string>();
+      for (const row of sharedRows) {
+        const current = bySlug.get(row.skillName);
+        if (!current) {
+          store.unshareSkill(req.user!.id, row.skillName); // dir gone → stale row
+          continue;
+        }
+        shared.add(row.skillName);
+        if (current.name !== row.displayName || current.description !== row.description) {
+          store.shareSkill(req.user!.id, {
+            skillName: current.slug,
+            displayName: current.name,
+            description: current.description,
+          });
+        }
+      }
+      res.json({
+        repoConfigured: true,
+        skills: repoSkills.map((s) => ({
+          slug: s.slug,
+          name: s.name,
+          description: s.description,
+          shared: shared.has(s.slug),
+        })),
+      });
+    },
+  );
+
+  // Share one of my repo skills (idempotent re-share refreshes the snapshot).
+  router.post(
+    "/api/skill-share/share",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const skillName = safeString(req.body?.skill);
+      if (!skillName || normalizeSkillSlug(skillName) !== skillName) {
+        apiError(res, 400, "공유할 스킬 이름이 올바르지 않습니다.");
+        return;
+      }
+      const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+      if (!ctx) {
+        apiError(res, 400, "지식 저장소가 연결되어 있지 않습니다.");
+        return;
+      }
+      let repoRoot: string;
+      try {
+        repoRoot = await ensureClone(ctx);
+      } catch (error) {
+        apiError(res, 502, `지식 저장소를 불러오지 못했습니다: ${scrubGitError(error)}`);
+        return;
+      }
+      const skill = readRepoSkill(repoRoot, skillName);
+      if (!skill) {
+        apiError(res, 404, "지식 저장소에 없는 스킬입니다.");
+        return;
+      }
+      const row = store.shareSkill(req.user!.id, {
+        skillName: skill.slug,
+        displayName: skill.name,
+        description: skill.description,
+      });
+      auditAs(req, "skill_share", `${skill.slug} 공유`);
+      res.json({ shared: row });
+    },
+  );
+
+  // Stop sharing one skill (the repo copy is untouched).
+  router.delete(
+    "/api/skill-share/share/:skillName",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const skillName = req.params.skillName;
+      if (!store.unshareSkill(req.user!.id, skillName)) {
+        apiError(res, 404, "공유 중인 스킬이 아닙니다.");
+        return;
+      }
+      auditAs(req, "skill_unshare", `${skillName} 공유 해제`);
+      res.json({ ok: true });
+    },
+  );
+
+  // Skills shared by teammates whose avatar I can see (metadata only — never
+  // touches a clone, so the tab list stays fast).
+  router.get(
+    "/api/skill-share/available",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const query = safeString(req.query?.query);
+      res.json({
+        skills: store.listLearnableSkills(req.user!.id, query, { limit: 100 }),
+      });
+    },
+  );
+
+  // One shared skill with a fresh SKILL.md preview (refreshes the sharer's
+  // clone, so the preview shows what would actually be learned).
+  router.get(
+    "/api/skill-share/available/:id",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const listing = store.getLearnableSkill(req.user!.id, req.params.id);
+      if (!listing) {
+        apiError(res, 404, "공유된 스킬을 찾을 수 없습니다.");
+        return;
+      }
+      const sharerCtx = knowledgeRepoContextFor(store, listing.ownerUserId, config);
+      if (!sharerCtx) {
+        apiError(res, 410, "공유한 사용자의 지식 저장소가 더 이상 연결되어 있지 않습니다.");
+        return;
+      }
+      try {
+        const srcRoot = await ensureClone(sharerCtx);
+        const content = await readFile(srcRoot, `${SKILL_DIR}/${listing.skillName}/SKILL.md`);
+        res.json({ skill: listing, content });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "NOT_FOUND" || (error as NodeJS.ErrnoException).code === "ENOENT") {
+          store.unshareSkill(listing.ownerUserId, listing.skillName); // stale share
+          apiError(res, 404, "공유한 아바타의 저장소에서 이 스킬을 찾을 수 없습니다.");
+          return;
+        }
+        apiError(res, 502, `스킬을 불러오지 못했습니다: ${scrubGitError(error)}`);
+      }
+    },
+  );
+
+  // Learn (전수): copy the shared skill into MY repo and commit as me.
+  router.post(
+    "/api/skill-share/learn",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const id = safeString(req.body?.id);
+      const rawNewName = safeString(req.body?.newName);
+      if (!id) {
+        apiError(res, 400, "배울 스킬을 선택해 주세요.");
+        return;
+      }
+      if (rawNewName.length > 100) {
+        apiError(res, 400, "새 스킬 이름이 너무 깁니다.");
+        return;
+      }
+      const listing = store.getLearnableSkill(req.user!.id, id);
+      if (!listing) {
+        apiError(res, 404, "공유된 스킬을 찾을 수 없습니다.");
+        return;
+      }
+      const learnerCtx = knowledgeRepoContextFor(store, req.user!.id, config);
+      if (!learnerCtx) {
+        apiError(res, 400, "먼저 설정에서 내 지식 저장소를 연결해 주세요.");
+        return;
+      }
+      const sharerCtx = knowledgeRepoContextFor(store, listing.ownerUserId, config);
+      if (!sharerCtx) {
+        apiError(res, 410, "공유한 사용자의 지식 저장소가 더 이상 연결되어 있지 않습니다.");
+        return;
+      }
+      try {
+        const result = await learnSkillIntoRepo({
+          sharerCtx,
+          learnerCtx,
+          skillName: listing.skillName,
+          newName: rawNewName || undefined,
+          commitMessage: `Learn skill "${listing.skillName}" from @${listing.owner.username}`,
+          identity: commitIdentityFor(store, req.user!),
+        });
+        auditAs(
+          req,
+          "skill_learn",
+          `@${listing.owner.username}의 ${listing.skillName} 전수 (→ ${result.slug})`,
+        );
+        logger.info(
+          {
+            userId: req.user!.id,
+            ownerUserId: listing.ownerUserId,
+            skill: listing.skillName,
+            slug: result.slug,
+          },
+          "shared skill learned",
+        );
+        res.json({
+          slug: result.slug,
+          skillPath: result.skillPath,
+          needsSelection: result.needsSelection,
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        const known = LEARN_ERROR_KO[message];
+        if (known) {
+          if (message === "SKILL_NOT_FOUND") {
+            store.unshareSkill(listing.ownerUserId, listing.skillName); // stale share
+          }
+          apiError(res, known.status, known.message);
+          return;
+        }
+        auditAs(req, "skill_learn", `@${listing.owner.username}의 ${listing.skillName} 전수 실패`, "error");
+        apiError(res, 502, `스킬을 가져오지 못했습니다: ${scrubGitError(error)}`);
+      }
+    },
+  );
+
+  return router;
+}

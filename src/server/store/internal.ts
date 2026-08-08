@@ -516,6 +516,23 @@ export class StoreBase {
         created_at TEXT,
         updated_at TEXT
       );
+      -- Skills shared from an owner's knowledge repo (#skill-share): one row per
+      -- (owner, skills/<slug> dir). METADATA SNAPSHOT ONLY — the content stays in
+      -- the owner's repo and is copied into the learner's repo at learn time.
+      -- Reach mirrors avatar discovery (avatars.ts VISIBILITY_WHERE): suspended or
+      -- private owners and non-teammates never see the row. A brand-new table:
+      -- CREATE TABLE IF NOT EXISTS IS the existing-deployment migration.
+      CREATE TABLE IF NOT EXISTS shared_skills (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        skill_name TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        created_at TEXT,
+        updated_at TEXT,
+        UNIQUE (owner_user_id, skill_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_shared_skills_owner ON shared_skills(owner_user_id);
       CREATE INDEX IF NOT EXISTS idx_group_agents_group ON group_agents(group_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);
