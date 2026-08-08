@@ -2349,11 +2349,57 @@ async function assertRefTabUsable(uid, patterns, source) {
  */
 const ORIGIN_EXEMPT_OPS = new Set(["navigate", "navigate_back"]);
 
-/** Shared by both back paths: the CDP one reads it off the history, the escape
- * path off chrome.tabs.goBack's rejection, and an agent must not be able to tell
- * which one answered. */
+/** Shared by both back paths for the ONE thing they can both establish: there is
+ * no earlier entry. The CDP path reads that off the history; the escape path can
+ * only infer it from chrome.tabs.goBack's rejection, so it must be sure the
+ * rejection actually says so — see BACK_EXHAUSTED_REJECTION. */
 const NO_HISTORY_MESSAGE =
   "This tab has no earlier history entry to go back to. Open a page explicitly with mcp__browser__navigate instead.";
+
+/**
+ * chrome.tabs.goBack rejecting because the history really is exhausted, which is
+ * the only rejection NO_HISTORY_MESSAGE may be told about.
+ *
+ * On an unattachable page this call has more than one failure mode, and mapping
+ * every rejection to "nothing to go back to" was measured to be a lie: a tab
+ * hijacked by a PDF viewer answered that while the earlier entry demonstrably
+ * existed. `tabs.goBack` needs access to the tab's CURRENT page (unlike
+ * `tabs.update({url})`, which is why the navigate escape works), so another
+ * extension's page can refuse it on grounds that have nothing to do with the
+ * history. Diagnosing a missing entry there sends the agent looking for a
+ * problem it does not have while hiding the exit that does work.
+ *
+ * Matched on Chrome's own phrasing ("Cannot find a previous page in history.").
+ * Anything unrecognized is reported verbatim rather than translated — an
+ * unfamiliar rejection is exactly the case where inventing a cause is the bug.
+ * Note this predicate is the SECONDARY guard: the primary verdict is the
+ * post-condition below, because the common failure never rejects at all.
+ */
+const BACK_EXHAUSTED_REJECTION = /page in history|cannot go back|no (?:previous|earlier) (?:page|entry)/i;
+
+/**
+ * The escape `goBack` did not take the tab anywhere, for a reason that is NOT
+ * history exhaustion. Two distinct failures land here — an outright rejection,
+ * and the silent no-op — so say which one was actually observed and nothing
+ * beyond it, then point at the op that IS measured to work from such a page.
+ */
+function backEscapeFailure({ error = null, url = "" } = {}) {
+  // Chrome's own rejections already end in a period; quoting them verbatim into
+  // a sentence of ours must not produce "page..".
+  const raw = String(error?.message || error || "").trim().replace(/\.+$/, "");
+  const observed = error
+    ? `The browser refused the back step itself${raw ? `: ${raw}` : ""}.`
+    : `The back step reported success but left the tab on the same page${url ? ` (${url})` : ""}.`;
+  return {
+    ok: false,
+    message:
+      "Going back from this page did not move the tab, and NOT because the history is empty — an earlier " +
+      `entry may well exist. ${observed} ` +
+      "This happens on pages the bridge cannot attach to (another extension's viewer, chrome://): stepping back " +
+      "there does not work and retrying will not change it. Leave with mcp__browser__navigate to an explicit " +
+      "http(s) URL, which does work from here, or open a fresh page with mcp__browser__new_tab.",
+  };
+}
 
 /**
  * Re-attach after an extension-API navigation, best effort. The tail's snapshot
@@ -2579,14 +2625,28 @@ async function performOp(message) {
       // still decides what may be READ, and stepping back from a page the bridge
       // cannot even attach to is at worst neutral — it is already reading
       // nothing there.
+      const before = (await chrome.tabs.get(tab.id)).url || "";
       try {
         await chrome.tabs.goBack(tab.id);
-      } catch {
-        // The only failure this call has: nothing to go back to. Answered with
-        // the same text the CDP path uses, so which one ran stays invisible.
-        return { ok: false, message: NO_HISTORY_MESSAGE };
+      } catch (error) {
+        // Only the rejection that actually reports an exhausted history gets the
+        // shared text; anything else is reported as the refusal it is, without
+        // naming a cause we did not observe.
+        if (BACK_EXHAUSTED_REJECTION.test(String(error?.message || error || ""))) {
+          return { ok: false, message: NO_HISTORY_MESSAGE };
+        }
+        return backEscapeFailure({ error });
       }
       await waitForLoad(tab.id);
+      // The verdict that matters, because the common failure never rejects.
+      // Measured 2026-08-09 on a PDF-viewer-hijacked tab whose earlier entry was
+      // PROVEN to exist (stepped back to it over CDP moments before the hijack):
+      // goBack resolves cleanly and moves nothing, twice in a row. Trusting the
+      // catch alone let the caller be told the step "completed" when the tab had
+      // not budged — a worse lie than the one this replaced, since it invited
+      // reading a page the agent had never left.
+      const after = (await chrome.tabs.get(tab.id)).url || "";
+      if (before && after === before) return backEscapeFailure({ url: after });
       await reattachAfterEscape(tab.id);
     } else {
       const { currentIndex, entries } = await sendCdp(

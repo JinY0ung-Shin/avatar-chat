@@ -819,10 +819,12 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
     tool(
       "navigate_back",
       "Go back one entry in the current tab's history, like the browser's Back button, and return a fresh " +
-        "snapshot. Like `navigate` it is judged on its DESTINATION rather than on the page you are leaving, " +
-        "so it works even from a blocked or extension-hijacked page. Errors when there is no earlier entry " +
-        "— use `navigate` with an explicit URL instead. If the PREVIOUS page is itself outside the " +
-        "operator's allowlist the step is refused; report that rather than retrying.",
+        "snapshot. Like `navigate` it is judged on its DESTINATION rather than on the page you are leaving, so a " +
+        "page the operator blocked does not trap it. Errors when there is no earlier entry — use `navigate` with " +
+        "an explicit URL instead. If the PREVIOUS page is itself outside the operator's allowlist the step is " +
+        "refused; report that rather than retrying. This is NOT the way out of a tab another extension hijacked " +
+        "(a PDF viewer, `chrome-extension://`): the back step there is unreliable and retrying will not help, so " +
+        "escape such a tab with `navigate` to an explicit URL, which does work.",
       {},
       async () => {
         const denied = gate();
