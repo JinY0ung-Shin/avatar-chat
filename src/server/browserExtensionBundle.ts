@@ -44,10 +44,11 @@ export const BROWSER_EXTENSION_DIR = path.join(process.cwd(), "extension");
 
 /**
  * Oldest installed extension build the CURRENT server can still drive
- * correctly. The composer badge shows an install at or above this as green
- * (compatible) even when it differs from the bundled version, so users are
- * only pushed through a re-download when the agent-facing op contract
- * actually broke — not on every extension-folder touch.
+ * correctly. An install at or above this reads as `compatible` in the composer
+ * badge — its own non-alarming rung ("업데이트 있음") rather than an update
+ * order — even when it differs from the bundled version, so users are only
+ * pushed through a re-download when the agent-facing op contract actually
+ * broke, not on every extension-folder touch.
  *
  * Bump this ONLY when the server starts emitting a bridge op/field an older
  * build would answer with `Unsupported operation` (or silently mishandle).

@@ -885,10 +885,17 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   description in `shared/mcpToolGroups.ts`. A field missed in the relay arrives `undefined` at the
   extension with no error anywhere.
 - **`BROWSER_EXTENSION_MIN_COMPATIBLE` (`browserExtensionBundle.ts`) is a REINSTALL order** — raise it
-  only when the op contract breaks. Below it every install badges orange in the composer.
+  only when the op contract breaks. Below it every install badges orange (`outdated`) in the composer.
   `tests/infra.test.ts` pins it at or below the bundled manifest version: above it, even a
   just-downloaded extension badges orange forever, telling users to update to something no download
   provides.
+- **The composer badge has FOUR rungs, and `compatible` is the one that keeps getting re-collapsed.**
+  `ChatView.svelte` holds ONE `bridgeCompat.level` (`current`/`compatible`/`outdated`/`unreachable`) —
+  the reachability and version axes were two fields that always moved together. `compatible` (at/above
+  the floor, behind the bundle) is deliberately NOT folded into `current`: it works right now, so the
+  temptation is to call it healthy, but that hides an available update. It renders `--info` blue with
+  its own "· 업데이트 있음" text and IS clickable into 설정 → 접근/보안; only `current` is an inert span.
+  `tests/svelte-chat-bridge-badge.test.ts` pins all of that.
 - **`screenshot` AND `click_at` are gated on the RUN's resolved vision policy** (`runVisionEnabled` →
   `BrowserToolsContext.vision`, defaulting to `false` so an unwired caller gets a polite refusal rather
   than an API error; click_at's coordinates have no source without a screenshot). `routes/chat.ts` caps

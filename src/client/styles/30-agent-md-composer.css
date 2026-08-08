@@ -1223,8 +1223,19 @@ button.composer-bridge:focus-visible {
   vertical-align: 1px;
   background: var(--muted);
 }
-.composer-bridge[data-status="ok"]::before {
-  background: var(--accent);
+/* Four rungs, escalating: matches the server bundle → works but an update
+   exists → below the compatibility floor → cannot be reached at all. `current`
+   keeps the inherited hint-row colour and tints only its dot — the healthy
+   state has nothing to say. The other three tint their text too, since each is
+   a button the user may want to act on. */
+.composer-bridge[data-status="current"]::before {
+  background: var(--ok);
+}
+.composer-bridge[data-status="compatible"] {
+  color: var(--info);
+}
+.composer-bridge[data-status="compatible"]::before {
+  background: var(--info);
 }
 .composer-bridge[data-status="outdated"] {
   color: var(--warn);

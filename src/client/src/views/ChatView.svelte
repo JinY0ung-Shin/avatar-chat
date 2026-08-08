@@ -265,15 +265,22 @@
   // INSTALLED extension build against the server bundle AND the server's
   // min-compatible floor, so a stale install shows up before the avatar hits
   // "Unsupported operation" — but an install that merely differs while staying
-  // at/above the floor keeps working (green) instead of demanding a re-download
-  // on every extension-folder touch. Probed once per app load — both sides only
+  // at/above the floor keeps working instead of demanding a re-download on
+  // every extension-folder touch. Probed once per app load — both sides only
   // change with a deploy or an extension reload, and either reloads this page in
   // practice. The probe only starts once a pane actually has the browser tool
   // group selected, so panes that never touch the bridge never ping it.
+  //
+  // FOUR distinct states, not three: `compatible` (works now, an update exists)
+  // is its own rung between "matches the server" and "must update", because
+  // collapsing it into the healthy state hides an update the user could take at
+  // their convenience. `unreachable` is the version verdict's absence, so the
+  // reachability and version axes fold into ONE level the badge renders from —
+  // they were two fields that always moved together.
+  type BridgeBadgeLevel = BridgeVersionVerdict | "unreachable";
   let bridgeCompat:
     | {
-        status: "ok" | "outdated" | "unreachable";
-        verdict: BridgeVersionVerdict;
+        level: BridgeBadgeLevel;
         installed: string;
         expected: string;
       }
@@ -298,11 +305,10 @@
       const expected = typeof meta.version === "string" ? meta.version : "";
       const floor = typeof meta.minCompatibleVersion === "string" ? meta.minCompatibleVersion : null;
       const installed = reply?.ok && typeof reply.version === "string" ? reply.version : "";
-      const verdict = bridgeVersionVerdict(installed, expected, floor);
       bridgeCompat =
         !reply || !reply.ok
-          ? { status: "unreachable", verdict: "outdated", installed: "", expected }
-          : { status: verdict === "outdated" ? "outdated" : "ok", verdict, installed, expected };
+          ? { level: "unreachable", installed: "", expected }
+          : { level: bridgeVersionVerdict(installed, expected, floor), installed, expected };
     } catch {
       // Transient failure — allow a couple of retries on the next reactive fire,
       // then give up (until a reload) so a persistent 5xx can't spin forever.
@@ -321,19 +327,23 @@
     void probeBridgeCompat();
   }
 
+  // Each rung carries its own TEXT, not just its own colour: `current` and
+  // `compatible` would otherwise read identically to anyone who cannot tell the
+  // two dots apart, and a difference nobody can name is not a state.
   function bridgeBadge(compat: NonNullable<typeof bridgeCompat>): { text: string; title: string } {
-    if (compat.status === "ok") {
-      return compat.verdict === "current"
-        ? {
-            text: `브라우저 확장 v${compat.installed}`,
-            title: "설치된 브라우저 확장이 서버가 배포하는 버전과 일치합니다.",
-          }
-        : {
-            text: `브라우저 확장 v${compat.installed}`,
-            title: `서버 번들(v${compat.expected || "?"})과 다르지만 호환되는 버전이라 그대로 쓸 수 있습니다. 설정 → 접근/보안의 원클릭 업데이트로 편할 때 올리세요.`,
-          };
+    if (compat.level === "current") {
+      return {
+        text: `브라우저 확장 v${compat.installed}`,
+        title: "설치된 브라우저 확장이 서버가 배포하는 버전과 일치합니다.",
+      };
     }
-    if (compat.status === "outdated") {
+    if (compat.level === "compatible") {
+      return {
+        text: `브라우저 확장 v${compat.installed} · 업데이트 있음`,
+        title: `서버 번들(v${compat.expected || "?"})과 다르지만 호환되는 버전이라 그대로 쓸 수 있습니다. 설정 → 접근/보안의 원클릭 업데이트로 편할 때 올리세요.`,
+      };
+    }
+    if (compat.level === "outdated") {
       return {
         text: `확장 업데이트 필요 (${compat.installed ? `v${compat.installed}` : "구버전"} → v${compat.expected || "?"})`,
         title: `설치된 브라우저 확장이 이 서버와 호환되지 않는 버전입니다. 설정 → 접근/보안에서 원클릭 업데이트를 누르거나, zip을 다시 받아 폴더를 교체한 뒤 ${extensionsPageUrl()}에서 리로드(↻)하세요.`,
@@ -1470,17 +1480,18 @@
               {/if}
               {#if bridgeCompat && !isExternalPane(item) && selectedMcpToolGroups(item).includes("browser") && !adminBlockedMcpToolGroupSet.has("browser")}
                 {@const badge = bridgeBadge(bridgeCompat)}
-                {#if bridgeCompat.status === "ok"}
-                  <span class="composer-bridge" data-status="ok" title={badge.title}>{badge.text}</span>
+                {#if bridgeCompat.level === "current"}
+                  <span class="composer-bridge" data-status="current" title={badge.title}>{badge.text}</span>
                 {:else}
-                  <!-- A problem badge is a dead end without a way out: make the
-                       whole line the button to the install guide. Healthy
-                       installs stay a plain span so the hint row keeps no
-                       control nobody needs. -->
+                  <!-- Any badge that reports something ACTIONABLE is a dead end
+                       without a way out: make the whole line the button to the
+                       install guide — including `compatible`, where the action
+                       is optional but real. Only the exact-match install stays a
+                       plain span, so the hint row keeps no control nobody needs. -->
                   <button
                     class="composer-bridge"
                     type="button"
-                    data-status={bridgeCompat.status}
+                    data-status={bridgeCompat.level}
                     title={`${badge.title}\n\n눌러서 설치·업데이트 안내를 엽니다.`}
                     on:click={openBrowserBridgeGuide}
                   >{badge.text} →</button>

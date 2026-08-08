@@ -29,8 +29,12 @@ Durable principles for this layer:
   there, never a second copy. Only LEGACY mirrors remain (`normalizeTags` vs the server's
   `normalizeHashtags`, repo-href in `lib/format.ts`) — update those in lockstep, don't add more.
 - **A status indicator that only STATES a problem is a dead end — make it the way to the fix.** The
-  composer's browser-bridge badge is an inert `<span>` when healthy and a `<button>` into the install
-  guide when not (a control nobody needs is clutter in an already dense hint row). Same rule for gated
+  composer's browser-bridge badge is a `<button>` into the install guide on every rung that names
+  something ACTIONABLE, and an inert `<span>` only when the install exactly matches the server bundle
+  (a control nobody needs is clutter in an already dense hint row). Its four rungs
+  (`data-status`: `current`/`compatible`/`outdated`/`unreachable`, styled `--ok`/`--info`/`--warn`/
+  `--danger`) each carry their OWN TEXT, not just their own colour — two rungs distinguished by hue
+  alone are one rung to anyone who can't separate the dots. Same rule for gated
   buttons: a disabled button whose prerequisite is unstated reads as broken — make the prerequisite the
   button's FIRST STEP on the same click, which is also the user gesture a file picker needs. Cross-view
   deep links ride a ONE-SHOT flag in `lib/state.ts` (`browserGuideRequested`, set by the badge and the

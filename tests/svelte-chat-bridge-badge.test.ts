@@ -1,8 +1,13 @@
 // Composer browser-bridge badge. A badge that only STATES a problem is a dead
 // end — an unreachable or outdated extension must offer the way out. These
 // cover the click contract (badge → 설정 → 권한·연결 + one-shot guide flag) and
-// the healthy case staying an inert span, since a control nobody needs is
+// the exact-match case staying an inert span, since a control nobody needs is
 // clutter in a hint row that is already dense.
+//
+// The badge has FOUR rungs (`data-status`): current / compatible / outdated /
+// unreachable. `compatible` is the easy one to accidentally re-collapse into
+// `current` — it works right now, so it is tempting to call it healthy — which
+// is why it gets its own pin on BOTH its distinguishing text and its button.
 import { fireEvent, render, waitFor } from "@testing-library/svelte";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -144,14 +149,34 @@ describe("composer browser-bridge badge", () => {
     expect(readState().browserGuideRequested).toBe(true);
   });
 
-  it("leaves a healthy install as an inert badge, with no button in the hint row", async () => {
+  it("marks an install above the floor but behind the bundle as its own rung, with an optional way out", async () => {
+    stubExtension("0.6.0"); // at minCompatibleVersion, below the bundled 0.7.0
+
+    const { container } = render(ChatView);
+
+    const badge = await waitFor(() => {
+      const found = container.querySelector<HTMLButtonElement>("button.composer-bridge");
+      expect(found).toBeTruthy();
+      return found!;
+    });
+    // Not folded into the healthy rung, and not alarmed into the outdated one.
+    expect(badge.dataset.status).toBe("compatible");
+    expect(badge.textContent).toContain("v0.6.0");
+    expect(badge.textContent).toContain("업데이트 있음");
+    expect(badge.textContent).not.toContain("업데이트 필요");
+
+    await fireEvent.click(badge);
+    expect(readState().browserGuideRequested).toBe(true);
+  });
+
+  it("leaves an exact-version install as an inert badge, with no button in the hint row", async () => {
     stubExtension(BUNDLED);
     const { container } = render(ChatView);
 
     await waitFor(() => {
       const badge = container.querySelector(".composer-bridge");
       expect(badge).toBeTruthy();
-      expect(badge!.getAttribute("data-status")).toBe("ok");
+      expect(badge!.getAttribute("data-status")).toBe("current");
     });
     expect(container.querySelector("button.composer-bridge")).toBeNull();
     expect(readState().browserGuideRequested).toBe(false);
