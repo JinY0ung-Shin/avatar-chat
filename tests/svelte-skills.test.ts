@@ -46,6 +46,7 @@ const LISTING = {
   displayName: "Deck maker",
   description: "Weekly report deck generator",
   learnCount: 2,
+  contentHash: "hash-v2",
   createdAt: "2026-08-01T00:00:00.000Z",
   updatedAt: "2026-08-01T00:00:00.000Z",
   owner: {
@@ -55,6 +56,20 @@ const LISTING = {
     alias: "",
     hasImage: false,
   },
+};
+
+/** The viewer's OWN share, mixed into the same feed with a 나 badge. */
+const OWN_LISTING = {
+  id: "share-own",
+  ownerUserId: "owner-1",
+  skillName: "my-skill",
+  displayName: "my-skill",
+  description: "mine",
+  learnCount: 3,
+  contentHash: "hash-own",
+  createdAt: "2026-08-01T00:00:00.000Z",
+  updatedAt: "2026-08-02T00:00:00.000Z",
+  owner: { id: "owner-1", username: "owner", displayName: "Owner", alias: "", hasImage: false },
 };
 
 function jsonResponse(body: unknown): Response {
@@ -77,13 +92,35 @@ beforeEach(() => {
 });
 
 describe("SkillsView", () => {
-  it("lists learnable skills with owner attribution and my shareable skills", async () => {
+  it("lists shared skills with own/learned/update states and my shareable skills", async () => {
     mockFetch({
-      "/api/skill-share/available": { skills: [LISTING] },
+      "/api/skill-share/available": { skills: [OWN_LISTING, LISTING] },
       "/api/skill-share/mine": {
         repoConfigured: true,
         skills: [
-          { slug: "my-skill", name: "my-skill", description: "mine", shared: true, learnCount: 3 },
+          {
+            slug: "my-skill",
+            name: "my-skill",
+            description: "mine",
+            shared: true,
+            learnCount: 3,
+            origin: null,
+          },
+          {
+            // Learned from LISTING at hash-v1; the share is now at hash-v2 →
+            // the card must offer 업데이트 받기 instead of 전수받기.
+            slug: "pptx-report",
+            name: "pptx-report",
+            description: "",
+            shared: false,
+            learnCount: 0,
+            origin: {
+              ownerUserId: "mate-1",
+              ownerUsername: "mate",
+              skillName: "pptx-report",
+              contentHash: "hash-v1",
+            },
+          },
         ],
       },
     });
@@ -93,10 +130,18 @@ describe("SkillsView", () => {
       expect(screen.getByText("Deck maker")).toBeTruthy();
     });
     expect(screen.getByText("@mate")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Deck maker 스킬 전수받기" })).toBeTruthy();
-    // Adoption badges (전수된 횟수) on both the learnable card and my own row.
+    // My own share rides the feed with a 나 badge and NO learn button.
+    expect(screen.getByText("나")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "my-skill 스킬 전수받기" })).toBeNull();
+    // The stale learned copy gets the update affordance.
+    expect(screen.getByText("업데이트 있음")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Deck maker 스킬 업데이트 받기" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Deck maker 스킬 전수받기" })).toBeNull();
+    // Adoption badges (전수된 횟수) on the cards and my own row.
+    expect(screen.getAllByText("전수 3회").length).toBeGreaterThan(0);
     expect(screen.getByText("전수 2회")).toBeTruthy();
-    expect(screen.getByText("전수 3회")).toBeTruthy();
+    // Provenance note in the mine panel.
+    expect(screen.getByText("@mate의 pptx-report에서 전수받음")).toBeTruthy();
     // My section: the shared toggle reflects server state.
     expect(screen.getByRole("switch", { name: "my-skill 공유" }).getAttribute("aria-checked")).toBe(
       "true",

@@ -789,6 +789,21 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `.claude-plugin/marketplace.json`, and commits+pushes with the LEARNER's identity. Share rows
   (`shared_skills`, store/avatars.ts) are METADATA SNAPSHOTS only; content is read from the sharer's
   clone at preview/learn time (`ensureClone` refresh), so learners always get the current version.
+- **Version updates (전수 후 원본 변경):** every shared_skills row carries a `content_hash` (sha256 of
+  the sharer's skill dir via `hashSkillDir`, origin-marker excluded), refreshed wherever the server
+  touches the sharer's clone — share, owner mine reconciliation (this ALSO bumps updated_at), and
+  teammate preview/learn (`setSharedSkillContentHash`, hash-only so a viewer can't reorder the owner's
+  listing). Each learn writes a provenance marker `skills/<slug>/.noah-skill-origin.json`
+  (owner id/@username, source skillName, source hash, learnedAt; chain-shares record their IMMEDIATE
+  source). The client joins mine.origin.contentHash × listing.contentHash → "업데이트 있음" +
+  업데이트 받기; the update path (`learn {updateSlug}` / `learn_skill {update:true}`) replaces the
+  learner's copy IN PLACE and is authorized by the origin marker, NOT the directory name — a mismatch
+  fails closed (`NOT_LEARNED_FROM_SHARE`). The MCP update resolves the learner's slug from the markers
+  (0 → redirect, >1 → ambiguous, ask the user).
+- **The feed includes the viewer's OWN shares** (route merges `listSharedSkillsByOwner` ahead of
+  `listLearnableSkills`, mirroring 탐색's "나" card): that's how an owner sees their skill's 전수 count
+  in context. The client badges them 나 and drops the learn button; `listLearnableSkills` itself stays
+  others-only (it feeds the MCP find tool + the metacognition count).
 - **Learn counts (전수된 횟수):** every successful learn inserts a `skill_learn_events` row keyed by
   (owner, skill_name) — NOT the share-row id — so counts survive unshare→re-share; recorded at the two
   call sites (route + MCP tool) AFTER copy+commit succeed. Surfaces: `SharedSkill.learnCount`

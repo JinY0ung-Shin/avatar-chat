@@ -22,6 +22,22 @@
     shared: boolean;
     /** 이 스킬이 동료에게 전수된 횟수 (공유 해제해도 이력은 유지). */
     learnCount: number;
+    /** 전수받은 스킬의 출처 마커 — 원본 해시와 비교해 업데이트 여부를 판단. */
+    origin: {
+      ownerUserId: string;
+      ownerUsername: string;
+      skillName: string;
+      contentHash: string | null;
+    } | null;
+  }
+
+  /** 목록 카드 하나의 파생 상태 (내 것/전수받음/업데이트 가능). */
+  interface ListingView {
+    skill: SharedSkillListing;
+    own: boolean;
+    /** 이 공유에서 전수받은 내 스킬 (있다면). */
+    copy: MySkill | null;
+    updateAvailable: boolean;
   }
 
   let loading = true;
@@ -85,6 +101,39 @@
   $: tokens = displayQuery.toLowerCase().split(/\s+/).filter(Boolean);
   $: filtered = tokens.length ? learnable.filter((skill) => matches(skill, tokens)) : learnable;
   $: sharedCount = mySkills.filter((skill) => skill.shared).length;
+  // 전수 출처 조인: 카드가 "내 것 / 전수받음 / 업데이트 있음"을 알 수 있게
+  // mine의 origin 마커와 목록의 현재 해시를 비교한다.
+  $: myUserId = $appState.user?.id ?? "";
+  $: copiesByOrigin = new Map(
+    mySkills
+      .filter((skill) => skill.origin)
+      .map((skill) => [`${skill.origin!.ownerUserId}:${skill.origin!.skillName}`, skill]),
+  );
+  $: listingViews = filtered.map((skill): ListingView => {
+    const own = skill.ownerUserId === myUserId;
+    const copy = own ? null : (copiesByOrigin.get(`${skill.ownerUserId}:${skill.skillName}`) ?? null);
+    return {
+      skill,
+      own,
+      copy,
+      updateAvailable: Boolean(
+        copy?.origin?.contentHash && skill.contentHash && copy.origin.contentHash !== skill.contentHash,
+      ),
+    };
+  });
+  // 내 스킬 관리 목록: 스킬이 많아지면 토글을 찾아 스크롤하는 대신 검색.
+  let mineQuery = "";
+  $: mineTokens = mineQuery.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  $: mineFiltered = mineTokens.length
+    ? mySkills.filter((skill) =>
+        mineTokens.every((t) =>
+          [skill.slug, skill.name, skill.description, skill.origin?.ownerUsername ?? ""]
+            .join(" ")
+            .toLowerCase()
+            .includes(t),
+        ),
+      )
+    : mySkills;
   $: resultStatus = loading
     ? "공유된 스킬을 불러오는 중입니다."
     : error
@@ -95,7 +144,7 @@
           ? `${displayQuery} 검색 결과가 없습니다.`
           : displayQuery
             ? `${displayQuery} 검색 결과 ${filtered.length}개가 있습니다.`
-            : `배울 수 있는 스킬 ${filtered.length}개가 있습니다.`;
+            : `공유된 스킬 ${filtered.length}개가 있습니다.`;
 
   function matches(skill: SharedSkillListing, parts: string[]): boolean {
     const hay = [
@@ -147,7 +196,10 @@
     renameValue = "";
   }
 
-  async function learn(skill: SharedSkillListing, newName?: string): Promise<void> {
+  async function learn(
+    skill: SharedSkillListing,
+    opts: { newName?: string; updateSlug?: string } = {},
+  ): Promise<void> {
     if (learningId) return;
     if (!repoConfigured) {
       notify("먼저 설정에서 내 지식 저장소를 연결해 주세요.", "warn");
@@ -155,24 +207,39 @@
       return;
     }
     const confirmed = await confirmAction(
-      `@${skill.owner.username}의 "${skillTitle(skill)}" 스킬을 전수받을까요? 내 지식 저장소에 복사되고 커밋됩니다.`,
-      { title: "스킬을 전수받을까요?", confirmLabel: "전수받기" },
+      opts.updateSlug
+        ? `"${opts.updateSlug}" 스킬을 @${skill.owner.username}의 최신 버전으로 업데이트할까요? 기존 내용을 덮어쓰고 커밋됩니다.`
+        : `@${skill.owner.username}의 "${skillTitle(skill)}" 스킬을 전수받을까요? 내 지식 저장소에 복사되고 커밋됩니다.`,
+      opts.updateSlug
+        ? { title: "스킬을 업데이트할까요?", confirmLabel: "업데이트" }
+        : { title: "스킬을 전수받을까요?", confirmLabel: "전수받기" },
     );
     if (!confirmed) return;
     learningId = skill.id;
     try {
-      const result = await api<{ slug: string; needsSelection: boolean }>("/api/skill-share/learn", {
-        method: "POST",
-        body: JSON.stringify({ id: skill.id, ...(newName ? { newName } : {}) }),
-      });
+      const result = await api<{ slug: string; needsSelection: boolean; updated: boolean }>(
+        "/api/skill-share/learn",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            id: skill.id,
+            ...(opts.newName ? { newName: opts.newName } : {}),
+            ...(opts.updateSlug ? { updateSlug: opts.updateSlug } : {}),
+          }),
+        },
+      );
       notify(
-        `"${result.slug}" 스킬을 전수받았습니다. 다음 대화부터 아바타가 사용할 수 있어요.` +
-          (result.needsSelection ? " (지식 저장소의 스킬 선택 목록에서 켜야 합니다)" : ""),
+        result.updated
+          ? `"${result.slug}" 스킬을 최신 버전으로 업데이트했습니다. 다음 대화부터 적용돼요.`
+          : `"${result.slug}" 스킬을 전수받았습니다. 다음 대화부터 아바타가 사용할 수 있어요.` +
+              (result.needsSelection ? " (지식 저장소의 스킬 선택 목록에서 켜야 합니다)" : ""),
         "ok",
       );
       preview = null;
       renameValue = "";
+      // origin/해시가 바뀌었으니 두 목록 모두 새로고침 (업데이트 배지 해소).
       void loadMine();
+      void load();
     } catch (err) {
       const message = (err as Error).message;
       notify(`전수 실패: ${message}`, "warn");
@@ -213,7 +280,7 @@
 <header class="view-header">
   <div>
     <h1>스킬 배우기</h1>
-    <p>동료 아바타가 공유한 스킬을 내 아바타에게 전수하세요</p>
+    <p>동료 아바타의 스킬을 전수받고, 내 스킬을 공유하세요</p>
   </div>
   <button class="linkish" type="button" disabled={loading || mineLoading} on:click={refresh}>
     <Icon name="refresh" size={15} />
@@ -245,7 +312,7 @@
 
   <section class="skill-section" aria-labelledby="skills-learnable-title">
     <div class="skill-section-head">
-      <h2 id="skills-learnable-title">배울 수 있는 스킬</h2>
+      <h2 id="skills-learnable-title">공유된 스킬</h2>
       {#if !loading && !error}<span class="skill-count">{filtered.length}</span>{/if}
     </div>
     {#if loading}
@@ -266,16 +333,25 @@
         <button class="linkish small" type="button" on:click={clearSearch}>검색어 지우기</button>
       </div>
     {:else}
-      <div class="skill-grid" aria-label={displayQuery ? `${displayQuery} 검색 결과` : "배울 수 있는 스킬 목록"}>
-        {#each filtered as skill (skill.id)}
+      <div class="skill-grid" aria-label={displayQuery ? `${displayQuery} 검색 결과` : "공유된 스킬 목록"}>
+        {#each listingViews as view (view.skill.id)}
+          {@const skill = view.skill}
           <div class="skill-card" class:busy={learningId === skill.id} aria-busy={learningId === skill.id}>
             <div class="sk-head">
               <strong class="sk-name">{skillTitle(skill)}</strong>
+              {#if view.own}
+                <span class="tag accent">나</span>
+              {/if}
               {#if skill.displayName && skill.displayName !== skill.skillName}
                 <span class="tag">{skill.skillName}</span>
               {/if}
               {#if skill.learnCount > 0}
                 <span class="tag accent" title={`지금까지 ${skill.learnCount}번 전수된 스킬`}>전수 {skill.learnCount}회</span>
+              {/if}
+              {#if view.updateAvailable}
+                <span class="tag write" title="전수받은 후 원본이 업데이트됐어요">업데이트 있음</span>
+              {:else if view.copy}
+                <span class="tag" title={`"${view.copy.slug}"로 전수받은 스킬`}>전수받음</span>
               {/if}
             </div>
             {#if skill.description}
@@ -293,15 +369,27 @@
               <button class="linkish small" type="button" disabled={Boolean(learningId)} on:click={() => openPreview(skill)}>
                 미리보기
               </button>
-              <button
-                class="primary small"
-                type="button"
-                disabled={Boolean(learningId)}
-                aria-label={`${skillTitle(skill)} 스킬 전수받기`}
-                on:click={() => learn(skill)}
-              >
-                {learningId === skill.id ? "전수 중…" : "전수받기"}
-              </button>
+              {#if view.updateAvailable && view.copy}
+                <button
+                  class="primary small"
+                  type="button"
+                  disabled={Boolean(learningId)}
+                  aria-label={`${skillTitle(skill)} 스킬 업데이트 받기`}
+                  on:click={() => learn(skill, { updateSlug: view.copy!.slug })}
+                >
+                  {learningId === skill.id ? "업데이트 중…" : "업데이트 받기"}
+                </button>
+              {:else if !view.own && !view.copy}
+                <button
+                  class="primary small"
+                  type="button"
+                  disabled={Boolean(learningId)}
+                  aria-label={`${skillTitle(skill)} 스킬 전수받기`}
+                  on:click={() => learn(skill)}
+                >
+                  {learningId === skill.id ? "전수 중…" : "전수받기"}
+                </button>
+              {/if}
             </div>
           </div>
         {/each}
@@ -332,8 +420,18 @@
         요청하면 스킬을 만들 수 있어요.
       </div>
     {:else}
+      {#if mySkills.length > 8}
+        <div class="sk-mine-search">
+          <input
+            type="search"
+            placeholder="내 스킬 검색"
+            aria-label="내 스킬 검색"
+            bind:value={mineQuery}
+          />
+        </div>
+      {/if}
       <div class="skill-mine-panel">
-        {#each mySkills as skill (skill.slug)}
+        {#each mineFiltered as skill (skill.slug)}
           <div class="skill-mine-row">
             <div class="sk-mine-meta">
               <div class="sk-mine-title">
@@ -343,6 +441,9 @@
                   <span class="tag accent" title={`동료가 지금까지 ${skill.learnCount}번 전수받았어요`}>전수 {skill.learnCount}회</span>
                 {/if}
               </div>
+              {#if skill.origin}
+                <span class="sk-mine-desc">@{skill.origin.ownerUsername}의 {skill.origin.skillName}에서 전수받음</span>
+              {/if}
               {#if skill.description}<span class="sk-mine-desc">{skill.description}</span>{/if}
             </div>
             <Toggle
@@ -351,6 +452,8 @@
               onChange={(next) => setShared(skill, next)}
             />
           </div>
+        {:else}
+          <div class="skill-mine-row"><span class="sk-mine-desc">"{mineQuery.trim()}"에 맞는 스킬이 없습니다.</span></div>
         {/each}
       </div>
       <p class="sk-share-hint">공유한 스킬은 같은 그룹 동료(아바타 공유가 켜진 그룹)에게만 보입니다.</p>
@@ -360,15 +463,21 @@
 </div>
 
 {#if preview}
+  {@const previewView = listingViews.find((v) => v.skill.id === preview!.id)}
+  {@const previewOwn = preview.ownerUserId === myUserId}
+  {@const previewUpdateSlug =
+    previewView?.updateAvailable && previewView.copy ? previewView.copy.slug : null}
   <Modal cardClass="skill-preview-card" ariaLabelledby="skill-preview-title" on:close={closePreview}>
     <h2 id="skill-preview-title">{skillTitle(preview)}</h2>
     <div class="sk-owner sk-preview-owner">
       <AvatarImage user={preview.owner} size={22} alt="" />
       <span class="sk-owner-name">{preview.owner.alias || preview.owner.displayName}</span>
       <span class="sk-owner-handle">@{preview.owner.username}</span>
+      {#if previewOwn}<span class="tag accent">나</span>{/if}
       {#if preview.learnCount > 0}
         <span class="tag accent">전수 {preview.learnCount}회</span>
       {/if}
+      {#if previewUpdateSlug}<span class="tag write">업데이트 있음</span>{/if}
     </div>
     {#if preview.description}<p class="sk-desc sk-preview-desc">{preview.description}</p>{/if}
     {#if previewLoading}
@@ -378,27 +487,42 @@
     {:else}
       <pre class="sk-preview-content scroll-thin">{previewContent}</pre>
     {/if}
-    <label class="field sk-rename-field">
-      <span>다른 이름으로 전수 (선택)</span>
-      <input
-        type="text"
-        placeholder={preview.skillName}
-        aria-label="전수받을 새 스킬 이름"
-        bind:this={renameInput}
-        bind:value={renameValue}
-        disabled={Boolean(learningId)}
-      />
-    </label>
+    {#if !previewOwn}
+      <label class="field sk-rename-field">
+        <span>다른 이름으로 전수 (선택)</span>
+        <input
+          type="text"
+          placeholder={preview.skillName}
+          aria-label="전수받을 새 스킬 이름"
+          bind:this={renameInput}
+          bind:value={renameValue}
+          disabled={Boolean(learningId)}
+        />
+      </label>
+    {/if}
     <div class="sk-actions sk-preview-actions">
       <button class="linkish" type="button" disabled={Boolean(learningId)} on:click={closePreview}>닫기</button>
-      <button
-        class="primary"
-        type="button"
-        disabled={Boolean(learningId) || previewLoading || Boolean(previewError)}
-        on:click={() => preview && learn(preview, renameValue.trim() || undefined)}
-      >
-        {learningId ? "전수 중…" : "전수받기"}
-      </button>
+      {#if !previewOwn}
+        {#if previewUpdateSlug && !renameValue.trim()}
+          <button
+            class="primary"
+            type="button"
+            disabled={Boolean(learningId) || previewLoading || Boolean(previewError)}
+            on:click={() => preview && learn(preview, { updateSlug: previewUpdateSlug })}
+          >
+            {learningId ? "업데이트 중…" : "업데이트 받기"}
+          </button>
+        {:else}
+          <button
+            class="primary"
+            type="button"
+            disabled={Boolean(learningId) || previewLoading || Boolean(previewError)}
+            on:click={() => preview && learn(preview, { newName: renameValue.trim() || undefined })}
+          >
+            {learningId ? "전수 중…" : "전수받기"}
+          </button>
+        {/if}
+      {/if}
     </div>
   </Modal>
 {/if}
@@ -513,6 +637,12 @@
     gap: var(--s-2);
   }
 
+  .sk-mine-search {
+    margin-bottom: var(--s-2);
+  }
+  .sk-mine-search input {
+    width: min(320px, 100%);
+  }
   .skill-mine-panel {
     border: 1px solid var(--line);
     border-radius: var(--r-md);

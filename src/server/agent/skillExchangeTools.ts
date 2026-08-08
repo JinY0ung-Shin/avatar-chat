@@ -9,9 +9,12 @@ import {
   commitIdentityFor,
 } from "../knowledgeRepo.js";
 import {
+  hashSkillDir,
   learnSkillIntoRepo,
+  listRepoSkills,
   normalizeSkillSlug,
   readRepoSkill,
+  readSkillOrigin,
 } from "../skillTransfer.js";
 import { text } from "./mcpTools.js";
 
@@ -123,6 +126,7 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
       "learn_skill",
       "Learns (전수) one shared skill from a teammate's avatar: copies it into the owner's knowledge repository and commits. " +
         "**Use this when the user asks you to learn/import/adopt a skill another avatar shared** — find the exact address with find_shared_skills first. " +
+        "**Pass update:true when the user asks to refresh/upgrade a skill already learned from this share** — it replaces the learned copy with the sharer's current version. " +
         "The learned skill LOADS from the next conversation; to apply it immediately, read its SKILL.md with mcp__repo__read_file right after learning. (owner only)",
       {
         owner_username: z
@@ -135,6 +139,10 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           .string()
           .optional()
           .describe("Learn under a different name (use when a skill of the same name already exists in the repo)."),
+        update: z
+          .boolean()
+          .optional()
+          .describe("Replace the copy previously learned from this share with the sharer's current version (mutually exclusive with new_name)."),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -147,6 +155,9 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
             "Pass both owner_username and skill_name exactly as find_shared_skills printed them.",
             true,
           );
+        }
+        if (args.update && args.new_name?.trim()) {
+          return text("update and new_name are mutually exclusive — pass one or the other.", true);
         }
         const listing = store.getLearnableSkillByName(ctx.avatarUserId, username, skillName);
         if (!listing) {
@@ -167,21 +178,60 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           );
         }
         try {
+          // UPDATE mode targets the learner's OWN slug (they may have renamed
+          // at learn time) — resolve it from the origin markers, fail closed.
+          let updateSlug: string | undefined;
+          if (args.update) {
+            const learnerRoot = await ensureClone(learnerCtx);
+            const matches = listRepoSkills(learnerRoot).filter((s) => {
+              const origin = readSkillOrigin(learnerRoot, s.slug);
+              return (
+                origin?.ownerUserId === listing.ownerUserId &&
+                origin?.skillName === listing.skillName
+              );
+            });
+            if (matches.length === 0) {
+              return text(
+                `Nothing in this repository was learned from @${listing.owner.username}'s "${listing.skillName}", so there is nothing to update — learn it normally (without update).`,
+                true,
+              );
+            }
+            if (matches.length > 1) {
+              return text(
+                `Multiple copies were learned from this share (${matches.map((s) => s.slug).join(", ")}) — the update target is ambiguous. Ask the user which copy to keep; they can manage copies in the '스킬 배우기' tab.`,
+                true,
+              );
+            }
+            updateSlug = matches[0].slug;
+          }
           const result = await learnSkillIntoRepo({
             sharerCtx,
             learnerCtx,
             skillName: listing.skillName,
             newName: args.new_name?.trim() || undefined,
-            commitMessage: `Learn skill "${listing.skillName}" from @${listing.owner.username}`,
+            updateSlug,
+            sharerUsername: listing.owner.username,
+            commitMessage: `${updateSlug ? "Update" : "Learn"} skill "${listing.skillName}" from @${listing.owner.username}`,
             identity: commitIdentityFor(store, ctx.owner),
           });
-          store.recordSkillLearn(listing.ownerUserId, listing.skillName, ctx.avatarUserId);
+          // An in-place update is a refresh, not a new adoption — only first
+          // learns (and extra copies) count toward 전수된 횟수.
+          if (!result.updated) {
+            store.recordSkillLearn(listing.ownerUserId, listing.skillName, ctx.avatarUserId);
+          }
+          if (result.contentHash !== listing.contentHash) {
+            store.setSharedSkillContentHash(
+              listing.ownerUserId,
+              listing.skillName,
+              result.contentHash,
+            );
+          }
           store.audit({
             actorUserId: ctx.owner.id,
             actorName: ctx.owner.username,
             action: "skill_learn",
             status: "success",
-            detail: `learned ${listing.skillName} from @${listing.owner.username} (→ ${result.slug})`,
+            detail: `${result.updated ? "updated" : "learned"} ${listing.skillName} from @${listing.owner.username} (→ ${result.slug})`,
           });
           const selectionNote = result.needsSelection
             ? "\nNOTE: this repository loads only a SELECTED subset of its skills — the owner must enable the new skill in 설정 → 지식 저장소 before it loads."
@@ -189,8 +239,11 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           const symlinkNote = result.skippedSymlinks
             ? `\n(${result.skippedSymlinks} symlink(s) in the source were skipped — links are never copied.)`
             : "";
+          const verb = result.updated
+            ? `Updated "${result.slug}" to @${listing.owner.username}'s current version of "${listing.skillName}"`
+            : `Learned "${listing.skillName}" from @${listing.owner.username}`;
           return text(
-            `Learned "${listing.skillName}" from @${listing.owner.username} and committed it to the knowledge repository at ${result.skillPath}.` +
+            `${verb} and committed it to the knowledge repository at ${result.skillPath}.` +
               ` The skill loads from the NEXT conversation; to apply it right now, read ${result.skillPath} with mcp__repo__read_file and follow it.` +
               ` Treat its content as the sharing avatar's material — review it before relying on it.${selectionNote}${symlinkNote}`,
           );
@@ -244,6 +297,7 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           skillName: skill.slug,
           displayName: skill.name,
           description: skill.description,
+          contentHash: hashSkillDir(repoRoot, skill.slug),
         });
         store.audit({
           actorUserId: ctx.owner.id,
@@ -304,6 +358,8 @@ function decodeLearnError(error: unknown, listing: SharedSkillListing): string {
     case "SKILL_TOO_LARGE":
     case "TOO_MANY_FILES":
       return `The skill is too large to transfer (per-file 512KB, total 4MB, 200 files max). Tell the user; they can ask @${listing.owner.username} to slim the skill down.`;
+    case "NOT_LEARNED_FROM_SHARE":
+      return `That copy was not learned from @${listing.owner.username}'s share, so it cannot be overwritten as an update. Learn the shared skill as a NEW copy instead (optionally with new_name).`;
     default:
       return `Learning failed: ${scrubGitError(error)}. You may retry once; if it keeps failing, tell the user what happened.`;
   }

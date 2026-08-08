@@ -7,9 +7,11 @@ import { createApp, createServices } from "../src/server/app.js";
 import { ensureClone, knowledgeRepoContextFor } from "../src/server/knowledgeRepo.js";
 import {
   copySkillDir,
+  hashSkillDir,
   learnSkillIntoRepo,
   listRepoSkills,
   normalizeSkillSlug,
+  readSkillOrigin,
 } from "../src/server/skillTransfer.js";
 import { buildSkillExchangeTools } from "../src/server/agent/skillExchangeTools.js";
 import { callTool, makeBareRemote, shareGroup, signup, withTempDir } from "./helpers.js";
@@ -81,6 +83,18 @@ function seedSkillRemote(name: string, extra: Record<string, string> = {}): stri
     "skills/pptx-report/scripts/render.sh": "#!/bin/sh\necho deck\n",
     ...extra,
   });
+}
+
+/** Commit + push a file change to a remote seeded by seedRemote (new version). */
+function updateRemoteFile(name: string, rel: string, content: string): void {
+  const seed = path.join(tempDir, `${name}-seed`);
+  const abs = path.join(seed, rel);
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  fs.writeFileSync(abs, content);
+  const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+  g("add", "-A");
+  g("commit", "-q", "-m", "update");
+  g("push", "-q", "origin", "main");
 }
 
 // ---- store: shared_skills ---------------------------------------------------
@@ -235,6 +249,22 @@ describe("skillTransfer", () => {
     expect(normalizeSkillSlug("  -weird-  ")).toBe("weird");
   });
 
+  it("hashes a skill dir deterministically, ignoring the origin marker", () => {
+    const root = path.join(tempDir, "hash-repo");
+    fs.mkdirSync(path.join(root, "skills", "s"), { recursive: true });
+    fs.writeFileSync(path.join(root, "skills", "s", "SKILL.md"), SKILL_MD);
+    const first = hashSkillDir(root, "s");
+    expect(first).toMatch(/^[0-9a-f]{64}$/);
+    expect(hashSkillDir(root, "s")).toBe(first);
+    // The learner-side provenance marker must not change the fingerprint —
+    // a learned copy re-shared by the learner hashes like the original.
+    fs.writeFileSync(path.join(root, "skills", "s", ".noah-skill-origin.json"), "{}");
+    expect(hashSkillDir(root, "s")).toBe(first);
+    fs.writeFileSync(path.join(root, "skills", "s", "SKILL.md"), `${SKILL_MD}\nmore`);
+    expect(hashSkillDir(root, "s")).not.toBe(first);
+    expect(hashSkillDir(root, "missing")).toBeNull();
+  });
+
   it("lists skills/<slug>/SKILL.md with frontmatter metadata", () => {
     const root = path.join(tempDir, "repo");
     fs.mkdirSync(path.join(root, "skills", "b-skill"), { recursive: true });
@@ -291,6 +321,7 @@ describe("skillTransfer", () => {
       sharerCtx,
       learnerCtx,
       skillName: "pptx-report",
+      sharerUsername: "sharer",
       commitMessage: "Learn skill",
       identity: { name: "Learner", email: "l@example.com" },
     });
@@ -322,12 +353,20 @@ describe("skillTransfer", () => {
     ).toString();
     expect(remoteLog).toContain("Learn skill");
 
+    // Provenance marker: who it came from + the SOURCE hash at learn time.
+    const origin = readSkillOrigin(learnerRoot, "pptx-report");
+    expect(origin?.ownerUserId).toBe(sharer.userId);
+    expect(origin?.ownerUsername).toBe("sharer");
+    expect(origin?.skillName).toBe("pptx-report");
+    expect(origin?.contentHash).toBe(result.contentHash);
+
     // Renamed learn rewrites the SKILL.md frontmatter name + plugin.json name.
     const renamed = await learnSkillIntoRepo({
       sharerCtx,
       learnerCtx,
       skillName: "pptx-report",
       newName: "My Deck Skill",
+      sharerUsername: "sharer",
       commitMessage: "Learn skill again",
       identity: { name: "Learner", email: "l@example.com" },
     });
@@ -344,6 +383,71 @@ describe("skillTransfer", () => {
       ),
     ) as { name: string };
     expect(renamedPlugin.name).toBe("my-deck-skill");
+  });
+
+  it("updates a learned copy in place, gated on the origin marker", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const sharer = await newUser(app, "sharer");
+    const learner = await newUser(app, "learner");
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      learner.userId,
+      seedRemote("learner-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "l", plugins: [] }),
+        // A hand-made skill with NO origin marker — update must refuse it.
+        "skills/handmade/SKILL.md": "---\nname: handmade\n---\n",
+      }),
+      "main",
+    );
+    const sharerCtx = knowledgeRepoContextFor(store, sharer.userId, config)!;
+    const learnerCtx = knowledgeRepoContextFor(store, learner.userId, config)!;
+    const identity = { name: "Learner", email: "l@example.com" };
+
+    const first = await learnSkillIntoRepo({
+      sharerCtx,
+      learnerCtx,
+      skillName: "pptx-report",
+      newName: "my-copy",
+      sharerUsername: "sharer",
+      commitMessage: "Learn",
+      identity,
+    });
+    expect(first.updated).toBe(false);
+
+    // The sharer ships a new version; updating replaces the learner's copy and
+    // records the NEW source hash.
+    updateRemoteFile("sharer-repo", "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## v2\n`);
+    const updated = await learnSkillIntoRepo({
+      sharerCtx,
+      learnerCtx,
+      skillName: "pptx-report",
+      updateSlug: "my-copy",
+      sharerUsername: "sharer",
+      commitMessage: "Update",
+      identity,
+    });
+    expect(updated.updated).toBe(true);
+    expect(updated.slug).toBe("my-copy");
+    expect(updated.contentHash).not.toBe(first.contentHash);
+    const learnerRoot = await ensureClone(learnerCtx);
+    expect(
+      fs.readFileSync(path.join(learnerRoot, "skills", "my-copy", "SKILL.md"), "utf8"),
+    ).toContain("## v2");
+    expect(readSkillOrigin(learnerRoot, "my-copy")?.contentHash).toBe(updated.contentHash);
+
+    // No origin marker (or a mismatched one) → fail closed, nothing replaced.
+    await expect(
+      learnSkillIntoRepo({
+        sharerCtx,
+        learnerCtx,
+        skillName: "pptx-report",
+        updateSlug: "handmade",
+        sharerUsername: "sharer",
+        commitMessage: "Update",
+        identity,
+      }),
+    ).rejects.toThrow("NOT_LEARNED_FROM_SHARE");
+    expect(fs.existsSync(path.join(learnerRoot, "skills", "handmade", "SKILL.md"))).toBe(true);
   });
 });
 
@@ -386,6 +490,7 @@ describe("skill-share routes", () => {
         description: "Weekly report deck generator",
         shared: false,
         learnCount: 0,
+        origin: null,
       },
     ]);
 
@@ -394,13 +499,19 @@ describe("skill-share routes", () => {
     await sharer.agent.post("/api/skill-share/share").send({ skill: "../etc" }).expect(400);
     await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
 
-    // Teammate browses it; outsider sees nothing.
+    // Teammate browses it; outsider sees nothing. The SHARER sees their own
+    // share in the same feed (like 탐색 shows one's own avatar) with the count.
     const avail = await mate.agent.get("/api/skill-share/available").expect(200);
     expect(avail.body.skills).toHaveLength(1);
     const listing = avail.body.skills[0];
     expect(listing.owner.username).toBe("sharer");
+    expect(listing.contentHash).toMatch(/^[0-9a-f]{64}$/);
     const outsiderAvail = await outsider.agent.get("/api/skill-share/available").expect(200);
     expect(outsiderAvail.body.skills).toHaveLength(0);
+    const sharerAvail = await sharer.agent.get("/api/skill-share/available").expect(200);
+    expect(sharerAvail.body.skills).toHaveLength(1);
+    expect(sharerAvail.body.skills[0].ownerUserId).toBe(sharer.userId);
+    expect(sharerAvail.body.skills[0].learnCount).toBe(0);
 
     // Preview returns the live SKILL.md; outsiders get 404 even with the id.
     const previewRes = await mate.agent
@@ -442,6 +553,62 @@ describe("skill-share routes", () => {
     await sharer.agent.delete("/api/skill-share/share/pptx-report").expect(200);
     const after = await mate.agent.get("/api/skill-share/available").expect(200);
     expect(after.body.skills).toHaveLength(0);
+  });
+
+  it("flags updates via origin markers and overwrites in place", { timeout: 30_000 }, async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      mate.userId,
+      seedRemote("mate-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "m", plugins: [] }),
+      }),
+      "main",
+    );
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const avail = await mate.agent.get("/api/skill-share/available").expect(200);
+    const listing = avail.body.skills[0];
+
+    await mate.agent.post("/api/skill-share/learn").send({ id: listing.id }).expect(200);
+    // Mine reports the provenance the client joins against the listing hash.
+    const mateMine = await mate.agent.get("/api/skill-share/mine").expect(200);
+    const learnedRow = mateMine.body.skills.find((s: { slug: string }) => s.slug === "pptx-report");
+    expect(learnedRow.origin.ownerUserId).toBe(sharer.userId);
+    expect(learnedRow.origin.contentHash).toBe(listing.contentHash);
+
+    // The sharer ships v2; their mine reconciliation refreshes the row hash,
+    // which no longer matches the learner's origin hash (= update available).
+    updateRemoteFile("sharer-repo", "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## v2\n`);
+    await sharer.agent.get("/api/skill-share/mine").expect(200);
+    const availAfter = await mate.agent.get("/api/skill-share/available").expect(200);
+    expect(availAfter.body.skills[0].contentHash).not.toBe(listing.contentHash);
+
+    // updateSlug + newName together is invalid; wrong slug fails closed.
+    await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "pptx-report", newName: "x" })
+      .expect(400);
+    await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "not-mine" })
+      .expect(409);
+
+    const updated = await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "pptx-report" })
+      .expect(200);
+    expect(updated.body.updated).toBe(true);
+    const mineAfter = await mate.agent.get("/api/skill-share/mine").expect(200);
+    expect(
+      mineAfter.body.skills.find((s: { slug: string }) => s.slug === "pptx-report").origin
+        .contentHash,
+    ).toBe(availAfter.body.skills[0].contentHash);
+    // The refresh did NOT inflate 전수된 횟수 — one learn, one count.
+    expect(store.countSkillLearnsForOwner(sharer.userId)).toBe(1);
   });
 
   it("learn without a connected learner repo is a 400 with guidance", async () => {
@@ -622,6 +789,75 @@ describe("mcp skill_exchange tools", () => {
     });
     expect(dup.isError).toBe(true);
     expect(dup.content[0].text).toContain("new_name");
+  });
+
+  it("learn_skill update:true resolves the learner's copy and refuses ambiguity", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      mate.userId,
+      seedRemote("mate-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "m", plugins: [] }),
+      }),
+      "main",
+    );
+    store.shareSkill(sharer.userId, {
+      skillName: "pptx-report",
+      displayName: "pptx-report",
+      description: "",
+    });
+    const tools = toolsFor(store, config, mate.userId, "mate");
+
+    // Nothing learned yet → update has no target.
+    const none = await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "pptx-report",
+      update: true,
+    });
+    expect(none.isError).toBe(true);
+    expect(none.content[0].text).toContain("nothing to update");
+
+    await callTool(tools, "learn_skill", { owner_username: "sharer", skill_name: "pptx-report" });
+    updateRemoteFile("sharer-repo", "skills/pptx-report/SKILL.md", `${SKILL_MD}\n## v2\n`);
+    const ok = await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "pptx-report",
+      update: true,
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content[0].text).toContain('Updated "pptx-report"');
+    const mateRoot = await ensureClone(knowledgeRepoContextFor(store, mate.userId, config)!);
+    expect(
+      fs.readFileSync(path.join(mateRoot, "skills", "pptx-report", "SKILL.md"), "utf8"),
+    ).toContain("## v2");
+
+    // A second copy makes the update target ambiguous → redirect, no change.
+    await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "pptx-report",
+      new_name: "second-copy",
+    });
+    const ambiguous = await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "pptx-report",
+      update: true,
+    });
+    expect(ambiguous.isError).toBe(true);
+    expect(ambiguous.content[0].text).toContain("ambiguous");
+
+    // update + new_name is contradictory input.
+    const both = await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "pptx-report",
+      update: true,
+      new_name: "x",
+    });
+    expect(both.isError).toBe(true);
+    expect(both.content[0].text).toContain("mutually exclusive");
   });
 
   it("share_skill/unshare_skill manage the owner's own listings", async () => {

@@ -33,6 +33,20 @@ const owner = (id: string, username: string, displayName: string, alias = "") =>
 
 const LEARNABLE = [
   {
+    // The viewer's OWN share riding the feed ("나" badge, no learn button).
+    id: "s0",
+    ownerUserId: "user-1",
+    skillName: "brain-tips",
+    displayName: "brain-tips",
+    description: "세컨드 브레인 활용 팁 모음",
+    learnCount: 5,
+    contentHash: "hash-own",
+    createdAt: "2026-08-01T00:00:00.000Z",
+    updatedAt: "2026-08-07T10:00:00.000Z",
+    owner: { id: "user-1", username: "jinyoung", displayName: "김진영", alias: "진영", hasImage: false },
+  },
+  {
+    // Learned at hash-v1, share now at hash-v2 → 업데이트 있음 / 업데이트 받기.
     id: "s1",
     ownerUserId: "u2",
     skillName: "pptx-report",
@@ -40,6 +54,7 @@ const LEARNABLE = [
     description:
       "매주 반복되는 주간 보고를 표준 템플릿으로 만들어 주는 스킬입니다. 데이터 표를 붙여 넣으면 요약 슬라이드와 차트 슬라이드를 만들어요.",
     learnCount: 12,
+    contentHash: "hash-v2",
     createdAt: "2026-08-01T00:00:00.000Z",
     updatedAt: "2026-08-07T09:30:00.000Z",
     owner: owner("u2", "sujin", "박수진", "수지"),
@@ -51,6 +66,7 @@ const LEARNABLE = [
     displayName: "code-review",
     description: "리뷰 체크리스트",
     learnCount: 3,
+    contentHash: "hash-cr",
     createdAt: "2026-08-02T00:00:00.000Z",
     updatedAt: "2026-08-06T02:00:00.000Z",
     owner: owner("u3", "minho", "이민호"),
@@ -62,6 +78,7 @@ const LEARNABLE = [
     displayName: "회의록 정리",
     description: "",
     learnCount: 0,
+    contentHash: "hash-mn",
     createdAt: "2026-08-03T00:00:00.000Z",
     updatedAt: "2026-08-05T11:00:00.000Z",
     owner: owner("u2", "sujin", "박수진", "수지"),
@@ -77,8 +94,29 @@ const MINE = {
       description: "세컨드 브레인 활용 팁 모음",
       shared: true,
       learnCount: 5,
+      origin: null,
     },
-    { slug: "daily-digest", name: "daily-digest", description: "", shared: false, learnCount: 0 },
+    {
+      slug: "pptx-report",
+      name: "pptx-report",
+      description: "",
+      shared: false,
+      learnCount: 0,
+      origin: {
+        ownerUserId: "u2",
+        ownerUsername: "sujin",
+        skillName: "pptx-report",
+        contentHash: "hash-v1",
+      },
+    },
+    {
+      slug: "daily-digest",
+      name: "daily-digest",
+      description: "",
+      shared: false,
+      learnCount: 0,
+      origin: null,
+    },
   ],
 };
 
@@ -145,13 +183,20 @@ test("skills view pins the explore-density layout", async ({ page }) => {
   await expect(page.locator("main.main")).toHaveScreenshot("skills-light.png");
 });
 
-test("preview modal opens with the fresh SKILL.md and the rename field", async ({ page }) => {
+test("preview modal opens with the fresh SKILL.md and the update affordance", async ({ page }) => {
   await mockApp(page);
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/#/skills");
   await expect(page.getByText("주간 보고 덱 생성")).toBeVisible();
-  await page.getByRole("button", { name: "미리보기" }).first().click();
+  // The pptx card carries a stale learned copy → its modal offers the update.
+  await page
+    .locator(".skill-card", { hasText: "주간 보고 덱 생성" })
+    .getByRole("button", { name: "미리보기" })
+    .click();
   await expect(page.getByText("# 주간 보고 덱")).toBeVisible();
   await expect(page.getByLabel("전수받을 새 스킬 이름")).toBeVisible();
+  await expect(page.getByRole("button", { name: "업데이트 받기" }).last()).toBeEnabled();
+  // Typing a new name switches the action back to a fresh copy.
+  await page.getByLabel("전수받을 새 스킬 이름").fill("deck-two");
   await expect(page.getByRole("button", { name: "전수받기" }).last()).toBeEnabled();
 });

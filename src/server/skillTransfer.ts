@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -91,6 +92,118 @@ export function listRepoSkills(repoRoot: string): RepoSkillEntry[] {
 /** Read one skill's metadata from a repo, or null when it doesn't exist. */
 export function readRepoSkill(repoRoot: string, slug: string): RepoSkillEntry | null {
   return listRepoSkills(repoRoot).find((s) => s.slug === slug) ?? null;
+}
+
+/**
+ * Provenance marker written into a LEARNED skill (`skills/<slug>/` root, named
+ * below): which share it came from and the SOURCE directory's content hash at
+ * learn time. Comparing that hash with the share row's CURRENT hash is what
+ * detects "the sharer updated this since you learned it", and the (owner,
+ * skillName) pair is what authorizes an in-place update overwrite.
+ */
+export interface SkillOrigin {
+  ownerUserId: string;
+  ownerUsername: string;
+  skillName: string;
+  contentHash: string | null;
+  learnedAt: string;
+}
+
+export const SKILL_ORIGIN_FILE = ".noah-skill-origin.json";
+
+/**
+ * Deterministic content hash of one skill directory: sha256 over the sorted
+ * repo-relative paths + file bytes, mirroring copySkillDir's traversal
+ * (symlinks and specials skipped, origin marker excluded so a learned copy's
+ * RE-share hashes like the original). Null when the dir is missing or blows
+ * the transfer caps (such a skill can't transfer anyway).
+ */
+export function hashSkillDir(repoRoot: string, slug: string): string | null {
+  const lexical = resolveInRepo(repoRoot, `${SKILL_DIR}/${slug}`);
+  if (!lexical) {
+    return null;
+  }
+  const dir = realpathContained(repoRoot, lexical, true);
+  if (!dir) {
+    return null;
+  }
+  const files: string[] = [];
+  const walk = (current: string, depth: number): boolean => {
+    if (depth > MAX_SKILL_DEPTH) {
+      return false;
+    }
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      return false;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const abs = path.join(current, entry.name);
+      const stat = fs.lstatSync(abs);
+      if (stat.isSymbolicLink()) {
+        continue;
+      }
+      if (stat.isDirectory()) {
+        if (!walk(abs, depth + 1)) {
+          return false;
+        }
+        continue;
+      }
+      if (!stat.isFile() || entry.name === SKILL_ORIGIN_FILE) {
+        continue;
+      }
+      if (stat.size > MAX_SKILL_FILE_BYTES || files.length >= MAX_SKILL_FILES) {
+        return false;
+      }
+      files.push(abs);
+    }
+    return true;
+  };
+  if (!walk(dir, 0)) {
+    return null;
+  }
+  const hash = crypto.createHash("sha256");
+  let total = 0;
+  for (const abs of files) {
+    const bytes = fs.readFileSync(abs);
+    total += bytes.length;
+    if (total > MAX_SKILL_TOTAL_BYTES) {
+      return null;
+    }
+    hash.update(path.relative(dir, abs).split(path.sep).join("/"));
+    hash.update("\0");
+    hash.update(bytes);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+/** Read a learned skill's provenance marker, or null when absent/invalid. */
+export function readSkillOrigin(repoRoot: string, slug: string): SkillOrigin | null {
+  const lexical = resolveInRepo(repoRoot, `${SKILL_DIR}/${slug}/${SKILL_ORIGIN_FILE}`);
+  if (!lexical) {
+    return null;
+  }
+  try {
+    const raw = JSON.parse(fs.readFileSync(lexical, "utf8")) as Partial<SkillOrigin>;
+    if (
+      typeof raw.ownerUserId !== "string" ||
+      typeof raw.ownerUsername !== "string" ||
+      typeof raw.skillName !== "string"
+    ) {
+      return null;
+    }
+    return {
+      ownerUserId: raw.ownerUserId,
+      ownerUsername: raw.ownerUsername,
+      skillName: raw.skillName,
+      contentHash: typeof raw.contentHash === "string" ? raw.contentHash : null,
+      learnedAt: typeof raw.learnedAt === "string" ? raw.learnedAt : "",
+    };
+  } catch {
+    return null;
+  }
 }
 
 interface CopyStats {
@@ -255,14 +368,24 @@ export interface LearnResult {
    * (`selected`) — the learned skill won't LOAD until they enable it there.
    */
   needsSelection: boolean;
+  /** The SOURCE directory's content hash recorded in the origin marker. */
+  contentHash: string | null;
+  /** True when this learn replaced an existing provenance-matched copy. */
+  updated: boolean;
 }
 
 /**
  * Learn one shared skill: refresh both clones, copy the skill directory,
- * rewrite its identity, advertise it in the learner's marketplace manifest,
- * and commit+push with the learner's git identity. Message-coded errors from
- * copySkillDir propagate; clone/push failures throw raw git errors (callers
- * scrub via scrubGitError).
+ * rewrite its identity, record provenance, advertise it in the learner's
+ * marketplace manifest, and commit+push with the learner's git identity.
+ *
+ * `updateSlug` switches to UPDATE mode: the learner's existing
+ * `skills/<updateSlug>/` is replaced with the sharer's current version —
+ * allowed ONLY when that directory carries an origin marker for the SAME
+ * (sharer, skillName) pair (fail closed: NOT_LEARNED_FROM_SHARE otherwise).
+ *
+ * Message-coded errors from copySkillDir propagate; clone/push failures throw
+ * raw git errors (callers scrub via scrubGitError).
  */
 export async function learnSkillIntoRepo(opts: {
   sharerCtx: KnowledgeRepoContext;
@@ -271,10 +394,18 @@ export async function learnSkillIntoRepo(opts: {
   skillName: string;
   /** Optional different name to learn under (conflict resolution / rebrand). */
   newName?: string;
+  /** UPDATE mode: replace this existing learner slug in place (see above). */
+  updateSlug?: string;
+  /** The sharer's @username, recorded in the origin marker for display. */
+  sharerUsername: string;
   commitMessage: string;
   identity: { name: string; email: string };
 }): Promise<LearnResult> {
-  const destSlug = opts.newName ? normalizeSkillSlug(opts.newName) : opts.skillName;
+  const destSlug = opts.updateSlug
+    ? opts.updateSlug
+    : opts.newName
+      ? normalizeSkillSlug(opts.newName)
+      : opts.skillName;
   if (!destSlug) {
     throw new Error("INVALID_NAME");
   }
@@ -286,8 +417,41 @@ export async function learnSkillIntoRepo(opts: {
   if (!source) {
     throw new Error("SKILL_NOT_FOUND");
   }
+  const sourceHash = hashSkillDir(srcRoot, opts.skillName);
+  if (opts.updateSlug) {
+    // Only a copy that PROVABLY came from this share may be replaced — the
+    // origin marker is the authorization, not the matching directory name.
+    const origin = readSkillOrigin(destRoot, destSlug);
+    if (
+      !origin ||
+      origin.ownerUserId !== opts.sharerCtx.userId ||
+      origin.skillName !== opts.skillName
+    ) {
+      throw new Error("NOT_LEARNED_FROM_SHARE");
+    }
+    const lexical = resolveInRepo(destRoot, `${SKILL_DIR}/${destSlug}`)!;
+    const abs = realpathContained(destRoot, lexical, true);
+    if (!abs) {
+      throw new Error("SKILL_NOT_FOUND");
+    }
+    await fsp.rm(abs, { recursive: true, force: true });
+  }
   const stats = await copySkillDir(srcRoot, opts.skillName, destRoot, destSlug);
   await rewriteSkillIdentity(destRoot, destSlug, source.description);
+  // Provenance marker LAST so it overwrites any origin file the source copy
+  // carried (chain-shares record THEIR immediate source, not the first one).
+  const originAbs = path.join(
+    resolveInRepo(destRoot, `${SKILL_DIR}/${destSlug}`)!,
+    SKILL_ORIGIN_FILE,
+  );
+  const origin: SkillOrigin = {
+    ownerUserId: opts.sharerCtx.userId,
+    ownerUsername: opts.sharerUsername,
+    skillName: opts.skillName,
+    contentHash: sourceHash,
+    learnedAt: new Date().toISOString(),
+  };
+  await fsp.writeFile(originAbs, `${JSON.stringify(origin, null, 2)}\n`, "utf8");
   await ensureMarketplaceManifest(destRoot, destSlug);
   const committed = await commitAndPush(opts.learnerCtx, opts.commitMessage, opts.identity);
   return {
@@ -296,5 +460,7 @@ export async function learnSkillIntoRepo(opts: {
     committed,
     skippedSymlinks: stats.skippedSymlinks,
     needsSelection: opts.learnerCtx.selected !== null,
+    contentHash: sourceHash,
+    updated: Boolean(opts.updateSlug),
   };
 }

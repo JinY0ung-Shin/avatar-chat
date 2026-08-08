@@ -528,6 +528,7 @@ export class StoreBase {
         skill_name TEXT NOT NULL,
         display_name TEXT NOT NULL,
         description TEXT DEFAULT '',
+        content_hash TEXT,
         created_at TEXT,
         updated_at TEXT,
         UNIQUE (owner_user_id, skill_name)
@@ -716,6 +717,11 @@ export class StoreBase {
     // SQL `!= 0` / TS `!== 0` reads in lockstep. Group repo/brain tools and the
     // admin tool policy are NOT affected by this knob.
     this.addColumnIfMissing("groups", "avatar_sharing", "INTEGER");
+    // Shared-skill content fingerprint (#skill-share): sha256 of the sharer's
+    // skills/<slug>/ dir, refreshed whenever the server touches their clone.
+    // NULL = not yet computed. Added here for DBs that created shared_skills
+    // before the update-detection feature.
+    this.addColumnIfMissing("shared_skills", "content_hash", "TEXT");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateCanvasArtifacts();

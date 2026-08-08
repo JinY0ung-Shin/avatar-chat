@@ -31,6 +31,7 @@ interface SharedSkillRow {
   skill_name: string;
   display_name: string;
   description: string | null;
+  content_hash: string | null;
   created_at: string;
   updated_at: string;
   learn_count?: number;
@@ -449,6 +450,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         displayName: row.display_name,
         description: row.description ?? "",
         learnCount: row.learn_count ?? 0,
+        contentHash: row.content_hash ?? null,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -475,16 +477,22 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
      */
     shareSkill(
       ownerUserId: string,
-      skill: { skillName: string; displayName: string; description: string },
+      skill: {
+        skillName: string;
+        displayName: string;
+        description: string;
+        contentHash?: string | null;
+      },
     ): SharedSkill {
       const timestamp = now();
       this.db
         .prepare(
-          `INSERT INTO shared_skills (id, owner_user_id, skill_name, display_name, description, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
+          `INSERT INTO shared_skills (id, owner_user_id, skill_name, display_name, description, content_hash, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT (owner_user_id, skill_name) DO UPDATE SET
              display_name = excluded.display_name,
              description = excluded.description,
+             content_hash = COALESCE(excluded.content_hash, shared_skills.content_hash),
              updated_at = excluded.updated_at`,
         )
         .run(
@@ -493,6 +501,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
           skill.skillName,
           skill.displayName,
           skill.description,
+          skill.contentHash ?? null,
           timestamp,
           timestamp,
         );
@@ -503,6 +512,24 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         )
         .get(ownerUserId, skill.skillName) as SharedSkillRow;
       return this.toSharedSkill(row);
+    }
+
+    /**
+     * Refresh ONE share's content fingerprint without touching updated_at —
+     * used when a TEAMMATE's preview/learn observes drift (a viewer action
+     * must not reorder the owner's listing; owner-side reconciliation goes
+     * through shareSkill, which does bump it).
+     */
+    setSharedSkillContentHash(
+      ownerUserId: string,
+      skillName: string,
+      contentHash: string | null,
+    ): void {
+      this.db
+        .prepare(
+          "UPDATE shared_skills SET content_hash = ? WHERE owner_user_id = ? AND skill_name = ?",
+        )
+        .run(contentHash, ownerUserId, skillName);
     }
 
     /**

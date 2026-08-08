@@ -559,6 +559,13 @@ export interface SharedSkill {
    * events for (owner, skillName), surviving unshare→re-share cycles.
    */
   learnCount: number;
+  /**
+   * Content hash of the sharer's `skills/<slug>/` directory, refreshed
+   * whenever the server touches the sharer's clone (share, owner mine
+   * reconciliation, preview, learn). Learners compare it against the hash in
+   * their copy's origin marker to detect an available update. Null = unknown.
+   */
+  contentHash: string | null;
   createdAt: string;
   updatedAt: string;
 }
