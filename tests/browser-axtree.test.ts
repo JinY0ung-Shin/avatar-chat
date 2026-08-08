@@ -1073,6 +1073,35 @@ describe("renderAxTree", () => {
     ).toBeNull();
   });
 
+  it("renders ONLY the in-scope nodes when there is no start node to walk from", () => {
+    // The scoped element is alive in the DOM and absent from the AX tree that
+    // was just fetched — a covering overlay div that never got an accessibility
+    // node, a map pane caught mid-rebuild. There is no start node to descend
+    // from, so what the DOM says lives inside it is the entire answer; falling
+    // back to the full walk would hand the whole page back as that element's
+    // contents, which is what an agent would read it as.
+    const nodes = [
+      node("1", "RootWebArea", "지도", ["2"]),
+      node("2", "region", "Map", [], { backendDOMNodeId: 10 }),
+      node("3", "image", "음식점", [], { backendDOMNodeId: 11 }),
+    ];
+    expect(renderAxTree(nodes, uids(), undefined, { scopeDomIds: new Set([11]) })).toEqual([
+      '[e1] image "음식점"',
+    ]);
+    // An EMPTY set is not a scope, so it still means the whole page.
+    expect(renderAxTree(nodes, uids(), undefined, { scopeDomIds: new Set() })).toEqual(
+      render(nodes),
+    );
+    // And the mode's boundary: a start id that was GIVEN and matches nothing is
+    // a stale uid whatever the set holds, never a reason to sweep instead.
+    expect(
+      renderAxTree(nodes, uids(), undefined, {
+        startBackendNodeId: 999,
+        scopeDomIds: new Set([11]),
+      }),
+    ).toBeNull();
+  });
+
   it("drops a line that is nothing but brackets, keeping bracketed TEXT", () => {
     // What is left of a construct suppressed elsewhere: the page's own
     // parentheses around a hole, shipped as if they were content. A uid line is
@@ -1306,6 +1335,70 @@ describe("renderAxTree", () => {
       node("4", "StaticText", "도움말"),
     ]);
     expect(lines).toEqual(['[e1] button "저장하기 도움말"']);
+  });
+
+  it("re-spaces a name whose only separator CHROME inserted at a block edge", () => {
+    // The live CDP dump from map.naver.com, used verbatim: the rating row's
+    // visually-hidden `place_blind` span is absolutely positioned, so Chrome
+    // itself put a space at that block boundary (accname leaves separation to
+    // the implementation). The raw name therefore carries exactly ONE space that
+    // NO segment contains, which `segments.join("") === rawName` could never
+    // satisfy — so every place row on the service printed welded, and its child
+    // StaticTexts then escaped container-echo suppression and re-spelled the
+    // label a line at a time. Both are gone once the name reads as words: the
+    // children are covered by it and drop out, leaving the one line.
+    const lines = render([
+      node("1", "button", "영업 종료별점 4.87리뷰1,269", ["st", "g1", "g2"], {
+        backendDOMNodeId: 7,
+      }),
+      node("st", "StaticText", "영업 종료"),
+      node("g1", "none", "", ["svg1", "blind", "rate"], { ignored: true }),
+      node("svg1", "generic", ""),
+      node("blind", "none", "", ["blindText"], { ignored: true }),
+      node("blindText", "StaticText", "별점"),
+      node("rate", "StaticText", "4.87"),
+      node("g2", "none", "", ["svg2", "reviews", "count"], { ignored: true }),
+      node("svg2", "generic", ""),
+      node("reviews", "StaticText", "리뷰"),
+      node("count", "StaticText", "1,269"),
+    ]);
+    expect(lines).toEqual(['[e1] button "영업 종료 별점 4.87 리뷰 1,269"']);
+  });
+
+  it("declines a name whose own text nodes are doing the spacing", () => {
+    // The PROSE GUARD, and the reason it is a guard and not a heuristic: the
+    // page wrote a space after 옥수수 and none in front of the postposition 랑,
+    // so the segments "옥수수 " + "크림 뇨끼" + "랑 홈메이드 …" would rebuild as
+    // "옥수수 크림 뇨끼 랑 홈메이드 …" — a sentence the page does not contain.
+    // An edge space on ANY segment says the page is spacing itself here, and
+    // then there is nothing to put back.
+    const lines = render([
+      node("1", "button", "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데", ["2", "3", "4"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", "옥수수 "),
+      node("3", "StaticText", "크림 뇨끼"),
+      node("4", "StaticText", "랑 홈메이드 라자냐 시켰는데"),
+    ]);
+    expect(lines).toEqual(['[e1] button "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데"']);
+  });
+
+  it("guesses a DRY seam even in a name that also crossed a block boundary", () => {
+    // The honest limit of the Chrome-separator branch, pinned rather than papered
+    // over. "가격 안내" arrives with the separator between 가격 and 안내 and the
+    // word 안내 itself split across two spans, all three segments dry — so the
+    // 안|내 seam falls to glueSegments' character rule and gets a space it should
+    // not have. That is knowingly the SAME guess this module already makes for a
+    // fully-welded name (종료|별점 and 광교|역 are both Hangul beside Hangul, and
+    // no character rule tells them apart); what it now costs is this corner,
+    // and what it buys is every rating row on Korea's dominant map service.
+    const lines = render([
+      node("1", "button", "가격 안내", ["2", "3", "4"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "가격"),
+      node("3", "StaticText", "안"),
+      node("4", "StaticText", "내"),
+    ]);
+    expect(lines).toEqual(['[e1] button "가격 안 내"']);
   });
 
   it("joins a row whose cell text lives on a nested link", () => {
@@ -1894,6 +1987,115 @@ describe("renderAxText", () => {
     expect(lines).toEqual(["China[n 1]"]);
   });
 
+  it("keeps the space a text node carried in front of the link beside it", () => {
+    // Wikipedia's deletion notice, byte-exact: the trailing space belongs to the
+    // text node, and the emit-time trim threw it away — so the character rule saw
+    // a comma, decided no space was needed, and read_text answered
+    // "If the page has been deleted,check the deletion log". The space is not
+    // inferred here, it is EVIDENCE the node carries.
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Doc", ["p"]),
+      node("p", "paragraph", "", ["t1", "l"]),
+      node("t1", "StaticText", "If the page has been deleted, "),
+      node("l", "link", "check the deletion log", [], { backendDOMNodeId: 7 }),
+    ]) as string[];
+    expect(lines).toEqual(["Doc", "If the page has been deleted, check the deletion log"]);
+  });
+
+  it("welds a quote to the phrase but restores the space after it", () => {
+    // Both directions of the rule in ONE sentence, which is why this shape is
+    // the sharpest pin: the closing `"` is its own text node with dry edges and
+    // must stay against "tree" (a blanket space shipped `Accessibility tree "`),
+    // while the next node BEGINS with a real space that the same character rule
+    // deleted — read_text answered `…"Accessibility tree"in existing articles.`
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Doc", ["p"]),
+      node("p", "paragraph", "", ["t1", "l", "t2", "t3"]),
+      node("t1", "StaticText", 'Search for "'),
+      node("l", "link", "Accessibility tree", [], { backendDOMNodeId: 7 }),
+      node("t2", "StaticText", '"'),
+      node("t3", "StaticText", " in existing articles."),
+    ]) as string[];
+    expect(lines).toEqual(["Doc", 'Search for "Accessibility tree" in existing articles.']);
+  });
+
+  it("keeps the space in front of a parenthesis the page put one before", () => {
+    // "Wiktionary(dictionary)" in the field: an opening bracket is a boundary
+    // character, so the character rule welded it onto the link's name — but the
+    // page's own text node opens with a space, which decides it.
+    const lines = renderAxText([
+      node("p", "paragraph", "", ["l", "t"]),
+      node("l", "link", "Wiktionary", [], { backendDOMNodeId: 7 }),
+      node("t", "StaticText", " (dictionary)"),
+    ]) as string[];
+    expect(lines).toEqual(["Wiktionary (dictionary)"]);
+  });
+
+  it("keeps a footnote marker tight but starts the next sentence with a space", () => {
+    // The two rules meeting at one link: "[3]" has dry edges and belongs against
+    // the word it annotates, exactly as round 7 pinned it, and the sentence that
+    // follows carries its own leading space — which used to vanish, shipping
+    // "…currency.[3]Such fluctuations may change…" as the page's own prose.
+    const lines = renderAxText([
+      node("p", "paragraph", "", ["t1", "l", "t2"]),
+      node("t1", "StaticText", "using current exchange rates for currency."),
+      node("l", "link", "[3]", [], { backendDOMNodeId: 7 }),
+      node("t2", "StaticText", " Such fluctuations may change a country ranking."),
+    ]) as string[];
+    expect(lines).toEqual([
+      "using current exchange rates for currency.[3] Such fluctuations may change a country ranking.",
+    ]);
+  });
+
+  it("reads a comma-separated list of links as the list the page wrote", () => {
+    // Every separator here is a text node of its own — ", " between the links,
+    // and ": " after the lead-in — and each one's trailing space was trimmed
+    // away, so a whole list of countries came back as
+    // "includes the following states:Andorra,Australia,Bahamas, The". The comma
+    // still gets no space in FRONT of it, because that edge is genuinely dry.
+    const lines = renderAxText([
+      node("p", "paragraph", "", ["t1", "l1", "c1", "l2", "c2", "l3"]),
+      node("t1", "StaticText", "includes the following states: "),
+      node("l1", "link", "Andorra", [], { backendDOMNodeId: 7 }),
+      node("c1", "StaticText", ", "),
+      node("l2", "link", "Australia", [], { backendDOMNodeId: 8 }),
+      node("c2", "StaticText", ", "),
+      node("l3", "link", "Bahamas, The", [], { backendDOMNodeId: 9 }),
+    ]) as string[];
+    expect(lines).toEqual(["includes the following states: Andorra, Australia, Bahamas, The"]);
+  });
+
+  it("still welds a period whose own text node has no space either side", () => {
+    // The round-7 case that motivated gluing in the first place, kept as a pin:
+    // with BOTH edges dry there is no evidence, the character rule decides, and
+    // read_text must not go back to answering "request a new article ."
+    const lines = renderAxText([
+      node("p", "paragraph", "", ["t1", "t2"]),
+      node("t1", "StaticText", "request a new article"),
+      node("t2", "StaticText", "."),
+    ]) as string[];
+    expect(lines).toEqual(["request a new article."]);
+  });
+
+  it("spaces two BLOCKS of one cell, which no text node spans", () => {
+    // A cell holding two paragraphs: the boundary between them carries no text
+    // node at all, so there is no edge whitespace to find — and welded, the cell
+    // read back as "First sentence.Second sentence.", a sentence boundary an
+    // agent cannot see. The structure is the evidence here. It is a SIBLING-block
+    // test and not "the container changed", because moving from inside a block
+    // out to cell level changes the container too and must stay welded — see the
+    // "China[n 1]" pin above.
+    const lines = renderAxText([
+      node("r", "row", "", ["c"]),
+      node("c", "cell", "", ["p1", "p2"]),
+      node("p1", "paragraph", "", ["s1"]),
+      node("s1", "StaticText", "First sentence."),
+      node("p2", "paragraph", "", ["s2"]),
+      node("s2", "StaticText", "Second sentence."),
+    ]) as string[];
+    expect(lines).toEqual(["First sentence. Second sentence."]);
+  });
+
   it("suppresses a footnote link its cell's label already spells out", () => {
     // The needle carries its own boundaries: `[n 1]` sits at a NON-boundary
     // position inside "China[n 1]" (an `a` right before the bracket), so
@@ -1954,6 +2156,23 @@ describe("renderAxText", () => {
     expect(renderAxText(nodes, 10)).toEqual(["Map"]);
     expect(renderAxText(nodes, 10, new Set([11]))).toEqual(["Map", "음식점"]);
     expect(renderAxText(nodes, 999, new Set([11]))).toBeNull();
+  });
+
+  it("reads ONLY the in-scope nodes when there is no start node to walk from", () => {
+    // A read scoped to an element the DOM has and this AX tree does not — an
+    // overlay that never got an accessibility node, a pane mid-rebuild. The set
+    // is then the whole scope, each id entered as its own root; answering with
+    // the full page instead would read as that element's text.
+    const nodes = [
+      node("1", "RootWebArea", "지도", ["2"]),
+      node("2", "region", "Map", [], { backendDOMNodeId: 10 }),
+      node("3", "image", "음식점", [], { backendDOMNodeId: 11 }),
+    ];
+    expect(renderAxText(nodes, undefined, new Set([11]))).toEqual(["음식점"]);
+    // An empty set is not a scope, and neither is an absent one: both still mean
+    // the whole page.
+    expect(renderAxText(nodes, undefined, new Set())).toEqual(["지도", "Map", "음식점"]);
+    expect(renderAxText(nodes)).toEqual(["지도", "Map", "음식점"]);
   });
 
   it("prints a huge value WHOLE — it is the channel the snapshot's cut points at", () => {

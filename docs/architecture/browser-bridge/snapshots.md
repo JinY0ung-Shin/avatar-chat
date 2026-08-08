@@ -50,9 +50,9 @@
   not the row, so Wikipedia's GDP table printed the rank on its own line and split its header row into
   six. Each renderer now keeps a per-render `parentOf` map and climbs it (`rowChain`, 25-hop bound):
   a piece whose nearest row matches the open row APPENDS — ` | ` when its nearest CELL changed; more of
-  the SAME cell is GLUED in the reading view (`glueSegments`, space only at a word|word seam, so a
-  footnote marker reads back as `China[n 1]` like the page; the snapshot view keeps the space, its
-  pieces are decorated renderings) — and a row slot nulled by run suppression starts a fresh line
+  the SAME cell is GLUED in the reading view (`glueSegments` on carried-whitespace evidence — see the
+  rejoin bullet below — so a footnote marker reads back as `China[n 1]` like the page; the snapshot
+  view keeps the space, its pieces are decorated renderings) — and a row slot nulled by run suppression starts a fresh line
   rather than resurrecting a deleted duplicate. Cells keep their full rendering, uid included, and the
   joined line still starts with the first cell's, which is what `capSnapshot`'s uid-first keep
   classifies it by.
@@ -70,22 +70,41 @@
   (`tests/visual/ax-facts.spec.ts`): Chrome does NOT truncate AX values (42 000 chars round-trip
   byte-identical), so that corruption was the PAGE's own virtualized DOM re-windowing the textarea —
   unfixable from here; the marker is what stops partial text posing as complete.
-- **A name is RE-SPACED only when it is EXACTLY the concatenation of its descendants' text.**
-  Chrome computes some names by welding descendant text together with no separators — a Naver Maps
-  place button arrives as `button "영업 종료별점 4.76리뷰7,262TV 식스센스"` — and the separated child
-  texts that could have been read instead are then deleted as a run-level ECHO of that very name, so
-  the structure was unrecoverable. `respacedName` (inside `walkAxNodes`, feeding both renderers AND
-  ancestor coverage) accepts only when `segments.join("") === rawName` (≥ 2 segments, 300-node bound):
-  the looser strip-spaces equality would re-space text the page never split ("검색어 광교역" →
-  "검색어 광교 역", inventing a boundary inside a place name), and the walk aborts on TEXT_LEVEL
-  wrappers, which split runs MID-word by construction. Segments are not StaticTexts only: a NAMED
-  descendant contributes its NAME and is not walked into (accname semantics — star-rating rows carry
-  their rating on an image's alt, and StaticText-only collection could never reconstruct those names,
-  so they stayed welded). Accepted seams are GLUED, not blanket-spaced (`glueSegments`: a space only
-  between letter/digit and letter/digit) — `Search for "` + `Accessibility tree` + `"` and footnote
-  links `[` + `n 2` + `]` must come back exactly as the page wrote them, and the same rule runs every
-  rejoin site (both renderers' inline runs, read_text same-cell appends), which is also what fixed
-  read_text's `request a new article .` space-before-period.
+- **A name is RE-SPACED only when its descendants' text fully ACCOUNTS for it.** Chrome computes some
+  names by welding descendant text together — a Naver Maps place button arrives as
+  `button "영업 종료별점 4.76리뷰7,262TV 식스센스"` — and the separated child texts that could have
+  been read instead are then deleted as a run-level ECHO of that very name, so the structure was
+  unrecoverable. `respacedName` (inside `walkAxNodes`, feeding both renderers AND ancestor coverage)
+  consume-matches the trimmed segments against the raw name (≥ 2 segments, 300-node bound): each must
+  sit contiguously where the previous ended, and the only thing allowed BETWEEN two is whitespace the
+  raw name carries and no segment does — Chrome's own block-boundary separator (probe-verified on
+  naver's rating rows: the visually-hidden absolutely-positioned `place_blind` span holding 별점 makes
+  Chrome write `별점 4.87` into the name while every child StaticText is edge-dry, which the old
+  `segments.join("") === rawName` gate could never pass — every rating row printed welded). A segment
+  carrying its OWN edge space declines the whole name (the PROSE GUARD: "옥수수 " + "크림 뇨끼" +
+  "랑 …" is the page's own typography, and re-spacing it puts a space before a postposition), and the
+  walk still aborts on TEXT_LEVEL wrappers, which split runs MID-word by construction ("검색어 광교역"
+  must never become "검색어 광교 역"). Rebuild: a Chrome-separator seam gets its one space back; a dry
+  seam is glued (word|word only) — a fully-welded name therefore behaves byte-identically to before,
+  and the pinned honest limit is now a name mixing BOTH seam kinds ("가격 안내" over "가격"+"안"+"내"
+  ships "가격 안 내" instead of declining; the trade un-welds every rating row this rule exists for).
+  Segments are not StaticTexts only: a NAMED descendant contributes its NAME and is not walked into
+  (accname semantics), and a reconstruction that fails still prints today's welded name — the benign
+  direction.
+- **Every rejoin site restores the whitespace the page's own text nodes CARRY, and guesses only when
+  both edges are dry.** `glueSegments`' word|word character rule alone deleted real page spaces at
+  every punctuation seam — Wikipedia read back as `deleted,check the deletion log`,
+  `Wiktionary(dictionary)`, `currency.[3]Such fluctuations`, and a country list lost every `, `
+  separator — because `walkAxNodes` trims names at emit and the trim destroys the evidence.
+  `nameEdges` re-reads the UNTRIMMED name at each glue site (leading/trailing `\s`; `trail` suppressed
+  when the piece printed a value, since the joined text then ends with the value); both renderers'
+  inline runs and read_text's same-cell appends pass that evidence as `glueSegments`' third argument —
+  a carried space wins over the character rule, while weld-only seams (`[`+`n 2`+`]`,
+  `request a new article`+`.`, `Search for "`+`Accessibility tree`+`"`) stay exactly as the page wrote
+  them. A same-cell seam has one more space source, structural rather than textual: SIBLING blocks in
+  one cell (`crossesBlocks` — neither piece's container encloses the other's), because two `<p>`s in a
+  cell have no text node spanning their edge, while `China` + `[n 1]` (same block, different depths)
+  keeps welding.
 - **A NAMED image outside every interactive ancestor mints a uid — and a SURFACE is not an
   "interactive ancestor".** Naver map markers surface as `image "음식점"` with nothing clickable above
   them, so reaching one was a click_at pixel gamble; but blanket image-uids would double a SERP with

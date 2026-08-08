@@ -87,7 +87,19 @@
   `DOM.getFrameOwner` on the ref's own session only) are appended — snapshot with local `frame fN:`
   headers, read_text as continuing text. Uids stay identical across the re-render (mintUid answers from
   `uidByNode`); any CDP failure skips enrichment (an addition, never a new failure); nested OOPIFs are
-  out of scope.
+  out of scope. Two more rungs cover the ways this still ended empty in the field: STILL-hollow after
+  enrichment repolls once (`STALE_SNAPSHOT_REPOLL_MS` wait + `flushLifecycle`, then a FRESH
+  `sourceAxNodes` fetch AND freshly re-asked `scopeDomIdsOf` — a live pane re-creates its DOM
+  continuously, so both the tree and the id set in hand can predate the rebuild; the longer answer
+  wins, the repoll never subtracts), and a start node NO tree contains is not declared gone until the
+  DOM agrees — if `scopeDomIdsOf` still answers, the walk runs SWEEP-ONLY (`scopeDomIds` with no start
+  id renders exactly the in-scope nodes — `walkAxNodes`' third mode) over the main tree plus in-scope
+  frames, because an unnamed overlay or a mid-rebuild pane is alive in the DOM while absent from the
+  AX tree, and the stale-uid error would discard a uid that still works. A SCOPED answer of zero
+  atoms / empty text is never returned bare: `HOLLOW_SCOPE_SNAPSHOT_NOTE` / `HOLLOW_SCOPE_TEXT_NOTE`
+  say the element renders nothing of its own and where to look instead (a SIBLING layer; `snapshot`
+  without uid; `click_at` with fractions) — an empty answer reads as a broken tool, and the /entry_ad
+  backdrop is the field case.
 - **Frame content is LABELLED, not just stitched in — and the header itself is the way IN.** A child
   frame's block is preceded by a header and the owning `Iframe` element's line carries a matching
   ` (frame fN)` (`renderAxTree`'s `frameLabels`: owner backendNodeId → label, printed LAST on the line

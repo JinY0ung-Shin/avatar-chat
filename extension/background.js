@@ -45,8 +45,12 @@ const CDP_VERSION = "1.3";
  * `Page.getFrameTree` reads the frame STRUCTURE (ids only, no content) so
  * same-process iframes can be walked at all, `DOM.getFrameOwner` answers the
  * other half of that structure question — which element OWNS a given frame — so
- * a frame's content block can name the `Iframe` line it belongs to, and
- * `Accessibility.getPartialAXTree` reads ONE node — the same exfiltration class
+ * a frame's content block can name the `Iframe` line it belongs to,
+ * `DOM.getDocument` reads that same structure from the ROOT instead of from one
+ * element — the pierced node tree, which is what lets a refused click climb from
+ * the piece it hit-tested to the overlay LAYER (see overlayRootFor) and mint a
+ * uid worth following; it exposes nothing a depth -1 `DOM.describeNode` already
+ * here does not, and `Accessibility.getPartialAXTree` reads ONE node — the same exfiltration class
  * as the getFullAXTree already here, and strictly less of it. It exists so a
  * clearing write can be VERIFIED by reading the field back instead of claiming
  * success on faith, the line select_option already draws.
@@ -59,6 +63,7 @@ const CDP_ALLOWLIST = new Set([
   "DOM.enable",
   "DOM.getBoxModel",
   "DOM.getContentQuads",
+  "DOM.getDocument",
   "DOM.getFrameOwner",
   "DOM.getNodeForLocation",
   "DOM.focus",
@@ -1062,6 +1067,28 @@ const HOLLOW_SCOPE_ATOMS = 3;
 const HOLLOW_SCOPE_TEXT_CHARS = 400;
 
 /**
+ * What a scoped read answers when the element is THERE and genuinely holds
+ * nothing readable. Both scoped paths used to hand back an empty snapshot or an
+ * empty string, which an agent cannot tell apart from a broken tool and which
+ * offers nothing to try next — and the shape is common enough to name: the
+ * covering-layer uid a refused click mints often wraps a full-viewport backdrop
+ * whose readable content sits in a SIBLING layer, and a map or <canvas> surface
+ * draws its content without marking any of it up. An empty answer has to say
+ * which of those it is and where to look instead.
+ */
+const HOLLOW_SCOPE_SNAPSHOT_NOTE =
+  "The element behind that uid exists but renders no readable content of its own (an empty overlay/backdrop, or a " +
+  "surface that is drawn rather than marked up). Its visible content may live in a SIBLING layer: take " +
+  "mcp__browser__snapshot without `uid` and look near this element, or aim mcp__browser__click_at at this uid with " +
+  "xFraction/yFraction.";
+
+const HOLLOW_SCOPE_TEXT_NOTE =
+  "The element behind that uid exists but contains no readable text of its own (an empty overlay/backdrop, or a " +
+  "surface that is drawn rather than marked up). Its visible text may live in a SIBLING layer: take " +
+  "mcp__browser__read_text without `uid`, or take a fresh mcp__browser__snapshot to find the element that actually " +
+  "holds the content.";
+
+/**
  * Every backendNodeId the DOM says lives INSIDE one element, shadow roots
  * included — the set that lets a hollow scoped read recover what the full walk
  * already knew about that same element.
@@ -1145,6 +1172,23 @@ async function framesInsideScope(target, frameIds, scopeDomIds) {
  * scopeDomIdsOf). Paid only on that path: a scope that already rendered content
  * returns straight away.
  *
+ * Two more rungs below that, for the two ways the field showed this still ending
+ * in nothing, and each one costs only the caller it saves:
+ *
+ *   still hollow after the enrichment — the tree in hand may simply be WRONG. A
+ *     map re-creates its marker DOM continuously, so an AX fetch can land
+ *     mid-rebuild and the enrichment, which re-renders that same array, has
+ *     nothing to find. One flushed repoll gets a tree that does.
+ *   no tree contained the start node — the element may still be ALIVE. An unnamed
+ *     overlay wrapper or a rebuilding pane is absent from the AX tree while the
+ *     DOM still describes it, so before declaring the uid dead the scope is swept
+ *     out of the tree by DOM membership alone.
+ *
+ * And an answer of zero atoms is never returned bare: the element behind the uid
+ * has been confirmed present by whichever rung produced it, so the op says in
+ * words that it renders nothing of its own (HOLLOW_SCOPE_SNAPSHOT_NOTE) instead
+ * of handing back an empty snapshot that reads as a broken tool.
+ *
  * Deliberately does NOT run the REF_MAP_MAX reset buildSnapshot opens with:
  * clearing the map mid-op would evict the very uid being scoped by, and a
  * subtree mints few uids anyway.
@@ -1179,12 +1223,43 @@ async function buildScopedSnapshot(tab, ref) {
     if (lines === null) continue; // the start node is not in THIS tree — try the next
     if (lines.length > HOLLOW_SCOPE_ATOMS) return lines;
     const scopeDomIds = await scopeDomIdsOf(target, ref.backendNodeId);
-    if (!scopeDomIds) return lines;
+    if (!scopeDomIds) return lines.length ? lines : [HOLLOW_SCOPE_SNAPSHOT_NOTE];
     // Re-rendered from the SAME nodes and the same hint map, so every uid the
     // first pass minted comes back identical — mintUid answers from uidByNode.
-    const atoms =
+    let atoms =
       renderAxTree(nodes, mint, hints, { startBackendNodeId: ref.backendNodeId, scopeDomIds }) ||
       lines;
+    if (atoms.length <= HOLLOW_SCOPE_ATOMS) {
+      // The enrichment had nothing to work with, which on a LIVE surface usually
+      // means the fetch caught the page mid-rebuild: a map re-creates its marker
+      // DOM continuously, so the tree in hand can be missing those nodes or hold
+      // them already detached, and re-rendering the SAME stale array cannot
+      // recover either. One repoll of a freshly flushed tree can — and it is paid
+      // only here, on a scope that has already answered nothing twice.
+      await new Promise((resolve) => setTimeout(resolve, STALE_SNAPSHOT_REPOLL_MS));
+      await flushLifecycle(target);
+      const freshNodes = await sourceAxNodes(source);
+      if (freshNodes) {
+        const { hints: freshHints } = await collectDomHints(
+          source,
+          freshNodes,
+          HINT_FETCH_PER_SNAPSHOT,
+        );
+        // The id set is re-asked, not reused: on the very surface this repoll
+        // exists for, the wait itself outdates those backendNodeIds — the
+        // rebuilt markers carry NEW ones — so sweeping a fresh tree with the old
+        // set would miss exactly what the repoll came back for. The old set
+        // stands in when the DOM will not answer a second time.
+        const freshIds = (await scopeDomIdsOf(target, ref.backendNodeId)) || scopeDomIds;
+        const retried = renderAxTree(freshNodes, mint, freshHints, {
+          startBackendNodeId: ref.backendNodeId,
+          scopeDomIds: freshIds,
+        });
+        // Whichever pass saw more of the element wins: the rebuild can be caught
+        // going either way, and the repoll must never SUBTRACT from the answer.
+        if (retried && retried.length > atoms.length) atoms = retried;
+      }
+    }
     // A frame inside the element gets the same `f1:` header treatment the full
     // walk gives one, counted locally: this view has no other frame blocks.
     let seq = 0;
@@ -1197,7 +1272,38 @@ async function buildScopedSnapshot(tab, ref) {
       atoms.push(frameHeader(`f${++seq}`, inner.source, inner.nodes));
       atoms.push(...renderAxTree(inner.nodes, mintForSource(inner.source), innerHints));
     }
-    return atoms;
+    return atoms.length ? atoms : [HOLLOW_SCOPE_SNAPSHOT_NOTE];
+  }
+  // No tree CONTAINED the start node — which is not the same as the element being
+  // gone. An unnamed overlay wrapper or a pane caught mid-rebuild can be absent
+  // from the accessibility tree while it is alive in the DOM, and the throw below
+  // then tells the agent to discard a uid that still works. The DOM is the
+  // referee: if it still describes a subtree, sweep the tree for the nodes that
+  // belong to it instead of walking down from a start node nothing can find.
+  const sweepIds = await scopeDomIdsOf(target, ref.backendNodeId);
+  if (sweepIds?.size) {
+    const mainSource = sources[0];
+    const nodes = await sourceAxNodes(mainSource);
+    if (nodes) {
+      const { hints } = await collectDomHints(mainSource, nodes, HINT_FETCH_PER_SNAPSHOT);
+      // No startBackendNodeId: with scopeDomIds alone the walk takes the in-scope
+      // nodes as its roots, so it visits exactly them and cannot answer null.
+      const atoms =
+        renderAxTree(nodes, mintForSource(mainSource), hints, { scopeDomIds: sweepIds }) || [];
+      let seq = 0;
+      for (const inner of await framesInsideScope(target, childIds, sweepIds)) {
+        const { hints: innerHints } = await collectDomHints(
+          inner.source,
+          inner.nodes,
+          HINT_FETCH_PER_SNAPSHOT,
+        );
+        atoms.push(frameHeader(`f${++seq}`, inner.source, inner.nodes));
+        atoms.push(...renderAxTree(inner.nodes, mintForSource(inner.source), innerHints));
+      }
+      // The DOM says the element is alive, so "gone from the page" is not an
+      // answer this path may give — an empty sweep explains itself instead.
+      return atoms.length ? atoms : [HOLLOW_SCOPE_SNAPSHOT_NOTE];
+    }
   }
   throw new Error(
     "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot without `uid` and use a current uid.",
@@ -1636,6 +1742,91 @@ async function describeSubtree(target, backendNodeId) {
 }
 
 /**
+ * Nodes indexed while climbing from a covering hit to its overlay layer, and
+ * hops that climb may take. Neither bound is ever reached by a real page: the
+ * index is a pure in-memory walk of a tree that was already fetched, and the
+ * climb stops at the lowest common ancestor long before 64 layers. A TRUNCATED
+ * index abandons the climb rather than using it — a partial ancestor chain would
+ * stop the climb too LATE and mint an enclosing page wrapper, which is a worse
+ * answer than the hit node itself.
+ */
+const OVERLAY_ROOT_SCAN_MAX = 20000;
+const OVERLAY_ROOT_HOPS_MAX = 64;
+
+/**
+ * The overlay LAYER a covering hit belongs to: climb from the hit node while the
+ * next step up is NOT an ancestor the target also has. The node that climb ends
+ * on is the hit-side child of the lowest common ancestor — the covering layer as
+ * a whole, rather than the piece of it the pointer happened to land on.
+ *
+ * Why naming the hit node is not good enough: on the-internet's /entry_ad the
+ * point resolves to `<div class="underlay">`, a full-viewport EMPTY backdrop. Its
+ * AX node is a childless nameless generic and its DOM subtree is exactly ONE
+ * node, while the modal's heading and its "Close" control live in the SIBLING
+ * `<div class="modal">`; both are children of the wrapper `<div id="modal">`. So a
+ * uid minted on the backdrop makes the refusal's own escape hatch a dead end —
+ * the scoped snapshot it recommends walks one generic, finds nothing to emit, and
+ * comes back EMPTY (verified live). The uid has to name the layer that CONTAINS
+ * the dialog, and that is the wrapper: the backdrop's parent, one step below where
+ * the target's own ancestry rejoins (`body`).
+ *
+ * By construction the node it lands on never CONTAINS the target — the climb stops
+ * before entering any ancestor they share — so the scoped snapshot the refusal
+ * recommends shows the overlay, never the page behind it.
+ *
+ * `DOM.getDocument` is read-only structure — the same pierced node tree the
+ * depth -1 `DOM.describeNode` above already returns, asked from the root rather
+ * than from one element. It also hands back `nodeId`s, whose id space it
+ * invalidates on every call; nothing here is affected, because every ref in this
+ * file is a backendNodeId, which that reset does not touch. Every failure returns
+ * `hitId`, so this can only make a refusal more useful; it is never a new way for
+ * the guard to break.
+ */
+async function overlayRootFor(target, hitId, targetId) {
+  const doc = await sendCdp(target, "DOM.getDocument", { depth: -1, pierce: true }).catch(
+    () => null,
+  );
+  const root = doc?.root;
+  if (!root) return hitId;
+  const parentOf = new Map();
+  const queue = [root];
+  let seen = 0;
+  while (queue.length) {
+    if (seen >= OVERLAY_ROOT_SCAN_MAX) return hitId;
+    const node = queue.shift();
+    seen += 1;
+    // Shadow roots ride along for the same reason subtreeContains walks them: a
+    // web component's overlay draws its layers inside one.
+    for (const child of [...(node?.children || []), ...(node?.shadowRoots || [])]) {
+      if (typeof node?.backendNodeId === "number" && typeof child?.backendNodeId === "number") {
+        parentOf.set(child.backendNodeId, node.backendNodeId);
+      }
+      queue.push(child);
+    }
+  }
+  // Every hop up to the document root, which is what makes the climb below
+  // terminate on a real page: both chains reach that node, so the worst case is
+  // stopping at the document's own child. The has() test doubles as the loop's
+  // guard — a malformed index that somehow cycles ends here instead of spinning.
+  const targetAncestors = new Set();
+  let up = parentOf.get(targetId);
+  while (up != null && !targetAncestors.has(up)) {
+    targetAncestors.add(up);
+    up = parentOf.get(up);
+  }
+  // The target is not in this index at all (it lives in a frame document, which
+  // hangs off `contentDocument` rather than `children`): nothing to climb toward.
+  if (!targetAncestors.size) return hitId;
+  let climbed = hitId;
+  for (let hops = 0; hops < OVERLAY_ROOT_HOPS_MAX; hops += 1) {
+    const parent = parentOf.get(climbed);
+    if (parent == null || targetAncestors.has(parent)) break;
+    climbed = parent;
+  }
+  return climbed;
+}
+
+/**
  * How much bigger than its target a covering element must be before the click
  * is refused. A layer that merely OVERLAPS (an icon badge, a focus ring, the
  * decorative span of a styled checkbox) is normal page construction; a modal or
@@ -1674,6 +1865,10 @@ const OBSCURED_MIN_TARGET_AREA = 100;
  * turns all three back on — the covering layer can be snapshotted, its close
  * control clicked directly, or aimed into with uid-relative click_at, which
  * needs no vision at all.
+ *
+ * That uid names the covering LAYER, not the node the hit test resolved to: see
+ * overlayRootFor for why the distinction is the difference between an escape
+ * hatch that works and a scoped snapshot of an empty backdrop.
  */
 async function assertNotObscured(ref, point) {
   const { target, area } = point;
@@ -1704,14 +1899,18 @@ async function assertNotObscured(ref, point) {
   // overlay — a <label> wrapping its input, or a card wrapping its own link,
   // receives the click on the target's behalf rather than instead of it.
   if (subtreeContains(await describeSubtree(target, hitId), ref.backendNodeId)) return;
+  // The layer, not the pixel the pointer found: a uid on the backdrop half of a
+  // modal is addressable but hollow. Describing the MINTED node keeps the message
+  // and the uid talking about the same element.
+  const overlayId = await overlayRootFor(target, hitId, ref.backendNodeId);
   const described = await sendCdp(target, "DOM.describeNode", {
-    backendNodeId: hitId,
+    backendNodeId: overlayId,
     depth: 2,
   }).catch(() => null);
   const desc = described?.node ? renderNodeBrief(described.node, 120) : "(it could not be described)";
   let uid = null;
   try {
-    uid = mintUid(target.tabId, target.sessionId, hitId);
+    uid = mintUid(target.tabId, target.sessionId, overlayId);
   } catch {
     // The same stable-ref machinery a snapshot mints from, and synchronous — but
     // wrapped anyway: this guard must never become a new way for a click to
@@ -2739,6 +2938,15 @@ const READ_TEXT_MAX = 20000;
  * Plain readable text of the page (or of one element's subtree), across every
  * attached session, in the same order the snapshot walks. Mints no uids, so
  * the previous snapshot's refs stay valid.
+ *
+ * A SCOPED read climbs the same recovery ladder buildScopedSnapshot documents,
+ * for the same field failures and in the same order: DOM-membership enrichment
+ * when the subtree reads hollow, one flushed repoll when even that finds nothing
+ * (the tree may have been fetched mid-rebuild), a DOM-membership sweep when no
+ * tree contains the start node at all (absent from the AX tree is not gone from
+ * the page), and a sentence rather than an empty string when the element is
+ * genuinely readable-content-free. The UNSCOPED path is untouched — `expand`
+ * merges its lines and needs exactly today's behavior.
  */
 async function buildPageText(tab, scope) {
   const scopeTarget = scope ? { tabId: scope.tabId, sessionId: scope.sessionId } : null;
@@ -2769,6 +2977,28 @@ async function buildPageText(tab, scope) {
       const scopeDomIds = await scopeDomIdsOf(scopeTarget, scope.backendNodeId);
       if (scopeDomIds) {
         lines = renderAxText(nodes, scope.backendNodeId, scopeDomIds) || lines;
+        if (lines.join("\n").length < HOLLOW_SCOPE_TEXT_CHARS) {
+          // Still nothing, which is the mid-rebuild case buildScopedSnapshot
+          // repolls for: a live surface re-creates the nodes it holds, so the
+          // tree in hand can predate them or have already detached them, and
+          // re-reading the SAME array cannot recover either.
+          await new Promise((resolve) => setTimeout(resolve, STALE_SNAPSHOT_REPOLL_MS));
+          await flushLifecycle(scopeTarget);
+          const freshNodes = await sourceAxNodes(source);
+          let retried = null;
+          if (freshNodes) {
+            // The id set is re-asked rather than reused: on the surface this
+            // repoll exists for, the wait itself outdates those backendNodeIds —
+            // the rebuilt nodes carry NEW ones — so reading a fresh tree against
+            // the old set would miss exactly what the repoll came back for. The
+            // old set stands in when the DOM will not answer a second time.
+            const freshIds = (await scopeDomIdsOf(scopeTarget, scope.backendNodeId)) || scopeDomIds;
+            retried = renderAxText(freshNodes, scope.backendNodeId, freshIds);
+          }
+          // Longer wins, never shorter: the rebuild can be caught going either
+          // way, and the repoll must not SUBTRACT from what was already read.
+          if (retried && retried.join("\n").length > lines.join("\n").length) lines = retried;
+        }
         // No frame header here: the reading view carries no labels or uids to
         // tie one to, so a frame's text simply continues the element's.
         for (const inner of await framesInsideScope(scopeTarget, scopeFrameIds, scopeDomIds)) {
@@ -2780,11 +3010,32 @@ async function buildPageText(tab, scope) {
     if (scope) break; // a scoped subtree lives in exactly one tree
   }
   if (scope && !scopeFound) {
-    throw new Error(
-      "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot and retry read_text with a current uid.",
-    );
+    // No tree contained the start node, which does not mean the element is gone:
+    // an unnamed wrapper or a pane caught mid-rebuild is alive in the DOM while
+    // absent from the accessibility tree, and telling the agent to discard a uid
+    // that still works costs it the whole read. The DOM decides — if it still
+    // describes a subtree, sweep the tree for the nodes belonging to it.
+    const sweepIds = await scopeDomIdsOf(scopeTarget, scope.backendNodeId);
+    const nodes = sweepIds?.size ? await sourceAxNodes(sources[0]) : null;
+    if (!nodes) {
+      throw new Error(
+        "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot and retry read_text with a current uid.",
+      );
+    }
+    // No startBackendNodeId: with the id set alone the walk takes the in-scope
+    // nodes as its roots, visiting exactly them and never answering null.
+    const swept = renderAxText(nodes, undefined, sweepIds) || [];
+    for (const inner of await framesInsideScope(scopeTarget, scopeFrameIds, sweepIds)) {
+      swept.push(...renderAxText(inner.nodes));
+    }
+    if (swept.length) parts.push(swept.join("\n"));
   }
-  return parts.join("\n");
+  const text = parts.join("\n");
+  // A SCOPED read that comes back empty says so in words: the element is there
+  // (every path that reaches here has confirmed as much), so an empty string
+  // would read as a broken tool and leave nothing to try next.
+  if (scope && !text) return HOLLOW_SCOPE_TEXT_NOTE;
+  return text;
 }
 
 /**

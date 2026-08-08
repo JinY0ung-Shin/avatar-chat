@@ -224,6 +224,9 @@ Linux (`/etc/opt/chrome/policies/managed/noah-bridge.json`, Edge는
 - **JS 실행 경로가 없습니다.** `CDP_ALLOWLIST`는 기본 거부이고 `Runtime.*`·`Network.*`·
   `Storage.*`가 없습니다. 요소는 접근성 트리의 `backendNodeId`로만 지목합니다.
   이 allowlist가 자격증명 도달 범위를 묶는 실질적 장치입니다 — 권한 매니페스트가 아니라.
+  `DOM.getDocument`도 읽기 전용 구조 조회로만 추가돼 있습니다(모달에 가려진 클릭을 거부할 때
+  덮은 레이어 전체를 지목하기 위한 부모 추적용 — `depth:-1`의 `DOM.describeNode`가 이미 주는
+  것 이상을 노출하지 않습니다).
 - **한 페이지의 접근성 트리는 세 갈래로 모읍니다.** `Accessibility.getFullAXTree`는 `frameId`
   없이는 **메인 프레임만** 훑기 때문에, 루트 세션 + `Page.getFrameTree`로 얻은 프레임별 트리
   (동일 프로세스 iframe) + OOPIF 자식 세션을 각각 읽어 합칩니다. 중간 갈래가 없으면 같은

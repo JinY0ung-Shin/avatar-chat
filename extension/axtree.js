@@ -378,7 +378,9 @@ function containsAsToken(hay, needle) {
 const WORDISH = /[\p{L}\p{N}]/u;
 
 /**
- * Append `next` to `prev`, spacing ONLY a word|word seam.
+ * Append `next` to `prev`, spacing ONLY a word|word seam — unless `realSpace`
+ * says the PAGE put whitespace at this seam, in which case exactly one space
+ * goes back whatever the characters on either side are.
  *
  * Every place this module rejoins text a page split — a welded accessible name,
  * a per-word <span> run, the pieces of one table cell — used to put a space at
@@ -388,14 +390,53 @@ const WORDISH = /[\p{L}\p{N}]/u;
  * "request a new article ." because the trailing period is a StaticText of its
  * own. A boundary character on either side of the seam already separates the
  * two pieces, so only letter-beside-letter needs a space put back.
+ *
+ * That character rule then failed the OTHER way round, and in the same channel:
+ * a page's real spaces sit exactly where the characters say none is needed.
+ * Wikipedia's `StaticText "If the page has been deleted, "` beside
+ * `link "check the deletion log"` read back as "…deleted,check the deletion
+ * log"; `link "Wiktionary"` + `StaticText " (dictionary)"` as
+ * "Wiktionary(dictionary)"; a footnote `[3]` followed by " Such fluctuations…"
+ * as "[3]Such fluctuations…". Those spaces are not inferable from the
+ * characters — they are CARRIED by the text node (see nameEdges) — so a caller
+ * holding that evidence passes it in, and only a seam with no evidence either
+ * way is left to the character classes.
+ *
+ * An empty side is still returned untouched: there is no seam to space.
  */
-function glueSegments(prev, next) {
+function glueSegments(prev, next, realSpace) {
   if (!prev) return next;
   if (!next) return prev;
+  if (realSpace) return `${prev} ${next}`;
   return WORDISH.test(prev[prev.length - 1]) && WORDISH.test(next[0])
     ? `${prev} ${next}`
     : `${prev}${next}`;
 }
+
+/** Whitespace at the very start / very end of a string. */
+const LEADING_WS = /^\s/;
+const TRAILING_WS = /\s$/;
+
+/**
+ * The whitespace a page's own text node carries at each END of one AX name —
+ * the evidence glueSegments' `realSpace` is decided on, and the reason it has to
+ * be read off the NODE instead of off the string a renderer was handed.
+ *
+ * `walkAxNodes` TRIMS every name before emitting it, and that trim is load
+ * bearing for the renderers: a label is printed quoted, where a stray edge space
+ * reads as corruption, and the echo/coverage tests compare labels against each
+ * other. But it also destroys the only fact that says whether the seam between
+ * two pieces was a space ON THE PAGE — so the untrimmed name is re-read here,
+ * once per glue site, and the trim stays exactly where it is.
+ *
+ * `trail` is suppressed for a piece that printed a VALUE after its name: what
+ * the joined text ends with is then the value, which arrived trimmed, so the
+ * name's trailing space says nothing about that edge.
+ */
+const nameEdges = (node, value) => {
+  const raw = String(node?.name?.value ?? "");
+  return { lead: LEADING_WS.test(raw), trail: !value && TRAILING_WS.test(raw) };
+};
 
 /**
  * Inline TEXT-LEVEL SEMANTIC roles, treated as STRUCTURAL. A `<mark>`,
@@ -571,11 +612,36 @@ function rowChain(parentOf) {
     }
     return null;
   };
+  /** True when `outer` IS `inner` or one of its emitting ancestors. */
+  const encloses = (outer, inner) => {
+    let at = inner;
+    for (let hops = 0; at && hops < CHAIN_MAX_HOPS; hops += 1) {
+      if (at === outer) return true;
+      at = parentOf.get(at);
+    }
+    return false;
+  };
   return {
     /** The cell a piece belongs to — the piece itself when it IS one. */
     cellOf: (node) => climb(node, CELL_ROLES),
     /** The row above a cell (or above a container, when there is no cell). */
     rowOf: (from) => climb(from, ROW_ROLES),
+    /**
+     * True when two pieces of ONE cell sit in SEPARATE BLOCKS of it rather than
+     * at two depths of the same block — which is a seam no text node can carry
+     * whitespace across, and so the one place a cell join has to supply a space
+     * from the structure instead of from the evidence. A cell holding two
+     * paragraphs is the case: "First sentence." and "Second sentence." welded
+     * into "First sentence.Second sentence.", a sentence boundary an agent
+     * cannot see.
+     *
+     * "Different container" is NOT the test, because moving DEEPER or SHALLOWER
+     * inside one block also changes it: Wikipedia's footnote cell holds "China"
+     * inside a block and the marker "[n 1]" directly at cell level, and that
+     * pair must stay welded as the page drew it. Only a pair where neither
+     * container encloses the other is a real sibling-block boundary.
+     */
+    crossesBlocks: (a, b) => Boolean(a) && Boolean(b) && !encloses(a, b) && !encloses(b, a),
   };
 }
 
@@ -641,36 +707,62 @@ const isEditableRoot = (node) =>
 const NAME_RESPACE_MAX_NODES = 300;
 
 /**
- * An accessible name Chrome built by CONCATENATING descendant text with no
- * separators, put back into words. A Naver Maps place button arrives as
+ * An accessible name Chrome built by CONCATENATING descendant text, put back
+ * into words. A Naver Maps place button arrives as
  * `button "영업 종료별점 4.76리뷰7,262TV 식스센스"` — business status, rating,
  * review count and title welded together — and the separated child StaticTexts
  * that could have been read instead are then deleted as a run-level echo of
  * that very name, so nothing on the page recovers the structure. Fixing it HERE
  * fixes it for both renderers and for ancestor coverage at once.
  *
- * The test is the concatenation ITSELF — the trimmed segments must join with NO
- * separator into exactly the raw name — and not the looser "equal once all
- * whitespace is stripped". The loose form re-spaces text the page never split:
- * the pinned review link "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데", whose
- * segments are "옥수수 " + "크림 뇨끼" + "랑 홈메이드 …", strips to the same
- * string and would ship with a space in front of the postposition 랑 — a
- * sentence the page does not contain, and unrecognizable as ours. A phrasing
- * wrapper (mark/strong/em …) aborts the walk for the same reason: it splits a
- * text run MID-WORD by construction.
+ * What this may never do is invent a word boundary: a name is the whole of what
+ * an agent has to go on for a control, and a name the page does not contain is
+ * unrecognizable as ours. So the rebuild fires ONLY when the raw name is fully
+ * ACCOUNTED FOR by the segments, and declines — printing today's welded name,
+ * which is benign and recoverable — the moment anything is left over.
  *
- * Whether Chrome inserted its own separator between BLOCK children (accname
- * leaves it to the implementation) decides nothing here, because both answers
- * are handled: if it did, the raw name already reads as words and strict
- * correctly declines to touch it; if it did not — which is what the field
- * string above shows, welded across four boundaries — strict fires. Only a
- * MIXED name, separated at some boundaries and not others, escapes, and that
- * case is undecidable from the strings alone: the boundary to split
- * (종료|별점) and the one that must never be split (광교|역) are both
- * Hangul-next-to-Hangul, so no character-class rule separates them. Strict
- * therefore fails the benign way — it prints today's welded name — where the
- * loose rule fails by shipping invented words as the page's own text, which is
- * the one thing a snapshot must never do.
+ * Two kinds of whitespace have to be told apart, and they are told apart by
+ * WHERE the space sits:
+ *
+ *   PROSE SPACING is carried by a segment's own text node, at its edge. The
+ *   pinned review link "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데" is split as
+ *   "옥수수 " + "크림 뇨끼" + "랑 홈메이드 …": the page wrote a space after
+ *   옥수수 and none in front of 랑, and re-spacing that ships a space before a
+ *   postposition — a sentence the page does not contain. So ANY segment
+ *   carrying an edge space declines the whole name (the PROSE GUARD): the page
+ *   is doing its own spacing here and this function has nothing to add.
+ *
+ *   A CHROME-INSERTED SEPARATOR is present in the RAW NAME and in no segment at
+ *   all. accname leaves block-boundary separation to the implementation, and
+ *   Chrome does insert one. Live CDP dump from map.naver.com, which is the field
+ *   evidence for this whole branch: a place row arrives as
+ *   `button "영업 종료별점 4.87리뷰1,269"` over segments 영업 종료 / 별점 / 4.87
+ *   / 리뷰 / 1,269 — welded at three boundaries and spaced at exactly one, the
+ *   block edge of the absolutely-positioned visually-hidden `place_blind` span
+ *   that holds 별점. Not one segment contains that space, so the old strict
+ *   `segments.join("") === rawName` gate could never pass: every place row on
+ *   Korea's dominant map service printed welded, and its child StaticTexts then
+ *   escaped container-echo suppression and re-spelled the label a line at a
+ *   time. Consume-matching the segments against the raw name and ALLOWING a run
+ *   of whitespace between two of them accounts for such a name exactly, and the
+ *   seam is rebuilt as the one space that was already there.
+ *
+ * A DRY seam is still a GUESS, knowingly the same guess round 7 already accepted
+ * for a fully-welded name: nothing in the strings says how 종료|별점, which wants
+ * a space, differs from 광교|역, which must never get one — both are Hangul
+ * beside Hangul — so glueSegments' character rule decides and letter-beside-
+ * letter gets a space. A fully-welded name therefore behaves byte-identically to
+ * before (every seam dry, same pairwise glue), and the honest limit of the new
+ * branch is a name mixing BOTH kinds of seam: a Chrome separator plus a genuine
+ * mid-word span split, e.g. "가격 안내" built from "가격" + "안" + "내", now
+ * ships "가격 안 내" instead of declining (pinned in the tests). The trade is
+ * deliberate — what loses is a phrasing wrapper splitting a Korean word inside a
+ * name that ALSO crosses a block boundary; what wins is every rating row on the
+ * map service this rule exists for.
+ *
+ * A phrasing wrapper (mark/strong/em …) still ABORTS the walk outright rather
+ * than contributing a segment: it splits a text run MID-WORD by construction,
+ * which is the one split no seam rule can decide.
  *
  * Skipped for OPAQUE_NAME_ROLES, which is both the cost bound and the meaning:
  * their name does not come from their contents, so it was never concatenated.
@@ -678,19 +770,16 @@ const NAME_RESPACE_MAX_NODES = 300;
  * The segments are NOT plain StaticText descendants only. A named descendant
  * contributes its NAME and is not walked into, which is what accname itself
  * says a name stands in for — and without it the star-rating rows on the same
- * page never re-spaced at all: `button "영업 종료별점 4.87리뷰1,269"` has its
- * rating text on an image's alt rather than in a text node, so the collected
- * StaticTexts could not reconstruct the raw name and the strict test declined
- * every time. Where a named descendant's name EQUALS its contents the result is
- * the same either way; where it does not, the reconstruction simply fails and
- * today's welded name prints, which is the benign direction.
- *
- * Seams are glued rather than joined with a blanket space (see glueSegments):
- * a name split at punctuation — `Search for "` + `Accessibility tree` + `"` —
- * must come back out exactly as the page wrote it.
+ * page never re-spaced at all: the rating text lives on an image's alt rather
+ * than in a text node, so the collected StaticTexts could not account for the
+ * raw name and the match declined every time. Where a named descendant's name
+ * EQUALS its contents the result is the same either way; where it does not, the
+ * match simply fails and today's welded name prints, which is the benign
+ * direction.
  */
 function respacedName(node, role, rawName, byId) {
   if (rawName.length < 4 || !node.childIds?.length || OPAQUE_NAME_ROLES.has(role)) return rawName;
+  /** Each: { text: trimmed, edged: the page's own space at one of its ends }. */
   const segments = [];
   const seen = new Set();
   let budget = NAME_RESPACE_MAX_NODES;
@@ -702,18 +791,20 @@ function respacedName(node, role, rawName, byId) {
     budget -= 1;
     const childRole = child.role?.value;
     if (TEXT_LEVEL_ROLES.has(String(childRole).toLowerCase())) return false;
-    const text = String(child.name?.value ?? "").trim();
+    const raw = String(child.name?.value ?? "");
+    const text = raw.trim();
+    const piece = { text, edged: LEADING_WS.test(raw) || TRAILING_WS.test(raw) };
     // A StaticText IS its text: its only children are InlineTextBoxes, which
     // re-spell the very same words and would be counted a second time.
     if (childRole === "StaticText") {
-      if (text) segments.push(text);
+      if (text) segments.push(piece);
       return true;
     }
     // A named descendant stands in for its own contents, so it is one segment
     // and the walk stops there. InlineTextBox is excluded for the reason above,
     // in case a malformed tree hands one over outside a StaticText.
     if (text && childRole !== "InlineTextBox") {
-      segments.push(text);
+      segments.push(piece);
       return true;
     }
     for (const grandChildId of child.childIds || []) if (!collect(grandChildId)) return false;
@@ -721,9 +812,31 @@ function respacedName(node, role, rawName, byId) {
   };
   for (const childId of node.childIds) if (!collect(childId)) return rawName;
   if (segments.length < 2) return rawName;
-  return segments.join("") === rawName
-    ? segments.reduce((joined, segment) => glueSegments(joined, segment))
-    : rawName;
+  // The prose guard. One segment spacing itself is the page's own typography,
+  // and there is no honest way to re-space the rest of the name around it.
+  if (segments.some((segment) => segment.edged)) return rawName;
+  // Consume-match, left to right: every segment has to sit contiguously where
+  // the previous one ended, and the ONLY thing allowed between two of them is
+  // whitespace the raw name carries and no segment does — Chrome's own
+  // block-boundary separator, recorded per seam so the rebuild can put back
+  // exactly what was there. A mismatch, a leftover prefix or an unconsumed tail
+  // all mean the name was not built out of these pieces, and nothing is rebuilt.
+  const seams = [];
+  let cursor = 0;
+  for (let i = 0; i < segments.length; i += 1) {
+    if (i > 0) {
+      const gap = /^\s+/.exec(rawName.slice(cursor));
+      seams.push(Boolean(gap));
+      cursor += gap ? gap[0].length : 0;
+    }
+    if (!rawName.startsWith(segments[i].text, cursor)) return rawName;
+    cursor += segments[i].text.length;
+  }
+  if (cursor !== rawName.length) return rawName;
+  let rebuilt = segments[0].text;
+  for (let i = 1; i < segments.length; i += 1)
+    rebuilt = glueSegments(rebuilt, segments[i].text, seams[i - 1]);
+  return rebuilt;
 }
 
 /**
@@ -757,6 +870,16 @@ function respacedName(node, role, rawName, byId) {
  * seen-set is what keeps that from emitting anything twice. No set (or an empty
  * one) leaves the walk byte-identical, and a start id matching nothing still
  * answers false whatever the set holds.
+ *
+ * With a set and NO start id the walk is that sweep and nothing else — the
+ * SWEEP-ONLY mode. It answers the case where the scoped element is alive in the
+ * DOM but absent from the AX tree that was just fetched: a covering overlay div
+ * that never got an accessibility node at all, or a map pane caught mid-rebuild.
+ * There is no start node to walk down from, so the only thing that can be
+ * rendered is what the DOM says lives inside it — the in-scope ids, each entered
+ * as a root at depth 0. Reaching for the FULL walk instead would answer a scoped
+ * read with the whole page, which reads as content of the element the agent
+ * asked about.
  */
 function walkAxNodes(nodes, startBackendNodeId, emit, scopeDomIds) {
   const byId = new Map(nodes.map((node) => [node.nodeId, node]));
@@ -801,16 +924,28 @@ function walkAxNodes(nodes, startBackendNodeId, emit, scopeDomIds) {
       visit(byId.get(childId), inherited, childContainer, childDepth);
   };
 
+  /** Every in-scope node the chain has not already reached, as its own root. */
+  const sweepScope = () => {
+    for (const node of nodes) {
+      if (seen.has(node.nodeId) || node.backendDOMNodeId == null) continue;
+      if (scopeDomIds.has(node.backendDOMNodeId)) visit(node, "", null, 0);
+    }
+  };
+
   if (startBackendNodeId != null) {
     const start = nodes.find((node) => node.backendDOMNodeId === startBackendNodeId);
     if (!start) return false;
     visit(start, "", null, 0);
-    if (scopeDomIds?.size) {
-      for (const node of nodes) {
-        if (seen.has(node.nodeId) || node.backendDOMNodeId == null) continue;
-        if (scopeDomIds.has(node.backendDOMNodeId)) visit(node, "", null, 0);
-      }
-    }
+    // The stale-uid contract is decided by the START node alone: a scope set is
+    // the caller widening a scope it already has, never a substitute for one it
+    // asked for and did not get.
+    if (scopeDomIds?.size) sweepScope();
+    return true;
+  }
+
+  // Sweep-only: no start node to descend from, so the scope IS the set.
+  if (scopeDomIds?.size) {
+    sweepScope();
     return true;
   }
 
@@ -893,8 +1028,10 @@ export function unlabeledInteractiveIds(nodes) {
  * `opts.startBackendNodeId` scopes the render to one subtree (a frame body, a
  * dialog), returning null when no node carries that id — the same stale-uid
  * contract renderAxText has; `opts.scopeDomIds` widens that scope to the DOM ids
- * the caller found inside it (see walkAxNodes). `opts.frameLabels` is a Map of
- * backendNodeId →
+ * the caller found inside it, and on its OWN (no start id) renders exactly those
+ * ids — the answer for an element the DOM has and the AX tree does not, such as
+ * a covering overlay that never got an accessibility node (see walkAxNodes).
+ * `opts.frameLabels` is a Map of backendNodeId →
  * frame label: a frame's tree is rendered as its own block AFTER the main one,
  * and without a marker on the owning `Iframe` line there was nothing tying a
  * trailing RootWebArea block to the place in the page it came from. Calling
@@ -912,7 +1049,12 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
   const byHref = new Map();
   /** Resolved once per render: what makes a link a SAME-DOCUMENT fragment. */
   const docUrl = documentUrl(nodes);
-  /** The inline-text run currently open: { container, index, text, segments, covered, indent }. */
+  /**
+   * The inline-text run currently open:
+   * { container, index, text, segments, covered, indent, trail }, where `trail`
+   * is whether the LAST node appended to it carried a trailing space of its own
+   * — the evidence the next seam is glued on (see nameEdges).
+   */
   let run = null;
   /** The table row the last pushed line holds: { row, cell, index }, or null. */
   let openRow = null;
@@ -1098,6 +1240,10 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
       }
       return;
     }
+    // The whitespace THIS node's own text carries, read before the trim the
+    // emit did — the only thing that says whether a seam beside it was a space
+    // on the page.
+    const edges = nameEdges(node, value);
     // Prose split into per-word <span>s emits one StaticText per word. Rejoin
     // the run into the paragraph it was; a different container breaks it, and a
     // LANDMARK container never joins at all (see NON_JOINING_CONTAINERS).
@@ -1109,8 +1255,12 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
       Boolean(name) &&
       joinsRuns(container);
     if (inRun && run && run.container === container) {
-      run.text = glueSegments(run.text, name);
+      // Spaced when EITHER side of the seam carried whitespace on the page —
+      // the piece just closed or the one arriving — and left to the character
+      // rule only when both edges are dry (see glueSegments).
+      run.text = glueSegments(run.text, name, run.trail || edges.lead);
       run.segments.push(name);
+      run.trail = edges.trail;
       // Rewritten in place, so it must be re-indented: the slot was pushed with
       // this run's own indent and nothing else may change where it sits.
       lines[run.index] = `${run.indent}StaticText "${run.text}"`;
@@ -1146,7 +1296,16 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     } else {
       openRow = null;
     }
-    if (inRun) run = { container, index: lines.length, text: name, segments: [name], covered, indent };
+    if (inRun)
+      run = {
+        container,
+        index: lines.length,
+        text: name,
+        segments: [name],
+        covered,
+        indent,
+        trail: edges.trail,
+      };
     // An interrupting link leaves the entry it did not fold onto untouched:
     // the folded destination still points at the line that first printed it.
     if (href && !kept) byHref.set(href, { index: lines.length, name, indent });
@@ -1177,17 +1336,27 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
  * the last snapshot stay valid. When `startBackendNodeId` is given only that
  * subtree is rendered; returns null when the id matches no node (stale uid —
  * the caller owns the model-facing message). `scopeDomIds` widens that scope to
- * the in-scope nodes the childIds chain cannot reach — see walkAxNodes.
+ * the in-scope nodes the childIds chain cannot reach, and WITHOUT a start id it
+ * is the whole scope: what the DOM says lives inside an element the AX tree has
+ * no node for at all — see walkAxNodes.
  */
 export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
   const lines = [];
-  /** The inline-text run currently open: { container, index, segments, covered }. */
+  /**
+   * The inline-text run currently open:
+   * { container, index, segments, covered, trail }, where `trail` is whether the
+   * last node appended to it carried a trailing space of its own (see nameEdges).
+   */
   let run = null;
-  /** The table row the last pushed line holds: { row, cell, index }, or null. */
+  /**
+   * The table row the last pushed line holds — { row, cell, index, trail,
+   * container }, or null. `trail` and `container` describe the LAST piece
+   * appended, which is what the next same-cell seam is decided on.
+   */
   let openRow = null;
   /** Emitted node -> its container, so a piece can find the cell and row above it. */
   const parentOf = new Map();
-  const { cellOf, rowOf } = rowChain(parentOf);
+  const { cellOf, rowOf, crossesBlocks } = rowChain(parentOf);
   /** Same mid-word-highlight suppression renderAxTree does — see closeRun there. */
   const closeTextRun = (incoming) => {
     if (run && run.segments.length > 1) {
@@ -1209,6 +1378,10 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
     const echoed = !value && Boolean(name) && containsAsToken(covered, name);
     if ((!name && !value) || echoed) return;
     const printed = name && value ? `${name}: ${value}` : name || value;
+    // The whitespace this node's own text carries at each end, read before the
+    // trim the emit did: at every seam below it is the difference between the
+    // page's spacing and a guess made from the characters (see nameEdges).
+    const edges = nameEdges(node, value);
     // Inline prose: consecutive StaticText under ONE container is a single
     // paragraph that a per-word <span> soup had split into a word per line — but
     // never under a LANDMARK, where the shared container means only "same page",
@@ -1222,10 +1395,15 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
     const inTextRun =
       (role === "StaticText" || (role === "link" && Boolean(name) && !value)) && joinsRuns(container);
     if (inTextRun && run && run.container === container) {
-      // Glued, not spaced: the sentence's own period arrives as a StaticText of
-      // its own, and read_text used to answer "request a new article ."
-      lines[run.index] = glueSegments(lines[run.index], printed);
+      // Glued, not blanket-spaced: the sentence's own period arrives as a
+      // StaticText of its own, and read_text used to answer "request a new
+      // article ." — but a space one of the two text nodes actually CARRIES is
+      // the page's own and goes back in, whatever the characters say. Wikipedia
+      // read as "If the page has been deleted,check the deletion log" until this
+      // seam looked at the evidence instead of at the comma.
+      lines[run.index] = glueSegments(lines[run.index], printed, run.trail || edges.lead);
       run.segments.push(printed);
+      run.trail = edges.trail;
       return;
     }
     closeTextRun(printed);
@@ -1240,18 +1418,32 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
         // More of the SAME cell is more of one value, so its pieces are glued
         // exactly as the page drew them — a footnote marker reads back as
         // "China[n 1]". Only the bar between CELLS is a fixed separator.
+        //
+        // Three things can put a space at that seam, and none of them is a
+        // guess: whitespace the piece just written carried at its end,
+        // whitespace the arriving piece carries at its start, or a SIBLING-BLOCK
+        // boundary inside the cell (see crossesBlocks) — a cell holding two
+        // paragraphs has no text node spanning their edge, and welding them
+        // reads back as one sentence the page never wrote.
         lines[openRow.index] =
           cell === openRow.cell
-            ? glueSegments(lines[openRow.index], printed)
+            ? glueSegments(
+                lines[openRow.index],
+                printed,
+                openRow.trail || edges.lead || crossesBlocks(container, openRow.container),
+              )
             : `${lines[openRow.index]} | ${printed}`;
         openRow.cell = cell;
+        openRow.trail = edges.trail;
+        openRow.container = container;
         return;
       }
-      openRow = { row, cell, index: lines.length };
+      openRow = { row, cell, index: lines.length, trail: edges.trail, container };
     } else {
       openRow = null;
     }
-    if (inTextRun) run = { container, index: lines.length, segments: [printed], covered };
+    if (inTextRun)
+      run = { container, index: lines.length, segments: [printed], covered, trail: edges.trail };
     lines.push(printed);
   }, scopeDomIds);
   closeTextRun();
