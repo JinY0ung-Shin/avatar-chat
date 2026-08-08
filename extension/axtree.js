@@ -211,6 +211,61 @@ function printableUrl(url) {
 }
 
 /**
+ * Print caps for ONE element's text in the snapshot view. A GitHub blob view
+ * keeps the whole file in a hidden <textarea>, so a 44.7 KB source file arrived
+ * as a single AX value: it ate 504 of the page's 1204 snapshot lines, and what
+ * survived was ~20 KB of source cut MID-LINE by capSnapshot with nothing saying
+ * so — text the agent read as the page's content. The value is not lost by
+ * cutting it here, because read_text can still deliver the whole thing in
+ * offset chunks; it is only lost by drowning everything ELSE on the page.
+ *
+ * Applied to the PRINTED line and nowhere else: echo suppression, run joining
+ * and byHref identity all keep comparing the RAW strings, so a cut can never
+ * change which lines survive. renderAxText is exempt entirely — it is the
+ * recovery channel the marker points at.
+ */
+const VALUE_PRINT_MAX = 3000;
+const NAME_PRINT_MAX = 1000;
+
+/**
+ * Deepest nesting the snapshot view indents for. One space per level is what
+ * turns a flat wall of lines back into a page's shape — which block a control
+ * belongs to, where a list ends — but every space is snapshot budget spent on
+ * layout instead of content, and real pages nest far deeper than they read.
+ */
+const SNAPSHOT_INDENT_MAX = 12;
+
+/**
+ * A value as it goes onto a snapshot line: quoted, and when cut, followed by
+ * what was dropped and the tool that still returns it. A marker-less cut is the
+ * failure mode this exists to end — corrupted text an agent cannot tell from
+ * the page.
+ */
+function printedValue(value, uid) {
+  if (value.length <= VALUE_PRINT_MAX) return `"${value}"`;
+  const recover = uid
+    ? `read the full text with mcp__browser__read_text (uid ${uid})`
+    : "read the full page text with mcp__browser__read_text";
+  return (
+    `"${value.slice(0, VALUE_PRINT_MAX)}" [value truncated: showing ${VALUE_PRINT_MAX} ` +
+    `of ${value.length} chars — ${recover}]`
+  );
+}
+
+/**
+ * A label as it goes onto a snapshot line. No recovery pointer: an accessible
+ * name is not addressable text — read_text would return the page's content, not
+ * this label — so the marker says only how much of it is shown.
+ */
+function printedName(name) {
+  if (name.length <= NAME_PRINT_MAX) return `"${name}"`;
+  return (
+    `"${name.slice(0, NAME_PRINT_MAX)}" ` +
+    `[label truncated: showing ${NAME_PRINT_MAX} of ${name.length} chars]`
+  );
+}
+
+/**
  * One AX state property, normalized to true / false / "mixed" / undefined.
  * Chrome delivers a state as a real BOOLEAN on some builds and properties and
  * as the STRING "true"/"false"/"mixed" on the tristate ones, so a `=== true`
@@ -252,6 +307,38 @@ function stateFlags(node) {
   if (axStateFlag(node, "selected") === true) flags.push("[selected]");
   if (axStateFlag(node, "disabled") === true) flags.push("[disabled]");
   return flags.length ? ` ${flags.join(" ")}` : "";
+}
+
+/**
+ * One AX number property, or undefined. Chrome delivers a bound as a real
+ * number on some builds and as its decimal STRING on others, and `Number("")`
+ * is 0 — so an absent bound read naively prints as `[min 0]` on every control.
+ */
+function axNumber(raw) {
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const parsed = Number(raw.trim());
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Roles that hold a position within a RANGE rather than a free value. */
+const RANGE_ROLES = new Set(["slider", "spinbutton"]);
+
+/**
+ * The bounds of a range control. `slider "확대/축소" = "5"` says nothing about
+ * where 5 sits: an agent asking for "about half" had no scale to aim at, and
+ * the clearing ladder's End key silently pinned the control to its MAXIMUM
+ * because nothing on the line said what the maximum was. Only the bounds Chrome
+ * actually carries are printed — a missing one is unknown, not zero.
+ */
+function rangeFlags(node, role) {
+  if (!RANGE_ROLES.has(role)) return "";
+  const min = axNumber(axProp(node, "valuemin"));
+  const max = axNumber(axProp(node, "valuemax"));
+  const parts = [];
+  if (min !== undefined) parts.push(`min ${min}`);
+  if (max !== undefined) parts.push(`max ${max}`);
+  return parts.length ? ` [${parts.join(" ")}]` : "";
 }
 
 /** A character that ENDS a token: whitespace, punctuation, or a symbol. */
@@ -400,6 +487,60 @@ const CELL_ROLES = new Set([
 /** Row roles that own those cells. */
 const ROW_ROLES = new Set(["row", "LayoutTableRow"]);
 
+/** Bound on any ancestor climb, so a malformed tree cannot cost a walk. */
+const CHAIN_MAX_HOPS = 25;
+
+/**
+ * The cell/row lookups for ONE render, over that render's map of emitted node →
+ * its container. Testing `container.role` alone is what broke row joining on
+ * every real table: a cell whose text lives on a nested LINK is itself NAMELESS
+ * and so never prints, and the link's own container is the CELL, not the row —
+ * so Wikipedia's GDP table printed the rank on its own line ("1", then "United
+ * States | 32,383,920 | …") and split its header into six. Climbing the chain
+ * instead finds the row from any depth inside it.
+ */
+function rowChain(parentOf) {
+  const climb = (from, roles) => {
+    let at = from;
+    for (let hops = 0; at && hops < CHAIN_MAX_HOPS; hops += 1) {
+      if (roles.has(at.role?.value)) return at;
+      at = parentOf.get(at);
+    }
+    return null;
+  };
+  return {
+    /** The cell a piece belongs to — the piece itself when it IS one. */
+    cellOf: (node) => climb(node, CELL_ROLES),
+    /** The row above a cell (or above a container, when there is no cell). */
+    rowOf: (from) => climb(from, ROW_ROLES),
+  };
+}
+
+/**
+ * Image roles. An image is normally NOT actionable — on a search page every
+ * thumbnail sits inside the link it illustrates, and a uid per image would
+ * double the snapshot with refs whose real click target is the ancestor.
+ * Outside any actionable ancestor the opposite is true: a Naver map's markers
+ * surface as `image "음식점"` with nothing above them that takes a click, so
+ * reaching one meant guessing pixels with click_at.
+ */
+const IMAGE_ROLES = new Set(["image", "img"]);
+
+/**
+ * Ancestors that carry a uid WITHOUT owning their descendants' clicks. A named
+ * region or application is a drawn SURFACE — a map body, an embedded app — and
+ * a canvas is a bare coordinate plane: they mint a uid so click_at has anything
+ * at all to aim at, not because clicking their centre reaches something inside
+ * them. The map markers this whole rule exists for sit INSIDE exactly such a
+ * container (`region "지도"` → `image "음식점"`), so counting the surface as the
+ * click target would put every marker straight back out of reach.
+ *
+ * A CONTROL ancestor is the opposite and still blocks: a link, a button, a
+ * named row or an editable root genuinely takes the click, and the image inside
+ * it is that control's label rather than a target of its own.
+ */
+const SURFACE_ROLES = new Set([...NAMED_CONTAINER_UID_ROLES, "canvas", "Canvas"]);
+
 /**
  * The ROOT of an editable region — the one node in it an agent clicks and types
  * into. Shared by the walk and by isActionableNode so the node that gets a uid
@@ -422,6 +563,69 @@ const ROW_ROLES = new Set(["row", "LayoutTableRow"]);
 const isEditableRoot = (node) =>
   Boolean(axProp(node, "editable")) && axProp(node, "focusable") === true;
 
+/** Bound on the descendant walk one name re-spacing costs. */
+const NAME_RESPACE_MAX_NODES = 300;
+
+/**
+ * An accessible name Chrome built by CONCATENATING descendant text with no
+ * separators, put back into words. A Naver Maps place button arrives as
+ * `button "영업 종료별점 4.76리뷰7,262TV 식스센스"` — business status, rating,
+ * review count and title welded together — and the separated child StaticTexts
+ * that could have been read instead are then deleted as a run-level echo of
+ * that very name, so nothing on the page recovers the structure. Fixing it HERE
+ * fixes it for both renderers and for ancestor coverage at once.
+ *
+ * The test is the concatenation ITSELF — the trimmed segments must join with NO
+ * separator into exactly the raw name — and not the looser "equal once all
+ * whitespace is stripped". The loose form re-spaces text the page never split:
+ * the pinned review link "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데", whose
+ * segments are "옥수수 " + "크림 뇨끼" + "랑 홈메이드 …", strips to the same
+ * string and would ship with a space in front of the postposition 랑 — a
+ * sentence the page does not contain, and unrecognizable as ours. A phrasing
+ * wrapper (mark/strong/em …) aborts the walk for the same reason: it splits a
+ * text run MID-WORD by construction.
+ *
+ * Whether Chrome inserted its own separator between BLOCK children (accname
+ * leaves it to the implementation) decides nothing here, because both answers
+ * are handled: if it did, the raw name already reads as words and strict
+ * correctly declines to touch it; if it did not — which is what the field
+ * string above shows, welded across four boundaries — strict fires. Only a
+ * MIXED name, separated at some boundaries and not others, escapes, and that
+ * case is undecidable from the strings alone: the boundary to split
+ * (종료|별점) and the one that must never be split (광교|역) are both
+ * Hangul-next-to-Hangul, so no character-class rule separates them. Strict
+ * therefore fails the benign way — it prints today's welded name — where the
+ * loose rule fails by shipping invented words as the page's own text, which is
+ * the one thing a snapshot must never do.
+ *
+ * Skipped for OPAQUE_NAME_ROLES, which is both the cost bound and the meaning:
+ * their name does not come from their contents, so it was never concatenated.
+ */
+function respacedName(node, role, rawName, byId) {
+  if (rawName.length < 4 || !node.childIds?.length || OPAQUE_NAME_ROLES.has(role)) return rawName;
+  const segments = [];
+  const seen = new Set();
+  let budget = NAME_RESPACE_MAX_NODES;
+  const collect = (id) => {
+    if (budget <= 0) return false;
+    const child = byId.get(id);
+    if (!child || seen.has(id)) return true;
+    seen.add(id);
+    budget -= 1;
+    const childRole = child.role?.value;
+    if (TEXT_LEVEL_ROLES.has(String(childRole).toLowerCase())) return false;
+    if (childRole === "StaticText") {
+      const text = String(child.name?.value ?? "").trim();
+      if (text) segments.push(text);
+    }
+    for (const grandChildId of child.childIds || []) if (!collect(grandChildId)) return false;
+    return true;
+  };
+  for (const childId of node.childIds) if (!collect(childId)) return rawName;
+  if (segments.length < 2) return rawName;
+  return segments.join("") === rawName ? segments.join(" ") : rawName;
+}
+
 /**
  * The one AX walk both renderers share, so their notion of document order,
  * ancestor-label coverage, and skipped structural nodes can never drift apart.
@@ -432,19 +636,20 @@ const isEditableRoot = (node) =>
  * ancestor's label already spells out. A link and the StaticText inside it are
  * one thing to a reader, and printing both doubled the size of every snapshot.
  *
- * `emit(node, role, name, value, covered, container)` fires once per printable
- * candidate; each renderer decides what (if anything) that node becomes.
- * `container` is the nearest ancestor that emitted (structural and ignored
- * nodes are transparent), or null at a root — it is how a renderer tells one
- * paragraph's worth of inline text apart from two unrelated blocks. When
- * `startBackendNodeId` is given, only that node's subtree is walked; returns
- * false when no node carries that id (a stale uid).
+ * `emit(node, role, name, value, covered, container, depth)` fires once per
+ * printable candidate; each renderer decides what (if anything) that node
+ * becomes. `container` is the nearest ancestor that emitted (structural and
+ * ignored nodes are transparent), or null at a root — it is how a renderer tells
+ * one paragraph's worth of inline text apart from two unrelated blocks. `depth`
+ * counts those same emitting ancestors, so a renderer can show nesting without
+ * re-deriving it. When `startBackendNodeId` is given, only that node's subtree
+ * is walked; returns false when no node carries that id (a stale uid).
  */
 function walkAxNodes(nodes, startBackendNodeId, emit) {
   const byId = new Map(nodes.map((node) => [node.nodeId, node]));
   const seen = new Set();
 
-  const visit = (node, covered, container) => {
+  const visit = (node, covered, container, depth) => {
     if (!node || seen.has(node.nodeId)) return;
     seen.add(node.nodeId);
     const role = node.role?.value;
@@ -466,33 +671,36 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
       TEXT_LEVEL_ROLES.has(String(role).toLowerCase());
     let inherited = covered;
     let childContainer = container;
+    let childDepth = depth;
     if (!node.ignored && !structural) {
       // AXValue is not always a string — a slider or spinbutton reports a
       // NUMBER, and calling .trim() on it threw, failing every read tool on
       // any page carrying one. `?? ""` rather than `|| ""` so a numeric 0
       // renders as "0" instead of vanishing.
-      const name = String(node.name?.value ?? "").trim();
+      const name = respacedName(node, role, String(node.name?.value ?? "").trim(), byId);
       const value = String(node.value?.value ?? "").trim();
-      emit(node, role, name, value, covered, container);
+      emit(node, role, name, value, covered, container, depth);
       if (name && !OPAQUE_NAME_ROLES.has(role)) inherited = name;
       childContainer = node;
+      childDepth = depth + 1;
     }
-    for (const childId of node.childIds || []) visit(byId.get(childId), inherited, childContainer);
+    for (const childId of node.childIds || [])
+      visit(byId.get(childId), inherited, childContainer, childDepth);
   };
 
   if (startBackendNodeId != null) {
     const start = nodes.find((node) => node.backendDOMNodeId === startBackendNodeId);
     if (!start) return false;
-    visit(start, "", null);
+    visit(start, "", null, 0);
     return true;
   }
 
   const claimed = new Set();
   for (const node of nodes) for (const childId of node.childIds || []) claimed.add(childId);
-  for (const node of nodes) if (!claimed.has(node.nodeId)) visit(node, "", null);
+  for (const node of nodes) if (!claimed.has(node.nodeId)) visit(node, "", null, 0);
   // Anything left is detached from every root (a mid-walk DOM change, a cycle).
   // Print it rather than silently losing page content.
-  for (const node of nodes) visit(node, "", null);
+  for (const node of nodes) visit(node, "", null, 0);
   return true;
 }
 
@@ -579,14 +787,32 @@ export function unlabeledInteractiveIds(nodes) {
 export function renderAxTree(nodes, mintUid, hints, opts) {
   const { startBackendNodeId, frameLabels } = opts || {};
   const lines = [];
-  /** Full href -> { index, name } of the one line kept for that destination. */
+  /** Full href -> { index, name, indent } of the one line kept for that destination. */
   const byHref = new Map();
   /** Resolved once per render: what makes a link a SAME-DOCUMENT fragment. */
   const docUrl = documentUrl(nodes);
-  /** The inline-text run currently open: { container, index, text, segments, covered }. */
+  /** The inline-text run currently open: { container, index, text, segments, covered, indent }. */
   let run = null;
-  /** The row whose cells the last PUSHED line holds, or null for anything else. */
+  /** The table row the last pushed line holds: { row, cell, index }, or null. */
   let openRow = null;
+  /** Emitted node -> its container, so a piece can find the cell and row above it. */
+  const parentOf = new Map();
+  /** Emitted node -> whether it was actionable, for the image ancestor test. */
+  const interactiveOf = new Map();
+  const { cellOf, rowOf } = rowChain(parentOf);
+  /**
+   * True when a CONTROL up the chain already takes the click this node would.
+   * Surfaces are climbed past rather than counted — see SURFACE_ROLES for why a
+   * map body holding a uid must not disqualify the markers drawn on it.
+   */
+  const hasActionableAncestor = (from) => {
+    let at = from;
+    for (let hops = 0; at && hops < CHAIN_MAX_HOPS; hops += 1) {
+      if (interactiveOf.get(at) && !SURFACE_ROLES.has(at.role?.value)) return true;
+      at = parentOf.get(at);
+    }
+    return false;
+  };
   /**
    * Close the open run, dropping it when it only re-spells its own container's
    * label. A `<mark>` keyword highlight splits a sentence MID-word, so the
@@ -628,8 +854,21 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     }
     run = null;
   };
-  const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered, container) => {
-    const interactive = isActionableNode(node, role, name, value);
+  const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered, container, depth) => {
+    parentOf.set(node, container);
+    // A NAMED image with no actionable ancestor is the click target itself —
+    // see IMAGE_ROLES. The ancestor test lives here and not in isActionableNode
+    // deliberately: that predicate is per-node and shared with
+    // unlabeledInteractiveIds, which has no chain to walk.
+    const interactive =
+      isActionableNode(node, role, name, value) ||
+      (IMAGE_ROLES.has(role) &&
+        Boolean(name) &&
+        node.backendDOMNodeId != null &&
+        !hasActionableAncestor(container));
+    // Recorded for EVERY emitted node, printed or not: an ancestor that this
+    // renderer suppresses still owns the click.
+    interactiveOf.set(node, interactive);
     // Nameless NON-interactive nodes are noise, but a nameless interactive
     // element (an unlabeled rich-text editor, an icon-only button) still
     // needs a uid — dropping those made such editors unreachable entirely.
@@ -639,6 +878,10 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     const echoed = !interactive && !value && Boolean(name) && containsAsToken(covered, name);
     if (!worthPrinting || echoed) return;
     const href = linkHref(node, role, docUrl);
+    // One space per level of emitted nesting. It costs snapshot budget, so it
+    // is capped: past a dozen levels the shape is no longer readable anyway and
+    // the width would come out of the page's own text.
+    const indent = " ".repeat(Math.min(depth, SNAPSHOT_INDENT_MAX));
     // An icon-only control usually carries its label in `title`, which Chrome
     // delivers as the AX DESCRIPTION — the only thing that tells a page full of
     // `button ""` lines apart. Read it ONLY as a last resort: it never replaces
@@ -656,23 +899,41 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
       // tells one `button ""` line from the next.
       const hinted = !label && !value ? hints?.get?.(node.backendDOMNodeId) || "" : "";
       const hint = hinted ? ` (dom: ${hinted})` : "";
-      const state = stateFlags(node);
+      const state = `${stateFlags(node)}${rangeFlags(node, role)}`;
       // Last on the line, after everything describing the element itself: this
       // says where the element's CONTENTS were printed, not what it is.
       const frame = frameLabels?.get?.(node.backendDOMNodeId);
       const framed = frame ? ` (frame ${frame})` : "";
-      return uid
-        ? `[${uid}] ${role} "${label}"${value ? ` = "${value}"` : ""}${state}${hint}${url}${framed}`
-        : `${role} "${name || value || described}"${state}${url}${framed}`;
+      if (uid) {
+        const held = value ? ` = ${printedValue(value, uid)}` : "";
+        return `[${uid}] ${role} ${printedName(label)}${held}${state}${hint}${url}${framed}`;
+      }
+      // With no uid the single quoted slot holds whichever of the three exists,
+      // so a value landing there is capped as a VALUE — the recovery pointer is
+      // what a 40 KB textarea needs, and it cannot name a uid this line lacks.
+      const only = name || value || described;
+      const shown = !name && value ? printedValue(only, null) : printedName(only);
+      return `${role} ${shown}${state}${url}${framed}`;
     };
     // A single search result arrives as four to six links to the SAME
     // destination (thumbnail, title, source, snippet), which buried the result
     // list in repeats. Print the first position once; a later duplicate with a
     // richer label upgrades THAT line in place rather than adding another.
     const kept = href ? byHref.get(href) : undefined;
-    if (kept) {
+    // Unless the link INTERRUPTS RUNNING PROSE. Wikipedia's edit notice printed
+    // "You need to and be autoconfirmed", because the mid-sentence "log in or
+    // create an account" link reaches the same href as the personal-tools menu
+    // link printed far above — folding deleted it out of the middle of a
+    // sentence. An open run under this link's own container is what says the
+    // sentence is still being written; a SERP duplicate has no run beside it
+    // and folds exactly as before.
+    const interruptsProse = Boolean(run) && run.container === container;
+    if (kept && !interruptsProse) {
       if (name.length > kept.name.length) {
-        lines[kept.index] = format();
+        // Rewrites the FIRST position's line, so it carries the indent that
+        // position was pushed with — the richer duplicate can sit any depth
+        // away, and its own indent would misplace the line it replaces.
+        lines[kept.index] = kept.indent + format();
         kept.name = name;
       }
       return;
@@ -690,7 +951,9 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     if (inRun && run && run.container === container) {
       run.text += ` ${name}`;
       run.segments.push(name);
-      lines[run.index] = `StaticText "${run.text}"`;
+      // Rewritten in place, so it must be re-indented: the slot was pushed with
+      // this run's own indent and nothing else may change where it sits.
+      lines[run.index] = `${run.indent}StaticText "${run.text}"`;
       return;
     }
     // Rendered BEFORE the run closes, so the closing check can see the line
@@ -705,16 +968,28 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     // with " | " here too. Each cell keeps its own full rendering, uid
     // INCLUDED, so nothing loses addressability, and the joined line still
     // starts with the first cell's — which is what capSnapshot's uid-first
-    // keep classifies it by.
-    const inRow = CELL_ROLES.has(role) && ROW_ROLES.has(container?.role?.value);
-    if (inRow && openRow === container && lines[lines.length - 1] != null) {
-      lines[lines.length - 1] += ` | ${line}`;
-      return;
+    // keep classifies it by. The row is found by CLIMBING (see rowChain), so a
+    // piece nested inside a nameless cell joins its row like a plain cell does;
+    // two pieces of the SAME cell are more of one value, not another column.
+    const cell = cellOf(node);
+    const row = rowOf(cell || container);
+    if (row) {
+      // The slot may have been NULLED by the suppression above — appending onto
+      // it would resurrect the very line that was just deleted as a duplicate.
+      if (openRow && openRow.row === row && lines[openRow.index] != null) {
+        lines[openRow.index] += `${cell === openRow.cell ? " " : " | "}${line}`;
+        openRow.cell = cell;
+        return;
+      }
+      openRow = { row, cell, index: lines.length };
+    } else {
+      openRow = null;
     }
-    openRow = inRow ? container : null;
-    if (inRun) run = { container, index: lines.length, text: name, segments: [name], covered };
-    if (href) byHref.set(href, { index: lines.length, name });
-    lines.push(line);
+    if (inRun) run = { container, index: lines.length, text: name, segments: [name], covered, indent };
+    // An interrupting link leaves the entry it did not fold onto untouched:
+    // the folded destination still points at the line that first printed it.
+    if (href && !kept) byHref.set(href, { index: lines.length, name, indent });
+    lines.push(indent + line);
   });
   closeRun();
   return found ? lines.filter((line) => line !== null) : null;
@@ -729,24 +1004,31 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
  */
 export function renderAxText(nodes, startBackendNodeId) {
   const lines = [];
-  /** What the last printed line was, so a run can extend it: {kind, container, …}. */
-  let last = null;
+  /** The inline-text run currently open: { container, index, segments, covered }. */
+  let run = null;
+  /** The table row the last pushed line holds: { row, cell, index }, or null. */
+  let openRow = null;
+  /** Emitted node -> its container, so a piece can find the cell and row above it. */
+  const parentOf = new Map();
+  const { cellOf, rowOf } = rowChain(parentOf);
   /** Same mid-word-highlight suppression renderAxTree does — see closeRun there. */
   const closeTextRun = (incoming) => {
-    if (last?.kind === "text" && last.segments.length > 1) {
-      const joined = stripSpaces(lines[last.index] ?? "");
+    if (run && run.segments.length > 1) {
+      const joined = stripSpaces(lines[run.index] ?? "");
       const echoesContainer =
-        Boolean(last.covered && joined) && stripSpaces(last.covered).includes(joined);
+        Boolean(run.covered && joined) && stripSpaces(run.covered).includes(joined);
       if (
         echoesContainer ||
-        runEchoesLine(last.segments, precedingLine(lines, last.index)) ||
-        runEchoesLine(last.segments, incoming)
+        runEchoesLine(run.segments, precedingLine(lines, run.index)) ||
+        runEchoesLine(run.segments, incoming)
       ) {
-        lines[last.index] = null;
+        lines[run.index] = null;
       }
     }
+    run = null;
   };
   const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered, container) => {
+    parentOf.set(node, container);
     const echoed = !value && Boolean(name) && containsAsToken(covered, name);
     if ((!name && !value) || echoed) return;
     const printed = name && value ? `${name}: ${value}` : name || value;
@@ -754,26 +1036,38 @@ export function renderAxText(nodes, startBackendNodeId) {
     // paragraph that a per-word <span> soup had split into a word per line — but
     // never under a LANDMARK, where the shared container means only "same page",
     // not "same block" (see NON_JOINING_CONTAINERS).
-    const inTextRun = role === "StaticText" && joinsRuns(container);
-    if (inTextRun && last?.kind === "text" && last.container === container) {
-      lines[last.index] += ` ${printed}`;
-      last.segments.push(printed);
-      return;
-    }
-    // A table read as a vertical list of cells loses the thing that made it a
-    // table. Keep each row on one line, its cells separated by " | ".
-    const inRow = CELL_ROLES.has(role) && ROW_ROLES.has(container?.role?.value);
-    if (inRow && last?.kind === "cell" && last.container === container) {
-      lines[lines.length - 1] += ` | ${printed}`;
+    //
+    // A LINK joins that run too, which the snapshot view deliberately does not
+    // do: in the reading view a mid-sentence link is a word of the sentence, and
+    // breaking the line at it left Wikipedia's prose in unreadable stubs. Menu
+    // and list links are unaffected — their container is a landmark or simply a
+    // different one, so they still print on their own line.
+    const inTextRun =
+      (role === "StaticText" || (role === "link" && Boolean(name) && !value)) && joinsRuns(container);
+    if (inTextRun && run && run.container === container) {
+      lines[run.index] += ` ${printed}`;
+      run.segments.push(printed);
       return;
     }
     closeTextRun(printed);
+    // A table read as a vertical list of cells loses the thing that made it a
+    // table. Keep each row on one line, its cells separated by " | " — found by
+    // CLIMBING to the row (see rowChain), so a cell whose text sits on a nested
+    // link joins the row instead of breaking it.
+    const cell = cellOf(node);
+    const row = rowOf(cell || container);
+    if (row) {
+      if (openRow && openRow.row === row && lines[openRow.index] != null) {
+        lines[openRow.index] += `${cell === openRow.cell ? " " : " | "}${printed}`;
+        openRow.cell = cell;
+        return;
+      }
+      openRow = { row, cell, index: lines.length };
+    } else {
+      openRow = null;
+    }
+    if (inTextRun) run = { container, index: lines.length, segments: [printed], covered };
     lines.push(printed);
-    last = inTextRun
-      ? { kind: "text", container, index: lines.length - 1, segments: [printed], covered }
-      : inRow
-        ? { kind: "cell", container }
-        : null;
   });
   closeTextRun();
   return found ? lines.filter((line) => line !== null) : null;
@@ -788,7 +1082,8 @@ export function renderAxText(nodes, startBackendNodeId) {
  */
 export const SNAPSHOT_MAX_CHARS = 30000;
 
-const UID_LINE = /^\[e\d+\] /;
+/** Leading spaces tolerated: the snapshot view indents by nesting depth. */
+const UID_LINE = /^ *\[e\d+\] /;
 
 /**
  * Fit a rendered snapshot into `maxChars`, spending the budget on actionable
@@ -820,6 +1115,72 @@ export function capSnapshot(text, maxChars = SNAPSHOT_MAX_CHARS) {
     "Interactive [uid] elements were kept first. Read the page's full text with " +
     "mcp__browser__read_text, which returns offset-addressed chunks.]"
   );
+}
+
+/** Most arrow presses worth spending on one slider — beyond this, ask the page. */
+const SLIDER_MAX_PRESSES = 400;
+
+/** Decimal places a number is written with, bounded so 1e-7 cannot blow it up. */
+function decimalPlaces(value) {
+  const text = String(value);
+  const dot = text.indexOf(".");
+  return dot < 0 ? 0 : Math.min(text.length - dot - 1, 10);
+}
+
+/**
+ * How to drive a range control to `target` with arrow keys, or why it cannot be
+ * done. The pure half of the fix for a silent success: the clearing ladder
+ * pressed End before typing, End on a slider means MAXIMUM, and the ladder
+ * verified only that the OLD value was gone — so `type(value="4")` left a
+ * 0-to-5 rating slider at 5 and reported that it had worked.
+ *
+ * A slider does not take text at all; the only thing that moves it from the
+ * keyboard is one arrow press per step. Every input arrives as the raw string
+ * an AX value or a DOM attribute gave up, so all of them are parsed here rather
+ * than in the caller, and the resolved bounds ride on EVERY answer — a refusal
+ * an agent can read ("max is 5") is what stops it retrying the same value.
+ *
+ * `expected` is rounded to the precision of the numbers it came from: 0.1 + 0.2
+ * is 0.30000000000000004, and a verify comparing that against the page's "0.3"
+ * would fail a move that landed exactly right.
+ *
+ * Read off an object rather than destructured in the parameter list, so a
+ * caller passing null gets a refusal instead of taking out the whole tool.
+ */
+export function sliderPlan(opts) {
+  const { current, target, min, max, step } = opts || {};
+  const bound = (raw, fallback) => {
+    const parsed = axNumber(raw);
+    return parsed === undefined ? fallback : parsed;
+  };
+  const minNum = bound(min, 0);
+  const maxNum = bound(max, 100);
+  const parsedStep = bound(step, 1);
+  // A step of 0 or less is not a step: an HTML `step="any"` arrives unparseable
+  // and a bad attribute can arrive negative, and either one divides the press
+  // count into Infinity or drives the control the wrong way.
+  const stepNum = parsedStep > 0 ? parsedStep : 1;
+  const bounds = { min: minNum, max: maxNum, step: stepNum };
+  const targetNum = axNumber(target);
+  if (targetNum === undefined) return { ok: false, reason: "not-a-number", ...bounds };
+  if (targetNum < minNum || targetNum > maxNum) return { ok: false, reason: "out-of-range", ...bounds };
+  // An unreadable current position is not a failure: Home takes the control to
+  // its minimum, which is a known place to count from.
+  const currentNum = axNumber(current);
+  const fromMin = currentNum === undefined;
+  const from = fromMin ? minNum : currentNum;
+  const signed = Math.round((targetNum - from) / stepNum);
+  const presses = Math.abs(signed);
+  if (presses > SLIDER_MAX_PRESSES) return { ok: false, reason: "too-far", presses, ...bounds };
+  const places = Math.max(decimalPlaces(stepNum), decimalPlaces(from));
+  return {
+    ok: true,
+    presses,
+    key: signed < 0 ? "ArrowLeft" : "ArrowRight",
+    fromMin,
+    expected: Number((from + signed * stepNum).toFixed(places)),
+    ...bounds,
+  };
 }
 
 /** Longest overlap considered when merging scroll captures (bounds the cost). */

@@ -347,7 +347,10 @@ export interface BrowserRequest {
   offset?: number;
   /** read_text only: scroll through the page while reading, so lazy-loaded content is included. */
   expand?: boolean;
-  /** snapshot only: tighten the snapshot's character budget (re-clamped extension-side). */
+  /**
+   * snapshot + every snapshot-returning action: tighten the returned snapshot's
+   * character budget (re-clamped extension-side).
+   */
   maxChars?: number;
 }
 

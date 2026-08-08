@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>ax facts fixture (browser bridge)</title>
+    <style>
+      body {
+        font: 14px system-ui, sans-serif;
+        margin: 24px;
+      }
+      h1 {
+        font-size: 15px;
+      }
+      section {
+        margin-bottom: 16px;
+      }
+      #aria-slider {
+        width: 200px;
+        height: 20px;
+        border: 1px solid #999;
+        border-radius: 10px;
+      }
+      textarea {
+        width: 30rem;
+        height: 6rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>accessibility-tree fact probe (browser bridge)</h1>
+
+    <!--
+      Every element here answers ONE question background.js/axtree.js decides on:
+      what Chrome actually emits, as opposed to what the specification implies.
+    -->
+
+    <section>
+      <!-- A bare image, and an image that is the whole of a link. The bridge
+           mints uids off AX roles, so "which role does Chrome give an <img>"
+           and "does the link stay an ancestor of the image" are load-bearing. -->
+      <img
+        id="bare-img"
+        alt="marker"
+        src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%23c00'/></svg>"
+      />
+      <a id="thumb-link" href="https://example.com/thumb">
+        <img
+          id="thumb-img"
+          alt="thumb"
+          src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40'><rect width='40' height='40' fill='%2306c'/></svg>"
+        />
+      </a>
+    </section>
+
+    <section>
+      <!-- The trap: a file input renders as a plain button with a Korean label,
+           and clicking it opens the OS dialog no browser tool can close. -->
+      <label for="upload">파일 선택</label>
+      <input id="upload" type="file" />
+    </section>
+
+    <section>
+      <!-- Native range: DOM min/max/step, AX valuemin/valuemax, numeric value. -->
+      <label for="range">볼륨</label>
+      <input id="range" type="range" min="0" max="5" step="0.5" value="2.5" />
+    </section>
+
+    <section>
+      <!-- WAI-ARIA slider: no DOM min/max/step at all, so the bounds can only
+           come from the aria-* attributes or the computed AX properties. -->
+      <div
+        id="aria-slider"
+        role="slider"
+        tabindex="0"
+        aria-label="밝기"
+        aria-valuemin="10"
+        aria-valuemax="90"
+        aria-valuenow="40"
+      ></div>
+    </section>
+
+    <section>
+      <!-- A value far past any plausible AX limit, to measure whether Chrome
+           truncates a long accessible value (the suspected source of a corrupted
+           20 KB blob read out of a GitHub editor). -->
+      <label for="long">긴 텍스트</label>
+      <textarea id="long" aria-label="긴 텍스트"></textarea>
+    </section>
+
+    <script>
+      // Fixtures may run their own JS; the BRIDGE never does. This one only
+      // builds the long value, whose length has to exceed anything a bridge
+      // caller would ever type by hand.
+      const TARGET_LENGTH = 42000;
+      const marker = (n) => `[${String(n).padStart(6, "0")}]`;
+      let long = "";
+      // Every 100 characters carry their own offset, so a truncated read says
+      // WHERE it stopped instead of only how much survived.
+      while (long.length < TARGET_LENGTH) {
+        long += (marker(long.length) + "-".repeat(100)).slice(0, 100);
+      }
+      document.getElementById("long").value = long;
+</script>
+  </body>
+</html>

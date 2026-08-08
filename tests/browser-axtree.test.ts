@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, axValueAnswer, clearFailed } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -63,6 +63,29 @@ const highlightDuplicate = (order: "plain-first" | "run-first") => [
   node("f3", "StaticText", "을 돋보이게 하는 브랜드."),
 ];
 
+/**
+ * The Wikipedia edit-notice shape: a link sits MID-SENTENCE and reaches the
+ * same destination as a menu link printed far above it. Folding deleted it out
+ * of the middle of the sentence, which shipped as "You need to and be
+ * autoconfirmed" — a sentence with a hole where an agent cannot see one.
+ */
+const inlineLinkProse = () => {
+  const login = { name: "url", value: { value: "https://x/login" } };
+  return [
+    node("1", "RootWebArea", "문서", ["nav", "para"]),
+    node("nav", "navigation", "", ["menu"]),
+    node("menu", "link", "로그인", [], { backendDOMNodeId: 11, properties: [login] }),
+    node("para", "paragraph", "", ["t1", "inline", "t2"]),
+    node("t1", "StaticText", "이 문서를 편집하려면"),
+    node("inline", "link", "로그인하거나 계정을 만들어야", ["it"], {
+      backendDOMNodeId: 12,
+      properties: [login],
+    }),
+    node("it", "StaticText", "로그인하거나 계정을 만들어야"),
+    node("t2", "StaticText", "합니다"),
+  ];
+};
+
 describe("renderAxTree", () => {
   it("prints a link once, not again as the text inside it", () => {
     // The doubling that made every snapshot twice as expensive to read.
@@ -71,7 +94,7 @@ describe("renderAxTree", () => {
       node("2", "link", "Parsoid", ["3"], { backendDOMNodeId: 42 }),
       node("3", "StaticText", "Parsoid"),
     ]);
-    expect(lines).toEqual(['RootWebArea "Docs"', '[e1] link "Parsoid"']);
+    expect(lines).toEqual(['RootWebArea "Docs"', ' [e1] link "Parsoid"']);
   });
 
   it("drops an intermediate heading that only echoes its link", () => {
@@ -92,7 +115,7 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "위키백과의 신뢰도", ["2"]),
       node("2", "StaticText", "위키백과"),
     ]);
-    expect(lines).toEqual(['RootWebArea "위키백과의 신뢰도"', 'StaticText "위키백과"']);
+    expect(lines).toEqual(['RootWebArea "위키백과의 신뢰도"', ' StaticText "위키백과"']);
   });
 
   it("keeps prose that is not contained in any ancestor label", () => {
@@ -102,7 +125,7 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       '[e1] link "짧은 라벨"',
-      'StaticText "이건 라벨에 없는 새로운 문장이다"',
+      ' StaticText "이건 라벨에 없는 새로운 문장이다"',
     ]);
   });
 
@@ -116,7 +139,7 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "Doc", ["2", "3"]),
       node("2", "StaticText", "둘째"),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "둘째"', 'StaticText "셋째"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' StaticText "둘째"', ' StaticText "셋째"']);
   });
 
   it("still gives a uid to a nameless interactive element", () => {
@@ -126,7 +149,7 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "textbox", "", [], { backendDOMNodeId: 9 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] textbox ""']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] textbox ""']);
   });
 
   it("prints a field's value even when the label repeats an ancestor", () => {
@@ -135,7 +158,7 @@ describe("renderAxTree", () => {
       node("1", "form", "검색", ["2"]),
       node("2", "combobox", "검색", [], { backendDOMNodeId: 5, value: { value: "위키백과" } }),
     ]);
-    expect(lines).toEqual(['form "검색"', '[e1] combobox "검색" = "위키백과"']);
+    expect(lines).toEqual(['form "검색"', ' [e1] combobox "검색" = "위키백과"']);
   });
 
   it("mints uids in output order so they match what the agent reads", () => {
@@ -144,7 +167,7 @@ describe("renderAxTree", () => {
       node("2", "button", "첫째", [], { backendDOMNodeId: 1 }),
       node("3", "button", "둘째", [], { backendDOMNodeId: 2 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button "첫째"', '[e2] button "둘째"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] button "첫째"', ' [e2] button "둘째"']);
   });
 
   it("prints nodes detached from every root instead of losing them", () => {
@@ -162,7 +185,7 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "StaticText", "루프", ["1"]),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "루프"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' StaticText "루프"']);
   });
 
   it("skips ignored nodes but keeps walking through them", () => {
@@ -171,7 +194,7 @@ describe("renderAxTree", () => {
       node("2", "StaticText", "숨겨짐", ["3"], { ignored: true }),
       node("3", "button", "보임", [], { backendDOMNodeId: 4 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button "보임"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] button "보임"']);
   });
 
   it("prints a link's destination from the AX url property", () => {
@@ -198,7 +221,7 @@ describe("renderAxTree", () => {
         properties: [{ name: "url", value: { value: "#top" } }],
       }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] link "메뉴"', '[e2] link "위로"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] link "메뉴"', ' [e2] link "위로"']);
   });
 
   it("prints an ordinary long query url WHOLE, and truncates only a dump", () => {
@@ -235,7 +258,7 @@ describe("renderAxTree", () => {
       node("2", "LayoutTableCell", "다이어그램 편집...", [], { backendDOMNodeId: 7 }),
       node("3", "LayoutTableCell", "", [], { backendDOMNodeId: 8 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] LayoutTableCell "다이어그램 편집..."']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] LayoutTableCell "다이어그램 편집..."']);
   });
 
   it("gives a uid to a named focusable node, but not to a focusable opaque container", () => {
@@ -249,7 +272,7 @@ describe("renderAxTree", () => {
         properties: [{ name: "focusable", value: { value: true } }],
       }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] heading "섹션 열기"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] heading "섹션 열기"']);
   });
 
   it("gives a uid to a nameless canvas so canvas apps can be focused", () => {
@@ -262,13 +285,13 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "Canvas", "", [], { backendDOMNodeId: 7 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] Canvas ""']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] Canvas ""']);
     // An explicit role="canvas" still arrives lowercase, so both are matched.
     const authored = render([
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "canvas", "", [], { backendDOMNodeId: 7 }),
     ]);
-    expect(authored).toEqual(['RootWebArea "Doc"', '[e1] canvas ""']);
+    expect(authored).toEqual(['RootWebArea "Doc"', ' [e1] canvas ""']);
   });
 
   it("gives a uid to a NAMED region, but not to a nameless one", () => {
@@ -281,7 +304,7 @@ describe("renderAxTree", () => {
       node("2", "region", "지도", [], { backendDOMNodeId: 7 }),
       node("3", "region", "", [], { backendDOMNodeId: 8 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "지도"', '[e1] region "지도"']);
+    expect(lines).toEqual(['RootWebArea "지도"', ' [e1] region "지도"']);
   });
 
   it("gives a uid to a named application container", () => {
@@ -289,7 +312,7 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "application", "도면 편집기", [], { backendDOMNodeId: 7 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] application "도면 편집기"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] application "도면 편집기"']);
   });
 
   it("keeps a named region's label from covering its children", () => {
@@ -299,7 +322,7 @@ describe("renderAxTree", () => {
       node("1", "region", "공지", ["2"], { backendDOMNodeId: 7 }),
       node("2", "StaticText", "공지"),
     ]);
-    expect(lines).toEqual(['[e1] region "공지"', 'StaticText "공지"']);
+    expect(lines).toEqual(['[e1] region "공지"', ' StaticText "공지"']);
   });
 
   it("falls back to the AX description for a nameless interactive node", () => {
@@ -312,7 +335,7 @@ describe("renderAxTree", () => {
         description: { value: " 길찾기 " },
       }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button "길찾기"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] button "길찾기"']);
   });
 
   it("never lets a description displace a real name", () => {
@@ -337,7 +360,7 @@ describe("renderAxTree", () => {
         value: { value: 14 },
       }),
     ]);
-    expect(lines).toEqual(['RootWebArea "지도"', '[e1] slider "0" = "14"']);
+    expect(lines).toEqual(['RootWebArea "지도"', ' [e1] slider "0" = "14"']);
   });
 
   it("does not let a date-bearing ancestor label swallow short cell text", () => {
@@ -357,10 +380,10 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'grid "달력 2026.08.08"',
-      'StaticText "26"',
-      'StaticText "2"',
-      'StaticText "8"',
-      'StaticText "20"',
+      '  StaticText "26"',
+      '  StaticText "2"',
+      '  StaticText "8"',
+      '  StaticText "20"',
     ]);
   });
 
@@ -374,7 +397,7 @@ describe("renderAxTree", () => {
       node("4", "cell", "", ["5"]),
       node("5", "StaticText", "월"),
     ]);
-    expect(lines).toEqual(['heading "8월 26일 토요일"', 'StaticText "일"', 'StaticText "월"']);
+    expect(lines).toEqual(['heading "8월 26일 토요일"', '  StaticText "일"', '  StaticText "월"']);
   });
 
   it("still suppresses a WHOLE-TOKEN echo of an ancestor label", () => {
@@ -398,7 +421,7 @@ describe("renderAxTree", () => {
       node("7", "StaticText", "서울에"),
       node("8", "StaticText", "폭염경보"),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "오늘 서울에 폭염경보"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', '  StaticText "오늘 서울에 폭염경보"']);
   });
 
   it("does not join text across two different containers", () => {
@@ -409,7 +432,7 @@ describe("renderAxTree", () => {
       node("4", "StaticText", "첫 문단"),
       node("5", "StaticText", "둘째 문단"),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "첫 문단"', 'StaticText "둘째 문단"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', '  StaticText "첫 문단"', '  StaticText "둘째 문단"']);
   });
 
   it("breaks a text run at an interleaved non-StaticText element", () => {
@@ -422,9 +445,9 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'RootWebArea "Doc"',
-      'StaticText "앞"',
-      '[e1] link "링크"',
-      'StaticText "뒤"',
+      '  StaticText "앞"',
+      '  [e1] link "링크"',
+      '  StaticText "뒤"',
     ]);
   });
 
@@ -450,7 +473,7 @@ describe("renderAxTree", () => {
       node("2", "StaticText", "어제 갔던"),
       node("3", "StaticText", "가게"),
     ]);
-    expect(lines).toEqual(['[e1] link "댓글 보기"', 'StaticText "어제 갔던 가게"']);
+    expect(lines).toEqual(['[e1] link "댓글 보기"', ' StaticText "어제 갔던 가게"']);
   });
 
   it("prints ONE line for an autocomplete option whose highlight split its text", () => {
@@ -489,7 +512,7 @@ describe("renderAxTree", () => {
         node("4", "StaticText", "서울에"),
         node("5", "StaticText", "폭염경보"),
       ]);
-      expect(lines, role).toEqual(['StaticText "오늘 서울에 폭염경보"']);
+      expect(lines, role).toEqual([' StaticText "오늘 서울에 폭염경보"']);
     }
   });
 
@@ -503,7 +526,9 @@ describe("renderAxTree", () => {
         node("3", role, "", ["4"]),
         node("4", "StaticText", "뒤"),
       ]);
-      expect(lines, role).toEqual(['StaticText "앞"', 'StaticText "뒤"']);
+      // The wrapper EMITS (it is not text-level), so the text inside it sits
+      // one level deeper — the indent says so, which is the point of it.
+      expect(lines, role).toEqual([' StaticText "앞"', '  StaticText "뒤"']);
     }
   });
 
@@ -517,7 +542,7 @@ describe("renderAxTree", () => {
       node("2", "cell", "", ["3"]),
       node("3", "StaticText", "26"),
     ]);
-    expect(lines).toEqual(['grid "달력 2026.08.08"', 'StaticText "26"']);
+    expect(lines).toEqual(['grid "달력 2026.08.08"', '  StaticText "26"']);
   });
 
   it("prints ONE line for several links to the same destination", () => {
@@ -533,7 +558,7 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'RootWebArea "뉴스"',
-      '[e2] link "폭염 특보 확대 발령" → https://news.example/a',
+      ' [e2] link "폭염 특보 확대 발령" → https://news.example/a',
     ]);
   });
 
@@ -558,9 +583,9 @@ describe("renderAxTree", () => {
     ) as string[];
     expect(lines).toEqual([
       'RootWebArea "Doc"',
-      '[e1] button "" (dom: #map-zoom-in)',
-      '[e2] button "저장"',
-      '[e3] textbox "" = "광교"',
+      ' [e1] button "" (dom: #map-zoom-in)',
+      ' [e2] button "저장"',
+      ' [e3] textbox "" = "광교"',
     ]);
   });
 
@@ -569,7 +594,7 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "button", "", [], { backendDOMNodeId: 48 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button ""']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] button ""']);
   });
 
   it("leaves links with different destinations alone", () => {
@@ -586,8 +611,8 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'RootWebArea "목록"',
-      '[e1] link "첫째" → https://e.example/1',
-      '[e2] link "둘째" → https://e.example/2',
+      ' [e1] link "첫째" → https://e.example/1',
+      ' [e2] link "둘째" → https://e.example/2',
     ]);
   });
 
@@ -611,8 +636,8 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'RootWebArea "가입"',
-      '[e1] checkbox "약관 동의" [checked]',
-      '[e2] checkbox "광고 수신" [unchecked]',
+      ' [e1] checkbox "약관 동의" [checked]',
+      ' [e2] checkbox "광고 수신" [unchecked]',
     ]);
   });
 
@@ -648,10 +673,10 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'RootWebArea "Doc"',
-      '[e1] button "굵게" [pressed]',
-      '[e2] combobox "지역" [collapsed]',
-      '[e3] combobox "정렬" [expanded]',
-      '[e4] button "저장" [disabled]',
+      ' [e1] button "굵게" [pressed]',
+      ' [e2] combobox "지역" [collapsed]',
+      ' [e3] combobox "정렬" [expanded]',
+      ' [e4] button "저장" [disabled]',
     ]);
   });
 
@@ -680,9 +705,9 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'RootWebArea "Doc"',
-      '[e1] textbox "검색" = "광교" [disabled]',
-      '[e2] option "서울" [selected]',
-      '[e3] option "부산"',
+      ' [e1] textbox "검색" = "광교" [disabled]',
+      ' [e2] option "서울" [selected]',
+      ' [e3] option "부산"',
     ]);
   });
 
@@ -716,10 +741,10 @@ describe("renderAxTree", () => {
         }),
       ]),
     ]);
-    expect(lines.filter((line) => /^\[e\d+\] link /.test(line))).toHaveLength(20);
+    expect(lines.filter((line) => /^ *\[e\d+\] link /.test(line))).toHaveLength(20);
     // Exempt from folding AND from decoration, exactly like a literal `#foo`:
     // a same-document destination tells the agent nothing it did not know.
-    expect(lines).toContain('[e1] link "edit"');
+    expect(lines).toContain(' [e1] link "edit"');
     expect(lines.some((line) => line.includes("→"))).toBe(false);
   });
 
@@ -735,7 +760,7 @@ describe("renderAxTree", () => {
         properties: [{ name: "url", value: { value: "https://x/page#edit" } }],
       }),
     ]);
-    expect(lines).toEqual(['RootWebArea "문서"', '[e1] link "편집"']);
+    expect(lines).toEqual(['RootWebArea "문서"', ' [e1] link "편집"']);
   });
 
   it("still folds duplicate links to ANOTHER page's fragment", () => {
@@ -750,7 +775,7 @@ describe("renderAxTree", () => {
       node("2", "link", "", [], { backendDOMNodeId: 11, properties: [url] }),
       node("3", "link", "다른 문서의 절", [], { backendDOMNodeId: 12, properties: [url] }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e2] link "다른 문서의 절" → https://x/other#sec']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e2] link "다른 문서의 절" → https://x/other#sec']);
   });
 
   it("does not glue two unrelated blocks that share only a landmark", () => {
@@ -765,7 +790,7 @@ describe("renderAxTree", () => {
       node("4", "StaticText", "0"),
       node("5", "StaticText", "Powered by"),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "0"', 'StaticText "Powered by"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' StaticText "0"', ' StaticText "Powered by"']);
   });
 
   it("blocks joining under main too, while real prose in a paragraph still joins", () => {
@@ -774,27 +799,27 @@ describe("renderAxTree", () => {
       node("2", "StaticText", "로딩 중"),
       node("3", "StaticText", "Powered by"),
     ]);
-    expect(across).toEqual(['StaticText "로딩 중"', 'StaticText "Powered by"']);
+    expect(across).toEqual([' StaticText "로딩 중"', ' StaticText "Powered by"']);
     const inside = render([
       node("1", "main", "", ["2"]),
       node("2", "paragraph", "", ["3", "4"]),
       node("3", "StaticText", "오늘"),
       node("4", "StaticText", "폭염경보"),
     ]);
-    expect(inside).toEqual(['StaticText "오늘 폭염경보"']);
+    expect(inside).toEqual(['  StaticText "오늘 폭염경보"']);
   });
 
   it("drops a highlight-split run the line ABOVE it already spells out", () => {
     expect(render(highlightDuplicate("plain-first"))).toEqual([
       'RootWebArea "검색"',
-      `StaticText "${HIGHLIGHT_SENTENCE}"`,
+      `  StaticText "${HIGHLIGHT_SENTENCE}"`,
     ]);
   });
 
   it("drops it the other way round too, when the whole copy arrives after", () => {
     expect(render(highlightDuplicate("run-first"))).toEqual([
       'RootWebArea "검색"',
-      `StaticText "${HIGHLIGHT_SENTENCE}"`,
+      `  StaticText "${HIGHLIGHT_SENTENCE}"`,
     ]);
   });
 
@@ -809,8 +834,8 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'RootWebArea "검색"',
-      `StaticText "${HIGHLIGHT_SENTENCE}"`,
-      'StaticText "리뷰 3,214건 영업 중"',
+      `  StaticText "${HIGHLIGHT_SENTENCE}"`,
+      '  StaticText "리뷰 3,214건 영업 중"',
     ]);
   });
 
@@ -825,7 +850,7 @@ describe("renderAxTree", () => {
       node("4", "StaticText", "2"),
       node("5", "StaticText", "8"),
     ]);
-    expect(lines).toEqual(['RootWebArea "달력"', 'StaticText "2026.08.08"', 'StaticText "2 8"']);
+    expect(lines).toEqual(['RootWebArea "달력"', ' StaticText "2026.08.08"', '  StaticText "2 8"']);
   });
 
   it("keeps a table row on ONE line here too, as the reading view already did", () => {
@@ -844,8 +869,8 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual([
       'table "실적"',
-      'columnheader "분기" | columnheader "매출" | columnheader "비고"',
-      'cell "1Q" | cell "100" | cell "호조"',
+      '  columnheader "분기" | columnheader "매출" | columnheader "비고"',
+      '  cell "1Q" | cell "100" | cell "호조"',
     ]);
   });
 
@@ -863,8 +888,8 @@ describe("renderAxTree", () => {
       node("7", "LayoutTableCell", "이동", [], { backendDOMNodeId: 14 }),
     ]);
     expect(lines).toEqual([
-      '[e1] LayoutTableCell "편집" | [e2] LayoutTableCell "삭제"',
-      '[e3] LayoutTableCell "복사" | [e4] LayoutTableCell "이동"',
+      '  [e1] LayoutTableCell "편집" | [e2] LayoutTableCell "삭제"',
+      '  [e3] LayoutTableCell "복사" | [e4] LayoutTableCell "이동"',
     ]);
   });
 
@@ -874,19 +899,36 @@ describe("renderAxTree", () => {
       node("2", "cell", "26", [], { backendDOMNodeId: 11 }),
       node("3", "cell", "27", [], { backendDOMNodeId: 12 }),
     ]);
-    expect(lines).toEqual(['grid "달력"', '[e1] cell "26"', '[e2] cell "27"']);
+    expect(lines).toEqual(['grid "달력"', ' [e1] cell "26"', ' [e2] cell "27"']);
   });
 
-  it("closes an inline run before joining a row, never appending onto its text", () => {
-    // A cell whose text is a StaticText of its own leaves a text line as the
-    // last one printed; the next cell must start a line, not extend that.
+  it("joins a row through a cell whose text is a StaticText of its own", () => {
+    // The cell holding the sentence is NAMELESS, so it never prints and the
+    // text arrives with the CELL as its container — the row is one hop further
+    // up, which a container-role test cannot see. The row line is indented at
+    // the first piece's own depth, and the run that built it is closed before
+    // the second cell lands, so it can no longer rewrite the joined slot.
     const lines = render([
       node("1", "row", "", ["2", "3"]),
       node("2", "cell", "", ["4"]),
       node("4", "StaticText", "설명 문장"),
       node("3", "cell", "값", [], { backendDOMNodeId: 12 }),
     ]);
-    expect(lines).toEqual(['StaticText "설명 문장"', '[e1] cell "값"']);
+    expect(lines).toEqual(['  StaticText "설명 문장" | [e1] cell "값"']);
+  });
+
+  it("starts a new row line when suppression deleted the one being built", () => {
+    // The run that opened the row line is dropped as a duplicate of the cell
+    // arriving beside it, which NULLS that slot: appending onto it would
+    // resurrect the very line the suppression had just decided to delete.
+    const lines = render([
+      node("1", "row", "", ["2", "3"]),
+      node("2", "cell", "", ["4", "5"]),
+      node("4", "StaticText", "폭염 특보가"),
+      node("5", "StaticText", "확대 발령됐다"),
+      node("3", "cell", "폭염 특보가 확대 발령됐다", [], { backendDOMNodeId: 12 }),
+    ]);
+    expect(lines).toEqual([' [e1] cell "폭염 특보가 확대 발령됐다"']);
   });
 
   it("gives a uid to an Iframe, which is nameless and so used to get none", () => {
@@ -897,7 +939,7 @@ describe("renderAxTree", () => {
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "Iframe", "", [], { backendDOMNodeId: 7 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] Iframe ""']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] Iframe ""']);
   });
 
   it("gives a uid to a designMode frame's document AND its body", () => {
@@ -911,7 +953,7 @@ describe("renderAxTree", () => {
       node("3", "paragraph", "", ["4"], editableDescendant()),
       node("4", "StaticText", "본문", [], editableDescendant()),
     ]);
-    expect(lines).toEqual(['[e1] RootWebArea ""', '[e2] generic ""', 'StaticText "본문"']);
+    expect(lines).toEqual(['[e1] RootWebArea ""', ' [e2] generic ""', '   StaticText "본문"']);
   });
 
   it("reaches a body-contenteditable frame through its body, not its document", () => {
@@ -928,7 +970,7 @@ describe("renderAxTree", () => {
       node("2", "generic", "", ["3"], { backendDOMNodeId: 11, ...editableRoot() }),
       node("3", "StaticText", "초안", [], editableDescendant()),
     ]);
-    expect(lines).toEqual(['RootWebArea "편집기"', '[e1] generic ""', 'StaticText "초안"']);
+    expect(lines).toEqual(['RootWebArea "편집기"', ' [e1] generic ""', '  StaticText "초안"']);
   });
 
   it("mints ONE uid for a contenteditable editor, not one per node inside it", () => {
@@ -949,9 +991,9 @@ describe("renderAxTree", () => {
     ];
     expect(render(nodes)).toEqual([
       'RootWebArea "글쓰기"',
-      '[e1] generic ""',
-      'StaticText "hello world"',
-      'StaticText "second para"',
+      ' [e1] generic ""',
+      '   StaticText "hello world"',
+      '   StaticText "second para"',
     ]);
     // Nameless and description-less, so it is exactly the kind of control the
     // caller looks a DOM identifier up for.
@@ -970,7 +1012,7 @@ describe("renderAxTree", () => {
         properties: [{ name: "editable", value: { value: "plaintext" } }],
       }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] textbox "메모"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] textbox "메모"']);
   });
 
   it("leaves an ordinary document without a uid", () => {
@@ -985,7 +1027,7 @@ describe("renderAxTree", () => {
       undefined,
       { frameLabels: new Map([[7, "f2"]]) },
     ) as string[];
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] Iframe "" (frame f2)']);
+    expect(lines).toEqual(['RootWebArea "Doc"', ' [e1] Iframe "" (frame f2)']);
   });
 
   it("renders only the requested subtree, and null when the start id is stale", () => {
@@ -996,7 +1038,8 @@ describe("renderAxTree", () => {
       node("4", "StaticText", "기사 내용"),
     ];
     const scoped = renderAxTree(nodes, uids(), undefined, { startBackendNodeId: 10 }) as string[];
-    expect(scoped).toEqual(['article "본문"', 'StaticText "기사 내용"']);
+    // The scope root starts at depth 0, so the subtree is indented from IT.
+    expect(scoped).toEqual(['article "본문"', ' StaticText "기사 내용"']);
     expect(renderAxTree(nodes, uids(), undefined, { startBackendNodeId: 999 })).toBeNull();
   });
 
@@ -1010,9 +1053,282 @@ describe("renderAxTree", () => {
       node("3", "StaticText", "본문"),
     ];
     const bare = renderAxTree(nodes, uids(), undefined) as string[];
-    expect(bare).toEqual(['RootWebArea "Doc"', '[e1] button "저장"', 'StaticText "본문"']);
+    expect(bare).toEqual(['RootWebArea "Doc"', ' [e1] button "저장"', ' StaticText "본문"']);
     expect(renderAxTree(nodes, uids(), undefined, {})).toEqual(bare);
     expect(renderAxTree(nodes, uids(), undefined, null)).toEqual(bare);
+  });
+
+  it("caps the indent, so deep nesting cannot eat the snapshot budget", () => {
+    // Real pages nest far deeper than they read, and every space is budget
+    // spent on layout instead of the page's own text.
+    const levels = 16;
+    const lines = render([
+      ...Array.from({ length: levels }, (_, i) =>
+        node(`n${i}`, "paragraph", "", [i + 1 < levels ? `n${i + 1}` : "leaf"]),
+      ),
+      node("leaf", "StaticText", "바닥"),
+    ]);
+    expect(lines).toEqual([`${" ".repeat(12)}StaticText "바닥"`]);
+  });
+
+  it("cuts a runaway field value, marking the cut and where to read the rest", () => {
+    // A GitHub blob view keeps the whole file in a hidden <textarea>: a 44.7 KB
+    // source file ate 504 of the page's 1204 snapshot lines, and what survived
+    // was source cut mid-line by capSnapshot with nothing saying so.
+    const lines = render([
+      node("1", "textbox", "소스", [], { backendDOMNodeId: 7, value: { value: "x".repeat(4000) } }),
+    ]);
+    expect(lines).toEqual([
+      `[e1] textbox "소스" = "${"x".repeat(3000)}" [value truncated: showing 3000 of 4000 ` +
+        "chars — read the full text with mcp__browser__read_text (uid e1)]",
+    ]);
+  });
+
+  it("points at the page's text when the cut line has no uid to name", () => {
+    // No backend id, so nothing was minted — read_text can still return the
+    // page, it just cannot be scoped to this element.
+    const lines = render([node("1", "textbox", "", [], { value: { value: "x".repeat(3200) } })]);
+    expect(lines).toEqual([
+      `textbox "${"x".repeat(3000)}" [value truncated: showing 3000 of 3200 ` +
+        "chars — read the full page text with mcp__browser__read_text]",
+    ]);
+  });
+
+  it("cuts a runaway accessible name too, saying how much of it is shown", () => {
+    const lines = render([node("1", "button", "가".repeat(1500), [], { backendDOMNodeId: 7 })]);
+    expect(lines).toEqual([
+      `[e1] button "${"가".repeat(1000)}" [label truncated: showing 1000 of 1500 chars]`,
+    ]);
+  });
+
+  it("caps only what is PRINTED, never what the suppression compares", () => {
+    // The cut is a display decision. Comparing cut strings instead would let a
+    // child whose text sits past the cap survive as a duplicate line.
+    const label = `${"가".repeat(1200)} 끝`;
+    const lines = render([
+      node("1", "link", label, ["2"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "끝"),
+    ]);
+    expect(lines).toEqual([
+      `[e1] link "${"가".repeat(1000)}" [label truncated: showing 1000 of 1202 chars]`,
+    ]);
+  });
+
+  it("re-spaces a name Chrome welded out of its descendants' text", () => {
+    // Naver Maps: business status, rating, review count and title arrive
+    // concatenated with NO separators, and the separated child StaticTexts are
+    // then deleted as a run-level echo of that very name — so nothing on the
+    // page recovers the structure unless the name itself is put back together.
+    const lines = render([
+      node("1", "button", "영업 종료별점 4.76리뷰7,262TV 식스센스", ["2", "3", "4", "5"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", "영업 종료"),
+      node("3", "StaticText", "별점 4.76"),
+      node("4", "StaticText", "리뷰7,262"),
+      node("5", "StaticText", "TV 식스센스"),
+    ]);
+    expect(lines).toEqual(['[e1] button "영업 종료 별점 4.76 리뷰7,262 TV 식스센스"']);
+  });
+
+  it("fires when a segment carries a space of its OWN, splitting only the welds", () => {
+    // The same field string cut a different way: "별점 4.76" arrives as ONE
+    // text node whose space is real page content, while the four boundaries
+    // BETWEEN the children carry none. Those welds are what gets a space, and
+    // the segment's own spacing is left exactly as the page wrote it.
+    const lines = render([
+      node("1", "button", "영업 종료별점 4.76리뷰7,262TV 식스센스", ["2", "3", "4", "5", "6"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", "영업 종료"),
+      node("3", "StaticText", "별점 4.76"),
+      node("4", "StaticText", "리뷰"),
+      node("5", "StaticText", "7,262"),
+      node("6", "StaticText", "TV 식스센스"),
+    ]);
+    expect(lines).toEqual(['[e1] button "영업 종료 별점 4.76 리뷰 7,262 TV 식스센스"']);
+  });
+
+  it("declines a MIXED name, separated at some boundaries and welded at others", () => {
+    // The honest limit of the rule, pinned rather than papered over. Here the
+    // space before "4.76" sits BETWEEN two children — so either Chrome inserted
+    // a separator there and not elsewhere, or the page did. Nothing in the
+    // strings says which boundaries deserve a space: 종료|별점, which wants one,
+    // and 광교|역, which must never get one, are both Hangul beside Hangul. The
+    // welded name is what prints, which is today's behaviour and recoverable —
+    // the alternative is shipping invented words as the page's own text.
+    const lines = render([
+      node("1", "button", "영업 종료별점 4.76리뷰7,262TV 식스센스", ["2", "3", "4", "5", "6", "7"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", "영업 종료"),
+      node("3", "StaticText", "별점"),
+      node("4", "StaticText", " 4.76"),
+      node("5", "StaticText", "리뷰"),
+      node("6", "StaticText", "7,262"),
+      node("7", "StaticText", "TV 식스센스"),
+    ]);
+    expect(lines).toEqual(['[e1] button "영업 종료별점 4.76리뷰7,262TV 식스센스"']);
+  });
+
+  it("leaves a name alone when the page's own text already separated it", () => {
+    // The segments do not concatenate into the raw name — a separator is
+    // already there — so there is nothing to put back and nothing to invent.
+    const lines = render([
+      node("1", "button", "영업 종료 별점 4.76", ["2", "3"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "영업 종료"),
+      node("3", "StaticText", "별점 4.76"),
+    ]);
+    expect(lines).toEqual(['[e1] button "영업 종료 별점 4.76"']);
+  });
+
+  it("never re-spaces a name a phrasing wrapper split MID-WORD", () => {
+    // `<mark>` around a matched keyword splits "수원광교역" into "수원광교" +
+    // "역", which DOES concatenate back into the raw name — re-spacing it would
+    // invent a word boundary inside a place name and ship it as the page's own.
+    const lines = render([
+      node("1", "option", "수원광교역", ["2", "3"], { backendDOMNodeId: 7 }),
+      node("2", "mark", "", ["4"]),
+      node("4", "StaticText", "수원광교"),
+      node("3", "StaticText", "역"),
+    ]);
+    expect(lines).toEqual(['[e1] option "수원광교역"']);
+  });
+
+  it("joins a row whose cell text lives on a nested link", () => {
+    // Wikipedia's GDP table: the country cell is NAMELESS because its text sits
+    // on a link inside it, and that link's container is the CELL, not the row —
+    // so the row chain broke and the rank printed on a line of its own.
+    const lines = render([
+      node("t", "table", "GDP", ["r"]),
+      node("r", "row", "", ["c1", "c2", "c3"]),
+      node("c1", "rowheader", "1", [], { backendDOMNodeId: 20 }),
+      node("c2", "cell", "", ["l"]),
+      node("l", "link", "United States", [], {
+        backendDOMNodeId: 21,
+        properties: [{ name: "url", value: { value: "https://x/us" } }],
+      }),
+      node("c3", "cell", "32,383,920", [], { backendDOMNodeId: 22 }),
+    ]);
+    // Every piece keeps its OWN uid, so joining the row costs no addressability.
+    expect(lines).toEqual([
+      'table "GDP"',
+      '  [e1] rowheader "1" | [e2] link "United States" → https://x/us | [e3] cell "32,383,920"',
+    ]);
+  });
+
+  it("joins a header row where EVERY cell's text sits on a nested link", () => {
+    // The same table's header split into one line per column for the same
+    // reason: not one of its columnheaders carries a name of its own.
+    const lines = render([
+      node("t", "table", "", ["r"]),
+      node("r", "row", "", ["c1", "c2"]),
+      node("c1", "columnheader", "", ["l1"]),
+      node("l1", "link", "Country", [], { backendDOMNodeId: 31 }),
+      node("c2", "columnheader", "", ["l2"]),
+      node("l2", "link", "GDP", [], { backendDOMNodeId: 32 }),
+    ]);
+    expect(lines).toEqual(['   [e1] link "Country" | [e2] link "GDP"']);
+  });
+
+  it("separates columns with a bar, but more of ONE cell with a space", () => {
+    // A reference marker belongs to the value beside it, not to a column of its
+    // own — the bar has to mean "next cell" or a row stops being readable.
+    const lines = render([
+      node("r", "row", "", ["c"]),
+      node("c", "cell", "", ["l", "sup"]),
+      node("l", "link", "United States", [], { backendDOMNodeId: 41 }),
+      node("sup", "superscript", "", ["st"]),
+      node("st", "StaticText", "[1]"),
+    ]);
+    expect(lines).toEqual(['  [e1] link "United States" StaticText "[1]"']);
+  });
+
+  it("gives a uid to a named image with no actionable ancestor above it", () => {
+    // Naver map markers surface as `image "음식점"` with nothing above them that
+    // takes a click, so picking one out was a click_at pixel gamble. A nameless
+    // image is still structure and mints nothing.
+    const lines = render([
+      node("1", "RootWebArea", "지도", ["2", "3", "4"]),
+      node("2", "image", "음식점", [], { backendDOMNodeId: 7 }),
+      node("3", "img", "카페", [], { backendDOMNodeId: 8 }),
+      node("4", "image", "", [], { backendDOMNodeId: 9 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "지도"', ' [e1] image "음식점"', ' [e2] img "카페"']);
+  });
+
+  it("mints an image uid INSIDE a named map surface, which is the whole case", () => {
+    // The field shape: markers are drawn on a map body that surfaces as
+    // `region "지도"` and takes a uid of its own. That uid exists so click_at
+    // has a coordinate plane to aim at — clicking the region's centre is not
+    // clicking a marker — so counting it as the marker's click target would put
+    // every one of them straight back out of reach.
+    const lines = render([
+      node("1", "region", "지도", ["2"], { backendDOMNodeId: 5 }),
+      node("2", "image", "음식점", [], { backendDOMNodeId: 7 }),
+    ]);
+    expect(lines).toEqual(['[e1] region "지도"', ' [e2] image "음식점"']);
+  });
+
+  it("mints an image uid inside a canvas, which is a plane and not a target", () => {
+    const lines = render([
+      node("1", "Canvas", "", ["2"], { backendDOMNodeId: 5 }),
+      node("2", "image", "표식", [], { backendDOMNodeId: 7 }),
+    ]);
+    expect(lines).toEqual(['[e1] Canvas ""', ' [e2] image "표식"']);
+  });
+
+  it("leaves an image inside a link alone — the ancestor IS the click target", () => {
+    // A search page is thumbnails inside their own result links; minting one
+    // per image would flood the snapshot with refs that all click the link.
+    const lines = render([
+      node("1", "link", "결과", ["2"], { backendDOMNodeId: 7 }),
+      node("2", "image", "썸네일", [], { backendDOMNodeId: 8 }),
+    ]);
+    expect(lines).toEqual(['[e1] link "결과"', ' image "썸네일"']);
+  });
+
+  it("keeps a link that interrupts running prose instead of folding it away", () => {
+    // Both links reach https://x/login, and the folding above ("prints ONE line
+    // for several links to the same destination") is what a search page needs —
+    // but applied mid-sentence it deleted the words out of the sentence. An
+    // open text run under the link's OWN container is what tells them apart.
+    expect(render(inlineLinkProse())).toEqual([
+      'RootWebArea "문서"',
+      '  [e1] link "로그인" → https://x/login',
+      '  StaticText "이 문서를 편집하려면"',
+      '  [e2] link "로그인하거나 계정을 만들어야" → https://x/login',
+      '  StaticText "합니다"',
+    ]);
+  });
+
+  it("prints a range control's bounds, so its value has a scale", () => {
+    // `slider "별점" = "5"` says nothing about where 5 sits — and the clearing
+    // ladder's End key pinned such a control to its MAXIMUM while nothing on
+    // the line said what the maximum was. Only bounds Chrome carries print: a
+    // missing one is unknown, not zero.
+    const lines = render([
+      node("1", "RootWebArea", "설정", ["2", "3", "4"]),
+      node("2", "slider", "별점", [], {
+        backendDOMNodeId: 7,
+        value: { value: 5 },
+        properties: [
+          { name: "valuemin", value: { value: 0 } },
+          { name: "valuemax", value: { value: "5" } },
+        ],
+      }),
+      node("3", "spinbutton", "수량", [], {
+        backendDOMNodeId: 8,
+        properties: [{ name: "valuemin", value: { value: "1" } }],
+      }),
+      node("4", "slider", "밝기", [], { backendDOMNodeId: 9 }),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "설정"',
+      ' [e1] slider "별점" = "5" [min 0 max 5]',
+      ' [e2] spinbutton "수량" [min 1]',
+      ' [e3] slider "밝기"',
+    ]);
   });
 });
 
@@ -1066,6 +1382,15 @@ describe("capSnapshot", () => {
     expect(out).not.toContain("가가가");
     expect(out).toContain("snapshot truncated");
     expect(out).toContain("mcp__browser__read_text");
+  });
+
+  it("recognizes an INDENTED uid line, which is how the snapshot prints them", () => {
+    // The snapshot view indents by nesting depth, so a uid line almost never
+    // starts at column 0 — a regex anchored there would classify every one of
+    // them as droppable text and cut the page's actionable elements first.
+    const out = capSnapshot([`  StaticText "${"가".repeat(60)}"`, '   [e1] button "저장"'].join("\n"), 40);
+    expect(out).toContain('   [e1] button "저장"');
+    expect(out).not.toContain("가가가");
   });
 
   it("preserves document order among the kept lines", () => {
@@ -1249,6 +1574,166 @@ describe("renderAxText", () => {
       node("6", "StaticText", "영업 중"),
     ]) as string[];
     expect(lines).toEqual(["검색", HIGHLIGHT_SENTENCE, "리뷰 3,214건 영업 중"]);
+  });
+
+  it("keeps an inline link inside the sentence it interrupts", () => {
+    // Breaking the line at a mid-sentence link left Wikipedia's prose in stubs;
+    // in the reading view such a link is a WORD of the sentence. The menu link
+    // above still prints on its own line — its container is a landmark.
+    expect(renderAxText(inlineLinkProse())).toEqual([
+      "문서",
+      "로그인",
+      "이 문서를 편집하려면 로그인하거나 계정을 만들어야 합니다",
+    ]);
+  });
+
+  it("keeps a row together when its cell text lives on a nested link", () => {
+    const lines = renderAxText([
+      node("t", "table", "GDP", ["r"]),
+      node("r", "row", "", ["c1", "c2", "c3"]),
+      node("c1", "rowheader", "1"),
+      node("c2", "cell", "", ["l"]),
+      node("l", "link", "United States", [], { backendDOMNodeId: 21 }),
+      node("c3", "cell", "32,383,920"),
+    ]) as string[];
+    expect(lines).toEqual(["GDP", "1 | United States | 32,383,920"]);
+  });
+
+  it("reads a link and the reference beside it as one cell, not two columns", () => {
+    const lines = renderAxText([
+      node("r", "row", "", ["c"]),
+      node("c", "cell", "", ["l", "sup"]),
+      node("l", "link", "United States", [], { backendDOMNodeId: 41 }),
+      node("sup", "superscript", "", ["st"]),
+      node("st", "StaticText", "[1]"),
+    ]) as string[];
+    expect(lines).toEqual(["United States [1]"]);
+  });
+
+  it("carries no indent and no bounds — it is the plain-reading view", () => {
+    const lines = renderAxText([
+      node("1", "RootWebArea", "설정", ["2"]),
+      node("2", "slider", "별점", [], {
+        backendDOMNodeId: 7,
+        value: { value: 5 },
+        properties: [
+          { name: "valuemin", value: { value: 0 } },
+          { name: "valuemax", value: { value: 5 } },
+        ],
+      }),
+    ]) as string[];
+    expect(lines).toEqual(["설정", "별점: 5"]);
+  });
+
+  it("prints a huge value WHOLE — it is the channel the snapshot's cut points at", () => {
+    const lines = renderAxText([
+      node("1", "textbox", "소스", [], { backendDOMNodeId: 7, value: { value: "x".repeat(4000) } }),
+    ]) as string[];
+    expect(lines).toEqual([`소스: ${"x".repeat(4000)}`]);
+  });
+});
+
+describe("sliderPlan", () => {
+  // A slider takes no text at all: the clearing ladder pressed End (which on a
+  // range control means MAXIMUM), typed, and verified only that the OLD value
+  // was gone — so `type(value="4")` left a 0-to-5 rating at 5 and said it
+  // worked. The arrow-press arithmetic that replaces it is unit-tested here so
+  // that no page is needed to know whether it lands where it says.
+
+  it("counts presses toward the target and names the direction", () => {
+    expect(sliderPlan({ current: "1", target: "4", min: "0", max: "5", step: "1" })).toEqual({
+      ok: true,
+      presses: 3,
+      key: "ArrowRight",
+      fromMin: false,
+      expected: 4,
+      min: 0,
+      max: 5,
+      step: 1,
+    });
+    expect(sliderPlan({ current: "5", target: "2", min: "0", max: "5", step: "1" })).toMatchObject({
+      ok: true,
+      presses: 3,
+      key: "ArrowLeft",
+      expected: 2,
+    });
+  });
+
+  it("lands exactly on a fractional step without float noise", () => {
+    // 0.1 + 0.2 is 0.30000000000000004, and a verify comparing that against the
+    // page's "0.3" would fail a move that landed exactly right.
+    expect(sliderPlan({ current: "1", target: "3.5", min: "0", max: "5", step: "0.5" })).toMatchObject(
+      { ok: true, presses: 5, key: "ArrowRight", expected: 3.5 },
+    );
+    expect(sliderPlan({ current: "0.1", target: "0.3", min: "0", max: "1", step: "0.1" })).toMatchObject(
+      { ok: true, presses: 2, expected: 0.3 },
+    );
+  });
+
+  it("plans from the minimum when the current value cannot be read", () => {
+    // Not a failure: Home takes the control to its minimum, which is a known
+    // place to count from — the caller presses it first.
+    expect(sliderPlan({ current: "", target: "2", min: "0", max: "5", step: "1" })).toMatchObject({
+      ok: true,
+      presses: 2,
+      fromMin: true,
+      expected: 2,
+    });
+    expect(sliderPlan({ target: "0", min: "0", max: "5" })).toMatchObject({
+      ok: true,
+      presses: 0,
+      key: "ArrowRight",
+      fromMin: true,
+    });
+  });
+
+  it("refuses a target that is not a number, or is off the scale", () => {
+    // Both answers carry the resolved bounds, which is what lets the caller say
+    // "max is 5" instead of leaving the agent to retry the same value.
+    expect(sliderPlan({ current: "1", target: "높게", max: "5" })).toEqual({
+      ok: false,
+      reason: "not-a-number",
+      min: 0,
+      max: 5,
+      step: 1,
+    });
+    expect(sliderPlan({ current: "1", target: "9", min: "0", max: "5", step: "1" })).toEqual({
+      ok: false,
+      reason: "out-of-range",
+      min: 0,
+      max: 5,
+      step: 1,
+    });
+    expect(sliderPlan({ current: "1", target: "-1", min: "0", max: "5", step: "1" })).toMatchObject({
+      ok: false,
+      reason: "out-of-range",
+    });
+  });
+
+  it("refuses a move too far to be worth pressing an arrow for", () => {
+    expect(
+      sliderPlan({ current: "0", target: "5000", min: "0", max: "100000", step: "1" }),
+    ).toEqual({ ok: false, reason: "too-far", presses: 5000, min: 0, max: 100000, step: 1 });
+  });
+
+  it("falls back to 0/100/1 for bounds a page did not give, or gave badly", () => {
+    // `step="any"` is unparseable and a bad attribute can arrive at 0 or below,
+    // either of which divides the press count into Infinity.
+    expect(sliderPlan({ current: "0", target: "50" })).toMatchObject({
+      ok: true,
+      presses: 50,
+      min: 0,
+      max: 100,
+      step: 1,
+    });
+    expect(sliderPlan({ current: "0", target: "2", step: "any" })).toMatchObject({ step: 1 });
+    expect(sliderPlan({ current: "0", target: "2", step: "0" })).toMatchObject({ step: 1 });
+    expect(sliderPlan({ current: "0", target: "2", step: "-1" })).toMatchObject({ step: 1 });
+  });
+
+  it("refuses rather than throwing when called with nothing at all", () => {
+    expect(sliderPlan()).toMatchObject({ ok: false, reason: "not-a-number" });
+    expect(sliderPlan(null)).toMatchObject({ ok: false, reason: "not-a-number" });
   });
 });
 

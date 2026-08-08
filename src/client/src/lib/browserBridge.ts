@@ -87,7 +87,10 @@ export interface BridgeOperation {
   offset?: number | null;
   /** read_text: scroll through the page while reading, to load lazy content. */
   expand?: boolean | null;
-  /** snapshot: tighten the snapshot's character budget (re-clamped extension-side). */
+  /**
+   * snapshot and every snapshot-returning action: tighten the returned
+   * snapshot's character budget (re-clamped extension-side).
+   */
   maxChars?: number | null;
 }
 

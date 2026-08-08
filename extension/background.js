@@ -27,6 +27,7 @@ import {
   axProp,
   axValueAnswer,
   clearFailed,
+  sliderPlan,
   unlabeledInteractiveIds,
 } from "./axtree.js";
 
@@ -930,6 +931,39 @@ function mintForSource(source) {
   return (backendNodeId) => mintUid(source.target.tabId, source.target.sessionId, backendNodeId);
 }
 
+/**
+ * The header line that opens a child frame's block:
+ *
+ *   frame f2 [e88]: "장소 검색" — https://map.naver.com/…
+ *
+ * `frame f2:` alone was the whole of it, and on a page carrying seven frames
+ * (naver map) only ONE of them had a visible owning `Iframe` line to tie it back
+ * to — so f1–f4 named nothing an agent could recognize and offered nothing it
+ * could reach. The frame's own RootWebArea answers both halves: its accessible
+ * name is the frame's title, its `url` property is the document it is showing.
+ *
+ * The uid is the frame's ENTRY HANDLE, not decoration. Minted against the
+ * DOCUMENT node, it is what `snapshot` and `read_text` scope INTO this frame by,
+ * and both already resolve it without a new special case: buildScopedSnapshot
+ * asks `DOM.describeNode`, which populates `frameId` on a document node as well
+ * as on a frame OWNER element, so frameSourceFor matches this source and renders
+ * the whole frame; read_text needs no such branch because the RootWebArea itself
+ * carries this backendDOMNodeId, so its startBackendNodeId walk finds the frame
+ * among the scoped sources (the session's main tree answers null and the walk
+ * moves on to the frame trees).
+ *
+ * Every part degrades on its own: no RootWebArea leaves exactly the old line.
+ */
+function frameHeader(label, source, nodes) {
+  const root = nodes.find((node) => node.role?.value === "RootWebArea");
+  if (!root) return `frame ${label}:`;
+  const uid = root.backendDOMNodeId != null ? mintForSource(source)(root.backendDOMNodeId) : null;
+  const title = String(root.name?.value ?? "").trim().slice(0, 80);
+  const url = String(axProp(root, "url") || "").trim().slice(0, 200);
+  const identity = [title ? `"${title}"` : "", url].filter(Boolean).join(" — ");
+  return `frame ${label}${uid ? ` [${uid}]` : ""}:${identity ? ` ${identity}` : ""}`;
+}
+
 /** Walk every attached session and merge the accessibility trees into one view. */
 async function buildSnapshot(tab) {
   if (refMap.size > REF_MAP_MAX) {
@@ -948,7 +982,7 @@ async function buildSnapshot(tab) {
     const { hints, left } = await collectDomHints(source, nodes, hintBudget);
     hintBudget = left;
     const label = labelBySource.get(source);
-    if (label) lines.push(`frame ${label}:`);
+    if (label) lines.push(frameHeader(label, source, nodes));
     // Frame nodes ride the session that fetched them; backendNodeIds are
     // unique per target, so click/type resolve unchanged.
     lines.push(
@@ -1110,14 +1144,38 @@ async function quadsOf(ref) {
   return { target, quads: quads || [] };
 }
 
-/** Centre point of an element, via quads on the element's OWN session. */
+/**
+ * Area of one content quad. Shoelace rather than width×height: a quad is four
+ * corner POINTS, and a rotated or skewed element's are not axis-aligned, so a
+ * bounding box would overstate how much of the page the element really covers.
+ */
+function quadArea(quad) {
+  let sum = 0;
+  for (let i = 0; i < 8; i += 2) {
+    const j = (i + 2) % 8;
+    sum += quad[i] * quad[j + 1] - quad[j] * quad[i + 1];
+  }
+  return Math.abs(sum) / 2;
+}
+
+/**
+ * Centre point of an element, via quads on the element's OWN session. `area`
+ * rides along for the obstruction check below, which has to compare how much
+ * surface the click target and whatever the point hit-tests to each occupy.
+ */
 async function centerOf(ref) {
   const { target, quads } = await quadsOf(ref);
   if (!quads.length) {
     throw new Error("The element is not visible on screen, so it cannot be clicked.");
   }
   const [x1, y1, x2, , x3, y3] = quads[0];
-  return { target, x: (x1 + x3) / 2, y: (y1 + y3) / 2, width: Math.abs(x2 - x1) };
+  return {
+    target,
+    x: (x1 + x3) / 2,
+    y: (y1 + y3) / 2,
+    width: Math.abs(x2 - x1),
+    area: quadArea(quads[0]),
+  };
 }
 
 /**
@@ -1209,13 +1267,15 @@ async function clickPoint(target, x, y) {
   await sendCdp(target, "Input.dispatchMouseEvent", { type: "mouseReleased", buttons: 0, ...base });
 }
 
+/**
+ * Click an element at its centre. Deliberately UNGUARDED: select_option's
+ * option-click and focusForInput's fallback both reuse it, and neither is a
+ * user-requested click, so the file-input and obstruction refusals live in the
+ * `click` op's own branch rather than here.
+ */
 async function clickNode(ref) {
   const { target, x, y } = await centerOf(ref);
   await clickPoint(target, x, y);
-}
-
-async function clickRef(uid) {
-  return clickNode(resolveRef(uid));
 }
 
 /**
@@ -1300,11 +1360,33 @@ async function buildDomHint(target, backendNodeId) {
 }
 
 /**
+ * A described DOM node rendered the way a person would point at it:
+ * `<tag id="…" role="…"> "label"`. Page-derived, so it is pre-sliced here — the
+ * obstruction refusal quotes it OUTSIDE the untrusted snapshot wrapper.
+ */
+function renderNodeBrief(node, max = 200) {
+  const attrs = flatAttrs(node);
+  const label =
+    attrs["aria-label"] ||
+    attrs.title ||
+    attrs.alt ||
+    attrs.placeholder ||
+    firstDomText(node?.children);
+  const tag = String(node?.nodeName || "?").toLowerCase();
+  const id = attrs.id ? ` id="${attrs.id}"` : "";
+  const role = attrs.role ? ` role="${attrs.role}"` : "";
+  return `<${tag}${id}${role}>${label ? ` "${label.slice(0, 80)}"` : ""}`.slice(0, max);
+}
+
+/**
  * Best-effort description of the element at a point — the blind spot of a
- * coordinate click. Read-only (`DOM.getNodeForLocation` + `describeNode`); any
- * failure degrades to "no description", never to a failed click. When a
- * root-session hit test lands in a cross-origin frame it resolves the <iframe>
- * element itself, which is still an honest answer.
+ * coordinate click — as `{ text, fileInput }`, or null when nothing can be said
+ * about it. `fileInput` is the half a caller must ACT on rather than report: a
+ * click there opens the OS file dialog (see FILE_INPUT_REFUSAL). Read-only
+ * (`DOM.getNodeForLocation` + `describeNode`); any failure degrades to "no
+ * description", never to a failed click. When a root-session hit test lands in
+ * a cross-origin frame it resolves the <iframe> element itself, which is still
+ * an honest answer.
  *
  * `target` is the session the coordinates BELONG TO ({tabId} for the root,
  * {tabId, sessionId} for a frame — both have DOM enabled: ensureAttached for
@@ -1337,20 +1419,178 @@ async function describePoint(target, x, y) {
     if (!contains) return null;
     const { node } = await sendCdp(target, "DOM.describeNode", { backendNodeId, depth: 2 });
     if (!node) return null;
-    const attrs = flatAttrs(node);
-    const label =
-      attrs["aria-label"] ||
-      attrs.title ||
-      attrs.alt ||
-      attrs.placeholder ||
-      firstDomText(node.children);
-    const tag = String(node.nodeName || "?").toLowerCase();
-    const id = attrs.id ? ` id="${attrs.id}"` : "";
-    const role = attrs.role ? ` role="${attrs.role}"` : "";
-    return `<${tag}${id}${role}>${label ? ` "${label.slice(0, 80)}"` : ""}`.slice(0, 200);
+    return { text: renderNodeBrief(node), fileInput: isFileInput(shapeOf(node)) };
   } catch {
     return null;
   }
+}
+
+// ------------------------------------------------------ click-target guards
+
+/**
+ * Refusing to operate a `<input type=file>`, which the accessibility tree
+ * renders as an ordinary `button "파일 선택"` with nothing marking it as a trap.
+ *
+ * Clicking one opens the OPERATING SYSTEM's file dialog. That dialog is browser
+ * chrome — outside the renderer, so no CDP input reaches it, and modal, so the
+ * window it belongs to stops answering entirely: the bridge cannot click it,
+ * read it, or press Escape at it, and every later op on that tab hangs until a
+ * PERSON dismisses it. There is no recovery path to offer afterwards, so the
+ * only safe treatment is to never open it.
+ */
+const FILE_INPUT_REFUSAL =
+  "This element is a FILE-UPLOAD input (<input type=file>). Clicking or operating it opens the operating " +
+  "system's native file dialog, which freezes the page and cannot be closed, read, or driven by any browser " +
+  "tool — only the user can dismiss it. File uploads are not supported through the bridge: ask the user to " +
+  "attach the file themselves, then take a fresh snapshot and continue.";
+
+/** A described DOM node reduced to what the guards below decide on. */
+function shapeOf(node) {
+  return node ? { nodeName: String(node.nodeName || "").toUpperCase(), attrs: flatAttrs(node) } : null;
+}
+
+/** One lowercased attribute of a shape, "" when absent. */
+function attrOf(shape, name) {
+  return String(shape?.attrs?.[name] ?? "").trim().toLowerCase();
+}
+
+/** The element itself, described shallowly — null on any failure. */
+async function describeElement(ref) {
+  try {
+    const { node } = await sendCdp(
+      { tabId: ref.tabId, sessionId: ref.sessionId },
+      "DOM.describeNode",
+      { backendNodeId: ref.backendNodeId, depth: 0 },
+    );
+    return shapeOf(node);
+  } catch {
+    return null;
+  }
+}
+
+function isFileInput(shape) {
+  return shape?.nodeName === "INPUT" && attrOf(shape, "type") === "file";
+}
+
+/** Throws on a file input; a shape that could not be read is let through. */
+function assertNotFileInput(shape) {
+  if (isFileInput(shape)) throw new Error(FILE_INPUT_REFUSAL);
+}
+
+/**
+ * The guard the acting ops call. A describeNode failure returns SILENTLY: this
+ * check exists to stop one specific trap, and letting it break ordinary clicks
+ * would cost far more than the trap does.
+ */
+async function refuseFileInput(ref) {
+  assertNotFileInput(await describeElement(ref));
+}
+
+/** Nodes walked when deciding whether one element sits inside another. */
+const SUBTREE_SCAN_MAX = 500;
+
+/** True when `backendNodeId` is somewhere under a described (pierced) subtree. */
+function subtreeContains(root, backendNodeId) {
+  const queue = root ? [root] : [];
+  let seen = 0;
+  while (queue.length && seen < SUBTREE_SCAN_MAX) {
+    const node = queue.shift();
+    seen += 1;
+    if (node?.backendNodeId === backendNodeId) return true;
+    for (const child of node?.children || []) queue.push(child);
+    // A web component's real control lives in its shadow root, so a click that
+    // lands there is still a click INSIDE the element that was addressed.
+    for (const shadow of node?.shadowRoots || []) queue.push(shadow);
+  }
+  return false;
+}
+
+/** One pierced subtree description, or null — the walk's input. */
+async function describeSubtree(target, backendNodeId) {
+  try {
+    const { node } = await sendCdp(target, "DOM.describeNode", {
+      backendNodeId,
+      depth: -1,
+      pierce: true,
+    });
+    return node || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * How much bigger than its target a covering element must be before the click
+ * is refused. A layer that merely OVERLAPS (an icon badge, a focus ring, the
+ * decorative span of a styled checkbox) is normal page construction; a modal or
+ * cookie wall that swallows the click covers the viewport.
+ */
+const OBSCURED_AREA_RATIO = 3;
+
+/**
+ * Below this the target is not something a person aims at — it is the
+ * 1×1 visually-hidden `<input>` behind a styled control, where a much larger
+ * sibling label legitimately receives every click. Refusing those would break a
+ * pattern that works today, and the failure this guard exists for (a real link
+ * under a modal) never involves a target this small.
+ */
+const OBSCURED_MIN_TARGET_AREA = 100;
+
+/**
+ * Refuse a click whose target is COVERED at the point we are about to click.
+ *
+ * The field failure: on the-internet's /entry_ad a modal was open, a click on a
+ * link underneath it navigated anyway, and the result read as a clean success —
+ * a state no person could have reached, since they would have had to close the
+ * modal first. Everything here is read-only (`DOM.getNodeForLocation`,
+ * `DOM.describeNode`, `DOM.getContentQuads`), and every CDP failure PROCEEDS:
+ * this is a guard against a specific lie, never a new way for a click to fail.
+ *
+ * Cheapest question first, so an ordinary click pays one hit test and a covered
+ * one pays four round trips.
+ */
+async function assertNotObscured(ref, point) {
+  const { target, area } = point;
+  if (!area || area < OBSCURED_MIN_TARGET_AREA) return;
+  let hitId;
+  try {
+    ({ backendNodeId: hitId } = await sendCdp(target, "DOM.getNodeForLocation", {
+      x: Math.round(point.x),
+      y: Math.round(point.y),
+    }));
+  } catch {
+    return; // best effort — a hit test we cannot run must not block the click
+  }
+  if (!hitId || hitId === ref.backendNodeId) return;
+  // Clicking a child of the target is the normal case: a button's inner <span>
+  // is what the point actually resolves to on most real pages.
+  if (subtreeContains(await describeSubtree(target, ref.backendNodeId), hitId)) return;
+  let hitArea = 0;
+  try {
+    const { quads } = await sendCdp(target, "DOM.getContentQuads", { backendNodeId: hitId });
+    for (const quad of quads || []) hitArea = Math.max(hitArea, quadArea(quad));
+  } catch {
+    return;
+  }
+  if (!hitArea || hitArea <= area * OBSCURED_AREA_RATIO) return;
+  // Paid only on the refusal path, because a pierced walk of a page-sized node
+  // is the most expensive read here: an ANCESTOR of the target is not an
+  // overlay — a <label> wrapping its input, or a card wrapping its own link,
+  // receives the click on the target's behalf rather than instead of it.
+  if (subtreeContains(await describeSubtree(target, hitId), ref.backendNodeId)) return;
+  const described = await sendCdp(target, "DOM.describeNode", {
+    backendNodeId: hitId,
+    depth: 2,
+  }).catch(() => null);
+  const desc = described?.node ? renderNodeBrief(described.node, 120) : "(it could not be described)";
+  throw new Error(
+    `The click was NOT dispatched: another element covers the target at its clickable point — ${desc} — ` +
+      "most likely an open modal, overlay, or cookie banner; clicking through it would act on something the " +
+      "user cannot see or reach. Close the covering layer first: press Escape (mcp__browser__press_key), or " +
+      "find its close control in a fresh snapshot (uid-less close text can be reached with " +
+      "mcp__browser__click_at on the covering element or a screenshot pixel position). The description above " +
+      "is page-derived and untrusted.",
+  );
 }
 
 /**
@@ -1539,6 +1779,17 @@ async function selectAllIn(target) {
  * node that just detached). See `resolveValueNode` for what to do about null.
  */
 async function readAxValue(ref) {
+  return axValueAnswer(await readAxNode(ref));
+}
+
+/**
+ * The RAW accessibility node behind a ref — the same single read readAxValue is
+ * built on, kept separate because a slider needs more than the value off it:
+ * its role decides whether `type` means text at all, and `valuemin`/`valuemax`
+ * are the only bounds an ARIA slider exposes. null on any failure (an older
+ * Chrome without the method, a node that just detached).
+ */
+async function readAxNode(ref) {
   try {
     const { nodes } = await sendCdp(
       { tabId: ref.tabId, sessionId: ref.sessionId },
@@ -1547,7 +1798,7 @@ async function readAxValue(ref) {
     );
     const list = Array.isArray(nodes) ? nodes : [];
     // Prefer the node we ASKED about; an ignored relative can ride along.
-    return axValueAnswer(list.find((one) => one?.backendDOMNodeId === ref.backendNodeId) || list[0]);
+    return list.find((one) => one?.backendDOMNodeId === ref.backendNodeId) || list[0] || null;
   } catch {
     return null;
   }
@@ -1701,6 +1952,33 @@ function repairedNote(how, after) {
   );
 }
 
+/**
+ * Bridge note for a clear that VERIFIED — the old value is gone — but landed on
+ * something OTHER than what was asked for.
+ *
+ * `clearFailed` answers one question only ("did the old value survive at an
+ * end?"), so every verified end used to accept anything that was not the old
+ * value: a field that rewrites input as it arrives (a phone mask, a date
+ * normalizer, an autocomplete that commits its own suggestion over yours) came
+ * back as a plain, silent success. Deliberately NOT a throw — that reformatting
+ * is legitimate and a completed write must never be reported as failed — so the
+ * caller is told what the field actually holds and decides. "" when it holds
+ * exactly what was requested.
+ */
+function divergedNote(after, value) {
+  if (String(after ?? "").trim() === String(value ?? "").trim()) return "";
+  return (
+    `The field now reads "${quoteForNote(after)}", which is DIFFERENT from the requested ` +
+    `"${quoteForNote(value)}". If that is not just the page's own reformatting of your input, do not build ` +
+    "on it — use the field's own clear control or ask the user."
+  );
+}
+
+/** Compose the notes one write can produce, dropping the empty ones. */
+function joinNotes(...notes) {
+  return notes.filter(Boolean).join(" ");
+}
+
 /** Bridge note for a clear whose outcome cannot be read back at all. */
 const UNVERIFIED_CLEAR_NOTE =
   "This element exposes no readable value, so the clear could NOT be verified — check the field's " +
@@ -1764,13 +2042,15 @@ async function clearAndWrite(ref, target, value, insert) {
   await overtype();
   let after = await settledValue(valueNode);
   if (after === null) return UNVERIFIED_CLEAR_NOTE;
-  if (!clearFailed(before, after, value)) return "";
+  if (!clearFailed(before, after, value)) return divergedNote(after, value);
 
   // Rung B.
   if (await imeRewrite(target, value, after)) {
     after = await settledValue(valueNode);
     if (after === null) return UNVERIFIED_CLEAR_NOTE;
-    if (!clearFailed(before, after, value)) return repairedNote("ime-rewrite", after);
+    if (!clearFailed(before, after, value)) {
+      return joinNotes(repairedNote("ime-rewrite", after), divergedNote(after, value));
+    }
   }
 
   // Rung C.
@@ -1787,7 +2067,9 @@ async function clearAndWrite(ref, target, value, insert) {
   if (value) await insert();
   after = await settledValue(valueNode);
   if (after === null) return UNVERIFIED_CLEAR_NOTE;
-  if (!clearFailed(before, after, value)) return repairedNote("keyboard-erase", after);
+  if (!clearFailed(before, after, value)) {
+    return joinNotes(repairedNote("keyboard-erase", after), divergedNote(after, value));
+  }
 
   throw new Error(
     `Clearing this field did not take: the page rewrote its value (it now reads "${quoteForNote(after, 120)}"). ` +
@@ -1797,15 +2079,204 @@ async function clearAndWrite(ref, target, value, insert) {
   );
 }
 
+// ------------------------------------------------- controls that hold no text
+//
+// `type` means "put this text in there", and two native controls have no text
+// to put it in. Measured in the field on `<input type=range>`: insertText
+// no-opped, so the clearing ladder fell through to rung C, whose `End` key
+// JUMPED the slider to its maximum — and "the old value is gone" then verified
+// that as a successful write of 4 into a slider now reading 5. A number input
+// fails the same way more quietly, rounding or refusing what it is handed while
+// the ladder reports the write it did not accept.
+//
+// So the routing happens BEFORE the first keystroke, off the one depth-0
+// description the preflight already needs for the file-upload refusal.
+
+/**
+ * Which KIND of control a write is about to land in.
+ *
+ *   "slider" — a native range input, or anything whose ROLE is slider (the ARIA
+ *              div with aria-valuenow that a design system ships).
+ *   "number" — a native number input, whose own constraints decide what lands.
+ *   "text"   — everything else, unchanged.
+ *
+ * The accessibility read is skipped whenever the DOM already settles it: a
+ * native field or an explicitly editable surface cannot compute to `slider`
+ * unless the page overrode `role` outright, which is read here for free. That
+ * matters because this runs on EVERY type and fill_form field, including the
+ * insert-at-cursor path that costs no read-back today.
+ */
+async function inputKind(ref, shape) {
+  if (shape?.nodeName === "INPUT") {
+    const type = attrOf(shape, "type");
+    if (type === "range") return "slider";
+    if (type === "number") return "number";
+  }
+  const role = attrOf(shape, "role");
+  if (role) return role === "slider" ? "slider" : "text";
+  if (shape?.nodeName === "INPUT" || shape?.nodeName === "TEXTAREA") return "text";
+  const editable = attrOf(shape, "contenteditable");
+  if (editable && editable !== "false") return "text";
+  return (await readAxNode(ref))?.role?.value === "slider" ? "slider" : "text";
+}
+
+/**
+ * The pre-flight both text-entry paths share: ONE description of the element,
+ * the file-upload refusal, and the control kind. Runs exactly once per field —
+ * typeRef hands its result to fillField rather than letting it describe again.
+ */
+async function inputPreflight(ref) {
+  const shape = await describeElement(ref);
+  assertNotFileInput(shape);
+  return { shape, kind: await inputKind(ref, shape) };
+}
+
+/**
+ * Move a slider with arrow keys — the only way one moves without page JS, and
+ * the reason `type` on a slider must never reach the text path at all.
+ *
+ * Everything is decided BEFORE the first key: `sliderPlan` (axtree.js) turns the
+ * current value, the requested one and the bounds into a direction, a press
+ * count and an expected landing, so an unreachable value is refused with the
+ * real range in hand instead of walking the slider somewhere arbitrary and
+ * calling it a success.
+ */
+async function driveSlider(ref, valueStr, shape, axNode) {
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  const node = axNode || (await readAxNode(ref));
+  const attrs = shape?.attrs || {};
+  // Native attributes first, then the ARIA ones, then what Chrome computed: a
+  // native range carries min/max/step in the DOM, an ARIA slider carries
+  // aria-valuemin/aria-valuemax, and a component that sets neither still
+  // reports bounds as accessibility properties.
+  const bound = (dom, aria, ax) => {
+    for (const candidate of [attrs[dom], attrs[aria], axProp(node, ax)]) {
+      if (candidate != null && String(candidate).trim() !== "") return candidate;
+    }
+    return undefined;
+  };
+  const plan = sliderPlan({
+    // An unreadable current value is not a failure: the plan then counts from
+    // the minimum, which is what `fromMin` and the Home key below are for.
+    current: node ? (axValueAnswer(node) ?? undefined) : undefined,
+    target: valueStr,
+    min: bound("min", "aria-valuemin", "valuemin"),
+    max: bound("max", "aria-valuemax", "valuemax"),
+    // ARIA has no step property at all, so a non-native slider's granularity is
+    // whatever sliderPlan defaults to.
+    step: attrs.step,
+  });
+  const wanted = quoteForNote(valueStr);
+  // The step rides into both the messages and the tolerance below, so it is
+  // coerced here rather than trusted: a granularity of 1 is the default nobody
+  // needs told about, whether the plan reports it as 1 or "1".
+  const grain = Number(plan.step);
+  const steps = Number.isFinite(grain) && grain !== 1 ? ` in steps of ${plan.step}` : "";
+  if (!plan.ok) {
+    if (plan.reason === "not-a-number") {
+      throw new Error(
+        "This element is a slider (range input), so `type` needs a plain number for `value` — it ranges " +
+          `${plan.min}–${plan.max}${steps}. To nudge it manually use mcp__browser__press_key with ` +
+          "ArrowRight/ArrowLeft on its uid.",
+      );
+    }
+    if (plan.reason === "out-of-range") {
+      throw new Error(
+        `The slider only goes from ${plan.min} to ${plan.max}${steps}, so it cannot be set to ${wanted}. ` +
+          "Pick a value inside that range.",
+      );
+    }
+    // "too-far": the press count is sliderPlan's own ceiling, not one this file
+    // could enforce — a thousand arrow keys is a minute of dispatches for a
+    // control click_at can jump to in one.
+    throw new Error(
+      `Setting this slider to ${wanted} would take ${plan.presses} arrow presses (limit 400). Use ` +
+        "mcp__browser__click_at with a fraction of the slider's track to jump near the value, then fine-tune " +
+        "with press_key ArrowLeft/ArrowRight.",
+    );
+  }
+  await focusForInput(ref);
+  // A plan counted from the floor has to REACH the floor first; Home is the one
+  // key that gets there without knowing where the slider started.
+  if (plan.fromMin) await dispatchKey(target, "Home", 0);
+  for (let i = 0; i < plan.presses; i += 1) {
+    // The same guard the clearing ladder presses under: a change handler can
+    // raise a dialog mid-walk, and keys queued into a frozen renderer strand it.
+    if (pendingDialogs.has(ref.tabId)) return "";
+    await dispatchKey(target, plan.key, 0);
+  }
+  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
+  const landed = await readAxValue(ref);
+  const landedNum = Number(String(landed ?? "").trim());
+  if (landed === null || String(landed).trim() === "" || !Number.isFinite(landedNum)) {
+    return (
+      "The slider exposes no numeric value to read back, so the change could NOT be verified — check its " +
+      "value in the returned snapshot."
+    );
+  }
+  // Half a step of tolerance, because a slider SNAPS: asking for 2.7 on a
+  // 0.5-step control lands on 2.5, and that is the control working correctly.
+  const tolerance = (Number.isFinite(grain) && grain > 0 ? grain : 1) / 2;
+  if (Math.abs(landedNum - Number(String(valueStr).trim())) <= tolerance) return "";
+  throw new Error(
+    `Setting the slider to ${wanted} did not take: it now reads ${quoteForNote(landed)} ` +
+      `(min ${plan.min}, max ${plan.max}, step ${plan.step}). The page may snap or override keyboard input — ` +
+      "try mcp__browser__click_at at a fraction of the slider's track, or ask the user to set it.",
+  );
+}
+
+/**
+ * Replace a native number input's value — what `clear: true` means there.
+ *
+ * The clearing ladder must never see one: its rungs are TEXT edits (End,
+ * Backspace, an IME replacement range) and a number field answers them with its
+ * own constraint logic — rounding to `step`, refusing a value outside min/max,
+ * emptying itself on anything it cannot parse — so "the old value is gone" says
+ * nothing about whether the requested value arrived. Overtype once, read back,
+ * and report what the field actually took.
+ */
+async function writeNumberInput(ref, target, value, shape) {
+  await selectAllIn(target);
+  // An empty value means "empty this field": nothing follows to overtype the
+  // selection, exactly as in clearAndWrite.
+  if (value) await insertValue(target, value);
+  else await dispatchKey(target, "Delete", 0);
+  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
+  const after = await readAxValue(ref);
+  // Unreadable is not "wrong": say the write could not be verified rather than
+  // inventing a failure out of a missing read.
+  if (after === null) return UNVERIFIED_CLEAR_NOTE;
+  const asked = String(value ?? "").trim();
+  const got = String(after).trim();
+  const accepted =
+    asked === "" ? got === "" : Number.isFinite(Number(got)) && Number(got) === Number(asked);
+  if (accepted) return "";
+  const constraints = ["min", "max", "step"]
+    .filter((name) => attrOf(shape, name))
+    .map((name) => `${name} ${quoteForNote(shape.attrs[name], 20)}`)
+    .join(", ");
+  throw new Error(
+    `This number input did not accept "${quoteForNote(value)}": it now reads "${quoteForNote(got)}"` +
+      `${constraints ? ` (${constraints})` : ""}. Its constraints may round or refuse the value — use a ` +
+      "value the field accepts, or ask the user.",
+  );
+}
+
 /**
  * Focus one field and enter `value` — the shared insert path of type and
  * fill_form. `clear` replaces the existing content instead of inserting into it,
  * through the verified ladder above. Returns that ladder's bridge note ("" when
- * there is nothing to report).
+ * there is nothing to report). `pre` is typeRef's already-run preflight; every
+ * other caller (fill_form) lets this run its own.
  */
-async function fillField(ref, value, clear) {
+async function fillField(ref, value, clear, pre) {
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  const { shape, kind } = pre || (await inputPreflight(ref));
+  // `clear` is meaningless on a slider — there is no text to replace — so the
+  // control is driven as what it is, whichever flags the caller passed.
+  if (kind === "slider") return driveSlider(ref, value, shape);
   await focusForInput(ref);
+  if (kind === "number" && clear) return writeNumberInput(ref, target, value, shape);
   if (!clear) {
     // Insert-at-cursor is the default and stays a straight write: no read-back,
     // no settle delay, no note. Only a REPLACEMENT can silently do the wrong thing.
@@ -1819,8 +2290,15 @@ async function fillField(ref, value, clear) {
 async function typeRef(uid, value, submit, keystrokes, clear) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  // One description for the whole call: it refuses a file-upload input before a
+  // single key is sent, and decides the control kind fillField then reuses.
+  const pre = await inputPreflight(ref);
   let note = "";
-  if (keystrokes) {
+  if (pre.kind === "slider") {
+    // Ahead of the keystrokes branch deliberately: a per-character replay is
+    // text entry too, and a slider has no text to enter.
+    note = await driveSlider(ref, value, pre.shape);
+  } else if (keystrokes) {
     await focusForInput(ref);
     // Replay as real per-character key events, ONE bridge operation for the
     // whole string — for editors that only listen to keyboard input. Server
@@ -1837,7 +2315,7 @@ async function typeRef(uid, value, submit, keystrokes, clear) {
     if (clear) note = await clearAndWrite(ref, target, value, replay);
     else await replay();
   } else {
-    note = await fillField(ref, value, clear);
+    note = await fillField(ref, value, clear, pre);
   }
   if (submit) {
     await dispatchKey(target, "Enter", 0);
@@ -2541,11 +3019,13 @@ async function performOp(message) {
     if (refused) return refused;
     snapshotScope = resolveRef(message.uid);
   }
-  // `maxChars` is the snapshot op's own budget and applies to both its forms.
-  // No other op's snapshot sizing changes — those are the tool's contract, not
-  // the caller's choice.
-  const snapshotChars =
-    message.op === "snapshot" ? clampSnapshotChars(message.maxChars) : undefined;
+  // `maxChars` caps whatever snapshot THIS op returns, not just the snapshot
+  // op's own two forms: every action answers with a full page walk, and an agent
+  // that only needed to confirm one click had no way to say so — it paid the
+  // whole default budget on every step of a long task. clampSnapshotChars reads
+  // a non-number as "not asked", so an op that never carries the field is
+  // unaffected, and read_text/screenshot/select_tab return before the tail.
+  const snapshotChars = clampSnapshotChars(message.maxChars);
 
   // Read-only extraction ops answer directly: their payload REPLACES the
   // snapshot, so the common action tail below (which walks the AX tree again)
@@ -2669,7 +3149,21 @@ async function performOp(message) {
   } else if (message.op === "click") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
-    await raceDialogOpen(tab.id, clickRef(message.uid));
+    const ref = resolveRef(message.uid);
+    // Guards and click stay INSIDE the race: every step here talks to the
+    // renderer, and a dialog raised by a page timer mid-measurement would hang
+    // the scroll/quad reads exactly as it would hang the click itself.
+    await raceDialogOpen(
+      tab.id,
+      (async () => {
+        await refuseFileInput(ref);
+        // The point is computed once and reused: the guard has to hit-test the
+        // SAME pixel the click lands on, or it is answering a different question.
+        const point = await centerOf(ref);
+        await assertNotObscured(ref, point);
+        await clickPoint(point.target, point.x, point.y);
+      })(),
+    );
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "click_at" && typeof message.uid === "string" && message.uid) {
     // uid mode: a RELATIVE position inside a known element. No screenshot is
@@ -2678,6 +3172,7 @@ async function performOp(message) {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
     const ref = resolveRef(message.uid);
+    await refuseFileInput(ref);
     const { target, quads } = await quadsOf(ref);
     if (!quads.length) {
       return { ok: false, message: "The element is not visible on screen, so it cannot be clicked." };
@@ -2704,7 +3199,13 @@ async function performOp(message) {
     // frame-local coordinate is resolved in the space it was measured in. If
     // the spaces disagree anyway, describePoint's containment cross-check
     // fails and reports nothing — a missing description beats a false one.
-    landedOn = await describePoint(target, px, py);
+    const described = await describePoint(target, px, py);
+    // A fraction inside an element that is not itself a file input can still
+    // land ON one, and the OS dialog it opens is unrecoverable either way.
+    if (described?.fileInput) {
+      return { ok: false, message: `${FILE_INPUT_REFUSAL} The click was NOT dispatched.` };
+    }
+    landedOn = described?.text ?? null;
     await raceDialogOpen(tab.id, clickPoint(target, px, py));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "click_at") {
@@ -2779,7 +3280,14 @@ async function performOp(message) {
     // Hit-test BEFORE clicking: the click itself may change what sits there.
     const cssX = Math.min(x / lastShot.scale, lastShot.clipWidth - 1);
     const cssY = Math.min(y / lastShot.scale, lastShot.clipHeight - 1);
-    landedOn = await describePoint({ tabId: tab.id }, cssX, cssY);
+    const described = await describePoint({ tabId: tab.id }, cssX, cssY);
+    // A pixel click has no uid to check, so this hit test is the ONLY thing
+    // between a screenshot coordinate and the OS file dialog — and a file input
+    // looks like an ordinary button in both the image and the snapshot.
+    if (described?.fileInput) {
+      return { ok: false, message: `${FILE_INPUT_REFUSAL} The click was NOT dispatched.` };
+    }
+    landedOn = described?.text ?? null;
     await raceDialogOpen(tab.id, clickPoint({ tabId: tab.id }, cssX, cssY));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "type") {
@@ -2859,6 +3367,9 @@ async function performOp(message) {
       const refused = await assertRefTabUsable(message.uid, patterns, source);
       if (refused) return refused;
       const ref = resolveRef(message.uid);
+      // Enter or Space on a FOCUSED file input opens the same OS dialog a click
+      // does, so the refusal belongs on this path too.
+      await refuseFileInput(ref);
       target = { tabId: ref.tabId, sessionId: ref.sessionId };
       await focusForInput(ref);
     }
@@ -2996,23 +3507,30 @@ async function performOp(message) {
       snapshotScope ? await buildScopedSnapshot(fresh, snapshotScope) : await buildSnapshot(fresh),
       snapshotChars,
     );
-  try {
-    snapshot = await readSnapshot();
-    // A BYTE-IDENTICAL snapshot after an action that changed the page is the
-    // shape of a too-early read, not of a no-op: clicking "Add Element" returned
-    // success while the new button was absent from the walk. flushLifecycle
-    // forces the lifecycle tick, but the AX flush can still land a beat later, so
-    // one bounded re-poll separates "the click did nothing" from the truth.
-    if (SETTLE_OPS.has(message.op) && snapshot && lastSnapshotByTab.get(fresh.id) === snapshot) {
-      await new Promise((resolve) => setTimeout(resolve, STALE_SNAPSHOT_REPOLL_MS));
+  // wait_for is the exception: it answers a yes/no question, and re-walking the
+  // page to decorate that answer cost ~25 KB on the one op whose whole job is to
+  // wait — often called several times in a row. Its loop above already matched
+  // against a full (uncapped) walk, and the caller takes a snapshot when it
+  // actually wants one. No snapshotError either: nothing was attempted.
+  if (message.op !== "wait_for") {
+    try {
       snapshot = await readSnapshot();
+      // A BYTE-IDENTICAL snapshot after an action that changed the page is the
+      // shape of a too-early read, not of a no-op: clicking "Add Element" returned
+      // success while the new button was absent from the walk. flushLifecycle
+      // forces the lifecycle tick, but the AX flush can still land a beat later, so
+      // one bounded re-poll separates "the click did nothing" from the truth.
+      if (SETTLE_OPS.has(message.op) && snapshot && lastSnapshotByTab.get(fresh.id) === snapshot) {
+        await new Promise((resolve) => setTimeout(resolve, STALE_SNAPSHOT_REPOLL_MS));
+        snapshot = await readSnapshot();
+      }
+      lastSnapshotByTab.set(fresh.id, snapshot);
+    } catch (error) {
+      // The ACTION already happened. Reporting the whole op as failed because
+      // the read-back broke made the agent retry it — navigating twice, clicking
+      // twice. Say the action ran and the view is missing, separately.
+      snapshotError = String(error?.message || error);
     }
-    lastSnapshotByTab.set(fresh.id, snapshot);
-  } catch (error) {
-    // The ACTION already happened. Reporting the whole op as failed because
-    // the read-back broke made the agent retry it — navigating twice, clicking
-    // twice. Say the action ran and the view is missing, separately.
-    snapshotError = String(error?.message || error);
   }
   // Always report the group's tabs: the agent needs to know a new tab appeared
   // (or that several are open) without spending a separate list_tabs round trip.
