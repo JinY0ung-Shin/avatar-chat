@@ -427,8 +427,16 @@
           >{profileGenStatus}</span>
         </div>
       {/if}
-      <label class="field"><span>표시 이름</span><input bind:value={displayName} required aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
-      <label class="field"><span>별칭 (아바타가 스스로를 부르는 이름)</span><input bind:value={alias} placeholder="비우면 표시 이름을 사용합니다" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
+      <label class="field">
+        <span>내 이름</span>
+        <input bind:value={displayName} required aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} />
+        <span class="field-hint">동료의 탐색·그룹 화면에 이 이름으로 보여요.</span>
+      </label>
+      <label class="field">
+        <span>아바타 이름</span>
+        <input bind:value={alias} placeholder="예: 세바스찬" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} />
+        <span class="field-hint">아바타가 대화에서 스스로를 부르는 이름 — 비우면 내 이름을 사용합니다.</span>
+      </label>
       <label class="field"><span>소개 (한 줄)</span><input bind:value={bio} placeholder="어떤 아바타인지 소개하세요" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
       <div class="field">
         <div class="field-row">

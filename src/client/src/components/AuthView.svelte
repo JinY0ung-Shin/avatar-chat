@@ -114,9 +114,9 @@
 
       {#if mode === "signup"}
         <label class="field">
-          <span>표시 이름</span>
+          <span>내 이름</span>
           <input name="displayName" autocomplete="nickname" bind:value={displayName} placeholder="홍길동" disabled={busy} />
-          <span class="field-hint">비워두면 사용자명이 표시됩니다.</span>
+          <span class="field-hint">동료에게 보이는 이름이에요. 비워두면 사용자명이 표시됩니다.</span>
         </label>
       {/if}
 
