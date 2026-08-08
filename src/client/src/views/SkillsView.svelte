@@ -20,6 +20,8 @@
     name: string;
     description: string;
     shared: boolean;
+    /** 이 스킬이 동료에게 전수된 횟수 (공유 해제해도 이력은 유지). */
+    learnCount: number;
   }
 
   let loading = true;
@@ -270,6 +272,9 @@
               {#if skill.displayName && skill.displayName !== skill.skillName}
                 <span class="tag">{skill.skillName}</span>
               {/if}
+              {#if skill.learnCount > 0}
+                <span class="tag accent" title={`지금까지 ${skill.learnCount}번 전수된 스킬`}>전수 {skill.learnCount}회</span>
+              {/if}
             </div>
             {#if skill.description}
               <p class="sk-desc">{skill.description}</p>
@@ -330,6 +335,9 @@
             <div class="sk-mine-meta">
               <strong>{skill.name}</strong>
               {#if skill.name !== skill.slug}<span class="tag">{skill.slug}</span>{/if}
+              {#if skill.learnCount > 0}
+                <span class="tag accent" title={`동료가 지금까지 ${skill.learnCount}번 전수받았어요`}>전수 {skill.learnCount}회</span>
+              {/if}
               {#if skill.description}<span class="sk-mine-desc">{skill.description}</span>{/if}
             </div>
             <Toggle
@@ -352,6 +360,9 @@
       <AvatarImage user={preview.owner} size={22} alt="" />
       <span class="sk-owner-name">{preview.owner.alias || preview.owner.displayName}</span>
       <span class="sk-owner-handle">@{preview.owner.username}</span>
+      {#if preview.learnCount > 0}
+        <span class="tag accent">전수 {preview.learnCount}회</span>
+      {/if}
     </div>
     {#if preview.description}<p class="sk-desc">{preview.description}</p>{/if}
     {#if previewLoading}

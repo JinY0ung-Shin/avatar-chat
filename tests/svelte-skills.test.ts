@@ -45,6 +45,7 @@ const LISTING = {
   skillName: "pptx-report",
   displayName: "Deck maker",
   description: "Weekly report deck generator",
+  learnCount: 2,
   createdAt: "2026-08-01T00:00:00.000Z",
   updatedAt: "2026-08-01T00:00:00.000Z",
   owner: {
@@ -81,7 +82,9 @@ describe("SkillsView", () => {
       "/api/skill-share/available": { skills: [LISTING] },
       "/api/skill-share/mine": {
         repoConfigured: true,
-        skills: [{ slug: "my-skill", name: "my-skill", description: "mine", shared: true }],
+        skills: [
+          { slug: "my-skill", name: "my-skill", description: "mine", shared: true, learnCount: 3 },
+        ],
       },
     });
     render(SkillsView);
@@ -91,6 +94,9 @@ describe("SkillsView", () => {
     });
     expect(screen.getByText("@mate")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Deck maker 스킬 전수받기" })).toBeTruthy();
+    // Adoption badges (전수된 횟수) on both the learnable card and my own row.
+    expect(screen.getByText("전수 2회")).toBeTruthy();
+    expect(screen.getByText("전수 3회")).toBeTruthy();
     // My section: the shared toggle reflects server state.
     expect(screen.getByRole("switch", { name: "my-skill 공유" }).getAttribute("aria-checked")).toBe(
       "true",

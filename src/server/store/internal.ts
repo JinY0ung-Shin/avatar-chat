@@ -533,6 +533,19 @@ export class StoreBase {
         UNIQUE (owner_user_id, skill_name)
       );
       CREATE INDEX IF NOT EXISTS idx_shared_skills_owner ON shared_skills(owner_user_id);
+      -- One row per successful learn (전수) of a shared skill. Keyed by
+      -- (owner, skill_name) — NOT the shared_skills row id — so the count
+      -- survives an unshare→re-share cycle. Learner ids are stored for the
+      -- deleteUser cascade (privacy promise); the UI only ever shows COUNTS.
+      CREATE TABLE IF NOT EXISTS skill_learn_events (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        skill_name TEXT NOT NULL,
+        learner_user_id TEXT NOT NULL,
+        created_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_skill_learn_events_skill ON skill_learn_events(owner_user_id, skill_name);
+      CREATE INDEX IF NOT EXISTS idx_skill_learn_events_learner ON skill_learn_events(learner_user_id);
       CREATE INDEX IF NOT EXISTS idx_group_agents_group ON group_agents(group_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);

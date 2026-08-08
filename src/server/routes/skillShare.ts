@@ -74,6 +74,9 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       const repoSkills = listRepoSkills(repoRoot);
       const bySlug = new Map(repoSkills.map((s) => [s.slug, s]));
       const sharedRows = store.listSharedSkillsByOwner(req.user!.id);
+      // 전수된 횟수 — keyed by skill name, so a currently-unshared skill keeps
+      // showing its history (events outlive the share row).
+      const learnCounts = store.skillLearnCounts(req.user!.id);
       const shared = new Set<string>();
       for (const row of sharedRows) {
         const current = bySlug.get(row.skillName);
@@ -97,6 +100,7 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
           name: s.name,
           description: s.description,
           shared: shared.has(s.slug),
+          learnCount: learnCounts[s.slug] ?? 0,
         })),
       });
     },
@@ -238,6 +242,7 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
           commitMessage: `Learn skill "${listing.skillName}" from @${listing.owner.username}`,
           identity: commitIdentityFor(store, req.user!),
         });
+        store.recordSkillLearn(listing.ownerUserId, listing.skillName, req.user!.id);
         auditAs(
           req,
           "skill_learn",

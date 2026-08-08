@@ -33,11 +33,20 @@ interface SharedSkillRow {
   description: string | null;
   created_at: string;
   updated_at: string;
+  learn_count?: number;
   owner_username?: string;
   owner_display_name?: string;
   owner_alias?: string | null;
   owner_avatar_ext?: string | null;
 }
+
+/**
+ * Correlated learn-count column for shared_skills SELECTs (전수된 횟수).
+ * Counted per (owner, skill_name) from skill_learn_events, so the number
+ * survives unshare→re-share (rows are re-created; events are not).
+ */
+const LEARN_COUNT_COLUMN = `(SELECT COUNT(*) FROM skill_learn_events e
+             WHERE e.owner_user_id = s.owner_user_id AND e.skill_name = s.skill_name) AS learn_count`;
 
 /**
  * Shared FROM/JOIN fragment for "users m1 and m2 share an avatar-sharing
@@ -439,6 +448,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         skillName: row.skill_name,
         displayName: row.display_name,
         description: row.description ?? "",
+        learnCount: row.learn_count ?? 0,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -488,7 +498,8 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         );
       const row = this.db
         .prepare(
-          "SELECT * FROM shared_skills WHERE owner_user_id = ? AND skill_name = ?",
+          `SELECT s.*, ${LEARN_COUNT_COLUMN} FROM shared_skills s
+           WHERE s.owner_user_id = ? AND s.skill_name = ?`,
         )
         .get(ownerUserId, skill.skillName) as SharedSkillRow;
       return this.toSharedSkill(row);
@@ -519,10 +530,48 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
     listSharedSkillsByOwner(ownerUserId: string): SharedSkill[] {
       const rows = this.db
         .prepare(
-          "SELECT * FROM shared_skills WHERE owner_user_id = ? ORDER BY skill_name COLLATE NOCASE ASC",
+          `SELECT s.*, ${LEARN_COUNT_COLUMN} FROM shared_skills s
+           WHERE s.owner_user_id = ? ORDER BY s.skill_name COLLATE NOCASE ASC`,
         )
         .all(ownerUserId) as SharedSkillRow[];
       return rows.map((row) => this.toSharedSkill(row));
+    }
+
+    /**
+     * Record one successful learn (전수) of `ownerUserId`'s `skillName` by
+     * `learnerUserId`. Called by the learn route + MCP tool AFTER the copy and
+     * commit succeed, never before.
+     */
+    recordSkillLearn(ownerUserId: string, skillName: string, learnerUserId: string): void {
+      this.db
+        .prepare(
+          `INSERT INTO skill_learn_events (id, owner_user_id, skill_name, learner_user_id, created_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(crypto.randomUUID(), ownerUserId, skillName, learnerUserId, now());
+    }
+
+    /**
+     * Learn counts for EVERY skill name of one owner (shared or not — events
+     * outlive the share row, so a re-shared or currently-unshared skill keeps
+     * its history). Backs the mine view's per-skill 전수 badge.
+     */
+    skillLearnCounts(ownerUserId: string): Record<string, number> {
+      const rows = this.db
+        .prepare(
+          `SELECT skill_name, COUNT(*) AS c FROM skill_learn_events
+           WHERE owner_user_id = ? GROUP BY skill_name`,
+        )
+        .all(ownerUserId) as { skill_name: string; c: number }[];
+      return Object.fromEntries(rows.map((r) => [r.skill_name, r.c]));
+    }
+
+    /** Total learns across all of one owner's skills (describe_system fact). */
+    countSkillLearnsForOwner(ownerUserId: string): number {
+      return this.count(
+        "SELECT COUNT(*) AS c FROM skill_learn_events WHERE owner_user_id = ?",
+        ownerUserId,
+      );
     }
 
     /**
@@ -540,7 +589,8 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const rows = this.db
         .prepare(
           `SELECT s.*, u.username AS owner_username, u.display_name AS owner_display_name,
-                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext
+                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext,
+                  ${LEARN_COUNT_COLUMN}
            ${Avatars.LEARNABLE_SKILLS_FROM}
            ORDER BY s.updated_at DESC`,
         )
@@ -585,7 +635,8 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const row = this.db
         .prepare(
           `SELECT s.*, u.username AS owner_username, u.display_name AS owner_display_name,
-                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext
+                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext,
+                  ${LEARN_COUNT_COLUMN}
            ${Avatars.LEARNABLE_SKILLS_FROM}
              AND s.id = ?`,
         )
@@ -605,7 +656,8 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const row = this.db
         .prepare(
           `SELECT s.*, u.username AS owner_username, u.display_name AS owner_display_name,
-                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext
+                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext,
+                  ${LEARN_COUNT_COLUMN}
            ${Avatars.LEARNABLE_SKILLS_FROM}
              AND u.username = ? AND s.skill_name = ?`,
         )

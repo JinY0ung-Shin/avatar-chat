@@ -554,6 +554,11 @@ export interface SharedSkill {
   /** SKILL.md frontmatter name at share time (falls back to the dir name). */
   displayName: string;
   description: string;
+  /**
+   * How many times this skill has been learned (전수) — total successful learn
+   * events for (owner, skillName), surviving unshare→re-share cycles.
+   */
+  learnCount: number;
   createdAt: string;
   updatedAt: string;
 }

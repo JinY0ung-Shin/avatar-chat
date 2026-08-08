@@ -408,7 +408,13 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         this.db.prepare("DELETE FROM git_repositories WHERE user_id = ?").run(id);
         // Shared-skill listings are owner-scoped only (learned copies live as
         // FILES in each learner's repo, not as rows referencing this user).
+        // Learn events go in BOTH directions: as the skill owner (their counts
+        // die with the listing) and as the learner (the "permanently deleted"
+        // promise — unlike audit, these rows are product data, not a trail).
         this.db.prepare("DELETE FROM shared_skills WHERE owner_user_id = ?").run(id);
+        this.db
+          .prepare("DELETE FROM skill_learn_events WHERE owner_user_id = ? OR learner_user_id = ?")
+          .run(id, id);
         this.db
           .prepare("DELETE FROM avatar_notifications WHERE owner_user_id = ? OR avatar_user_id = ?")
           .run(id, id);

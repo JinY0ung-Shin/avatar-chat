@@ -55,7 +55,7 @@ export interface SkillExchangeContext {
   config: AppConfig;
 }
 
-/** One find result line: name, address (@owner + slug), and description. */
+/** One find result line: name, address (@owner + slug), adoption, description. */
 function formatSharedSkill(s: SharedSkillListing): string {
   const ownerName = s.owner.alias
     ? `${s.owner.displayName} ("${s.owner.alias}")`
@@ -66,7 +66,10 @@ function formatSharedSkill(s: SharedSkillListing): string {
     ? ` — ${s.description.length > 140 ? `${s.description.slice(0, 140)}…` : s.description}`
     : "";
   const label = s.displayName !== s.skillName ? ` "${s.displayName}"` : "";
-  return `- ${s.skillName}${label} · shared by @${s.owner.username} (${ownerName})${desc}`;
+  // Adoption count (전수된 횟수) — a useful popularity signal when the user
+  // asks for a recommendation among several shared skills.
+  const learns = s.learnCount > 0 ? ` · learned ${s.learnCount}×` : "";
+  return `- ${s.skillName}${label} · shared by @${s.owner.username} (${ownerName})${learns}${desc}`;
 }
 
 /**
@@ -172,6 +175,7 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
             commitMessage: `Learn skill "${listing.skillName}" from @${listing.owner.username}`,
             identity: commitIdentityFor(store, ctx.owner),
           });
+          store.recordSkillLearn(listing.ownerUserId, listing.skillName, ctx.avatarUserId);
           store.audit({
             actorUserId: ctx.owner.id,
             actorName: ctx.owner.username,

@@ -789,6 +789,14 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `.claude-plugin/marketplace.json`, and commits+pushes with the LEARNER's identity. Share rows
   (`shared_skills`, store/avatars.ts) are METADATA SNAPSHOTS only; content is read from the sharer's
   clone at preview/learn time (`ensureClone` refresh), so learners always get the current version.
+- **Learn counts (전수된 횟수):** every successful learn inserts a `skill_learn_events` row keyed by
+  (owner, skill_name) — NOT the share-row id — so counts survive unshare→re-share; recorded at the two
+  call sites (route + MCP tool) AFTER copy+commit succeed. Surfaces: `SharedSkill.learnCount`
+  (correlated subquery in every shared_skills SELECT), the mine view's per-skill counts
+  (`skillLearnCounts` — an unshared skill keeps its history), the tab's "전수 N회" badges, find's
+  `learned N×` marker, and describe_system's owner total (`OwnerState.sharedSkillLearnTotal`,
+  describe_system-only like gitRepoCount). Learner ids are stored ONLY for the deleteUser cascade
+  (both axes purge — product data, not an audit trail); the UI never shows who learned.
 - **Reach = avatar discovery, exactly.** `LEARNABLE_SKILLS_FROM` (store/avatars.ts) mirrors
   `VISIBILITY_WHERE` minus the self-exception: not suspended + `visibility='group'` + SHARING_TEAMMATES
   co-membership. A `private` avatar's shares vanish; an `avatar_sharing`-off group grants nothing; your

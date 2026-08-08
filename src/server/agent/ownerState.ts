@@ -54,6 +54,8 @@ export interface OwnerState {
   learnableSkillCount: number;
   /** Skills this owner currently shares from their knowledge repo. */
   sharedSkillCount: number;
+  /** Total times teammates learned this owner's skills (전수된 횟수, all skills). */
+  sharedSkillLearnTotal: number;
   /** Env-pinned model (`ANTHROPIC_MODEL`); wins over the admin override. */
   anthropicModel?: string;
   /** Admin-selected model override; used when no env pin is set. */
@@ -99,6 +101,10 @@ export function summarizeOwnerState(
     get sharedSkillCount() {
       return store.listSharedSkillsByOwner(avatarUserId).length;
     },
+    // Lazy; only describe_system reads it (gitRepoCount precedent).
+    get sharedSkillLearnTotal() {
+      return store.countSkillLearnsForOwner(avatarUserId);
+    },
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
     experimentalFeatures: store.getExperimentalFeatures(avatarUserId),
@@ -125,6 +131,7 @@ export function emptyOwnerState(store: Store, config: AppConfig): OwnerState {
     openRequestCount: 0,
     learnableSkillCount: 0,
     sharedSkillCount: 0,
+    sharedSkillLearnTotal: 0,
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
     experimentalFeatures: [],

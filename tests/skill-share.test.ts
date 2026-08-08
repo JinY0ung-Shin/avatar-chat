@@ -174,6 +174,42 @@ describe("shared_skills store", () => {
     expect(store.listLearnableSkills(mate.userId, "nothing-matches")).toHaveLength(0);
   });
 
+  it("counts learns per (owner, skill) and keeps them across unshare→re-share", async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.shareSkill(sharer.userId, {
+      skillName: "pptx-report",
+      displayName: "pptx-report",
+      description: "",
+    });
+
+    expect(store.listLearnableSkills(mate.userId)[0].learnCount).toBe(0);
+    store.recordSkillLearn(sharer.userId, "pptx-report", mate.userId);
+    store.recordSkillLearn(sharer.userId, "pptx-report", mate.userId);
+    expect(store.listLearnableSkills(mate.userId)[0].learnCount).toBe(2);
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].learnCount).toBe(2);
+    expect(store.skillLearnCounts(sharer.userId)).toEqual({ "pptx-report": 2 });
+    expect(store.countSkillLearnsForOwner(sharer.userId)).toBe(2);
+
+    // Events are keyed by (owner, skill_name), not the share row: an
+    // unshare→re-share keeps the history.
+    store.unshareSkill(sharer.userId, "pptx-report");
+    expect(store.skillLearnCounts(sharer.userId)).toEqual({ "pptx-report": 2 });
+    store.shareSkill(sharer.userId, {
+      skillName: "pptx-report",
+      displayName: "pptx-report",
+      description: "",
+    });
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].learnCount).toBe(2);
+
+    // deleteUser cascades the LEARNER axis too (privacy promise).
+    store.deleteUser(mate.userId);
+    expect(store.countSkillLearnsForOwner(sharer.userId)).toBe(0);
+  });
+
   it("deleteUser cascades the owner's share rows", async () => {
     const { app, store } = bootstrap();
     const admin = await newUser(app, "admin");
@@ -337,7 +373,7 @@ describe("skill-share routes", () => {
       "main",
     );
 
-    // Owner's mine view lists the repo skill, unshared.
+    // Owner's mine view lists the repo skill, unshared, never learned.
     const mine = await sharer.agent.get("/api/skill-share/mine").expect(200);
     expect(mine.body.repoConfigured).toBe(true);
     expect(mine.body.skills).toEqual([
@@ -346,6 +382,7 @@ describe("skill-share routes", () => {
         name: "pptx-report",
         description: "Weekly report deck generator",
         shared: false,
+        learnCount: 0,
       },
     ]);
 
@@ -389,6 +426,13 @@ describe("skill-share routes", () => {
       "deck-two",
       "pptx-report",
     ]);
+
+    // Both successful learns were counted: teammates' listing AND the owner's
+    // mine view show 전수 2회.
+    const availAfterLearns = await mate.agent.get("/api/skill-share/available").expect(200);
+    expect(availAfterLearns.body.skills[0].learnCount).toBe(2);
+    const sharerMine = await sharer.agent.get("/api/skill-share/mine").expect(200);
+    expect(sharerMine.body.skills[0].learnCount).toBe(2);
 
     // Unshare: 404 for a non-shared name, 200 for the shared one; the listing empties.
     await sharer.agent.delete("/api/skill-share/share/none").expect(404);
@@ -563,6 +607,10 @@ describe("mcp skill_exchange tools", () => {
     expect(ok.content[0].text).toContain('Learned "pptx-report" from @sharer');
     const mateRoot = await ensureClone(knowledgeRepoContextFor(store, mate.userId, config)!);
     expect(fs.existsSync(path.join(mateRoot, "skills", "pptx-report", "SKILL.md"))).toBe(true);
+    // The learn was recorded, and find surfaces the adoption count.
+    expect(store.countSkillLearnsForOwner(sharer.userId)).toBe(1);
+    const foundAfter = await callTool(tools, "find_shared_skills", {});
+    expect(foundAfter.content[0].text).toContain("learned 1×");
 
     // Second learn collides → suggests new_name.
     const dup = await callTool(tools, "learn_skill", {
