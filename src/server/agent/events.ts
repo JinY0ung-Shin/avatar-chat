@@ -365,6 +365,15 @@ export type BrowserResult =
        * action that had already happened.
        */
       snapshotError?: string;
+      /**
+       * A BRIDGE-authored caveat about this op's outcome — currently a clear
+       * that had to be REPAIRED to take, or one that could not be verified at
+       * all. Not page content (any page-derived value inside it is pre-sliced by
+       * the extension), so it is rendered OUTSIDE the untrusted wrapper. It
+       * exists because the alternative was silence: a script-controlled field
+       * appended instead of replacing and the tool reported plain success.
+       */
+      note?: string;
       url?: string;
       title?: string;
       tabs?: BrowserTab[];

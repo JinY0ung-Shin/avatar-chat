@@ -985,28 +985,63 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `expand: true` it scrolls the page in viewport steps and MERGES the captures
   (`mergeTextLines` — virtualized feeds DELETE what scrolls out, so one read at the bottom would
   hold only the tail); expand is page-level by definition and refused together with `uid`.
-- **`type`/`fill_form`'s `clear` is a VERIFIED write, and the only reason `Accessibility.getPartialAXTree`
-  is on the allowlist.** Clearing means select-all-then-overtype, and on a script-controlled input
-  (map.naver.com's React combobox) the select-all silently did nothing twice in a row: "광교" +
-  type("카페거리", clear) read back as "광교카페거리" and the tool reported success. Three parts, in
-  `background.js`: (1) `selectAllIn` sends the platform shortcut AND `commands: ["selectAll"]`, CDP's hook
-  into the Blink editor command, so a keymap that never interprets our synthetic ⌘A/Ctrl+A still selects —
-  but it travels through the DEFAULT keydown handler, so a page that `preventDefault()`s the shortcut
-  defeats it too (verified experimentally); (2) `readAxValue` reads that ONE node's live value
-  (`getPartialAXTree`, `fetchRelatives: false` — read-only, strictly less than the `getFullAXTree`
-  already allowed, and the whole point is that a write can be CHECKED rather than believed, the line
-  `select_option` already draws), `null` meaning verification is UNAVAILABLE (old Chrome, detached node)
-  and therefore keeping the old optimistic behavior; (3) `clearFailed` + one `VALUE_SETTLE_MS` (150ms)
-  re-read decide whether the old value survived at EITHER END — front when the caret sat at the end,
-  back when it sat at 0, both seen — while an exact match on the requested value is always a success
-  (replacing "광교" with "광교역" must not look like a survival). A survivor escalates to what a person
-  does when a shortcut is ignored: `End`, Backspace × the length of what is ACTUALLY there
-  (`CLEAR_BACKSPACE_MAX` 300, dialog-checked per press like the keystrokes loop), re-insert through the
-  SAME path the caller used (insertText/IME, or per-character keys — `verifyClearedWrite` takes the
-  re-insert as a callback), one more settle+re-read, and then an honest THROW naming what the field reads.
-  The no-clear path is untouched — insert-at-cursor stays the default and gains no reads and no delay.
-  `fill_form` inherits all of it through `fillField`, and its partial-progress error now says the field
-  "may hold partly-written text".
+- **`type`/`fill_form`'s `clear` is a VERIFIED write with FOUR exhaustive end states, and the only reason
+  `Accessibility.getPartialAXTree` is on the allowlist.** On map.naver.com's React combobox, "광교카페거리성남"
+  + type("성남", clear) read back as "광교카페거리성남성남" — three times running, across two extension
+  builds, reported as plain success every time. Round 3's select-all hardening AND its own verification both
+  failed silently, so the whole path lives in `clearAndWrite` (`background.js`) now:
+  - **The value node is RESOLVED, because "unreadable" is not "empty".** Chrome OMITS the AX `value`
+    property on an EMPTY text field, so the old `String(node.value?.value ?? "").trim()` answered `""` for a
+    node that exposes no value AT ALL — and `""` walks straight into `clearFailed`'s `if (!old) return
+    false`, which is exactly how verification disarmed itself in the field. `readAxValue` now returns three
+    distinct answers: the raw text, `""` only when the node carries the `editable` property
+    (`plaintext`/`richtext` — Chrome sets it on every textbox/textarea/contenteditable whether or not it
+    holds text), else `null` = UNREADABLE. Both of the PURE decisions in that sentence —
+    `axValueAnswer` (the three-way read) and `clearFailed` — live in `axtree.js`, the bridge's pure half,
+    so `tests/browser-axtree.test.ts` covers them in the always-run suite: this class of bug shipped twice
+    while every unit test stayed green. `resolveValueNode` then recovers the common case: the uid an
+    agent addresses on a combobox is the WRAPPER, whose text lives in a descendant `<input>`, so it walks
+    `DOM.describeNode {depth: -1, pierce: true}` breadth-first (children + `shadowRoots`, never
+    `contentDocument` — an iframe's input is a DIFFERENT field and would invent failures) for the first
+    `INPUT`/`TEXTAREA`/`[contenteditable]` that reads non-null. Nothing cached; a clear is rare.
+  - **A three-rung LADDER, order measured rather than assumed.** `tests/visual/clear-ladder.spec.ts` drives
+    raw CDP against `fixtures/controlled-input.html` (a vanilla-JS controlled input: page state is the only
+    writer of `input.value`) in two variants — `plain`, and `guarded`, which `preventDefault()`s ctrl/cmd+A:
+
+    | rung | plain | guarded |
+    | --- | --- | --- |
+    | none — `insertText` only (the field bug) | APPENDED | APPENDED |
+    | A — `rawKeyDown` + `commands: ["selectAll"]`, then overtype | cleared | APPENDED |
+    | B — `imeSetComposition` replacement range, then `insertText` commit | cleared | cleared |
+    | C — `End` + Backspace × length, then re-insert | cleared | cleared |
+
+    So rung A (CDP's hook into the Blink editor command, so a keymap that never interprets our synthetic
+    ⌘A/Ctrl+A still selects) is real but travels through the DEFAULT keydown handler — one `preventDefault`
+    and it is gone. It stays FIRST because it is what a person does and costs one round trip; B before C
+    because it is one pair of CDP calls instead of one per character. B's offsets are UTF-16 code units
+    (DOM text offsets), while C's Backspace count is CODE POINTS off the LATEST read (over-counting is a
+    no-op, under-counting leaves the old value; counting off `before` would delete the tail of what was just
+    written and leave the old value in FRONT — the failure itself). C is dialog-checked per press,
+    `CLEAR_BACKSPACE_MAX` 300, and re-inserts through the SAME path the caller used (`insert` callback:
+    insertText/IME, or the per-character replay in keystrokes mode).
+  - **`clearFailed` decides each rung** off a settle (`VALUE_SETTLE_MS` 150ms) + re-read: the old value
+    surviving at EITHER END is failure (front when the caret sat at the end, back when it sat at 0, both
+    seen), an exact match on the requested value is always success (replacing "광교" with "광교역" must not
+    look like a survival), and a `null` read still never reads as failure.
+  - **The four end states, none silent-optimistic:** verified on rung A → no note; verified after B or C →
+    a `note` naming the repair (`ime-rewrite` / `keyboard-erase`) and what the field now reads; every rung
+    failed → THROW quoting the survivor and naming all three rungs tried; `resolveValueNode` → `null` → rung
+    A only (no read to verify with, no length to count Backspaces off) plus a note that the clear is
+    UNVERIFIED. The no-clear path is untouched — insert-at-cursor stays the default and gains no reads, no
+    delay, no note.
+  - **`note` is the honest side channel**, a sixth-layer field on the ok-variant: `background.js` (capped
+    `NOTE_MAX` 480, page-derived values pre-sliced to `NOTE_VALUE_MAX` 80 at the source) → client
+    `BridgeReply` → `routes/chat.ts` (`.slice(0, 500)`) → `BrowserResult.note` → `report()` renders
+    `Note from the browser bridge: …` BEFORE the snapshot body and OUTSIDE the untrusted wrapper (it is
+    bridge-authored, and it is the reason to look at the field's `= "…"` line). `fill_form` attributes one
+    note per field (`Field N (uid "…")`), and an outright failure in a later field carries the earlier
+    notes in its error text, since an `ok: false` reply has only `message`. Its partial-progress error still
+    says the field "may hold partly-written text".
 - **Snapshots are budgeted uid-first.** `capSnapshot` (extension side, `axtree.js`) fits every
   snapshot into a fixed character budget by keeping `[uid]` lines before prose — cut TEXT is
   recoverable via offset-chunked `read_text`, a cut uid is unreachable — and says what it dropped;

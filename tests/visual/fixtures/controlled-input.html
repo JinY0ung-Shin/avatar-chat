@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>controlled input fixture</title>
+    <style>
+      body {
+        font: 14px system-ui, sans-serif;
+        margin: 24px;
+      }
+      .combobox {
+        display: inline-block;
+        border: 1px solid #999;
+        border-radius: 6px;
+        padding: 4px;
+      }
+      input {
+        font: inherit;
+        width: 24rem;
+        border: 0;
+        outline: none;
+      }
+      h1 {
+        font-size: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>script-controlled combobox fixture (browser bridge clear ladder)</h1>
+
+    <!--
+      Emulates map.naver.com's React search combobox in vanilla JS: the page's own
+      state variable is the ONLY writer of input.value, and the wrapper carries
+      role="combobox" so the AX node the bridge would address is NOT the element
+      holding the value (that is Fix 1's value-node resolution).
+    -->
+    <p>
+      <span class="combobox" id="wrap-plain" role="combobox" aria-expanded="false" aria-label="장소 검색">
+        <input id="plain" type="text" aria-label="검색어" autocomplete="off" />
+      </span>
+    </p>
+    <p>
+      <span
+        class="combobox"
+        id="wrap-guarded"
+        role="combobox"
+        aria-expanded="false"
+        aria-label="장소 검색 (단축키 차단)"
+      >
+        <input id="guarded" type="text" aria-label="검색어 (단축키 차단)" autocomplete="off" />
+      </span>
+    </p>
+    <p>
+      <input id="pristine" type="text" aria-label="빈 입력" autocomplete="off" />
+    </p>
+
+    <script>
+      const START = "광교카페거리성남";
+
+      /**
+       * A controlled input: every `input` event's value is accepted ONLY by
+       * routing it through `state` and re-rendering from `state`. A DOM write
+       * that fires no event is therefore reverted on the next render — the
+       * behavior that makes framework-controlled inputs resist blind writes.
+       */
+      function controlled(el, options) {
+        let state = "";
+        const render = () => {
+          if (el.value !== state) el.value = state;
+        };
+        el.addEventListener("input", (event) => {
+          state = event.target.value;
+          render();
+        });
+        if (options && options.blockSelectAll) {
+          // The half that defeats a select-all shortcut: the page consumes the
+          // keydown, so Blink never runs the editor command it carries.
+          el.addEventListener("keydown", (event) => {
+            if ((event.ctrlKey || event.metaKey) && String(event.key).toLowerCase() === "a") {
+              event.preventDefault();
+            }
+          });
+        }
+        // The reconciliation pass. Short interval so a test never has to guess.
+        setInterval(render, 30);
+        return {
+          state: () => state,
+          reset: (text) => {
+            state = text;
+            el.value = text;
+          },
+        };
+      }
+
+      const inputs = {
+        plain: controlled(document.getElementById("plain")),
+        guarded: controlled(document.getElementById("guarded"), { blockSelectAll: true }),
+      };
+      inputs.plain.reset(START);
+      inputs.guarded.reset(START);
+
+      window.__fixture = {
+        start: START,
+        /** What the PAGE thinks the value is (not the DOM) — the round-trip proof. */
+        state: (id) => inputs[id].state(),
+        dom: (id) => document.getElementById(id).value,
+        reset: (id, text) => inputs[id].reset(typeof text === "string" ? text : START),
+      };
+    </script>
+  </body>
+</html>

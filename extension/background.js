@@ -25,6 +25,8 @@ import {
   capSnapshot,
   mergeTextLines,
   axProp,
+  axValueAnswer,
+  clearFailed,
   unlabeledInteractiveIds,
 } from "./axtree.js";
 
@@ -1101,14 +1103,13 @@ async function selectAllIn(target) {
 }
 
 /**
- * What the accessibility tree reports as one element's CURRENT value, or null
- * when it cannot be read (an older Chrome without the method, a node that just
- * detached). One node, read-only, no relatives — it exists so a clearing write
- * can be verified instead of assumed.
- *
- * null means verification is UNAVAILABLE, which is not the same as "the field is
- * empty": every caller treats null as "no evidence either way" and keeps the
- * optimistic behavior the bridge had before verification existed.
+ * What the accessibility tree reports as one element's CURRENT value: one node,
+ * read-only, no relatives. It exists so a clearing write can be verified instead
+ * of assumed, and it answers three ways — the text, "" for a genuinely empty
+ * field, or null when verification is UNAVAILABLE here (`axValueAnswer` in
+ * `axtree.js` holds that decision and the reasons it is a three-way one; a null
+ * from THIS layer additionally covers an older Chrome without the method, or a
+ * node that just detached). See `resolveValueNode` for what to do about null.
  */
 async function readAxValue(ref) {
   try {
@@ -1117,10 +1118,79 @@ async function readAxValue(ref) {
       "Accessibility.getPartialAXTree",
       { backendNodeId: ref.backendNodeId, fetchRelatives: false },
     );
-    return String(nodes?.[0]?.value?.value ?? "").trim();
+    const list = Array.isArray(nodes) ? nodes : [];
+    // Prefer the node we ASKED about; an ignored relative can ride along.
+    return axValueAnswer(list.find((one) => one?.backendDOMNodeId === ref.backendNodeId) || list[0]);
   } catch {
     return null;
   }
+}
+
+/** DOM elements that OWN a text value the accessibility tree can report. */
+const VALUE_NODE_NAMES = new Set(["INPUT", "TEXTAREA"]);
+/** Nodes inspected while hunting for a field's value-bearing element. */
+const VALUE_NODE_SCAN_MAX = 300;
+
+/** True for a DOM.Node that is a text field or an explicitly editable element. */
+function ownsTextValue(node) {
+  if (VALUE_NODE_NAMES.has(node?.nodeName)) return true;
+  // DOM.Node.attributes is a FLAT name,value,name,value… array.
+  const attributes = Array.isArray(node?.attributes) ? node.attributes : [];
+  for (let i = 0; i + 1 < attributes.length; i += 2) {
+    if (attributes[i] === "contenteditable" && String(attributes[i + 1]).toLowerCase() !== "false") {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The ref whose AX node actually CARRIES a value, so the clear below can be
+ * verified: the ref itself when it reads, otherwise its first text-field
+ * descendant. The `role="combobox"` wrapper is the shape that forced this — the
+ * uid an agent addresses is the wrapper, the text lives in an <input> inside it,
+ * and reading the wrapper answers "nothing readable".
+ *
+ * Returns `{ ref, value }` (the value already read, so the caller's `before`
+ * costs no second round trip), or null when NO readable node was found — which
+ * every caller treats as "verification unavailable", never as "the field is empty".
+ *
+ * Structure only (`DOM.describeNode`, already allowed), nothing cached: a clear
+ * is rare, so paying the walk beats holding ids that can go stale. Deliberately
+ * does NOT descend into `contentDocument`: an iframe's input is a DIFFERENT
+ * field, and verifying against the wrong field would invent failures.
+ */
+async function resolveValueNode(ref) {
+  const own = await readAxValue(ref);
+  if (own !== null) return { ref, value: own };
+  let root = null;
+  try {
+    const described = await sendCdp(
+      { tabId: ref.tabId, sessionId: ref.sessionId },
+      "DOM.describeNode",
+      { backendNodeId: ref.backendNodeId, depth: -1, pierce: true },
+    );
+    root = described?.node || null;
+  } catch {
+    return null;
+  }
+  // Breadth-first, so the SHALLOWEST field wins on a wrapper holding several.
+  const queue = root ? [root] : [];
+  let seen = 0;
+  while (queue.length && seen < VALUE_NODE_SCAN_MAX) {
+    const node = queue.shift();
+    seen += 1;
+    if (node !== root && typeof node?.backendNodeId === "number" && ownsTextValue(node)) {
+      const candidate = { ...ref, backendNodeId: node.backendNodeId };
+      const value = await readAxValue(candidate);
+      if (value !== null) return { ref: candidate, value };
+    }
+    for (const child of node?.children || []) queue.push(child);
+    // A web component hides its real <input> in a shadow root, and the value the
+    // AX tree reports lives THERE, so the walk has to reach inside.
+    for (const shadow of node?.shadowRoots || []) queue.push(shadow);
+  }
+  return null;
 }
 
 /** Enter text at the caret the way the field expects (IME for non-ASCII). */
@@ -1136,99 +1206,193 @@ async function insertValue(target, value) {
 const VALUE_SETTLE_MS = 150;
 /** Backspaces the clearing fallback may press: a field is not a document. */
 const CLEAR_BACKSPACE_MAX = 300;
+/** How much of a page-derived value a bridge note may quote. */
+const NOTE_VALUE_MAX = 80;
+/** A bridge note rides into the model turn like any other field: one paragraph. */
+const NOTE_MAX = 480;
 
 /**
- * True when the OLD value survived the write at one END of the field — the
- * signature of a select-all the page ignored, which turns a replacement into an
- * insert. BOTH ends, because the surviving text sits wherever the caret was not:
- * "광교" + "카페거리" read back as "광교카페거리" in the field report (caret at the
- * end) and as "카페거리광교" on a freshly focused input (caret at 0). A hit in the
- * MIDDLE is not counted — that is where a short old value collides with a page's
- * own reformatting by coincidence, and a false alarm here costs a real error
- * message on a page that worked.
- *
- * Decidable only when both reads succeeded; a null read means verification was
- * unavailable and must never read as failure. A field that now holds EXACTLY the
- * requested value is a success whatever it held before, which is what keeps
- * replacing "광교" with "광교역" from looking like a survival.
+ * Quote a page-derived value inside a bridge note. A note is rendered OUTSIDE
+ * the untrusted wrapper, so whatever it embeds is pre-sliced here, at the source.
  */
-function clearFailed(before, after, value) {
-  if (before === null || after === null) return false;
-  const old = before.trim();
-  if (!old) return false;
-  if (after === value.trim()) return false;
-  return after.startsWith(old) || after.endsWith(old);
+function quoteForNote(value, max = NOTE_VALUE_MAX) {
+  return String(value ?? "")
+    .trim()
+    .slice(0, max);
+}
+
+/** Keep a note (or several, joined) inside its budget. */
+function capNote(note) {
+  const text = String(note || "");
+  return text.length > NOTE_MAX ? `${text.slice(0, NOTE_MAX)}…` : text;
+}
+
+/** Read the field back once the page has had its beat to re-assert its model. */
+async function settledValue(valueNode) {
+  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
+  return readAxValue(valueNode);
 }
 
 /**
- * Verify that a CLEARING write actually replaced the field, and repair it by
- * keyboard when it did not — then say so out loud if even that fails. Silence
- * was the bug: a script-controlled input appended twice in a row, deterministic
- * and invisible, and the tool reported success both times.
+ * Rewrite the whole field through the IME REPLACEMENT RANGE: compose `value`
+ * over the range the old text occupies, then commit it. Depends on NEITHER a
+ * selection nor a keymap — Blink's IME pipeline fires real
+ * beforeinput/input events, which is what a controlled input accepts — so it is
+ * the one clearing path that survives a page which consumed our ⌘A/Ctrl+A.
+ * Measured against a controlled input that does exactly that
+ * (`tests/visual/clear-ladder.spec.ts`): the select-all rung leaves the old
+ * value, this one replaces it.
  *
- * `insert` re-enters the value the same way the caller entered it the first time
- * (insertText/IME, or per-character keys), so the repair never switches input
- * paths mid-field. Erasing is counted off `after`, the text ACTUALLY in the
- * field — counting off `before` would delete the tail of what we just wrote and
- * leave the old value in front, which is the failure itself.
+ * false means the browser refused the composition (no IME-capable focus, an
+ * older Chrome) — the caller falls through to the keyboard rung.
  */
-async function verifyClearedWrite(ref, target, before, value, insert) {
-  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
-  let after = await readAxValue(ref);
-  if (!clearFailed(before, after, value)) return;
-  // Do what a person does when a shortcut is ignored: caret to the back, erase
-  // what is there one key at a time, type the value again.
+async function imeRewrite(target, value, current) {
+  try {
+    await sendCdp(target, "Input.imeSetComposition", {
+      text: value,
+      // These are DOM text offsets: UTF-16 code units, so `.length` is the count
+      // Blink means. A code-point count would cut a surrogate pair in half.
+      selectionStart: value.length,
+      selectionEnd: value.length,
+      replacementStart: 0,
+      replacementEnd: String(current ?? "").length,
+    });
+    await sendCdp(target, "Input.insertText", { text: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Bridge note for a clear that only succeeded after a repair. */
+function repairedNote(how, after) {
+  return (
+    `The field's previous value resisted the standard clear and was replaced via ${how}; ` +
+    `it now reads "${quoteForNote(after)}".`
+  );
+}
+
+/** Bridge note for a clear whose outcome cannot be read back at all. */
+const UNVERIFIED_CLEAR_NOTE =
+  "This element exposes no readable value, so the clear could NOT be verified — check the field's " +
+  '= "…" value in the returned snapshot before relying on it.';
+
+/**
+ * Clear a field and write `value` into it — the whole of `clear: true`, and the
+ * only path here that can silently do the wrong thing, so it is the only one
+ * that reads the field back. Returns the bridge note the caller must relay
+ * ("" when the clear verified cleanly on the first try).
+ *
+ * A LADDER, stopping at the first rung that verifies (order measured, not
+ * assumed — `tests/visual/clear-ladder.spec.ts` has the rung × page matrix):
+ *
+ *   A  select-all then overtype — what a person does, one round trip. Defeated
+ *      by a page that consumes the shortcut's keydown.
+ *   B  IME replacement-range rewrite — no selection, no keymap.
+ *   C  End, Backspace × what is ACTUALLY there, re-insert. Counted off `after`,
+ *      not `before`: counting off `before` would delete the tail of what we just
+ *      wrote and leave the old value in FRONT, which is the failure itself.
+ *
+ * Rungs A and C re-enter the value through `insert`, the way the caller entered
+ * it the first time (insertText/IME, or the per-character replay), so the field
+ * keeps seeing the input path it was chosen for. Rung B is deliberately its OWN
+ * path — being independent of selection and keymap is the whole point — which is
+ * also why it is verified like everything else and falls through to C when an
+ * editor that only listens to keydown ignores it.
+ *
+ * EXACTLY four end states, and none of them is silent-optimistic — silence was
+ * the bug: a script-controlled input appended three times running, deterministic
+ * and invisible, and the tool reported success every time.
+ *
+ *   verified on rung A          → ""
+ *   verified after B or C       → a note naming which repair ran and what the
+ *                                 field now reads
+ *   every rung failed           → THROW, quoting the surviving value
+ *   nothing readable to verify  → rung A only (a Backspace count cannot be
+ *                                 derived either), plus a note saying the clear
+ *                                 is UNVERIFIED
+ */
+async function clearAndWrite(ref, target, value, insert) {
+  const overtype = async () => {
+    if (value) await insert();
+    // An empty value means "empty this field" — nothing follows to overtype the
+    // selection, so remove it explicitly.
+    else await dispatchKey(target, "Delete", 0);
+  };
+  const resolved = await resolveValueNode(ref);
+  if (!resolved) {
+    await selectAllIn(target);
+    await overtype();
+    return UNVERIFIED_CLEAR_NOTE;
+  }
+  const { ref: valueNode, value: before } = resolved;
+
+  // Rung A. A mid-ladder null read means the value node DETACHED under us (the
+  // page re-rendered the field while we wrote into it) — verification just
+  // became unavailable, which must surface as the unverified note, never as a
+  // clean "": that would reopen exactly the silent end state this ladder closed.
+  await selectAllIn(target);
+  await overtype();
+  let after = await settledValue(valueNode);
+  if (after === null) return UNVERIFIED_CLEAR_NOTE;
+  if (!clearFailed(before, after, value)) return "";
+
+  // Rung B.
+  if (await imeRewrite(target, value, after)) {
+    after = await settledValue(valueNode);
+    if (after === null) return UNVERIFIED_CLEAR_NOTE;
+    if (!clearFailed(before, after, value)) return repairedNote("ime-rewrite", after);
+  }
+
+  // Rung C.
   await dispatchKey(target, "End", 0);
-  const presses = Math.min([...after].length, CLEAR_BACKSPACE_MAX);
+  // Code points, not UTF-16 units: over-counting is harmless (Backspace on an
+  // empty field is a no-op), under-counting would leave the old value behind.
+  const presses = Math.min([...String(after ?? "")].length, CLEAR_BACKSPACE_MAX);
   for (let i = 0; i < presses; i += 1) {
-    if (pendingDialogs.has(ref.tabId)) return; // frozen renderer; the tail reports it
+    // Frozen renderer mid-erase. The op tail reports the open dialog instead of
+    // a snapshot, so there is nothing this note could usefully add.
+    if (pendingDialogs.has(ref.tabId)) return "";
     await dispatchKey(target, "Backspace", 0);
   }
   if (value) await insert();
-  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
-  after = await readAxValue(ref);
-  if (!clearFailed(before, after, value)) return;
+  after = await settledValue(valueNode);
+  if (after === null) return UNVERIFIED_CLEAR_NOTE;
+  if (!clearFailed(before, after, value)) return repairedNote("keyboard-erase", after);
+
   throw new Error(
-    `Clearing this field did not take: the page rewrote its value (it now reads "${String(after).slice(0, 120)}"). ` +
-      "This input is script-controlled. Click the field's own clear (X) control from the snapshot if it has one, " +
-      "or ask the user to clear it.",
+    `Clearing this field did not take: the page rewrote its value (it now reads "${quoteForNote(after, 120)}"). ` +
+      "This input is script-controlled: a select-all overtype, an IME replacement-range rewrite, and erasing " +
+      "it key by key were all tried, and the old value came back each time. Click the field's own clear (X) " +
+      "control from the snapshot if it has one, or ask the user to clear it.",
   );
 }
 
 /**
  * Focus one field and enter `value` — the shared insert path of type and
- * fill_form. `clear` first selects the existing content the way a person would
- * (select-all, then overtype / delete), so edit forms can be REPLACED rather
- * than appended to, and then READS THE FIELD BACK to check that the replacement
- * actually happened.
+ * fill_form. `clear` replaces the existing content instead of inserting into it,
+ * through the verified ladder above. Returns that ladder's bridge note ("" when
+ * there is nothing to report).
  */
 async function fillField(ref, value, clear) {
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   await focusForInput(ref);
   if (!clear) {
     // Insert-at-cursor is the default and stays a straight write: no read-back,
-    // no settle delay. Only a REPLACEMENT has something that can silently fail.
+    // no settle delay, no note. Only a REPLACEMENT can silently do the wrong thing.
     if (value) await insertValue(target, value);
-    return;
+    return "";
   }
-  const before = await readAxValue(ref);
-  await selectAllIn(target);
-  if (value) {
-    await insertValue(target, value); // replaces the selection, like paste-over
-  } else {
-    // An empty value means "empty this field" — nothing follows to overtype the
-    // selection, so remove it explicitly.
-    await dispatchKey(target, "Delete", 0);
-  }
-  await verifyClearedWrite(ref, target, before, value, () => insertValue(target, value));
+  return clearAndWrite(ref, target, value, () => insertValue(target, value));
 }
 
+/** Type into one field. Returns the clearing ladder's bridge note, or "". */
 async function typeRef(uid, value, submit, keystrokes, clear) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  let note = "";
   if (keystrokes) {
     await focusForInput(ref);
-    const before = clear ? await readAxValue(ref) : null;
     // Replay as real per-character key events, ONE bridge operation for the
     // whole string — for editors that only listen to keyboard input. Server
     // caps the length; the dialog check keeps a mid-string alert() from
@@ -1239,22 +1403,17 @@ async function typeRef(uid, value, submit, keystrokes, clear) {
         await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
       }
     };
-    if (clear) {
-      // fillField's clear mechanics, replayed BEFORE the loop so the first
-      // character overtypes the selection instead of extending the value.
-      await selectAllIn(target);
-      // An empty value means "empty this field" — nothing follows to overtype
-      // the selection, so remove it explicitly (the replay below is a no-op).
-      if (!value) await dispatchKey(target, "Delete", 0);
-    }
-    await replay();
-    if (clear) await verifyClearedWrite(ref, target, before, value, replay);
+    // Same ladder, same verification; the replay IS this mode's insert path, so
+    // the first character overtypes the selection instead of extending the value.
+    if (clear) note = await clearAndWrite(ref, target, value, replay);
+    else await replay();
   } else {
-    await fillField(ref, value, clear);
+    note = await fillField(ref, value, clear);
   }
   if (submit) {
     await dispatchKey(target, "Enter", 0);
   }
+  return note;
 }
 
 // ------------------------------------------------------------- select_option
@@ -1732,6 +1891,9 @@ async function perform(message) {
   // click_at's pre-click hit-test result, reported alongside the snapshot so a
   // blind coordinate click states what it actually hit.
   let landedOn = null;
+  // BRIDGE-authored caveat about this op's outcome (a repaired or unverifiable
+  // clear) — not page content, and the reason a clear can no longer end silently.
+  let note = "";
 
   // Read-only extraction ops answer directly: their payload REPLACES the
   // snapshot, so the common action tail below (which walks the AX tree again)
@@ -1931,15 +2093,19 @@ async function perform(message) {
   } else if (message.op === "type") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
+    // raceDialogOpen resolves on whichever of the work or a dialog wins, so the
+    // note is captured HERE rather than returned through it.
     await raceDialogOpen(
       tab.id,
-      typeRef(
-        message.uid,
-        message.text || "",
-        Boolean(message.submit),
-        Boolean(message.keystrokes),
-        Boolean(message.clear),
-      ),
+      (async () => {
+        note = await typeRef(
+          message.uid,
+          message.text || "",
+          Boolean(message.submit),
+          Boolean(message.keystrokes),
+          Boolean(message.clear),
+        );
+      })(),
     );
     if (message.submit) await waitForLoad(tab.id, 5000);
   } else if (message.op === "fill_form") {
@@ -1950,6 +2116,9 @@ async function perform(message) {
         message: "fill_form needs a non-empty `fields` array of { uid, value } entries.",
       };
     }
+    // Per-field clear notes, attributed: with 25 fields in one call, "a clear
+    // was repaired" is useless without saying WHICH field it was.
+    const notes = [];
     for (let i = 0; i < fields.length; i += 1) {
       if (pendingDialogs.has(tab.id)) break; // frozen — the tail reports the open dialog
       const field = fields[i] || {};
@@ -1959,7 +2128,14 @@ async function perform(message) {
       try {
         await raceDialogOpen(
           tab.id,
-          fillField(resolveRef(uid), String(field.value ?? ""), Boolean(field.clear)),
+          (async () => {
+            const fieldNote = await fillField(
+              resolveRef(uid),
+              String(field.value ?? ""),
+              Boolean(field.clear),
+            );
+            if (fieldNote) notes.push(`Field ${i + 1} (uid "${uid}"): ${fieldNote}`);
+          })(),
         );
       } catch (error) {
         // Partial progress is real progress: say exactly where it stopped so
@@ -1971,10 +2147,14 @@ async function perform(message) {
           message:
             `Field ${i + 1} of ${fields.length} (uid "${uid}") could not be filled: ${String(error?.message || error)} ` +
             "Fields before it were already filled, and this one may hold partly-written text — " +
-            "take a fresh snapshot and continue from there.",
+            "take a fresh snapshot and continue from there." +
+            // An earlier field's caveat must not be lost just because a later
+            // one failed outright: the ok:false reply carries only `message`.
+            (notes.length ? ` Notes from earlier fields: ${capNote(notes.join(" "))}` : ""),
         };
       }
     }
+    note = notes.join("\n");
   } else if (message.op === "select_option") {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
@@ -2103,7 +2283,13 @@ async function perform(message) {
   // instead, keeping what a coordinate click landed on: the confirm() case is
   // exactly when knowing what was clicked matters most.
   if (pendingDialogs.has(tab.id)) {
-    return { ...(await dialogBlockedResult(fresh)), ...(landedOn ? { landedOn } : {}) };
+    return {
+      ...(await dialogBlockedResult(fresh)),
+      ...(landedOn ? { landedOn } : {}),
+      // A clear caveat outlives the interruption: the field still holds whatever
+      // the note says it holds, and there is no snapshot here to check it against.
+      ...(note ? { note: capNote(note) } : {}),
+    };
   }
 
   // Cap the snapshot uid-first: an uncapped long page fails the whole model
@@ -2129,6 +2315,7 @@ async function perform(message) {
     title: fresh.title,
     tabs: (await groupedTabs()).map(describeTab),
     ...(landedOn ? { landedOn } : {}),
+    ...(note ? { note: capNote(note) } : {}),
   };
 }
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, axValueAnswer, clearFailed } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -723,5 +723,78 @@ describe("renderAxText", () => {
       node("9", "cell", "호조"),
     ]) as string[];
     expect(lines).toEqual(["실적", "분기 | 매출 | 비고", "1Q | 100 | 호조"]);
+  });
+});
+
+describe("axValueAnswer", () => {
+  // The shapes are transcribed from real Chrome output, measured in
+  // tests/visual/clear-ladder.spec.ts. This is the half of the clear bug that
+  // needed no page at all to be wrong: reading three states as two.
+  const field = (value?: string, editable = "plaintext") => ({
+    role: { value: "textbox" },
+    ...(value === undefined ? {} : { value: { type: "string", value } }),
+    properties: [
+      { name: "focusable", value: { type: "booleanOrUndefined", value: true } },
+      { name: "editable", value: { type: "token", value: editable } },
+    ],
+  });
+
+  it("reads a field's text RAW, so a length can be counted off it", () => {
+    // Trimming here would under-count an IME replacement range and leave residue.
+    expect(axValueAnswer(field("광교카페거리성남"))).toBe("광교카페거리성남");
+    expect(axValueAnswer(field("  spaced  "))).toBe("  spaced  ");
+  });
+
+  it("answers \"\" for an EMPTY field, which Chrome reports by omitting `value`", () => {
+    expect(axValueAnswer(field(undefined))).toBe("");
+    expect(axValueAnswer(field(undefined, "richtext"))).toBe("");
+  });
+
+  it("answers null for a node that carries no value AND is not editable", () => {
+    // The combobox WRAPPER an agent's uid actually points at. Answering "" here
+    // is what silently disarmed clear verification: an empty `before` makes
+    // clearFailed give up, so a deterministic append reported success.
+    const wrapper = {
+      role: { value: "combobox" },
+      properties: [{ name: "expanded", value: { type: "booleanOrUndefined", value: false } }],
+    };
+    expect(axValueAnswer(wrapper)).toBeNull();
+    expect(axValueAnswer(undefined)).toBeNull();
+    expect(axValueAnswer(null)).toBeNull();
+  });
+
+  it("keeps a numeric or zero value readable", () => {
+    // A slider/spinbutton reports a number, and `??` (not `||`) is why 0 prints.
+    expect(axValueAnswer({ value: { type: "number", value: 0 } })).toBe("0");
+    expect(axValueAnswer({ value: { type: "string", value: "" } })).toBe("");
+  });
+});
+
+describe("clearFailed", () => {
+  it("catches the old value surviving at EITHER end", () => {
+    // Caret at the end, then caret at 0 — both seen in the field.
+    expect(clearFailed("광교", "광교카페거리", "카페거리")).toBe(true);
+    expect(clearFailed("광교", "카페거리광교", "카페거리")).toBe(true);
+    expect(clearFailed("광교카페거리성남", "광교카페거리성남성남", "성남")).toBe(true);
+  });
+
+  it("does not fire on a clean replacement, a middle hit, or an unreadable read", () => {
+    expect(clearFailed("광교", "카페거리", "카페거리")).toBe(false);
+    // An exact match on the requested value is success whatever came before.
+    expect(clearFailed("광교", "광교역", "광교역")).toBe(false);
+    // A short old value colliding mid-string is a coincidence, not a survival —
+    // a false alarm here costs a real error on a page that worked.
+    expect(clearFailed("교", "광교역", "광교역")).toBe(false);
+    // Verification unavailable must never read as failure.
+    expect(clearFailed(null, "광교카페거리", "카페거리")).toBe(false);
+    expect(clearFailed("광교", null, "카페거리")).toBe(false);
+    // Nothing was there to survive.
+    expect(clearFailed("", "카페거리", "카페거리")).toBe(false);
+    expect(clearFailed("   ", "카페거리", "카페거리")).toBe(false);
+  });
+
+  it("compares trimmed, so a page's own padding is not a survival", () => {
+    expect(clearFailed(" 광교 ", " 카페거리 ", "카페거리")).toBe(false);
+    expect(clearFailed(" 광교 ", " 광교카페거리 ", "카페거리")).toBe(true);
   });
 });

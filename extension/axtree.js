@@ -1,9 +1,11 @@
 /**
- * Rendering a CDP accessibility tree into the text an agent reads.
+ * The PURE half of the bridge: rendering a CDP accessibility tree into the text
+ * an agent reads, plus the decisions taken on values read back out of it.
  *
- * Kept apart from background.js so it can be unit tested: it is the one piece
- * of the bridge that is pure, and the one whose output size the agent pays for
- * on every single snapshot.
+ * Kept apart from background.js so it can be unit tested — background.js reaches
+ * `chrome.*` and CDP and cannot be. Everything here is a function of its
+ * arguments, so every rule that silently deleted, drowned, or MISREAD real page
+ * content has a test instead of a field report.
  */
 
 /** Roles that get a uid, because an agent can act on them. */
@@ -90,6 +92,54 @@ const OPAQUE_NAME_ROLES = new Set([
 export function axProp(node, name) {
   const hit = (node?.properties || []).find((prop) => prop?.name === name);
   return hit ? hit.value?.value : undefined;
+}
+
+/**
+ * The THREE answers one AX node gives about the text it holds. Keeping them
+ * apart is what makes a clearing write verifiable at all:
+ *
+ *   "text"  the field holds that text (RAW — callers trim where they compare);
+ *   ""      the field is genuinely EMPTY;
+ *   null    nothing readable here — this node exposes no text value at all.
+ *
+ * Chrome OMITS the `value` property entirely on an EMPTY text field, so "no value
+ * property" cannot mean "empty" on its own. Reading it that way is exactly how
+ * clear verification disarmed itself in the field: a `role="combobox"` WRAPPER,
+ * whose text lives in a descendant <input>, answered "" — and an empty `before`
+ * makes `clearFailed` give up, so a silent append shipped as success three times
+ * running. The `editable` property is what separates the two: Chrome sets it
+ * (`plaintext`/`richtext`) on every textbox/textarea/contenteditable whether or
+ * not it holds text, and never on such a wrapper. Both facts are measured in
+ * `tests/visual/clear-ladder.spec.ts`.
+ */
+export function axValueAnswer(node) {
+  if (!node) return null;
+  if (node.value != null) return String(node.value.value ?? "");
+  return axProp(node, "editable") === undefined ? null : "";
+}
+
+/**
+ * True when the OLD value survived a clearing write at one END of the field — the
+ * signature of a select-all the page ignored, which turns a replacement into an
+ * insert. BOTH ends, because the surviving text sits wherever the caret was not:
+ * "광교" + "카페거리" read back as "광교카페거리" in the field report (caret at the
+ * end) and as "카페거리광교" on a freshly focused input (caret at 0). A hit in the
+ * MIDDLE is not counted — that is where a short old value collides with a page's
+ * own reformatting by coincidence, and a false alarm here costs a real error
+ * message on a page that worked.
+ *
+ * Decidable only when both reads succeeded; a null read means verification was
+ * unavailable and must never read as failure. A field that now holds EXACTLY the
+ * requested value is a success whatever it held before, which is what keeps
+ * replacing "광교" with "광교역" from looking like a survival.
+ */
+export function clearFailed(before, after, value) {
+  if (before === null || after === null) return false;
+  const old = String(before).trim();
+  const now = String(after).trim();
+  if (!old) return false;
+  if (now === String(value).trim()) return false;
+  return now.startsWith(old) || now.endsWith(old);
 }
 
 /** Cap for a printed link href — enough to identify and open, never a dump. */

@@ -3853,6 +3853,57 @@ describe("browser bridge interaction ops", () => {
     expect(execute).toHaveBeenLastCalledWith({ op: "type", uid: "e2", text: "덧붙임" });
   });
 
+  it("relays a bridge note about a repaired clear, AHEAD of the snapshot it points at", async () => {
+    // The note is the whole answer to the round-3 failure: both the hardened
+    // select-all and its verification failed with no observable trace, so a
+    // deterministic silent append shipped as plain success three times running.
+    const note =
+      'The field\'s previous value resisted the standard clear and was replaced via ime-rewrite; it now reads "성남".';
+    const tools = buildBrowserTools({
+      execute: ok({ note, snapshot: '[e16] textbox "검색" = "성남"' }),
+      allowed: true,
+    });
+    const res = await callTool(tools, "type", { uid: "e16", value: "성남", clear: true });
+    const out = res.content[0].text ?? "";
+    expect(res.isError).toBeFalsy();
+    expect(out).toContain(`Note from the browser bridge: ${note}`);
+    // Bridge-authored, so it stays OUTSIDE the quarantine wrapper — and it must
+    // arrive BEFORE the snapshot, being the reason to read the field's value line.
+    expect(out.indexOf("Note from the browser bridge")).toBeLessThan(out.indexOf("<page_content>"));
+  });
+
+  it("relays the UNVERIFIABLE-clear note, and says nothing when a clear verified cleanly", async () => {
+    const note =
+      'This element exposes no readable value, so the clear could NOT be verified — check the field\'s = "…" value in the returned snapshot before relying on it.';
+    const noted = buildBrowserTools({
+      execute: ok({ note, snapshot: "[e1] combobox" }),
+      allowed: true,
+    });
+    const quiet = buildBrowserTools({ execute: ok({ snapshot: "[e1] combobox" }), allowed: true });
+
+    const withNote = await callTool(noted, "fill_form", {
+      fields: [{ uid: "e1", value: "성남", clear: true }],
+    });
+    expect(withNote.content[0].text).toContain(note);
+    // A clear that verified on the first try adds NOTHING: the note channel has
+    // to stay rare or it stops being read.
+    const without = await callTool(quiet, "fill_form", {
+      fields: [{ uid: "e1", value: "성남", clear: true }],
+    });
+    expect(without.content[0].text).not.toContain("Note from the browser bridge");
+  });
+
+  it("caps an oversized note, since it renders as the bridge's own words", async () => {
+    // The chat route bounds this too; this is the same defensive cap the snapshot
+    // has, for a build that answers with more than the current one ever sends.
+    const tools = buildBrowserTools({ execute: ok({ note: "가".repeat(2_000) }), allowed: true });
+    const res = await callTool(tools, "type", { uid: "e1", value: "x", clear: true });
+    const out = res.content[0].text ?? "";
+    expect(out).toContain("가".repeat(500));
+    expect(out).not.toContain("가".repeat(501));
+    expect(out).toContain("…");
+  });
+
   it("refuses click_at's PIXEL mode without vision, before reaching the bridge", async () => {
     // Coordinates come from a screenshot; a text-only model has no source for
     // them, so the tool must redirect to uid clicks instead of clicking blind.

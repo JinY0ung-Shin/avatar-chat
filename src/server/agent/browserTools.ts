@@ -110,6 +110,9 @@ function formatTabs(tabs: BrowserTab[]): string {
  */
 const SNAPSHOT_RESULT_MAX_CHARS = 60_000;
 
+/** Same idea for a bridge note — one paragraph of BRIDGE-authored caveat, never a payload. */
+const NOTE_RESULT_MAX_CHARS = 500;
+
 /** Tool-result shape: text blocks, plus an image block for screenshots. */
 type BrowserToolResult = {
   content: (
@@ -157,6 +160,21 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
         end < page.total ? `; call read_text with offset=${end} for the next chunk` : ""
       }):\n${wrapUntrustedPageContent(page.text)}`
     : "";
+  // A caveat about the op's OUTCOME, authored by the bridge — a clear that had to
+  // be repaired to take, or one that could not be verified at all. Placed BEFORE
+  // the snapshot body on purpose: it is the reason to look at the field's value
+  // in that snapshot, so it has to be read first. Bridge-authored, so it stays
+  // outside the untrusted wrapper (page-derived values inside it are pre-sliced
+  // by the extension) — which is also why the length gets a defensive cap here
+  // as well as in the chat route: text the model reads as OURS must stay short
+  // enough to be ours, whatever build sent it.
+  const bridgeNote = result.note
+    ? `\n\nNote from the browser bridge: ${
+        result.note.length > NOTE_RESULT_MAX_CHARS
+          ? `${result.note.slice(0, NOTE_RESULT_MAX_CHARS)}…`
+          : result.note
+      }`
+    : "";
   const snap =
     result.snapshot && result.snapshot.length > SNAPSHOT_RESULT_MAX_CHARS
       ? `${result.snapshot.slice(0, SNAPSHOT_RESULT_MAX_CHARS)}\n[snapshot truncated at ${SNAPSHOT_RESULT_MAX_CHARS} characters — read long content with mcp__browser__read_text, which returns offset-addressed chunks]`
@@ -170,7 +188,7 @@ function report(result: BrowserResult, okNote: string): BrowserToolResult {
       "The page may still have changed — verify with mcp__browser__read_text or a fresh mcp__browser__snapshot " +
       "instead of retrying the action."
     : "";
-  const message = `${okNote}${where}${share}${dialog}${landed}${tabs}${pageText}${body}${snapshotFailed}`;
+  const message = `${okNote}${where}${share}${dialog}${landed}${tabs}${pageText}${bridgeNote}${body}${snapshotFailed}`;
   // A screenshot rides as a real image block. Pixels are page-authored too:
   // rendered text can carry injected instructions exactly like snapshot text,
   // so the caption restates the warning the wrapper gives textual content.
@@ -520,9 +538,12 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "The WHOLE string is entered in this one call — never enter text by pressing keys one at a time. " +
         "Typing INSERTS at the cursor, so a field that already holds a value KEEPS it and your text is added " +
         "to it: pass `clear: true` to replace that content instead (for a form of two or more fields, use " +
-        "fill_form's per-field clear). A clear is VERIFIED by reading the field back afterwards, so a " +
-        "script-controlled field that refuses to be cleared now FAILS with what the field actually reads " +
-        "instead of silently appending — do not retry the same call when that happens. " +
+        "fill_form's per-field clear). A clear is VERIFIED by reading the field back afterwards, and it can " +
+        "end three ways: a field that resists every clearing strategy FAILS with what it actually reads " +
+        "instead of silently appending (do not retry the same call when that happens); a clear that only " +
+        "took after a repair, or one this element exposes no readable value to confirm, comes back with an " +
+        "explicit `Note from the browser bridge` line — READ it and check the field's `= \"…\"` value in the " +
+        "returned snapshot before acting on it; otherwise the replacement is confirmed. " +
         "If the page visibly ignored a normal type (the field stayed empty), retry ONCE with " +
         "`keystrokes: true`, which replays the text as real per-character key events for editors that only " +
         "listen to keyboard input. " +
@@ -541,8 +562,9 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           .describe(
             "Replace the field's existing content instead of inserting into it — same as fill_form's per-field " +
               'clear. The snapshot shows a field\'s current value as `= "…"`; pass true when that value should ' +
-              "not remain. The replacement is verified by reading the field back, and errors if the page keeps " +
-              "re-asserting the old value.",
+              "not remain. The replacement is verified by reading the field back: it errors if the page keeps " +
+              "re-asserting the old value, and carries a bridge note when it had to be repaired or could not " +
+              "be verified.",
           ),
         keystrokes: z
           .boolean()
@@ -593,7 +615,8 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
                 .optional()
                 .describe(
                   "Replace the field's current content instead of inserting into it. Verified by reading the " +
-                    "field back: a field that refuses to be cleared fails this call rather than appending.",
+                    "field back: a field that refuses to be cleared fails this call rather than appending, and " +
+                    "a clear that was repaired or could not be verified is named in a bridge note per field.",
                 ),
             }),
           )

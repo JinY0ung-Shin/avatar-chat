@@ -1972,6 +1972,7 @@ export function createChatRouter({
                   message?: string;
                   snapshot?: string;
                   snapshotError?: string;
+                  note?: string;
                   url?: string;
                   title?: string;
                   tabs?: BrowserTab[];
@@ -2102,6 +2103,14 @@ export function createChatRouter({
                   snapshotError:
                     typeof reply.snapshotError === "string"
                       ? reply.snapshotError.slice(0, 1_000)
+                      : undefined,
+                  // A bridge-authored caveat about the op's outcome (a repaired
+                  // or unverifiable clear). Short by construction on the
+                  // extension side; bounded here because it lands OUTSIDE the
+                  // untrusted wrapper, where a long one would read as ours.
+                  note:
+                    typeof reply.note === "string" && reply.note
+                      ? reply.note.slice(0, 500)
                       : undefined,
                   url: typeof reply.url === "string" ? reply.url.slice(0, 4_000) : undefined,
                   title: typeof reply.title === "string" ? reply.title.slice(0, 2_000) : undefined,

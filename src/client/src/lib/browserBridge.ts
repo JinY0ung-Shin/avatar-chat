@@ -19,6 +19,8 @@ export interface BridgeReply {
   snapshot?: string;
   /** The action ran but the fresh snapshot could not be rendered — why. */
   snapshotError?: string;
+  /** Bridge-authored caveat about the op's outcome (a repaired or unverifiable clear). */
+  note?: string;
   url?: string;
   title?: string;
   tabs?: { tabId: string; title: string; url: string; current: boolean }[];
