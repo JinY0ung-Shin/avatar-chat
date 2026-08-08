@@ -520,7 +520,9 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "The WHOLE string is entered in this one call — never enter text by pressing keys one at a time. " +
         "Typing INSERTS at the cursor, so a field that already holds a value KEEPS it and your text is added " +
         "to it: pass `clear: true` to replace that content instead (for a form of two or more fields, use " +
-        "fill_form's per-field clear). " +
+        "fill_form's per-field clear). A clear is VERIFIED by reading the field back afterwards, so a " +
+        "script-controlled field that refuses to be cleared now FAILS with what the field actually reads " +
+        "instead of silently appending — do not retry the same call when that happens. " +
         "If the page visibly ignored a normal type (the field stayed empty), retry ONCE with " +
         "`keystrokes: true`, which replays the text as real per-character key events for editors that only " +
         "listen to keyboard input. " +
@@ -539,7 +541,8 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           .describe(
             "Replace the field's existing content instead of inserting into it — same as fill_form's per-field " +
               'clear. The snapshot shows a field\'s current value as `= "…"`; pass true when that value should ' +
-              "not remain.",
+              "not remain. The replacement is verified by reading the field back, and errors if the page keeps " +
+              "re-asserting the old value.",
           ),
         keystrokes: z
           .boolean()
@@ -588,7 +591,10 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
               clear: z
                 .boolean()
                 .optional()
-                .describe("Replace the field's current content instead of inserting into it."),
+                .describe(
+                  "Replace the field's current content instead of inserting into it. Verified by reading the " +
+                    "field back: a field that refuses to be cleared fails this call rather than appending.",
+                ),
             }),
           )
           .min(1)

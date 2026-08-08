@@ -140,6 +140,34 @@ function containsAsToken(hay, needle) {
   }
 }
 
+/**
+ * Inline TEXT-LEVEL SEMANTIC roles, treated as STRUCTURAL. A `<mark>`,
+ * `<strong>` or `<em>` is a phrasing wrapper AROUND a text run: never a
+ * container in its own right, never printable content. Left non-structural, a
+ * keyword-highlight `<mark>` emitted namelessly (printing nothing) but still
+ * became the `container` of the first fragment of a sentence it split, while the
+ * rest sat on the real container — so the halves never joined into one run and
+ * the run-level suppression below never saw them. `[e82] option "검색어 광교역"`
+ * printed with `StaticText "광교"` and `StaticText "역"` under it, re-spelling
+ * the option's own label as two extra lines.
+ *
+ * The strings are Chrome's own, verified against `Accessibility.getFullAXTree`:
+ * `<mark>`→mark, `<strong>`→strong, `<em>`→emphasis, `<sup>`→superscript,
+ * `<sub>`→subscript, `<del>`/`<s>`→deletion, `<ins>`→insertion. (`<b>`, `<i>`,
+ * `<span>` and friends already arrive as `generic`.) `code` and `time` are
+ * deliberately absent: `<pre><code>` is a BLOCK, and dissolving it would glue a
+ * code listing into the surrounding prose as one run.
+ */
+const TEXT_LEVEL_ROLES = new Set([
+  "mark",
+  "strong",
+  "emphasis",
+  "superscript",
+  "subscript",
+  "deletion",
+  "insertion",
+]);
+
 /** Whitespace-free form, for comparing text a markup split MID-word. */
 const stripSpaces = (s) => s.replace(/\s+/g, "");
 
@@ -181,7 +209,12 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
     if (!node || seen.has(node.nodeId)) return;
     seen.add(node.nodeId);
     const role = node.role?.value;
-    const structural = !role || role === "none" || role === "generic" || role === "InlineTextBox";
+    const structural =
+      !role ||
+      role === "none" ||
+      role === "generic" ||
+      role === "InlineTextBox" ||
+      TEXT_LEVEL_ROLES.has(String(role).toLowerCase());
     let inherited = covered;
     let childContainer = container;
     if (!node.ignored && !structural) {
@@ -215,14 +248,58 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
 }
 
 /**
+ * Whether an agent can ACT on this node — the ONE predicate that decides which
+ * elements mint a uid. Shared with `unlabeledInteractiveIds` so a hint looked up
+ * by the caller can never describe a node the renderer does not print, nor miss
+ * one it does.
+ */
+export function isActionableNode(node, role, name, value) {
+  if (INTERACTIVE_ROLES.has(role)) return true;
+  // Clickable-in-practice surfaces: named table/tree rows and cells, named
+  // drawn surfaces (map/app containers), plus anything the page marked
+  // focusable (accordion headers, custom widgets). Opaque containers are
+  // excluded from the FOCUSABLE branch — RootWebArea and friends report
+  // focusable without being a target anyone means to click.
+  if (!name && !value) return false;
+  return (
+    NAMED_CLICKABLE_ROLES.has(role) ||
+    NAMED_CONTAINER_UID_ROLES.has(role) ||
+    (axProp(node, "focusable") === true && !OPAQUE_NAME_ROLES.has(role))
+  );
+}
+
+/**
+ * backendNodeIds of interactive nodes the accessibility tree cannot name AT
+ * ALL: no name, no value, and no description either — so even the `title`
+ * fallback has nothing to print. These are the `[e48] button ""` lines an agent
+ * cannot tell apart. The caller looks up a short DOM identifier for them and
+ * passes it back through `renderAxTree`'s `hints`; that lookup stays outside
+ * this module because it costs a CDP round trip per node, which a pure
+ * renderer has no business spending.
+ */
+export function unlabeledInteractiveIds(nodes) {
+  const ids = new Set();
+  walkAxNodes(nodes, undefined, (node, role, name, value) => {
+    if (name || value || node.backendDOMNodeId == null) return;
+    if (!isActionableNode(node, role, name, value)) return;
+    if (String(node.description?.value ?? "").trim()) return;
+    ids.add(node.backendDOMNodeId);
+  });
+  return [...ids];
+}
+
+/**
  * Render one session's AX tree as the INTERACTION view: every actionable
  * element gets a uid the agent can pass to click/type.
  *
  * `mintUid(backendNodeId)` is called for each actionable element, in output
  * order, and returns the uid to print. The caller owns the uid counter so that
  * numbering stays continuous across a page's frames.
+ *
+ * `hints` is an optional Map of backendNodeId → DOM identifier, printed only
+ * beside a label that would otherwise be empty (see unlabeledInteractiveIds).
  */
-export function renderAxTree(nodes, mintUid) {
+export function renderAxTree(nodes, mintUid, hints) {
   const lines = [];
   /** Full href -> { index, name } of the one line kept for that destination. */
   const byHref = new Map();
@@ -234,7 +311,10 @@ export function renderAxTree(nodes, mintUid) {
    * fragments do not sit on token boundaries of the parent label and each one
    * survives `containsAsToken` on its own — the rejoined run then printed the
    * container's sentence a SECOND time, verbatim. Whitespace-insensitive
-   * because the split loses the spaces too.
+   * because the split loses the spaces too. This only ever SEES those fragments
+   * because `TEXT_LEVEL_ROLES` makes the highlight wrapper structural; while it
+   * was a container of its own, the fragments landed in separate runs and walked
+   * straight past this check.
    *
    * Only a JOINED run (≥ 2 segments) may be dropped: a lone StaticText that
    * sits inside a longer ancestor label is the calendar case, where "26" under
@@ -252,17 +332,7 @@ export function renderAxTree(nodes, mintUid) {
     run = null;
   };
   walkAxNodes(nodes, undefined, (node, role, name, value, covered, container) => {
-    const interactive =
-      INTERACTIVE_ROLES.has(role) ||
-      // Clickable-in-practice surfaces: named table/tree rows and cells, named
-      // drawn surfaces (map/app containers), plus anything the page marked
-      // focusable (accordion headers, custom widgets). Opaque containers are
-      // excluded from the FOCUSABLE branch — RootWebArea and friends report
-      // focusable without being a target anyone means to click.
-      (Boolean(name || value) &&
-        (NAMED_CLICKABLE_ROLES.has(role) ||
-          NAMED_CONTAINER_UID_ROLES.has(role) ||
-          (axProp(node, "focusable") === true && !OPAQUE_NAME_ROLES.has(role))));
+    const interactive = isActionableNode(node, role, name, value);
     // Nameless NON-interactive nodes are noise, but a nameless interactive
     // element (an unlabeled rich-text editor, an icon-only button) still
     // needs a uid — dropping those made such editors unreachable entirely.
@@ -283,8 +353,14 @@ export function renderAxTree(nodes, mintUid) {
       const uid =
         interactive && node.backendDOMNodeId != null ? mintUid(node.backendDOMNodeId) : null;
       const url = href ? ` → ${printableUrl(href)}` : "";
+      const label = name || described;
+      // Nothing in the accessibility tree names this control. The caller's DOM
+      // hint (#id, class, input type, icon label) is then the only thing that
+      // tells one `button ""` line from the next.
+      const hinted = !label && !value ? hints?.get?.(node.backendDOMNodeId) || "" : "";
+      const hint = hinted ? ` (dom: ${hinted})` : "";
       return uid
-        ? `[${uid}] ${role} "${name || described}"${value ? ` = "${value}"` : ""}${url}`
+        ? `[${uid}] ${role} "${label}"${value ? ` = "${value}"` : ""}${hint}${url}`
         : `${role} "${name || value || described}"${url}`;
     };
     // A single search result arrives as four to six links to the SAME

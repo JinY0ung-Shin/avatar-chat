@@ -620,6 +620,7 @@ export function buildSystemPromptAppend(
         "Always `snapshot` first to get element uids, act, then snapshot again — uids from a stale snapshot may hit the wrong element. " +
         "Enter text with `type`: the WHOLE string goes in ONE call — never enter text by pressing keys one character at a time. If a page visibly ignored a normal type, retry once with `keystrokes: true`; for repeated special keys use press_key's `repeat` (e.g. ArrowDown ×5 in one call). " +
         "A field that already shows a value keeps it — `type` inserts at the cursor, so pass `clear: true` (or fill_form's per-field clear) when that value should be replaced rather than added to. " +
+        "A clear is verified against the field afterwards: if it fails, the call tells you the page re-asserted its own value — click that field's own clear (X) control instead of repeating the type. " +
         "A form with two or more fields is ONE `fill_form` call ([{uid, value, clear?}] — clear replaces existing content), not a chain of type calls; it never submits, so click the submit control afterwards. " +
         "Dropdowns are `select_option` (the select's uid + the option label from the snapshot), not arrow-key guessing. " +
         "To READ a long page (summarize, quote, extract), use `read_text` — plain text in offset-addressed chunks, far cheaper than snapshot; snapshot is for when you need uids to act. " +

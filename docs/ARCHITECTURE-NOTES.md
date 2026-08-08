@@ -985,6 +985,28 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   `expand: true` it scrolls the page in viewport steps and MERGES the captures
   (`mergeTextLines` — virtualized feeds DELETE what scrolls out, so one read at the bottom would
   hold only the tail); expand is page-level by definition and refused together with `uid`.
+- **`type`/`fill_form`'s `clear` is a VERIFIED write, and the only reason `Accessibility.getPartialAXTree`
+  is on the allowlist.** Clearing means select-all-then-overtype, and on a script-controlled input
+  (map.naver.com's React combobox) the select-all silently did nothing twice in a row: "광교" +
+  type("카페거리", clear) read back as "광교카페거리" and the tool reported success. Three parts, in
+  `background.js`: (1) `selectAllIn` sends the platform shortcut AND `commands: ["selectAll"]`, CDP's hook
+  into the Blink editor command, so a keymap that never interprets our synthetic ⌘A/Ctrl+A still selects —
+  but it travels through the DEFAULT keydown handler, so a page that `preventDefault()`s the shortcut
+  defeats it too (verified experimentally); (2) `readAxValue` reads that ONE node's live value
+  (`getPartialAXTree`, `fetchRelatives: false` — read-only, strictly less than the `getFullAXTree`
+  already allowed, and the whole point is that a write can be CHECKED rather than believed, the line
+  `select_option` already draws), `null` meaning verification is UNAVAILABLE (old Chrome, detached node)
+  and therefore keeping the old optimistic behavior; (3) `clearFailed` + one `VALUE_SETTLE_MS` (150ms)
+  re-read decide whether the old value survived at EITHER END — front when the caret sat at the end,
+  back when it sat at 0, both seen — while an exact match on the requested value is always a success
+  (replacing "광교" with "광교역" must not look like a survival). A survivor escalates to what a person
+  does when a shortcut is ignored: `End`, Backspace × the length of what is ACTUALLY there
+  (`CLEAR_BACKSPACE_MAX` 300, dialog-checked per press like the keystrokes loop), re-insert through the
+  SAME path the caller used (insertText/IME, or per-character keys — `verifyClearedWrite` takes the
+  re-insert as a callback), one more settle+re-read, and then an honest THROW naming what the field reads.
+  The no-clear path is untouched — insert-at-cursor stays the default and gains no reads and no delay.
+  `fill_form` inherits all of it through `fillField`, and its partial-progress error now says the field
+  "may hold partly-written text".
 - **Snapshots are budgeted uid-first.** `capSnapshot` (extension side, `axtree.js`) fits every
   snapshot into a fixed character budget by keeping `[uid]` lines before prose — cut TEXT is
   recoverable via offset-chunked `read_text`, a cut uid is unreachable — and says what it dropped;
@@ -994,7 +1016,7 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (`NAMED_CLICKABLE_ROLES` — draw.io-style `<tr>` menus were visible but unclickable), and input ops
   focus via `focusForInput`, which falls back to a real centre click when `DOM.focus` refuses
   (ProseMirror bodies, canvases).
-- **Seven `axtree.js` rules exist because each one silently DELETED, DROWNED, or made UNREACHABLE real
+- **Nine `axtree.js` rules exist because each one silently DELETED, DROWNED, or made UNREACHABLE real
   page content.**
   (1) `AXValue.value` is not always a string — a slider/spinbutton reports a number and `.trim()` threw,
   failing all three read tools on the whole page; both name and value are `String(… ?? "")`, with `??`
@@ -1019,7 +1041,25 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   sits on a token boundary and the rejoined run repeated the container's whole label as a second line.
   Only runs of ≥ 2 segments may be dropped (a lone StaticText inside a longer label is the calendar
   case, rule 2), and suppression NULLS the slot, filtered out once at the end, because `byHref` holds
-  line indices that must stay valid for the rest of the walk.
+  line indices that must stay valid for the rest of the walk. (8) Inline TEXT-LEVEL SEMANTIC roles are
+  STRUCTURAL (`TEXT_LEVEL_ROLES` — `mark`/`strong`/`emphasis`/`superscript`/`subscript`/`deletion`/
+  `insertion`, the exact strings Chrome emits for `<mark>`/`<strong>`/`<em>`/`<sup>`/`<sub>`/`<del>`,`<s>`/
+  `<ins>`, verified against `getFullAXTree`; `<b>`/`<i>`/`<span>` already arrive as `generic`). Rule 7
+  alone was not enough: the highlight wrapper printed NOTHING yet still became the `container` of the
+  fragment inside it while the rest of the sentence sat on the real container, so the halves never joined
+  into one run and the ≥2-segment suppression never saw them — an autocomplete option re-spelled its own
+  label as two extra lines. `code` and `time` are deliberately excluded: `<pre><code>` is a block, and
+  dissolving it would glue a listing into the surrounding prose. (9) An interactive node with NO name, no
+  value and no description gets a DOM hint printed beside its empty label
+  (`[e48] button "" (dom: #map-zoom-in)`). `axtree.js` stays pure — `unlabeledInteractiveIds` only NAMES
+  the nodes worth asking about (through `isActionableNode`, the one interactive predicate it now shares
+  with `renderAxTree` so the two cannot drift), and `background.js` does the asking: `buildDomHint`
+  (`DOM.describeNode` depth 2 → `#id`, else two class tokens, else an input's `type`, else a nested
+  img/svg's alt/aria-label/title or the first text, clipped to `HINT_MAX_CHARS` 60), at most
+  `HINT_FETCH_PER_SNAPSHOT` (8) UNCACHED lookups per snapshot, cached in `hintByNode` keyed exactly like
+  `uidByNode` — misses cached as `""` so they are not re-paid, swept by `forgetTabRefs` (by key prefix, so
+  a hint cannot outlive its tab even if the uid was already evicted) and cleared with the `REF_MAP_MAX`
+  eviction. `renderAxText` gets NO hints: the reading view has no uids to disambiguate.
 - **The signing key IS the extension's identity.** It lives off-repo on the release machine only;
   manifest `key` is its public half and Chrome derives the id from it. Change the key and the id
   changes — `extension/manifest.json`, the `browserBridge.ts` default id, `extension/README.md`, and any

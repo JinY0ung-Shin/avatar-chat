@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+// Kept on ONE line: @ts-expect-error only covers the line after it, and the
+// error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -390,6 +392,60 @@ describe("renderAxTree", () => {
     expect(lines).toEqual(['[e1] link "댓글 보기"', 'StaticText "어제 갔던 가게"']);
   });
 
+  it("prints ONE line for an autocomplete option whose highlight split its text", () => {
+    // The residual after run-level suppression shipped: the `<mark>` around the
+    // matched keyword emitted namelessly (printing nothing) yet still became the
+    // CONTAINER of the fragment inside it, while the rest of the text sat on the
+    // option. The two halves never joined, so the ≥2-segment suppression never
+    // saw them and the option's own label was re-spelled as two extra lines.
+    const lines = render([
+      node("1", "option", "검색어 광교역", ["2", "3", "4"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "검색어 "),
+      node("3", "mark", "", ["5"]),
+      node("4", "StaticText", "역"),
+      node("5", "StaticText", "광교"),
+    ]);
+    expect(lines).toEqual(['[e1] option "검색어 광교역"']);
+  });
+
+  it("treats every inline text-level role as a phrasing wrapper, not a container", () => {
+    // The exact role strings Chrome emits, verified against getFullAXTree:
+    // <mark>/<strong>/<em>/<sup>/<sub>/<del>/<ins>. (<b>, <i>, <span> already
+    // arrive as `generic`, which was structural all along.)
+    for (const role of [
+      "mark",
+      "strong",
+      "emphasis",
+      "superscript",
+      "subscript",
+      "deletion",
+      "insertion",
+    ]) {
+      const lines = render([
+        node("1", "paragraph", "", ["2", "3", "5"]),
+        node("2", "StaticText", "오늘"),
+        node("3", role, "", ["4"]),
+        node("4", "StaticText", "서울에"),
+        node("5", "StaticText", "폭염경보"),
+      ]);
+      expect(lines, role).toEqual(['StaticText "오늘 서울에 폭염경보"']);
+    }
+  });
+
+  it("still breaks the run at a code or time wrapper, which can be a block", () => {
+    // Deliberately NOT text-level: `<pre><code>` is a block of its own, and
+    // dissolving it would glue a code listing into the surrounding prose.
+    for (const role of ["code", "time"]) {
+      const lines = render([
+        node("1", "paragraph", "", ["2", "3"]),
+        node("2", "StaticText", "앞"),
+        node("3", role, "", ["4"]),
+        node("4", "StaticText", "뒤"),
+      ]);
+      expect(lines, role).toEqual(['StaticText "앞"', 'StaticText "뒤"']);
+    }
+  });
+
   it("keeps a SINGLE StaticText contained in its ancestor label", () => {
     // The ≥2-segment guard is what protects the calendar: "26" IS a substring
     // of "달력 2026.08.08" once whitespace is stripped, and whitespace-blind
@@ -420,6 +476,41 @@ describe("renderAxTree", () => {
     ]);
   });
 
+  it("prints a DOM hint beside a control the accessibility tree cannot name", () => {
+    // `[e48] button ""` / `[e49] button ""` are indistinguishable, and with no
+    // name, value OR title there is nothing in the AX tree left to print. The
+    // hint the caller looked up in the DOM is the last thing that tells them
+    // apart — and it never decorates a control that HAS a label.
+    const lines = renderAxTree(
+      [
+        node("1", "RootWebArea", "Doc", ["2", "3", "4"]),
+        node("2", "button", "", [], { backendDOMNodeId: 48 }),
+        node("3", "button", "저장", [], { backendDOMNodeId: 49 }),
+        node("4", "textbox", "", [], { backendDOMNodeId: 50, value: { value: "광교" } }),
+      ],
+      uids(),
+      new Map([
+        [48, "#map-zoom-in"],
+        [49, "#save"],
+        [50, ".search-input"],
+      ]),
+    ) as string[];
+    expect(lines).toEqual([
+      'RootWebArea "Doc"',
+      '[e1] button "" (dom: #map-zoom-in)',
+      '[e2] button "저장"',
+      '[e3] textbox "" = "광교"',
+    ]);
+  });
+
+  it("renders unchanged when the caller passes no hints at all", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "button", "", [], { backendDOMNodeId: 48 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button ""']);
+  });
+
   it("leaves links with different destinations alone", () => {
     const lines = render([
       node("1", "RootWebArea", "목록", ["2", "3"]),
@@ -437,6 +528,28 @@ describe("renderAxTree", () => {
       '[e1] link "첫째" → https://e.example/1',
       '[e2] link "둘째" → https://e.example/2',
     ]);
+  });
+});
+
+describe("unlabeledInteractiveIds", () => {
+  it("finds only interactive nodes with no name, no value and no description", () => {
+    // The set the caller spends CDP round trips on. A named control needs no
+    // hint, a described one already prints its title, a nameless StaticText is
+    // not actionable at all, and a field with a value is identified by it.
+    const ids = unlabeledInteractiveIds([
+      node("1", "RootWebArea", "Doc", ["2", "3", "4", "5", "6"]),
+      node("2", "button", "", [], { backendDOMNodeId: 48 }),
+      node("3", "button", "저장", [], { backendDOMNodeId: 49 }),
+      node("4", "button", "", [], { backendDOMNodeId: 50, description: { value: " 길찾기 " } }),
+      node("5", "StaticText", "", [], { backendDOMNodeId: 51 }),
+      node("6", "textbox", "", [], { backendDOMNodeId: 52, value: { value: "광교" } }),
+    ]) as number[];
+    expect(ids).toEqual([48]);
+  });
+
+  it("skips a nameless node that carries no backend id to address it by", () => {
+    const ids = unlabeledInteractiveIds([node("1", "button", "", [], {})]) as number[];
+    expect(ids).toEqual([]);
   });
 });
 
@@ -580,6 +693,19 @@ describe("renderAxText", () => {
       node("4", "StaticText", "랑 홈메이드 라자냐 시켰는데"),
     ]) as string[];
     expect(lines).toEqual(["옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데"]);
+  });
+
+  it("reads a highlight-split option as its label alone, nothing extra", () => {
+    // Same walk, so the phrasing-wrapper fix lands here too: the reading view
+    // must not repeat the option's text as a second line of fragments.
+    const lines = renderAxText([
+      node("1", "option", "검색어 광교역", ["2", "3", "4"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "검색어 "),
+      node("3", "mark", "", ["5"]),
+      node("4", "StaticText", "역"),
+      node("5", "StaticText", "광교"),
+    ]) as string[];
+    expect(lines).toEqual(["검색어 광교역"]);
   });
 
   it("keeps a table's rows together instead of one cell per line", () => {

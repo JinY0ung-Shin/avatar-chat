@@ -19,7 +19,14 @@
 // out detaches it. That makes consent a live, visible surface the user can
 // revoke without a settings screen.
 
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, axProp } from "./axtree.js";
+import {
+  renderAxTree,
+  renderAxText,
+  capSnapshot,
+  mergeTextLines,
+  axProp,
+  unlabeledInteractiveIds,
+} from "./axtree.js";
 
 const GROUP_TITLE = "Noah";
 const CDP_VERSION = "1.3";
@@ -32,12 +39,17 @@ const CDP_VERSION = "1.3";
  * reads pixels — the same exfiltration class as a snapshot, gated by the same
  * origin allowlist — `DOM.getNodeForLocation` hit-tests a point so a
  * coordinate click can report what it landed on instead of assuming success,
- * and `Page.getFrameTree` reads the frame STRUCTURE (ids only, no content) so
- * same-process iframes can be walked at all.
+ * `Page.getFrameTree` reads the frame STRUCTURE (ids only, no content) so
+ * same-process iframes can be walked at all, and
+ * `Accessibility.getPartialAXTree` reads ONE node — the same exfiltration class
+ * as the getFullAXTree already here, and strictly less of it. It exists so a
+ * clearing write can be VERIFIED by reading the field back instead of claiming
+ * success on faith, the line select_option already draws.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
   "Accessibility.getFullAXTree",
+  "Accessibility.getPartialAXTree",
   "DOM.describeNode",
   "DOM.enable",
   "DOM.getBoxModel",
@@ -128,6 +140,16 @@ const uidByNode = new Map();
 let refSeq = 0;
 
 /**
+ * nodeKey -> DOM hint for an interactive element the accessibility tree cannot
+ * name (see buildDomHint). Keyed exactly like uidByNode and swept with it, so a
+ * hint can never outlive its tab and get printed against a stranger. An empty
+ * string means "asked, nothing useful" and is CACHED: a miss costs the same
+ * round trip as a hit, and refetching it every snapshot would spend the whole
+ * per-snapshot budget on the same handful of nodes.
+ */
+const hintByNode = new Map();
+
+/**
  * Ceiling on remembered uids. A long-lived worker crawling many pages would
  * otherwise grow both maps without bound; past this, everything is forgotten
  * at the start of a snapshot and agents recover through the ordinary
@@ -157,6 +179,13 @@ function forgetTabRefs(tabId) {
     if (ref.tabId !== tabId) continue;
     refMap.delete(uid);
     uidByNode.delete(nodeKey(ref.tabId, ref.sessionId, ref.backendNodeId));
+  }
+  // Swept by key prefix rather than through refMap: a cached hint must go even
+  // if its uid was already evicted. Tab ids are integers, so "12:" never
+  // matches "123:…".
+  const prefix = `${tabId}:`;
+  for (const key of hintByNode.keys()) {
+    if (key.startsWith(prefix)) hintByNode.delete(key);
   }
 }
 
@@ -576,21 +605,56 @@ async function sourceAxNodes(source) {
   }
 }
 
+/**
+ * Uncached DOM-hint lookups one snapshot may spend. Each is a round trip, and a
+ * page can hold dozens of unlabeled controls; the cache means later snapshots
+ * pick up where this one stopped rather than re-asking about the same nodes.
+ */
+const HINT_FETCH_PER_SNAPSHOT = 8;
+
+/**
+ * DOM hints for the nodes in one source the AX tree could not name at all,
+ * newly fetched ones bounded by `budget`. Returns the map renderAxTree prints
+ * from and how much budget is left.
+ */
+async function collectDomHints(source, nodes, budget) {
+  const hints = new Map();
+  let left = budget;
+  for (const backendNodeId of unlabeledInteractiveIds(nodes)) {
+    const key = nodeKey(source.target.tabId, source.target.sessionId, backendNodeId);
+    let hint = hintByNode.get(key);
+    if (hint === undefined) {
+      if (left <= 0) continue;
+      left -= 1;
+      hint = await buildDomHint(source.target, backendNodeId);
+      hintByNode.set(key, hint);
+    }
+    if (hint) hints.set(backendNodeId, hint);
+  }
+  return { hints, left };
+}
+
 /** Walk every attached session and merge the accessibility trees into one view. */
 async function buildSnapshot(tab) {
   if (refMap.size > REF_MAP_MAX) {
     refMap.clear();
     uidByNode.clear();
+    hintByNode.clear();
   }
   const lines = [];
+  let hintBudget = HINT_FETCH_PER_SNAPSHOT;
   for (const source of await axSources(tab)) {
     const nodes = await sourceAxNodes(source);
     if (!nodes) continue;
+    const { hints, left } = await collectDomHints(source, nodes, hintBudget);
+    hintBudget = left;
     // Frame nodes ride the session that fetched them; backendNodeIds are
     // unique per target, so click/type resolve unchanged.
     lines.push(
-      ...renderAxTree(nodes, (backendNodeId) =>
-        mintUid(source.target.tabId, source.target.sessionId, backendNodeId),
+      ...renderAxTree(
+        nodes,
+        (backendNodeId) => mintUid(source.target.tabId, source.target.sessionId, backendNodeId),
+        hints,
       ),
     );
   }
@@ -736,6 +800,76 @@ function clampFraction(value) {
   return Math.min(Math.max(value, 0), 1);
 }
 
+/** A described DOM node's attributes as an object — CDP hands them back flat. */
+function flatAttrs(node) {
+  const attrs = {};
+  const flat = node?.attributes || [];
+  for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i]] = flat[i + 1];
+  return attrs;
+}
+
+/**
+ * First non-empty text anywhere in a described subtree, so a wrapper like
+ * `<button><span>Save</span></button>` still yields a label.
+ */
+function firstDomText(nodes) {
+  for (const child of nodes || []) {
+    if (child.nodeName === "#text" && (child.nodeValue || "").trim()) {
+      return child.nodeValue.trim();
+    }
+    const nested = firstDomText(child.children);
+    if (nested) return nested;
+  }
+  return "";
+}
+
+/** Cap for a printed DOM hint: enough to tell two controls apart, never a dump. */
+const HINT_MAX_CHARS = 60;
+
+/**
+ * A short DOM identifier for an interactive element the accessibility tree
+ * cannot name — the last thing that tells `[e48] button ""` from
+ * `[e49] button ""` once name, value AND title are all empty. Read-only
+ * (`DOM.describeNode`, already allowlisted for describePoint).
+ *
+ * Priority is "what a person would quote to a colleague": `#id`, else the first
+ * two class tokens, else an input's `type`, else the label of the icon inside it
+ * (the depth-2 subtree is already in hand, so this costs no extra round trip).
+ * Any failure returns "" — a missing hint is the status quo, never an error.
+ * The result is page-derived text riding inside the snapshot, which is already
+ * quarantined as untrusted, so it needs no wrapper of its own.
+ */
+async function buildDomHint(target, backendNodeId) {
+  try {
+    const { node } = await sendCdp(target, "DOM.describeNode", { backendNodeId, depth: 2 });
+    if (!node) return "";
+    const clip = (value) => String(value).replace(/\s+/g, " ").trim().slice(0, HINT_MAX_CHARS);
+    const attrs = flatAttrs(node);
+    if (attrs.id) return clip(`#${attrs.id}`);
+    const classes = String(attrs.class || "")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 2);
+    if (classes.length) return clip(`.${classes.join(".")}`);
+    if (attrs.type) return clip(`type=${attrs.type}`);
+    const findIcon = (items) => {
+      for (const child of items || []) {
+        const tag = String(child.nodeName || "").toLowerCase();
+        if (tag === "img" || tag === "svg") return child;
+        const nested = findIcon(child.children);
+        if (nested) return nested;
+      }
+      return null;
+    };
+    const icon = flatAttrs(findIcon(node.children));
+    const label = icon.alt || icon["aria-label"] || icon.title || firstDomText(node.children);
+    return label ? clip(label) : "";
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Best-effort description of the element at a point — the blind spot of a
  * coordinate click. Read-only (`DOM.getNodeForLocation` + `describeNode`); any
@@ -774,23 +908,13 @@ async function describePoint(target, x, y) {
     if (!contains) return null;
     const { node } = await sendCdp(target, "DOM.describeNode", { backendNodeId, depth: 2 });
     if (!node) return null;
-    const attrs = {};
-    const flat = node.attributes || [];
-    for (let i = 0; i + 1 < flat.length; i += 2) attrs[flat[i]] = flat[i + 1];
-    // First non-empty text anywhere in the described subtree, so a wrapper
-    // like <button><span>Save</span></button> still yields a label.
-    const firstText = (nodes) => {
-      for (const child of nodes || []) {
-        if (child.nodeName === "#text" && (child.nodeValue || "").trim()) {
-          return child.nodeValue.trim();
-        }
-        const nested = firstText(child.children);
-        if (nested) return nested;
-      }
-      return "";
-    };
+    const attrs = flatAttrs(node);
     const label =
-      attrs["aria-label"] || attrs.title || attrs.alt || attrs.placeholder || firstText(node.children);
+      attrs["aria-label"] ||
+      attrs.title ||
+      attrs.alt ||
+      attrs.placeholder ||
+      firstDomText(node.children);
     const tag = String(node.nodeName || "?").toLowerCase();
     const id = attrs.id ? ` id="${attrs.id}"` : "";
     const role = attrs.role ? ` role="${attrs.role}"` : "";
@@ -943,25 +1067,64 @@ async function focusForInput(ref) {
 }
 
 /**
- * Focus one field and enter `value` — the shared insert path of type and
- * fill_form. `clear` first selects the existing content the way a person
- * would (select-all, then overtype / delete), so edit forms can be REPLACED
- * rather than appended to.
+ * Select everything in the focused element, the way a person does AND the way
+ * the editor itself does.
+ *
+ * The keystroke alone was not enough: on a script-controlled combobox
+ * (map.naver.com's React search box) Ctrl+A silently did nothing, so the insert
+ * that followed APPENDED — "광교" + "카페거리" became "광교카페거리" instead of
+ * replacing. `commands: ["selectAll"]` is CDP's escape hatch into the Blink
+ * editor command the shortcut would have triggered: it runs in the focused
+ * element directly, without depending on our synthetic key fields being
+ * interpreted by the platform keymap. The key fields stay exactly as dispatchKey
+ * would have sent them so a page listening for ⌘A/Ctrl+A still sees a plausible
+ * event, and the paired keyUp carries no command — an editor command runs once,
+ * on the way down.
+ *
+ * It is NOT a guarantee, which is exactly why the read-back below exists: the
+ * command still travels through the default keydown handler, so a page that
+ * preventDefault()s the shortcut defeats this too (verified against one that
+ * does). Selecting nothing is invisible at this layer — only reading the field
+ * afterwards can tell.
  */
-async function fillField(ref, value, clear) {
-  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
-  await focusForInput(ref);
-  if (clear) {
-    // Blink maps the select-all editing command per platform.
-    const mask = (await platformOs()) === "mac" ? MODIFIER_BITS.Meta : MODIFIER_BITS.Control;
-    await dispatchKey(target, "a", mask);
-    if (!value) {
-      await dispatchKey(target, "Delete", 0);
-      return;
-    }
-    // Non-empty value: the insert below replaces the selection, like paste-over.
+async function selectAllIn(target) {
+  // Blink maps the select-all editing command per platform.
+  const modifiers = (await platformOs()) === "mac" ? MODIFIER_BITS.Meta : MODIFIER_BITS.Control;
+  const key = { key: "a", code: "KeyA", windowsVirtualKeyCode: 65 };
+  await sendCdp(target, "Input.dispatchKeyEvent", {
+    type: "rawKeyDown",
+    modifiers,
+    ...key,
+    commands: ["selectAll"],
+  });
+  await sendCdp(target, "Input.dispatchKeyEvent", { type: "keyUp", modifiers, ...key });
+}
+
+/**
+ * What the accessibility tree reports as one element's CURRENT value, or null
+ * when it cannot be read (an older Chrome without the method, a node that just
+ * detached). One node, read-only, no relatives — it exists so a clearing write
+ * can be verified instead of assumed.
+ *
+ * null means verification is UNAVAILABLE, which is not the same as "the field is
+ * empty": every caller treats null as "no evidence either way" and keeps the
+ * optimistic behavior the bridge had before verification existed.
+ */
+async function readAxValue(ref) {
+  try {
+    const { nodes } = await sendCdp(
+      { tabId: ref.tabId, sessionId: ref.sessionId },
+      "Accessibility.getPartialAXTree",
+      { backendNodeId: ref.backendNodeId, fetchRelatives: false },
+    );
+    return String(nodes?.[0]?.value?.value ?? "").trim();
+  } catch {
+    return null;
   }
-  if (!value) return;
+}
+
+/** Enter text at the caret the way the field expects (IME for non-ASCII). */
+async function insertValue(target, value) {
   if (needsComposition(value)) {
     await insertTextAsIme(target, value);
   } else {
@@ -969,28 +1132,123 @@ async function fillField(ref, value, clear) {
   }
 }
 
+/** A page can sync its own model back into the field a beat after the events. */
+const VALUE_SETTLE_MS = 150;
+/** Backspaces the clearing fallback may press: a field is not a document. */
+const CLEAR_BACKSPACE_MAX = 300;
+
+/**
+ * True when the OLD value survived the write at one END of the field — the
+ * signature of a select-all the page ignored, which turns a replacement into an
+ * insert. BOTH ends, because the surviving text sits wherever the caret was not:
+ * "광교" + "카페거리" read back as "광교카페거리" in the field report (caret at the
+ * end) and as "카페거리광교" on a freshly focused input (caret at 0). A hit in the
+ * MIDDLE is not counted — that is where a short old value collides with a page's
+ * own reformatting by coincidence, and a false alarm here costs a real error
+ * message on a page that worked.
+ *
+ * Decidable only when both reads succeeded; a null read means verification was
+ * unavailable and must never read as failure. A field that now holds EXACTLY the
+ * requested value is a success whatever it held before, which is what keeps
+ * replacing "광교" with "광교역" from looking like a survival.
+ */
+function clearFailed(before, after, value) {
+  if (before === null || after === null) return false;
+  const old = before.trim();
+  if (!old) return false;
+  if (after === value.trim()) return false;
+  return after.startsWith(old) || after.endsWith(old);
+}
+
+/**
+ * Verify that a CLEARING write actually replaced the field, and repair it by
+ * keyboard when it did not — then say so out loud if even that fails. Silence
+ * was the bug: a script-controlled input appended twice in a row, deterministic
+ * and invisible, and the tool reported success both times.
+ *
+ * `insert` re-enters the value the same way the caller entered it the first time
+ * (insertText/IME, or per-character keys), so the repair never switches input
+ * paths mid-field. Erasing is counted off `after`, the text ACTUALLY in the
+ * field — counting off `before` would delete the tail of what we just wrote and
+ * leave the old value in front, which is the failure itself.
+ */
+async function verifyClearedWrite(ref, target, before, value, insert) {
+  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
+  let after = await readAxValue(ref);
+  if (!clearFailed(before, after, value)) return;
+  // Do what a person does when a shortcut is ignored: caret to the back, erase
+  // what is there one key at a time, type the value again.
+  await dispatchKey(target, "End", 0);
+  const presses = Math.min([...after].length, CLEAR_BACKSPACE_MAX);
+  for (let i = 0; i < presses; i += 1) {
+    if (pendingDialogs.has(ref.tabId)) return; // frozen renderer; the tail reports it
+    await dispatchKey(target, "Backspace", 0);
+  }
+  if (value) await insert();
+  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
+  after = await readAxValue(ref);
+  if (!clearFailed(before, after, value)) return;
+  throw new Error(
+    `Clearing this field did not take: the page rewrote its value (it now reads "${String(after).slice(0, 120)}"). ` +
+      "This input is script-controlled. Click the field's own clear (X) control from the snapshot if it has one, " +
+      "or ask the user to clear it.",
+  );
+}
+
+/**
+ * Focus one field and enter `value` — the shared insert path of type and
+ * fill_form. `clear` first selects the existing content the way a person would
+ * (select-all, then overtype / delete), so edit forms can be REPLACED rather
+ * than appended to, and then READS THE FIELD BACK to check that the replacement
+ * actually happened.
+ */
+async function fillField(ref, value, clear) {
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  await focusForInput(ref);
+  if (!clear) {
+    // Insert-at-cursor is the default and stays a straight write: no read-back,
+    // no settle delay. Only a REPLACEMENT has something that can silently fail.
+    if (value) await insertValue(target, value);
+    return;
+  }
+  const before = await readAxValue(ref);
+  await selectAllIn(target);
+  if (value) {
+    await insertValue(target, value); // replaces the selection, like paste-over
+  } else {
+    // An empty value means "empty this field" — nothing follows to overtype the
+    // selection, so remove it explicitly.
+    await dispatchKey(target, "Delete", 0);
+  }
+  await verifyClearedWrite(ref, target, before, value, () => insertValue(target, value));
+}
+
 async function typeRef(uid, value, submit, keystrokes, clear) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   if (keystrokes) {
     await focusForInput(ref);
-    if (clear) {
-      // fillField's clear mechanics, replayed BEFORE the loop so the first
-      // character overtypes the selection instead of extending the value.
-      const mask = (await platformOs()) === "mac" ? MODIFIER_BITS.Meta : MODIFIER_BITS.Control;
-      await dispatchKey(target, "a", mask);
-      // An empty value means "empty this field" — nothing follows to overtype
-      // the selection, so remove it explicitly (the loop below is a no-op).
-      if (!value) await dispatchKey(target, "Delete", 0);
-    }
+    const before = clear ? await readAxValue(ref) : null;
     // Replay as real per-character key events, ONE bridge operation for the
     // whole string — for editors that only listen to keyboard input. Server
     // caps the length; the dialog check keeps a mid-string alert() from
     // queueing keystrokes into a frozen renderer.
-    for (const ch of [...value]) {
-      if (pendingDialogs.has(ref.tabId)) return;
-      await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
+    const replay = async () => {
+      for (const ch of [...value]) {
+        if (pendingDialogs.has(ref.tabId)) return;
+        await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
+      }
+    };
+    if (clear) {
+      // fillField's clear mechanics, replayed BEFORE the loop so the first
+      // character overtypes the selection instead of extending the value.
+      await selectAllIn(target);
+      // An empty value means "empty this field" — nothing follows to overtype
+      // the selection, so remove it explicitly (the replay below is a no-op).
+      if (!value) await dispatchKey(target, "Delete", 0);
     }
+    await replay();
+    if (clear) await verifyClearedWrite(ref, target, before, value, replay);
   } else {
     await fillField(ref, value, clear);
   }
@@ -1706,11 +1964,14 @@ async function perform(message) {
       } catch (error) {
         // Partial progress is real progress: say exactly where it stopped so
         // the agent re-snapshots and continues instead of re-filling from zero.
+        // "may hold partly-written text" covers the clearing failure, where the
+        // field was written but the old value survived in front of it.
         return {
           ok: false,
           message:
             `Field ${i + 1} of ${fields.length} (uid "${uid}") could not be filled: ${String(error?.message || error)} ` +
-            "Fields before it were already filled — take a fresh snapshot and continue from there.",
+            "Fields before it were already filled, and this one may hold partly-written text — " +
+            "take a fresh snapshot and continue from there.",
         };
       }
     }
