@@ -1,0 +1,126 @@
+# Agent core — orchestration, tool policy, MCP servers
+
+> Detail page of [Architecture & Operational Notes](../ARCHITECTURE-NOTES.md).
+> How `claudeAgent.ts` is split, the admin tool/skill on-off policy, agent teams, and the checklist for adding an MCP tool server.
+
+Agent orchestration + in-process MCP tool servers. Companion to the agent-area philosophy in
+[`../../src/server/agent/CLAUDE.md`](../../src/server/agent/CLAUDE.md).
+
+## claudeAgent.ts is split (behind unchanged exports)
+`claudeAgent.ts` is the orchestrator (`runClaudeAgent` + subprocess-env helpers) and **re-exports** the
+moved symbols so importers keep their paths:
+- `promptBuilder.ts` — `buildSystemPromptAppend` + `buildUserPrompt` + compatibility `buildPrompt` +
+  `compactConversationHistory`/`conversationHistoryBlock` + `GIT_MCP_ONLY_GUIDANCE`.
+  `claudeAgent.ts` uses the SDK's default Claude Code system prompt via `systemPrompt: { type: "preset",
+  preset: "claude_code", append, excludeDynamicSections: true }`; app/permission/self-state guidance goes
+  in the append, while stored history + the current user/task instruction stay in the user prompt. **`agent-core.test.ts`
+  checks the prompt with `toContain`/`not.toContain` substrings, NOT byte-for-byte** — ADDING a section is
+  safe; only changing an EXISTING string (or its presence per viewer class) breaks a test.
+- `sdkMessageHandlers.ts` — SDK-message→`AgentEvents` translation (`handle*` + Task helpers + `LoopState`
+  + `interpretResult`/`resultErrorMessage`).
+- `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput`.
+- `agentUtils.ts` — small shared helpers.
+Keep the re-export set in `claudeAgent.ts` minimal to the original public surface.
+
+## Admin builtin tool/skill on-off policy (`toolSkillPolicy.ts` + `agent/skillDiscovery.ts`)
+- **What it is:** the admin panel (system tab → "내장 도구·스킬 정책") disables SDK BUILT-IN tools
+  (WebFetch/WebSearch/NotebookEdit/Task+Agent/SendMessage — the `TOGGLABLE_BUILTIN_TOOLS` catalog; core
+  tools are deliberately NOT togglable and the strict parser rejects them) and individual SKILLS (CLI built-ins
+  like code-review/deep-research AND app/plugin skills) deployment-wide. Storage mirrors the hex-ssh
+  policy: one JSON blob in `app_config` (`getToolSkillPolicy`/`setToolSkillPolicy` in `store/secrets.ts`,
+  lenient `normalize*` on read / strict `parse*` at `PUT /api/admin/tool-skill-policy`), read FRESH per
+  agent run. Empty policy == pre-feature behavior (safe under `SESSION_SECRET` rotation).
+- **Three-layer enforcement (all from ONE `toolSkillPolicy` read in `runClaudeAgent`):**
+  1. `disallowedTools` = `UNUSED_SDK_BUILTIN_TOOLS ∪ disallowedEntriesForPolicy(policy)` — bare names
+     remove built-ins from the advertised set; `Skill(<name>)` denies that one skill at the CLI (a
+     content-carrying deny never strips the whole Skill tool — verified against the bundled CLI matcher).
+  2. `options.skills` — `"all"` normally; when skills are disabled AND the discovery cache matches the
+     bundled CLI version, an explicit allowlist (`computeSkillsOption`) HIDES them from the skill
+     listing. **Visibility fail-open / execution fail-closed:** missing or stale cache → `"all"` (skills
+     must never vanish because a preflight failed); the hook still denies.
+  3. PreToolUse hook — denies disabled skills (`Skill` is otherwise an auto-allowed meta tool, so this
+     branch runs BEFORE the auto-allow; matches bare AND `plugin:name` forms) and disabled tool names.
+     English deny reason, Korean `onBlocked`.
+- **Skill discovery** (`agent/skillDiscovery.ts`, gateway-proven pattern): one preflight SDK session in
+  streaming-input mode that never sends a turn → `query.supportedCommands()` (~0.3s, no API call/auth) →
+  cached in `app_config` keyed by the SDK's `claudeCodeVersion`. Runs lazily from
+  `GET /api/admin/system` (claude runtime only — the `local` test runtime is cache-only), single-flight
+  guarded. Per-avatar plugin skills are NOT in the cache: `listPluginRootSkills` scans each run's plugin
+  roots (`skills/<dir>/SKILL.md`) so the allowlist covers them. Over-inclusion in the allowlist is inert;
+  omission hides a skill — hence fail-open on any doubt. Known edge: an availability-gated CLI skill
+  absent at preflight (e.g. `commit`) stays hidden while any skill is disabled.
+- **Meta-cognition:** `buildSystemPromptAppend` standing note (`adminDisabledTools/-Skills` on
+  `AgentRequest`) + `describe_system` "Admin-disabled …" lines (via `SystemToolsContext.toolSkillPolicy`)
+  — a disabled skill may still be LISTED when the cache is stale, so the note pre-empts wasted attempts.
+- **Beware `*/` in JSDoc:** a glob like `skills/*/SKILL.md` inside a block comment TERMINATES it and the
+  rest of the file parses as code (surfaced as bizarre TS1443/TS1160 errors far below). Write
+  `skills/<dir>/SKILL.md` in block comments; `//` line comments are safe.
+
+## Agent teams (experimental — named subagents + SendMessage)
+- **Enablement is three-legged** (2026-08): `agentSubprocessEnv` sets
+  `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1`; `SendMessage` is exposed via `SDK_TEAM_TOOLS` (removed from
+  `UNUSED_SDK_BUILTIN_TOOLS`) and folded into the hook's `TASK_ORCHESTRATION_TOOLS` auto-allow +
+  `allowedTools`; and ONE admin toggle (`agent_teams` in the togglable-tool catalog) switches the WHOLE
+  feature: it disallows the `SendMessage` tool AND (via `isAgentTeamsDisabled` →
+  `agentSubprocessEnv`'s third arg) forces the CLI flag to "0". **Precedence:** admin toggle (off wins
+  over everything) > operator-set env value in the deploy environment > default-on. The CLI-side gate
+  (`isAgentSwarmsEnabled` in the bundled CLI) also consults a statsig gate that DEFAULTS TRUE offline.
+  Keep the tool-name→feature semantic in `isAgentTeamsDisabled` (next to the catalog), never inline
+  `includes("SendMessage")` at call sites.
+- **Usage shape in CLI ≥2.1.x:** there are NO TeamCreate/TeamDelete tools and `Agent.team_name` is
+  deprecated — a session has ONE implicit team; `Agent` with `name:` spawns an addressable teammate and
+  `SendMessage({to: name})` messages it. Teammates' own tool calls still hit the PreToolUse hook
+  individually, so per-viewer gating is unchanged.
+- **Presentation:** `SendMessage` is deliberately NOT in `SDK_HIDDEN_ACTIVITY_TOOLS` — coordination
+  renders as a visible tool row ("팀원 메시지 전송", detail = `recipient · summary|content` via the
+  `summarizeToolInput` special case; CLI input keys are recipient/content/summary). Teammate lifecycles
+  surface through the existing subagent/task event paths (`SUBAGENT_TOOLS`, `task_started` system
+  events); the teammate's addressable identity rides on `AgentSpawnEvent.name` (from `input.name` /
+  `teammate_name`) and the client prefixes the agent node label with `@<name>`. The persisted activity
+  snapshot needs no schema change — it stores the rendered label.
+- **Headless caveat:** `teammateMode` ('auto'|'tmux'|'iterm2'|'in-process') comes from settings files,
+  which Noah never loads (`settingSources: []`) — runs rely on 'auto' resolving to in-process in a
+  TTY-less server. Verified only at the unit level; watch the first live runs on the deploy server.
+
+## Adding / changing an MCP tool server
+- **One template per `*Tools.ts`:** `buildXTools` (handler-level owner/elevated guards) + `buildXServer`
+  + a `SERVER_NAME`/`TOOL_NAMES` const pair.
+- **A new tool means updating BOTH `mcpServers` AND `allowedTools` in `claudeAgent.ts`** — two hand-synced
+  lists. Add to one but not the other and the model either sees a tool it can't call or can call a tool it
+  can't see. (Making this data-driven is deferred, T3.5.)
+- **Guard convention differs per file BY DESIGN:** groupRepo/system/sshIdentity/knowledge-write gate on
+  `ctx.viewerIsOwner` (= `ownerToolAccess` = owner chat OR owner routine); `repoTools` (personal knowledge
+  repo) splits READ (`list_files`/`read_file`, gated on `ctx.elevated` = owner OR trusted same-group
+  teammate) vs WRITE/commit/create (owner-only); `gitRepoTools` splits owner vs elevated; `confluenceTools`
+  and `webFetchTools` gate on `ctx.elevated`; `sshTrustTools` and `search_avatars` are intentionally
+  UNGATED (fingerprints aren't secrets; directory search is all-viewer read-only) while its sibling
+  `ask_avatar` in the SAME file is owner-driven (see the consultation section below). Don't "normalize"
+  these.
+- **Second-brain read tools (`brainTools`/`groupBrainTools`):** read-only RECALL servers
+  (`search`/`get_note`) over the same knowledge-repo clones. `brainTools` (personal) gates reads on
+  `ctx.elevated`; `groupBrainTools` gates reads on group-MEMBERship. There is NO brain WRITE tool — route
+  writes through `mcp__repo__write_file`/`mcp__group_repo__write_file` + `commit`.
+- **Web fetch (`webFetchTools.ts`, server `web`, tool-group id `web`):** one `mcp__web__fetch` tool that
+  fetches from the APP process, NOT the CLI subprocess — that's the whole point: the built-in WebFetch
+  force-upgrades `http://`→`https://` (verified on the bundled binary), so plain-HTTP intranet pages only
+  work here. Proxy: `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` via undici's `EnvHttpProxyAgent` — must use
+  undici's OWN `fetch` (node's global fetch is a different bundled undici and rejects the dispatcher).
+  Live-verified: undici tunnels EVERY proxied request via `CONNECT` (even `http://` targets; curl uses
+  absolute-form GET instead), so a corporate proxy that only allows `CONNECT :443` refuses proxied
+  plain-HTTP to EXTERNAL port-80 sites. Intranet http bypasses the proxy via `NO_PROXY`/direct, so this
+  bites rarely — check the proxy's CONNECT port policy before blaming the tool.
+  Private CAs: `NODE_EXTRA_CA_CERTS` (node-native) and `GITHUB_CA_CERT` (process-wide
+  `tls.setDefaultCACertificates`, tlsCa.ts) both cover it. Guards: handler gates on `ctx.elevated`;
+  loopback + link-local/metadata (169.254.x, `::1`, `localhost`, v4-mapped) refused while PRIVATE ranges
+  (10.x/172.16-31/192.168) are deliberately allowed; same-host redirects followed (≤5) but cross-host
+  redirects REPORTED for an explicit re-fetch (the built-in WebFetch contract, and it re-runs the guard);
+  2MB streamed body cap; 20k-char result window with `offset` continuation; charset from the header or a
+  `<meta charset>` sniff (KR intranets still serve euc-kr). HTML→text is deliberately dependency-free
+  (entities decoded AFTER tag-strip; links kept as `label (abs-url)`). Proxy self-state comes from ONE
+  helper, `webFetchProxyState()` (values redacted to scheme://host:port — proxy creds never enter a
+  prompt), read by BOTH `buildSystemPromptAppend` (`AgentRequest.webFetchProxy`, set in `runClaudeAgent`)
+  and `describe_system` — the Confluence-style deployment-fact sync. The built-in WebFetch stays
+  available (its own description tells the model to prefer an MCP web fetch tool); admins can still kill
+  it via the builtin-tool policy toggle.
+- **The `mcp__`-prefix auto-allow in the PreToolUse hook fires BEFORE the owner check**, so every tool
+  MUST self-gate in its handler. Don't rely on the hook.

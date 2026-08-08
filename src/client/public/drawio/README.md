@@ -29,4 +29,4 @@ dead same-origin path, so math labels render as raw text.
 Re-download `viewer-static.min.js` and the stencil XMLs from one upstream tag (keep
 them in lockstep), update the tag above, and re-verify under the app CSP: the viewer
 must render without `unsafe-eval` and without external requests (see the
-"drawio viewer" section in `docs/ARCHITECTURE-NOTES.md`).
+draw.io viewer notes in `docs/architecture/chat-sse-media.md`).

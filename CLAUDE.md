@@ -2,8 +2,9 @@
 
 The durable **direction and philosophy** of this codebase. Operational detail (file/function/column
 names, migration mechanics, refactor history, CSP byte rules, test coupling, and the long gotcha list)
-lives in **[`docs/ARCHITECTURE-NOTES.md`](docs/ARCHITECTURE-NOTES.md)** — read it before touching the
-relevant subsystem. See README.md for features, setup, env vars, verification.
+lives in **[`docs/ARCHITECTURE-NOTES.md`](docs/ARCHITECTURE-NOTES.md)**, which is an **index** over
+per-subsystem pages in [`docs/architecture/`](docs/architecture/) — open the index, then load only the
+page for what you are touching. See README.md for features, setup, env vars, verification.
 
 ## Core design direction
 
@@ -50,7 +51,7 @@ These are the invariants the project is built around. New work should reinforce 
   COPIES `skills/<slug>/` into the learner's own repo and commits as the learner (`skillTransfer.ts` —
   symlinks never followed, size-capped); a learned skill LOADS from the next conversation, and both
   metacognition surfaces + the tool result say so. The `mcp__skill_exchange__*` tools are owner-only end
-  to end. Mechanics → `docs/ARCHITECTURE-NOTES.md` §Skill sharing.
+  to end. Mechanics → `docs/architecture/avatar-collab.md`.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the
   subprocess env), so Bash `git push`/`gh` can never authenticate. Route every git-ish capability through
   an in-process MCP bridge (`mcp__repo__*`/`mcp__git_repo__*`/`mcp__group_repo__*`) and keep the
@@ -66,7 +67,7 @@ These are the invariants the project is built around. New work should reinforce 
   AX-invisible targets), so an op that cannot be executed directly must be driven the way a
   PERSON would AND re-read what it landed on instead of assuming success. Everything the page returns
   (snapshot text, `read_text` chunks, screenshot pixels) is UNTRUSTED input. Mechanics →
-  `docs/ARCHITECTURE-NOTES.md` §Browser bridge.
+  `docs/architecture/browser-bridge.md` (its own 5-page hub — start with `contract.md`).
 - **A server-held third-party credential stays READ-ONLY; the WRITE path is the user's own browser.**
   The Confluence tools read only, enforced STRUCTURALLY — `requestJson` has no `method`/`body` option,
   so a future tool cannot quietly reach a mutating endpoint. Page creation/editing is routed to the
@@ -134,7 +135,8 @@ These are the invariants the project is built around. New work should reinforce 
   `infra`, `app`, `chat-history`, `external-agent` (+ `tests/helpers.ts`).
 - Module-level cautions: [`src/server/CLAUDE.md`](src/server/CLAUDE.md),
   [`src/server/agent/CLAUDE.md`](src/server/agent/CLAUDE.md), [`src/client/CLAUDE.md`](src/client/CLAUDE.md).
-  Operational detail: [`docs/ARCHITECTURE-NOTES.md`](docs/ARCHITECTURE-NOTES.md). Design language:
+  Operational detail: [`docs/ARCHITECTURE-NOTES.md`](docs/ARCHITECTURE-NOTES.md) (index →
+  [`docs/architecture/`](docs/architecture/)). Design language:
   [`docs/DESIGN.md`](docs/DESIGN.md). Deferred work: [`docs/REFACTORING-BACKLOG.md`](docs/REFACTORING-BACKLOG.md).
 
 ## Verification gate
@@ -143,7 +145,7 @@ These are the invariants the project is built around. New work should reinforce 
   `npm run lint` to eslint and fails — don't rely on it.
 - `rtk proxy npx vitest run tests/<file>.test.ts` — run ONE test file (full suite ~16s).
 - `npm run dev` — server (tsx watch, :48787) + client (vite, :5173, proxies `/api`,`/users`,`/fonts`).
-- Command/Docker/proxy/Playwright detail → [`docs/ARCHITECTURE-NOTES.md`](docs/ARCHITECTURE-NOTES.md).
+- Command/Docker/proxy/Playwright detail → [`docs/architecture/build-run-verify.md`](docs/architecture/build-run-verify.md).
 
 ## Deploy topology (don't forget)
 - **Coding happens on this WSL2 box; deployment is a SEPARATE internal corporate server** — `localhost`

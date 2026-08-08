@@ -2,9 +2,13 @@
 
 Agent orchestration + in-process MCP tool servers. Read with the **root [`CLAUDE.md`](../../../CLAUDE.md)**
 (meta-cognition, language split, permission gate, MCP-only git) and [`../CLAUDE.md`](../CLAUDE.md). The
-detailed mechanics (the prompt-section helpers, SSE/session resume, image-attachment query mode, canvas,
-hex-ssh, offline test setup) live in
-**[`../../../docs/ARCHITECTURE-NOTES.md`](../../../docs/ARCHITECTURE-NOTES.md) §Agent**.
+detailed mechanics live in **[`../../../docs/architecture/`](../../../docs/architecture/)** —
+[`agent-core.md`](../../../docs/architecture/agent-core.md) (the split, tool/skill policy, adding an MCP server),
+[`chat-sse-media.md`](../../../docs/architecture/chat-sse-media.md) (SSE/session resume, image query mode, canvas, share_file),
+[`avatar-collab.md`](../../../docs/architecture/avatar-collab.md) (consultation, skill sharing),
+[`browser-bridge.md`](../../../docs/architecture/browser-bridge.md) (own 5-page hub),
+[`agent-misc.md`](../../../docs/architecture/agent-misc.md) (hex-ssh, slash commands, offline test setup). Index:
+[`../../../docs/ARCHITECTURE-NOTES.md`](../../../docs/ARCHITECTURE-NOTES.md).
 
 Durable principles for this layer:
 

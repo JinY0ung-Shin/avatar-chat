@@ -3,7 +3,8 @@
 The Chrome/Edge extension half of the browser bridge. Read with the **root
 [`CLAUDE.md`](../CLAUDE.md)** (§"Browser control is a RELAY…" and §"The browser bridge is a
 SIGNED artifact"), install/policy detail in **[`README.md`](README.md)**, and mechanics in
-**[`../docs/ARCHITECTURE-NOTES.md`](../docs/ARCHITECTURE-NOTES.md) §Browser bridge**. This folder ships
+**[`../docs/architecture/browser-bridge.md`](../docs/architecture/browser-bridge.md)** (a 5-page hub —
+start with its `contract.md`). This folder ships
 to users' machines as a SIGNED artifact — a mistake here fails in the FIELD, not in CI.
 
 Durable constraints for this layer:

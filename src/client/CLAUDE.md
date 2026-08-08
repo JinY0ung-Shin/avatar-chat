@@ -3,7 +3,7 @@
 Client-area direction. Read with the **root [`CLAUDE.md`](../../CLAUDE.md)** ("Frontend"/CSP, build,
 SSE chat, language split). The detailed mechanics (state store API, theme single-source, every CSS
 gotcha, the Svelte 5 timing traps, hand-mirrored validators, Playwright verification recipe) live in
-**[`../../docs/ARCHITECTURE-NOTES.md`](../../docs/ARCHITECTURE-NOTES.md) §Client**. Design language →
+**[`../../docs/architecture/client.md`](../../docs/architecture/client.md)**. Design language →
 [`../../docs/DESIGN.md`](../../docs/DESIGN.md).
 
 Durable principles for this layer:

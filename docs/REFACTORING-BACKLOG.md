@@ -9,7 +9,7 @@ Each item lists: files · why · risk · effort · breaking.
 ## Deferred from Tier 2
 
 ### T2.6 — Split `public/app.js` into ES modules — ✅ DONE (2026-06)
-- **Done:** `public/app.js` is now a thin entry; feature code lives in `public/js/*.js` with `core.js` as the leaf primitives module (and `public/styles.css` split into `public/styles/*.css`). `pretest` now `node --check`s every module; import graph validated statically. Module map + the core-stays-a-leaf rule are documented in [`public/CLAUDE.md`](../public/CLAUDE.md). **Still needs a human browser smoke-test before relying on it** (no runtime verification in this env).
+- **Done:** `public/app.js` is now a thin entry; feature code lives in `public/js/*.js` with `core.js` as the leaf primitives module (and `public/styles.css` split into `public/styles/*.css`). `pretest` now `node --check`s every module; import graph validated statically. Module map + the core-stays-a-leaf rule were documented in `public/CLAUDE.md` (since removed — the vanilla `public/` frontend was superseded by the Svelte migration). **Still needs a human browser smoke-test before relying on it** (no runtime verification in this env).
 
 ---
 
@@ -76,7 +76,7 @@ Each item lists: files · why · risk · effort · breaking.
 ### T3.10 — audit remaining untracked template function calls (Svelte 5 legacy)
 - **Files:** `src/client/src/components/Shell.svelte` (`isConversationBusy`/`isConversationStreaming`),
   `src/client/src/views/ChatView.svelte` (`canPickModel`)
-- Same class as the fixed CONFLUENCE_PAT save-button bug (ARCHITECTURE-NOTES §Svelte 5 runtime gotchas):
+- Same class as the fixed CONFLUENCE_PAT save-button bug ([`architecture/client.md`](architecture/client.md) §Svelte 5 runtime gotchas):
   the template calls a helper whose BODY reads reactive state → compiled with `$.untrack` → the attribute
   goes stale until an unrelated invalidation. These are currently masked by coincident list/store
   refreshes (unverified). Verify each with a Playwright fixture, then convert to `$:` derived maps the
@@ -144,7 +144,7 @@ The 5-axis UI audit + fix pass landed (see DESIGN.md §5 item 9). Deliberately N
 ## Background phase (2026-08) — deferred hardening
 
 The SDK-native background-task continuation (visible turn finalized at the first `result` while the
-session keeps running; wake-ups delivered as new messages — see ARCHITECTURE-NOTES §Chat/SSE) shipped
+session keeps running; wake-ups delivered as new messages — see [`architecture/chat-sse-media.md`](architecture/chat-sse-media.md)) shipped
 with two deliberate v1 limits worth revisiting:
 
 ### BG1 — New user message during a background phase still 409s

@@ -13,7 +13,7 @@ a separate internal corporate server; end by reminding the user to deploy the ta
 
 - On `main`, synced with origin (`git fetch origin && git status -sb`).
 - If unrelated files are dirty, stage release files EXPLICITLY — never `git add -A`
-  (`.claude/worktrees/` embedded checkouts + stray edits; see ARCHITECTURE-NOTES).
+  (`.claude/worktrees/` embedded checkouts + stray edits; see ARCHITECTURE-NOTES §Cross-cutting gotchas).
 
 ## 2. Decide the version
 

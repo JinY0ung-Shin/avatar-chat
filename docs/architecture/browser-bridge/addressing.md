@@ -1,0 +1,105 @@
+# Browser bridge — addressing: uids, clicks, tabs, frames
+
+> Detail page of [Architecture & Operational Notes](../../ARCHITECTURE-NOTES.md).
+> `click_at`'s two modes, uid lifetime, the pinned working tab, the settle tail, and how frames are walked.
+
+- **`click_at` has TWO modes and they share nothing but a name.** UID mode (`uid` +
+  `xFraction`/`yFraction`, 0–1, default 0.5 centre) resolves the ref, takes `DOM.getContentQuads` on the
+  ref's OWN session, and clicks a fraction of the element's bounding box clamped 1px inside — no
+  screenshot, no `lastShot`, no drift check. `landedOn` is BEST-EFFORT here: `describePoint` takes the
+  full session target (not a bare tabId) and is asked on the ref's own session with the same point that
+  is clicked, so a frame-local coordinate is resolved in the space it was measured in — and its
+  `getContentQuads` containment cross-check is what makes that safe by construction, degrading to null
+  whenever the spaces disagree instead of naming the wrong element. Missing `landedOn` is therefore
+  still EXPECTED in uid mode and must not warn (unlike pixel mode, whose absence IS the warning); the
+  tool text tells the model to confirm the effect in the returned snapshot instead. The mode is chosen
+  in `background.js` by `typeof message.uid === "string" && message.uid`, and `browserTools` rejects
+  both-or-neither before the wire. `clampFraction` refuses `Number(null) === 0` explicitly — the relay
+  sends `null` for an omitted field, which would otherwise click the left edge instead of the centre.
+- **PIXEL mode clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** Screenshots are
+  downscaled (`SCREENSHOT_MAX_WIDTH` 1400), so the pixels the model sees ≠ CSS px. The extension
+  remembers the LAST capture's mapping (`lastShot`: tabId/mode/scale/clip dims) and inverts the scale at
+  click time — viewport captures only; element/fullPage clips are page-absolute and refused with a
+  redirect to a plain viewport screenshot. Same lifetime rule as uids: coordinates are only valid for
+  the screenshot that produced them — enforced at CLICK time, not mint time: the branch re-reads
+  `Page.getLayoutMetrics` and refuses on URL/scroll/viewport-size drift (a stale image size would even
+  pass the bounds check). Before dispatching, the point is hit-tested read-only
+  (`DOM.getNodeForLocation` + `describeNode`, geometry cross-checked via `getContentQuads` so a
+  wrong-space hit degrades to silence, never a lie) and the
+  landed-on element rides back (`landedOn`, quarantined as page content, capped in the relay). An
+  UNIDENTIFIED landing is stated as a warning in the tool result ("could NOT be identified") — absence
+  must never read as success, since the landed-on report is the one thing keeping a blind click honest.
+- **A uid is STABLE for the life of the worker, not for one snapshot.** `refMap` (uid → ref) plus the
+  reverse `uidByNode` (`${tabId}:${sessionId||"root"}:${backendNodeId}` → uid) are never reset per
+  snapshot: `mintUid` returns the uid an element already has, so re-snapshotting a page that re-orders
+  itself (a rolling newsstand) no longer repoints "e42" at a stranger — a re-rendered element is simply
+  a NEW element with a new uid, and a dead one fails loudly. Bound by `REF_MAP_MAX` (30k, both maps
+  cleared at the start of a snapshot past it) and swept per tab on `close_tab` and `chrome.tabs.onRemoved`.
+  `refSeq` deliberately keeps counting across an eviction — reusing numbers would reintroduce exactly
+  the wrong-element bug. A uid that RESOLVES but whose node is gone gets a written recovery instruction,
+  not raw CDP text: `nodeCall(ref, …)` maps `/no node|not found|could not find node/i` and wraps
+  `centerOf`/`quadsOf`, `focusForInput`, captureShot's uid branch and selectOption's `describeNode`.
+  `resolveRef`'s unknown-uid message is unchanged.
+- **A uid still dies with its DOCUMENT — the one lifetime it does not outlive.** Chrome REUSES
+  `backendNodeId`s across documents in a tab, so a uid minted before a navigation could resolve cleanly
+  on the next page and point at an unrelated element: the same wrong-element bug `uidByNode` fixed for
+  re-renders, arriving through navigation instead. The worker now invalidates a document's uids when
+  that document is replaced, so a stale uid raises an explicit "belongs to a previous page … take a
+  fresh snapshot" error instead of quietly operating on a stranger. Both agent-facing surfaces state it
+  (`snapshot`'s description, the promptBuilder browser paragraph): no uid survives
+  `navigate`/`navigate_back` or a click that loads a different document.
+- **The WORKING TAB is pinned across turns, and losing it is ANNOUNCED, not silent.** The tab every op
+  acts on is persisted in `chrome.storage.session` (survives service-worker suspension, dies with the
+  browser session), so the tab a previous turn opened is still the tab this turn acts on. When it is
+  gone the bridge falls back to another tab in the group and says WHICH through the `note` channel; a
+  tab the page opened itself (`target=_blank`) is announced the same way. `list_tabs`' `*` marks that
+  tab, and its description now says the marker means "the working tab, pinned until you switch it or it
+  closes" — the agent used to read `*` as "wherever we happen to be".
+- **The common action tail settles, and it never reports a done action as failed.** `SETTLE_OPS`
+  (INPUT_OPS + navigate/navigate_back/new_tab/handle_dialog) wait `ACTION_SETTLE_MS` (350) before the
+  tail re-reads the tab: a page's answer to input is async, so the old immediate snapshot showed the
+  state BEFORE the autocomplete/menu/validation appeared and the agent read the action as a no-op
+  (`wait_for` keeps its own loop and does not settle). If the tail snapshot then THROWS, the reply is
+  still `ok:true` with `snapshot: ""` plus `snapshotError` — the action already happened, and failing
+  the whole op made the agent retry and navigate twice. `snapshotError` is a full five-layer field
+  (`browserTools.report` appends it OUTSIDE the untrusted wrapper, since it is bridge-authored, and
+  names read_text/snapshot as the check instead of the action).
+- **`getFullAXTree` covers only the MAIN frame, so frames are walked THREE ways.** `axSources(tab)`
+  returns the root session, then one source per non-main frame id from `Page.getFrameTree` (read-only
+  structure, ids only — one of the two frame additions to `CDP_ALLOWLIST`, `DOM.getFrameOwner` being
+  the other, next bullet), then one per OOPIF child session.
+  Without the middle kind a SAME-process iframe rendered as an empty `Iframe "name"` line with all its
+  content missing. Root-session frame ids for OOPIFs fail there and are absorbed by the per-source
+  try/continue, since that content arrives via the child session. Frame uids ride the session that
+  fetched them (backendNodeIds are unique per target), so click/type are unchanged. `read_text`'s
+  uid-scoped path stays session-scoped but falls through that session's frame trees when
+  `renderAxText` returns null, before raising the stale-uid error.
+- **A HOLLOW scoped read is re-read against what the DOM says the element contains.** Field case: on a
+  map page, `snapshot(uid=region "Map")` / `read_text(uid=…)` answered the region line alone (3 chars)
+  while the UNSCOPED walk printed 47 markers under that very uid — the markers are AX nodes DETACHED
+  from the region's childIds (only the full walk's orphan sweep reaches them), and part of a pane can be
+  a same-process child frame (a different AX source entirely). When a scoped render comes back hollow
+  (≤ 3 atoms for snapshot, < 400 chars for read_text — `HOLLOW_SCOPE_*`), `scopeDomIdsOf` collects the
+  element's DOM-subtree backendNodeIds once (`DOM.describeNode depth:-1 pierce`, capped
+  `SCOPE_DOM_IDS_MAX` 4000 — deliberately NOT `SUBTREE_SCAN_MAX`, which the obscured-click guard is
+  tuned to), the walk re-runs with `scopeDomIds` (in-scope detached nodes adopted as extra roots;
+  `walkAxNodes` 4th param), and frames whose OWNER sits inside the set (`framesInsideScope`,
+  `DOM.getFrameOwner` on the ref's own session only) are appended — snapshot with local `frame fN:`
+  headers, read_text as continuing text. Uids stay identical across the re-render (mintUid answers from
+  `uidByNode`); any CDP failure skips enrichment (an addition, never a new failure); nested OOPIFs are
+  out of scope.
+- **Frame content is LABELLED, not just stitched in — and the header itself is the way IN.** A child
+  frame's block is preceded by a header and the owning `Iframe` element's line carries a matching
+  ` (frame fN)` (`renderAxTree`'s `frameLabels`: owner backendNodeId → label, printed LAST on the line
+  because it says where the element's CONTENTS went, not what the element is). Without the pairing a
+  stitched snapshot read as one flat document and the agent could not tell which of three iframes it
+  was acting inside. The owner is resolved with `DOM.getFrameOwner` — newly allowlisted, the other
+  half of the read-only structure question `Page.getFrameTree` already answers (ids only, no content).
+  `Iframe` elements mint uids, so `snapshot { uid }` can scope INTO one frame — but on naver map only
+  ONE of seven frames had a visible `Iframe` line, so `frame f1:`…`f7:` named nothing recognizable and
+  offered nothing reachable. The header (`frameHeader`) is now
+  `frame f2 [e88]: "장소 검색" — https://…`, built from the frame's OWN RootWebArea: name = title,
+  AX `url` = document, and the minted uid is the frame's ENTRY HANDLE — `DOM.describeNode` populates
+  `frameId` on a document node as it does on an owner element, so `frameSourceFor` scopes a snapshot
+  to it, and read_text's `startBackendNodeId` walk finds the node among the scoped sources with no new
+  branch. Every part degrades independently back to the bare `frame fN:`.

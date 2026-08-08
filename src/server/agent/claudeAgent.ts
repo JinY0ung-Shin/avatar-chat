@@ -562,7 +562,7 @@ export async function runClaudeAgent(
   // the request or its effects, so the widenings a HUMAN teammate turn gets —
   // shared-account repo writes, plugin MCP servers with the owner's secret
   // vault, shell secret exposure — are withheld below. The run stays personal-
-  // knowledge READ + request_info (see avatarAsk.ts and ARCHITECTURE-NOTES).
+  // knowledge READ + request_info (see avatarAsk.ts and docs/architecture/avatar-collab.md).
   const consultationRun = Boolean(request.avatarConsultation);
   const hexSshPolicy = store.getHexSshToolPolicy();
   const hexSshAllowedTools = allowedHexSshToolsForViewer(
