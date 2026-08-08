@@ -272,7 +272,7 @@ describe("skillTransfer", () => {
     await expect(copySkillDir(src, "s", dest, "s2")).rejects.toThrow("SKILL_FILE_TOO_LARGE");
   });
 
-  it("learns end-to-end: copy, identity rewrite, manifest, commit+push", async () => {
+  it("learns end-to-end: copy, identity rewrite, manifest, commit+push", { timeout: 30_000 }, async () => {
     const { app, store, config } = bootstrap();
     const sharer = await newUser(app, "sharer");
     const learner = await newUser(app, "learner");
@@ -357,7 +357,10 @@ describe("skill-share routes", () => {
     expect(res.body).toEqual({ repoConfigured: false, skills: [] });
   });
 
-  it("shares, browses, previews, and learns across a group", async () => {
+  // The heaviest test in the suite: two seeded remotes + repeated clone/learn
+  // round-trips. Under full-suite parallel load the real git work can exceed
+  // vitest's 5s default, so give the END-TO-END flow explicit headroom.
+  it("shares, browses, previews, and learns across a group", { timeout: 30_000 }, async () => {
     const { app, store } = bootstrap();
     const admin = await newUser(app, "admin");
     const sharer = await newUser(app, "sharer");
@@ -561,7 +564,7 @@ describe("mcp skill_exchange tools", () => {
     expect(miss.content[0].text).toContain('No shared skill matches "zzz"');
   });
 
-  it("learn_skill copies into the owner's repo and redirects on failures", async () => {
+  it("learn_skill copies into the owner's repo and redirects on failures", { timeout: 30_000 }, async () => {
     const { app, store, config } = bootstrap();
     const admin = await newUser(app, "admin");
     const sharer = await newUser(app, "sharer");
