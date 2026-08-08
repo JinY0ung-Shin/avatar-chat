@@ -3834,6 +3834,25 @@ describe("browser bridge interaction ops", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("passes type's clear through, and leaves it off by default", async () => {
+    // Typing INSERTS at the cursor, so an edit form appended silently until
+    // `clear` existed. The DEFAULT stays insert on purpose: a select-all in a
+    // rich-text editor would put the whole document under the replacement.
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+
+    await callTool(tools, "type", { uid: "e2", value: "새 제목", clear: true });
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "type",
+      uid: "e2",
+      text: "새 제목",
+      clear: true,
+    });
+
+    await callTool(tools, "type", { uid: "e2", value: "덧붙임" });
+    expect(execute).toHaveBeenLastCalledWith({ op: "type", uid: "e2", text: "덧붙임" });
+  });
+
   it("refuses click_at's PIXEL mode without vision, before reaching the bridge", async () => {
     // Coordinates come from a screenshot; a text-only model has no source for
     // them, so the tool must redirect to uid clicks instead of clicking blind.
@@ -3875,8 +3894,10 @@ describe("browser bridge interaction ops", () => {
   });
 
   it("does not warn about a missing landed-on element in uid mode", async () => {
-    // Inside an embedded frame there is deliberately no hit-test, so absence
-    // is expected there — the standing instruction is to check the snapshot.
+    // uid mode hit-tests best-effort (on the ref's own session, degrading to
+    // silence when the coordinate spaces disagree), so absence is EXPECTED and
+    // must not read as the pixel mode's alarm — the standing instruction is to
+    // confirm the effect in the snapshot instead.
     const execute = ok();
     const tools = buildBrowserTools({ execute, allowed: true, vision: true });
     const res = await callTool(tools, "click_at", { uid: "e7" });

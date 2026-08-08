@@ -921,9 +921,12 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
 - **`click_at` has TWO modes and they share nothing but a name.** UID mode (`uid` +
   `xFraction`/`yFraction`, 0–1, default 0.5 centre) resolves the ref, takes `DOM.getContentQuads` on the
   ref's OWN session, and clicks a fraction of the element's bounding box clamped 1px inside — no
-  screenshot, no `lastShot`, no drift check, and `landedOn` is filled in ONLY for a root-session ref
-  (a child frame's quads are frame-relative, so a root-session hit test would name the wrong element
-  with total confidence). Missing `landedOn` is therefore EXPECTED in uid mode and must not warn; the
+  screenshot, no `lastShot`, no drift check. `landedOn` is BEST-EFFORT here: `describePoint` takes the
+  full session target (not a bare tabId) and is asked on the ref's own session with the same point that
+  is clicked, so a frame-local coordinate is resolved in the space it was measured in — and its
+  `getContentQuads` containment cross-check is what makes that safe by construction, degrading to null
+  whenever the spaces disagree instead of naming the wrong element. Missing `landedOn` is therefore
+  still EXPECTED in uid mode and must not warn (unlike pixel mode, whose absence IS the warning); the
   tool text tells the model to confirm the effect in the returned snapshot instead. The mode is chosen
   in `background.js` by `typeof message.uid === "string" && message.uid`, and `browserTools` rejects
   both-or-neither before the wire. `clampFraction` refuses `Number(null) === 0` explicitly — the relay
@@ -991,7 +994,8 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (`NAMED_CLICKABLE_ROLES` — draw.io-style `<tr>` menus were visible but unclickable), and input ops
   focus via `focusForInput`, which falls back to a real centre click when `DOM.focus` refuses
   (ProseMirror bodies, canvases).
-- **Four `axtree.js` rules exist because each one silently DELETED or DROWNED real page content.**
+- **Seven `axtree.js` rules exist because each one silently DELETED, DROWNED, or made UNREACHABLE real
+  page content.**
   (1) `AXValue.value` is not always a string — a slider/spinbutton reports a number and `.trim()` threw,
   failing all three read tools on the whole page; both name and value are `String(… ?? "")`, with `??`
   not `||` so a numeric 0 prints as "0". (2) Echo suppression matches on TOKEN boundaries
@@ -1003,7 +1007,19 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (4) `renderAxTree` folds links sharing a FULL href onto one line at the first occurrence's position,
   upgrading it in place when a later duplicate carries a longer name — one SERP result arrives as four
   to six links to the same destination. `linkHref` returns the URL untruncated because it is the dedupe
-  identity; `printableUrl` applies `LINK_URL_MAX`.
+  identity; `printableUrl` applies `LINK_URL_MAX`. Three later rules answer the same class of failure:
+  (5) NAMED `region`/`application` containers mint uids (`NAMED_CONTAINER_UID_ROLES`) — a map's drawn
+  body has no accessible children at all, so the container's own uid is the only thing click_at's uid
+  mode can aim at; nameless ones stay structure, and `region` remains in `OPAQUE_NAME_ROLES` (a uid says
+  "actionable", not "my name covers my subtree"). (6) `renderAxTree` falls back to the AX `description`
+  (where a `title` attribute lands) when an interactive node has neither name nor value, so a page of
+  icon-only `button ""` lines becomes distinguishable; it never replaces a real name and never feeds
+  ancestor coverage. (7) Echo suppression is TWO-layered: per-node token matching, plus a RUN-level
+  whitespace-insensitive check at close — a `<mark>` highlight splits a sentence mid-word, so no fragment
+  sits on a token boundary and the rejoined run repeated the container's whole label as a second line.
+  Only runs of ≥ 2 segments may be dropped (a lone StaticText inside a longer label is the calendar
+  case, rule 2), and suppression NULLS the slot, filtered out once at the end, because `byHref` holds
+  line indices that must stay valid for the rest of the walk.
 - **The signing key IS the extension's identity.** It lives off-repo on the release machine only;
   manifest `key` is its public half and Chrome derives the id from it. Change the key and the id
   changes — `extension/manifest.json`, the `browserBridge.ts` default id, `extension/README.md`, and any

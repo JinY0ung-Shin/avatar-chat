@@ -1940,6 +1940,7 @@ export function createChatRouter({
                     typeof requestData.yFraction === "number" ? requestData.yFraction : null,
                   text: requestData.text ?? null,
                   submit: Boolean(requestData.submit),
+                  clear: Boolean(requestData.clear),
                   keystrokes: Boolean(requestData.keystrokes),
                   key: requestData.key ?? null,
                   modifiers: requestData.modifiers ?? null,
@@ -2023,6 +2024,9 @@ export function createChatRouter({
                         : "",
                       requestData.fields ? `fields=${requestData.fields.length}` : "",
                       requestData.option ? `option=${requestData.option.slice(0, 80)}` : "",
+                      // A type that REPLACED what the field held, rather than
+                      // adding to it — the destructive half of the same op.
+                      requestData.clear ? "clear" : "",
                       requestData.expand ? "expand" : "",
                       `url=${scrubAuditUrl(reply.url || requestData.url)}`,
                     ]

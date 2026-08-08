@@ -737,16 +737,20 @@ function clampFraction(value) {
 }
 
 /**
- * Best-effort description of the element at a viewport point — the blind spot
- * of a coordinate click. Read-only (`DOM.getNodeForLocation` + `describeNode`);
- * any failure degrades to "no description", never to a failed click. When the
- * point lands in a cross-origin frame the root session resolves the <iframe>
+ * Best-effort description of the element at a point — the blind spot of a
+ * coordinate click. Read-only (`DOM.getNodeForLocation` + `describeNode`); any
+ * failure degrades to "no description", never to a failed click. When a
+ * root-session hit test lands in a cross-origin frame it resolves the <iframe>
  * element itself, which is still an honest answer.
+ *
+ * `target` is the session the coordinates BELONG TO ({tabId} for the root,
+ * {tabId, sessionId} for a frame — both have DOM enabled: ensureAttached for
+ * the tab, the auto-attach handler for each child). Asking the wrong session
+ * is not a silent lie: the containment cross-check below fails and the answer
+ * degrades to null.
  */
-async function describePoint(tabId, x, y) {
+async function describePoint(target, x, y) {
   try {
-    // ensureAttached already enabled the DOM domain for this tab.
-    const target = { tabId };
     const { backendNodeId } = await sendCdp(target, "DOM.getNodeForLocation", {
       x: Math.round(x),
       y: Math.round(y),
@@ -965,11 +969,20 @@ async function fillField(ref, value, clear) {
   }
 }
 
-async function typeRef(uid, value, submit, keystrokes) {
+async function typeRef(uid, value, submit, keystrokes, clear) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   if (keystrokes) {
     await focusForInput(ref);
+    if (clear) {
+      // fillField's clear mechanics, replayed BEFORE the loop so the first
+      // character overtypes the selection instead of extending the value.
+      const mask = (await platformOs()) === "mac" ? MODIFIER_BITS.Meta : MODIFIER_BITS.Control;
+      await dispatchKey(target, "a", mask);
+      // An empty value means "empty this field" — nothing follows to overtype
+      // the selection, so remove it explicitly (the loop below is a no-op).
+      if (!value) await dispatchKey(target, "Delete", 0);
+    }
     // Replay as real per-character key events, ONE bridge operation for the
     // whole string — for editors that only listen to keyboard input. Server
     // caps the length; the dialog check keeps a mid-string alert() from
@@ -979,7 +992,7 @@ async function typeRef(uid, value, submit, keystrokes) {
       await dispatchKey(target, ch === "\n" ? "Enter" : ch, 0);
     }
   } else {
-    await fillField(ref, value, false);
+    await fillField(ref, value, clear);
   }
   if (submit) {
     await dispatchKey(target, "Enter", 0);
@@ -1575,10 +1588,11 @@ async function perform(message) {
       Math.min(Math.max(start + fraction * span, start + 1), start + Math.max(span - 1, 0));
     const px = inside(minX, width, clampFraction(message.xFraction));
     const py = inside(minY, height, clampFraction(message.yFraction));
-    // describePoint hit-tests in ROOT-session coordinates. A child frame's
-    // quads are frame-relative, so asking there would name a different element
-    // with total confidence — no description beats a false one.
-    if (!ref.sessionId) landedOn = await describePoint(tab.id, px, py);
+    // Hit-test the SAME point on the SAME session the click goes to, so a
+    // frame-local coordinate is resolved in the space it was measured in. If
+    // the spaces disagree anyway, describePoint's containment cross-check
+    // fails and reports nothing — a missing description beats a false one.
+    landedOn = await describePoint(target, px, py);
     await raceDialogOpen(tab.id, clickPoint(target, px, py));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "click_at") {
@@ -1653,7 +1667,7 @@ async function perform(message) {
     // Hit-test BEFORE clicking: the click itself may change what sits there.
     const cssX = Math.min(x / lastShot.scale, lastShot.clipWidth - 1);
     const cssY = Math.min(y / lastShot.scale, lastShot.clipHeight - 1);
-    landedOn = await describePoint(tab.id, cssX, cssY);
+    landedOn = await describePoint({ tabId: tab.id }, cssX, cssY);
     await raceDialogOpen(tab.id, clickPoint({ tabId: tab.id }, cssX, cssY));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "type") {
@@ -1661,7 +1675,13 @@ async function perform(message) {
     if (refused) return refused;
     await raceDialogOpen(
       tab.id,
-      typeRef(message.uid, message.text || "", Boolean(message.submit), Boolean(message.keystrokes)),
+      typeRef(
+        message.uid,
+        message.text || "",
+        Boolean(message.submit),
+        Boolean(message.keystrokes),
+        Boolean(message.clear),
+      ),
     );
     if (message.submit) await waitForLoad(tab.id, 5000);
   } else if (message.op === "fill_form") {

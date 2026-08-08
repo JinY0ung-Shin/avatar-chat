@@ -208,6 +208,60 @@ describe("renderAxTree", () => {
     expect(lines).toEqual(['RootWebArea "Doc"', '[e1] canvas ""']);
   });
 
+  it("gives a uid to a NAMED region, but not to a nameless one", () => {
+    // A map's drawn body surfaces as `region "지도"` and nothing inside it has
+    // an accessibility entry — without a uid on the region itself, click_at's
+    // uid mode had no target at all and the map was unreachable. A nameless
+    // region is page structure; minting it would flood the snapshot.
+    const lines = render([
+      node("1", "RootWebArea", "지도", ["2", "3"]),
+      node("2", "region", "지도", [], { backendDOMNodeId: 7 }),
+      node("3", "region", "", [], { backendDOMNodeId: 8 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "지도"', '[e1] region "지도"']);
+  });
+
+  it("gives a uid to a named application container", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "application", "도면 편집기", [], { backendDOMNodeId: 7 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] application "도면 편집기"']);
+  });
+
+  it("keeps a named region's label from covering its children", () => {
+    // A uid says "actionable", not "my name describes my subtree" — region
+    // stays opaque, so text repeating its name is still real page content.
+    const lines = render([
+      node("1", "region", "공지", ["2"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "공지"),
+    ]);
+    expect(lines).toEqual(['[e1] region "공지"', 'StaticText "공지"']);
+  });
+
+  it("falls back to the AX description for a nameless interactive node", () => {
+    // An icon-only button's `title` lands in the AX description. Ignoring it
+    // printed a page of indistinguishable `button ""` lines.
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "button", "", [], {
+        backendDOMNodeId: 7,
+        description: { value: " 길찾기 " },
+      }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button "길찾기"']);
+  });
+
+  it("never lets a description displace a real name", () => {
+    const lines = render([
+      node("1", "button", "저장", [], {
+        backendDOMNodeId: 7,
+        description: { value: "문서를 저장합니다" },
+      }),
+    ]);
+    expect(lines).toEqual(['[e1] button "저장"']);
+  });
+
   it("renders a node whose AX name and value are NUMBERS", () => {
     // AXValue is not always a string: a slider or spinbutton reports a number,
     // and .trim() on it threw — one zoom slider failed every read tool on the
@@ -309,6 +363,44 @@ describe("renderAxTree", () => {
       '[e1] link "링크"',
       'StaticText "뒤"',
     ]);
+  });
+
+  it("drops a joined run that only re-spells its container's label", () => {
+    // A <mark> keyword highlight splits the sentence MID-word, so no fragment
+    // sits on a token boundary of the link's label and each one survives echo
+    // suppression alone — the rejoined run then printed the whole sentence a
+    // SECOND time, right under the link that already said it.
+    const lines = render([
+      node("1", "link", "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데", ["2", "3", "4"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", "옥수수 "),
+      node("3", "StaticText", "크림 뇨끼"),
+      node("4", "StaticText", "랑 홈메이드 라자냐 시켰는데"),
+    ]);
+    expect(lines).toEqual(['[e1] link "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데"']);
+  });
+
+  it("keeps a joined run that says something the ancestor label does not", () => {
+    const lines = render([
+      node("1", "link", "댓글 보기", ["2", "3"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "어제 갔던"),
+      node("3", "StaticText", "가게"),
+    ]);
+    expect(lines).toEqual(['[e1] link "댓글 보기"', 'StaticText "어제 갔던 가게"']);
+  });
+
+  it("keeps a SINGLE StaticText contained in its ancestor label", () => {
+    // The ≥2-segment guard is what protects the calendar: "26" IS a substring
+    // of "달력 2026.08.08" once whitespace is stripped, and whitespace-blind
+    // suppression without that guard would delete the day numbers all over
+    // again. One segment is never a mid-word highlight fragment.
+    const lines = render([
+      node("1", "grid", "달력 2026.08.08", ["2"]),
+      node("2", "cell", "", ["3"]),
+      node("3", "StaticText", "26"),
+    ]);
+    expect(lines).toEqual(['grid "달력 2026.08.08"', 'StaticText "26"']);
   });
 
   it("prints ONE line for several links to the same destination", () => {
@@ -474,6 +566,20 @@ describe("renderAxText", () => {
       node("5", "StaticText", "둘째 문단"),
     ]) as string[];
     expect(lines).toEqual(["Doc", "첫 문단", "둘째 문단"]);
+  });
+
+  it("drops a joined run that only re-spells its container's label", () => {
+    // Same mid-word highlight as the interaction view: the reading view would
+    // otherwise repeat the sentence immediately after printing it.
+    const lines = renderAxText([
+      node("1", "link", "옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데", ["2", "3", "4"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", "옥수수 "),
+      node("3", "StaticText", "크림 뇨끼"),
+      node("4", "StaticText", "랑 홈메이드 라자냐 시켰는데"),
+    ]) as string[];
+    expect(lines).toEqual(["옥수수 크림 뇨끼랑 홈메이드 라자냐 시켰는데"]);
   });
 
   it("keeps a table's rows together instead of one cell per line", () => {

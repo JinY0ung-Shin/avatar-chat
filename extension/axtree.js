@@ -48,6 +48,18 @@ export const NAMED_CLICKABLE_ROLES = new Set([
 ]);
 
 /**
+ * Containers that are not controls but ARE the drawn surface itself — a map
+ * body, an embedded app. Nothing inside them has an accessibility entry, so
+ * the container's own uid is the only handle click_at's uid mode (and
+ * read_text's uid scoping) can aim at; without it a map surfaced as a bare
+ * `region "Map"` line that named a target no tool could reach. Named only:
+ * a nameless region is page structure and minting it would flood the snapshot.
+ * They stay in OPAQUE_NAME_ROLES — a uid says "actionable", not "my name
+ * describes my children".
+ */
+export const NAMED_CONTAINER_UID_ROLES = new Set(["region", "application"]);
+
+/**
  * Roles whose accessible name does NOT come from their contents. A descendant
  * that repeats a word from one of these is saying something new, so they must
  * never suppress it — letting RootWebArea cover the page would delete every
@@ -127,6 +139,9 @@ function containsAsToken(hay, needle) {
     from = i + 1;
   }
 }
+
+/** Whitespace-free form, for comparing text a markup split MID-word. */
+const stripSpaces = (s) => s.replace(/\s+/g, "");
 
 /** Cell roles whose row grouping the reading view restores. */
 const CELL_ROLES = new Set([
@@ -211,17 +226,42 @@ export function renderAxTree(nodes, mintUid) {
   const lines = [];
   /** Full href -> { index, name } of the one line kept for that destination. */
   const byHref = new Map();
-  /** The inline-text run currently open: { container, index, text }. */
+  /** The inline-text run currently open: { container, index, text, segments, covered }. */
   let run = null;
+  /**
+   * Close the open run, dropping it when it only re-spells its own container's
+   * label. A `<mark>` keyword highlight splits a sentence MID-word, so the
+   * fragments do not sit on token boundaries of the parent label and each one
+   * survives `containsAsToken` on its own — the rejoined run then printed the
+   * container's sentence a SECOND time, verbatim. Whitespace-insensitive
+   * because the split loses the spaces too.
+   *
+   * Only a JOINED run (≥ 2 segments) may be dropped: a lone StaticText that
+   * sits inside a longer ancestor label is the calendar case, where "26" under
+   * "달력 2026.08.08" is real content the page would otherwise lose.
+   *
+   * Suppression NULLS the slot instead of splicing — byHref holds line indices
+   * that must stay valid for the rest of the walk; the nulls are filtered out
+   * once, at the end.
+   */
+  const closeRun = () => {
+    if (run && run.segments > 1 && run.covered) {
+      const joined = stripSpaces(run.text);
+      if (joined && stripSpaces(run.covered).includes(joined)) lines[run.index] = null;
+    }
+    run = null;
+  };
   walkAxNodes(nodes, undefined, (node, role, name, value, covered, container) => {
     const interactive =
       INTERACTIVE_ROLES.has(role) ||
-      // Clickable-in-practice surfaces: named table/tree rows and cells, plus
-      // anything the page marked focusable (accordion headers, custom
-      // widgets). Opaque containers are excluded — RootWebArea and friends
-      // report focusable without being a target anyone means to click.
+      // Clickable-in-practice surfaces: named table/tree rows and cells, named
+      // drawn surfaces (map/app containers), plus anything the page marked
+      // focusable (accordion headers, custom widgets). Opaque containers are
+      // excluded from the FOCUSABLE branch — RootWebArea and friends report
+      // focusable without being a target anyone means to click.
       (Boolean(name || value) &&
         (NAMED_CLICKABLE_ROLES.has(role) ||
+          NAMED_CONTAINER_UID_ROLES.has(role) ||
           (axProp(node, "focusable") === true && !OPAQUE_NAME_ROLES.has(role))));
     // Nameless NON-interactive nodes are noise, but a nameless interactive
     // element (an unlabeled rich-text editor, an icon-only button) still
@@ -232,13 +272,20 @@ export function renderAxTree(nodes, mintUid) {
     const echoed = !interactive && !value && Boolean(name) && containsAsToken(covered, name);
     if (!worthPrinting || echoed) return;
     const href = linkHref(node, role);
+    // An icon-only control usually carries its label in `title`, which Chrome
+    // delivers as the AX DESCRIPTION — the only thing that tells a page full of
+    // `button ""` lines apart. Read it ONLY as a last resort: it never replaces
+    // a real name and never feeds ancestor coverage, since it describes this
+    // node alone.
+    const described =
+      interactive && !name && !value ? String(node.description?.value ?? "").trim() : "";
     const format = () => {
       const uid =
         interactive && node.backendDOMNodeId != null ? mintUid(node.backendDOMNodeId) : null;
       const url = href ? ` → ${printableUrl(href)}` : "";
       return uid
-        ? `[${uid}] ${role} "${name}"${value ? ` = "${value}"` : ""}${url}`
-        : `${role} "${name || value}"${url}`;
+        ? `[${uid}] ${role} "${name || described}"${value ? ` = "${value}"` : ""}${url}`
+        : `${role} "${name || value || described}"${url}`;
     };
     // A single search result arrives as four to six links to the SAME
     // destination (thumbnail, title, source, snippet), which buried the result
@@ -258,15 +305,18 @@ export function renderAxTree(nodes, mintUid) {
       role === "StaticText" && !interactive && !href && !value && Boolean(name) && container != null;
     if (inRun && run && run.container === container) {
       run.text += ` ${name}`;
+      run.segments += 1;
       lines[run.index] = `StaticText "${run.text}"`;
       return;
     }
+    closeRun();
     const line = format();
-    run = inRun ? { container, index: lines.length, text: name } : null;
+    if (inRun) run = { container, index: lines.length, text: name, segments: 1, covered };
     if (href) byHref.set(href, { index: lines.length, name });
     lines.push(line);
   });
-  return lines;
+  closeRun();
+  return lines.filter((line) => line !== null);
 }
 
 /**
@@ -278,8 +328,15 @@ export function renderAxTree(nodes, mintUid) {
  */
 export function renderAxText(nodes, startBackendNodeId) {
   const lines = [];
-  /** What the last printed line was, so a run can extend it: {kind, container}. */
+  /** What the last printed line was, so a run can extend it: {kind, container, …}. */
   let last = null;
+  /** Same mid-word-highlight suppression renderAxTree does — see closeRun there. */
+  const closeTextRun = () => {
+    if (last?.kind === "text" && last.segments > 1 && last.covered) {
+      const joined = stripSpaces(lines[last.index] ?? "");
+      if (joined && stripSpaces(last.covered).includes(joined)) lines[last.index] = null;
+    }
+  };
   const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered, container) => {
     const echoed = !value && Boolean(name) && containsAsToken(covered, name);
     if ((!name && !value) || echoed) return;
@@ -292,7 +349,8 @@ export function renderAxText(nodes, startBackendNodeId) {
       last?.kind === "text" &&
       last.container === container
     ) {
-      lines[lines.length - 1] += ` ${printed}`;
+      lines[last.index] += ` ${printed}`;
+      last.segments += 1;
       return;
     }
     // A table read as a vertical list of cells loses the thing that made it a
@@ -302,15 +360,17 @@ export function renderAxText(nodes, startBackendNodeId) {
       lines[lines.length - 1] += ` | ${printed}`;
       return;
     }
+    closeTextRun();
     lines.push(printed);
     last =
       role === "StaticText" && container != null
-        ? { kind: "text", container }
+        ? { kind: "text", container, index: lines.length - 1, segments: 1, covered }
         : inRow
           ? { kind: "cell", container }
           : null;
   });
-  return found ? lines : null;
+  closeTextRun();
+  return found ? lines.filter((line) => line !== null) : null;
 }
 
 /**

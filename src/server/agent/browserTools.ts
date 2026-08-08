@@ -423,8 +423,8 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           return report(
             await ctx.execute({ op: "click_at", uid: args.uid, xFraction, yFraction }),
             `Clicked ${args.uid} at (${xFraction}, ${yFraction}) of its box. ` +
-              "A relative click cannot report what it hit (and reports nothing at all inside an embedded " +
-              "frame) — confirm the effect you intended in the snapshot below.",
+              "A relative click may be unable to identify what it hit, especially inside an embedded frame — " +
+              "always confirm the effect you intended in the snapshot below.",
           );
         }
         // Pixel mode only: its coordinates come from an image, so a model that
@@ -518,6 +518,9 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
       "type",
       "Type text into a field in the user's browser, addressed by a `uid` from the most recent snapshot. " +
         "The WHOLE string is entered in this one call — never enter text by pressing keys one at a time. " +
+        "Typing INSERTS at the cursor, so a field that already holds a value KEEPS it and your text is added " +
+        "to it: pass `clear: true` to replace that content instead (for a form of two or more fields, use " +
+        "fill_form's per-field clear). " +
         "If the page visibly ignored a normal type (the field stayed empty), retry ONCE with " +
         "`keystrokes: true`, which replays the text as real per-character key events for editors that only " +
         "listen to keyboard input. " +
@@ -530,6 +533,14 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           .boolean()
           .optional()
           .describe("Press Enter after typing (submits most forms). Defaults to false."),
+        clear: z
+          .boolean()
+          .optional()
+          .describe(
+            "Replace the field's existing content instead of inserting into it — same as fill_form's per-field " +
+              'clear. The snapshot shows a field\'s current value as `= "…"`; pass true when that value should ' +
+              "not remain.",
+          ),
         keystrokes: z
           .boolean()
           .optional()
@@ -553,6 +564,7 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
             uid: args.uid,
             text: args.value,
             submit: args.submit || undefined,
+            clear: args.clear || undefined,
             keystrokes: args.keystrokes || undefined,
           }),
           `Typed into ${args.uid}.`,

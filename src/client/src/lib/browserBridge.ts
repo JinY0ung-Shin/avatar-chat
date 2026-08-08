@@ -66,6 +66,8 @@ export interface BridgeOperation {
   yFraction?: number | null;
   text?: string | null;
   submit?: boolean;
+  /** type only: replace the field's existing content instead of inserting into it. */
+  clear?: boolean;
   keystrokes?: boolean;
   key?: string | null;
   modifiers?: string[] | null;

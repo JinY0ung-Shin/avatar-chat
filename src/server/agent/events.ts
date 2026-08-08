@@ -308,6 +308,8 @@ export interface BrowserRequest {
   text?: string;
   /** type only: press Enter afterwards. */
   submit?: boolean;
+  /** type only: replace the field's existing content instead of inserting into it. */
+  clear?: boolean;
   /** type only: enter per-character as real key events instead of one insert. */
   keystrokes?: boolean;
   /** press_key only: W3C key value ("Enter", "Escape", "ArrowDown", "a", …). */
