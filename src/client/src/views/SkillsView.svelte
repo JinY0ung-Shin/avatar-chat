@@ -222,6 +222,7 @@
 </header>
 
 <div class="view-body scroll-thin" aria-busy={loading}>
+  <div class="skills-content">
   <div class="explore-search-bar">
     <Icon name="sparkles" />
     <input
@@ -242,9 +243,10 @@
   </div>
   <div class="sr-only" id="skills-results-status" role="status" aria-live="polite">{resultStatus}</div>
 
-  <section class="settings-card">
-    <div class="panel-section-head">
-      <h2>배울 수 있는 스킬 {#if !loading && !error}<span class="rail-section-count">{filtered.length}</span>{/if}</h2>
+  <section class="skill-section" aria-labelledby="skills-learnable-title">
+    <div class="skill-section-head">
+      <h2 id="skills-learnable-title">배울 수 있는 스킬</h2>
+      {#if !loading && !error}<span class="skill-count">{filtered.length}</span>{/if}
     </div>
     {#if loading}
       <div class="muted pad" role="status">불러오는 중…</div>
@@ -307,9 +309,10 @@
     {/if}
   </section>
 
-  <section class="settings-card">
-    <div class="panel-section-head">
-      <h2>내 아바타의 스킬 공유 {#if !mineLoading && !mineError && repoConfigured}<span class="rail-section-count">{sharedCount}/{mySkills.length}</span>{/if}</h2>
+  <section class="skill-section" aria-labelledby="skills-mine-title">
+    <div class="skill-section-head">
+      <h2 id="skills-mine-title">내 아바타의 스킬 공유</h2>
+      {#if !mineLoading && !mineError && repoConfigured}<span class="skill-count">{sharedCount}/{mySkills.length} 공유 중</span>{/if}
     </div>
     {#if mineLoading}
       <div class="muted pad" role="status">불러오는 중…</div>
@@ -329,15 +332,17 @@
         요청하면 스킬을 만들 수 있어요.
       </div>
     {:else}
-      <div class="skill-mine-list">
+      <div class="skill-mine-panel">
         {#each mySkills as skill (skill.slug)}
           <div class="skill-mine-row">
             <div class="sk-mine-meta">
-              <strong>{skill.name}</strong>
-              {#if skill.name !== skill.slug}<span class="tag">{skill.slug}</span>{/if}
-              {#if skill.learnCount > 0}
-                <span class="tag accent" title={`동료가 지금까지 ${skill.learnCount}번 전수받았어요`}>전수 {skill.learnCount}회</span>
-              {/if}
+              <div class="sk-mine-title">
+                <strong>{skill.name}</strong>
+                {#if skill.name !== skill.slug}<span class="tag">{skill.slug}</span>{/if}
+                {#if skill.learnCount > 0}
+                  <span class="tag accent" title={`동료가 지금까지 ${skill.learnCount}번 전수받았어요`}>전수 {skill.learnCount}회</span>
+                {/if}
+              </div>
               {#if skill.description}<span class="sk-mine-desc">{skill.description}</span>{/if}
             </div>
             <Toggle
@@ -348,9 +353,10 @@
           </div>
         {/each}
       </div>
-      <p class="sk-share-hint muted">공유한 스킬은 같은 그룹 동료(아바타 공유가 켜진 그룹)에게만 보입니다.</p>
+      <p class="sk-share-hint">공유한 스킬은 같은 그룹 동료(아바타 공유가 켜진 그룹)에게만 보입니다.</p>
     {/if}
   </section>
+  </div>
 </div>
 
 {#if preview}
@@ -364,7 +370,7 @@
         <span class="tag accent">전수 {preview.learnCount}회</span>
       {/if}
     </div>
-    {#if preview.description}<p class="sk-desc">{preview.description}</p>{/if}
+    {#if preview.description}<p class="sk-desc sk-preview-desc">{preview.description}</p>{/if}
     {#if previewLoading}
       <div class="muted pad" role="status">스킬 내용을 불러오는 중…</div>
     {:else if previewError}
@@ -398,19 +404,52 @@
 {/if}
 
 <style>
+  /* Explore-family layout (docs/DESIGN.md §3): content column capped like the
+     search bar, sections directly on the canvas (no card-in-card), grid density
+     tokens matching .avatar-grid — card padding --s-5, grid gap --s-4. */
+  .skills-content {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .skill-section {
+    margin-top: var(--s-6);
+  }
+  .skill-section:first-of-type {
+    margin-top: 0;
+  }
+  .skill-section-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-2);
+    margin: 0 0 var(--s-3);
+  }
+  .skill-section-head h2 {
+    margin: 0;
+    font-size: var(--t-md);
+    font-weight: 700;
+    letter-spacing: -0.01em;
+  }
+  .skill-count {
+    font-size: var(--t-sm);
+    font-weight: 600;
+    color: var(--muted);
+  }
+
   .skill-grid {
+    --pad-card: var(--s-5);
+    --gap-stack: var(--s-4);
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 12px;
-    padding: 4px 0 2px;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: var(--gap-stack);
+    align-items: stretch;
   }
   .skill-card {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: 14px;
+    gap: var(--s-2-5);
+    padding: var(--pad-card);
     border: 1px solid var(--line);
-    border-radius: var(--r-lg);
+    border-radius: var(--r-md);
     background: var(--panel);
     min-width: 0;
   }
@@ -420,17 +459,19 @@
   .sk-head {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--s-2);
     flex-wrap: wrap;
     min-width: 0;
   }
   .sk-name {
-    font-size: 15px;
+    font-size: var(--t-md);
+    font-weight: 700;
+    letter-spacing: -0.01em;
     word-break: break-all;
   }
   .sk-desc {
     margin: 0;
-    font-size: 13px;
+    font-size: var(--t-sm);
     color: var(--text-soft);
     line-height: 1.5;
     display: -webkit-box;
@@ -439,16 +480,21 @@
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  /* Owner row is anchored to the card bottom so short cards keep their
+     attribution + actions aligned across the grid row. */
   .sk-owner {
     display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--text-soft);
+    gap: var(--s-1-5);
+    margin-top: auto;
+    padding-top: var(--s-1);
+    font-size: var(--t-xs);
+    color: var(--muted);
     min-width: 0;
   }
   .sk-owner-name {
     font-weight: 600;
+    font-size: var(--t-sm);
     color: var(--text);
     white-space: nowrap;
     overflow: hidden;
@@ -464,61 +510,75 @@
   .sk-actions {
     display: flex;
     justify-content: flex-end;
-    gap: 8px;
-    margin-top: auto;
+    gap: var(--s-2);
   }
-  .skill-mine-list {
-    display: flex;
-    flex-direction: column;
+
+  .skill-mine-panel {
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+    background: var(--panel);
+    overflow: hidden;
   }
   .skill-mine-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 10px 2px;
-    border-bottom: 1px solid var(--line);
+    gap: var(--s-4);
+    padding: var(--s-3) var(--s-4);
   }
-  .skill-mine-row:last-child {
-    border-bottom: none;
+  .skill-mine-row + .skill-mine-row {
+    border-top: 1px solid var(--line-soft);
   }
   .sk-mine-meta {
     display: flex;
-    align-items: baseline;
-    gap: 8px;
-    flex-wrap: wrap;
+    flex: 1;
+    flex-direction: column;
+    gap: var(--s-0-5);
     min-width: 0;
   }
+  .sk-mine-title {
+    display: flex;
+    align-items: center;
+    gap: var(--s-2);
+    flex-wrap: wrap;
+    font-size: var(--t-base);
+  }
   .sk-mine-desc {
-    font-size: 12px;
-    color: var(--text-soft);
+    font-size: var(--t-xs);
+    color: var(--muted);
   }
   .sk-share-hint {
-    margin: 10px 2px 0;
-    font-size: 12px;
+    margin: var(--s-2) var(--s-1) 0;
+    font-size: var(--t-xs);
+    color: var(--muted);
   }
+
   .sk-preview-owner {
-    margin: -6px 0 4px;
+    margin: var(--s-1) 0 0;
+    padding-top: 0;
+  }
+  .sk-preview-desc {
+    margin: var(--s-2) 0 0;
   }
   .sk-preview-content {
     max-height: 320px;
+    margin-top: var(--s-3);
     overflow: auto;
-    padding: 12px;
+    padding: var(--s-3);
     border: 1px solid var(--line);
-    border-radius: var(--r-md);
+    border-radius: var(--r-sm);
     background: var(--bg-subtle);
-    font-size: 12px;
+    font-size: var(--t-xs);
     line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
   }
   .sk-rename-field {
-    margin-top: 10px;
+    margin-top: var(--s-3);
   }
   .sk-preview-actions {
-    margin-top: 12px;
+    margin-top: var(--s-4);
   }
   :global(.skill-preview-card) {
-    width: min(680px, calc(100vw - 32px));
+    width: min(680px, calc(100vw - 2 * var(--s-4)));
   }
 </style>
