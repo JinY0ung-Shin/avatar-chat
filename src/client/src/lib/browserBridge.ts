@@ -87,6 +87,8 @@ export interface BridgeOperation {
   offset?: number | null;
   /** read_text: scroll through the page while reading, to load lazy content. */
   expand?: boolean | null;
+  /** snapshot: tighten the snapshot's character budget (re-clamped extension-side). */
+  maxChars?: number | null;
 }
 
 /** Where the effective allowlist comes from; `managed` cannot be edited here. */

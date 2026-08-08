@@ -1612,6 +1612,7 @@ function handleBrowserOp(paneId: string, data: any): void {
     fullPage: data.fullPage,
     offset: data.offset,
     expand: data.expand,
+    maxChars: data.maxChars,
   })
     .then((reply) =>
       api("/api/chat/respond", {

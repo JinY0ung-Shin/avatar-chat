@@ -42,7 +42,9 @@ const CDP_VERSION = "1.3";
  * origin allowlist — `DOM.getNodeForLocation` hit-tests a point so a
  * coordinate click can report what it landed on instead of assuming success,
  * `Page.getFrameTree` reads the frame STRUCTURE (ids only, no content) so
- * same-process iframes can be walked at all, and
+ * same-process iframes can be walked at all, `DOM.getFrameOwner` answers the
+ * other half of that structure question — which element OWNS a given frame — so
+ * a frame's content block can name the `Iframe` line it belongs to, and
  * `Accessibility.getPartialAXTree` reads ONE node — the same exfiltration class
  * as the getFullAXTree already here, and strictly less of it. It exists so a
  * clearing write can be VERIFIED by reading the field back instead of claiming
@@ -56,6 +58,7 @@ const CDP_ALLOWLIST = new Set([
   "DOM.enable",
   "DOM.getBoxModel",
   "DOM.getContentQuads",
+  "DOM.getFrameOwner",
   "DOM.getNodeForLocation",
   "DOM.focus",
   "DOM.scrollIntoViewIfNeeded",
@@ -121,16 +124,49 @@ async function readPolicy() {
   return policyCache;
 }
 
-chrome.storage.onChanged.addListener(() => {
-  policyCache = null;
+chrome.storage.onChanged.addListener((_changes, areaName) => {
+  // The SESSION area holds only the bridge's own working-tab pointer — a policy
+  // push never lands there, and dropping the cache on every tab switch would
+  // re-read managed storage for nothing.
+  if (areaName !== "session") policyCache = null;
 });
 
-/** tabId -> { rootSession: true, children: Set<sessionId> } */
+/** tabId -> { children: Map<sessionId, frameId> } — the OOPIF sessions of a tab. */
 const attached = new Map();
 
 /**
- * uid -> { tabId, sessionId, backendNodeId }, and its reverse index. STABLE
- * ACROSS SNAPSHOTS by design: these used to reset on every buildSnapshot, so
+ * `${tabId}:${sessionId||"root"}` -> how many DOCUMENTS that session has shown.
+ *
+ * Chrome REUSES backendNodeIds across documents in a tab, so after a navigation
+ * a remembered uid still RESOLVES — to whatever element inherited the number.
+ * In the field `[e15] link "메일"` on finance.naver.com became
+ * `button "Add Element"` on the next page, and the tool's "a uid keeps pointing
+ * at the same element" contract broke with no error anywhere. Namespacing uids
+ * by tab+session was never enough because the reuse happens INSIDE one session;
+ * the epoch is the missing component, and comparing it at resolve time is what
+ * turns a silent wrong-element action into an explicit "take a fresh snapshot".
+ *
+ * Wiped with the worker, which is safe: refMap is module state too, so a restart
+ * loses every uid before it can lose an epoch.
+ */
+const docEpochs = new Map();
+
+function docKey(tabId, sessionId) {
+  return `${tabId}:${sessionId || "root"}`;
+}
+
+function docEpoch(tabId, sessionId) {
+  return docEpochs.get(docKey(tabId, sessionId)) || 0;
+}
+
+function bumpDocEpoch(tabId, sessionId) {
+  const key = docKey(tabId, sessionId);
+  docEpochs.set(key, (docEpochs.get(key) || 0) + 1);
+}
+
+/**
+ * uid -> { tabId, sessionId, backendNodeId, epoch }, and its reverse index.
+ * STABLE ACROSS SNAPSHOTS by design: these used to reset on every buildSnapshot, so
  * "e42" silently addressed a DIFFERENT element after any re-snapshot — on a
  * page that re-orders itself (a rolling newsstand) the agent clicked a
  * stranger and had no way to notice. Now an element keeps its uid for as long
@@ -160,17 +196,19 @@ const hintByNode = new Map();
  */
 const REF_MAP_MAX = 30000;
 
-function nodeKey(tabId, sessionId, backendNodeId) {
-  return `${tabId}:${sessionId || "root"}:${backendNodeId}`;
+/** Keyed by DOCUMENT, not just by session — see docEpochs for why. */
+function nodeKey(tabId, sessionId, epoch, backendNodeId) {
+  return `${tabId}:${sessionId || "root"}:${epoch}:${backendNodeId}`;
 }
 
 /** The uid for a node, minting one only the first time it is seen. */
 function mintUid(tabId, sessionId, backendNodeId) {
-  const key = nodeKey(tabId, sessionId, backendNodeId);
+  const epoch = docEpoch(tabId, sessionId);
+  const key = nodeKey(tabId, sessionId, epoch, backendNodeId);
   const known = uidByNode.get(key);
   if (known) return known;
   const uid = `e${++refSeq}`;
-  refMap.set(uid, { tabId, sessionId, backendNodeId });
+  refMap.set(uid, { tabId, sessionId, backendNodeId, epoch });
   uidByNode.set(key, uid);
   return uid;
 }
@@ -180,16 +218,28 @@ function forgetTabRefs(tabId) {
   for (const [uid, ref] of refMap) {
     if (ref.tabId !== tabId) continue;
     refMap.delete(uid);
-    uidByNode.delete(nodeKey(ref.tabId, ref.sessionId, ref.backendNodeId));
+    uidByNode.delete(nodeKey(ref.tabId, ref.sessionId, ref.epoch, ref.backendNodeId));
   }
   // Swept by key prefix rather than through refMap: a cached hint must go even
   // if its uid was already evicted. Tab ids are integers, so "12:" never
-  // matches "123:…".
+  // matches "123:…". Epochs share the shape, so one prefix sweeps both.
   const prefix = `${tabId}:`;
   for (const key of hintByNode.keys()) {
     if (key.startsWith(prefix)) hintByNode.delete(key);
   }
+  for (const key of docEpochs.keys()) {
+    if (key.startsWith(prefix)) docEpochs.delete(key);
+  }
 }
+
+/**
+ * tabId -> the snapshot TEXT last returned for that tab. An action that really
+ * did mutate the DOM has come back with a BYTE-IDENTICAL snapshot (see
+ * flushLifecycle), and identical-to-last is the only cheap signal that the read
+ * was too early. One entry per GROUPED tab, dropped when the tab closes; module
+ * state, so a worker restart just skips one re-poll.
+ */
+const lastSnapshotByTab = new Map();
 
 /**
  * Pixel→CSS mapping of the most recent screenshot, so `click_at` can invert
@@ -236,7 +286,7 @@ function attachDebugger(tabId) {
 async function ensureAttached(tabId) {
   if (attached.has(tabId)) return;
   await attachDebugger(tabId);
-  attached.set(tabId, { children: new Set() });
+  attached.set(tabId, { children: new Map() });
   await sendCdp({ tabId }, "Target.setAutoAttach", {
     autoAttach: true,
     waitForDebuggerOnStart: false,
@@ -253,7 +303,11 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
   if (method !== "Target.attachedToTarget") return;
   const entry = attached.get(source.tabId);
   if (!entry || !params?.sessionId) return;
-  entry.children.add(params.sessionId);
+  // For an iframe target the targetId IS the frameId, and it is the only place
+  // that mapping is offered: it names the document behind this session, which
+  // the epoch check needs (which frameNavigated is this session's ROOT?) and
+  // the frame labeller needs (which <iframe> element owns this tree?).
+  entry.children.set(params.sessionId, params.targetInfo?.targetId || "");
   const child = { tabId: source.tabId, sessionId: params.sessionId };
   try {
     // Nested OOPIFs only surface if each new child also auto-attaches.
@@ -271,12 +325,34 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
   }
 });
 
+/**
+ * A new DOCUMENT in a session's root frame retires every uid minted against the
+ * old one. Only cross-document navigations fire this — an SPA route change is
+ * `Page.navigatedWithinDocument`, where the ids genuinely do stay put — so the
+ * epoch moves exactly when the numbering can restart underneath us.
+ */
+chrome.debugger.onEvent.addListener((source, method, params) => {
+  if (method !== "Page.frameNavigated" || source.tabId == null) return;
+  const frameId = params?.frame?.id;
+  const isSessionRoot = source.sessionId
+    ? attached.get(source.tabId)?.children?.get(source.sessionId) === frameId
+    : !params?.frame?.parentId;
+  if (isSessionRoot) bumpDocEpoch(source.tabId, source.sessionId);
+});
+
 // Clicking Chrome's own "cancel" on the debugging banner, or any other detach,
 // must drop our state rather than leave stale sessions that fail confusingly.
 chrome.debugger.onDetach.addListener((source) => {
   if (source.tabId != null) {
     attached.delete(source.tabId);
     pendingDialogs.delete(source.tabId);
+    // Detached means UNOBSERVED: a navigation during the gap raises no
+    // frameNavigated, so the epoch can no longer vouch for the ids minted before
+    // it. Bump rather than trust — a needless "take a fresh snapshot" costs one
+    // round trip, a uid that silently addresses a stranger costs the whole task.
+    // Only this session's document needs it: the child sessions died with the
+    // detach and their ids are not reused, so their refs already fail loudly.
+    bumpDocEpoch(source.tabId, source.sessionId);
   }
 });
 
@@ -284,6 +360,8 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   attached.delete(tabId);
   pendingDialogs.delete(tabId);
   forgetTabRefs(tabId);
+  lastSnapshotByTab.delete(tabId);
+  if (currentTabId === tabId) setCurrentTab(null);
 });
 
 // ------------------------------------------------------------------- dialogs
@@ -392,15 +470,77 @@ const NO_TAB_MESSAGE =
  * Which grouped tab subsequent operations act on. Sticky so a multi-step task
  * doesn't silently hop tabs, but always re-validated against the group: if the
  * user dragged the current tab out, the pointer is stale and must not be used.
+ *
+ * Sticky was never the whole story: this is MV3 service-worker state, and the
+ * worker idles out BETWEEN TURNS. The pointer came back null on the next turn
+ * and the fallback picked tabs[0] — the OLDEST tab in the group, which is
+ * typically the user's own — so a `navigate` overwrote the page they were
+ * reading. The mirror in chrome.storage.session survives the worker restart and
+ * dies with the browser session, which is exactly the lifetime a working tab has.
  */
 let currentTabId = null;
+const WORKING_TAB_KEY = "workingTabId";
+
+/** Point at a tab (or forget one), in module state AND across worker restarts. */
+function setCurrentTab(tabId) {
+  currentTabId = tabId;
+  // Fire and forget: the module state is already correct, and a storage failure
+  // must degrade to "forgets between turns" rather than fail the operation.
+  const write =
+    tabId == null
+      ? chrome.storage.session.remove(WORKING_TAB_KEY)
+      : chrome.storage.session.set({ [WORKING_TAB_KEY]: tabId });
+  Promise.resolve(write).catch(() => {});
+}
+
+async function storedTabId() {
+  try {
+    const stored = await chrome.storage.session.get(WORKING_TAB_KEY);
+    const id = stored?.[WORKING_TAB_KEY];
+    return typeof id === "number" ? id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * BRIDGE-authored caveat about WHICH TAB the bridge is on, left here by
+ * targetTab and drained by perform() into the result's `note`. A guess about the
+ * working tab has to be visible in the same turn it is made — the field failure
+ * was silent drift, not a wrong answer.
+ */
+let pendingTabNotice = "";
+
+function takeTabNotice() {
+  const notice = pendingTabNotice;
+  pendingTabNotice = "";
+  return notice;
+}
 
 async function targetTab() {
   const tabs = await groupedTabs();
   if (!tabs.length) throw new Error(NO_TAB_MESSAGE);
-  const picked = tabs.find((tab) => tab.id === currentTabId) || tabs[0];
-  currentTabId = picked.id;
-  return picked;
+  if (currentTabId == null) {
+    const stored = await storedTabId();
+    // Validated against the group like any other pointer: a stored id whose tab
+    // was closed or dragged out grants nothing.
+    if (stored != null && tabs.some((tab) => tab.id === stored)) currentTabId = stored;
+  }
+  const picked = tabs.find((tab) => tab.id === currentTabId);
+  if (picked) return picked;
+  // FALLING BACK: nothing was ever chosen, or the chosen tab is gone. tabs[0] is
+  // the oldest tab in the group, so with more than one candidate this is a guess
+  // — and the guess is the drift itself, so it must be said out loud.
+  const fallback = tabs[0];
+  if (tabs.length > 1) {
+    pendingTabNotice =
+      `No working tab was remembered, so this operation ran on the OLDEST of the ${tabs.length} tabs in the group: ` +
+      `tabId ${fallback.id}, "${quoteForNote(fallback.title || "(untitled)")}" — ` +
+      `${quoteForNote(fallback.url, NOTE_URL_MAX)}. That tab may be the user's own rather than the one you were ` +
+      "working in; if it is not the one you meant, call mcp__browser__list_tabs and mcp__browser__select_tab before acting further.";
+  }
+  setCurrentTab(fallback.id);
+  return fallback;
 }
 
 /** Resolve a caller-supplied tab id, refusing anything outside the group. */
@@ -443,19 +583,63 @@ function originAllowed(rawUrl, patterns) {
   });
 }
 
+function policySource(source) {
+  return source === "managed"
+    ? "The site is not in the administrator's browser-control policy."
+    : source === "local"
+      ? "The site is not in this browser's local allowlist (extension options page)."
+      : "No browser-control allowlist is configured yet, so every site is denied.";
+}
+
+/**
+ * The tab is not on a WEB page at all — ANOTHER extension took it over. The
+ * field case is a PDF-viewer extension (Adobe's) intercepting a .pdf navigation:
+ * the tab lands on `chrome-extension://…`, and calling that "not in the
+ * allowlist" sent the agent hunting for a different URL to reach the same
+ * document, when no allowlist change could ever help. Null when the URL is an
+ * ordinary denied site, so the caller falls through to its normal refusal.
+ */
+function hijackRefusal(rawUrl) {
+  if (!String(rawUrl || "").startsWith("chrome-extension://")) return null;
+  return (
+    `This tab is showing a page that belongs to ANOTHER browser extension (${rawUrl}) — most often a PDF-viewer ` +
+    "extension that intercepted a PDF link. The bridge cannot read or drive pages inside other extensions, and this " +
+    "is not an allowlist decision, so no policy change would open it. Recover with mcp__browser__navigate to an " +
+    "allowed http(s) URL (that op still works from here) or open a fresh page with mcp__browser__new_tab, and tell " +
+    "the user their PDF opened in their PDF-viewer extension."
+  );
+}
+
 /** Refusal text is model-facing: say what happened and close off the retry. */
 function refuseOrigin(rawUrl, source) {
-  const where =
-    source === "managed"
-      ? "The site is not in the administrator's browser-control policy."
-      : source === "local"
-        ? "The site is not in this browser's local allowlist (extension options page)."
-        : "No browser-control allowlist is configured yet, so every site is denied.";
+  const hijacked = hijackRefusal(rawUrl);
+  if (hijacked) return { ok: false, message: hijacked };
   return {
     ok: false,
     message:
-      `${where} Blocked: ${rawUrl}. Tell the user which site was blocked and who can change it; ` +
+      `${policySource(source)} Blocked: ${rawUrl}. Tell the user which site was blocked and who can change it; ` +
       "do not try a different URL to reach the same content.",
+  };
+}
+
+/**
+ * The POST-action landing refusal, which is a different fact from the pre-action
+ * one: the op RAN and the tab MOVED. Wording it like a refusal ("blocked") made
+ * the agent read a completed navigation as a failure and do it again, so this
+ * says what happened first and what is still possible second.
+ */
+function refuseLanding(op, rawUrl, source) {
+  const hijacked = hijackRefusal(rawUrl);
+  if (hijacked) {
+    return { ok: false, message: `The ${op} itself completed, and then: ${hijacked}` };
+  }
+  return {
+    ok: false,
+    message:
+      `The ${op} itself completed and the tab now sits at ${rawUrl}, which is outside the allowlist, so no page ` +
+      `content is returned. ${policySource(source)} Do not repeat the ${op} — it already happened. Move on with ` +
+      "mcp__browser__navigate to an allowed URL (navigation is not blocked by a denied current page), and tell the " +
+      "user where the tab ended up.",
   };
 }
 
@@ -572,7 +756,7 @@ async function childFrameIds(target) {
 
 /**
  * Every accessibility tree that makes up one tab's page, as
- * `{ target, frameId? }` sources.
+ * `{ target, frameId?, docFrameId? }` sources.
  *
  * Three kinds, and the middle one is easy to miss: `getFullAXTree` without a
  * frameId covers only the target's MAIN frame, so a SAME-process iframe
@@ -588,11 +772,79 @@ async function axSources(tab) {
     ...(await childFrameIds({ tabId: tab.id })).map((frameId) => ({
       target: { tabId: tab.id },
       frameId,
+      docFrameId: frameId,
     })),
-    ...[...(entry?.children || [])].map((sessionId) => ({
+    // `docFrameId` names the DOCUMENT a source renders, for the frame labeller.
+    // It is separate from `frameId` on purpose: `frameId` is an argument to
+    // getFullAXTree (which asks the ROOT session for one of ITS frames), while an
+    // OOPIF's session already IS that document and must not be asked that way.
+    ...[...(entry?.children || [])].map(([sessionId, frameId]) => ({
       target: { tabId: tab.id, sessionId },
+      docFrameId: frameId,
     })),
   ];
+}
+
+/**
+ * Force a document lifecycle tick before reading the accessibility tree.
+ *
+ * Chrome updates its AXObject tree LAZILY, and nothing in the snapshot path used
+ * to pump it: on an IDLE tab (no animation, no further input) getFullAXTree
+ * answered from a tree that predated the DOM change the action had just made.
+ * The field failure was a click on "Add Element" that reported success while the
+ * new <button> stayed missing from snapshot, read_text and wait_for for many
+ * seconds — intermittent only because a page with a running animation flushes
+ * itself. Page.getLayoutMetrics is the cheapest ALLOWLISTED call that forces the
+ * tick, which is also why screenshots and quad reads never showed this bug.
+ *
+ * Non-fatal by design: a mid-navigation or dying target throws here, and a
+ * snapshot that skips the flush is exactly the previous behavior.
+ */
+async function flushLifecycle(target) {
+  try {
+    await sendCdp(target, "Page.getLayoutMetrics", {});
+  } catch {
+    // Nothing to flush (navigating, detached, closed); the walk continues.
+  }
+}
+
+/**
+ * Per-snapshot `f1, f2 …` labels for the child-frame trees, resolved to the
+ * `<iframe>` element that OWNS each one.
+ *
+ * A child frame renders as its own detached `RootWebArea` block appended after
+ * the main tree, and nothing said which `Iframe` line it belonged to — on a page
+ * with several (naver map) there was no way to tell the search panel's frame from
+ * the map's. One label rides BOTH ends: the renderer appends it to the owner's
+ * line and the block gets a `frame f1:` header.
+ *
+ * `DOM.getFrameOwner` is read-only structure (frameId → the owning element's
+ * backendNodeId), the same class as Page.getFrameTree. It is asked on the ROOT
+ * target only — which is also why the map is handed to root-target renders only:
+ * backendNodeIds are unique per TARGET, so an id resolved in the root process
+ * names a DIFFERENT node inside an OOPIF's session, and labelling a stranger is
+ * worse than labelling nothing. A frame whose owner will not resolve (a nested
+ * OOPIF, a frame that died mid-walk) simply goes unlabelled.
+ */
+async function labelFrames(tab, sources) {
+  const byOwner = new Map();
+  const labelBySource = new Map();
+  let seq = 0;
+  for (const source of sources) {
+    if (!source.docFrameId) continue;
+    try {
+      const { backendNodeId } = await sendCdp({ tabId: tab.id }, "DOM.getFrameOwner", {
+        frameId: source.docFrameId,
+      });
+      if (backendNodeId == null) continue;
+      const label = `f${++seq}`;
+      byOwner.set(backendNodeId, label);
+      labelBySource.set(source, label);
+    } catch {
+      // The frame is gone, or its owner lives in another process's document.
+    }
+  }
+  return { byOwner, labelBySource };
 }
 
 /** One source's AX nodes, or null when that frame/session is not readable. */
@@ -622,8 +874,11 @@ const HINT_FETCH_PER_SNAPSHOT = 8;
 async function collectDomHints(source, nodes, budget) {
   const hints = new Map();
   let left = budget;
+  // Same document key the uids use, so a hint cached against a backendNodeId the
+  // NEXT page reused cannot be printed against the stranger that inherited it.
+  const epoch = docEpoch(source.target.tabId, source.target.sessionId);
   for (const backendNodeId of unlabeledInteractiveIds(nodes)) {
-    const key = nodeKey(source.target.tabId, source.target.sessionId, backendNodeId);
+    const key = nodeKey(source.target.tabId, source.target.sessionId, epoch, backendNodeId);
     let hint = hintByNode.get(key);
     if (hint === undefined) {
       if (left <= 0) continue;
@@ -636,6 +891,11 @@ async function collectDomHints(source, nodes, budget) {
   return { hints, left };
 }
 
+/** The uid minter bound to one source's session — every render needs one. */
+function mintForSource(source) {
+  return (backendNodeId) => mintUid(source.target.tabId, source.target.sessionId, backendNodeId);
+}
+
 /** Walk every attached session and merge the accessibility trees into one view. */
 async function buildSnapshot(tab) {
   if (refMap.size > REF_MAP_MAX) {
@@ -643,24 +903,121 @@ async function buildSnapshot(tab) {
     uidByNode.clear();
     hintByNode.clear();
   }
+  await flushLifecycle({ tabId: tab.id });
+  const sources = await axSources(tab);
+  const { byOwner, labelBySource } = await labelFrames(tab, sources);
   const lines = [];
   let hintBudget = HINT_FETCH_PER_SNAPSHOT;
-  for (const source of await axSources(tab)) {
+  for (const source of sources) {
     const nodes = await sourceAxNodes(source);
     if (!nodes) continue;
     const { hints, left } = await collectDomHints(source, nodes, hintBudget);
     hintBudget = left;
+    const label = labelBySource.get(source);
+    if (label) lines.push(`frame ${label}:`);
     // Frame nodes ride the session that fetched them; backendNodeIds are
     // unique per target, so click/type resolve unchanged.
     lines.push(
       ...renderAxTree(
         nodes,
-        (backendNodeId) => mintUid(source.target.tabId, source.target.sessionId, backendNodeId),
+        mintForSource(source),
         hints,
+        // Owner ids were resolved in the ROOT target's id space — valid for
+        // every source that renders that target, meaningless in an OOPIF's.
+        { frameLabels: source.target.sessionId ? undefined : byOwner },
       ),
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * The source rendering the frame this element OWNS, or null when it owns none.
+ *
+ * The snapshot tool promises that an Iframe's uid scopes INTO that frame, and a
+ * subtree walk cannot deliver it: the `<iframe>` ELEMENT and the frame's CONTENT
+ * live in DIFFERENT accessibility trees. getFullAXTree stops at the frame
+ * boundary (the same fact axSources exists for), so the element's subtree in the
+ * parent tree is the lone `Iframe` node — scoping to it would answer one useless
+ * line for the one uid an agent is most likely to scope by.
+ *
+ * `DOM.describeNode` settles it in a single round trip: `frameId` is populated on
+ * frame OWNER elements and absent on everything else. Matching it against the
+ * sources' `docFrameId` is sound from ANY session because a frameId is a
+ * browser-global string — unlike the backendNodeIds `DOM.getFrameOwner` returns,
+ * which only mean anything in the target that resolved them, and which would
+ * therefore risk matching a stranger when the uid came from an OOPIF.
+ */
+async function frameSourceFor(ref, sources) {
+  let frameId;
+  try {
+    const { node } = await sendCdp(
+      { tabId: ref.tabId, sessionId: ref.sessionId },
+      "DOM.describeNode",
+      { backendNodeId: ref.backendNodeId },
+    );
+    frameId = node?.frameId;
+  } catch {
+    return null; // not describable — the ordinary subtree walk still applies
+  }
+  if (!frameId) return null;
+  return sources.find((source) => source.docFrameId === frameId) || null;
+}
+
+/**
+ * One element's subtree, rendered like a snapshot — the `uid` form of the
+ * snapshot op, so following up on a search-results list or a dialog costs a few
+ * hundred characters instead of re-reading the whole page.
+ *
+ * Two shapes, because a uid can name either a piece of ONE document or the
+ * BOUNDARY between two:
+ *
+ *   frame owner — render that frame's whole tree (see frameSourceFor).
+ *   anything else — walk the subtree, mirroring buildPageText's scoped source
+ *     strategy: the session that minted the uid first, then that session's
+ *     same-process child frames, because an element can sit in a frame whose
+ *     nodes are absent from the session's main tree. A tree that does not contain
+ *     the start node answers null and the walk moves on.
+ *
+ * Deliberately does NOT run the REF_MAP_MAX reset buildSnapshot opens with:
+ * clearing the map mid-op would evict the very uid being scoped by, and a
+ * subtree mints few uids anyway.
+ */
+async function buildScopedSnapshot(tab, ref) {
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  await flushLifecycle(target);
+  const frameSource = await frameSourceFor(ref, await axSources(tab));
+  if (frameSource) {
+    // An OOPIF's document is a different target, so the parent's flush above did
+    // nothing for it; give the tree we are about to read its own lifecycle tick.
+    await flushLifecycle(frameSource.target);
+    const nodes = await sourceAxNodes(frameSource);
+    if (nodes) {
+      const { hints } = await collectDomHints(frameSource, nodes, HINT_FETCH_PER_SNAPSHOT);
+      // No startBackendNodeId: the frame's tree IS the requested scope, and
+      // without one renderAxTree cannot answer null.
+      return renderAxTree(nodes, mintForSource(frameSource), hints).join("\n");
+    }
+    // Attached but unreadable this instant (navigating, dying). Fall through, so
+    // the answer is at least the Iframe element rather than an outright failure.
+  }
+  const sources = [
+    { target },
+    ...(await childFrameIds(target)).map((frameId) => ({ target, frameId })),
+  ];
+  for (const source of sources) {
+    const nodes = await sourceAxNodes(source);
+    if (!nodes) continue;
+    const { hints } = await collectDomHints(source, nodes, HINT_FETCH_PER_SNAPSHOT);
+    const lines = renderAxTree(nodes, mintForSource(source), hints, {
+      startBackendNodeId: ref.backendNodeId,
+    });
+    if (lines === null) continue; // the start node is not in THIS tree — try the next
+    return lines.join("\n");
+  }
+  throw new Error(
+    "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot without `uid` and use a current uid.",
+  );
 }
 
 // -------------------------------------------------------------------- actions
@@ -670,6 +1027,17 @@ function resolveRef(uid) {
   if (!ref) {
     throw new Error(
       `Unknown element uid "${uid}". No current snapshot has minted it (or the extension restarted and forgot it) — take a fresh mcp__browser__snapshot and use a uid it prints.`,
+    );
+  }
+  // The uid still RESOLVES after a navigation — that is the danger. Chrome hands
+  // the new document the same backendNodeIds, so without this check the old uid
+  // quietly operates on whatever inherited the number (a naver "메일" link became
+  // an "Add Element" button, with no error anywhere).
+  if (ref.epoch !== docEpoch(ref.tabId, ref.sessionId)) {
+    throw new Error(
+      `The element uid "${uid}" belongs to a PREVIOUS page in that tab — it has navigated since the snapshot that ` +
+        "minted it, and uids do not survive a navigation (the browser reuses its internal node ids, so acting on this " +
+        "one would hit an unrelated element). Take a fresh mcp__browser__snapshot and use a uid it prints.",
     );
   }
   return ref;
@@ -690,7 +1058,7 @@ async function nodeCall(ref, work) {
   } catch (error) {
     const message = String(error?.message || error);
     if (!DEAD_NODE_MESSAGE.test(message)) throw error;
-    const uid = uidByNode.get(nodeKey(ref.tabId, ref.sessionId, ref.backendNodeId));
+    const uid = uidByNode.get(nodeKey(ref.tabId, ref.sessionId, ref.epoch, ref.backendNodeId));
     throw new Error(
       `The element behind ${uid ? `uid "${uid}"` : "that uid"} is no longer in the page ` +
         "(it re-rendered or was removed). Take a fresh mcp__browser__snapshot and use a current uid.",
@@ -745,6 +1113,31 @@ const VISIBLE_OPS = new Set([...INPUT_OPS, "screenshot"]);
  */
 const SETTLE_OPS = new Set([...INPUT_OPS, "navigate", "navigate_back", "new_tab", "handle_dialog"]);
 const ACTION_SETTLE_MS = 350;
+/**
+ * Second look when a settled action's snapshot came back BYTE-IDENTICAL to the
+ * one before it. Chrome's AX flush can land after the lifecycle tick
+ * flushLifecycle forces, and one bounded re-poll is the difference between
+ * reporting "the click did nothing" and the truth.
+ */
+const STALE_SNAPSHOT_REPOLL_MS = 250;
+
+/**
+ * The snapshot op's `maxChars`, clamped. The floor keeps a request from asking
+ * for a snapshot too small to hold any uid line; the ceiling is the point past
+ * which the default cap is the better answer anyway.
+ *
+ * Type-checked rather than coerced, for the same reason clampFraction is: an
+ * omitted field arrives on the wire as `null`, and `Number(null)` is 0 — finite,
+ * so a coercing version would read "not asked" as "clamp me to the floor" and
+ * silently truncate every snapshot to the minimum.
+ */
+const SNAPSHOT_CHARS_MIN = 2000;
+const SNAPSHOT_CHARS_MAX = 30000;
+
+function clampSnapshotChars(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.min(Math.max(Math.round(value), SNAPSHOT_CHARS_MIN), SNAPSHOT_CHARS_MAX);
+}
 
 /** Make the tab actually visible, so dispatched input reaches its renderer. */
 async function showTab(tab) {
@@ -1208,6 +1601,8 @@ const VALUE_SETTLE_MS = 150;
 const CLEAR_BACKSPACE_MAX = 300;
 /** How much of a page-derived value a bridge note may quote. */
 const NOTE_VALUE_MAX = 80;
+/** URLs get more room than values: a truncated one is not a URL at all. */
+const NOTE_URL_MAX = 120;
 /** A bridge note rides into the model turn like any other field: one paragraph. */
 const NOTE_MAX = 480;
 
@@ -1420,10 +1815,25 @@ async function typeRef(uid, value, submit, keystrokes, clear) {
 //
 // CDP has no setter for a <select>'s value short of running page JS, which
 // this worker never does. So selection is driven the way a person drives it:
-// a visibly rendered option is CLICKED; a collapsed native dropdown is walked
-// with arrow keys and the landing value is VERIFIED afterwards — the keyboard
-// path is the one that can silently no-op (macOS opens the native popup
-// instead of moving the selection), and it must never claim success on faith.
+// a visibly rendered option is CLICKED; a collapsed native dropdown is TYPED at
+// and only then walked with arrow keys, and the landing value is VERIFIED
+// afterwards — the keyboard path is the one that can silently no-op, and it must
+// never claim success on faith.
+//
+// The order was measured, not assumed. On a COLLAPSED select this Linux build
+// does what the comment here used to blame on macOS alone: ArrowDown does not
+// move the selection, it opens the browser-process native popup, which lives
+// outside the renderer and which `Input.*` cannot reach at all — so the arrow
+// walk reported `Selecting "Option 2" did not take` on a plain
+// the-internet.herokuapp.com/dropdown. Type-ahead is the path that survives it:
+// a focused collapsed select jumps to the option whose label starts with what
+// was typed, entirely inside the renderer. Arrows stay as the fallback for the
+// platforms where they do move the selection.
+
+/** Settle before believing a select's new value; the AX value lags the key. */
+const SELECT_SETTLE_MS = 150;
+/** One more look before calling it a failure — the field bug was a hasty read. */
+const SELECT_RECHECK_MS = 250;
 
 async function sessionAxNodes(target) {
   const { nodes } = await sendCdp(target, "Accessibility.getFullAXTree", {});
@@ -1498,6 +1908,40 @@ function collectDomOptions(root) {
   return out;
 }
 
+/**
+ * The shortest prefix of `picked`'s label that Blink's select type-ahead would
+ * land on, or "" when type-ahead cannot do the job here.
+ *
+ * Type-ahead matches the typed characters against the option labels
+ * case-insensitively and keeps roughly a one-second buffer between keystrokes,
+ * so the whole prefix goes out back to back. Three things rule it out, and all
+ * three are decided BEFORE typing rather than discovered afterwards:
+ *
+ *   - a non-ASCII character leaves dispatchKey through the IME composition path,
+ *     which does not feed type-ahead at all;
+ *   - a leading SPACE opens the native popup instead of starting a session (a
+ *     space INSIDE an active prefix is ordinary input, which is why only the
+ *     first character is ruled on — and why the label is trimmed first);
+ *   - two enabled options sharing a label cannot be told apart by any prefix.
+ *
+ * Uniqueness is judged among the ENABLED options only, matching what the arrow
+ * fallback walks.
+ */
+function typeaheadPrefix(enabled, picked) {
+  const wanted = picked.label.trim();
+  // Printable ASCII throughout, and never a space first.
+  if (!/^[!-~][ -~]*$/.test(wanted)) return "";
+  const others = enabled
+    .filter((option) => option !== picked)
+    .map((option) => option.label.trim().toLowerCase());
+  const lower = wanted.toLowerCase();
+  for (let len = 1; len <= wanted.length; len += 1) {
+    const prefix = lower.slice(0, len);
+    if (!others.some((label) => label.startsWith(prefix))) return wanted.slice(0, len);
+  }
+  return ""; // a duplicate label: no prefix singles it out
+}
+
 /** Exact match first, then trimmed, then case-insensitive — never substring. */
 function matchOptionLabel(options, wanted) {
   const trimmed = wanted.trim();
@@ -1547,7 +1991,9 @@ async function selectOption(uid, wanted) {
   // ARIA listbox) is clicked like real UI, firing the page's own handlers.
   if (picked.backendNodeId != null) {
     try {
-      await clickNode({ tabId: ref.tabId, sessionId: ref.sessionId, backendNodeId: picked.backendNodeId });
+      // Spread the ref so the option inherits its document epoch: nodeCall looks
+      // the uid up by the full key when it has to explain a dead node.
+      await clickNode({ ...ref, backendNodeId: picked.backendNodeId });
       return;
     } catch {
       // No geometry — a collapsed native dropdown. Fall through to keys.
@@ -1566,30 +2012,69 @@ async function selectOption(uid, wanted) {
     );
   }
 
-  // Collapsed native single <select>: arrows move by one ENABLED option.
+  // Collapsed native single <select>. Type-ahead first, arrows as the fallback.
   const enabled = options.filter((option) => !option.disabled);
+  const wantLabel = picked.label.trim();
+  await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+  await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+
+  const readValue = async () =>
+    String(
+      (await sessionAxNodes(target)).find((node) => node.backendDOMNodeId === ref.backendNodeId)
+        ?.value?.value || "",
+    ).trim();
+  /**
+   * Read the value back the way the clearing ladder does — with a settle, and a
+   * SECOND look before giving up. Reading immediately after the last key
+   * reported successful selections as failures: the AX value is one flush
+   * behind the keystroke that changed it.
+   */
+  const verify = async () => {
+    await new Promise((resolve) => setTimeout(resolve, SELECT_SETTLE_MS));
+    let landed = await readValue();
+    if (landed !== wantLabel) {
+      await new Promise((resolve) => setTimeout(resolve, SELECT_RECHECK_MS));
+      landed = await readValue();
+    }
+    return landed;
+  };
+
+  let landed = "";
+  const prefix = typeaheadPrefix(enabled, picked);
+  for (const ch of prefix) {
+    if (pendingDialogs.has(ref.tabId)) return; // a change handler froze the page
+    await dispatchKey(target, ch, 0);
+  }
+  if (prefix) {
+    landed = await verify();
+    if (landed === wantLabel) return;
+  }
+
+  // Arrows move by one ENABLED option — on the platforms where they move at all.
+  // The starting index comes from the value just READ, not from the pre-typing
+  // snapshot: type-ahead may have moved the selection somewhere else entirely,
+  // and walking from a stale index would overshoot by exactly that much.
   const targetIdx = enabled.indexOf(picked);
-  let currentIdx = enabled.findIndex((option) => option.selected === true);
+  let currentIdx = landed ? enabled.findIndex((option) => option.label.trim() === landed) : -1;
+  if (currentIdx < 0) currentIdx = enabled.findIndex((option) => option.selected === true);
   if (currentIdx < 0) {
     const currentLabel = String(rootAx?.value?.value || "").trim();
     currentIdx = enabled.findIndex((option) => option.label.trim() === currentLabel);
   }
   if (currentIdx < 0) currentIdx = 0; // best effort — the verify below is the referee
-  await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
-  await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
   const delta = targetIdx - currentIdx;
   for (let i = 0; i < Math.abs(delta); i += 1) {
-    if (pendingDialogs.has(ref.tabId)) return; // a change handler froze the page
+    if (pendingDialogs.has(ref.tabId)) return;
     await dispatchKey(target, delta > 0 ? "ArrowDown" : "ArrowUp", 0);
   }
-  const after = (await sessionAxNodes(target)).find(
-    (node) => node.backendDOMNodeId === ref.backendNodeId,
-  );
-  const landed = String(after?.value?.value || "").trim();
-  if (landed !== picked.label.trim()) {
+  landed = await verify();
+  if (landed !== wantLabel) {
     throw new Error(
-      `Selecting "${wanted}" did not take: the dropdown now reads "${landed || "(unknown)"}". ` +
-        "This platform's native dropdown may not be keyboard-drivable — ask the user to pick the option themselves, then take a snapshot.",
+      `Selecting "${wanted}" did not take: the dropdown still reads "${landed || "(unknown)"}". ` +
+        "Typing the option's label (the browser's own type-ahead) and walking with arrow keys were both tried and " +
+        "the value did not change — on this platform the keys open the browser's NATIVE dropdown popup, which is " +
+        "browser UI that synthetic input cannot reach. Ask the user to pick the option themselves, then take a " +
+        "snapshot to confirm what is selected.",
     );
   }
 }
@@ -1605,6 +2090,11 @@ const READ_TEXT_MAX = 20000;
  * the previous snapshot's refs stay valid.
  */
 async function buildPageText(tab, scope) {
+  // Same lazily-updated AX tree the snapshot path reads: the field report had
+  // the page's new button missing from read_text too, so the flush belongs here.
+  await flushLifecycle(
+    scope ? { tabId: scope.tabId, sessionId: scope.sessionId } : { tabId: tab.id },
+  );
   // A uid-scoped read stays on the session that minted the uid, but the
   // element may sit in a SAME-process child frame, whose nodes are absent from
   // that session's main tree — so the frame trees are a fallback, not a miss.
@@ -1814,7 +2304,18 @@ async function assertRefTabUsable(uid, patterns, source) {
   return null;
 }
 
-async function perform(message) {
+/**
+ * Ops exempt from the CURRENT-url origin gate, because they are the way OUT of a
+ * denied page and both check their own DESTINATION before moving. Gating them on
+ * where the tab already sits is what stranded a tab an Adobe PDF-viewer
+ * extension had hijacked: every op refused while quoting the stuck URL, and the
+ * only recovery left was new_tab + close_tab. Everything else still refuses —
+ * reading or acting on a denied page is the risk this gate exists for — and the
+ * post-action landing check still decides what may be READ.
+ */
+const ORIGIN_EXEMPT_OPS = new Set(["navigate", "navigate_back"]);
+
+async function performOp(message) {
   const { patterns, source } = await readPolicy();
 
   // Tab management runs before the current-tab origin check: listing and
@@ -1849,13 +2350,22 @@ async function perform(message) {
     if (!group) {
       await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: "green" });
     }
-    currentTabId = created.id;
+    setCurrentTab(created.id);
     await waitForLoad(created.id);
   }
 
   if (message.op === "select_tab") {
     const picked = await groupedTabById(message.tabId);
-    currentTabId = picked.id;
+    setCurrentTab(picked.id);
+    // No snapshot: switching tabs used to fall through to the tail and return a
+    // full page walk nobody asked for. Answer like list_tabs does — and from the
+    // same pre-gate position, so a denied tab can still be switched away from.
+    return {
+      ok: true,
+      url: picked.url || "",
+      title: picked.title || "",
+      tabs: (await groupedTabs()).map(describeTab),
+    };
   }
 
   if (message.op === "close_tab") {
@@ -1863,18 +2373,25 @@ async function perform(message) {
     await chrome.tabs.remove(picked.id);
     attached.delete(picked.id);
     forgetTabRefs(picked.id);
-    if (currentTabId === picked.id) currentTabId = null;
+    lastSnapshotByTab.delete(picked.id);
+    if (currentTabId === picked.id) setCurrentTab(null);
     const left = await groupedTabs();
     if (!left.length) {
       return { ok: true, tabs: [], url: "", title: "", snapshot: "" };
     }
   }
 
+  // Baseline for the new-tab announcement in the tail. Taken AFTER the
+  // tab-management branches so new_tab's own tab is not announced as a surprise.
+  const tabIdsBefore = new Set((await groupedTabs()).map((one) => one.id));
+
   const tab = await targetTab();
   // Check the tab we are ABOUT to read as well as any URL we are asked to open:
   // an allowed navigation can land somewhere else via a redirect, and a tab the
   // user dragged in may already be sitting on a denied site.
-  if (tab.url && !originAllowed(tab.url, patterns)) return refuseOrigin(tab.url, source);
+  if (!ORIGIN_EXEMPT_OPS.has(message.op) && tab.url && !originAllowed(tab.url, patterns)) {
+    return refuseOrigin(tab.url, source);
+  }
   await ensureAttached(tab.id);
   // read_text with `expand` scrolls, and wheel events go through the
   // browser-side input router — dropped unless the tab's view is visible.
@@ -1894,6 +2411,20 @@ async function perform(message) {
   // BRIDGE-authored caveat about this op's outcome (a repaired or unverifiable
   // clear) — not page content, and the reason a clear can no longer end silently.
   let note = "";
+
+  // A uid-scoped snapshot resolves its element BEFORE any page work, so a uid
+  // from a previous page fails with the uid error rather than after a full walk.
+  let snapshotScope = null;
+  if (message.op === "snapshot" && message.uid) {
+    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    if (refused) return refused;
+    snapshotScope = resolveRef(message.uid);
+  }
+  // `maxChars` is the snapshot op's own budget and applies to both its forms.
+  // No other op's snapshot sizing changes — those are the tool's contract, not
+  // the caller's choice.
+  const snapshotChars =
+    message.op === "snapshot" ? clampSnapshotChars(message.maxChars) : undefined;
 
   // Read-only extraction ops answer directly: their payload REPLACES the
   // snapshot, so the common action tail below (which walks the AX tree again)
@@ -2276,7 +2807,9 @@ async function perform(message) {
   // can redirect somewhere denied, and the snapshot is the exfiltration path
   // that matters (reading a logged-in page is the risk, not just acting on it).
   const fresh = await chrome.tabs.get(tab.id);
-  if (fresh.url && !originAllowed(fresh.url, patterns)) return refuseOrigin(fresh.url, source);
+  if (fresh.url && !originAllowed(fresh.url, patterns)) {
+    return refuseLanding(message.op, fresh.url, source);
+  }
 
   // A dialog may have opened as a RESULT of the action (click → confirm). The
   // snapshot walk would hang on the frozen renderer — report the dialog
@@ -2297,8 +2830,23 @@ async function perform(message) {
   // internal matching above deliberately uses the uncapped walk.
   let snapshot = "";
   let snapshotError;
+  const readSnapshot = async () =>
+    capSnapshot(
+      snapshotScope ? await buildScopedSnapshot(fresh, snapshotScope) : await buildSnapshot(fresh),
+      snapshotChars,
+    );
   try {
-    snapshot = capSnapshot(await buildSnapshot(fresh));
+    snapshot = await readSnapshot();
+    // A BYTE-IDENTICAL snapshot after an action that changed the page is the
+    // shape of a too-early read, not of a no-op: clicking "Add Element" returned
+    // success while the new button was absent from the walk. flushLifecycle
+    // forces the lifecycle tick, but the AX flush can still land a beat later, so
+    // one bounded re-poll separates "the click did nothing" from the truth.
+    if (SETTLE_OPS.has(message.op) && snapshot && lastSnapshotByTab.get(fresh.id) === snapshot) {
+      await new Promise((resolve) => setTimeout(resolve, STALE_SNAPSHOT_REPOLL_MS));
+      snapshot = await readSnapshot();
+    }
+    lastSnapshotByTab.set(fresh.id, snapshot);
   } catch (error) {
     // The ACTION already happened. Reporting the whole op as failed because
     // the read-back broke made the agent retry it — navigating twice, clicking
@@ -2307,16 +2855,61 @@ async function perform(message) {
   }
   // Always report the group's tabs: the agent needs to know a new tab appeared
   // (or that several are open) without spending a separate list_tabs round trip.
+  const groupNow = await groupedTabs();
+  // …and a target=_blank click ADDS one silently: the array changes and nothing
+  // says so, so the agent kept driving the old page while the result it asked
+  // for was on the new one. new_tab is exempt — its tab is in the baseline.
+  const opened = message.op === "new_tab" ? [] : groupNow.filter((one) => !tabIdsBefore.has(one.id));
+  if (opened.length) {
+    note = [
+      note,
+      ...opened.map(
+        (one) =>
+          `A new tab opened during this ${message.op}: "${quoteForNote(one.title || "(untitled)")}" — ` +
+          `${quoteForNote(one.url, NOTE_URL_MAX)} (tabId ${one.id}). It did NOT become the working tab; ` +
+          "use mcp__browser__select_tab to work in it.",
+      ),
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
   return {
     ok: true,
     snapshot,
     ...(snapshotError ? { snapshotError } : {}),
     url: fresh.url,
     title: fresh.title,
-    tabs: (await groupedTabs()).map(describeTab),
+    tabs: groupNow.map(describeTab),
     ...(landedOn ? { landedOn } : {}),
     ...(note ? { note: capNote(note) } : {}),
   };
+}
+
+/**
+ * The op, plus any working-tab notice targetTab left behind.
+ *
+ * It rides `note` — the existing BRIDGE-authored caveat channel, already relayed
+ * and capped — rather than a new wire field, and it is folded in HERE so an op
+ * with its own early-return shape (read_text, screenshot, a blocked dialog)
+ * cannot drop it. A refusal carries no `note` across the wire, so there it joins
+ * the message instead: "Blocked: <url>" is exactly the case where the reason may
+ * BE that the bridge is on a tab the agent never chose. First in either string,
+ * because it reframes every other line and capNote truncates the tail.
+ */
+async function perform(message) {
+  let result;
+  try {
+    result = await performOp(message);
+  } catch (error) {
+    takeTabNotice(); // never let a stale notice surface on the NEXT op
+    throw error;
+  }
+  const notice = takeTabNotice();
+  if (!notice) return result;
+  if (result?.ok === false) {
+    return { ...result, message: `${notice} ${result.message || ""}`.trim() };
+  }
+  return { ...result, note: capNote([notice, result?.note].filter(Boolean).join(" ")) };
 }
 
 // `externally_connectable` restricts senders to the Noah origins declared in the

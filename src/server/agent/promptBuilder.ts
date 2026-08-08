@@ -616,8 +616,14 @@ export function buildSystemPromptAppend(
         " / `type` / `fill_form` / `select_option` / `press_key` / `hover` / `scroll` / `wait_for`, " +
         "manage tabs with `list_tabs` / `new_tab` / `select_tab` / `close_tab`, and answer JavaScript dialogs with `handle_dialog`. " +
         "You can only reach tabs the user put in the Noah tab group plus ones you opened yourself; the rest of their browser is invisible to you. " +
-        "Use `new_tab` when the current page still matters — `navigate` replaces it — and re-`snapshot` after switching tabs to see the new tab's contents (uids keep pointing at the elements they were minted for). " +
+        "Use `new_tab` when the current page still matters — `navigate` replaces it — and re-`snapshot` after switching tabs to see the new tab's contents: `select_tab` returns only the tab's identity, never its page (uids you already hold keep pointing at the pages they were minted for). " +
         "Always `snapshot` first to get element uids, act, then snapshot again — uids from a stale snapshot may hit the wrong element. " +
+        // uids are per-DOCUMENT: Chrome reuses backendNodeIds across documents,
+        // so the bridge invalidates a page's uids when it is replaced. Without
+        // this line the agent reuses a pre-navigation uid and reads the
+        // resulting error as a broken tool rather than a stale reference.
+        "A uid dies with its document: after `navigate`/`navigate_back`, or any click that loads a different page, every earlier uid errors out — take a fresh snapshot instead of reusing one. " +
+        "On a big page, scope the read with `snapshot`'s `uid` (an Iframe's uid scopes into that frame) or tighten `maxChars`, and confirm a toggle really flipped by reading its state flag (`[checked]`, `[expanded]`, `[pressed]`, `[selected]`, `[disabled]`) in the next snapshot rather than assuming it. " +
         // Field-tested on a map whose place-search iframe auto-fit the viewport
         // seconds AFTER the action returned: the settle delay cannot cover
         // multi-second loads, but the snapshot DID show the placeholder — the

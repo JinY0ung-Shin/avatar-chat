@@ -291,7 +291,12 @@ export interface BrowserRequest {
     | "close_tab";
   /** navigate/new_tab: absolute http(s) URL. */
   url?: string;
-  /** click/type/hover (and optionally press_key/scroll/click_at): element uid minted by a previous snapshot. */
+  /**
+   * Element uid minted by a previous snapshot. Required by click/type/hover,
+   * optional on press_key/scroll/click_at (uid mode), and a SCOPE on
+   * snapshot/read_text/screenshot — that element's subtree instead of the whole
+   * page. Dies with the document it was minted in: a navigation invalidates it.
+   */
   uid?: string;
   /** click_at PIXEL mode: coordinates measured on the most recent viewport screenshot image. */
   x?: number;
@@ -342,6 +347,8 @@ export interface BrowserRequest {
   offset?: number;
   /** read_text only: scroll through the page while reading, so lazy-loaded content is included. */
   expand?: boolean;
+  /** snapshot only: tighten the snapshot's character budget (re-clamped extension-side). */
+  maxChars?: number;
 }
 
 /** One tab inside the consented group — the only tabs that exist to the agent. */

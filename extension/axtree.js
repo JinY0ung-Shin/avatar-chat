@@ -27,8 +27,15 @@ export const INTERACTIVE_ROLES = new Set([
   "spinbutton",
   // A canvas is where canvas APPS (diagram editors, maps) live; without a uid
   // there is no way to click or focus one, and keyboard shortcuts silently go
-  // nowhere because the canvas never holds focus.
+  // nowhere because the canvas never holds focus. BOTH spellings, because they
+  // come from different places: Chrome COMPUTES a plain <canvas> as CamelCase
+  // "Canvas" (the same convention as RootWebArea/StaticText/LayoutTableCell),
+  // while only an explicit role="canvas" arrives lowercase. Matching lowercase
+  // alone meant every real canvas was nameless AND non-interactive, so it
+  // vanished from the snapshot entirely and click_at's uid mode had nothing on
+  // the page to aim at.
   "canvas",
+  "Canvas",
 ]);
 
 /**
@@ -142,8 +149,35 @@ export function clearFailed(before, after, value) {
   return now.startsWith(old) || now.endsWith(old);
 }
 
-/** Cap for a printed link href — enough to identify and open, never a dump. */
-const LINK_URL_MAX = 150;
+/**
+ * Cap for a printed link href. A printed URL is meant to be OPENED — handed to
+ * a read-only fetch, compared against another result — and 150 chopped the tail
+ * off ordinary real-world links (a search query with its tracking parameters, a
+ * doc anchor), leaving a string that identifies the target but that no tool can
+ * follow: worse than printing nothing. 500 covers those whole while still
+ * bounding the dumps the cap exists for (data: URIs, tracker payloads).
+ */
+const LINK_URL_MAX = 500;
+
+/** A url with its fragment removed — the identity of the DOCUMENT it points at. */
+const stripFragment = (url) => {
+  const hash = url.indexOf("#");
+  return hash < 0 ? url : url.slice(0, hash);
+};
+
+/**
+ * The url of the document being rendered, read off its RootWebArea — the only
+ * place a pure renderer can learn it, and what makes a same-document link
+ * recognizable at all. Resolved ONCE per render, not per link.
+ *
+ * Its own fragment is stripped: a page LOADED at an anchor reports its url with
+ * `#intro` attached, which would make every in-page link look cross-document
+ * again.
+ */
+function documentUrl(nodes) {
+  const root = nodes.find((node) => node.role?.value === "RootWebArea");
+  return stripFragment(String(axProp(root, "url") || ""));
+}
 
 /**
  * A link's destination, straight from the AX node's `url` property — Chrome
@@ -156,16 +190,68 @@ const LINK_URL_MAX = 150;
  * on, and two destinations differing only past the print cap are not the same
  * link.
  */
-function linkHref(node, role) {
+function linkHref(node, role, docUrl) {
   if (role !== "link") return "";
   const url = String(axProp(node, "url") || "");
   if (!url || url.startsWith("javascript:") || url.startsWith("#")) return "";
+  // Chrome hands the url ALREADY RESOLVED, so `href="#edit"` arrives as
+  // https://site/page#edit and walks straight past the literal `#` test above.
+  // Every row of a ten-row table then shared ONE href, folded onto a single
+  // uid, and rows 2-10 lost their edit/delete links SILENTLY — the snapshot
+  // simply had no line for them. Recognized by comparing against the document's
+  // own url, so a `#sec` on ANOTHER page stays a real destination and still
+  // folds and decorates as before.
+  if (url.includes("#") && docUrl && stripFragment(url) === docUrl) return "";
   return url;
 }
 
 /** The printed form of a destination: identifiable, never a dump. */
 function printableUrl(url) {
   return url.length > LINK_URL_MAX ? `${url.slice(0, LINK_URL_MAX)}…` : url;
+}
+
+/**
+ * One AX state property, normalized to true / false / "mixed" / undefined.
+ * Chrome delivers a state as a real BOOLEAN on some builds and properties and
+ * as the STRING "true"/"false"/"mixed" on the tristate ones, so a `=== true`
+ * read prints half the checked boxes on a page as unchecked.
+ */
+function axStateFlag(node, name) {
+  const raw = axProp(node, name);
+  if (raw === true || raw === "true") return true;
+  if (raw === false || raw === "false") return false;
+  if (raw === "mixed") return "mixed";
+  return undefined;
+}
+
+/**
+ * The state markers appended to a control's snapshot line. Deployed pages
+ * printed `checkbox ""` identically whether the box was ticked or not, so an
+ * agent could neither read a form back nor tell whether the click it just made
+ * toggled anything — a verification that always passed.
+ *
+ * checked/pressed/expanded print BOTH ways, because "not checked" is exactly
+ * the fact a verifying read is after. selected/disabled print only when true:
+ * every option in a listbox is unselected and every control on the page is
+ * enabled, so the false form is pure noise. `[disabled]` is worth its width on
+ * its own — it is what stops an agent spending a click on a dead button.
+ */
+function stateFlags(node) {
+  const flags = [];
+  const checked = axStateFlag(node, "checked");
+  if (checked !== undefined) {
+    flags.push(checked === "mixed" ? "[checked=mixed]" : checked ? "[checked]" : "[unchecked]");
+  }
+  const pressed = axStateFlag(node, "pressed");
+  if (pressed !== undefined) {
+    flags.push(pressed === "mixed" ? "[pressed=mixed]" : pressed ? "[pressed]" : "[unpressed]");
+  }
+  const expanded = axStateFlag(node, "expanded");
+  if (expanded === true) flags.push("[expanded]");
+  else if (expanded === false) flags.push("[collapsed]");
+  if (axStateFlag(node, "selected") === true) flags.push("[selected]");
+  if (axStateFlag(node, "disabled") === true) flags.push("[disabled]");
+  return flags.length ? ` ${flags.join(" ")}` : "";
 }
 
 /** A character that ENDS a token: whitespace, punctuation, or a symbol. */
@@ -221,6 +307,87 @@ const TEXT_LEVEL_ROLES = new Set([
 /** Whitespace-free form, for comparing text a markup split MID-word. */
 const stripSpaces = (s) => s.replace(/\s+/g, "");
 
+/**
+ * Containers whose inline text must NEVER be rejoined into one line. Run
+ * joining rebuilds the paragraph a per-word <span> soup had split — but
+ * `container` is the nearest EMITTING ancestor, and every plain <div> is
+ * `generic` and therefore transparent, so two entirely unrelated page blocks
+ * can share nothing but the landmark they both sit under. Joined on that, a
+ * counter and a footer credit shipped as `StaticText "0 Powered by"`, a spinner
+ * and the same credit as `"Loading… Powered by"` — sentences the page never
+ * contained, which an agent cannot tell from real prose.
+ *
+ * The tradeoff is one-sided, which is why the guard is this blunt: the worst
+ * case it causes is a word-split paragraph sitting DIRECTLY under a landmark
+ * printing one word per line — ugly, obvious, and LOSSLESS — while a false join
+ * fuses two unrelated facts into one and is invisible. Real prose lives in a
+ * paragraph/heading/listitem/cell, all of which keep joining.
+ */
+const NON_JOINING_CONTAINERS = new Set([
+  "RootWebArea",
+  "main",
+  "region",
+  "navigation",
+  "banner",
+  "contentinfo",
+  "complementary",
+  "form",
+  "dialog",
+  "article",
+  "tabpanel",
+]);
+
+/** True when a run of inline text under this container may be rejoined. */
+const joinsRuns = (container) =>
+  container != null && !NON_JOINING_CONTAINERS.has(container.role?.value);
+
+/**
+ * Stripped length a joined run must reach before a NEIGHBOURING line is allowed
+ * to drop it. Two one-character segments occur in order inside almost any line;
+ * eight characters of ordered agreement is no longer a coincidence.
+ */
+const RUN_ECHO_MIN_CHARS = 8;
+
+/**
+ * True when every segment of a joined run occurs, IN ORDER, inside `line`.
+ *
+ * The second shape of the keyword-highlight duplicate, and the one that
+ * container-label suppression structurally cannot see: the page holds the
+ * sentence TWICE — once whole (arriving as a single StaticText line) and once
+ * split around the highlighted words, whose own text nodes never reach the run.
+ * So the fragment run is not a SUBSTRING of anything; it is the sentence with
+ * HOLES where the keywords were ("저당 시럽이라 달달한 단맛을 …" printed a second
+ * time as "저당 이라 달달한 을 …"), which an `includes` test misses and both
+ * lines shipped. An advancing-cursor indexOf chain matches through the holes.
+ *
+ * Whitespace-insensitive because the split loses the spaces too.
+ */
+function runEchoesLine(segments, line) {
+  const hay = stripSpaces(String(line ?? ""));
+  if (!hay) return false;
+  let cursor = 0;
+  let matched = 0;
+  for (const segment of segments) {
+    const needle = stripSpaces(String(segment ?? ""));
+    if (!needle) continue;
+    const at = hay.indexOf(needle, cursor);
+    if (at < 0) return false;
+    cursor = at + needle.length;
+    matched += needle.length;
+  }
+  return matched >= RUN_ECHO_MIN_CHARS;
+}
+
+/**
+ * The last line actually PRINTED before `index`. Suppressed lines are nulled in
+ * place rather than spliced (byHref holds indices that must stay valid), so the
+ * slot immediately before a run is not necessarily a line at all.
+ */
+function precedingLine(lines, index) {
+  for (let i = index - 1; i >= 0; i -= 1) if (lines[i] != null) return lines[i];
+  return null;
+}
+
 /** Cell roles whose row grouping the reading view restores. */
 const CELL_ROLES = new Set([
   "cell",
@@ -232,6 +399,28 @@ const CELL_ROLES = new Set([
 
 /** Row roles that own those cells. */
 const ROW_ROLES = new Set(["row", "LayoutTableRow"]);
+
+/**
+ * The ROOT of an editable region — the one node in it an agent clicks and types
+ * into. Shared by the walk and by isActionableNode so the node that gets a uid
+ * and the node that survives structural skipping can never be different ones.
+ *
+ * `editable` alone does NOT mean root. Measured against real Chromium over CDP
+ * (Accessibility.getFullAXTree), Chrome stamps `editable` on every DESCENDANT of
+ * an editable region too: inside `<div contenteditable><p>hello <b>world</b></p>`
+ * the div, both paragraphs, all three StaticTexts and the InlineTextBoxes each
+ * report editable="richtext". Keying on it alone minted a uid per text node —
+ * and worse, made StaticText INTERACTIVE, which silently switched off run
+ * joining (`inRun` requires `!interactive`) and its duplicate suppression inside
+ * every editor on the page.
+ *
+ * `focusable === true` is what separates them: in those same probes it was true
+ * on the contenteditable div, on a designMode frame's RootWebArea, and on a
+ * contenteditable <body>, and absent on every descendant and on a textarea's
+ * inner generic.
+ */
+const isEditableRoot = (node) =>
+  Boolean(axProp(node, "editable")) && axProp(node, "focusable") === true;
 
 /**
  * The one AX walk both renderers share, so their notion of document order,
@@ -259,10 +448,20 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
     if (!node || seen.has(node.nodeId)) return;
     seen.add(node.nodeId);
     const role = node.role?.value;
+    // A bare contenteditable surface has NO role of its own: a `<div
+    // contenteditable>` and a contenteditable `<body>` both arrive as `generic`,
+    // which is structural — so the only focusable, typeable handle of the whole
+    // editor was never emitted, and an iframe rich-text editor had no uid
+    // anywhere on the page. (The frame's RootWebArea is not a substitute: with a
+    // contenteditable BODY it carries focusable but no `editable` at all.) An
+    // editable ROOT therefore stays visible; it prints as a nameless interactive
+    // and becomes the container of its own children, which it genuinely is.
+    // Every other structural role keeps its meaning — descendants of an editable
+    // region carry `editable` too, and isEditableRoot is what tells them apart.
     const structural =
       !role ||
       role === "none" ||
-      role === "generic" ||
+      (role === "generic" && !isEditableRoot(node)) ||
       role === "InlineTextBox" ||
       TEXT_LEVEL_ROLES.has(String(role).toLowerCase());
     let inherited = covered;
@@ -305,6 +504,21 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
  */
 export function isActionableNode(node, role, name, value) {
   if (INTERACTIVE_ROLES.has(role)) return true;
+  // An Iframe is almost always NAMELESS, so both of these must be decided
+  // BEFORE the nameless gate below or they never fire at all.
+  //
+  // The Iframe itself: its uid is the handle for a frame-scoped snapshot or
+  // screenshot, the only thing that ties a trailing frame block back to a place
+  // in the main tree, and a click target of last resort.
+  if (role === "Iframe") return true;
+  // The ROOT of an editable region — a contenteditable div or body, or the
+  // RootWebArea of a designMode frame, which is where a rich-text editor
+  // (TinyMCE and friends) puts the caret. Such a root is opaque-named or
+  // nameless, so the focusable branch below skips it and these editors had no
+  // uid anywhere: visible, and impossible to type into. It must be decided by
+  // isEditableRoot and not by `editable` alone — see there for the measurement
+  // showing every descendant carries `editable` as well.
+  if (isEditableRoot(node)) return true;
   // Clickable-in-practice surfaces: named table/tree rows and cells, named
   // drawn surfaces (map/app containers), plus anything the page marked
   // focusable (accordion headers, custom widgets). Opaque containers are
@@ -348,13 +562,31 @@ export function unlabeledInteractiveIds(nodes) {
  *
  * `hints` is an optional Map of backendNodeId → DOM identifier, printed only
  * beside a label that would otherwise be empty (see unlabeledInteractiveIds).
+ *
+ * `opts.startBackendNodeId` scopes the render to one subtree (a frame body, a
+ * dialog), returning null when no node carries that id — the same stale-uid
+ * contract renderAxText has. `opts.frameLabels` is a Map of backendNodeId →
+ * frame label: a frame's tree is rendered as its own block AFTER the main one,
+ * and without a marker on the owning `Iframe` line there was nothing tying a
+ * trailing RootWebArea block to the place in the page it came from. Calling
+ * with no `opts` at all renders exactly as it did before it existed.
+ *
+ * Read off `opts` rather than destructured in the parameter list, because a
+ * default only covers `undefined`: a caller passing `null` for "no options" —
+ * the natural shape of `frameLabels ? { frameLabels } : null` — would otherwise
+ * throw here and take out every snapshot on the page, not just the frame part.
  */
-export function renderAxTree(nodes, mintUid, hints) {
+export function renderAxTree(nodes, mintUid, hints, opts) {
+  const { startBackendNodeId, frameLabels } = opts || {};
   const lines = [];
   /** Full href -> { index, name } of the one line kept for that destination. */
   const byHref = new Map();
+  /** Resolved once per render: what makes a link a SAME-DOCUMENT fragment. */
+  const docUrl = documentUrl(nodes);
   /** The inline-text run currently open: { container, index, text, segments, covered }. */
   let run = null;
+  /** The row whose cells the last PUSHED line holds, or null for anything else. */
+  let openRow = null;
   /**
    * Close the open run, dropping it when it only re-spells its own container's
    * label. A `<mark>` keyword highlight splits a sentence MID-word, so the
@@ -373,15 +605,30 @@ export function renderAxTree(nodes, mintUid, hints) {
    * Suppression NULLS the slot instead of splicing — byHref holds line indices
    * that must stay valid for the rest of the walk; the nulls are filtered out
    * once, at the end.
+   *
+   * The container's label is not the only copy of the sentence to check against:
+   * where the page carries the plain sentence as its OWN line, the fragment run
+   * matches nothing's label and used to print beside it, garbled. So the run is
+   * also tested against the line before it and against `incoming` — the line
+   * about to be pushed — which covers the plain copy arriving on either side.
+   * See runEchoesLine for why that test is ordered-with-holes, not `includes`.
    */
-  const closeRun = () => {
-    if (run && run.segments > 1 && run.covered) {
+  const closeRun = (incoming) => {
+    if (run && run.segments.length > 1) {
       const joined = stripSpaces(run.text);
-      if (joined && stripSpaces(run.covered).includes(joined)) lines[run.index] = null;
+      const echoesContainer =
+        Boolean(run.covered && joined) && stripSpaces(run.covered).includes(joined);
+      if (
+        echoesContainer ||
+        runEchoesLine(run.segments, precedingLine(lines, run.index)) ||
+        runEchoesLine(run.segments, incoming)
+      ) {
+        lines[run.index] = null;
+      }
     }
     run = null;
   };
-  walkAxNodes(nodes, undefined, (node, role, name, value, covered, container) => {
+  const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered, container) => {
     const interactive = isActionableNode(node, role, name, value);
     // Nameless NON-interactive nodes are noise, but a nameless interactive
     // element (an unlabeled rich-text editor, an icon-only button) still
@@ -391,7 +638,7 @@ export function renderAxTree(nodes, mintUid, hints) {
     // line carries the uid, which nothing else can supply.
     const echoed = !interactive && !value && Boolean(name) && containsAsToken(covered, name);
     if (!worthPrinting || echoed) return;
-    const href = linkHref(node, role);
+    const href = linkHref(node, role, docUrl);
     // An icon-only control usually carries its label in `title`, which Chrome
     // delivers as the AX DESCRIPTION — the only thing that tells a page full of
     // `button ""` lines apart. Read it ONLY as a last resort: it never replaces
@@ -409,9 +656,14 @@ export function renderAxTree(nodes, mintUid, hints) {
       // tells one `button ""` line from the next.
       const hinted = !label && !value ? hints?.get?.(node.backendDOMNodeId) || "" : "";
       const hint = hinted ? ` (dom: ${hinted})` : "";
+      const state = stateFlags(node);
+      // Last on the line, after everything describing the element itself: this
+      // says where the element's CONTENTS were printed, not what it is.
+      const frame = frameLabels?.get?.(node.backendDOMNodeId);
+      const framed = frame ? ` (frame ${frame})` : "";
       return uid
-        ? `[${uid}] ${role} "${label}"${value ? ` = "${value}"` : ""}${hint}${url}`
-        : `${role} "${name || value || described}"${url}`;
+        ? `[${uid}] ${role} "${label}"${value ? ` = "${value}"` : ""}${state}${hint}${url}${framed}`
+        : `${role} "${name || value || described}"${state}${url}${framed}`;
     };
     // A single search result arrives as four to six links to the SAME
     // destination (thumbnail, title, source, snippet), which buried the result
@@ -426,23 +678,46 @@ export function renderAxTree(nodes, mintUid, hints) {
       return;
     }
     // Prose split into per-word <span>s emits one StaticText per word. Rejoin
-    // the run into the paragraph it was; a different container breaks it.
+    // the run into the paragraph it was; a different container breaks it, and a
+    // LANDMARK container never joins at all (see NON_JOINING_CONTAINERS).
     const inRun =
-      role === "StaticText" && !interactive && !href && !value && Boolean(name) && container != null;
+      role === "StaticText" &&
+      !interactive &&
+      !href &&
+      !value &&
+      Boolean(name) &&
+      joinsRuns(container);
     if (inRun && run && run.container === container) {
       run.text += ` ${name}`;
-      run.segments += 1;
+      run.segments.push(name);
       lines[run.index] = `StaticText "${run.text}"`;
       return;
     }
-    closeRun();
+    // Rendered BEFORE the run closes, so the closing check can see the line
+    // about to land beside it. format() mints only a uid counter tick, and it
+    // happens at the same point of the walk either way, so the numbering the
+    // agent reads is untouched by this ordering.
     const line = format();
-    if (inRun) run = { container, index: lines.length, text: name, segments: 1, covered };
+    closeRun(line);
+    // The reading view has kept a table's rows on one line for a while; the
+    // snapshot view printed one line per cell, so a 650-cell finance table made
+    // the agent COUNT columns to work out where a row began. Join a row's cells
+    // with " | " here too. Each cell keeps its own full rendering, uid
+    // INCLUDED, so nothing loses addressability, and the joined line still
+    // starts with the first cell's — which is what capSnapshot's uid-first
+    // keep classifies it by.
+    const inRow = CELL_ROLES.has(role) && ROW_ROLES.has(container?.role?.value);
+    if (inRow && openRow === container && lines[lines.length - 1] != null) {
+      lines[lines.length - 1] += ` | ${line}`;
+      return;
+    }
+    openRow = inRow ? container : null;
+    if (inRun) run = { container, index: lines.length, text: name, segments: [name], covered };
     if (href) byHref.set(href, { index: lines.length, name });
     lines.push(line);
   });
   closeRun();
-  return lines.filter((line) => line !== null);
+  return found ? lines.filter((line) => line !== null) : null;
 }
 
 /**
@@ -457,10 +732,18 @@ export function renderAxText(nodes, startBackendNodeId) {
   /** What the last printed line was, so a run can extend it: {kind, container, …}. */
   let last = null;
   /** Same mid-word-highlight suppression renderAxTree does — see closeRun there. */
-  const closeTextRun = () => {
-    if (last?.kind === "text" && last.segments > 1 && last.covered) {
+  const closeTextRun = (incoming) => {
+    if (last?.kind === "text" && last.segments.length > 1) {
       const joined = stripSpaces(lines[last.index] ?? "");
-      if (joined && stripSpaces(last.covered).includes(joined)) lines[last.index] = null;
+      const echoesContainer =
+        Boolean(last.covered && joined) && stripSpaces(last.covered).includes(joined);
+      if (
+        echoesContainer ||
+        runEchoesLine(last.segments, precedingLine(lines, last.index)) ||
+        runEchoesLine(last.segments, incoming)
+      ) {
+        lines[last.index] = null;
+      }
     }
   };
   const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered, container) => {
@@ -468,15 +751,13 @@ export function renderAxText(nodes, startBackendNodeId) {
     if ((!name && !value) || echoed) return;
     const printed = name && value ? `${name}: ${value}` : name || value;
     // Inline prose: consecutive StaticText under ONE container is a single
-    // paragraph that a per-word <span> soup had split into a word per line.
-    if (
-      role === "StaticText" &&
-      container != null &&
-      last?.kind === "text" &&
-      last.container === container
-    ) {
+    // paragraph that a per-word <span> soup had split into a word per line — but
+    // never under a LANDMARK, where the shared container means only "same page",
+    // not "same block" (see NON_JOINING_CONTAINERS).
+    const inTextRun = role === "StaticText" && joinsRuns(container);
+    if (inTextRun && last?.kind === "text" && last.container === container) {
       lines[last.index] += ` ${printed}`;
-      last.segments += 1;
+      last.segments.push(printed);
       return;
     }
     // A table read as a vertical list of cells loses the thing that made it a
@@ -486,14 +767,13 @@ export function renderAxText(nodes, startBackendNodeId) {
       lines[lines.length - 1] += ` | ${printed}`;
       return;
     }
-    closeTextRun();
+    closeTextRun(printed);
     lines.push(printed);
-    last =
-      role === "StaticText" && container != null
-        ? { kind: "text", container, index: lines.length - 1, segments: 1, covered }
-        : inRow
-          ? { kind: "cell", container }
-          : null;
+    last = inTextRun
+      ? { kind: "text", container, index: lines.length - 1, segments: [printed], covered }
+      : inRow
+        ? { kind: "cell", container }
+        : null;
   });
   closeTextRun();
   return found ? lines.filter((line) => line !== null) : null;

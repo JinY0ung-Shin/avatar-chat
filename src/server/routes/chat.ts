@@ -1957,6 +1957,7 @@ export function createChatRouter({
                   fullPage: typeof requestData.fullPage === "boolean" ? requestData.fullPage : null,
                   offset: requestData.offset ?? null,
                   expand: typeof requestData.expand === "boolean" ? requestData.expand : null,
+                  maxChars: typeof requestData.maxChars === "number" ? requestData.maxChars : null,
                 });
                 const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
                 if (answer === CANCELLED) {

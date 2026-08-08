@@ -3669,6 +3669,23 @@ describe("resolveOwnerGroup scoping via a group tool", () => {
   });
 });
 
+/**
+ * A browser tool's zod shape. `callTool` invokes the handler directly and never
+ * runs the SDK's schema pass, so a cap that lives only in the schema has to be
+ * asserted on the schema itself.
+ */
+function browserSchema(
+  tools: readonly { name: string; inputSchema: unknown }[],
+  name: string,
+): Record<string, { safeParse: (value: unknown) => { success: boolean } }> {
+  const found = tools.find((t) => t.name === name);
+  if (!found) throw new Error(`browser tool ${name} not found`);
+  return found.inputSchema as Record<
+    string,
+    { safeParse: (value: unknown) => { success: boolean } }
+  >;
+}
+
 describe("browser bridge tools", () => {
   const ok = (snapshot?: string) =>
     vi.fn(async () => ({ behavior: "ok" as const, snapshot, url: "https://intra.example/x", title: "T" }));
@@ -3722,6 +3739,32 @@ describe("browser bridge tools", () => {
       text: "hi",
       submit: true,
     });
+  });
+
+  it("scopes a snapshot to a uid and budget when asked, and sends neither otherwise", async () => {
+    const execute = ok("[e7] button \"Save\"");
+    const tools = buildBrowserTools({ execute, allowed: true });
+
+    // Scoping is how a huge page (or one frame of it) stays readable: the uid
+    // names the subtree, maxChars tightens the budget the extension applies.
+    await callTool(tools, "snapshot", { uid: "e7", maxChars: 5000 });
+    expect(execute).toHaveBeenLastCalledWith({ op: "snapshot", uid: "e7", maxChars: 5000 });
+
+    await callTool(tools, "snapshot", {});
+    expect(execute).toHaveBeenLastCalledWith({ op: "snapshot" });
+  });
+
+  it("bounds the snapshot scope arguments in the schema, where the model is actually stopped", async () => {
+    // callTool invokes the handler directly, bypassing the SDK's zod pass, so
+    // these caps are only ever enforced by the schema — assert them there.
+    const schema = browserSchema(buildBrowserTools({ execute: ok(), allowed: true }), "snapshot");
+    expect(schema.maxChars.safeParse(100).success).toBe(false);
+    expect(schema.maxChars.safeParse(30_001).success).toBe(false);
+    expect(schema.maxChars.safeParse(2_500.5).success).toBe(false);
+    expect(schema.maxChars.safeParse(2_500).success).toBe(true);
+    expect(schema.maxChars.safeParse(undefined).success).toBe(true);
+    expect(schema.uid.safeParse("").success).toBe(false);
+    expect(schema.uid.safeParse("e7").success).toBe(true);
   });
 
   it("quarantines page text so a page cannot forge the trusted wrapper", async () => {
@@ -4232,6 +4275,32 @@ describe("browser bridge tab management", () => {
 
     await callTool(tools, "close_tab", { tabId: "22" });
     expect(execute).toHaveBeenLastCalledWith({ op: "close_tab", tabId: "22" });
+  });
+
+  it("renders a select_tab reply that carries no snapshot as the tab's identity alone", async () => {
+    // select_tab no longer returns page content — the agent snapshots after
+    // switching — so the report has to read as a complete result without one:
+    // where it landed and which tabs exist, and no hole where a snapshot was.
+    const execute = withTabs({
+      url: "https://intra.example/b",
+      title: "B",
+      tabs: [
+        { tabId: "11", title: "A", url: "https://intra.example/a", current: false },
+        { tabId: "22", title: "B", url: "https://intra.example/b", current: true },
+      ],
+    });
+    const res = await callTool(buildBrowserTools({ execute, allowed: true }), "select_tab", {
+      tabId: "22",
+    });
+    const out = res.content[0].text ?? "";
+    expect(res.isError).toBeFalsy();
+    expect(out).toContain("Switched to tab 22.");
+    expect(out).toContain("Current page: B — https://intra.example/b");
+    expect(out).toContain("* [22]");
+    expect(out).not.toContain("undefined");
+    // The tab list is the ONLY quarantined block here: an absent snapshot must
+    // not leave an empty page_content wrapper behind.
+    expect(out.match(/<page_content>/g)).toHaveLength(1);
   });
 
   it("marks the current tab and quarantines tab titles as page-derived text", async () => {

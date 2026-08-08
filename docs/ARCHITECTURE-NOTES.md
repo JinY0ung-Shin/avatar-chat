@@ -955,6 +955,21 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   not raw CDP text: `nodeCall(ref, …)` maps `/no node|not found|could not find node/i` and wraps
   `centerOf`/`quadsOf`, `focusForInput`, captureShot's uid branch and selectOption's `describeNode`.
   `resolveRef`'s unknown-uid message is unchanged.
+- **A uid still dies with its DOCUMENT — the one lifetime it does not outlive.** Chrome REUSES
+  `backendNodeId`s across documents in a tab, so a uid minted before a navigation could resolve cleanly
+  on the next page and point at an unrelated element: the same wrong-element bug `uidByNode` fixed for
+  re-renders, arriving through navigation instead. The worker now invalidates a document's uids when
+  that document is replaced, so a stale uid raises an explicit "belongs to a previous page … take a
+  fresh snapshot" error instead of quietly operating on a stranger. Both agent-facing surfaces state it
+  (`snapshot`'s description, the promptBuilder browser paragraph): no uid survives
+  `navigate`/`navigate_back` or a click that loads a different document.
+- **The WORKING TAB is pinned across turns, and losing it is ANNOUNCED, not silent.** The tab every op
+  acts on is persisted in `chrome.storage.session` (survives service-worker suspension, dies with the
+  browser session), so the tab a previous turn opened is still the tab this turn acts on. When it is
+  gone the bridge falls back to another tab in the group and says WHICH through the `note` channel; a
+  tab the page opened itself (`target=_blank`) is announced the same way. `list_tabs`' `*` marks that
+  tab, and its description now says the marker means "the working tab, pinned until you switch it or it
+  closes" — the agent used to read `*` as "wherever we happen to be".
 - **The common action tail settles, and it never reports a done action as failed.** `SETTLE_OPS`
   (INPUT_OPS + navigate/navigate_back/new_tab/handle_dialog) wait `ACTION_SETTLE_MS` (350) before the
   tail re-reads the tab: a page's answer to input is async, so the old immediate snapshot showed the
@@ -965,26 +980,59 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (`browserTools.report` appends it OUTSIDE the untrusted wrapper, since it is bridge-authored, and
   names read_text/snapshot as the check instead of the action).
 - **`getFullAXTree` covers only the MAIN frame, so frames are walked THREE ways.** `axSources(tab)`
-  returns the root session, then one source per non-main frame id from `Page.getFrameTree` (the only
-  addition to `CDP_ALLOWLIST` here — read-only structure, ids only), then one per OOPIF child session.
+  returns the root session, then one source per non-main frame id from `Page.getFrameTree` (read-only
+  structure, ids only — one of the two frame additions to `CDP_ALLOWLIST`, `DOM.getFrameOwner` being
+  the other, next bullet), then one per OOPIF child session.
   Without the middle kind a SAME-process iframe rendered as an empty `Iframe "name"` line with all its
   content missing. Root-session frame ids for OOPIFs fail there and are absorbed by the per-source
   try/continue, since that content arrives via the child session. Frame uids ride the session that
   fetched them (backendNodeIds are unique per target), so click/type are unchanged. `read_text`'s
   uid-scoped path stays session-scoped but falls through that session's frame trees when
   `renderAxText` returns null, before raising the stale-uid error.
+- **Frame content is LABELLED, not just stitched in.** A child frame's block is preceded by a
+  `frame fN:` header and the owning `Iframe` element's line carries a matching ` (frame fN)`
+  (`renderAxTree`'s `frameLabels`: owner backendNodeId → label, printed LAST on the line because it says
+  where the element's CONTENTS went, not what the element is). Without the pairing a stitched snapshot
+  read as one flat document and the agent could not tell which of three iframes it was acting inside.
+  The owner is resolved with `DOM.getFrameOwner` — newly allowlisted, the other half of the read-only
+  structure question `Page.getFrameTree` already answers (ids only, no content). `Iframe` elements mint
+  uids now, so `snapshot { uid }` can scope INTO one frame.
 - **Audit policy: actions PLUS deliberate reads.** `screenshot`/`read_text` get rows (they are the
   exfiltration surface); `snapshot`/`wait_for` never do — they fire between every step and would bury
   the rows that matter. URLs are scrubbed of userinfo and query string.
 - **No JS execution, and that shapes op design.** `CDP_ALLOWLIST` is default-deny with no
   `Runtime.*`/`Network.*`/`Storage.*`; elements are AX-tree `backendNodeId`s. So `select_option` clicks a
-  rendered option, or walks a collapsed native `<select>` with arrow keys and then RE-READS the landed
-  value (the keyboard path silently no-ops on some platforms — macOS opens the native popup instead).
+  rendered option, or drives a collapsed native `<select>` from the KEYBOARD (next bullet).
   `read_text` reuses the same `extension/axtree.js` walker as snapshot (`renderAxText` vs
   `renderAxTree`), is offset-chunked, and mints no uids so it never invalidates a snapshot. With
   `expand: true` it scrolls the page in viewport steps and MERGES the captures
   (`mergeTextLines` — virtualized feeds DELETE what scrolls out, so one read at the bottom would
   hold only the tail); expand is page-level by definition and refused together with `uid`.
+- **A collapsed native `<select>` is driven by a THREE-rung ladder, each rung settle-then-VERIFIED.**
+  Type-ahead first (the option label's prefix as real key events — what a PERSON does, and what the
+  browser's own list-box matching is built for), then arrow-stepping, then a hand-to-user error naming
+  what the control still reads. The first two rungs SETTLE and re-read the landed value instead of
+  claiming success: the keyboard path silently no-ops on some platforms (macOS opens the native popup
+  instead), so an unverified rung wrote "selected" into the transcript with the old value still on the
+  page. The agent-facing contract is unchanged — uid + the option's exact label.
+- **`select_tab` returns IDENTITY only** (`{ok, url, title, tabs}`, no snapshot): switching is not
+  reading, and bundling a read into the switch made MOVING to a tab inherit the read's origin check —
+  the tab you most need to reach is the one sitting somewhere you may not read. The agent snapshots
+  explicitly afterwards (tool description + standing guidance both say so); `browserTools.report()`
+  renders the snapshot-less reply as url/title/tab-list with no empty wrapper, pinned in
+  `tests/agent-tools.test.ts`. Tab MANAGEMENT is exempt from the origin gate the way `list_tabs`
+  already was: you may MOVE to a tab sitting on a non-allowlisted page, you just cannot READ it there.
+- **The origin gate judges `navigate`/`navigate_back` by DESTINATION, not by the page being left.**
+  Otherwise a tab that landed somewhere denied was a DEAD END — every op refused, including the only
+  one that could escape — which is exactly what a PDF-viewer extension hijacking a `.pdf` navigation
+  produces (`chrome-extension://…`, its own error message now). Reading is unchanged: the destination
+  still has to pass. And when an ACTION lands outside the allowlist, the error now says the action
+  COMPLETED and only the page content is withheld; the old wording read as "nothing happened" and had
+  the agent performing it a second time. Known residual: the escape assumes the debugger is ALREADY
+  attached (true in the field sequence — the tab was being driven when it got hijacked). A cold worker
+  cannot `chrome.debugger.attach` to another extension's page, so that corner still errors raw and
+  recovery is `new_tab`; a `chrome.tabs.update` fallback was considered and deliberately not added —
+  it would open a second navigation mechanism outside the CDP contract this file is built around.
 - **`type`/`fill_form`'s `clear` is a VERIFIED write with FOUR exhaustive end states, and the only reason
   `Accessibility.getPartialAXTree` is on the allowlist.** On map.naver.com's React combobox, "광교카페거리성남"
   + type("성남", clear) read back as "광교카페거리성남성남" — three times running, across two extension
@@ -1043,7 +1091,8 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
     notes in its error text, since an `ok: false` reply has only `message`. Its partial-progress error still
     says the field "may hold partly-written text".
 - **Snapshots are budgeted uid-first.** `capSnapshot` (extension side, `axtree.js`) fits every
-  snapshot into a fixed character budget by keeping `[uid]` lines before prose — cut TEXT is
+  snapshot into its character budget (`SNAPSHOT_MAX_CHARS` 30000 by default, tightenable per call —
+  next bullet) by keeping `[uid]` lines before prose — cut TEXT is
   recoverable via offset-chunked `read_text`, a cut uid is unreachable — and says what it dropped;
   `browserTools.report()` keeps a coarser defensive cap for old installed builds. Related renderer
   choices: links print their AX `url` property (`→ https://…`, so results can be compared without a
@@ -1051,6 +1100,25 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (`NAMED_CLICKABLE_ROLES` — draw.io-style `<tr>` menus were visible but unclickable), and input ops
   focus via `focusForInput`, which falls back to a real centre click when `DOM.focus` refuses
   (ProseMirror bodies, canvases).
+- **`snapshot` takes `uid` and `maxChars`** — both optional, both full five-layer fields
+  (`browserTools` zod → `BrowserRequest` → `routes/chat.ts` relay → `BridgeOperation` →
+  `background.js`). `uid` renders only that element's subtree (an `Iframe`'s uid scopes into that
+  frame) and a dead uid raises read_text's re-snapshot error, not a silent whole-page fallback.
+  `maxChars` tightens `capSnapshot`'s budget and is RE-CLAMPED extension-side to [2000, 30000], so the
+  wire value can only ever shrink the cap. A pre-0.15.0 build ignores both and returns the full
+  snapshot — a degrade, not a break, which is why `BROWSER_EXTENSION_MIN_COMPATIBLE` stays 0.6.0.
+- **Snapshots print STATE, so a toggle click can be VERIFIED instead of assumed** (`stateFlags`):
+  `[checked]`/`[unchecked]`/`[checked=mixed]` and `[pressed]`/`[unpressed]`/`[pressed=mixed]` print
+  BOTH ways — "not checked" is exactly the fact a verifying read is after — while `[selected]` and
+  `[disabled]` print only when true (every option in a listbox is unselected and every control is
+  enabled; the false form is pure noise). `[expanded]`/`[collapsed]` covers disclosures. Read through
+  `axStateFlag`, which normalizes Chrome's boolean-or-string delivery to true/false/"mixed"/undefined —
+  a raw truthiness read printed half a page's checked boxes as unchecked.
+- **The snapshot view groups a table ROW onto one line**, joined with ` | ` like the reading view has
+  done for a while (`CELL_ROLES` inside `ROW_ROLES`). One line per cell made a 650-cell finance table
+  force the agent to COUNT columns to find where a row began. Each cell keeps its full rendering, uid
+  INCLUDED, and the joined line still starts with the first cell's, which is what `capSnapshot`'s
+  uid-first keep classifies it by.
 - **Nine `axtree.js` rules exist because each one silently DELETED, DROWNED, or made UNREACHABLE real
   page content.**
   (1) `AXValue.value` is not always a string — a slider/spinbutton reports a number and `.trim()` threw,
@@ -1064,7 +1132,16 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (4) `renderAxTree` folds links sharing a FULL href onto one line at the first occurrence's position,
   upgrading it in place when a later duplicate carries a longer name — one SERP result arrives as four
   to six links to the same destination. `linkHref` returns the URL untruncated because it is the dedupe
-  identity; `printableUrl` applies `LINK_URL_MAX`. Three later rules answer the same class of failure:
+  identity; `printableUrl` applies `LINK_URL_MAX`, now 500 — a query with its tracking parameters or a
+  doc anchor has to survive WHOLE, since a truncated URL names a target no tool can follow, which is
+  worse than printing none; the cap still bounds what it exists for (data: URIs, tracker payloads).
+  SAME-DOCUMENT fragment links are excluded from folding entirely: Chrome hands `href="#edit"` back
+  ALREADY RESOLVED as `https://site/page#edit`, so it walked straight past the literal `#` test, every
+  row of a ten-row table shared ONE href, and rows 2-10 lost their edit/delete links SILENTLY — no line
+  in the snapshot at all. `documentUrl` (the RootWebArea's own url, its own fragment stripped because a
+  page LOADED at an anchor reports one) is resolved ONCE per render and compared via `stripFragment`, so
+  a `#sec` pointing at ANOTHER page stays a real destination and folds as before.
+  Three later rules answer the same class of failure:
   (5) NAMED `region`/`application` containers mint uids (`NAMED_CONTAINER_UID_ROLES`) — a map's drawn
   body has no accessible children at all, so the container's own uid is the only thing click_at's uid
   mode can aim at; nameless ones stay structure, and `region` remains in `OPAQUE_NAME_ROLES` (a uid says

@@ -28,6 +28,41 @@ const uids = () => {
 
 const render = (nodes: unknown[]) => renderAxTree(nodes, uids()) as string[];
 
+/**
+ * The two halves of an editable region, as a real Chromium probe reported them
+ * over CDP: the ROOT carries editable AND focusable, while every descendant
+ * (paragraphs, StaticTexts, InlineTextBoxes, a textarea's inner generic) carries
+ * editable ALONE. Telling them apart is the whole rule.
+ */
+const editableRoot = () => ({
+  properties: [
+    { name: "editable", value: { value: "richtext" } },
+    { name: "focusable", value: { value: true } },
+  ],
+});
+const editableDescendant = () => ({
+  properties: [{ name: "editable", value: { value: "richtext" } }],
+});
+
+/**
+ * The naver shape: the page holds one sentence TWICE — once whole, and once
+ * split around the highlighted keywords ("시럽", "단맛"), whose own text nodes
+ * never reach the renderer. The split copy is therefore a substring of nothing,
+ * so container-label suppression cannot see it and both lines used to print,
+ * the second one garbled. Built in both orders, since the whole copy can arrive
+ * on either side of the fragments.
+ */
+const HIGHLIGHT_SENTENCE = "저당 시럽이라 달달한 단맛을 돋보이게 하는 브랜드.";
+const highlightDuplicate = (order: "plain-first" | "run-first") => [
+  node("root", "RootWebArea", "검색", order === "plain-first" ? ["plain", "split"] : ["split", "plain"]),
+  node("plain", "paragraph", "", ["full"]),
+  node("full", "StaticText", HIGHLIGHT_SENTENCE),
+  node("split", "paragraph", "", ["f1", "f2", "f3"]),
+  node("f1", "StaticText", "저당 "),
+  node("f2", "StaticText", "이라 달달한 "),
+  node("f3", "StaticText", "을 돋보이게 하는 브랜드."),
+];
+
 describe("renderAxTree", () => {
   it("prints a link once, not again as the text inside it", () => {
     // The doubling that made every snapshot twice as expensive to read.
@@ -72,15 +107,16 @@ describe("renderAxTree", () => {
   });
 
   it("emits in document order, not in the order Chrome listed the nodes", () => {
-    // Both StaticTexts hang off the same container, so they now render as ONE
-    // joined run (inline text used to print a word per line). Document order is
-    // still what the assertion pins — it is visible inside the joined line.
+    // Both StaticTexts hang off the RootWebArea, which is a LANDMARK: sharing
+    // one says only "same page", so they stay two lines (they briefly rendered
+    // as one joined run — see the "0 Powered by" case below). Document order is
+    // what this pins either way.
     const lines = render([
       node("3", "StaticText", "셋째"),
       node("1", "RootWebArea", "Doc", ["2", "3"]),
       node("2", "StaticText", "둘째"),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "둘째 셋째"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "둘째"', 'StaticText "셋째"']);
   });
 
   it("still gives a uid to a nameless interactive element", () => {
@@ -165,16 +201,30 @@ describe("renderAxTree", () => {
     expect(lines).toEqual(['RootWebArea "Doc"', '[e1] link "메뉴"', '[e2] link "위로"']);
   });
 
-  it("truncates a very long link url", () => {
-    const long = `https://example.com/${"x".repeat(300)}`;
-    const lines = render([
-      node("1", "link", "긴 링크", [], {
+  it("prints an ordinary long query url WHOLE, and truncates only a dump", () => {
+    // The cap was 150, which cut the tail off perfectly ordinary links (a search
+    // query with its tracking parameters) and left a string that identifies the
+    // target but that no tool can open — worse than printing nothing. 500 keeps
+    // those whole and still bounds the data:/tracker dumps the cap exists for.
+    const ordinary = `https://example.com/search?q=${"a".repeat(300)}`;
+    const kept = render([
+      node("1", "link", "검색 결과", [], {
         backendDOMNodeId: 7,
-        properties: [{ name: "url", value: { value: long } }],
+        properties: [{ name: "url", value: { value: ordinary } }],
       }),
     ]);
-    expect(lines[0].length).toBeLessThan(200);
-    expect(lines[0]).toContain("…");
+    expect(kept[0]).toContain(ordinary);
+    expect(kept[0]).not.toContain("…");
+
+    const dump = `https://example.com/${"x".repeat(900)}`;
+    const cut = render([
+      node("1", "link", "긴 링크", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "url", value: { value: dump } }],
+      }),
+    ]);
+    expect(cut[0]).toContain("…");
+    expect(cut[0].length).toBeLessThan(560);
   });
 
   it("gives a uid to a NAMED table-row menu item, but not to a nameless cell", () => {
@@ -203,11 +253,22 @@ describe("renderAxTree", () => {
   });
 
   it("gives a uid to a nameless canvas so canvas apps can be focused", () => {
+    // This fixture used to say lowercase "canvas" and passed while every REAL
+    // canvas failed: Chrome COMPUTES a plain <canvas> as CamelCase "Canvas"
+    // (like RootWebArea/StaticText), so it matched nothing, counted as neither
+    // named nor interactive, and vanished from the snapshot altogether —
+    // leaving click_at's uid mode with no target on the whole page.
     const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "Canvas", "", [], { backendDOMNodeId: 7 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] Canvas ""']);
+    // An explicit role="canvas" still arrives lowercase, so both are matched.
+    const authored = render([
       node("1", "RootWebArea", "Doc", ["2"]),
       node("2", "canvas", "", [], { backendDOMNodeId: 7 }),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] canvas ""']);
+    expect(authored).toEqual(['RootWebArea "Doc"', '[e1] canvas ""']);
   });
 
   it("gives a uid to a NAMED region, but not to a nameless one", () => {
@@ -529,6 +590,430 @@ describe("renderAxTree", () => {
       '[e2] link "둘째" → https://e.example/2',
     ]);
   });
+
+  it("prints checkbox state, so a form can be read and a toggle verified", () => {
+    // Deployed pages printed `checkbox ""` identically whether ticked or not:
+    // the agent could not read a form back, and a click it made "verified"
+    // against a line that never changes. Chrome sends the state as a real
+    // boolean on some builds and as the STRING "true"/"false" on others, so a
+    // `=== true` read prints half a page's checked boxes as unchecked — both
+    // spellings are pinned here.
+    const lines = render([
+      node("1", "RootWebArea", "가입", ["2", "3"]),
+      node("2", "checkbox", "약관 동의", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "checked", value: { value: true } }],
+      }),
+      node("3", "checkbox", "광고 수신", [], {
+        backendDOMNodeId: 8,
+        properties: [{ name: "checked", value: { value: "false" } }],
+      }),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "가입"',
+      '[e1] checkbox "약관 동의" [checked]',
+      '[e2] checkbox "광고 수신" [unchecked]',
+    ]);
+  });
+
+  it("prints a tri-state box as mixed instead of guessing which way it leans", () => {
+    const lines = render([
+      node("1", "checkbox", "전체 선택", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "checked", value: { value: "mixed" } }],
+      }),
+    ]);
+    expect(lines).toEqual(['[e1] checkbox "전체 선택" [checked=mixed]']);
+  });
+
+  it("prints pressed, expanded/collapsed and disabled where they are carried", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2", "3", "4", "5"]),
+      node("2", "button", "굵게", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "pressed", value: { value: true } }],
+      }),
+      node("3", "combobox", "지역", [], {
+        backendDOMNodeId: 8,
+        properties: [{ name: "expanded", value: { value: false } }],
+      }),
+      node("4", "combobox", "정렬", [], {
+        backendDOMNodeId: 9,
+        properties: [{ name: "expanded", value: { value: "true" } }],
+      }),
+      node("5", "button", "저장", [], {
+        backendDOMNodeId: 10,
+        properties: [{ name: "disabled", value: { value: true } }],
+      }),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "Doc"',
+      '[e1] button "굵게" [pressed]',
+      '[e2] combobox "지역" [collapsed]',
+      '[e3] combobox "정렬" [expanded]',
+      '[e4] button "저장" [disabled]',
+    ]);
+  });
+
+  it("puts state after the value, and prints nothing for a state's default", () => {
+    // The flags describe the control, so they sit after what it HOLDS and before
+    // where it points. `selected: false` is the state of every option in a list
+    // and `disabled: false` of every live control — printing those is pure noise.
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2", "3", "4"]),
+      node("2", "textbox", "검색", [], {
+        backendDOMNodeId: 7,
+        value: { value: "광교" },
+        properties: [{ name: "disabled", value: { value: true } }],
+      }),
+      node("3", "option", "서울", [], {
+        backendDOMNodeId: 8,
+        properties: [{ name: "selected", value: { value: true } }],
+      }),
+      node("4", "option", "부산", [], {
+        backendDOMNodeId: 9,
+        properties: [
+          { name: "selected", value: { value: false } },
+          { name: "disabled", value: { value: false } },
+        ],
+      }),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "Doc"',
+      '[e1] textbox "검색" = "광교" [disabled]',
+      '[e2] option "서울" [selected]',
+      '[e3] option "부산"',
+    ]);
+  });
+
+  it("never folds same-document fragment links, however Chrome resolved them", () => {
+    // Chrome delivers `href="#edit"` ALREADY RESOLVED as https://x/page#edit, so
+    // the literal `#` exclusion missed it: all ten rows' edit links shared ONE
+    // href, folded onto a single uid, and rows 2-10 lost their edit and delete
+    // buttons from the snapshot entirely — silently, since folding prints no
+    // trace of what it dropped.
+    const rows = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    const url = (fragment: string) => ({
+      name: "url",
+      value: { value: `https://x/page${fragment}` },
+    });
+    const lines = render([
+      node(
+        "root",
+        "RootWebArea",
+        "표",
+        rows.flatMap((i) => [`edit-${i}`, `del-${i}`]),
+        { properties: [url("")] },
+      ),
+      ...rows.flatMap((i) => [
+        node(`edit-${i}`, "link", "edit", [], {
+          backendDOMNodeId: 100 + i,
+          properties: [url("#edit")],
+        }),
+        node(`del-${i}`, "link", "delete", [], {
+          backendDOMNodeId: 200 + i,
+          properties: [url("#delete")],
+        }),
+      ]),
+    ]);
+    expect(lines.filter((line) => /^\[e\d+\] link /.test(line))).toHaveLength(20);
+    // Exempt from folding AND from decoration, exactly like a literal `#foo`:
+    // a same-document destination tells the agent nothing it did not know.
+    expect(lines).toContain('[e1] link "edit"');
+    expect(lines.some((line) => line.includes("→"))).toBe(false);
+  });
+
+  it("recognizes a fragment link even when the page was loaded at an anchor", () => {
+    // The document then reports its OWN url with `#intro` attached, which would
+    // make every in-page link look cross-document all over again.
+    const lines = render([
+      node("1", "RootWebArea", "문서", ["2"], {
+        properties: [{ name: "url", value: { value: "https://x/page#intro" } }],
+      }),
+      node("2", "link", "편집", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "url", value: { value: "https://x/page#edit" } }],
+      }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "문서"', '[e1] link "편집"']);
+  });
+
+  it("still folds duplicate links to ANOTHER page's fragment", () => {
+    // The behaviour the fragment exemption must not cost: a search result
+    // reaches one destination four to six times, and a `#sec` on a different
+    // document is a real destination.
+    const url = { name: "url", value: { value: "https://x/other#sec" } };
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2", "3"], {
+        properties: [{ name: "url", value: { value: "https://x/page" } }],
+      }),
+      node("2", "link", "", [], { backendDOMNodeId: 11, properties: [url] }),
+      node("3", "link", "다른 문서의 절", [], { backendDOMNodeId: 12, properties: [url] }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e2] link "다른 문서의 절" → https://x/other#sec']);
+  });
+
+  it("does not glue two unrelated blocks that share only a landmark", () => {
+    // `StaticText "0 Powered by"` shipped from a real page: a counter and a
+    // footer credit, each inside its own <div> (generic → transparent), so the
+    // nearest EMITTING container of both was the RootWebArea and the run-joiner
+    // fused them into a sentence the page never contained.
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "generic", "", ["4"]),
+      node("3", "generic", "", ["5"]),
+      node("4", "StaticText", "0"),
+      node("5", "StaticText", "Powered by"),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "0"', 'StaticText "Powered by"']);
+  });
+
+  it("blocks joining under main too, while real prose in a paragraph still joins", () => {
+    const across = render([
+      node("1", "main", "", ["2", "3"]),
+      node("2", "StaticText", "로딩 중"),
+      node("3", "StaticText", "Powered by"),
+    ]);
+    expect(across).toEqual(['StaticText "로딩 중"', 'StaticText "Powered by"']);
+    const inside = render([
+      node("1", "main", "", ["2"]),
+      node("2", "paragraph", "", ["3", "4"]),
+      node("3", "StaticText", "오늘"),
+      node("4", "StaticText", "폭염경보"),
+    ]);
+    expect(inside).toEqual(['StaticText "오늘 폭염경보"']);
+  });
+
+  it("drops a highlight-split run the line ABOVE it already spells out", () => {
+    expect(render(highlightDuplicate("plain-first"))).toEqual([
+      'RootWebArea "검색"',
+      `StaticText "${HIGHLIGHT_SENTENCE}"`,
+    ]);
+  });
+
+  it("drops it the other way round too, when the whole copy arrives after", () => {
+    expect(render(highlightDuplicate("run-first"))).toEqual([
+      'RootWebArea "검색"',
+      `StaticText "${HIGHLIGHT_SENTENCE}"`,
+    ]);
+  });
+
+  it("keeps a run that says something the line beside it does not", () => {
+    const lines = render([
+      node("1", "RootWebArea", "검색", ["2", "3"]),
+      node("2", "paragraph", "", ["4"]),
+      node("4", "StaticText", HIGHLIGHT_SENTENCE),
+      node("3", "paragraph", "", ["5", "6"]),
+      node("5", "StaticText", "리뷰 3,214건"),
+      node("6", "StaticText", "영업 중"),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "검색"',
+      `StaticText "${HIGHLIGHT_SENTENCE}"`,
+      'StaticText "리뷰 3,214건 영업 중"',
+    ]);
+  });
+
+  it("does not let a SHORT run be swallowed by a coincidental ordered match", () => {
+    // "2" and "8" both occur, in that order, inside "2026.08.08" — the calendar
+    // case again, one line up instead of one level up. Eight characters of
+    // ordered agreement is where coincidence stops and a duplicate begins.
+    const lines = render([
+      node("1", "RootWebArea", "달력", ["2", "3"]),
+      node("2", "StaticText", "2026.08.08"),
+      node("3", "paragraph", "", ["4", "5"]),
+      node("4", "StaticText", "2"),
+      node("5", "StaticText", "8"),
+    ]);
+    expect(lines).toEqual(['RootWebArea "달력"', 'StaticText "2026.08.08"', 'StaticText "2 8"']);
+  });
+
+  it("keeps a table row on ONE line here too, as the reading view already did", () => {
+    // A 650-cell finance table printed one line per cell, so the agent had to
+    // count columns to work out where each row began.
+    const lines = render([
+      node("1", "table", "실적", ["2", "3"]),
+      node("2", "row", "", ["4", "5", "6"]),
+      node("3", "row", "", ["7", "8", "9"]),
+      node("4", "columnheader", "분기"),
+      node("5", "columnheader", "매출"),
+      node("6", "columnheader", "비고"),
+      node("7", "cell", "1Q"),
+      node("8", "cell", "100"),
+      node("9", "cell", "호조"),
+    ]);
+    expect(lines).toEqual([
+      'table "실적"',
+      'columnheader "분기" | columnheader "매출" | columnheader "비고"',
+      'cell "1Q" | cell "100" | cell "호조"',
+    ]);
+  });
+
+  it("keeps every joined cell's own uid, so a row loses no addressability", () => {
+    // The challenging_dom shape: no table or columnheader roles anywhere, just
+    // LayoutTableRow/LayoutTableCell, each cell a click target of its own. The
+    // line still STARTS with a uid, which is what capSnapshot keeps it by.
+    const lines = render([
+      node("1", "LayoutTable", "", ["2", "3"]),
+      node("2", "LayoutTableRow", "", ["4", "5"]),
+      node("3", "LayoutTableRow", "", ["6", "7"]),
+      node("4", "LayoutTableCell", "편집", [], { backendDOMNodeId: 11 }),
+      node("5", "LayoutTableCell", "삭제", [], { backendDOMNodeId: 12 }),
+      node("6", "LayoutTableCell", "복사", [], { backendDOMNodeId: 13 }),
+      node("7", "LayoutTableCell", "이동", [], { backendDOMNodeId: 14 }),
+    ]);
+    expect(lines).toEqual([
+      '[e1] LayoutTableCell "편집" | [e2] LayoutTableCell "삭제"',
+      '[e3] LayoutTableCell "복사" | [e4] LayoutTableCell "이동"',
+    ]);
+  });
+
+  it("leaves a cell alone when its container is not a row", () => {
+    const lines = render([
+      node("1", "grid", "달력", ["2", "3"]),
+      node("2", "cell", "26", [], { backendDOMNodeId: 11 }),
+      node("3", "cell", "27", [], { backendDOMNodeId: 12 }),
+    ]);
+    expect(lines).toEqual(['grid "달력"', '[e1] cell "26"', '[e2] cell "27"']);
+  });
+
+  it("closes an inline run before joining a row, never appending onto its text", () => {
+    // A cell whose text is a StaticText of its own leaves a text line as the
+    // last one printed; the next cell must start a line, not extend that.
+    const lines = render([
+      node("1", "row", "", ["2", "3"]),
+      node("2", "cell", "", ["4"]),
+      node("4", "StaticText", "설명 문장"),
+      node("3", "cell", "값", [], { backendDOMNodeId: 12 }),
+    ]);
+    expect(lines).toEqual(['StaticText "설명 문장"', '[e1] cell "값"']);
+  });
+
+  it("gives a uid to an Iframe, which is nameless and so used to get none", () => {
+    // The Iframe's uid is the handle for a frame-scoped snapshot or screenshot,
+    // the only thing tying a trailing frame block to a place in the main tree,
+    // and a click target of last resort.
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "Iframe", "", [], { backendDOMNodeId: 7 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] Iframe ""']);
+  });
+
+  it("gives a uid to a designMode frame's document AND its body", () => {
+    // Old TinyMCE. Fixture transcribed from a real Chromium probe over CDP: the
+    // frame's RootWebArea carries editable+focusable, the <body> arrives as a
+    // `generic` with editable+focusable, and the paragraph inside carries
+    // `editable` ONLY. Both roots are typeable handles; the paragraph is not.
+    const lines = render([
+      node("1", "RootWebArea", "", ["2"], { backendDOMNodeId: 10, ...editableRoot() }),
+      node("2", "generic", "", ["3"], { backendDOMNodeId: 11, ...editableRoot() }),
+      node("3", "paragraph", "", ["4"], editableDescendant()),
+      node("4", "StaticText", "본문", [], editableDescendant()),
+    ]);
+    expect(lines).toEqual(['[e1] RootWebArea ""', '[e2] generic ""', 'StaticText "본문"']);
+  });
+
+  it("reaches a body-contenteditable frame through its body, not its document", () => {
+    // Measured: with a contenteditable BODY the frame's RootWebArea reports
+    // focusable but NO `editable` at all, so the RootWebArea route this fix was
+    // originally aimed at does not exist. The real editable surface is the body,
+    // which arrives as role `generic` — structural, and so never emitted until
+    // the walk learned to keep an editable ROOT.
+    const lines = render([
+      node("1", "RootWebArea", "편집기", ["2"], {
+        backendDOMNodeId: 10,
+        properties: [{ name: "focusable", value: { value: true } }],
+      }),
+      node("2", "generic", "", ["3"], { backendDOMNodeId: 11, ...editableRoot() }),
+      node("3", "StaticText", "초안", [], editableDescendant()),
+    ]);
+    expect(lines).toEqual(['RootWebArea "편집기"', '[e1] generic ""', 'StaticText "초안"']);
+  });
+
+  it("mints ONE uid for a contenteditable editor, not one per node inside it", () => {
+    // The probe that corrected this rule: Chrome stamps `editable` on every
+    // DESCENDANT of an editable region — the div, both paragraphs and all three
+    // StaticTexts here — and `focusable` on the root alone. Keying on `editable`
+    // by itself flooded the snapshot with uids AND made StaticText interactive,
+    // which silently switched off run joining inside every editor (`inRun`
+    // requires `!interactive`) — so the prose below is the regression guard.
+    const nodes = [
+      node("1", "RootWebArea", "글쓰기", ["2"]),
+      node("2", "generic", "", ["3", "6"], { backendDOMNodeId: 20, ...editableRoot() }),
+      node("3", "paragraph", "", ["4", "5"], editableDescendant()),
+      node("4", "StaticText", "hello", [], editableDescendant()),
+      node("5", "StaticText", "world", [], editableDescendant()),
+      node("6", "paragraph", "", ["7"], editableDescendant()),
+      node("7", "StaticText", "second para", [], editableDescendant()),
+    ];
+    expect(render(nodes)).toEqual([
+      'RootWebArea "글쓰기"',
+      '[e1] generic ""',
+      'StaticText "hello world"',
+      'StaticText "second para"',
+    ]);
+    // Nameless and description-less, so it is exactly the kind of control the
+    // caller looks a DOM identifier up for.
+    expect(unlabeledInteractiveIds(nodes)).toEqual([20]);
+  });
+
+  it("leaves a textarea's inner editable generic invisible", () => {
+    // Measured: that inner generic carries editable="plaintext" and no focusable
+    // — a descendant, not a root. The textarea itself is a textbox and mints as
+    // it always has; minting the inner one too would double every text field.
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "textbox", "메모", ["3"], { backendDOMNodeId: 30 }),
+      node("3", "generic", "", [], {
+        backendDOMNodeId: 31,
+        properties: [{ name: "editable", value: { value: "plaintext" } }],
+      }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] textbox "메모"']);
+  });
+
+  it("leaves an ordinary document without a uid", () => {
+    const lines = render([node("1", "RootWebArea", "Doc", [], { backendDOMNodeId: 3 })]);
+    expect(lines).toEqual(['RootWebArea "Doc"']);
+  });
+
+  it("marks the Iframe line with the frame label its subtree is rendered under", () => {
+    const lines = renderAxTree(
+      [node("1", "RootWebArea", "Doc", ["2"]), node("2", "Iframe", "", [], { backendDOMNodeId: 7 })],
+      uids(),
+      undefined,
+      { frameLabels: new Map([[7, "f2"]]) },
+    ) as string[];
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] Iframe "" (frame f2)']);
+  });
+
+  it("renders only the requested subtree, and null when the start id is stale", () => {
+    const nodes = [
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "article", "본문", ["4"], { backendDOMNodeId: 10 }),
+      node("3", "StaticText", "사이드바"),
+      node("4", "StaticText", "기사 내용"),
+    ];
+    const scoped = renderAxTree(nodes, uids(), undefined, { startBackendNodeId: 10 }) as string[];
+    expect(scoped).toEqual(['article "본문"', 'StaticText "기사 내용"']);
+    expect(renderAxTree(nodes, uids(), undefined, { startBackendNodeId: 999 })).toBeNull();
+  });
+
+  it("renders identically whether the options argument is passed, null or omitted", () => {
+    // `null` is the natural shape of `frameLabels ? { frameLabels } : null` at a
+    // call site, and a parameter default only covers `undefined` — destructuring
+    // it would throw and take out the whole snapshot, not just the frame part.
+    const nodes = [
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "button", "저장", [], { backendDOMNodeId: 7 }),
+      node("3", "StaticText", "본문"),
+    ];
+    const bare = renderAxTree(nodes, uids(), undefined) as string[];
+    expect(bare).toEqual(['RootWebArea "Doc"', '[e1] button "저장"', 'StaticText "본문"']);
+    expect(renderAxTree(nodes, uids(), undefined, {})).toEqual(bare);
+    expect(renderAxTree(nodes, uids(), undefined, null)).toEqual(bare);
+  });
 });
 
 describe("unlabeledInteractiveIds", () => {
@@ -550,6 +1035,16 @@ describe("unlabeledInteractiveIds", () => {
   it("skips a nameless node that carries no backend id to address it by", () => {
     const ids = unlabeledInteractiveIds([node("1", "button", "", [], {})]) as number[];
     expect(ids).toEqual([]);
+  });
+
+  it("includes a nameless Iframe, which is exactly what a DOM hint is for", () => {
+    // An Iframe is actionable now and almost never named, so `[e7] Iframe ""` is
+    // the line a hint has to tell apart from the next one.
+    const ids = unlabeledInteractiveIds([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "Iframe", "", [], { backendDOMNodeId: 60 }),
+    ]) as number[];
+    expect(ids).toEqual([60]);
   });
 });
 
@@ -723,6 +1218,37 @@ describe("renderAxText", () => {
       node("9", "cell", "호조"),
     ]) as string[];
     expect(lines).toEqual(["실적", "분기 | 매출 | 비고", "1Q | 100 | 호조"]);
+  });
+
+  it("does not glue two unrelated blocks that share only a landmark", () => {
+    // The reading view fused the same two blocks the snapshot view did: a
+    // counter and a footer credit, read back as one sentence "0 Powered by".
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "generic", "", ["4"]),
+      node("3", "generic", "", ["5"]),
+      node("4", "StaticText", "0"),
+      node("5", "StaticText", "Powered by"),
+    ]) as string[];
+    expect(lines).toEqual(["Doc", "0", "Powered by"]);
+  });
+
+  it("drops a highlight-split run the whole sentence beside it already spells", () => {
+    // Both orders: the plain copy can arrive before or after its split twin.
+    expect(renderAxText(highlightDuplicate("plain-first"))).toEqual(["검색", HIGHLIGHT_SENTENCE]);
+    expect(renderAxText(highlightDuplicate("run-first"))).toEqual(["검색", HIGHLIGHT_SENTENCE]);
+  });
+
+  it("keeps a run that says something the line beside it does not", () => {
+    const lines = renderAxText([
+      node("1", "RootWebArea", "검색", ["2", "3"]),
+      node("2", "paragraph", "", ["4"]),
+      node("4", "StaticText", HIGHLIGHT_SENTENCE),
+      node("3", "paragraph", "", ["5", "6"]),
+      node("5", "StaticText", "리뷰 3,214건"),
+      node("6", "StaticText", "영업 중"),
+    ]) as string[];
+    expect(lines).toEqual(["검색", HIGHLIGHT_SENTENCE, "리뷰 3,214건 영업 중"]);
   });
 });
 
