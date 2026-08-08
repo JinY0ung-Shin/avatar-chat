@@ -140,8 +140,10 @@ describe("SkillsView", () => {
     // Adoption badges (전수된 횟수) on the cards and my own row.
     expect(screen.getAllByText("전수 3회").length).toBeGreaterThan(0);
     expect(screen.getByText("전수 2회")).toBeTruthy();
-    // Provenance note in the mine panel.
+    // Provenance note + unlink affordance in the mine panel (learned rows only).
     expect(screen.getByText("@mate의 pptx-report에서 전수받음")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "pptx-report 원본 연결 끊기" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "my-skill 원본 연결 끊기" })).toBeNull();
     // My section: the shared toggle reflects server state.
     expect(screen.getByRole("switch", { name: "my-skill 공유" }).getAttribute("aria-checked")).toBe(
       "true",

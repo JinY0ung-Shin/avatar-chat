@@ -216,6 +216,33 @@ export function readSkillOrigin(repoRoot: string, slug: string): SkillOrigin | n
 }
 
 /**
+ * Unlink a learned copy from its share (구독 해지): delete the origin marker
+ * and commit. The skill itself stays; update badges/tracking stop, and a
+ * later re-learn of the same share is a NEW copy. Throws NO_ORIGIN when the
+ * slug has no marker (never learned, or already unlinked).
+ */
+export async function unlinkSkillOrigin(opts: {
+  learnerCtx: KnowledgeRepoContext;
+  slug: string;
+  commitMessage: string;
+  identity: { name: string; email: string };
+}): Promise<{ origin: SkillOrigin; committed: boolean }> {
+  const root = await ensureClone(opts.learnerCtx);
+  const origin = readSkillOrigin(root, opts.slug);
+  if (!origin) {
+    throw new Error("NO_ORIGIN");
+  }
+  const lexical = resolveInRepo(root, `${SKILL_DIR}/${opts.slug}/${SKILL_ORIGIN_FILE}`);
+  const abs = lexical ? realpathContained(root, lexical, true) : null;
+  if (!abs) {
+    throw new Error("NO_ORIGIN");
+  }
+  await fsp.rm(abs, { force: true });
+  const committed = await commitAndPush(opts.learnerCtx, opts.commitMessage, opts.identity);
+  return { origin, committed };
+}
+
+/**
  * Whether a learned copy was locally customized since the learn: current dir
  * hash vs the origin marker's localHash. Returns null when it cannot tell —
  * no marker, a legacy marker without localHash, or an unhashable dir — which

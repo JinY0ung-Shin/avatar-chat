@@ -712,6 +712,46 @@ describe("skill-share routes", () => {
       .expect(200);
   });
 
+  it("unlink (구독 해지) drops the origin marker; the copy stays, tracking stops", { timeout: 30_000 }, async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      mate.userId,
+      seedRemote("mate-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "m", plugins: [] }),
+      }),
+      "main",
+    );
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const avail = await mate.agent.get("/api/skill-share/available").expect(200);
+    const listing = avail.body.skills[0];
+    await mate.agent.post("/api/skill-share/learn").send({ id: listing.id }).expect(200);
+
+    // Not-learned slugs (and repeat unlinks) are a 404, not a crash.
+    await mate.agent.post("/api/skill-share/unlink").send({ slug: "nope" }).expect(404);
+
+    const unlinked = await mate.agent
+      .post("/api/skill-share/unlink")
+      .send({ slug: "pptx-report" })
+      .expect(200);
+    expect(unlinked.body.origin.ownerUsername).toBe("sharer");
+    await mate.agent.post("/api/skill-share/unlink").send({ slug: "pptx-report" }).expect(404);
+
+    // The copy survives with no origin; the update path now refuses it.
+    const mine = await mate.agent.get("/api/skill-share/mine").expect(200);
+    const row = mine.body.skills.find((s: { slug: string }) => s.slug === "pptx-report");
+    expect(row).toBeTruthy();
+    expect(row.origin).toBeNull();
+    await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "pptx-report" })
+      .expect(409);
+  });
+
   it("learn without a connected learner repo is a 400 with guidance", async () => {
     const { app, store } = bootstrap();
     const admin = await newUser(app, "admin");
@@ -798,7 +838,13 @@ describe("mcp skill_exchange tools", () => {
   it("every tool self-gates on viewerIsOwner", async () => {
     const { store, config } = bootstrap();
     const tools = toolsFor(store, config, "u1", "u1", false);
-    for (const name of ["find_shared_skills", "learn_skill", "share_skill", "unshare_skill"]) {
+    for (const name of [
+      "find_shared_skills",
+      "learn_skill",
+      "share_skill",
+      "unshare_skill",
+      "unlink_skill",
+    ]) {
       const result = await callTool(tools, name, {
         owner_username: "x",
         skill_name: "y",
@@ -980,6 +1026,42 @@ describe("mcp skill_exchange tools", () => {
     });
     expect(both.isError).toBe(true);
     expect(both.content[0].text).toContain("mutually exclusive");
+  });
+
+  it("unlink_skill stops tracking mid-conversation", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      mate.userId,
+      seedRemote("mate-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "m", plugins: [] }),
+      }),
+      "main",
+    );
+    store.shareSkill(sharer.userId, {
+      skillName: "pptx-report",
+      displayName: "pptx-report",
+      description: "",
+    });
+    const tools = toolsFor(store, config, mate.userId, "mate");
+
+    const nothing = await callTool(tools, "unlink_skill", { skill_name: "pptx-report" });
+    expect(nothing.isError).toBe(true);
+    expect(nothing.content[0].text).toContain("nothing to unlink");
+
+    await callTool(tools, "learn_skill", { owner_username: "sharer", skill_name: "pptx-report" });
+    const ok = await callTool(tools, "unlink_skill", { skill_name: "pptx-report" });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content[0].text).toContain("Unlinked");
+    const mateRoot = await ensureClone(knowledgeRepoContextFor(store, mate.userId, config)!);
+    expect(fs.existsSync(path.join(mateRoot, "skills", "pptx-report", "SKILL.md"))).toBe(true);
+    expect(
+      fs.existsSync(path.join(mateRoot, "skills", "pptx-report", ".noah-skill-origin.json")),
+    ).toBe(false);
   });
 
   it("share_skill/unshare_skill manage the owner's own listings", async () => {

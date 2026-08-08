@@ -804,6 +804,9 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   legacy marker can't prove otherwise — throws `SKILL_LOCALLY_MODIFIED` until the caller passes
   explicit consent (`overwriteModified` on the route after a danger confirm; `overwrite_modified` on
   the MCP tool after the model asks the user). Git history retains the overwritten customization.
+  UNLINK (구독 해지) is the marker's deletion: `unlinkSkillOrigin` (route `POST /api/skill-share/unlink`,
+  mine-row 연결 끊기 action, `mcp__skill_exchange__unlink_skill`) commits the removal — the copy stays,
+  tracking/badges stop, and re-learning the same share later is a fresh copy.
 - **The feed includes the viewer's OWN shares** (route merges `listSharedSkillsByOwner` ahead of
   `listLearnableSkills`, mirroring 탐색's "나" card): that's how an owner sees their skill's 전수 count
   in context. The client badges them 나 and drops the learn button; `listLearnableSkills` itself stays

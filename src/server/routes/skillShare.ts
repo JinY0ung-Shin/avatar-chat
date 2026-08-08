@@ -16,6 +16,7 @@ import {
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
+  unlinkSkillOrigin,
 } from "../skillTransfer.js";
 import { apiError, safeString, type RouterDeps } from "./_shared.js";
 
@@ -190,6 +191,43 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       }
       auditAs(req, "skill_unshare", `${skillName} 공유 해제`);
       res.json({ ok: true });
+    },
+  );
+
+  // Unlink a LEARNED copy from its share (구독 해지): removes the origin
+  // marker + commits. The skill stays; update tracking stops, and re-learning
+  // the same share later is a fresh copy.
+  router.post(
+    "/api/skill-share/unlink",
+    requireAuth(store),
+    async (req: AuthenticatedRequest, res) => {
+      const slug = safeString(req.body?.slug);
+      if (!slug || normalizeSkillSlug(slug) !== slug) {
+        apiError(res, 400, "스킬 이름이 올바르지 않습니다.");
+        return;
+      }
+      const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+      if (!ctx) {
+        apiError(res, 400, "지식 저장소가 연결되어 있지 않습니다.");
+        return;
+      }
+      try {
+        const { origin } = await unlinkSkillOrigin({
+          learnerCtx: ctx,
+          slug,
+          commitMessage: `Unlink skill "${slug}" origin`,
+          identity: commitIdentityFor(store, req.user!),
+        });
+        auditAs(req, "skill_unlink", `${slug} 원본 연결 끊기 (@${origin.ownerUsername})`);
+        res.json({ ok: true, origin: { ownerUsername: origin.ownerUsername } });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "";
+        if (message === "NO_ORIGIN") {
+          apiError(res, 404, "전수받은 스킬이 아니거나 이미 연결이 끊긴 스킬입니다.");
+          return;
+        }
+        apiError(res, 502, `연결을 끊지 못했습니다: ${scrubGitError(error)}`);
+      }
     },
   );
 

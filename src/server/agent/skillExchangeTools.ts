@@ -15,6 +15,7 @@ import {
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
+  unlinkSkillOrigin,
 } from "../skillTransfer.js";
 import { text } from "./mcpTools.js";
 
@@ -34,6 +35,7 @@ export const SKILL_EXCHANGE_TOOL_NAMES = [
   "mcp__skill_exchange__learn_skill",
   "mcp__skill_exchange__share_skill",
   "mcp__skill_exchange__unshare_skill",
+  "mcp__skill_exchange__unlink_skill",
 ] as const;
 
 /** Owner-only refusal — same viewer line as the other owner-gated tools. */
@@ -314,6 +316,60 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
         return text(
           `Now sharing "${skill.slug}" — same-group teammates can browse it in their 스킬 배우기 tab or learn it through their own avatars. Unshare any time with unshare_skill.`,
         );
+      },
+    ),
+    tool(
+      "unlink_skill",
+      "Unlinks a LEARNED skill from its share (구독 해지): removes the provenance marker and commits, so update notifications from the original sharer stop and the copy becomes fully the owner's own. The skill's content is untouched. " +
+        "**Use this when the user asks to stop following/tracking updates for a skill they learned** — NOT for deleting the skill (that is mcp__repo__delete_file) and NOT for unsharing their own share (that is unshare_skill). " +
+        "Re-learning the same share afterwards creates a fresh copy. (owner only)",
+      {
+        skill_name: z
+          .string()
+          .describe("The learned skill's `skills/<name>` directory name in THIS avatar's repository (mine rows show '@user의 …에서 전수받음')."),
+      },
+      async (args) => {
+        if (!ctx.viewerIsOwner) {
+          return text(OWNER_ONLY, true);
+        }
+        const slug = (args.skill_name ?? "").trim();
+        if (!slug || normalizeSkillSlug(slug) !== slug) {
+          return text(
+            "Pass the skill's directory name exactly as it appears under skills/ (lowercase letters, digits, - _ .).",
+            true,
+          );
+        }
+        const repoCtx = ownRepoCtx();
+        if (!repoCtx) {
+          return text(NO_REPO, true);
+        }
+        try {
+          const { origin } = await unlinkSkillOrigin({
+            learnerCtx: repoCtx,
+            slug,
+            commitMessage: `Unlink skill "${slug}" origin`,
+            identity: commitIdentityFor(store, ctx.owner),
+          });
+          store.audit({
+            actorUserId: ctx.owner.id,
+            actorName: ctx.owner.username,
+            action: "skill_unlink",
+            status: "success",
+            detail: `unlinked ${slug} (was from @${origin.ownerUsername})`,
+          });
+          return text(
+            `Unlinked "${slug}" from @${origin.ownerUsername}'s share: update tracking stopped and the copy is now fully this avatar's own. The content is unchanged.`,
+          );
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          if (message === "NO_ORIGIN") {
+            return text(
+              `"skills/${slug}/" carries no share-origin marker — it was not learned from a share (or was already unlinked), so there is nothing to unlink.`,
+              true,
+            );
+          }
+          return text(`Unlinking failed: ${scrubGitError(error)}. You may retry once.`, true);
+        }
       },
     ),
     tool(

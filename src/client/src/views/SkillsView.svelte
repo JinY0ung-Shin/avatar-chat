@@ -273,6 +273,27 @@
     }
   }
 
+  // 구독 해지: 출처 마커를 삭제해 원본 업데이트 추적을 끊는다 (스킬은 유지).
+  async function unlinkOrigin(skill: MySkill): Promise<void> {
+    if (!skill.origin) return;
+    const confirmed = await confirmAction(
+      `"${skill.name}" 스킬의 원본 연결을 끊을까요? 앞으로 @${skill.origin.ownerUsername}의 업데이트 알림을 받지 않아요. 스킬 내용은 그대로 남습니다.`,
+      { title: "원본 연결을 끊을까요?", confirmLabel: "연결 끊기", tone: "danger" },
+    );
+    if (!confirmed) return;
+    try {
+      await api("/api/skill-share/unlink", {
+        method: "POST",
+        body: JSON.stringify({ slug: skill.slug }),
+      });
+      notify(`"${skill.name}" 스킬의 원본 연결을 끊었습니다. 이제 완전한 내 스킬이에요.`, "ok");
+      void loadMine();
+      void load();
+    } catch (err) {
+      notify(`연결 끊기 실패: ${(err as Error).message}`, "warn");
+    }
+  }
+
   async function setShared(skill: MySkill, next: boolean): Promise<void> {
     try {
       if (next) {
@@ -464,11 +485,22 @@
               {/if}
               {#if skill.description}<span class="sk-mine-desc">{skill.description}</span>{/if}
             </div>
-            <Toggle
-              on={skill.shared}
-              label={`${skill.name} 공유`}
-              onChange={(next) => setShared(skill, next)}
-            />
+            <div class="sk-mine-actions">
+              {#if skill.origin}
+                <button
+                  class="linkish small"
+                  type="button"
+                  title={`@${skill.origin.ownerUsername}의 업데이트 추적을 중단합니다 (스킬은 유지)`}
+                  aria-label={`${skill.name} 원본 연결 끊기`}
+                  on:click={() => unlinkOrigin(skill)}
+                >연결 끊기</button>
+              {/if}
+              <Toggle
+                on={skill.shared}
+                label={`${skill.name} 공유`}
+                onChange={(next) => setShared(skill, next)}
+              />
+            </div>
           </div>
         {:else}
           <div class="skill-mine-row"><span class="sk-mine-desc">"{mineQuery.trim()}"에 맞는 스킬이 없습니다.</span></div>
@@ -693,6 +725,12 @@
   .sk-mine-desc {
     font-size: var(--t-xs);
     color: var(--muted);
+  }
+  .sk-mine-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--s-3);
+    flex-shrink: 0;
   }
   .sk-share-hint {
     margin: var(--s-2) var(--s-1) 0;

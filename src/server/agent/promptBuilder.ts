@@ -686,7 +686,8 @@ export function buildSystemPromptAppend(
         `Skill exchange (스킬 배우기): teammates' avatars currently share ${learnable} skill(s) this avatar could learn; this avatar shares ${sharedByMe} of its own. ` +
           "When the user asks to learn/adopt a capability from another avatar — or asks for something a teammate's shared skill covers better — search with `mcp__skill_exchange__find_shared_skills`, then (with the user's go-ahead) copy it into the knowledge repository with `mcp__skill_exchange__learn_skill`." +
           readNote +
-          " Share this avatar's own repo skills with `mcp__skill_exchange__share_skill` (stop with `unshare_skill`) when the user asks; sharing reaches same-group teammates only, and the user can also manage it in the '스킬 배우기' tab.",
+          " Share this avatar's own repo skills with `mcp__skill_exchange__share_skill` (stop with `unshare_skill`) when the user asks; sharing reaches same-group teammates only, and the user can also manage it in the '스킬 배우기' tab." +
+          " When the user asks to stop following a learned skill's updates (구독 해지), use `mcp__skill_exchange__unlink_skill` — it keeps the skill and only stops the tracking.",
       );
     }
   }
