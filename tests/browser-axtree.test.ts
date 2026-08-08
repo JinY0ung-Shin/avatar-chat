@@ -1043,6 +1043,58 @@ describe("renderAxTree", () => {
     expect(renderAxTree(nodes, uids(), undefined, { startBackendNodeId: 999 })).toBeNull();
   });
 
+  it("adopts in-scope nodes the childIds chain cannot reach, when told which", () => {
+    // `snapshot(uid=…)` on a map's `region "Map"` answered with the region line
+    // alone, while the full page showed 47 markers under it: the markers are a
+    // detached island, which the full walk's leftover sweep prints and a scoped
+    // walk structurally cannot reach. The caller's DOM subtree says they belong.
+    const nodes = [
+      node("1", "RootWebArea", "지도", ["2"]),
+      node("2", "region", "Map", [], { backendDOMNodeId: 10 }),
+      node("3", "image", "음식점", [], { backendDOMNodeId: 11 }),
+    ];
+    // Today's answer, pinned: with no set the scope is the chain and nothing more.
+    expect(renderAxTree(nodes, uids(), undefined, { startBackendNodeId: 10 })).toEqual([
+      '[e1] region "Map"',
+    ]);
+    expect(
+      renderAxTree(nodes, uids(), undefined, {
+        startBackendNodeId: 10,
+        scopeDomIds: new Set([11]),
+      }),
+    ).toEqual(['[e1] region "Map"', '[e2] image "음식점"']);
+    // The stale-uid contract is unchanged: a start node matching nothing is
+    // still null, however much the set claims is in scope.
+    expect(
+      renderAxTree(nodes, uids(), undefined, {
+        startBackendNodeId: 999,
+        scopeDomIds: new Set([11]),
+      }),
+    ).toBeNull();
+  });
+
+  it("drops a line that is nothing but brackets, keeping bracketed TEXT", () => {
+    // What is left of a construct suppressed elsewhere: the page's own
+    // parentheses around a hole, shipped as if they were content. A uid line is
+    // never dropped — its element would become unreachable over punctuation.
+    const lines = render([
+      node("1", "RootWebArea", "지도", ["2", "3", "4", "5"]),
+      node("2", "StaticText", "( )"),
+      node("3", "StaticText", "(광교점)"),
+      node("4", "StaticText", "-"),
+      node("5", "StaticText", "( )", [], {
+        backendDOMNodeId: 8,
+        properties: [{ name: "focusable", value: { value: true } }],
+      }),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "지도"',
+      ' StaticText "(광교점)"',
+      ' StaticText "-"',
+      ' [e1] StaticText "( )"',
+    ]);
+  });
+
   it("renders identically whether the options argument is passed, null or omitted", () => {
     // `null` is the natural shape of `frameLabels ? { frameLabels } : null` at a
     // call site, and a parameter default only covers `undefined` — destructuring
@@ -1195,6 +1247,67 @@ describe("renderAxTree", () => {
     expect(lines).toEqual(['[e1] option "수원광교역"']);
   });
 
+  it("puts a name back together WITHOUT inventing spaces around its punctuation", () => {
+    // Wikipedia's search link: the quotes around the phrase are text nodes of
+    // their own, and a blanket space at every seam shipped
+    // `Search for " Accessibility tree "` — a label the page does not contain
+    // and that no search for it would match. A boundary character on either
+    // side of a seam already separates the pieces.
+    const lines = render([
+      node("1", "link", 'Search for "Accessibility tree"', ["2", "3", "4"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", 'Search for "'),
+      node("3", "StaticText", "Accessibility tree"),
+      node("4", "StaticText", '"'),
+    ]);
+    expect(lines).toEqual(['[e1] link "Search for "Accessibility tree""']);
+  });
+
+  it("keeps a bracketed footnote label tight, as the page drew it", () => {
+    // `[` + `n 2` + `]` are three text nodes, and the same blanket space made
+    // every Wikipedia footnote link read `[ n 2 ]`.
+    const lines = render([
+      node("1", "link", "[n 2]", ["2", "3", "4"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "["),
+      node("3", "StaticText", "n 2"),
+      node("4", "StaticText", "]"),
+    ]);
+    expect(lines).toEqual(['[e1] link "[n 2]"']);
+  });
+
+  it("re-spaces a name whose rating arrives as a named image, not as text", () => {
+    // The star-rating rows on the same Naver Maps result list never re-spaced:
+    // the rating's text lives on an image's alt, so the collected StaticTexts
+    // could not reconstruct the raw name and the strict test declined every
+    // time — leaving `button "영업 종료별점 4.87리뷰1,269"` welded on the page
+    // this whole rule exists for.
+    const lines = render([
+      node("1", "button", "영업 종료별점 4.87리뷰1,269", ["2", "3", "4", "5"], {
+        backendDOMNodeId: 7,
+      }),
+      node("2", "StaticText", "영업 종료"),
+      node("3", "image", "별점 4.87"),
+      node("4", "StaticText", "리뷰"),
+      node("5", "StaticText", "1,269"),
+    ]);
+    expect(lines).toEqual(['[e1] button "영업 종료 별점 4.87 리뷰 1,269"']);
+  });
+
+  it("counts a named descendant ONCE, not again as the text inside it", () => {
+    // Per accname a named descendant stands in for its contents, so the walk
+    // stops there. Recursing as well would collect "도움말" twice, the
+    // reconstruction would miss, and the name would print welded — the failure
+    // this rule was added to end.
+    const lines = render([
+      node("1", "button", "저장하기도움말", ["2", "3"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "저장하기"),
+      node("3", "image", "도움말", ["4"]),
+      node("4", "StaticText", "도움말"),
+    ]);
+    expect(lines).toEqual(['[e1] button "저장하기 도움말"']);
+  });
+
   it("joins a row whose cell text lives on a nested link", () => {
     // Wikipedia's GDP table: the country cell is NAMELESS because its text sits
     // on a link inside it, and that link's container is the CELL, not the row —
@@ -1276,6 +1389,83 @@ describe("renderAxTree", () => {
       node("2", "image", "표식", [], { backendDOMNodeId: 7 }),
     ]);
     expect(lines).toEqual(['[e1] Canvas ""', ' [e2] image "표식"']);
+  });
+
+  it("folds the label beside a map marker onto the marker's own line", () => {
+    // A Naver map draws 47 markers and every one of them printed as
+    // `[eN] image "음식점"` — addressable, and indistinguishable from the other
+    // 46, so picking the right one was a guess. The name that tells them apart
+    // is the StaticText next to it, which read as an unrelated line.
+    const lines = render([
+      node("1", "region", "지도", ["2", "3"], { backendDOMNodeId: 5 }),
+      node("2", "image", "음식점", [], { backendDOMNodeId: 7 }),
+      node("3", "StaticText", "스타벅스 광교점"),
+    ]);
+    expect(lines).toEqual(['[e1] region "지도"', ' [e2] image "음식점 스타벅스 광교점"']);
+  });
+
+  it("does not fold text from a block of its own into a marker", () => {
+    // A shared container is what makes the text the marker's label rather than
+    // the next thing on the page.
+    const lines = render([
+      node("1", "region", "지도", ["2", "3"], { backendDOMNodeId: 5 }),
+      node("2", "image", "음식점", [], { backendDOMNodeId: 7 }),
+      node("3", "group", "", ["4"]),
+      node("4", "StaticText", "카페 이름"),
+    ]);
+    expect(lines).toEqual([
+      '[e1] region "지도"',
+      ' [e2] image "음식점"',
+      '  StaticText "카페 이름"',
+    ]);
+  });
+
+  it("does not fold across a line that landed in between", () => {
+    const lines = render([
+      node("1", "region", "지도", ["2", "3", "4"], { backendDOMNodeId: 5 }),
+      node("2", "image", "음식점", [], { backendDOMNodeId: 7 }),
+      node("3", "button", "확대", [], { backendDOMNodeId: 8 }),
+      node("4", "StaticText", "카페 이름"),
+    ]);
+    expect(lines).toEqual([
+      '[e1] region "지도"',
+      ' [e2] image "음식점"',
+      ' [e3] button "확대"',
+      ' StaticText "카페 이름"',
+    ]);
+  });
+
+  it("does not fold a paragraph that merely happens to follow a marker", () => {
+    const long = "가".repeat(121);
+    const lines = render([
+      node("1", "region", "지도", ["2", "3"], { backendDOMNodeId: 5 }),
+      node("2", "image", "음식점", [], { backendDOMNodeId: 7 }),
+      node("3", "StaticText", long),
+    ]);
+    expect(lines).toEqual(['[e1] region "지도"', ' [e2] image "음식점"', ` StaticText "${long}"`]);
+  });
+
+  it("keeps the marker's own decoration when a label is folded in", () => {
+    // The fold rewrites a line that was already printed, so it has to rebuild
+    // everything format() put AFTER the label — calling format() again is not
+    // an option, since that would mint a second uid for the same element.
+    const lines = renderAxTree(
+      [
+        node("1", "region", "지도", ["2", "3"], { backendDOMNodeId: 5 }),
+        node("2", "image", "음식점", [], {
+          backendDOMNodeId: 7,
+          properties: [{ name: "disabled", value: { value: true } }],
+        }),
+        node("3", "StaticText", "스타벅스"),
+      ],
+      uids(),
+      undefined,
+      { frameLabels: new Map([[7, "f2"]]) },
+    ) as string[];
+    expect(lines).toEqual([
+      '[e1] region "지도"',
+      ' [e2] image "음식점 스타벅스" [disabled] (frame f2)',
+    ]);
   });
 
   it("leaves an image inside a link alone — the ancestor IS the click target", () => {
@@ -1397,6 +1587,53 @@ describe("capSnapshot", () => {
     const filler = `StaticText "${"x".repeat(500)}"`;
     const out = capSnapshot([filler, '[e1] button "둘"', '[e2] button "하나"'].join("\n"), 60);
     expect(out.indexOf("[e1]")).toBeLessThan(out.indexOf("[e2]"));
+  });
+
+  it("keeps a multi-line ELEMENT whole when it fits, newlines and all", () => {
+    // The renderers push one entry per element, and an element's own value can
+    // hold newlines (a source file inside one textbox). Under the budget it is
+    // returned exactly as it came.
+    const atom = ['[e1] textbox "소스" = "첫 줄', "둘째 줄", '셋째 줄"'].join("\n");
+    expect(capSnapshot([atom, 'StaticText "꼬리"'], 10000)).toBe(`${atom}\nStaticText "꼬리"`);
+  });
+
+  it("head-keeps an oversized element CONTIGUOUSLY, and says where the rest is", () => {
+    // The field report: `[e246] textbox "file content"` came back with different
+    // middle lines missing on every call and nothing saying so, because only the
+    // atom's FIRST line carried the uid and the rest competed as ordinary lines.
+    const body = Array.from({ length: 60 }, (_, i) => `line ${i}: ${"y".repeat(40)}`).join("\n");
+    const atom = `[e7] textbox "file" = "${body}"`;
+    const out = capSnapshot([atom, '[e8] button "저장"', 'StaticText "꼬리"'], 900);
+    const head = out.slice(0, out.indexOf("… [cut by the maxChars budget"));
+    // A PREFIX of the element, not a selection of its lines.
+    expect(head.length).toBeGreaterThan(100);
+    expect(atom.startsWith(head)).toBe(true);
+    expect(out).toContain(`of ${atom.length} chars`);
+    expect(out).toContain("mcp__browser__read_text (uid e7)");
+    // Whole uid atoms are kept BEFORE the head-keep spends what is left, so one
+    // runaway element cannot cost the rest of the page its addressability.
+    expect(out).toContain('[e8] button "저장"');
+    expect(out).toContain("snapshot truncated");
+  });
+
+  it("never fills a hole in one element with a later line that happened to fit", () => {
+    const atom = ['[e1] textbox "소스" = "머리', "y".repeat(600), '짧은 꼬리"'].join("\n");
+    const out = capSnapshot([atom], 600);
+    const head = out.slice(0, out.indexOf("… [cut by the maxChars budget"));
+    expect(atom.startsWith(head)).toBe(true);
+    expect(out).not.toContain("짧은 꼬리");
+  });
+
+  it("still splits a plain STRING per physical line, as its callers rely on", () => {
+    const text = [
+      'StaticText "머리"',
+      `StaticText "${"가".repeat(200)}"`,
+      '[e1] button "저장"',
+    ].join("\n");
+    const out = capSnapshot(text, 40);
+    expect(out).toContain('[e1] button "저장"');
+    expect(out).toContain('StaticText "머리"');
+    expect(out).not.toContain("가가가");
   });
 });
 
@@ -1600,6 +1837,10 @@ describe("renderAxText", () => {
   });
 
   it("reads a link and the reference beside it as one cell, not two columns", () => {
+    // Glued rather than spaced, which is the CHANGE: a reference marker sits
+    // against the word it annotates on the page, and inventing a space in front
+    // of it makes the reading view disagree with what the reader sees. Only the
+    // bar between CELLS is a separator this view supplies itself.
     const lines = renderAxText([
       node("r", "row", "", ["c"]),
       node("c", "cell", "", ["l", "sup"]),
@@ -1607,7 +1848,7 @@ describe("renderAxText", () => {
       node("sup", "superscript", "", ["st"]),
       node("st", "StaticText", "[1]"),
     ]) as string[];
-    expect(lines).toEqual(["United States [1]"]);
+    expect(lines).toEqual(["United States[1]"]);
   });
 
   it("carries no indent and no bounds — it is the plain-reading view", () => {
@@ -1623,6 +1864,96 @@ describe("renderAxText", () => {
       }),
     ]) as string[];
     expect(lines).toEqual(["설정", "별점: 5"]);
+  });
+
+  it("ends a sentence at its period, without a space in front of it", () => {
+    // The trailing period is a StaticText of its own, so joining the run with a
+    // blanket space read back "request a new article ." — punctuation the page
+    // never wrote, in text an agent quotes verbatim.
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Doc", ["p"]),
+      node("p", "paragraph", "", ["t1", "l", "t2"]),
+      node("t1", "StaticText", "You can"),
+      node("l", "link", "request a new article", [], { backendDOMNodeId: 7 }),
+      node("t2", "StaticText", "."),
+    ]) as string[];
+    expect(lines).toEqual(["Doc", "You can request a new article."]);
+  });
+
+  it("glues more of the SAME cell as the page drew it", () => {
+    // The two pieces sit in one cell but under different containers, so no run
+    // carries them — the row join is what puts them back together, and it must
+    // not invent a space either.
+    const lines = renderAxText([
+      node("r", "row", "", ["c"]),
+      node("c", "cell", "", ["p", "st2"]),
+      node("p", "paragraph", "", ["st1"]),
+      node("st1", "StaticText", "China"),
+      node("st2", "StaticText", "[n 1]"),
+    ]) as string[];
+    expect(lines).toEqual(["China[n 1]"]);
+  });
+
+  it("suppresses a footnote link its cell's label already spells out", () => {
+    // The needle carries its own boundaries: `[n 1]` sits at a NON-boundary
+    // position inside "China[n 1]" (an `a` right before the bracket), so
+    // whole-token suppression missed it and the reference printed twice.
+    const lines = renderAxText([
+      node("r", "row", "", ["c"]),
+      node("c", "cell", "China[n 1]", ["l", "f"]),
+      node("l", "link", "China", [], { backendDOMNodeId: 41 }),
+      node("f", "link", "[n 1]", [], { backendDOMNodeId: 42 }),
+    ]) as string[];
+    expect(lines).toEqual(["China[n 1]"]);
+  });
+
+  it("suppresses a fragment that starts on punctuation inside a longer label", () => {
+    const lines = renderAxText([
+      node("1", "cell", "ASEAN-5[r 10]", ["2", "3"]),
+      node("2", "StaticText", "ASEAN"),
+      node("3", "StaticText", "-5"),
+    ]) as string[];
+    expect(lines).toEqual(["ASEAN-5[r 10]"]);
+  });
+
+  it("still prints a day number its calendar's date only CONTAINS", () => {
+    // The other side of the same rule: "26" is digits at both ends, so it keeps
+    // demanding real boundaries and still fails to find them inside
+    // "2026.08.08" — the day numbers stay on the page.
+    const lines = renderAxText([
+      node("1", "grid", "달력 2026.08.08", ["2"]),
+      node("2", "cell", "", ["3"]),
+      node("3", "StaticText", "26"),
+    ]) as string[];
+    expect(lines).toEqual(["달력 2026.08.08", "26"]);
+  });
+
+  it("drops a bracket-only line, keeping bracketed text and bare punctuation", () => {
+    // The lone `}` is the reason an UNPAIRED bracket survives: read_text is how
+    // an agent reads a source listing, and that line is the listing's content.
+    const lines = renderAxText([
+      node("1", "RootWebArea", "지도", ["2", "3", "4", "5", "6"]),
+      node("2", "StaticText", "( )"),
+      node("3", "StaticText", "(광교점)"),
+      node("4", "StaticText", "-"),
+      node("5", "StaticText", "[ ]"),
+      node("6", "StaticText", "}"),
+    ]) as string[];
+    expect(lines).toEqual(["지도", "(광교점)", "-", "}"]);
+  });
+
+  it("adopts in-scope nodes the childIds chain cannot reach, when told which", () => {
+    // read_text scoped to a map region answered a few characters for an element
+    // the unscoped read shows full — the same detached-island case the
+    // interaction view has.
+    const nodes = [
+      node("1", "RootWebArea", "지도", ["2"]),
+      node("2", "region", "Map", [], { backendDOMNodeId: 10 }),
+      node("3", "image", "음식점", [], { backendDOMNodeId: 11 }),
+    ];
+    expect(renderAxText(nodes, 10)).toEqual(["Map"]);
+    expect(renderAxText(nodes, 10, new Set([11]))).toEqual(["Map", "음식점"]);
+    expect(renderAxText(nodes, 999, new Set([11]))).toBeNull();
   });
 
   it("prints a huge value WHOLE — it is the channel the snapshot's cut points at", () => {

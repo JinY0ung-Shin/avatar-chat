@@ -354,13 +354,47 @@ const TOKEN_BOUNDARY = /[\s\p{P}\p{S}]/u;
 function containsAsToken(hay, needle) {
   if (!hay || !needle) return false;
   const boundary = (ch) => !ch || TOKEN_BOUNDARY.test(ch);
+  // A needle that BEGINS or ENDS on a boundary character carries that boundary
+  // with it, so the hay does not have to supply one on that side. Wikipedia's
+  // footnote links are the case: a cell reading "China[n 1]" holds a link named
+  // "[n 1]", which sits at a NON-boundary position (an `a` right before the
+  // bracket) and so survived suppression and printed the reference twice — same
+  // for a "-5" fragment inside "ASEAN-5[r 10]". The calendar case is untouched
+  // because it is digits at both ends: "26" inside "달력 2026.08.08" still
+  // demands real boundaries, and still fails to find them.
+  const selfLeft = TOKEN_BOUNDARY.test(needle[0]);
+  const selfRight = TOKEN_BOUNDARY.test(needle[needle.length - 1]);
   let from = 0;
   for (;;) {
     const i = hay.indexOf(needle, from);
     if (i < 0) return false;
-    if (boundary(hay[i - 1]) && boundary(hay[i + needle.length])) return true;
+    if ((selfLeft || boundary(hay[i - 1])) && (selfRight || boundary(hay[i + needle.length])))
+      return true;
     from = i + 1;
   }
+}
+
+/** A word-ish character: a letter or a digit, in any script. */
+const WORDISH = /[\p{L}\p{N}]/u;
+
+/**
+ * Append `next` to `prev`, spacing ONLY a word|word seam.
+ *
+ * Every place this module rejoins text a page split — a welded accessible name,
+ * a per-word <span> run, the pieces of one table cell — used to put a space at
+ * EVERY seam, which invents punctuation spacing the page never had. Wikipedia
+ * shipped `Search for " Accessibility tree "` (the quotes are their own text
+ * nodes) and `[ n 2 ]` for a footnote link, and read_text answered
+ * "request a new article ." because the trailing period is a StaticText of its
+ * own. A boundary character on either side of the seam already separates the
+ * two pieces, so only letter-beside-letter needs a space put back.
+ */
+function glueSegments(prev, next) {
+  if (!prev) return next;
+  if (!next) return prev;
+  return WORDISH.test(prev[prev.length - 1]) && WORDISH.test(next[0])
+    ? `${prev} ${next}`
+    : `${prev}${next}`;
 }
 
 /**
@@ -475,6 +509,35 @@ function precedingLine(lines, index) {
   return null;
 }
 
+/** Brackets and whitespace, nothing else — and an OPENING one closed again. */
+const BRACKETS_ONLY = /^[\s()[\]{}（）]*$/;
+const OPENS_BRACKET = /[([{（]/;
+const CLOSES_BRACKET = /[)\]}）]/;
+
+/**
+ * True for a line that is nothing but an empty pair of brackets: `( )`, `[ ]`,
+ * `（）`. These are what is LEFT of a construct whose content this module
+ * suppressed elsewhere (a link folded onto its duplicate, a reference dropped as
+ * an echo) — the page's own punctuation around a hole, shipped to the agent as
+ * if it were content. They cost a line each in both views and say nothing.
+ *
+ * A word character disqualifies, so `(광교점)` is text and stays; a bracket is
+ * required, so `-` and other bare punctuation stay. Both an opener and a closer
+ * are required, which is narrower than "only brackets" on purpose: read_text is
+ * how an agent reads a source listing, and a line holding just `}` is that
+ * listing's own content. Deleting real text unmarked is the one thing these
+ * renderers must never do, and an unpaired bracket is not the leftover shape.
+ */
+const isBracketNoise = (text) =>
+  BRACKETS_ONLY.test(text) && OPENS_BRACKET.test(text) && CLOSES_BRACKET.test(text);
+
+/** A snapshot line whose whole content is bracket noise — never a uid line. */
+const NOISE_SNAPSHOT_LINE = /^ *StaticText "(.*)"$/;
+function isBracketNoiseSnapshotLine(line) {
+  const hit = NOISE_SNAPSHOT_LINE.exec(line);
+  return Boolean(hit) && isBracketNoise(hit[1]);
+}
+
 /** Cell roles whose row grouping the reading view restores. */
 const CELL_ROLES = new Set([
   "cell",
@@ -525,6 +588,17 @@ function rowChain(parentOf) {
  * reaching one meant guessing pixels with click_at.
  */
 const IMAGE_ROLES = new Set(["image", "img"]);
+
+/**
+ * Longest neighbouring text folded onto a marker image's line. A Naver map
+ * draws 47 markers and every one of them arrives as `image "음식점"` — clickable,
+ * and indistinguishable from the other 46, so choosing one was a guess. The name
+ * that tells them apart (the shop's) is a StaticText SIBLING, which prints on
+ * the next line and reads as unrelated. Folding it onto the marker's own line is
+ * what makes the uid mean something; the cap is there because a paragraph that
+ * merely happens to follow a marker is not that marker's label.
+ */
+const MARKER_LABEL_MAX = 120;
 
 /**
  * Ancestors that carry a uid WITHOUT owning their descendants' clicks. A named
@@ -600,6 +674,20 @@ const NAME_RESPACE_MAX_NODES = 300;
  *
  * Skipped for OPAQUE_NAME_ROLES, which is both the cost bound and the meaning:
  * their name does not come from their contents, so it was never concatenated.
+ *
+ * The segments are NOT plain StaticText descendants only. A named descendant
+ * contributes its NAME and is not walked into, which is what accname itself
+ * says a name stands in for — and without it the star-rating rows on the same
+ * page never re-spaced at all: `button "영업 종료별점 4.87리뷰1,269"` has its
+ * rating text on an image's alt rather than in a text node, so the collected
+ * StaticTexts could not reconstruct the raw name and the strict test declined
+ * every time. Where a named descendant's name EQUALS its contents the result is
+ * the same either way; where it does not, the reconstruction simply fails and
+ * today's welded name prints, which is the benign direction.
+ *
+ * Seams are glued rather than joined with a blanket space (see glueSegments):
+ * a name split at punctuation — `Search for "` + `Accessibility tree` + `"` —
+ * must come back out exactly as the page wrote it.
  */
 function respacedName(node, role, rawName, byId) {
   if (rawName.length < 4 || !node.childIds?.length || OPAQUE_NAME_ROLES.has(role)) return rawName;
@@ -614,16 +702,28 @@ function respacedName(node, role, rawName, byId) {
     budget -= 1;
     const childRole = child.role?.value;
     if (TEXT_LEVEL_ROLES.has(String(childRole).toLowerCase())) return false;
+    const text = String(child.name?.value ?? "").trim();
+    // A StaticText IS its text: its only children are InlineTextBoxes, which
+    // re-spell the very same words and would be counted a second time.
     if (childRole === "StaticText") {
-      const text = String(child.name?.value ?? "").trim();
       if (text) segments.push(text);
+      return true;
+    }
+    // A named descendant stands in for its own contents, so it is one segment
+    // and the walk stops there. InlineTextBox is excluded for the reason above,
+    // in case a malformed tree hands one over outside a StaticText.
+    if (text && childRole !== "InlineTextBox") {
+      segments.push(text);
+      return true;
     }
     for (const grandChildId of child.childIds || []) if (!collect(grandChildId)) return false;
     return true;
   };
   for (const childId of node.childIds) if (!collect(childId)) return rawName;
   if (segments.length < 2) return rawName;
-  return segments.join("") === rawName ? segments.join(" ") : rawName;
+  return segments.join("") === rawName
+    ? segments.reduce((joined, segment) => glueSegments(joined, segment))
+    : rawName;
 }
 
 /**
@@ -644,8 +744,21 @@ function respacedName(node, role, rawName, byId) {
  * counts those same emitting ancestors, so a renderer can show nesting without
  * re-deriving it. When `startBackendNodeId` is given, only that node's subtree
  * is walked; returns false when no node carries that id (a stale uid).
+ *
+ * `scopeDomIds` is a set of backendDOMNodeIds the CALLER established (by walking
+ * the DOM subtree, which this module cannot do) as living inside the scoped
+ * element. It exists because a scoped walk sees far less than the full one: the
+ * full walk sweeps roots, then unclaimed nodes, then whatever is left, so a
+ * detached island — a node hanging off a pruned or aria-hidden ancestor — still
+ * prints, while the childIds chain under one start node simply cannot reach it.
+ * A map's 47 markers vanished exactly that way: `snapshot(uid=region "Map")`
+ * answered with the region line alone while the full page showed every marker.
+ * In-scope nodes the chain missed are visited afterwards as extra roots; the
+ * seen-set is what keeps that from emitting anything twice. No set (or an empty
+ * one) leaves the walk byte-identical, and a start id matching nothing still
+ * answers false whatever the set holds.
  */
-function walkAxNodes(nodes, startBackendNodeId, emit) {
+function walkAxNodes(nodes, startBackendNodeId, emit, scopeDomIds) {
   const byId = new Map(nodes.map((node) => [node.nodeId, node]));
   const seen = new Set();
 
@@ -692,6 +805,12 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
     const start = nodes.find((node) => node.backendDOMNodeId === startBackendNodeId);
     if (!start) return false;
     visit(start, "", null, 0);
+    if (scopeDomIds?.size) {
+      for (const node of nodes) {
+        if (seen.has(node.nodeId) || node.backendDOMNodeId == null) continue;
+        if (scopeDomIds.has(node.backendDOMNodeId)) visit(node, "", null, 0);
+      }
+    }
     return true;
   }
 
@@ -773,7 +892,9 @@ export function unlabeledInteractiveIds(nodes) {
  *
  * `opts.startBackendNodeId` scopes the render to one subtree (a frame body, a
  * dialog), returning null when no node carries that id — the same stale-uid
- * contract renderAxText has. `opts.frameLabels` is a Map of backendNodeId →
+ * contract renderAxText has; `opts.scopeDomIds` widens that scope to the DOM ids
+ * the caller found inside it (see walkAxNodes). `opts.frameLabels` is a Map of
+ * backendNodeId →
  * frame label: a frame's tree is rendered as its own block AFTER the main one,
  * and without a marker on the owning `Iframe` line there was nothing tying a
  * trailing RootWebArea block to the place in the page it came from. Calling
@@ -785,7 +906,7 @@ export function unlabeledInteractiveIds(nodes) {
  * throw here and take out every snapshot on the page, not just the frame part.
  */
 export function renderAxTree(nodes, mintUid, hints, opts) {
-  const { startBackendNodeId, frameLabels } = opts || {};
+  const { startBackendNodeId, frameLabels, scopeDomIds } = opts || {};
   const lines = [];
   /** Full href -> { index, name, indent } of the one line kept for that destination. */
   const byHref = new Map();
@@ -795,6 +916,12 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
   let run = null;
   /** The table row the last pushed line holds: { row, cell, index }, or null. */
   let openRow = null;
+  /**
+   * A marker image line waiting for the label beside it:
+   * { index, indent, uid, role, name, suffix, container }, or null. See
+   * MARKER_LABEL_MAX.
+   */
+  let pendingMarker = null;
   /** Emitted node -> its container, so a piece can find the cell and row above it. */
   const parentOf = new Map();
   /** Emitted node -> whether it was actionable, for the image ancestor test. */
@@ -860,12 +987,16 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     // see IMAGE_ROLES. The ancestor test lives here and not in isActionableNode
     // deliberately: that predicate is per-node and shared with
     // unlabeledInteractiveIds, which has no chain to walk.
-    const interactive =
-      isActionableNode(node, role, name, value) ||
-      (IMAGE_ROLES.has(role) &&
-        Boolean(name) &&
-        node.backendDOMNodeId != null &&
-        !hasActionableAncestor(container));
+    const actionable = isActionableNode(node, role, name, value);
+    // Held apart from `interactive` because only a line that got its uid from
+    // THIS rule is a map marker, and only a map marker takes a folded label.
+    const markerImage =
+      !actionable &&
+      IMAGE_ROLES.has(role) &&
+      Boolean(name) &&
+      node.backendDOMNodeId != null &&
+      !hasActionableAncestor(container);
+    const interactive = actionable || markerImage;
     // Recorded for EVERY emitted node, printed or not: an ancestor that this
     // renderer suppresses still owns the click.
     interactiveOf.set(node, interactive);
@@ -877,6 +1008,29 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     // line carries the uid, which nothing else can supply.
     const echoed = !interactive && !value && Boolean(name) && containsAsToken(covered, name);
     if (!worthPrinting || echoed) return;
+    // The label a map marker was waiting for: the plain text node RIGHT after
+    // it, under the same container, short enough to be a label. Folded onto the
+    // marker's own line and consumed — it never opens a run, never joins a row,
+    // and mints nothing, so nothing downstream can tell it was ever two nodes.
+    // Anything else standing between the marker and its text says the two are
+    // unrelated, and clears the marker unfolded.
+    if (pendingMarker) {
+      const marker = pendingMarker;
+      pendingMarker = null;
+      if (
+        lines.length === marker.index + 1 &&
+        role === "StaticText" &&
+        !interactive &&
+        !value &&
+        Boolean(name) &&
+        name.length <= MARKER_LABEL_MAX &&
+        container === marker.container
+      ) {
+        const labelled = printedName(glueSegments(marker.name, name));
+        lines[marker.index] = `${marker.indent}[${marker.uid}] ${marker.role} ${labelled}${marker.suffix}`;
+        return;
+      }
+    }
     const href = linkHref(node, role, docUrl);
     // One space per level of emitted nesting. It costs snapshot budget, so it
     // is capped: past a dozen levels the shape is no longer readable anyway and
@@ -889,6 +1043,10 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     // node alone.
     const described =
       interactive && !name && !value ? String(node.description?.value ?? "").trim() : "";
+    // Returns the line together with the two pieces a later fold has to rebuild
+    // it from: the uid it minted, and the SUFFIX — everything printed after the
+    // quoted label. Re-calling format() to relabel a line is not an option, as
+    // it would mint a second uid for the same element.
     const format = () => {
       const uid =
         interactive && node.backendDOMNodeId != null ? mintUid(node.backendDOMNodeId) : null;
@@ -906,14 +1064,16 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
       const framed = frame ? ` (frame ${frame})` : "";
       if (uid) {
         const held = value ? ` = ${printedValue(value, uid)}` : "";
-        return `[${uid}] ${role} ${printedName(label)}${held}${state}${hint}${url}${framed}`;
+        const suffix = `${held}${state}${hint}${url}${framed}`;
+        return { line: `[${uid}] ${role} ${printedName(label)}${suffix}`, uid, suffix };
       }
       // With no uid the single quoted slot holds whichever of the three exists,
       // so a value landing there is capped as a VALUE — the recovery pointer is
       // what a 40 KB textarea needs, and it cannot name a uid this line lacks.
       const only = name || value || described;
       const shown = !name && value ? printedValue(only, null) : printedName(only);
-      return `${role} ${shown}${state}${url}${framed}`;
+      const suffix = `${state}${url}${framed}`;
+      return { line: `${role} ${shown}${suffix}`, uid: null, suffix };
     };
     // A single search result arrives as four to six links to the SAME
     // destination (thumbnail, title, source, snippet), which buried the result
@@ -933,7 +1093,7 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
         // Rewrites the FIRST position's line, so it carries the indent that
         // position was pushed with — the richer duplicate can sit any depth
         // away, and its own indent would misplace the line it replaces.
-        lines[kept.index] = kept.indent + format();
+        lines[kept.index] = kept.indent + format().line;
         kept.name = name;
       }
       return;
@@ -949,7 +1109,7 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
       Boolean(name) &&
       joinsRuns(container);
     if (inRun && run && run.container === container) {
-      run.text += ` ${name}`;
+      run.text = glueSegments(run.text, name);
       run.segments.push(name);
       // Rewritten in place, so it must be re-indented: the slot was pushed with
       // this run's own indent and nothing else may change where it sits.
@@ -960,7 +1120,8 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     // about to land beside it. format() mints only a uid counter tick, and it
     // happens at the same point of the walk either way, so the numbering the
     // agent reads is untouched by this ordering.
-    const line = format();
+    const formatted = format();
+    const line = formatted.line;
     closeRun(line);
     // The reading view has kept a table's rows on one line for a while; the
     // snapshot view printed one line per cell, so a 650-cell finance table made
@@ -990,9 +1151,24 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
     // the folded destination still points at the line that first printed it.
     if (href && !kept) byHref.set(href, { index: lines.length, name, indent });
     lines.push(indent + line);
-  });
+    // Only a line that actually LANDED can take a label: a marker joined into a
+    // row above returns before this and never becomes pending.
+    pendingMarker = markerImage
+      ? {
+          index: lines.length - 1,
+          indent,
+          uid: formatted.uid,
+          role,
+          name,
+          suffix: formatted.suffix,
+          container,
+        }
+      : null;
+  }, scopeDomIds);
   closeRun();
-  return found ? lines.filter((line) => line !== null) : null;
+  return found
+    ? lines.filter((line) => line !== null && !isBracketNoiseSnapshotLine(line))
+    : null;
 }
 
 /**
@@ -1000,9 +1176,10 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
  * uids and no role decoration, for read_text. Mints nothing, so the uids of
  * the last snapshot stay valid. When `startBackendNodeId` is given only that
  * subtree is rendered; returns null when the id matches no node (stale uid —
- * the caller owns the model-facing message).
+ * the caller owns the model-facing message). `scopeDomIds` widens that scope to
+ * the in-scope nodes the childIds chain cannot reach — see walkAxNodes.
  */
-export function renderAxText(nodes, startBackendNodeId) {
+export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
   const lines = [];
   /** The inline-text run currently open: { container, index, segments, covered }. */
   let run = null;
@@ -1045,7 +1222,9 @@ export function renderAxText(nodes, startBackendNodeId) {
     const inTextRun =
       (role === "StaticText" || (role === "link" && Boolean(name) && !value)) && joinsRuns(container);
     if (inTextRun && run && run.container === container) {
-      lines[run.index] += ` ${printed}`;
+      // Glued, not spaced: the sentence's own period arrives as a StaticText of
+      // its own, and read_text used to answer "request a new article ."
+      lines[run.index] = glueSegments(lines[run.index], printed);
       run.segments.push(printed);
       return;
     }
@@ -1058,7 +1237,13 @@ export function renderAxText(nodes, startBackendNodeId) {
     const row = rowOf(cell || container);
     if (row) {
       if (openRow && openRow.row === row && lines[openRow.index] != null) {
-        lines[openRow.index] += `${cell === openRow.cell ? " " : " | "}${printed}`;
+        // More of the SAME cell is more of one value, so its pieces are glued
+        // exactly as the page drew them — a footnote marker reads back as
+        // "China[n 1]". Only the bar between CELLS is a fixed separator.
+        lines[openRow.index] =
+          cell === openRow.cell
+            ? glueSegments(lines[openRow.index], printed)
+            : `${lines[openRow.index]} | ${printed}`;
         openRow.cell = cell;
         return;
       }
@@ -1068,9 +1253,9 @@ export function renderAxText(nodes, startBackendNodeId) {
     }
     if (inTextRun) run = { container, index: lines.length, segments: [printed], covered };
     lines.push(printed);
-  });
+  }, scopeDomIds);
   closeTextRun();
-  return found ? lines.filter((line) => line !== null) : null;
+  return found ? lines.filter((line) => line !== null && !isBracketNoise(line)) : null;
 }
 
 /**
@@ -1085,33 +1270,89 @@ export const SNAPSHOT_MAX_CHARS = 30000;
 /** Leading spaces tolerated: the snapshot view indents by nesting depth. */
 const UID_LINE = /^ *\[e\d+\] /;
 
+/** The uid an atom leads with, for the marker that says where to read the rest. */
+const LEADING_UID = /^\s*\[(e\d+)\]/;
+
+/**
+ * Budget below which a head-keep is not worth doing: a few hundred characters
+ * of a source file, most of it spent on the marker, is not readable text.
+ */
+const HEAD_KEEP_MIN_CHARS = 500;
+
+/** What a head-kept atom ends with. Sized on the numbers it names, so it can be measured first. */
+const cutMarker = (shown, total, uid) =>
+  `… [cut by the maxChars budget: showing ${shown} of ${total} chars — ` +
+  `mcp__browser__read_text${uid ? ` (uid ${uid})` : ""} returns the full text]`;
+
+/**
+ * The longest CONTIGUOUS head of `atom` that fits in `remaining`, marked, or
+ * null when even that does not fit. Measured against the widest the marker can
+ * get (the kept count can have no more digits than the total), so rebuilding it
+ * with the real count can only make the line shorter, never overshoot.
+ */
+function headKeptAtom(atom, remaining) {
+  const uid = LEADING_UID.exec(atom)?.[1] || "";
+  const room = remaining - 1 - cutMarker(atom.length, atom.length, uid).length;
+  if (room < 1) return null;
+  const head = atom.slice(0, room);
+  return head + cutMarker(head.length, atom.length, uid);
+}
+
 /**
  * Fit a rendered snapshot into `maxChars`, spending the budget on actionable
- * lines first. A cut TEXT line is recoverable — read_text re-reads the page
+ * elements first. A cut TEXT line is recoverable — read_text re-reads the page
  * in offset chunks — but a cut `[uid]` line makes its element unreachable, so
  * uid lines are kept preferentially. Output preserves document order; a
  * trailing notice says what was dropped so the model knows the page did not
  * end where the text stops.
+ *
+ * The unit is an ATOM, not a physical line: the renderers push one array entry
+ * per element, and an element's own value can hold newlines. A GitHub blob view
+ * keeps the whole source file in one textbox value, and keeping that by the line
+ * cut it to pieces — its first line carried the uid and was kept, its interior
+ * lines were kept or dropped INDIVIDUALLY (a short one still fitting after a
+ * long one did not), and the closing quote and `[value truncated]` marker fell
+ * off the end. What came back was source with holes in it, different on every
+ * call, and nothing on the page said so. Callers may still pass a plain string,
+ * which splits per line exactly as before.
+ *
+ * A uid atom too big to keep whole is HEAD-kept rather than dropped: its first
+ * line is what carries the uid, so dropping it whole would make the element
+ * unreachable, and a marked contiguous prefix is text an agent can trust. It
+ * happens after the whole-atom uid pass — one oversized atom must not cost the
+ * page's other elements their uids — and it takes essentially all of what is
+ * left, so the text pass after it usually gets nothing. That is the intended
+ * trade: text is recoverable through read_text, and the marker names it.
  */
-export function capSnapshot(text, maxChars = SNAPSHOT_MAX_CHARS) {
-  if (text.length <= maxChars) return text;
-  const lines = text.split("\n");
-  const keep = new Array(lines.length).fill(false);
+export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS) {
+  const atoms = Array.isArray(textOrLines) ? textOrLines : String(textOrLines).split("\n");
+  const whole = atoms.join("\n");
+  if (whole.length <= maxChars) return whole;
+  const keep = new Array(atoms.length).fill(null);
   let remaining = maxChars;
-  for (const wantUid of [true, false]) {
-    for (let i = 0; i < lines.length; i += 1) {
-      if (keep[i] || UID_LINE.test(lines[i]) !== wantUid) continue;
-      const cost = lines[i].length + 1;
-      if (cost <= remaining) {
-        keep[i] = true;
-        remaining -= cost;
-      }
-    }
+  const take = (i, text) => {
+    keep[i] = text;
+    remaining -= text.length + 1;
+  };
+  // An atom is classified by its FIRST physical line, which is where the
+  // renderer put the element's own rendering.
+  const leadsWithUid = (atom) => UID_LINE.test(atom);
+  for (let i = 0; i < atoms.length; i += 1) {
+    if (leadsWithUid(atoms[i]) && atoms[i].length + 1 <= remaining) take(i, atoms[i]);
   }
-  const kept = lines.filter((_, i) => keep[i]);
-  const dropped = lines.length - kept.length;
+  for (let i = 0; i < atoms.length && remaining >= HEAD_KEEP_MIN_CHARS; i += 1) {
+    if (keep[i] !== null || !leadsWithUid(atoms[i])) continue;
+    const head = headKeptAtom(atoms[i], remaining);
+    if (head) take(i, head);
+  }
+  for (let i = 0; i < atoms.length; i += 1) {
+    if (keep[i] === null && !leadsWithUid(atoms[i]) && atoms[i].length + 1 <= remaining)
+      take(i, atoms[i]);
+  }
+  const kept = keep.filter((atom) => atom !== null);
+  const dropped = atoms.length - kept.length;
   return (
-    `${kept.join("\n")}\n\n[snapshot truncated: ${dropped} of ${lines.length} lines omitted to fit. ` +
+    `${kept.join("\n")}\n\n[snapshot truncated: ${dropped} of ${atoms.length} entries omitted to fit. ` +
     "Interactive [uid] elements were kept first. Read the page's full text with " +
     "mcp__browser__read_text, which returns offset-addressed chunks.]"
   );

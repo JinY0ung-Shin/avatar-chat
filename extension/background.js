@@ -964,7 +964,18 @@ function frameHeader(label, source, nodes) {
   return `frame ${label}${uid ? ` [${uid}]` : ""}:${identity ? ` ${identity}` : ""}`;
 }
 
-/** Walk every attached session and merge the accessibility trees into one view. */
+/**
+ * Walk every attached session and merge the accessibility trees into one view,
+ * returned as the ATOMS the renderers produced — one entry per element (a frame
+ * header, one rendered line), some of which carry newlines of their own.
+ *
+ * Not joined here because capSnapshot has to see those boundaries. A GitHub blob
+ * view puts a whole source file in ONE textbox value, and once the atoms were
+ * flattened the only structure left was physical lines: a tightened `maxChars`
+ * then kept a handful of them from the middle of that file and dropped the rest,
+ * so the agent read non-contiguous source with nothing saying so. A caller that
+ * wants plain text joins with "\n" itself.
+ */
 async function buildSnapshot(tab) {
   if (refMap.size > REF_MAP_MAX) {
     refMap.clear();
@@ -996,7 +1007,7 @@ async function buildSnapshot(tab) {
       ),
     );
   }
-  return lines.join("\n");
+  return lines;
 }
 
 /**
@@ -1033,9 +1044,91 @@ async function frameSourceFor(ref, sources) {
 }
 
 /**
+ * Ids collected while working out what a scoped read's element CONTAINS. A map
+ * pane holds thousands of marker <div>s, so the ceiling sits far above
+ * SUBTREE_SCAN_MAX — which is deliberately NOT reused: the obscured-click guard
+ * is tuned to answer "is this ONE node under that one?" in a few hops, and
+ * raising its bound would make every refused click pay for this walk.
+ */
+const SCOPE_DOM_IDS_MAX = 4000;
+
+/**
+ * When a scoped read counts as HOLLOW and the enrichment below is worth its
+ * round trips. A scope that already rendered content is returned untouched, at
+ * exactly today's cost. Atoms for the snapshot view, characters for the reading
+ * view — which has no atoms, since a whole paragraph is one line there.
+ */
+const HOLLOW_SCOPE_ATOMS = 3;
+const HOLLOW_SCOPE_TEXT_CHARS = 400;
+
+/**
+ * Every backendNodeId the DOM says lives INSIDE one element, shadow roots
+ * included — the set that lets a hollow scoped read recover what the full walk
+ * already knew about that same element.
+ *
+ * The field failure: `snapshot(uid=…)` on a map's `region "Map"` answered the
+ * region line alone (3 characters) while the UNSCOPED snapshot printed 47
+ * markers under that very uid. Two mechanisms produce that, both ordinary page
+ * construction — the markers are AX nodes DETACHED from the region's childIds,
+ * which the full walk only reaches through its orphan sweep and a
+ * startBackendNodeId walk never reaches at all; and part of a pane can be a
+ * same-process child frame, which is a different AX source entirely. Scoping
+ * exists to SAVE tokens, so it must never answer less about an element than the
+ * unscoped view does; the DOM is the one place that still says what belongs to
+ * what.
+ *
+ * null on any CDP failure: this is an addition, never a new way to fail.
+ */
+async function scopeDomIdsOf(target, backendNodeId) {
+  const root = await describeSubtree(target, backendNodeId);
+  if (!root) return null;
+  const ids = new Set();
+  const queue = [root];
+  while (queue.length && ids.size < SCOPE_DOM_IDS_MAX) {
+    const node = queue.shift();
+    if (typeof node?.backendNodeId === "number") ids.add(node.backendNodeId);
+    for (const child of node?.children || []) queue.push(child);
+    // A web component draws its content in a shadow root, and those nodes are
+    // as much "inside the element" as its light children are.
+    for (const shadow of node?.shadowRoots || []) queue.push(shadow);
+  }
+  return ids;
+}
+
+/**
+ * The same-process child frames whose OWNING `<iframe>` sits inside
+ * `scopeDomIds` — the documents that live INSIDE the scoped element — as
+ * `{ source, nodes }` pairs ready to render.
+ *
+ * `DOM.getFrameOwner` is asked on the REF'S OWN session, the only id space
+ * `scopeDomIds` was collected in: an owner id resolved from any other session
+ * names a different node, and matching a stranger would splice an unrelated
+ * frame into the answer. A frame whose owner will not resolve (a nested OOPIF, a
+ * frame that died mid-walk) is simply left out — nested OOPIFs are not in scope
+ * for this path.
+ */
+async function framesInsideScope(target, frameIds, scopeDomIds) {
+  const inside = [];
+  for (const frameId of frameIds) {
+    let ownerId;
+    try {
+      ({ backendNodeId: ownerId } = await sendCdp(target, "DOM.getFrameOwner", { frameId }));
+    } catch {
+      continue;
+    }
+    if (ownerId == null || !scopeDomIds.has(ownerId)) continue;
+    const source = { target, frameId };
+    const nodes = await sourceAxNodes(source);
+    if (nodes) inside.push({ source, nodes });
+  }
+  return inside;
+}
+
+/**
  * One element's subtree, rendered like a snapshot — the `uid` form of the
  * snapshot op, so following up on a search-results list or a dialog costs a few
- * hundred characters instead of re-reading the whole page.
+ * hundred characters instead of re-reading the whole page. Returns ATOMS, like
+ * buildSnapshot and for the same reason.
  *
  * Two shapes, because a uid can name either a piece of ONE document or the
  * BOUNDARY between two:
@@ -1046,6 +1139,11 @@ async function frameSourceFor(ref, sources) {
  *     same-process child frames, because an element can sit in a frame whose
  *     nodes are absent from the session's main tree. A tree that does not contain
  *     the start node answers null and the walk moves on.
+ *
+ * A subtree that comes back HOLLOW is then re-read against what the DOM says the
+ * element contains — the detached islands and the frames living inside it (see
+ * scopeDomIdsOf). Paid only on that path: a scope that already rendered content
+ * returns straight away.
  *
  * Deliberately does NOT run the REF_MAP_MAX reset buildSnapshot opens with:
  * clearing the map mid-op would evict the very uid being scoped by, and a
@@ -1064,24 +1162,42 @@ async function buildScopedSnapshot(tab, ref) {
       const { hints } = await collectDomHints(frameSource, nodes, HINT_FETCH_PER_SNAPSHOT);
       // No startBackendNodeId: the frame's tree IS the requested scope, and
       // without one renderAxTree cannot answer null.
-      return renderAxTree(nodes, mintForSource(frameSource), hints).join("\n");
+      return renderAxTree(nodes, mintForSource(frameSource), hints);
     }
     // Attached but unreadable this instant (navigating, dying). Fall through, so
     // the answer is at least the Iframe element rather than an outright failure.
   }
-  const sources = [
-    { target },
-    ...(await childFrameIds(target)).map((frameId) => ({ target, frameId })),
-  ];
+  // Held rather than re-asked: the enrichment below needs the same frame ids.
+  const childIds = await childFrameIds(target);
+  const sources = [{ target }, ...childIds.map((frameId) => ({ target, frameId }))];
   for (const source of sources) {
     const nodes = await sourceAxNodes(source);
     if (!nodes) continue;
     const { hints } = await collectDomHints(source, nodes, HINT_FETCH_PER_SNAPSHOT);
-    const lines = renderAxTree(nodes, mintForSource(source), hints, {
-      startBackendNodeId: ref.backendNodeId,
-    });
+    const mint = mintForSource(source);
+    const lines = renderAxTree(nodes, mint, hints, { startBackendNodeId: ref.backendNodeId });
     if (lines === null) continue; // the start node is not in THIS tree — try the next
-    return lines.join("\n");
+    if (lines.length > HOLLOW_SCOPE_ATOMS) return lines;
+    const scopeDomIds = await scopeDomIdsOf(target, ref.backendNodeId);
+    if (!scopeDomIds) return lines;
+    // Re-rendered from the SAME nodes and the same hint map, so every uid the
+    // first pass minted comes back identical — mintUid answers from uidByNode.
+    const atoms =
+      renderAxTree(nodes, mint, hints, { startBackendNodeId: ref.backendNodeId, scopeDomIds }) ||
+      lines;
+    // A frame inside the element gets the same `f1:` header treatment the full
+    // walk gives one, counted locally: this view has no other frame blocks.
+    let seq = 0;
+    for (const inner of await framesInsideScope(target, childIds, scopeDomIds)) {
+      const { hints: innerHints } = await collectDomHints(
+        inner.source,
+        inner.nodes,
+        HINT_FETCH_PER_SNAPSHOT,
+      );
+      atoms.push(frameHeader(`f${++seq}`, inner.source, inner.nodes));
+      atoms.push(...renderAxTree(inner.nodes, mintForSource(inner.source), innerHints));
+    }
+    return atoms;
   }
   throw new Error(
     "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot without `uid` and use a current uid.",
@@ -1548,6 +1664,16 @@ const OBSCURED_MIN_TARGET_AREA = 100;
  *
  * Cheapest question first, so an ordinary click pays one hit test and a covered
  * one pays four round trips.
+ *
+ * The refusal MINTS the covering element a uid, because the field showed the old
+ * advice was a dead end: the overlay is typically a NAMELESS <div>, so no
+ * snapshot line carries it and there was nothing for the agent to name in a
+ * follow-up call; Escape does not always close it (on the-internet's /entry_ad
+ * the modal's own close control is a uid-less <p>); and a screenshot pixel
+ * position needs a screenshot the conversation's model may not accept. A uid
+ * turns all three back on — the covering layer can be snapshotted, its close
+ * control clicked directly, or aimed into with uid-relative click_at, which
+ * needs no vision at all.
  */
 async function assertNotObscured(ref, point) {
   const { target, area } = point;
@@ -1583,13 +1709,26 @@ async function assertNotObscured(ref, point) {
     depth: 2,
   }).catch(() => null);
   const desc = described?.node ? renderNodeBrief(described.node, 120) : "(it could not be described)";
+  let uid = null;
+  try {
+    uid = mintUid(target.tabId, target.sessionId, hitId);
+  } catch {
+    // The same stable-ref machinery a snapshot mints from, and synchronous — but
+    // wrapped anyway: this guard must never become a new way for a click to
+    // fail, so a mint that somehow throws degrades to the older advice below.
+  }
+  const escapeHatch = uid
+    ? `The covering element is now addressable as uid "${uid}": take mcp__browser__snapshot with that uid to ` +
+      "see inside it and find its close control, click it directly with mcp__browser__click, or aim " +
+      `mcp__browser__click_at inside it (uid "${uid}" plus xFraction/yFraction — works without a screenshot; ` +
+      "a screenshot pixel position also works). Pressing Escape (mcp__browser__press_key) may close it too."
+    : "Close the covering layer first: press Escape (mcp__browser__press_key), or find its close control in a " +
+      "fresh snapshot (uid-less close text can be reached with mcp__browser__click_at on the covering element " +
+      "or a screenshot pixel position).";
   throw new Error(
     `The click was NOT dispatched: another element covers the target at its clickable point — ${desc} — ` +
       "most likely an open modal, overlay, or cookie banner; clicking through it would act on something the " +
-      "user cannot see or reach. Close the covering layer first: press Escape (mcp__browser__press_key), or " +
-      "find its close control in a fresh snapshot (uid-less close text can be reached with " +
-      "mcp__browser__click_at on the covering element or a screenshot pixel position). The description above " +
-      "is page-derived and untrusted.",
+      `user cannot see or reach. ${escapeHatch} The description above is page-derived and untrusted.`,
   );
 }
 
@@ -2602,33 +2741,41 @@ const READ_TEXT_MAX = 20000;
  * the previous snapshot's refs stay valid.
  */
 async function buildPageText(tab, scope) {
+  const scopeTarget = scope ? { tabId: scope.tabId, sessionId: scope.sessionId } : null;
   // Same lazily-updated AX tree the snapshot path reads: the field report had
   // the page's new button missing from read_text too, so the flush belongs here.
-  await flushLifecycle(
-    scope ? { tabId: scope.tabId, sessionId: scope.sessionId } : { tabId: tab.id },
-  );
+  await flushLifecycle(scopeTarget || { tabId: tab.id });
   // A uid-scoped read stays on the session that minted the uid, but the
   // element may sit in a SAME-process child frame, whose nodes are absent from
   // that session's main tree — so the frame trees are a fallback, not a miss.
-  const sources = scope
-    ? [
-        { target: { tabId: scope.tabId, sessionId: scope.sessionId } },
-        ...(
-          await childFrameIds({ tabId: scope.tabId, sessionId: scope.sessionId })
-        ).map((frameId) => ({
-          target: { tabId: scope.tabId, sessionId: scope.sessionId },
-          frameId,
-        })),
-      ]
+  // The ids are held: the enrichment below asks which of those frames the
+  // scoped element OWNS.
+  const scopeFrameIds = scopeTarget ? await childFrameIds(scopeTarget) : [];
+  const sources = scopeTarget
+    ? [{ target: scopeTarget }, ...scopeFrameIds.map((frameId) => ({ target: scopeTarget, frameId }))]
     : await axSources(tab);
   const parts = [];
   let scopeFound = false;
   for (const source of sources) {
     const nodes = await sourceAxNodes(source);
     if (!nodes) continue;
-    const lines = renderAxText(nodes, scope ? scope.backendNodeId : undefined);
+    let lines = renderAxText(nodes, scope ? scope.backendNodeId : undefined);
     if (lines === null) continue; // the start node is not in THIS tree — try the next
     scopeFound = true;
+    // A HOLLOW scoped read is the map-region case scopeDomIdsOf documents: the
+    // subtree walk answered a few characters for an element the unscoped read
+    // shows full. Re-read it against what the DOM says the element contains.
+    if (scope && lines.join("\n").length < HOLLOW_SCOPE_TEXT_CHARS) {
+      const scopeDomIds = await scopeDomIdsOf(scopeTarget, scope.backendNodeId);
+      if (scopeDomIds) {
+        lines = renderAxText(nodes, scope.backendNodeId, scopeDomIds) || lines;
+        // No frame header here: the reading view carries no labels or uids to
+        // tie one to, so a frame's text simply continues the element's.
+        for (const inner of await framesInsideScope(scopeTarget, scopeFrameIds, scopeDomIds)) {
+          lines.push(...renderAxText(inner.nodes));
+        }
+      }
+    }
     if (lines.length) parts.push(lines.join("\n"));
     if (scope) break; // a scoped subtree lives in exactly one tree
   }
@@ -3446,7 +3593,9 @@ async function performOp(message) {
     const started = Date.now();
     for (;;) {
       if (pendingDialogs.has(tab.id)) break; // frozen page — reported below
-      const view = await buildSnapshot(tab);
+      // Joined here: this matcher asks a question about the page as TEXT, and
+      // the atoms exist for capSnapshot's benefit, not `includes`'s.
+      const view = (await buildSnapshot(tab)).join("\n");
       if ((!wantText || view.includes(wantText)) && (!goneText || !view.includes(goneText))) break;
       if (Date.now() - started >= timeoutMs) {
         return {
@@ -3500,6 +3649,12 @@ async function performOp(message) {
   // Cap the snapshot uid-first: an uncapped long page fails the whole model
   // turn, which made merely REACHING such a page count as an error. wait_for's
   // internal matching above deliberately uses the uncapped walk.
+  //
+  // The builders hand capSnapshot their ATOMS rather than joined text, so an
+  // element holding many lines (a source file inside one textbox value) is kept
+  // or dropped WHOLE instead of being cut into non-contiguous pieces. It still
+  // returns the finished string, so lastSnapshotByTab compares exactly what it
+  // compared before.
   let snapshot = "";
   let snapshotError;
   const readSnapshot = async () =>
