@@ -618,6 +618,11 @@ export function buildSystemPromptAppend(
         "You can only reach tabs the user put in the Noah tab group plus ones you opened yourself; the rest of their browser is invisible to you. " +
         "Use `new_tab` when the current page still matters — `navigate` replaces it — and re-`snapshot` after switching tabs to see the new tab's contents (uids keep pointing at the elements they were minted for). " +
         "Always `snapshot` first to get element uids, act, then snapshot again — uids from a stale snapshot may hit the wrong element. " +
+        // Field-tested on a map whose place-search iframe auto-fit the viewport
+        // seconds AFTER the action returned: the settle delay cannot cover
+        // multi-second loads, but the snapshot DID show the placeholder — the
+        // agent just has to know that seeing one means "look again".
+        "A snapshot showing loading placeholders (a spinner, \"loading\" text, skeleton rows) caught the page MID-LOAD: do not trust the state around them — panels, lists, even the map viewport may rearrange once results land — use `wait_for` (e.g. textGone for the placeholder) or re-snapshot before acting on it. " +
         "Enter text with `type`: the WHOLE string goes in ONE call — never enter text by pressing keys one character at a time. If a page visibly ignored a normal type, retry once with `keystrokes: true`; for repeated special keys use press_key's `repeat` (e.g. ArrowDown ×5 in one call). " +
         "A field that already shows a value keeps it — `type` inserts at the cursor, so pass `clear: true` (or fill_form's per-field clear) when that value should be replaced rather than added to. " +
         "A clear is verified against the field afterwards: if it fails, the call tells you the page re-asserted its own value — click that field's own clear (X) control instead of repeating the type. " +
