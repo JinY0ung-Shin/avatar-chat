@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -131,6 +131,123 @@ describe("renderAxTree", () => {
       node("3", "button", "보임", [], { backendDOMNodeId: 4 }),
     ]);
     expect(lines).toEqual(['RootWebArea "Doc"', '[e1] button "보임"']);
+  });
+
+  it("prints a link's destination from the AX url property", () => {
+    // Without the href, choosing between several results means clicking each
+    // one and paying a full page load per candidate.
+    const lines = render([
+      node("1", "link", "결과 하나", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "url", value: { value: "https://example.com/a" } }],
+      }),
+    ]);
+    expect(lines).toEqual(['[e1] link "결과 하나" → https://example.com/a']);
+  });
+
+  it("omits javascript: and same-document fragment link urls", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "link", "메뉴", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "url", value: { value: "javascript:void(0)" } }],
+      }),
+      node("3", "link", "위로", [], {
+        backendDOMNodeId: 8,
+        properties: [{ name: "url", value: { value: "#top" } }],
+      }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] link "메뉴"', '[e2] link "위로"']);
+  });
+
+  it("truncates a very long link url", () => {
+    const long = `https://example.com/${"x".repeat(300)}`;
+    const lines = render([
+      node("1", "link", "긴 링크", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "url", value: { value: long } }],
+      }),
+    ]);
+    expect(lines[0].length).toBeLessThan(200);
+    expect(lines[0]).toContain("…");
+  });
+
+  it("gives a uid to a NAMED table-row menu item, but not to a nameless cell", () => {
+    // draw.io's submenu rows render as LayoutTableCell — with no uid they were
+    // visible but unclickable, making whole menus unreachable.
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "LayoutTableCell", "다이어그램 편집...", [], { backendDOMNodeId: 7 }),
+      node("3", "LayoutTableCell", "", [], { backendDOMNodeId: 8 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] LayoutTableCell "다이어그램 편집..."']);
+  });
+
+  it("gives a uid to a named focusable node, but not to a focusable opaque container", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"], {
+        backendDOMNodeId: 1,
+        properties: [{ name: "focusable", value: { value: true } }],
+      }),
+      node("2", "heading", "섹션 열기", [], {
+        backendDOMNodeId: 7,
+        properties: [{ name: "focusable", value: { value: true } }],
+      }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] heading "섹션 열기"']);
+  });
+
+  it("gives a uid to a nameless canvas so canvas apps can be focused", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "canvas", "", [], { backendDOMNodeId: 7 }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', '[e1] canvas ""']);
+  });
+});
+
+describe("capSnapshot", () => {
+  it("returns text under the budget unchanged", () => {
+    expect(capSnapshot("짧은 스냅샷", 100)).toBe("짧은 스냅샷");
+  });
+
+  it("keeps [uid] lines over text lines and appends a truncation notice", () => {
+    const lines = [
+      `StaticText "${"가".repeat(60)}"`,
+      '[e1] button "저장"',
+      `StaticText "${"나".repeat(60)}"`,
+      '[e2] link "다음"',
+    ];
+    const out = capSnapshot(lines.join("\n"), 60);
+    expect(out).toContain('[e1] button "저장"');
+    expect(out).toContain('[e2] link "다음"');
+    expect(out).not.toContain("가가가");
+    expect(out).toContain("snapshot truncated");
+    expect(out).toContain("mcp__browser__read_text");
+  });
+
+  it("preserves document order among the kept lines", () => {
+    const filler = `StaticText "${"x".repeat(500)}"`;
+    const out = capSnapshot([filler, '[e1] button "둘"', '[e2] button "하나"'].join("\n"), 60);
+    expect(out.indexOf("[e1]")).toBeLessThan(out.indexOf("[e2]"));
+  });
+});
+
+describe("mergeTextLines", () => {
+  it("appends only the non-overlapping tail of the next capture", () => {
+    expect(mergeTextLines(["a", "b", "c"], ["b", "c", "d"])).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("adds nothing when the next capture is the same view", () => {
+    expect(mergeTextLines(["a", "b"], ["a", "b"])).toEqual(["a", "b"]);
+  });
+
+  it("concatenates whole when there is no overlap — a duplicate beats a hole", () => {
+    expect(mergeTextLines(["a", "b"], ["x", "y"])).toEqual(["a", "b", "x", "y"]);
+  });
+
+  it("starts from the first capture when nothing is accumulated yet", () => {
+    expect(mergeTextLines([], ["a"])).toEqual(["a"]);
   });
 });
 

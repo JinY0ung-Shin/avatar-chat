@@ -623,6 +623,7 @@ export function buildSystemPromptAppend(
         "A form with two or more fields is ONE `fill_form` call ([{uid, value, clear?}] — clear replaces existing content), not a chain of type calls; it never submits, so click the submit control afterwards. " +
         "Dropdowns are `select_option` (the select's uid + the option label from the snapshot), not arrow-key guessing. " +
         "To READ a long page (summarize, quote, extract), use `read_text` — plain text in offset-addressed chunks, far cheaper than snapshot; snapshot is for when you need uids to act. " +
+        "When a page lazy-loads content as you scroll (feeds, comment threads showing only a few of many items), call `read_text` with `expand: true` — it scrolls through the page while reading so that content is loaded and included. " +
         (request.visionEnabled !== false
           ? "When pixels matter (charts, maps, images, layout that seems broken), `screenshot` returns an actual image of the viewport, one element (uid), or the full page. " +
             "Every screenshot you take is also shared with the user as a file card in the chat (it opens in the preview panel), so the user sees each capture — refer to it instead of re-describing every detail. " +

@@ -1579,7 +1579,10 @@ function handleBrowserOp(paneId: string, data: any): void {
     select_tab: "탭을 전환하는 중…",
     close_tab: "탭을 닫는 중…",
   };
-  const label = BROWSER_OP_LABELS[String(data.op)] ?? "브라우저 화면을 읽는 중…";
+  const label =
+    data.op === "read_text" && data.expand
+      ? "페이지를 스크롤하며 본문을 읽는 중…"
+      : (BROWSER_OP_LABELS[String(data.op)] ?? "브라우저 화면을 읽는 중…");
   setStatus(paneId, label, false);
 
   void sendToExtension({
@@ -1605,6 +1608,7 @@ function handleBrowserOp(paneId: string, data: any): void {
     option: data.option,
     fullPage: data.fullPage,
     offset: data.offset,
+    expand: data.expand,
   })
     .then((reply) =>
       api("/api/chat/respond", {

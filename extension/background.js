@@ -19,7 +19,7 @@
 // out detaches it. That makes consent a live, visible surface the user can
 // revoke without a settings screen.
 
-import { renderAxTree, renderAxText } from "./axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, axProp } from "./axtree.js";
 
 const GROUP_TITLE = "Noah";
 const CDP_VERSION = "1.3";
@@ -774,6 +774,23 @@ async function platformOs() {
 }
 
 /**
+ * Focus an element for input, falling back to a real click when DOM.focus
+ * refuses. Rich-text editors (ProseMirror bodies) and canvases often expose
+ * an AX node whose DOM element is not natively focusable — a person focuses
+ * them by clicking, and "Element is not focusable" was exactly how typing
+ * into them failed before this fallback.
+ */
+async function focusForInput(ref) {
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+  try {
+    await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+  } catch {
+    await clickNode(ref);
+  }
+}
+
+/**
  * Focus one field and enter `value` — the shared insert path of type and
  * fill_form. `clear` first selects the existing content the way a person
  * would (select-all, then overtype / delete), so edit forms can be REPLACED
@@ -781,8 +798,7 @@ async function platformOs() {
  */
 async function fillField(ref, value, clear) {
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
-  await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
-  await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+  await focusForInput(ref);
   if (clear) {
     // Blink maps the select-all editing command per platform.
     const mask = (await platformOs()) === "mac" ? MODIFIER_BITS.Meta : MODIFIER_BITS.Control;
@@ -805,8 +821,7 @@ async function typeRef(uid, value, submit, keystrokes) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
   if (keystrokes) {
-    await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
-    await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+    await focusForInput(ref);
     // Replay as real per-character key events, ONE bridge operation for the
     // whole string — for editors that only listen to keyboard input. Server
     // caps the length; the dialog check keeps a mid-string alert() from
@@ -835,11 +850,6 @@ async function typeRef(uid, value, submit, keystrokes) {
 async function sessionAxNodes(target) {
   const { nodes } = await sendCdp(target, "Accessibility.getFullAXTree", {});
   return nodes || [];
-}
-
-function axProp(node, name) {
-  const hit = (node?.properties || []).find((prop) => prop?.name === name);
-  return hit ? hit.value?.value : undefined;
 }
 
 /** Option descendants of one AX node, in document order, as a uniform shape. */
@@ -1044,6 +1054,58 @@ async function buildPageText(tab, scope) {
   return parts.join("\n");
 }
 
+/**
+ * Time budget for the `expand` scroll loop. The Noah client parks the whole
+ * bridge operation for 40s; stopping here leaves room for the final walk and
+ * the reply on a big page.
+ */
+const EXPAND_BUDGET_MS = 18000;
+/** Hard stop for text accumulated during `expand`, in characters. */
+const EXPAND_MAX_CHARS = 500000;
+/** Scroll steps that add no new lines before `expand` concludes it is done. */
+const EXPAND_STALL_LIMIT = 3;
+
+/**
+ * read_text with `expand`: scroll toward the end of the page in viewport-sized
+ * steps, collecting text at every stop. Lazy-loaded and VIRTUALIZED content
+ * only exists in the DOM near the viewport (a feed can render 6 of 334
+ * comments), so a single walk misses it — and content that scrolls out may be
+ * REMOVED again, so chunks are merged as we go rather than read once at the
+ * bottom. Infinite feeds never reach the end; the stall/time/size caps are
+ * what terminate those.
+ */
+async function buildExpandedPageText(tab) {
+  const started = Date.now();
+  let lines = [];
+  let stalled = 0;
+  for (;;) {
+    if (pendingDialogs.has(tab.id)) break;
+    const text = await buildPageText(tab, null);
+    const before = lines.length;
+    lines = mergeTextLines(lines, text ? text.split("\n") : []);
+    stalled = lines.length > before ? 0 : stalled + 1;
+    const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
+    const viewport = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
+    const height = viewport.clientHeight || 600;
+    const atEnd =
+      (viewport.pageY || 0) + height >= ((metrics.cssContentSize || {}).height || 0) - 2;
+    if (atEnd && stalled >= 1) break; // bottom reached and nothing new loaded
+    if (stalled >= EXPAND_STALL_LIMIT) break; // nothing loads; stop spending the budget
+    if (Date.now() - started >= EXPAND_BUDGET_MS) break;
+    if (lines.join("\n").length >= EXPAND_MAX_CHARS) break;
+    await sendCdp({ tabId: tab.id }, "Input.dispatchMouseEvent", {
+      type: "mouseWheel",
+      x: (viewport.clientWidth || 800) / 2,
+      y: height / 2,
+      deltaX: 0,
+      deltaY: Math.round(height * 0.8),
+    });
+    // Give the page a beat to fetch and render what the scroll uncovered.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+  }
+  return lines.join("\n");
+}
+
 /** Longest horizontal edge of a screenshot after scaling, in CSS px. */
 const SCREENSHOT_MAX_WIDTH = 1400;
 /** fullPage capture height cap, CSS px — beyond this the image is cut off. */
@@ -1233,7 +1295,11 @@ async function perform(message) {
   // user dragged in may already be sitting on a denied site.
   if (tab.url && !originAllowed(tab.url, patterns)) return refuseOrigin(tab.url, source);
   await ensureAttached(tab.id);
-  if (VISIBLE_OPS.has(message.op)) await showTab(tab);
+  // read_text with `expand` scrolls, and wheel events go through the
+  // browser-side input router — dropped unless the tab's view is visible.
+  if (VISIBLE_OPS.has(message.op) || (message.op === "read_text" && message.expand)) {
+    await showTab(tab);
+  }
 
   // An open JS dialog freezes the renderer: every page-touching command below
   // would hang. Surface the dialog instead — only handle_dialog may proceed.
@@ -1256,7 +1322,11 @@ async function perform(message) {
       scope = resolveRef(message.uid);
     }
     const offset = Math.min(Math.max(Math.round(Number(message.offset) || 0), 0), 5_000_000);
-    const full = await buildPageText(tab, scope);
+    // `expand` is page-level by definition (scrolling loads content relative
+    // to the viewport, not one element); the server refuses uid+expand, and
+    // ignoring expand here keeps a mixed call honest rather than wrong.
+    const full =
+      message.expand && !scope ? await buildExpandedPageText(tab) : await buildPageText(tab, scope);
     return {
       ok: true,
       pageText: full.slice(offset, offset + READ_TEXT_MAX),
@@ -1451,8 +1521,7 @@ async function perform(message) {
       if (refused) return refused;
       const ref = resolveRef(message.uid);
       target = { tabId: ref.tabId, sessionId: ref.sessionId };
-      await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
-      await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
+      await focusForInput(ref);
     }
     const repeat = Math.min(Math.max(Math.round(Number(message.repeat) || 1), 1), 50);
     await raceDialogOpen(
@@ -1563,7 +1632,10 @@ async function perform(message) {
     return { ...(await dialogBlockedResult(fresh)), ...(landedOn ? { landedOn } : {}) };
   }
 
-  const snapshot = await buildSnapshot(fresh);
+  // Cap the snapshot uid-first: an uncapped long page fails the whole model
+  // turn, which made merely REACHING such a page count as an error. wait_for's
+  // internal matching above deliberately uses the uncapped walk.
+  const snapshot = capSnapshot(await buildSnapshot(fresh));
   // Always report the group's tabs: the agent needs to know a new tab appeared
   // (or that several are open) without spending a separate list_tabs round trip.
   return {

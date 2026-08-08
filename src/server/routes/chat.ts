@@ -1951,6 +1951,7 @@ export function createChatRouter({
                   option: requestData.option ?? null,
                   fullPage: typeof requestData.fullPage === "boolean" ? requestData.fullPage : null,
                   offset: requestData.offset ?? null,
+                  expand: typeof requestData.expand === "boolean" ? requestData.expand : null,
                 });
                 const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
                 if (answer === CANCELLED) {
@@ -2011,6 +2012,7 @@ export function createChatRouter({
                         : "",
                       requestData.fields ? `fields=${requestData.fields.length}` : "",
                       requestData.option ? `option=${requestData.option.slice(0, 80)}` : "",
+                      requestData.expand ? "expand" : "",
                       `url=${scrubAuditUrl(reply.url || requestData.url)}`,
                     ]
                       .filter(Boolean)
@@ -2073,10 +2075,11 @@ export function createChatRouter({
                   shareNote,
                   sharedAttachments,
                   // Every field below is UNTRUSTED extension input that rides into
-                  // the model turn, and this route is the ONLY size gate
-                  // (browserTools.report applies none). Bound each explicitly and
-                  // shape-validate tabs[] so a hostile/oversized reply can't blow up
-                  // the turn or smuggle an unbounded payload.
+                  // the model turn, and this route is the PRIMARY size gate
+                  // (browserTools.report adds only a model-facing snapshot cap for
+                  // old extension builds). Bound each explicitly and shape-validate
+                  // tabs[] so a hostile/oversized reply can't blow up the turn or
+                  // smuggle an unbounded payload.
                   snapshot:
                     typeof reply.snapshot === "string" ? reply.snapshot.slice(0, 200_000) : undefined,
                   url: typeof reply.url === "string" ? reply.url.slice(0, 4_000) : undefined,

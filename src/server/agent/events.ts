@@ -330,6 +330,8 @@ export interface BrowserRequest {
   fullPage?: boolean;
   /** read_text only: character offset to continue a previous read from. */
   offset?: number;
+  /** read_text only: scroll through the page while reading, so lazy-loaded content is included. */
+  expand?: boolean;
 }
 
 /** One tab inside the consented group — the only tabs that exist to the agent. */

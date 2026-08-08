@@ -76,6 +76,8 @@ export interface BridgeOperation {
   option?: string | null;
   fullPage?: boolean | null;
   offset?: number | null;
+  /** read_text: scroll through the page while reading, to load lazy content. */
+  expand?: boolean | null;
 }
 
 /** Where the effective allowlist comes from; `managed` cannot be edited here. */

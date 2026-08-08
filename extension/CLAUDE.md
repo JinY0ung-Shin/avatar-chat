@@ -33,9 +33,9 @@ Durable constraints for this layer:
   here. `CDP_ALLOWLIST` in `background.js` stays default-deny (no `Runtime.*`/`Network.*`/`Storage.*`).
 - **A browser op is a FIVE-layer hand-synced contract** (`agent/browserTools.ts` → `agent/events.ts` →
   `routes/chat.ts` relay → client `lib/browserBridge.ts` → `background.js perform()`); nothing type-checks
-  across the gap, so a field missed in the middle arrives `undefined`. `chat.ts` is the ONLY size bound on
-  extension-supplied strings — `browserTools.report()` applies none — so any new relayed field must be
-  `.slice()`d there.
+  across the gap, so a field missed in the middle arrives `undefined`. `chat.ts` is the PRIMARY size bound on
+  extension-supplied strings — `browserTools.report()` adds only a defensive snapshot cap for old
+  builds — so any new relayed field must be `.slice()`d there.
 - **Language split applies INSIDE this folder.** `background.js`/`axtree.js` strings are ENGLISH on purpose —
   they are model-facing input (refusal reasons, error text the agent reads). Everything a PERSON reads
   (`options.html`, `consent.html`, `action.default_title`, `README.md`) is KOREAN. `manifest.json`

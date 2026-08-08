@@ -7,9 +7,11 @@
    <html data-theme>; an extension page has no such JS contract, so dark rides
    prefers-color-scheme instead.
 
-   One stylesheet, two hosts: as the action POPUP the window shrinks to the
-   body, so the body width must be explicit or the popup balloons to Chrome's
-   800px cap; as the options TAB the same fixed column just centers. */
+   One stylesheet, two hosts: as the action POPUP the window is a browser-drawn
+   sharp-cornered bubble, so the sheet fills it edge-to-edge (a rounded card
+   floating inside that square frame reads as a mistake) and the body width must
+   be explicit or the popup balloons to Chrome's 800px cap; as the options TAB
+   the page owns a wide canvas, so the same sheet floats as a rounded card. */
 
 :root {
   color-scheme: light dark;
@@ -88,11 +90,12 @@
   box-sizing: border-box;
 }
 
-/* The action-popup WINDOW is a browser-drawn rectangle we cannot reshape, so
-   the page fakes it: everything lives on a rounded floating sheet, and the
-   margin around it shows the renderer's default canvas (html stays unpainted
-   in the popup) — the same color the bubble frame has, so the corners READ
-   rounded whether or not the browser rounds the actual window. */
+/* Both hosts paint the app ground under everything, so no default-canvas
+   flash or stray margin color ever shows around the sheet. */
+html {
+  background: var(--bg);
+}
+
 body {
   width: 26rem;
   max-width: 100vw;
@@ -105,33 +108,31 @@ body {
   letter-spacing: 0;
 }
 
-/* The sheet carries the app's grouped background and its quiet environmental
-   accent glow; overflow clips the glow to the rounded corners. */
+/* In the popup the window frame IS the sheet's edge: no margin, no radius, no
+   fake border — the browser draws the bubble's corners and the app's grouped
+   background (with its quiet accent glow) meets them exactly. */
 main {
-  margin: 10px;
-  padding: 14px 14px 12px;
+  margin: 0;
+  padding: 16px 16px 12px;
   display: flex;
   flex-direction: column;
   gap: 12px;
   background:
     radial-gradient(circle at 78% -10%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 42%),
     var(--bg);
-  border: 1px solid var(--line-soft);
-  border-radius: 16px;
-  box-shadow: var(--shadow-sm);
   overflow: hidden;
 }
 
 /* Opened as a full options TAB the viewport is wider than the popup ever is —
-   there the page owns the whole canvas: a flat app ground with the same glowing
-   sheet floating on it, given some air instead of hugging the top edge. */
+   there the page owns the whole canvas, so the same glowing sheet becomes a
+   rounded floating card with air around it instead of hugging the frame. */
 @media (min-width: 40rem) {
-  html {
-    background: var(--bg);
-  }
-
   main {
     margin: 48px 10px 24px;
+    padding: 14px 14px 12px;
+    border: 1px solid var(--line-soft);
+    border-radius: 16px;
+    box-shadow: var(--shadow-sm);
   }
 }
 
@@ -352,6 +353,22 @@ button:disabled {
 
 .disabled {
   opacity: 0.75;
+}
+
+/* ------------------------------------------------------------- meta */
+
+/* Quiet provenance line: which bridge build, hosted by which browser. The
+   extension fetches nothing by design, so these two local facts are the only
+   version truths this page can state. */
+.meta {
+  margin: 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
 }
 
 @media (prefers-reduced-motion: reduce) {

@@ -13,6 +13,7 @@ const editor = document.getElementById("editor");
 const textarea = document.getElementById("origins");
 const saveButton = document.getElementById("save");
 const status = document.getElementById("status");
+const versionLine = document.getElementById("version");
 
 function parseLines(raw) {
   const seen = new Set();
@@ -70,4 +71,28 @@ saveButton.addEventListener("click", async () => {
   }, 4000);
 });
 
+// The extension fetches nothing by design, so the footer states the two LOCAL
+// facts that matter when debugging "why doesn't the bridge work here": which
+// bridge build this is, and which browser build is hosting it. Brand names
+// come from userAgentData (always present on the Chromium ≥116 this manifest
+// requires); specific brands are preferred over the generic "Chromium" entry.
+function renderVersion() {
+  const parts = [`브릿지 v${chrome.runtime.getManifest().version}`];
+  const brands = navigator.userAgentData?.brands ?? [];
+  for (const [brand, label] of [
+    ["Microsoft Edge", "Edge"],
+    ["Whale", "Whale"],
+    ["Google Chrome", "Chrome"],
+    ["Chromium", "Chromium"],
+  ]) {
+    const hit = brands.find((entry) => entry.brand === brand);
+    if (hit?.version) {
+      parts.push(`${label} ${hit.version}`);
+      break;
+    }
+  }
+  versionLine.textContent = parts.join(" · ");
+}
+
+renderVersion();
 void init();

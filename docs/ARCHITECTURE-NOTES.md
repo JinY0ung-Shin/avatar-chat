@@ -854,7 +854,19 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   rendered option, or walks a collapsed native `<select>` with arrow keys and then RE-READS the landed
   value (the keyboard path silently no-ops on some platforms — macOS opens the native popup instead).
   `read_text` reuses the same `extension/axtree.js` walker as snapshot (`renderAxText` vs
-  `renderAxTree`), is offset-chunked, and mints no uids so it never invalidates a snapshot.
+  `renderAxTree`), is offset-chunked, and mints no uids so it never invalidates a snapshot. With
+  `expand: true` it scrolls the page in viewport steps and MERGES the captures
+  (`mergeTextLines` — virtualized feeds DELETE what scrolls out, so one read at the bottom would
+  hold only the tail); expand is page-level by definition and refused together with `uid`.
+- **Snapshots are budgeted uid-first.** `capSnapshot` (extension side, `axtree.js`) fits every
+  snapshot into a fixed character budget by keeping `[uid]` lines before prose — cut TEXT is
+  recoverable via offset-chunked `read_text`, a cut uid is unreachable — and says what it dropped;
+  `browserTools.report()` keeps a coarser defensive cap for old installed builds. Related renderer
+  choices: links print their AX `url` property (`→ https://…`, so results can be compared without a
+  click-and-load per candidate), NAMED table/tree rows and focusable non-opaque nodes mint uids
+  (`NAMED_CLICKABLE_ROLES` — draw.io-style `<tr>` menus were visible but unclickable), and input ops
+  focus via `focusForInput`, which falls back to a real centre click when `DOM.focus` refuses
+  (ProseMirror bodies, canvases).
 - **The signing key IS the extension's identity.** It lives off-repo on the release machine only;
   manifest `key` is its public half and Chrome derives the id from it. Change the key and the id
   changes — `extension/manifest.json`, the `browserBridge.ts` default id, `extension/README.md`, and any

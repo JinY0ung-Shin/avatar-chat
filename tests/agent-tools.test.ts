@@ -3752,6 +3752,22 @@ describe("browser bridge tools", () => {
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain("did not respond");
   });
+
+  it("caps an oversized snapshot from an old extension build instead of failing the turn", async () => {
+    // Current builds cap uid-first in the extension; this guard is for old
+    // installs, where an uncapped long page failed the WHOLE tool result.
+    const huge = Array.from(
+      { length: 4000 },
+      (_, i) => `StaticText "줄 ${i} ${"x".repeat(20)}"`,
+    ).join("\n");
+    const tools = buildBrowserTools({ execute: ok(huge), allowed: true });
+    const res = await callTool(tools, "snapshot", {});
+    const out = res.content[0].text ?? "";
+    expect(res.isError).toBeFalsy();
+    expect(out.length).toBeLessThan(70_000);
+    expect(out).toContain("snapshot truncated at 60000 characters");
+    expect(out).toContain("mcp__browser__read_text");
+  });
 });
 
 describe("browser bridge interaction ops", () => {
@@ -3975,6 +3991,19 @@ describe("browser bridge reading, forms, and screenshots", () => {
     expect(execute).toHaveBeenLastCalledWith({ op: "read_text", uid: "e9", offset: 49997 });
     expect(res.content[0].text).toContain("characters 49997–50000 of 50000");
     expect(res.content[0].text).not.toContain("offset=50000");
+  });
+
+  it("passes read_text expand through, and refuses uid+expand before reaching the bridge", async () => {
+    const execute = ok({ pageText: { text: "본문", offset: 0, total: 4 } });
+    const tools = buildBrowserTools({ execute, allowed: true });
+    await callTool(tools, "read_text", { expand: true });
+    expect(execute).toHaveBeenLastCalledWith({ op: "read_text", expand: true });
+    // expand scrolls the page relative to the viewport — it cannot honestly
+    // apply to one element's subtree, so the combination is refused up front.
+    const both = await callTool(tools, "read_text", { uid: "e9", expand: true });
+    expect(both.isError).toBe(true);
+    expect(both.content[0].text).toContain("not both");
+    expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it("refuses screenshot without vision, before reaching the bridge", async () => {
