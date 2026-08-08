@@ -1591,6 +1591,8 @@ function handleBrowserOp(paneId: string, data: any): void {
     uid: data.uid,
     x: data.x,
     y: data.y,
+    xFraction: data.xFraction,
+    yFraction: data.yFraction,
     text: data.text,
     submit: Boolean(data.submit),
     keystrokes: Boolean(data.keystrokes),

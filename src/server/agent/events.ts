@@ -291,11 +291,19 @@ export interface BrowserRequest {
     | "close_tab";
   /** navigate/new_tab: absolute http(s) URL. */
   url?: string;
-  /** click/type/hover (and optionally press_key/scroll): element uid minted by the previous snapshot. */
+  /** click/type/hover (and optionally press_key/scroll/click_at): element uid minted by a previous snapshot. */
   uid?: string;
-  /** click_at only: pixel coordinates measured on the most recent viewport screenshot image. */
+  /** click_at PIXEL mode: coordinates measured on the most recent viewport screenshot image. */
   x?: number;
+  /** click_at PIXEL mode: coordinates measured on the most recent viewport screenshot image. */
   y?: number;
+  /**
+   * click_at UID mode: where inside `uid`'s box to click, as a 0–1 fraction of
+   * its width/height (0.5 = centre). Needs no screenshot, so it is the only
+   * coordinate click available to a model that cannot receive images.
+   */
+  xFraction?: number;
+  yFraction?: number;
   /** type: the literal text to enter. wait_for: text that must appear. */
   text?: string;
   /** type only: press Enter afterwards. */
@@ -347,6 +355,14 @@ export type BrowserResult =
       behavior: "ok";
       /** Serialized accessibility tree — UNTRUSTED page content. */
       snapshot?: string;
+      /**
+       * The ACTION succeeded but the fresh snapshot could not be rendered, and
+       * this is why. Bridge-authored (not page content), so it is reported
+       * outside the untrusted wrapper — and it exists so a failed read-back
+       * never reads as a failed action, which had the agent retrying an
+       * action that had already happened.
+       */
+      snapshotError?: string;
       url?: string;
       title?: string;
       tabs?: BrowserTab[];

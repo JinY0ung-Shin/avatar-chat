@@ -17,6 +17,8 @@ export interface BridgeReply {
   ok: boolean;
   message?: string;
   snapshot?: string;
+  /** The action ran but the fresh snapshot could not be rendered — why. */
+  snapshotError?: string;
   url?: string;
   title?: string;
   tabs?: { tabId: string; title: string; url: string; current: boolean }[];
@@ -56,9 +58,12 @@ export interface BridgeOperation {
     | "close_tab";
   url?: string | null;
   uid?: string | null;
-  /** click_at: pixel coordinates on the most recent viewport screenshot. */
+  /** click_at pixel mode: coordinates on the most recent viewport screenshot. */
   x?: number | null;
   y?: number | null;
+  /** click_at uid mode: 0–1 position inside the uid's box (0.5 = centre). */
+  xFraction?: number | null;
+  yFraction?: number | null;
   text?: string | null;
   submit?: boolean;
   keystrokes?: boolean;

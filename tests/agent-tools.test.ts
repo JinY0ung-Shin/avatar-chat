@@ -3834,7 +3834,7 @@ describe("browser bridge interaction ops", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("refuses click_at without vision, before reaching the bridge", async () => {
+  it("refuses click_at's PIXEL mode without vision, before reaching the bridge", async () => {
     // Coordinates come from a screenshot; a text-only model has no source for
     // them, so the tool must redirect to uid clicks instead of clicking blind.
     const execute = ok();
@@ -3842,6 +3842,60 @@ describe("browser bridge interaction ops", () => {
     const res = await callTool(tools, "click_at", { x: 10, y: 20 });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain("cannot receive images");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("allows click_at's UID mode WITHOUT vision — it needs no screenshot", async () => {
+    // The uid-relative mode measures off the element itself, so it is the only
+    // way into a canvas or map surface on a text-only model. Gating it on
+    // vision left those pages with no escape hatch at all.
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "click_at", { uid: "e7", xFraction: 0.25, yFraction: 0.75 });
+    expect(res.isError).toBeFalsy();
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "click_at",
+      uid: "e7",
+      xFraction: 0.25,
+      yFraction: 0.75,
+    });
+    expect(res.content[0].text).toContain("Clicked e7 at (0.25, 0.75) of its box.");
+  });
+
+  it("defaults click_at's uid mode to the element's centre", async () => {
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    await callTool(tools, "click_at", { uid: "e7" });
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "click_at",
+      uid: "e7",
+      xFraction: 0.5,
+      yFraction: 0.5,
+    });
+  });
+
+  it("does not warn about a missing landed-on element in uid mode", async () => {
+    // Inside an embedded frame there is deliberately no hit-test, so absence
+    // is expected there — the standing instruction is to check the snapshot.
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "click_at", { uid: "e7" });
+    const out = res.content[0].text ?? "";
+    expect(out).not.toContain("could NOT be identified");
+    expect(out).toContain("confirm the effect you intended in the snapshot");
+  });
+
+  it("rejects a click_at that gives neither a uid nor both coordinates", async () => {
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    for (const args of [{}, { x: 5 }, { yFraction: 0.5 }]) {
+      const res = await callTool(tools, "click_at", args);
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("click_at needs either");
+    }
+    const mixed = await callTool(tools, "click_at", { uid: "e7", x: 5, y: 6 });
+    expect(mixed.isError).toBe(true);
+    expect(mixed.content[0].text).toContain("not both");
     expect(execute).not.toHaveBeenCalled();
   });
 
@@ -3884,6 +3938,23 @@ describe("browser bridge interaction ops", () => {
     const out = res.content[0].text ?? "";
     expect(out).not.toContain("could NOT be identified");
     expect(out).toContain('"confirm" dialog is OPEN');
+  });
+
+  it("reports a failed post-action snapshot as a done action, not a failed one", async () => {
+    // The navigation HAPPENED; only the read-back broke. Reported as a failure
+    // the agent retried and navigated twice, so the note has to say the action
+    // ran and name a read tool as the way to check, never the same action.
+    const execute = ok({ snapshot: "", snapshotError: "nodes.map is not a function" });
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "navigate", { url: "https://intra.example/x" });
+    expect(res.isError).toBeFalsy();
+    const out = res.content[0].text ?? "";
+    expect(out).toContain("The action itself was performed");
+    expect(out).toContain("nodes.map is not a function");
+    expect(out).toContain("instead of retrying the action");
+    // Bridge-authored, so it must NOT be quarantined as page content — there
+    // is no page content in this result at all.
+    expect(out).not.toContain("<page_content>");
   });
 
   it("rejects a wait_for with no condition before reaching the bridge", async () => {

@@ -896,9 +896,13 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   temptation is to call it healthy, but that hides an available update. It renders `--info` blue with
   its own "· 업데이트 있음" text and IS clickable into 설정 → 접근/보안; only `current` is an inert span.
   `tests/svelte-chat-bridge-badge.test.ts` pins all of that.
-- **`screenshot` AND `click_at` are gated on the RUN's resolved vision policy** (`runVisionEnabled` →
-  `BrowserToolsContext.vision`, defaulting to `false` so an unwired caller gets a polite refusal rather
-  than an API error; click_at's coordinates have no source without a screenshot). `routes/chat.ts` caps
+- **`screenshot` is gated on the RUN's resolved vision policy, and with it click_at's PIXEL mode only**
+  (`runVisionEnabled` → `BrowserToolsContext.vision`, defaulting to `false` so an unwired caller gets a
+  polite refusal rather than an API error; pixel coordinates have no source without a screenshot).
+  click_at's UID mode is measured off the element and stays available on a text-only model — gating the
+  whole tool left canvas/map surfaces with no escape hatch at all on such a deployment. Both
+  metacognition surfaces branch accordingly: click_at is listed unconditionally, and the vision-off
+  branch says pixel mode is out while uid mode still works. `routes/chat.ts` caps
   the relayed base64 and whitelists the mime type — the extension is semi-trusted and that string lands
   in an API image block. The caption restates that the pixels are untrusted page content.
 - **Every screenshot is AUTO-SHARED to the user** as the same card+slides pair share_file produces:
@@ -914,7 +918,17 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (`MAX_SHARED_SCREENSHOTS_PER_MESSAGE`) so a browsing loop can't exhaust the share_file cap; past it
   (or on publish failure) the MODEL still gets the image — only the user-facing card is skipped, and the
   note says so. Best-effort BY DESIGN: publish failure never fails the tool call.
-- **`click_at` clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** Screenshots are
+- **`click_at` has TWO modes and they share nothing but a name.** UID mode (`uid` +
+  `xFraction`/`yFraction`, 0–1, default 0.5 centre) resolves the ref, takes `DOM.getContentQuads` on the
+  ref's OWN session, and clicks a fraction of the element's bounding box clamped 1px inside — no
+  screenshot, no `lastShot`, no drift check, and `landedOn` is filled in ONLY for a root-session ref
+  (a child frame's quads are frame-relative, so a root-session hit test would name the wrong element
+  with total confidence). Missing `landedOn` is therefore EXPECTED in uid mode and must not warn; the
+  tool text tells the model to confirm the effect in the returned snapshot instead. The mode is chosen
+  in `background.js` by `typeof message.uid === "string" && message.uid`, and `browserTools` rejects
+  both-or-neither before the wire. `clampFraction` refuses `Number(null) === 0` explicitly — the relay
+  sends `null` for an omitted field, which would otherwise click the left edge instead of the centre.
+- **PIXEL mode clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** Screenshots are
   downscaled (`SCREENSHOT_MAX_WIDTH` 1400), so the pixels the model sees ≠ CSS px. The extension
   remembers the LAST capture's mapping (`lastShot`: tabId/mode/scale/clip dims) and inverts the scale at
   click time — viewport captures only; element/fullPage clips are page-absolute and refused with a
@@ -922,11 +936,40 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   the screenshot that produced them — enforced at CLICK time, not mint time: the branch re-reads
   `Page.getLayoutMetrics` and refuses on URL/scroll/viewport-size drift (a stale image size would even
   pass the bounds check). Before dispatching, the point is hit-tested read-only
-  (`DOM.getNodeForLocation` + `describeNode` — the only CDP-allowlist additions, geometry
-  cross-checked via `getContentQuads` so a wrong-space hit degrades to silence, never a lie) and the
+  (`DOM.getNodeForLocation` + `describeNode`, geometry cross-checked via `getContentQuads` so a
+  wrong-space hit degrades to silence, never a lie) and the
   landed-on element rides back (`landedOn`, quarantined as page content, capped in the relay). An
   UNIDENTIFIED landing is stated as a warning in the tool result ("could NOT be identified") — absence
   must never read as success, since the landed-on report is the one thing keeping a blind click honest.
+- **A uid is STABLE for the life of the worker, not for one snapshot.** `refMap` (uid → ref) plus the
+  reverse `uidByNode` (`${tabId}:${sessionId||"root"}:${backendNodeId}` → uid) are never reset per
+  snapshot: `mintUid` returns the uid an element already has, so re-snapshotting a page that re-orders
+  itself (a rolling newsstand) no longer repoints "e42" at a stranger — a re-rendered element is simply
+  a NEW element with a new uid, and a dead one fails loudly. Bound by `REF_MAP_MAX` (30k, both maps
+  cleared at the start of a snapshot past it) and swept per tab on `close_tab` and `chrome.tabs.onRemoved`.
+  `refSeq` deliberately keeps counting across an eviction — reusing numbers would reintroduce exactly
+  the wrong-element bug. A uid that RESOLVES but whose node is gone gets a written recovery instruction,
+  not raw CDP text: `nodeCall(ref, …)` maps `/no node|not found|could not find node/i` and wraps
+  `centerOf`/`quadsOf`, `focusForInput`, captureShot's uid branch and selectOption's `describeNode`.
+  `resolveRef`'s unknown-uid message is unchanged.
+- **The common action tail settles, and it never reports a done action as failed.** `SETTLE_OPS`
+  (INPUT_OPS + navigate/navigate_back/new_tab/handle_dialog) wait `ACTION_SETTLE_MS` (350) before the
+  tail re-reads the tab: a page's answer to input is async, so the old immediate snapshot showed the
+  state BEFORE the autocomplete/menu/validation appeared and the agent read the action as a no-op
+  (`wait_for` keeps its own loop and does not settle). If the tail snapshot then THROWS, the reply is
+  still `ok:true` with `snapshot: ""` plus `snapshotError` — the action already happened, and failing
+  the whole op made the agent retry and navigate twice. `snapshotError` is a full five-layer field
+  (`browserTools.report` appends it OUTSIDE the untrusted wrapper, since it is bridge-authored, and
+  names read_text/snapshot as the check instead of the action).
+- **`getFullAXTree` covers only the MAIN frame, so frames are walked THREE ways.** `axSources(tab)`
+  returns the root session, then one source per non-main frame id from `Page.getFrameTree` (the only
+  addition to `CDP_ALLOWLIST` here — read-only structure, ids only), then one per OOPIF child session.
+  Without the middle kind a SAME-process iframe rendered as an empty `Iframe "name"` line with all its
+  content missing. Root-session frame ids for OOPIFs fail there and are absorbed by the per-source
+  try/continue, since that content arrives via the child session. Frame uids ride the session that
+  fetched them (backendNodeIds are unique per target), so click/type are unchanged. `read_text`'s
+  uid-scoped path stays session-scoped but falls through that session's frame trees when
+  `renderAxText` returns null, before raising the stale-uid error.
 - **Audit policy: actions PLUS deliberate reads.** `screenshot`/`read_text` get rows (they are the
   exfiltration surface); `snapshot`/`wait_for` never do — they fire between every step and would bury
   the rows that matter. URLs are scrubbed of userinfo and query string.
@@ -948,6 +991,19 @@ Keep the re-export set in `claudeAgent.ts` minimal to the original public surfac
   (`NAMED_CLICKABLE_ROLES` — draw.io-style `<tr>` menus were visible but unclickable), and input ops
   focus via `focusForInput`, which falls back to a real centre click when `DOM.focus` refuses
   (ProseMirror bodies, canvases).
+- **Four `axtree.js` rules exist because each one silently DELETED or DROWNED real page content.**
+  (1) `AXValue.value` is not always a string — a slider/spinbutton reports a number and `.trim()` threw,
+  failing all three read tools on the whole page; both name and value are `String(… ?? "")`, with `??`
+  not `||` so a numeric 0 prints as "0". (2) Echo suppression matches on TOKEN boundaries
+  (`containsAsToken`), not `String.includes`: a substring hit let an ancestor label like
+  "달력 2026.08.08" swallow every calendar cell named "2"/"8"/"20"/"26". (3) `walkAxNodes` passes each
+  emission its nearest emitting ancestor as `container`, which is what lets both renderers rejoin a
+  paragraph that per-word `<span>`s split into a word per line, and lets `renderAxText` keep a table's
+  row on one ` | `-separated line (`CELL_ROLES` inside `ROW_ROLES`) instead of a vertical list of cells.
+  (4) `renderAxTree` folds links sharing a FULL href onto one line at the first occurrence's position,
+  upgrading it in place when a later duplicate carries a longer name — one SERP result arrives as four
+  to six links to the same destination. `linkHref` returns the URL untruncated because it is the dedupe
+  identity; `printableUrl` applies `LINK_URL_MAX`.
 - **The signing key IS the extension's identity.** It lives off-repo on the release machine only;
   manifest `key` is its public half and Chrome derives the id from it. Change the key and the id
   changes — `extension/manifest.json`, the `browserBridge.ts` default id, `extension/README.md`, and any

@@ -30,8 +30,10 @@ const CDP_VERSION = "1.3";
  * cookies), no `Storage.*`, no `Browser.*`. The read-only additions stay
  * inside that line: `DOM.describeNode` reads structure, `Page.captureScreenshot`
  * reads pixels — the same exfiltration class as a snapshot, gated by the same
- * origin allowlist — and `DOM.getNodeForLocation` hit-tests a point so a
- * coordinate click can report what it landed on instead of assuming success.
+ * origin allowlist — `DOM.getNodeForLocation` hit-tests a point so a
+ * coordinate click can report what it landed on instead of assuming success,
+ * and `Page.getFrameTree` reads the frame STRUCTURE (ids only, no content) so
+ * same-process iframes can be walked at all.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
@@ -49,6 +51,7 @@ const CDP_ALLOWLIST = new Set([
   "Input.insertText",
   "Page.captureScreenshot",
   "Page.enable",
+  "Page.getFrameTree",
   "Page.getLayoutMetrics",
   "Page.getNavigationHistory",
   "Page.handleJavaScriptDialog",
@@ -111,9 +114,51 @@ chrome.storage.onChanged.addListener(() => {
 /** tabId -> { rootSession: true, children: Set<sessionId> } */
 const attached = new Map();
 
-/** uid -> { tabId, sessionId, backendNodeId } from the most recent snapshot. */
-let refMap = new Map();
+/**
+ * uid -> { tabId, sessionId, backendNodeId }, and its reverse index. STABLE
+ * ACROSS SNAPSHOTS by design: these used to reset on every buildSnapshot, so
+ * "e42" silently addressed a DIFFERENT element after any re-snapshot — on a
+ * page that re-orders itself (a rolling newsstand) the agent clicked a
+ * stranger and had no way to notice. Now an element keeps its uid for as long
+ * as it stays in the page, a re-rendered element gets a fresh one, and a dead
+ * uid fails loudly instead of resolving to whatever took its place.
+ */
+const refMap = new Map();
+const uidByNode = new Map();
 let refSeq = 0;
+
+/**
+ * Ceiling on remembered uids. A long-lived worker crawling many pages would
+ * otherwise grow both maps without bound; past this, everything is forgotten
+ * at the start of a snapshot and agents recover through the ordinary
+ * unknown-uid error. `refSeq` deliberately keeps counting — reusing numbers
+ * would reintroduce exactly the wrong-element bug this map exists to prevent.
+ */
+const REF_MAP_MAX = 30000;
+
+function nodeKey(tabId, sessionId, backendNodeId) {
+  return `${tabId}:${sessionId || "root"}:${backendNodeId}`;
+}
+
+/** The uid for a node, minting one only the first time it is seen. */
+function mintUid(tabId, sessionId, backendNodeId) {
+  const key = nodeKey(tabId, sessionId, backendNodeId);
+  const known = uidByNode.get(key);
+  if (known) return known;
+  const uid = `e${++refSeq}`;
+  refMap.set(uid, { tabId, sessionId, backendNodeId });
+  uidByNode.set(key, uid);
+  return uid;
+}
+
+/** Forget one tab's elements: nothing there is addressable once it is gone. */
+function forgetTabRefs(tabId) {
+  for (const [uid, ref] of refMap) {
+    if (ref.tabId !== tabId) continue;
+    refMap.delete(uid);
+    uidByNode.delete(nodeKey(ref.tabId, ref.sessionId, ref.backendNodeId));
+  }
+}
 
 /**
  * Pixel→CSS mapping of the most recent screenshot, so `click_at` can invert
@@ -207,6 +252,7 @@ chrome.debugger.onDetach.addListener((source) => {
 chrome.tabs.onRemoved.addListener((tabId) => {
   attached.delete(tabId);
   pendingDialogs.delete(tabId);
+  forgetTabRefs(tabId);
 });
 
 // ------------------------------------------------------------------- dialogs
@@ -475,28 +521,77 @@ chrome.windows.onRemoved.addListener((windowId) => {
 
 // ------------------------------------------------------------------ snapshot
 
+/** Ids of a target's NON-main frames — the same-process iframes, recursively. */
+async function childFrameIds(target) {
+  try {
+    const { frameTree } = await sendCdp(target, "Page.getFrameTree", {});
+    const ids = [];
+    const walk = (entry) => {
+      for (const child of entry?.childFrames || []) {
+        if (child.frame?.id) ids.push(child.frame.id);
+        walk(child);
+      }
+    };
+    walk(frameTree);
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Every accessibility tree that makes up one tab's page, as
+ * `{ target, frameId? }` sources.
+ *
+ * Three kinds, and the middle one is easy to miss: `getFullAXTree` without a
+ * frameId covers only the target's MAIN frame, so a SAME-process iframe
+ * (a same-site widget box) rendered as an empty `Iframe "name"` line with all
+ * of its content missing. Asking per frame id fills that in. Out-of-process
+ * frames have their own sessions instead — their ids fail on the root session,
+ * which the caller's try/continue absorbs.
+ */
+async function axSources(tab) {
+  const entry = attached.get(tab.id);
+  return [
+    { target: { tabId: tab.id } },
+    ...(await childFrameIds({ tabId: tab.id })).map((frameId) => ({
+      target: { tabId: tab.id },
+      frameId,
+    })),
+    ...[...(entry?.children || [])].map((sessionId) => ({
+      target: { tabId: tab.id, sessionId },
+    })),
+  ];
+}
+
+/** One source's AX nodes, or null when that frame/session is not readable. */
+async function sourceAxNodes(source) {
+  try {
+    const { nodes } = await sendCdp(source.target, "Accessibility.getFullAXTree", {
+      ...(source.frameId ? { frameId: source.frameId } : {}),
+    });
+    return nodes || [];
+  } catch {
+    return null; // A frame can vanish mid-walk; the rest of the page still renders.
+  }
+}
+
 /** Walk every attached session and merge the accessibility trees into one view. */
 async function buildSnapshot(tab) {
-  const entry = attached.get(tab.id);
-  const sessions = [{ tabId: tab.id }, ...[...(entry?.children || [])].map((sessionId) => ({ tabId: tab.id, sessionId }))];
-
-  refMap = new Map();
-  refSeq = 0;
+  if (refMap.size > REF_MAP_MAX) {
+    refMap.clear();
+    uidByNode.clear();
+  }
   const lines = [];
-
-  for (const session of sessions) {
-    let nodes;
-    try {
-      ({ nodes } = await sendCdp(session, "Accessibility.getFullAXTree", {}));
-    } catch {
-      continue; // A frame can vanish mid-walk; the rest of the page still renders.
-    }
+  for (const source of await axSources(tab)) {
+    const nodes = await sourceAxNodes(source);
+    if (!nodes) continue;
+    // Frame nodes ride the session that fetched them; backendNodeIds are
+    // unique per target, so click/type resolve unchanged.
     lines.push(
-      ...renderAxTree(nodes || [], (backendNodeId) => {
-        const uid = `e${++refSeq}`;
-        refMap.set(uid, { tabId: tab.id, sessionId: session.sessionId, backendNodeId });
-        return uid;
-      }),
+      ...renderAxTree(nodes, (backendNodeId) =>
+        mintUid(source.target.tabId, source.target.sessionId, backendNodeId),
+      ),
     );
   }
   return lines.join("\n");
@@ -508,20 +603,49 @@ function resolveRef(uid) {
   const ref = refMap.get(uid);
   if (!ref) {
     throw new Error(
-      `Unknown element uid "${uid}". Take a fresh mcp__browser__snapshot — uids are only valid for the snapshot that produced them.`,
+      `Unknown element uid "${uid}". No current snapshot has minted it (or the extension restarted and forgot it) — take a fresh mcp__browser__snapshot and use a uid it prints.`,
     );
   }
   return ref;
 }
 
+/** CDP's way of saying the backendNodeId no longer resolves to anything. */
+const DEAD_NODE_MESSAGE = /no node|not found|could not find node/i;
+
+/**
+ * Run a CDP call against a resolved ref, translating "the node is gone" into
+ * an instruction. A uid that RESOLVED but whose element left the page is the
+ * common case on a re-rendering site, and raw CDP text ("No node with given
+ * id") tells an agent neither what happened nor what to do next.
+ */
+async function nodeCall(ref, work) {
+  try {
+    return await work();
+  } catch (error) {
+    const message = String(error?.message || error);
+    if (!DEAD_NODE_MESSAGE.test(message)) throw error;
+    const uid = uidByNode.get(nodeKey(ref.tabId, ref.sessionId, ref.backendNodeId));
+    throw new Error(
+      `The element behind ${uid ? `uid "${uid}"` : "that uid"} is no longer in the page ` +
+        "(it re-rendered or was removed). Take a fresh mcp__browser__snapshot and use a current uid.",
+    );
+  }
+}
+
+/** Every content quad of an element, on its OWN session, scrolled into view. */
+async function quadsOf(ref) {
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  const { quads } = await nodeCall(ref, async () => {
+    await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+    return sendCdp(target, "DOM.getContentQuads", { backendNodeId: ref.backendNodeId });
+  });
+  return { target, quads: quads || [] };
+}
+
 /** Centre point of an element, via quads on the element's OWN session. */
 async function centerOf(ref) {
-  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
-  await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
-  const { quads } = await sendCdp(target, "DOM.getContentQuads", {
-    backendNodeId: ref.backendNodeId,
-  });
-  if (!quads || !quads.length) {
+  const { target, quads } = await quadsOf(ref);
+  if (!quads.length) {
     throw new Error("The element is not visible on screen, so it cannot be clicked.");
   }
   const [x1, y1, x2, , x3, y3] = quads[0];
@@ -544,6 +668,17 @@ const INPUT_OPS = new Set(["click", "click_at", "type", "fill_form", "select_opt
  * the same show-the-tab path as the input ops.
  */
 const VISIBLE_OPS = new Set([...INPUT_OPS, "screenshot"]);
+
+/**
+ * Ops that CHANGE the page, so the snapshot they return has to wait for the
+ * change to land. A page's response to input is ASYNC — an autocomplete layer,
+ * a menu, a validation message all arrive at least a frame after the event is
+ * acknowledged — and a snapshot taken the instant the op returned showed the
+ * page as it was BEFORE, so the agent concluded nothing had happened and
+ * repeated the action. Read-only ops need no settle; wait_for owns its own loop.
+ */
+const SETTLE_OPS = new Set([...INPUT_OPS, "navigate", "navigate_back", "new_tab", "handle_dialog"]);
+const ACTION_SETTLE_MS = 350;
 
 /** Make the tab actually visible, so dispatched input reaches its renderer. */
 async function showTab(tab) {
@@ -588,6 +723,17 @@ async function clickNode(ref) {
 
 async function clickRef(uid) {
   return clickNode(resolveRef(uid));
+}
+
+/**
+ * A 0–1 position inside an element's box for click_at's uid mode. Anything
+ * that is not a real number means the centre — `null` arrives on the wire
+ * whenever the caller omitted the field, and Number(null) is 0, which would
+ * quietly click the left edge instead.
+ */
+function clampFraction(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0.5;
+  return Math.min(Math.max(value, 0), 1);
 }
 
 /**
@@ -782,7 +928,9 @@ async function platformOs() {
  */
 async function focusForInput(ref) {
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
-  await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
+  await nodeCall(ref, () =>
+    sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId }),
+  );
   try {
     await sendCdp(target, "DOM.focus", { backendNodeId: ref.backendNodeId });
   } catch {
@@ -934,10 +1082,9 @@ function matchOptionLabel(options, wanted) {
 async function selectOption(uid, wanted) {
   const ref = resolveRef(uid);
   const target = { tabId: ref.tabId, sessionId: ref.sessionId };
-  const described = await sendCdp(target, "DOM.describeNode", {
-    backendNodeId: ref.backendNodeId,
-    depth: -1,
-  });
+  const described = await nodeCall(ref, () =>
+    sendCdp(target, "DOM.describeNode", { backendNodeId: ref.backendNodeId, depth: -1 }),
+  );
   const tagName = String(described?.node?.nodeName || "").toUpperCase();
   const domAttrs = described?.node?.attributes || [];
   let isMultiple = false;
@@ -1028,28 +1175,35 @@ const READ_TEXT_MAX = 20000;
  * the previous snapshot's refs stay valid.
  */
 async function buildPageText(tab, scope) {
-  const entry = attached.get(tab.id);
-  const sessions = scope
-    ? [{ tabId: scope.tabId, sessionId: scope.sessionId }]
-    : [
-        { tabId: tab.id },
-        ...[...(entry?.children || [])].map((sessionId) => ({ tabId: tab.id, sessionId })),
-      ];
+  // A uid-scoped read stays on the session that minted the uid, but the
+  // element may sit in a SAME-process child frame, whose nodes are absent from
+  // that session's main tree — so the frame trees are a fallback, not a miss.
+  const sources = scope
+    ? [
+        { target: { tabId: scope.tabId, sessionId: scope.sessionId } },
+        ...(
+          await childFrameIds({ tabId: scope.tabId, sessionId: scope.sessionId })
+        ).map((frameId) => ({
+          target: { tabId: scope.tabId, sessionId: scope.sessionId },
+          frameId,
+        })),
+      ]
+    : await axSources(tab);
   const parts = [];
-  for (const session of sessions) {
-    let nodes;
-    try {
-      ({ nodes } = await sendCdp(session, "Accessibility.getFullAXTree", {}));
-    } catch {
-      continue; // A frame can vanish mid-walk; the rest of the page still renders.
-    }
-    const lines = renderAxText(nodes || [], scope ? scope.backendNodeId : undefined);
-    if (lines === null) {
-      throw new Error(
-        "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot and retry read_text with a current uid.",
-      );
-    }
+  let scopeFound = false;
+  for (const source of sources) {
+    const nodes = await sourceAxNodes(source);
+    if (!nodes) continue;
+    const lines = renderAxText(nodes, scope ? scope.backendNodeId : undefined);
+    if (lines === null) continue; // the start node is not in THIS tree — try the next
+    scopeFound = true;
     if (lines.length) parts.push(lines.join("\n"));
+    if (scope) break; // a scoped subtree lives in exactly one tree
+  }
+  if (scope && !scopeFound) {
+    throw new Error(
+      "The element behind that uid is gone from the page. Take a fresh mcp__browser__snapshot and retry read_text with a current uid.",
+    );
   }
   return parts.join("\n");
 }
@@ -1125,12 +1279,8 @@ async function captureShot(tab, message) {
           "Take a screenshot without `uid` to capture the viewport instead.",
       );
     }
-    const target = { tabId: ref.tabId };
-    await sendCdp(target, "DOM.scrollIntoViewIfNeeded", { backendNodeId: ref.backendNodeId });
-    const { quads } = await sendCdp(target, "DOM.getContentQuads", {
-      backendNodeId: ref.backendNodeId,
-    });
-    if (!quads || !quads.length) {
+    const { quads } = await quadsOf(ref);
+    if (!quads.length) {
       throw new Error("The element is not visible on screen, so it cannot be captured.");
     }
     // Quads are viewport-relative; the capture clip is page-absolute.
@@ -1282,6 +1432,7 @@ async function perform(message) {
     const picked = await groupedTabById(message.tabId);
     await chrome.tabs.remove(picked.id);
     attached.delete(picked.id);
+    forgetTabRefs(picked.id);
     if (currentTabId === picked.id) currentTabId = null;
     const left = await groupedTabs();
     if (!left.length) {
@@ -1394,6 +1545,41 @@ async function perform(message) {
     const refused = await assertRefTabUsable(message.uid, patterns, source);
     if (refused) return refused;
     await raceDialogOpen(tab.id, clickRef(message.uid));
+    await waitForLoad(tab.id, 5000);
+  } else if (message.op === "click_at" && typeof message.uid === "string" && message.uid) {
+    // uid mode: a RELATIVE position inside a known element. No screenshot is
+    // involved, so this is the escape hatch that still works for a canvas or a
+    // map when the conversation's model cannot receive images at all.
+    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    if (refused) return refused;
+    const ref = resolveRef(message.uid);
+    const { target, quads } = await quadsOf(ref);
+    if (!quads.length) {
+      return { ok: false, message: "The element is not visible on screen, so it cannot be clicked." };
+    }
+    const xs = [];
+    const ys = [];
+    for (const quad of quads) {
+      for (let i = 0; i < quad.length; i += 2) {
+        xs.push(quad[i]);
+        ys.push(quad[i + 1]);
+      }
+    }
+    const minX = Math.min(...xs);
+    const minY = Math.min(...ys);
+    const width = Math.max(...xs) - minX;
+    const height = Math.max(...ys) - minY;
+    // Clamp a pixel inside the box, so fraction 0 or 1 still lands ON the
+    // element rather than on whatever owns its border.
+    const inside = (start, span, fraction) =>
+      Math.min(Math.max(start + fraction * span, start + 1), start + Math.max(span - 1, 0));
+    const px = inside(minX, width, clampFraction(message.xFraction));
+    const py = inside(minY, height, clampFraction(message.yFraction));
+    // describePoint hit-tests in ROOT-session coordinates. A child frame's
+    // quads are frame-relative, so asking there would name a different element
+    // with total confidence — no description beats a false one.
+    if (!ref.sessionId) landedOn = await describePoint(tab.id, px, py);
+    await raceDialogOpen(tab.id, clickPoint(target, px, py));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "click_at") {
     const x = message.x;
@@ -1618,6 +1804,13 @@ async function perform(message) {
     return { ok: false, message: `Unsupported operation "${message.op}".` };
   }
 
+  // Let an action's async effect land before reading the page back. Without
+  // this, typing a query returned a snapshot with no autocomplete layer in it
+  // and the next identical call showed one — the action looked like a no-op.
+  if (SETTLE_OPS.has(message.op)) {
+    await new Promise((resolve) => setTimeout(resolve, ACTION_SETTLE_MS));
+  }
+
   // Re-check where we actually LANDED before reading the page: a permitted URL
   // can redirect somewhere denied, and the snapshot is the exfiltration path
   // that matters (reading a logged-in page is the risk, not just acting on it).
@@ -1635,12 +1828,22 @@ async function perform(message) {
   // Cap the snapshot uid-first: an uncapped long page fails the whole model
   // turn, which made merely REACHING such a page count as an error. wait_for's
   // internal matching above deliberately uses the uncapped walk.
-  const snapshot = capSnapshot(await buildSnapshot(fresh));
+  let snapshot = "";
+  let snapshotError;
+  try {
+    snapshot = capSnapshot(await buildSnapshot(fresh));
+  } catch (error) {
+    // The ACTION already happened. Reporting the whole op as failed because
+    // the read-back broke made the agent retry it — navigating twice, clicking
+    // twice. Say the action ran and the view is missing, separately.
+    snapshotError = String(error?.message || error);
+  }
   // Always report the group's tabs: the agent needs to know a new tab appeared
   // (or that several are open) without spending a separate list_tabs round trip.
   return {
     ok: true,
     snapshot,
+    ...(snapshotError ? { snapshotError } : {}),
     url: fresh.url,
     title: fresh.title,
     tabs: (await groupedTabs()).map(describeTab),

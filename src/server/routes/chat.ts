@@ -1934,6 +1934,10 @@ export function createChatRouter({
                   uid: requestData.uid ?? null,
                   x: typeof requestData.x === "number" ? requestData.x : null,
                   y: typeof requestData.y === "number" ? requestData.y : null,
+                  xFraction:
+                    typeof requestData.xFraction === "number" ? requestData.xFraction : null,
+                  yFraction:
+                    typeof requestData.yFraction === "number" ? requestData.yFraction : null,
                   text: requestData.text ?? null,
                   submit: Boolean(requestData.submit),
                   keystrokes: Boolean(requestData.keystrokes),
@@ -1966,6 +1970,7 @@ export function createChatRouter({
                   ok?: boolean;
                   message?: string;
                   snapshot?: string;
+                  snapshotError?: string;
                   url?: string;
                   title?: string;
                   tabs?: BrowserTab[];
@@ -2006,6 +2011,12 @@ export function createChatRouter({
                       requestData.uid ? `uid=${requestData.uid}` : "",
                       typeof requestData.x === "number" && typeof requestData.y === "number"
                         ? `at=(${requestData.x},${requestData.y})`
+                        : "",
+                      // click_at's uid mode: the point is relative to the
+                      // element above, so the row needs both to be readable.
+                      typeof requestData.xFraction === "number" &&
+                      typeof requestData.yFraction === "number"
+                        ? `rel=(${requestData.xFraction},${requestData.yFraction})`
                         : "",
                       requestData.key
                         ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`
@@ -2082,6 +2093,12 @@ export function createChatRouter({
                   // smuggle an unbounded payload.
                   snapshot:
                     typeof reply.snapshot === "string" ? reply.snapshot.slice(0, 200_000) : undefined,
+                  // Why the post-action snapshot is missing. One line, not a
+                  // stack: it rides into the model turn like everything else.
+                  snapshotError:
+                    typeof reply.snapshotError === "string"
+                      ? reply.snapshotError.slice(0, 1_000)
+                      : undefined,
                   url: typeof reply.url === "string" ? reply.url.slice(0, 4_000) : undefined,
                   title: typeof reply.title === "string" ? reply.title.slice(0, 2_000) : undefined,
                   tabs: Array.isArray(reply.tabs)

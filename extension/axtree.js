@@ -89,13 +89,56 @@ const LINK_URL_MAX = 150;
  * trip. This is what lets an agent compare several search results or hand a
  * URL to read-only tools without paying a full click-and-load per candidate.
  * Same-document fragments and javascript: pseudo-links say nothing useful.
+ *
+ * Returned UNTRUNCATED: it doubles as the identity duplicate links are folded
+ * on, and two destinations differing only past the print cap are not the same
+ * link.
  */
-function linkUrl(node, role) {
+function linkHref(node, role) {
   if (role !== "link") return "";
   const url = String(axProp(node, "url") || "");
   if (!url || url.startsWith("javascript:") || url.startsWith("#")) return "";
+  return url;
+}
+
+/** The printed form of a destination: identifiable, never a dump. */
+function printableUrl(url) {
   return url.length > LINK_URL_MAX ? `${url.slice(0, LINK_URL_MAX)}…` : url;
 }
+
+/** A character that ENDS a token: whitespace, punctuation, or a symbol. */
+const TOKEN_BOUNDARY = /[\s\p{P}\p{S}]/u;
+
+/**
+ * True when `needle` appears in `hay` as a whole token — each end sitting at a
+ * string edge, whitespace, punctuation, or a symbol. A hit INSIDE a larger word
+ * or number does not count: plain `includes` let an ancestor label like
+ * "달력 2026.08.08" swallow every calendar cell named "2", "8", "20" or "26",
+ * silently deleting the page's day numbers from the output.
+ */
+function containsAsToken(hay, needle) {
+  if (!hay || !needle) return false;
+  const boundary = (ch) => !ch || TOKEN_BOUNDARY.test(ch);
+  let from = 0;
+  for (;;) {
+    const i = hay.indexOf(needle, from);
+    if (i < 0) return false;
+    if (boundary(hay[i - 1]) && boundary(hay[i + needle.length])) return true;
+    from = i + 1;
+  }
+}
+
+/** Cell roles whose row grouping the reading view restores. */
+const CELL_ROLES = new Set([
+  "cell",
+  "gridcell",
+  "columnheader",
+  "rowheader",
+  "LayoutTableCell",
+]);
+
+/** Row roles that own those cells. */
+const ROW_ROLES = new Set(["row", "LayoutTableRow"]);
 
 /**
  * The one AX walk both renderers share, so their notion of document order,
@@ -107,8 +150,11 @@ function linkUrl(node, role) {
  * ancestor's label already spells out. A link and the StaticText inside it are
  * one thing to a reader, and printing both doubled the size of every snapshot.
  *
- * `emit(node, role, name, value, covered)` fires once per printable candidate;
- * each renderer decides what (if anything) that node becomes. When
+ * `emit(node, role, name, value, covered, container)` fires once per printable
+ * candidate; each renderer decides what (if anything) that node becomes.
+ * `container` is the nearest ancestor that emitted (structural and ignored
+ * nodes are transparent), or null at a root — it is how a renderer tells one
+ * paragraph's worth of inline text apart from two unrelated blocks. When
  * `startBackendNodeId` is given, only that node's subtree is walked; returns
  * false when no node carries that id (a stale uid).
  */
@@ -116,34 +162,40 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
   const byId = new Map(nodes.map((node) => [node.nodeId, node]));
   const seen = new Set();
 
-  const visit = (node, covered) => {
+  const visit = (node, covered, container) => {
     if (!node || seen.has(node.nodeId)) return;
     seen.add(node.nodeId);
     const role = node.role?.value;
     const structural = !role || role === "none" || role === "generic" || role === "InlineTextBox";
     let inherited = covered;
+    let childContainer = container;
     if (!node.ignored && !structural) {
-      const name = (node.name?.value || "").trim();
-      const value = (node.value?.value || "").trim();
-      emit(node, role, name, value, covered);
+      // AXValue is not always a string — a slider or spinbutton reports a
+      // NUMBER, and calling .trim() on it threw, failing every read tool on
+      // any page carrying one. `?? ""` rather than `|| ""` so a numeric 0
+      // renders as "0" instead of vanishing.
+      const name = String(node.name?.value ?? "").trim();
+      const value = String(node.value?.value ?? "").trim();
+      emit(node, role, name, value, covered, container);
       if (name && !OPAQUE_NAME_ROLES.has(role)) inherited = name;
+      childContainer = node;
     }
-    for (const childId of node.childIds || []) visit(byId.get(childId), inherited);
+    for (const childId of node.childIds || []) visit(byId.get(childId), inherited, childContainer);
   };
 
   if (startBackendNodeId != null) {
     const start = nodes.find((node) => node.backendDOMNodeId === startBackendNodeId);
     if (!start) return false;
-    visit(start, "");
+    visit(start, "", null);
     return true;
   }
 
   const claimed = new Set();
   for (const node of nodes) for (const childId of node.childIds || []) claimed.add(childId);
-  for (const node of nodes) if (!claimed.has(node.nodeId)) visit(node, "");
+  for (const node of nodes) if (!claimed.has(node.nodeId)) visit(node, "", null);
   // Anything left is detached from every root (a mid-walk DOM change, a cycle).
   // Print it rather than silently losing page content.
-  for (const node of nodes) visit(node, "");
+  for (const node of nodes) visit(node, "", null);
   return true;
 }
 
@@ -157,7 +209,11 @@ function walkAxNodes(nodes, startBackendNodeId, emit) {
  */
 export function renderAxTree(nodes, mintUid) {
   const lines = [];
-  walkAxNodes(nodes, undefined, (node, role, name, value, covered) => {
+  /** Full href -> { index, name } of the one line kept for that destination. */
+  const byHref = new Map();
+  /** The inline-text run currently open: { container, index, text }. */
+  let run = null;
+  walkAxNodes(nodes, undefined, (node, role, name, value, covered, container) => {
     const interactive =
       INTERACTIVE_ROLES.has(role) ||
       // Clickable-in-practice surfaces: named table/tree rows and cells, plus
@@ -173,15 +229,42 @@ export function renderAxTree(nodes, mintUid) {
     const worthPrinting = Boolean(name || value || interactive);
     // An echo of an ancestor's label. Interactive nodes are exempt: their
     // line carries the uid, which nothing else can supply.
-    const echoed = !interactive && !value && Boolean(name) && covered.includes(name);
+    const echoed = !interactive && !value && Boolean(name) && containsAsToken(covered, name);
     if (!worthPrinting || echoed) return;
-    const uid = interactive && node.backendDOMNodeId != null ? mintUid(node.backendDOMNodeId) : null;
-    const url = linkUrl(node, role);
-    if (uid) {
-      lines.push(`[${uid}] ${role} "${name}"${value ? ` = "${value}"` : ""}${url ? ` → ${url}` : ""}`);
-    } else {
-      lines.push(`${role} "${name || value}"${url ? ` → ${url}` : ""}`);
+    const href = linkHref(node, role);
+    const format = () => {
+      const uid =
+        interactive && node.backendDOMNodeId != null ? mintUid(node.backendDOMNodeId) : null;
+      const url = href ? ` → ${printableUrl(href)}` : "";
+      return uid
+        ? `[${uid}] ${role} "${name}"${value ? ` = "${value}"` : ""}${url}`
+        : `${role} "${name || value}"${url}`;
+    };
+    // A single search result arrives as four to six links to the SAME
+    // destination (thumbnail, title, source, snippet), which buried the result
+    // list in repeats. Print the first position once; a later duplicate with a
+    // richer label upgrades THAT line in place rather than adding another.
+    const kept = href ? byHref.get(href) : undefined;
+    if (kept) {
+      if (name.length > kept.name.length) {
+        lines[kept.index] = format();
+        kept.name = name;
+      }
+      return;
     }
+    // Prose split into per-word <span>s emits one StaticText per word. Rejoin
+    // the run into the paragraph it was; a different container breaks it.
+    const inRun =
+      role === "StaticText" && !interactive && !href && !value && Boolean(name) && container != null;
+    if (inRun && run && run.container === container) {
+      run.text += ` ${name}`;
+      lines[run.index] = `StaticText "${run.text}"`;
+      return;
+    }
+    const line = format();
+    run = inRun ? { container, index: lines.length, text: name } : null;
+    if (href) byHref.set(href, { index: lines.length, name });
+    lines.push(line);
   });
   return lines;
 }
@@ -195,10 +278,37 @@ export function renderAxTree(nodes, mintUid) {
  */
 export function renderAxText(nodes, startBackendNodeId) {
   const lines = [];
-  const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered) => {
-    const echoed = !value && Boolean(name) && covered.includes(name);
+  /** What the last printed line was, so a run can extend it: {kind, container}. */
+  let last = null;
+  const found = walkAxNodes(nodes, startBackendNodeId, (node, role, name, value, covered, container) => {
+    const echoed = !value && Boolean(name) && containsAsToken(covered, name);
     if ((!name && !value) || echoed) return;
-    lines.push(name && value ? `${name}: ${value}` : name || value);
+    const printed = name && value ? `${name}: ${value}` : name || value;
+    // Inline prose: consecutive StaticText under ONE container is a single
+    // paragraph that a per-word <span> soup had split into a word per line.
+    if (
+      role === "StaticText" &&
+      container != null &&
+      last?.kind === "text" &&
+      last.container === container
+    ) {
+      lines[lines.length - 1] += ` ${printed}`;
+      return;
+    }
+    // A table read as a vertical list of cells loses the thing that made it a
+    // table. Keep each row on one line, its cells separated by " | ".
+    const inRow = CELL_ROLES.has(role) && ROW_ROLES.has(container?.role?.value);
+    if (inRow && last?.kind === "cell" && last.container === container) {
+      lines[lines.length - 1] += ` | ${printed}`;
+      return;
+    }
+    lines.push(printed);
+    last =
+      role === "StaticText" && container != null
+        ? { kind: "text", container }
+        : inRow
+          ? { kind: "cell", container }
+          : null;
   });
   return found ? lines : null;
 }

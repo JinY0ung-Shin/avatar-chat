@@ -70,12 +70,15 @@ describe("renderAxTree", () => {
   });
 
   it("emits in document order, not in the order Chrome listed the nodes", () => {
+    // Both StaticTexts hang off the same container, so they now render as ONE
+    // joined run (inline text used to print a word per line). Document order is
+    // still what the assertion pins — it is visible inside the joined line.
     const lines = render([
       node("3", "StaticText", "셋째"),
       node("1", "RootWebArea", "Doc", ["2", "3"]),
       node("2", "StaticText", "둘째"),
     ]);
-    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "둘째"', 'StaticText "셋째"']);
+    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "둘째 셋째"']);
   });
 
   it("still gives a uid to a nameless interactive element", () => {
@@ -204,6 +207,145 @@ describe("renderAxTree", () => {
     ]);
     expect(lines).toEqual(['RootWebArea "Doc"', '[e1] canvas ""']);
   });
+
+  it("renders a node whose AX name and value are NUMBERS", () => {
+    // AXValue is not always a string: a slider or spinbutton reports a number,
+    // and .trim() on it threw — one zoom slider failed every read tool on the
+    // whole page. A numeric 0 must print as "0", not vanish into "".
+    const lines = render([
+      node("1", "RootWebArea", "지도", ["2"]),
+      node("2", "slider", undefined, [], {
+        backendDOMNodeId: 7,
+        name: { value: 0 },
+        value: { value: 14 },
+      }),
+    ]);
+    expect(lines).toEqual(['RootWebArea "지도"', '[e1] slider "0" = "14"']);
+  });
+
+  it("does not let a date-bearing ancestor label swallow short cell text", () => {
+    // Substring coverage deleted a calendar's day numbers: every one of "2",
+    // "8", "20", "26" occurs INSIDE "2026.08.08". Only whole-token echoes are
+    // an echo.
+    const lines = render([
+      node("1", "grid", "달력 2026.08.08", ["2", "3", "4", "5"]),
+      node("2", "cell", "", ["6"]),
+      node("3", "cell", "", ["7"]),
+      node("4", "cell", "", ["8"]),
+      node("5", "cell", "", ["9"]),
+      node("6", "StaticText", "26"),
+      node("7", "StaticText", "2"),
+      node("8", "StaticText", "8"),
+      node("9", "StaticText", "20"),
+    ]);
+    expect(lines).toEqual([
+      'grid "달력 2026.08.08"',
+      'StaticText "26"',
+      'StaticText "2"',
+      'StaticText "8"',
+      'StaticText "20"',
+    ]);
+  });
+
+  it("keeps day headers whose text only occurs inside a longer word above", () => {
+    // "일" and "월" appear in "8월 26일 토요일" but never as a token of their
+    // own, so the weekday row must survive.
+    const lines = render([
+      node("1", "heading", "8월 26일 토요일", ["2", "4"]),
+      node("2", "cell", "", ["3"]),
+      node("3", "StaticText", "일"),
+      node("4", "cell", "", ["5"]),
+      node("5", "StaticText", "월"),
+    ]);
+    expect(lines).toEqual(['heading "8월 26일 토요일"', 'StaticText "일"', 'StaticText "월"']);
+  });
+
+  it("still suppresses a WHOLE-TOKEN echo of an ancestor label", () => {
+    const lines = render([
+      node("1", "link", "오늘 날씨", ["2"], { backendDOMNodeId: 7 }),
+      node("2", "StaticText", "오늘"),
+    ]);
+    expect(lines).toEqual(['[e1] link "오늘 날씨"']);
+  });
+
+  it("joins a paragraph split into per-word spans into one line", () => {
+    // A briefing panel wraps every word in its own <span>; unjoined, the
+    // snapshot printed one word per line and buried the page's structure.
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "paragraph", "", ["3", "4", "5"]),
+      node("3", "generic", "", ["6"]),
+      node("4", "generic", "", ["7"]),
+      node("5", "generic", "", ["8"]),
+      node("6", "StaticText", "오늘"),
+      node("7", "StaticText", "서울에"),
+      node("8", "StaticText", "폭염경보"),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "오늘 서울에 폭염경보"']);
+  });
+
+  it("does not join text across two different containers", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "paragraph", "", ["4"]),
+      node("3", "paragraph", "", ["5"]),
+      node("4", "StaticText", "첫 문단"),
+      node("5", "StaticText", "둘째 문단"),
+    ]);
+    expect(lines).toEqual(['RootWebArea "Doc"', 'StaticText "첫 문단"', 'StaticText "둘째 문단"']);
+  });
+
+  it("breaks a text run at an interleaved non-StaticText element", () => {
+    const lines = render([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "paragraph", "", ["3", "4", "5"]),
+      node("3", "StaticText", "앞"),
+      node("4", "link", "링크", [], { backendDOMNodeId: 7 }),
+      node("5", "StaticText", "뒤"),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "Doc"',
+      'StaticText "앞"',
+      '[e1] link "링크"',
+      'StaticText "뒤"',
+    ]);
+  });
+
+  it("prints ONE line for several links to the same destination", () => {
+    // A search result surfaces as thumbnail + title + source links, all to the
+    // same href. The richest label wins, at the FIRST one's position, and the
+    // line carries that element's uid.
+    const url = { name: "url", value: { value: "https://news.example/a" } };
+    const lines = render([
+      node("1", "RootWebArea", "뉴스", ["2", "3", "4"]),
+      node("2", "link", "", [], { backendDOMNodeId: 11, properties: [url] }),
+      node("3", "link", "폭염 특보 확대 발령", [], { backendDOMNodeId: 12, properties: [url] }),
+      node("4", "link", "연합뉴스", [], { backendDOMNodeId: 13, properties: [url] }),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "뉴스"',
+      '[e2] link "폭염 특보 확대 발령" → https://news.example/a',
+    ]);
+  });
+
+  it("leaves links with different destinations alone", () => {
+    const lines = render([
+      node("1", "RootWebArea", "목록", ["2", "3"]),
+      node("2", "link", "첫째", [], {
+        backendDOMNodeId: 11,
+        properties: [{ name: "url", value: { value: "https://e.example/1" } }],
+      }),
+      node("3", "link", "둘째", [], {
+        backendDOMNodeId: 12,
+        properties: [{ name: "url", value: { value: "https://e.example/2" } }],
+      }),
+    ]);
+    expect(lines).toEqual([
+      'RootWebArea "목록"',
+      '[e1] link "첫째" → https://e.example/1',
+      '[e2] link "둘째" → https://e.example/2',
+    ]);
+  });
 });
 
 describe("capSnapshot", () => {
@@ -295,5 +437,59 @@ describe("renderAxText", () => {
 
   it("returns null for a stale start node so the caller owns the message", () => {
     expect(renderAxText([node("1", "RootWebArea", "Doc")], 999)).toBeNull();
+  });
+
+  it("renders a node whose AX name and value are NUMBERS", () => {
+    const lines = renderAxText([
+      node("1", "RootWebArea", "지도", ["2"]),
+      node("2", "slider", undefined, [], {
+        backendDOMNodeId: 7,
+        name: { value: 0 },
+        value: { value: 14 },
+      }),
+    ]) as string[];
+    expect(lines).toEqual(["지도", "0: 14"]);
+  });
+
+  it("reads a paragraph of per-word spans as one line of prose", () => {
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Doc", ["2"]),
+      node("2", "paragraph", "", ["3", "4", "5"]),
+      node("3", "generic", "", ["6"]),
+      node("4", "generic", "", ["7"]),
+      node("5", "generic", "", ["8"]),
+      node("6", "StaticText", "오늘"),
+      node("7", "StaticText", "서울에"),
+      node("8", "StaticText", "폭염경보"),
+    ]) as string[];
+    expect(lines).toEqual(["Doc", "오늘 서울에 폭염경보"]);
+  });
+
+  it("keeps two paragraphs on separate lines", () => {
+    const lines = renderAxText([
+      node("1", "RootWebArea", "Doc", ["2", "3"]),
+      node("2", "paragraph", "", ["4"]),
+      node("3", "paragraph", "", ["5"]),
+      node("4", "StaticText", "첫 문단"),
+      node("5", "StaticText", "둘째 문단"),
+    ]) as string[];
+    expect(lines).toEqual(["Doc", "첫 문단", "둘째 문단"]);
+  });
+
+  it("keeps a table's rows together instead of one cell per line", () => {
+    // Flattened into a vertical list, a table stops being a table: which value
+    // belongs to which column is no longer recoverable from the text.
+    const lines = renderAxText([
+      node("1", "table", "실적", ["2", "3"]),
+      node("2", "row", "", ["4", "5", "6"]),
+      node("3", "row", "", ["7", "8", "9"]),
+      node("4", "columnheader", "분기"),
+      node("5", "columnheader", "매출"),
+      node("6", "columnheader", "비고"),
+      node("7", "cell", "1Q"),
+      node("8", "cell", "100"),
+      node("9", "cell", "호조"),
+    ]) as string[];
+    expect(lines).toEqual(["실적", "분기 | 매출 | 비고", "1Q | 100 | 호조"]);
   });
 });
