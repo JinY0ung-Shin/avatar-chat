@@ -27,8 +27,10 @@ import {
   axProp,
   axValueAnswer,
   clearFailed,
+  extraClickables,
   sliderPlan,
   unlabeledInteractiveIds,
+  EXTRA_CLICKABLE_MAX,
 } from "./axtree.js";
 
 const GROUP_TITLE = "Noah";
@@ -54,6 +56,18 @@ const CDP_VERSION = "1.3";
  * as the getFullAXTree already here, and strictly less of it. It exists so a
  * clearing write can be VERIFIED by reading the field back instead of claiming
  * success on faith, the line select_option already draws.
+ *
+ * `DOMSnapshot.captureSnapshot` reads the whole document ONCE — structure,
+ * attributes, the computed styles it is asked for, laid-out text and boxes. It
+ * executes no page JS (that is the invariant at the top of this file, and it is
+ * why this is not a `Runtime.evaluate` in disguise) and it is the same
+ * exfiltration class as the `Accessibility.getFullAXTree` already here, gated by
+ * the same origin allowlist. It exists because a page's thumbnails are routinely
+ * plain <div>s with a click listener and no accessibility node at all: without
+ * it those elements have no uid and the only way to reach one is guessing pixels.
+ * `DOMSnapshot.enable` is deliberately NOT here — probe-measured
+ * (`tests/visual/ax-facts.spec.ts`), captureSnapshot answers without it, and an
+ * allowlist entry nothing calls is a widening bought for nothing.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
@@ -68,6 +82,7 @@ const CDP_ALLOWLIST = new Set([
   "DOM.getNodeForLocation",
   "DOM.focus",
   "DOM.scrollIntoViewIfNeeded",
+  "DOMSnapshot.captureSnapshot",
   "Input.dispatchKeyEvent",
   "Input.dispatchMouseEvent",
   "Input.imeSetComposition",
@@ -970,6 +985,94 @@ function frameHeader(label, source, nodes) {
 }
 
 /**
+ * The prose that opens the AX-invisible section. It names both signals because
+ * an agent reading `clickable ""` beside a DOM hint has to know it is looking at
+ * something the page marked as a target, not at a guess this bridge made.
+ */
+const EXTRA_CLICKABLE_HEADER =
+  "clickable but not in the accessibility tree (DOM click listeners / pointer cursor):";
+
+/**
+ * What the cap says when it truncates. This codebase does not cap silently — and
+ * the way out it names has to be one that WORKS. Selection is the first
+ * EXTRA_CLICKABLE_MAX outermost survivors in DOCUMENT order, and the only
+ * viewport-sensitive rule is an AREA comparison, so scrolling moves nothing into
+ * the list; a uid-scoped snapshot does not render this section at all (it is
+ * built in buildSnapshot alone). That leaves the pixel route, and making the page
+ * itself show fewer elements.
+ */
+const extraClickableCut = (more) =>
+  `${more} more clickable elements without an accessibility entry were not listed: this section keeps the first ` +
+  `${EXTRA_CLICKABLE_MAX} in document order. Scrolling does not change which ones are listed, and a snapshot ` +
+  "scoped with `uid` does not include this section at all. To reach one that is missing, take " +
+  "mcp__browser__screenshot and aim mcp__browser__click_at at its pixels, or make the page itself show fewer " +
+  "elements (search, filter, or open one section at a time).";
+
+/**
+ * The trailing section listing clickable elements the accessibility tree has no
+ * entry for — see `extraClickables` for what qualifies and why the two signals
+ * are both needed.
+ *
+ * ROOT SESSION ONLY, and deliberately so for v1: same-process frames already
+ * ride along in `documents[]` with backendNodeIds that are valid on the root
+ * target, so they are covered for free, while an OOPIF's ids live in another id
+ * space entirely and would need their own capture and their own minter.
+ *
+ * ANY failure returns nothing at all. This is an addition to a snapshot, never a
+ * new way for one to fail — the same line scopeDomIdsOf draws.
+ */
+async function extraClickableLines(tab, mintedBackendIds) {
+  try {
+    const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
+    // The LAYOUT viewport, offset by its page origin: `layout.bounds` are
+    // document coordinates, so the two only compare in the same space.
+    const view = metrics.cssLayoutViewport || {};
+    const viewport = {
+      x: Number(view.pageX) || 0,
+      y: Number(view.pageY) || 0,
+      width: Number(view.clientWidth) || 0,
+      height: Number(view.clientHeight) || 0,
+    };
+    if (!viewport.width || !viewport.height) return [];
+    const captured = await sendCdp({ tabId: tab.id }, "DOMSnapshot.captureSnapshot", {
+      computedStyles: ["cursor"],
+    });
+    const documents = captured?.documents;
+    const strings = captured?.strings;
+    if (!Array.isArray(documents) || !Array.isArray(strings)) return [];
+    const found = [];
+    let more = 0;
+    for (const document of documents) {
+      const answer = extraClickables(document, strings, {
+        mintedBackendIds,
+        viewport,
+        limit: EXTRA_CLICKABLE_MAX - found.length,
+      });
+      found.push(...answer.items);
+      more += answer.more;
+    }
+    if (!found.length) return [];
+    // Same minter the root sources used — mintUid, so these uids have exactly
+    // the stability and lifetime of every other uid on the page, and
+    // click/click_at/hover resolve them with no new branch anywhere.
+    const mint = (backendNodeId) => mintUid(tab.id, undefined, backendNodeId);
+    const lines = [EXTRA_CLICKABLE_HEADER];
+    for (const item of found) {
+      // The hint is printed when it ADDS identity — an `#id` or a class — and
+      // always when the label is empty, which is the case it exists for: one
+      // `clickable ""` is indistinguishable from the next.
+      const identifying = /[#.]/.test(item.hint);
+      const dom = item.hint && (!item.label || identifying) ? ` (dom: ${item.hint})` : "";
+      lines.push(`[${mint(item.backendNodeId)}] clickable "${item.label}"${dom}`);
+    }
+    if (more > 0) lines.push(extraClickableCut(more));
+    return lines;
+  } catch {
+    return []; // No enrichment; the snapshot is exactly what it was before.
+  }
+}
+
+/**
  * Walk every attached session and merge the accessibility trees into one view,
  * returned as the ATOMS the renderers produced — one entry per element (a frame
  * header, one rendered line), some of which carry newlines of their own.
@@ -980,8 +1083,15 @@ function frameHeader(label, source, nodes) {
  * then kept a handful of them from the middle of that file and dropped the rest,
  * so the agent read non-contiguous source with nothing saying so. A caller that
  * wants plain text joins with "\n" itself.
+ *
+ * `withExtraClickables` is opted out of by ONE caller — wait_for's match loop,
+ * which re-walks the page every 500ms and returns no snapshot to the agent at
+ * all, so the whole-document DOMSnapshot capture behind that section would be
+ * spent on the user's machine and thrown away every poll. Every other caller
+ * (the settle tail after an action, the snapshot op itself) pays it ONCE per op,
+ * which is what buys the freshly scrolled grid.
  */
-async function buildSnapshot(tab) {
+async function buildSnapshot(tab, { withExtraClickables = true } = {}) {
   if (refMap.size > REF_MAP_MAX) {
     refMap.clear();
     uidByNode.clear();
@@ -991,6 +1101,13 @@ async function buildSnapshot(tab) {
   const sources = await axSources(tab);
   const { byOwner, labelBySource } = await labelFrames(tab, sources);
   const lines = [];
+  /**
+   * What THIS render minted on the root target, for the AX-invisible section
+   * below. Recorded here rather than read back out of `uidByNode`, which
+   * remembers the elements that section itself minted on the previous snapshot
+   * and would therefore exclude exactly them from this one.
+   */
+  const mintedBackendIds = new Set();
   let hintBudget = HINT_FETCH_PER_SNAPSHOT;
   for (const source of sources) {
     const nodes = await sourceAxNodes(source);
@@ -999,12 +1116,21 @@ async function buildSnapshot(tab) {
     hintBudget = left;
     const label = labelBySource.get(source);
     if (label) lines.push(frameHeader(label, source, nodes));
+    const mint = mintForSource(source);
+    // Only root-target ids are comparable with what DOMSnapshot returns; an
+    // OOPIF's backendNodeIds mean nothing outside its own target.
+    const record = source.target.sessionId
+      ? mint
+      : (backendNodeId) => {
+          mintedBackendIds.add(backendNodeId);
+          return mint(backendNodeId);
+        };
     // Frame nodes ride the session that fetched them; backendNodeIds are
     // unique per target, so click/type resolve unchanged.
     lines.push(
       ...renderAxTree(
         nodes,
-        mintForSource(source),
+        record,
         hints,
         // Owner ids were resolved in the ROOT target's id space — valid for
         // every source that renders that target, meaningless in an OOPIF's.
@@ -1012,6 +1138,7 @@ async function buildSnapshot(tab) {
       ),
     );
   }
+  if (withExtraClickables) lines.push(...(await extraClickableLines(tab, mintedBackendIds)));
   return lines;
 }
 
@@ -1080,7 +1207,8 @@ const HOLLOW_SCOPE_SNAPSHOT_NOTE =
   "The element behind that uid exists but renders no readable content of its own (an empty overlay/backdrop, or a " +
   "surface that is drawn rather than marked up). Its visible content may live in a SIBLING layer: take " +
   "mcp__browser__snapshot without `uid` and look near this element, or aim mcp__browser__click_at at this uid with " +
-  "xFraction/yFraction.";
+  "xFraction/yFraction. A full mcp__browser__snapshot (no `uid`) also lists the clickable elements that have no " +
+  "accessibility entry at all, which is what a drawn tile or thumbnail usually is.";
 
 const HOLLOW_SCOPE_TEXT_NOTE =
   "The element behind that uid exists but contains no readable text of its own (an empty overlay/backdrop, or a " +
@@ -3846,7 +3974,15 @@ async function performOp(message) {
       if (pendingDialogs.has(tab.id)) break; // frozen page — reported below
       // Joined here: this matcher asks a question about the page as TEXT, and
       // the atoms exist for capSnapshot's benefit, not `includes`'s.
-      const view = (await buildSnapshot(tab)).join("\n");
+      //
+      // WITHOUT the AX-invisible section: this loop re-walks the page every
+      // 500ms for up to 25s and hands the agent no snapshot at all, so a
+      // whole-document DOMSnapshot capture per poll would be paid on the user's
+      // machine and thrown away. 0.16.0 cut this op's cost down for exactly that
+      // reason — it stopped returning a snapshot entirely — and an element the
+      // section would have named is not lost, only deferred: the action the
+      // agent takes after the wait reads an enriched snapshot.
+      const view = (await buildSnapshot(tab, { withExtraClickables: false })).join("\n");
       if ((!wantText || view.includes(wantText)) && (!goneText || !view.includes(goneText))) break;
       if (Date.now() - started >= timeoutMs) {
         return {

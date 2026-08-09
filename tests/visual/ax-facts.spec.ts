@@ -6,7 +6,10 @@ import { expect, test, type CDPSession } from "@playwright/test";
 // EMPIRICAL evidence for what Chrome's accessibility tree actually reports about
 // the four element kinds the browser bridge now makes decisions on
 // (extension/background.js: refuseFileInput / inputKind / driveSlider,
-// extension/axtree.js: image uids, sliderPlan).
+// extension/axtree.js: image uids, sliderPlan) — plus, in the second describe
+// below, what `DOMSnapshot.captureSnapshot` says about the elements the
+// accessibility tree does NOT contain at all (extension/axtree.js:
+// extraClickables).
 //
 // This repo pins Chrome facts by EXPERIMENT, not by reading the specification:
 // the bridge addresses elements through AX roles and properties, so a role
@@ -234,5 +237,168 @@ test.describe("what Chrome's accessibility tree emits (empirical)", () => {
       .soft(axValue.length, "Chrome does not truncate a long AX value")
       .toBe(truth.longLength);
     expect.soft(axValue.slice(0, 12), "the value starts where the DOM's does").toBe(truth.longHead);
+  });
+});
+
+// ------------------------------------- what the DOM says about AX-invisible clicks
+
+/** The parallel-array document `DOMSnapshot.captureSnapshot` answers with. */
+type DomSnapshot = {
+  documents: {
+    nodes: {
+      parentIndex: number[];
+      nodeName: number[];
+      backendNodeId: number[];
+      attributes: number[][];
+      isClickable?: { index: number[] };
+    };
+    layout: { nodeIndex: number[]; styles: number[][]; bounds: number[][]; text: number[] };
+  }[];
+  strings: string[];
+};
+
+/**
+ * The shape the VOC is about: tiles that are plain <div>s with a click listener
+ * and/or a pointer cursor, and no role, name or tabindex anywhere. Built inline
+ * rather than as a fixture file so that every element here sits beside the fact
+ * it is measuring.
+ */
+const CLICKABLE_FIXTURE = `
+  <style>
+    #thumb { width: 120px; height: 90px; cursor: pointer; }
+    #feed { width: 400px; height: 200px; }
+    #card { width: 120px; height: 90px; cursor: pointer; }
+    #listener { width: 120px; height: 40px; }
+  </style>
+  <canvas id="map" aria-label="지도" width="300" height="200"></canvas>
+  <canvas id="bare" width="60" height="60"></canvas>
+  <div id="thumb">썸네일</div>
+  <div id="listener">직접 리스너</div>
+  <div id="feed"><div id="card">위임된 카드</div></div>
+  <script>
+    // The two listeners this whole section exists to tell apart: one bound to
+    // the element itself, one bound to the container above it (delegation).
+    document.getElementById('listener').addEventListener('click', () => {});
+    document.getElementById('feed').addEventListener('click', () => {});
+  </script>
+`;
+
+test.describe("what DOMSnapshot says about clickable elements (empirical)", () => {
+  let cdp: CDPSession;
+
+  test.beforeEach(async ({ page }) => {
+    await page.setContent(CLICKABLE_FIXTURE);
+    cdp = await page.context().newCDPSession(page);
+    await cdp.send("DOM.enable");
+    await cdp.send("Accessibility.enable");
+    // DOMSnapshot.enable is deliberately NOT sent anywhere in this describe —
+    // see the last test, which is what keeps it off CDP_ALLOWLIST.
+  });
+
+  test("a <canvas> emits the CamelCase role Canvas, named or not", async () => {
+    const nodes = await fullAxTree(cdp);
+    const named = axFor(nodes, await backendIdFor(cdp, "#map"));
+    const bare = axFor(nodes, await backendIdFor(cdp, "#bare"));
+
+    record("canvas", {
+      named: { role: roleOf(named), name: nameOf(named) },
+      bare: { role: roleOf(bare), name: nameOf(bare) },
+    });
+
+    // axtree.js carries BOTH spellings because they come from different places:
+    // Chrome COMPUTES this one, while `role="canvas"` arrives lowercase. A
+    // canvas is in INTERACTIVE_ROLES, so the NAMELESS one mints a uid too —
+    // that is the anchor click_at's uid mode aims at on a drawn surface.
+    expect(roleOf(named), "role Chrome emits for <canvas aria-label>").toBe("Canvas");
+    expect(nameOf(named)).toBe("지도");
+    expect(roleOf(bare), "a nameless canvas is still a Canvas").toBe("Canvas");
+    expect(nameOf(bare), "and it has no name at all").toBe("");
+  });
+
+  test("isClickable marks the element the listener is bound to, and not its children", async () => {
+    const snapshot = (await cdp.send("DOMSnapshot.captureSnapshot", {
+      computedStyles: ["cursor"],
+    } as never)) as DomSnapshot;
+    const doc = snapshot.documents[0];
+    const indexOfBackend = new Map<number, number>();
+    doc.nodes.backendNodeId.forEach((backendId, index) => indexOfBackend.set(backendId, index));
+    const indexOf = async (selector: string) =>
+      indexOfBackend.get(await backendIdFor(cdp, selector)) as number;
+    const clickable = new Set(doc.nodes.isClickable?.index ?? []);
+
+    const observed = {
+      listener: clickable.has(await indexOf("#listener")),
+      feed: clickable.has(await indexOf("#feed")),
+      card: clickable.has(await indexOf("#card")),
+      thumb: clickable.has(await indexOf("#thumb")),
+      marked: clickable.size,
+    };
+    record("is-clickable", observed);
+
+    // Signal (a): a node with its own mouse-click listener is marked. This is
+    // what finds a hand-written tile.
+    expect(observed.listener, "a div with its own click listener is marked").toBe(true);
+    expect(observed.feed, "so is a container that has one").toBe(true);
+    // The measured fact the CURSOR signal exists for, and the reason the
+    // >50%-of-viewport area guard exists: with delegation Chrome marks the
+    // CONTAINER and nothing else, so isClickable alone finds one uid for a whole
+    // grid and none for the items a person actually clicks.
+    expect(observed.card, "a child under a DELEGATED listener is NOT marked").toBe(false);
+    expect(observed.thumb, "and neither is a pointer-cursor tile without a listener").toBe(false);
+  });
+
+  test("cursor arrives through computedStyles and the string table", async () => {
+    const snapshot = (await cdp.send("DOMSnapshot.captureSnapshot", {
+      computedStyles: ["cursor"],
+    } as never)) as DomSnapshot;
+    const doc = snapshot.documents[0];
+    const indexOfBackend = new Map<number, number>();
+    doc.nodes.backendNodeId.forEach((backendId, index) => indexOfBackend.set(backendId, index));
+    const layoutAt = new Map<number, number>();
+    doc.layout.nodeIndex.forEach((nodeIndex, slot) => layoutAt.set(nodeIndex, slot));
+    const cursorOf = async (selector: string) => {
+      const slot = layoutAt.get(indexOfBackend.get(await backendIdFor(cdp, selector)) as number);
+      if (slot === undefined) return "(not laid out)";
+      const index = doc.layout.styles[slot]?.[0];
+      // Exactly how extraClickables reads it: slot 0 is the one requested style,
+      // and a negative index means Chrome reported no value.
+      return index === undefined || index < 0 ? "(none)" : snapshot.strings[index];
+    };
+
+    const observed = {
+      thumb: await cursorOf("#thumb"),
+      card: await cursorOf("#card"),
+      feed: await cursorOf("#feed"),
+      listener: await cursorOf("#listener"),
+    };
+    record("cursor", observed);
+
+    expect(observed.thumb, "an explicit cursor:pointer reaches the styles array").toBe("pointer");
+    expect(observed.card, "so does the one on a delegated card").toBe("pointer");
+    // The BOUNDARY half of signal (b): cursor inherits, so a pointer node is
+    // only an item when the container above it is not also pointer.
+    expect(observed.feed, "the container above it is not pointer").toBe("auto");
+    expect(observed.listener, "and neither is a listener-only div").toBe("auto");
+  });
+
+  test("captureSnapshot answers WITHOUT DOMSnapshot.enable", async () => {
+    // The allowlist question. CDP_ALLOWLIST is default-deny and every entry has
+    // to earn itself, so if this passes, `DOMSnapshot.enable` must NOT be added:
+    // an allowlist entry nothing calls is a widening bought for nothing. This
+    // session has never enabled the domain — see beforeEach.
+    let failure = "";
+    let documents = 0;
+    try {
+      const snapshot = (await cdp.send("DOMSnapshot.captureSnapshot", {
+        computedStyles: ["cursor"],
+      } as never)) as DomSnapshot;
+      documents = snapshot.documents.length;
+    } catch (error) {
+      failure = String(error);
+    }
+    record("enable-needed", { failure: failure || null, documents });
+
+    expect(failure, "captureSnapshot does not require DOMSnapshot.enable").toBe("");
+    expect(documents, "and it returns the page's document").toBeGreaterThan(0);
   });
 });

@@ -16,6 +16,12 @@
   in `background.js` by `typeof message.uid === "string" && message.uid`, and `browserTools` rejects
   both-or-neither before the wire. `clampFraction` refuses `Number(null) === 0` explicitly — the relay
   sends `null` for an omitted field, which would otherwise click the left edge instead of the centre.
+  A uid-mode click needs an ANCHOR element to be a fraction OF; every `<canvas>` mints one through
+  `INTERACTIVE_ROLES` (named or not — snapshots.md rule 5), which is what keeps a drawn surface reachable
+  on a VISION-OFF run, where pixel mode does not exist at all. And elements that are
+  clickable but absent from the AX tree no longer need a fraction guess in the first place: a FULL
+  snapshot lists them with ordinary uids in its trailing `clickable but not in the accessibility tree`
+  section (snapshots.md), which `click`/`click_at`/`hover` resolve like any other uid.
 - **PIXEL mode clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** Screenshots are
   downscaled (`SCREENSHOT_MAX_WIDTH` 1400), so the pixels the model sees ≠ CSS px. The extension
   remembers the LAST capture's mapping (`lastShot`: tabId/mode/scale/clip dims) and inverts the scale at

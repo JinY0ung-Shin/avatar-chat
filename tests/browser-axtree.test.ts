@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -1644,6 +1644,396 @@ describe("unlabeledInteractiveIds", () => {
       node("2", "Iframe", "", [], { backendDOMNodeId: 60 }),
     ]) as number[];
     expect(ids).toEqual([60]);
+  });
+});
+
+describe("isActionableNode", () => {
+  it("makes a canvas actionable NAMED or NOT, which is the field fix", () => {
+    // A canvas is where diagram editors and maps live, and its own uid is the
+    // only thing click_at's uid mode can aim at: nothing drawn on it has an
+    // accessibility entry. It reaches that through INTERACTIVE_ROLES, so the
+    // name gate below does not apply to it — a real <canvas> is usually
+    // NAMELESS, and making it depend on a name would put every canvas app back
+    // out of reach. Its membership in NAMED_CONTAINER_UID_ROLES says something
+    // else entirely: that it is a SURFACE, and never owns its children's clicks.
+    expect(isActionableNode({}, "Canvas", "지도", "")).toBe(true);
+    expect(isActionableNode({}, "Canvas", "", "")).toBe(true);
+    // Chrome COMPUTES the CamelCase spelling (probe-measured in
+    // tests/visual/ax-facts.spec.ts); the lowercase one only arrives from an
+    // explicit role="canvas", and both have to work.
+    expect(isActionableNode({}, "canvas", "", "")).toBe(true);
+  });
+
+  it("still refuses a nameless container that is not a control", () => {
+    expect(isActionableNode({}, "region", "지도", "")).toBe(true);
+    expect(isActionableNode({}, "region", "", "")).toBe(false);
+    expect(isActionableNode({}, "generic", "", "")).toBe(false);
+  });
+});
+
+/** One node of a `DOMSnapshot.captureSnapshot` document, as a test writes it. */
+type DomNodeSpec = {
+  tag: string;
+  id?: string;
+  className?: string;
+  attrs?: Record<string, string>;
+  backendNodeId?: number;
+  /** [x, y, width, height] in DOCUMENT coordinates. Omitted = no layout entry. */
+  box?: [number, number, number, number];
+  /** The computed `cursor`. Omitted = Chrome reported none for this node. */
+  cursor?: string;
+  /** The laid-out text on this node's layout entry. */
+  text?: string;
+  /** Listed in `isClickable.index` — Chrome's mark for a mouse-click listener. */
+  clickable?: boolean;
+  children?: DomNodeSpec[];
+};
+
+/**
+ * The parallel-array document `DOMSnapshot.captureSnapshot` returns, assembled
+ * from a nested spec so a test reads like the page it describes. The shape —
+ * string-table indices everywhere, -1 for "no value", `isClickable` as a bare
+ * `{ index }` list, `layout` as its own set of arrays keyed by node index — is
+ * what a real Chromium capture produced in the probe.
+ */
+function domSnapshot(root: DomNodeSpec) {
+  const strings: string[] = [];
+  const intern = (value: string) => {
+    const at = strings.indexOf(value);
+    if (at >= 0) return at;
+    strings.push(value);
+    return strings.length - 1;
+  };
+  const parentIndex: number[] = [];
+  const nodeName: number[] = [];
+  const backendNodeId: number[] = [];
+  const attributes: number[][] = [];
+  const clickable: number[] = [];
+  const nodeIndex: number[] = [];
+  const styles: number[][] = [];
+  const bounds: number[][] = [];
+  const text: number[] = [];
+  let autoBackendId = 9000;
+
+  const walk = (spec: DomNodeSpec, parent: number) => {
+    const index = nodeName.length;
+    parentIndex.push(parent);
+    nodeName.push(intern(spec.tag));
+    backendNodeId.push(spec.backendNodeId ?? (autoBackendId += 1));
+    const attrs: Record<string, string> = { ...spec.attrs };
+    if (spec.id) attrs.id = spec.id;
+    if (spec.className) attrs.class = spec.className;
+    attributes.push(Object.entries(attrs).flatMap(([name, value]) => [intern(name), intern(value)]));
+    if (spec.clickable) clickable.push(index);
+    if (spec.box || spec.cursor !== undefined || spec.text !== undefined) {
+      nodeIndex.push(index);
+      bounds.push(spec.box ?? [0, 0, 0, 0]);
+      styles.push([spec.cursor === undefined ? -1 : intern(spec.cursor)]);
+      text.push(spec.text === undefined ? -1 : intern(spec.text));
+    }
+    for (const child of spec.children ?? []) walk(child, index);
+  };
+  walk(root, -1);
+  return {
+    document: {
+      nodes: {
+        parentIndex,
+        nodeName,
+        backendNodeId,
+        attributes,
+        isClickable: { index: clickable },
+      },
+      layout: { nodeIndex, styles, bounds, text },
+    },
+    strings,
+  };
+}
+
+/** A 1000×800 viewport, so the delegated-container guard trips past 400 000 px². */
+const VIEWPORT = { x: 0, y: 0, width: 1000, height: 800 };
+
+type ExtraClickable = { backendNodeId: number; label: string; hint: string };
+type ExtraAnswer = { items: ExtraClickable[]; more: number };
+
+/** Run the selection over one spec'd page. `minted` is what the AX render gave uids. */
+function extrasFor(root: DomNodeSpec, minted: number[] = [], limit?: number): ExtraAnswer {
+  const { document, strings } = domSnapshot(root);
+  return extraClickables(document, strings, {
+    mintedBackendIds: new Set(minted),
+    viewport: VIEWPORT,
+    ...(limit === undefined ? {} : { limit }),
+  }) as ExtraAnswer;
+}
+
+const idsOf = (answer: ExtraAnswer) => answer.items.map((item) => item.backendNodeId);
+
+/** A page wrapper, so every fixture below starts where a real document does. */
+const page = (children: DomNodeSpec[]): DomNodeSpec => ({
+  tag: "#document",
+  children: [
+    {
+      tag: "HTML",
+      cursor: "auto",
+      box: [0, 0, 1000, 2000],
+      children: [{ tag: "BODY", cursor: "auto", box: [0, 0, 1000, 2000], children }],
+    },
+  ],
+});
+
+/** A thumbnail: its own box, `cursor: pointer`, and no accessibility identity. */
+const tile = (backendNodeId: number, box: [number, number, number, number], rest: DomNodeSpec = { tag: "DIV" }): DomNodeSpec => ({
+  ...rest,
+  tag: rest.tag ?? "DIV",
+  backendNodeId,
+  box,
+  cursor: "pointer",
+});
+
+describe("extraClickables", () => {
+  it("mints the per-item pointer boundaries and not the container above them", () => {
+    // The VOC shape: a thumbnail grid whose items are plain <div>s with a click
+    // listener and a pointer cursor. Cursor INHERITS, so only the outermost
+    // pointer node is the item — the grid itself is a layout box.
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          id: "grid",
+          cursor: "auto",
+          box: [0, 0, 600, 200],
+          children: [
+            tile(11, [0, 0, 120, 90], { tag: "DIV", className: "thumb" }),
+            tile(12, [130, 0, 120, 90], { tag: "DIV", className: "thumb" }),
+          ],
+        },
+      ]),
+    );
+    expect(idsOf(answer)).toEqual([11, 12]);
+    expect(answer.more).toBe(0);
+  });
+
+  it("drops a delegated container by AREA while its pointer items survive", () => {
+    // Measured (tests/visual/ax-facts.spec.ts): Chrome marks isClickable on the
+    // node the listener is BOUND to, so a React-style page that delegates to the
+    // feed root marks the root and none of the cards. Listing that root would
+    // hand the agent one uid for the whole page — and worse, the nesting prune
+    // would then delete every card as its descendant.
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          id: "feed",
+          clickable: true,
+          cursor: "auto",
+          box: [0, 0, 1000, 600],
+          children: [
+            tile(21, [0, 0, 300, 200], { tag: "DIV", className: "card" }),
+            tile(22, [0, 210, 300, 200], { tag: "DIV", className: "card" }),
+          ],
+        },
+      ]),
+    );
+    expect(idsOf(answer)).toEqual([21, 22]);
+  });
+
+  it("drops a card that CONTAINS something the accessibility tree already minted", () => {
+    // The inner link is the real target and it already has a uid; listing the
+    // card too spends two refs on one click and leaves the agent choosing.
+    const answer = extrasFor(
+      page([
+        {
+          ...tile(31, [0, 0, 300, 200], { tag: "DIV", className: "card" }),
+          children: [{ tag: "A", backendNodeId: 32, box: [8, 8, 100, 20], text: "자세히" }],
+        },
+      ]),
+      [32],
+    );
+    expect(idsOf(answer)).toEqual([]);
+  });
+
+  it("drops a candidate sitting UNDER something already minted", () => {
+    // A wrapper inside an already-clickable element is that element's insides,
+    // not a target of its own.
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          backendNodeId: 41,
+          cursor: "auto",
+          box: [0, 0, 300, 200],
+          children: [tile(42, [4, 4, 200, 100], { tag: "DIV", className: "inner" })],
+        },
+      ]),
+      [41],
+    );
+    expect(idsOf(answer)).toEqual([]);
+  });
+
+  it("keeps the OUTERMOST of two nested survivors", () => {
+    // A tile and the overlay drawn on top of it are the same click, and the
+    // whole tile box is what a person aims at.
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          className: "tile",
+          backendNodeId: 51,
+          clickable: true,
+          cursor: "auto",
+          box: [0, 0, 300, 200],
+          children: [
+            {
+              tag: "DIV",
+              className: "overlay",
+              backendNodeId: 52,
+              clickable: true,
+              cursor: "auto",
+              box: [10, 10, 280, 180],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(idsOf(answer)).toEqual([51]);
+  });
+
+  it("reports how many the cap cut off, because a silent cap is a lie", () => {
+    const tiles = Array.from({ length: 45 }, (_, at) =>
+      tile(100 + at, [0, at * 100, 120, 90], { tag: "DIV", className: "thumb" }),
+    );
+    const answer = extrasFor(page(tiles));
+    expect(answer.items).toHaveLength(40);
+    expect(answer.more).toBe(5);
+    expect(idsOf(answer)[0]).toBe(100);
+    expect(idsOf(answer)[39]).toBe(139);
+  });
+
+  it("shares one cap across a page's documents through `limit`", () => {
+    const tiles = Array.from({ length: 6 }, (_, at) =>
+      tile(200 + at, [0, at * 100, 120, 90], { tag: "DIV", className: "thumb" }),
+    );
+    const answer = extrasFor(page(tiles), [], 4);
+    expect(idsOf(answer)).toEqual([200, 201, 202, 203]);
+    expect(answer.more).toBe(2);
+
+    // A budget an earlier document already spent still COUNTS what this one
+    // holds — otherwise a page's second document disappears with no notice.
+    const exhausted = extrasFor(page(tiles), [], 0);
+    expect(exhausted.items).toEqual([]);
+    expect(exhausted.more).toBe(6);
+  });
+
+  it("labels from aria-label, then title, then img alt, then rendered text", () => {
+    const labels = (root: DomNodeSpec) => extrasFor(root).items.map((item) => item.label);
+    expect(
+      labels(
+        page([
+          {
+            ...tile(61, [0, 0, 120, 90], { tag: "DIV", attrs: { "aria-label": "지도 썸네일", title: "무시" } }),
+            children: [{ tag: "IMG", attrs: { alt: "해변" }, box: [0, 0, 120, 90] }],
+          },
+        ]),
+      ),
+    ).toEqual(["지도 썸네일"]);
+    expect(labels(page([tile(62, [0, 0, 120, 90], { tag: "DIV", attrs: { title: "장바구니" } })]))).toEqual([
+      "장바구니",
+    ]);
+    expect(
+      labels(
+        page([
+          {
+            ...tile(63, [0, 0, 120, 90]),
+            children: [
+              { tag: "IMG", attrs: { alt: "해변 사진" }, box: [0, 0, 60, 90] },
+              { tag: "IMG", attrs: { alt: "노을" }, box: [60, 0, 60, 90] },
+            ],
+          },
+        ]),
+      ),
+    ).toEqual(["해변 사진 노을"]);
+    expect(
+      labels(
+        page([
+          {
+            ...tile(64, [0, 0, 120, 90]),
+            children: [{ tag: "#text", text: "  구매\n  하기  ", box: [0, 0, 120, 20] }],
+          },
+        ]),
+      ),
+    ).toEqual(["구매 하기"]);
+  });
+
+  it("hints with tag, #id and at most two classes", () => {
+    const hints = (root: DomNodeSpec) => extrasFor(root).items.map((item) => item.hint);
+    expect(
+      hints(page([tile(71, [0, 0, 120, 90], { tag: "DIV", id: "t1", className: "thumb card wide" })])),
+    ).toEqual(["div#t1.thumb.card"]);
+    // No id and no class leaves the bare tag — which the renderer prints only
+    // when the label is empty, since "div" alone identifies nothing.
+    expect(hints(page([tile(72, [0, 0, 120, 90], { tag: "SPAN" })]))).toEqual(["span"]);
+  });
+
+  it("skips the page itself, a zero-area box and anything under 12px", () => {
+    const answer = extrasFor(
+      page([
+        // A click listener on <body> is a page-level handler, not an item.
+        tile(81, [0, 0, 0, 0], { tag: "DIV", className: "collapsed" }),
+        tile(82, [0, 0, 10, 10], { tag: "DIV", className: "dot" }),
+        tile(83, [0, 0, 120, 90], { tag: "DIV", className: "real" }),
+      ]),
+    );
+    expect(idsOf(answer)).toEqual([83]);
+
+    const bodyClick = extrasFor({
+      tag: "#document",
+      clickable: true,
+      children: [
+        {
+          tag: "HTML",
+          clickable: true,
+          cursor: "auto",
+          box: [0, 0, 1000, 2000],
+          children: [{ tag: "BODY", clickable: true, cursor: "pointer", box: [0, 0, 1000, 300] }],
+        },
+      ],
+    });
+    expect(idsOf(bodyClick)).toEqual([]);
+  });
+
+  it("takes a nested pointer node when the ancestor's cursor is not pointer", () => {
+    // Only the OUTERMOST pointer node counts, and "outermost" is decided against
+    // the nearest ancestor that HAS a cursor at all — a wrapper Chrome reported
+    // no computed style for must not break the chain.
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          cursor: "pointer",
+          box: [0, 0, 400, 300],
+          backendNodeId: 91,
+          children: [
+            {
+              tag: "DIV",
+              box: [0, 0, 200, 150],
+              children: [tile(92, [0, 0, 120, 90], { tag: "DIV", className: "inner" })],
+            },
+          ],
+        },
+      ]),
+    );
+    // 92 inherits `pointer` through the style-less wrapper, so it is not a
+    // boundary; 91 is, and the nesting prune would have dropped 92 anyway.
+    expect(idsOf(answer)).toEqual([91]);
+  });
+
+  it("answers nothing rather than guessing when the arrays are missing", () => {
+    const empty = { items: [], more: 0 };
+    expect(extraClickables(null, [], { mintedBackendIds: new Set(), viewport: VIEWPORT })).toEqual(empty);
+    expect(extraClickables({}, [], { mintedBackendIds: new Set(), viewport: VIEWPORT })).toEqual(empty);
+    expect(
+      extraClickables({ nodes: {}, layout: {} }, null, { mintedBackendIds: new Set(), viewport: VIEWPORT }),
+    ).toEqual(empty);
+    expect(extraClickables({ nodes: {}, layout: {} }, [], {})).toEqual(empty);
   });
 });
 

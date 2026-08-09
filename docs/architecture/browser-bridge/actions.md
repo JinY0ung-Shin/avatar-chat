@@ -8,7 +8,12 @@
   the rows that matter. URLs are scrubbed of userinfo and query string.
 - **No JS execution, and that shapes op design.** `CDP_ALLOWLIST` is default-deny with no
   `Runtime.*`/`Network.*`/`Storage.*`; elements are AX-tree `backendNodeId`s. So `select_option` clicks a
-  rendered option, or drives a collapsed native `<select>` from the KEYBOARD (next bullet).
+  rendered option, or drives a collapsed native `<select>` from the KEYBOARD (next bullet). Every later
+  entry has had to pass the SAME test — read-only, executes no page JS, opens no exfiltration class
+  `getFullAXTree` does not already open (it hands back the page's whole text): `Page.getFrameTree` and
+  `DOM.getFrameOwner` for frame structure, `Accessibility.getPartialAXTree` for verified writes, and
+  `DOMSnapshot.captureSnapshot` (`computedStyles: ["cursor"]`) for the full snapshot's AX-invisible
+  clickable section (snapshots.md).
   `read_text` reuses the same `extension/axtree.js` walker as snapshot (`renderAxText` vs
   `renderAxTree`), is offset-chunked, and mints no uids so it never invalidates a snapshot. With
   `expand: true` it scrolls the page in viewport steps and MERGES the captures

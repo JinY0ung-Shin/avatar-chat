@@ -58,26 +58,45 @@ export const NAMED_CLICKABLE_ROLES = new Set([
 
 /**
  * Containers that are not controls but ARE the drawn surface itself — a map
- * body, an embedded app. Nothing inside them has an accessibility entry, so
- * the container's own uid is the only handle click_at's uid mode (and
+ * body, an embedded app, a <canvas>. Nothing inside them has an accessibility
+ * entry, so the container's own uid is the only handle click_at's uid mode (and
  * read_text's uid scoping) can aim at; without it a map surfaced as a bare
  * `region "Map"` line that named a target no tool could reach. Named only:
  * a nameless region is page structure and minting it would flood the snapshot.
  * They stay in OPAQUE_NAME_ROLES — a uid says "actionable", not "my name
  * describes my children".
+ *
+ * A canvas is listed here for the SURFACE half of that meaning (see
+ * SURFACE_ROLES, which is exactly this set): a drawn surface never owns the
+ * clicks of what is drawn on it. Its uid does NOT depend on this membership —
+ * canvas is in INTERACTIVE_ROLES, so even a NAMELESS one mints, which is the
+ * field fix diagram editors depend on.
  */
-export const NAMED_CONTAINER_UID_ROLES = new Set(["region", "application"]);
+export const NAMED_CONTAINER_UID_ROLES = new Set([
+  "region",
+  "application",
+  "canvas",
+  "Canvas",
+]);
 
 /**
  * Roles whose accessible name does NOT come from their contents. A descendant
  * that repeats a word from one of these is saying something new, so they must
  * never suppress it — letting RootWebArea cover the page would delete every
  * mention of the title from the body text.
+ *
+ * A canvas belongs here for the same reason a region does, only more strictly:
+ * its name can ONLY come from aria-label or the fallback content, never from
+ * what it draws, so a descendant repeating one of its words is not an echo of
+ * it — and the fallback content is precisely the text a canvas app leaves for
+ * the readers that cannot see the drawing.
  */
 const OPAQUE_NAME_ROLES = new Set([
   "RootWebArea",
   "main",
   "region",
+  "canvas",
+  "Canvas",
   "navigation",
   "form",
   "article",
@@ -678,8 +697,13 @@ const MARKER_LABEL_MAX = 120;
  * A CONTROL ancestor is the opposite and still blocks: a link, a button, a
  * named row or an editable root genuinely takes the click, and the image inside
  * it is that control's label rather than a target of its own.
+ *
+ * Derived from NAMED_CONTAINER_UID_ROLES rather than re-listed: the two sets
+ * answer the same question about the same roles ("this is a surface, not a
+ * control"), and spelling them out twice is how one of them silently loses a
+ * role the other keeps.
  */
-const SURFACE_ROLES = new Set([...NAMED_CONTAINER_UID_ROLES, "canvas", "Canvas"]);
+const SURFACE_ROLES = new Set(NAMED_CONTAINER_UID_ROLES);
 
 /**
  * The ROOT of an editable region — the one node in it an agent clicks and types
@@ -1012,6 +1036,289 @@ export function unlabeledInteractiveIds(nodes) {
     ids.add(node.backendDOMNodeId);
   });
   return [...ids];
+}
+
+/**
+ * Most AX-invisible clickables one snapshot lists. The section exists to make a
+ * drawn grid reachable, not to re-describe the page: past this many the useful
+ * answer is a narrower view, which is what the truncation notice says.
+ */
+export const EXTRA_CLICKABLE_MAX = 40;
+
+/**
+ * Node count past which this enrichment gives up on a document. It bails WHOLE
+ * rather than part-way on purpose: every rule below is decided by ANCESTOR and
+ * DESCENDANT relationships, so a truncated node array does not answer LESS, it
+ * answers WRONG — a wrapper whose real click target sits outside the walked
+ * range would be listed as if it were the target itself.
+ */
+const EXTRA_CLICKABLE_SCAN_MAX = 50000;
+
+/** Smallest box worth a uid, px. Below this it is a divider, a badge or a hairline. */
+const EXTRA_CLICKABLE_MIN_PX = 12;
+
+/**
+ * Share of the viewport past which a box is a SURFACE, not an item. This is the
+ * guard that makes the whole feature work on React-style pages: a framework
+ * delegates its click listener to a container, so Chrome marks the CONTAINER as
+ * clickable and none of the tiles inside it — listing that container would hand
+ * the agent one uid for a whole grid, and the per-tile pointer boundaries that
+ * ARE the answer would be pruned away as its descendants.
+ */
+const EXTRA_CLICKABLE_VIEWPORT_SHARE = 0.5;
+
+/** Printed label and DOM hint caps — sized like buildDomHint's, for the same reason. */
+const EXTRA_LABEL_MAX = 80;
+const EXTRA_HINT_MAX = 60;
+
+/** Descendants one candidate's label may be gathered from. A tile can wrap a feed. */
+const EXTRA_LABEL_SCAN_MAX = 200;
+
+/** Ancestor hops any of the climbs below will pay. Real DOM depth is far under this. */
+const EXTRA_ANCESTOR_HOPS = 200;
+
+/** nodeNames that are the PAGE, never an item in it. */
+const EXTRA_CLICKABLE_SKIP_NAMES = new Set(["BODY", "HTML", "#DOCUMENT"]);
+
+/**
+ * The clickable elements the accessibility tree does not contain, so that a page
+ * built out of drawn tiles is addressable at all.
+ *
+ * Field case: a thumbnail grid whose items are <div>s or <canvas>es carrying a
+ * JS click listener and/or `cursor: pointer`, and no role, name or tabindex.
+ * Chrome computes nothing worth emitting for them, so the AX walk mints no uid
+ * and the agent's only remaining move was a pixel gamble with click_at.
+ *
+ * Input is ONE `DOMSnapshot.captureSnapshot` document — parallel arrays indexing
+ * a shared `strings` table — captured with `computedStyles: ["cursor"]`. Nothing
+ * here costs a CDP round trip: label and hint are derived from the arrays
+ * already in hand, because a section a snapshot pays for on EVERY call has to be
+ * free after the one capture.
+ *
+ * TWO signals, because neither alone finds a real page's tiles. `isClickable` is
+ * Chrome's own mark for a node with a mouse-click listener, and it is measured
+ * (`tests/visual/ax-facts.spec.ts`) to mark ONLY the node the listener is bound
+ * to — a framework that delegates to the grid root leaves every tile unmarked.
+ * The pointer-cursor BOUNDARY covers those: cursor inherits, so a node whose own
+ * cursor is `pointer` while the nearest ancestor that has a cursor at all is not
+ * is the outermost thing the PAGE is telling a person to click.
+ *
+ * `opts.mintedBackendIds` is what the AX render minted on THIS pass — never the
+ * persistent uid map, which remembers the elements this very function minted
+ * last time and would exclude exactly them. `opts.viewport` is the layout
+ * viewport in the same DOCUMENT coordinates as `layout.bounds` (hence its
+ * pageX/pageY origin); only its area is read today, and it is what separates a
+ * delegated container from an item. `opts.limit` is the budget LEFT, because a
+ * page's documents share one cap.
+ *
+ * Returns `{ items, more }`. `more` is how many candidates the limit cut off: a
+ * silent cap is a page the agent believes it has seen the whole of.
+ */
+export function extraClickables(document, strings, opts) {
+  const limit = Math.max(0, Math.trunc(Number(opts?.limit ?? EXTRA_CLICKABLE_MAX)) || 0);
+  const nodes = document?.nodes;
+  const layout = document?.layout;
+  const table = Array.isArray(strings) ? strings : null;
+  if (!nodes || !layout || !table) return { items: [], more: 0 };
+
+  const parentIndex = nodes.parentIndex || [];
+  const nodeNames = nodes.nodeName || [];
+  const backendIds = nodes.backendNodeId || [];
+  const attributes = nodes.attributes || [];
+  const count = backendIds.length;
+  if (!count || count > EXTRA_CLICKABLE_SCAN_MAX) return { items: [], more: 0 };
+
+  const str = (index) =>
+    typeof index === "number" && index >= 0 ? String(table[index] ?? "") : "";
+  const clip = (value, max) => String(value ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+  const parentOf = (index) => {
+    const parent = parentIndex[index];
+    return typeof parent === "number" && parent >= 0 && parent !== index ? parent : -1;
+  };
+
+  const layoutNodes = layout.nodeIndex || [];
+  const boundsOf = layout.bounds || [];
+  const stylesOf = layout.styles || [];
+  const textOf = layout.text || [];
+  /** nodeIndex -> its layout slot. A node without one is not laid out at all. */
+  const layoutAt = new Map();
+  for (let slot = 0; slot < layoutNodes.length; slot += 1) layoutAt.set(layoutNodes[slot], slot);
+
+  // `computedStyles: ["cursor"]` was requested, so slot 0 of a layout entry's
+  // style list IS the cursor; a negative index means Chrome had no value there.
+  const ownCursor = (index) => {
+    const slot = layoutAt.get(index);
+    return slot === undefined ? "" : str(stylesOf[slot]?.[0]);
+  };
+  /** Memoized so one climb serves a whole branch — a big page has 50k nodes. */
+  const cursorCache = new Map();
+  const effectiveCursor = (index) => {
+    const path = [];
+    let at = index;
+    let value = "";
+    for (let hop = 0; at >= 0 && hop < EXTRA_ANCESTOR_HOPS; hop += 1) {
+      const cached = cursorCache.get(at);
+      if (cached !== undefined) {
+        value = cached;
+        break;
+      }
+      const own = ownCursor(at);
+      if (own) {
+        cursorCache.set(at, own);
+        value = own;
+        break;
+      }
+      path.push(at);
+      at = parentOf(at);
+    }
+    for (const one of path) cursorCache.set(one, value);
+    return value;
+  };
+  const isPointerBoundary = (index) =>
+    ownCursor(index) === "pointer" && effectiveCursor(parentOf(index)) !== "pointer";
+
+  const candidates = new Set();
+  for (const index of nodes.isClickable?.index || []) {
+    if (typeof index === "number" && index >= 0 && index < count) candidates.add(index);
+  }
+  for (const index of layoutNodes) {
+    if (index >= 0 && index < count && isPointerBoundary(index)) candidates.add(index);
+  }
+  if (!candidates.size) return { items: [], more: 0 };
+
+  const view = opts?.viewport || {};
+  const viewArea = (Number(view.width) || 0) * (Number(view.height) || 0);
+  // No usable viewport leaves the area guard off rather than dropping the whole
+  // section: the caller owns that measurement and has no reason to omit it.
+  const maxArea = viewArea > 0 ? viewArea * EXTRA_CLICKABLE_VIEWPORT_SHARE : Infinity;
+  const passesGuards = (index) => {
+    if (backendIds[index] == null) return false;
+    if (EXTRA_CLICKABLE_SKIP_NAMES.has(str(nodeNames[index]).toUpperCase())) return false;
+    const slot = layoutAt.get(index);
+    if (slot === undefined) return false;
+    const box = boundsOf[slot] || [];
+    const width = Number(box[2]) || 0;
+    const height = Number(box[3]) || 0;
+    if (width < EXTRA_CLICKABLE_MIN_PX || height < EXTRA_CLICKABLE_MIN_PX) return false;
+    return width * height <= maxArea;
+  };
+
+  /** nodeIndex of everything the AX render already gave a uid this pass. */
+  const minted = new Set();
+  const mintedIds = opts?.mintedBackendIds;
+  if (mintedIds && typeof mintedIds.has === "function") {
+    for (let index = 0; index < count; index += 1) {
+      if (mintedIds.has(backendIds[index])) minted.add(index);
+    }
+  }
+  // A card that CONTAINS a real link or button is not the target — the control
+  // inside it is, and listing the card too spends two uids on one click. Marked
+  // by climbing from each minted node once rather than searching per candidate.
+  const holdsMinted = new Set();
+  for (const index of minted) {
+    let at = parentOf(index);
+    for (let hop = 0; at >= 0 && hop < EXTRA_ANCESTOR_HOPS; hop += 1) {
+      if (holdsMinted.has(at)) break;
+      holdsMinted.add(at);
+      at = parentOf(at);
+    }
+  }
+  const insideMinted = (index) => {
+    let at = parentOf(index);
+    for (let hop = 0; at >= 0 && hop < EXTRA_ANCESTOR_HOPS; hop += 1) {
+      if (minted.has(at)) return true;
+      at = parentOf(at);
+    }
+    return false;
+  };
+
+  const surviving = [];
+  for (const index of [...candidates].sort((a, b) => a - b)) {
+    if (!passesGuards(index)) continue;
+    if (minted.has(index) || holdsMinted.has(index) || insideMinted(index)) continue;
+    surviving.push(index);
+  }
+  // Outermost wins: a tile's inner overlay is the same click, and the whole tile
+  // box is what a person aims at.
+  const survivingSet = new Set(surviving);
+  const outermost = surviving.filter((index) => {
+    let at = parentOf(index);
+    for (let hop = 0; at >= 0 && hop < EXTRA_ANCESTOR_HOPS; hop += 1) {
+      if (survivingSet.has(at)) return false;
+      at = parentOf(at);
+    }
+    return true;
+  });
+  const kept = outermost.slice(0, limit);
+  // A budget already spent by an earlier document still has to COUNT what it
+  // leaves behind: silently answering nothing here would let a page's second
+  // document vanish without the truncation notice ever being printed.
+  if (!kept.length) return { items: [], more: outermost.length };
+
+  const childrenOf = new Map();
+  for (let index = 0; index < count; index += 1) {
+    const parent = parentOf(index);
+    if (parent < 0) continue;
+    const kin = childrenOf.get(parent);
+    if (kin) kin.push(index);
+    else childrenOf.set(parent, [index]);
+  }
+  const descendantsOf = (index) => {
+    const out = [];
+    const queue = [...(childrenOf.get(index) || [])];
+    while (queue.length && out.length < EXTRA_LABEL_SCAN_MAX) {
+      const at = queue.shift();
+      out.push(at);
+      const kin = childrenOf.get(at);
+      if (kin) queue.push(...kin);
+    }
+    return out;
+  };
+  /** One node's attributes as { name: value } — DOMSnapshot ships them flat. */
+  const attrsOf = (index) => {
+    const flat = attributes[index] || [];
+    const attrs = {};
+    for (let i = 0; i + 1 < flat.length; i += 2) attrs[str(flat[i])] = str(flat[i + 1]);
+    return attrs;
+  };
+
+  // What the element says it is, in the order a person would read it: its own
+  // label, then the alt text of what it draws (a thumbnail IS an <img> often
+  // enough), then the words rendered inside it. Nothing here can tell a tile
+  // apart on its own, which is why the hint rides along too.
+  const labelOf = (index) => {
+    const attrs = attrsOf(index);
+    const own = clip(attrs["aria-label"] || attrs.title, EXTRA_LABEL_MAX);
+    if (own) return own;
+    const alts = [];
+    const words = [];
+    for (const at of descendantsOf(index)) {
+      if (str(nodeNames[at]).toUpperCase() === "IMG") {
+        const alt = clip(attrsOf(at).alt, EXTRA_LABEL_MAX);
+        if (alt) alts.push(alt);
+      }
+      const slot = layoutAt.get(at);
+      const text = slot === undefined ? "" : clip(str(textOf[slot]), EXTRA_LABEL_MAX);
+      if (text) words.push(text);
+    }
+    return clip((alts.length ? alts : words).join(" "), EXTRA_LABEL_MAX);
+  };
+  const hintOf = (index) => {
+    const attrs = attrsOf(index);
+    const tag = str(nodeNames[index]).toLowerCase();
+    const id = attrs.id ? `#${attrs.id.trim().split(/\s+/)[0]}` : "";
+    const classes = attrs.class ? attrs.class.trim().split(/\s+/).filter(Boolean).slice(0, 2) : [];
+    return clip(`${tag}${id}${classes.map((one) => `.${one}`).join("")}`, EXTRA_HINT_MAX);
+  };
+
+  return {
+    items: kept.map((index) => ({
+      backendNodeId: backendIds[index],
+      label: labelOf(index),
+      hint: hintOf(index),
+    })),
+    more: outermost.length - kept.length,
+  };
 }
 
 /**

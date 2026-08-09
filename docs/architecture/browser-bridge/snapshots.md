@@ -120,6 +120,43 @@
   chars, no value) rewrites that line to `image "음식점 <shop name>"` and is consumed — it never opens a
   run, joins a row, or mints anything (`pendingMarker`; `format()` returns `{line, uid, suffix}` so the
   rewrite cannot mint a second uid).
+- **A FULL snapshot also reports what the accessibility tree cannot see at all: DOM-clickable elements.**
+  VOC field case: thumbnail grids built from bare `<div>`/`<canvas>` (a click listener and/or
+  `cursor:pointer`, no role, no name, no tabindex) have NO accessibility-tree entry, so the walk minted no
+  uid and the agent could not click a card it could plainly see in a screenshot — the one failure the
+  image-uid and named-container rules above do not reach, because there is no AX node to attach a uid to.
+  After the tree renders, the UNSCOPED path additionally calls `DOMSnapshot.captureSnapshot`
+  (`computedStyles: ["cursor"]`, root session only — newly allowlisted, read-only, executes no page JS,
+  the same exfiltration class as `getFullAXTree`) and appends a bounded trailing
+  `clickable but not in the accessibility tree (DOM click listeners / pointer cursor):` section of
+  `[e123] clickable "<label>" (dom: div#thumb.card)` lines. TWO signals, because neither alone finds the
+  field case: Chrome's own `isClickable` (a real click listener ON the node) MISSES React-style ROOT
+  DELEGATION entirely — measured, not assumed, and the reason the second signal exists — while
+  pointer-cursor nodes catch those, taken at the BOUNDARY (the outermost element that INTRODUCES
+  `cursor:pointer`) because the property inherits and a grid would otherwise report every descendant of
+  every card. The guards all say "this is not the real target": BODY/HTML dropped, zero-area and
+  < 12×12 boxes dropped, boxes covering > 50% of the viewport dropped (delegated containers and
+  backdrops), any element whose backendNodeId — or an ancestor's, or a descendant's — ALREADY minted a
+  uid in this render dropped (the AX element is the target; the DOM node around it is its wrapper), and
+  among nested survivors the outermost wins. Capped at 40 in document order with an explicit "N more"
+  atom when it truncates, never silently: a cap the agent cannot see is indistinguishable from the
+  element not existing, which is the very bug this section fixes. Label and hint are derived PURELY from
+  the DOMSnapshot payload already in hand (aria-label → title → descendant `img` alt → descendant text;
+  hint = `tag#id.classes`), so the whole section costs ZERO extra CDP round trips beyond that one
+  capture — no `describeNode` budget like rule 9's DOM hints. Uids ride the ordinary `mintUid`/`uidByNode`
+  maps, so stability, document-lifetime invalidation and click/click_at/hover resolution all work with NO
+  new op and no new wire field. Scoped and hollow-scope renders are unchanged — a deliberate v1 boundary
+  (the guards are tuned against a whole-viewport picture; the hollow note now points at the full snapshot
+  instead) — and `wait_for`'s internal match loop opts out (`withExtraClickables: false`): its 500ms
+  polls stopped returning a snapshot at all in 0.16.0 precisely to stay cheap, and a whole-document
+  serialization per poll would reverse that; the element becomes reachable one action later, in the
+  settle tail's enriched snapshot. The truncation notice names the recoveries that genuinely work
+  (screenshot + pixel click_at, or narrowing what the page shows), because scrolling cannot change a
+  document-order selection and a scoped snapshot lacks the section entirely. Any CDP failure skips
+  enrichment SILENTLY: it is an addition, never a new way for a snapshot
+  to fail. Extension-side only (`axtree.js` + `background.js`, manifest 0.18.0), so
+  `BROWSER_EXTENSION_MIN_COMPATIBLE` stays put — an old build simply lacks the section, a degrade rather
+  than a break — and `snapshot`'s tool description says "MAY end with" for exactly that reason.
 - **A link is never folded out of RUNNING PROSE, and the reading view keeps links in their sentence.**
   byHref folding deleted Wikipedia's mid-sentence "log in or create an account" (same href as the
   Personal-tools menu link printed far above), leaving "You need to and be autoconfirmed". An open
@@ -155,10 +192,17 @@
   page LOADED at an anchor reports one) is resolved ONCE per render and compared via `stripFragment`, so
   a `#sec` pointing at ANOTHER page stays a real destination and folds as before.
   Three later rules answer the same class of failure:
-  (5) NAMED `region`/`application` containers mint uids (`NAMED_CONTAINER_UID_ROLES`) — a map's drawn
-  body has no accessible children at all, so the container's own uid is the only thing click_at's uid
+  (5) NAMED `region`/`application` containers mint uids (`NAMED_CONTAINER_UID_ROLES`) — a map's
+  drawn body has no accessible children at all, so the container's own uid is the only thing click_at's uid
   mode can aim at; nameless ones stay structure, and `region` remains in `OPAQUE_NAME_ROLES` (a uid says
-  "actionable", not "my name covers my subtree"). (6) `renderAxTree` falls back to the AX `description`
+  "actionable", not "my name covers my subtree"). `canvas`/`Canvas` sit in BOTH sets too, but their uid
+  does not come from here: every canvas mints through `INTERACTIVE_ROLES`, named or not (a real canvas is
+  usually nameless, and Chrome computes a plain `<canvas>` as CamelCase `Canvas` — probe-measured), the
+  field fix that keeps diagram editors and vision-off fraction clicks reachable. Their membership here is
+  the SURFACE half of the meaning: `SURFACE_ROLES` now DERIVES from this set (one list, so the two cannot
+  drift), and the opaque entry keeps a canvas's aria-label — which never comes from what it draws — from
+  suppressing its fallback text as echo.
+  (6) `renderAxTree` falls back to the AX `description`
   (where a `title` attribute lands) when an interactive node has neither name nor value, so a page of
   icon-only `button ""` lines becomes distinguishable; it never replaces a real name and never feeds
   ancestor coverage. (7) Echo suppression is TWO-layered: per-node token matching, plus a RUN-level
