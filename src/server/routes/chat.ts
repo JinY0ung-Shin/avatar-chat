@@ -1317,6 +1317,10 @@ export function createChatRouter({
         // Browser screenshots auto-shared as file cards this run — own budget,
         // separate from the share_file/show_file caps (see chatFiles.ts).
         let sharedScreenshotCount = 0;
+        // Documents the model shared via share_file this run. Counted on its own
+        // rather than off `shownAttachments`, which also carries the screenshot
+        // auto-share's kind:"file" cards — a browsing loop must not spend this cap.
+        let sharedFileCount = 0;
         // Visual-canvas artifacts (#50) now persist to the dedicated canvas tables as
         // they are shown (see the onCanvas handler), with version history — they no
         // longer ride the assistant message's response JSON.
@@ -2242,8 +2246,7 @@ export function createChatRouter({
                 };
               },
               onShareFile: async (requestData) => {
-                const sharedFiles = shownAttachments.filter((a) => a.kind === "file").length;
-                if (sharedFiles >= MAX_CHAT_FILES_PER_MESSAGE) {
+                if (sharedFileCount >= MAX_CHAT_FILES_PER_MESSAGE) {
                   return {
                     behavior: "error",
                     message: `This turn already shared ${MAX_CHAT_FILES_PER_MESSAGE} files. Do not share more in the same response.`,
@@ -2275,6 +2278,7 @@ export function createChatRouter({
                   } as const;
                   return { behavior: "error", message: messages[result.error] };
                 }
+                sharedFileCount += 1;
                 shownAttachments.push(result.attachment);
                 emitRunEvent(runId, "file", {
                   runId,

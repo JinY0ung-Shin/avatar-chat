@@ -23,7 +23,11 @@ import {
 
 /** Per-file byte cap. Documents run bigger than chat images (decks with media). */
 export const MAX_CHAT_FILE_BYTES = 30 * 1024 * 1024;
-/** Max download-card files the agent may share per assistant turn. */
+/**
+ * Max download-card files the agent may share per assistant turn. Counts
+ * `share_file` calls ONLY — the screenshot auto-share writes the same kind of
+ * card but rides {@link MAX_SHARED_SCREENSHOTS_PER_MESSAGE} instead.
+ */
 export const MAX_CHAT_FILES_PER_MESSAGE = 3;
 /**
  * Max browser screenshots auto-shared to the user per assistant turn. Its own

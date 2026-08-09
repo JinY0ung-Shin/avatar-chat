@@ -1638,6 +1638,64 @@ describe("publishing images and documents mid-turn (onFile / onShareFile)", () =
     expect(assistant.attachments!.filter((a) => a.kind === "image" && a.hidden)).toHaveLength(4);
   });
 
+  it("keeps the screenshot auto-share out of the share_file document budget", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "shotdoc").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const shares: FileOutputResult[] = [];
+    const notes: (string | undefined)[] = [];
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
+      fs.writeFileSync(path.join(agentRequest.cwd!, "notes.md"), "# 회의록");
+      const capture = async () => {
+        const result = await events.onBrowser!({ op: "screenshot" });
+        notes.push(result.behavior === "ok" ? result.shareNote : "ERROR");
+      };
+      // Interleaved: each capture publishes a kind:"file" card of its own, which
+      // must leave the document cap untouched.
+      for (let i = 0; i < MAX_CHAT_FILES_PER_MESSAGE; i++) {
+        await capture();
+        shares.push(await events.onShareFile!({ path: "notes.md" }));
+      }
+      shares.push(await events.onShareFile!({ path: "notes.md" })); // over the document cap
+      // A spent document cap does not stop capturing either: the browsing loop
+      // runs on to its OWN budget.
+      for (let i = MAX_CHAT_FILES_PER_MESSAGE; i <= MAX_SHARED_SCREENSHOTS_PER_MESSAGE; i++) {
+        await capture();
+      }
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "캡처와 문서" };
+    };
+
+    await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-shotdoc", message: "캡처하고 문서도" },
+      () => ({ ok: true, imageBase64: JPEG_BYTES.toString("base64") }),
+    );
+
+    // Every document still lands after the captures that preceded it…
+    expect(shares.slice(0, MAX_CHAT_FILES_PER_MESSAGE).every((r) => r.behavior === "shown")).toBe(true);
+    // …and the cap still fires, counting share_file calls alone.
+    const overflow = shares[MAX_CHAT_FILES_PER_MESSAGE];
+    expect(overflow.behavior).toBe("error");
+    if (overflow.behavior !== "error") return;
+    expect(overflow.message).toContain(`already shared ${MAX_CHAT_FILES_PER_MESSAGE} files`);
+
+    // The capture budget is likewise spent by captures alone.
+    expect(notes).toHaveLength(MAX_SHARED_SCREENSHOTS_PER_MESSAGE + 1);
+    expect(notes.filter((n) => n?.includes("also shared with the user"))).toHaveLength(
+      MAX_SHARED_SCREENSHOTS_PER_MESSAGE,
+    );
+    expect(notes[MAX_SHARED_SCREENSHOTS_PER_MESSAGE]).toContain("was NOT shared with the user");
+
+    const assistant = store.listMessages(ownerId, "conv-shotdoc").find((m) => m.role === "assistant")!;
+    expect(assistant.attachments!.filter((a) => a.kind === "file")).toHaveLength(
+      MAX_SHARED_SCREENSHOTS_PER_MESSAGE + MAX_CHAT_FILES_PER_MESSAGE,
+    );
+  }, LIVE);
+
   it("still delivers a previewable document when the render toolchain produces nothing", async () => {
     const { app } = boot();
     const owner = request.agent(app);
