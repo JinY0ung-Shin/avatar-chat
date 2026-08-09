@@ -18,6 +18,7 @@ import { createSkillShareRouter } from "./routes/skillShare.js";
 import { createChatRouter, conversationHistoryForPrompt, expandChatSlashCommand } from "./routes/chat.js";
 import { createAdminRouter } from "./routes/admin.js";
 import { createBrowserExtensionRouter } from "./routes/browserExtension.js";
+import { createBrowserClipboardRouter } from "./browserClipboard.js";
 
 export type { AppServices };
 export { conversationHistoryForPrompt, expandChatSlashCommand };
@@ -172,6 +173,7 @@ export function createApp(services = createServices()) {
   app.use(createSkillShareRouter(deps));
   app.use(createChatRouter(deps));
   app.use(createBrowserExtensionRouter(deps));
+  app.use(createBrowserClipboardRouter({ store }));
   app.use(createAdminRouter(deps));
 
   // Unknown API requests must stay API-shaped. Without this boundary, GET

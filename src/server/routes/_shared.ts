@@ -24,6 +24,20 @@ export interface AppServices {
   store: Store;
 }
 
+/**
+ * The absolute origin (`scheme://host`) the user's browser used to reach us,
+ * honouring the reverse proxy via `x-forwarded-host`/`x-forwarded-proto` the
+ * same way the browser-extension bundle stamping does (routes/browserExtension.ts)
+ * — behind the corporate proxy `req.protocol` reports the internal http hop.
+ * Null when no host header is present.
+ */
+export function requestOrigin(req: AuthenticatedRequest): string | null {
+  const host = req.get("x-forwarded-host") || req.get("host");
+  if (!host) return null;
+  const proto = (req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim();
+  return `${proto}://${host}`;
+}
+
 /** A small mutable holder for the model the SDK last reported (chat → admin). */
 export interface ObservedModelHolder {
   get(): string | null;

@@ -27,6 +27,7 @@ export const BROWSER_TOOL_NAMES = [
   "mcp__browser__new_tab",
   "mcp__browser__select_tab",
   "mcp__browser__close_tab",
+  "mcp__browser__copy_image",
 ] as const;
 
 /**
@@ -55,6 +56,21 @@ export interface BrowserToolsContext {
    * model.
    */
   vision?: boolean;
+  /**
+   * The Noah app's OWN public origin (e.g. `https://noah.corp.local`), used to
+   * build an absolute URL the agent can open with `new_tab` — the clipboard
+   * staging page is served by Noah itself. Wired by the caller elsewhere;
+   * absent when the run has no configured app origin.
+   */
+  appOrigin?: string;
+  /**
+   * Stage a local image file for the OS clipboard: reads the given image from
+   * the agent's workspace, holds its bytes server-side, and returns `{ path }`
+   * where `path` is a root-relative URL like `/browser-clip/<token>` to append
+   * to `appOrigin`. THROWS if the file is missing or is not an image. Wired by
+   * the caller elsewhere; absent when clipboard staging is not available.
+   */
+  stageClipboardImage?: (workspacePath: string) => Promise<{ path: string }>;
 }
 
 const DENIED =
@@ -1014,6 +1030,48 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           }),
           `${args.accept ? "Accepted" : "Dismissed"} the dialog.`,
         );
+      },
+    ),
+    tool(
+      "copy_image",
+      "Copy a local image file onto the user's clipboard so you can paste it into a page that has no upload " +
+        "route you can use (e.g. a Confluence page body). Give `path`, the image file to copy (the same kind " +
+        "of path you would hand to mcp__file_output). This returns a staging URL: open it with `new_tab`, " +
+        "`click` its '클립보드로 복사' button (that puts the image on the clipboard), then `select_tab` back to " +
+        'your target page and paste with `press_key` (key "v", modifiers ["Control"]). The image is ' +
+        "normalized to PNG. NOTE: this needs the Noah app's OWN origin to be in the browser-control " +
+        "allowlist, since you are opening a Noah page — if new_tab is refused for that origin, tell the user " +
+        "to add it in the extension's allowlist (설정 → 접근/보안).",
+      {
+        path: z
+          .string()
+          .min(1)
+          .max(1024)
+          .describe("Path to the image file to copy to the clipboard, e.g. a PNG/JPG file you created."),
+      },
+      async (args) => {
+        const denied = gate();
+        if (denied) return denied;
+        if (!ctx.stageClipboardImage || !ctx.appOrigin) {
+          return text("Copying images to the clipboard is not available in this run.", true);
+        }
+        try {
+          const { path } = await ctx.stageClipboardImage(args.path);
+          const url = ctx.appOrigin + path;
+          return text(
+            "Image staged for the clipboard. Now: 1) open this URL with mcp__browser__new_tab: " +
+              url +
+              "  2) mcp__browser__click the button named '클립보드로 복사' (this copies the image to the OS " +
+              "clipboard)  3) mcp__browser__select_tab back to your target page, focus the editor, and " +
+              'mcp__browser__press_key with key "v" and modifiers ["Control"] to paste.  The staging link ' +
+              "expires in ~2 minutes.",
+          );
+        } catch (err) {
+          return text(
+            "Could not stage that image: " + (err instanceof Error ? err.message : String(err)),
+            true,
+          );
+        }
       },
     ),
   ];

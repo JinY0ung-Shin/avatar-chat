@@ -173,19 +173,21 @@ export type PublishWorkspaceImageResult =
   | { attachment: MessageAttachment }
   | { error: "OUTSIDE_WORKSPACE" | "NOT_FOUND" | "NOT_FILE" | "EMPTY" | "TOO_LARGE" | "UNSUPPORTED" | "READ_FAILED" };
 
+export type ReadWorkspaceImageResult =
+  | { buffer: Buffer; mediaType: ImageMediaType; sourcePath: string }
+  | { error: "OUTSIDE_WORKSPACE" | "NOT_FOUND" | "NOT_FILE" | "EMPTY" | "TOO_LARGE" | "UNSUPPORTED" | "READ_FAILED" };
+
 /**
- * Copy a local image from one of this run's explicit working roots into the
- * owner-scoped conversation image store. The browser never receives the source
- * path. MIME is detected from file bytes, not from the extension supplied by a
- * repo or download.
+ * Resolve a run-supplied image path against its allowed working roots and read
+ * its bytes, detecting MIME from CONTENT (never the caller-supplied extension).
+ * The containment discipline (realpath both sides, `isInside`, size cap) is
+ * shared with {@link publishWorkspaceImage} and the clipboard-staging wiring
+ * (runPlan → browserClipboard) so they can't drift on path safety.
  */
-export function publishWorkspaceImage(
-  config: AppConfig,
-  conversationId: string,
-  inputPath: string,
+export function readWorkspaceImage(
   allowedRoots: string[],
-  caption?: string,
-): PublishWorkspaceImageResult {
+  inputPath: string,
+): ReadWorkspaceImageResult {
   const roots = allowedRoots.flatMap((root) => {
     try {
       return [fs.realpathSync(root)];
@@ -227,6 +229,25 @@ export function publishWorkspaceImage(
   if (buffer.length > MAX_CHAT_IMAGE_BYTES) return { error: "TOO_LARGE" };
   const mediaType = detectImageMediaType(buffer);
   if (!mediaType) return { error: "UNSUPPORTED" };
+  return { buffer, mediaType, sourcePath: source };
+}
+
+/**
+ * Copy a local image from one of this run's explicit working roots into the
+ * owner-scoped conversation image store. The browser never receives the source
+ * path. MIME is detected from file bytes, not from the extension supplied by a
+ * repo or download.
+ */
+export function publishWorkspaceImage(
+  config: AppConfig,
+  conversationId: string,
+  inputPath: string,
+  allowedRoots: string[],
+  caption?: string,
+): PublishWorkspaceImageResult {
+  const read = readWorkspaceImage(allowedRoots, inputPath);
+  if ("error" in read) return read;
+  const { buffer, mediaType, sourcePath: source } = read;
 
   const id = crypto.randomUUID();
   const dir = chatImagesDir(config, conversationId);

@@ -1284,6 +1284,14 @@ export interface AgentRequest {
    */
   browserEnabled?: boolean;
   /**
+   * The Noah app's OWN public origin (scheme + host) as the user's browser
+   * reaches it, derived from the chat request (honouring the reverse proxy).
+   * Lets browser-driving tools build an absolute URL to a Noah-served page — the
+   * clipboard-staging page `copy_image` returns — that the agent opens with
+   * `new_tab`. Owner/interactive turns only; undefined when it can't be derived.
+   */
+  appOrigin?: string;
+  /**
    * This interactive turn can publish PNG/JPEG/WebP/GIF files from its allowed
    * working directories into the assistant bubble with `show_file`, and share
    * generated documents as download cards with `share_file`.

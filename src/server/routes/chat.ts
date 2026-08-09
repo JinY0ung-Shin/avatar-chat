@@ -103,6 +103,7 @@ import { workspaceDirFor } from "../workspace.js";
 import {
   apiError,
   isSafePathId,
+  requestOrigin,
   resolveAvatarSkillSources,
   safeString,
   type RouterDeps,
@@ -1595,6 +1596,10 @@ export function createChatRouter({
               // per-conversation scratch dir is exposed as an additional writable dir.
               cwd: activeRepoCwd ?? workspaceDir,
               additionalDirs: activeRepoCwd ? [workspaceDir] : undefined,
+              // Noah's own public origin, so copy_image can hand the agent an
+              // absolute clipboard-staging URL to open with new_tab. Derived
+              // from THIS request to match the origin the user's browser is on.
+              appOrigin: requestOrigin(req) ?? undefined,
               activeRepoName: activeRepoName ?? undefined,
               resumeSessionId,
               conversationHistory,
