@@ -157,10 +157,21 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       // renames are FOLLOWED identically wherever they are noticed. Under the
       // repo lock: it reads git history off this clone, which a concurrent
       // ensureClone may be removing and rebuilding (ensureClone above has
-      // already released the lock, so this is not nested).
-      await withRepoLock(repoRoot, () =>
-        reconcileOwnerSharedSkills(store, repoRoot, req.user!.id),
-      );
+      // already released the lock, so this is not nested). Best-effort like the
+      // commit-path reconcile: Express 4 routes an async handler's rejection
+      // nowhere (see src/server/index.ts), so an uncaught throw here would
+      // stall this request until the client's 120s abort — while a reconcile
+      // failure only means stale rows, and the tab can still render.
+      try {
+        await withRepoLock(repoRoot, () =>
+          reconcileOwnerSharedSkills(store, repoRoot, req.user!.id),
+        );
+      } catch (error) {
+        logger.warn(
+          { err: error, userId: req.user!.id },
+          "skill-share reconcile failed; serving the tab unreconciled",
+        );
+      }
       const sharedRows = store.listSharedSkillsByOwner(req.user!.id);
       // 전수된 횟수 — keyed by skill name, so a currently-unshared skill keeps
       // showing its history (events outlive the share row).

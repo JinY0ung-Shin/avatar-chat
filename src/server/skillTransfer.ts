@@ -956,10 +956,15 @@ export async function rescueSharedSkillRename(
   repoRoot: string,
   row: RenameSubject,
 ): Promise<{ to: string } | null> {
-  const bySlug = new Map(listRepoSkills(repoRoot).map((entry) => [entry.slug, entry]));
-  if (bySlug.has(row.skillName) || !fs.existsSync(path.join(repoRoot, ".git"))) {
+  // Every preview runs this, and "the dir is still there" is the overwhelmingly
+  // common answer — give it with one stat instead of parsing every skill's
+  // frontmatter (listRepoSkills reads each SKILL.md). The SKILL.md-exists test
+  // is listRepoSkills' membership rule for one slug.
+  const presentMd = resolveInRepo(repoRoot, `${SKILL_DIR}/${row.skillName}/SKILL.md`);
+  if ((presentMd && fs.existsSync(presentMd)) || !fs.existsSync(path.join(repoRoot, ".git"))) {
     return null; // the dir is present (so this was no rename), or the clone is mid-rebuild
   }
+  const bySlug = new Map(listRepoSkills(repoRoot).map((entry) => [entry.slug, entry]));
   const move = (await resolveSkillDirMoves(repoRoot, new Set([row.skillName]))).get(
     row.skillName,
   );
