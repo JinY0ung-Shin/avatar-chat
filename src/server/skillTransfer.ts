@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
 import { sanitizeName } from "./marketplace.js";
 import {
   SKILL_DIR,
@@ -12,8 +14,12 @@ import {
   realpathContained,
   type KnowledgeRepoContext,
 } from "./knowledgeRepo.js";
+import { git } from "./repoGitCore.js";
+import { resolveShareCopy } from "../shared/skillOriginMatch.js";
 import { skillMdMeta } from "./agent/skillDiscovery.js";
 import type { SharedSkill, SharedSkillManifest } from "./types.js";
+
+const execFileAsync = promisify(execFile);
 
 // Skill transfer between knowledge repos (#skill-share): the "learn" half of
 // skill sharing. The share rows (store/avatars.ts) are metadata only; THIS
@@ -441,31 +447,342 @@ function hashCache(repoRoot: string): (slug: string) => string | null {
   };
 }
 
+// ---- Rename EVIDENCE, read out of git ---------------------------------------
+// A share follows a renamed directory only because GIT reported a rename, never
+// because some other directory happens to hold the same bytes: an identical
+// copy elsewhere made a deletion look like a move, and a `git mv` into an
+// existing private directory could carry a share onto content it never
+// published. Everything below reads history — nothing infers a move from
+// content alone.
+
+/** How far back the evidence is looked for (commits, newest first). */
+const MOVE_HISTORY_COMMITS = 30;
+/** Longest chain of consecutive renames one row is followed through. */
+const MOVE_CHAIN_CAP = 5;
+
+/** What git says became of one `skills/<slug>/` directory. */
+type SkillDirMove =
+  | {
+      kind: "renamed";
+      to: string;
+      /** The target did not exist in the tree the rename was made against. */
+      targetFresh: boolean;
+    }
+  | { kind: "deleted" };
+
+/** One `--name-status` entry, already detokenized. */
+type DiffEntry =
+  | { status: "R"; from: string; to: string }
+  | { status: "A" | "D"; path: string };
+
+/** The skill-directory events of ONE diff (see skillDirEvents). */
+interface SkillDirEvents {
+  /** slug → the single slug its files moved to. */
+  renamedTo: Map<string, string>;
+  /** slugs whose SKILL.md was deleted outright. */
+  deleted: Set<string>;
+  /** slugs whose SKILL.md was added outright. */
+  created: Set<string>;
+  /** slugs that RECEIVED another slug's files. */
+  renamedInto: Set<string>;
+}
+
+/** One step of the newest-first diff timeline the search walks. */
+interface MoveTimelineDiff {
+  /** The ref the diff was taken AGAINST — its parent tree. */
+  parentRef: string;
+  /** `--name-status -z` output, fetched on demand. */
+  diff: () => Promise<string>;
+}
+
 /**
- * Where a share whose directory vanished may have MOVED to: a skill dir that is
- * present, not itself shared, and carries no origin marker (a learned copy is
- * never the new home of the owner's own share). Content-identity is the match:
- * hashSkillDir digests relative paths + bytes and never the slug, so a pure
- * `git mv` keeps the hash.
- *
- * Deliberately conservative — the match must be UNIQUE. Zero candidates is an
- * ordinary deletion, and two identical dirs are a copy the reconciler cannot
- * tell apart from a move; both leave the caller to unshare, which loses only
- * the row (the skill and its learn history stay).
+ * Split `--name-status -z` output into entries. NUL-delimited output is the
+ * whole point: git QUOTES non-ASCII paths in its default textual form
+ * (`"skills/\353\260\260…"`), so a Korean skill directory read that way never
+ * matches the tree. A rename token carries two paths, everything else one.
  */
-function matchRenameByHash(
-  candidates: RepoSkillEntry[],
-  contentHash: string | null,
-  hashOf: (slug: string) => string | null,
-  claimed: Set<string>,
-): RepoSkillEntry | null {
-  if (!contentHash) {
-    return null;
+function parseNameStatus(stdout: string): DiffEntry[] {
+  const tokens = stdout.split("\0");
+  const entries: DiffEntry[] = [];
+  for (let i = 0; i < tokens.length; ) {
+    const status = tokens[i];
+    i += 1;
+    if (!status) {
+      continue; // trailing NUL
+    }
+    // R and C carry two paths; everything else one. C never appears without
+    // `-C`, but consuming it correctly keeps one stray token from desyncing the
+    // whole stream.
+    if (status.startsWith("R") || status.startsWith("C")) {
+      const from = tokens[i];
+      const to = tokens[i + 1];
+      i += 2;
+      if (from && to && status.startsWith("R")) {
+        entries.push({ status: "R", from, to });
+      }
+      continue;
+    }
+    const target = tokens[i];
+    i += 1;
+    if (target && (status[0] === "A" || status[0] === "D")) {
+      entries.push({ status: status[0], path: target });
+    }
   }
-  const hits = candidates.filter(
-    (entry) => !claimed.has(entry.slug) && hashOf(entry.slug) === contentHash,
-  );
-  return hits.length === 1 ? hits[0] : null;
+  return entries;
+}
+
+/** A repo path inside a skill directory, split into its slug and its role. */
+function skillDirRef(repoPath: string): { slug: string; isSkillMd: boolean } | null {
+  const match = new RegExp(`^${SKILL_DIR}/([^/]+)/(.+)$`).exec(repoPath);
+  return match ? { slug: match[1], isSkillMd: match[2] === "SKILL.md" } : null;
+}
+
+/**
+ * Reduce one diff to per-directory events.
+ *
+ * A renamed SKILL.md decides its directory's move on its own. The other files
+ * only VOTE, and only for a directory that also LOST its SKILL.md — deleted (a
+ * commit rewriting SKILL.md enough is reported as delete+add rather than a
+ * rename, which is the case the votes exist for) or taken over by another
+ * skill's files. Without that condition a single auxiliary file moved between
+ * two LIVING skills would read as a rename of the whole directory. A directory
+ * whose files scattered across several targets yields nothing either way.
+ *
+ * A rename AWAY beats one arriving in the same diff, which is what lets a
+ * one-commit swap (a→c, b→a) resolve: `a` left for `c`, and `b` moving in
+ * concerns only whoever is following `b`.
+ */
+function skillDirEvents(entries: DiffEntry[]): SkillDirEvents {
+  const renamedTo = new Map<string, string>();
+  const votes = new Map<string, Set<string>>();
+  const receivers = new Set<string>();
+  const addedMd = new Set<string>();
+  const deletedMd = new Set<string>();
+  for (const entry of entries) {
+    if (entry.status === "R") {
+      const fromRef = skillDirRef(entry.from);
+      const toRef = skillDirRef(entry.to);
+      if (!fromRef || !toRef || fromRef.slug === toRef.slug) {
+        continue;
+      }
+      if (fromRef.isSkillMd && toRef.isSkillMd) {
+        renamedTo.set(fromRef.slug, toRef.slug);
+      }
+      const seen = votes.get(fromRef.slug) ?? new Set<string>();
+      seen.add(toRef.slug);
+      votes.set(fromRef.slug, seen);
+      receivers.add(toRef.slug);
+      continue;
+    }
+    const ref = skillDirRef(entry.path);
+    if (!ref?.isSkillMd) {
+      continue;
+    }
+    (entry.status === "A" ? addedMd : deletedMd).add(ref.slug);
+  }
+  for (const [slug, targets] of votes) {
+    if (
+      !renamedTo.has(slug) &&
+      (deletedMd.has(slug) || receivers.has(slug)) &&
+      targets.size === 1
+    ) {
+      renamedTo.set(slug, [...targets][0]);
+    }
+  }
+  const movedAway = new Set(renamedTo.keys());
+  return {
+    renamedTo,
+    deleted: new Set([...deletedMd].filter((slug) => !movedAway.has(slug))),
+    created: new Set(
+      [...addedMd].filter((slug) => !movedAway.has(slug) && !deletedMd.has(slug)),
+    ),
+    renamedInto: new Set([...receivers].filter((slug) => !movedAway.has(slug))),
+  };
+}
+
+/**
+ * The working tree against HEAD, INCLUDING untracked files — the uncommitted
+ * step of the timeline.
+ *
+ * `move_file` renames a directory with `fs.rename` and leaves it UNSTAGED, so a
+ * plain `git diff HEAD` sees only the vanished side and reports a rename the
+ * avatar is about to commit as a deletion — which reconciliation now treats as
+ * a hard revoke. Staging into a THROWAWAY index lets git's own `-M` detection
+ * see both sides; the clone's real index, refs and worktree are never touched.
+ * The index starts EMPTY on purpose: `add -A` then describes the whole tree, so
+ * `diff-index --cached HEAD` is exactly worktree-vs-HEAD. GIT_INDEX_FILE is why
+ * this one call can't go through repoGitCore's `git` (no env there).
+ */
+async function worktreeNameStatus(repoRoot: string): Promise<string> {
+  const indexFile = path.join(repoRoot, ".git", `noah-reconcile-${crypto.randomUUID()}.index`);
+  const run = (args: string[]) =>
+    execFileAsync("git", ["-C", repoRoot, ...args], {
+      timeout: 120_000,
+      env: { ...process.env, GIT_INDEX_FILE: indexFile },
+    });
+  try {
+    await run(["add", "-A"]);
+    const { stdout } = await run([
+      "diff-index",
+      "-M",
+      "--diff-filter=ARD",
+      "--name-status",
+      "--cached",
+      "-z",
+      "HEAD",
+    ]);
+    return stdout;
+  } finally {
+    await fsp.rm(indexFile, { force: true });
+  }
+}
+
+/** The newest-first diff timeline: uncommitted work, then recent commits. */
+async function buildMoveTimeline(repoRoot: string): Promise<MoveTimelineDiff[]> {
+  const timeline: MoveTimelineDiff[] = [
+    { parentRef: "HEAD", diff: () => worktreeNameStatus(repoRoot) },
+  ];
+  let stdout: string;
+  try {
+    ({ stdout } = await git(repoRoot, [
+      "log",
+      "-n",
+      String(MOVE_HISTORY_COMMITS),
+      "--format=%H",
+    ]));
+  } catch {
+    return timeline; // no history yet (or unreadable) — the worktree is all there is
+  }
+  for (const hash of stdout.split("\n").map((line) => line.trim()).filter(Boolean)) {
+    timeline.push({
+      parentRef: `${hash}~1`,
+      diff: async () =>
+        (
+          await git(repoRoot, [
+            "diff-tree",
+            "-r",
+            "-M",
+            "--diff-filter=ARD",
+            "--name-status",
+            "--no-commit-id",
+            "-z",
+            hash,
+          ])
+        ).stdout,
+    });
+  }
+  return timeline;
+}
+
+/**
+ * What git can still attest to about each of `names`. Diffs are parsed only
+ * when the search reaches them, and the FIRST (newest) diff carrying an event
+ * for a directory decides its fate:
+ *
+ *  - renamed away → the target is followed onward through NEWER diffs only, so
+ *    a chain of renames resolves and a target later replaced by something else
+ *    yields NOTHING (better no answer than the wrong directory);
+ *  - deleted → deleted, even if identical bytes live elsewhere;
+ *  - created, or another directory renamed INTO this name → nothing: this
+ *    incarnation began here, and an older rename of a previous one must never
+ *    be applied to it.
+ *
+ * Best effort: any git failure ends the search with what it has, and the caller
+ * falls back to its no-evidence branch.
+ */
+async function resolveSkillDirMoves(
+  repoRoot: string,
+  names: ReadonlySet<string>,
+): Promise<Map<string, SkillDirMove>> {
+  const moves = new Map<string, SkillDirMove>();
+  if (names.size === 0) {
+    return moves;
+  }
+  const timeline = await buildMoveTimeline(repoRoot);
+  const parsed = new Map<number, SkillDirEvents | null>();
+  const eventsAt = async (index: number): Promise<SkillDirEvents | null> => {
+    if (!parsed.has(index)) {
+      try {
+        parsed.set(index, skillDirEvents(parseNameStatus(await timeline[index].diff())));
+      } catch {
+        parsed.set(index, null);
+      }
+    }
+    return parsed.get(index) ?? null;
+  };
+  const targetFresh = async (index: number, slug: string): Promise<boolean> => {
+    try {
+      const { stdout } = await git(repoRoot, [
+        "ls-tree",
+        "--name-only",
+        "-z",
+        timeline[index].parentRef,
+        `${SKILL_DIR}/`,
+      ]);
+      return !stdout.split("\0").includes(`${SKILL_DIR}/${slug}`);
+    } catch {
+      return true; // nothing to compare against (a root commit) — a new location
+    }
+  };
+  /** Follow one slug forward through the diffs NEWER than `newerThan`. */
+  const follow = async (
+    slug: string,
+    newerThan: number,
+    depth: number,
+  ): Promise<SkillDirMove | { kind: "settled" } | null> => {
+    if (depth > MOVE_CHAIN_CAP) {
+      return null;
+    }
+    for (let index = 0; index < newerThan; index += 1) {
+      const events = await eventsAt(index);
+      if (!events) {
+        return null;
+      }
+      const to = events.renamedTo.get(slug);
+      if (to) {
+        const onward = await follow(to, index, depth + 1);
+        if (!onward) {
+          return null;
+        }
+        return onward.kind === "settled"
+          ? { kind: "renamed", to, targetFresh: await targetFresh(index, to) }
+          : onward; // deleted downstream, or the chain runs on
+      }
+      if (events.deleted.has(slug)) {
+        return { kind: "deleted" };
+      }
+      if (events.created.has(slug) || events.renamedInto.has(slug)) {
+        return null;
+      }
+    }
+    return { kind: "settled" }; // nothing happened to it in the window
+  };
+  for (const name of names) {
+    const outcome = await follow(name, timeline.length, 0);
+    if (outcome && outcome.kind !== "settled") {
+      moves.set(name, outcome);
+    }
+  }
+  return moves;
+}
+
+/**
+ * Whether `move` may carry a row onto `slug`. Evidence says a rename happened;
+ * this says the destination is a legitimate home for THIS share.
+ *
+ * The content check is the consolidation guard: `git mv skills/a/SKILL.md` into
+ * an EXISTING directory is a rename to git, so without it a share would follow
+ * onto a directory whose other content was never published. Either the target
+ * still holds the row's bytes, or git renamed into a location that did not
+ * exist before (a genuine new home, which a rename+edit in one commit needs).
+ * A row with no fingerprint at all (an oversized tree) has only the latter.
+ */
+function renameTargetCorroborated(
+  move: { targetFresh: boolean },
+  row: { contentHash: string | null },
+  targetHash: string | null,
+): boolean {
+  return move.targetFresh || (row.contentHash !== null && targetHash === row.contentHash);
 }
 
 /**
@@ -473,18 +790,20 @@ function matchRenameByHash(
  * a re-snapshot or a followed rename bumps `updated_at` (the owner changed what
  * teammates see, so the listing may reorder).
  *
- * `renameHints` are authoritative when they resolve — the commit hook derives
- * them from `git diff -M`, which sees a rename the CONTENT hash cannot (a
- * rename plus an edit in the same commit). A hint that no longer holds (target
- * gone, already shared, a learned copy, or claimed earlier in this pass) falls
- * back to the hash match, and an unmatched row is unshared.
+ * A rename is followed ONLY on git's own evidence, and only onto a directory
+ * that corroborates it (renameTargetCorroborated). Everything that does not
+ * resolve falls back rather than guessing, because guessing can carry a share
+ * onto content its owner never published: a DELETION revokes even when
+ * byte-identical content sits elsewhere, a row whose directory is gone with
+ * nothing to explain it unshares, and a rename the safety checks reject leaves
+ * the row on the directory it still names. Unsharing costs only the row — the
+ * skill, its learn history and a group's blocks all stay.
  */
-export function reconcileOwnerSharedSkills(
+export async function reconcileOwnerSharedSkills(
   store: SharedSkillReconcileStore,
   repoRoot: string,
   ownerUserId: string,
-  opts: { renameHints?: Map<string, string> } = {},
-): SharedSkillReconcileResult {
+): Promise<SharedSkillReconcileResult> {
   const result: SharedSkillReconcileResult = {
     resnapshotted: [],
     renamed: [],
@@ -495,23 +814,102 @@ export function reconcileOwnerSharedSkills(
   if (rows.length === 0) {
     return result;
   }
+  // A clone being REBUILT has no `.git` and, for a moment, no working tree
+  // either (ensureClone removes it before re-cloning a repointed repo). Reading
+  // that as "every shared directory was deleted" would revoke the owner's
+  // shares wholesale — the callers' repo lock is the first belt, this is the
+  // second, since only this function knows the stakes.
+  if (!fs.existsSync(path.join(repoRoot, ".git"))) {
+    return result;
+  }
   const skills = listRepoSkills(repoRoot);
   const bySlug = new Map(skills.map((entry) => [entry.slug, entry]));
-  const occupied = new Set(rows.map((row) => row.skillName));
   const hashOf = hashCache(repoRoot);
-  const missing: SharedSkill[] = [];
 
+  // Drain first: a row whose dir turned into a LEARNED copy predates the
+  // refusal to re-share linked copies, and must not be followed anywhere.
+  const live: SharedSkill[] = [];
   for (const row of rows) {
-    const current = bySlug.get(row.skillName);
-    if (!current) {
-      missing.push(row);
-      continue;
-    }
-    // Legacy row: the dir now carries an origin marker, so this share predates
-    // the refusal to re-share linked copies. Drain it like a deleted dir.
-    if (readSkillOrigin(repoRoot, current.slug)) {
+    if (bySlug.has(row.skillName) && readSkillOrigin(repoRoot, row.skillName)) {
       store.unshareSkill(ownerUserId, row.skillName);
       result.drained.push(row.skillName);
+      continue;
+    }
+    live.push(row);
+  }
+  // EVERY live row is queried, not only the ones whose directory vanished: a
+  // swap committed in one step leaves a directory PRESENT under the old name
+  // holding foreign content, so evidence has to beat mere presence.
+  const moves = await resolveSkillDirMoves(
+    repoRoot,
+    new Set(live.map((row) => row.skillName)),
+  );
+
+  // Renames first, in dependency order: a row may be moving onto a name another
+  // row is about to vacate, so keep sweeping while anything still moves.
+  const swept = new Set<string>(); // the rename sweep is finished with this row
+  const handled = new Set<string>(); // …and it moved or unshared, so it is done
+  const claimed = new Set<string>();
+  const held = new Set(live.map((row) => row.skillName));
+  const unshare = (row: SharedSkill): void => {
+    store.unshareSkill(ownerUserId, row.skillName);
+    result.unshared.push(row.skillName);
+    held.delete(row.skillName);
+    swept.add(row.skillName);
+    handled.add(row.skillName);
+  };
+  const moving = live.filter((row) => moves.get(row.skillName)?.kind === "renamed");
+  for (let progress = true; progress; ) {
+    progress = false;
+    for (const row of moving) {
+      const move = moves.get(row.skillName);
+      if (swept.has(row.skillName) || move?.kind !== "renamed" || held.has(move.to)) {
+        continue;
+      }
+      const target = bySlug.get(move.to);
+      const moved =
+        target &&
+        !claimed.has(move.to) &&
+        !readSkillOrigin(repoRoot, move.to) &&
+        renameTargetCorroborated(move, row, hashOf(move.to))
+          ? store.renameSharedSkill(ownerUserId, row.skillName, move.to, {
+              displayName: target.name,
+              description: target.description,
+              contentHash: hashOf(move.to),
+              bumpUpdatedAt: true,
+            })
+          : null;
+      if (moved) {
+        claimed.add(move.to);
+        held.delete(row.skillName);
+        held.add(move.to);
+        swept.add(row.skillName);
+        handled.add(row.skillName);
+        result.renamed.push({ from: row.skillName, to: move.to });
+      } else if (bySlug.has(row.skillName)) {
+        // The evidence didn't survive the safety checks (target taken, a
+        // learned copy, or content that corroborates nothing) — but the row's
+        // OWN directory is still there, so the share stays where it is and the
+        // snapshot pass below refreshes it. Guessing further is what this
+        // whole path refuses to do.
+        swept.add(row.skillName);
+      } else {
+        unshare(row);
+      }
+      progress = true;
+    }
+  }
+
+  for (const row of live) {
+    if (handled.has(row.skillName)) {
+      continue;
+    }
+    const current = bySlug.get(row.skillName);
+    // Nothing left to describe — the directory is gone (or a leftover rename
+    // never resolved). A DELETION revokes even when the directory somehow
+    // reappeared: it is a decision, not an accident.
+    if (!current || moves.get(row.skillName)?.kind === "deleted") {
+      unshare(row);
       continue;
     }
     // Compare against the frontmatter SNAPSHOT, never the effective
@@ -522,7 +920,11 @@ export function reconcileOwnerSharedSkills(
     if (
       current.name !== row.displayName ||
       current.description !== row.snapshotDescription ||
-      currentHash !== row.contentHash
+      // A null hash is UNKNOWN (a tree past the transfer caps), not drift.
+      // shareSkill COALESCEs a null back to the stored one, so treating it as
+      // drift would re-fire every pass: the avatar would keep reporting share
+      // changes and every commit would re-sort teammates' 탐색.
+      (currentHash !== null && currentHash !== row.contentHash)
     ) {
       store.shareSkill(ownerUserId, {
         skillName: current.slug,
@@ -533,80 +935,57 @@ export function reconcileOwnerSharedSkills(
       result.resnapshotted.push(row.skillName);
     }
   }
-
-  if (missing.length === 0) {
-    return result;
-  }
-  const candidates = skills.filter(
-    (entry) => !occupied.has(entry.slug) && !readSkillOrigin(repoRoot, entry.slug),
-  );
-  // One candidate dir can only be the new home of ONE row: two rows racing for
-  // the same target are as ambiguous as two identical dirs.
-  const claimed = new Set<string>();
-  for (const row of missing) {
-    // A hint wins while it still resolves to a free candidate (an undefined
-    // hint simply matches no slug); otherwise the fingerprint decides.
-    const hinted = opts.renameHints?.get(row.skillName);
-    const target =
-      candidates.find((entry) => entry.slug === hinted && !claimed.has(entry.slug)) ??
-      matchRenameByHash(candidates, row.contentHash, hashOf, claimed);
-    if (target) {
-      const moved = store.renameSharedSkill(ownerUserId, row.skillName, target.slug, {
-        displayName: target.name,
-        description: target.description,
-        contentHash: hashOf(target.slug),
-        bumpUpdatedAt: true,
-      });
-      if (moved) {
-        claimed.add(target.slug);
-        result.renamed.push({ from: row.skillName, to: target.slug });
-        continue;
-      }
-    }
-    store.unshareSkill(ownerUserId, row.skillName);
-    result.unshared.push(row.skillName);
-  }
   return result;
 }
 
 /**
  * The VIEWER-path half of the above: a teammate's preview/learn found the
  * listing's source dir gone, before the owner's own commit/tab reconciled it.
- * Hash matching only — a viewer has no commit to derive rename hints from — and
- * `bumpUpdatedAt: false`, because a viewer action must never reorder the
- * owner's listing (same invariant as setSharedSkillContentHash).
+ * Same git evidence and the same corroboration as the owner path — matching by
+ * content hash alone is gone, because it could follow a DELETION onto an
+ * unrelated identical directory. `bumpUpdatedAt: false`, because a viewer
+ * action must never reorder the owner's listing (same invariant as
+ * setSharedSkillContentHash).
  *
  * Returns the new name on success; null (nothing changed) when the dir is still
- * there, the row is gone, or the match is not unique — the caller then prunes
+ * there, the row is gone, or the evidence doesn't hold — the caller then prunes
  * the stale row exactly as before.
  */
-export function rescueSharedSkillRename(
+export async function rescueSharedSkillRename(
   store: SharedSkillReconcileStore,
   repoRoot: string,
   row: RenameSubject,
-): { to: string } | null {
-  const skills = listRepoSkills(repoRoot);
-  if (skills.some((entry) => entry.slug === row.skillName)) {
-    return null; // the dir is present — whatever failed, it was not a rename
+): Promise<{ to: string } | null> {
+  const bySlug = new Map(listRepoSkills(repoRoot).map((entry) => [entry.slug, entry]));
+  if (bySlug.has(row.skillName) || !fs.existsSync(path.join(repoRoot, ".git"))) {
+    return null; // the dir is present (so this was no rename), or the clone is mid-rebuild
   }
+  const move = (await resolveSkillDirMoves(repoRoot, new Set([row.skillName]))).get(
+    row.skillName,
+  );
+  if (move?.kind !== "renamed") {
+    return null;
+  }
+  const target = bySlug.get(move.to);
   const occupied = new Set(
     store.listSharedSkillsByOwner(row.ownerUserId).map((share) => share.skillName),
   );
   const hashOf = hashCache(repoRoot);
-  const candidates = skills.filter(
-    (entry) => !occupied.has(entry.slug) && !readSkillOrigin(repoRoot, entry.slug),
-  );
-  const target = matchRenameByHash(candidates, row.contentHash, hashOf, new Set());
-  if (!target) {
+  if (
+    !target ||
+    occupied.has(move.to) ||
+    readSkillOrigin(repoRoot, move.to) ||
+    !renameTargetCorroborated(move, row, hashOf(move.to))
+  ) {
     return null;
   }
-  const moved = store.renameSharedSkill(row.ownerUserId, row.skillName, target.slug, {
+  const moved = store.renameSharedSkill(row.ownerUserId, row.skillName, move.to, {
     displayName: target.name,
     description: target.description,
-    contentHash: hashOf(target.slug),
+    contentHash: hashOf(move.to),
     bumpUpdatedAt: false,
   });
-  return moved ? { to: target.slug } : null;
+  return moved ? { to: move.to } : null;
 }
 
 interface CopyStats {
@@ -784,8 +1163,8 @@ export interface LearnResult {
  *
  * `updateSlug` switches to UPDATE mode: the learner's existing
  * `skills/<updateSlug>/` is replaced with the sharer's current version —
- * allowed ONLY when that directory carries an origin marker for the SAME
- * (sharer, skillName) pair (fail closed: NOT_LEARNED_FROM_SHARE otherwise).
+ * allowed ONLY when the repo's origin markers resolve this share to exactly
+ * that directory (fail closed: NOT_LEARNED_FROM_SHARE otherwise).
  *
  * Message-coded errors from copySkillDir propagate, plus SKILL_IS_LEARNED_COPY
  * when the SOURCE is itself a linked copy (a legacy row — prune it); clone/push
@@ -803,8 +1182,9 @@ export async function learnSkillIntoRepo(opts: {
   /**
    * The share's former names (its rename trail). An existing copy's origin
    * marker records the name it was learned under, so after the share followed a
-   * rename the marker authorizes an update only through this set — the marker
-   * itself is rewritten with the CURRENT name below, so it self-heals.
+   * rename the trail is what still matches it — but only as the sole answer
+   * (resolveShareCopy). The marker is rewritten with the CURRENT name below, so
+   * it self-heals after one update.
    */
   previousNames?: string[];
   /**
@@ -842,17 +1222,35 @@ export async function learnSkillIntoRepo(opts: {
   const sourceHash = hashSkillDir(srcRoot, opts.skillName);
   if (opts.updateSlug) {
     // Only a copy that PROVABLY came from this share may be replaced — the
-    // origin marker is the authorization, not the matching directory name. The
-    // marker may still name the share's PREVIOUS slug (the share followed a
-    // rename since the learn), so the trail counts as the same share.
-    const origin = readSkillOrigin(destRoot, destSlug);
-    const fromThisShare = new Set([opts.skillName, ...(opts.previousNames ?? [])]);
-    if (
-      !origin ||
-      origin.ownerUserId !== opts.sharerCtx.userId ||
-      !fromThisShare.has(origin.skillName)
-    ) {
+    // origin marker is the authorization, not the matching directory name.
+    // A marker naming the share's CURRENT name is that proof on its own (an
+    // owner's live share names are unique), and it must keep authorizing even
+    // when the learner holds SEVERAL copies of this share (learn + learn under
+    // new_name both write the current name) — the caller named destSlug, so
+    // there is nothing to disambiguate. Only a marker matched through the
+    // rename TRAIL is resolved across the WHOLE repo and trusted solely as the
+    // unique answer: a name this share left behind can now belong to an
+    // unrelated share, and a marker naming it would otherwise authorize
+    // overwriting THAT share's copy.
+    const own = readSkillOrigin(destRoot, destSlug);
+    if (!own || own.ownerUserId !== opts.sharerCtx.userId) {
       throw new Error("NOT_LEARNED_FROM_SHARE");
+    }
+    if (own.skillName !== opts.skillName) {
+      const copies: { slug: string; origin: SkillOrigin }[] = [];
+      for (const entry of listRepoSkills(destRoot)) {
+        const origin = readSkillOrigin(destRoot, entry.slug);
+        if (origin?.ownerUserId === opts.sharerCtx.userId) {
+          copies.push({ slug: entry.slug, origin });
+        }
+      }
+      const resolved = resolveShareCopy(copies, (copy) => copy.origin.skillName, {
+        skillName: opts.skillName,
+        previousNames: opts.previousNames ?? [],
+      });
+      if (!resolved || !("match" in resolved) || resolved.match.slug !== destSlug) {
+        throw new Error("NOT_LEARNED_FROM_SHARE");
+      }
     }
     // A locally customized copy (or one we can't judge — legacy marker) is
     // only replaced with the caller's explicit go-ahead: the learner's own

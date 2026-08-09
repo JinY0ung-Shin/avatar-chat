@@ -19,11 +19,10 @@ import {
   moveFile as moveRepoFile,
   readFile as readRepoFile,
   scaffoldSkill,
-  SKILL_DIR,
   writeFile as writeRepoFile,
   writeRepoTemplate,
 } from "../knowledgeRepo.js";
-import { git } from "../repoGitCore.js";
+import { withRepoLock } from "../gitMutex.js";
 import {
   reconcileOwnerSharedSkills,
   type SharedSkillReconcileResult,
@@ -254,62 +253,6 @@ export async function createRemoteRepo(
   }
 }
 
-/** A repo path inside a skill directory, split into its slug and its role. */
-function skillDirRef(repoPath: string): { slug: string; isSkillMd: boolean } | null {
-  const match = new RegExp(`^${SKILL_DIR}/([^/]+)/(.+)$`).exec(repoPath);
-  return match ? { slug: match[1], isSkillMd: match[2] === "SKILL.md" } : null;
-}
-
-/**
- * Rename hints for the just-created commit, read from `git diff -M` against its
- * parent: a file renamed from `skills/<a>/…` to `skills/<b>/…` means the share
- * on `a` should follow to `b`. Git's similarity detection sees this even when
- * the same commit EDITED the skill, which the content-hash fallback in
- * reconcileOwnerSharedSkills cannot.
- *
- * A renamed SKILL.md decides on its own; the other files only VOTE, and a
- * directory whose files scattered across several targets yields no hint. That
- * indirection is load-bearing: a commit that rewrites SKILL.md enough is
- * reported as delete+add rather than a rename — precisely the case the hint
- * exists for — so the unchanged sibling files are what carry the signal.
- *
- * Best effort throughout: a root commit has no `HEAD~1`, and unreadable output
- * is simply no hints (reconciliation falls back to hash matching).
- */
-async function renameHintsFromHeadCommit(repoRoot: string): Promise<Map<string, string>> {
-  let stdout: string;
-  try {
-    ({ stdout } = await git(repoRoot, ["diff", "--name-status", "-M", "HEAD~1", "HEAD"]));
-  } catch {
-    return new Map();
-  }
-  const hints = new Map<string, string>();
-  const votes = new Map<string, Set<string>>();
-  for (const line of stdout.split("\n")) {
-    const [status, from, to] = line.split("\t");
-    if (!status?.startsWith("R") || !from || !to) {
-      continue;
-    }
-    const fromRef = skillDirRef(from);
-    const toRef = skillDirRef(to);
-    if (!fromRef || !toRef || fromRef.slug === toRef.slug) {
-      continue;
-    }
-    if (fromRef.isSkillMd && toRef.isSkillMd) {
-      hints.set(fromRef.slug, toRef.slug);
-    }
-    const seen = votes.get(fromRef.slug) ?? new Set<string>();
-    seen.add(toRef.slug);
-    votes.set(fromRef.slug, seen);
-  }
-  for (const [fromSlug, targets] of votes) {
-    if (!hints.has(fromSlug) && targets.size === 1) {
-      hints.set(fromSlug, [...targets][0]);
-    }
-  }
-  return hints;
-}
-
 /**
  * Agent-facing summary of a reconciliation pass — metacognition, so the avatar
  * can TELL the owner that committing just changed what their teammates see
@@ -335,6 +278,12 @@ function reconcileNote(result: SharedSkillReconcileResult): string {
 
 /**
  * Reconcile the owner's share rows against the tree that was just committed.
+ * Under the repo lock: commitAndPush holds it only for its own add/commit/push
+ * and has released it by now, so re-acquiring keeps the reconciliation's git
+ * reads from overlapping a concurrent ensureClone that is removing and
+ * re-cloning the very working tree being read (never nested — this runs after
+ * commitAndPush returned).
+ *
  * BEST EFFORT by construction: the commit already succeeded and was pushed, so
  * every failure here is swallowed — a stale share row is a far smaller problem
  * than a commit tool that reports failure after a successful push.
@@ -345,9 +294,10 @@ async function reconcileSharesAfterCommit(
   repoRoot: string,
 ): Promise<string> {
   try {
-    const hints = await renameHintsFromHeadCommit(repoRoot);
     return reconcileNote(
-      reconcileOwnerSharedSkills(store, repoRoot, ownerUserId, { renameHints: hints }),
+      await withRepoLock(repoRoot, () =>
+        reconcileOwnerSharedSkills(store, repoRoot, ownerUserId),
+      ),
     );
   } catch {
     return "";
@@ -567,8 +517,8 @@ export function buildRepoTools(
           // The commit may have moved, deleted or edited a SHARED skill dir, and
           // the share rows are only a snapshot of it. The working tree is right
           // here and freshly committed, so reconcile now instead of waiting for
-          // the owner to open the 스킬 배우기 tab — this is also the one place
-          // that can see a rename git detected (`-M`) rather than infer it.
+          // the owner to open the 스킬 배우기 tab — and the rename this commit
+          // just recorded is the evidence the reconciliation reads.
           const shares = await reconcileSharesAfterCommit(
             store,
             ctx.owner.id,

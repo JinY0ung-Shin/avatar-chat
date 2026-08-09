@@ -10,6 +10,7 @@
   import { goView } from "../lib/nav";
   import { appState, notify } from "../lib/state";
   import type { SharedSkill, SharedSkillListing, SharedSkillManifest } from "../lib/types";
+  import { resolveShareCopy } from "../../../shared/skillOriginMatch";
 
   // 스킬 배우기: 동료 아바타가 공유한 스킬을 둘러보고 내 아바타의 지식 저장소로
   // 전수(복사+커밋)하는 탭 + 내 저장소 스킬의 공유 토글. 서버 계약은
@@ -146,14 +147,10 @@
   $: filtered = tokens.length ? learnable.filter((skill) => matches(skill, tokens)) : learnable;
   $: sharedCount = mySkills.filter((skill) => skill.shared).length;
   // 전수 출처 조인: 카드가 "내 것 / 전수받음 / 업데이트 있음"을 알 수 있게
-  // mine의 origin 마커와 목록의 현재 해시를 비교한다. 키는 (주인, 원본 이름) —
-  // 이름이 바뀐 공유는 findCopy가 옛 이름으로도 찾는다.
+  // mine의 origin 마커와 목록의 현재 해시를 비교한다. 원본 주인별로 모으고
+  // (한 공유에 대한 사본이 여럿일 수 있다) 이름 짝짓기는 findCopy가 맡는다.
   $: myUserId = $appState.user?.id ?? "";
-  $: copiesByOrigin = new Map(
-    mySkills
-      .filter((skill) => skill.origin)
-      .map((skill) => [`${skill.origin!.ownerUserId}:${skill.origin!.skillName}`, skill]),
-  );
+  $: copiesByOrigin = groupCopiesByOwner(mySkills);
   $: listingViews = filtered.map((skill): ListingView => {
     const own = skill.ownerUserId === myUserId;
     const copy = own ? null : findCopy(copiesByOrigin, skill);
@@ -191,18 +188,33 @@
             ? `${displayQuery} 검색 결과 ${filtered.length}개가 있습니다.`
             : `공유된 스킬 ${filtered.length}개가 있습니다.`;
 
+  /** 출처 마커를 가진 내 스킬들을 원본 주인별로 모은다. */
+  function groupCopiesByOwner(skills: MySkill[]): Map<string, MySkill[]> {
+    const byOwner = new Map<string, MySkill[]>();
+    for (const skill of skills) {
+      if (!skill.origin) continue;
+      const copies = byOwner.get(skill.origin.ownerUserId);
+      if (copies) copies.push(skill);
+      else byOwner.set(skill.origin.ownerUserId, [skill]);
+    }
+    return byOwner;
+  }
+
   /**
    * 이 공유에서 전수받은 내 스킬 찾기. 출처 마커에는 전수받던 당시의 원본 이름이
    * 남으므로, 그 뒤 원본 주인이 스킬 이름을 바꿨다면 현재 이름으로는 찾지 못한다 —
-   * 공유 행이 들고 다니는 옛 이름(previousNames)까지 같은 주인 기준으로 훑는다.
+   * 공유 행이 들고 다니는 옛 이름(previousNames)까지 훑되, 짝짓기 규칙은 서버와
+   * 같은 resolveShareCopy가 정한다(현재 이름 우선, 애매하면 아무것도 고르지 않아
+   * 엉뚱한 사본에 업데이트 배지가 켜지지 않게).
    * (copies를 인자로 받는 이유: 반응형 문장이 이 Map을 의존성으로 잡게 하려고.)
    */
-  function findCopy(copies: Map<string, MySkill>, skill: SharedSkillListing): MySkill | null {
-    for (const name of [skill.skillName, ...(skill.previousNames ?? [])]) {
-      const copy = copies.get(`${skill.ownerUserId}:${name}`);
-      if (copy) return copy;
-    }
-    return null;
+  function findCopy(copies: Map<string, MySkill[]>, skill: SharedSkillListing): MySkill | null {
+    const resolved = resolveShareCopy(
+      copies.get(skill.ownerUserId) ?? [],
+      (copy) => copy.origin!.skillName,
+      { skillName: skill.skillName, previousNames: skill.previousNames ?? [] },
+    );
+    return resolved && "match" in resolved ? resolved.match : null;
   }
 
   function matches(skill: SharedSkillListing, parts: string[]): boolean {

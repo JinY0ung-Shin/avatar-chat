@@ -26,6 +26,7 @@ import {
   SkillIsLearnedCopyError,
   unlinkSkillOrigin,
 } from "../skillTransfer.js";
+import { withRepoLock } from "../gitMutex.js";
 import { apiError, safeString, type RouterDeps } from "./_shared.js";
 import type { SharedSkill, SharedSkillListing, User } from "../types.js";
 
@@ -151,11 +152,15 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         repoSkills.map((s) => [s.slug, readSkillOrigin(repoRoot, s.slug)]),
       );
       // The owner opening this tab is one of the two moments the share rows are
-      // reconciled with the working tree (the other is their commit tool, which
-      // additionally has git's rename detection). Same helper, so drift
-      // re-snapshots, deletions/learned copies unshare, and renames are FOLLOWED
-      // identically wherever they are noticed.
-      reconcileOwnerSharedSkills(store, repoRoot, req.user!.id);
+      // reconciled with the working tree (the other is their commit tool). Same
+      // helper, so drift re-snapshots, deletions/learned copies unshare, and
+      // renames are FOLLOWED identically wherever they are noticed. Under the
+      // repo lock: it reads git history off this clone, which a concurrent
+      // ensureClone may be removing and rebuilding (ensureClone above has
+      // already released the lock, so this is not nested).
+      await withRepoLock(repoRoot, () =>
+        reconcileOwnerSharedSkills(store, repoRoot, req.user!.id),
+      );
       const sharedRows = store.listSharedSkillsByOwner(req.user!.id);
       // 전수된 횟수 — keyed by skill name, so a currently-unshared skill keeps
       // showing its history (events outlive the share row).
@@ -388,7 +393,7 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         // commit already moved the row, but a viewer arriving first rescues it
         // here rather than pruning a live share. A no-op while the dir is still
         // there, and it never bumps updated_at (no reordering by a viewer).
-        if (rescueSharedSkillRename(store, srcRoot, listing)) {
+        if (await rescueSharedSkillRename(store, srcRoot, listing)) {
           listing = resolveListing() ?? listing;
         }
         // Before serving anything: a source that is itself a linked copy is a
@@ -491,17 +496,16 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
           result = await runLearn(listing);
         } catch (error) {
           // The source dir being gone may mean RENAMED rather than deleted. The
-          // learn just refreshed the sharer's clone, so match against it on disk
+          // learn just refreshed the sharer's clone, so read the evidence off it
           // (no second fetch) and retry once under the new name before pruning.
-          const moved =
+          const rescued =
             (error instanceof Error ? error.message : "") === "SKILL_NOT_FOUND" &&
-            rescueSharedSkillRename(
+            (await rescueSharedSkillRename(
               store,
               knowledgeClonePath(listing.ownerUserId, config),
               listing,
-            )
-              ? store.getLearnableSkill(req.user!.id, id)
-              : null;
+            ));
+          const moved = rescued ? store.getLearnableSkill(req.user!.id, id) : null;
           if (!moved) {
             throw error;
           }

@@ -600,10 +600,22 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
      *
      * Everything else keyed by the skill NAME moves with it in the SAME
      * transaction, or the rename would silently drop moderation and history:
-     * `skill_learn_events` (the 전수 count) is re-keyed, and
-     * `shared_skill_group_blocks` is re-keyed by INSERT OR IGNORE + DELETE so a
-     * group's block survives (merging with a block that already exists under
-     * the new name — a block must never be lost, and never duplicated).
+     *
+     * - `shared_skill_group_blocks` is COPIED to the new name (INSERT OR IGNORE
+     *   merges with a block already standing there — never lost, never
+     *   duplicated) and the old name's blocks are LEFT IN PLACE. Blocks are
+     *   name-keyed anti-evasion, which is why they already survive
+     *   unshare→re-share; letting two `git mv`s clear one would hand every
+     *   owner a way around a group admin's decision. Only an explicit unblock
+     *   removes a block, so re-minting a share under the freed old name stays
+     *   blocked.
+     * - `skill_learn_events` is re-keyed onto the new name, and any event
+     *   ALREADY under that name is deleted first. The collision guard below
+     *   proved no live share holds it, so those are orphans of a dead share
+     *   whose name this one is taking over — counted by name, they would
+     *   permanently inflate the renamed skill's 전수 count. The trade-off is
+     *   deliberate: the dead share's history (restorable by re-sharing under
+     *   its own name) is forfeited once another skill claims the name.
      *
      * `bumpUpdatedAt` is the owner/viewer split: owner-side reconciliation
      * bumps (the listing legitimately reorders), while a VIEWER's preview/learn
@@ -668,6 +680,11 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
           );
         this.db
           .prepare(
+            "DELETE FROM skill_learn_events WHERE owner_user_id = ? AND skill_name = ?",
+          )
+          .run(ownerUserId, toSkillName);
+        this.db
+          .prepare(
             "UPDATE skill_learn_events SET skill_name = ? WHERE owner_user_id = ? AND skill_name = ?",
           )
           .run(toSkillName, ownerUserId, fromSkillName);
@@ -680,11 +697,6 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
               WHERE owner_user_id = ? AND skill_name = ?`,
           )
           .run(toSkillName, ownerUserId, fromSkillName);
-        this.db
-          .prepare(
-            "DELETE FROM shared_skill_group_blocks WHERE owner_user_id = ? AND skill_name = ?",
-          )
-          .run(ownerUserId, fromSkillName);
         return true;
       });
       return move() ? this.readOwnShare(ownerUserId, toSkillName) : null;

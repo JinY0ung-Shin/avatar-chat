@@ -403,6 +403,48 @@ describe("SkillsView", () => {
     expect(screen.getByRole("button", { name: "Deck maker 스킬 업데이트 받기" })).toBeTruthy();
   });
 
+  // A name a share LEFT is free for another share to take, so two copies can
+  // carry markers naming it. Picking either one would light the update badge on
+  // a card that may belong to the OTHER share.
+  it("lights no badge when the rename trail matches two copies", async () => {
+    const copy = (slug: string) => ({
+      slug,
+      name: slug,
+      description: "",
+      shared: false,
+      customDescription: null,
+      learnCount: 0,
+      origin: {
+        ownerUserId: "mate-1",
+        ownerUsername: "mate",
+        skillName: "pptx-report", // the name this share left behind
+        contentHash: "hash-v1",
+      },
+    });
+    mockFetch({
+      "/api/skill-share/available": {
+        skills: [
+          {
+            ...LISTING,
+            skillName: "deck-report",
+            previousNames: ["pptx-report"],
+            contentHash: "hash-v2",
+          },
+        ],
+      },
+      "/api/skill-share/mine": {
+        repoConfigured: true,
+        skills: [copy("pptx-report"), copy("pptx-report-2")],
+      },
+    });
+    render(SkillsView);
+
+    // Unjoined: the card offers a fresh 전수 rather than an update of a guess.
+    expect(await screen.findByRole("button", { name: "Deck maker 스킬 전수받기" })).toBeTruthy();
+    expect(screen.queryByText("업데이트 있음")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deck maker 스킬 업데이트 받기" })).toBeNull();
+  });
+
   // /mine is the slow path (server-side git fetch) that WRITES fresh hashes, and
   // /available is a fast DB read — so the first paint always shows pre-refresh
   // hashes. The tab re-reads /available once /mine settles, quietly.

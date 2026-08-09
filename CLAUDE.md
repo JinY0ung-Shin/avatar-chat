@@ -56,12 +56,17 @@ These are the invariants the project is built around. New work should reinforce 
   rows — including their update path — drain through the hygiene prunes), and a group admin can
   channel-BLOCK an (owner, skill name) pair per group (`shared_skill_group_blocks`, enforced inside
   `LEARNABLE_SKILLS_FROM` so every learnable read fails closed; a skill stays learnable only through an
-  unblocked mutual sharing group, blocks survive unshare→re-share, learned copies stay put). Share rows
-  are a SNAPSHOT of the tree, so ONE reconcile helper runs wherever the owner's fresh clone is in hand
-  (mine tab + a successful `mcp__repo__commit`, best-effort so it can never fail the commit): drift
-  re-snapshots, a deleted/marker-carrying dir unshares, and a RENAMED dir is FOLLOWED in place —
-  row id/intro/learn-count/group-blocks all move, the old slug lands in `previous_names`, and learners'
-  origin markers match through that trail until their next update heals them. The
+  unblocked mutual sharing group, blocks survive unshare→re-share AND a rename of the blocked skill —
+  they are never deleted, only unblocked — and learned copies stay put). Share rows are a SNAPSHOT of
+  the tree, so ONE reconcile helper runs wherever the owner's fresh clone is in hand (mine tab + a
+  successful `mcp__repo__commit`, best-effort so it can never fail the commit): drift re-snapshots, a
+  deleted/marker-carrying dir unshares, and a RENAMED dir is FOLLOWED in place — but ONLY on git's own
+  rename EVIDENCE onto a corroborating target, never by guessing from content, so a DELETION stays a
+  hard revoke (even with an identical dir elsewhere) and anything unresolved unshares rather than
+  risking a share landing on someone's unpublished content. When a rename is followed the row
+  id/intro/learn-count all move, the old slug lands in `previous_names`, and learners' origin markers
+  match through that trail — as the sole answer, never over an exact name match — until their next
+  update heals them. The
   `mcp__skill_exchange__*` tools are owner-only end
   to end. Mechanics → `docs/architecture/avatar-collab.md`.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the
