@@ -3,8 +3,14 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
 import {
+  MAX_EXTERNAL_AGENTS,
   externalAvatarId,
+  findExternalAgent,
+  mergeExternalAgentRegistries,
+  parseAdminExternalAgentInput,
   parseExternalAgents,
+  parseManagedExternalAgents,
+  serializeManagedExternalAgents,
 } from "../src/server/externalAgents.js";
 import type {
   AdminExternalAgentInput,
@@ -52,6 +58,31 @@ function envAgent(endpoint: string): ExternalAgentConfig {
     apiKey: "environment-secret",
   };
 }
+
+/** Boot an app whose first user is the admin, plus a group they belong to. */
+async function bootAdmin(
+  username: string,
+  externalAgents: ExternalAgentConfig[] = [],
+) {
+  const services = createServices({
+    dataDir: tempDir(),
+    agentRuntime: "local",
+    sessionSecret: "test",
+    externalAgents,
+  });
+  const app = createApp(services);
+  const admin = request.agent(app);
+  const adminId = (await signup(admin, username).expect(201)).body.user
+    .id as string;
+  const group = services.store.createGroup({
+    name: `${username}-group`,
+    createdBy: adminId,
+  });
+  services.store.addGroupMember(group.id, adminId, "admin");
+  return { services, app, admin, adminId, groupId: group.id };
+}
+
+const GATEWAY_ENDPOINT = "https://gateway.example/v1/agents/messages";
 
 describe("external agent endpoint normalization", () => {
   it("canonicalizes base paths without doubling the endpoint suffix", () => {
@@ -139,6 +170,136 @@ describe("external agent endpoint normalization", () => {
         ]),
       ),
     ).toThrow("agent는 claude만 지원합니다.");
+  });
+});
+
+describe("external agent managed registry parsing", () => {
+  it("enforces write-only credential semantics on managed input", () => {
+    const base = input(GATEWAY_ENDPOINT);
+    for (const value of ["research", 42, null, [base]]) {
+      expect(() => parseAdminExternalAgentInput(value)).toThrow(
+        "외부 아바타 설정은 객체여야 합니다.",
+      );
+    }
+    // The env-only fields stay out of the UI surface entirely.
+    expect(() =>
+      parseAdminExternalAgentInput({ ...base, apiKeyEnv: "GATEWAY_TOKEN" }),
+    ).toThrow("지원하지 않는 설정 필드입니다: apiKeyEnv");
+    expect(() =>
+      parseAdminExternalAgentInput({ ...base, baseUrl: "https://gateway.example" }),
+    ).toThrow("지원하지 않는 설정 필드입니다: baseUrl");
+    expect(() => parseAdminExternalAgentInput({ ...base, agent: "codex" })).toThrow(
+      "외부 아바타는 현재 Claude만 지원합니다. (agent: claude)",
+    );
+    expect(() =>
+      parseAdminExternalAgentInput({ ...base, apiKeyMode: "rotate" }),
+    ).toThrow("API 키 처리 방식이 올바르지 않습니다.");
+    expect(() => parseAdminExternalAgentInput({ ...base, apiKeyMode: undefined })).toThrow(
+      "API 키 처리 방식이 올바르지 않습니다.",
+    );
+    // A key value may ride ONLY the replace mode, and it must be usable.
+    for (const apiKeyMode of ["keep", "clear"]) {
+      expect(() =>
+        parseAdminExternalAgentInput({ ...base, apiKeyMode, apiKey: "leaked" }),
+      ).toThrow("API 키 값은 교체 모드에서만 보낼 수 있습니다.");
+    }
+    for (const apiKey of ["   ", 42, undefined]) {
+      expect(() =>
+        parseAdminExternalAgentInput({ ...base, apiKeyMode: "set", apiKey }),
+      ).toThrow("교체할 Gateway API 키를 입력해 주세요.");
+    }
+    // "keep" carries the stored key forward without the caller ever seeing it.
+    const existing = parseAdminExternalAgentInput(base);
+    expect(existing.apiKey).toBe("private-api-key-marker");
+    expect(
+      parseAdminExternalAgentInput(
+        { ...base, apiKey: undefined, apiKeyMode: "keep" },
+        existing,
+      ).apiKey,
+    ).toBe("private-api-key-marker");
+    expect(
+      parseAdminExternalAgentInput(
+        { ...base, apiKey: undefined, apiKeyMode: "clear" },
+        existing,
+      ).apiKey,
+    ).toBeUndefined();
+  });
+
+  it("rejects a stored registry that is not a supported v1 document", () => {
+    expect(() => parseManagedExternalAgents("not json")).toThrow(
+      "저장된 외부 아바타 설정이 올바른 JSON이 아닙니다.",
+    );
+    for (const stored of [
+      JSON.stringify([]),
+      JSON.stringify("v1"),
+      JSON.stringify({ version: 2, agents: [] }),
+      JSON.stringify({ version: 1, agents: "research" }),
+    ]) {
+      expect(() => parseManagedExternalAgents(stored)).toThrow(
+        "지원하지 않는 외부 아바타 설정 버전입니다.",
+      );
+    }
+  });
+
+  it("lets environment entries win the same id without hiding managed ones", () => {
+    const [environment] = parseExternalAgents(
+      JSON.stringify([
+        { id: "research", displayName: "Environment Research", endpoint: GATEWAY_ENDPOINT },
+      ]),
+    );
+    const managed = parseExternalAgents(
+      JSON.stringify([
+        { id: "research", displayName: "Managed Research", endpoint: GATEWAY_ENDPOINT },
+        { id: "extra", displayName: "Managed Extra", endpoint: GATEWAY_ENDPOINT },
+      ]),
+    );
+
+    expect(
+      mergeExternalAgentRegistries([environment], managed).map(
+        (agent) => agent.displayName,
+      ),
+    ).toEqual(["Environment Research", "Managed Extra"]);
+    expect(mergeExternalAgentRegistries(undefined, managed)).toEqual(managed);
+    expect(mergeExternalAgentRegistries([environment], undefined)).toEqual([
+      environment,
+    ]);
+    expect(mergeExternalAgentRegistries(undefined, undefined)).toEqual([]);
+
+    const effective = mergeExternalAgentRegistries([environment], managed);
+    expect(findExternalAgent(effective, "external:research")).toBe(environment);
+    expect(findExternalAgent(effective, "research")).toBeNull();
+    expect(findExternalAgent(effective, "external:missing")).toBeNull();
+    expect(findExternalAgent(undefined, "external:research")).toBeNull();
+  });
+
+  it("keeps the stored registry encoding stable across a decode cycle", () => {
+    // The store's compare-and-swap matches RE-SERIALIZED documents, so an
+    // unstable round trip would make every managed write look like a conflict.
+    const agents = parseExternalAgents(
+      JSON.stringify([
+        {
+          id: "research",
+          displayName: "Research Agent",
+          alias: "리서처",
+          hashtags: ["#research", "research"],
+          endpoint: GATEWAY_ENDPOINT,
+          model: "sonnet",
+          system: "private-system-marker",
+          apiKey: "private-api-key-marker",
+          enabled: false,
+          visibleToGroupIds: ["team", "team"],
+          connectTimeoutSeconds: 12.5,
+          idleTimeoutSeconds: 90,
+          totalTimeoutSeconds: 900,
+        },
+        { id: "minimal", displayName: "Minimal Agent", endpoint: GATEWAY_ENDPOINT },
+      ]),
+    );
+    const encoded = serializeManagedExternalAgents(agents);
+    expect(parseManagedExternalAgents(encoded)).toEqual(agents);
+    expect(
+      serializeManagedExternalAgents(parseManagedExternalAgents(encoded)),
+    ).toBe(encoded);
   });
 });
 
@@ -693,5 +854,379 @@ describe("external agent admin API", () => {
     } finally {
       await new Promise<void>((resolve) => gateway.close(() => resolve()));
     }
+  });
+
+  it("sorts the admin list across sources and flags shadowed managed ids", async () => {
+    const { services, admin, groupId } = await bootAdmin("external-list-admin");
+    for (const [id, displayName] of [
+      ["zulu", "Zulu Managed"],
+      ["alpha", "Alpha Managed"],
+      ["research", "Shadowed Managed"],
+    ]) {
+      await admin
+        .post("/api/admin/external-agents")
+        .send({
+          agent: input(GATEWAY_ENDPOINT, {
+            id,
+            displayName,
+            visibleToGroupIds: [groupId],
+          }),
+        })
+        .expect(201);
+    }
+    // An environment entry now claims a managed id: the read-only env row wins
+    // and the shadowed managed row is reported instead of listed twice.
+    services.config.externalAgents = [
+      {
+        ...envAgent("https://env-gateway.example/v1/agents/messages"),
+        id: "research",
+        displayName: "Middle Environment",
+      },
+    ];
+
+    const listed = await admin.get("/api/admin/external-agents").expect(200);
+    expect(
+      listed.body.agents.map(
+        (agent: { id: string; source: string }) => `${agent.id}:${agent.source}`,
+      ),
+    ).toEqual(["alpha:managed", "research:environment", "zulu:managed"]);
+    expect(
+      listed.body.agents.map(
+        (agent: { displayName: string }) => agent.displayName,
+      ),
+    ).toEqual(["Alpha Managed", "Middle Environment", "Zulu Managed"]);
+    expect(listed.body.shadowedManagedIds).toEqual(["research"]);
+    expect(listed.body.configError).toBeNull();
+  });
+
+  it("refuses a managed write that would leave the avatar visible to no one", async () => {
+    const { services, admin, groupId } = await bootAdmin("external-group-admin");
+    const missingGroups = await admin
+      .post("/api/admin/external-agents")
+      .send({ agent: input(GATEWAY_ENDPOINT) })
+      .expect(400);
+    expect(missingGroups.body.error).toBe(
+      "외부 아바타는 공개할 그룹을 1개 이상 지정해야 합니다.",
+    );
+    expect(services.store.getManagedExternalAgents()).toEqual([]);
+    // An explicitly empty list is refused earlier, by the registry parser.
+    const emptyList = await admin
+      .post("/api/admin/external-agents")
+      .send({ agent: input(GATEWAY_ENDPOINT, { visibleToGroupIds: [] }) })
+      .expect(400);
+    expect(emptyList.body.error).toContain(
+      "visibleToGroupIds는 비워 둘 수 없습니다.",
+    );
+
+    // The same rule holds on update: an existing binding cannot be dropped.
+    await admin
+      .post("/api/admin/external-agents")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, { visibleToGroupIds: [groupId] }),
+      })
+      .expect(201);
+    const unbound = await admin
+      .put("/api/admin/external-agents/research")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, {
+          apiKeyMode: "keep",
+          apiKey: undefined,
+        }),
+      })
+      .expect(400);
+    expect(unbound.body.error).toBe(
+      "외부 아바타는 공개할 그룹을 1개 이상 지정해야 합니다.",
+    );
+    expect(
+      services.store.getManagedExternalAgents()[0].visibleToGroupIds,
+    ).toEqual([groupId]);
+  });
+
+  it("reports a malformed payload without leaking the env-var config path", async () => {
+    const { admin, groupId } = await bootAdmin("external-input-admin");
+    const grouped = { visibleToGroupIds: [groupId] };
+    const badMode = await admin
+      .post("/api/admin/external-agents")
+      .send({ agent: { ...input(GATEWAY_ENDPOINT, grouped), apiKeyMode: "rotate" } })
+      .expect(400);
+    expect(badMode.body.error).toBe(
+      "외부 아바타 설정을 확인해 주세요: API 키 처리 방식이 올바르지 않습니다.",
+    );
+    // Field-level messages keep the field name, entry-level ones keep the noun.
+    const missingName = await admin
+      .post("/api/admin/external-agents")
+      .send({ agent: input(GATEWAY_ENDPOINT, { ...grouped, displayName: "" }) })
+      .expect(400);
+    expect(missingName.body.error).toBe(
+      "외부 아바타 설정을 확인해 주세요: displayName은(는) 필수입니다.",
+    );
+    const missingEndpoint = await admin
+      .post("/api/admin/external-agents")
+      .send({ agent: input("", grouped) })
+      .expect(400);
+    expect(missingEndpoint.body.error).toBe(
+      "외부 아바타 설정을 확인해 주세요: endpoint 또는 baseUrl이 필요합니다.",
+    );
+    for (const body of [badMode.body, missingName.body, missingEndpoint.body]) {
+      expect(JSON.stringify(body)).not.toContain("EXTERNAL_AGENTS_JSON");
+    }
+  });
+
+  it("caps the managed registry at the maximum agent count", async () => {
+    const { services, admin, groupId } = await bootAdmin("external-cap-admin");
+    services.store.setManagedExternalAgents(
+      parseExternalAgents(
+        JSON.stringify(
+          Array.from({ length: MAX_EXTERNAL_AGENTS }, (_, index) => ({
+            id: `bulk-${index}`,
+            displayName: `Bulk ${index}`,
+            endpoint: GATEWAY_ENDPOINT,
+            visibleToGroupIds: [groupId],
+          })),
+        ),
+      ),
+    );
+    const overflow = await admin
+      .post("/api/admin/external-agents")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, {
+          id: "overflow",
+          visibleToGroupIds: [groupId],
+        }),
+      })
+      .expect(400);
+    expect(overflow.body.error).toBe(
+      "외부 아바타는 최대 50개까지 등록할 수 있습니다.",
+    );
+    expect(services.store.getManagedExternalAgents()).toHaveLength(
+      MAX_EXTERNAL_AGENTS,
+    );
+  });
+
+  it("guards update targets, immutable ids, and unconfirmed endpoint moves", async () => {
+    const { services, admin, adminId, groupId } =
+      await bootAdmin("external-update-admin");
+    const nextEndpoint = "https://gateway-next.example/v1/agents/messages";
+    const grouped = { visibleToGroupIds: [groupId] };
+
+    const missing = await admin
+      .put("/api/admin/external-agents/ghost")
+      .send({ agent: input(GATEWAY_ENDPOINT, { ...grouped, id: "ghost" }) })
+      .expect(404);
+    expect(missing.body.error).toBe("외부 아바타를 찾을 수 없습니다.");
+
+    await admin
+      .post("/api/admin/external-agents")
+      .send({ agent: input(GATEWAY_ENDPOINT, grouped) })
+      .expect(201);
+    const renamed = await admin
+      .put("/api/admin/external-agents/research")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, { ...grouped, id: "research-2" }),
+      })
+      .expect(400);
+    expect(renamed.body.error).toBe("외부 아바타 ID는 생성 후 변경할 수 없습니다.");
+
+    services.store.touchConversation(
+      adminId,
+      "external-update-history",
+      externalAvatarId({ id: "research" }),
+      "기존 질문",
+      { externalEndpoint: GATEWAY_ENDPOINT },
+    );
+    const unconfirmed = await admin
+      .put("/api/admin/external-agents/research")
+      .send({ agent: input(nextEndpoint, grouped) })
+      .expect(409);
+    expect(unconfirmed.body.error).toBe(
+      "기존 대화 기록이 있는 아바타의 Gateway 주소를 바꾸려면 기록 전송 위험을 확인해야 합니다.",
+    );
+    // Neither the registry nor the stored conversation binding moved.
+    expect(services.store.getManagedExternalAgents()[0].endpoint).toBe(
+      GATEWAY_ENDPOINT,
+    );
+    expect(
+      services.store.getConversationExternalEndpoint(
+        adminId,
+        "external-update-history",
+      ),
+    ).toBe(GATEWAY_ENDPOINT);
+  });
+
+  it("round-trips timeout seconds and audits enable/disable transitions", async () => {
+    const { services, admin, groupId } = await bootAdmin("external-audit-admin");
+    const grouped = { visibleToGroupIds: [groupId] };
+    const created = await admin
+      .post("/api/admin/external-agents")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, {
+          ...grouped,
+          connectTimeoutSeconds: 12.5,
+          idleTimeoutSeconds: 90,
+          totalTimeoutSeconds: 900,
+        }),
+      })
+      .expect(201);
+    // The admin DTO speaks seconds; the runtime config stores milliseconds.
+    expect(created.body.agent).toMatchObject({
+      connectTimeoutSeconds: 12.5,
+      idleTimeoutSeconds: 90,
+      totalTimeoutSeconds: 900,
+    });
+    expect(services.store.getManagedExternalAgents()[0]).toMatchObject({
+      connectTimeoutMs: 12_500,
+      idleTimeoutMs: 90_000,
+      totalTimeoutMs: 900_000,
+    });
+
+    const avatarIds = async () =>
+      (await admin.get("/api/avatars").expect(200)).body.avatars.map(
+        (avatar: { id: string }) => avatar.id,
+      );
+    expect(await avatarIds()).toContain("external:research");
+    for (const enabled of [false, true]) {
+      await admin
+        .put("/api/admin/external-agents/research")
+        .send({
+          agent: input(GATEWAY_ENDPOINT, {
+            ...grouped,
+            enabled,
+            apiKeyMode: "keep",
+            apiKey: undefined,
+          }),
+        })
+        .expect(200);
+      // A disabled entry keeps its registry row but leaves discovery.
+      expect((await avatarIds()).includes("external:research")).toBe(enabled);
+    }
+    // A save that does not move the flag stays a plain update.
+    await admin
+      .put("/api/admin/external-agents/research")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, {
+          ...grouped,
+          bio: "수정된 소개",
+          apiKeyMode: "keep",
+          apiKey: undefined,
+        }),
+      })
+      .expect(200);
+
+    const audit = await admin.get("/api/audit").expect(200);
+    const actions = audit.body.audit
+      .map((row: { action: string }) => row.action)
+      .filter((action: string) => action.startsWith("external_agent_"));
+    expect(actions).toHaveLength(4);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        "external_agent_create",
+        "external_agent_disable",
+        "external_agent_enable",
+        "external_agent_update",
+      ]),
+    );
+  });
+
+  it("returns 404 for delete and image routes naming an unknown agent", async () => {
+    const { admin } = await bootAdmin("external-delete-admin");
+    const deleted = await admin
+      .delete("/api/admin/external-agents/ghost")
+      .expect(404);
+    expect(deleted.body.error).toBe("외부 아바타를 찾을 수 없습니다.");
+    const image = await admin
+      .delete("/api/admin/external-agents/ghost/image")
+      .expect(404);
+    expect(image.body.error).toBe("외부 아바타를 찾을 수 없습니다.");
+  });
+
+  it("validates the connection-check payload before probing a gateway", async () => {
+    const { admin, groupId } = await bootAdmin("external-probe-guard-admin");
+    const unknown = await admin
+      .post("/api/admin/external-agents/test")
+      .send({ storedId: "ghost" })
+      .expect(404);
+    expect(unknown.body.error).toBe(
+      "연결을 확인할 외부 아바타를 찾을 수 없습니다.",
+    );
+    const empty = await admin
+      .post("/api/admin/external-agents/test")
+      .send({})
+      .expect(400);
+    expect(empty.body.error).toBe(
+      "연결을 확인할 외부 아바타 설정을 입력해 주세요.",
+    );
+    await admin
+      .post("/api/admin/external-agents")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, { visibleToGroupIds: [groupId] }),
+      })
+      .expect(201);
+    const mismatched = await admin
+      .post("/api/admin/external-agents/test")
+      .send({
+        storedId: "research",
+        agent: input(GATEWAY_ENDPOINT, { id: "other" }),
+      })
+      .expect(400);
+    expect(mismatched.body.error).toBe(
+      "연결 확인 설정의 외부 아바타 ID가 일치하지 않습니다.",
+    );
+  });
+
+  it("keeps every managed write behind the admin role", async () => {
+    const { services, app, admin, groupId } =
+      await bootAdmin("external-role-admin");
+    await admin
+      .post("/api/admin/external-agents")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, { visibleToGroupIds: [groupId] }),
+      })
+      .expect(201);
+    const member = request.agent(app);
+    await signup(member, "external-role-member").expect(201);
+
+    await member
+      .post("/api/admin/external-agents")
+      .send({ agent: input(GATEWAY_ENDPOINT, { id: "intruder" }) })
+      .expect(403);
+    await member
+      .put("/api/admin/external-agents/research")
+      .send({ agent: input("https://attacker.example/v1/agents/messages") })
+      .expect(403);
+    await member.delete("/api/admin/external-agents/research").expect(403);
+    await member
+      .post("/api/admin/external-agents/test")
+      .send({ storedId: "research" })
+      .expect(403);
+    await member
+      .put("/api/admin/external-agents/research/image")
+      .send({ image: "data:image/png;base64,aGk=" })
+      .expect(403);
+    await member.delete("/api/admin/external-agents/research/image").expect(403);
+    expect(services.store.getManagedExternalAgents()).toMatchObject([
+      { id: "research", endpoint: GATEWAY_ENDPOINT },
+    ]);
+  });
+
+  it("refuses a registry swap built on a stale snapshot", async () => {
+    const { services, admin, groupId } = await bootAdmin("external-cas-admin");
+    await admin
+      .post("/api/admin/external-agents")
+      .send({
+        agent: input(GATEWAY_ENDPOINT, { visibleToGroupIds: [groupId] }),
+      })
+      .expect(201);
+    const stale = services.store.getManagedExternalAgents();
+    // A concurrent admin process rewrites the registry under this snapshot.
+    services.store.setManagedExternalAgents([]);
+    expect(services.store.replaceManagedExternalAgents(stale, stale)).toBe(
+      false,
+    );
+    expect(services.store.getManagedExternalAgents()).toEqual([]);
+    // The same write succeeds once it expects what is actually stored.
+    expect(services.store.replaceManagedExternalAgents([], stale)).toBe(true);
+    expect(services.store.getManagedExternalAgents()).toMatchObject([
+      { id: "research" },
+    ]);
   });
 });

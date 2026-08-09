@@ -10,9 +10,9 @@ export default defineConfig({
       // index.ts/main.ts are process/browser entrypoints; types.ts is types-only.
       exclude: ["src/server/index.ts", "src/server/types.ts", "src/client/src/main.ts"],
       reporter: ["text", "text-summary"],
-      // Regression floor, a hair under the achieved coverage (2026-07: ~91/79/91/90).
+      // Regression floor, a hair under the achieved coverage (2026-08: ~94/86/95/93).
       // Raise as coverage grows; don't lower to admit untested code.
-      thresholds: { lines: 90, branches: 77, functions: 90, statements: 88 },
+      thresholds: { lines: 93, branches: 84, functions: 93, statements: 91 },
     },
     projects: [
       {

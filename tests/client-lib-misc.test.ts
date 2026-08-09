@@ -45,8 +45,14 @@ import {
   compareBridgeVersions,
 } from "../src/client/src/lib/browserBridge.js";
 import {
+  clearExtensionDir,
+  ensureDirPermission,
   extensionIdFromManifestKey,
+  fsaSupported,
+  loadSavedExtensionDir,
   mergeManifestOrigins,
+  pickExtensionDir,
+  saveExtensionDir,
   updateExtensionInPlace,
   verifyExtensionDir,
   writeExtensionFiles,
@@ -1279,5 +1285,350 @@ describe("browser bridge one-click install lib", () => {
     const outcome = await pending;
 
     expect(outcome).toEqual({ status: "wrong-folder" });
+  });
+
+  it("updateExtensionInPlace surfaces a failed file fetch without touching the folder", async () => {
+    useFetch((url) =>
+      url.includes("/api/browser-extension.files")
+        ? jsonRes({ error: "확장 번들을 만들 수 없습니다." }, 500)
+        : undefined,
+    );
+    const dir = fakeDir({ "manifest.json": JSON.stringify({ version: "0.4.0" }) });
+    expect(await updateExtensionInPlace(dir.handle)).toEqual({
+      status: "failed",
+      reason: "확장 번들을 만들 수 없습니다.",
+    });
+    expect(dir.writeOrder).toEqual([]);
+  });
+
+  it("updateExtensionInPlace refuses an answer with no files or no version", async () => {
+    const dir = fakeDir();
+    const noFiles = { status: "failed", reason: "서버가 확장 파일 목록을 주지 않았습니다." };
+
+    useFetch((url) =>
+      url.includes("/api/browser-extension.files") ? jsonRes({ version: "0.5.0", files: [] }) : undefined,
+    );
+    expect(await updateExtensionInPlace(dir.handle)).toEqual(noFiles);
+
+    // A version-less answer is equally unusable: the post-reload probe compares
+    // against it, so without one there is nothing to confirm the update by.
+    useFetch((url) =>
+      url.includes("/api/browser-extension.files")
+        ? jsonRes({ files: [{ name: "background.js", content: "// x" }] })
+        : undefined,
+    );
+    expect(await updateExtensionInPlace(dir.handle)).toEqual(noFiles);
+
+    // A body with no `files` key at all (older/garbled answer) reads the same
+    // way as an empty list rather than throwing on the missing array.
+    useFetch((url) =>
+      url.includes("/api/browser-extension.files") ? jsonRes({ version: "0.5.0" }) : undefined,
+    );
+    expect(await updateExtensionInPlace(dir.handle)).toEqual(noFiles);
+    expect(dir.writeOrder).toEqual([]);
+  });
+
+  it("updateExtensionInPlace aborts on a path-like filename, leaving the old manifest loadable", async () => {
+    useFetch((url) =>
+      url.includes("/api/browser-extension.files")
+        ? jsonRes({
+            version: "0.5.0",
+            files: [
+              { name: "../escape.js", content: "x" },
+              { name: "manifest.json", content: JSON.stringify({ version: "0.5.0" }) },
+            ],
+          })
+        : undefined,
+    );
+    const dir = fakeDir({ "manifest.json": JSON.stringify({ version: "0.4.0" }) });
+
+    expect(await updateExtensionInPlace(dir.handle)).toEqual({
+      status: "failed",
+      reason: expect.stringContaining("unexpected bundle filename"),
+    });
+    // manifest.json is written LAST as the commit marker, so a refused bundle
+    // leaves the previous — still loadable — extension untouched.
+    expect(dir.writeOrder).toEqual([]);
+    expect(dir.files.get("manifest.json")).toBe(JSON.stringify({ version: "0.4.0" }));
+  });
+
+  it("updateExtensionInPlace re-probes once before settling for a manual reload", async () => {
+    stubFilesEndpoint();
+    let probes = 0;
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: (_id: string, message: { op: string }, cb: (r: unknown) => void) => {
+          if (message.op === "reloadExtension") {
+            cb({ ok: true, version: "0.4.0" });
+            return;
+          }
+          if (message.op === "getAllowedOrigins") {
+            probes += 1;
+            cb({ ok: false, message: "worker restarting" });
+            return;
+          }
+          cb({ ok: false, message: `Unsupported operation "${message.op}".` });
+        },
+      },
+    });
+    const dir = fakeDir();
+
+    vi.useFakeTimers();
+    const pending = updateExtensionInPlace(dir.handle);
+    await vi.runAllTimersAsync();
+    const outcome = await pending;
+
+    // The reload was accepted but the running build never answered, so the
+    // files are in place and one manual ↻ finishes it — never "wrong-folder",
+    // which would send the user hunting for a folder that is in fact correct.
+    expect(outcome).toEqual({ status: "manual-reload", version: "0.5.0" });
+    expect(probes).toBe(2); // first probe, then one more beat for a slow restart
+    expect(dir.files.get("background.js")).toBe("// v0.5.0");
+  });
+
+  it("updateExtensionInPlace finishes when the reload is refused without a reason", async () => {
+    stubFilesEndpoint();
+    // An `ok:false` with no message is a valid wire answer, and the pre-0.5.0
+    // fallback keys on that text — an absent one must not read as a match.
+    vi.stubGlobal("chrome", {
+      runtime: {
+        sendMessage: (_id: string, _message: unknown, cb: (r: unknown) => void) => cb({ ok: false }),
+      },
+    });
+    const dir = fakeDir();
+
+    vi.useFakeTimers();
+    const pending = updateExtensionInPlace(dir.handle);
+    await vi.runAllTimersAsync();
+
+    expect(await pending).toEqual({ status: "manual-reload", version: "0.5.0" });
+    expect(dir.files.get("background.js")).toBe("// v0.5.0");
+  });
+
+  /* ---------------------------------------------------------------- */
+  /* folder handle: picker + IndexedDB persistence                     */
+  /* ---------------------------------------------------------------- */
+
+  describe("extension folder handle", () => {
+    /**
+     * Minimal in-memory IndexedDB — jsdom ships none, and the real API's shape
+     * is exactly what is under test: requests settle asynchronously, so the
+     * handlers the module assigns AFTER the call returns must still fire.
+     */
+    function fakeIdb(opts: { failOpen?: boolean; failOp?: boolean; nullError?: boolean } = {}) {
+      const rows = new Map<string, unknown>();
+      const stats = { opens: 0, closes: 0, upgrades: 0, modes: [] as string[] };
+      const failure = () => (opts.nullError ? null : new Error("QuotaExceededError"));
+
+      interface FakeRequest {
+        result: unknown;
+        error: Error | null;
+        onsuccess: (() => void) | null;
+        onerror: (() => void) | null;
+        onupgradeneeded: (() => void) | null;
+      }
+      const request = (settle: (req: FakeRequest) => void): FakeRequest => {
+        const req: FakeRequest = {
+          result: undefined,
+          error: null,
+          onsuccess: null,
+          onerror: null,
+          onupgradeneeded: null,
+        };
+        queueMicrotask(() => settle(req));
+        return req;
+      };
+
+      const store = {
+        get: (key: string) =>
+          request((req) => {
+            if (opts.failOp) {
+              req.error = failure();
+              req.onerror?.();
+              return;
+            }
+            req.result = rows.get(key);
+            req.onsuccess?.();
+          }),
+        put: (value: unknown, key: string) =>
+          request((req) => {
+            if (opts.failOp) {
+              req.error = failure();
+              req.onerror?.();
+              return;
+            }
+            rows.set(key, value);
+            req.onsuccess?.();
+          }),
+        delete: (key: string) =>
+          request((req) => {
+            if (opts.failOp) {
+              req.error = failure();
+              req.onerror?.();
+              return;
+            }
+            rows.delete(key);
+            req.onsuccess?.();
+          }),
+      };
+
+      const db = {
+        createObjectStore: () => {
+          stats.upgrades += 1;
+          return store;
+        },
+        transaction: (_name: string, mode: string) => {
+          stats.modes.push(mode);
+          return { objectStore: () => store };
+        },
+        close: () => {
+          stats.closes += 1;
+        },
+      };
+
+      vi.stubGlobal("indexedDB", {
+        open: () =>
+          request((req) => {
+            stats.opens += 1;
+            if (opts.failOpen) {
+              req.error = failure();
+              req.onerror?.();
+              return;
+            }
+            req.result = db;
+            if (!stats.upgrades) req.onupgradeneeded?.(); // first open creates the store
+            req.onsuccess?.();
+          }),
+      });
+      return { rows, stats };
+    }
+
+    it("fsaSupported and pickExtensionDir follow the picker's presence", async () => {
+      // jsdom has no File System Access; so does any non-Chromium browser and
+      // any fleet where enterprise policy disabled it.
+      expect(fsaSupported()).toBe(false);
+      expect(await pickExtensionDir()).toBeNull();
+
+      const picked = fakeDir().handle;
+      const picker = vi.fn(async () => picked);
+      vi.stubGlobal("showDirectoryPicker", picker);
+      expect(fsaSupported()).toBe(true);
+      expect(await pickExtensionDir()).toBe(picked);
+      // readwrite at pick time: a readonly handle could never run the update.
+      expect(picker).toHaveBeenCalledWith({ mode: "readwrite" });
+
+      // Dismissing the OS dialog throws AbortError — a choice, not a failure.
+      vi.stubGlobal("showDirectoryPicker", async () => {
+        throw Object.assign(new Error("aborted"), { name: "AbortError" });
+      });
+      expect(await pickExtensionDir()).toBeNull();
+    });
+
+    it("round-trips the picked folder through IndexedDB and closes every connection", async () => {
+      const idb = fakeIdb();
+      const handle = fakeDir().handle;
+
+      expect(await loadSavedExtensionDir()).toBeNull(); // nothing connected yet
+      await saveExtensionDir(handle);
+      // The key is the cross-session contract: renaming it orphans every
+      // already-connected install without any visible error.
+      expect([...idb.rows.keys()]).toEqual(["extensionDir"]);
+      // The live handle comes back, not a copy — a clone would carry no grant.
+      expect(await loadSavedExtensionDir()).toBe(handle);
+
+      await clearExtensionDir();
+      expect(await loadSavedExtensionDir()).toBeNull();
+      expect(idb.rows.size).toBe(0);
+
+      expect(idb.stats.opens).toBe(5);
+      expect(idb.stats.closes).toBe(5); // every op closes its own connection
+      expect(idb.stats.upgrades).toBe(1); // the store is created once, then reused
+      expect(idb.stats.modes).toEqual([
+        "readonly",
+        "readwrite",
+        "readonly",
+        "readwrite",
+        "readonly",
+      ]);
+    });
+
+    it("treats unusable storage as 'never connected', but never hides a failed save", async () => {
+      fakeIdb({ failOpen: true });
+      // Private mode / blocked storage: the page simply acts as if no folder
+      // was ever connected, and clearing is already at its goal state.
+      expect(await loadSavedExtensionDir()).toBeNull();
+      await expect(clearExtensionDir()).resolves.toBeUndefined();
+      // Saving is the step the user is waiting on, so it must not be silent.
+      await expect(saveExtensionDir(fakeDir().handle)).rejects.toThrow("QuotaExceededError");
+
+      // A failing REQUEST (rather than a failing open) still closes the db.
+      const opened = fakeIdb({ failOp: true });
+      expect(await loadSavedExtensionDir()).toBeNull();
+      await expect(saveExtensionDir(fakeDir().handle)).rejects.toThrow("QuotaExceededError");
+      expect(opened.stats.closes).toBe(opened.stats.opens);
+    });
+
+    it("names the failing stage when the IndexedDB request carries no error", async () => {
+      fakeIdb({ failOpen: true, nullError: true });
+      await expect(saveExtensionDir(fakeDir().handle)).rejects.toThrow("indexedDB open failed");
+      fakeIdb({ failOp: true, nullError: true });
+      await expect(saveExtensionDir(fakeDir().handle)).rejects.toThrow("indexedDB op failed");
+    });
+
+    it("ensureDirPermission re-asks only while the stored grant is in doubt", async () => {
+      const base = {
+        getFileHandle: async (): Promise<never> => {
+          throw new Error("unused by the permission path");
+        },
+      };
+      const requestPermission = vi.fn(async () => "granted");
+
+      // A handle with no permission API (tests, future spec drift) passes.
+      expect(await ensureDirPermission({ ...base })).toBe(true);
+
+      // Persisted grant (Chrome 122+): no second prompt, so the user's click is
+      // not spent re-authorizing a folder they already authorized.
+      expect(
+        await ensureDirPermission({ ...base, queryPermission: async () => "granted", requestPermission }),
+      ).toBe(true);
+      expect(requestPermission).not.toHaveBeenCalled();
+
+      // "prompt" is how a stored handle normally wakes up → ask, then proceed.
+      const queryPermission = vi.fn(async () => "prompt");
+      expect(await ensureDirPermission({ ...base, queryPermission, requestPermission })).toBe(true);
+      expect(queryPermission).toHaveBeenCalledWith({ mode: "readwrite" });
+      expect(requestPermission).toHaveBeenCalledWith({ mode: "readwrite" });
+
+      // Denied is final — re-asking would only be a prompt the browser ignores.
+      const afterDenied = vi.fn(async () => "granted");
+      expect(
+        await ensureDirPermission({
+          ...base,
+          queryPermission: async () => "denied",
+          requestPermission: afterDenied,
+        }),
+      ).toBe(false);
+      expect(afterDenied).not.toHaveBeenCalled();
+
+      // The user dismissed the prompt.
+      expect(
+        await ensureDirPermission({
+          ...base,
+          queryPermission: async () => "prompt",
+          requestPermission: async () => "denied",
+        }),
+      ).toBe(false);
+      // Queryable but with no request half → fail closed rather than write blind.
+      expect(await ensureDirPermission({ ...base, queryPermission: async () => "prompt" })).toBe(false);
+      // A revoked/detached handle throws instead of answering.
+      expect(
+        await ensureDirPermission({
+          ...base,
+          queryPermission: async () => {
+            throw new Error("NotAllowedError");
+          },
+        }),
+      ).toBe(false);
+    });
   });
 });

@@ -1,10 +1,43 @@
 // Admin builtin tool/skill on-off policy: validators, the skills-allowlist
 // math (discovery cache ∪ plugin-root scan − disabled), and the PreToolUse
 // hook + prompt enforcement/meta-cognition surfaces.
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+
+// ---------------------------------------------------------------------------
+// The discovery preflight opens a REAL SDK session (`query()` in streaming-input
+// mode). Replace ONLY `query` with a per-test fake and keep everything else real
+// — tool()/createSdkMcpServer() are used at import time by the in-process MCP
+// servers that createServices pulls in. Each call records a SNAPSHOT of the
+// options bag so assertions read what the preflight actually asked for.
+// ---------------------------------------------------------------------------
+type PreflightQuery = AsyncIterable<unknown> & {
+  supportedCommands?: () => Promise<Array<{ name?: unknown; description?: unknown }>>;
+};
+type PreflightArgs = { prompt: unknown; options: Record<string, unknown> };
+
+const sdkMock = vi.hoisted(() => ({
+  impl: null as null | ((args: PreflightArgs) => PreflightQuery),
+  calls: [] as Record<string, unknown>[],
+}));
+
+vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    query: (args: PreflightArgs) => {
+      sdkMock.calls.push({ ...args.options });
+      if (!sdkMock.impl) {
+        throw new Error("sdkMock.impl not programmed for this test");
+      }
+      return sdkMock.impl(args);
+    },
+  };
+});
+
+import { createServices } from "../src/server/app.js";
 import {
   DEFAULT_TOOL_SKILL_POLICY,
   TOGGLABLE_BUILTIN_TOOLS,
@@ -17,8 +50,12 @@ import {
   type SkillDiscoveryCache,
 } from "../src/server/toolSkillPolicy.js";
 import {
+  bundledCliVersion,
   computeSkillsOption,
+  discoverGlobalSkills,
+  freshSkillDiscoveryCache,
   listPluginRootSkills,
+  skillMdMeta,
 } from "../src/server/agent/skillDiscovery.js";
 import { buildPreToolUseHook } from "../src/server/agent/preToolUseHook.js";
 import { buildSystemPromptAppend } from "../src/server/agent/promptBuilder.js";
@@ -165,6 +202,267 @@ describe("skill discovery helpers", () => {
     // Allowlist = (cache ∪ plugin roots) − disabled; a disabled bare name also
     // strips the plugin-qualified form.
     expect(computeSkillsOption(policy, cache, [root])).toEqual(["gamma-skill", "verify"]);
+  });
+
+  it("skips a skills/ subdirectory that carries no SKILL.md", () => {
+    // The scan feeds an ALLOWLIST, so a stray directory must not invent a skill
+    // name (the CLI would never load one, and the entry would be inert noise).
+    const root = tmpDir();
+    writeSkill(root, "real", "---\nname: real-skill\n---\n");
+    fs.mkdirSync(path.join(root, "skills", "empty-dir"), { recursive: true });
+    expect(listPluginRootSkills([root])).toEqual([{ name: "real-skill", description: "" }]);
+  });
+
+  it("de-duplicates a skill name shared by two roots, keeping the first root's copy", () => {
+    const first = tmpDir();
+    const second = tmpDir();
+    writeSkill(first, "dup", "---\nname: shared\ndescription: from the first root\n---\n");
+    writeSkill(second, "dup", "---\nname: shared\ndescription: from the second root\n---\n");
+    expect(listPluginRootSkills([first, second])).toEqual([
+      { name: "shared", description: "from the first root" },
+    ]);
+  });
+
+  it("skillMdMeta tolerates an unreadable file and an unterminated frontmatter block", () => {
+    expect(skillMdMeta(path.join(tmpDir(), "does-not-exist", "SKILL.md"))).toEqual({});
+
+    const root = tmpDir();
+    // Opening `---` but no closing fence: the whole head is treated as frontmatter
+    // rather than discarded, so a name/description still reaches the allowlist.
+    const openEnded = path.join(root, "SKILL.md");
+    fs.writeFileSync(openEnded, '---\nname: "quoted-name"\ndescription: still readable\n');
+    expect(skillMdMeta(openEnded)).toEqual({
+      name: "quoted-name",
+      description: "still readable",
+    });
+  });
+});
+
+describe("global skill discovery (preflight + cache)", () => {
+  afterEach(() => {
+    sdkMock.impl = null;
+    sdkMock.calls.length = 0;
+  });
+
+  function services(label: string) {
+    return createServices({
+      dataDir: path.join(tmpDir(), label),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+  }
+
+  /**
+   * A query handle shaped like the SDK's: async-iterable (the preflight drains it
+   * so the CLI subprocess is reaped) with an optional `supportedCommands()`.
+   * `kickInput` starts the caller's idle input generator, which is what registers
+   * the abort listener the preflight relies on to end the session.
+   */
+  function preflightHandle(
+    args: PreflightArgs,
+    opts: {
+      supportedCommands?: () => Promise<Array<{ name?: unknown; description?: unknown }>>;
+      drainMessages?: unknown[];
+      drainError?: unknown;
+      kickInput?: boolean;
+    },
+  ): PreflightQuery {
+    if (opts.kickInput !== false) {
+      void (args.prompt as AsyncGenerator<never>).next();
+    }
+    async function* drain(): AsyncGenerator<unknown> {
+      for (const message of opts.drainMessages ?? []) {
+        yield message;
+      }
+      if (opts.drainError) {
+        throw opts.drainError;
+      }
+    }
+    const handle = drain() as PreflightQuery;
+    if (opts.supportedCommands) {
+      handle.supportedCommands = opts.supportedCommands;
+    }
+    return handle;
+  }
+
+  const commands = async () => [
+    { name: "code-review", description: "Review the current diff" },
+    { name: "plugin:deep-research" },
+    { name: "", description: "nameless commands are dropped" },
+    { description: "so are shapeless ones" },
+  ];
+
+  it("reads the bundled CLI version out of the installed SDK's package metadata", () => {
+    // The discovery cache is keyed by this value, so it must be the SDK's real
+    // claudeCodeVersion — an "unknown" fallback would make every cache stale.
+    const pkg = JSON.parse(
+      fs.readFileSync(
+        path.join(process.cwd(), "node_modules", "@anthropic-ai", "claude-agent-sdk", "package.json"),
+        "utf8",
+      ),
+    ) as { version?: string; claudeCodeVersion?: string };
+    expect(bundledCliVersion()).toBe(pkg.claudeCodeVersion || pkg.version || "unknown");
+    expect(bundledCliVersion()).not.toBe("unknown");
+  });
+
+  it("treats a stored cache as fresh only while it matches the bundled CLI version", () => {
+    const { store } = services("fresh-cache");
+    expect(freshSkillDiscoveryCache(store)).toBeNull();
+
+    store.setSkillDiscoveryCache({
+      cliVersion: "0.0.0-stale",
+      fetchedAt: "t",
+      skills: [{ name: "old-skill", description: "" }],
+    });
+    // After an SDK upgrade the stale list could omit new built-ins, so it is
+    // dropped rather than used to compute an allowlist.
+    expect(freshSkillDiscoveryCache(store)).toBeNull();
+
+    const current = {
+      cliVersion: bundledCliVersion(),
+      fetchedAt: "t",
+      skills: [{ name: "new-skill", description: "" }],
+    };
+    store.setSkillDiscoveryCache(current);
+    expect(freshSkillDiscoveryCache(store)).toEqual(current);
+  });
+
+  it("runs one auth-free preflight, keeps only named commands, and caches the result", async () => {
+    const { store, config } = services("preflight-ok");
+    sdkMock.impl = (args) => preflightHandle(args, { supportedCommands: commands });
+
+    const cache = await discoverGlobalSkills(store, config);
+    expect(cache.cliVersion).toBe(bundledCliVersion());
+    expect(cache.skills).toEqual([
+      { name: "code-review", description: "Review the current diff" },
+      { name: "plugin:deep-research", description: "" },
+    ]);
+    // Persisted, so the next boot answers from app_config instead of re-running it.
+    expect(store.getSkillDiscoveryCache()).toEqual(cache);
+
+    // The session must be incapable of spending a turn: no user message is ever
+    // sent, only the app default-skills root is mounted, and the CLI writes into
+    // the app's own session dir.
+    expect(sdkMock.calls).toHaveLength(1);
+    const options = sdkMock.calls[0];
+    expect(options.skills).toBe("all");
+    expect(options.settingSources).toEqual([]);
+    expect(options.strictMcpConfig).toBe(true);
+    expect(options.maxTurns).toBe(1);
+    expect(options.cwd).toBe(config.dataDir);
+    expect(options.plugins).toEqual([{ type: "local", path: config.defaultPluginsDir }]);
+    expect((options.env as Record<string, string>).CLAUDE_CONFIG_DIR).toBe(config.agentSessionsDir);
+    expect(fs.existsSync(config.agentSessionsDir)).toBe(true);
+  });
+
+  it("answers a fresh cache without touching the SDK, and refreshes a stale one", async () => {
+    const { store, config } = services("preflight-cached");
+    const stored = {
+      cliVersion: bundledCliVersion(),
+      fetchedAt: "2026-01-01T00:00:00.000Z",
+      skills: [{ name: "cached-skill", description: "from app_config" }],
+    };
+    store.setSkillDiscoveryCache(stored);
+    // sdkMock.impl stays null: a query() call here would throw.
+    expect(await discoverGlobalSkills(store, config)).toEqual(stored);
+    expect(sdkMock.calls).toHaveLength(0);
+
+    store.setSkillDiscoveryCache({ ...stored, cliVersion: "0.0.0-stale" });
+    sdkMock.impl = (args) => preflightHandle(args, { supportedCommands: commands });
+    const refreshed = await discoverGlobalSkills(store, config);
+    expect(refreshed.cliVersion).toBe(bundledCliVersion());
+    expect(refreshed.skills.map((s) => s.name)).toEqual(["code-review", "plugin:deep-research"]);
+    expect(sdkMock.calls).toHaveLength(1);
+  });
+
+  it("shares ONE preflight between concurrent callers", async () => {
+    const { store, config } = services("preflight-single-flight");
+    let release: (() => void) | null = null;
+    sdkMock.impl = (args) =>
+      preflightHandle(args, {
+        supportedCommands: () =>
+          new Promise((resolve) => {
+            release = () => resolve([{ name: "slow-skill" }]);
+          }),
+      });
+
+    const first = discoverGlobalSkills(store, config);
+    const second = discoverGlobalSkills(store, config);
+    await vi.waitFor(() => expect(release).not.toBeNull());
+    release!();
+    const [a, b] = await Promise.all([first, second]);
+
+    expect(sdkMock.calls).toHaveLength(1);
+    expect(a).toBe(b);
+    expect(a.skills).toEqual([{ name: "slow-skill", description: "" }]);
+  });
+
+  it("propagates a preflight failure and clears the single-flight guard", async () => {
+    const { store, config } = services("preflight-fail");
+    // An SDK whose query handle lacks supportedCommands() cannot enumerate skills.
+    sdkMock.impl = (args) => preflightHandle(args, {});
+    await expect(discoverGlobalSkills(store, config)).rejects.toThrow(
+      "SDK query() has no supportedCommands()",
+    );
+    // Nothing cached — the admin route reports the failure, agent runs fail open.
+    expect(store.getSkillDiscoveryCache()).toBeNull();
+
+    // The guard was released, so a later attempt runs a NEW preflight.
+    sdkMock.impl = (args) => preflightHandle(args, { supportedCommands: commands });
+    const cache = await discoverGlobalSkills(store, config);
+    expect(cache.skills.map((s) => s.name)).toEqual(["code-review", "plugin:deep-research"]);
+    expect(sdkMock.calls).toHaveLength(2);
+  });
+
+  it("drains the aborted session's remaining messages and swallows its abort error", async () => {
+    // The drain exists to reap the CLI subprocess; whatever it yields is
+    // discarded and an abort-time throw must not lose the enumerated skills.
+    const { store, config } = services("preflight-drain-error");
+    sdkMock.impl = (args) =>
+      preflightHandle(args, {
+        supportedCommands: async () => [{ name: "survivor" }],
+        drainMessages: [{ type: "system", subtype: "init" }],
+        drainError: new Error("AbortError: session aborted"),
+      });
+    const cache = await discoverGlobalSkills(store, config);
+    expect(cache.skills).toEqual([{ name: "survivor", description: "" }]);
+    expect(store.getSkillDiscoveryCache()?.skills).toEqual([{ name: "survivor", description: "" }]);
+  });
+
+  it("aborts a hung preflight at the hard timeout so the admin panel cannot wedge", async () => {
+    const { store, config } = services("preflight-timeout");
+    vi.useFakeTimers();
+    try {
+      let abortedAfterMs: number | null = null;
+      const startedAt = Date.now();
+      sdkMock.impl = (args) => {
+        const { signal } = args.options.abortController as AbortController;
+        return preflightHandle(args, {
+          // A CLI that never answers: the only thing that settles this is the
+          // preflight's own abort.
+          supportedCommands: () =>
+            new Promise((resolve) => {
+              signal.addEventListener(
+                "abort",
+                () => {
+                  abortedAfterMs = Date.now() - startedAt;
+                  resolve([]);
+                },
+                { once: true },
+              );
+            }),
+        });
+      };
+      const pending = discoverGlobalSkills(store, config);
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(abortedAfterMs).toBeNull();
+      await vi.advanceTimersByTimeAsync(1_000);
+      const cache = await pending;
+      expect(abortedAfterMs).toBe(30_000);
+      expect(cache.skills).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

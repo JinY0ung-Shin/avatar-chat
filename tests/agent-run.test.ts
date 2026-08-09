@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Response } from "express";
 import type {
   AgentEvents,
@@ -40,6 +40,52 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   };
 });
 
+// ---------------------------------------------------------------------------
+// Turn ON the opt-in SDK tool-call trace for this file. `TOOL_TRACE_ENABLED`
+// (agentUtils) reads AGENT_TOOL_TRACE ONCE at module load, so the flag has to be
+// set before any import — hence vi.hoisted. Every run-loop test in this file
+// then exercises the trace path with real message shapes, and the tracing suite
+// below asserts what it emits. Cleared in afterAll so the flag can't ride along
+// into another test file sharing this worker process.
+// ---------------------------------------------------------------------------
+vi.hoisted(() => {
+  process.env.AGENT_TOOL_TRACE = "1";
+});
+afterAll(() => {
+  delete process.env.AGENT_TOOL_TRACE;
+});
+
+// The trace's only observable output is its logger, so capture the ONE child
+// logger sdkMessageHandlers binds (`trace: "tool"`). Every other child — the
+// PreToolUse hook's included — stays the real, test-silent pino instance.
+const traceLog = vi.hoisted(() => {
+  const entries: { payload: Record<string, unknown>; msg: string }[] = [];
+  const record = (payload?: unknown, msg?: string) => {
+    entries.push({
+      payload: (typeof payload === "object" && payload ? payload : {}) as Record<string, unknown>,
+      msg: typeof payload === "string" ? payload : (msg ?? ""),
+    });
+  };
+  const child: Record<string, unknown> = { child: () => child };
+  for (const level of ["trace", "debug", "info", "warn", "error", "fatal"]) {
+    child[level] = record;
+  }
+  return { entries, child };
+});
+
+vi.mock("../src/server/logger.js", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const real = actual.default as { child: (bindings: Record<string, unknown>) => unknown };
+  const realChild = real.child.bind(real);
+  return {
+    ...actual,
+    default: Object.assign(Object.create(real as object), {
+      child: (bindings: Record<string, unknown>) =>
+        bindings?.trace === "tool" ? traceLog.child : realChild(bindings),
+    }),
+  };
+});
+
 import { createServices } from "../src/server/app.js";
 import { CLAUDE_OAUTH_TOKEN_KEY } from "../src/server/store.js";
 import { runAgentStream } from "../src/server/agent/index.js";
@@ -63,6 +109,11 @@ import {
   openRun,
   submitResponse,
 } from "../src/server/agent/runRegistry.js";
+import {
+  createLoopState,
+  dispatchSdkMessage,
+  traceSdkMessage,
+} from "../src/server/agent/sdkMessageHandlers.js";
 
 // ---------------------------------------------------------------------------
 // SDK-message + query-handle builders (shapes copied from sdkMessageHandlers /
@@ -1149,5 +1200,167 @@ describe("runRegistry (additional coverage)", () => {
     expect(getActiveRunForConversation("other", "c-gc")).toBeNull(); // key is per-user
     closeRun("gc-1");
     expect(getActiveRunForConversation("u", "c-gc")).toBeNull();
+  });
+});
+
+// ===========================================================================
+// AGENT_TOOL_TRACE — the opt-in diagnostic trace of one turn's tool lifecycle
+// ===========================================================================
+describe("SDK tool-call tracing (AGENT_TOOL_TRACE)", () => {
+  beforeEach(() => {
+    traceLog.entries.length = 0;
+  });
+
+  /** The payloads of every trace line whose message matches `msg`. */
+  function traced(msg: string): Record<string, unknown>[] {
+    return traceLog.entries.filter((e) => e.msg === msg).map((e) => e.payload);
+  }
+
+  it("traces the streaming tool_use block lifecycle and the turn's stop_reason", () => {
+    // The documented stall signature is a "tool_use block start" with no matching
+    // "content_block stop": the backend opened a tool call and never closed its
+    // input JSON. Both halves have to be traced with the same index for that
+    // comparison to be possible at all.
+    const state = createLoopState();
+    const events = makeEvents();
+    const stream = (event: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+      dispatchSdkMessage({ type: "stream_event", ...extra, event }, events, state);
+
+    stream({ type: "message_start", message: { usage: { input_tokens: 10 } } });
+    stream({
+      type: "content_block_start",
+      index: 1,
+      content_block: { type: "tool_use", id: "toolu_1", name: "Bash" },
+    });
+    // A text block start is NOT a tool call and must not be traced as one.
+    stream({ type: "content_block_start", index: 2, content_block: { type: "text" } });
+    stream({ type: "content_block_stop", index: 1 });
+    stream({ type: "message_delta", delta: { stop_reason: "tool_use" } });
+    // A delta with no stop_reason yet is silent (it fires on every chunk).
+    stream({ type: "message_delta", delta: {} });
+    stream({ type: "message_stop" }, { parent_tool_use_id: "agent-7" });
+
+    expect(traced("trace: tool_use block start")).toEqual([
+      { agentId: "main", index: 1, toolName: "Bash", toolUseId: "toolu_1" },
+    ]);
+    expect(traced("trace: content_block stop")).toEqual([{ agentId: "main", index: 1 }]);
+    expect(traced("trace: message_delta stop_reason")).toEqual([
+      { agentId: "main", stopReason: "tool_use" },
+    ]);
+    // Subagent streams are attributed to their spawning tool_use id, not "main".
+    expect(traced("trace: stream lifecycle")).toEqual([
+      { agentId: "main", eventType: "message_start" },
+      { agentId: "agent-7", eventType: "message_stop" },
+    ]);
+  });
+
+  it("traces the assembled assistant tool calls, every tool_result, and the result subtype", () => {
+    // The other documented stall signature: stop_reason "tool_use" + an assistant
+    // tool call, but no tool_result — the SDK never dispatched the announced call.
+    const state = createLoopState();
+    const events = makeEvents();
+    dispatchSdkMessage(
+      {
+        type: "assistant",
+        message: {
+          stop_reason: "tool_use",
+          content: [
+            { type: "text", text: "확인해 볼게요" },
+            { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls" } },
+            { type: "tool_use", id: "toolu_2", name: "Read", input: { file_path: "a.ts" } },
+          ],
+        },
+      },
+      events,
+      state,
+    );
+    expect(traced("trace: assistant message assembled")).toEqual([
+      {
+        agentId: "main",
+        stopReason: "tool_use",
+        blockTypes: ["text", "tool_use", "tool_use"],
+        toolCalls: [
+          { name: "Bash", toolUseId: "toolu_1" },
+          { name: "Read", toolUseId: "toolu_2" },
+        ],
+      },
+    ]);
+
+    dispatchSdkMessage(
+      {
+        type: "user",
+        message: {
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_1", is_error: true },
+            { type: "tool_result", tool_use_id: "toolu_2" },
+          ],
+        },
+      },
+      events,
+      state,
+    );
+    // A user turn with no tool_result blocks stays out of the trace entirely.
+    dispatchSdkMessage(
+      { type: "user", message: { content: [{ type: "text", text: "다음은?" }] } },
+      events,
+      state,
+    );
+    expect(traced("trace: tool_result(s) returned")).toEqual([
+      {
+        agentId: "main",
+        results: [
+          { toolUseId: "toolu_1", isError: true },
+          { toolUseId: "toolu_2", isError: false },
+        ],
+      },
+    ]);
+
+    dispatchSdkMessage({ type: "result", subtype: "error_max_turns" }, events, state);
+    expect(traced("trace: result")).toEqual([{ agentId: "main", subtype: "error_max_turns" }]);
+  });
+
+  it("stays silent for envelopes it does not model, and never throws into the run loop", () => {
+    const state = createLoopState();
+    dispatchSdkMessage({ type: "tool_progress", tool_name: "Bash" }, makeEvents(), state);
+    dispatchSdkMessage({ type: "system", subtype: "init" }, makeEvents(), state);
+    expect(traceLog.entries).toEqual([]);
+
+    // Tracing is best-effort diagnostics: a hostile/exotic envelope must not take
+    // the turn down with it.
+    const hostile = {
+      get type(): string {
+        throw new Error("boom");
+      },
+    } as unknown as Record<string, unknown>;
+    expect(() => traceSdkMessage(hostile)).not.toThrow();
+    expect(traceLog.entries).toEqual([]);
+  });
+
+  it("traces a real streamed turn end to end through runClaudeAgent", async () => {
+    const { config, store, baseRequest } = setup();
+    sdkMock.impl = () =>
+      handleFrom([
+        initMsg(),
+        startMsg({ input_tokens: 100 }),
+        deltaMsg("답변"),
+        assistantMsg([textBlock("답변"), toolUseBlock("toolu_run", "Read", { file_path: "a.ts" })]),
+        toolResultMsg("toolu_run"),
+        successResult("답변"),
+      ]);
+    const res = await runClaudeAgent(baseRequest, [], config, store, makeEvents());
+    expect(res.text).toBe("답변");
+
+    // The whole lifecycle is visible in order from a single run, which is the
+    // point of the flag: assistant tool call → its result → the terminal result.
+    expect(traced("trace: stream lifecycle")).toEqual([
+      { agentId: "main", eventType: "message_start" },
+    ]);
+    expect(traced("trace: assistant message assembled")[0]).toMatchObject({
+      toolCalls: [{ name: "Read", toolUseId: "toolu_run" }],
+    });
+    expect(traced("trace: tool_result(s) returned")[0]).toMatchObject({
+      results: [{ toolUseId: "toolu_run", isError: false }],
+    });
+    expect(traced("trace: result")).toEqual([{ agentId: "main", subtype: "success" }]);
   });
 });

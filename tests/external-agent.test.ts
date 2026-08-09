@@ -1,10 +1,16 @@
 import http from "node:http";
 import request from "supertest";
 import { describe, expect, it } from "vitest";
-import { runExternalAgent } from "../src/server/agent/externalAgent.js";
 import {
+  EXTERNAL_SDK_MESSAGE_SCHEMA,
+  probeExternalAgentGateway,
+  runExternalAgent,
+} from "../src/server/agent/externalAgent.js";
+import {
+  MAX_EXTERNAL_AGENTS,
   externalAgentVisibleTo,
   externalAvatarDetail,
+  listExternalAvatarSummaries,
   parseExternalAgents,
 } from "../src/server/externalAgents.js";
 import { createApp, createServices } from "../src/server/app.js";
@@ -71,6 +77,72 @@ async function withGateway(
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+/**
+ * Gateway that writes RAW HTTP/SSE bytes, so a test can shape frame
+ * boundaries, headers, and truncation that the structured `withGateway`
+ * fixture always gets right.
+ */
+async function withRawGateway(
+  respond: (
+    res: http.ServerResponse,
+    req: http.IncomingMessage,
+  ) => void | Promise<void>,
+  run: (endpoint: string) => Promise<void>,
+): Promise<void> {
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on("end", () => void respond(res, req));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  try {
+    await run(`http://127.0.0.1:${port}/v1/agents/messages`);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+/** Open an SSE response and write pre-built raw blocks (no framing help). */
+function writeSse(res: http.ServerResponse, ...blocks: string[]): void {
+  res.writeHead(200, { "content-type": "text/event-stream" });
+  for (const block of blocks) res.write(block);
+}
+
+function rawFrame(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+const RAW_START = rawFrame("message_start", {
+  schema: EXTERNAL_SDK_MESSAGE_SCHEMA,
+});
+
+/** Run and return the rejection, so a test can assert what a message omits. */
+async function failedRun(
+  ...args: Parameters<typeof runExternalAgent>
+): Promise<Error> {
+  try {
+    await runExternalAgent(...args);
+  } catch (error) {
+    return error as Error;
+  }
+  throw new Error("expected the external agent run to fail");
+}
+
+/** Minimal valid registry entry; a case overrides only the field under test. */
+const REGISTRY_ENTRY = {
+  id: "research",
+  displayName: "Research Agent",
+  endpoint: "https://gateway.example/v1/agents/messages",
+};
+
+function parseEntry(overrides: Record<string, unknown>): ExternalAgentConfig {
+  return parseExternalAgents(
+    JSON.stringify([{ ...REGISTRY_ENTRY, ...overrides }]),
+  )[0];
 }
 
 function externalConfig(endpoint: string): ExternalAgentConfig {
@@ -332,6 +404,185 @@ describe("external agent registry", () => {
         JSON.stringify([{ ...entry, totalTimeoutSeconds: 100_000 }]),
       ),
     ).toThrow("totalTimeoutSeconds은(는) 86400초 이하의 양수여야 합니다.");
+  });
+
+  it("rejects a registry that is not a JSON array of objects", () => {
+    expect(parseExternalAgents(undefined)).toEqual([]);
+    expect(parseExternalAgents("   ")).toEqual([]);
+    expect(() => parseExternalAgents("{not json}")).toThrow(
+      "EXTERNAL_AGENTS_JSON은 올바른 JSON이어야 합니다.",
+    );
+    expect(() => parseExternalAgents(JSON.stringify(REGISTRY_ENTRY))).toThrow(
+      "EXTERNAL_AGENTS_JSON은 JSON 배열이어야 합니다.",
+    );
+    expect(() =>
+      parseExternalAgents(
+        JSON.stringify(
+          Array.from({ length: MAX_EXTERNAL_AGENTS + 1 }, (_, index) => ({
+            ...REGISTRY_ENTRY,
+            id: `research-${index}`,
+          })),
+        ),
+      ),
+    ).toThrow("최대 50개의 외부 아바타만 등록할 수 있습니다.");
+    for (const item of ["research", 42, null, ["research"]]) {
+      expect(() => parseExternalAgents(JSON.stringify([item]))).toThrow(
+        "EXTERNAL_AGENTS_JSON[0] 항목은 객체여야 합니다.",
+      );
+    }
+  });
+
+  it("rejects malformed identity, text, and flag fields", () => {
+    expect(() => parseEntry({ id: undefined })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].id은(는) 필수입니다.",
+    );
+    expect(() => parseEntry({ id: "리서치 에이전트" })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].id는 영문/숫자/_/- 만 사용할 수 있습니다.",
+    );
+    expect(() =>
+      parseExternalAgents(
+        JSON.stringify([
+          REGISTRY_ENTRY,
+          { ...REGISTRY_ENTRY, displayName: "Twin" },
+        ]),
+      ),
+    ).toThrow("EXTERNAL_AGENTS_JSON에 중복된 id가 있습니다: research");
+    expect(() => parseEntry({ displayName: 42 })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].displayName은(는) 문자열이어야 합니다.",
+    );
+    expect(() => parseEntry({ displayName: "   " })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].displayName은(는) 필수입니다.",
+    );
+    expect(() => parseEntry({ bio: "가".repeat(501) })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].bio은(는) 500자를 초과할 수 없습니다.",
+    );
+    expect(() => parseEntry({ enabled: "yes" })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].enabled은(는) true 또는 false여야 합니다.",
+    );
+    // Blank/absent optional values mean "unset", not an error.
+    expect(parseEntry({ alias: "", model: "", enabled: null })).toMatchObject({
+      alias: "",
+      enabled: true,
+    });
+    expect(parseEntry({ model: "" }).model).toBeUndefined();
+  });
+
+  it("rejects unusable endpoint URLs", () => {
+    expect(() => parseEntry({ endpoint: undefined })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0] endpoint 또는 baseUrl이 필요합니다.",
+    );
+    expect(() =>
+      parseEntry({ endpoint: "gateway.example/v1/agents/messages" }),
+    ).toThrow("EXTERNAL_AGENTS_JSON[0].endpoint URL 형식이 올바르지 않습니다.");
+    expect(() =>
+      parseEntry({ endpoint: "ftp://gateway.example/v1/agents/messages" }),
+    ).toThrow("EXTERNAL_AGENTS_JSON[0].endpoint는 http 또는 https여야 합니다.");
+    expect(() =>
+      parseEntry({
+        endpoint: "https://user:pass@gateway.example/v1/agents/messages",
+      }),
+    ).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].endpoint에는 인증 정보를 포함할 수 없습니다.",
+    );
+  });
+
+  it("rejects malformed hashtag and group-ACL shapes", () => {
+    expect(() => parseEntry({ hashtags: "research" })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].hashtags는 배열이어야 합니다.",
+    );
+    expect(() => parseEntry({ hashtags: ["ok", 7] })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].hashtags[1]은(는) 문자열이어야 합니다.",
+    );
+    expect(
+      parseEntry({
+        hashtags: Array.from({ length: 25 }, (_, index) => `tag-${index}`),
+      }).hashtags,
+    ).toHaveLength(20);
+    expect(() =>
+      parseEntry({
+        visibleToGroupIds: Array.from(
+          { length: 51 },
+          (_, index) => `group-${index}`,
+        ),
+      }),
+    ).toThrow("visibleToGroupIds는 최대 50개 그룹까지 지정할 수 있습니다.");
+    for (const groupId of ["   ", "g".repeat(129)]) {
+      expect(() => parseEntry({ visibleToGroupIds: [groupId] })).toThrow(
+        "visibleToGroupIds[0]에는 128자 이하의 그룹 ID를 입력해야 합니다.",
+      );
+    }
+  });
+
+  it("reads apiKeyEnv through process.env when no lookup is injected", () => {
+    const variable = "NOAH_TEST_EXTERNAL_GATEWAY_TOKEN";
+    delete process.env[variable];
+    expect(() => parseEntry({ apiKeyEnv: "not a variable" })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].apiKeyEnv는 올바른 환경 변수 이름이 아닙니다.",
+    );
+    expect(() => parseEntry({ apiKeyEnv: variable })).toThrow(
+      "EXTERNAL_AGENTS_JSON[0].apiKeyEnv가 가리키는 환경 변수가 설정되지 않았습니다.",
+    );
+    process.env[variable] = "  env-token  ";
+    try {
+      // The env value is trimmed and wins over an inline apiKey.
+      expect(
+        parseEntry({ apiKeyEnv: variable, apiKey: "inline-token" }).apiKey,
+      ).toBe("env-token");
+    } finally {
+      delete process.env[variable];
+    }
+  });
+
+  it("lists only enabled, group-visible avatars sorted by display name", () => {
+    const agents = parseExternalAgents(
+      JSON.stringify([
+        {
+          ...REGISTRY_ENTRY,
+          id: "zulu",
+          displayName: "Zulu Agent",
+          visibleToGroupIds: ["team"],
+        },
+        {
+          ...REGISTRY_ENTRY,
+          id: "alpha",
+          displayName: "Alpha Agent",
+          visibleToGroupIds: ["team", "other"],
+        },
+        {
+          ...REGISTRY_ENTRY,
+          id: "off",
+          displayName: "Disabled Agent",
+          enabled: false,
+          visibleToGroupIds: ["team"],
+        },
+        {
+          ...REGISTRY_ENTRY,
+          id: "elsewhere",
+          displayName: "Elsewhere Agent",
+          visibleToGroupIds: ["other"],
+        },
+        { ...REGISTRY_ENTRY, id: "unbound", displayName: "Unbound Agent" },
+      ]),
+    );
+
+    const visible = listExternalAvatarSummaries(agents, new Set(["team"]));
+    expect(visible.map((avatar) => avatar.id)).toEqual([
+      "external:alpha",
+      "external:zulu",
+    ]);
+    expect(visible[0]).toMatchObject({
+      username: "external-alpha",
+      runtime: "external",
+      visibility: "group",
+      sharesGroup: false,
+      pluginCount: 0,
+      hasImage: false,
+    });
+    // A group-less viewer and an unconfigured registry both see nothing.
+    expect(listExternalAvatarSummaries(agents, new Set())).toEqual([]);
+    expect(listExternalAvatarSummaries(undefined, new Set(["team"]))).toEqual(
+      [],
+    );
   });
 });
 
@@ -601,6 +852,547 @@ describe("external agent SDK event bridge", () => {
       server.closeAllConnections();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it("flushes a final frame the gateway never newline-terminated", async () => {
+    await withRawGateway(
+      (res) => {
+        writeSse(
+          res,
+          RAW_START,
+          rawFrame("sdk_message", {
+            type: "result",
+            subtype: "success",
+            result: "마지막 프레임",
+          }),
+          // No trailing blank line: this frame exists only in the leftover
+          // buffer once the stream closes.
+          "event: message_stop\ndata: {}",
+        );
+        res.end();
+      },
+      async (endpoint) => {
+        const result = await runExternalAgent(
+          { message: "끝맺음" },
+          externalConfig(endpoint),
+          {},
+        );
+        expect(result).toMatchObject({
+          runtime: "external",
+          text: "마지막 프레임",
+        });
+      },
+    );
+  });
+
+  it("rejects a stream that stops before the completion event", async () => {
+    await withRawGateway(
+      (res) => {
+        writeSse(
+          res,
+          RAW_START,
+          rawFrame("sdk_message", {
+            type: "stream_event",
+            event: {
+              type: "content_block_delta",
+              delta: { type: "text_delta", text: "중간까지" },
+            },
+          }),
+        );
+        res.end();
+      },
+      async (endpoint) => {
+        const deltas: string[] = [];
+        await expect(
+          runExternalAgent({ message: "중단" }, externalConfig(endpoint), {
+            onDelta: (text) => deltas.push(text),
+          }),
+        ).rejects.toThrow(
+          "외부 에이전트 스트림이 완료 이벤트 없이 종료되었습니다.",
+        );
+        // The partial text did reach the client, but the turn still fails.
+        expect(deltas).toEqual(["중간까지"]);
+      },
+    );
+
+    await withRawGateway(
+      (res) => {
+        writeSse(res);
+        res.end();
+      },
+      async (endpoint) => {
+        await expect(
+          runExternalAgent({ message: "빈 응답" }, externalConfig(endpoint), {}),
+        ).rejects.toThrow(
+          "외부 에이전트 스트림에 message_start 이벤트가 없습니다.",
+        );
+      },
+    );
+
+    // A dangling comment is not a frame, so it cannot stand in for the
+    // completion event either.
+    await withRawGateway(
+      (res) => {
+        writeSse(res, RAW_START, ": still working");
+        res.end();
+      },
+      async (endpoint) => {
+        await expect(
+          runExternalAgent(
+            { message: "주석으로 끝남" },
+            externalConfig(endpoint),
+            {},
+          ),
+        ).rejects.toThrow(
+          "외부 에이전트 스트림이 완료 이벤트 없이 종료되었습니다.",
+        );
+      },
+    );
+  });
+
+  it("answers with the empty-response text when a turn carries no content", async () => {
+    await withRawGateway(
+      (res) => {
+        writeSse(res, RAW_START, rawFrame("message_stop", {}));
+        res.end();
+      },
+      async (endpoint) => {
+        const result = await runExternalAgent(
+          { message: "빈 턴" },
+          externalConfig(endpoint),
+          {},
+        );
+        expect(result).toMatchObject({
+          runtime: "external",
+          text: "외부 에이전트 응답이 비어 있습니다.",
+        });
+        expect(result.usage).toBeUndefined();
+      },
+    );
+  });
+
+  it("rejects frames that break the SDK event contract", async () => {
+    const cases = [
+      {
+        blocks: [rawFrame("message_stop", {})],
+        message: "외부 에이전트 스트림에 message_start 이벤트가 없습니다.",
+      },
+      {
+        blocks: [rawFrame("sdk_message", { type: "result" })],
+        message: "외부 에이전트가 message_start 전에 SDK 이벤트를 보냈습니다.",
+      },
+      {
+        blocks: [RAW_START, rawFrame("sdk_message", 42)],
+        message: "외부 에이전트의 sdk_message 이벤트가 객체가 아닙니다.",
+      },
+      {
+        blocks: [RAW_START, 'event: sdk_message\ndata: {"type":\n\n'],
+        message: "외부 에이전트의 sdk_message 이벤트가 올바른 JSON이 아닙니다.",
+      },
+      {
+        blocks: ["event: message_start\ndata: nope\n\n"],
+        message: "외부 에이전트의 message_start 이벤트가 올바른 JSON이 아닙니다.",
+      },
+      {
+        blocks: [rawFrame("message_start", 42)],
+        message: "외부 에이전트 스트림에 이벤트 스키마가 없습니다.",
+      },
+    ];
+    for (const { blocks, message } of cases) {
+      await withRawGateway(
+        (res) => {
+          writeSse(res, ...blocks);
+          res.end();
+        },
+        async (endpoint) => {
+          await expect(
+            runExternalAgent(
+              { message: "계약 위반" },
+              externalConfig(endpoint),
+              {},
+            ),
+          ).rejects.toThrow(message);
+        },
+      );
+    }
+  });
+
+  it("ignores SSE comments and unknown event names", async () => {
+    await withRawGateway(
+      (res) => {
+        writeSse(
+          res,
+          ": stream primed\n\n",
+          `: about to start\n${RAW_START}`,
+          // A field-less line is neither `event` nor `data`: skip, don't fail.
+          `retry\n${rawFrame("heartbeat", { note: "ignored" })}`,
+          rawFrame("sdk_message", {
+            type: "result",
+            subtype: "success",
+            result: "주석은 무시됩니다",
+          }),
+          rawFrame("message_stop", {}),
+        );
+        res.end();
+      },
+      async (endpoint) => {
+        const statuses: string[] = [];
+        const result = await runExternalAgent(
+          { message: "주석" },
+          externalConfig(endpoint),
+          { onStatus: (label) => statuses.push(label) },
+        );
+        expect(result.text).toBe("주석은 무시됩니다");
+        expect(statuses).toEqual([
+          "외부 에이전트에 연결 중…",
+          "응답 생성 중…",
+        ]);
+      },
+    );
+  });
+
+  it("rejects an SSE frame larger than the stream limit", async () => {
+    const limit = 2 * 1024 * 1024;
+    // Terminated frame: the pending buffer stays legal until the closing chunk
+    // arrives, so the guard has to reject the assembled block.
+    await withRawGateway(
+      async (res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`event: sdk_message\ndata: "${"x".repeat(limit - 1_000)}`);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        res.write(`${"x".repeat(2_000)}"\n\n`);
+      },
+      async (endpoint) => {
+        await expect(
+          runExternalAgent(
+            { message: "거대 프레임" },
+            externalConfig(endpoint),
+            {},
+          ),
+        ).rejects.toThrow(
+          "외부 에이전트 스트림 이벤트가 허용 크기를 초과했습니다.",
+        );
+      },
+    );
+
+    // Never-terminated frame: the same cap applies to the pending buffer, so a
+    // gateway cannot stream unbounded bytes by withholding the boundary.
+    await withRawGateway(
+      (res) => {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.write(`event: sdk_message\ndata: "${"x".repeat(limit + 4_096)}`);
+      },
+      async (endpoint) => {
+        await expect(
+          runExternalAgent(
+            { message: "미완 프레임" },
+            externalConfig(endpoint),
+            {},
+          ),
+        ).rejects.toThrow(
+          "외부 에이전트 스트림 이벤트가 허용 크기를 초과했습니다.",
+        );
+      },
+    );
+  });
+
+  it("rejects a gateway response that is not a live SSE stream", async () => {
+    await withRawGateway(
+      (res) => {
+        res.writeHead(500, { "content-type": "text/event-stream" });
+        res.end("upstream stack trace");
+      },
+      async (endpoint) => {
+        const error = await failedRun(
+          { message: "실패 응답" },
+          externalConfig(endpoint),
+          {},
+        );
+        expect(error.message).toBe(
+          "외부 에이전트 요청에 실패했습니다 (HTTP 500).",
+        );
+        // The upstream body may carry implementation detail: never relay it.
+        expect(error.message).not.toContain("upstream stack trace");
+      },
+    );
+
+    await withRawGateway(
+      (res) => {
+        res.writeHead(204, { "content-type": "text/event-stream" });
+        res.end();
+      },
+      async (endpoint) => {
+        await expect(
+          runExternalAgent(
+            { message: "빈 본문" },
+            externalConfig(endpoint),
+            {},
+          ),
+        ).rejects.toThrow("외부 에이전트가 빈 스트림을 반환했습니다.");
+      },
+    );
+
+    await withRawGateway(
+      (res) => {
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ok: true }));
+      },
+      async (endpoint) => {
+        await expect(
+          runExternalAgent(
+            { message: "JSON 응답" },
+            externalConfig(endpoint),
+            {},
+          ),
+        ).rejects.toThrow(
+          "외부 에이전트가 SSE 스트림이 아닌 응답을 반환했습니다.",
+        );
+      },
+    );
+  });
+
+  it("normalizes upstream error events into one Korean failure line", async () => {
+    const cases = [
+      {
+        data: "gateway exploded",
+        expected: "외부 에이전트 실행에 실패했습니다: gateway exploded",
+      },
+      {
+        data: JSON.stringify("quota exceeded"),
+        expected: "외부 에이전트 실행에 실패했습니다: quota exceeded",
+      },
+      {
+        data: JSON.stringify({ error: "bad gateway key" }),
+        expected: "외부 에이전트 실행에 실패했습니다: bad gateway key",
+      },
+      {
+        data: JSON.stringify({ message: "upstream busy" }),
+        expected: "외부 에이전트 실행에 실패했습니다: upstream busy",
+      },
+      {
+        data: JSON.stringify({ error: { message: "nested detail" } }),
+        expected: "외부 에이전트 실행에 실패했습니다: nested detail",
+      },
+      {
+        data: JSON.stringify({ code: 500 }),
+        expected: "외부 에이전트 실행에 실패했습니다.",
+      },
+      {
+        data: JSON.stringify([1, 2]),
+        expected: "외부 에이전트 실행에 실패했습니다.",
+      },
+      { data: "   ", expected: "외부 에이전트 실행에 실패했습니다." },
+    ];
+    for (const { data, expected } of cases) {
+      await withRawGateway(
+        (res) => {
+          writeSse(res, RAW_START, `event: error\ndata: ${data}\n\n`);
+          res.end();
+        },
+        async (endpoint) => {
+          const error = await failedRun(
+            { message: "오류 이벤트" },
+            externalConfig(endpoint),
+            {},
+          );
+          expect(error.message).toBe(expected);
+        },
+      );
+    }
+  });
+
+  it("fails when a non-result SDK message carries is_error", async () => {
+    const cases = [
+      {
+        payload: {
+          type: "stream_event",
+          is_error: true,
+          message: "gateway refused the tool call",
+        },
+        expected:
+          "외부 에이전트 실행에 실패했습니다: gateway refused the tool call",
+      },
+      {
+        payload: { type: "assistant", is_error: true },
+        expected: "외부 에이전트 실행에 실패했습니다.",
+      },
+    ];
+    for (const { payload, expected } of cases) {
+      await withGateway(
+        () => [
+          {
+            event: "message_start",
+            data: { schema: EXTERNAL_SDK_MESSAGE_SCHEMA },
+          },
+          { event: "sdk_message", data: payload },
+          { event: "message_stop", data: {} },
+        ],
+        async (endpoint) => {
+          const error = await failedRun(
+            { message: "도구 거부" },
+            externalConfig(endpoint),
+            {},
+          );
+          expect(error.message).toBe(expected);
+        },
+      );
+    }
+  });
+
+  it("never contacts the gateway when the run is already cancelled", async () => {
+    await withGateway(
+      () => successfulFrames("실행되지 않아야 함"),
+      async (endpoint, captured) => {
+        const controller = new AbortController();
+        controller.abort();
+        const statuses: string[] = [];
+        await expect(
+          runExternalAgent(
+            { message: "이미 취소됨" },
+            externalConfig(endpoint),
+            { onStatus: (label) => statuses.push(label) },
+            controller,
+          ),
+        ).rejects.toMatchObject({ name: "AbortError" });
+        expect(captured).toHaveLength(0);
+        expect(statuses).toEqual(["외부 에이전트에 연결 중…"]);
+      },
+    );
+  });
+});
+
+describe("external gateway connection probe", () => {
+  it("refuses to probe an endpoint that is not the agent route", async () => {
+    await expect(
+      probeExternalAgentGateway({
+        ...externalConfig("https://gateway.example/v1/agents/messages"),
+        endpoint: "https://gateway.example/v2/chat",
+      }),
+    ).rejects.toThrow(
+      "외부 에이전트 endpoint가 /v1/agents/messages 형식이 아닙니다.",
+    );
+  });
+
+  it("rejects unusable model-catalog responses", async () => {
+    const cases: {
+      respond: (res: http.ServerResponse) => void;
+      message: string;
+    }[] = [
+      {
+        respond: (res) => {
+          res.writeHead(503, { "content-type": "application/json" });
+          res.end("{}");
+        },
+        message: "Gateway 연결 확인에 실패했습니다 (HTTP 503).",
+      },
+      {
+        respond: (res) => {
+          res.writeHead(200, { "content-type": "text/plain" });
+          res.end("ok");
+        },
+        message: "Gateway가 JSON 모델 목록을 반환하지 않았습니다.",
+      },
+      {
+        respond: (res) => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end("not json");
+        },
+        message: "Gateway 모델 목록이 올바른 JSON이 아닙니다.",
+      },
+      {
+        respond: (res) => {
+          // A bodyless success is still not a catalog.
+          res.writeHead(204, { "content-type": "application/json" });
+          res.end();
+        },
+        message: "Gateway 모델 목록이 올바른 JSON이 아닙니다.",
+      },
+      {
+        respond: (res) => {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ data: { id: "sonnet" } }));
+        },
+        message: "Gateway 모델 목록 형식이 올바르지 않습니다.",
+      },
+      {
+        respond: (res) => {
+          // Declares a huge body: the cap must apply before a byte is read.
+          res.writeHead(200, {
+            "content-type": "application/json",
+            "content-length": "99999999",
+          });
+          res.write("{");
+        },
+        message: "Gateway 모델 응답이 허용 크기를 초과했습니다.",
+      },
+      {
+        respond: (res) => {
+          // Chunked, so only the streamed byte count can stop it.
+          res.writeHead(200, { "content-type": "application/json" });
+          res.write('{"data":[{"id":"');
+          res.write("m".repeat(1024 * 1024 + 4_096));
+          res.end('"}]}');
+        },
+        message: "Gateway 모델 응답이 허용 크기를 초과했습니다.",
+      },
+    ];
+    for (const { respond, message } of cases) {
+      await withRawGateway(respond, async (endpoint) => {
+        await expect(
+          probeExternalAgentGateway(externalConfig(endpoint)),
+        ).rejects.toThrow(message);
+      });
+    }
+  });
+
+  it("reports the Claude catalog when no model preference is configured", async () => {
+    let authorization: string | undefined = "unset";
+    await withRawGateway(
+      (res, req) => {
+        authorization = req.headers.authorization;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(
+          JSON.stringify({
+            data: [
+              { id: "claude-a", backend: "claude" },
+              { id: "claude-a", backend: "claude" },
+              { id: "gpt-9", backend: "openai" },
+              { id: "claude-b", backend: "claude" },
+              { backend: "claude" },
+            ],
+          }),
+        );
+      },
+      async (endpoint) => {
+        const result = await probeExternalAgentGateway({
+          ...externalConfig(endpoint),
+          model: undefined,
+          apiKey: undefined,
+        });
+        expect(result).toMatchObject({
+          ok: true,
+          modelsCount: 3,
+          // No configured model means "nothing to check", not "unavailable".
+          modelAvailable: null,
+          models: ["claude-a", "claude-b"],
+        });
+      },
+    );
+    // An entry without a stored key must not send a bearer header at all.
+    expect(authorization).toBeUndefined();
+  });
+
+  it("aborts a probe the gateway never answers", async () => {
+    await withRawGateway(
+      () => {
+        // Accept the request and intentionally never respond.
+      },
+      async (endpoint) => {
+        await expect(
+          probeExternalAgentGateway(externalConfig(endpoint), 40),
+        ).rejects.toThrow("Gateway 연결 확인 시간이 초과되었습니다.");
+      },
+    );
   });
 });
 

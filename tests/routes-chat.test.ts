@@ -3,11 +3,22 @@ import fs from "node:fs";
 import path from "node:path";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentRequest, AgentResponse, AppConfig } from "../src/server/types.js";
-import type { AgentEvents } from "../src/server/agent/events.js";
+import type {
+  AgentRequest,
+  AgentResponse,
+  AppConfig,
+  ExternalAgentConfig,
+} from "../src/server/types.js";
+import type { AgentEvents, BrowserResult, FileOutputResult } from "../src/server/agent/events.js";
 import type { Store } from "../src/server/store.js";
-import { parseSse, signup, withTempDir } from "./helpers.js";
-import { chatFilesDir } from "../src/server/chatFiles.js";
+import { makeBareRemote, parseSse, signup, withTempDir } from "./helpers.js";
+import {
+  chatFilesDir,
+  MAX_CHAT_FILES_PER_MESSAGE,
+  MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE,
+  MAX_SHARED_SCREENSHOTS_PER_MESSAGE,
+} from "../src/server/chatFiles.js";
+import { MAX_CHAT_IMAGES_PER_MESSAGE } from "../src/server/chatImages.js";
 
 // Shared control surface for the mocked agent layer. `impl`, when set, fully
 // drives a turn (fires the events callbacks the route wires); otherwise a default
@@ -22,10 +33,27 @@ type RunImpl = (
   abortController: AbortController,
 ) => Promise<AgentResponse>;
 
+/** Same idea as RunImpl, for the gateway-backed (external avatar) turn. */
+type ExternalRunImpl = (
+  request: { message: string; conversationHistory?: unknown },
+  external: ExternalAgentConfig,
+  events: AgentEvents,
+  abortController?: AbortController,
+) => Promise<AgentResponse>;
+
 const H = vi.hoisted(() => ({
   requests: [] as AgentRequest[],
   impl: null as RunImpl | null,
   retryable: false,
+  // External avatars run behind a gateway: mocked at the same network seam the
+  // SDK is mocked at, so the route's own relay/fan-out is what gets tested.
+  externalImpl: null as ExternalRunImpl | null,
+  externalRequests: [] as { message: string; external: ExternalAgentConfig }[],
+  probeModels: null as string[] | null,
+  // Server-side preview rendering shells out to soffice/pdftoppm, which no test
+  // box has. [] reproduces the missing-toolchain result; a non-empty value
+  // stands in for a successful render.
+  previewPages: [] as Buffer[],
 }));
 
 vi.mock("../src/server/agent/index.js", () => ({
@@ -55,6 +83,36 @@ vi.mock("../src/server/agent/index.js", () => ({
   isRetryableModelError: vi.fn(() => H.retryable),
 }));
 
+vi.mock("../src/server/agent/externalAgent.js", () => ({
+  runExternalAgent: vi.fn(
+    async (
+      agentRequest: { message: string; conversationHistory?: unknown },
+      external: ExternalAgentConfig,
+      events: AgentEvents,
+      abortController?: AbortController,
+    ): Promise<AgentResponse> => {
+      H.externalRequests.push({ message: agentRequest.message, external });
+      if (!H.externalImpl) {
+        throw new Error("no externalImpl configured for this test");
+      }
+      return H.externalImpl(agentRequest, external, events, abortController);
+    },
+  ),
+  probeExternalAgentGateway: vi.fn(async () => {
+    if (!H.probeModels) {
+      throw new Error("gateway unreachable");
+    }
+    return { models: H.probeModels, durationMs: 1 };
+  }),
+}));
+
+// Only the toolchain shell-out is replaced; isPreviewableExtension and the rest
+// of the module stay real.
+vi.mock("../src/server/deckRender.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/server/deckRender.js")>()),
+  renderDocumentPreviews: vi.fn(async () => H.previewPages),
+}));
+
 import { createApp, createServices } from "../src/server/app.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../src/server/activeRepoLock.js";
 import { gitRepoClonePath } from "../src/server/gitRepos.js";
@@ -65,6 +123,10 @@ const getTempDir = withTempDir("routes-chat", () => {
   H.requests.length = 0;
   H.impl = null;
   H.retryable = false;
+  H.externalImpl = null;
+  H.externalRequests.length = 0;
+  H.probeModels = null;
+  H.previewPages = [];
 });
 
 function boot() {
@@ -102,9 +164,11 @@ const LIVE = 20_000;
 async function activeRun(
   agent: ReturnType<typeof request.agent>,
   conversationId: string,
-): Promise<{ runId: string; pendingCount: number } | null> {
+): Promise<{ runId: string; pendingCount: number; background?: boolean } | null> {
   const res = await agent.get(`/api/chat/runs?conversationId=${conversationId}`);
-  return (res.body.run as { runId: string; pendingCount: number } | null) ?? null;
+  return (
+    (res.body.run as { runId: string; pendingCount: number; background?: boolean } | null) ?? null
+  );
 }
 
 /** Dispatch a chat-stream POST in the background; resolves when the run closes. */
@@ -154,6 +218,11 @@ interface SseFrame {
   event: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   data: any;
+}
+
+/** `parseSse` types frame data as unknown; these tests read known payloads. */
+function frameData(frame: { data: unknown }): SseFrame["data"] {
+  return frame.data as SseFrame["data"];
 }
 
 function parseFrameBlock(block: string): SseFrame | null {
@@ -238,6 +307,49 @@ async function withServer(
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+/** Minimal byte sequences whose magic matches what the publish helpers sniff. */
+const JPEG_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff]), Buffer.alloc(32, 1)]);
+const PNG_BYTES = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
+  "base64",
+);
+const PPTX_BYTES = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64, 1)]);
+const PDF_BYTES = Buffer.concat([Buffer.from("%PDF-1.4 "), Buffer.alloc(64, 1)]);
+
+/**
+ * Run one turn over a real socket, standing in for the user's browser: every
+ * parked `browser` frame is answered with `replyFor(frame.data)` through
+ * /api/chat/respond, the way the Noah tab relays the extension's outcome.
+ * Returns the SSE frames plus the op payloads the route put on the wire.
+ */
+async function runWithBridge(
+  app: ReturnType<typeof createApp>,
+  cookie: string,
+  body: object,
+  replyFor: (data: SseFrame["data"]) => object,
+): Promise<{ frames: SseFrame[]; relayed: SseFrame["data"][] }> {
+  const relayed: SseFrame["data"][] = [];
+  const answers: Promise<{ status: number }>[] = [];
+  let frames: SseFrame[] = [];
+  await withServer(app, async (port) => {
+    frames = (
+      await streamRaw(port, cookie, "/api/chat/stream", "POST", body, (frame) => {
+        if (frame.event !== "browser") return;
+        relayed.push(frame.data);
+        answers.push(
+          postJson(port, cookie, "/api/chat/respond", {
+            runId: frame.data.runId,
+            requestId: frame.data.requestId,
+            value: replyFor(frame.data),
+          }),
+        );
+      })
+    ).frames;
+    for (const answer of await Promise.all(answers)) expect(answer.status).toBe(200);
+  });
+  return { frames, relayed };
 }
 
 /** A fake turn that streams a partial then parks until the SDK is aborted. */
@@ -1030,4 +1142,982 @@ describe("run-registry endpoint validation", () => {
     await owner.post("/api/chat/respond").send({ runId: "a", requestId: "b", value: "not-an-object" }).expect(400);
     await owner.post("/api/chat/respond").send({ runId: "a", requestId: "b", value: { behavior: "allow" } }).expect(404);
   });
+});
+
+describe("browser-bridge relay (onBrowser)", () => {
+  it("puts the whole op on the wire, audits a scrubbed url, and bounds every untrusted reply field", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridge").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const results: BrowserResult[] = [];
+    H.impl = async (_req, _pr, config, _store, events) => {
+      results.push(
+        await events.onBrowser!({
+          op: "press_key",
+          uid: "u-7",
+          url: "https://intranet.example.com/start",
+          x: 12,
+          y: 34,
+          xFraction: 0.5,
+          yFraction: 0.25,
+          key: "Enter",
+          modifiers: ["Control", "Shift"],
+          repeat: 3,
+          fields: [
+            { uid: "f1", value: "a" },
+            { uid: "f2", value: "b" },
+          ],
+          option: "선택지",
+          clear: true,
+          expand: true,
+          maxChars: 4000,
+        }),
+      );
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
+    };
+
+    const { relayed } = await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-bridge", message: "브라우저" },
+      () => ({
+        ok: true,
+        // Credentials in userinfo and a token in the query string must not reach
+        // the audit table an admin can read.
+        url: "https://user:hunter2@intranet.example.com/wiki/page?token=abc123",
+        title: "위키 문서",
+        snapshot: "s".repeat(200_050),
+        snapshotError: "e".repeat(1_100),
+        note: "n".repeat(600),
+        landedOn: "l".repeat(400),
+        pageText: "p".repeat(200_050),
+        pageTextOffset: -5, // negative offsets are not trusted
+        tabs: [
+          { tabId: "t1", title: "T1", url: "https://a.example.com", current: true },
+          { tabId: 5, title: "numeric id" }, // dropped: tabId must be a string
+          "not-an-object", // dropped
+          { tabId: "t2" }, // missing fields default rather than fail
+        ],
+        dialog: { message: "정말 삭제할까요?" }, // no type → alert
+      }),
+    );
+
+    // Every wire field the five hand-synced layers agreed on rides the frame.
+    expect(relayed).toHaveLength(1);
+    expect(relayed[0]).toMatchObject({
+      op: "press_key",
+      uid: "u-7",
+      url: "https://intranet.example.com/start",
+      x: 12,
+      y: 34,
+      xFraction: 0.5,
+      yFraction: 0.25,
+      key: "Enter",
+      modifiers: ["Control", "Shift"],
+      repeat: 3,
+      fields: [
+        { uid: "f1", value: "a" },
+        { uid: "f2", value: "b" },
+      ],
+      option: "선택지",
+      clear: true,
+      expand: true,
+      maxChars: 4000,
+      // Fields this op doesn't carry are explicitly nulled, never undefined.
+      text: null,
+      direction: null,
+      accept: null,
+      fullPage: null,
+    });
+
+    const result = results[0];
+    expect(result.behavior).toBe("ok");
+    if (result.behavior !== "ok") return;
+    expect(result.snapshot).toHaveLength(200_000);
+    expect(result.snapshotError).toHaveLength(1_000);
+    expect(result.note).toHaveLength(500);
+    expect(result.landedOn).toHaveLength(300);
+    expect(result.pageText?.text).toHaveLength(200_000);
+    expect(result.pageText?.offset).toBe(0);
+    // `total` reports the page's real length, not the truncated chunk's.
+    expect(result.pageText?.total).toBe(200_050);
+    expect(result.tabs).toEqual([
+      { tabId: "t1", title: "T1", url: "https://a.example.com", current: true },
+      { tabId: "t2", title: "", url: "", current: false },
+    ]);
+    expect(result.dialog).toEqual({ type: "alert", message: "정말 삭제할까요?", defaultPrompt: undefined });
+
+    const audit = store.listAudit(ownerId, true).find((e) => e.action === "browser_press_key")!;
+    expect(audit.detail).toContain("op=press_key");
+    expect(audit.detail).toContain("uid=u-7");
+    expect(audit.detail).toContain("at=(12,34)");
+    expect(audit.detail).toContain("rel=(0.5,0.25)");
+    expect(audit.detail).toContain("key=Control+Shift+Enter x3");
+    expect(audit.detail).toContain("fields=2");
+    expect(audit.detail).toContain("option=선택지");
+    expect(audit.detail).toContain("clear");
+    expect(audit.detail).toContain("expand");
+    // The url the op LANDED on wins over the requested one, scrubbed to scheme/host/path.
+    expect(audit.detail).toContain("url=https://intranet.example.com/wiki/page");
+    expect(audit.detail).not.toContain("hunter2");
+    expect(audit.detail).not.toContain("token=abc123");
+  }, LIVE);
+
+  it("keeps snapshot/wait_for out of the audit trail and records unknown/unparseable urls", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgeaudit").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    H.impl = async (_req, _pr, config, _store, events) => {
+      // Both fire between every step, so auditing them would bury the rows an
+      // admin actually wants.
+      await events.onBrowser!({ op: "snapshot" });
+      await events.onBrowser!({ op: "wait_for", text: "완료", timeoutS: 5 });
+      await events.onBrowser!({ op: "click", uid: "u-1" });
+      await events.onBrowser!({ op: "hover", uid: "u-2" });
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
+    };
+
+    await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-bridge2", message: "브라우저" },
+      (data) =>
+        data.op === "hover"
+          ? { ok: true, url: "::::not a url::::" }
+          : { ok: true }, // click: no url anywhere
+    );
+
+    const actions = store.listAudit(ownerId, true).map((e) => e.action);
+    expect(actions).not.toContain("browser_snapshot");
+    expect(actions).not.toContain("browser_wait_for");
+    expect(actions).toContain("browser_click");
+    expect(actions).toContain("browser_hover");
+    const rows = store.listAudit(ownerId, true);
+    expect(rows.find((e) => e.action === "browser_click")!.detail).toContain("url=(unknown)");
+    expect(rows.find((e) => e.action === "browser_hover")!.detail).toContain("url=(unparseable)");
+  }, LIVE);
+
+  it("reports an extension refusal to the model, translating an old build's 'unsupported operation'", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgerefuse").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const results: BrowserResult[] = [];
+    H.impl = async (_req, _pr, config, _store, events) => {
+      results.push(await events.onBrowser!({ op: "click", uid: "gone" }));
+      results.push(await events.onBrowser!({ op: "fill_form", fields: [{ uid: "f", value: "v" }] }));
+      results.push(await events.onBrowser!({ op: "select_option", uid: "s", option: "A" }));
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
+    };
+
+    await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-bridge3", message: "브라우저" },
+      (data) => {
+        if (data.op === "click") return { ok: false, message: "Element uid gone is not on the page." };
+        if (data.op === "fill_form") return { ok: false, message: "Unsupported operation: fill_form" };
+        return { ok: false }; // refused without saying why
+      },
+    );
+
+    expect(results.map((r) => r.behavior)).toEqual(["error", "error", "error"]);
+    const messages = results.map((r) => (r.behavior === "error" ? r.message : ""));
+    expect(messages[0]).toBe("Element uid gone is not on the page.");
+    // The old build can't explain itself, so the route translates for it.
+    expect(messages[1]).toContain("Unsupported operation: fill_form");
+    expect(messages[1]).toContain("OLDER build than this server");
+    expect(messages[1]).toContain("브라우저 브릿지");
+    expect(messages[2]).toContain("refused the operation without a reason");
+  }, LIVE);
+
+  it("reads bridge silence as an absent bridge, not a refusal, when the run is stopped mid-op", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "bridgesilent").expect(201)).body.user.id as string;
+
+    const results: BrowserResult[] = [];
+    H.impl = async (_req, _pr, _config, _store, events) => {
+      results.push(await events.onBrowser!({ op: "navigate", url: "https://intranet.example.com" }));
+      throw new Error("aborted");
+    };
+
+    const streamDone = fireStream(owner, { avatarId: ownerId, conversationId: "conv-bridge4", message: "이동" });
+    await waitUntil(async () => ((await activeRun(owner, "conv-bridge4"))?.pendingCount ?? 0) === 1, "browser op parked");
+    const run = (await activeRun(owner, "conv-bridge4"))!;
+    await owner.post(`/api/chat/runs/${run.runId}/cancel`).send({}).expect(200);
+    await streamDone;
+
+    expect(results[0].behavior).toBe("error");
+    if (results[0].behavior !== "error") return;
+    expect(results[0].message).toContain("The browser bridge did not respond");
+    expect(results[0].message).toContain("attach a tab");
+  }, LIVE);
+
+  it("auto-shares a screenshot as a file card plus hidden slide, and refuses an oversized capture", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgeshot").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const results: BrowserResult[] = [];
+    H.impl = async (_req, _pr, config, _store, events) => {
+      results.push(await events.onBrowser!({ op: "screenshot" })); // shared
+      results.push(await events.onBrowser!({ op: "screenshot", fullPage: true })); // publish fails
+      results.push(await events.onBrowser!({ op: "screenshot", uid: "u-1" })); // too large to relay
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "본 화면" };
+    };
+
+    const { frames } = await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-shot", message: "화면 캡처" },
+      (data) => {
+        if (data.uid === "u-1") return { ok: true, imageBase64: "A".repeat(8_000_001) };
+        if (data.fullPage) return { ok: true, imageBase64: Buffer.from("<html>nope</html>").toString("base64") };
+        return { ok: true, imageBase64: JPEG_BYTES.toString("base64"), title: "사내 포털" };
+      },
+    );
+
+    // 1) The user gets the same bytes the model saw, as a download card + slide.
+    const first = results[0];
+    expect(first.behavior).toBe("ok");
+    if (first.behavior !== "ok") return;
+    expect(first.shareNote).toContain("also shared with the user as a file card");
+    expect(first.sharedAttachments).toHaveLength(2);
+    expect(first.sharedAttachments![0]).toMatchObject({ kind: "file", name: "스크린샷 - 사내 포털.jpg" });
+    expect(first.sharedAttachments![1]).toMatchObject({ kind: "image", hidden: true });
+    const fileFrames = frames.filter((f) => f.event === "file");
+    expect(fileFrames).toHaveLength(2);
+    // The attachments ride the persisted assistant message too, so a reload
+    // shows what the user already saw live.
+    const assistant = store.listMessages(ownerId, "conv-shot").find((m) => m.role === "assistant")!;
+    expect(assistant.attachments?.map((a) => a.kind)).toEqual(["file", "image"]);
+
+    // 2) Unpublishable bytes still answer the tool call — the note keeps the
+    //    model's self-knowledge honest about what the user actually got.
+    const second = results[1];
+    expect(second.behavior).toBe("ok");
+    if (second.behavior !== "ok") return;
+    expect(second.shareNote).toContain("could NOT be shared");
+
+    // 3) A runaway payload fails the ONE tool call rather than the turn.
+    expect(results[2].behavior).toBe("error");
+    if (results[2].behavior !== "error") return;
+    expect(results[2].message).toContain("too large to relay");
+  }, LIVE);
+
+  it("whitelists the screenshot mime type and passes explicit dialog/read_text metadata through", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgemeta").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const results: BrowserResult[] = [];
+    H.impl = async (_req, _pr, config, _store, events) => {
+      results.push(await events.onBrowser!({ op: "screenshot" }));
+      results.push(await events.onBrowser!({ op: "screenshot", fullPage: true }));
+      results.push(await events.onBrowser!({ op: "read_text", offset: 100, maxChars: 500 }));
+      results.push(await events.onBrowser!({ op: "handle_dialog", accept: true, promptText: "홍길동" }));
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "ok" };
+    };
+
+    const { relayed } = await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-meta", message: "브라우저" },
+      (data) => {
+        if (data.op === "read_text") {
+          return { ok: true, pageText: "본문 일부", pageTextOffset: 100, pageTextTotal: 5000 };
+        }
+        if (data.op === "handle_dialog") {
+          return { ok: true, dialog: { type: "prompt", message: "이름을 입력하세요", defaultPrompt: "기본값" } };
+        }
+        return data.fullPage
+          ? { ok: true, imageBase64: PNG_BYTES.toString("base64"), imageMimeType: "image/png" }
+          : // A semi-trusted extension must not choose the mime type freely: the
+            // string lands in an API image block.
+            { ok: true, imageBase64: JPEG_BYTES.toString("base64"), imageMimeType: "image/svg+xml" };
+      },
+    );
+
+    expect(relayed[2]).toMatchObject({ op: "read_text", offset: 100, maxChars: 500 });
+    expect(relayed[3]).toMatchObject({ op: "handle_dialog", accept: true, promptText: "홍길동" });
+
+    const [jpeg, png, text, dialog] = results;
+    expect(jpeg.behavior === "ok" && jpeg.image?.mimeType).toBe("image/jpeg"); // coerced
+    expect(png.behavior === "ok" && png.image?.mimeType).toBe("image/png"); // whitelisted
+    expect(text.behavior === "ok" && text.pageText).toEqual({ text: "본문 일부", offset: 100, total: 5000 });
+    expect(dialog.behavior === "ok" && dialog.dialog).toEqual({
+      type: "prompt",
+      message: "이름을 입력하세요",
+      defaultPrompt: "기본값",
+    });
+  }, LIVE);
+
+  it("stops auto-sharing screenshots once the per-turn budget is spent", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "bridgebudget").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    const notes: (string | undefined)[] = [];
+    H.impl = async (_req, _pr, config, _store, events) => {
+      for (let i = 0; i < MAX_SHARED_SCREENSHOTS_PER_MESSAGE + 1; i++) {
+        const result = await events.onBrowser!({ op: "screenshot" });
+        notes.push(result.behavior === "ok" ? result.shareNote : "ERROR");
+      }
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "많이 봄" };
+    };
+
+    await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-budget", message: "계속 캡처" },
+      () => ({ ok: true, imageBase64: JPEG_BYTES.toString("base64") }),
+    );
+
+    expect(notes).toHaveLength(MAX_SHARED_SCREENSHOTS_PER_MESSAGE + 1);
+    for (const note of notes.slice(0, MAX_SHARED_SCREENSHOTS_PER_MESSAGE)) {
+      expect(note).toContain("also shared with the user");
+    }
+    // The capture still succeeds; only the sharing stops, and the model is told
+    // the user has NOT seen it.
+    expect(notes[MAX_SHARED_SCREENSHOTS_PER_MESSAGE]).toContain("was NOT shared with the user");
+    expect(notes[MAX_SHARED_SCREENSHOTS_PER_MESSAGE]).toContain(
+      `already shared ${MAX_SHARED_SCREENSHOTS_PER_MESSAGE} screenshots`,
+    );
+  }, LIVE);
+});
+
+describe("publishing images and documents mid-turn (onFile / onShareFile)", () => {
+  it("keeps separate per-turn budgets for visible and hidden image publishes", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "showfile").expect(201)).body.user.id as string;
+
+    const shown: FileOutputResult[] = [];
+    const hidden: FileOutputResult[] = [];
+    let visibleOverflow!: FileOutputResult;
+    let hiddenOverflow!: FileOutputResult;
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
+      fs.writeFileSync(path.join(agentRequest.cwd!, "shot.png"), PNG_BYTES);
+      for (let i = 0; i < MAX_CHAT_IMAGES_PER_MESSAGE; i++) {
+        shown.push(await events.onFile!({ path: "shot.png", caption: `장면 ${i}` }));
+      }
+      visibleOverflow = await events.onFile!({ path: "shot.png" });
+      // Hidden publishes only cost disk (canvas slide embeds), so a whole deck
+      // fits in one turn after the visible budget is already spent.
+      for (let i = 0; i < MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE; i++) {
+        hidden.push(await events.onFile!({ path: "shot.png", hidden: true }));
+      }
+      hiddenOverflow = await events.onFile!({ path: "shot.png", hidden: true });
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "그림들" };
+    };
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-showfile", message: "그려줘" })
+      .expect(200);
+
+    expect(shown.every((r) => r.behavior === "shown")).toBe(true);
+    expect(shown[0]).toMatchObject({
+      behavior: "shown",
+      url: expect.stringContaining("/api/conversations/conv-showfile/images/"),
+    });
+    expect(hidden.every((r) => r.behavior === "shown" && r.attachment.hidden === true)).toBe(true);
+
+    expect(visibleOverflow.behavior).toBe("error");
+    if (visibleOverflow.behavior !== "error") return;
+    expect(visibleOverflow.message).toContain(`already showed ${MAX_CHAT_IMAGES_PER_MESSAGE} images`);
+    expect(hiddenOverflow.behavior).toBe("error");
+    if (hiddenOverflow.behavior !== "error") return;
+    expect(hiddenOverflow.message).toContain(
+      `already published ${MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE} hidden images`,
+    );
+
+    const total = MAX_CHAT_IMAGES_PER_MESSAGE + MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE;
+    expect(parseSse(res.text).filter((f) => f.event === "file")).toHaveLength(total);
+    const assistant = store.listMessages(ownerId, "conv-showfile").find((m) => m.role === "assistant")!;
+    expect(assistant.attachments).toHaveLength(total);
+  });
+
+  it("maps a show_file publish failure to model-facing guidance", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "showfail").expect(201)).body.user.id as string;
+
+    const results: FileOutputResult[] = [];
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
+      // Real file, but parked one level above the run cwd and the scratch workspace.
+      fs.writeFileSync(path.join(agentRequest.cwd!, "..", "outside.png"), PNG_BYTES);
+      results.push(await events.onFile!({ path: "ghost.png" }));
+      results.push(await events.onFile!({ path: "../outside.png" }));
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "실패" };
+    };
+
+    await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-showfail", message: "보여줘" })
+      .expect(200);
+
+    const messages = results.map((r) => (r.behavior === "error" ? r.message : "SHOWN"));
+    expect(messages[0]).toBe("The image file does not exist.");
+    // Not a bare refusal — it tells the model the copy-then-retry recipe.
+    expect(messages[1]).toContain("must stay inside the current working directory");
+    expect(messages[1]).toContain("cp /tmp/image.png");
+  });
+
+  it("shares documents up to the per-turn cap, attaching server-rendered previews", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "sharefile").expect(201)).body.user.id as string;
+    H.previewPages = [Buffer.from("page-1"), Buffer.from("page-2")];
+
+    const results: FileOutputResult[] = [];
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
+      const cwd = agentRequest.cwd!;
+      fs.writeFileSync(path.join(cwd, "report.pdf"), PDF_BYTES);
+      fs.writeFileSync(path.join(cwd, "notes.md"), "# 회의록");
+      fs.writeFileSync(path.join(cwd, "deck.pptx"), PPTX_BYTES);
+      fs.writeFileSync(path.join(cwd, "tool.exe"), PPTX_BYTES);
+      results.push(await events.onShareFile!({ path: "report.pdf", name: "주간 보고" })); // previewable
+      results.push(await events.onShareFile!({ path: "ghost.pptx" })); // NOT_FOUND
+      results.push(await events.onShareFile!({ path: "tool.exe" })); // UNSUPPORTED
+      results.push(await events.onShareFile!({ path: "notes.md" })); // no previews
+      results.push(await events.onShareFile!({ path: "deck.pptx" })); // previewable
+      results.push(await events.onShareFile!({ path: "notes.md" })); // over the cap
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "문서들" };
+    };
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-sharefile", message: "문서 만들어줘" })
+      .expect(200);
+
+    expect(results.map((r) => r.behavior)).toEqual([
+      "shown",
+      "error",
+      "error",
+      "shown",
+      "shown",
+      "error",
+    ]);
+    // A previewable document carries its auto-rendered pages; other types don't.
+    expect(results[0]).toMatchObject({
+      behavior: "shown",
+      previews: 2,
+      url: expect.stringContaining("/api/conversations/conv-sharefile/files/"),
+    });
+    expect(results[0].behavior === "shown" && results[0].attachment.name).toBe("주간 보고.pdf");
+    expect(results[3]).toMatchObject({ behavior: "shown", previews: 0 });
+    expect(results[4]).toMatchObject({ behavior: "shown", previews: 2 });
+
+    const errors = results.map((r) => (r.behavior === "error" ? r.message : ""));
+    expect(errors[1]).toBe("The file does not exist.");
+    expect(errors[2]).toContain(".pptx");
+    expect(errors[2]).toContain("no Bash or Markdown workaround");
+    expect(errors[5]).toContain(`already shared ${MAX_CHAT_FILES_PER_MESSAGE} files`);
+
+    // 3 download cards + 4 hidden preview slides ride the message and the stream.
+    const fileFrames = parseSse(res.text).filter((f) => f.event === "file");
+    expect(fileFrames).toHaveLength(7);
+    const assistant = store.listMessages(ownerId, "conv-sharefile").find((m) => m.role === "assistant")!;
+    expect(assistant.attachments!.filter((a) => a.kind === "file")).toHaveLength(3);
+    expect(assistant.attachments!.filter((a) => a.kind === "image" && a.hidden)).toHaveLength(4);
+  });
+
+  it("still delivers a previewable document when the render toolchain produces nothing", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "nopreview").expect(201)).body.user.id as string;
+    H.previewPages = []; // no soffice/pdftoppm in this deployment
+
+    let shared!: FileOutputResult;
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
+      fs.writeFileSync(path.join(agentRequest.cwd!, "report.pdf"), PDF_BYTES);
+      shared = await events.onShareFile!({ path: "report.pdf" });
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "문서" };
+    };
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-nopreview", message: "보고서" })
+      .expect(200);
+
+    // Previews are best-effort: the download card still lands, just bare.
+    expect(shared).toMatchObject({ behavior: "shown", previews: 0 });
+    expect(parseSse(res.text).filter((f) => f.event === "file")).toHaveLength(1);
+  });
+
+  it("refuses to publish anything once the conversation is deleted mid-run", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const signupRes = await signup(owner, "gonefile").expect(201);
+    const ownerId = signupRes.body.user.id as string;
+    const cookie = cookieOf(signupRes);
+
+    let image!: FileOutputResult;
+    let file!: FileOutputResult;
+    let capture!: BrowserResult;
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
+      fs.writeFileSync(path.join(agentRequest.cwd!, "shot.png"), PNG_BYTES);
+      fs.writeFileSync(path.join(agentRequest.cwd!, "deck.pptx"), PPTX_BYTES);
+      // The user closed the conversation while the avatar was still working.
+      expect(store.deleteConversation(ownerId, "conv-gone")).toBe(true);
+      image = await events.onFile!({ path: "shot.png" });
+      file = await events.onShareFile!({ path: "deck.pptx" });
+      capture = await events.onBrowser!({ op: "screenshot" });
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "늦었다" };
+    };
+
+    const { frames } = await runWithBridge(
+      app,
+      cookie,
+      { avatarId: ownerId, conversationId: "conv-gone", message: "작업" },
+      () => ({ ok: true, imageBase64: JPEG_BYTES.toString("base64") }),
+    );
+
+    expect(image).toEqual({
+      behavior: "error",
+      message: "The conversation no longer exists, so the image cannot be shown.",
+    });
+    expect(file).toEqual({
+      behavior: "error",
+      message: "The conversation no longer exists, so the file cannot be shared.",
+    });
+    // The capture itself still succeeds — only the user-facing copy is skipped.
+    expect(capture.behavior).toBe("ok");
+    if (capture.behavior !== "ok") return;
+    expect(capture.shareNote).toContain("the conversation no longer exists");
+    expect(capture.sharedAttachments).toBeUndefined();
+
+    // Nothing was persisted, and the turn still completes cleanly.
+    const done = frames.find((f) => f.event === "done")!;
+    expect(done.data.message).toBeNull();
+    expect(store.listMessages(ownerId, "conv-gone")).toEqual([]);
+  }, LIVE);
+});
+
+describe("SDK-native background phase", () => {
+  it("finalizes the visible turn at the first background boundary and delivers wake-ups as new messages", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "bgphase").expect(201)).body.user.id as string;
+
+    const tasks = [{ taskId: "t1", taskType: "local_bash", description: "빌드 실행" }];
+    let releaseBackground!: () => void;
+    const backgroundParked = new Promise<void>((resolve) => {
+      releaseBackground = resolve;
+    });
+
+    H.impl = async (_req, _pr, config, _store, events) => {
+      events.onSessionId?.("sess-bg");
+      events.onDelta?.("바로 보이는 답변");
+      events.onThinking?.("첫 생각");
+      // A boundary with NO live background tasks is an ordinary turn — the
+      // post-await done path owns it, so nothing is persisted here.
+      events.onTurnResult?.({ text: "바로 보이는 답변", backgroundTasks: [] });
+
+      events.onBackgroundTasks?.({ tasks });
+      events.onTurnResult?.({
+        text: "바로 보이는 답변",
+        backgroundTasks: tasks,
+        usage: { inputTokens: 10, outputTokens: 20 },
+      });
+
+      await backgroundParked;
+
+      // Background phase: the live set empties, one pure bookkeeping boundary
+      // passes (no text, no attachments → no message), then a real wake-up turn.
+      events.onBackgroundTasks?.({ tasks: [] });
+      events.onTurnResult?.({ text: "   ", backgroundTasks: [] });
+      events.onDelta?.("빌드가 끝났습니다");
+      events.onThinking?.("두번째 생각");
+      events.onTurnResult?.({ text: "빌드가 끝났습니다", backgroundTasks: [] });
+      return { kind: "text", runtime: config.agentRuntime, summary: "집계", text: "집계 응답" };
+    };
+
+    const streamDone = fireStream(owner, {
+      avatarId: ownerId,
+      conversationId: "conv-bg",
+      message: "빌드 돌려줘",
+    });
+    await waitUntil(
+      async () => (await activeRun(owner, "conv-bg"))?.background === true,
+      "run marked as background",
+    );
+
+    // The visible turn is already persisted, so a new typed message is refused
+    // with the background-specific reason (not the generic "생성 중").
+    const conflict = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-bg", message: "하나 더" })
+      .expect(409);
+    expect(conflict.body.error).toContain("백그라운드 작업");
+    expect(conflict.body.error).toContain("중지 버튼");
+
+    // The session id is persisted at the finalize boundary — the phase can
+    // outlive the tab, and the next turn must resume this transcript.
+    expect(store.getAgentSessionId(ownerId, "conv-bg")).toBe("sess-bg");
+
+    releaseBackground();
+    const frames = parseSse((await streamDone).text);
+
+    const done = frames.filter((f) => f.event === "done");
+    expect(done).toHaveLength(1); // the aggregate response is NOT re-persisted
+    expect(frameData(done[0]).background).toBe(true);
+    expect(frameData(done[0]).tasks).toEqual(tasks);
+    expect(frameData(done[0]).response).toMatchObject({
+      text: "바로 보이는 답변",
+      thinking: "첫 생각",
+      usage: { inputTokens: 10, outputTokens: 20 },
+    });
+    expect(frames.filter((f) => f.event === "bg_tasks").map((f) => frameData(f).tasks)).toEqual([tasks, []]);
+    const bgMessages = frames.filter((f) => f.event === "bg_message");
+    expect(bgMessages).toHaveLength(1); // the bookkeeping boundary produced none
+    expect(frameData(bgMessages[0]).message.content).toBe("빌드가 끝났습니다");
+    expect(frames.some((f) => f.event === "bg_end")).toBe(true);
+
+    const assistants = store.listMessages(ownerId, "conv-bg").filter((m) => m.role === "assistant");
+    expect(assistants.map((m) => m.content)).toEqual(["바로 보이는 답변", "빌드가 끝났습니다"]);
+    expect(assistants[0].response?.summary).toBe("Claude Agent SDK 실행이 완료되었습니다.");
+    // Each report carries only ITS OWN tail of the streamed reasoning.
+    expect(assistants[1].response).toMatchObject({ summary: "백그라운드 작업 보고", thinking: "두번째 생각" });
+  }, LIVE);
+});
+
+describe("second-brain memory notices", () => {
+  it("emits a 기억 row per note write, each with its own replay-stable id", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "memnote").expect(201)).body.user.id as string;
+
+    H.impl = async (_req, _pr, config, _store, events) => {
+      events.onMemory?.({ scope: "personal", action: "add", path: "wiki/people/kim.md" });
+      events.onMemory?.({ scope: "group", action: "update", path: "wiki/rules.md", groupName: "플랫폼" });
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "기억했습니다" };
+    };
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-mem", message: "기억해줘" })
+      .expect(200);
+
+    const memory = parseSse(res.text).filter((f) => f.event === "memory");
+    expect(memory).toHaveLength(2);
+    expect(memory[0].data).toMatchObject({ scope: "personal", action: "add", path: "wiki/people/kim.md" });
+    expect(memory[1].data).toMatchObject({ scope: "group", action: "update", groupName: "플랫폼" });
+    // The client dedupes replayed rows by this id, so the two must differ.
+    expect(frameData(memory[0]).id).toEqual(expect.any(String));
+    expect(frameData(memory[0]).id).not.toBe(frameData(memory[1]).id);
+  });
+});
+
+describe("external avatar turns", () => {
+  /** A gateway-backed avatar; `visibleToGroupIds` is filled in per test. */
+  function externalAvatar(): ExternalAgentConfig {
+    return {
+      id: "research",
+      displayName: "Research Agent",
+      alias: "리서처",
+      bio: "외부 조사 에이전트",
+      persona: "공개 소개",
+      intro: "외부 Gateway에서 실행됩니다.",
+      hashtags: ["research"],
+      endpoint: "https://gateway.example.com/v1/agents/messages",
+      agent: "claude",
+      model: "gateway-default",
+      apiKey: "gateway-secret",
+      visibleToGroupIds: [],
+    };
+  }
+
+  /** Boot an app where `external` is reachable by the (only) signed-up viewer. */
+  async function bootWithExternal(username: string) {
+    const external = externalAvatar();
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "claude",
+      sessionSecret: "test",
+      externalAgents: [external],
+    });
+    const app = createApp(services);
+    const viewer = request.agent(app);
+    const viewerId = (await signup(viewer, username).expect(201)).body.user.id as string;
+    const group = services.store.createGroup({ name: "ext-viewers" });
+    services.store.addGroupMember(group.id, viewerId);
+    external.visibleToGroupIds = [group.id];
+    return { services, app, viewer, viewerId, external, store: services.store };
+  }
+
+  it("fans out every gateway event and keeps the turn out of local SDK state", async () => {
+    const { store, viewer, viewerId } = await bootWithExternal("extfan");
+
+    H.externalImpl = async (_req, _external, events) => {
+      events.onStatus?.("조사 중");
+      events.onPlugin?.({ status: "installed", name: "gateway-plugin" });
+      events.onToolStart?.({ toolUseId: "t1", name: "WebSearch", agentId: "main" });
+      events.onToolEnd?.({ toolUseId: "t1", ok: true });
+      events.onTaskStart?.({ taskId: "k1", description: "조사" });
+      events.onTaskUpdate?.({ taskId: "k1", status: "running" });
+      events.onTaskEnd?.({ taskId: "k1", ok: true, status: "done" });
+      events.onAgentStart?.({ agentId: "a1", parentId: "main", subagentType: "explore" });
+      events.onAgentEnd?.({ agentId: "a1", ok: true });
+      events.onBlocked?.({ toolName: "Bash", agentId: "main", reason: "read-only" });
+      events.onMemory?.({ scope: "personal", action: "add", path: "wiki/외부.md" });
+      events.onPlan?.({ plan: "", planning: true });
+      events.onPlan?.({ plan: "외부 계획" });
+      events.onThinking?.("외부 생각");
+      events.onDelta?.("외부 답변");
+      // A gateway session id must never become Noah continuation state, so the
+      // route wires no onSessionId at all for external runs.
+      expect(events.onSessionId).toBeUndefined();
+      expect(events.onModel).toBeUndefined();
+      return { kind: "text", runtime: "external", summary: "완료", text: "외부 답변" };
+    };
+
+    const res = await viewer
+      .post("/api/chat/stream")
+      .send({ avatarId: "external:research", conversationId: "conv-ext", message: "조사해줘" })
+      .expect(200);
+
+    const frames = parseSse(res.text);
+    const names = frames.map((f) => f.event);
+    for (const name of [
+      "open", "status", "plugin", "tool", "tool_end", "task", "task_update", "task_end",
+      "agent", "agent_end", "blocked", "memory", "plan", "thinking", "delta", "done",
+    ]) {
+      expect(names).toContain(name);
+    }
+    expect(frames.filter((f) => f.event === "plan")).toHaveLength(2);
+    expect(frameData(frames.find((f) => f.event === "memory")!).id).toEqual(expect.any(String));
+
+    const done = frames.find((f) => f.event === "done")!.data as { response: AgentResponse };
+    expect(done.response.plan).toBe("외부 계획");
+    expect(done.response.thinking).toBe("외부 생각");
+
+    const assistant = store.listMessages(viewerId, "conv-ext").find((m) => m.role === "assistant")!;
+    expect(assistant.content).toBe("외부 답변");
+    // Stateless by contract: nothing to resume next turn.
+    expect(store.getAgentSessionId(viewerId, "conv-ext")).toBeNull();
+    expect(store.listAudit(viewerId, true).some((e) => e.detail === "chat with Research Agent (external)")).toBe(true);
+  });
+
+  it("sends the viewer-picked gateway model, falling back to the admin default", async () => {
+    const { viewer } = await bootWithExternal("extmodel");
+    H.externalImpl = async (_req, _external, events) => {
+      events.onDelta?.("답");
+      return { kind: "text", runtime: "external", summary: "완료", text: "답" };
+    };
+
+    await viewer
+      .post("/api/chat/stream")
+      .send({ avatarId: "external:research", conversationId: "conv-extm", message: "질문", model: "gateway-alt" })
+      .expect(200);
+    expect(H.externalRequests[0].external.model).toBe("gateway-alt");
+
+    // No pick this turn → the conversation's stored pick still applies.
+    await viewer
+      .post("/api/chat/stream")
+      .send({ avatarId: "external:research", conversationId: "conv-extm", message: "또" })
+      .expect(200);
+    expect(H.externalRequests[1].external.model).toBe("gateway-alt");
+
+    // A brand-new conversation with no pick keeps the admin-configured default.
+    await viewer
+      .post("/api/chat/stream")
+      .send({ avatarId: "external:research", conversationId: "conv-extm2", message: "새 대화" })
+      .expect(200);
+    expect(H.externalRequests[2].external.model).toBe("gateway-default");
+  });
+
+  it("502s the composer model catalog when the gateway probe fails", async () => {
+    const { viewer } = await bootWithExternal("extcatalog");
+
+    H.probeModels = null; // the mocked probe throws
+    const failed = await viewer.get("/api/avatars/external:research/models").expect(502);
+    expect(failed.body.error).toContain("Gateway 모델 목록");
+
+    // A recovered gateway is probed again (the failure was never cached).
+    H.probeModels = ["claude-sonnet-5", "claude-opus-5"];
+    const ok = await viewer.get("/api/avatars/external:research/models").expect(200);
+    expect(ok.body).toEqual({
+      models: ["claude-sonnet-5", "claude-opus-5"],
+      defaultModel: "gateway-default",
+    });
+  });
+});
+
+describe("group shared agents in the chat routes", () => {
+  it("lists a group agent's skills from the group repo only, and hides it from non-members", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "gaowner").expect(201)).body.user.id as string;
+    const group = store.createGroup({ name: "플랫폼" });
+    store.addGroupMember(group.id, ownerId);
+    const agent = store.createGroupAgent(group.id, { displayName: "팀 비서" })!;
+    const avatarId = `group:${group.id}:${agent.id}`;
+
+    // The group has no shared repo yet, so there is nothing to list — the
+    // viewer's OWN avatar skills must not leak into a group-agent panel.
+    await owner.get(`/api/avatars/${avatarId}/skills`).expect(200).expect({ skills: [] });
+    // Group agents use the bootstrap tier picker, not a gateway catalog.
+    await owner
+      .get(`/api/avatars/${avatarId}/models`)
+      .expect(200)
+      .expect({ models: [], defaultModel: null });
+
+    const outsider = request.agent(app);
+    await signup(outsider, "gaoutsider").expect(201);
+    await outsider.get(`/api/avatars/${avatarId}/skills`).expect(404);
+  });
+});
+
+describe("knowledge-repo load failures degrade to a status frame", () => {
+  it("still runs the turn when the owner's personal knowledge repo cannot be loaded", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "repowarn").expect(201)).body.user.id as string;
+    store.setKnowledgeRepo(ownerId, path.join(tempDir, "missing", "knowledge.git"), null);
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-warn", message: "안녕" })
+      .expect(200);
+
+    const warnings = parseSse(res.text).filter(
+      (f) => f.event === "status" && String((f.data as { label: string }).label).startsWith("플러그인 경고"),
+    );
+    expect(warnings).toHaveLength(1);
+    expect((warnings[0].data as { label: string }).label).toContain("불러오기 실패");
+    // The failure costs the avatar its standing memory, not the turn.
+    expect(H.requests).toHaveLength(1);
+    expect(H.requests[0].knowledgeMemory).toMatchObject({ personal: null });
+  });
+
+  it("reports a failed group repo on a group shared-agent turn", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "gawarn").expect(201)).body.user.id as string;
+    const group = store.createGroup({ name: "플랫폼" });
+    store.addGroupMember(group.id, ownerId);
+    store.setGroupKnowledgeRepo(group.id, path.join(tempDir, "missing", "group.git"), null);
+    const agent = store.createGroupAgent(group.id, { displayName: "팀 비서" })!;
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: `group:${group.id}:${agent.id}`, conversationId: "conv-gawarn", message: "안녕" })
+      .expect(200);
+
+    const warnings = parseSse(res.text).filter(
+      (f) => f.event === "status" && String((f.data as { label: string }).label).startsWith("플러그인 경고"),
+    );
+    expect(warnings).toHaveLength(1);
+    expect((warnings[0].data as { label: string }).label).toContain("불러오기 실패");
+    // The run still carries the group-agent kind (group resources only).
+    expect(H.requests[0].groupAgent).toMatchObject({
+      groupId: group.id,
+      agentId: agent.id,
+      groupName: "플랫폼",
+    });
+    // A group-agent run never resolves a personal working repo or trust list.
+    expect(H.requests[0].trustedViaGroups).toEqual([]);
+    expect(H.requests[0].activeRepoName).toBeUndefined();
+  });
+});
+
+describe("admin MCP tool policy clamps the run", () => {
+  it("runs with the intersection of the composer choice and the group policy, storing the raw choice", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "policyuser").expect(201)).body.user.id as string;
+    const group = store.createGroup({ name: "policy" });
+    store.addGroupMember(group.id, ownerId);
+    store.setGroupAllowedMcpToolGroups(group.id, ["confluence"]);
+
+    await owner
+      .post("/api/chat/stream")
+      .send({
+        avatarId: ownerId,
+        conversationId: "conv-policy",
+        message: "작업",
+        mcpToolGroups: ["confluence", "git_repo"],
+      })
+      .expect(200);
+
+    // The RUN is clamped…
+    expect(H.requests[0].mcpToolGroups).toEqual(["confluence"]);
+    // …while the conversation keeps the user's untouched choice, so lifting the
+    // policy later restores it.
+    const msgs = await owner.get("/api/messages?conversationId=conv-policy").expect(200);
+    expect(msgs.body.selectedMcpToolGroups).toEqual(["confluence", "git_repo"]);
+  });
+});
+
+describe("working-repo resolution (opened repo becomes the run cwd)", () => {
+  it("runs inside the opened repo's clone and frees the per-clone lock afterwards", async () => {
+    const { store, config, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "repoopen").expect(201)).body.user.id as string;
+    const remote = makeBareRemote(path.join(tempDir, "work-remote.git"));
+    store.upsertGitRepo(ownerId, "workrepo", remote, null);
+    store.touchConversation(ownerId, "conv-open", ownerId, "seed");
+    store.setConversationWorkingRepo("conv-open", "workrepo");
+
+    await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-open", message: "코드 고쳐줘" })
+      .expect(200);
+
+    const clonePath = gitRepoClonePath(ownerId, "workrepo", config);
+    expect(H.requests[0].cwd).toBe(clonePath);
+    expect(H.requests[0].activeRepoName).toBe("workrepo");
+    // The scratch workspace stays writable alongside the clone.
+    expect(H.requests[0].additionalDirs).toHaveLength(1);
+    expect(H.requests[0].additionalDirs![0]).toContain("conv-open");
+    expect(fs.existsSync(path.join(clonePath, ".git"))).toBe(true);
+
+    // The run released the serialization lock on its way out.
+    expect(acquireActiveRepo(clonePath, "later-conversation")).toBe(true);
+    releaseActiveRepo(clonePath, "later-conversation");
+  });
+
+  it("502s before SSE when the opened repo cannot be cloned", async () => {
+    const { store, config, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "repobroken").expect(201)).body.user.id as string;
+    store.upsertGitRepo(ownerId, "brokenrepo", path.join(tempDir, "missing", "nope.git"), null);
+    store.touchConversation(ownerId, "conv-broken", ownerId, "seed");
+    store.setConversationWorkingRepo("conv-broken", "brokenrepo");
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-broken", message: "작업" })
+      .expect(502);
+    expect(res.body.error).toContain("저장소 작업공간을 열지 못했습니다");
+    expect(H.requests).toHaveLength(0);
+
+    // The failed attempt must not strand the per-clone lock.
+    const clonePath = gitRepoClonePath(ownerId, "brokenrepo", config);
+    expect(acquireActiveRepo(clonePath, "later-conversation")).toBe(true);
+    releaseActiveRepo(clonePath, "later-conversation");
+  });
+
+  // NOTE: the post-clone re-check (`racedRun`) needs two POSTs to interleave
+  // around the internal `await resolveActiveWorkspaceRepo`. A two-request
+  // version of this test passes in isolation but goes load-sensitive when the
+  // chat files run together, so the branch is left uncovered rather than
+  // flaky-covered.
 });

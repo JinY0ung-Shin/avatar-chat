@@ -12,6 +12,7 @@ import {
   fetchCanvasVersions,
   humanTool,
   newChat,
+  openSeededChat,
   PLUGIN_STATUS_LABELS,
   regenerate,
   respondPlanReview,
@@ -20,6 +21,7 @@ import {
   sendMessage,
   setActiveCanvas,
   startChatWith,
+  startNewChat,
   stopPane,
   submitCanvas,
   submitCanvasEdit,
@@ -29,7 +31,9 @@ import {
 } from "../src/client/src/lib/chat.js";
 import { appState, readState, replaceState, toasts, updateState } from "../src/client/src/lib/state.js";
 import { resolveConfirmation } from "../src/client/src/lib/confirm.js";
+import { DRAWIO_MEDIA_TYPE } from "../src/client/src/lib/drawioViewer.js";
 import { DEFAULT_MCP_TOOL_GROUPS } from "../src/shared/mcpToolGroups.js";
+import type { ClientState } from "../src/client/src/lib/state.js";
 import type { ChatPane } from "../src/client/src/lib/types.js";
 
 /* ------------------------------------------------------------------ */
@@ -74,13 +78,35 @@ function streamFrom(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function sseFrame([event, data]: [string, unknown]): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
 function sseRes(frames: Array<[string, unknown]>, status = 200) {
-  const chunks = frames.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
-  return { ok: status >= 200 && status < 300, status, body: streamFrom(chunks), json: async () => ({}) };
+  return { ok: status >= 200 && status < 300, status, body: streamFrom(frames.map(sseFrame)), json: async () => ({}) };
+}
+
+/** An SSE response that delivers its frames and then loses the connection. */
+function brokenSseRes(frames: Array<[string, unknown]>, reason = "연결이 끊겼습니다") {
+  const enc = new TextEncoder();
+  const chunks = frames.map(sseFrame);
+  let i = 0;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (i < chunks.length) controller.enqueue(enc.encode(chunks[i++]));
+      else controller.error(new Error(reason));
+    },
+  });
+  return { ok: true, status: 200, body, json: async () => ({}) };
 }
 
 function body(init: RequestInit): any {
   return init.body ? JSON.parse(String(init.body)) : undefined;
+}
+
+/** Let queued microtasks — the best-effort `.catch()` handlers — run. */
+function flush(): Promise<void> {
+  return new Promise((r) => setTimeout(r, 0));
 }
 
 async function waitFor(cond: () => boolean, tries = 100): Promise<void> {
@@ -137,6 +163,99 @@ function pane(id: string): ChatPane {
   return readState().chatPanes.find((p) => p.id === id)!;
 }
 
+/* ------------------------------------------------------------------ */
+/* live-state, notification, extension + event-replay harness          */
+/* ------------------------------------------------------------------ */
+
+const storeTrackers: Array<() => void> = [];
+
+/**
+ * Record a projection of the store on every update. State that only exists WHILE
+ * a run streams — the status label, a queued prompt — is wiped the moment the run
+ * ends, so it has to be sampled as it happens rather than read afterwards.
+ */
+function trackState<T>(pick: (state: ClientState) => T): () => T[] {
+  const seen: T[] = [];
+  storeTrackers.push(appState.subscribe((state) => seen.push(pick(state))));
+  return () => seen;
+}
+
+/** Every liveStatus a pane showed during a run (it is cleared when the run ends). */
+function trackStatus(paneId: string): () => string[] {
+  return trackState((state) => state.chatPanes.find((p) => p.id === paneId)?.liveStatus ?? "");
+}
+
+interface OsNote {
+  title: string;
+  body?: string;
+  tag?: string;
+}
+
+/**
+ * Capture OS notifications. osNotify stays silent unless the Notification API
+ * exists, permission is granted, AND the app is not the focused window — so all
+ * three have to be arranged for a notification to be observable at all.
+ */
+function useOsNotifications(): OsNote[] {
+  const notes: OsNote[] = [];
+  class FakeNotification {
+    static permission = "granted";
+    static requestPermission = async () => "granted";
+    onclick: (() => void) | null = null;
+    constructor(title: string, options: NotificationOptions = {}) {
+      notes.push({ title, body: options.body, tag: options.tag });
+    }
+    close(): void {}
+  }
+  vi.stubGlobal("Notification", FakeNotification);
+  // notificationsSupported() probes `window`, which under vitest's jsdom is not
+  // the same object stubGlobal writes to.
+  Object.defineProperty(window, "Notification", {
+    value: FakeNotification,
+    configurable: true,
+    writable: true,
+  });
+  vi.spyOn(document, "hasFocus").mockReturnValue(false);
+  return notes;
+}
+
+/** Stand in for the Noah extension: `chrome.runtime` is the only channel to it. */
+function useExtension(reply: unknown) {
+  const send = vi.fn((_extensionId: string, _message: unknown, cb: (response: unknown) => void) => cb(reply));
+  vi.stubGlobal("chrome", { runtime: { sendMessage: send } });
+  return send;
+}
+
+let eventRunSeq = 0;
+
+/**
+ * Replay `frames` into a pane through the real SSE reader (attachRun's reconnect
+ * path), so events are applied exactly as a live run applies them. Requests other
+ * than the event stream fall through to `rest`, then default to 200 `{ok:true}` —
+ * handlers fire best-effort follow-ups (the activity PUT, /api/chat/respond) that
+ * no test needs to restate; `calls` records every one of them.
+ */
+async function driveEvents(
+  paneId: string,
+  frames: Array<[string, unknown]>,
+  rest: FetchHandler = () => undefined,
+): Promise<{ calls: { url: string; init: RequestInit }[] }> {
+  const runId = `evt-run-${++eventRunSeq}`;
+  const calls: { url: string; init: RequestInit }[] = [];
+  useFetch((url, init) => {
+    calls.push({ url, init });
+    if (url.includes(`/api/chat/runs/${runId}/events`)) return sseRes(frames);
+    const handled = rest(url, init);
+    return handled === undefined ? jsonRes({ ok: true }) : handled;
+  });
+  await attachRun(paneId, runId);
+  return { calls };
+}
+
+function postedTo(calls: { url: string; init: RequestInit }[], path: string): any[] {
+  return calls.filter((c) => c.url === path).map((c) => body(c.init));
+}
+
 beforeEach(() => {
   appState.set(structuredClone(PRISTINE));
   toasts.set([]);
@@ -145,6 +264,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  while (storeTrackers.length) storeTrackers.pop()!();
+  delete (window as { Notification?: unknown }).Notification;
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -531,6 +652,18 @@ describe("pane lifecycle", () => {
     expect(fresh.messages).toEqual([]);
   });
 
+  it("newChat with no pane id targets the active pane", () => {
+    const other = seedPane({ messages: [{ id: "keep" } as any] });
+    const active = seedPane({ messages: [{ id: "drop" } as any] });
+    newChat();
+    const panes = readState().chatPanes;
+    expect(panes[0].id).toBe(other);
+    expect(panes[0].messages).toHaveLength(1);
+    expect(panes[1].id).not.toBe(active);
+    expect(panes[1].messages).toEqual([]);
+    expect(readState().activePaneId).toBe(panes[1].id);
+  });
+
   it("clearChatHistory deletes conversations and resets matching panes", async () => {
     const id = seedPane({ conversationId: "c1", messages: [{ id: "m" } as any] });
     replaceState({ conversations: [{ id: "c1" } as any, { id: "c2" } as any] });
@@ -874,5 +1007,1557 @@ describe("reattaching to a live run", () => {
     await attachActiveRun(id);
     expect(pane(id).messages).toHaveLength(2);
     expect(pane(id).messages.at(-1)).toMatchObject({ content: "완료된 답변" });
+  });
+
+  it("attachActiveRun reconnects to a run the server still has open", async () => {
+    const id = seedPane({ conversationId: "c-live" });
+    useFetch((url) => {
+      if (url.startsWith("/api/chat/runs?")) return jsonRes({ run: { runId: "run-open" } });
+      if (url.includes("/api/chat/runs/run-open/events")) {
+        return sseRes([
+          ["delta", { text: "이어받은 답변" }],
+          ["done", { response: { kind: "text", runtime: "claude", text: "이어받은 답변" } }],
+        ]);
+      }
+      return undefined;
+    });
+    await attachActiveRun(id);
+    expect(pane(id).messages.at(-1)).toMatchObject({ role: "assistant", content: "이어받은 답변" });
+    expect(pane(id).streaming).toBe(false);
+  });
+
+  it("attachRun warns when the replay stream cannot be read at all", async () => {
+    const id = seedPane({ conversationId: "c1" });
+    useFetch((url) => (url.includes("/events") ? jsonRes({}, 500) : undefined));
+    await attachRun(id, "run-broken");
+    expect(get(toasts).some((t) => t.message.includes("진행 중인 응답에 다시 연결하지 못했습니다"))).toBe(true);
+    // The pane is handed back idle rather than left stuck on the reconnect status.
+    expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "", abortController: null });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* openSeededChat / startNewChat / resume-instead-of-duplicate         */
+/* ------------------------------------------------------------------ */
+
+describe("opening a seeded or brand-new chat", () => {
+  it("openSeededChat fills the composer with the handoff text without sending it", async () => {
+    useFetch((url) => {
+      if (url === "/api/avatars/owner") return jsonRes({ avatar: { id: "owner", alias: "내 아바타", isOwn: true } });
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await openSeededChat("이 알림에 대해 알려줘");
+    const s = readState();
+    expect(s.view).toBe("chat");
+    expect(s.chatPanes).toHaveLength(1);
+    expect(s.chatPanes[0]).toMatchObject({ draft: "이 알림에 대해 알려줘", messages: [], streaming: false });
+    expect(s.currentAvatar?.id).toBe("owner");
+    expect(s.activePaneId).toBe(s.chatPanes[0].id);
+    expect(get(toasts).some((t) => t.message.includes("검토 후 보내기"))).toBe(true);
+  });
+
+  it("openSeededChat lets the caller phrase its own notice", async () => {
+    useFetch((url) => {
+      if (url === "/api/avatars/owner") return jsonRes({ avatar: { id: "owner", alias: "내 아바타", isOwn: true } });
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await openSeededChat("예약 작업을 지금 실행", "예약 작업 내용을 입력창에 담았습니다.");
+    expect(get(toasts).some((t) => t.message === "예약 작업 내용을 입력창에 담았습니다.")).toBe(true);
+  });
+
+  it("openSeededChat leaves a streaming pane alone when the switch is declined", async () => {
+    const id = seedPane({ streaming: true, draft: "원래 초안" });
+    const fetchFn = noFetch();
+    const opening = openSeededChat("새 주제");
+    resolveConfirmation(false);
+    await opening;
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(pane(id).draft).toBe("원래 초안");
+  });
+
+  it("openSeededChat does nothing when no one is signed in", async () => {
+    replaceState({ user: null });
+    const fetchFn = noFetch();
+    await openSeededChat("주제");
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(readState().chatPanes).toEqual([]);
+  });
+
+  it("startNewChat replaces the active pane with an empty thread", async () => {
+    const id = seedPane({ messages: [{ id: "m" } as any], draft: "남은 초안" });
+    const fetchFn = noFetch();
+    updateState((s) => {
+      s.view = "explore";
+    });
+    await startNewChat();
+    const s = readState();
+    expect(s.view).toBe("chat");
+    expect(s.chatPanes).toHaveLength(1);
+    expect(s.chatPanes[0].id).not.toBe(id);
+    expect(s.chatPanes[0]).toMatchObject({ messages: [], draft: "" });
+    // The avatar is kept, so no avatar lookup is needed.
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("startNewChat replaces a streaming pane only once the owner confirms", async () => {
+    const id = seedPane({ streaming: true, messages: [{ id: "m" } as any] });
+    noFetch();
+
+    const declined = startNewChat();
+    resolveConfirmation(false);
+    await declined;
+    expect(readState().chatPanes[0].id).toBe(id);
+    expect(pane(id).messages).toHaveLength(1);
+
+    const accepted = startNewChat();
+    resolveConfirmation(true);
+    await accepted;
+    expect(readState().chatPanes[0].id).not.toBe(id);
+    expect(readState().chatPanes[0].messages).toEqual([]);
+  });
+
+  it("startNewChat opens the owner's own avatar when nothing is open", async () => {
+    useFetch((url) => {
+      if (url === "/api/avatars/owner") return jsonRes({ avatar: { id: "owner", alias: "내 아바타", isOwn: true } });
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await startNewChat();
+    const s = readState();
+    expect(s.chatPanes).toHaveLength(1);
+    expect(s.chatPanes[0].avatar.id).toBe("owner");
+    expect(s).toMatchObject({ view: "chat", activePaneId: s.chatPanes[0].id });
+  });
+
+  it("startNewChat does nothing with no pane and no signed-in user", async () => {
+    replaceState({ user: null });
+    const fetchFn = noFetch();
+    await startNewChat();
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(readState().chatPanes).toEqual([]);
+  });
+
+  it("startChatWith resumes the existing conversation instead of opening a duplicate", async () => {
+    replaceState({ conversations: [{ id: "c-old", avatarUserId: "av9", isRoutine: false } as any] });
+    useFetch((url) => {
+      // A thread that never had canvases or group-knowledge picks omits both keys.
+      if (url.startsWith("/api/messages")) return jsonRes({ messages: [] });
+      if (url === "/api/avatars/av9") return jsonRes({ avatar: { id: "av9", alias: "동료", isOwn: false } });
+      if (url.startsWith("/api/chat/runs")) return jsonRes({ run: null });
+      return undefined;
+    });
+    await startChatWith({ id: "av9" } as any);
+    expect(readState().chatPanes).toHaveLength(1);
+    expect(readState().chatPanes[0]).toMatchObject({
+      conversationId: "c-old",
+      groupKnowledgeOff: [],
+      canvases: [],
+    });
+  });
+
+  it("startChatWith ignores a routine thread and starts a fresh conversation", async () => {
+    // Routine threads have their own view; resuming one from 탐색 would drop the
+    // owner into a scheduled job's transcript.
+    replaceState({ conversations: [{ id: "r-only", avatarUserId: "av9", isRoutine: true } as any] });
+    useFetch((url) => {
+      if (url === "/api/avatars/av9") return jsonRes({ avatar: { id: "av9", alias: "동료", isOwn: false } });
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await startChatWith({ id: "av9" } as any);
+    expect(readState().chatPanes[0].conversationId).not.toBe("r-only");
+    expect(readState().chatPanes[0].messages).toEqual([]);
+  });
+
+  it("addConversationToSplit loads a stored conversation into a second pane", async () => {
+    seedPane();
+    replaceState({ conversations: [{ id: "c9", avatarUserId: "av9", isRoutine: false } as any] });
+    useFetch((url) => {
+      if (url.startsWith("/api/messages")) {
+        return jsonRes({
+          messages: [
+            { id: "u", role: "user", content: "질문", response: null, conversationId: "c9", createdAt: "t" },
+            {
+              id: "a",
+              role: "assistant",
+              content: "답변",
+              conversationId: "c9",
+              createdAt: "t",
+              response: { kind: "text", runtime: "claude", text: "답변", usage: { inputTokens: 12, outputTokens: 3 } },
+            },
+            // A later turn that reported no tokens (a stop, a replayed reply) must
+            // not blank the badge the previous turn earned.
+            {
+              id: "a2",
+              role: "assistant",
+              content: "중지됨",
+              conversationId: "c9",
+              createdAt: "t",
+              response: { kind: "text", runtime: "claude", text: "", usage: { inputTokens: 0, outputTokens: 0 } },
+            },
+          ],
+          groupKnowledgeOff: ["g1"],
+          selectedModel: "opus",
+          selectedEffort: "high",
+          selectedMcpToolGroups: ["git_repo", "web"],
+          // The same artifact is persisted once per version; only the last entry
+          // (the current version) belongs in the panel.
+          canvases: [
+            { id: "cv1", title: "초안" },
+            { id: "cv1", title: "최종" },
+            { id: "cv2", title: "다른 캔버스" },
+          ],
+        });
+      }
+      if (url === "/api/avatars/av9") return jsonRes({ avatar: { id: "av9", alias: "동료", isOwn: false } });
+      if (url.startsWith("/api/chat/runs")) return jsonRes({ run: null });
+      return undefined;
+    });
+
+    await addConversationToSplit("c9");
+
+    const s = readState();
+    expect(s.chatPanes).toHaveLength(2);
+    const added = s.chatPanes[1];
+    expect(s.activePaneId).toBe(added.id);
+    expect(s.currentAvatar?.id).toBe("av9");
+    expect(added).toMatchObject({
+      conversationId: "c9",
+      groupKnowledgeOff: ["g1"],
+      modelTier: "opus",
+      effort: "high",
+      mcpToolGroups: ["git_repo", "web"],
+      activeCanvasId: "cv2",
+    });
+    expect(added.messages).toHaveLength(3);
+    expect(added.canvases).toEqual([
+      { id: "cv1", title: "최종", pending: false },
+      { id: "cv2", title: "다른 캔버스", pending: false },
+    ]);
+    // The composer badge picks up the newest turn that actually reported usage.
+    expect(added.usage).toMatchObject({ inputTokens: 12, outputTokens: 3 });
+  });
+
+  it("addConversationToSplit warns when the conversation is gone", async () => {
+    seedPane();
+    useFetch((url) =>
+      url === "/api/conversations" || url === "/api/conversations?kind=routine"
+        ? jsonRes({ conversations: [] })
+        : undefined,
+    );
+    await addConversationToSplit("ghost");
+    expect(get(toasts).some((t) => t.message.includes("대화를 찾을 수 없습니다"))).toBe(true);
+    expect(readState().chatPanes).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* sendMessage — slash literals, staged images, failure modes           */
+/* ------------------------------------------------------------------ */
+
+const STAGED_IMAGE = {
+  id: "img1",
+  dataUrl: "data:image/png;base64,AAAA",
+  name: "shot.png",
+  mediaType: "image/png" as const,
+};
+
+function doneWith(text: string): Array<[string, unknown]> {
+  return [
+    [
+      "done",
+      {
+        message: {
+          id: newIdLike(),
+          role: "assistant",
+          content: text,
+          conversationId: "c",
+          createdAt: "t",
+          response: { kind: "text", runtime: "claude", text },
+        },
+      },
+    ],
+  ];
+}
+
+let doneSeq = 0;
+function newIdLike(): string {
+  return `done-msg-${++doneSeq}`;
+}
+
+describe("sendMessage: slash literals, staged images, failure modes", () => {
+  it("sends a typed slash command as its literal text", async () => {
+    const id = seedPane({ avatar: { id: "owner", alias: "내 아바타", isOwn: true } as any });
+    const bodies: any[] = [];
+    useFetch((url, init) => {
+      if (url === "/api/chat/stream") {
+        bodies.push(body(init));
+        return sseRes(doneWith("저장했습니다"));
+      }
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+
+    await sendMessage(id, "/remember 회의는 화요일");
+
+    // The server expands the command into the agent-facing prompt; the wire and
+    // the visible bubble both keep the literal the owner typed.
+    expect(bodies[0].message).toBe("/remember 회의는 화요일");
+    expect(pane(id).messages[0]).toMatchObject({ role: "user", content: "/remember 회의는 화요일" });
+
+    await sendMessage(id, "/summarize");
+    expect(bodies[1].message).toBe("/summarize");
+  });
+
+  it("falls back to the status code when a failed send carries no readable message", async () => {
+    const id = seedPane();
+    useFetch((url) => {
+      if (url === "/api/chat/stream") return jsonRes({}, 503);
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await sendMessage(id, "안녕");
+    expect(get(toasts).some((t) => t.message.includes("HTTP 503"))).toBe(true);
+
+    // A proxy's HTML error page is not JSON at all.
+    const other = seedPane();
+    useFetch((url) => {
+      if (url === "/api/chat/stream") {
+        return {
+          ok: false,
+          status: 502,
+          json: async () => {
+            throw new Error("not json");
+          },
+        };
+      }
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await sendMessage(other, "안녕");
+    expect(get(toasts).some((t) => t.message.includes("HTTP 502"))).toBe(true);
+  });
+
+  it("ignores panes it cannot act on", async () => {
+    const fetchFn = noFetch();
+    await sendMessage("no-such-pane", "안녕");
+    const streaming = seedPane({ streaming: true, conversationId: "c1" });
+    // A pane that is already streaming has nothing to reattach to.
+    await attachActiveRun(streaming);
+    await attachActiveRun("no-such-pane");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("sends staged images on an image-only turn and holds their data URLs for the bubble", async () => {
+    const id = seedPane({ pendingImages: [STAGED_IMAGE] });
+    const bodies: any[] = [];
+    useFetch((url, init) => {
+      if (url === "/api/chat/stream") {
+        bodies.push(body(init));
+        return sseRes(doneWith("이미지를 확인했습니다"));
+      }
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+
+    await sendMessage(id, "");
+
+    expect(bodies[0].images).toEqual([{ id: "img1", data: STAGED_IMAGE.dataUrl }]);
+    expect(pane(id).messages[0]).toMatchObject({
+      role: "user",
+      content: "",
+      attachments: [{ id: "img1", kind: "image", mediaType: "image/png", name: "shot.png" }],
+    });
+    // Held locally so the just-sent bubble renders before the bytes are fetchable.
+    expect(pane(id).localImages).toEqual({ img1: STAGED_IMAGE.dataUrl });
+    expect(pane(id).pendingImages).toEqual([]);
+  });
+
+  it("restores the draft and the staged images when nothing streamed", async () => {
+    const id = seedPane({ pendingImages: [STAGED_IMAGE] });
+    useFetch((url) => {
+      if (url === "/api/chat/stream") return jsonRes({ error: "업로드에 실패했습니다." }, 500);
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+
+    await sendMessage(id, "이 이미지 봐줘");
+
+    expect(pane(id).messages).toEqual([]);
+    expect(pane(id).draft).toBe("이 이미지 봐줘");
+    // Re-attaching by hand after a failed send would be busywork.
+    expect(pane(id).pendingImages).toEqual([STAGED_IMAGE]);
+    expect(pane(id).localImages).toEqual({});
+    expect(get(toasts).some((t) => t.message.includes("업로드에 실패했습니다."))).toBe(true);
+  });
+
+  it("reports an expired session rather than a bare status code", async () => {
+    const id = seedPane();
+    useFetch((url) => {
+      if (url === "/api/chat/stream") return { ok: false, status: 401, json: async () => ({}) };
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await sendMessage(id, "안녕");
+    expect(get(toasts).some((t) => t.message.includes("세션이 만료되었습니다"))).toBe(true);
+    expect(pane(id).draft).toBe("안녕");
+  });
+
+  it("keeps the streamed text as an error bubble when the stream breaks mid-turn", async () => {
+    const id = seedPane();
+    useFetch((url) => {
+      if (url === "/api/chat/stream") return brokenSseRes([["delta", { text: "여기까지 답하다" }]]);
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+
+    await sendMessage(id, "질문");
+
+    const last = pane(id).messages.at(-1)!;
+    expect(last.role).toBe("assistant");
+    // Partial work is kept and the failure is appended, not swapped in for it.
+    expect(last.content).toBe("여기까지 답하다\n\n연결이 끊겼습니다");
+    expect(last.response).toMatchObject({ summary: "오류", text: "여기까지 답하다" });
+    expect(pane(id).messages[0]).toMatchObject({ role: "user", content: "질문" });
+    expect(get(toasts).some((t) => t.message.includes("메시지를 보내지 못했습니다"))).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* stream events applied to a pane                                     */
+/* ------------------------------------------------------------------ */
+
+describe("stream events applied to a pane", () => {
+  it("starts a new paragraph when activity interrupts the text stream", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["delta", { text: "첫 문장" }],
+      ["tool", { toolUseId: "t1", name: "Read", input: { file_path: "/a.ts" } }],
+      ["delta", { text: "이어지는 문장" }],
+    ]);
+    expect(pane(id).liveText).toBe("첫 문장\n\n이어지는 문장");
+    expect(pane(id).liveTextBreakPending).toBe(false);
+    expect(pane(id).liveTools[0]).toMatchObject({ label: "파일 읽기", detail: "/a.ts", status: "running" });
+    // Answer text means reasoning handed off.
+    expect(pane(id).thinkingActive).toBe(false);
+  });
+
+  it("does not double-space when either side already broke the line", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["delta", { text: "끝난 문단\n" }],
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "ls" } }],
+      ["delta", { text: "새 문단" }],
+    ]);
+    expect(pane(id).liveText).toBe("끝난 문단\n새 문단");
+
+    const other = seedPane();
+    await driveEvents(other, [
+      ["delta", { text: "문장" }],
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "ls" } }],
+      ["delta", { text: "\n이어서" }],
+    ]);
+    expect(pane(other).liveText).toBe("문장\n이어서");
+  });
+
+  it("thinking_reset drops the discarded attempt's reasoning", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["thinking", { text: "버려질 추론" }],
+      ["thinking_reset", {}],
+      ["thinking", { text: "남는 추론" }],
+    ]);
+    expect(pane(id).liveThinking).toBe("남는 추론");
+    expect(pane(id).thinkingActive).toBe(true);
+  });
+
+  it("keeps internal orchestration tools out of the activity rows", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["tool", { toolUseId: "h1", name: "TodoWrite", input: {} }],
+      ["tool", { toolUseId: "h2", input: { command: "이름 없는 도구" } }],
+      ["tool", { toolUseId: "v1", name: "Bash", input: { command: "ls" } }],
+    ]);
+    expect(pane(id).liveTools.map((t) => t.id)).toEqual(["v1"]);
+  });
+
+  it("a repeated tool frame updates the row instead of adding a second one", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "ls" } }],
+      ["tool", { toolUseId: "t1", name: "Bash", inputSummary: "ls -la" }],
+    ]);
+    expect(pane(id).liveTools).toHaveLength(1);
+    expect(pane(id).liveTools[0]).toMatchObject({ label: "명령 실행", detail: "ls -la", status: "running" });
+  });
+
+  it("a generic status label does not overwrite a sticky activity label", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "npm test" } }],
+      ["status", { label: "작업 중" }],
+    ]);
+    expect(statuses()).toContain("명령 실행 · npm test");
+    expect(statuses()).not.toContain("작업 중");
+  });
+
+  it("blocked explains the block in Korean and outlasts a later tool_end", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "git push" } }],
+      ["blocked", { toolUseId: "t1", toolName: "Bash", uiReason: "읽기 전용 도구입니다." }],
+      // A tool_end still arrives for the blocked call; it must not report success.
+      ["tool_end", { toolUseId: "t1", ok: true, output: "무시되어야 함" }],
+    ]);
+    expect(pane(id).liveTools).toHaveLength(1);
+    expect(pane(id).liveTools[0]).toMatchObject({
+      status: "blocked",
+      detail: "차단됨 · 읽기 전용 도구입니다.",
+    });
+  });
+
+  it("blocked tags model-facing English as a detail and has a fallback with no reason", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["blocked", { toolUseId: "b1", toolName: "Bash", reason: "read-only mode" }],
+      ["blocked", { toolUseId: "b2", toolName: "Bash", reason: "정책상 허용되지 않습니다." }],
+      ["blocked", { toolName: "mcp__repo__write_file" }],
+    ]);
+    const rows = pane(id).liveTools;
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({
+      id: "b1",
+      kind: "blocked",
+      label: "명령 실행",
+      detail: "차단됨 (상세: read-only mode)",
+      status: "blocked",
+    });
+    expect(rows[1].detail).toBe("차단됨 · 정책상 허용되지 않습니다.");
+    expect(rows[2]).toMatchObject({ label: "write file", detail: "읽기 전용이라 차단됨" });
+    expect(rows[2].id).toBeTruthy();
+  });
+
+  it("memory rows render a capture once per event id", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["memory", { id: "mem1", path: "wiki/회의.md", action: "create" }],
+      // A reattach replays the whole log; the same capture must not stack up.
+      ["memory", { id: "mem1", path: "wiki/회의.md", action: "create" }],
+      ["memory", { id: "mem2", path: "wiki/정책.md", action: "update", scope: "group", groupName: "플랫폼" }],
+      // An id-less capture still gets a row (it just cannot be deduped).
+      ["memory", { path: "wiki/무제.md" }],
+    ]);
+    const rows = pane(id).liveTools;
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({
+      kind: "memory",
+      label: "기억 추가됨",
+      detail: "wiki/회의.md",
+      status: "done",
+      agentId: "main",
+    });
+    expect(rows[1]).toMatchObject({ label: "그룹 기억 갱신됨", detail: "플랫폼 · wiki/정책.md" });
+    expect(rows[2]).toMatchObject({ label: "기억 추가됨", detail: "wiki/무제.md" });
+    expect(rows[2].id).toBeTruthy();
+  });
+
+  it("plan mode shows a placeholder while writing, then the submitted plan", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    const pending = trackState((s) => s.chatPanes.find((p) => p.id === id)?.planPending ?? false);
+    await driveEvents(id, [
+      ["plan", { planning: true }],
+      ["plan", { plan: "1. 조사\n2. 구현" }],
+    ]);
+    expect(pending()).toContain(true);
+    expect(pane(id)).toMatchObject({ livePlan: "1. 조사\n2. 구현", planPending: false });
+    expect(statuses()).toContain("계획을 작성하는 중…");
+    expect(statuses()).toContain("계획을 제출했습니다.");
+  });
+
+  it("an empty ExitPlanMode clears the writing-plan placeholder", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["plan", { planning: true }],
+      ["plan", {}],
+    ]);
+    expect(pane(id)).toMatchObject({ planPending: false, livePlan: "" });
+  });
+
+  it("plan_review surfaces inline controls and notifies the owner", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    await driveEvents(id, [["plan_review", { requestId: "pr-live-1", runId: "rn-live-1", plan: "제안된 계획" }]]);
+    expect(pane(id).planReview).toEqual({ requestId: "pr-live-1", runId: "rn-live-1" });
+    expect(pane(id)).toMatchObject({ livePlan: "제안된 계획", planPending: false, planReviewSubmitting: false });
+    expect(notes).toEqual([
+      { title: "노아 · 계획 승인 필요", body: "제안한 계획을 검토해 주세요.", tag: `plan-${id}` },
+    ]);
+  });
+
+  it("prompt_resolved locks a parked canvas form and drops the plan controls", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      [
+        "canvas",
+        {
+          artifactId: "cv-live",
+          title: "설문",
+          controls: [{ id: "q1" }],
+          interaction: "blocking",
+          requestId: "rq-live-1",
+          runId: "rn-live",
+        },
+      ],
+      ["plan_review", { requestId: "pr-live-2", runId: "rn-live", plan: "계획" }],
+      // Resolved server-side (timeout / answered elsewhere / reconnect).
+      ["prompt_resolved", { requestId: "rq-live-1" }],
+      ["prompt_resolved", { requestId: "pr-live-2" }],
+    ]);
+    expect(pane(id).canvases[0]).toMatchObject({ id: "cv-live", pending: false, requestId: "rq-live-1" });
+    expect(pane(id).planReview).toBeNull();
+    expect(pane(id).planReviewSubmitting).toBe(false);
+  });
+
+  it("a re-shown canvas replaces its entry and bumps the version count", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      // Controls without a parked run: an async canvas renders its form but the
+      // run keeps going.
+      ["canvas", { artifactId: "cv1", title: "초안", content: "v1", controls: [{ id: "a" }], interaction: "async" }],
+      ["canvas", { artifactId: "cv1", title: "다듬은 초안", content: "v2", editable: true }],
+      ["canvas", { artifactId: "cv2" }],
+      ["canvas", { artifactId: "cv3", controls: [{ id: "b" }], interaction: "blocking", requestId: "rq-b", runId: "rn-b" }],
+    ]);
+    const canvases = pane(id).canvases;
+    expect(canvases.map((c) => c.id)).toEqual(["cv1", "cv2", "cv3"]);
+    expect(canvases[0]).toMatchObject({
+      title: "다듬은 초안",
+      content: "v2",
+      editable: true,
+      pending: false,
+      currentVersion: 2,
+      versionCount: 2,
+    });
+    expect(canvases[1]).toMatchObject({ title: "캔버스", contentType: "markdown", currentVersion: 1 });
+    expect(canvases[2]).toMatchObject({ pending: true, requestId: "rq-b", runId: "rn-b" });
+    expect(pane(id).activeCanvasId).toBe("cv3");
+  });
+
+  it("a shared .drawio pops the side preview and anchors the card to the text so far", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    const attachment = { id: "d1", kind: "file", mediaType: DRAWIO_MEDIA_TYPE, name: "구조.drawio" };
+    await driveEvents(id, [
+      ["delta", { text: "1234" }],
+      ["file", { attachment }],
+      ["file", { attachment }],
+    ]);
+    expect(pane(id).liveAttachments).toEqual([{ ...attachment, anchor: 4 }]);
+    expect(pane(id).filePreview).toMatchObject({ attachment: { id: "d1" }, slides: [] });
+    expect(statuses()).toContain("파일을 공유했습니다.");
+  });
+
+  it("a .drawio share stays a card when more than one pane is open", async () => {
+    seedPane();
+    const id = seedPane();
+    const attachment = { id: "d2", kind: "file", mediaType: DRAWIO_MEDIA_TYPE, name: "구조.drawio" };
+    await driveEvents(id, [["file", { attachment }]]);
+    // Split view has no side-panel slot; the preview would silently hijack it.
+    expect(pane(id).filePreview).toBeUndefined();
+    expect(pane(id).liveAttachments).toHaveLength(1);
+  });
+
+  it("a replayed done frame does not duplicate an already-stored bubble", async () => {
+    const stored = {
+      id: "m-stored",
+      role: "assistant",
+      content: "저장된 답변",
+      conversationId: "conv-x",
+      createdAt: "t",
+      response: { kind: "text", runtime: "claude", text: "저장된 답변" },
+    };
+    const id = seedPane({ messages: [stored as any] });
+    await driveEvents(id, [
+      ["delta", { text: "재생된 텍스트" }],
+      ["done", { message: stored }],
+    ]);
+    expect(pane(id).messages).toHaveLength(1);
+    expect(pane(id).liveText).toBe("");
+  });
+
+  it("ignores an event kind it does not know", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["mystery", { text: "?" }],
+      ["delta", { text: "정상" }],
+    ]);
+    expect(pane(id).liveText).toBe("정상");
+    expect(pane(id).messages).toEqual([]);
+    expect(get(toasts)).toEqual([]);
+  });
+
+  it("ignores frames that are missing the field they hinge on", async () => {
+    const id = seedPane({ conversationId: "conv-keep" });
+    await driveEvents(id, [
+      ["delta", {}],
+      ["thinking", {}],
+      ["open", {}],
+      ["status", {}],
+      ["plugin", {}],
+      ["agent", {}],
+      ["agent_end", {}],
+      ["agent_end", { agentId: "never-announced" }],
+      ["tool_end", {}],
+      ["tool_end", { toolUseId: "never-started" }],
+      ["task", {}],
+      ["blocked", {}],
+      ["memory", {}],
+      ["canvas", {}],
+      ["file", { attachment: {} }],
+      ["prompt_resolved", {}],
+      ["bg_end", {}],
+    ]);
+    const p = pane(id);
+    // A partial frame must not mint a phantom row or move the conversation.
+    expect(p.conversationId).toBe("conv-keep");
+    expect(p).toMatchObject({ liveText: "", liveThinking: "" });
+    expect(p.liveTools).toEqual([]);
+    expect(p.liveTasks).toEqual([]);
+    expect(p.liveAgents).toEqual([]);
+    expect(p.livePlugins).toEqual([]);
+    expect(p.canvases).toEqual([]);
+    expect(p.liveAttachments).toEqual([]);
+    expect(p.messages).toEqual([]);
+  });
+
+  it("a tool from an unannounced agent gets a placeholder node, and a bare repeat keeps its detail", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", agentId: "ghost", input: { command: "ls" } }],
+      // Nothing to summarise this time; the detail captured at tool start stands.
+      ["tool", { toolUseId: "t1", name: "Bash", agentId: "ghost" }],
+    ]);
+    const p = pane(id);
+    expect(p.liveAgents.map((a) => a.id)).toEqual(["main", "ghost"]);
+    expect(p.liveAgents[1]).toMatchObject({
+      parentId: "main",
+      label: "하위 작업",
+      status: "running",
+      isMain: false,
+    });
+    expect(p.liveTools[0]).toMatchObject({ detail: "ls", status: "running" });
+  });
+
+  it("a server-set plan and reasoning on the finished response win over the live ones", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["plan", { plan: "라이브 계획" }],
+      ["thinking", { text: "라이브 추론" }],
+      [
+        "done",
+        { response: { kind: "text", runtime: "claude", text: "완료", plan: "서버 계획", thinking: "서버 추론" } },
+      ],
+    ]);
+    expect(pane(id).messages.at(-1)!.response).toMatchObject({ plan: "서버 계획", thinking: "서버 추론" });
+  });
+
+  it("a done frame with nothing to show leaves the transcript as it was", async () => {
+    const id = seedPane({
+      messages: [{ id: "u", role: "user", content: "질문", response: null, conversationId: "c", createdAt: "t" } as any],
+    });
+    const notes = useOsNotifications();
+    await driveEvents(id, [["done", {}]]);
+    expect(pane(id).messages).toHaveLength(1);
+    // Nothing completed, so there is nothing to announce.
+    expect(notes).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* background phase (the SDK keeps working past the visible turn)      */
+/* ------------------------------------------------------------------ */
+
+const BG_MESSAGE = {
+  id: "bg-msg-1",
+  role: "assistant",
+  content: "먼저 답합니다",
+  conversationId: "conv-x",
+  createdAt: "t",
+  response: {
+    kind: "text",
+    runtime: "claude",
+    text: "먼저 답합니다",
+    usage: { inputTokens: 5, outputTokens: 2 },
+  },
+};
+
+describe("background phase", () => {
+  it("done{background} finalizes the bubble but keeps the activity tree mounted", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    const notes = useOsNotifications();
+    await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "npm test" } }],
+      ["delta", { text: "먼저 답합니다" }],
+      ["done", { background: true, message: BG_MESSAGE, tasks: [{ taskId: "bt1", description: "후속 작업" }] }],
+    ]);
+    const p = pane(id);
+    expect(p.messages.at(-1)).toMatchObject({ id: "bg-msg-1", role: "assistant" });
+    expect(p).toMatchObject({ backgroundPhase: true, backgroundMessageId: "bg-msg-1" });
+    expect(p.backgroundTasks).toEqual([{ taskId: "bt1", description: "후속 작업" }]);
+    // Rows keep updating until bg_end; only the text moved into the bubble.
+    expect(p.liveTools).toHaveLength(1);
+    expect(p).toMatchObject({ liveText: "", liveThinking: "", planPending: false });
+    expect(p.usage).toMatchObject({ inputTokens: 5, outputTokens: 2 });
+    expect(statuses()).toContain("백그라운드 작업 진행 중…");
+    expect(notes.map((n) => n.title)).toContain("노아 · 답변 완료");
+  });
+
+  it("bg_tasks replaces the live task set rather than merging into it", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["done", { background: true, message: BG_MESSAGE }],
+      ["bg_tasks", { tasks: [{ taskId: "a" }, { taskId: "b" }] }],
+      ["bg_tasks", { tasks: [{ taskId: "c" }] }],
+    ]);
+    expect(pane(id).backgroundTasks).toEqual([{ taskId: "c" }]);
+  });
+
+  it("bg_end seals the tree onto the finalized turn and persists the snapshot", async () => {
+    const id = seedPane();
+    const { calls } = await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "npm test" } }],
+      ["task", { taskId: "k9", subagentType: "worker" }],
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["bg_end", {}],
+    ]);
+    const p = pane(id);
+    expect(p).toMatchObject({ backgroundPhase: false, backgroundMessageId: null });
+    expect(p.backgroundTasks).toEqual([]);
+    expect(p.liveTools).toEqual([]);
+    expect(p.liveTasks).toEqual([]);
+    // A row still "running" at the end would render a perpetual spinner.
+    const sealed = (p.messages.at(-1)!.response as any).activity;
+    expect(sealed.tools[0]).toMatchObject({ id: "t1", status: "done" });
+    expect(sealed.tasks[0]).toMatchObject({ id: "k9", status: "done" });
+    const put = calls.find((c) => c.url.includes("/api/messages/bg-msg-1/activity"));
+    expect(put?.init.method).toBe("PUT");
+    expect(body(put!.init).activity.tools[0].status).toBe("done");
+  });
+
+  it("bg_end with no activity to seal just ends the phase", async () => {
+    const id = seedPane();
+    const { calls } = await driveEvents(id, [
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["bg_end", {}],
+    ]);
+    expect(pane(id).backgroundPhase).toBe(false);
+    expect(calls.some((c) => c.url.includes("/activity"))).toBe(false);
+  });
+
+  it("a background wake-up turn gets its own bubble, once per message id", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    const wake = {
+      id: "bg-wake-1",
+      role: "assistant",
+      content: "백그라운드 결과입니다",
+      conversationId: "conv-x",
+      createdAt: "t",
+      response: { kind: "text", runtime: "claude", text: "백그라운드 결과입니다" },
+    };
+    await driveEvents(id, [
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["delta", { text: "스트리밍 꼬리" }],
+      ["bg_message", { message: wake }],
+      ["bg_message", { message: wake }],
+      // Only the avatar's own wake-up turns become bubbles.
+      ["bg_message", { message: { ...wake, id: "bg-wake-2", role: "user" } }],
+    ]);
+    const p = pane(id);
+    expect(p.messages.filter((m) => m.id === "bg-wake-1")).toHaveLength(1);
+    expect(p.messages.some((m) => m.id === "bg-wake-2")).toBe(false);
+    // The streamed tail is embodied in the pushed bubble — it must not render twice.
+    expect(p.liveText).toBe("");
+    expect(notes.filter((n) => n.title.includes("백그라운드 작업 보고"))).toEqual([
+      { title: "노아 · 백그라운드 작업 보고", body: "백그라운드 결과입니다", tag: `bg-${id}` },
+    ]);
+  });
+
+  it("stopping during the background phase seals the tree as failed and keeps the tail", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "sleep 60" } }],
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["delta", { text: "중단 직전 텍스트" }],
+      ["cancelled", {}],
+    ]);
+    const p = pane(id);
+    // Those tasks really died — reporting "done" would be a lie.
+    const sealed = (p.messages.find((m) => m.id === "bg-msg-1")!.response as any).activity;
+    expect(sealed.tools[0]).toMatchObject({ id: "t1", status: "failed" });
+    expect(p.backgroundPhase).toBe(false);
+    expect(p.messages.at(-1)).toMatchObject({ content: "중단 직전 텍스트" });
+    expect(p.messages.at(-1)!.response).toMatchObject({ summary: "중지됨" });
+  });
+
+  it("an error during the background phase fails the tree and reports the error", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "sleep 60" } }],
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["error", { error: "모델이 응답하지 못했습니다." }],
+    ]);
+    const p = pane(id);
+    const sealed = (p.messages.find((m) => m.id === "bg-msg-1")!.response as any).activity;
+    expect(sealed.tools[0].status).toBe("failed");
+    expect(p.messages.at(-1)).toMatchObject({ content: "모델이 응답하지 못했습니다." });
+    expect(p.messages.at(-1)!.response).toMatchObject({ summary: "오류" });
+    expect(get(toasts).some((t) => t.message.includes("모델이 응답하지 못했습니다."))).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* browser-bridge relay                                                */
+/* ------------------------------------------------------------------ */
+
+describe("browser-bridge relay", () => {
+  it("hands a parked op to the extension and posts the reply back exactly once", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    const send = useExtension({ ok: true, pageText: "본문", pageTextOffset: 0, pageTextTotal: 10 });
+    const op = { requestId: "br-read-1", runId: "rn-b", op: "read_text", expand: true, maxChars: 2000 };
+    const { calls } = await driveEvents(id, [
+      ["browser", op],
+      // A reattach replays the log; re-executing would act on the page twice.
+      ["browser", op],
+      // Neither an op nor a requestId to answer — nothing to relay.
+      ["browser", { requestId: "br-read-2" }],
+    ]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][1]).toMatchObject({ source: "noah", op: "read_text", expand: true, maxChars: 2000 });
+    expect(postedTo(calls, "/api/chat/respond")).toEqual([
+      { runId: "rn-b", requestId: "br-read-1", value: { ok: true, pageText: "본문", pageTextOffset: 0, pageTextTotal: 10 } },
+    ]);
+    expect(statuses()).toContain("페이지를 스크롤하며 본문을 읽는 중…");
+  });
+
+  it("answers the parked run even with no extension installed", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    // No chrome.runtime at all: the bridge authors its own ok:false reply so the
+    // run resumes with a usable reason instead of waiting out its park TTL.
+    const { calls } = await driveEvents(id, [
+      ["browser", { requestId: "br-snap-1", runId: "rn-s", op: "snapshot" }],
+    ]);
+    await waitFor(() => calls.some((c) => c.url === "/api/chat/respond"));
+
+    const [posted] = postedTo(calls, "/api/chat/respond");
+    expect(posted).toMatchObject({ runId: "rn-s", requestId: "br-snap-1" });
+    expect(posted.value.ok).toBe(false);
+    expect(String(posted.value.message)).toContain("not reachable");
+    // An op with no label of its own still says something truthful.
+    expect(statuses()).toContain("브라우저 화면을 읽는 중…");
+  });
+
+  it("bounds the replay-dedupe set so a long run cannot grow it forever", async () => {
+    const id = seedPane();
+    const send = useExtension({ ok: true });
+    const frames: Array<[string, unknown]> = [];
+    for (let i = 0; i < 520; i++) {
+      frames.push(["browser", { requestId: `br-bulk-${i}`, runId: "rn-bulk", op: "click", uid: "u1" }]);
+    }
+    await driveEvents(id, frames);
+    expect(send).toHaveBeenCalledTimes(520);
+
+    // Ids are consumed in order, so the oldest are the safe ones to drop: past the
+    // cap the first requests are evicted and would run again if replayed.
+    send.mockClear();
+    await driveEvents(id, [["browser", { requestId: "br-bulk-0", runId: "rn-bulk", op: "click", uid: "u1" }]]);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* interactive prompts raised by a run                                 */
+/* ------------------------------------------------------------------ */
+
+describe("interactive prompts raised by a run", () => {
+  it("queues permission and question prompts and notifies the owner", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    const queued = trackState((s) => s.promptQueue.map((p) => `${p.kind}:${p.id}`).join(","));
+    await driveEvents(id, [
+      ["permission", { requestId: "pm-1", runId: "rn-p", toolName: "Bash" }],
+      ["permission", { requestId: "pm-1", runId: "rn-p", toolName: "Bash" }],
+      ["question", { requestId: "qs-1", runId: "rn-p", payload: { questions: [{ question: "어느 쪽으로 갈까요?" }] } }],
+      ["permission", { runId: "rn-p", toolName: "Bash" }],
+    ]);
+    expect(queued()).toContain("permission:pm-1,question:qs-1");
+    // One notification each: the duplicate and the id-less frame raised nothing.
+    expect(notes).toEqual([
+      { title: "노아 · 확인 필요", body: '"명령 실행" 실행을 승인해 주세요.', tag: "prompt-pm-1" },
+      { title: "노아 · 질문", body: "어느 쪽으로 갈까요?", tag: "prompt-qs-1" },
+    ]);
+    // The queue is dropped with the run so nothing can be answered into a dead run.
+    expect(readState().promptQueue).toEqual([]);
+  });
+
+  it("a question with no readable text still says what it wants", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    await driveEvents(id, [
+      ["question", { requestId: "qs-2", runId: "rn-q", payload: { questions: [{ header: "권한" }] } }],
+      ["question", { requestId: "qs-3", runId: "rn-q", payload: {} }],
+    ]);
+    expect(notes.map((n) => n.body)).toEqual(["권한", "확인이 필요한 질문이 있습니다."]);
+  });
+
+  it("prompt_resolved takes a queued prompt down and blocks its replay", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    const queued = trackState((s) => s.promptQueue.map((p) => p.id).join(","));
+    await driveEvents(id, [
+      ["permission", { requestId: "pm-2", runId: "rn-r", toolName: "Bash" }],
+      ["prompt_resolved", { requestId: "pm-2" }],
+      ["permission", { requestId: "pm-2", runId: "rn-r", toolName: "Bash" }],
+    ]);
+    expect(queued()).toContain("pm-2");
+    expect(queued().at(-1)).toBe("");
+    // enqueuePrompt is the only thing that notifies, so one note proves the
+    // resolved id was never shown a second time.
+    expect(notes).toHaveLength(1);
+  });
+
+  it("respondPlanReview re-enables the controls and rethrows when the submit fails", async () => {
+    const id = seedPane({ planReview: { requestId: "pr-fail", runId: "rn-f" } });
+    useFetch(() => jsonRes({ error: "이미 종료된 실행입니다." }, 500));
+    await expect(respondPlanReview(id, "rejected", "다시 세워줘")).rejects.toThrow("이미 종료된 실행입니다.");
+    // The review stays put so the owner can retry rather than losing the controls.
+    expect(pane(id).planReview).toEqual({ requestId: "pr-fail", runId: "rn-f" });
+    expect(pane(id).planReviewSubmitting).toBe(false);
+    expect(get(toasts).some((t) => t.message.includes("이미 종료된 실행입니다."))).toBe(true);
+  });
+
+  it("respondPlanReview sends a rejection with no feedback at all", async () => {
+    const id = seedPane({ planReview: { requestId: "pr-bare", runId: "rn-bare" } });
+    let posted: any;
+    useFetch((url, init) => {
+      if (url === "/api/chat/respond") {
+        posted = body(init);
+        return jsonRes({ ok: true });
+      }
+      return undefined;
+    });
+    await respondPlanReview(id, "rejected", "   ");
+    expect(posted.value).toEqual({ behavior: "rejected" });
+    expect(pane(id).planReview).toBeNull();
+  });
+
+  it("a plan_review replayed after it was resolved does not come back", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    // A reconnect's plan_review may carry no plan text (the "plan" frame did).
+    await driveEvents(id, [
+      ["plan_review", { requestId: "pr-gone" }],
+      ["prompt_resolved", { requestId: "pr-gone" }],
+      ["plan_review", { requestId: "pr-gone" }],
+    ]);
+    expect(pane(id).planReview).toBeNull();
+    expect(pane(id).livePlan).toBe("");
+    expect(notes).toHaveLength(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* pane defaults, external avatars                                     */
+/* ------------------------------------------------------------------ */
+
+describe("composer defaults on a new pane", () => {
+  it("seeds a native pane from the owner's remembered picks", async () => {
+    replaceState({
+      user: {
+        id: "owner",
+        roles: [],
+        modelDefault: "opus",
+        effortDefault: "low",
+        mcpToolGroupsDefault: ["git_repo"],
+        groupKnowledgeOffDefault: ["g7"],
+      } as any,
+    });
+    useFetch((url) => {
+      if (url === "/api/avatars/owner") return jsonRes({ avatar: { id: "owner", alias: "내 아바타", isOwn: true } });
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await startNewChat();
+    expect(readState().chatPanes[0]).toMatchObject({
+      modelTier: "opus",
+      effort: "low",
+      mcpToolGroups: ["git_repo"],
+      groupKnowledgeOff: ["g7"],
+    });
+  });
+
+  it("leaves an external pane unseeded and sends only its gateway model", async () => {
+    replaceState({
+      user: { id: "owner", roles: [], modelDefault: "opus", effortDefault: "low" } as any,
+    });
+    const bodies: any[] = [];
+    useFetch((url, init) => {
+      if (url === "/api/avatars/ext1")
+        return jsonRes({ avatar: { id: "ext1", alias: "게이트웨이", isOwn: false, runtime: "external" } });
+      if (url === "/api/chat/stream") {
+        bodies.push(body(init));
+        return sseRes(doneWith("외부 응답"));
+      }
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+
+    await startChatWith({ id: "ext1" } as any);
+    const id = readState().chatPanes[0].id;
+    // A native tier alias must never leak into a slot holding a gateway model id.
+    expect(pane(id).modelTier).toBeUndefined();
+    expect(pane(id).effort).toBeUndefined();
+
+    updateState((s) => {
+      const p = s.chatPanes.find((x) => x.id === id)!;
+      p.pendingImages = [STAGED_IMAGE];
+    });
+    await sendMessage(id, "안녕");
+
+    // External avatars run their own stack behind the gateway: the local-only
+    // composer settings and the image upload path stay off it.
+    expect(bodies[0]).toMatchObject({ avatarId: "ext1", model: "" });
+    expect(bodies[0].effort).toBeUndefined();
+    expect(bodies[0].groupKnowledgeOff).toBeUndefined();
+    expect(bodies[0].mcpToolGroups).toBeUndefined();
+    expect(bodies[0].images).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* activity-tree failure arms + terminal frames                        */
+/* ------------------------------------------------------------------ */
+
+describe("activity failures and terminal frames", () => {
+  it("names an addressable teammate and marks failed agents, tools and tasks", async () => {
+    const id = seedPane();
+    const statuses = trackStatus(id);
+    await driveEvents(id, [
+      ["plugin", { name: "pluginA", status: "started" }],
+      // A later chip frame with no status keeps the one it had.
+      ["plugin", { name: "pluginA" }],
+      // A first chip frame with no status starts as "불러오는 중".
+      ["plugin", { name: "pluginB" }],
+      ["agent", { agentId: "mate", name: "reviewer", subagentType: "code-review" }],
+      // The same agent announced again re-labels its node instead of forking one.
+      ["agent", { agentId: "mate", name: "reviewer", subagentType: "code-review", description: "2차" }],
+      ["agent", { agentId: "anon", parentId: "mate" }],
+      ["agent_end", { agentId: "mate", ok: false }],
+      ["tool", { toolUseId: "t1", name: "Bash", agentId: "mate", input: { command: "npm test" } }],
+      ["tool_end", { toolUseId: "t1", ok: false, error: "종료 코드 1" }],
+      // A tool_end with nothing new to say keeps the detail it started with.
+      ["tool", { toolUseId: "t2", name: "Grep", input: { pattern: "TODO" } }],
+      ["tool_end", { toolUseId: "t2", ok: true }],
+      ["task", { taskId: "k1", workflowName: "배포" }],
+      ["task", { taskId: "k2", taskType: "code_review" }],
+      ["task_update", { taskId: "k2" }],
+      ["task_end", { taskId: "k1", workflowName: "배포", ok: false }],
+    ]);
+    const p = pane(id);
+    expect(p.livePlugins).toEqual([
+      { name: "pluginA", status: "started" },
+      { name: "pluginB", status: "started" },
+    ]);
+    expect(p.liveAgents.filter((a) => a.id === "mate")).toHaveLength(1);
+    expect(p.liveAgents.find((a) => a.id === "mate")).toMatchObject({
+      label: "@reviewer · code-review · 2차",
+      status: "failed",
+      parentId: "main",
+    });
+    expect(p.liveAgents.find((a) => a.id === "anon")).toMatchObject({ label: "하위 작업", parentId: "mate" });
+    expect(p.liveTools[0]).toMatchObject({ status: "failed", detail: "종료 코드 1" });
+    expect(p.liveTools[1]).toMatchObject({ status: "done", detail: "TODO" });
+    expect(p.liveTasks.map((t) => t.label)).toEqual(["워크플로 배포", "code review"]);
+    expect(p.liveTasks[0].status).toBe("failed");
+    expect(statuses()).toContain("태스크가 완료되지 못했습니다.");
+    // A task frame with nothing to name it still says something.
+    expect(statuses()).toContain("태스크 진행 중");
+  });
+
+  it("a cancelled frame outside the background phase stops the turn and keeps what it shared", async () => {
+    const id = seedPane();
+    const attachment = { id: "f1", kind: "file", mediaType: "text/plain", name: "메모.txt" };
+    await driveEvents(id, [
+      ["file", { attachment }],
+      ["cancelled", {}],
+    ]);
+    const last = pane(id).messages.at(-1)!;
+    expect(last).toMatchObject({ role: "assistant", content: "(중지됨)" });
+    expect(last.response).toMatchObject({ summary: "중지됨" });
+    // A file already handed over stays on the stopped bubble.
+    expect(last.attachments).toEqual([{ ...attachment, anchor: 0 }]);
+  });
+
+  it("an error frame outside the background phase reports the error", async () => {
+    const id = seedPane();
+    await driveEvents(id, [["error", { error: "도구 실행이 실패했습니다." }]]);
+    expect(pane(id).messages.at(-1)).toMatchObject({ content: "도구 실행이 실패했습니다." });
+    expect(get(toasts).some((t) => t.message.includes("도구 실행이 실패했습니다."))).toBe(true);
+
+    const other = seedPane();
+    await driveEvents(other, [["error", {}]]);
+    expect(pane(other).messages.at(-1)).toMatchObject({ content: "오류가 발생했습니다." });
+  });
+
+  it("a done frame with no payload still keeps the streamed answer", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["delta", { text: "스트리밍만 된 답변" }],
+      ["done", {}],
+    ]);
+    expect(pane(id).messages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "스트리밍만 된 답변",
+      response: null,
+    });
+    expect(pane(id).liveText).toBe("");
+  });
+
+  it("the answer-complete notification is trimmed, and says so when there is no text", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    const long = "가".repeat(200);
+    await driveEvents(id, [
+      ["done", { message: { ...BG_MESSAGE, id: "long-1", content: `  ${long}  ` } }],
+      ["done", { message: { ...BG_MESSAGE, id: "empty-1", content: "" } }],
+    ]);
+    expect(notes[0].body).toBe(`${"가".repeat(140)}…`);
+    expect(notes[1].body).toBe("응답이 완료되었습니다.");
+  });
+
+  it("a background report notification is trimmed the same way", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    const long = "나".repeat(200);
+    await driveEvents(id, [
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["bg_message", { message: { ...BG_MESSAGE, id: "wake-long", content: long } }],
+      ["bg_message", { message: { ...BG_MESSAGE, id: "wake-empty", content: "" } }],
+      // A bg_tasks frame with no task list clears the chips.
+      ["bg_tasks", {}],
+    ]);
+    expect(notes.map((n) => n.body).slice(-2)).toEqual([
+      `${"나".repeat(140)}…`,
+      "백그라운드 작업이 완료되었습니다.",
+    ]);
+    expect(pane(id).backgroundTasks).toEqual([]);
+  });
+
+  it("notifications name the avatar by alias, then display name, then a generic fallback", async () => {
+    const notes = useOsNotifications();
+    const named = seedPane({ avatar: { id: "av2", displayName: "노아 봇" } as any });
+    const frames: Array<[string, unknown]> = [
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["bg_message", { message: { ...BG_MESSAGE, id: "wake-named", content: "보고" } }],
+      ["permission", { requestId: `nm-${Date.now()}-1`, toolName: "Bash" }],
+      ["plan_review", { requestId: `nm-${Date.now()}-2`, plan: "계획" }],
+    ];
+    await driveEvents(named, frames);
+    expect(notes.map((n) => n.title)).toEqual([
+      "노아 봇 · 답변 완료",
+      "노아 봇 · 백그라운드 작업 보고",
+      "노아 봇 · 확인 필요",
+      "노아 봇 · 계획 승인 필요",
+    ]);
+
+    const seen = notes.length;
+    const anon = seedPane({ avatar: {} as any });
+    await driveEvents(anon, [
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["bg_message", { message: { ...BG_MESSAGE, id: "wake-anon", content: "보고" } }],
+      ["permission", { requestId: `nm-${Date.now()}-3`, toolName: "Bash" }],
+      ["plan_review", { requestId: `nm-${Date.now()}-4`, plan: "계획" }],
+    ]);
+    expect(notes.slice(seen).map((n) => n.title)).toEqual([
+      "아바타 · 답변 완료",
+      "아바타 · 백그라운드 작업 보고",
+      "아바타 · 확인 필요",
+      "아바타 · 계획 승인 필요",
+    ]);
+  });
+
+  it("a replayed done{background} frame does not duplicate the finalized bubble", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+    ]);
+    expect(pane(id).messages.filter((m) => m.id === "bg-msg-1")).toHaveLength(1);
+    expect(pane(id).backgroundPhase).toBe(true);
+  });
+
+  it("a background turn with no usage, no response and no message at all still holds together", async () => {
+    const bare = seedPane();
+    const { calls } = await driveEvents(bare, [
+      ["tool", { toolUseId: "t1", name: "Bash", input: { command: "ls" } }],
+      ["done", { background: true, message: { id: "bg-thin", role: "assistant", content: "얇은 답변", response: null } }],
+      ["bg_end", {}],
+    ]);
+    expect(pane(bare).usage).toBeNull();
+    // Nothing to graft onto in memory, but the snapshot is still persisted.
+    expect(pane(bare).messages.at(-1)!.response).toBeNull();
+    expect(calls.some((c) => c.url.includes("/api/messages/bg-thin/activity"))).toBe(true);
+
+    const none = seedPane();
+    await driveEvents(none, [["done", { background: true }]]);
+    expect(pane(none)).toMatchObject({ backgroundPhase: true, backgroundMessageId: null });
+    expect(pane(none).messages).toEqual([]);
+  });
+
+  it("keeps working when every best-effort follow-up call fails", async () => {
+    const id = seedPane();
+    const send = useExtension({ ok: true });
+    const failEverythingElse: FetchHandler = () => jsonRes({ error: "저장 실패" }, 500);
+    const { calls } = await driveEvents(
+      id,
+      [
+        ["tool", { toolUseId: "t1", name: "Bash", input: { command: "ls" } }],
+        ["browser", { requestId: "br-fail-1", runId: "rn-fail", op: "click", uid: "u1" }],
+        ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+        ["bg_end", {}],
+      ],
+      failEverythingElse,
+    );
+    await flush();
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(calls.some((c) => c.url === "/api/chat/respond")).toBe(true);
+    expect(calls.some((c) => c.url.includes("/activity"))).toBe(true);
+    // The sealed tree is on the bubble even though persisting it failed.
+    expect((pane(id).messages.at(-1)!.response as any).activity.tools[0]).toMatchObject({
+      id: "t1",
+      status: "done",
+    });
+
+    const plain = seedPane();
+    await driveEvents(
+      plain,
+      [
+        ["tool", { toolUseId: "t2", name: "Bash", input: { command: "ls" } }],
+        ["done", { message: { ...structuredClone(BG_MESSAGE), id: "done-fail-1" } }],
+      ],
+      failEverythingElse,
+    );
+    await flush();
+    expect((pane(plain).messages.at(-1)!.response as any).activity.tools[0].status).toBe("done");
+    // None of it is the viewer's problem, so none of it is surfaced.
+    expect(get(toasts)).toEqual([]);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* guards: canvas panel, stop/close, clear-history                     */
+/* ------------------------------------------------------------------ */
+
+describe("guards around the canvas panel and pane lifecycle", () => {
+  it("canvas actions on an unknown canvas do nothing", async () => {
+    const id = seedPane({ canvases: [{ id: "cv1" } as any] });
+    const fetchFn = noFetch();
+    await submitCanvas(id, "missing", { a: 1 });
+    await submitCanvasEdit(id, "missing", "내용");
+    await dismissCanvas(id, "missing");
+    await closeCanvas(id, "missing");
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(pane(id).canvases.map((c) => c.id)).toEqual(["cv1"]);
+  });
+
+  it("canvas submissions wait while the pane is already streaming", async () => {
+    const id = seedPane({ streaming: true, canvases: [{ id: "cv1", pending: false } as any] });
+    const fetchFn = noFetch();
+    await submitCanvas(id, "cv1", { pick: "A" });
+    await submitCanvasEdit(id, "cv1", "고친 내용");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("submitCanvasEdit ignores an empty edit", async () => {
+    const id = seedPane({ canvases: [{ id: "cv1" } as any] });
+    const fetchFn = noFetch();
+    await submitCanvasEdit(id, "cv1", "   ");
+    expect(fetchFn).not.toHaveBeenCalled();
+  });
+
+  it("dismissCanvas hides a display-only canvas without answering any run", async () => {
+    const id = seedPane({ canvases: [{ id: "cv1", pending: true } as any] });
+    const fetchFn = noFetch();
+    await dismissCanvas(id, "cv1");
+    // No requestId/runId: there is no parked run to cancel.
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(pane(id).canvases[0].pending).toBe(false);
+  });
+
+  it("closing the active canvas falls back to the tab before it, then to none", async () => {
+    const id = seedPane({
+      canvases: [{ id: "cv1" } as any, { id: "cv2" } as any],
+      activeCanvasId: "cv2",
+    });
+    useFetch(() => jsonRes({ ok: true }));
+    await closeCanvas(id, "cv2");
+    expect(pane(id).activeCanvasId).toBe("cv1");
+    await closeCanvas(id, "cv1");
+    expect(pane(id).canvases).toEqual([]);
+    expect(pane(id).activeCanvasId).toBeNull();
+  });
+
+  it("closing a parked canvas cancels its run and leaves the active tab alone", async () => {
+    const id = seedPane({
+      canvases: [{ id: "cv1", pending: true, requestId: "rq-c", runId: "rn-c" } as any, { id: "cv2" } as any],
+      activeCanvasId: "cv2",
+    });
+    const posted: any[] = [];
+    useFetch((url, init) => {
+      if (url === "/api/chat/respond") posted.push(body(init));
+      return jsonRes({ ok: true });
+    });
+    await closeCanvas(id, "cv1");
+    // Closing the tab must release the run, not leave it parked on awaitResponse.
+    expect(posted).toEqual([
+      { runId: "rn-c", requestId: "rq-c", value: { cancelled: true, deleteCanvas: true } },
+    ]);
+    expect(pane(id).canvases.map((c) => c.id)).toEqual(["cv2"]);
+    expect(pane(id).activeCanvasId).toBe("cv2");
+  });
+
+  it("closePane leaves nothing behind when there is no avatar to reopen with", () => {
+    const id = seedPane();
+    updateState((s) => {
+      s.currentAvatar = null;
+    });
+    closePane(id);
+    expect(readState().chatPanes).toEqual([]);
+    expect(readState().activePaneId).toBeNull();
+  });
+
+  it("a canvas shown with no live run leaves its ids unset and versions the reloaded copy", async () => {
+    // Rebuilt from the server on reload, so it carries no version fields yet.
+    const id = seedPane({ canvases: [{ id: "cv1", title: "이전" } as any] });
+    useFetch((url) => {
+      if (url === "/api/chat/stream") {
+        return sseRes([
+          ["canvas", { artifactId: "cv1", title: "새로 표시", content: "본문" }],
+          ...doneWith("표시했습니다"),
+        ]);
+      }
+      if (url === "/api/conversations") return jsonRes({ conversations: [] });
+      return undefined;
+    });
+    await sendMessage(id, "캔버스 보여줘");
+    expect(pane(id).canvases[0]).toMatchObject({
+      title: "새로 표시",
+      content: "본문",
+      currentVersion: 2,
+      versionCount: 2,
+      runId: undefined,
+      requestId: undefined,
+    });
+  });
+
+  it("the version panel tolerates a response with no versions, and an unknown rollback target", async () => {
+    const id = seedPane({ canvases: [{ id: "cv1" } as any] });
+    useFetch((url) =>
+      url.includes("/versions") ? jsonRes({}) : jsonRes({ canvas: { id: "cv1", title: "되돌림" } }),
+    );
+    expect(await fetchCanvasVersions("cv1")).toEqual([]);
+    await rollbackCanvas(id, "unknown-canvas", 2);
+    expect(pane(id).canvases).toEqual([{ id: "cv1" }]);
+  });
+
+  it("dismissCanvas hides the form even when the cancel POST fails", async () => {
+    const id = seedPane({ canvases: [{ id: "cv1", pending: true, requestId: "rq-x", runId: "rn-x" } as any] });
+    useFetch(() => jsonRes({ error: "이미 종료된 실행입니다." }, 500));
+    await dismissCanvas(id, "cv1");
+    // The run may simply have ended already; the form must still close.
+    expect(pane(id).canvases[0].pending).toBe(false);
+    expect(get(toasts)).toEqual([]);
+  });
+
+  it("stopPane still stops the local stream when the cancel call fails", async () => {
+    const controller = new AbortController();
+    const id = seedPane({ liveRunId: "run-x", abortController: controller, streaming: true });
+    useFetch(() => jsonRes({ error: "이미 종료된 실행입니다." }, 500));
+    await stopPane(id);
+    await flush();
+    expect(controller.signal.aborted).toBe(true);
+    expect(pane(id).liveStatus).toBe("중지 중…");
+    expect(get(toasts)).toEqual([]);
+  });
+
+  it("stopPane is a no-op for an unknown pane and needs no run id to abort", async () => {
+    const fetchFn = noFetch();
+    await stopPane("nope");
+    expect(fetchFn).not.toHaveBeenCalled();
+
+    const controller = new AbortController();
+    const id = seedPane({ streaming: true, abortController: controller, liveRunId: null });
+    await stopPane(id);
+    // Nothing to cancel server-side yet, but the local stream still stops.
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(controller.signal.aborted).toBe(true);
+    expect(pane(id).liveStatus).toBe("중지 중…");
+  });
+
+  it("closePane stops a streaming pane on its way out", async () => {
+    const controller = new AbortController();
+    const a = seedPane();
+    const b = seedPane({ streaming: true, liveRunId: "run9", abortController: controller });
+    const fetchFn = useFetch(() => jsonRes({ ok: true }));
+    closePane(b);
+    expect(readState().chatPanes.map((p) => p.id)).toEqual([a]);
+    expect(controller.signal.aborted).toBe(true);
+    expect(fetchFn).toHaveBeenCalledWith(
+      expect.stringContaining("/api/chat/runs/run9/cancel"),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("clearChatHistory aborts the cleared pane's run and leaves the others alone", async () => {
+    const controller = new AbortController();
+    const cleared = seedPane({ conversationId: "c1", streaming: true, abortController: controller });
+    const kept = seedPane({ conversationId: "c2", messages: [{ id: "m" } as any] });
+    replaceState({ conversations: [{ id: "c1" } as any, { id: "c2" } as any] });
+    // No `deleted` count in the response: the id list is the fallback.
+    useFetch(() => jsonRes({ conversationIds: ["c1"] }));
+
+    expect(await clearChatHistory()).toBe(1);
+
+    expect(controller.signal.aborted).toBe(true);
+    expect(readState().chatPanes[0].id).not.toBe(cleared);
+    expect(readState().chatPanes[1].id).toBe(kept);
+    expect(readState().chatPanes[1].messages).toHaveLength(1);
+    // The focused pane survived, so focus does not move.
+    expect(readState().activePaneId).toBe(kept);
+
+    // A response that names no conversations at all clears nothing.
+    useFetch(() => jsonRes({}));
+    expect(await clearChatHistory()).toBe(0);
+    expect(readState().chatPanes[1].id).toBe(kept);
+  });
+
+  it("regenerate is a no-op while the pane is still streaming", () => {
+    const id = seedPane({
+      streaming: true,
+      messages: [{ id: "u", role: "user", content: "질문" } as any],
+    });
+    const fetchFn = noFetch();
+    regenerate(id);
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect(pane(id).messages).toHaveLength(1);
   });
 });

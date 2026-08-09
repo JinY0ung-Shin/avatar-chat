@@ -2484,6 +2484,514 @@ describe("system tools (avatar system management)", () => {
     expect(disabled.content[0].text).toContain("enabled=false");
     expect(s.store.getPlugin(s.owner.id, plugin.id)?.enabled).toBe(false);
   });
+
+  it("refuses EVERY read/write tool for a non-owner viewer", async () => {
+    // Handler-level owner gating is the safety boundary (the SDK still sees the
+    // names), so each tool must refuse on its own — a missing guard on one tool
+    // would leak the owner's conversations, routines, or plugin list.
+    const s = setup("st-deny-all");
+    s.store.touchConversation(s.owner.id, "c-secret", s.owner.id, "비밀 대화");
+    s.store.addMessage("c-secret", { role: "user", content: "기밀 내용" });
+    s.store.createRoutineJob(s.owner.id, { prompt: "비밀 루틴", minuteOfDay: 60 });
+    s.store.addPlugin(s.owner.id, { repo: "owner/secret-plugin" });
+
+    const nonOwner = toolsFor(s, false);
+    const calls: [string, Record<string, unknown>][] = [
+      ["list_recent_conversations", {}],
+      ["read_conversation", { conversationId: "c-secret" }],
+      ["list_routines", {}],
+      ["update_routine", { id: "any" }],
+      ["delete_routine", { id: "any" }],
+      ["list_plugins", {}],
+      ["set_plugin_enabled", { id: "any", enabled: false }],
+    ];
+    for (const [name, args] of calls) {
+      const res = await callTool(nonOwner, name, args);
+      expect(res.isError, name).toBe(true);
+      expect(res.content[0].text, name).toContain("avatar owner is participating in");
+      expect(res.content[0].text, name).not.toContain("기밀 내용");
+      expect(res.content[0].text, name).not.toContain("owner/secret-plugin");
+    }
+    // Nothing was mutated by the refused writes.
+    expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(1);
+    expect(s.store.listPlugins(s.owner.id)).toHaveLength(1);
+  });
+
+  it("reports empty routine and plugin lists distinctly from a refusal", async () => {
+    const s = setup("st-empty-lists");
+    const routines = await callTool(toolsFor(s), "list_routines", {});
+    expect(routines.isError).toBeFalsy();
+    expect(routines.content[0].text).toBe("There are no registered routines.");
+
+    const plugins = await callTool(toolsFor(s), "list_plugins", {});
+    expect(plugins.isError).toBeFalsy();
+    expect(plugins.content[0].text).toBe("There are no registered plugins.");
+  });
+
+  it("reports a missing routine/plugin id instead of silently succeeding", async () => {
+    const s = setup("st-missing-ids");
+    const tools = toolsFor(s);
+    const deleted = await callTool(tools, "delete_routine", { id: "no-such-routine" });
+    expect(deleted.isError).toBe(true);
+    expect(deleted.content[0].text).toBe("Routine not found.");
+
+    const updated = await callTool(tools, "update_routine", { id: "no-such-routine", prompt: "새 지시" });
+    expect(updated.isError).toBe(true);
+    expect(updated.content[0].text).toBe("Routine not found.");
+
+    const toggled = await callTool(tools, "set_plugin_enabled", { id: "no-such-plugin", enabled: true });
+    expect(toggled.isError).toBe(true);
+    expect(toggled.content[0].text).toBe("Plugin not found.");
+  });
+
+  it("rejects an all-whitespace prompt on create and on update", async () => {
+    const s = setup("st-blank-prompt");
+    const tools = toolsFor(s);
+    const created = await callTool(tools, "create_routine", { prompt: "   \n ", time: "09:00" });
+    expect(created.isError).toBe(true);
+    expect(created.content[0].text).toBe("Please enter a prompt.");
+    expect(s.store.listRoutineJobs(s.owner.id)).toHaveLength(0);
+
+    const job = s.store.createRoutineJob(s.owner.id, { prompt: "원래 지시", minuteOfDay: 9 * 60 });
+    const updated = await callTool(tools, "update_routine", { id: job.id, prompt: "  " });
+    expect(updated.isError).toBe(true);
+    expect(updated.content[0].text).toBe("Please enter a prompt.");
+    expect(s.store.getRoutineJob(s.owner.id, job.id)?.prompt).toBe("원래 지시");
+  });
+
+  it("update_routine needs at least one field, and clears a name with an empty string", async () => {
+    const s = setup("st-update-patch");
+    const tools = toolsFor(s);
+    const job = s.store.createRoutineJob(s.owner.id, {
+      name: "이전 이름",
+      prompt: "정리해줘",
+      minuteOfDay: 9 * 60,
+    });
+
+    const nothing = await callTool(tools, "update_routine", { id: job.id });
+    expect(nothing.isError).toBe(true);
+    expect(nothing.content[0].text).toContain("At least one of the values to update");
+
+    const cleared = await callTool(tools, "update_routine", { id: job.id, name: "   " });
+    expect(cleared.isError).toBeFalsy();
+    expect(cleared.content[0].text).toContain("name=(unnamed)");
+    expect(s.store.getRoutineJob(s.owner.id, job.id)?.name).toBeNull();
+
+    const renamed = await callTool(tools, "update_routine", { id: job.id, name: "새 이름" });
+    expect(renamed.content[0].text).toContain('name="새 이름"');
+  });
+
+  it("update_routine validates a replacement schedule and refuses re-enabling a past one-time job", async () => {
+    const s = setup("st-update-schedule");
+    const tools = toolsFor(s);
+    const job = s.store.createRoutineJob(s.owner.id, { prompt: "한 번만", minuteOfDay: 9 * 60 });
+
+    // Any schedule field present replaces the whole schedule — so an invalid one
+    // is rejected before the row is touched.
+    const badInterval = await callTool(tools, "update_routine", {
+      id: job.id,
+      scheduleKind: "interval",
+      intervalMinutes: 1,
+    });
+    expect(badInterval.isError).toBe(true);
+    expect(badInterval.content[0].text).toBe(
+      "intervalMinutes must be an integer between 5 and 10080.",
+    );
+    expect(s.store.getRoutineJob(s.owner.id, job.id)?.scheduleKind).toBe("daily");
+
+    // Enabling is the moment a one-time schedule's date matters: a past date
+    // would otherwise be enabled and never fire.
+    const past = await callTool(tools, "update_routine", {
+      id: job.id,
+      scheduleKind: "once",
+      date: "2000-01-01",
+      time: "09:00",
+      enabled: true,
+    });
+    expect(past.isError).toBe(true);
+    expect(past.content[0].text).toContain("later than the current KST");
+
+    // The same enable with a future date goes through.
+    const future = await callTool(tools, "update_routine", {
+      id: job.id,
+      scheduleKind: "once",
+      date: "2099-12-31",
+      time: "09:00",
+      enabled: true,
+    });
+    expect(future.isError).toBeFalsy();
+    expect(future.content[0].text).toContain("schedule=once on 2099-12-31 at 09:00 KST");
+    expect(future.content[0].text).toContain("enabled=true");
+  });
+
+  it("refuses to re-enable a routine whose STORED one-time date already passed", async () => {
+    // A schedule-less patch never re-parses, so the guard has to read the stored
+    // schedule — otherwise a lapsed one-time job could be flipped back on and
+    // would simply never fire again.
+    const s = setup("st-update-stale-once");
+    const job = s.store.createRoutineJob(s.owner.id, {
+      prompt: "지난 점검",
+      scheduleKind: "once",
+      runDate: "2000-01-01",
+      minuteOfDay: 9 * 60,
+      enabled: false,
+    });
+    const res = await callTool(toolsFor(s), "update_routine", { id: job.id, enabled: true });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toBe(
+      "A one-time schedule must be later than the current KST date and time.",
+    );
+    expect(s.store.getRoutineJob(s.owner.id, job.id)?.enabled).toBe(false);
+  });
+
+  it("re-enabling a recurring routine skips the one-time date check", async () => {
+    // isFutureOnceSchedule only constrains `once`; a daily job whose stored
+    // schedule is untouched must still be re-enableable.
+    const s = setup("st-update-reenable");
+    const job = s.store.createRoutineJob(s.owner.id, {
+      prompt: "매일 정리",
+      minuteOfDay: 9 * 60,
+      enabled: false,
+    });
+    const res = await callTool(toolsFor(s), "update_routine", { id: job.id, enabled: true });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("enabled=true");
+    expect(res.content[0].text).toContain("schedule=daily at 09:00 KST");
+  });
+
+  it("notify_user reports an empty body and a store failure differently", async () => {
+    const s = setup("st-notify-errors");
+    const tools = toolsFor(s);
+    const empty = await callTool(tools, "notify_user", { message: "   " });
+    expect(empty.isError).toBe(true);
+    expect(empty.content[0].text).toBe("Please enter a notification body.");
+    expect(s.store.listAvatarNotifications(s.owner.id)).toHaveLength(0);
+
+    // Any other failure (here: the DB handle gone) must not surface as success.
+    s.store.close();
+    const failed = await callTool(tools, "notify_user", { message: "저장되지 않음" });
+    expect(failed.isError).toBe(true);
+    expect(failed.content[0].text).toBe("Failed to save the notification.");
+  });
+
+  it("list_recent_conversations filters by kind and reports an empty window", async () => {
+    const s = setup("st-recent");
+    const tools = toolsFor(s);
+    const none = await callTool(tools, "list_recent_conversations", { sinceHours: 0 });
+    expect(none.isError).toBeFalsy();
+    // sinceHours is floored at 1, so 0 is reported back as a 1h window.
+    expect(none.content[0].text).toBe("No conversations updated in the last 1h (kind=chat).");
+
+    s.store.touchConversation(s.owner.id, "c-chat", s.owner.id, "일반 대화");
+    s.store.touchConversation(s.owner.id, "c-routine", s.owner.id, "루틴 로그", { isRoutine: true });
+
+    const chats = await callTool(tools, "list_recent_conversations", {});
+    expect(chats.content[0].text).toContain("c-chat");
+    expect(chats.content[0].text).not.toContain("c-routine");
+    expect(chats.content[0].text).toContain("Read one with read_conversation.");
+
+    const all = await callTool(tools, "list_recent_conversations", { kind: "all", limit: 500 });
+    expect(all.content[0].text).toContain("c-routine");
+    expect(all.content[0].text).toContain("[routine]");
+    expect(all.content[0].text).toContain("(last 24h, kind=all, 2 shown)");
+  });
+
+  it("read_conversation truncates per message, caps the transcript, and skips system rows", async () => {
+    const s = setup("st-read-conv");
+    const tools = toolsFor(s);
+    s.store.touchConversation(s.owner.id, "c-long", s.owner.id, "첫 질문");
+    s.store.addMessage("c-long", { role: "system", content: "SYSTEM-ONLY-MARKER" });
+    // A message under the cap is passed through whole.
+    s.store.addMessage("c-long", { role: "user", content: "짧은 질문" });
+    for (let i = 0; i < 12; i += 1) {
+      s.store.addMessage("c-long", { role: "assistant", content: "본".repeat(9000) });
+    }
+    const res = await callTool(tools, "read_conversation", { conversationId: "c-long", maxChars: 9999 });
+    expect(res.isError).toBeFalsy();
+    const body = res.content[0].text ?? "";
+    expect(body).toContain("[user] 짧은 질문");
+    // maxChars is clamped to 8000, so each long message ends in the truncation mark…
+    expect(body).toContain("본…");
+    // …and the whole transcript stops at the 60K global cap well before message 12.
+    expect(body).toContain("…(transcript truncated)");
+    expect(body.length).toBeLessThan(70_000);
+    expect(body).not.toContain("SYSTEM-ONLY-MARKER");
+
+    // A conversation with nothing but system rows reads as empty, not as an error.
+    s.store.touchConversation(s.owner.id, "c-sys", s.owner.id, "시스템만");
+    s.store.addMessage("c-sys", { role: "system", content: "SYSTEM-ONLY-MARKER" });
+    const sysOnly = await callTool(tools, "read_conversation", { conversationId: "c-sys" });
+    expect(sysOnly.isError).toBeFalsy();
+    expect(sysOnly.content[0].text).toBe("(no readable messages)");
+  });
+
+  it("renders degenerate routine rows without leaking `undefined` to the model", async () => {
+    // Legacy/migrated rows can carry a null schedule field the MCP path would
+    // never write. The listing is model-facing text, so every field must still
+    // read as a value the avatar can reason about.
+    const s = setup("st-render-edges");
+    s.store.createRoutineJob(s.owner.id, {
+      name: "날짜 없는 1회",
+      prompt: "p",
+      scheduleKind: "once",
+      runDate: null,
+      minuteOfDay: 9 * 60,
+    });
+    s.store.createRoutineJob(s.owner.id, {
+      prompt: "요일 없는 주간",
+      scheduleKind: "weekly",
+      daysOfWeek: null,
+      minuteOfDay: 8 * 60,
+    });
+    const interval = s.store.createRoutineJob(s.owner.id, {
+      prompt: "간격 없는 인터벌",
+      scheduleKind: "interval",
+      intervalMinutes: null,
+      minuteOfDay: 0,
+    });
+    s.store.markRoutineRun(interval.id, { status: "error", error: "boom" });
+
+    const listed = await callTool(toolsFor(s), "list_routines", {});
+    const body = listed.content[0].text ?? "";
+    expect(body).toContain("schedule=once on (missing date) at 09:00 KST");
+    expect(body).toContain("schedule=weekly on  at 08:00 KST");
+    expect(body).toContain("schedule=every 0h");
+    expect(body).toContain("lastStatus=error");
+    expect(body).toContain("nextRunAt=null");
+    expect(body).not.toContain("undefined");
+  });
+
+  it("add_plugin drops blank ref/label, and list_plugins renders the null fields", async () => {
+    const s = setup("st-plugin-nulls");
+    const tools = toolsFor(s);
+    const added = await callTool(tools, "add_plugin", { repo: "https://example.com/x.git", ref: "  ", label: " " });
+    expect(added.isError).toBeFalsy();
+    const plugin = s.store.listPlugins(s.owner.id)[0];
+    expect(plugin.ref).toBeNull();
+    expect(plugin.label).toBeNull();
+
+    const before = await callTool(tools, "list_plugins", {});
+    expect(before.content[0].text).toContain("label=null | ref=null");
+    expect(before.content[0].text).toContain("lastSyncedAt=null");
+
+    s.store.markPluginSynced(s.owner.id, plugin.id);
+    const after = await callTool(tools, "list_plugins", {});
+    expect(after.content[0].text).toMatch(/lastSyncedAt=\d{4}-/);
+  });
+
+  it("describe_system names the composer's model, effort, working repo, and empty tool groups", async () => {
+    // The avatar has to report what it ACTUALLY runs with this turn, not the
+    // deployment default — the composer's per-conversation picks win.
+    const s = setup("st-run-facts");
+    s.store.setModelOverride("claude-admin-default");
+    s.store.updateProfile(s.owner.id, {
+      alias: "노아",
+      visibility: "private",
+      sharedAccount: true,
+      experimentalFeatures: ["canvas"],
+    });
+    const tools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      config: {
+        ...s.config,
+        autoCompactWindow: 120_000,
+        // ANTHROPIC_DEFAULT_OPUS_MODEL is set on this deployment, so the tier
+        // alias resolves to a concrete model the avatar can actually name.
+        defaultTierModels: { ...s.config.defaultTierModels, opus: "claude-opus-5" },
+      },
+      viewerIsOwner: true,
+      selectedModelTier: "opus",
+      selectedEffort: "low",
+      enabledMcpToolGroups: [],
+      activeRepoName: "acme/service",
+    });
+    const body = (await callTool(tools, "describe_system", {})).content[0].text ?? "";
+
+    expect(body).toContain(
+      "Model in use: claude-opus-5 (opus) (chosen for this conversation in the composer)",
+    );
+    expect(body).not.toContain("claude-admin-default");
+    expect(body).toContain("Reasoning effort: low (");
+    expect(body).toContain("(chosen for this conversation)");
+    expect(body).toContain("MCP tool groups enabled for this conversation: (none)");
+    expect(body).toContain("Autocompact window: 120000 tokens (AUTO_COMPACT_WINDOW)");
+    expect(body).toContain("Name: 노아");
+    expect(body).toContain("Profile visibility: private (owner only)");
+    expect(body).toContain("Shared (communal) account: yes");
+    expect(body).toContain("Experimental features: canvas");
+    expect(body).toContain("Working repository: acme/service (opened via open_repo");
+    // Tool groups off ⇒ the tools that ride them must report themselves OFF.
+    expect(body).toContain("Web fetch (mcp__web__fetch): OFF for this conversation");
+    expect(body).toContain("Avatar consultation (mcp__avatars__ask_avatar): OFF for this conversation");
+    expect(body).toContain("Skill exchange (mcp__skill_exchange__*): OFF for this conversation");
+  });
+
+  it("describe_system falls back to the owner identity when the avatar row is gone", async () => {
+    // A user deleted mid-run must not render "Name: undefined" into the prompt
+    // the model reads.
+    const s = setup("st-missing-user");
+    const tools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      avatarUserId: "deleted-user-id",
+      viewerIsOwner: true,
+    });
+    const body = (await callTool(tools, "describe_system", {})).content[0].text ?? "";
+    expect(body).toContain("Name: Owner");
+    expect(body).toContain("intro (none), capability hashtags (none)");
+    expect(body).toContain("group (discoverable by group teammates only)");
+    expect(body).not.toContain("undefined");
+  });
+
+  it("describe_system names the default tier's model, a bare tier alias, and an unknown effort", async () => {
+    const s = setup("st-model-fallbacks");
+    // No env pin, no composer pick, no admin override → the default tier, named
+    // through the operator's ANTHROPIC_DEFAULT_OPUS_MODEL.
+    const defaults = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      config: { ...s.config, defaultTierModels: { ...s.config.defaultTierModels, opus: "claude-opus-5" } },
+      viewerIsOwner: true,
+    });
+    expect((await callTool(defaults, "describe_system", {})).content[0].text).toContain(
+      "Model in use: claude-opus-5 (opus) (default)",
+    );
+
+    // A tier the operator pinned no concrete model for is reported as the alias
+    // alone (the SDK resolves it to an account default the app cannot name), and
+    // an effort id with no known label is echoed verbatim rather than dropped.
+    const bare = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: true,
+      selectedModelTier: "sonnet",
+      selectedEffort: "turbo",
+    });
+    const body = (await callTool(bare, "describe_system", {})).content[0].text ?? "";
+    expect(body).toContain("Model in use: sonnet (chosen for this conversation in the composer)");
+    expect(body).toContain("Reasoning effort: turbo (chosen for this conversation)");
+  });
+
+  it("describe_system pairs a CONNECTED browser with Confluence writes and a text-only model", async () => {
+    const s = setup("st-browser-confluence");
+    const tools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      config: { ...s.config, confluenceUrl: "https://confluence.internal" },
+      viewerIsOwner: true,
+      browserEnabled: true,
+      visionEnabled: false,
+      deckRenderingAvailable: true,
+      fileOutputEnabled: false,
+    });
+    const body = (await callTool(tools, "describe_system", {})).content[0].text ?? "";
+    // With the bridge up, the Confluence WRITE route is the user's own browser.
+    expect(body).toContain("to write, drive Confluence in the user's own browser with mcp__browser__*");
+    // A text-only model loses screenshot AND click_at's pixel mode, but keeps the
+    // uid-relative mode — the avatar must be told exactly that.
+    expect(body).toContain("Browser control (mcp__browser__*): CONNECTED");
+    expect(body).not.toContain("/screenshot/navigate");
+    expect(body).toContain("screenshot is unavailable because the currently selected model does not accept images");
+    expect(body).toContain("uid-relative mode");
+    // Deck toolchain present but no interactive file output → no download promise.
+    expect(body).toContain("Document deck generation (PPTX): toolchain available");
+    expect(body).toContain("preview/download need an interactive chat turn");
+    expect(body).not.toContain("`pptx` skill");
+  });
+
+  it("describe_system reports the corporate proxy with its credentials redacted", async () => {
+    const s = setup("st-proxy");
+    vi.stubEnv("HTTPS_PROXY", "http://svc:s3cr3t@proxy.corp:3128");
+    vi.stubEnv("NO_PROXY", ".corp,localhost");
+    try {
+      const tools = buildSystemTools(s.store, {
+        ...s.baseCtx,
+        viewerIsOwner: true,
+        enabledMcpToolGroups: ["web"],
+      });
+      const body = (await callTool(tools, "describe_system", {})).content[0].text ?? "";
+      expect(body).toContain("Web fetch (mcp__web__fetch): enabled for this conversation");
+      expect(body).toContain("external URLs go through the corporate proxy");
+      expect(body).toContain("NO_PROXY: .corp,localhost");
+      expect(body).not.toContain("s3cr3t");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("describe_system reports an env model pin as outranking the composer pick", async () => {
+    const s = setup("st-env-pin");
+    const tools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      config: { ...s.config, anthropicModel: "claude-env-pinned", confluenceUrl: "https://confluence.internal" },
+      viewerIsOwner: true,
+      selectedModelTier: "sonnet",
+    });
+    s.store.setUserSecret(s.owner.id, "CONFLUENCE_PERSONAL_ACCESS_TOKEN", "pat");
+
+    const body = (await callTool(tools, "describe_system", {})).content[0].text ?? "";
+    expect(body).toContain("Model in use: claude-env-pinned (pinned via environment variable)");
+    expect(body).not.toContain("chosen for this conversation in the composer");
+    expect(body).toContain("Confluence host: set (mcp__confluence__* is READ-ONLY");
+    // No browser this run → the write route is named as unavailable, not offered.
+    expect(body).toContain("writing would need browser control, which is unavailable in this run");
+    expect(body).toContain("Confluence PAT: secret set");
+  });
+
+  it("describe_system surfaces intro, hashtags, and shell-exposed secrets", async () => {
+    const s = setup("st-profile-facts");
+    s.store.updateProfile(s.owner.id, {
+      intro: "인프라를 담당합니다",
+      hashtags: ["쿠버네티스", "관측성"],
+    });
+    s.store.setUserSecret(s.owner.id, "GRAFANA_TOKEN", "shell-secret-value");
+    s.store.setUserSecret(s.owner.id, "VAULT_ONLY", "never-in-shell");
+    expect(s.store.setSecretShellExpose(s.owner.id, "GRAFANA_TOKEN", true)).toBe(true);
+
+    const body = (await callTool(toolsFor(s), "describe_system", {})).content[0].text ?? "";
+    expect(body).toContain("intro set");
+    expect(body).toContain("#쿠버네티스 #관측성");
+    expect(body).toContain("Shell-exposed secrets: `GRAFANA_TOKEN`");
+    // The non-exposed secret is still NAMED in the secret list but never in the
+    // shell line, and no value ever appears.
+    expect(body).toContain("`VAULT_ONLY`");
+    expect(body).not.toContain("shell-secret-value");
+    expect(body).not.toContain("never-in-shell");
+  });
+
+  it("describe_system counts only the groups whose shared repository is connected", async () => {
+    const s = setup("st-team-brain");
+    const withRepo = s.store.createGroup({ name: "플랫폼팀" });
+    const withoutRepo = s.store.createGroup({ name: "지식전용팀" });
+    s.store.addGroupMember(withRepo.id, s.owner.id, "member");
+    s.store.addGroupMember(withoutRepo.id, s.owner.id, "member");
+
+    const before = (await callTool(toolsFor(s), "describe_system", {})).content[0].text ?? "";
+    expect(before).toContain("Team second brain: none (no group has a connected shared repository)");
+
+    s.store.setGroupKnowledgeRepo(withRepo.id, "acme/team-knowledge", "main");
+    const after = (await callTool(toolsFor(s), "describe_system", {})).content[0].text ?? "";
+    expect(after).toContain("Team second brain: 1 group(s) expose `mcp__group_brain__search`");
+    expect(after).toContain("플랫폼팀(member, shared repository connected)");
+    expect(after).toContain("지식전용팀(member, shared repository none)");
+  });
+
+  it("describe_system fails closed when a shared group agent's group is gone", async () => {
+    // The route authorized the run at start; a group deleted since then must not
+    // fall through to the owner block (which would report the owner's own repo,
+    // secrets, and routines to every member of a vanished group).
+    const s = setup("st-groupagent-missing");
+    const tools = buildSystemTools(s.store, {
+      ...s.baseCtx,
+      viewerIsOwner: false,
+      groupAgent: { agentId: "group:ghost:agent", actingUserId: s.owner.id },
+    });
+    s.store.setKnowledgeRepo(s.owner.id, "owner/knowledge", "main");
+
+    const res = await callTool(tools, "describe_system", {});
+    expect(res.isError).toBeFalsy();
+    const body = res.content[0].text ?? "";
+    expect(body).toContain("Noah Almighty avatar-chat system summary");
+    expect(body).toContain("group no longer exists");
+    expect(body).not.toContain("Current avatar state:");
+    expect(body).not.toContain("owner/knowledge");
+  });
 });
 
 

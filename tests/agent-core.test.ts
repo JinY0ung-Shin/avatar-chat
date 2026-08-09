@@ -94,6 +94,7 @@ import {
 } from "../src/server/agent/claudeAgent.js";
 import {
   createLoopState,
+  dispatchSdkMessage,
   extractMainAssistantText,
   handleAssistantMessage,
   handleStreamEvent,
@@ -1456,6 +1457,40 @@ describe("interpretResult", () => {
     expect(msg).toContain("최대 처리 단계");
     expect(msg).not.toContain("maximum number of turns");
   });
+
+  it("gives any other error subtype a generic Korean retry message", () => {
+    const msg = resultErrorMessage("error_during_execution");
+    expect(msg).toBe("응답 생성 중 오류가 발생해 완료하지 못했습니다. 다시 시도해 주세요.");
+    expect(msg).not.toContain("error_during_execution");
+  });
+
+  it("takes the largest context window across models and ignores malformed entries", () => {
+    const r = interpretResult({
+      type: "result",
+      subtype: "success",
+      result: "hi",
+      usage: { input_tokens: 10, output_tokens: 2 },
+      modelUsage: {
+        "claude-haiku-4-5": { contextWindow: 200_000 },
+        "claude-opus-5": { contextWindow: 1_000_000 },
+        broken: "not an object",
+      },
+    });
+    expect(r.usage?.contextWindow).toBe(1_000_000);
+  });
+
+  it("returns usage only for a result that is neither a text success nor an error", () => {
+    // A non-error subtype the app does not model, and a success whose `result` is
+    // not a string: neither yields text, and neither may be reported as an error.
+    expect(
+      interpretResult({
+        type: "result",
+        subtype: "cancelled",
+        usage: { input_tokens: 7, output_tokens: 3 },
+      }),
+    ).toEqual({ usage: { inputTokens: 7, outputTokens: 3 } });
+    expect(interpretResult({ type: "result", subtype: "success", result: null })).toEqual({});
+  });
 });
 
 describe("mainAssistantContextTokens", () => {
@@ -1543,6 +1578,25 @@ describe("streamStartContextTokens", () => {
       streamStartContextTokens({ type: "assistant", message: {} }),
     ).toBeUndefined();
     expect(streamStartContextTokens(null)).toBeUndefined();
+  });
+
+  it("returns undefined when the message_start envelope carries no usage at all", () => {
+    // Distinct from a zero-count usage: some backends emit message_start before
+    // any token accounting exists.
+    expect(
+      streamStartContextTokens({
+        type: "stream_event",
+        parent_tool_use_id: null,
+        event: { type: "message_start", message: { id: "msg_1" } },
+      }),
+    ).toBeUndefined();
+    expect(
+      streamStartContextTokens({
+        type: "stream_event",
+        parent_tool_use_id: null,
+        event: { type: "message_start" },
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -2269,6 +2323,298 @@ describe("sdk message handlers", () => {
       }),
     ).toBe("");
     expect(extractMainAssistantText({ message: { content: null } })).toBe("");
+  });
+
+  it("falls back to the first non-empty string value when no known input key matches", () => {
+    // A tool the summarizer knows nothing about still gets a readable row label
+    // instead of an empty one.
+    expect(
+      summarizeToolInput("mcp__system__set_plugin_enabled", {
+        enabled: false,
+        label: "",
+        id: "plugin-42",
+      }),
+    ).toBe("plugin-42");
+    // Nothing string-shaped at all → an empty summary, not a crash or "[object Object]".
+    expect(summarizeToolInput("Unknown", { count: 3, nested: { a: 1 } })).toBe("");
+    expect(summarizeToolInput("Unknown", {})).toBe("");
+  });
+
+  it("ignores malformed assistant/user envelopes instead of throwing into the run loop", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    // content that is not an array (SDK error envelopes look like this).
+    expect(handleAssistantMessage({ type: "assistant", message: { content: "oops" } }, sink, state)).toBe("");
+    expect(handleAssistantMessage({ type: "assistant" }, sink, state)).toBe("");
+
+    // A tool_use block missing its id or name cannot be tracked, so no row opens.
+    expect(
+      handleAssistantMessage(
+        {
+          type: "assistant",
+          message: {
+            content: [
+              null,
+              "a bare string block",
+              { type: "tool_use", name: "Read", input: { file_path: "x" } },
+              { type: "tool_use", id: "t-1", input: {} },
+              { type: "text", text: 42 },
+            ],
+          },
+        },
+        sink,
+        state,
+      ),
+    ).toBe("");
+    expect(sink.onToolStart).not.toHaveBeenCalled();
+
+    // Same tolerance on the tool_result side.
+    handleUserMessage({ type: "user", message: { content: "oops" } }, sink, state);
+    handleUserMessage({ type: "user" }, sink, state);
+    handleUserMessage(
+      {
+        type: "user",
+        message: {
+          content: [null, { type: "text", text: "not a result" }, { type: "tool_result" }],
+        },
+      },
+      sink,
+      state,
+    );
+    expect(sink.onToolEnd).not.toHaveBeenCalled();
+    expect(sink.onAgentEnd).not.toHaveBeenCalled();
+
+    // A stream_event with no `event` envelope yields no delta.
+    expect(handleStreamEvent({ type: "stream_event" }, sink)).toBe("");
+    expect(sink.onDelta).not.toHaveBeenCalled();
+  });
+
+  it("keeps the auto-deny notice Korean and the plugin status valid on sparse events", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    // No decision_reason at all → the bare Korean notice (the row label must never
+    // fall back to English model-facing text).
+    handleSystemEvent(
+      { subtype: "permission_denied", tool_name: "Bash", agent_id: "agent-3" },
+      sink,
+      state,
+    );
+    expect(sink.onBlocked).toHaveBeenLastCalledWith({
+      toolUseId: undefined,
+      toolName: "Bash",
+      agentId: "agent-3",
+      reason: undefined,
+      uiReason: "권한 정책에 따라 자동 거부되었습니다.",
+    });
+
+    // `message` is the fallback field name, and a long reason is collapsed+truncated.
+    handleSystemEvent(
+      { subtype: "permission_denied", tool_name: "Bash", message: `deny\n${"x".repeat(200)}` },
+      sink,
+      state,
+    );
+    const blocked = sink.onBlocked.mock.lastCall?.[0] as { uiReason: string; agentId: string };
+    expect(blocked.agentId).toBe("main");
+    expect(blocked.uiReason).toContain("권한 정책에 따라 자동 거부되었습니다: deny x");
+    expect(blocked.uiReason.endsWith("…")).toBe(true);
+
+    // An unrecognized install status must still be one of the four the UI knows.
+    handleSystemEvent({ subtype: "plugin_install", name: "alpha", status: "weird" }, sink, state);
+    expect(sink.onPlugin).toHaveBeenLastCalledWith({ status: "started", name: "alpha" });
+    handleSystemEvent({ subtype: "plugin_install" }, sink, state);
+    expect(sink.onPlugin).toHaveBeenLastCalledWith({ status: "started", name: "" });
+    expect(sink.onStatus).toHaveBeenLastCalledWith("플러그인 불러오는 중…");
+
+    // init with no model/session and the alternate plugin-list key.
+    handleSystemEvent({ subtype: "init", loadedPlugins: ["gamma"] }, sink, state);
+    expect(sink.onStatus).toHaveBeenLastCalledWith("Claude 준비 완료");
+    expect(sink.onPlugin).toHaveBeenLastCalledWith({ status: "completed", name: "gamma" });
+    expect(sink.onModel).not.toHaveBeenCalled();
+    expect(sink.onSessionId).not.toHaveBeenCalled();
+  });
+
+  it("adopts an unannounced task id on first progress rather than dropping the update", () => {
+    // Task progress can arrive for a task whose create tool call was never seen
+    // (resumed session, ambient CLI task) — it must still render.
+    const sink = events();
+    const state = createLoopState();
+    handleSystemEvent(
+      {
+        type: "system",
+        subtype: "task_progress",
+        task_id: "never-announced",
+        summary: "인덱싱 중",
+      },
+      sink,
+      state,
+    );
+    expect(sink.onTaskUpdate).toHaveBeenCalledWith({
+      taskId: "never-announced",
+      summary: "인덱싱 중",
+    });
+    expect(state.tasks.get("never-announced")).toEqual({ uiId: "never-announced", kind: "task" });
+  });
+
+  it("lets a task-tagged message with an unhandled subtype fall through to the generic handlers", () => {
+    // handleTaskSystemEvent must return false (not swallow the message) for a
+    // subtype it does not own, or the status line would never update.
+    const sink = events();
+    const state = createLoopState();
+    handleSystemEvent(
+      { type: "system", subtype: "status", status: "compacting", task_id: "t-9" },
+      sink,
+      state,
+    );
+    expect(sink.onStatus).toHaveBeenCalledWith("맥락 정리 중…");
+  });
+
+  it("skips malformed entries in a background_tasks_changed level signal", () => {
+    const sink = events();
+    const state = createLoopState();
+    handleSystemEvent(
+      {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: ["junk", null, { description: "no id" }, { task_id: "bg-1", task_type: "bash" }],
+      },
+      sink,
+      state,
+    );
+    expect(sink.onBackgroundTasks).toHaveBeenCalledWith({
+      tasks: [{ taskId: "bg-1", taskType: "bash" }],
+    });
+    expect(state.backgroundTasks.size).toBe(1);
+  });
+});
+
+describe("dispatchSdkMessage", () => {
+  function sink() {
+    return {
+      onDelta: vi.fn(),
+      onStatus: vi.fn(),
+      onToolStart: vi.fn(),
+      onSessionId: vi.fn(),
+      onToolEnd: vi.fn(),
+    };
+  }
+
+  it("classifies every envelope kind and reports an unknown type as `other`", () => {
+    const state = createLoopState();
+    const events = sink();
+
+    expect(
+      dispatchSdkMessage(
+        {
+          type: "stream_event",
+          parent_tool_use_id: null,
+          event: { type: "message_start", message: { usage: { input_tokens: 1_200 } } },
+        },
+        events,
+        state,
+      ),
+    ).toEqual({ kind: "stream_event", contextTokens: 1_200 });
+
+    expect(
+      dispatchSdkMessage({ type: "system", subtype: "init", session_id: "sess-9" }, events, state),
+    ).toEqual({ kind: "system" });
+    expect(events.onSessionId).toHaveBeenCalledWith("sess-9");
+
+    expect(
+      dispatchSdkMessage({ type: "tool_progress", tool_name: "mcp__repo__write_file" }, events, state),
+    ).toEqual({ kind: "tool_progress" });
+    // Raw MCP ids are an implementation detail — the status line shows the label.
+    expect(events.onStatus).toHaveBeenCalledWith(expect.stringContaining("실행 중: "));
+    expect(events.onStatus).not.toHaveBeenCalledWith(expect.stringContaining("mcp__repo__"));
+
+    expect(
+      dispatchSdkMessage(
+        { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t-1" }] } },
+        events,
+        state,
+      ),
+    ).toEqual({ kind: "user" });
+    expect(events.onToolEnd).toHaveBeenCalledWith({ toolUseId: "t-1", ok: true });
+
+    expect(
+      dispatchSdkMessage({ type: "result", subtype: "success", result: "끝" }, events, state),
+    ).toEqual({ kind: "result", resultText: "끝" });
+
+    // Anything the run loop does not model (e.g. a future envelope type) is inert.
+    expect(dispatchSdkMessage({ type: "compact_boundary" }, events, state)).toEqual({ kind: "other" });
+    expect(dispatchSdkMessage({}, events, state)).toEqual({ kind: "other" });
+  });
+
+  it("still extracts assistant text and usage without an events sink", () => {
+    // The headless/external path passes no sink: text extraction and the context
+    // snapshot must survive, but nothing may be emitted.
+    const state = createLoopState();
+    const result = dispatchSdkMessage(
+      {
+        type: "assistant",
+        parent_tool_use_id: null,
+        message: {
+          content: [{ type: "text", text: "답변" }, { type: "tool_use", id: "t-1", name: "Read", input: {} }],
+          usage: { input_tokens: 400, cache_read_input_tokens: 600 },
+        },
+      },
+      undefined,
+      state,
+    );
+    expect(result).toEqual({
+      kind: "assistant",
+      mainAssistant: true,
+      assistantText: "답변",
+      contextTokens: 1_000,
+    });
+    // No sink → no tool row was opened, so the tool id was never tracked.
+    expect(state.spawnedAgentIds.size).toBe(0);
+
+    // Sink-less stream/user/system envelopes are classified but produce no delta.
+    expect(
+      dispatchSdkMessage(
+        {
+          type: "stream_event",
+          event: { type: "content_block_delta", delta: { type: "text_delta", text: "hi" } },
+        },
+        undefined,
+        state,
+      ),
+    ).toEqual({ kind: "stream_event" });
+    expect(dispatchSdkMessage({ type: "system", subtype: "init" }, undefined, state)).toEqual({ kind: "system" });
+    expect(dispatchSdkMessage({ type: "tool_progress" }, undefined, state)).toEqual({ kind: "tool_progress" });
+  });
+
+  it("marks a subagent assistant envelope and carries an error result's subtype + usage", () => {
+    const state = createLoopState();
+    const subagent = dispatchSdkMessage(
+      {
+        type: "assistant",
+        parent_tool_use_id: "agent-1",
+        message: { content: [{ type: "text", text: "내부" }] },
+      },
+      undefined,
+      state,
+    );
+    expect(subagent.mainAssistant).toBe(false);
+    expect(subagent.assistantText).toBeUndefined();
+
+    expect(
+      dispatchSdkMessage(
+        {
+          type: "result",
+          subtype: "error_max_turns",
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+        undefined,
+        state,
+      ),
+    ).toEqual({
+      kind: "result",
+      errorSubtype: "error_max_turns",
+      usage: { inputTokens: 10, outputTokens: 5 },
+    });
   });
 });
 
