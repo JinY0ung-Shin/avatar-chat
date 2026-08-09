@@ -289,6 +289,189 @@ describe("SkillsView", () => {
     expect(readState().settingsTab).toBe("knowledge");
   });
 
+  // The owner may RENAME a shared skill; the learner's origin marker keeps the
+  // name it was learned under, so the join has to fall back to previousNames.
+  it("joins a learned copy to a RENAMED share via previousNames", async () => {
+    mockFetch({
+      "/api/skill-share/available": {
+        skills: [
+          {
+            ...LISTING,
+            skillName: "deck-report", // renamed since the copy was learned
+            displayName: "Deck maker",
+            previousNames: ["pptx-report"],
+            contentHash: "hash-v2",
+          },
+        ],
+      },
+      "/api/skill-share/mine": {
+        repoConfigured: true,
+        skills: [
+          {
+            slug: "pptx-report",
+            name: "pptx-report",
+            description: "",
+            shared: false,
+            customDescription: null,
+            learnCount: 0,
+            origin: {
+              ownerUserId: "mate-1",
+              ownerUsername: "mate",
+              skillName: "pptx-report", // the OLD name
+              contentHash: "hash-v1",
+            },
+          },
+        ],
+      },
+    });
+    render(SkillsView);
+
+    expect(await screen.findByText("업데이트 있음")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Deck maker 스킬 업데이트 받기" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Deck maker 스킬 전수받기" })).toBeNull();
+  });
+
+  it("shows a renamed share as 전수받음 (no badge) when the hash still matches", async () => {
+    mockFetch({
+      "/api/skill-share/available": {
+        skills: [
+          {
+            ...LISTING,
+            skillName: "deck-report",
+            previousNames: ["pptx-report"],
+            contentHash: "hash-v1",
+          },
+        ],
+      },
+      "/api/skill-share/mine": {
+        repoConfigured: true,
+        skills: [
+          {
+            slug: "pptx-report",
+            name: "pptx-report",
+            description: "",
+            shared: false,
+            customDescription: null,
+            learnCount: 0,
+            origin: {
+              ownerUserId: "mate-1",
+              ownerUsername: "mate",
+              skillName: "pptx-report",
+              contentHash: "hash-v1", // same content → nothing to update
+            },
+          },
+        ],
+      },
+    });
+    render(SkillsView);
+
+    expect(await screen.findByText("전수받음")).toBeTruthy();
+    expect(screen.queryByText("업데이트 있음")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Deck maker 스킬 업데이트 받기" })).toBeNull();
+    // Already learned, so no 전수받기 either.
+    expect(screen.queryByRole("button", { name: "Deck maker 스킬 전수받기" })).toBeNull();
+  });
+
+  it("still joins on the CURRENT name when the share also carries previousNames", async () => {
+    mockFetch({
+      "/api/skill-share/available": {
+        skills: [{ ...LISTING, previousNames: ["ancient-name"], contentHash: "hash-v2" }],
+      },
+      "/api/skill-share/mine": {
+        repoConfigured: true,
+        skills: [
+          {
+            slug: "pptx-report",
+            name: "pptx-report",
+            description: "",
+            shared: false,
+            customDescription: null,
+            learnCount: 0,
+            origin: {
+              ownerUserId: "mate-1",
+              ownerUsername: "mate",
+              skillName: "pptx-report", // matches the listing's CURRENT name
+              contentHash: "hash-v1",
+            },
+          },
+        ],
+      },
+    });
+    render(SkillsView);
+
+    expect(await screen.findByText("업데이트 있음")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Deck maker 스킬 업데이트 받기" })).toBeTruthy();
+  });
+
+  // /mine is the slow path (server-side git fetch) that WRITES fresh hashes, and
+  // /available is a fast DB read — so the first paint always shows pre-refresh
+  // hashes. The tab re-reads /available once /mine settles, quietly.
+  it("re-fetches the available feed after /mine settles, without a spinner flash", async () => {
+    const calls: string[] = [];
+    let releaseMine: (() => void) | null = null;
+    const minePending = new Promise<void>((resolve) => {
+      releaseMine = resolve;
+    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.startsWith("/api/skill-share/mine")) {
+        await minePending; // the slow reconciliation
+        return jsonResponse({ repoConfigured: true, skills: [] });
+      }
+      if (url.startsWith("/api/skill-share/available")) {
+        // Second read sees the refreshed row (renamed + re-hashed by /mine).
+        const renamed = calls.filter((c) => c.startsWith("/api/skill-share/available")).length > 1;
+        return jsonResponse({
+          skills: [renamed ? { ...LISTING, displayName: "Deck maker v2" } : LISTING],
+        });
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    const { container } = render(SkillsView);
+
+    // First paint: both requests are in flight together, available wins.
+    await screen.findByText("Deck maker");
+    expect(calls.filter((c) => c.startsWith("/api/skill-share/available"))).toHaveLength(1);
+    const gridBefore = container.querySelector(".skill-grid");
+    expect(gridBefore).toBeTruthy();
+
+    releaseMine!();
+    // The quiet re-read lands and replaces the list…
+    expect(await screen.findByText("Deck maker v2")).toBeTruthy();
+    expect(calls.filter((c) => c.startsWith("/api/skill-share/available"))).toHaveLength(2);
+    expect(calls.indexOf("/api/skill-share/mine")).toBeLessThan(
+      calls.lastIndexOf("/api/skill-share/available"),
+    );
+    // …without ever unmounting the grid, i.e. no 불러오는 중… flash.
+    expect(container.querySelector(".skill-grid")).toBe(gridBefore);
+    expect(screen.queryByText("불러오는 중…")).toBeNull();
+  });
+
+  it("skips the quiet re-fetch when /mine fails", async () => {
+    const calls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url.startsWith("/api/skill-share/mine")) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({ error: "저장소 오류" }),
+        } as unknown as Response;
+      }
+      if (url.startsWith("/api/skill-share/available")) return jsonResponse({ skills: [LISTING] });
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    render(SkillsView);
+
+    expect(await screen.findByText(/내 스킬 목록을 불러오지 못했습니다/)).toBeTruthy();
+    await waitFor(() => {
+      expect(screen.getByText("Deck maker")).toBeTruthy();
+    });
+    expect(calls.filter((c) => c.startsWith("/api/skill-share/available"))).toHaveLength(1);
+  });
+
   it("filters the learnable list by the search query", async () => {
     mockFetch({
       "/api/skill-share/available": {

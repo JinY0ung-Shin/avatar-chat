@@ -747,6 +747,13 @@ export class StoreBase {
     // snapshot. Owner reconciliation only ever rewrites `description`, so a
     // custom intro survives it; unsharing deletes it with the row.
     this.addColumnIfMissing("shared_skills", "custom_description", "TEXT");
+    // RENAME TRAIL (#skill-share): the skill_name values this row carried before
+    // its current one — JSON array, oldest first, capped, never containing the
+    // current name. A share FOLLOWS a rename of its `skills/<slug>/` dir, but
+    // learners' origin markers still record the name they learned under, so the
+    // trail is what keeps those copies matched to the row until their next
+    // update rewrites the marker. NULL (and anything unparseable) reads as [].
+    this.addColumnIfMissing("shared_skills", "previous_names", "TEXT");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateCanvasArtifacts();

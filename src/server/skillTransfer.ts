@@ -13,7 +13,7 @@ import {
   type KnowledgeRepoContext,
 } from "./knowledgeRepo.js";
 import { skillMdMeta } from "./agent/skillDiscovery.js";
-import type { SharedSkillManifest } from "./types.js";
+import type { SharedSkill, SharedSkillManifest } from "./types.js";
 
 // Skill transfer between knowledge repos (#skill-share): the "learn" half of
 // skill sharing. The share rows (store/avatars.ts) are metadata only; THIS
@@ -374,6 +374,241 @@ export function isSkillLocallyModified(repoRoot: string, slug: string): boolean 
   return current !== origin.localHash;
 }
 
+// ---- Reconciling an owner's share rows with their working tree -------------
+// Share rows are a SNAPSHOT of `skills/<slug>/`, so the tree can move out from
+// under them: the dir drifts, is deleted, turns into a learned copy, or is
+// RENAMED. Every path that has the owner's fresh clone in hand runs the same
+// reconciliation (the mine tab and the commit tool), and a teammate's
+// preview/learn runs the rename half of it — see rescueSharedSkillRename.
+
+/**
+ * The store surface reconciliation needs, declared STRUCTURALLY so this module
+ * keeps not importing Store (it already sits below the store in the layering).
+ * The composed Store satisfies it as-is.
+ */
+export interface SharedSkillReconcileStore {
+  listSharedSkillsByOwner(ownerUserId: string): SharedSkill[];
+  shareSkill(
+    ownerUserId: string,
+    skill: {
+      skillName: string;
+      displayName: string;
+      description: string;
+      contentHash?: string | null;
+    },
+  ): SharedSkill;
+  unshareSkill(ownerUserId: string, skillName: string): boolean;
+  renameSharedSkill(
+    ownerUserId: string,
+    fromSkillName: string,
+    toSkillName: string,
+    next: {
+      displayName: string;
+      description: string;
+      contentHash: string | null;
+      bumpUpdatedAt: boolean;
+    },
+  ): SharedSkill | null;
+}
+
+/** What one reconciliation pass changed — the caller's material for a report. */
+export interface SharedSkillReconcileResult {
+  /** Rows whose metadata/fingerprint drifted and were re-snapshotted. */
+  resnapshotted: string[];
+  /** Rows that FOLLOWED a renamed directory (row id and intro preserved). */
+  renamed: { from: string; to: string }[];
+  /** Rows unshared because `skills/<slug>/` is gone. */
+  unshared: string[];
+  /** Rows unshared because the dir became a LEARNED copy (chain drain). */
+  drained: string[];
+}
+
+/** The row fields a rename match needs — both SharedSkill and its listing fit. */
+interface RenameSubject {
+  ownerUserId: string;
+  skillName: string;
+  contentHash: string | null;
+}
+
+/** Lazily-computed dir hashes for one pass (hashing reads every file). */
+function hashCache(repoRoot: string): (slug: string) => string | null {
+  const hashes = new Map<string, string | null>();
+  return (slug) => {
+    if (!hashes.has(slug)) {
+      hashes.set(slug, hashSkillDir(repoRoot, slug));
+    }
+    return hashes.get(slug) ?? null;
+  };
+}
+
+/**
+ * Where a share whose directory vanished may have MOVED to: a skill dir that is
+ * present, not itself shared, and carries no origin marker (a learned copy is
+ * never the new home of the owner's own share). Content-identity is the match:
+ * hashSkillDir digests relative paths + bytes and never the slug, so a pure
+ * `git mv` keeps the hash.
+ *
+ * Deliberately conservative — the match must be UNIQUE. Zero candidates is an
+ * ordinary deletion, and two identical dirs are a copy the reconciler cannot
+ * tell apart from a move; both leave the caller to unshare, which loses only
+ * the row (the skill and its learn history stay).
+ */
+function matchRenameByHash(
+  candidates: RepoSkillEntry[],
+  contentHash: string | null,
+  hashOf: (slug: string) => string | null,
+  claimed: Set<string>,
+): RepoSkillEntry | null {
+  if (!contentHash) {
+    return null;
+  }
+  const hits = candidates.filter(
+    (entry) => !claimed.has(entry.slug) && hashOf(entry.slug) === contentHash,
+  );
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * Reconcile every share row of one owner against their working tree. OWNER-side:
+ * a re-snapshot or a followed rename bumps `updated_at` (the owner changed what
+ * teammates see, so the listing may reorder).
+ *
+ * `renameHints` are authoritative when they resolve — the commit hook derives
+ * them from `git diff -M`, which sees a rename the CONTENT hash cannot (a
+ * rename plus an edit in the same commit). A hint that no longer holds (target
+ * gone, already shared, a learned copy, or claimed earlier in this pass) falls
+ * back to the hash match, and an unmatched row is unshared.
+ */
+export function reconcileOwnerSharedSkills(
+  store: SharedSkillReconcileStore,
+  repoRoot: string,
+  ownerUserId: string,
+  opts: { renameHints?: Map<string, string> } = {},
+): SharedSkillReconcileResult {
+  const result: SharedSkillReconcileResult = {
+    resnapshotted: [],
+    renamed: [],
+    unshared: [],
+    drained: [],
+  };
+  const rows = store.listSharedSkillsByOwner(ownerUserId);
+  if (rows.length === 0) {
+    return result;
+  }
+  const skills = listRepoSkills(repoRoot);
+  const bySlug = new Map(skills.map((entry) => [entry.slug, entry]));
+  const occupied = new Set(rows.map((row) => row.skillName));
+  const hashOf = hashCache(repoRoot);
+  const missing: SharedSkill[] = [];
+
+  for (const row of rows) {
+    const current = bySlug.get(row.skillName);
+    if (!current) {
+      missing.push(row);
+      continue;
+    }
+    // Legacy row: the dir now carries an origin marker, so this share predates
+    // the refusal to re-share linked copies. Drain it like a deleted dir.
+    if (readSkillOrigin(repoRoot, current.slug)) {
+      store.unshareSkill(ownerUserId, row.skillName);
+      result.drained.push(row.skillName);
+      continue;
+    }
+    // Compare against the frontmatter SNAPSHOT, never the effective
+    // description: an owner with a custom 소개 문구 would otherwise look
+    // permanently drifted and get re-snapshotted (and re-sorted) every pass.
+    // shareSkill leaves custom_description alone, so it survives this.
+    const currentHash = hashOf(current.slug);
+    if (
+      current.name !== row.displayName ||
+      current.description !== row.snapshotDescription ||
+      currentHash !== row.contentHash
+    ) {
+      store.shareSkill(ownerUserId, {
+        skillName: current.slug,
+        displayName: current.name,
+        description: current.description,
+        contentHash: currentHash,
+      });
+      result.resnapshotted.push(row.skillName);
+    }
+  }
+
+  if (missing.length === 0) {
+    return result;
+  }
+  const candidates = skills.filter(
+    (entry) => !occupied.has(entry.slug) && !readSkillOrigin(repoRoot, entry.slug),
+  );
+  // One candidate dir can only be the new home of ONE row: two rows racing for
+  // the same target are as ambiguous as two identical dirs.
+  const claimed = new Set<string>();
+  for (const row of missing) {
+    // A hint wins while it still resolves to a free candidate (an undefined
+    // hint simply matches no slug); otherwise the fingerprint decides.
+    const hinted = opts.renameHints?.get(row.skillName);
+    const target =
+      candidates.find((entry) => entry.slug === hinted && !claimed.has(entry.slug)) ??
+      matchRenameByHash(candidates, row.contentHash, hashOf, claimed);
+    if (target) {
+      const moved = store.renameSharedSkill(ownerUserId, row.skillName, target.slug, {
+        displayName: target.name,
+        description: target.description,
+        contentHash: hashOf(target.slug),
+        bumpUpdatedAt: true,
+      });
+      if (moved) {
+        claimed.add(target.slug);
+        result.renamed.push({ from: row.skillName, to: target.slug });
+        continue;
+      }
+    }
+    store.unshareSkill(ownerUserId, row.skillName);
+    result.unshared.push(row.skillName);
+  }
+  return result;
+}
+
+/**
+ * The VIEWER-path half of the above: a teammate's preview/learn found the
+ * listing's source dir gone, before the owner's own commit/tab reconciled it.
+ * Hash matching only — a viewer has no commit to derive rename hints from — and
+ * `bumpUpdatedAt: false`, because a viewer action must never reorder the
+ * owner's listing (same invariant as setSharedSkillContentHash).
+ *
+ * Returns the new name on success; null (nothing changed) when the dir is still
+ * there, the row is gone, or the match is not unique — the caller then prunes
+ * the stale row exactly as before.
+ */
+export function rescueSharedSkillRename(
+  store: SharedSkillReconcileStore,
+  repoRoot: string,
+  row: RenameSubject,
+): { to: string } | null {
+  const skills = listRepoSkills(repoRoot);
+  if (skills.some((entry) => entry.slug === row.skillName)) {
+    return null; // the dir is present — whatever failed, it was not a rename
+  }
+  const occupied = new Set(
+    store.listSharedSkillsByOwner(row.ownerUserId).map((share) => share.skillName),
+  );
+  const hashOf = hashCache(repoRoot);
+  const candidates = skills.filter(
+    (entry) => !occupied.has(entry.slug) && !readSkillOrigin(repoRoot, entry.slug),
+  );
+  const target = matchRenameByHash(candidates, row.contentHash, hashOf, new Set());
+  if (!target) {
+    return null;
+  }
+  const moved = store.renameSharedSkill(row.ownerUserId, row.skillName, target.slug, {
+    displayName: target.name,
+    description: target.description,
+    contentHash: hashOf(target.slug),
+    bumpUpdatedAt: false,
+  });
+  return moved ? { to: target.slug } : null;
+}
+
 interface CopyStats {
   files: number;
   bytes: number;
@@ -566,6 +801,13 @@ export async function learnSkillIntoRepo(opts: {
   /** UPDATE mode: replace this existing learner slug in place (see above). */
   updateSlug?: string;
   /**
+   * The share's former names (its rename trail). An existing copy's origin
+   * marker records the name it was learned under, so after the share followed a
+   * rename the marker authorizes an update only through this set — the marker
+   * itself is rewritten with the CURRENT name below, so it self-heals.
+   */
+  previousNames?: string[];
+  /**
    * Overwrite even a LOCALLY CUSTOMIZED copy (update mode only). Without it a
    * copy whose current hash differs from the origin marker's localHash — or
    * whose marker predates localHash — throws SKILL_LOCALLY_MODIFIED so the
@@ -600,12 +842,15 @@ export async function learnSkillIntoRepo(opts: {
   const sourceHash = hashSkillDir(srcRoot, opts.skillName);
   if (opts.updateSlug) {
     // Only a copy that PROVABLY came from this share may be replaced — the
-    // origin marker is the authorization, not the matching directory name.
+    // origin marker is the authorization, not the matching directory name. The
+    // marker may still name the share's PREVIOUS slug (the share followed a
+    // rename since the learn), so the trail counts as the same share.
     const origin = readSkillOrigin(destRoot, destSlug);
+    const fromThisShare = new Set([opts.skillName, ...(opts.previousNames ?? [])]);
     if (
       !origin ||
       origin.ownerUserId !== opts.sharerCtx.userId ||
-      origin.skillName !== opts.skillName
+      !fromThisShare.has(origin.skillName)
     ) {
       throw new Error("NOT_LEARNED_FROM_SHARE");
     }

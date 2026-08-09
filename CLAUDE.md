@@ -56,7 +56,12 @@ These are the invariants the project is built around. New work should reinforce 
   rows — including their update path — drain through the hygiene prunes), and a group admin can
   channel-BLOCK an (owner, skill name) pair per group (`shared_skill_group_blocks`, enforced inside
   `LEARNABLE_SKILLS_FROM` so every learnable read fails closed; a skill stays learnable only through an
-  unblocked mutual sharing group, blocks survive unshare→re-share, learned copies stay put). The
+  unblocked mutual sharing group, blocks survive unshare→re-share, learned copies stay put). Share rows
+  are a SNAPSHOT of the tree, so ONE reconcile helper runs wherever the owner's fresh clone is in hand
+  (mine tab + a successful `mcp__repo__commit`, best-effort so it can never fail the commit): drift
+  re-snapshots, a deleted/marker-carrying dir unshares, and a RENAMED dir is FOLLOWED in place —
+  row id/intro/learn-count/group-blocks all move, the old slug lands in `previous_names`, and learners'
+  origin markers match through that trail until their next update heals them. The
   `mcp__skill_exchange__*` tools are owner-only end
   to end. Mechanics → `docs/architecture/avatar-collab.md`.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the

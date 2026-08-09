@@ -4,6 +4,7 @@ import logger from "../logger.js";
 import { scrubGitError } from "../marketplace.js";
 import {
   ensureClone,
+  knowledgeClonePath,
   knowledgeRepoContextFor,
   commitIdentityFor,
   readFile,
@@ -15,10 +16,13 @@ import {
   learnSkillIntoRepo,
   listRepoSkills,
   listSkillFiles,
+  type LearnResult,
   MAX_SKILL_INTRO_CHARS,
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
+  reconcileOwnerSharedSkills,
+  rescueSharedSkillRename,
   SkillIsLearnedCopyError,
   unlinkSkillOrigin,
 } from "../skillTransfer.js";
@@ -141,57 +145,27 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         return;
       }
       const repoSkills = listRepoSkills(repoRoot);
-      const bySlug = new Map(repoSkills.map((s) => [s.slug, s]));
-      // Provenance for LEARNED skills (전수받은 것) — read once: it drives BOTH
-      // the reconciliation below and the response's origin field.
+      // Provenance for LEARNED skills (전수받은 것) — drives the response's
+      // origin field (reconciliation reads its own copy off the same tree).
       const originBySlug = new Map(
         repoSkills.map((s) => [s.slug, readSkillOrigin(repoRoot, s.slug)]),
       );
+      // The owner opening this tab is one of the two moments the share rows are
+      // reconciled with the working tree (the other is their commit tool, which
+      // additionally has git's rename detection). Same helper, so drift
+      // re-snapshots, deletions/learned copies unshare, and renames are FOLLOWED
+      // identically wherever they are noticed.
+      reconcileOwnerSharedSkills(store, repoRoot, req.user!.id);
       const sharedRows = store.listSharedSkillsByOwner(req.user!.id);
       // 전수된 횟수 — keyed by skill name, so a currently-unshared skill keeps
       // showing its history (events outlive the share row).
       const learnCounts = store.skillLearnCounts(req.user!.id);
-      const shared = new Set<string>();
+      const shared = new Set(sharedRows.map((row) => row.skillName));
       // The owner's custom 소개 문구 per shared slug — the mine rows carry it so
       // the tab can show what teammates read and offer 소개 수정 / 되돌리기.
       const customDescriptions = new Map(
         sharedRows.map((row) => [row.skillName, row.customDescription]),
       );
-      for (const row of sharedRows) {
-        const current = bySlug.get(row.skillName);
-        if (!current) {
-          store.unshareSkill(req.user!.id, row.skillName); // dir gone → stale row
-          continue;
-        }
-        // Legacy row: the dir now carries an origin marker, so this share was
-        // created before re-sharing linked copies was refused. Drain it here
-        // like a deleted dir — no operator, no migration (learn history is
-        // keyed by owner+skill_name and survives the unshare by design).
-        if (originBySlug.get(current.slug)) {
-          store.unshareSkill(req.user!.id, row.skillName);
-          continue;
-        }
-        shared.add(row.skillName);
-        // Reconcile metadata AND the content fingerprint: the owner opening
-        // this tab is what tells teammates "a newer version exists". The
-        // comparison is against the frontmatter SNAPSHOT, never the effective
-        // description — an owner with a custom 소개 문구 would otherwise look
-        // permanently drifted and get re-snapshotted (and re-sorted) on every
-        // load. shareSkill leaves custom_description alone, so it survives.
-        const currentHash = hashSkillDir(repoRoot, current.slug);
-        if (
-          current.name !== row.displayName ||
-          current.description !== row.snapshotDescription ||
-          currentHash !== row.contentHash
-        ) {
-          store.shareSkill(req.user!.id, {
-            skillName: current.slug,
-            displayName: current.name,
-            description: current.description,
-            contentHash: currentHash,
-          });
-        }
-      }
       res.json({
         repoConfigured: true,
         skills: repoSkills.map((s) => ({
@@ -383,26 +357,40 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
     requireAuth(store),
     async (req: AuthenticatedRequest, res) => {
       const me = req.user!;
-      let listing = store.getLearnableSkill(me.id, req.params.id);
-      if (!listing) {
+      // Re-resolvable because a rename rescue below moves the row's skill_name
+      // while KEEPING its id — the same lookup then finds it under the new name.
+      const resolveListing = (): SharedSkillListing | null => {
+        const learnable = store.getLearnableSkill(me.id, req.params.id);
+        if (learnable) {
+          return learnable;
+        }
         // My own shares are IN the feed (badged 나) but are deliberately not
         // learnable — LEARNABLE_SKILLS_FROM excludes self — so 미리보기 on my
         // own card resolves the row here or it would always 404. Everything
         // below works unchanged: ownerUserId is my own id.
         const own = store.listSharedSkillsByOwner(me.id).find((s) => s.id === req.params.id);
-        if (own) listing = ownShareListing(own, me);
-      }
-      if (!listing) {
+        return own ? ownShareListing(own, me) : null;
+      };
+      const found = resolveListing();
+      if (!found) {
         apiError(res, 404, "공유된 스킬을 찾을 수 없습니다.");
         return;
       }
-      const sharerCtx = knowledgeRepoContextFor(store, listing.ownerUserId, config);
+      const sharerCtx = knowledgeRepoContextFor(store, found.ownerUserId, config);
       if (!sharerCtx) {
         apiError(res, 410, "공유한 사용자의 지식 저장소가 더 이상 연결되어 있지 않습니다.");
         return;
       }
+      let listing = found;
       try {
         const srcRoot = await ensureClone(sharerCtx);
+        // The dir may have been RENAMED, not deleted — usually the owner's own
+        // commit already moved the row, but a viewer arriving first rescues it
+        // here rather than pruning a live share. A no-op while the dir is still
+        // there, and it never bumps updated_at (no reordering by a viewer).
+        if (rescueSharedSkillRename(store, srcRoot, listing)) {
+          listing = resolveListing() ?? listing;
+        }
         // Before serving anything: a source that is itself a linked copy is a
         // row from before re-sharing those was refused (see the catch).
         assertSkillShareable(srcRoot, listing.skillName);
@@ -465,11 +453,12 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         apiError(res, 400, "업데이트와 새 이름 지정은 함께 쓸 수 없습니다.");
         return;
       }
-      const listing = store.getLearnableSkill(req.user!.id, id);
-      if (!listing) {
+      const found = store.getLearnableSkill(req.user!.id, id);
+      if (!found) {
         apiError(res, 404, "공유된 스킬을 찾을 수 없습니다.");
         return;
       }
+      let listing = found;
       const learnerCtx = knowledgeRepoContextFor(store, req.user!.id, config);
       if (!learnerCtx) {
         apiError(res, 400, "먼저 설정에서 내 지식 저장소를 연결해 주세요.");
@@ -480,18 +469,45 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         apiError(res, 410, "공유한 사용자의 지식 저장소가 더 이상 연결되어 있지 않습니다.");
         return;
       }
-      try {
-        const result = await learnSkillIntoRepo({
+      const runLearn = (target: SharedSkillListing) =>
+        learnSkillIntoRepo({
           sharerCtx,
           learnerCtx,
-          skillName: listing.skillName,
+          skillName: target.skillName,
           newName: rawNewName || undefined,
           updateSlug: updateSlug || undefined,
           allowModified: overwriteModified,
-          sharerUsername: listing.owner.username,
-          commitMessage: learnCommitMessage(listing, Boolean(updateSlug)),
+          // A copy learned before the share followed a rename carries the OLD
+          // name in its origin marker; the trail is what still authorizes an
+          // in-place update (the marker is rewritten with the current name).
+          previousNames: target.previousNames,
+          sharerUsername: target.owner.username,
+          commitMessage: learnCommitMessage(target, Boolean(updateSlug)),
           identity: commitIdentityFor(store, req.user!),
         });
+      try {
+        let result: LearnResult;
+        try {
+          result = await runLearn(listing);
+        } catch (error) {
+          // The source dir being gone may mean RENAMED rather than deleted. The
+          // learn just refreshed the sharer's clone, so match against it on disk
+          // (no second fetch) and retry once under the new name before pruning.
+          const moved =
+            (error instanceof Error ? error.message : "") === "SKILL_NOT_FOUND" &&
+            rescueSharedSkillRename(
+              store,
+              knowledgeClonePath(listing.ownerUserId, config),
+              listing,
+            )
+              ? store.getLearnableSkill(req.user!.id, id)
+              : null;
+          if (!moved) {
+            throw error;
+          }
+          listing = moved;
+          result = await runLearn(moved);
+        }
         // An in-place update is a refresh, not a new adoption — only first
         // learns (and extra copies) count toward 전수된 횟수.
         if (!result.updated) {

@@ -192,11 +192,15 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           let updateSlug: string | undefined;
           if (args.update) {
             const learnerRoot = await ensureClone(learnerCtx);
+            // A marker written before the share followed a rename names the OLD
+            // slug — the rename trail keeps those copies matched to this share.
+            const fromThisShare = new Set([listing.skillName, ...listing.previousNames]);
             const matches = listRepoSkills(learnerRoot).filter((s) => {
               const origin = readSkillOrigin(learnerRoot, s.slug);
               return (
-                origin?.ownerUserId === listing.ownerUserId &&
-                origin?.skillName === listing.skillName
+                origin !== null &&
+                origin.ownerUserId === listing.ownerUserId &&
+                fromThisShare.has(origin.skillName)
               );
             });
             if (matches.length === 0) {
@@ -220,6 +224,7 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
             newName: args.new_name?.trim() || undefined,
             updateSlug,
             allowModified: args.overwrite_modified === true,
+            previousNames: listing.previousNames,
             sharerUsername: listing.owner.username,
             commitMessage: `${updateSlug ? "Update" : "Learn"} skill "${listing.skillName}" from @${listing.owner.username}`,
             identity: commitIdentityFor(store, ctx.owner),

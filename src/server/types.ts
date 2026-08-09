@@ -584,6 +584,14 @@ export interface SharedSkill {
    * their copy's origin marker to detect an available update. Null = unknown.
    */
   contentHash: string | null;
+  /**
+   * Names this share carried BEFORE its current one, oldest first (capped, and
+   * never containing the current name). A share FOLLOWS a rename of its
+   * `skills/<slug>/` directory, so a learner whose origin marker still records
+   * the old name is matched through this trail until their next update rewrites
+   * the marker. Empty for a share that was never renamed.
+   */
+  previousNames: string[];
   createdAt: string;
   updatedAt: string;
 }

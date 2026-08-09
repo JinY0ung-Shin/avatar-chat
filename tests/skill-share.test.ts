@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
 import { ensureClone, knowledgeRepoContextFor } from "../src/server/knowledgeRepo.js";
 import {
@@ -12,8 +12,11 @@ import {
   listRepoSkills,
   listSkillFiles,
   normalizeSkillSlug,
+  readRepoSkill,
   readSkillOrigin,
+  reconcileOwnerSharedSkills,
 } from "../src/server/skillTransfer.js";
+import { buildRepoTools } from "../src/server/agent/repoTools.js";
 import { buildSkillExchangeTools } from "../src/server/agent/skillExchangeTools.js";
 import { callTool, makeBareRemote, shareGroup, signup, withTempDir } from "./helpers.js";
 
@@ -110,6 +113,43 @@ function updateRemoteFile(name: string, rel: string, content: string): void {
   g("add", "-A");
   g("commit", "-q", "-m", "update");
   g("push", "-q", "origin", "main");
+}
+
+/** `git mv` one skill dir in a seeded remote and push — a PURE rename. */
+function renameRemoteSkill(name: string, from: string, to: string): void {
+  const seed = path.join(tempDir, `${name}-seed`);
+  const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+  g("mv", `skills/${from}`, `skills/${to}`);
+  g("commit", "-q", "-m", `rename ${from} -> ${to}`);
+  g("push", "-q", "origin", "main");
+}
+
+/** SKILL.md text with the given frontmatter — the shape listRepoSkills reads. */
+function skillMd(name: string, description: string): string {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
+}
+
+/**
+ * A bare working TREE (no git, no remote): reconciliation only ever reads
+ * `skills/<slug>/` off disk, so the drift/rename/ambiguity cases don't need a
+ * clone round-trip. Keys are slugs, values are the files under that slug.
+ */
+function makeTree(name: string, skills: Record<string, Record<string, string>>): string {
+  const root = path.join(tempDir, name);
+  fs.mkdirSync(root, { recursive: true });
+  for (const [slug, files] of Object.entries(skills)) {
+    for (const [rel, content] of Object.entries(files)) {
+      const abs = path.join(root, "skills", slug, rel);
+      fs.mkdirSync(path.dirname(abs), { recursive: true });
+      fs.writeFileSync(abs, content);
+    }
+  }
+  return root;
+}
+
+/** Rename `skills/<from>` → `skills/<to>` inside a makeTree working tree. */
+function moveTreeSkill(root: string, from: string, to: string): void {
+  fs.renameSync(path.join(root, "skills", from), path.join(root, "skills", to));
 }
 
 /**
@@ -463,6 +503,106 @@ describe("shared_skills store", () => {
     expect(store.listGroupSharedSkills(groupId)[0].blocked).toBe(false);
   });
 
+  it("renameSharedSkill moves the row, its history, and its blocks in one step", () => {
+    const { store } = bootstrap();
+    const share = store.shareSkill("u1", {
+      skillName: "pptx-report",
+      displayName: "pptx-report",
+      description: "old",
+      contentHash: "h1",
+    });
+    store.setSharedSkillDescription("u1", "pptx-report", "우리 팀 보고서 덱 스킬");
+    store.recordSkillLearn("u1", "pptx-report", "mate-1");
+    store.recordSkillLearn("u1", "pptx-report", "mate-2");
+    store.blockSharedSkillInGroup("g-1", "u1", "pptx-report", "admin-1");
+
+    const moved = store.renameSharedSkill("u1", "pptx-report", "deck-maker", {
+      displayName: "Deck maker",
+      description: "new",
+      contentHash: "h2",
+      bumpUpdatedAt: true,
+    })!;
+    // Same share under a new name: id, created_at and the owner's 소개 문구 are
+    // the row's identity, not its slug.
+    expect(moved.id).toBe(share.id);
+    expect(moved.createdAt).toBe(share.createdAt);
+    expect(moved.customDescription).toBe("우리 팀 보고서 덱 스킬");
+    expect(moved.skillName).toBe("deck-maker");
+    expect(moved.snapshotDescription).toBe("new");
+    expect(moved.contentHash).toBe("h2");
+    expect(moved.previousNames).toEqual(["pptx-report"]);
+    expect(store.listSharedSkillsByOwner("u1")).toHaveLength(1);
+    // Both name-keyed tables followed, so the 전수 count and a group admin's
+    // moderation survive a rename they never asked for.
+    expect(store.skillLearnCounts("u1")).toEqual({ "deck-maker": 2 });
+    expect(store.unblockSharedSkillInGroup("g-1", "u1", "pptx-report")).toBe(false);
+    expect(store.unblockSharedSkillInGroup("g-1", "u1", "deck-maker")).toBe(true);
+  });
+
+  it("renameSharedSkill refuses a taken target and leaves everything untouched", () => {
+    const { store } = bootstrap();
+    store.shareSkill("u1", { skillName: "a", displayName: "a", description: "A" });
+    const taken = store.shareSkill("u1", { skillName: "b", displayName: "b", description: "B" });
+    store.recordSkillLearn("u1", "a", "mate-1");
+    store.blockSharedSkillInGroup("g-1", "u1", "a");
+
+    expect(
+      store.renameSharedSkill("u1", "a", "b", {
+        displayName: "b",
+        description: "B2",
+        contentHash: "h",
+        bumpUpdatedAt: true,
+      }),
+    ).toBeNull();
+    // No half-applied transaction: rows, counts and blocks are exactly as before.
+    const rows = store.listSharedSkillsByOwner("u1");
+    expect(rows.map((s) => s.skillName)).toEqual(["a", "b"]);
+    expect(rows.map((s) => s.snapshotDescription)).toEqual(["A", "B"]);
+    expect(rows.find((s) => s.skillName === "b")!.id).toBe(taken.id);
+    expect(store.skillLearnCounts("u1")).toEqual({ a: 1 });
+    expect(store.unblockSharedSkillInGroup("g-1", "u1", "a")).toBe(true);
+    // A row that doesn't exist is refused the same way.
+    expect(
+      store.renameSharedSkill("u1", "ghost", "c", {
+        displayName: "c",
+        description: "",
+        contentHash: null,
+        bumpUpdatedAt: true,
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the rename trail capped, deduped, and free of the current name", () => {
+    const { store } = bootstrap();
+    const rename = (owner: string, from: string, to: string) =>
+      store.renameSharedSkill(owner, from, to, {
+        displayName: to,
+        description: "",
+        contentHash: null,
+        bumpUpdatedAt: true,
+      });
+
+    // Seven renames, trail of five: the oldest names fall off the front,
+    // most-recent last.
+    store.shareSkill("u1", { skillName: "n0", displayName: "n0", description: "" });
+    for (let i = 1; i <= 7; i += 1) {
+      expect(rename("u1", `n${i - 1}`, `n${i}`)).not.toBeNull();
+    }
+    expect(store.listSharedSkillsByOwner("u1")[0].previousNames).toEqual([
+      "n2",
+      "n3",
+      "n4",
+      "n5",
+      "n6",
+    ]);
+
+    // a → b → a: the trail must never contain the name the row now carries.
+    store.shareSkill("u2", { skillName: "a", displayName: "a", description: "" });
+    rename("u2", "a", "b");
+    rename("u2", "b", "a");
+    expect(store.listSharedSkillsByOwner("u2")[0].previousNames).toEqual(["b"]);
+  });
+
   it("deleteUser cascades the owner's share rows", async () => {
     const { app, store } = bootstrap();
     const admin = await newUser(app, "admin");
@@ -806,6 +946,267 @@ describe("skillTransfer", () => {
     fs.writeFileSync(markerPath, JSON.stringify(marker));
     customizeLearnedCopy(learner.userId, "skills/pptx-report/.noah-skill-origin.json", JSON.stringify(marker));
     await expect(update()).rejects.toThrow("SKILL_LOCALLY_MODIFIED");
+  });
+});
+
+// ---- skillTransfer: reconciling shares with the working tree ------------------
+
+describe("shared-skill reconciliation", () => {
+  /** Share `slug` with the tree's current metadata + fingerprint. */
+  function share(
+    store: ReturnType<typeof bootstrap>["store"],
+    root: string,
+    owner: string,
+    slug: string,
+  ) {
+    const skill = readRepoSkill(root, slug)!;
+    return store.shareSkill(owner, {
+      skillName: skill.slug,
+      displayName: skill.name,
+      description: skill.description,
+      contentHash: hashSkillDir(root, slug),
+    });
+  }
+
+  it("re-snapshots drift in place and leaves the owner's 소개 문구 alone", () => {
+    const { store } = bootstrap();
+    const root = makeTree("recon-drift", {
+      "pptx-report": { "SKILL.md": skillMd("pptx-report", "v1") },
+    });
+    const before = share(store, root, "u1", "pptx-report");
+    store.setSharedSkillDescription("u1", "pptx-report", "제가 쓰는 보고서 스킬이에요");
+
+    fs.writeFileSync(
+      path.join(root, "skills", "pptx-report", "SKILL.md"),
+      skillMd("Deck maker", "v2"),
+    );
+    expect(reconcileOwnerSharedSkills(store, root, "u1")).toEqual({
+      resnapshotted: ["pptx-report"],
+      renamed: [],
+      unshared: [],
+      drained: [],
+    });
+    const row = store.listSharedSkillsByOwner("u1")[0];
+    expect(row.id).toBe(before.id);
+    expect(row.displayName).toBe("Deck maker");
+    expect(row.snapshotDescription).toBe("v2");
+    expect(row.contentHash).toBe(hashSkillDir(root, "pptx-report"));
+    // The frontmatter is a snapshot; the human-facing introduction is not.
+    expect(row.customDescription).toBe("제가 쓰는 보고서 스킬이에요");
+    expect(row.description).toBe("제가 쓰는 보고서 스킬이에요");
+
+    // Settled: a second pass finds nothing to do (no re-sorting on every load).
+    expect(reconcileOwnerSharedSkills(store, root, "u1").resnapshotted).toEqual([]);
+  });
+
+  it("unshares a deleted directory and drains one that became a learned copy", () => {
+    const { store } = bootstrap();
+    const root = makeTree("recon-gone", {
+      gone: { "SKILL.md": skillMd("gone", "d") },
+      learned: { "SKILL.md": skillMd("learned", "d") },
+    });
+    share(store, root, "u1", "gone");
+    share(store, root, "u1", "learned");
+    store.recordSkillLearn("u1", "gone", "mate-1");
+    fs.rmSync(path.join(root, "skills", "gone"), { recursive: true });
+    fs.writeFileSync(
+      path.join(root, "skills", "learned", ".noah-skill-origin.json"),
+      ORIGIN_MARKER,
+    );
+
+    const result = reconcileOwnerSharedSkills(store, root, "u1");
+    expect(result.unshared).toEqual(["gone"]);
+    expect(result.drained).toEqual(["learned"]);
+    expect(store.listSharedSkillsByOwner("u1")).toHaveLength(0);
+    // Learn history is keyed by (owner, skill name) and outlives the row.
+    expect(store.skillLearnCounts("u1")).toEqual({ gone: 1 });
+  });
+
+  it("follows a pure directory move by content hash, carrying the row along", () => {
+    const { store } = bootstrap();
+    const root = makeTree("recon-move", {
+      "pptx-report": {
+        "SKILL.md": skillMd("pptx-report", "v1"),
+        "scripts/render.sh": "#!/bin/sh\n",
+      },
+    });
+    const before = share(store, root, "u1", "pptx-report");
+    store.setSharedSkillDescription("u1", "pptx-report", "덱 만들어 드려요");
+    store.recordSkillLearn("u1", "pptx-report", "mate-1");
+    store.blockSharedSkillInGroup("g-1", "u1", "pptx-report");
+
+    moveTreeSkill(root, "pptx-report", "deck-maker");
+    const result = reconcileOwnerSharedSkills(store, root, "u1");
+    expect(result.renamed).toEqual([{ from: "pptx-report", to: "deck-maker" }]);
+    expect(result.unshared).toEqual([]);
+
+    const row = store.listSharedSkillsByOwner("u1")[0];
+    expect(row.id).toBe(before.id);
+    expect(row.createdAt).toBe(before.createdAt);
+    expect(row.customDescription).toBe("덱 만들어 드려요");
+    expect(row.skillName).toBe("deck-maker");
+    expect(row.previousNames).toEqual(["pptx-report"]);
+    // The hash is unchanged BY DESIGN — hashSkillDir digests relative paths and
+    // bytes, never the slug — which is exactly what made the match possible.
+    expect(row.contentHash).toBe(before.contentHash);
+    expect(store.skillLearnCounts("u1")).toEqual({ "deck-maker": 1 });
+    expect(store.unblockSharedSkillInGroup("g-1", "u1", "deck-maker")).toBe(true);
+  });
+
+  it("needs git's rename hint when the same commit also edited the skill", () => {
+    const { store } = bootstrap();
+    const root = makeTree("recon-hint", {
+      "pptx-report": { "SKILL.md": skillMd("pptx-report", "v1") },
+    });
+    // Two owners sharing the same skill from (conceptually) their own trees —
+    // one reconciles with a hint, one without.
+    share(store, root, "u1", "pptx-report");
+    share(store, root, "u2", "pptx-report");
+    moveTreeSkill(root, "pptx-report", "deck-maker");
+    fs.writeFileSync(
+      path.join(root, "skills", "deck-maker", "SKILL.md"),
+      skillMd("deck-maker", "v2"),
+    );
+
+    // Without a hint the content hash no longer matches anything: from the
+    // tree alone this is indistinguishable from "deleted, and a new skill added".
+    expect(reconcileOwnerSharedSkills(store, root, "u1").unshared).toEqual(["pptx-report"]);
+
+    // With the hint `git diff -M` produced, the share follows and re-snapshots.
+    const result = reconcileOwnerSharedSkills(store, root, "u2", {
+      renameHints: new Map([["pptx-report", "deck-maker"]]),
+    });
+    expect(result.renamed).toEqual([{ from: "pptx-report", to: "deck-maker" }]);
+    const row = store.listSharedSkillsByOwner("u2")[0];
+    expect(row.skillName).toBe("deck-maker");
+    expect(row.snapshotDescription).toBe("v2");
+    expect(row.contentHash).toBe(hashSkillDir(root, "deck-maker"));
+  });
+
+  it("refuses to guess: ambiguous candidates and taken targets unshare instead", () => {
+    const { store } = bootstrap();
+    // Two byte-identical directories — a copy is indistinguishable from a move.
+    const root = makeTree("recon-ambiguous", {
+      "pptx-report": { "SKILL.md": skillMd("pptx-report", "v1") },
+      "deck-a": { "SKILL.md": skillMd("pptx-report", "v1") },
+      "deck-b": { "SKILL.md": skillMd("pptx-report", "v1") },
+    });
+    share(store, root, "u1", "pptx-report");
+    fs.rmSync(path.join(root, "skills", "pptx-report"), { recursive: true });
+    expect(reconcileOwnerSharedSkills(store, root, "u1").unshared).toEqual(["pptx-report"]);
+    expect(store.listSharedSkillsByOwner("u1")).toHaveLength(0);
+
+    // A hint pointing at a dir that is ALREADY shared is refused too: merging
+    // two shares would silently pick one row's intro and history over the other.
+    const root2 = makeTree("recon-taken", {
+      old: { "SKILL.md": skillMd("old", "same") },
+      live: { "SKILL.md": skillMd("live", "other") },
+    });
+    share(store, root2, "u2", "old");
+    share(store, root2, "u2", "live");
+    fs.rmSync(path.join(root2, "skills", "old"), { recursive: true });
+    const result = reconcileOwnerSharedSkills(store, root2, "u2", {
+      renameHints: new Map([["old", "live"]]),
+    });
+    expect(result.renamed).toEqual([]);
+    expect(result.unshared).toEqual(["old"]);
+    expect(store.listSharedSkillsByOwner("u2").map((s) => s.skillName)).toEqual(["live"]);
+    expect(store.listSharedSkillsByOwner("u2")[0].previousNames).toEqual([]);
+  });
+
+  it("never adopts a learned copy as the new home of a share", () => {
+    const { store } = bootstrap();
+    const root = makeTree("recon-marker", {
+      "pptx-report": { "SKILL.md": skillMd("pptx-report", "v1") },
+    });
+    share(store, root, "u1", "pptx-report");
+    moveTreeSkill(root, "pptx-report", "borrowed");
+    // The target now claims to have been learned from somebody else.
+    fs.writeFileSync(
+      path.join(root, "skills", "borrowed", ".noah-skill-origin.json"),
+      ORIGIN_MARKER,
+    );
+    const result = reconcileOwnerSharedSkills(store, root, "u1");
+    expect(result.renamed).toEqual([]);
+    expect(result.unshared).toEqual(["pptx-report"]);
+  });
+
+  it("commit reconciles the owner's shares and says so in the tool result", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const owner = await newUser(app, "owner");
+    store.setKnowledgeRepo(owner.userId, seedSkillRemote("owner-repo"), "main");
+    store.setGitToken(owner.userId, "tok"); // commit gate; a file remote ignores it
+    const ctx = knowledgeRepoContextFor(store, owner.userId, config)!;
+    const root = await ensureClone(ctx);
+    const before = share(store, root, owner.userId, "pptx-report");
+    store.setSharedSkillDescription(owner.userId, "pptx-report", "덱 만들어 드려요");
+    const tools = buildRepoTools(store, {
+      avatarUserId: owner.userId,
+      owner: { id: owner.userId, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config,
+    });
+
+    // Rename AND edit in one commit — only git's -M detection can see this.
+    execFileSync("git", ["-C", root, "mv", "skills/pptx-report", "skills/deck-maker"], {
+      stdio: "pipe",
+    });
+    fs.writeFileSync(
+      path.join(root, "skills", "deck-maker", "SKILL.md"),
+      skillMd("deck-maker", "v2"),
+    );
+    const res = await callTool(tools, "commit", { message: "rename the deck skill" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("Committed and pushed the changes");
+    expect(res.content[0].text).toContain("the share follows the rename pptx-report → deck-maker");
+
+    const row = store.listSharedSkillsByOwner(owner.userId)[0];
+    expect(row.id).toBe(before.id);
+    expect(row.skillName).toBe("deck-maker");
+    expect(row.previousNames).toEqual(["pptx-report"]);
+    expect(row.customDescription).toBe("덱 만들어 드려요");
+    expect(row.contentHash).toBe(hashSkillDir(root, "deck-maker"));
+  });
+
+  it("reports a plain fingerprint refresh, and never fails a commit on reconcile trouble", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const owner = await newUser(app, "owner");
+    store.setKnowledgeRepo(owner.userId, seedSkillRemote("owner-repo"), "main");
+    store.setGitToken(owner.userId, "tok");
+    const ctx = knowledgeRepoContextFor(store, owner.userId, config)!;
+    const root = await ensureClone(ctx);
+    share(store, root, owner.userId, "pptx-report");
+    const tools = buildRepoTools(store, {
+      avatarUserId: owner.userId,
+      owner: { id: owner.userId, username: "owner", displayName: "Owner" },
+      viewerIsOwner: true,
+      config,
+    });
+
+    fs.writeFileSync(
+      path.join(root, "skills", "pptx-report", "SKILL.md"),
+      skillMd("pptx-report", "v2"),
+    );
+    const refreshed = await callTool(tools, "commit", { message: "edit the deck skill" });
+    expect(refreshed.content[0].text).toContain("refreshed the shared fingerprint of 1 skill(s)");
+    expect(store.listSharedSkillsByOwner(owner.userId)[0].contentHash).toBe(
+      hashSkillDir(root, "pptx-report"),
+    );
+
+    // The push already happened: a broken reconciliation must never turn a
+    // successful commit into a failed tool call.
+    const spy = vi.spyOn(store, "listSharedSkillsByOwner").mockImplementation(() => {
+      throw new Error("reconcile exploded");
+    });
+    fs.writeFileSync(
+      path.join(root, "skills", "pptx-report", "SKILL.md"),
+      skillMd("pptx-report", "v3"),
+    );
+    const survived = await callTool(tools, "commit", { message: "edit again" });
+    expect(survived.isError).toBeFalsy();
+    expect(survived.content[0].text).toContain("Committed and pushed the changes");
+    expect(survived.content[0].text).not.toContain("Shared skills were reconciled");
+    spy.mockRestore();
   });
 });
 
@@ -1295,6 +1696,152 @@ describe("skill-share routes", () => {
     expect(store.listSharedSkillsByOwner(sharer.userId)).toHaveLength(0);
   });
 
+  it("mine follows a renamed skill dir and keeps its response shape", { timeout: 30_000 }, async () => {
+    const { app, store } = bootstrap();
+    const sharer = await newUser(app, "sharer");
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    await sharer.agent
+      .put("/api/skill-share/share/pptx-report/description")
+      .send({ description: "덱 만들어 드려요" })
+      .expect(200);
+    const before = store.listSharedSkillsByOwner(sharer.userId)[0];
+
+    renameRemoteSkill("sharer-repo", "pptx-report", "deck-maker");
+    const mine = await sharer.agent.get("/api/skill-share/mine").expect(200);
+    // Same keys as before the rename existed — the tab's contract is unchanged.
+    // `name` still reads the frontmatter, which a `git mv` does not rewrite.
+    expect(mine.body).toEqual({
+      repoConfigured: true,
+      skills: [
+        {
+          slug: "deck-maker",
+          name: "pptx-report",
+          description: "Weekly report deck generator",
+          shared: true,
+          customDescription: "덱 만들어 드려요",
+          learnCount: 0,
+          origin: null,
+        },
+      ],
+    });
+    const row = store.listSharedSkillsByOwner(sharer.userId)[0];
+    expect(row.id).toBe(before.id);
+    expect(row.createdAt).toBe(before.createdAt);
+    expect(row.skillName).toBe("deck-maker");
+    expect(row.previousNames).toEqual(["pptx-report"]);
+  });
+
+  it("preview serves a renamed skill on a stale card, without reordering the owner's shares", { timeout: 30_000 }, async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const listing = (await mate.agent.get("/api/skill-share/available").expect(200)).body.skills[0];
+
+    // The owner renames and never opens their own tab: the teammate's card is
+    // stale, and the viewer path is what notices.
+    renameRemoteSkill("sharer-repo", "pptx-report", "deck-maker");
+    const before = store.listSharedSkillsByOwner(sharer.userId)[0];
+
+    const preview = await mate.agent
+      .get(`/api/skill-share/available/${listing.id}`)
+      .expect(200);
+    expect(preview.body.skill.id).toBe(listing.id);
+    expect(preview.body.skill.skillName).toBe("deck-maker");
+    expect(preview.body.skill.previousNames).toEqual(["pptx-report"]);
+    expect(preview.body.content).toContain("Make the deck.");
+    expect(preview.body.manifest.files.map((f: { path: string }) => f.path)).toContain("SKILL.md");
+    // A viewer action must never bump updated_at — the owner's listing order is
+    // theirs, exactly as for the preview's fingerprint refresh.
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].updatedAt).toBe(before.updatedAt);
+  });
+
+  it("learn rescues a renamed source instead of pruning the share", { timeout: 30_000 }, async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      mate.userId,
+      seedRemote("mate-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "m", plugins: [] }),
+      }),
+      "main",
+    );
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const listing = (await mate.agent.get("/api/skill-share/available").expect(200)).body.skills[0];
+
+    renameRemoteSkill("sharer-repo", "pptx-report", "deck-maker");
+    const learned = await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id })
+      .expect(200);
+    expect(learned.body.slug).toBe("deck-maker");
+    // The share survived: the row moved rather than being pruned as stale.
+    const row = store.listSharedSkillsByOwner(sharer.userId)[0];
+    expect(row.id).toBe(listing.id);
+    expect(row.skillName).toBe("deck-maker");
+    expect(store.skillLearnCounts(sharer.userId)).toEqual({ "deck-maker": 1 });
+  });
+
+  it("an update is still authorized by a marker naming the share's previous name", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      mate.userId,
+      seedRemote("mate-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "m", plugins: [] }),
+        // Never learned from anyone — the fail-closed control.
+        "skills/handmade/SKILL.md": "---\nname: handmade\n---\n",
+      }),
+      "main",
+    );
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const listing = (await mate.agent.get("/api/skill-share/available").expect(200)).body.skills[0];
+    await mate.agent.post("/api/skill-share/learn").send({ id: listing.id }).expect(200);
+
+    // Rename first (the share follows), then ship a new version.
+    renameRemoteSkill("sharer-repo", "pptx-report", "deck-maker");
+    await sharer.agent.get("/api/skill-share/mine").expect(200);
+    updateRemoteFile("sharer-repo", "skills/deck-maker/SKILL.md", `${SKILL_MD}\n## v2\n`);
+    await sharer.agent.get("/api/skill-share/mine").expect(200);
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].previousNames).toEqual(["pptx-report"]);
+
+    // The learner's copy kept its own slug AND a marker naming the old share.
+    const mateCtx = knowledgeRepoContextFor(store, mate.userId, config)!;
+    expect(readSkillOrigin(await ensureClone(mateCtx), "pptx-report")?.skillName).toBe(
+      "pptx-report",
+    );
+    const updated = await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "pptx-report" })
+      .expect(200);
+    expect(updated.body.updated).toBe(true);
+
+    // The marker self-heals to the share's CURRENT name, so the trail is only
+    // ever needed once per learner.
+    const healed = await ensureClone(mateCtx);
+    expect(readSkillOrigin(healed, "pptx-report")?.skillName).toBe("deck-maker");
+    expect(
+      fs.readFileSync(path.join(healed, "skills", "pptx-report", "SKILL.md"), "utf8"),
+    ).toContain("## v2");
+    // A genuinely foreign copy still fails closed.
+    await mate.agent
+      .post("/api/skill-share/learn")
+      .send({ id: listing.id, updateSlug: "handmade" })
+      .expect(409);
+  });
+
   it("mine reconciles stale rows: a share whose dir vanished is unshared", async () => {
     const { app, store } = bootstrap();
     const sharer = await newUser(app, "sharer");
@@ -1628,6 +2175,44 @@ describe("mcp skill_exchange tools", () => {
     });
     expect(both.isError).toBe(true);
     expect(both.content[0].text).toContain("mutually exclusive");
+  });
+
+  it("learn_skill update:true finds a copy learned under the share's previous name", { timeout: 30_000 }, async () => {
+    const { app, store, config } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    store.setKnowledgeRepo(
+      mate.userId,
+      seedRemote("mate-repo", {
+        ".claude-plugin/marketplace.json": JSON.stringify({ name: "m", plugins: [] }),
+      }),
+      "main",
+    );
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const tools = toolsFor(store, config, mate.userId, "mate");
+    await callTool(tools, "learn_skill", { owner_username: "sharer", skill_name: "pptx-report" });
+
+    // The share follows a rename; the learner's marker still names the old one.
+    renameRemoteSkill("sharer-repo", "pptx-report", "deck-maker");
+    await sharer.agent.get("/api/skill-share/mine").expect(200);
+    updateRemoteFile("sharer-repo", "skills/deck-maker/SKILL.md", `${SKILL_MD}\n## v2\n`);
+    await sharer.agent.get("/api/skill-share/mine").expect(200);
+
+    const updated = await callTool(tools, "learn_skill", {
+      owner_username: "sharer",
+      skill_name: "deck-maker",
+      update: true,
+    });
+    expect(updated.isError).toBeFalsy();
+    expect(updated.content[0].text).toContain('Updated "pptx-report"');
+    const mateRoot = await ensureClone(knowledgeRepoContextFor(store, mate.userId, config)!);
+    expect(
+      fs.readFileSync(path.join(mateRoot, "skills", "pptx-report", "SKILL.md"), "utf8"),
+    ).toContain("## v2");
+    expect(readSkillOrigin(mateRoot, "pptx-report")?.skillName).toBe("deck-maker");
   });
 
   it("unlink_skill stops tracking mid-conversation", { timeout: 30_000 }, async () => {
