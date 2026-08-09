@@ -148,8 +148,9 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
     }
 
     /**
-     * Delete a group, its memberships, and its shared agent (row + every
-     * member's conversations with it — manual cascade, no ON DELETE CASCADE).
+     * Delete a group, its memberships, its shared-skill channel blocks, and its
+     * shared agent (row + every member's conversations with it — manual
+     * cascade, no ON DELETE CASCADE).
      * On-disk leftovers (group-knowledge clone, agent image, workspaces) are
      * the route's job: see cleanupGroupDataDirs in ../groupAgents.ts.
      * Returns false if it didn't exist.
@@ -184,6 +185,12 @@ export function withGroups<TBase extends Constructor<StoreBase>>(Base: TBase) {
         }
         this.db.prepare("DELETE FROM group_agents WHERE group_id = ?").run(id);
         this.db.prepare("DELETE FROM group_members WHERE group_id = ?").run(id);
+        // This group's shared-skill channel blocks: they only ever meant
+        // "not through THIS group", so they die with it (a surviving row would
+        // also match a recycled group id).
+        this.db
+          .prepare("DELETE FROM shared_skill_group_blocks WHERE group_id = ?")
+          .run(id);
         this.db.prepare("DELETE FROM groups WHERE id = ?").run(id);
       });
       tx();

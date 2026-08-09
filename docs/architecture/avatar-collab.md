@@ -65,8 +65,9 @@
   touches the sharer's clone — share, owner mine reconciliation (this ALSO bumps updated_at), and
   teammate preview/learn (`setSharedSkillContentHash`, hash-only so a viewer can't reorder the owner's
   listing). Each learn writes a provenance marker `skills/<slug>/.noah-skill-origin.json`
-  (owner id/@username, source skillName, source hash, learnedAt; chain-shares record their IMMEDIATE
-  source). The client joins mine.origin.contentHash × listing.contentHash → "업데이트 있음" +
+  (owner id/@username, source skillName, source hash, learnedAt; written LAST so it overwrites any
+  marker that reached the copy — chains can no longer START, since a marker-carrying dir is refused at
+  share time). The client joins mine.origin.contentHash × listing.contentHash → "업데이트 있음" +
   업데이트 받기; the update path (`learn {updateSlug}` / `learn_skill {update:true}`) replaces the
   learner's copy IN PLACE and is authorized by the origin marker, NOT the directory name — a mismatch
   fails closed (`NOT_LEARNED_FROM_SHARE`). The MCP update resolves the learner's slug from the markers
@@ -78,6 +79,26 @@
   UNLINK (구독 해지) is the marker's deletion: `unlinkSkillOrigin` (route `POST /api/skill-share/unlink`,
   mine-row 연결 끊기 action, `mcp__skill_exchange__unlink_skill`) commits the removal — the copy stays,
   tracking/badges stop, and re-learning the same share later is a fresh copy.
+- **A LEARNED copy is NOT re-shareable while it is linked.** The avatar-discovery boundary must hold for
+  CONTENT, not just rows: a learner re-sharing their copy carries the original owner's material to
+  teammates the owner never shared it with, duplicates the listing (two cards, one skill), leaves stale
+  chains that never see the original's updates, and credits the wrong author. `assertSkillShareable`
+  (skillTransfer.ts) is the ONE choke point — throws `SKILL_IS_LEARNED_COPY` (a `SkillIsLearnedCopyError`
+  carrying the marker, so callers name the sharer without re-reading it) whenever `skills/<slug>/` still
+  has an origin marker — and BOTH share paths call it after the clone is fresh, before the row is
+  written: `POST /api/skill-share/share` (409, Korean 연결 끊기 안내) and
+  `mcp__skill_exchange__share_skill` (English redirect naming @sharer + both recoveries). UNLINK is the
+  deliberate ownership claim that lifts it — 구독 해지 already means "the copy is fully mine" — so the
+  recovery is an action the user already has, in the same tab. Rows created BEFORE this rule drain
+  WITHOUT an operator or a schema change, through the two hygiene paths that already handle a deleted
+  dir: the owner's `mine` reconciliation unshares a row whose dir now carries a marker, and the teammate
+  preview/learn path prunes it (`learnSkillIntoRepo` re-applies the same guard to the SOURCE dir, so the
+  learn catch prunes on `SKILL_IS_LEARNED_COPY` exactly as on `SKILL_NOT_FOUND`). That guard sits BEFORE
+  the `updateSlug` branch, so a pre-existing chain's UPDATE path (업데이트 받기 from a linked source) also
+  refuses with `SKILL_IS_LEARNED_COPY` and prunes the row — chains DRAIN rather than keep updating.
+  `skill_learn_events` history is keyed by owner+skill_name and survives the unshare, by design.
+  A corrupt/unreadable marker reads as NO marker (`readSkillOrigin` → null) and stays shareable: fail
+  open, because a copy that makes no provenance claim is the owner's own.
 - **The feed includes the viewer's OWN shares** (route merges `listSharedSkillsByOwner` ahead of
   `listLearnableSkills`, mirroring 탐색's "나" card): that's how an owner sees their skill's 전수 count
   in context. The client badges them 나 and drops the learn button; `listLearnableSkills` itself stays
@@ -92,11 +113,35 @@
   `learned N×` marker, and describe_system's owner total (`OwnerState.sharedSkillLearnTotal`,
   describe_system-only like gitRepoCount). Learner ids are stored ONLY for the deleteUser cascade
   (both axes purge — product data, not an audit trail); the UI never shows who learned.
+- **A GROUP ADMIN can take a member's share out of THEIR group's channel — moderation, not global
+  unshare.** An admin owns what circulates in their group, but nothing outside it: they must not be able
+  to revoke someone's sharing everywhere, and the owner's own listing is not theirs to edit. So a block is
+  a row in `shared_skill_group_blocks` keyed by **(group_id, owner_user_id, skill_name)** — the skill
+  NAME, not the share-row id, the same anti-evasion key as `skill_learn_events`: unshare→re-share mints a
+  new row that lands ALREADY blocked. The visibility rule is **"at least one mutual sharing group with no
+  block"**: `LEARNABLE_SKILLS_FROM`'s teammate test became an `EXISTS` over the shared groups with a
+  correlated `NOT EXISTS` block check, so a block subtracts exactly ONE group for exactly ONE
+  (owner, skill) — that is the admin's authority radius, and it's why the fragment now diverges from
+  `VISIBILITY_WHERE`'s `IN (…)` (the suspended/`group`/SHARING_TEAMMATES half still moves in lockstep;
+  avatar visibility itself is never touched). Enforcement is at the STORE QUERY level and so fails closed:
+  the learnable listing AND the single-row lookups (`getLearnableSkill`/`getLearnableSkillByName`) are all
+  built on that one fragment, so preview/learn by id can't route around a block, and
+  `mcp__skill_exchange__find_shared_skills` + the metacognition `learnableSkillCount` follow for free —
+  no route logic changed. What a block does NOT do: learned copies stay in learners' repos (the same
+  "what crossed the boundary belongs to the receiver" line as `ask_avatar`), the owner's `mine` view and
+  their share row are untouched (they are never told which group blocked them), and other groups keep
+  carrying the skill. Managed by `canManageGroup` (system admin OR that group's admin) at
+  `GET/POST/DELETE /api/me/groups/:id/shared-skills[/blocks…]` in routes/groups.ts, audited as
+  `group_skill_block`/`group_skill_unblock`. Cascades: `deleteGroup` drops its blocks (a surviving row
+  would also match a recycled group id); `deleteUser` purges blocks where the deleted user is the OWNER
+  (their shares vanish anyway) while `blocked_by` DANGLES like `groups.created_by` — a block outlives the
+  admin who set it, since dropping it would silently un-moderate a live channel.
 - **Reach = avatar discovery, exactly.** `LEARNABLE_SKILLS_FROM` (store/avatars.ts) mirrors
   `VISIBILITY_WHERE` minus the self-exception: not suspended + `visibility='group'` + SHARING_TEAMMATES
   co-membership. A `private` avatar's shares vanish; an `avatar_sharing`-off group grants nothing; your
   own shares are never "learnable" (managed via `listSharedSkillsByOwner`). Keep the two SQL fragments in
-  lockstep.
+  lockstep — the ONLY sanctioned divergence is the per-skill group-channel block above, which narrows the
+  teammate relation for one (owner, skill) without touching avatar visibility.
 - **Transfer plumbing lives in `skillTransfer.ts`** (server root, NOT knowledgeRepo.ts — it imports both
   knowledgeRepo and agent/skillDiscovery without cycles): `listRepoSkills` (scan `skills/<dir>/SKILL.md`),
   `copySkillDir` (lstat walk — symlinks SKIPPED never followed, 512KB/file + 4MB + 200 files + depth 8
@@ -106,7 +151,7 @@
   stale frontmatter name would load the skill under the OLD name and collide); a missing plugin.json is
   created (the marketplace entry is unloadable without one).
 - **Message-coded errors** in the knowledgeRepo style: `SKILL_NOT_FOUND`/`SKILL_EXISTS`/`INVALID_NAME`/
-  `SKILL_FILE_TOO_LARGE`/`SKILL_TOO_LARGE`/`TOO_MANY_FILES`. Decoded to Korean in `routes/skillShare.ts`
+  `SKILL_FILE_TOO_LARGE`/`SKILL_TOO_LARGE`/`TOO_MANY_FILES`/`SKILL_IS_LEARNED_COPY`. Decoded to Korean in `routes/skillShare.ts`
   (`LEARN_ERROR_KO`, 409 drives the client's rename flow) and to English redirects in
   `skillExchangeTools.decodeLearnError`.
 - **Registration:** `skillExchangeActive` (= `avatars` group enabled && `ownerToolAccess`) drives
@@ -121,7 +166,8 @@
   to `mcp__repo__read_file` the new SKILL.md to apply it immediately.
 - **Hygiene:** `GET /api/skill-share/mine` reconciles rows against the working tree (dir gone → unshare;
   drifted name/description → re-snapshot); a learn/preview that finds the dir deleted also prunes the
-  stale row; the knowledge-repo PUT clears ALL of the owner's shares on disconnect or repoint
+  stale row (a dir that now carries an origin marker drains through those SAME two paths — see the
+  no-re-share bullet); the knowledge-repo PUT clears ALL of the owner's shares on disconnect or repoint
   (`clearSharedSkills` — a same-repo re-save keeps them). `deleteUser` cascades `shared_skills` by owner
   (learned copies are FILES in learners' repos, intentionally untouched — like ask_avatar, what crossed
   the boundary belongs to the receiver).

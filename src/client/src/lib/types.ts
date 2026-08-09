@@ -23,6 +23,7 @@ export type {
   GroupAgent,
   GroupAgentCaptureScope,
   GroupMember,
+  GroupSharedSkill,
   ImageMediaType,
   KnowledgeGraph,
   KnowledgeGraphNode,

@@ -148,6 +148,20 @@ describe("SkillsView", () => {
     expect(screen.getByRole("switch", { name: "my-skill 공유" }).getAttribute("aria-checked")).toBe(
       "true",
     );
+    // A still-linked learned copy can't be re-shared (the server 409s), so the
+    // toggle is locked and the row says how to unlock it.
+    const learnedToggle = screen.getByRole("switch", {
+      name: "pptx-report 공유",
+    }) as HTMLButtonElement;
+    expect(learnedToggle.disabled).toBe(true);
+    expect(learnedToggle.getAttribute("title")).toContain("연결 끊기");
+    expect(
+      screen.getByText(/전수받은 스킬은 원본과 연결된 동안 공유할 수 없어요/),
+    ).toBeTruthy();
+    // My own (unlinked) skill stays shareable.
+    expect((screen.getByRole("switch", { name: "my-skill 공유" }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
   });
 
   it("guides to knowledge settings when no repo is connected", async () => {

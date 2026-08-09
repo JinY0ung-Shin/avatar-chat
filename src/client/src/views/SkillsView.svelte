@@ -482,6 +482,9 @@
               </div>
               {#if skill.origin}
                 <span class="sk-mine-desc">@{skill.origin.ownerUsername}의 {skill.origin.skillName}에서 전수받음</span>
+                <!-- 서버가 이 재공유를 409로 거절한다(assertSkillShareable). UI를
+                     정직하게 만들어 그 오류 경로에 도달하지 않게 한다. -->
+                <span class="sk-mine-desc">전수받은 스킬은 원본과 연결된 동안 공유할 수 없어요. 내 스킬로 공유하려면 먼저 ‘연결 끊기(구독 해지)’를 해 주세요.</span>
               {/if}
               {#if skill.description}<span class="sk-mine-desc">{skill.description}</span>{/if}
             </div>
@@ -498,6 +501,10 @@
               <Toggle
                 on={skill.shared}
                 label={`${skill.name} 공유`}
+                disabled={Boolean(skill.origin)}
+                title={skill.origin
+                  ? `@${skill.origin.ownerUsername}의 원본과 연결된 동안에는 공유할 수 없어요 (연결 끊기 후 가능)`
+                  : `${skill.name} 공유`}
                 onChange={(next) => setShared(skill, next)}
               />
             </div>

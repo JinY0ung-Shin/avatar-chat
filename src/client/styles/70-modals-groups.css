@@ -857,7 +857,10 @@
   flex: 0 1 auto;
   min-height: 28px;
 }
-.group-repo {
+/* Sub-sections inside one group block (shared repo, shared-skill channel):
+   same dashed separator + column stack. */
+.group-repo,
+.group-shared-skills {
   display: flex;
   flex-direction: column;
   gap: var(--s-2);

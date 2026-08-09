@@ -581,6 +581,15 @@ export interface SharedSkillListing extends SharedSkill {
   };
 }
 
+/**
+ * A member's share as ONE group's admin sees it, for the group-channel
+ * moderation list. `blocked` is per-group state, not a property of the share:
+ * the same row can be blocked in one group and still learnable through another.
+ */
+export interface GroupSharedSkill extends SharedSkillListing {
+  blocked: boolean;
+}
+
 export interface AvatarSummary {
   id: string;
   username: string;

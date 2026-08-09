@@ -547,6 +547,24 @@ export class StoreBase {
       );
       CREATE INDEX IF NOT EXISTS idx_skill_learn_events_skill ON skill_learn_events(owner_user_id, skill_name);
       CREATE INDEX IF NOT EXISTS idx_skill_learn_events_learner ON skill_learn_events(learner_user_id);
+      -- GROUP-CHANNEL BLOCK on a shared skill (group-admin moderation): this
+      -- group's discovery channel no longer carries (owner, skill_name). Keyed
+      -- by the skill NAME — not the shared_skills row id — for the same
+      -- anti-evasion reason as skill_learn_events: an unshare→re-share mints a
+      -- new row but must stay blocked. Scoped to ONE group, which is exactly
+      -- the blocking admin's authority: the share stays visible through any
+      -- OTHER sharing group the viewer and owner share (see
+      -- LEARNABLE_SKILLS_FROM in store/avatars.ts). A brand-new table:
+      -- CREATE TABLE IF NOT EXISTS IS the existing-deployment migration.
+      CREATE TABLE IF NOT EXISTS shared_skill_group_blocks (
+        group_id TEXT NOT NULL,
+        owner_user_id TEXT NOT NULL,
+        skill_name TEXT NOT NULL,
+        blocked_by TEXT,
+        created_at TEXT,
+        PRIMARY KEY (group_id, owner_user_id, skill_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_shared_skill_group_blocks_skill ON shared_skill_group_blocks(owner_user_id, skill_name);
       CREATE INDEX IF NOT EXISTS idx_group_agents_group ON group_agents(group_id);
       CREATE INDEX IF NOT EXISTS idx_sessions_token_hash ON sessions(token_hash);
       CREATE INDEX IF NOT EXISTS idx_conversations_owner ON conversations(owner_user_id);

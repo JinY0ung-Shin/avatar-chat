@@ -10,12 +10,14 @@ import {
   SKILL_DIR,
 } from "../knowledgeRepo.js";
 import {
+  assertSkillShareable,
   hashSkillDir,
   learnSkillIntoRepo,
   listRepoSkills,
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
+  SkillIsLearnedCopyError,
   unlinkSkillOrigin,
 } from "../skillTransfer.js";
 import { apiError, safeString, type RouterDeps } from "./_shared.js";
@@ -60,7 +62,30 @@ const LEARN_ERROR_KO: Record<string, { status: number; message: string }> = {
     status: 409,
     message: "전수 후 수정한 스킬입니다. 덮어쓰면 수정 내용이 사라져요 (저장소 이력에는 남습니다).",
   },
+  // SOURCE side of the re-share guard: the share row points at a copy its owner
+  // learned from someone else (a row from before that was refused). Handlers
+  // that hit this PRUNE the row, exactly like a share whose directory is gone.
+  SKILL_IS_LEARNED_COPY: {
+    status: 404,
+    message:
+      "이 공유는 다른 아바타에게서 전수받은 사본이라 더 이상 전수받을 수 없습니다. 원작자의 공유를 찾아 주세요.",
+  },
 };
+
+/**
+ * 409 body for a re-share the provenance marker blocks. Learned copies stay
+ * inside the original owner's discovery boundary until the learner claims them
+ * with 연결 끊기 (구독 해지).
+ */
+function reshareBlockedKo(error: unknown): string {
+  const from =
+    error instanceof SkillIsLearnedCopyError ? `@${error.origin.ownerUsername}` : "원작자";
+  return (
+    `${from}에게서 전수받은 스킬은 원본과 연결된 동안 다시 공유할 수 없습니다. ` +
+    `동료에게는 ${from}의 원본 공유를 안내하고, 내 스킬로 공유하려면 ` +
+    `먼저 '연결 끊기(구독 해지)' 후 다시 시도해 주세요.`
+  );
+}
 
 /**
  * Attribute one of MY OWN share rows as a listing. The store's learnable query
@@ -115,6 +140,11 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       }
       const repoSkills = listRepoSkills(repoRoot);
       const bySlug = new Map(repoSkills.map((s) => [s.slug, s]));
+      // Provenance for LEARNED skills (전수받은 것) — read once: it drives BOTH
+      // the reconciliation below and the response's origin field.
+      const originBySlug = new Map(
+        repoSkills.map((s) => [s.slug, readSkillOrigin(repoRoot, s.slug)]),
+      );
       const sharedRows = store.listSharedSkillsByOwner(req.user!.id);
       // 전수된 횟수 — keyed by skill name, so a currently-unshared skill keeps
       // showing its history (events outlive the share row).
@@ -124,6 +154,14 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         const current = bySlug.get(row.skillName);
         if (!current) {
           store.unshareSkill(req.user!.id, row.skillName); // dir gone → stale row
+          continue;
+        }
+        // Legacy row: the dir now carries an origin marker, so this share was
+        // created before re-sharing linked copies was refused. Drain it here
+        // like a deleted dir — no operator, no migration (learn history is
+        // keyed by owner+skill_name and survives the unshare by design).
+        if (originBySlug.get(current.slug)) {
+          store.unshareSkill(req.user!.id, row.skillName);
           continue;
         }
         shared.add(row.skillName);
@@ -151,10 +189,10 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
           description: s.description,
           shared: shared.has(s.slug),
           learnCount: learnCounts[s.slug] ?? 0,
-          // Provenance for LEARNED skills (전수받은 것): who it came from and
-          // the source hash at learn time — the client joins this against the
-          // shared listing's current hash to flag available updates.
-          origin: readSkillOrigin(repoRoot, s.slug),
+          // Who it came from and the source hash at learn time — the client
+          // joins this against the shared listing's current hash to flag
+          // available updates (and a set origin means "not re-shareable").
+          origin: originBySlug.get(s.slug) ?? null,
         })),
       });
     },
@@ -185,6 +223,12 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       const skill = readRepoSkill(repoRoot, skillName);
       if (!skill) {
         apiError(res, 404, "지식 저장소에 없는 스킬입니다.");
+        return;
+      }
+      try {
+        assertSkillShareable(repoRoot, skill.slug);
+      } catch (error) {
+        apiError(res, 409, reshareBlockedKo(error));
         return;
       }
       const row = store.shareSkill(req.user!.id, {
@@ -305,6 +349,9 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       }
       try {
         const srcRoot = await ensureClone(sharerCtx);
+        // Before serving anything: a source that is itself a linked copy is a
+        // row from before re-sharing those was refused (see the catch).
+        assertSkillShareable(srcRoot, listing.skillName);
         const content = await readFile(srcRoot, `${SKILL_DIR}/${listing.skillName}/SKILL.md`);
         // The clone is fresh — opportunistically refresh the fingerprint so
         // update badges appear even before the owner next opens their tab.
@@ -319,6 +366,14 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         if (message === "NOT_FOUND" || (error as NodeJS.ErrnoException).code === "ENOENT") {
           store.unshareSkill(listing.ownerUserId, listing.skillName); // stale share
           apiError(res, 404, "공유한 아바타의 저장소에서 이 스킬을 찾을 수 없습니다.");
+          return;
+        }
+        if (message === "SKILL_IS_LEARNED_COPY") {
+          // Legacy row, drained on sight like a deleted dir: teammates must not
+          // be served content that escaped the original owner's boundary.
+          store.unshareSkill(listing.ownerUserId, listing.skillName);
+          const known = LEARN_ERROR_KO.SKILL_IS_LEARNED_COPY;
+          apiError(res, known.status, known.message);
           return;
         }
         apiError(res, 502, `스킬을 불러오지 못했습니다: ${scrubGitError(error)}`);
@@ -418,7 +473,9 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         const message = error instanceof Error ? error.message : "";
         const known = LEARN_ERROR_KO[message];
         if (known) {
-          if (message === "SKILL_NOT_FOUND") {
+          // Both stale-row shapes drain here: the source dir is gone, or it
+          // turned out to be a linked copy (a row predating that refusal).
+          if (message === "SKILL_NOT_FOUND" || message === "SKILL_IS_LEARNED_COPY") {
             store.unshareSkill(listing.ownerUserId, listing.skillName); // stale share
           }
           apiError(res, known.status, known.message);

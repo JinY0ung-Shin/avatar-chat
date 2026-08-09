@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type {
   AvatarDetail,
   AvatarSummary,
+  GroupSharedSkill,
   SharedSkill,
   SharedSkillListing,
 } from "../types.js";
@@ -39,6 +40,8 @@ interface SharedSkillRow {
   owner_display_name?: string;
   owner_alias?: string | null;
   owner_avatar_ext?: string | null;
+  /** 1 when this row is blocked in the group the management query asked about. */
+  blocked?: number;
 }
 
 /**
@@ -431,15 +434,33 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
      * with VISIBILITY_WHERE above, minus the self-exception: a viewer's own
      * shares are managed via listSharedSkillsByOwner, not browsed as learnable.
      * Binds TWO positional params, both the viewer id.
+     *
+     * The teammate test is an EXISTS over the shared groups rather than
+     * VISIBILITY_WHERE's `IN (…)` because a GROUP-CHANNEL BLOCK
+     * (shared_skill_group_blocks) removes ONE group from the relation for ONE
+     * (owner, skill_name): the share survives as long as SOME mutual sharing
+     * group is unblocked, and avatar visibility itself never changes. That
+     * per-skill subtraction is the ONLY intended divergence — the
+     * suspended/`group`/SHARING_TEAMMATES half stays in lockstep. Enforcing it
+     * HERE is what makes it fail closed: every learnable read (listing, by-id,
+     * by-name, count) is built on this fragment, so a direct id fetch from
+     * preview/learn can't route around a block.
      */
     private static readonly LEARNABLE_SKILLS_FROM = `FROM shared_skills s
            JOIN users u ON u.id = s.owner_user_id
            WHERE u.suspended = 0
              AND s.owner_user_id != ?
              AND u.visibility = 'group'
-             AND s.owner_user_id IN (
-               SELECT m2.user_id ${SHARING_TEAMMATES}
+             AND EXISTS (
+               SELECT 1 ${SHARING_TEAMMATES}
                WHERE m1.user_id = ?
+                 AND m2.user_id = s.owner_user_id
+                 AND NOT EXISTS (
+                   SELECT 1 FROM shared_skill_group_blocks b
+                   WHERE b.group_id = m1.group_id
+                     AND b.owner_user_id = s.owner_user_id
+                     AND b.skill_name = s.skill_name
+                 )
              )`;
 
     private toSharedSkill(row: SharedSkillRow): SharedSkill {
@@ -700,6 +721,79 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         `SELECT COUNT(*) AS c ${Avatars.LEARNABLE_SKILLS_FROM}`,
         viewerId,
         viewerId,
+      );
+    }
+
+    // ---- Group-channel blocks (group-admin moderation) ---------------------
+    // A group admin may take a member's shared skill out of THEIR group's
+    // discovery channel. The block is keyed by (group, owner, skill NAME) —
+    // like skill_learn_events, NOT the share-row id, so an unshare→re-share
+    // can't evade it — and it subtracts exactly one group from
+    // LEARNABLE_SKILLS_FROM's teammate relation: another mutual sharing group
+    // still carries the skill, avatar visibility is untouched, and copies
+    // already learned stay in their learners' repos.
+
+    /**
+     * Every share by a MEMBER of this group, with its owner, 전수 count, and
+     * whether it is blocked in THIS group — the group-admin management view.
+     * Unlike the learnable listing this is not viewer-scoped: an admin manages
+     * their channel, so blocked rows stay listed (that's how they're unblocked).
+     */
+    listGroupSharedSkills(groupId: string): GroupSharedSkill[] {
+      const rows = this.db
+        .prepare(
+          `SELECT s.*, u.username AS owner_username, u.display_name AS owner_display_name,
+                  u.alias AS owner_alias, u.avatar_ext AS owner_avatar_ext,
+                  ${LEARN_COUNT_COLUMN},
+                  EXISTS (SELECT 1 FROM shared_skill_group_blocks b
+                          WHERE b.group_id = ?
+                            AND b.owner_user_id = s.owner_user_id
+                            AND b.skill_name = s.skill_name) AS blocked
+           FROM shared_skills s
+           JOIN users u ON u.id = s.owner_user_id
+           JOIN group_members m ON m.user_id = s.owner_user_id AND m.group_id = ?
+           ORDER BY u.display_name COLLATE NOCASE ASC, s.skill_name COLLATE NOCASE ASC`,
+        )
+        .all(groupId, groupId) as SharedSkillRow[];
+      return rows.map((row) => ({
+        ...this.toSharedSkillListing(row),
+        blocked: row.blocked === 1,
+      }));
+    }
+
+    /**
+     * Block one owner's skill in one group's channel (idempotent — an already
+     * blocked row keeps its original blocker/timestamp). Deliberately does NOT
+     * require a live share row: the key is the skill NAME, so blocking survives
+     * (and pre-empts) an unshare→re-share cycle.
+     */
+    blockSharedSkillInGroup(
+      groupId: string,
+      ownerUserId: string,
+      skillName: string,
+      blockedBy: string | null = null,
+    ): void {
+      this.db
+        .prepare(
+          `INSERT INTO shared_skill_group_blocks (group_id, owner_user_id, skill_name, blocked_by, created_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (group_id, owner_user_id, skill_name) DO NOTHING`,
+        )
+        .run(groupId, ownerUserId, skillName, blockedBy, now());
+    }
+
+    /** Lift a group-channel block. False when it wasn't blocked. */
+    unblockSharedSkillInGroup(
+      groupId: string,
+      ownerUserId: string,
+      skillName: string,
+    ): boolean {
+      return (
+        this.db
+          .prepare(
+            "DELETE FROM shared_skill_group_blocks WHERE group_id = ? AND owner_user_id = ? AND skill_name = ?",
+          )
+          .run(groupId, ownerUserId, skillName).changes > 0
       );
     }
   };

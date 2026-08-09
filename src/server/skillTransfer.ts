@@ -122,9 +122,13 @@ export const SKILL_ORIGIN_FILE = ".noah-skill-origin.json";
 /**
  * Deterministic content hash of one skill directory: sha256 over the sorted
  * repo-relative paths + file bytes, mirroring copySkillDir's traversal
- * (symlinks and specials skipped, origin marker excluded so a learned copy's
- * RE-share hashes like the original). Null when the dir is missing or blows
- * the transfer caps (such a skill can't transfer anyway).
+ * (symlinks and specials skipped). Excluding the origin marker is still
+ * REQUIRED, for a different reason than re-sharing (which is now refused —
+ * assertSkillShareable): every comparison a learned copy takes part in is
+ * against a marker-less hash — the SOURCE dir's, for update detection, and its
+ * own marker's localHash, for customization detection — so the marker must be
+ * invisible on both sides. Null when the dir is missing or blows the transfer
+ * caps (such a skill can't transfer anyway).
  */
 export function hashSkillDir(repoRoot: string, slug: string): string | null {
   const lexical = resolveInRepo(repoRoot, `${SKILL_DIR}/${slug}`);
@@ -216,10 +220,42 @@ export function readSkillOrigin(repoRoot: string, slug: string): SkillOrigin | n
 }
 
 /**
+ * Refusal thrown by assertSkillShareable. Message-coded like every other error
+ * in this module (callers switching on `error.message` keep working); `origin`
+ * rides along so they can name the sharer without re-reading the marker.
+ */
+export class SkillIsLearnedCopyError extends Error {
+  constructor(readonly origin: SkillOrigin) {
+    super("SKILL_IS_LEARNED_COPY");
+    this.name = "SkillIsLearnedCopyError";
+  }
+}
+
+/**
+ * Refuse to publish a skill directory that still carries a provenance marker.
+ * A learned copy lives inside the ORIGINAL owner's avatar-discovery boundary:
+ * re-sharing it would carry the CONTENT past that boundary, duplicate the
+ * listing, and credit the wrong author. Unlinking (구독 해지) is the deliberate
+ * ownership claim that lifts the refusal — see unlinkSkillOrigin.
+ *
+ * The one choke point for both share paths (the share endpoint in
+ * routes/skillShare.ts and mcp__skill_exchange__share_skill) and for the SOURCE
+ * side of a learn. A corrupt/unreadable marker reads as no marker
+ * (readSkillOrigin's null): a copy making no provenance claim is shareable.
+ */
+export function assertSkillShareable(repoRoot: string, slug: string): void {
+  const origin = readSkillOrigin(repoRoot, slug);
+  if (origin) {
+    throw new SkillIsLearnedCopyError(origin);
+  }
+}
+
+/**
  * Unlink a learned copy from its share (구독 해지): delete the origin marker
- * and commit. The skill itself stays; update badges/tracking stop, and a
- * later re-learn of the same share is a NEW copy. Throws NO_ORIGIN when the
- * slug has no marker (never learned, or already unlinked).
+ * and commit. The skill itself stays; update badges/tracking stop, the copy
+ * becomes shareable as the owner's own, and a later re-learn of the same share
+ * is a NEW copy. Throws NO_ORIGIN when the slug has no marker (never learned,
+ * or already unlinked).
  */
 export async function unlinkSkillOrigin(opts: {
   learnerCtx: KnowledgeRepoContext;
@@ -438,8 +474,9 @@ export interface LearnResult {
  * allowed ONLY when that directory carries an origin marker for the SAME
  * (sharer, skillName) pair (fail closed: NOT_LEARNED_FROM_SHARE otherwise).
  *
- * Message-coded errors from copySkillDir propagate; clone/push failures throw
- * raw git errors (callers scrub via scrubGitError).
+ * Message-coded errors from copySkillDir propagate, plus SKILL_IS_LEARNED_COPY
+ * when the SOURCE is itself a linked copy (a legacy row — prune it); clone/push
+ * failures throw raw git errors (callers scrub via scrubGitError).
  */
 export async function learnSkillIntoRepo(opts: {
   sharerCtx: KnowledgeRepoContext;
@@ -478,6 +515,10 @@ export async function learnSkillIntoRepo(opts: {
   if (!source) {
     throw new Error("SKILL_NOT_FOUND");
   }
+  // A share row pointing at a still-linked LEARNED copy predates the
+  // no-re-share rule: refuse rather than extend the chain (callers prune the
+  // stale row, the same way they prune a share whose directory is gone).
+  assertSkillShareable(srcRoot, opts.skillName);
   const sourceHash = hashSkillDir(srcRoot, opts.skillName);
   if (opts.updateSlug) {
     // Only a copy that PROVABLY came from this share may be replaced — the
@@ -505,10 +546,11 @@ export async function learnSkillIntoRepo(opts: {
   }
   const stats = await copySkillDir(srcRoot, opts.skillName, destRoot, destSlug);
   await rewriteSkillIdentity(destRoot, destSlug, source.description);
-  // Provenance marker LAST so it overwrites any origin file the source copy
-  // carried (chain-shares record THEIR immediate source, not the first one).
-  // localHash is the DEST dir hash post-rewrite (marker file excluded), so a
-  // later mismatch means the learner customized the copy.
+  // Provenance marker LAST so it overwrites any origin file that reached the
+  // destination (a marker-carrying source is refused above, and update mode
+  // wipes the dir first — this just keeps the invariant local). localHash is
+  // the DEST dir hash post-rewrite (marker file excluded), so a later mismatch
+  // means the learner customized the copy.
   const originAbs = path.join(
     resolveInRepo(destRoot, `${SKILL_DIR}/${destSlug}`)!,
     SKILL_ORIGIN_FILE,

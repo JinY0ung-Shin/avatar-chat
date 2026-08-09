@@ -415,6 +415,14 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         this.db
           .prepare("DELETE FROM skill_learn_events WHERE owner_user_id = ? OR learner_user_id = ?")
           .run(id, id);
+        // Group-channel blocks ON this user's shares: their listings are gone,
+        // so the blocks have nothing left to hide. Only the OWNER axis purges —
+        // `blocked_by` is an actor column and DANGLES like groups.created_by and
+        // audit.actor_user_id (a block by a since-deleted admin still stands;
+        // dropping it would silently un-moderate another group's channel).
+        this.db
+          .prepare("DELETE FROM shared_skill_group_blocks WHERE owner_user_id = ?")
+          .run(id);
         this.db
           .prepare("DELETE FROM avatar_notifications WHERE owner_user_id = ? OR avatar_user_id = ?")
           .run(id, id);

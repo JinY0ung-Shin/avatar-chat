@@ -9,12 +9,14 @@ import {
   commitIdentityFor,
 } from "../knowledgeRepo.js";
 import {
+  assertSkillShareable,
   hashSkillDir,
   learnSkillIntoRepo,
   listRepoSkills,
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
+  SkillIsLearnedCopyError,
   unlinkSkillOrigin,
 } from "../skillTransfer.js";
 import { text } from "./mcpTools.js";
@@ -263,7 +265,8 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
       "share_skill",
       "Shares one of THIS avatar's knowledge-repo skills (a `skills/<name>/` directory) so same-group teammates can browse and learn it. " +
         "**Use this when the user asks to share/publish a skill with the team or another user.** " +
-        "Re-sharing an already-shared skill just refreshes its listed description. (owner only)",
+        "Re-sharing an already-shared skill just refreshes its listed description. " +
+        "A skill LEARNED from another avatar and still linked to that share is refused — unlink it first to claim it as this avatar's own, then share. (owner only)",
       {
         skill_name: z
           .string()
@@ -300,6 +303,13 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
             true,
           );
         }
+        // Same guard the share endpoint uses: a copy still linked to the share
+        // it was learned from is not this avatar's to publish.
+        try {
+          assertSkillShareable(repoRoot, skill.slug);
+        } catch (error) {
+          return text(decodeShareBlocked(error, skill.slug), true);
+        }
         store.shareSkill(ctx.avatarUserId, {
           skillName: skill.slug,
           displayName: skill.name,
@@ -320,8 +330,8 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
     ),
     tool(
       "unlink_skill",
-      "Unlinks a LEARNED skill from its share (구독 해지): removes the provenance marker and commits, so update notifications from the original sharer stop and the copy becomes fully the owner's own. The skill's content is untouched. " +
-        "**Use this when the user asks to stop following/tracking updates for a skill they learned** — NOT for deleting the skill (that is mcp__repo__delete_file) and NOT for unsharing their own share (that is unshare_skill). " +
+      "Unlinks a LEARNED skill from its share (구독 해지): removes the provenance marker and commits, so update notifications from the original sharer stop and the copy becomes fully the owner's own — and, being the owner's own, shareable with share_skill (a still-linked copy cannot be). The skill's content is untouched. " +
+        "**Use this when the user asks to stop following/tracking updates for a skill they learned, or to share a learned skill as their own** — NOT for deleting the skill (that is mcp__repo__delete_file) and NOT for unsharing their own share (that is unshare_skill). " +
         "Re-learning the same share afterwards creates a fresh copy. (owner only)",
       {
         skill_name: z
@@ -405,6 +415,23 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
   ];
 }
 
+/**
+ * Agent-facing REDIRECT for a share the provenance marker blocks: name the
+ * sharer the copy is still linked to, and give BOTH ways forward — teammates
+ * learn from the original share, or the owner claims the copy by unlinking it.
+ */
+function decodeShareBlocked(error: unknown, slug: string): string {
+  const from =
+    error instanceof SkillIsLearnedCopyError
+      ? `@${error.origin.ownerUsername}`
+      : "the avatar it was learned from";
+  return (
+    `"${slug}" was learned from ${from}'s share and is still linked to it, so this avatar cannot re-share it — that would carry ${from}'s content past the teammates ${from} shared it with. ` +
+    `Teammates who can see ${from}'s avatar should learn it from that original share instead (they find it with find_shared_skills). ` +
+    `To distribute it as THIS avatar's own skill, the owner must first unlink it with mcp__skill_exchange__unlink_skill (update tracking from ${from} stops and the copy becomes fully the owner's), then call share_skill again.`
+  );
+}
+
 /** Map learnSkillIntoRepo failures to agent-facing REDIRECTS (English). */
 function decodeLearnError(error: unknown, listing: SharedSkillListing): string {
   const message = error instanceof Error ? error.message : "";
@@ -421,6 +448,8 @@ function decodeLearnError(error: unknown, listing: SharedSkillListing): string {
       return `The skill is too large to transfer (per-file 512KB, total 4MB, 200 files max). Tell the user; they can ask @${listing.owner.username} to slim the skill down.`;
     case "NOT_LEARNED_FROM_SHARE":
       return `That copy was not learned from @${listing.owner.username}'s share, so it cannot be overwritten as an update. Learn the shared skill as a NEW copy instead (optionally with new_name).`;
+    case "SKILL_IS_LEARNED_COPY":
+      return `@${listing.owner.username}'s "${listing.skillName}" is itself a copy learned from another avatar, so it cannot be passed on (that listing predates the rule and is no longer usable). Find the ORIGINAL sharer with find_shared_skills and learn it from them.`;
     case "SKILL_LOCALLY_MODIFIED":
       return "The learned copy was CUSTOMIZED after learning (or predates modification tracking). Do NOT overwrite silently: tell the user their local edits would be replaced by the sharer's version (git history keeps the old one), and only after they explicitly agree retry with overwrite_modified: true — or learn the new version as a separate copy with new_name to keep both.";
     default:

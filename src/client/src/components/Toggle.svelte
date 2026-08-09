@@ -4,11 +4,15 @@
   export let on = false;
   export let label = "사용";
   export let onChange: (next: boolean) => Promise<void> | void = () => {};
+  /** Locked by a PRECONDITION (not by an in-flight save) — `title` should say which. */
+  export let disabled = false;
+  /** Hover/AT explanation; defaults to `label` so the plain switch is unchanged. */
+  export let title = "";
 
   let busy = false;
 
   async function handle() {
-    if (busy) return;
+    if (busy || disabled) return;
     const next = !on;
     busy = true;
     try {
@@ -29,8 +33,8 @@
   aria-checked={on ? "true" : "false"}
   aria-busy={busy ? "true" : "false"}
   aria-label={label}
-  title={label}
-  disabled={busy}
+  title={title || label}
+  disabled={busy || disabled}
   on:click|stopPropagation={handle}
 >
   <span class="knob"></span>

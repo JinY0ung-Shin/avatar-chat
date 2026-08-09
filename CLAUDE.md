@@ -50,7 +50,14 @@ These are the invariants the project is built around. New work should reinforce 
   owner's avatar is visible in 탐색 (`SHARING_TEAMMATES`; private/suspended owners drop out). Learning
   COPIES `skills/<slug>/` into the learner's own repo and commits as the learner (`skillTransfer.ts` —
   symlinks never followed, size-capped); a learned skill LOADS from the next conversation, and both
-  metacognition surfaces + the tool result say so. The `mcp__skill_exchange__*` tools are owner-only end
+  metacognition surfaces + the tool result say so. The boundary holds for CONTENT, not just rows: a
+  learned copy is NOT re-shareable while its origin marker links it to the source
+  (`assertSkillShareable`; unlink/구독 해지 IS the ownership claim that unlocks sharing, and legacy chain
+  rows — including their update path — drain through the hygiene prunes), and a group admin can
+  channel-BLOCK an (owner, skill name) pair per group (`shared_skill_group_blocks`, enforced inside
+  `LEARNABLE_SKILLS_FROM` so every learnable read fails closed; a skill stays learnable only through an
+  unblocked mutual sharing group, blocks survive unshare→re-share, learned copies stay put). The
+  `mcp__skill_exchange__*` tools are owner-only end
   to end. Mechanics → `docs/architecture/avatar-collab.md`.
 - **git remote work is MCP-only BY DESIGN.** The agent shell has NO git credentials (stripped from the
   subprocess env), so Bash `git push`/`gh` can never authenticate. Route every git-ish capability through

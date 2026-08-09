@@ -22,7 +22,7 @@
 </script>
 
 <script lang="ts">
-  import { tick } from "svelte";
+  import { onMount, tick } from "svelte";
   // One group block in the 그룹 tab: teammate roster (searchable, chat shortcut),
   // and for group admins, member management (role toggle / remove) + a member-add
   // typeahead, plus the shared knowledge-repo card. Ports buildGroupBlock /
@@ -35,7 +35,7 @@
   import { notify, readState, newId } from "../lib/state";
   import { repoToHref } from "../lib/format";
   import { downscaleImageToDataUrl } from "../lib/dom";
-  import type { AvatarSummary, RepoPluginContents } from "../lib/types";
+  import type { AvatarSummary, GroupSharedSkill, RepoPluginContents } from "../lib/types";
   import { MCP_TOOL_GROUPS } from "../../../shared/mcpToolGroups";
   import AvatarImage from "./AvatarImage.svelte";
   import Icon from "./Icon.svelte";
@@ -704,6 +704,74 @@
   // REJECTS on a null 2d context and preserves jpeg/webp) — the old hand-rolled
   // copy silently uploaded a BLANK image when getContext returned null.
 
+  // ---- 공유 스킬 채널 관리 (그룹 관리자) ----
+  // 그룹원이 공유한 스킬을 이 그룹 채널에서만 내리는 moderation. 차단은
+  // (그룹, 소유자, 스킬 이름) 키라서 공유 해제 후 재공유해도 유지되고, 다른
+  // 공통 그룹이 있으면 그쪽으로는 계속 보인다(서버가 질의 단계에서 강제).
+  let sharedSkills: GroupSharedSkill[] = [];
+  let sharedSkillsLoading = false;
+  let sharedSkillsError = "";
+  let blockBusyKey = "";
+  const skillKey = (s: GroupSharedSkill) => `${s.ownerUserId}:${s.skillName}`;
+
+  // 관리자에게만 필요한 목록이라 관리자 카드에서만 불러온다 (메타데이터 전용
+  // 질의라 클론을 건드리지 않는다).
+  onMount(() => {
+    if (amAdmin) void loadSharedSkills();
+  });
+
+  async function loadSharedSkills(): Promise<void> {
+    if (sharedSkillsLoading) return;
+    sharedSkillsLoading = true;
+    sharedSkillsError = "";
+    try {
+      const { skills } = await api<{ skills: GroupSharedSkill[] }>(
+        `/api/me/groups/${encodeURIComponent(group.id)}/shared-skills`,
+      );
+      sharedSkills = skills;
+    } catch (err) {
+      sharedSkillsError = (err as Error).message;
+    } finally {
+      sharedSkillsLoading = false;
+    }
+  }
+
+  async function toggleSkillBlock(skill: GroupSharedSkill): Promise<void> {
+    if (blockBusyKey) return;
+    const title = skill.displayName || skill.skillName;
+    const confirmed = await confirmAction(
+      skill.blocked
+        ? `@${skill.owner.username}의 "${title}" 스킬 차단을 해제할까요? "${group.name}" 그룹원에게 다시 보입니다.`
+        : `@${skill.owner.username}의 "${title}" 스킬을 "${group.name}" 그룹 채널에서 차단할까요? 이 그룹을 통해서는 그룹원에게 보이지 않게 됩니다. 이미 전수받은 사본과 다른 그룹은 그대로예요.`,
+      skill.blocked
+        ? { title: "차단을 해제할까요?", confirmLabel: "차단 해제" }
+        : { title: "공유 스킬을 차단할까요?", confirmLabel: "차단", tone: "danger" },
+    );
+    if (!confirmed) return;
+    const base = `/api/me/groups/${encodeURIComponent(group.id)}/shared-skills/blocks`;
+    blockBusyKey = skillKey(skill);
+    try {
+      if (skill.blocked) {
+        await api(
+          `${base}/${encodeURIComponent(skill.ownerUserId)}/${encodeURIComponent(skill.skillName)}`,
+          { method: "DELETE" },
+        );
+        notify(`"${title}" 스킬 차단을 해제했습니다.`, "ok");
+      } else {
+        await api(base, {
+          method: "POST",
+          body: JSON.stringify({ ownerUserId: skill.ownerUserId, skillName: skill.skillName }),
+        });
+        notify(`"${title}" 스킬을 "${group.name}" 그룹 채널에서 차단했습니다.`, "ok");
+      }
+      await loadSharedSkills();
+    } catch (err) {
+      notify(`공유 스킬 차단 설정 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      blockBusyKey = "";
+    }
+  }
+
   // ---- avatar-sharing policy (group admins) ----
   let sharingSaving = false;
   async function toggleAvatarSharing(on: boolean): Promise<void> {
@@ -1107,6 +1175,65 @@
             {/if}
           </div>
         {/if}
+      {/if}
+    </div>
+
+    <div class="group-shared-skills">
+      <h4 class="knowledge-sub">공유 스킬</h4>
+      <div class="head-actions">
+        <span class="muted small nowrap">
+          {sharedSkillsError ? "조회 실패" : sharedSkillsLoading ? "불러오는 중" : `총 ${sharedSkills.length}개`}
+        </span>
+        <button class="linkish small" type="button" disabled={sharedSkillsLoading} on:click={() => void loadSharedSkills()}>새로고침</button>
+      </div>
+      <p class="muted small">
+        그룹원이 자기 지식 저장소에서 공유한 스킬입니다. 차단하면 이 그룹을 통해서는 보이지 않아요 — 다른 공통 그룹이 있으면 그쪽으로는 계속 보이고,
+        이미 전수받은 사본과 공유한 사람 본인의 목록은 그대로입니다. 공유를 해제했다가 다시 공유해도 차단은 유지돼요.
+      </p>
+      {#if !group.avatarSharing}
+        <p class="muted small">
+          지금은 그룹원 아바타 상호 공개가 꺼져 있어 이 그룹 채널로는 어차피 스킬이 보이지 않습니다. 차단 설정은 저장되고, 상호 공개를 다시 켜면 그대로 적용돼요.
+        </p>
+      {/if}
+      {#if sharedSkillsLoading && !sharedSkills.length}
+        <div class="muted" role="status">불러오는 중…</div>
+      {:else if sharedSkillsError}
+        <div class="warn-box" role="alert">
+          공유 스킬을 불러오지 못했습니다: {sharedSkillsError}
+          <button class="linkish" type="button" disabled={sharedSkillsLoading} on:click={() => void loadSharedSkills()}>다시 시도</button>
+        </div>
+      {:else if !sharedSkills.length}
+        <div class="empty-note">아직 이 그룹의 그룹원이 공유한 스킬이 없습니다.</div>
+      {:else}
+        <div class="plugin-rows">
+          {#each sharedSkills as skill (skillKey(skill))}
+            <div class="plugin-row" class:busy={blockBusyKey === skillKey(skill)} aria-busy={blockBusyKey === skillKey(skill) ? "true" : "false"}>
+              <AvatarImage user={skill.owner} size={32} alt="" />
+              <div class="pr-main">
+                <strong>{skill.displayName || skill.skillName}</strong>
+                <div class="pr-sub">
+                  {skill.owner.displayName} · @{skill.owner.username}
+                  {#if skill.displayName && skill.displayName !== skill.skillName} · {skill.skillName}{/if}
+                  · 전수 {skill.learnCount}회
+                </div>
+              </div>
+              {#if skill.blocked}<span class="tag read">차단됨</span>{/if}
+              <div class="pr-actions">
+                <button
+                  class="ghost-sm"
+                  class:danger={!skill.blocked}
+                  type="button"
+                  title={skill.blocked
+                    ? "이 그룹의 그룹원에게 다시 보이게 합니다"
+                    : "이 그룹을 통해서는 그룹원에게 보이지 않게 합니다"}
+                  aria-label={`${skill.displayName || skill.skillName} ${skill.blocked ? "차단 해제" : "차단"}`}
+                  disabled={Boolean(blockBusyKey)}
+                  on:click={() => toggleSkillBlock(skill)}
+                >{skill.blocked ? "차단 해제" : "차단"}</button>
+              </div>
+            </div>
+          {/each}
+        </div>
       {/if}
     </div>
   {:else}
