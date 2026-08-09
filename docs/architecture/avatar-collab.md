@@ -81,7 +81,9 @@
 - **The feed includes the viewer's OWN shares** (route merges `listSharedSkillsByOwner` ahead of
   `listLearnableSkills`, mirroring 탐색's "나" card): that's how an owner sees their skill's 전수 count
   in context. The client badges them 나 and drops the learn button; `listLearnableSkills` itself stays
-  others-only (it feeds the MCP find tool + the metacognition count).
+  others-only (it feeds the MCP find tool + the metacognition count). The preview route
+  (`available/:id`) falls back to the SAME own-share mapping when `getLearnableSkill` misses, since that
+  query excludes self — otherwise 미리보기 on one's own card would 404 (learn stays own-404 by design).
 - **Learn counts (전수된 횟수):** every successful learn inserts a `skill_learn_events` row keyed by
   (owner, skill_name) — NOT the share-row id — so counts survive unshare→re-share; recorded at the two
   call sites (route + MCP tool) AFTER copy+commit succeed. Surfaces: `SharedSkill.learnCount`

@@ -606,6 +606,13 @@ describe("skill-share routes", () => {
       .expect(200);
     expect(previewRes.body.content).toContain("Make the deck.");
     await outsider.agent.get(`/api/skill-share/available/${listing.id}`).expect(404);
+    // The SHARER previews their own card: the row is in their feed but excluded
+    // from the learnable query, so the route must resolve own shares separately.
+    const ownPreview = await sharer.agent
+      .get(`/api/skill-share/available/${listing.id}`)
+      .expect(200);
+    expect(ownPreview.body.content).toContain("Make the deck.");
+    expect(ownPreview.body.skill.ownerUserId).toBe(sharer.userId);
 
     // Learn: outsider 404; mate without conflicts 200; second learn 409; rename ok.
     await outsider.agent.post("/api/skill-share/learn").send({ id: listing.id }).expect(404);

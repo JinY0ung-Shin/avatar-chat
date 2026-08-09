@@ -19,6 +19,7 @@ import {
   unlinkSkillOrigin,
 } from "../skillTransfer.js";
 import { apiError, safeString, type RouterDeps } from "./_shared.js";
+import type { SharedSkill, SharedSkillListing, User } from "../types.js";
 
 // ---- Skill sharing between avatars (#skill-share) ----------------------
 // The owner-side management (share/unshare my repo skills) and the learner
@@ -60,6 +61,24 @@ const LEARN_ERROR_KO: Record<string, { status: number; message: string }> = {
     message: "전수 후 수정한 스킬입니다. 덮어쓰면 수정 내용이 사라져요 (저장소 이력에는 남습니다).",
   },
 };
+
+/**
+ * Attribute one of MY OWN share rows as a listing. The store's learnable query
+ * is others-only, so the viewer's own rows carry no joined owner — the feed and
+ * the preview route both build it from the authenticated user, right here.
+ */
+function ownShareListing(row: SharedSkill, me: User): SharedSkillListing {
+  return {
+    ...row,
+    owner: {
+      id: me.id,
+      username: me.username,
+      displayName: me.displayName,
+      alias: me.alias ?? "",
+      hasImage: Boolean(me.hasImage),
+    },
+  };
+}
 
 /** Commit message for a first learn vs. an in-place update. */
 function learnCommitMessage(
@@ -252,16 +271,7 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
               [s.skillName, s.displayName, s.description].join(" ").toLowerCase().includes(t),
             ),
         )
-        .map((s) => ({
-          ...s,
-          owner: {
-            id: me.id,
-            username: me.username,
-            displayName: me.displayName,
-            alias: me.alias ?? "",
-            hasImage: Boolean(me.hasImage),
-          },
-        }));
+        .map((s) => ownShareListing(s, me));
       res.json({
         skills: [...own, ...store.listLearnableSkills(me.id, query, { limit: 100 })],
       });
@@ -274,7 +284,16 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
     "/api/skill-share/available/:id",
     requireAuth(store),
     async (req: AuthenticatedRequest, res) => {
-      const listing = store.getLearnableSkill(req.user!.id, req.params.id);
+      const me = req.user!;
+      let listing = store.getLearnableSkill(me.id, req.params.id);
+      if (!listing) {
+        // My own shares are IN the feed (badged 나) but are deliberately not
+        // learnable — LEARNABLE_SKILLS_FROM excludes self — so 미리보기 on my
+        // own card resolves the row here or it would always 404. Everything
+        // below works unchanged: ownerUserId is my own id.
+        const own = store.listSharedSkillsByOwner(me.id).find((s) => s.id === req.params.id);
+        if (own) listing = ownShareListing(own, me);
+      }
       if (!listing) {
         apiError(res, 404, "공유된 스킬을 찾을 수 없습니다.");
         return;
