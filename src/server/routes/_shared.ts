@@ -29,13 +29,51 @@ export interface AppServices {
  * honouring the reverse proxy via `x-forwarded-host`/`x-forwarded-proto` the
  * same way the browser-extension bundle stamping does (routes/browserExtension.ts)
  * — behind the corporate proxy `req.protocol` reports the internal http hop.
- * Null when no host header is present.
+ *
+ * Both headers are CLIENT-CONTROLLED and a chained proxy APPENDS to them, so
+ * neither may be emitted verbatim: a comma-joined `x-forwarded-host` yields a
+ * malformed origin (new_tab then fails), and a forged one would hand the agent
+ * an attacker-chosen origin to open in the user's authenticated browser. So we
+ * take the first entry of each, parse, and demand a sane http(s) URL — failing
+ * CLOSED to null on anything else, exactly like `matchPatternForOrigin`
+ * (browserExtensionBundle.ts). Returning `url.origin` also normalizes for free
+ * (default ports dropped, hostname lowercased).
  */
 export function requestOrigin(req: AuthenticatedRequest): string | null {
-  const host = req.get("x-forwarded-host") || req.get("host");
+  const host = (req.get("x-forwarded-host") || req.get("host") || "").split(",")[0].trim();
   if (!host) return null;
   const proto = (req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim();
-  return `${proto}://${host}`;
+  // The scheme is checked BEFORE it is concatenated, not just on the parsed
+  // URL: a forged `x-forwarded-proto: "https://evil.com"` would otherwise smuggle
+  // its own authority into the string ("https://evil.com://noah.example" parses
+  // as host evil.com) and still come back with protocol "https:".
+  if (proto.toLowerCase() !== "http" && proto.toLowerCase() !== "https") return null;
+  try {
+    const url = new URL(`${proto}://${host}`);
+    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+    if (!url.host) return null;
+    return url.origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The OS of the browser making this chat request, or undefined when it can't be
+ * told. The browser bridge relays into the browser of the person chatting, so
+ * the requesting User-Agent IS the driven browser — the only platform signal
+ * the server has (the extension is never asked). It decides the paste-shortcut
+ * wording in the browser tool text; unknown falls back to a dual Ctrl/Cmd
+ * instruction rather than guessing.
+ */
+export function viewerPlatformFromUserAgent(
+  ua: string | undefined,
+): "mac" | "windows" | "linux" | undefined {
+  if (!ua) return undefined;
+  if (/Macintosh|Mac OS X/i.test(ua)) return "mac";
+  if (/Windows/i.test(ua)) return "windows";
+  if (/Linux|X11|CrOS/i.test(ua)) return "linux";
+  return undefined;
 }
 
 /** A small mutable holder for the model the SDK last reported (chat → admin). */

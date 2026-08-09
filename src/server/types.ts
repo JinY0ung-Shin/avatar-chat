@@ -1292,6 +1292,14 @@ export interface AgentRequest {
    */
   appOrigin?: string;
   /**
+   * The OS of the browser this turn drives, derived from the chat request's
+   * User-Agent (the bridge relays into the browser that is making the request).
+   * Drives the paste-shortcut wording in the browser tool text and prompt
+   * guidance — Cmd+V on macOS, Ctrl+V elsewhere. Undefined when the UA says
+   * nothing usable; the wording then mentions both.
+   */
+  viewerPlatform?: "mac" | "windows" | "linux";
+  /**
    * This interactive turn can publish PNG/JPEG/WebP/GIF files from its allowed
    * working directories into the assistant bubble with `show_file`, and share
    * generated documents as download cards with `share_file`.

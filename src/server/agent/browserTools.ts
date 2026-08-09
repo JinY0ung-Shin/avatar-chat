@@ -71,6 +71,31 @@ export interface BrowserToolsContext {
    * the caller elsewhere; absent when clipboard staging is not available.
    */
   stageClipboardImage?: (workspacePath: string) => Promise<{ path: string }>;
+  /**
+   * The OS of the browser this run drives (from the chat request's User-Agent —
+   * the bridge relays into the requesting browser). Only the paste shortcut
+   * depends on it: Ctrl+V is not paste on macOS, so a hardcoded ["Control"]
+   * silently pastes NOTHING there. Undefined = say both.
+   */
+  viewerPlatform?: "mac" | "windows" | "linux";
+}
+
+/**
+ * The exact `press_key` call that pastes, worded for the driven OS. Shared by
+ * copy_image's description and its success text so the two can't drift; both
+ * are rebuilt per run, so branching in the description is fine.
+ */
+function pasteInstruction(platform: BrowserToolsContext["viewerPlatform"]): string {
+  if (platform === "mac") {
+    return 'press_key with key "v" and modifiers ["Meta"] (the user is on macOS)';
+  }
+  if (platform === "windows" || platform === "linux") {
+    return 'press_key with key "v" and modifiers ["Control"]';
+  }
+  return (
+    'press_key with key "v" and modifiers ["Control"] on Windows/Linux or ["Meta"] on macOS ' +
+    "(the user's OS is not known — if the verified paste inserts nothing, try the other modifier)"
+  );
 }
 
 const DENIED =
@@ -1036,10 +1061,14 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
       "copy_image",
       "Copy a local image file onto the user's clipboard so you can paste it into a page that has no upload " +
         "route you can use (e.g. a Confluence page body). Give `path`, the image file to copy (the same kind " +
-        "of path you would hand to mcp__file_output). This returns a staging URL: open it with `new_tab`, " +
-        "`click` its '클립보드로 복사' button (that puts the image on the clipboard), then `select_tab` back to " +
-        'your target page and paste with `press_key` (key "v", modifiers ["Control"]). The image is ' +
-        "normalized to PNG. NOTE: this needs the Noah app's OWN origin to be in the browser-control " +
+        "of path you would hand to mcp__file_output). This returns a staging URL to drive: `new_tab` it, " +
+        "`click` its '클립보드로 복사' button, then VERIFY the copy with `list_tabs` before pasting — that " +
+        'tab\'s title becomes "COPIED" on success and "COPY_FAILED" when the browser refused (the copy needs ' +
+        "the window's activation, so it can fail). Only on COPIED: `select_tab` back to your target page, " +
+        "focus the editor, " +
+        pasteInstruction(ctx.viewerPlatform) +
+        ", then RE-READ the page (`snapshot` or `read_text`) to confirm the image actually landed. The image " +
+        "is normalized to PNG. NOTE: this needs the Noah app's OWN origin to be in the browser-control " +
         "allowlist, since you are opening a Noah page — if new_tab is refused for that origin, tell the user " +
         "to add it in the extension's allowlist (설정 → 접근/보안).",
       {
@@ -1061,9 +1090,15 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           return text(
             "Image staged for the clipboard. Now: 1) open this URL with mcp__browser__new_tab: " +
               url +
-              "  2) mcp__browser__click the button named '클립보드로 복사' (this copies the image to the OS " +
-              "clipboard)  3) mcp__browser__select_tab back to your target page, focus the editor, and " +
-              'mcp__browser__press_key with key "v" and modifiers ["Control"] to paste.  The staging link ' +
+              "  2) mcp__browser__click the button named '클립보드로 복사'  3) VERIFY with " +
+              'mcp__browser__list_tabs that THIS staging tab\'s title is now "COPIED". "COPY_FAILED" or an ' +
+              "unchanged title means the copy did NOT happen — do not paste; tell the user to bring the " +
+              "browser window to the foreground (or click the button themselves) and retry.  4) Only after " +
+              "COPIED: mcp__browser__select_tab back to your target page, focus the editor, and paste — " +
+              "mcp__browser__" +
+              pasteInstruction(ctx.viewerPlatform) +
+              ".  5) RE-READ the page (mcp__browser__snapshot or read_text) to confirm the image " +
+              "actually landed before reporting success — never assume the paste worked.  The staging link " +
               "expires in ~2 minutes.",
           );
         } catch (err) {

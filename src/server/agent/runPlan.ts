@@ -880,6 +880,11 @@ export async function buildAgentRunPlan(
   // `mcp__` auto-allow in the PreToolUse hook fires before any owner check, and
   // a colleague must never drive their own logged-in session through someone
   // else's avatar prompt.
+  // copy_image staging binds the held bytes to a user, and the staging page is
+  // opened by the VIEWER's browser (the bridge relays into the browser of the
+  // person chatting) — so the viewer, not the avatar owner, is who may read
+  // them back. Captured for narrowing: the callback below is deferred.
+  const stagingUserId = request.viewerUserId;
   const browserServer = browserActive
     ? buildBrowserServer({
         // Screenshot auto-share: the route publishes the capture as a file
@@ -904,33 +909,38 @@ export async function buildAgentRunPlan(
         // Noah's own origin, so copy_image can hand the agent an absolute
         // clipboard-staging URL to open with new_tab.
         appOrigin: request.appOrigin,
+        // The paste shortcut differs by OS; the wording follows the browser
+        // that is actually being driven.
+        viewerPlatform: request.viewerPlatform,
         // copy_image: resolve the path in the SAME working roots show_file uses
         // (shared readWorkspaceImage — one copy of the containment discipline),
         // then hold the bytes for the Noah-served staging page. Wired only when
-        // the request carried an origin to build that page's URL from.
-        stageClipboardImage: request.appOrigin
-          ? async (workspacePath) => {
-              const roots = [request.cwd, ...(request.additionalDirs ?? [])].filter(
-                (dir): dir is string => Boolean(dir),
-              );
-              const read = readWorkspaceImage(roots, workspacePath);
-              if ("error" in read) {
-                const messages = {
-                  OUTSIDE_WORKSPACE:
-                    "The image must be inside the current working directory or scratch workspace.",
-                  NOT_FOUND: "The image file does not exist.",
-                  NOT_FILE: "The path is not a regular file.",
-                  EMPTY: "The image file is empty.",
-                  TOO_LARGE: "The image is larger than the 5 MB limit.",
-                  UNSUPPORTED:
-                    "Unsupported image format — use a PNG, JPEG, WebP, or GIF whose bytes match the format.",
-                  READ_FAILED: "The image file could not be read.",
-                } as const;
-                throw new Error(messages[read.error]);
+        // the request carried an origin to build that page's URL from AND a
+        // viewer to bind the staged bytes to.
+        stageClipboardImage:
+          request.appOrigin && stagingUserId
+            ? async (workspacePath) => {
+                const roots = [request.cwd, ...(request.additionalDirs ?? [])].filter(
+                  (dir): dir is string => Boolean(dir),
+                );
+                const read = readWorkspaceImage(roots, workspacePath);
+                if ("error" in read) {
+                  const messages = {
+                    OUTSIDE_WORKSPACE:
+                      "The image must be inside the current working directory or scratch workspace.",
+                    NOT_FOUND: "The image file does not exist.",
+                    NOT_FILE: "The path is not a regular file.",
+                    EMPTY: "The image file is empty.",
+                    TOO_LARGE: "The image is larger than the 5 MB limit.",
+                    UNSUPPORTED:
+                      "Unsupported image format — use a PNG, JPEG, WebP, or GIF whose bytes match the format.",
+                    READ_FAILED: "The image file could not be read.",
+                  } as const;
+                  throw new Error(messages[read.error]);
+                }
+                return stageClipboardImageBytes(read.buffer, read.mediaType, stagingUserId);
               }
-              return stageClipboardImageBytes(read.buffer, read.mediaType);
-            }
-          : undefined,
+            : undefined,
       })
     : null;
   // Local file output is available only for an interactive run with an

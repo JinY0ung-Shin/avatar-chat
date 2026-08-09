@@ -20,27 +20,44 @@ interface StagedImage {
   bytes: Buffer;
   mime: string;
   expiresAt: number;
+  /**
+   * The user the staged bytes belong to. The image comes out of that user's own
+   * workspace (which may hold a private repo clone), so the token alone is NOT
+   * the capability — every read is additionally bound to this id.
+   */
+  userId: string;
 }
 
 const STAGE_TTL_MS = 120_000;
 const MAX_STAGED = 50;
 const staged = new Map<string, StagedImage>();
 
-/** Drop every entry whose TTL has passed. Called lazily whenever we stage. */
+/** Drop every entry whose TTL has passed. Called lazily on every stage/read. */
 function evictExpired(now: number): void {
   for (const [token, entry] of staged) {
     if (entry.expiresAt <= now) staged.delete(token);
   }
 }
 
+// The lazy evictions above only fire while the feature is in use, so a burst of
+// stages followed by idleness would keep up to MAX_STAGED × 5 MB of Buffers
+// alive for the process lifetime. This sweep bounds how long expired bytes
+// outlive their TTL; `.unref()` so it never holds the process open (tests and
+// short-lived CLI runs included).
+setInterval(() => evictExpired(Date.now()), 60_000).unref();
+
 /**
- * Stage `bytes` for a one-shot clipboard copy and return the token plus the
- * same-origin path that renders the staging page.
+ * Stage `bytes` for a one-shot clipboard copy by `userId` and return the token
+ * plus the same-origin path that renders the staging page.
  *
  * CONTRACT: callers rely on `path === "/browser-clip/" + token` exactly — the
  * browser bridge navigates there and clicks the copy button. Do not change it.
  */
-export function stageClipboardImage(bytes: Buffer, mime: string): { token: string; path: string } {
+export function stageClipboardImage(
+  bytes: Buffer,
+  mime: string,
+  userId: string,
+): { token: string; path: string } {
   const now = Date.now();
   evictExpired(now);
   // A Map iterates in insertion order, so its first key is the oldest entry.
@@ -51,19 +68,26 @@ export function stageClipboardImage(bytes: Buffer, mime: string): { token: strin
     staged.delete(oldest);
   }
   const token = crypto.randomBytes(16).toString("hex");
-  staged.set(token, { bytes, mime, expiresAt: now + STAGE_TTL_MS });
+  staged.set(token, { bytes, mime, expiresAt: now + STAGE_TTL_MS, userId });
   return { token, path: "/browser-clip/" + token };
 }
 
-/** The staged entry for `token`, or null if missing/expired (expired is dropped). */
-export function readStagedImage(token: string): { bytes: Buffer; mime: string } | null {
+/**
+ * The staged entry for `token` (including its owning `userId`, which callers
+ * MUST check against the requester), or null if missing/expired.
+ */
+export function readStagedImage(
+  token: string,
+): { bytes: Buffer; mime: string; userId: string } | null {
+  const now = Date.now();
+  evictExpired(now);
   const entry = staged.get(token);
   if (!entry) return null;
-  if (entry.expiresAt <= Date.now()) {
+  if (entry.expiresAt <= now) {
     staged.delete(token);
     return null;
   }
-  return { bytes: entry.bytes, mime: entry.mime };
+  return { bytes: entry.bytes, mime: entry.mime, userId: entry.userId };
 }
 
 // ---- Staging page + client script -------------------------------------------
@@ -184,6 +208,9 @@ const BROWSER_CLIP_SCRIPT = `"use strict";
         setStatus("이미지가 아직 준비되지 않았습니다.");
         return;
       }
+      // The document TITLE is the machine-readable outcome: the agent reads it
+      // back with list_tabs and must not paste unless it says COPIED. The
+      // status line stays Korean prose for a human glancing at the page.
       try {
         await navigator.clipboard.write([new ClipboardItemCtor({ "image/png": pngBlob })]);
         setStatus("이미지를 클립보드에 복사했습니다.");
@@ -191,6 +218,7 @@ const BROWSER_CLIP_SCRIPT = `"use strict";
         window.__copied = true;
       } catch (err) {
         setStatus("복사 실패: " + (err && err.name ? err.name : "오류"));
+        document.title = "COPY_FAILED";
       }
     });
   }
@@ -208,9 +236,13 @@ export function createBrowserClipboardRouter(deps: { store: Store }): Router {
   const router = Router();
 
   // The staging page: one big copy button the browser bridge clicks. Served
-  // only to an authenticated viewer; the unguessable token is the capability.
+  // only to the authenticated viewer the bytes were staged for — the token is
+  // printed into the persisted tool-result text, so it is not a capability on
+  // its own. A foreign token must be INDISTINGUISHABLE from an expired one
+  // (same 404 body): don't leak that someone else's staging exists.
   router.get("/browser-clip/:token", requireAuth(store), (req: AuthenticatedRequest, res) => {
-    if (!readStagedImage(req.params.token)) {
+    const entry = readStagedImage(req.params.token);
+    if (!entry || entry.userId !== req.user!.id) {
       res.status(404).type("text/plain; charset=utf-8").send(EXPIRED_MESSAGE);
       return;
     }
@@ -221,7 +253,8 @@ export function createBrowserClipboardRouter(deps: { store: Store }): Router {
   // The raw staged bytes, loaded by the client script and rasterized to PNG.
   router.get("/browser-clip/:token/img", requireAuth(store), (req: AuthenticatedRequest, res) => {
     const entry = readStagedImage(req.params.token);
-    if (!entry) {
+    // Same owner check, same indistinguishable-from-expired 404 as the page.
+    if (!entry || entry.userId !== req.user!.id) {
       res.status(404).type("text/plain; charset=utf-8").send(EXPIRED_MESSAGE);
       return;
     }

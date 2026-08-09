@@ -106,6 +106,7 @@ import {
   requestOrigin,
   resolveAvatarSkillSources,
   safeString,
+  viewerPlatformFromUserAgent,
   type RouterDeps,
 } from "./_shared.js";
 
@@ -1600,6 +1601,9 @@ export function createChatRouter({
               // absolute clipboard-staging URL to open with new_tab. Derived
               // from THIS request to match the origin the user's browser is on.
               appOrigin: requestOrigin(req) ?? undefined,
+              // The bridge drives THIS browser, so its UA is the only platform
+              // signal we have for the paste shortcut (Cmd+V vs Ctrl+V).
+              viewerPlatform: viewerPlatformFromUserAgent(req.get("user-agent")),
               activeRepoName: activeRepoName ?? undefined,
               resumeSessionId,
               conversationHistory,

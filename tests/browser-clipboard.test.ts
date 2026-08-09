@@ -2,12 +2,17 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp, createServices } from "../src/server/app.js";
 import { stageClipboardImage, readStagedImage } from "../src/server/browserClipboard.js";
-import { signup, withTempDir } from "./helpers.js";
+import { buildBrowserTools } from "../src/server/agent/browserTools.js";
+import { requestOrigin, viewerPlatformFromUserAgent } from "../src/server/routes/_shared.js";
+import type { AuthenticatedRequest } from "../src/server/auth.js";
+import { callTool, signup, withTempDir } from "./helpers.js";
 
 // Coverage target: src/server/browserClipboard.ts — the short-lived byte store
 // behind copy_image (agent → OS clipboard) and the auth-gated staging routes the
-// browser bridge drives. The clipboard WRITE itself is a browser fact proven by
-// the Playwright spike, not something a server test can exercise.
+// browser bridge drives — plus the two request-derived inputs copy_image is
+// built from (`requestOrigin`, `viewerPlatformFromUserAgent`) and the tool
+// handler that stitches them together. The clipboard WRITE itself is a browser
+// fact proven by the Playwright spike, not something a server test can exercise.
 
 // 1x1 transparent PNG.
 const PNG_BYTES = Buffer.from(
@@ -25,17 +30,26 @@ function testApp() {
   return createApp(services);
 }
 
+/** Sign `username` up and return the agent plus the real user id it was given. */
+async function signedUp(app: ReturnType<typeof testApp>, username: string) {
+  const agent = request.agent(app);
+  const res = await signup(agent, username).expect(201);
+  return { agent, userId: res.body.user.id as string };
+}
+
 describe("clipboard staging store", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
 
-  it("round-trips bytes + mime and mints the contract path", () => {
-    const { token, path } = stageClipboardImage(PNG_BYTES, "image/png");
+  it("round-trips bytes + mime + owner and mints the contract path", () => {
+    const { token, path } = stageClipboardImage(PNG_BYTES, "image/png", "user-a");
     expect(path).toBe("/browser-clip/" + token); // CONTRACT: copy_image builds appOrigin + path
     const got = readStagedImage(token);
     expect(got?.mime).toBe("image/png");
     expect(got?.bytes.equals(PNG_BYTES)).toBe(true);
+    // The owner rides along so the routes can bind each read to one user.
+    expect(got?.userId).toBe("user-a");
   });
 
   it("returns null for an unknown token", () => {
@@ -43,10 +57,10 @@ describe("clipboard staging store", () => {
   });
 
   it("evicts the oldest entries when the store is flooded", () => {
-    const first = stageClipboardImage(PNG_BYTES, "image/png").token;
+    const first = stageClipboardImage(PNG_BYTES, "image/png", "user-a").token;
     let last = first;
     for (let i = 0; i < 60; i += 1) {
-      last = stageClipboardImage(PNG_BYTES, "image/png").token;
+      last = stageClipboardImage(PNG_BYTES, "image/png", "user-a").token;
     }
     // The cap is well under 60, so the earliest token must have been dropped
     // while the most recent survives.
@@ -57,26 +71,38 @@ describe("clipboard staging store", () => {
   it("drops an entry once its TTL passes", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
-    const { token } = stageClipboardImage(PNG_BYTES, "image/png");
+    const { token } = stageClipboardImage(PNG_BYTES, "image/png", "user-a");
     expect(readStagedImage(token)).not.toBeNull();
     vi.setSystemTime(new Date("2026-01-01T00:05:00Z")); // +5 min, past the ~2 min TTL
     expect(readStagedImage(token)).toBeNull();
+  });
+
+  it("sweeps expired entries on a plain read, not only when something new is staged", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
+    const stale = stageClipboardImage(PNG_BYTES, "image/png", "user-a").token;
+    const other = stageClipboardImage(PNG_BYTES, "image/png", "user-b").token;
+    vi.setSystemTime(new Date("2026-01-01T00:05:00Z"));
+    // Reading ONE token also reclaims the other expired entry's bytes — a
+    // staging burst must not sit in memory until the next stage happens.
+    expect(readStagedImage(stale)).toBeNull();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00Z")); // rewind: only eviction can have dropped it
+    expect(readStagedImage(other)).toBeNull();
   });
 });
 
 describe("clipboard staging routes", () => {
   it("requires authentication for the page and the bytes", async () => {
     const app = testApp();
-    const { token } = stageClipboardImage(PNG_BYTES, "image/png");
+    const { token } = stageClipboardImage(PNG_BYTES, "image/png", "someone");
     await request(app).get(`/browser-clip/${token}`).expect(401);
     await request(app).get(`/browser-clip/${token}/img`).expect(401);
   });
 
-  it("serves the staging page, the bytes, and the script to an authed viewer", async () => {
+  it("serves the staging page, the bytes, and the script to the viewer it was staged for", async () => {
     const app = testApp();
-    const agent = request.agent(app);
-    await signup(agent, "clip-user").expect(201);
-    const { token } = stageClipboardImage(PNG_BYTES, "image/png");
+    const { agent, userId } = await signedUp(app, "clip-user");
+    const { token } = stageClipboardImage(PNG_BYTES, "image/png", userId);
 
     const page = await agent.get(`/browser-clip/${token}`).expect(200);
     expect(page.headers["content-type"]).toContain("text/html");
@@ -92,13 +118,215 @@ describe("clipboard staging routes", () => {
     expect(script.headers["content-type"]).toContain("javascript");
     expect(script.text).toContain("navigator.clipboard");
     expect(script.text).toContain("ClipboardItem");
+    // The document title is the machine-readable outcome the agent verifies
+    // with list_tabs — both branches must be reachable from the script.
+    expect(script.text).toContain("COPIED");
+    expect(script.text).toContain("COPY_FAILED");
   });
 
   it("404s an unknown or expired token for an authed viewer", async () => {
     const app = testApp();
-    const agent = request.agent(app);
-    await signup(agent, "clip-user-2").expect(201);
+    const { agent } = await signedUp(app, "clip-user-2");
     await agent.get("/browser-clip/deadbeef/img").expect(404);
     await agent.get("/browser-clip/deadbeef").expect(404);
+  });
+
+  it("hides another user's staged image behind the SAME 404 as an expired one", async () => {
+    const app = testApp();
+    const owner = await signedUp(app, "clip-owner");
+    const stranger = await signedUp(app, "clip-stranger");
+    const { token } = stageClipboardImage(PNG_BYTES, "image/png", owner.userId);
+
+    // The token is printed into the persisted tool-result text, so being logged
+    // in and holding it must not be enough: the bytes can come from the owner's
+    // private repo clone. The body must match the expired one exactly — a
+    // different response would confirm the staging exists.
+    const expired = await stranger.agent.get("/browser-clip/deadbeef").expect(404);
+    const foreignPage = await stranger.agent.get(`/browser-clip/${token}`).expect(404);
+    expect(foreignPage.text).toBe(expired.text);
+    await stranger.agent.get(`/browser-clip/${token}/img`).expect(404);
+
+    // ...and the owner is unaffected by the stranger's attempts.
+    await owner.agent.get(`/browser-clip/${token}`).expect(200);
+    await owner.agent.get(`/browser-clip/${token}/img`).expect(200);
+  });
+});
+
+/** A request stub carrying just the headers `requestOrigin` reads. */
+function stubReq(headers: Record<string, string>, protocol = "http"): AuthenticatedRequest {
+  return {
+    protocol,
+    get: (name: string) => headers[name.toLowerCase()],
+  } as unknown as AuthenticatedRequest;
+}
+
+describe("request-derived browser inputs", () => {
+  it("takes the FIRST forwarded host and proto, so a chained proxy can't malform the origin", () => {
+    const origin = requestOrigin(
+      stubReq({
+        "x-forwarded-host": "noah.corp.example, internal.svc",
+        "x-forwarded-proto": "https",
+        host: "internal.svc:8080",
+      }),
+    );
+    expect(origin).toBe("https://noah.corp.example");
+  });
+
+  it("normalizes the parsed origin (default port dropped, host lowercased)", () => {
+    expect(requestOrigin(stubReq({ host: "noah.example:443" }, "https"))).toBe("https://noah.example");
+    expect(requestOrigin(stubReq({ host: "NOAH.Example" }, "https"))).toBe("https://noah.example");
+    // A non-default port is part of the origin and must survive.
+    expect(requestOrigin(stubReq({ host: "noah.example:8443" }, "https"))).toBe(
+      "https://noah.example:8443",
+    );
+  });
+
+  it("fails CLOSED on anything that isn't a plain http(s) origin", () => {
+    // These headers are client-controlled; a forged one would otherwise hand the
+    // agent an attacker-chosen origin to open in the user's own browser.
+    expect(requestOrigin(stubReq({ host: "exa mple" }))).toBeNull();
+    expect(requestOrigin(stubReq({ host: "noah.example", "x-forwarded-proto": "javascript" }))).toBeNull();
+    expect(requestOrigin(stubReq({ host: "noah.example", "x-forwarded-proto": "file" }))).toBeNull();
+    expect(requestOrigin(stubReq({}))).toBeNull(); // no host header at all
+    expect(requestOrigin(stubReq({ "x-forwarded-host": " , internal.svc" }))).toBeNull();
+    // A scheme carrying its own authority parses as `https:` with the ATTACKER's
+    // host, so the proto is validated before it is ever concatenated.
+    expect(
+      requestOrigin(stubReq({ host: "noah.example", "x-forwarded-proto": "https://evil.example" })),
+    ).toBeNull();
+  });
+
+  it("reads the driven browser's OS off the chat request's User-Agent", () => {
+    expect(
+      viewerPlatformFromUserAgent(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+      ),
+    ).toBe("mac");
+    expect(
+      viewerPlatformFromUserAgent(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0 Safari/537.36",
+      ),
+    ).toBe("windows");
+    expect(
+      viewerPlatformFromUserAgent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0"),
+    ).toBe("linux");
+    // Unknown stays undefined so the tool text mentions BOTH shortcuts rather
+    // than guessing one that pastes nothing.
+    expect(viewerPlatformFromUserAgent(undefined)).toBeUndefined();
+    expect(viewerPlatformFromUserAgent("")).toBeUndefined();
+    expect(viewerPlatformFromUserAgent("curl/8.4.0")).toBeUndefined();
+  });
+});
+
+describe("copy_image tool handler", () => {
+  const execute = () =>
+    vi.fn(async () => ({ behavior: "ok" as const, url: "https://intra.example/x", title: "T" }));
+  const stage = () => vi.fn(async () => ({ path: "/browser-clip/abc123" }));
+
+  function description(tools: readonly { name: string; description?: string }[]): string {
+    const found = tools.find((t) => t.name === "copy_image");
+    if (!found) throw new Error("copy_image tool not found");
+    return found.description ?? "";
+  }
+
+  it("refuses an uncleared viewer without staging anything", async () => {
+    const stageClipboardImage = stage();
+    const tools = buildBrowserTools({
+      execute: execute(),
+      allowed: false,
+      appOrigin: "https://noah.example",
+      stageClipboardImage,
+    });
+    const res = await callTool(tools, "copy_image", { path: "shot.png" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("talking to their OWN avatar");
+    expect(stageClipboardImage).not.toHaveBeenCalled();
+  });
+
+  it("refuses when the run has no app origin or no stager", async () => {
+    const noStager = await callTool(
+      buildBrowserTools({ execute: execute(), allowed: true, appOrigin: "https://noah.example" }),
+      "copy_image",
+      { path: "shot.png" },
+    );
+    expect(noStager.isError).toBe(true);
+    expect(noStager.content[0].text).toContain("not available in this run");
+
+    const noOrigin = await callTool(
+      buildBrowserTools({ execute: execute(), allowed: true, stageClipboardImage: stage() }),
+      "copy_image",
+      { path: "shot.png" },
+    );
+    expect(noOrigin.isError).toBe(true);
+    expect(noOrigin.content[0].text).toContain("not available in this run");
+  });
+
+  it("returns the absolute staging URL and mandates the list_tabs check before pasting", async () => {
+    const stageClipboardImage = stage();
+    const tools = buildBrowserTools({
+      execute: execute(),
+      allowed: true,
+      appOrigin: "https://noah.example",
+      stageClipboardImage,
+      viewerPlatform: "mac",
+    });
+    const res = await callTool(tools, "copy_image", { path: "shot.png" });
+    expect(res.isError).toBeFalsy();
+    expect(stageClipboardImage).toHaveBeenCalledWith("shot.png");
+
+    const body = res.content[0].text;
+    expect(body).toContain("https://noah.example/browser-clip/abc123");
+    // The copy can silently fail, so success text and description both route the
+    // agent through the title check instead of assuming the clipboard is set.
+    expect(body).toContain("list_tabs");
+    expect(body).toContain("COPIED");
+    expect(description(tools)).toContain("COPY_FAILED");
+    // Ctrl+V is not paste on macOS; a hardcoded ["Control"] would paste nothing.
+    expect(body).toContain('["Meta"]');
+    expect(body).not.toContain('["Control"]');
+    expect(description(tools)).toContain('["Meta"]');
+  });
+
+  it("names the Control modifier on Windows and both when the OS is unknown", async () => {
+    const win = await callTool(
+      buildBrowserTools({
+        execute: execute(),
+        allowed: true,
+        appOrigin: "https://noah.example",
+        stageClipboardImage: stage(),
+        viewerPlatform: "windows",
+      }),
+      "copy_image",
+      { path: "shot.png" },
+    );
+    expect(win.content[0].text).toContain('["Control"]');
+    expect(win.content[0].text).not.toContain('["Meta"]');
+
+    const unknown = await callTool(
+      buildBrowserTools({
+        execute: execute(),
+        allowed: true,
+        appOrigin: "https://noah.example",
+        stageClipboardImage: stage(),
+      }),
+      "copy_image",
+      { path: "shot.png" },
+    );
+    expect(unknown.content[0].text).toContain('["Control"]');
+    expect(unknown.content[0].text).toContain('["Meta"]');
+  });
+
+  it("reports a staging failure as a tool error instead of a staging URL", async () => {
+    const tools = buildBrowserTools({
+      execute: execute(),
+      allowed: true,
+      appOrigin: "https://noah.example",
+      stageClipboardImage: vi.fn(async () => {
+        throw new Error("The image file does not exist.");
+      }),
+    });
+    const res = await callTool(tools, "copy_image", { path: "missing.png" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("The image file does not exist.");
   });
 });
