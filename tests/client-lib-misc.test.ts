@@ -41,9 +41,11 @@ import {
 } from "../src/client/src/lib/nav.js";
 import { recordKnowledgeViaAvatar } from "../src/client/src/lib/knowledge.js";
 import {
+  allowlistSeed,
   bridgeVersionVerdict,
   compareBridgeVersions,
 } from "../src/client/src/lib/browserBridge.js";
+import { defaultAllowlistFor, patternMatchesHost } from "../src/shared/originPatterns.js";
 import {
   clearExtensionDir,
   ensureDirPermission,
@@ -1000,6 +1002,50 @@ it("formatRoutineSchedule renders once/interval/weekly/daily variants (server-mi
 /* ------------------------------------------------------------------ */
 /* browserBridge.ts — version verdict for the composer badge           */
 /* ------------------------------------------------------------------ */
+
+describe("browser-control default allowlist", () => {
+  it("patternMatchesHost mirrors the extension: exact, *.suffix (never the apex), bare *", () => {
+    expect(patternMatchesHost("intra.example.com", "intra.example.com")).toBe(true);
+    expect(patternMatchesHost("intra.example.com", "other.example.com")).toBe(false);
+    expect(patternMatchesHost("*.corp.local", "noah.corp.local")).toBe(true);
+    expect(patternMatchesHost("*.corp.local", "corp.local")).toBe(false);
+    expect(patternMatchesHost("*", "anything.example")).toBe(true);
+  });
+
+  it("defaultAllowlistFor drops anything covering Noah's own host and normalizes", () => {
+    expect(
+      defaultAllowlistFor(
+        [" Confluence.corp.example ", "noah.corp.example", "*.corp.example", "*", "", "confluence.corp.example"],
+        "noah.corp.example",
+      ),
+    ).toEqual(["confluence.corp.example"]);
+  });
+
+  it("allowlistSeed writes ONLY into an empty, unmanaged, reachable allowlist", () => {
+    const defaults = ["confluence.corp.example"];
+    // The one seedable state: extension answered, no policy, nothing stored.
+    expect(allowlistSeed(defaults, { ok: true, source: "empty", patterns: [] }, "noah.corp")).toEqual(
+      defaults,
+    );
+    // A user's list — even a different one — is never overwritten.
+    expect(
+      allowlistSeed(defaults, { ok: true, source: "local", patterns: ["a.example"] }, "noah.corp"),
+    ).toBeNull();
+    // Managed policy governs; the extension would refuse the write anyway.
+    expect(
+      allowlistSeed(defaults, { ok: true, source: "managed", patterns: ["a.example"] }, "noah.corp"),
+    ).toBeNull();
+    // Unreachable extension / failed probe.
+    expect(allowlistSeed(defaults, null, "noah.corp")).toBeNull();
+    expect(allowlistSeed(defaults, { ok: false }, "noah.corp")).toBeNull();
+    // Nothing usable to seed (all entries covered Noah itself).
+    expect(
+      allowlistSeed(["noah.corp"], { ok: true, source: "empty", patterns: [] }, "noah.corp"),
+    ).toBeNull();
+    expect(allowlistSeed([], { ok: true, source: "empty", patterns: [] }, "noah.corp")).toBeNull();
+    expect(allowlistSeed(undefined, { ok: true, source: "empty", patterns: [] }, "noah.corp")).toBeNull();
+  });
+});
 
 describe("browser bridge versioning", () => {
   it("compareBridgeVersions compares numerically, not lexicographically", () => {

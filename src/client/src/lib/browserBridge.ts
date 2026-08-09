@@ -7,6 +7,8 @@
 // says. The trust boundary is this page's authenticated session — which is why
 // the extension only accepts messages from this origin.
 
+import { defaultAllowlistFor } from "../../../shared/originPatterns";
+
 /** The published extension id. Overridable for a locally loaded unpacked build. */
 const EXTENSION_ID =
   (import.meta.env?.VITE_BROWSER_EXTENSION_ID as string | undefined) ||
@@ -269,4 +271,24 @@ export function writeAllowedOrigins(patterns: string[]): Promise<AllowlistReply>
     op: "setAllowedOrigins",
     patterns,
   } as unknown as BridgeOperation);
+}
+
+/**
+ * What the operator's default allowlist (`BROWSER_ALLOWED_ORIGINS`, served on
+ * `/api/browser-extension`) should seed into THIS browser, or null when nothing
+ * may be written: the extension is unreachable, a managed policy governs it, or
+ * the user already holds ANY local list (their edits are never overwritten —
+ * seeding is a first-run convenience, not a push channel). `ownHostname` drops
+ * entries covering Noah itself, belt-and-suspenders with the server-side filter.
+ */
+export function allowlistSeed(
+  defaults: readonly string[] | undefined,
+  reply: AllowlistReply | null,
+  ownHostname: string,
+): string[] | null {
+  if (!reply?.ok || reply.source !== "empty" || (reply.patterns ?? []).length > 0) {
+    return null;
+  }
+  const seed = defaultAllowlistFor(defaults ?? [], ownHostname);
+  return seed.length ? seed : null;
 }

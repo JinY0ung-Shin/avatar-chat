@@ -166,6 +166,17 @@ export interface AppConfig {
    */
   confluenceUrl?: string;
   /**
+   * Deployment-wide DEFAULT browser-control allowlist (env
+   * `BROWSER_ALLOWED_ORIGINS`, comma-separated hostnames / `*.wildcards`).
+   * Served via `GET /api/browser-extension` and applied by the Noah page to a
+   * browser whose extension allowlist is still EMPTY — never over a list the
+   * user (or managed policy) already holds. Entries that would cover Noah's own
+   * host — including a bare `*` — are dropped before serving
+   * (shared/originPatterns.ts): a default must not reopen what the staging-page
+   * exemption was scoped to prevent.
+   */
+  browserDefaultAllowedOrigins: string[];
+  /**
    * Optional PEM CA file path (env `GITHUB_CA_CERT`) trusted for BOTH TLS stacks
    * the app uses to reach `githubHost`: Node `fetch` and every `git` clone/push.
    * `create_repo` also passes it to gh as `SSL_CERT_FILE`. Applied once at

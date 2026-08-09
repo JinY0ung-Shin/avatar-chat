@@ -109,6 +109,37 @@ describe("noah-almighty platform", () => {
     await request(app).get("/api/browser-extension").expect(401);
   });
 
+  it("serves the operator's default allowlist minus anything covering Noah's own host", async () => {
+    const services = createServices({
+      dataDir: tempDir,
+      agentRuntime: "local",
+      sessionSecret: "test",
+      browserDefaultAllowedOrigins: [
+        "confluence.corp.example",
+        "noah.corp.example", // Noah itself — must never ship as a default
+        "*.corp.example", // covers noah.corp.example — dropped for the same reason
+        "*", // allow-everything can never be a default
+        "wiki.other.example",
+      ],
+    });
+    const app = createApp(services);
+    const { agent } = await newUser(app, "bridge-defaults");
+    const res = await agent
+      .get("/api/browser-extension")
+      .set("Host", "noah.corp.example")
+      .expect(200);
+    expect(res.body.defaultAllowedOrigins).toEqual([
+      "confluence.corp.example",
+      "wiki.other.example",
+    ]);
+
+    // No env configured → an empty list, so the client seeds nothing.
+    const bare = testApp();
+    const { agent: plain } = await newUser(bare, "bridge-defaults-2");
+    const none = await plain.get("/api/browser-extension").expect(200);
+    expect(none.body.defaultAllowedOrigins).toEqual([]);
+  });
+
   it("publishes a compatibility floor at or below the bundled extension version", async () => {
     const app = testApp();
     const { agent } = await newUser(app, "bridge-floor-admin");

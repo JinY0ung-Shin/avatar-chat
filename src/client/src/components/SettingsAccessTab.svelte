@@ -151,10 +151,12 @@
         extensionId: string | null;
         origins: string[];
         multimediaNotice?: boolean;
+        defaultAllowedOrigins?: string[];
       }>("/api/browser-extension");
       extensionId = meta.extensionId;
       extensionOrigins = meta.origins ?? [];
       extensionMultimediaNotice = Boolean(meta.multimediaNotice);
+      serverDefaultOrigins = meta.defaultAllowedOrigins ?? [];
       // Mark loaded only on SUCCESS: a transient failure must not permanently pin
       // extensionId=null (the guide would show "id unavailable" with no retry).
       extensionMetaLoaded = true;
@@ -209,6 +211,10 @@
   let allowPatterns: string[] = [];
   let allowSource: AllowlistSource = "empty";
   let allowDraft = "";
+  // 서버 기본 허용 사이트(BROWSER_ALLOWED_ORIGINS) — 빈 허용목록에는 채팅 화면이
+  // 자동으로 적용하고, 여기서는 초안 채우기 버튼으로만 쓴다(저장은 항상 사용자
+  // 클릭). Noah 자기 호스트를 덮는 항목은 서버가 이미 걸러서 내려준다.
+  let serverDefaultOrigins: string[] = [];
 
   async function loadAllowlist(): Promise<void> {
     allowBusy = true;
@@ -718,10 +724,27 @@
             (<code>*.corp.local</code>은 <code>corp.local</code> 자체에는 적용되지 않아요).
             비워두면 모든 사이트가 거부됩니다.
           </p>
+          {#if serverDefaultOrigins.length}
+            <p class="muted">
+              서버 기본값: {#each serverDefaultOrigins as origin, i (origin)}{i > 0 ? ", " : ""}<code
+                >{origin}</code
+              >{/each}
+            </p>
+          {/if}
           <div class="browser-bridge-actions">
             <button type="button" class="btn primary" disabled={allowBusy} on:click={saveAllowlist}>
               {allowBusy ? "저장 중…" : "허용 사이트 저장"}
             </button>
+            {#if serverDefaultOrigins.length}
+              <button
+                type="button"
+                class="btn"
+                disabled={allowBusy}
+                on:click={() => (allowDraft = serverDefaultOrigins.join("\n"))}
+              >
+                서버 기본값 채우기
+              </button>
+            {/if}
           </div>
         {/if}
       </div>

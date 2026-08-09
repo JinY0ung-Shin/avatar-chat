@@ -23,10 +23,12 @@
   } from "../lib/chat";
   import { api } from "../lib/api";
   import {
+    allowlistSeed,
     browserBridgeReachable,
     bridgeVersionVerdict,
     extensionsPageUrl,
     readAllowedOrigins,
+    writeAllowedOrigins,
     type BridgeVersionVerdict,
   } from "../lib/browserBridge";
   import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
@@ -294,9 +296,11 @@
   async function probeBridgeCompat(): Promise<void> {
     try {
       const [meta, reply] = await Promise.all([
-        api<{ version?: string | null; minCompatibleVersion?: string | null }>(
-          "/api/browser-extension",
-        ),
+        api<{
+          version?: string | null;
+          minCompatibleVersion?: string | null;
+          defaultAllowedOrigins?: string[];
+        }>("/api/browser-extension"),
         // getAllowedOrigins exists in every extension build, so it is the one
         // probe that cannot side-effect an old install; pre-0.4.0 builds
         // answer without `version`, which reads as "outdated".
@@ -309,6 +313,21 @@
         !reply || !reply.ok
           ? { level: "unreachable", installed: "", expected }
           : { level: bridgeVersionVerdict(installed, expected, floor), installed, expected };
+      // First-run convenience: an EMPTY local allowlist (deny-all, before any
+      // user choice exists) is seeded once with the operator's default
+      // (BROWSER_ALLOWED_ORIGINS). A user-edited or managed list never is —
+      // allowlistSeed answers null there — and the notice keeps the change
+      // visible instead of silently widening what the agent may drive.
+      const seed = allowlistSeed(meta.defaultAllowedOrigins, reply, location.hostname);
+      if (seed) {
+        const seeded = await writeAllowedOrigins(seed);
+        if (seeded.ok) {
+          notify(
+            `브라우저 제어 허용 사이트에 서버 기본값 ${seed.length}개를 적용했습니다. 설정 → 접근/보안에서 바꿀 수 있어요.`,
+            "ok",
+          );
+        }
+      }
     } catch {
       // Transient failure — allow a couple of retries on the next reactive fire,
       // then give up (until a reload) so a persistent 5xx can't spin forever.

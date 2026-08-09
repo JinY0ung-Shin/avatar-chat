@@ -35,6 +35,17 @@
 - **Corporate DLP can intercept the browser's file dialog** ("not an allowed upload URL"), which kills
   every File System Access path on managed machines — that is why the policy channel exists. The
   no-dialog interim is "unzip in Explorer + `chrome://extensions` ↻". Don't try to code around it.
+- **The allowlist has an operator-seeded DEFAULT tier that lives server-side, not in the extension.**
+  `BROWSER_ALLOWED_ORIGINS` (server env) is served on `GET /api/browser-extension` as
+  `defaultAllowedOrigins`, and the chat page's bridge probe writes it — via the ordinary
+  `setAllowedOrigins` config op — into an extension whose local allowlist is still EMPTY
+  (`allowlistSeed`, `lib/browserBridge.ts`; a visible notify follows). Precedence is unchanged:
+  managed policy still wins outright, a user-edited local list is NEVER overwritten (seeding requires
+  `source === "empty"` with zero patterns), and the settings tab only offers a draft-fill button.
+  Entries that would cover Noah's own host — exact, `*.wildcard`, or a bare `*` — are dropped
+  server-side AND client-side (`shared/originPatterns.ts`, a hand-kept mirror of `originAllowed`'s
+  pattern semantics): a default must not reopen what the `/browser-clip/` staging exemption was
+  scoped down to prevent. The extension itself still fetches nothing.
 - **Edge is served by the SAME build.** Every API the extension touches (`tabGroups`/`tabs.group`,
   `debugger`, `storage.managed`, `externally_connectable`) is on Edge's supported-API list, and the id
   derives from the manifest `key` identically, so one zip/crx covers both browsers. The only per-browser

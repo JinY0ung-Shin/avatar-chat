@@ -77,6 +77,17 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     readOnlyTools,
     githubHost,
     confluenceUrl: env("CONFLUENCE_URL") || undefined,
+    // Default browser-control allowlist, seeded into browsers whose extension
+    // allowlist is still empty (see AppConfig). Normalized here once; the
+    // self-host filtering happens per request, where Noah's host is known.
+    browserDefaultAllowedOrigins: [
+      ...new Set(
+        env("BROWSER_ALLOWED_ORIGINS", "")
+          .split(",")
+          .map((entry) => entry.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ],
     githubCaCert: env("GITHUB_CA_CERT") || undefined,
     // Repo-bundled default skills, loaded for every avatar. cwd-based to match
     // dataDir; cwd is the app root under both `tsx` (dev) and `node dist` (prod).

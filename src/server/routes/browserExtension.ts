@@ -10,7 +10,8 @@ import {
   listBrowserExtensionFiles,
   matchPatternForOrigin,
 } from "../browserExtensionBundle.js";
-import { apiError, type RouterDeps } from "./_shared.js";
+import { defaultAllowlistFor } from "../../shared/originPatterns.js";
+import { apiError, requestOrigin, type RouterDeps } from "./_shared.js";
 
 // ---- Browser-bridge extension ------------------------------------------------
 // Install/update surface for the browser bridge. Auth-only, NOT admin-gated:
@@ -31,6 +32,15 @@ function requestOriginPatterns(req: AuthenticatedRequest): string[] {
   const proto = (req.get("x-forwarded-proto") || req.protocol || "http").split(",")[0].trim();
   const pattern = matchPatternForOrigin(`${proto}://${host}`);
   return pattern ? [pattern] : [];
+}
+
+/** The bare hostname of a validated `requestOrigin` result, or null. */
+function originHostname(origin: string | null): string | null {
+  try {
+    return origin ? new URL(origin).hostname : null;
+  } catch {
+    return null;
+  }
 }
 
 /** What the downloaded bundle will actually accept: shipped list + this address. */
@@ -63,6 +73,16 @@ export function createBrowserExtensionRouter(deps: RouterDeps): Router {
       // Corp-policy install-location notice, opt-in via
       // BROWSER_BRIDGE_MULTIMEDIA_NOTICE (default hidden).
       multimediaNotice: config.browserBridgeMultimediaNotice,
+      // Operator's DEFAULT browser-control allowlist (BROWSER_ALLOWED_ORIGINS).
+      // The page seeds it into an extension whose allowlist is still EMPTY —
+      // never over a user-edited or managed list. Filtered here against the
+      // host THIS request came in on: an entry covering Noah itself (or a bare
+      // `*`) must never ship as a default, or it would reopen exactly what the
+      // staging-page exemption was scoped down to prevent.
+      defaultAllowedOrigins: defaultAllowlistFor(
+        config.browserDefaultAllowedOrigins,
+        originHostname(requestOrigin(req)),
+      ),
     });
   });
 
