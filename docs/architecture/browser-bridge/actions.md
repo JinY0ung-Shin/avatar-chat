@@ -202,9 +202,17 @@
   breaks `new_tab` and a forged one hands the agent an attacker-chosen origin to open in the user's
   authenticated browser. The image path resolves through the SHARED `readWorkspaceImage` (chatImages.ts
   — one copy of the containment discipline show_file uses).
-  Two field-relevant caveats: (1) the agent is opening a NOAH page, so **Noah's own origin must be in
-  the browser-control allowlist** or `new_tab` is refused — the tool text and both metacognition
-  surfaces say so. (2) Paste rides the EXISTING `press_key` shortcut, which the spike showed pastes an
+  Two field-relevant caveats: (1) the agent is opening a NOAH page, and **Noah's own origin must NOT be
+  put in the browser-control allowlist** — that would make the whole logged-in Noah UI drivable by an
+  agent whose inputs include untrusted page text (avatar visibility, skill shares, deletions). Instead
+  the extension (0.19.0+) carries a built-in, path-scoped exemption: `originAllowed` accepts
+  `<sender.origin>/browser-clip/<32 hex>` — the op's `sender.origin` is browser-verified via
+  `externally_connectable`, the match is the EXACT token-page shape (never a prefix), and the server
+  hard-404s everything else under `/browser-clip/` so no path in the exempted namespace can ever fall
+  through to the SPA and render the app UI. An older extension simply refuses the staging URL; the tool
+  text redirects to updating the extension (or a manual copy via show_file), never to allowlisting
+  Noah. Token format and path shape are a cross-artifact contract (`browserClipboard.ts` ↔
+  `background.js`). (2) Paste rides the EXISTING `press_key` shortcut, which the spike showed pastes an
   image into a contentEditable; if a real editor (Confluence) ignores the synthetic shortcut, the known
   upgrade is a `commands:["paste"]` field on `press_key` (the same Blink-editor-command escape hatch
   `selectAll` already uses) — deferred until measurement shows it is needed. Security posture: the

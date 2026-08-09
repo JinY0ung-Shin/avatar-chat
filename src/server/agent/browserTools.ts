@@ -1068,9 +1068,12 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         "focus the editor, " +
         pasteInstruction(ctx.viewerPlatform) +
         ", then RE-READ the page (`snapshot` or `read_text`) to confirm the image actually landed. The image " +
-        "is normalized to PNG. NOTE: this needs the Noah app's OWN origin to be in the browser-control " +
-        "allowlist, since you are opening a Noah page — if new_tab is refused for that origin, tell the user " +
-        "to add it in the extension's allowlist (설정 → 접근/보안).",
+        "is normalized to PNG. The staging page is allowed automatically by the Noah extension (the exemption " +
+        "covers ONLY /browser-clip/ token pages) — NEVER tell the user to add Noah's own origin to the " +
+        "browser-control allowlist; that would expose the whole logged-in Noah UI to browser control. If " +
+        "new_tab refuses the staging URL, the user's extension predates the exemption: ask them to update " +
+        "the Noah extension (설정 → 접근/보안), or fall back to showing the image with " +
+        "mcp__file_output__show_file so they can copy it themselves.",
       {
         path: z
           .string()
@@ -1082,7 +1085,13 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
         const denied = gate();
         if (denied) return denied;
         if (!ctx.stageClipboardImage || !ctx.appOrigin) {
-          return text("Copying images to the clipboard is not available in this run.", true);
+          return text(
+            "Copying images to the clipboard is not available in this run (the request carried no usable " +
+              "app origin to stage the image under). Hand the image to the USER instead: show it with " +
+              "mcp__file_output__show_file (or attach it with mcp__file_output__share_file) and ask them to " +
+              "copy it and paste it into the page themselves.",
+            true,
+          );
         }
         try {
           const { path } = await ctx.stageClipboardImage(args.path);

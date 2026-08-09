@@ -51,7 +51,10 @@ setInterval(() => evictExpired(Date.now()), 60_000).unref();
  * plus the same-origin path that renders the staging page.
  *
  * CONTRACT: callers rely on `path === "/browser-clip/" + token` exactly — the
- * browser bridge navigates there and clicks the copy button. Do not change it.
+ * browser bridge navigates there and clicks the copy button — and the
+ * EXTENSION's allowlist exemption pins the same shape
+ * (`/browser-clip/<32 hex>`, background.js originAllowed). Changing the token
+ * format or the path breaks fielded extensions, not just this server.
  */
 export function stageClipboardImage(
   bytes: Buffer,
@@ -267,6 +270,14 @@ export function createBrowserClipboardRouter(deps: { store: Store }): Router {
   router.get("/browser-clip.js", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
     res.type("application/javascript; charset=utf-8").send(BROWSER_CLIP_SCRIPT);
+  });
+
+  // Everything else under /browser-clip/ is a HARD 404, never the SPA
+  // fallback: the extension exempts this namespace from its allowlist (exact
+  // token pages only), and that is safe only while no path under it can ever
+  // render the logged-in Noah UI. Belt to the extension's exact-shape match.
+  router.all("/browser-clip/*", (_req, res) => {
+    res.status(404).type("text/plain; charset=utf-8").send(EXPIRED_MESSAGE);
   });
 
   return router;

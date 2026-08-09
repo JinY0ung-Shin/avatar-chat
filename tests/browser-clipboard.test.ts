@@ -150,6 +150,25 @@ describe("clipboard staging routes", () => {
     await owner.agent.get(`/browser-clip/${token}`).expect(200);
     await owner.agent.get(`/browser-clip/${token}/img`).expect(200);
   });
+
+  it("hard-404s every other path under /browser-clip/, never the SPA fallback", async () => {
+    const app = testApp();
+    const { agent, userId } = await signedUp(app, "clip-namespace");
+    const { token } = stageClipboardImage(PNG_BYTES, "image/png", userId);
+
+    // The EXTENSION exempts /browser-clip/ token pages from its allowlist, so
+    // this namespace must never serve the logged-in app UI: a deep path that
+    // fell through to the SPA fallback would render Noah under an exempted URL.
+    for (const path of [
+      `/browser-clip/${token}/deeper`,
+      `/browser-clip/${token}/img/extra`,
+      "/browser-clip/x/y/z",
+    ]) {
+      const res = await agent.get(path).expect(404);
+      expect(res.headers["content-type"]).toContain("text/plain");
+      expect(res.text).not.toContain("<");
+    }
+  });
 });
 
 /** A request stub carrying just the headers `requestOrigin` reads. */
@@ -251,6 +270,9 @@ describe("copy_image tool handler", () => {
     );
     expect(noStager.isError).toBe(true);
     expect(noStager.content[0].text).toContain("not available in this run");
+    // A dead end must redirect (root CLAUDE.md): the way that still works is
+    // handing the image to the user for a manual copy.
+    expect(noStager.content[0].text).toContain("mcp__file_output__show_file");
 
     const noOrigin = await callTool(
       buildBrowserTools({ execute: execute(), allowed: true, stageClipboardImage: stage() }),
@@ -259,6 +281,7 @@ describe("copy_image tool handler", () => {
     );
     expect(noOrigin.isError).toBe(true);
     expect(noOrigin.content[0].text).toContain("not available in this run");
+    expect(noOrigin.content[0].text).toContain("mcp__file_output__show_file");
   });
 
   it("returns the absolute staging URL and mandates the list_tabs check before pasting", async () => {

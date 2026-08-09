@@ -587,7 +587,7 @@ function describeTab(tab) {
   };
 }
 
-function originAllowed(rawUrl, patterns) {
+function originAllowed(rawUrl, patterns, stagingOrigin) {
   let url;
   try {
     url = new URL(rawUrl);
@@ -595,6 +595,20 @@ function originAllowed(rawUrl, patterns) {
     return false;
   }
   if (url.protocol !== "https:" && url.protocol !== "http:") return false;
+  // copy_image's staging page is allowed for the Noah origin that sent THIS op
+  // (sender.origin is browser-verified via externally_connectable), without the
+  // operator listing Noah itself: allowlisting the app origin would make the
+  // whole logged-in Noah UI drivable by an agent whose inputs include untrusted
+  // page text. The match is the EXACT token-page shape, never a prefix — the
+  // server hard-404s the rest of /browser-clip/ too, but a prefix would trust
+  // the server's routing to keep the SPA out of an exempted path.
+  if (
+    stagingOrigin &&
+    url.origin === stagingOrigin &&
+    /^\/browser-clip\/[0-9a-f]{32}$/.test(url.pathname)
+  ) {
+    return true;
+  }
   return patterns.some((pattern) => {
     if (pattern === "*") return true;
     // `*.corp.local` matches sub.corp.local but NOT corp.local itself, so a
@@ -3334,11 +3348,13 @@ function waitForLoad(tabId, timeoutMs = 15000) {
  * origin. Without this, a uid captured on an allowed page could be actioned
  * after the tab left the group or navigated somewhere denied.
  */
-async function assertRefTabUsable(uid, patterns, source) {
+async function assertRefTabUsable(uid, patterns, source, stagingOrigin) {
   const ref = refMap.get(uid);
   if (!ref) return null;
   const tab = await groupedTabById(ref.tabId);
-  if (tab.url && !originAllowed(tab.url, patterns)) return refuseOrigin(tab.url, source);
+  if (tab.url && !originAllowed(tab.url, patterns, stagingOrigin)) {
+    return refuseOrigin(tab.url, source);
+  }
   return null;
 }
 
@@ -3420,7 +3436,7 @@ async function reattachAfterEscape(tabId) {
   }
 }
 
-async function performOp(message) {
+async function performOp(message, stagingOrigin) {
   const { patterns, source } = await readPolicy();
 
   // Tab management runs before the current-tab origin check: listing and
@@ -3434,7 +3450,9 @@ async function performOp(message) {
   }
 
   if (message.op === "new_tab") {
-    if (!originAllowed(message.url, patterns)) return refuseOrigin(message.url, source);
+    if (!originAllowed(message.url, patterns, stagingOrigin)) {
+      return refuseOrigin(message.url, source);
+    }
     let group = await noahGroup();
     // No group = browser control is currently OFF in this browser. Turning it
     // on must be the user's click, not a tab-creation side effect, so ask
@@ -3495,7 +3513,7 @@ async function performOp(message) {
   // an allowed navigation can land somewhere else via a redirect, and a tab the
   // user dragged in may already be sitting on a denied site.
   const originExempt = ORIGIN_EXEMPT_OPS.has(message.op);
-  if (!originExempt && tab.url && !originAllowed(tab.url, patterns)) {
+  if (!originExempt && tab.url && !originAllowed(tab.url, patterns, stagingOrigin)) {
     return refuseOrigin(tab.url, source);
   }
   // Whether THIS op has to move the tab through the extension API instead of
@@ -3541,7 +3559,7 @@ async function performOp(message) {
   // from a previous page fails with the uid error rather than after a full walk.
   let snapshotScope = null;
   if (message.op === "snapshot" && message.uid) {
-    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     snapshotScope = resolveRef(message.uid);
   }
@@ -3559,7 +3577,7 @@ async function performOp(message) {
   if (message.op === "read_text") {
     let scope = null;
     if (message.uid) {
-      const refused = await assertRefTabUsable(message.uid, patterns, source);
+      const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
       if (refused) return refused;
       scope = resolveRef(message.uid);
     }
@@ -3610,7 +3628,9 @@ async function performOp(message) {
   } else if (message.op === "navigate") {
     // The destination check is unchanged and still runs BEFORE any movement —
     // which mechanism carries the tab there does not change WHERE it may go.
-    if (!originAllowed(message.url, patterns)) return refuseOrigin(message.url, source);
+    if (!originAllowed(message.url, patterns, stagingOrigin)) {
+      return refuseOrigin(message.url, source);
+    }
     if (escapeViaTabsApi) {
       // Security-equivalent to the CDP path, and deliberately so: this is the
       // same call new_tab already makes to open a page, it runs no page JS, and
@@ -3666,14 +3686,14 @@ async function performOp(message) {
       }
       // The destination is known BEFORE moving — refuse a back step into a
       // denied origin instead of visiting it and refusing afterwards.
-      if (previous.url && !originAllowed(previous.url, patterns)) {
+      if (previous.url && !originAllowed(previous.url, patterns, stagingOrigin)) {
         return refuseOrigin(previous.url, source);
       }
       await sendCdp({ tabId: tab.id }, "Page.navigateToHistoryEntry", { entryId: previous.id });
       await waitForLoad(tab.id);
     }
   } else if (message.op === "click") {
-    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     const ref = resolveRef(message.uid);
     // Guards and click stay INSIDE the race: every step here talks to the
@@ -3695,7 +3715,7 @@ async function performOp(message) {
     // uid mode: a RELATIVE position inside a known element. No screenshot is
     // involved, so this is the escape hatch that still works for a canvas or a
     // map when the conversation's model cannot receive images at all.
-    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     const ref = resolveRef(message.uid);
     await refuseFileInput(ref);
@@ -3817,7 +3837,7 @@ async function performOp(message) {
     await raceDialogOpen(tab.id, clickPoint({ tabId: tab.id }, cssX, cssY));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "type") {
-    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     // raceDialogOpen resolves on whichever of the work or a dialog wins, so the
     // note is captured HERE rather than returned through it.
@@ -3849,7 +3869,7 @@ async function performOp(message) {
       if (pendingDialogs.has(tab.id)) break; // frozen — the tail reports the open dialog
       const field = fields[i] || {};
       const uid = String(field.uid || "");
-      const refused = await assertRefTabUsable(uid, patterns, source);
+      const refused = await assertRefTabUsable(uid, patterns, source, stagingOrigin);
       if (refused) return refused;
       try {
         await raceDialogOpen(
@@ -3882,7 +3902,7 @@ async function performOp(message) {
     }
     note = notes.join("\n");
   } else if (message.op === "select_option") {
-    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     await raceDialogOpen(tab.id, selectOption(message.uid, String(message.option ?? "")));
     // A change handler can submit or navigate, same as a click.
@@ -3890,7 +3910,7 @@ async function performOp(message) {
   } else if (message.op === "press_key") {
     let target = { tabId: tab.id };
     if (message.uid) {
-      const refused = await assertRefTabUsable(message.uid, patterns, source);
+      const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
       if (refused) return refused;
       const ref = resolveRef(message.uid);
       // Enter or Space on a FOCUSED file input opens the same OS dialog a click
@@ -3912,7 +3932,7 @@ async function performOp(message) {
     // Enter and shortcuts can submit or navigate, same as a click.
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "hover") {
-    const refused = await assertRefTabUsable(message.uid, patterns, source);
+    const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     const { target, x, y } = await centerOf(resolveRef(message.uid));
     await raceDialogOpen(
@@ -3938,7 +3958,7 @@ async function performOp(message) {
     let x = viewWidth / 2;
     let y = viewHeight / 2;
     if (message.uid) {
-      const refused = await assertRefTabUsable(message.uid, patterns, source);
+      const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
       if (refused) return refused;
       ({ target, x, y } = await centerOf(resolveRef(message.uid)));
     }
@@ -4015,7 +4035,7 @@ async function performOp(message) {
   // can redirect somewhere denied, and the snapshot is the exfiltration path
   // that matters (reading a logged-in page is the risk, not just acting on it).
   const fresh = await chrome.tabs.get(tab.id);
-  if (fresh.url && !originAllowed(fresh.url, patterns)) {
+  if (fresh.url && !originAllowed(fresh.url, patterns, stagingOrigin)) {
     return refuseLanding(message.op, fresh.url, source);
   }
 
@@ -4117,10 +4137,10 @@ async function performOp(message) {
  * BE that the bridge is on a tab the agent never chose. First in either string,
  * because it reframes every other line and capNote truncates the tail.
  */
-async function perform(message) {
+async function perform(message, senderOrigin) {
   let result;
   try {
-    result = await performOp(message);
+    result = await performOp(message, senderOrigin);
   } catch (error) {
     takeTabNotice(); // never let a stale notice surface on the NEXT op
     throw error;
@@ -4187,7 +4207,10 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
   }
   const config = handleConfig(message);
   config
-    .then((reply) => (reply ? reply : perform(message)))
+    // sender.origin rides along as the ONLY origin whose /browser-clip/ staging
+    // page is exempt from the allowlist (originAllowed) — verified by the
+    // browser, never taken from the message body.
+    .then((reply) => (reply ? reply : perform(message, sender.origin)))
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, message: String(error?.message || error) }));
   // Keep the channel open for the async reply.
