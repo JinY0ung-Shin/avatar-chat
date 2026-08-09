@@ -264,6 +264,7 @@ describe("global skill discovery (preflight + cache)", () => {
       supportedCommands?: () => Promise<Array<{ name?: unknown; description?: unknown }>>;
       drainMessages?: unknown[];
       drainError?: unknown;
+      drainHangs?: boolean;
       kickInput?: boolean;
     },
   ): PreflightQuery {
@@ -276,6 +277,10 @@ describe("global skill discovery (preflight + cache)", () => {
       }
       if (opts.drainError) {
         throw opts.drainError;
+      }
+      if (opts.drainHangs) {
+        // A CLI that takes the abort but never closes its message stream.
+        await new Promise<void>(() => {});
       }
     }
     const handle = drain() as PreflightQuery;
@@ -460,6 +465,78 @@ describe("global skill discovery (preflight + cache)", () => {
       const cache = await pending;
       expect(abortedAfterMs).toBe(30_000);
       expect(cache.skills).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("bounds the post-abort drain by the same hard timeout, keeping the enumerated skills", async () => {
+    // The cap covers the WHOLE preflight: a CLI that answers supportedCommands()
+    // but never closes its message stream used to hang the drain forever, past
+    // the cap, with the admin request awaiting it inline.
+    const { store, config } = services("preflight-drain-hang");
+    vi.useFakeTimers();
+    try {
+      sdkMock.impl = (args) =>
+        preflightHandle(args, {
+          supportedCommands: async () => [{ name: "enumerated" }],
+          drainMessages: [{ type: "system", subtype: "init" }],
+          drainHangs: true,
+        });
+      const pending = discoverGlobalSkills(store, config);
+      let settled: "resolved" | "rejected" | null = null;
+      void pending.then(
+        () => (settled = "resolved"),
+        () => (settled = "rejected"),
+      );
+
+      await vi.advanceTimersByTimeAsync(29_000);
+      expect(settled).toBeNull();
+      await vi.advanceTimersByTimeAsync(1_000);
+      // The drain only reaps the subprocess, so losing it costs nothing — the
+      // skills it already enumerated survive, exactly like a drain that throws.
+      expect(settled).toBe("resolved");
+      expect((await pending).skills).toEqual([{ name: "enumerated", description: "" }]);
+
+      // The single-flight guard was released: a discovery that goes stale runs
+      // a NEW preflight rather than replaying the abandoned one.
+      store.setSkillDiscoveryCache({ cliVersion: "0.0.0-stale", fetchedAt: "t", skills: [] });
+      sdkMock.impl = (args) => preflightHandle(args, { supportedCommands: commands });
+      const next = await discoverGlobalSkills(store, config);
+      expect(next.skills.map((s) => s.name)).toEqual(["code-review", "plugin:deep-research"]);
+      expect(sdkMock.calls).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails the discovery when the CLI ignores the abort entirely", async () => {
+    // Nothing here ever settles on its own — the deadline is the only exit. It
+    // fails rather than caching an empty list, so the panel reports the failure
+    // and runs keep failing open to "all".
+    const { store, config } = services("preflight-deaf-cli");
+    vi.useFakeTimers();
+    try {
+      sdkMock.impl = (args) =>
+        preflightHandle(args, {
+          supportedCommands: () => new Promise(() => {}),
+          drainHangs: true,
+        });
+      const pending = discoverGlobalSkills(store, config);
+      const outcome = pending.then(
+        () => "resolved",
+        (error: unknown) => (error as Error).message,
+      );
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await outcome).toBe("skill discovery preflight timed out after 30000ms");
+      expect(store.getSkillDiscoveryCache()).toBeNull();
+
+      // Guard released here too, so the admin can retry without a restart.
+      sdkMock.impl = (args) => preflightHandle(args, { supportedCommands: commands });
+      const cache = await discoverGlobalSkills(store, config);
+      expect(cache.skills.map((s) => s.name)).toEqual(["code-review", "plugin:deep-research"]);
+      expect(sdkMock.calls).toHaveLength(2);
     } finally {
       vi.useRealTimers();
     }

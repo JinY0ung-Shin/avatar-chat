@@ -25,6 +25,9 @@ const agentLogger = logger.child({ module: "agent" });
 /** Preflight hard cap: a hung CLI must not wedge the admin panel. */
 const PREFLIGHT_TIMEOUT_MS = 30_000;
 
+/** Race marker for that cap — see the deadline in runSkillPreflight. */
+const TIMED_OUT = Symbol("preflight deadline");
+
 /**
  * Version of the Claude Code CLI bundled in the installed SDK (the discovery
  * cache key: skills are embedded in the CLI binary, so the set can only change
@@ -151,12 +154,26 @@ async function runSkillPreflight(config: AppConfig): Promise<DiscoveredSkill[]> 
       },
     },
   });
-  const timeout = setTimeout(() => abort.abort(), PREFLIGHT_TIMEOUT_MS);
+  // ONE deadline for the WHOLE preflight — enumeration AND the post-abort
+  // drain. Aborting alone bounds nothing: a CLI is free to ignore the abort and
+  // leave supportedCommands() pending or its message stream open forever, and
+  // the admin route awaits this inline. Resolving (never rejecting) keeps the
+  // loser of every race below observed.
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<typeof TIMED_OUT>((resolve) => {
+    timeout = setTimeout(() => {
+      abort.abort();
+      resolve(TIMED_OUT);
+    }, PREFLIGHT_TIMEOUT_MS);
+  });
   try {
     if (typeof query.supportedCommands !== "function") {
       throw new Error("SDK query() has no supportedCommands()");
     }
-    const commands = await query.supportedCommands();
+    const commands = await Promise.race([query.supportedCommands(), expired]);
+    if (commands === TIMED_OUT) {
+      throw new Error(`skill discovery preflight timed out after ${PREFLIGHT_TIMEOUT_MS}ms`);
+    }
     return commands
       .filter(
         (command): command is { name: string; description?: unknown } =>
@@ -168,16 +185,20 @@ async function runSkillPreflight(config: AppConfig): Promise<DiscoveredSkill[]> 
           typeof command.description === "string" ? command.description : "",
       }));
   } finally {
-    clearTimeout(timeout);
     abort.abort();
-    try {
-      // Drain so the CLI subprocess is reaped before we return.
+    // Drain so the CLI subprocess is reaped before we return. Best effort: the
+    // skills are already enumerated, so a drain that throws (the aborted
+    // session usually ends with an abort error) or never ends must not lose
+    // them. The catch sits on the drain itself, not on the race, so a drain
+    // rejecting AFTER it lost to the deadline still has a handler.
+    const drained = (async () => {
       for await (const _message of query) {
         void _message;
       }
-    } catch {
-      // Expected: the aborted session may end with an abort error.
-    }
+    })().catch(() => {});
+    await Promise.race([drained, expired]);
+    // Last, not first: the deadline stays armed across the drain.
+    clearTimeout(timeout);
   }
 }
 
