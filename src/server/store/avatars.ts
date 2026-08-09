@@ -31,7 +31,10 @@ interface SharedSkillRow {
   owner_user_id: string;
   skill_name: string;
   display_name: string;
+  /** SKILL.md frontmatter snapshot — reconciliation's comparison target. */
   description: string | null;
+  /** Owner-written introduction; NULL falls back to `description`. */
+  custom_description: string | null;
   content_hash: string | null;
   created_at: string;
   updated_at: string;
@@ -463,13 +466,23 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
                  )
              )`;
 
+    /**
+     * The EFFECTIVE description resolution lives HERE, in the one mapper every
+     * shared_skills read passes through: the owner's custom introduction when
+     * set, else the frontmatter snapshot. Consumers (feed, preview header, MCP
+     * find, group management) read `description` and cannot drift apart; the
+     * two raw columns stay available for the owner's own UIs and for the mine
+     * reconciliation, which must compare the SNAPSHOT only.
+     */
     private toSharedSkill(row: SharedSkillRow): SharedSkill {
       return {
         id: row.id,
         ownerUserId: row.owner_user_id,
         skillName: row.skill_name,
         displayName: row.display_name,
-        description: row.description ?? "",
+        description: row.custom_description ?? row.description ?? "",
+        customDescription: row.custom_description ?? null,
+        snapshotDescription: row.description ?? "",
         learnCount: row.learn_count ?? 0,
         contentHash: row.content_hash ?? null,
         createdAt: row.created_at,
@@ -495,6 +508,11 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
      * already-shared slug refreshes the metadata snapshot + updated_at and
      * keeps the row id. Callers validate that `skills/<skillName>/` actually
      * exists in the owner's repo BEFORE calling.
+     *
+     * `description` is the frontmatter SNAPSHOT column only. The owner's custom
+     * introduction is deliberately absent from the conflict update, so a
+     * re-share (and every reconciliation re-snapshot) leaves it standing —
+     * setSharedSkillDescription is the single write point for it.
      */
     shareSkill(
       ownerUserId: string,
@@ -526,13 +544,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
           timestamp,
           timestamp,
         );
-      const row = this.db
-        .prepare(
-          `SELECT s.*, ${LEARN_COUNT_COLUMN} FROM shared_skills s
-           WHERE s.owner_user_id = ? AND s.skill_name = ?`,
-        )
-        .get(ownerUserId, skill.skillName) as SharedSkillRow;
-      return this.toSharedSkill(row);
+      return this.readOwnShare(ownerUserId, skill.skillName)!;
     }
 
     /**
@@ -551,6 +563,40 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
           "UPDATE shared_skills SET content_hash = ? WHERE owner_user_id = ? AND skill_name = ?",
         )
         .run(contentHash, ownerUserId, skillName);
+    }
+
+    /**
+     * Set (or clear) the owner's custom INTRODUCTION for one share — the
+     * human-facing card text. Empty/whitespace clears it, so viewers fall back
+     * to the frontmatter snapshot; the snapshot column is never touched here.
+     * Bumps updated_at like a re-share does: this is an owner-initiated change
+     * to what teammates see, unlike a viewer's fingerprint refresh. Returns the
+     * refreshed row, or null when the skill isn't shared.
+     */
+    setSharedSkillDescription(
+      ownerUserId: string,
+      skillName: string,
+      customDescription: string | null,
+    ): SharedSkill | null {
+      const value = customDescription?.trim() || null;
+      const changed = this.db
+        .prepare(
+          `UPDATE shared_skills SET custom_description = ?, updated_at = ?
+           WHERE owner_user_id = ? AND skill_name = ?`,
+        )
+        .run(value, now(), ownerUserId, skillName).changes;
+      return changed > 0 ? this.readOwnShare(ownerUserId, skillName) : null;
+    }
+
+    /** One of an owner's OWN share rows (no visibility filter — it's theirs). */
+    private readOwnShare(ownerUserId: string, skillName: string): SharedSkill | null {
+      const row = this.db
+        .prepare(
+          `SELECT s.*, ${LEARN_COUNT_COLUMN} FROM shared_skills s
+           WHERE s.owner_user_id = ? AND s.skill_name = ?`,
+        )
+        .get(ownerUserId, skillName) as SharedSkillRow | undefined;
+      return row ? this.toSharedSkill(row) : null;
     }
 
     /**
@@ -652,7 +698,14 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         return rows.slice(0, limit).map((row) => this.toSharedSkillListing(row));
       }
       const scored = rows.map((row) => {
-        const skillHay = [row.skill_name, row.display_name, row.description]
+        // Both description columns: the custom intro is what the browser READS
+        // on the card, the snapshot is what the skill says about itself.
+        const skillHay = [
+          row.skill_name,
+          row.display_name,
+          row.custom_description,
+          row.description,
+        ]
           .filter(Boolean)
           .join(" ")
           .toLowerCase();

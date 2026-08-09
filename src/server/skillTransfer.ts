@@ -13,6 +13,7 @@ import {
   type KnowledgeRepoContext,
 } from "./knowledgeRepo.js";
 import { skillMdMeta } from "./agent/skillDiscovery.js";
+import type { SharedSkillManifest } from "./types.js";
 
 // Skill transfer between knowledge repos (#skill-share): the "learn" half of
 // skill sharing. The share rows (store/avatars.ts) are metadata only; THIS
@@ -33,6 +34,14 @@ const MAX_SKILL_TOTAL_BYTES = 4 * 1024 * 1024;
 /** File-count + depth bounds so a pathological tree can't wedge the copy. */
 const MAX_SKILL_FILES = 200;
 const MAX_SKILL_DEPTH = 8;
+/**
+ * Cap on the owner's custom share INTRODUCTION (소개 문구). The frontmatter
+ * description it falls back to is unbounded by nature (one YAML line), but this
+ * one is free-form user text that rides listings and MCP tool results, so both
+ * entry points (the route and share_skill) REJECT past this rather than clip —
+ * silently truncating someone's intro is worse than telling them to shorten it.
+ */
+export const MAX_SKILL_INTRO_CHARS = 500;
 
 /** One shareable skill directory in a repo working tree. */
 export interface RepoSkillEntry {
@@ -119,27 +128,35 @@ export interface SkillOrigin {
 
 export const SKILL_ORIGIN_FILE = ".noah-skill-origin.json";
 
+/** One file seen by the shared read-only walk below. */
+interface SkillWalkFile {
+  abs: string;
+  /** Path relative to the skill directory, always POSIX-separated. */
+  rel: string;
+  bytes: number;
+}
+
 /**
- * Deterministic content hash of one skill directory: sha256 over the sorted
- * repo-relative paths + file bytes, mirroring copySkillDir's traversal
- * (symlinks and specials skipped). Excluding the origin marker is still
- * REQUIRED, for a different reason than re-sharing (which is now refused —
- * assertSkillShareable): every comparison a learned copy takes part in is
- * against a marker-less hash — the SOURCE dir's, for update detection, and its
- * own marker's localHash, for customization detection — so the marker must be
- * invisible on both sides. Null when the dir is missing or blows the transfer
- * caps (such a skill can't transfer anyway).
+ * Read-only traversal of ONE skill directory under copySkillDir's rules —
+ * symlinks and specials skipped, depth-capped, entries taken in per-directory
+ * name order (that order is what makes hashSkillDir's digest stable, so don't
+ * change it). Never reads file CONTENT: callers get sizes and decide.
+ *
+ * Stops (rather than throwing) when it can't see the whole tree — more than
+ * `limit` files, deeper than MAX_SKILL_DEPTH, or an unreadable directory — and
+ * reports that as `truncated`. hashSkillDir turns it into a null hash (an
+ * untransferable skill has no meaningful fingerprint); listSkillFiles keeps the
+ * partial listing and flags it, so a preview says honestly what it saw.
+ *
+ * `skipName` drops entries with that basename at ANY depth (the origin marker,
+ * for the hash).
  */
-export function hashSkillDir(repoRoot: string, slug: string): string | null {
-  const lexical = resolveInRepo(repoRoot, `${SKILL_DIR}/${slug}`);
-  if (!lexical) {
-    return null;
-  }
-  const dir = realpathContained(repoRoot, lexical, true);
-  if (!dir) {
-    return null;
-  }
-  const files: string[] = [];
+function walkSkillDir(
+  dir: string,
+  limit: number,
+  skipName?: string,
+): { files: SkillWalkFile[]; truncated: boolean } {
+  const files: SkillWalkFile[] = [];
   const walk = (current: string, depth: number): boolean => {
     if (depth > MAX_SKILL_DEPTH) {
       return false;
@@ -162,33 +179,94 @@ export function hashSkillDir(repoRoot: string, slug: string): string | null {
         }
         continue;
       }
-      if (!stat.isFile() || entry.name === SKILL_ORIGIN_FILE) {
+      if (!stat.isFile() || entry.name === skipName) {
         continue;
       }
-      if (stat.size > MAX_SKILL_FILE_BYTES || files.length >= MAX_SKILL_FILES) {
+      if (files.length >= limit) {
         return false;
       }
-      files.push(abs);
+      files.push({
+        abs,
+        rel: path.relative(dir, abs).split(path.sep).join("/"),
+        bytes: stat.size,
+      });
     }
     return true;
   };
-  if (!walk(dir, 0)) {
+  return { files, truncated: !walk(dir, 0) };
+}
+
+/**
+ * Deterministic content hash of one skill directory: sha256 over the sorted
+ * repo-relative paths + file bytes, mirroring copySkillDir's traversal
+ * (symlinks and specials skipped). Excluding the origin marker is still
+ * REQUIRED, for a different reason than re-sharing (which is now refused —
+ * assertSkillShareable): every comparison a learned copy takes part in is
+ * against a marker-less hash — the SOURCE dir's, for update detection, and its
+ * own marker's localHash, for customization detection — so the marker must be
+ * invisible on both sides. Null when the dir is missing or blows the transfer
+ * caps (such a skill can't transfer anyway).
+ */
+export function hashSkillDir(repoRoot: string, slug: string): string | null {
+  const lexical = resolveInRepo(repoRoot, `${SKILL_DIR}/${slug}`);
+  if (!lexical) {
+    return null;
+  }
+  const dir = realpathContained(repoRoot, lexical, true);
+  if (!dir) {
+    return null;
+  }
+  const { files, truncated } = walkSkillDir(dir, MAX_SKILL_FILES, SKILL_ORIGIN_FILE);
+  if (truncated) {
     return null;
   }
   const hash = crypto.createHash("sha256");
   let total = 0;
-  for (const abs of files) {
-    const bytes = fs.readFileSync(abs);
+  for (const file of files) {
+    if (file.bytes > MAX_SKILL_FILE_BYTES) {
+      return null;
+    }
+    const bytes = fs.readFileSync(file.abs);
     total += bytes.length;
     if (total > MAX_SKILL_TOTAL_BYTES) {
       return null;
     }
-    hash.update(path.relative(dir, abs).split(path.sep).join("/"));
+    hash.update(file.rel);
     hash.update("\0");
     hash.update(bytes);
     hash.update("\0");
   }
   return hash.digest("hex");
+}
+
+/**
+ * The file manifest of one skill directory — what a learn would ACTUALLY copy.
+ * A skill is the whole `skills/<slug>/` tree (aux docs, scripts, templates),
+ * not just its SKILL.md, so the preview lists it rather than letting a learner
+ * assume one file. Same walk as copySkillDir minus the copying: symlinks and
+ * specials never appear, sizes come from lstat (no content is read), and paths
+ * are relative to the skill dir with SKILL.md included.
+ *
+ * A tree past the transfer caps returns what it saw with `truncated` — such a
+ * skill would FAIL to learn anyway, and an honest partial listing beats an
+ * empty one. A missing/uncontained dir is an empty manifest, not an error.
+ */
+export function listSkillFiles(repoRoot: string, slug: string): SharedSkillManifest {
+  const lexical = resolveInRepo(repoRoot, `${SKILL_DIR}/${slug}`);
+  const dir = lexical ? realpathContained(repoRoot, lexical, true) : null;
+  if (!dir) {
+    return { files: [], totalBytes: 0, truncated: false };
+  }
+  const { files, truncated } = walkSkillDir(dir, MAX_SKILL_FILES);
+  return {
+    // Code-unit order, not localeCompare: a manifest is a stable listing, and
+    // this keeps SKILL.md at the top the way `ls` would.
+    files: files
+      .map((file) => ({ path: file.rel, bytes: file.bytes }))
+      .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0)),
+    totalBytes: files.reduce((sum, file) => sum + file.bytes, 0),
+    truncated,
+  };
 }
 
 /** Read a learned skill's provenance marker, or null when absent/invalid. */

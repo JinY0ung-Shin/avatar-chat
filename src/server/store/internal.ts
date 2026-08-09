@@ -528,6 +528,7 @@ export class StoreBase {
         skill_name TEXT NOT NULL,
         display_name TEXT NOT NULL,
         description TEXT DEFAULT '',
+        custom_description TEXT,
         content_hash TEXT,
         created_at TEXT,
         updated_at TEXT,
@@ -740,6 +741,12 @@ export class StoreBase {
     // NULL = not yet computed. Added here for DBs that created shared_skills
     // before the update-detection feature.
     this.addColumnIfMissing("shared_skills", "content_hash", "TEXT");
+    // Owner-written INTRODUCTION for one share (소개 문구): the human-facing
+    // card text, distinct from `description` (the SKILL.md frontmatter snapshot
+    // the model reads). NULL = never set / cleared → viewers fall back to the
+    // snapshot. Owner reconciliation only ever rewrites `description`, so a
+    // custom intro survives it; unsharing deletes it with the row.
+    this.addColumnIfMissing("shared_skills", "custom_description", "TEXT");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateCanvasArtifacts();

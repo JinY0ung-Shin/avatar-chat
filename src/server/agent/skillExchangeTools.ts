@@ -13,6 +13,7 @@ import {
   hashSkillDir,
   learnSkillIntoRepo,
   listRepoSkills,
+  MAX_SKILL_INTRO_CHARS,
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
@@ -265,12 +266,20 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
       "share_skill",
       "Shares one of THIS avatar's knowledge-repo skills (a `skills/<name>/` directory) so same-group teammates can browse and learn it. " +
         "**Use this when the user asks to share/publish a skill with the team or another user.** " +
-        "Re-sharing an already-shared skill just refreshes its listed description. " +
+        "Re-sharing an already-shared skill re-reads its SKILL.md metadata; it never clears an introduction the owner already wrote. " +
         "A skill LEARNED from another avatar and still linked to that share is refused — unlink it first to claim it as this avatar's own, then share. (owner only)",
       {
         skill_name: z
           .string()
           .describe("The `skills/<name>` directory name in the knowledge repository (list them with mcp__repo__list_files skills/)."),
+        description: z
+          .string()
+          .optional()
+          .describe(
+            `The INTRODUCTION shown to teammates on the shared card — human-facing prose in the user's language (max ${MAX_SKILL_INTRO_CHARS} characters), NOT the SKILL.md frontmatter description (which is written for models and stays untouched). ` +
+              "Passing it REPLACES any previous introduction; omitting it leaves the current one exactly as it is (a re-share never wipes it). Pass an empty string to remove it, so the card falls back to the frontmatter description. " +
+              "Offer to write one when the user shares a skill whose frontmatter description would read poorly to a person.",
+          ),
       },
       async (args) => {
         if (!ctx.viewerIsOwner) {
@@ -280,6 +289,13 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
         if (!skillName || normalizeSkillSlug(skillName) !== skillName) {
           return text(
             "Pass the skill's directory name exactly as it appears under skills/ (lowercase letters, digits, - _ .).",
+            true,
+          );
+        }
+        const intro = args.description?.trim();
+        if (intro && intro.length > MAX_SKILL_INTRO_CHARS) {
+          return text(
+            `The introduction is ${intro.length} characters; the card holds at most ${MAX_SKILL_INTRO_CHARS}. Shorten it and call share_skill again — nothing was shared.`,
             true,
           );
         }
@@ -316,6 +332,11 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           description: skill.description,
           contentHash: hashSkillDir(repoRoot, skill.slug),
         });
+        // Only an explicitly PASSED description touches the intro — an omitted
+        // param must leave whatever the owner wrote before standing.
+        if (args.description !== undefined) {
+          store.setSharedSkillDescription(ctx.avatarUserId, skill.slug, intro || null);
+        }
         store.audit({
           actorUserId: ctx.owner.id,
           actorName: ctx.owner.username,
@@ -323,8 +344,14 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           status: "success",
           detail: `shared ${skill.slug}`,
         });
+        const introNote =
+          args.description === undefined
+            ? ""
+            : intro
+              ? ` The card now introduces it as: "${intro}".`
+              : " Its custom introduction was removed; the card falls back to the SKILL.md description.";
         return text(
-          `Now sharing "${skill.slug}" — same-group teammates can browse it in their 스킬 배우기 tab or learn it through their own avatars. Unshare any time with unshare_skill.`,
+          `Now sharing "${skill.slug}" — same-group teammates can browse it in their 스킬 배우기 tab or learn it through their own avatars.${introNote} Unshare any time with unshare_skill.`,
         );
       },
     ),

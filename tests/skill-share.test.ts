@@ -10,6 +10,7 @@ import {
   hashSkillDir,
   learnSkillIntoRepo,
   listRepoSkills,
+  listSkillFiles,
   normalizeSkillSlug,
   readSkillOrigin,
 } from "../src/server/skillTransfer.js";
@@ -149,6 +150,71 @@ describe("shared_skills store", () => {
     expect(store.unshareSkill("u1", "pptx-report")).toBe(true);
     expect(store.unshareSkill("u1", "pptx-report")).toBe(false);
     expect(store.listSharedSkillsByOwner("u1")).toHaveLength(0);
+  });
+
+  it("a custom introduction overrides the snapshot for viewers, and outlives a re-share", async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.shareSkill(sharer.userId, {
+      skillName: "pptx-report",
+      displayName: "Deck maker",
+      description: "Weekly report deck generator",
+    });
+
+    // Unset: the effective description IS the frontmatter snapshot.
+    const before = store.listSharedSkillsByOwner(sharer.userId)[0];
+    expect(before.description).toBe("Weekly report deck generator");
+    expect(before.customDescription).toBeNull();
+    expect(before.snapshotDescription).toBe("Weekly report deck generator");
+
+    const set = store.setSharedSkillDescription(sharer.userId, "pptx-report", "  주간 보고 덱을 대신 만들어 드려요  ");
+    expect(set?.customDescription).toBe("주간 보고 덱을 대신 만들어 드려요"); // trimmed
+    // EVERY viewer surface reads the mapper, so none of them can drift.
+    expect(store.listLearnableSkills(mate.userId)[0].description).toBe(
+      "주간 보고 덱을 대신 만들어 드려요",
+    );
+    expect(store.getLearnableSkillByName(mate.userId, "sharer", "pptx-report")?.description).toBe(
+      "주간 보고 덱을 대신 만들어 드려요",
+    );
+    // ...while the snapshot column stays exactly what the SKILL.md said.
+    expect(store.listLearnableSkills(mate.userId)[0].snapshotDescription).toBe(
+      "Weekly report deck generator",
+    );
+    // Searchable by BOTH texts: what the browser reads and what the skill says.
+    expect(store.listLearnableSkills(mate.userId, "주간")).toHaveLength(1);
+    expect(store.listLearnableSkills(mate.userId, "Weekly")).toHaveLength(1);
+
+    // A re-share (owner reconciliation, drifted frontmatter) re-snapshots the
+    // snapshot column ONLY — the owner's intro is not theirs to overwrite.
+    store.shareSkill(sharer.userId, {
+      skillName: "pptx-report",
+      displayName: "Deck maker",
+      description: "Weekly report deck generator v2",
+    });
+    const afterReshare = store.listSharedSkillsByOwner(sharer.userId)[0];
+    expect(afterReshare.snapshotDescription).toBe("Weekly report deck generator v2");
+    expect(afterReshare.description).toBe("주간 보고 덱을 대신 만들어 드려요");
+
+    // Empty clears it back to the frontmatter text.
+    expect(store.setSharedSkillDescription(sharer.userId, "pptx-report", "   ")?.description).toBe(
+      "Weekly report deck generator v2",
+    );
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].customDescription).toBeNull();
+    // A skill that isn't shared has nothing to introduce.
+    expect(store.setSharedSkillDescription(sharer.userId, "nope", "hi")).toBeNull();
+
+    // Unshare deletes the intro with the row: a later re-share starts clean.
+    store.setSharedSkillDescription(sharer.userId, "pptx-report", "다시 쓴 소개");
+    store.unshareSkill(sharer.userId, "pptx-report");
+    store.shareSkill(sharer.userId, {
+      skillName: "pptx-report",
+      displayName: "Deck maker",
+      description: "Weekly report deck generator",
+    });
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].customDescription).toBeNull();
   });
 
   it("learnable visibility mirrors avatar discovery (group teammates only)", async () => {
@@ -453,6 +519,54 @@ describe("skillTransfer", () => {
     expect(skills[1].name).toBe("b-skill"); // dir-name fallback
   });
 
+  it("lists the files a learn would copy (tree, no symlinks, SKILL.md-only)", () => {
+    const root = path.join(tempDir, "manifest-repo");
+    fs.mkdirSync(path.join(root, "skills", "solo"), { recursive: true });
+    fs.writeFileSync(path.join(root, "skills", "solo", "SKILL.md"), SKILL_MD);
+    // A one-file skill: the preview has nothing more to say than the summary.
+    const solo = listSkillFiles(root, "solo");
+    expect(solo.files).toEqual([{ path: "SKILL.md", bytes: Buffer.byteLength(SKILL_MD) }]);
+    expect(solo.totalBytes).toBe(Buffer.byteLength(SKILL_MD));
+    expect(solo.truncated).toBe(false);
+
+    // A real skill is a TREE — nested aux files ride along on a learn, symlinks
+    // never do (copySkillDir skips them), so the manifest must agree.
+    const dir = path.join(root, "skills", "full");
+    fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "templates"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), SKILL_MD);
+    fs.writeFileSync(path.join(dir, "scripts", "render.sh"), "#!/bin/sh\n");
+    fs.writeFileSync(path.join(dir, "templates", "deck.md"), "x".repeat(40));
+    fs.symlinkSync("/etc/hostname", path.join(dir, "evil-link"));
+    const full = listSkillFiles(root, "full");
+    expect(full.files.map((f) => f.path)).toEqual([
+      "SKILL.md",
+      "scripts/render.sh",
+      "templates/deck.md",
+    ]);
+    expect(full.files.find((f) => f.path === "templates/deck.md")?.bytes).toBe(40);
+    expect(full.totalBytes).toBe(full.files.reduce((sum, f) => sum + f.bytes, 0));
+    expect(full.truncated).toBe(false);
+    // A missing dir is an empty manifest, never an error.
+    expect(listSkillFiles(root, "nope")).toEqual({ files: [], totalBytes: 0, truncated: false });
+  });
+
+  it("flags a manifest cut off at the transfer file cap", () => {
+    const root = path.join(tempDir, "many-files-repo");
+    const dir = path.join(root, "skills", "many");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "SKILL.md"), SKILL_MD);
+    for (let i = 0; i < 210; i += 1) {
+      fs.writeFileSync(path.join(dir, `f${String(i).padStart(3, "0")}.txt`), "x");
+    }
+    const manifest = listSkillFiles(root, "many");
+    expect(manifest.files).toHaveLength(200); // MAX_SKILL_FILES
+    expect(manifest.truncated).toBe(true);
+    // The same tree can't transfer at all — the honest partial listing lines up
+    // with the refusal a learn would hit.
+    expect(hashSkillDir(root, "many")).toBeNull();
+  });
+
   it("copies a skill dir with guards (exists/missing/symlink/oversize)", async () => {
     const src = path.join(tempDir, "src-repo");
     const dest = path.join(tempDir, "dest-repo");
@@ -733,6 +847,7 @@ describe("skill-share routes", () => {
         name: "pptx-report",
         description: "Weekly report deck generator",
         shared: false,
+        customDescription: null,
         learnCount: 0,
         origin: null,
       },
@@ -804,6 +919,109 @@ describe("skill-share routes", () => {
     await sharer.agent.delete("/api/skill-share/share/pptx-report").expect(200);
     const after = await mate.agent.get("/api/skill-share/available").expect(200);
     expect(after.body.skills).toHaveLength(0);
+  });
+
+  it("previews the whole file manifest, on a teammate's card and my own", { timeout: 30_000 }, async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const listing = (await mate.agent.get("/api/skill-share/available").expect(200)).body.skills[0];
+
+    // A skill is the DIRECTORY: the preview lists everything a learn copies,
+    // not just the SKILL.md it renders above it.
+    const teammateView = await mate.agent
+      .get(`/api/skill-share/available/${listing.id}`)
+      .expect(200);
+    expect(teammateView.body.manifest.files.map((f: { path: string }) => f.path)).toEqual([
+      "SKILL.md",
+      "scripts/render.sh",
+    ]);
+    expect(teammateView.body.manifest.totalBytes).toBeGreaterThan(0);
+    expect(teammateView.body.manifest.truncated).toBe(false);
+
+    // The own-share fallback path serves the same manifest (it 404s in the
+    // learnable query, so it is a SECOND code path through the same handler).
+    const ownView = await sharer.agent
+      .get(`/api/skill-share/available/${listing.id}`)
+      .expect(200);
+    expect(ownView.body.manifest).toEqual(teammateView.body.manifest);
+  });
+
+  it("owner-written 소개 문구 rides every viewer surface and survives reconciliation", { timeout: 30_000 }, async () => {
+    const { app, store } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    await sharer.agent.post("/api/skill-share/share").send({ skill: "pptx-report" }).expect(200);
+    const listing = (await mate.agent.get("/api/skill-share/available").expect(200)).body.skills[0];
+    expect(listing.description).toBe("Weekly report deck generator");
+
+    const intro = "매주 월요일 보고용 덱을 대신 만들어 드려요.";
+    const saved = await sharer.agent
+      .put("/api/skill-share/share/pptx-report/description")
+      .send({ description: `  ${intro}  ` })
+      .expect(200);
+    expect(saved.body.shared.customDescription).toBe(intro);
+
+    // The feed card and the preview header both read the effective text.
+    const feed = await mate.agent.get("/api/skill-share/available").expect(200);
+    expect(feed.body.skills[0].description).toBe(intro);
+    const preview = await mate.agent
+      .get(`/api/skill-share/available/${listing.id}`)
+      .expect(200);
+    expect(preview.body.skill.description).toBe(intro);
+    // The owner's own tab distinguishes intro from frontmatter text.
+    const mine = await sharer.agent.get("/api/skill-share/mine").expect(200);
+    expect(mine.body.skills[0].customDescription).toBe(intro);
+    expect(mine.body.skills[0].description).toBe("Weekly report deck generator");
+
+    // The owner edits SKILL.md: reconciliation re-snapshots the FRONTMATTER but
+    // must not touch the intro (nor keep rewriting the row on every load).
+    updateRemoteFile(
+      "sharer-repo",
+      "skills/pptx-report/SKILL.md",
+      "---\nname: pptx-report\ndescription: Rewritten frontmatter\n---\n\n# pptx-report\n",
+    );
+    const reconciled = await sharer.agent.get("/api/skill-share/mine").expect(200);
+    expect(reconciled.body.skills[0].description).toBe("Rewritten frontmatter");
+    expect(reconciled.body.skills[0].customDescription).toBe(intro);
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].snapshotDescription).toBe(
+      "Rewritten frontmatter",
+    );
+    const settled = store.listSharedSkillsByOwner(sharer.userId)[0].updatedAt;
+    await sharer.agent.get("/api/skill-share/mine").expect(200);
+    expect(store.listSharedSkillsByOwner(sharer.userId)[0].updatedAt).toBe(settled);
+    expect((await mate.agent.get("/api/skill-share/available").expect(200)).body.skills[0].description).toBe(intro);
+
+    // Clearing falls back to the (now rewritten) frontmatter text.
+    await sharer.agent
+      .put("/api/skill-share/share/pptx-report/description")
+      .send({ description: "" })
+      .expect(200);
+    expect((await mate.agent.get("/api/skill-share/available").expect(200)).body.skills[0].description).toBe(
+      "Rewritten frontmatter",
+    );
+
+    // Cap + ownership: too long is a 400, an unshared skill is a 404, and a
+    // teammate cannot introduce someone else's share (it is keyed by ME).
+    await sharer.agent
+      .put("/api/skill-share/share/pptx-report/description")
+      .send({ description: "가".repeat(501) })
+      .expect(400);
+    await sharer.agent
+      .put("/api/skill-share/share/not-shared/description")
+      .send({ description: "hi" })
+      .expect(404);
+    await mate.agent
+      .put("/api/skill-share/share/pptx-report/description")
+      .send({ description: "hijack" })
+      .expect(404);
   });
 
   it("flags updates via origin markers and overwrites in place", { timeout: 30_000 }, async () => {
@@ -1468,6 +1686,48 @@ describe("mcp skill_exchange tools", () => {
 
     const again = await callTool(tools, "unshare_skill", { skill_name: "pptx-report" });
     expect(again.isError).toBe(true);
+  });
+
+  it("share_skill's description sets the card introduction; omitting it preserves one", async () => {
+    const { app, store, config } = bootstrap();
+    const admin = await newUser(app, "admin");
+    const sharer = await newUser(app, "sharer");
+    const mate = await newUser(app, "mate");
+    await shareGroup(admin.agent, ["sharer", "mate"]);
+    store.setKnowledgeRepo(sharer.userId, seedSkillRemote("sharer-repo"), "main");
+    const tools = toolsFor(store, config, sharer.userId, "sharer");
+    const share = (args: Record<string, unknown>) => callTool(tools, "share_skill", args);
+    const row = () => store.listSharedSkillsByOwner(sharer.userId)[0];
+
+    // Sharing without the param leaves the card on the frontmatter text.
+    await share({ skill_name: "pptx-report" });
+    expect(row().customDescription).toBeNull();
+    expect(row().description).toBe("Weekly report deck generator");
+
+    const withIntro = await share({
+      skill_name: "pptx-report",
+      description: "  주간 보고 덱을 대신 만들어 드려요  ",
+    });
+    expect(withIntro.isError).toBeFalsy();
+    expect(withIntro.content[0].text).toContain("주간 보고 덱을 대신 만들어 드려요");
+    expect(row().customDescription).toBe("주간 보고 덱을 대신 만들어 드려요");
+
+    // A later re-share WITHOUT the param must not wipe what the owner wrote.
+    await share({ skill_name: "pptx-report" });
+    expect(row().customDescription).toBe("주간 보고 덱을 대신 만들어 드려요");
+    // The find tool prints the effective text to the teammate's model.
+    const found = await callTool(toolsFor(store, config, mate.userId, "mate"), "find_shared_skills", {});
+    expect(found.content[0].text).toContain("주간 보고 덱을 대신 만들어 드려요");
+
+    // An EXPLICIT empty string is the clear (the tool description says so).
+    await share({ skill_name: "pptx-report", description: "" });
+    expect(row().customDescription).toBeNull();
+    expect(row().description).toBe("Weekly report deck generator");
+
+    // Over the cap: refuse and say so rather than silently truncating.
+    const tooLong = await share({ skill_name: "pptx-report", description: "가".repeat(501) });
+    expect(tooLong.isError).toBe(true);
+    expect(tooLong.content[0].text).toContain("500");
   });
 
   it("share_skill refuses a still-linked copy and redirects to unlink", { timeout: 30_000 }, async () => {

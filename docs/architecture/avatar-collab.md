@@ -60,6 +60,26 @@
   `.claude-plugin/marketplace.json`, and commits+pushes with the LEARNER's identity. Share rows
   (`shared_skills`, store/avatars.ts) are METADATA SNAPSHOTS only; content is read from the sharer's
   clone at preview/learn time (`ensureClone` refresh), so learners always get the current version.
+- **What a browser SEES is the OWNER's text and the WHOLE directory, not the frontmatter and one file.**
+  Two independent fixes to the same illusion: (1) `shared_skills.custom_description` is the owner's
+  human-facing 소개 문구, and the EFFECTIVE description (`custom_description ?? description`) is resolved
+  in `toSharedSkill` — the one mapper every read passes through — so the feed, preview header, group
+  management list and `find_shared_skills` cannot drift apart; the raw columns ride along as
+  `customDescription` (owner UIs distinguish "custom" from "falling back") and `snapshotDescription`.
+  That second field exists because the mine RECONCILIATION must keep comparing and writing the SNAPSHOT
+  column only (`shareSkill` leaves `custom_description` out of its upsert): comparing the effective text
+  would re-snapshot — and re-sort — the row on every tab load once an intro exists. So a custom intro
+  survives frontmatter drift and re-shares; UNSHARE deletes it with the row (a later re-share starts
+  clean, unlike learn counts and group blocks, which are keyed by skill NAME on purpose). Write path:
+  `PUT /api/skill-share/share/:skillName/description` (owner-only by construction — the row is addressed
+  by the authenticated id; empty body = clear) and `share_skill`'s optional `description` param, whose
+  contract is OMITTED = leave standing, non-empty = replace, explicit `""` = clear. Both REJECT past
+  `MAX_SKILL_INTRO_CHARS` (500) rather than clip. (2) The preview route returns a `manifest` alongside the
+  SKILL.md — `listSkillFiles` is `copySkillDir`'s traversal minus the copying (symlinks/specials skipped,
+  depth-capped, sizes from lstat, no content read), sharing ONE walker with `hashSkillDir` so the three
+  can't disagree about what a skill IS. Past the caps it returns what it saw with `truncated` instead of
+  failing: such a tree can't be learned either, and an honest partial listing beats an empty one. Both
+  preview paths (learnable + the own-share fallback) get it, since they meet before the response.
 - **Version updates (전수 후 원본 변경):** every shared_skills row carries a `content_hash` (sha256 of
   the sharer's skill dir via `hashSkillDir`, origin-marker excluded), refreshed wherever the server
   touches the sharer's clone — share, owner mine reconciliation (this ALSO bumps updated_at), and

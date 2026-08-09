@@ -103,6 +103,7 @@ describe("SkillsView", () => {
             name: "my-skill",
             description: "mine",
             shared: true,
+            customDescription: null,
             learnCount: 3,
             origin: null,
           },
@@ -113,6 +114,7 @@ describe("SkillsView", () => {
             name: "pptx-report",
             description: "",
             shared: false,
+            customDescription: null,
             learnCount: 0,
             origin: {
               ownerUserId: "mate-1",
@@ -162,6 +164,116 @@ describe("SkillsView", () => {
     expect((screen.getByRole("switch", { name: "my-skill 공유" }) as HTMLButtonElement).disabled).toBe(
       false,
     );
+  });
+
+  it("previews the whole file manifest, and stays quiet for a one-file skill", async () => {
+    // Route order matters: the by-id preview prefix must come BEFORE the feed.
+    mockFetch({
+      "/api/skill-share/available/share-1": {
+        skill: LISTING,
+        content: "# pptx-report",
+        manifest: {
+          files: [
+            { path: "SKILL.md", bytes: 1200 },
+            { path: "scripts/render.sh", bytes: 40 },
+          ],
+          totalBytes: 1240,
+          truncated: true,
+        },
+      },
+      "/api/skill-share/available": { skills: [LISTING] },
+      "/api/skill-share/mine": { repoConfigured: true, skills: [] },
+    });
+    render(SkillsView);
+    await fireEvent.click(await screen.findByRole("button", { name: "미리보기" }));
+
+    expect(await screen.findByText("포함 파일 2개 · 총 1.2 KB")).toBeTruthy();
+    expect(screen.getByText("scripts/render.sh")).toBeTruthy();
+    expect(screen.getByText(/목록이 잘렸습니다/)).toBeTruthy();
+  });
+
+  it("keeps the preview manifest to one line when the skill is only SKILL.md", async () => {
+    mockFetch({
+      "/api/skill-share/available/share-1": {
+        skill: LISTING,
+        content: "# pptx-report",
+        manifest: {
+          files: [{ path: "SKILL.md", bytes: 1200 }],
+          totalBytes: 1200,
+          truncated: false,
+        },
+      },
+      "/api/skill-share/available": { skills: [LISTING] },
+      "/api/skill-share/mine": { repoConfigured: true, skills: [] },
+    });
+    render(SkillsView);
+    await fireEvent.click(await screen.findByRole("button", { name: "미리보기" }));
+
+    expect(await screen.findByText("포함 파일 1개 · 총 1.2 KB")).toBeTruthy();
+    expect(screen.queryByText("SKILL.md")).toBeNull(); // no one-item list
+    expect(screen.queryByText(/목록이 잘렸습니다/)).toBeNull();
+  });
+
+  it("writes and reverts the 소개 문구 of a shared skill", async () => {
+    const mineRow = {
+      slug: "my-skill",
+      name: "my-skill",
+      description: "Frontmatter description",
+      shared: true,
+      customDescription: null as string | null,
+      learnCount: 0,
+      origin: null,
+    };
+    const calls: { url: string; method?: string; body?: string }[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const url = String(input);
+      const request = init as RequestInit | undefined;
+      calls.push({ url, method: request?.method, body: request?.body as string | undefined });
+      if (url.includes("/description")) {
+        const sent = JSON.parse(String(request?.body)) as { description: string };
+        return jsonResponse({
+          shared: { ...OWN_LISTING, customDescription: sent.description || null },
+        });
+      }
+      if (url.startsWith("/api/skill-share/mine")) {
+        return jsonResponse({ repoConfigured: true, skills: [mineRow] });
+      }
+      if (url.startsWith("/api/skill-share/available")) return jsonResponse({ skills: [] });
+      throw new Error(`unexpected fetch ${url}`);
+    });
+    render(SkillsView);
+
+    // The frontmatter text is what shows until an introduction is written.
+    await screen.findByText("Frontmatter description");
+    await fireEvent.click(screen.getByRole("button", { name: "my-skill 소개 수정" }));
+    const box = screen.getByRole("textbox", { name: "my-skill 소개 문구" }) as HTMLTextAreaElement;
+    expect(box.value).toBe("Frontmatter description"); // pre-filled with what viewers see
+    // Nothing to revert to yet.
+    expect(screen.queryByRole("button", { name: "frontmatter 설명으로 되돌리기" })).toBeNull();
+
+    await fireEvent.input(box, { target: { value: "주간 보고 덱을 대신 만들어 드려요" } });
+    await fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => {
+      expect(calls.some((c) => c.url.includes("/description"))).toBe(true);
+    });
+    const put = calls.find((c) => c.url.includes("/description"))!;
+    expect(put.url).toBe("/api/skill-share/share/my-skill/description");
+    expect(put.method).toBe("PUT");
+    expect(JSON.parse(put.body!)).toEqual({ description: "주간 보고 덱을 대신 만들어 드려요" });
+    // The row now shows what teammates read, labelled as the introduction.
+    expect(await screen.findByText("소개 문구: 주간 보고 덱을 대신 만들어 드려요")).toBeTruthy();
+
+    // With one set, the modal offers the way back to the frontmatter text.
+    await fireEvent.click(screen.getByRole("button", { name: "my-skill 소개 수정" }));
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "frontmatter 설명으로 되돌리기" }),
+    );
+    await waitFor(() => {
+      expect(calls.filter((c) => c.url.includes("/description"))).toHaveLength(2);
+    });
+    const revert = calls.filter((c) => c.url.includes("/description")).at(-1)!;
+    expect(JSON.parse(revert.body!)).toEqual({ description: "" });
+    expect(await screen.findByText("Frontmatter description")).toBeTruthy();
   });
 
   it("guides to knowledge settings when no repo is connected", async () => {

@@ -553,7 +553,25 @@ export interface SharedSkill {
   skillName: string;
   /** SKILL.md frontmatter name at share time (falls back to the dir name). */
   displayName: string;
+  /**
+   * The EFFECTIVE description every viewer surface shows: the owner's custom
+   * introduction when they wrote one, else the frontmatter snapshot. Resolved
+   * in the store's row mappers so no consumer has to choose (and none can drift).
+   */
   description: string;
+  /**
+   * The owner's custom, human-facing introduction (소개 문구) — null when never
+   * set or cleared back to the frontmatter text. Owner UIs need it separately to
+   * tell "custom" from "falling back"; viewers only ever read `description`.
+   */
+  customDescription: string | null;
+  /**
+   * The SKILL.md frontmatter description snapshotted at (re-)share time. Kept
+   * as its own field because the owner's mine reconciliation compares THIS
+   * against the repo to detect drift — comparing the effective text would
+   * re-snapshot on every load once a custom intro exists.
+   */
+  snapshotDescription: string;
   /**
    * How many times this skill has been learned (전수) — total successful learn
    * events for (owner, skillName), surviving unshare→re-share cycles.
@@ -568,6 +586,29 @@ export interface SharedSkill {
   contentHash: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** One file inside a shared skill directory, as the preview manifest lists it. */
+export interface SharedSkillFile {
+  /** Path relative to `skills/<slug>/`, POSIX-separated (SKILL.md included). */
+  path: string;
+  bytes: number;
+}
+
+/**
+ * What learning a shared skill would ACTUALLY copy: every file under the
+ * sharer's `skills/<slug>/`, not just its SKILL.md. Built by
+ * `listSkillFiles` — copySkillDir's traversal minus the copying — so a preview
+ * can promise exactly what transfers.
+ */
+export interface SharedSkillManifest {
+  files: SharedSkillFile[];
+  totalBytes: number;
+  /**
+   * The walk could not see the whole tree (transfer caps: 200 files / depth 8),
+   * so the listing is partial. Such a skill would fail to learn as well.
+   */
+  truncated: boolean;
 }
 
 /** A shared skill as browsed by a viewer, with owner attribution for cards. */

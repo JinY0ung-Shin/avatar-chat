@@ -441,6 +441,8 @@ const GROUP_SKILL: GroupSharedSkill = {
   skillName: "pptx-report",
   displayName: "Deck maker",
   description: "Weekly report deck generator",
+  customDescription: null,
+  snapshotDescription: "Weekly report deck generator",
   learnCount: 2,
   contentHash: null,
   createdAt: "2026-08-01T00:00:00.000Z",

@@ -14,6 +14,8 @@ import {
   hashSkillDir,
   learnSkillIntoRepo,
   listRepoSkills,
+  listSkillFiles,
+  MAX_SKILL_INTRO_CHARS,
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
@@ -150,6 +152,11 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
       // showing its history (events outlive the share row).
       const learnCounts = store.skillLearnCounts(req.user!.id);
       const shared = new Set<string>();
+      // The owner's custom 소개 문구 per shared slug — the mine rows carry it so
+      // the tab can show what teammates read and offer 소개 수정 / 되돌리기.
+      const customDescriptions = new Map(
+        sharedRows.map((row) => [row.skillName, row.customDescription]),
+      );
       for (const row of sharedRows) {
         const current = bySlug.get(row.skillName);
         if (!current) {
@@ -166,11 +173,15 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         }
         shared.add(row.skillName);
         // Reconcile metadata AND the content fingerprint: the owner opening
-        // this tab is what tells teammates "a newer version exists".
+        // this tab is what tells teammates "a newer version exists". The
+        // comparison is against the frontmatter SNAPSHOT, never the effective
+        // description — an owner with a custom 소개 문구 would otherwise look
+        // permanently drifted and get re-snapshotted (and re-sorted) on every
+        // load. shareSkill leaves custom_description alone, so it survives.
         const currentHash = hashSkillDir(repoRoot, current.slug);
         if (
           current.name !== row.displayName ||
-          current.description !== row.description ||
+          current.description !== row.snapshotDescription ||
           currentHash !== row.contentHash
         ) {
           store.shareSkill(req.user!.id, {
@@ -188,6 +199,9 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
           name: s.name,
           description: s.description,
           shared: shared.has(s.slug),
+          // Null while unshared or while the share falls back to the
+          // frontmatter text above — the tab renders 되돌리기 only when set.
+          customDescription: shared.has(s.slug) ? (customDescriptions.get(s.slug) ?? null) : null,
           learnCount: learnCounts[s.slug] ?? 0,
           // Who it came from and the source hash at learn time — the client
           // joins this against the shared listing's current hash to flag
@@ -238,6 +252,40 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         contentHash: hashSkillDir(repoRoot, skill.slug),
       });
       auditAs(req, "skill_share", `${skill.slug} 공유`);
+      res.json({ shared: row });
+    },
+  );
+
+  // Set (or clear) the owner's 소개 문구 for one share. The frontmatter
+  // description is written FOR THE MODEL and often reads badly to a human
+  // browsing 스킬 배우기, so the owner may put their own introduction on the
+  // card; an empty body clears it back to that frontmatter snapshot. Owner-only
+  // by construction — the row is addressed by the authenticated user's id.
+  router.put(
+    "/api/skill-share/share/:skillName/description",
+    requireAuth(store),
+    (req: AuthenticatedRequest, res) => {
+      const description = safeString(req.body?.description);
+      if (description.length > MAX_SKILL_INTRO_CHARS) {
+        apiError(res, 400, `소개 문구는 ${MAX_SKILL_INTRO_CHARS}자까지 쓸 수 있습니다.`);
+        return;
+      }
+      const row = store.setSharedSkillDescription(
+        req.user!.id,
+        req.params.skillName,
+        description || null,
+      );
+      if (!row) {
+        apiError(res, 404, "공유 중인 스킬이 아닙니다.");
+        return;
+      }
+      // Its own action, not skill_share: this changes what a share SAYS, not
+      // whether it exists — an admin counting shares shouldn't catch edits.
+      auditAs(
+        req,
+        "skill_share_intro",
+        `${req.params.skillName} 소개 문구 ${description ? "수정" : "되돌리기"}`,
+      );
       res.json({ shared: row });
     },
   );
@@ -312,7 +360,13 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
           (s) =>
             tokens.length === 0 ||
             tokens.some((t) =>
-              [s.skillName, s.displayName, s.description].join(" ").toLowerCase().includes(t),
+              // Both description columns, like listLearnableSkills: the custom
+              // intro is what shows on the card, the snapshot is the skill's
+              // own words (s.description already resolves to the former).
+              [s.skillName, s.displayName, s.description, s.snapshotDescription]
+                .join(" ")
+                .toLowerCase()
+                .includes(t),
             ),
         )
         .map((s) => ownShareListing(s, me));
@@ -353,6 +407,10 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         // row from before re-sharing those was refused (see the catch).
         assertSkillShareable(srcRoot, listing.skillName);
         const content = await readFile(srcRoot, `${SKILL_DIR}/${listing.skillName}/SKILL.md`);
+        // A skill is the whole directory, not one file: list what a learn would
+        // actually copy (aux docs, scripts, templates) so nobody adopts a tree
+        // they never saw. Read-only walk — no file contents are loaded.
+        const manifest = listSkillFiles(srcRoot, listing.skillName);
         // The clone is fresh — opportunistically refresh the fingerprint so
         // update badges appear even before the owner next opens their tab.
         // (Hash-only: a viewer's preview must not reorder the owner's listing.)
@@ -360,7 +418,7 @@ export function createSkillShareRouter({ config, store, auditAs }: RouterDeps): 
         if (currentHash !== listing.contentHash) {
           store.setSharedSkillContentHash(listing.ownerUserId, listing.skillName, currentHash);
         }
-        res.json({ skill: { ...listing, contentHash: currentHash }, content });
+        res.json({ skill: { ...listing, contentHash: currentHash }, content, manifest });
       } catch (error) {
         const message = error instanceof Error ? error.message : "";
         if (message === "NOT_FOUND" || (error as NodeJS.ErrnoException).code === "ENOENT") {

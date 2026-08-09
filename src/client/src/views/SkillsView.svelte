@@ -6,20 +6,26 @@
   import Toggle from "../components/Toggle.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
-  import { timeLabel } from "../lib/format";
+  import { formatFileSize, timeLabel } from "../lib/format";
   import { goView } from "../lib/nav";
   import { appState, notify } from "../lib/state";
-  import type { SharedSkillListing } from "../lib/types";
+  import type { SharedSkill, SharedSkillListing, SharedSkillManifest } from "../lib/types";
 
   // 스킬 배우기: 동료 아바타가 공유한 스킬을 둘러보고 내 아바타의 지식 저장소로
   // 전수(복사+커밋)하는 탭 + 내 저장소 스킬의 공유 토글. 서버 계약은
   // routes/skillShare.ts — 공유 범위는 탐색과 동일(같은 그룹, 아바타 공개 시).
 
+  /** 서버 상한과 맞춘 값 (skillTransfer.ts의 MAX_SKILL_INTRO_CHARS) — 넘으면 400. */
+  const INTRO_MAX = 500;
+
   interface MySkill {
     slug: string;
     name: string;
+    /** SKILL.md frontmatter 설명 — 모델이 읽는 텍스트. */
     description: string;
     shared: boolean;
+    /** 공유 카드에 내가 직접 쓴 소개 문구 (없으면 frontmatter 설명이 보인다). */
+    customDescription: string | null;
     /** 이 스킬이 동료에게 전수된 횟수 (공유 해제해도 이력은 유지). */
     learnCount: number;
     /** 전수받은 스킬의 출처 마커 — 원본 해시와 비교해 업데이트 여부를 판단. */
@@ -55,10 +61,19 @@
   // 미리보기 모달: 목록 카드에서 열고, 이름 충돌(409) 시 새 이름 입력을 안내.
   let preview: SharedSkillListing | null = null;
   let previewContent = "";
+  // 전수 시 실제로 복사되는 파일 목록 — 스킬은 SKILL.md 한 장이 아니라
+  // skills/<slug>/ 디렉터리 전체라서, 무엇이 따라오는지 먼저 보여 준다.
+  let previewManifest: SharedSkillManifest | null = null;
   let previewLoading = false;
   let previewError = "";
   let renameValue = "";
   let renameInput: HTMLInputElement | null = null;
+
+  // 소개 문구 편집 모달: 공유 중인 스킬에만 열린다.
+  let introSkill: MySkill | null = null;
+  let introValue = "";
+  let introSaving = false;
+  let introInput: HTMLTextAreaElement | null = null;
 
   onMount(() => {
     void load();
@@ -173,14 +188,16 @@
   async function openPreview(skill: SharedSkillListing): Promise<void> {
     preview = skill;
     previewContent = "";
+    previewManifest = null;
     previewError = "";
     renameValue = "";
     previewLoading = true;
     try {
-      const data = await api<{ content: string }>(
+      const data = await api<{ content: string; manifest: SharedSkillManifest }>(
         `/api/skill-share/available/${encodeURIComponent(skill.id)}`,
       );
       previewContent = data.content;
+      previewManifest = data.manifest;
     } catch (err) {
       previewError = (err as Error).message;
     } finally {
@@ -192,8 +209,53 @@
     if (learningId) return;
     preview = null;
     previewContent = "";
+    previewManifest = null;
     previewError = "";
     renameValue = "";
+  }
+
+  /** 소개 문구 편집 시작: 지금 동료가 보고 있는 텍스트를 그대로 채워 준다. */
+  function openIntro(skill: MySkill): void {
+    introSkill = skill;
+    introValue = skill.customDescription ?? skill.description ?? "";
+    queueMicrotask(() => introInput?.focus());
+  }
+
+  function closeIntro(): void {
+    if (introSaving) return;
+    introSkill = null;
+    introValue = "";
+  }
+
+  /** 빈 문자열을 보내면 서버가 소개를 지우고 frontmatter 설명으로 되돌린다. */
+  async function saveIntro(next: string): Promise<void> {
+    const skill = introSkill;
+    if (!skill || introSaving) return;
+    introSaving = true;
+    try {
+      const { shared } = await api<{ shared: SharedSkill }>(
+        `/api/skill-share/share/${encodeURIComponent(skill.slug)}/description`,
+        { method: "PUT", body: JSON.stringify({ description: next }) },
+      );
+      mySkills = mySkills.map((item) =>
+        item.slug === skill.slug
+          ? { ...item, customDescription: shared.customDescription }
+          : item,
+      );
+      notify(
+        next
+          ? `"${skill.name}" 스킬의 소개 문구를 저장했습니다. 동료 목록에 바로 보여요.`
+          : `"${skill.name}" 스킬의 소개 문구를 지웠습니다. 이제 frontmatter 설명이 보입니다.`,
+        "ok",
+      );
+      introSkill = null;
+      introValue = "";
+      void load(); // 위쪽 목록 카드(내 공유 포함)의 설명도 갱신
+    } catch (err) {
+      notify(`소개 문구 저장 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      introSaving = false;
+    }
   }
 
   async function learn(
@@ -486,9 +548,24 @@
                      정직하게 만들어 그 오류 경로에 도달하지 않게 한다. -->
                 <span class="sk-mine-desc">전수받은 스킬은 원본과 연결된 동안 공유할 수 없어요. 내 스킬로 공유하려면 먼저 ‘연결 끊기(구독 해지)’를 해 주세요.</span>
               {/if}
-              {#if skill.description}<span class="sk-mine-desc">{skill.description}</span>{/if}
+              <!-- 공유 중이고 소개 문구를 쓴 스킬은 동료가 그 문구를 본다 —
+                   여기서도 같은 텍스트를 보여 줘야 무엇이 보이는지 안다. -->
+              {#if skill.customDescription}
+                <span class="sk-mine-desc">소개 문구: {skill.customDescription}</span>
+              {:else if skill.description}
+                <span class="sk-mine-desc">{skill.description}</span>
+              {/if}
             </div>
             <div class="sk-mine-actions">
+              {#if skill.shared}
+                <button
+                  class="linkish small"
+                  type="button"
+                  title="동료 목록에 보이는 소개 문구를 직접 씁니다"
+                  aria-label={`${skill.name} 소개 수정`}
+                  on:click={() => openIntro(skill)}
+                >소개 수정</button>
+              {/if}
               {#if skill.origin}
                 <button
                   class="linkish small"
@@ -543,6 +620,29 @@
       <div class="warn-box" role="alert">{previewError}</div>
     {:else}
       <pre class="sk-preview-content scroll-thin">{previewContent}</pre>
+      {#if previewManifest?.files.length}
+        <div class="sk-files">
+          <p class="sk-files-head">
+            포함 파일 {previewManifest.files.length}개 · 총 {formatFileSize(previewManifest.totalBytes) || "0 B"}
+          </p>
+          <!-- SKILL.md 한 장뿐이면 위 한 줄로 충분하다. -->
+          {#if previewManifest.files.length > 1}
+            <ul class="sk-file-list scroll-thin">
+              {#each previewManifest.files as file (file.path)}
+                <li>
+                  <span class="sk-file-path">{file.path}</span>
+                  <span class="sk-file-size">{formatFileSize(file.bytes) || "0 B"}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+          {#if previewManifest.truncated}
+            <p class="sk-files-note">
+              전송 한도(파일 200개)에 걸려 목록이 잘렸습니다. 지금 상태로는 전수받을 수 없어요.
+            </p>
+          {/if}
+        </div>
+      {/if}
     {/if}
     {#if !previewOwn}
       <label class="field sk-rename-field">
@@ -580,6 +680,45 @@
           </button>
         {/if}
       {/if}
+    </div>
+  </Modal>
+{/if}
+
+{#if introSkill}
+  <Modal ariaLabelledby="skill-intro-title" closeDisabled={introSaving} on:close={closeIntro}>
+    <h2 id="skill-intro-title">소개 문구</h2>
+    <p class="sk-intro-help">
+      동료의 스킬 목록 카드에 보이는 소개예요. 비워 두면 SKILL.md frontmatter 설명이 그대로 보입니다.
+    </p>
+    <label class="field">
+      <span>"{introSkill.name}" 소개 문구</span>
+      <textarea
+        rows="4"
+        maxlength={INTRO_MAX}
+        placeholder={introSkill.description || "이 스킬이 무엇을 해 주는지 한두 문장으로 소개해 주세요."}
+        aria-label={`${introSkill.name} 소개 문구`}
+        bind:this={introInput}
+        bind:value={introValue}
+        disabled={introSaving}
+      ></textarea>
+    </label>
+    <p class="sk-intro-help">{introValue.trim().length}/{INTRO_MAX}자</p>
+    <div class="sk-actions sk-preview-actions">
+      {#if introSkill.customDescription}
+        <button
+          class="linkish sk-intro-revert"
+          type="button"
+          disabled={introSaving}
+          on:click={() => saveIntro("")}
+        >frontmatter 설명으로 되돌리기</button>
+      {/if}
+      <button class="linkish" type="button" disabled={introSaving} on:click={closeIntro}>취소</button>
+      <button
+        class="primary"
+        type="button"
+        disabled={introSaving || !introValue.trim()}
+        on:click={() => saveIntro(introValue.trim())}
+      >{introSaving ? "저장 중…" : "저장"}</button>
     </div>
   </Modal>
 {/if}
@@ -764,6 +903,60 @@
     line-height: 1.55;
     white-space: pre-wrap;
     word-break: break-word;
+  }
+  /* 전수되는 파일 목록: SKILL.md 본문 바로 아래, 같은 폭의 종속 정보로 붙는다. */
+  .sk-files {
+    margin-top: var(--s-3);
+  }
+  .sk-files-head {
+    margin: 0;
+    font-size: var(--t-xs);
+    font-weight: 600;
+    color: var(--text-soft);
+  }
+  .sk-file-list {
+    max-height: 160px;
+    margin: var(--s-1-5) 0 0;
+    padding: 0;
+    overflow: auto;
+    list-style: none;
+    border: 1px solid var(--line);
+    border-radius: var(--r-sm);
+  }
+  .sk-file-list li {
+    display: flex;
+    align-items: baseline;
+    gap: var(--s-3);
+    padding: var(--s-1) var(--s-2-5);
+    font-size: var(--t-xs);
+    color: var(--muted);
+  }
+  .sk-file-list li + li {
+    border-top: 1px solid var(--line-soft);
+  }
+  .sk-file-path {
+    flex: 1;
+    min-width: 0;
+    color: var(--text-soft);
+    word-break: break-all;
+  }
+  .sk-file-size {
+    white-space: nowrap;
+  }
+  .sk-files-note {
+    margin: var(--s-1-5) 0 0;
+    font-size: var(--t-xs);
+    color: var(--warn);
+  }
+
+  .sk-intro-help {
+    margin: var(--s-2) 0 0;
+    font-size: var(--t-xs);
+    color: var(--muted);
+  }
+  /* 되돌리기는 파괴적이지 않지만 되돌아가는 동작이라 확인 버튼들과 떼어 둔다. */
+  .sk-intro-revert {
+    margin-right: auto;
   }
   .sk-rename-field {
     margin-top: var(--s-3);
