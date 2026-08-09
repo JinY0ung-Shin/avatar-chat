@@ -170,6 +170,10 @@ These are the invariants the project is built around. New work should reinforce 
   EXISTING-deployment migration path, not just fresh-install behavior.
 - **Project name diverges by layer:** display "Noah Almighty", code slug `noah-almighty`, working dir
   `avatar-chat`. Grep both old/new slugs when auditing names.
+- **The user fleet is Windows/Linux only — no macOS.** Platform-dependent decisions (browser-bridge
+  paste shortcuts, file-dialog/DLP behavior, extension guidance) target Windows/Linux; keep any mac
+  handling defensive-only (e.g. `viewerPlatform`'s Meta branch) and never advertise macOS in
+  user-facing text or release notes.
 - **The browser bridge is a SIGNED artifact living on users' machines, not just server code.** The
   extension id and the policy update channel derive from ONE RSA key that exists only on the release machine
   (`BROWSER_EXTENSION_KEY_FILE`, `BROWSER_BRIDGE_ORIGINS` — release-only `.env` keys the server never
