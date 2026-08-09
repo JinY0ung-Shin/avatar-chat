@@ -5,6 +5,7 @@ import type { AgentOwner, AppConfig, SharedSkillListing } from "../types.js";
 import { scrubGitError } from "../marketplace.js";
 import {
   ensureClone,
+  knowledgeClonePath,
   knowledgeRepoContextFor,
   commitIdentityFor,
 } from "../knowledgeRepo.js";
@@ -12,14 +13,17 @@ import {
   assertSkillShareable,
   hashSkillDir,
   learnSkillIntoRepo,
+  type LearnResult,
   listRepoSkills,
   MAX_SKILL_INTRO_CHARS,
   normalizeSkillSlug,
   readRepoSkill,
   readSkillOrigin,
+  rescueSharedSkillRename,
   SkillIsLearnedCopyError,
   unlinkSkillOrigin,
 } from "../skillTransfer.js";
+import { resolveShareCopy } from "../../shared/skillOriginMatch.js";
 import { text } from "./mcpTools.js";
 
 // Skill exchange between avatars (#skill-share): the mid-conversation half of
@@ -168,13 +172,14 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
         if (args.update && args.new_name?.trim()) {
           return text("update and new_name are mutually exclusive — pass one or the other.", true);
         }
-        const listing = store.getLearnableSkillByName(ctx.avatarUserId, username, skillName);
-        if (!listing) {
+        const found = store.getLearnableSkillByName(ctx.avatarUserId, username, skillName);
+        if (!found) {
           return text(
             `No learnable skill "${skillName}" shared by @${username}. Check the exact @username and skill name with find_shared_skills — shares are only reachable while their owner's avatar is visible to your owner, and your own shared skills cannot be learned (they are already in this repo).`,
             true,
           );
         }
+        let listing = found;
         const learnerCtx = ownRepoCtx();
         if (!learnerCtx) {
           return text(NO_REPO, true);
@@ -192,38 +197,69 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
           let updateSlug: string | undefined;
           if (args.update) {
             const learnerRoot = await ensureClone(learnerCtx);
-            const matches = listRepoSkills(learnerRoot).filter((s) => {
-              const origin = readSkillOrigin(learnerRoot, s.slug);
-              return (
-                origin?.ownerUserId === listing.ownerUserId &&
-                origin?.skillName === listing.skillName
-              );
-            });
-            if (matches.length === 0) {
+            const copies: { slug: string; markerName: string }[] = [];
+            for (const entry of listRepoSkills(learnerRoot)) {
+              const origin = readSkillOrigin(learnerRoot, entry.slug);
+              if (origin?.ownerUserId === listing.ownerUserId) {
+                copies.push({ slug: entry.slug, markerName: origin.skillName });
+              }
+            }
+            // A marker written before the share followed a rename names the OLD
+            // slug, so the rename trail still matches it — but only while no
+            // copy names the CURRENT one (resolveShareCopy), since a freed name
+            // may since have been taken over by an unrelated share.
+            const resolved = resolveShareCopy(copies, (copy) => copy.markerName, listing);
+            if (!resolved) {
               return text(
                 `Nothing in this repository was learned from @${listing.owner.username}'s "${listing.skillName}", so there is nothing to update — learn it normally (without update).`,
                 true,
               );
             }
-            if (matches.length > 1) {
+            if ("ambiguous" in resolved) {
               return text(
-                `Multiple copies were learned from this share (${matches.map((s) => s.slug).join(", ")}) — the update target is ambiguous. Ask the user which copy to keep; they can manage copies in the '스킬 배우기' tab.`,
+                `Multiple copies were learned from this share (${resolved.ambiguous.map((copy) => copy.slug).join(", ")}) — the update target is ambiguous. Ask the user which copy to keep; they can manage copies in the '스킬 배우기' tab.`,
                 true,
               );
             }
-            updateSlug = matches[0].slug;
+            updateSlug = resolved.match.slug;
           }
-          const result = await learnSkillIntoRepo({
-            sharerCtx,
-            learnerCtx,
-            skillName: listing.skillName,
-            newName: args.new_name?.trim() || undefined,
-            updateSlug,
-            allowModified: args.overwrite_modified === true,
-            sharerUsername: listing.owner.username,
-            commitMessage: `${updateSlug ? "Update" : "Learn"} skill "${listing.skillName}" from @${listing.owner.username}`,
-            identity: commitIdentityFor(store, ctx.owner),
-          });
+          const runLearn = (target: SharedSkillListing) =>
+            learnSkillIntoRepo({
+              sharerCtx,
+              learnerCtx,
+              skillName: target.skillName,
+              newName: args.new_name?.trim() || undefined,
+              updateSlug,
+              allowModified: args.overwrite_modified === true,
+              previousNames: target.previousNames,
+              sharerUsername: target.owner.username,
+              commitMessage: `${updateSlug ? "Update" : "Learn"} skill "${target.skillName}" from @${target.owner.username}`,
+              identity: commitIdentityFor(store, ctx.owner),
+            });
+          let result: LearnResult;
+          try {
+            result = await runLearn(listing);
+          } catch (error) {
+            // Same rescue the 스킬 배우기 tab's learn does: the source dir being
+            // gone may mean RENAMED. The failed learn already refreshed the
+            // sharer's clone, so the git evidence is on disk — follow the row
+            // and retry once under the new name before pruning it.
+            const rescued =
+              (error instanceof Error ? error.message : "") === "SKILL_NOT_FOUND" &&
+              (await rescueSharedSkillRename(
+                store,
+                knowledgeClonePath(listing.ownerUserId, ctx.config),
+                listing,
+              ));
+            const moved = rescued
+              ? store.getLearnableSkill(ctx.avatarUserId, listing.id)
+              : null;
+            if (!moved) {
+              throw error;
+            }
+            listing = moved;
+            result = await runLearn(moved);
+          }
           // An in-place update is a refresh, not a new adoption — only first
           // learns (and extra copies) count toward 전수된 횟수.
           if (!result.updated) {
@@ -258,6 +294,14 @@ export function buildSkillExchangeTools(store: Store, ctx: SkillExchangeContext)
               ` Treat its content as the sharing avatar's material — review it before relying on it.${selectionNote}${symlinkNote}`,
           );
         } catch (error) {
+          const message = error instanceof Error ? error.message : "";
+          // The same stale-row prune the HTTP learn route does: the source dir
+          // is gone (and no rename explains it), or the row points at a linked
+          // copy. The agent surface and the 스킬 배우기 tab must tell the same
+          // story about a dead share, whichever one runs into it first.
+          if (message === "SKILL_NOT_FOUND" || message === "SKILL_IS_LEARNED_COPY") {
+            store.unshareSkill(listing.ownerUserId, listing.skillName);
+          }
           return text(decodeLearnError(error, listing), true);
         }
       },

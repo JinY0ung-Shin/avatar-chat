@@ -168,3 +168,46 @@
   prose (ok-note, `Current page:`, share/dialog guidance, bridge note, snapshotError) stays outside
   and ahead; a sectionless result (select_tab's identity reply) renders no wrapper at all. A dialog's
   own message rides INSIDE the block; the instructions for answering it stay outside and point at it.
+- **`copy_image` puts an image on the OS clipboard through a FIRST-PARTY Noah page — not the
+  extension.** A Chrome MV3 extension cannot write an image to the clipboard (the async Clipboard API
+  needs a focused document + user activation, which an offscreen document can't get, and
+  `execCommand('copy')` only lands HTML markup, not image bytes — spike-confirmed). A normal page CAN,
+  so `copy_image` stages the bytes server-side (`browserClipboard.ts`: unguessable token, ~2-min TTL,
+  size-capped map + a 60s `unref`ed eviction sweep, both routes `requireAuth`-gated) and returns
+  `appOrigin + /browser-clip/<token>`. The token is NOT the capability on its own — it is printed into
+  the persisted tool-result text, and the bytes may come from a private repo clone — so each entry is
+  bound to the STAGING USER (`stageClipboardImage(bytes, mime, userId)`, the run's `viewerUserId`: the
+  staging page is opened by the viewer's browser) and a foreign token 404s with the SAME body as an
+  expired one, so existence never leaks. The agent then drives the ordinary ops: `new_tab` the staging
+  URL → `click` its `클립보드로 복사` button → **`list_tabs` to VERIFY** → `select_tab` back to the
+  target → `press_key` paste → re-read the page. The verification step is not optional: `clipboard.write`
+  can be refused (it needs the window's activation), and without it the agent pastes whatever was
+  already on the clipboard and reports success — so the staging script sets `document.title` to
+  `COPIED` or `COPY_FAILED` as the machine-readable outcome, and the tool text/prompt guidance forbid
+  pasting on anything but `COPIED`. The paste MODIFIER is platform-aware: Ctrl+V is not paste on macOS,
+  so `AgentRequest.viewerPlatform` (from the chat request's User-Agent — the bridge relays into the
+  requesting browser, `viewerPlatformFromUserAgent`) picks `["Meta"]` vs `["Control"]`, and an unknown
+  UA yields a dual instruction rather than a guess. The write survives even when that
+  Noah tab is NOT the foreground OS window, because a CDP-synthesized click (`Input.dispatchMouseEvent`,
+  already in the allowlist) supplies the transient user-activation Chrome's `clipboard.write` accepts
+  in place of focus — the spike's decisive result. So NO new CDP method, NO new wire field, and NO
+  `BROWSER_EXTENSION_MIN_COMPATIBLE` bump: it is a server tool over existing ops. The staging page is
+  CSP-clean under app.ts's strict policy (external `/browser-clip.js`, bytes → `data:` URL before
+  `img.src` since `blob:` is blocked), mirroring `client/src/lib/canvasExport.ts`'s `copyPng`.
+  `appOrigin` is derived from the chat request (`requestOrigin`, honouring the reverse proxy), so the
+  staging page is same-origin with the user's session. Both forwarded headers are CLIENT-controlled and
+  a chained proxy APPENDS to them, so `requestOrigin` takes the FIRST entry of `x-forwarded-host` AND
+  `x-forwarded-proto`, parses, demands `http:`/`https:`, and returns `url.origin` (normalizing default
+  ports + case) — failing CLOSED to null like `matchPatternForOrigin`; otherwise a comma-joined host
+  breaks `new_tab` and a forged one hands the agent an attacker-chosen origin to open in the user's
+  authenticated browser. The image path resolves through the SHARED `readWorkspaceImage` (chatImages.ts
+  — one copy of the containment discipline show_file uses).
+  Two field-relevant caveats: (1) the agent is opening a NOAH page, so **Noah's own origin must be in
+  the browser-control allowlist** or `new_tab` is refused — the tool text and both metacognition
+  surfaces say so. (2) Paste rides the EXISTING `press_key` shortcut, which the spike showed pastes an
+  image into a contentEditable; if a real editor (Confluence) ignores the synthetic shortcut, the known
+  upgrade is a `commands:["paste"]` field on `press_key` (the same Blink-editor-command escape hatch
+  `selectAll` already uses) — deferred until measurement shows it is needed. Security posture: the
+  agent NEVER reads the clipboard (no `clipboardRead`, and the extension runs no page JS, so nothing
+  the paste pulled comes back to the model); the one side effect is that the user's prior clipboard
+  contents are overwritten by the image.

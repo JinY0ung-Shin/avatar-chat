@@ -27,6 +27,7 @@ export const BROWSER_TOOL_NAMES = [
   "mcp__browser__new_tab",
   "mcp__browser__select_tab",
   "mcp__browser__close_tab",
+  "mcp__browser__copy_image",
 ] as const;
 
 /**
@@ -55,6 +56,46 @@ export interface BrowserToolsContext {
    * model.
    */
   vision?: boolean;
+  /**
+   * The Noah app's OWN public origin (e.g. `https://noah.corp.local`), used to
+   * build an absolute URL the agent can open with `new_tab` — the clipboard
+   * staging page is served by Noah itself. Wired by the caller elsewhere;
+   * absent when the run has no configured app origin.
+   */
+  appOrigin?: string;
+  /**
+   * Stage a local image file for the OS clipboard: reads the given image from
+   * the agent's workspace, holds its bytes server-side, and returns `{ path }`
+   * where `path` is a root-relative URL like `/browser-clip/<token>` to append
+   * to `appOrigin`. THROWS if the file is missing or is not an image. Wired by
+   * the caller elsewhere; absent when clipboard staging is not available.
+   */
+  stageClipboardImage?: (workspacePath: string) => Promise<{ path: string }>;
+  /**
+   * The OS of the browser this run drives (from the chat request's User-Agent —
+   * the bridge relays into the requesting browser). Only the paste shortcut
+   * depends on it: Ctrl+V is not paste on macOS, so a hardcoded ["Control"]
+   * silently pastes NOTHING there. Undefined = say both.
+   */
+  viewerPlatform?: "mac" | "windows" | "linux";
+}
+
+/**
+ * The exact `press_key` call that pastes, worded for the driven OS. Shared by
+ * copy_image's description and its success text so the two can't drift; both
+ * are rebuilt per run, so branching in the description is fine.
+ */
+function pasteInstruction(platform: BrowserToolsContext["viewerPlatform"]): string {
+  if (platform === "mac") {
+    return 'press_key with key "v" and modifiers ["Meta"] (the user is on macOS)';
+  }
+  if (platform === "windows" || platform === "linux") {
+    return 'press_key with key "v" and modifiers ["Control"]';
+  }
+  return (
+    'press_key with key "v" and modifiers ["Control"] on Windows/Linux or ["Meta"] on macOS ' +
+    "(the user's OS is not known — if the verified paste inserts nothing, try the other modifier)"
+  );
 }
 
 const DENIED =
@@ -1014,6 +1055,58 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
           }),
           `${args.accept ? "Accepted" : "Dismissed"} the dialog.`,
         );
+      },
+    ),
+    tool(
+      "copy_image",
+      "Copy a local image file onto the user's clipboard so you can paste it into a page that has no upload " +
+        "route you can use (e.g. a Confluence page body). Give `path`, the image file to copy (the same kind " +
+        "of path you would hand to mcp__file_output). This returns a staging URL to drive: `new_tab` it, " +
+        "`click` its '클립보드로 복사' button, then VERIFY the copy with `list_tabs` before pasting — that " +
+        'tab\'s title becomes "COPIED" on success and "COPY_FAILED" when the browser refused (the copy needs ' +
+        "the window's activation, so it can fail). Only on COPIED: `select_tab` back to your target page, " +
+        "focus the editor, " +
+        pasteInstruction(ctx.viewerPlatform) +
+        ", then RE-READ the page (`snapshot` or `read_text`) to confirm the image actually landed. The image " +
+        "is normalized to PNG. NOTE: this needs the Noah app's OWN origin to be in the browser-control " +
+        "allowlist, since you are opening a Noah page — if new_tab is refused for that origin, tell the user " +
+        "to add it in the extension's allowlist (설정 → 접근/보안).",
+      {
+        path: z
+          .string()
+          .min(1)
+          .max(1024)
+          .describe("Path to the image file to copy to the clipboard, e.g. a PNG/JPG file you created."),
+      },
+      async (args) => {
+        const denied = gate();
+        if (denied) return denied;
+        if (!ctx.stageClipboardImage || !ctx.appOrigin) {
+          return text("Copying images to the clipboard is not available in this run.", true);
+        }
+        try {
+          const { path } = await ctx.stageClipboardImage(args.path);
+          const url = ctx.appOrigin + path;
+          return text(
+            "Image staged for the clipboard. Now: 1) open this URL with mcp__browser__new_tab: " +
+              url +
+              "  2) mcp__browser__click the button named '클립보드로 복사'  3) VERIFY with " +
+              'mcp__browser__list_tabs that THIS staging tab\'s title is now "COPIED". "COPY_FAILED" or an ' +
+              "unchanged title means the copy did NOT happen — do not paste; tell the user to bring the " +
+              "browser window to the foreground (or click the button themselves) and retry.  4) Only after " +
+              "COPIED: mcp__browser__select_tab back to your target page, focus the editor, and paste — " +
+              "mcp__browser__" +
+              pasteInstruction(ctx.viewerPlatform) +
+              ".  5) RE-READ the page (mcp__browser__snapshot or read_text) to confirm the image " +
+              "actually landed before reporting success — never assume the paste worked.  The staging link " +
+              "expires in ~2 minutes.",
+          );
+        } catch (err) {
+          return text(
+            "Could not stage that image: " + (err instanceof Error ? err.message : String(err)),
+            true,
+          );
+        }
       },
     ),
   ];

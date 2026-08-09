@@ -10,6 +10,7 @@
   import { goView } from "../lib/nav";
   import { appState, notify } from "../lib/state";
   import type { SharedSkill, SharedSkillListing, SharedSkillManifest } from "../lib/types";
+  import { resolveShareCopy } from "../../../shared/skillOriginMatch";
 
   // 스킬 배우기: 동료 아바타가 공유한 스킬을 둘러보고 내 아바타의 지식 저장소로
   // 전수(복사+커밋)하는 탭 + 내 저장소 스킬의 공유 토글. 서버 계약은
@@ -53,6 +54,11 @@
   let mineError = "";
   let repoConfigured = true;
   let mySkills: MySkill[] = [];
+  /**
+   * available 요청 순번 — 늦게 도착한 응답이 최신 목록을 덮어쓰지 못하게 한다.
+   * 조용한 재조회와 사용자의 새로고침이 겹칠 수 있어서, 나중에 시작한 요청이 이긴다.
+   */
+  let availableSeq = 0;
 
   let query = "";
   let searchInput: HTMLInputElement | null = null;
@@ -76,40 +82,64 @@
   let introInput: HTMLTextAreaElement | null = null;
 
   onMount(() => {
-    void load();
-    void loadMine();
+    loadAll();
   });
 
-  async function load(): Promise<void> {
-    loading = true;
-    error = "";
+  /**
+   * 공유 목록 읽기. available는 빠른 DB 읽기고, mine은 서버에서 원본 저장소를
+   * fetch해 최신 해시를 DB에 다시 써 넣는 느린 경로다. quiet 모드는 그 mine이
+   * 끝난 뒤의 재조회용 — 스피너를 다시 띄우지 않고 목록만 갈아 끼운다.
+   */
+  async function load(opts: { quiet?: boolean } = {}): Promise<void> {
+    const seq = ++availableSeq;
+    if (!opts.quiet) {
+      loading = true;
+      error = "";
+    }
     try {
       const data = await api<{ skills: SharedSkillListing[] }>("/api/skill-share/available");
+      if (seq !== availableSeq) return; // 더 나중에 시작한 요청이 이긴다
       learnable = data.skills;
+      error = "";
     } catch (err) {
-      error = (err as Error).message;
+      // 조용한 갱신 실패는 이미 그려 둔 목록을 그대로 두고 넘어간다.
+      if (!opts.quiet && seq === availableSeq) error = (err as Error).message;
     } finally {
-      loading = false;
+      if (!opts.quiet) loading = false;
     }
   }
 
-  async function loadMine(): Promise<void> {
+  /** 성공 여부를 돌려준다 — 실패했다면 뒤이은 조용한 재조회를 건너뛴다. */
+  async function loadMine(): Promise<boolean> {
     mineLoading = true;
     mineError = "";
     try {
       const data = await api<{ repoConfigured: boolean; skills: MySkill[] }>("/api/skill-share/mine");
       repoConfigured = data.repoConfigured;
       mySkills = data.skills;
+      return true;
     } catch (err) {
       mineError = (err as Error).message;
+      return false;
     } finally {
       mineLoading = false;
     }
   }
 
-  function refresh(): void {
+  /**
+   * 두 목록을 나란히 띄워 첫 화면을 빨리 그리되, mine이 끝나면 available를 한 번
+   * 더 조용히 읽는다. mine이 서버에서 최신 해시를 써 넣기 전에 available가 먼저
+   * 도착하면(거의 항상 그렇다) 방금 고친 내 스킬이 옛 해시로 보이기 때문이다.
+   */
+  function loadAll(): void {
     void load();
-    void loadMine();
+    void loadMine().then((ok) => {
+      if (ok) void load({ quiet: true });
+    });
+  }
+
+  function refresh(): void {
+    loadAll();
   }
 
   $: displayQuery = query.trim();
@@ -117,16 +147,13 @@
   $: filtered = tokens.length ? learnable.filter((skill) => matches(skill, tokens)) : learnable;
   $: sharedCount = mySkills.filter((skill) => skill.shared).length;
   // 전수 출처 조인: 카드가 "내 것 / 전수받음 / 업데이트 있음"을 알 수 있게
-  // mine의 origin 마커와 목록의 현재 해시를 비교한다.
+  // mine의 origin 마커와 목록의 현재 해시를 비교한다. 원본 주인별로 모으고
+  // (한 공유에 대한 사본이 여럿일 수 있다) 이름 짝짓기는 findCopy가 맡는다.
   $: myUserId = $appState.user?.id ?? "";
-  $: copiesByOrigin = new Map(
-    mySkills
-      .filter((skill) => skill.origin)
-      .map((skill) => [`${skill.origin!.ownerUserId}:${skill.origin!.skillName}`, skill]),
-  );
+  $: copiesByOrigin = groupCopiesByOwner(mySkills);
   $: listingViews = filtered.map((skill): ListingView => {
     const own = skill.ownerUserId === myUserId;
-    const copy = own ? null : (copiesByOrigin.get(`${skill.ownerUserId}:${skill.skillName}`) ?? null);
+    const copy = own ? null : findCopy(copiesByOrigin, skill);
     return {
       skill,
       own,
@@ -160,6 +187,35 @@
           : displayQuery
             ? `${displayQuery} 검색 결과 ${filtered.length}개가 있습니다.`
             : `공유된 스킬 ${filtered.length}개가 있습니다.`;
+
+  /** 출처 마커를 가진 내 스킬들을 원본 주인별로 모은다. */
+  function groupCopiesByOwner(skills: MySkill[]): Map<string, MySkill[]> {
+    const byOwner = new Map<string, MySkill[]>();
+    for (const skill of skills) {
+      if (!skill.origin) continue;
+      const copies = byOwner.get(skill.origin.ownerUserId);
+      if (copies) copies.push(skill);
+      else byOwner.set(skill.origin.ownerUserId, [skill]);
+    }
+    return byOwner;
+  }
+
+  /**
+   * 이 공유에서 전수받은 내 스킬 찾기. 출처 마커에는 전수받던 당시의 원본 이름이
+   * 남으므로, 그 뒤 원본 주인이 스킬 이름을 바꿨다면 현재 이름으로는 찾지 못한다 —
+   * 공유 행이 들고 다니는 옛 이름(previousNames)까지 훑되, 짝짓기 규칙은 서버와
+   * 같은 resolveShareCopy가 정한다(현재 이름 우선, 애매하면 아무것도 고르지 않아
+   * 엉뚱한 사본에 업데이트 배지가 켜지지 않게).
+   * (copies를 인자로 받는 이유: 반응형 문장이 이 Map을 의존성으로 잡게 하려고.)
+   */
+  function findCopy(copies: Map<string, MySkill[]>, skill: SharedSkillListing): MySkill | null {
+    const resolved = resolveShareCopy(
+      copies.get(skill.ownerUserId) ?? [],
+      (copy) => copy.origin!.skillName,
+      { skillName: skill.skillName, previousNames: skill.previousNames ?? [] },
+    );
+    return resolved && "match" in resolved ? resolved.match : null;
+  }
 
   function matches(skill: SharedSkillListing, parts: string[]): boolean {
     const hay = [
@@ -304,8 +360,7 @@
       preview = null;
       renameValue = "";
       // origin/해시가 바뀌었으니 두 목록 모두 새로고침 (업데이트 배지 해소).
-      void loadMine();
-      void load();
+      loadAll();
     } catch (err) {
       const message = (err as Error).message;
       // 전수 후 커스텀한 사본: 덮어쓸지 사용자에게 danger 확인 후 재시도.
@@ -349,8 +404,7 @@
         body: JSON.stringify({ slug: skill.slug }),
       });
       notify(`"${skill.name}" 스킬의 원본 연결을 끊었습니다. 이제 완전한 내 스킬이에요.`, "ok");
-      void loadMine();
-      void load();
+      loadAll();
     } catch (err) {
       notify(`연결 끊기 실패: ${(err as Error).message}`, "warn");
     }
@@ -383,6 +437,9 @@
     <h1>스킬 배우기</h1>
     <p>동료 아바타의 스킬을 전수받고, 내 스킬을 공유하세요</p>
   </div>
+  <!-- 두 목록을 실제로 기다리는 동안에만 잠근다. 뒤이은 조용한 재조회는 화면을
+       비우지 않으므로 버튼도 막지 않고, 그사이 새로고침을 누르면 순번 가드가
+       늦게 도착한 조용한 응답을 버린다. -->
   <button class="linkish" type="button" disabled={loading || mineLoading} on:click={refresh}>
     <Icon name="refresh" size={15} />
     새로고침

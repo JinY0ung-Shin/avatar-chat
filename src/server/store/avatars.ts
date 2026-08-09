@@ -36,6 +36,8 @@ interface SharedSkillRow {
   /** Owner-written introduction; NULL falls back to `description`. */
   custom_description: string | null;
   content_hash: string | null;
+  /** JSON array of former skill_name values (rename trail); NULL = none. */
+  previous_names: string | null;
   created_at: string;
   updated_at: string;
   learn_count?: number;
@@ -54,6 +56,30 @@ interface SharedSkillRow {
  */
 const LEARN_COUNT_COLUMN = `(SELECT COUNT(*) FROM skill_learn_events e
              WHERE e.owner_user_id = s.owner_user_id AND e.skill_name = s.skill_name) AS learn_count`;
+
+/**
+ * How many former names one share row remembers. The trail exists so learners'
+ * origin markers keep matching after a rename; a marker that stale (five
+ * renames without a single 업데이트 받기) is better dropped than carried forever.
+ */
+const PREVIOUS_NAMES_CAP = 5;
+
+/**
+ * Read the rename trail column. Anything unparseable — hand-edited JSON, a
+ * value from a future shape — reads as NO trail rather than throwing: a lost
+ * trail costs a learner one re-learn, a throw breaks every share listing.
+ */
+function parsePreviousNames(raw: string | null | undefined): string[] {
+  if (!raw) {
+    return [];
+  }
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((n): n is string => typeof n === "string") : [];
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Shared FROM/JOIN fragment for "users m1 and m2 share an avatar-sharing
@@ -485,6 +511,7 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
         snapshotDescription: row.description ?? "",
         learnCount: row.learn_count ?? 0,
         contentHash: row.content_hash ?? null,
+        previousNames: parsePreviousNames(row.previous_names),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -563,6 +590,116 @@ export function withAvatars<TBase extends Constructor<StoreBase>>(Base: TBase) {
           "UPDATE shared_skills SET content_hash = ? WHERE owner_user_id = ? AND skill_name = ?",
         )
         .run(contentHash, ownerUserId, skillName);
+    }
+
+    /**
+     * Move one share onto a RENAMED skill directory. The row keeps its id,
+     * created_at and custom_description — a rename is the same share under a
+     * new name, not an unshare plus a re-share — and takes the new slug, a
+     * fresh metadata snapshot, and the old name appended to its rename trail.
+     *
+     * Everything else keyed by the skill NAME moves with it in the SAME
+     * transaction, or the rename would silently drop moderation and history:
+     *
+     * - `shared_skill_group_blocks` is COPIED to the new name (INSERT OR IGNORE
+     *   merges with a block already standing there — never lost, never
+     *   duplicated) and the old name's blocks are LEFT IN PLACE. Blocks are
+     *   name-keyed anti-evasion, which is why they already survive
+     *   unshare→re-share; letting two `git mv`s clear one would hand every
+     *   owner a way around a group admin's decision. Only an explicit unblock
+     *   removes a block, so re-minting a share under the freed old name stays
+     *   blocked.
+     * - `skill_learn_events` is re-keyed onto the new name, and any event
+     *   ALREADY under that name is deleted first. The collision guard below
+     *   proved no live share holds it, so those are orphans of a dead share
+     *   whose name this one is taking over — counted by name, they would
+     *   permanently inflate the renamed skill's 전수 count. The trade-off is
+     *   deliberate: the dead share's history (restorable by re-sharing under
+     *   its own name) is forfeited once another skill claims the name.
+     *
+     * `bumpUpdatedAt` is the owner/viewer split: owner-side reconciliation
+     * bumps (the listing legitimately reorders), while a VIEWER's preview/learn
+     * rescue must not reorder the owner's listing — same invariant as
+     * setSharedSkillContentHash.
+     *
+     * Returns null WITHOUT side effects when there is no row under
+     * `fromSkillName`, or when `toSkillName` is already shared (the caller
+     * falls back to unsharing the stale row — merging two shares would silently
+     * pick one row's introduction and learn history over the other's).
+     */
+    renameSharedSkill(
+      ownerUserId: string,
+      fromSkillName: string,
+      toSkillName: string,
+      next: {
+        displayName: string;
+        description: string;
+        contentHash: string | null;
+        bumpUpdatedAt: boolean;
+      },
+    ): SharedSkill | null {
+      const move = this.db.transaction((): boolean => {
+        const row = this.db
+          .prepare("SELECT * FROM shared_skills WHERE owner_user_id = ? AND skill_name = ?")
+          .get(ownerUserId, fromSkillName) as SharedSkillRow | undefined;
+        if (!row || fromSkillName === toSkillName) {
+          return false;
+        }
+        const taken = this.db
+          .prepare(
+            "SELECT 1 AS taken FROM shared_skills WHERE owner_user_id = ? AND skill_name = ?",
+          )
+          .get(ownerUserId, toSkillName);
+        if (taken) {
+          return false;
+        }
+        // Oldest first, most recent last, deduped, and never carrying the name
+        // the row is moving TO (a → b → a must leave a trail of just "b").
+        const trail = [
+          ...parsePreviousNames(row.previous_names).filter(
+            (name) => name !== fromSkillName && name !== toSkillName,
+          ),
+          fromSkillName,
+        ].slice(-PREVIOUS_NAMES_CAP);
+        this.db
+          .prepare(
+            `UPDATE shared_skills
+                SET skill_name = ?, display_name = ?, description = ?, content_hash = ?,
+                    previous_names = ?, updated_at = ?
+              WHERE owner_user_id = ? AND skill_name = ?`,
+          )
+          .run(
+            toSkillName,
+            next.displayName,
+            next.description,
+            next.contentHash,
+            JSON.stringify(trail),
+            next.bumpUpdatedAt ? now() : row.updated_at,
+            ownerUserId,
+            fromSkillName,
+          );
+        this.db
+          .prepare(
+            "DELETE FROM skill_learn_events WHERE owner_user_id = ? AND skill_name = ?",
+          )
+          .run(ownerUserId, toSkillName);
+        this.db
+          .prepare(
+            "UPDATE skill_learn_events SET skill_name = ? WHERE owner_user_id = ? AND skill_name = ?",
+          )
+          .run(toSkillName, ownerUserId, fromSkillName);
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO shared_skill_group_blocks
+               (group_id, owner_user_id, skill_name, blocked_by, created_at)
+             SELECT group_id, owner_user_id, ?, blocked_by, created_at
+               FROM shared_skill_group_blocks
+              WHERE owner_user_id = ? AND skill_name = ?`,
+          )
+          .run(toSkillName, ownerUserId, fromSkillName);
+        return true;
+      });
+      return move() ? this.readOwnShare(ownerUserId, toSkillName) : null;
     }
 
     /**

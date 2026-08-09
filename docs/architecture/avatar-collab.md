@@ -82,9 +82,9 @@
   preview paths (learnable + the own-share fallback) get it, since they meet before the response.
 - **Version updates (전수 후 원본 변경):** every shared_skills row carries a `content_hash` (sha256 of
   the sharer's skill dir via `hashSkillDir`, origin-marker excluded), refreshed wherever the server
-  touches the sharer's clone — share, owner mine reconciliation (this ALSO bumps updated_at), and
-  teammate preview/learn (`setSharedSkillContentHash`, hash-only so a viewer can't reorder the owner's
-  listing). Each learn writes a provenance marker `skills/<slug>/.noah-skill-origin.json`
+  touches the sharer's clone — share, owner reconciliation (mine tab AND the `mcp__repo__commit` hook;
+  both ALSO bump updated_at), and teammate preview/learn (`setSharedSkillContentHash`, hash-only so a
+  viewer can't reorder the owner's listing). Each learn writes a provenance marker `skills/<slug>/.noah-skill-origin.json`
   (owner id/@username, source skillName, source hash, learnedAt; written LAST so it overwrites any
   marker that reached the copy — chains can no longer START, since a marker-carrying dir is refused at
   share time). The client joins mine.origin.contentHash × listing.contentHash → "업데이트 있음" +
@@ -99,6 +99,68 @@
   UNLINK (구독 해지) is the marker's deletion: `unlinkSkillOrigin` (route `POST /api/skill-share/unlink`,
   mine-row 연결 끊기 action, `mcp__skill_exchange__unlink_skill`) commits the removal — the copy stays,
   tracking/badges stop, and re-learning the same share later is a fresh copy.
+- **A RENAMED skill directory is followed, not unshared.** Renaming `skills/<a>/` → `skills/<b>/` used
+  to look exactly like "deleted a, added b", so the share row (with its 소개 문구, its 전수 history and
+  every group block) was pruned and the owner had to re-share under the new name. Now
+  `renameSharedSkill` (store/avatars.ts) moves the row IN PLACE in one transaction: same id, same
+  `created_at`, same `custom_description`, new slug + fresh snapshot/hash, the old name appended to
+  `previous_names` (JSON array, cap 5, most-recent-last, deduped, and never containing the CURRENT
+  name — a→b→a leaves just `b`). The two NAME-keyed tables move with it or the rename would silently
+  drop them, but ASYMMETRICALLY. `skill_learn_events` is re-keyed by UPDATE, after a DELETE of any
+  event already sitting under the target name: the collision guard below proved no live share holds
+  it, so those are orphans of a dead share whose name this one takes over, and leaving them would
+  inflate the renamed skill's 전수 count forever (the dead share's own count is forfeited once another
+  skill claims its name). `shared_skill_group_blocks` is COPIED by `INSERT OR IGNORE` (merging with a
+  block already standing at the new name — never lost, never duplicated) and the OLD name's blocks are
+  LEFT IN PLACE: blocks are name-keyed anti-evasion that already survive unshare→re-share, so letting
+  two `git mv`s clear one would hand every owner a way around a group admin's decision. Only an
+  explicit unblock removes a block. A target slug that is ALREADY shared refuses the rename (returns
+  null, no side effects) and the caller falls back to unsharing — merging two shares would silently
+  pick one row's intro and history over the other's.
+- **Detection is GIT EVIDENCE ONLY, and unsharing is always the fallback.** `reconcileOwnerSharedSkills`
+  (skillTransfer.ts) is the ONE pass every owner-side path runs — drift → re-snapshot, dir gone →
+  unshare, dir now carrying a marker → drain, dir renamed → follow. `resolveSkillDirMoves` reads a
+  NEWEST-FIRST timeline of `--name-status -z` diffs (index 0 = the working tree vs HEAD, then
+  `git log -n 30`, each diffed against its own parent, parsed lazily) and the first diff carrying an
+  event for a directory decides: renamed away → chase the target through NEWER diffs only (chain cap 5;
+  a target later created or renamed into yields NOTHING); deleted → deleted; created or renamed-into →
+  no evidence, because that incarnation BEGAN there and an older rename of a previous one must never be
+  applied to it. Content is corroboration, never the signal: a rename is followed only onto a directory
+  that is present, markerless, unclaimed, held by no live row, and either still holding the row's
+  `contentHash` or FRESH (absent from the rename commit's parent tree, which is what lets a
+  rename-plus-edit follow). Nothing that fails to resolve is guessed at — a rejected rename leaves the
+  row on the directory it still names, and unshares only when that directory is gone too. Three cases
+  that fall out of this and are pinned by tests: a DELETION is a hard revoke even when a byte-identical
+  directory sits elsewhere; `git mv skills/a/SKILL.md` into an existing private directory is refused
+  (git calls it a rename, but the target is neither fresh nor hash-matching, and following it would
+  publish unshared content); a one-commit swap (a→c, b→a) resolves because renames are applied in
+  dependency order, sweeping until nothing more moves. Gotchas: a commit that rewrites SKILL.md enough
+  makes git report delete+add, so any renamed file under `skills/<a>/` VOTES for the target (a renamed
+  SKILL.md decides alone; scattered files yield nothing) — but only when that directory also LOST its
+  SKILL.md (deleted, or taken over by another skill's files), or moving one shared note from `a` to `b`
+  would read as renaming `a`;
+  `-z` is mandatory, since git QUOTES non-ASCII paths in its textual form and a Korean slug would never
+  match the tree; and index 0 stages into a THROWAWAY `GIT_INDEX_FILE` because `move_file` renames with
+  `fs.rename` and leaves it unstaged, where a plain `git diff HEAD` would see only the deletion and
+  revoke a rename the avatar is about to commit. The pass is a no-op when `repoRoot/.git` is missing
+  (a clone mid-rebuild must never read as "every share was deleted") and both owner-side callers hold
+  `withRepoLock` around it, since `ensureClone` may be removing the very tree it reads.
+- **Learners heal themselves; viewers never reorder.** A learner's origin marker records the source
+  name at learn time, so after a rename it names the OLD one. Every place a marker is matched against a
+  listing — `learnSkillIntoRepo`'s update authorization, the MCP `learn_skill {update:true}` slug
+  resolution, the client's update badge — goes through ONE shared resolver,
+  `resolveShareCopy` (`src/shared/skillOriginMatch.ts`): among the copies carrying that OWNER's marker,
+  an EXACT match on the share's current name wins outright, and `previousNames` is consulted only when
+  there is none. That order is the point — a name a share left behind is free for an unrelated share to
+  take, so a trail hit next to an exact hit belongs to that other share. Anything not resolving to
+  exactly one copy is ambiguous and fails closed (`NOT_LEARNED_FROM_SHARE`, the MCP "ambiguous"
+  redirect, no badge). `learnSkillIntoRepo` rewrites the marker with the CURRENT name, so the trail is
+  needed once per learner. The teammate preview/learn paths (route AND
+  `mcp__skill_exchange__learn_skill`) run `rescueSharedSkillRename` before pruning — same git evidence
+  and corroboration as the owner path, since matching by hash alone could follow a DELETION onto an
+  unrelated identical directory — so a stale card serves the renamed skill instead of 404ing; it passes
+  `bumpUpdatedAt: false`, the same don't-reorder-the-owner's-listing invariant as
+  `setSharedSkillContentHash`.
 - **A LEARNED copy is NOT re-shareable while it is linked.** The avatar-discovery boundary must hold for
   CONTENT, not just rows: a learner re-sharing their copy carries the original owner's material to
   teammates the owner never shared it with, duplicates the listing (two cards, one skill), leaves stale
@@ -184,10 +246,17 @@
   gate) and `describe_system`'s "Skill exchange" line. A LEARNED skill only LOADS on the NEXT
   conversation (plugin roots mount at run start), so both surfaces + the learn tool result tell the model
   to `mcp__repo__read_file` the new SKILL.md to apply it immediately.
-- **Hygiene:** `GET /api/skill-share/mine` reconciles rows against the working tree (dir gone → unshare;
-  drifted name/description → re-snapshot); a learn/preview that finds the dir deleted also prunes the
-  stale row (a dir that now carries an origin marker drains through those SAME two paths — see the
-  no-re-share bullet); the knowledge-repo PUT clears ALL of the owner's shares on disconnect or repoint
+- **Hygiene:** the owner-side paths share ONE helper — `GET /api/skill-share/mine` and the
+  `mcp__repo__commit` hook both call `reconcileOwnerSharedSkills` (dir gone → unshare; marker → drain;
+  drifted name/description/hash → re-snapshot; moved → rename), so they cannot drift apart and a
+  commit no longer waits for the owner to open the tab. A learn/preview that finds the dir gone first
+  tries `rescueSharedSkillRename` and only prunes the stale row when no git evidence explains the move
+  (a dir that now carries an origin marker still drains through those SAME paths — see the no-re-share
+  bullet). BOTH learn surfaces do the whole dance identically — the HTTP route and
+  `mcp__skill_exchange__learn_skill` rescue, refetch by row id, retry once, and prune on a final
+  `SKILL_NOT_FOUND`/`SKILL_IS_LEARNED_COPY` — so the tab and the agent never tell different stories
+  about a dead share. The commit hook is best-effort and wrapped so a reconcile failure can never fail
+  a commit that already pushed. The knowledge-repo PUT clears ALL of the owner's shares on disconnect or repoint
   (`clearSharedSkills` — a same-repo re-save keeps them). `deleteUser` cascades `shared_skills` by owner
   (learned copies are FILES in learners' repos, intentionally untouched — like ask_avatar, what crossed
   the boundary belongs to the receiver).

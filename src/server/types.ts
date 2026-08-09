@@ -584,6 +584,14 @@ export interface SharedSkill {
    * their copy's origin marker to detect an available update. Null = unknown.
    */
   contentHash: string | null;
+  /**
+   * Names this share carried BEFORE its current one, oldest first (capped, and
+   * never containing the current name). A share FOLLOWS a rename of its
+   * `skills/<slug>/` directory, so a learner whose origin marker still records
+   * the old name is matched through this trail until their next update rewrites
+   * the marker. Empty for a share that was never renamed.
+   */
+  previousNames: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -1275,6 +1283,22 @@ export interface AgentRequest {
    * Mirrored by describe_system (META-COGNITION).
    */
   browserEnabled?: boolean;
+  /**
+   * The Noah app's OWN public origin (scheme + host) as the user's browser
+   * reaches it, derived from the chat request (honouring the reverse proxy).
+   * Lets browser-driving tools build an absolute URL to a Noah-served page — the
+   * clipboard-staging page `copy_image` returns — that the agent opens with
+   * `new_tab`. Owner/interactive turns only; undefined when it can't be derived.
+   */
+  appOrigin?: string;
+  /**
+   * The OS of the browser this turn drives, derived from the chat request's
+   * User-Agent (the bridge relays into the browser that is making the request).
+   * Drives the paste-shortcut wording in the browser tool text and prompt
+   * guidance — Cmd+V on macOS, Ctrl+V elsewhere. Undefined when the UA says
+   * nothing usable; the wording then mentions both.
+   */
+  viewerPlatform?: "mac" | "windows" | "linux";
   /**
    * This interactive turn can publish PNG/JPEG/WebP/GIF files from its allowed
    * working directories into the assistant bubble with `show_file`, and share

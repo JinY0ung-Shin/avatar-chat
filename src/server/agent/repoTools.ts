@@ -13,6 +13,7 @@ import {
   deleteFile as deleteRepoFile,
   editFile as editRepoFile,
   ensureClone,
+  knowledgeClonePath,
   knowledgeRepoContextFor,
   listTree,
   moveFile as moveRepoFile,
@@ -21,6 +22,12 @@ import {
   writeFile as writeRepoFile,
   writeRepoTemplate,
 } from "../knowledgeRepo.js";
+import { withRepoLock } from "../gitMutex.js";
+import {
+  reconcileOwnerSharedSkills,
+  type SharedSkillReconcileResult,
+  type SharedSkillReconcileStore,
+} from "../skillTransfer.js";
 import {
   NO_CHANGES,
   NO_GIT_TOKEN,
@@ -246,6 +253,57 @@ export async function createRemoteRepo(
   }
 }
 
+/**
+ * Agent-facing summary of a reconciliation pass — metacognition, so the avatar
+ * can TELL the owner that committing just changed what their teammates see
+ * (empty when the commit touched no shared skill).
+ */
+function reconcileNote(result: SharedSkillReconcileResult): string {
+  const parts = [
+    ...result.renamed.map((r) => `the share follows the rename ${r.from} → ${r.to}`),
+    ...result.unshared.map((name) => `${name} is no longer shared (its directory was deleted)`),
+    ...result.drained.map(
+      (name) => `${name} is no longer shared (it became a copy learned from another avatar)`,
+    ),
+  ];
+  if (result.resnapshotted.length > 0) {
+    parts.push(
+      `refreshed the shared fingerprint of ${result.resnapshotted.length} skill(s) so teammates see the update`,
+    );
+  }
+  return parts.length === 0
+    ? ""
+    : `\nShared skills were reconciled with this commit: ${parts.join("; ")}. Tell the owner what changed about their shares.`;
+}
+
+/**
+ * Reconcile the owner's share rows against the tree that was just committed.
+ * Under the repo lock: commitAndPush holds it only for its own add/commit/push
+ * and has released it by now, so re-acquiring keeps the reconciliation's git
+ * reads from overlapping a concurrent ensureClone that is removing and
+ * re-cloning the very working tree being read (never nested — this runs after
+ * commitAndPush returned).
+ *
+ * BEST EFFORT by construction: the commit already succeeded and was pushed, so
+ * every failure here is swallowed — a stale share row is a far smaller problem
+ * than a commit tool that reports failure after a successful push.
+ */
+async function reconcileSharesAfterCommit(
+  store: SharedSkillReconcileStore,
+  ownerUserId: string,
+  repoRoot: string,
+): Promise<string> {
+  try {
+    return reconcileNote(
+      await withRepoLock(repoRoot, () =>
+        reconcileOwnerSharedSkills(store, repoRoot, ownerUserId),
+      ),
+    );
+  } catch {
+    return "";
+  }
+}
+
 const OWNER_ONLY = REPO_OWNER_ONLY;
 const NO_REPO =
   "No knowledge repository is connected yet. If you are the owner, first create and connect a new repository with the `create_repo` tool, then try again. (If you already have a repo you've been using, you can also connect it directly in settings.) Do not walk through manual setup steps — use `create_repo`.";
@@ -456,7 +514,17 @@ export function buildRepoTools(
                 ? `pushed to ${c.repo}`
                 : `pushed to ${c.repo} (shared account, owner ${ctx.owner.username})`,
           });
-          return text(`Committed and pushed the changes: ${c.repo}`);
+          // The commit may have moved, deleted or edited a SHARED skill dir, and
+          // the share rows are only a snapshot of it. The working tree is right
+          // here and freshly committed, so reconcile now instead of waiting for
+          // the owner to open the 스킬 배우기 tab — and the rename this commit
+          // just recorded is the evidence the reconciliation reads.
+          const shares = await reconcileSharesAfterCommit(
+            store,
+            ctx.owner.id,
+            knowledgeClonePath(c.userId, c.config),
+          );
+          return text(`Committed and pushed the changes: ${c.repo}${shares}`);
         } catch (error) {
           return text(commitFailureMessage(error), true);
         }
