@@ -27,6 +27,12 @@ const BUNDLE_FILES = [
   "consent.html",
   "consent.js",
   "consent.css",
+  // The uid-map viewer the popup opens (chrome.runtime.getURL("uid-map.html")).
+  // Nothing else references it, so a bundle missing these ships a button whose
+  // new tab 404s — with the capture already taken and no way to see it.
+  "uid-map.html",
+  "uid-map.js",
+  "uid-map.css",
   // Binary entries — the files list ships these base64 (see BINARY_BUNDLE_FILES);
   // the manifest references them, so an install missing them fails to load.
   "icon-16.png",

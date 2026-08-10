@@ -196,9 +196,9 @@ async function readHighlightPref() {
 }
 
 chrome.storage.onChanged.addListener((_changes, areaName) => {
-  // The SESSION area holds only the bridge's own working-tab pointer — a policy
-  // push never lands there, and dropping the cache on every tab switch would
-  // re-read managed storage for nothing.
+  // The SESSION area holds only the bridge's own scratch state — the working-tab
+  // pointer, the uid-map hand-off. A policy push never lands there, and dropping
+  // the cache on every tab switch would re-read managed storage for nothing.
   if (areaName !== "session") {
     policyCache = null;
     highlightPrefCache = null;
@@ -3479,6 +3479,241 @@ function waitForLoad(tabId, timeoutMs = 15000) {
   });
 }
 
+// --------------------------------------------------------------------- uid map
+
+/**
+ * chrome.storage.session key the viewer page reads — and deletes — on load.
+ */
+const UID_MAP_KEY = "uidMapPayload";
+
+/**
+ * Largest base64 image the hand-off will carry, in characters. The payload
+ * travels through chrome.storage.session, which holds 10MB in total, so a tall
+ * page has to be retried smaller rather than written into a quota that would
+ * reject it.
+ */
+const UID_MAP_MAX_BASE64 = 8_000_000;
+
+/**
+ * The "which uid sits where" answer for the popup: ONE full-page capture of the
+ * working tab plus the document-space box of every uid still live on it, handed
+ * to the extension's own viewer page through storage.session.
+ *
+ * This is the USER reading the agent's uid map, not an agent op, so it does not
+ * go through perform(): no snapshot tail, no audit relay, no prose result. It
+ * also touches nothing the agent's next op depends on — see the lastShot note at
+ * the capture below, which is the one way a read like this could break a write.
+ *
+ * Answers a CODE, never a sentence. Everything a person reads here is Korean and
+ * lives in the popup and the viewer; this file is English by rule.
+ */
+async function buildUidMap() {
+  try {
+    const { patterns } = await readPolicy();
+    let tab;
+    try {
+      tab = await targetTab();
+    } catch {
+      // targetTab throws NO_TAB_MESSAGE, which is agent-facing prose about tab
+      // groups. The popup has its own sentence for this, so only the code travels.
+      return { ok: false, code: "no_tab" };
+    }
+    // targetTab may have left a which-tab caveat behind for perform() to drain.
+    // It is written FOR the agent ("call mcp__browser__list_tabs before acting
+    // further") and this build is not the agent's turn, so it is dropped here
+    // rather than surfacing on the agent's next op as a fallback that happened
+    // during somebody else's read.
+    takeTabNotice();
+
+    // Gated exactly like a read, even though the user asked for this and only the
+    // user's own browser ever sees the result. Two reasons to keep it literal: a
+    // uid only exists where the agent already worked, and that was gated by this
+    // same rule, so a denied page can only be holding stale uids anyway; and the
+    // extension's stated contract is that nothing outside the allowlist is read,
+    // while a full-page capture is the largest read there is. No sender origin
+    // reaches an internal message, so the /browser-clip/ staging exemption is
+    // passed nothing and can never match.
+    if (tab.url && !originAllowed(tab.url, patterns, null)) {
+      return { ok: false, code: "origin_denied" };
+    }
+
+    // The uids to place: fresh ones on this tab's ROOT session. An OOPIF's uids
+    // are COUNTED but never placed — their backendNodeIds live in another id
+    // space and their bounds are relative to their own document, so composing
+    // them onto this capture needs a per-session capture and an offset chain that
+    // v1 does not do.
+    const rootEpoch = docEpoch(tab.id, undefined);
+    const live = [];
+    let skippedFrames = 0;
+    for (const [uid, ref] of refMap) {
+      if (ref.tabId !== tab.id) continue;
+      if (ref.sessionId) {
+        if (ref.epoch === docEpoch(ref.tabId, ref.sessionId)) skippedFrames += 1;
+        continue;
+      }
+      // A stale-epoch uid resolves to whatever inherited its backendNodeId after
+      // the navigation (see docEpochs). Drawing it would put a confident label on
+      // the wrong element, which is worse than leaving it out, so it is not even
+      // counted as skipped: it is not a uid anyone can still use.
+      if (ref.epoch !== rootEpoch) continue;
+      live.push({ uid, backendNodeId: ref.backendNodeId });
+    }
+    // Nothing to map. Refused BEFORE attaching on purpose: asking for a map of a
+    // page the agent never snapshotted must not pop Chrome's debugger infobar
+    // over an empty answer.
+    if (!live.length && !skippedFrames) return { ok: false, code: "no_uids" };
+
+    await ensureAttached(tab.id);
+
+    // ONE snapshot, and the ROOT document only. documents[1..] are the
+    // same-process iframes, whose bounds are relative to their OWN document
+    // origin — so a root-session uid minted inside one (getFullAXTree crosses
+    // those frame boundaries, and so does the AX-invisible section) is absent
+    // from the map below and lands in the same skipped bucket as an OOPIF's.
+    // extraClickables is not reusable here despite reading the same arrays: it
+    // FINDS candidates and pays for `computedStyles: ["cursor"]` to do it, while
+    // this needs the box of ids that are already chosen.
+    const captured = await sendCdp({ tabId: tab.id }, "DOMSnapshot.captureSnapshot", {
+      computedStyles: [],
+    });
+    const rootDoc = captured?.documents?.[0];
+    const strings = Array.isArray(captured?.strings) ? captured.strings : [];
+    const backendIds = rootDoc?.nodes?.backendNodeId || [];
+    const nodeNames = rootDoc?.nodes?.nodeName || [];
+    const layoutNodes = rootDoc?.layout?.nodeIndex || [];
+    const layoutBounds = rootDoc?.layout?.bounds || [];
+    /** backendNodeId -> { bounds: [x, y, w, h] in document CSS px, tag }. */
+    const boxOf = new Map();
+    for (let slot = 0; slot < layoutNodes.length; slot += 1) {
+      const index = layoutNodes[slot];
+      const backendNodeId = backendIds[index];
+      // FIRST slot wins: an inline element broken across lines gets one layout
+      // entry per fragment, and the first fragment is where the element starts.
+      if (backendNodeId == null || boxOf.has(backendNodeId)) continue;
+      const bounds = layoutBounds[slot];
+      if (!Array.isArray(bounds)) continue;
+      const nameIndex = nodeNames[index];
+      const name =
+        typeof nameIndex === "number" && nameIndex >= 0 ? String(strings[nameIndex] ?? "") : "";
+      boxOf.set(backendNodeId, { bounds, tag: name.toLowerCase() });
+    }
+
+    const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
+    const viewport = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
+    const content = metrics.cssContentSize || {};
+    // The same fields and the same height cap captureShot's fullPage branch
+    // reads: past the cap the browser hands back a cut-off image, so the cap is
+    // also the line the boxes below are cropped against.
+    const docWidth = Math.max(1, Math.round(content.width || viewport.clientWidth || 1024));
+    const docHeight = Math.max(
+      1,
+      Math.round(
+        Math.min(content.height || viewport.clientHeight || 768, SCREENSHOT_MAX_FULL_HEIGHT),
+      ),
+    );
+
+    const boxes = [];
+    let skippedCropped = 0;
+    for (const { uid, backendNodeId } of live) {
+      const found = boxOf.get(backendNodeId);
+      if (!found) {
+        // Detached, `display: none` (no layout entry exists at all), or living in
+        // one of the documents this map deliberately does not read.
+        skippedFrames += 1;
+        continue;
+      }
+      const x = Number(found.bounds[0]) || 0;
+      const y = Number(found.bounds[1]) || 0;
+      const w = Number(found.bounds[2]) || 0;
+      const h = Number(found.bounds[3]) || 0;
+      // EITHER axis collapsed is nothing to draw, not something to crop: a
+      // zero-width element has a position and a height and would otherwise fall
+      // through to the clip below and be counted as cut off, which it is not.
+      // Counting it as SHOWN is the other wrong answer — it would sit in uidCount
+      // with no box anyone can find.
+      if (w <= 0 || h <= 0) {
+        skippedFrames += 1;
+        continue;
+      }
+      // Clipped to the captured rectangle, because the viewer positions boxes in
+      // exactly the doc.width/height space this payload declares: a box outside
+      // it points at pixels the image does not contain. A tall page cut by the
+      // height cap is the common case; off-page-left or above is the same fact.
+      const left = Math.max(0, x);
+      const top = Math.max(0, y);
+      const right = Math.min(docWidth, x + w);
+      const bottom = Math.min(docHeight, y + h);
+      if (right <= left || bottom <= top) {
+        skippedCropped += 1;
+        continue;
+      }
+      boxes.push({ uid, x: left, y: top, w: right - left, h: bottom - top, tag: found.tag });
+    }
+
+    // NOT captureShot, and `lastShot` is deliberately left untouched: that
+    // variable is the pixel→CSS anchor click_at inverts for the AGENT's most
+    // recent screenshot, so a user-triggered capture writing to it would silently
+    // re-aim the agent's next pixel click at this page-absolute geometry. The
+    // agent's action highlight is left standing for the same reason — it is the
+    // agent's live state, and a read has no business taking it down.
+    const capture = async (scale) => {
+      const { data } = await sendCdp({ tabId: tab.id }, "Page.captureScreenshot", {
+        format: "jpeg",
+        quality: 80,
+        clip: { x: 0, y: 0, width: docWidth, height: docHeight, scale },
+        captureBeyondViewport: true,
+      });
+      return String(data || "");
+    };
+    // Halving is a WHOLE-payload move: the contract carries no scale field, so
+    // the boxes and the declared document size have to shrink with the image or
+    // every box lands at twice its offset.
+    let scale = 1;
+    let data = await capture(scale);
+    if (data.length > UID_MAP_MAX_BASE64) {
+      scale = 0.5;
+      data = await capture(scale);
+    }
+    if (!data || data.length > UID_MAP_MAX_BASE64) return { ok: false, code: "capture_failed" };
+
+    const payload = {
+      // Unscrubbed, unlike a note or an audit row: this payload never leaves the
+      // user's own browser, and telling them which page they are looking at is
+      // most of what the viewer's header is for.
+      url: tab.url || "",
+      title: tab.title || "",
+      capturedAt: Date.now(),
+      doc: { width: Math.round(docWidth * scale), height: Math.round(docHeight * scale) },
+      image: { dataUrl: `data:image/jpeg;base64,${data}` },
+      boxes: boxes.map((box) => ({
+        uid: box.uid,
+        x: Math.round(box.x * scale),
+        y: Math.round(box.y * scale),
+        // Never rounded away to nothing. A hairline element (or any box once the
+        // half-scale retry has run) can measure well under a pixel, and a zero
+        // dimension is a box the viewer cannot draw — which would leave uidCount
+        // promising more than the map shows, in neither skipped bucket.
+        w: Math.max(1, Math.round(box.w * scale)),
+        h: Math.max(1, Math.round(box.h * scale)),
+        tag: box.tag,
+      })),
+      skipped: { frames: skippedFrames, cropped: skippedCropped },
+    };
+    // Handed over through storage.session rather than in a message: it is
+    // megabytes, and the viewer opens as its own tab that has to be able to read
+    // it even after this worker has idled out. The default TRUSTED_CONTEXTS
+    // access level is what keeps a web page from reading it.
+    await chrome.storage.session.set({ [UID_MAP_KEY]: payload });
+    await chrome.tabs.create({ url: chrome.runtime.getURL("uid-map.html") });
+    return { ok: true, uidCount: payload.boxes.length };
+  } catch {
+    // A refused attach, a failed CDP call, a payload the quota rejected: one code
+    // covers all of it. Nothing here may throw through the message channel — an
+    // unanswered sendMessage reads in the popup as an extension that is gone.
+    return { ok: false, code: "capture_failed" };
+  }
+}
+
 // -------------------------------------------------------------- message entry
 
 /**
@@ -4402,6 +4637,30 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
     .then((reply) => (reply ? reply : perform(message, sender.origin)))
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, message: String(error?.message || error) }));
+  // Keep the channel open for the async reply.
+  return true;
+});
+
+/**
+ * The INTERNAL message surface, and it is a different trust story from the
+ * EXTERNAL one above: the senders here are this extension's own pages (the
+ * popup, the consent window), which a web page cannot impersonate — a site
+ * declared in `externally_connectable` lands on onMessageExternal, where the
+ * browser-verified `sender.origin` is checked. So there is no origin to verify
+ * here, and no agent on the other end either: the popup's caller is the user.
+ *
+ * Unknown ops are LEFT ALONE — no response, no open channel — because the
+ * consent page has its own listener on this same event, and a future internal op
+ * must be addable without this one swallowing it.
+ */
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (message?.op !== "buildUidMap") return false;
+  buildUidMap()
+    .then(sendResponse)
+    // buildUidMap answers a code for everything it can foresee; this is the
+    // belt-and-braces path, because a listener that returns true and then never
+    // calls sendResponse leaves the popup waiting forever.
+    .catch(() => sendResponse({ ok: false, code: "capture_failed" }));
   // Keep the channel open for the async reply.
   return true;
 });

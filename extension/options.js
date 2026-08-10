@@ -16,6 +16,8 @@ const textarea = document.getElementById("origins");
 const saveButton = document.getElementById("save");
 const status = document.getElementById("status");
 const highlightToggle = document.getElementById("highlight-actions");
+const uidMapButton = document.getElementById("uid-map");
+const uidMapStatus = document.getElementById("uid-map-status");
 const versionLine = document.getElementById("version");
 
 function parseLines(raw) {
@@ -93,6 +95,56 @@ async function initHighlight() {
 // already honors it.
 highlightToggle.addEventListener("change", async () => {
   await chrome.storage.local.set({ [HIGHLIGHT_KEY]: highlightToggle.checked });
+});
+
+// ------------------------------------------------------------- uid map
+//
+// The worker does all of it: capture, build, store the payload, open the
+// viewer tab. This page only asks and reports why not — so on success there is
+// nothing to say, the new tab takes focus and (as the action popup) this window
+// closes itself mid-flight.
+//
+// Every failure the worker can name gets its own sentence, because "지도를
+// 만들지 못했습니다" alone would leave the user with no idea whether to drag a
+// tab into the Noah group, widen the allowlist, or just ask the avatar to look
+// at the page first.
+const UID_MAP_ERRORS = {
+  no_tab: "브릿지가 잡고 있는 탭이 없습니다 — 아바타로 브라우저 조작을 먼저 시작하세요.",
+  origin_denied: "현재 탭은 허용 목록 밖이라 캡처하지 않습니다.",
+  no_uids: "이 페이지에서 부여된 uid가 없습니다 — 아바타가 스냅샷을 찍은 뒤 다시 시도하세요.",
+  capture_failed: "지도를 만들지 못했습니다 — 탭 상태를 바꾼 뒤 다시 시도하세요.",
+};
+
+// Callback form, not the promise form: a service worker that never answers (an
+// older build without this op, a listener that threw) surfaces as
+// chrome.runtime.lastError here, and reading it inside the callback is what
+// marks it handled. Resolving null then joins the same path as a malformed
+// reply — the user gets the capture_failed line either way.
+function requestUidMap() {
+  return new Promise((resolve) => {
+    try {
+      chrome.runtime.sendMessage({ op: "buildUidMap" }, (reply) => {
+        resolve(chrome.runtime.lastError ? null : reply);
+      });
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+uidMapButton.addEventListener("click", async () => {
+  uidMapButton.disabled = true;
+  uidMapStatus.textContent = "";
+  try {
+    const reply = await requestUidMap();
+    if (reply?.ok === true) return;
+    const code = typeof reply?.code === "string" ? reply.code : "capture_failed";
+    uidMapStatus.textContent = UID_MAP_ERRORS[code] ?? UID_MAP_ERRORS.capture_failed;
+  } finally {
+    // Re-enabled even on success: as the options TAB this window stays open, so
+    // leaving the button dead would strand it after one use.
+    uidMapButton.disabled = false;
+  }
 });
 
 // The extension fetches nothing by design, so the footer states the two LOCAL

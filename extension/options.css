@@ -218,6 +218,29 @@ h1 {
   margin-top: 6px;
 }
 
+/* A tool is an ACTION, not a preference — it shares the panel but sits below a
+   hairline so it never reads as another setting the toggle above owns. */
+.tool {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* Feedback that can be a whole sentence, so it wraps on its own line under the
+   button instead of sharing a row the way #status does. Empty means gone: no
+   reserved gap under the hint while nothing has been said. */
+.status-line {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+  letter-spacing: 0.008em;
+}
+
+.status-line:empty {
+  display: none;
+}
+
 .managed {
   background: var(--panel);
   border: 1px solid var(--line-soft);
@@ -339,6 +362,22 @@ button:hover:not(:disabled) {
   box-shadow:
     0 1px 1px rgba(255, 255, 255, 0.24) inset,
     0 7px 20px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+/* Ghost variant, transcribed from the same app layer as the primary fill: this
+   page has exactly one accent button — 저장 — and a second one would compete
+   with it for the eye. */
+button.secondary {
+  border-color: var(--line-soft);
+  background: color-mix(in srgb, var(--material-thick) 78%, transparent);
+  color: var(--text);
+  box-shadow: none;
+}
+
+button.secondary:hover:not(:disabled) {
+  border-color: var(--line);
+  background: var(--panel-strong);
+  box-shadow: none;
 }
 
 button:active:not(:disabled) {

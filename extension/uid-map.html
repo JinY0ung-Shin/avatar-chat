@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>uid 지도 — Noah 브라우저 브릿지</title>
+    <link rel="stylesheet" href="uid-map.css" />
+  </head>
+  <body>
+    <header class="masthead" id="masthead" hidden>
+      <div class="ident">
+        <h1 id="page-title"></h1>
+        <p class="url" id="page-url"></p>
+      </div>
+
+      <div class="stats">
+        <p class="counts">
+          <strong id="count-shown"></strong>
+          <span class="skipped" id="count-skipped" hidden></span>
+        </p>
+        <p class="meta">
+          <span id="captured-at"></span>
+          <span class="one-shot">새로고침하면 지도가 사라집니다 — 팝업에서 다시 열어 주세요.</span>
+        </p>
+      </div>
+
+      <div class="zoom">
+        <label for="zoom">배율</label>
+        <select id="zoom">
+          <option value="fit">너비 맞춤</option>
+          <option value="0.25">25%</option>
+          <option value="0.5">50%</option>
+          <option value="0.75">75%</option>
+          <option value="1" selected>100%</option>
+          <option value="1.5">150%</option>
+          <option value="2">200%</option>
+        </select>
+      </div>
+    </header>
+
+    <main class="stage" id="stage" hidden>
+      <!-- .sizer carries the ZOOMED footprint so the scroll area matches what the
+           eye sees; .canvas keeps the unscaled capture coordinate space. -->
+      <div class="sizer" id="sizer">
+        <div class="canvas" id="canvas">
+          <img id="shot" alt="" />
+        </div>
+      </div>
+    </main>
+
+    <section class="empty" id="empty" hidden>
+      <h1>표시할 데이터가 없습니다</h1>
+      <p>팝업에서 ‘uid 지도 보기’를 다시 눌러 주세요.</p>
+      <p class="empty-hint">
+        지도는 한 번만 열립니다 — 이 페이지를 새로고침하면 데이터가 사라집니다. 페이지가
+        바뀐 뒤에도 옛 지도가 남아 있으면 없는 uid를 가리키게 되므로, 매번 새로 만듭니다.
+      </p>
+    </section>
+
+    <script src="uid-map.js"></script>
+  </body>
+</html>
