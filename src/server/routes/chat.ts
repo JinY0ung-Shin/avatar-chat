@@ -154,11 +154,12 @@ function sanitizeActivity(raw: unknown): AgentResponse["activity"] | null {
         id: cap(row.id, 80),
         agentId: cap(row.agentId, 80) || "main",
         // "memory" must survive the round-trip: the 기억 summary chip is
-        // rebuilt from persisted kind:"memory" rows after reload.
-        kind: (kind === "blocked" || kind === "memory" ? kind : "tool") as
-          | "tool"
-          | "blocked"
-          | "memory",
+        // rebuilt from persisted kind:"memory" rows after reload. "compact"
+        // likewise — it is the only lasting record that the conversation was
+        // summarized mid-turn.
+        kind: (kind === "blocked" || kind === "memory" || kind === "compact"
+          ? kind
+          : "tool") as "tool" | "blocked" | "memory" | "compact",
         label: cap(row.label, 300),
         detail: row.detail ? cap(row.detail, 400) : undefined,
         status: (["done", "failed", "blocked"].includes(status)
@@ -1473,6 +1474,9 @@ export function createChatRouter({
                   // the client dedupes 기억 rows by this id.
                   emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
                 },
+                onCompact: (event) => {
+                  emitRunEvent(runId, "compact", { id: crypto.randomUUID(), ...event });
+                },
                 onPlan: (event) => {
                   if (event.plan) latestPlan = event.plan;
                   emitRunEvent(runId, "plan", {
@@ -1792,6 +1796,11 @@ export function createChatRouter({
                 // Stable id: an SSE reattach replays the whole event log, and
                 // the client dedupes 기억 rows by this id.
                 emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
+              },
+              // Compaction happened (or failed). Same id discipline as 기억 —
+              // a reattach replays the log and the client dedupes on it.
+              onCompact: (event) => {
+                emitRunEvent(runId, "compact", { id: crypto.randomUUID(), ...event });
               },
               // Plan mode: the avatar submitted a plan via ExitPlanMode. Surface it as
               // a dedicated plan card (display-only) and keep the latest one to persist

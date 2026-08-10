@@ -392,6 +392,27 @@ describe("ActivityTree", () => {
     expect(screen.queryByText("기억 추가됨")).toBeNull();
     expect(container.querySelectorAll(".tool-row")).toHaveLength(1);
   });
+
+  it("renders kind==='compact' rows in the tree, announced as 맥락 rather than 도구", () => {
+    const withCompact: LiveToolRow[] = [
+      ...tools,
+      { id: "c1", agentId: "main", kind: "compact", label: "대화 맥락이 요약되었습니다", detail: "자동 요약 · 이전 맥락 약 152K토큰", status: "done" },
+      { id: "c2", agentId: "main", kind: "compact", label: "맥락 정리에 실패했습니다", detail: "429 rate limit", status: "failed" },
+    ];
+    const { container } = render(ActivityTree, {
+      props: { agentId: "main", agents, tools: withCompact, tasks: [] },
+    });
+
+    expect(container.querySelectorAll(".tool-row")).toHaveLength(3);
+    // A compaction is not a tool call, so it must not be announced as one.
+    const ok = screen.getByText("대화 맥락이 요약되었습니다").closest(".tool-row")!;
+    expect(ok.getAttribute("aria-label")).toBe(
+      "맥락 · 대화 맥락이 요약되었습니다 · 완료 · 자동 요약 · 이전 맥락 약 152K토큰",
+    );
+    const failed = screen.getByText("맥락 정리에 실패했습니다").closest(".tool-row")!;
+    expect(failed.getAttribute("data-status")).toBe("failed");
+    expect(failed.querySelector(".tool-arg")!.textContent).toBe("429 rate limit");
+  });
 });
 
 /* ------------------------------------------------------------------ */

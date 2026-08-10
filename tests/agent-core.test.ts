@@ -1683,6 +1683,7 @@ describe("sdk message handlers", () => {
       onAgentStart: vi.fn(),
       onAgentEnd: vi.fn(),
       onBlocked: vi.fn(),
+      onCompact: vi.fn(),
       onPlan: vi.fn(),
       onBackgroundTasks: vi.fn(),
       onTurnResult: vi.fn(),
@@ -2101,6 +2102,105 @@ describe("sdk message handlers", () => {
     expect(sink.onStatus).toHaveBeenCalledWith("응답 생성 중…");
     expect(sink.onStatus).toHaveBeenCalledWith("맥락 정리 중…");
     expect(sink.onStatus).toHaveBeenCalledWith("처리 중…");
+    // The transient labels alone raise no durable notice.
+    expect(sink.onCompact).not.toHaveBeenCalled();
+  });
+
+  it("raises a durable notice on a compact_boundary", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent(
+      {
+        subtype: "compact_boundary",
+        compact_metadata: { trigger: "auto", pre_tokens: 152_000, post_tokens: 21_000 },
+      },
+      sink,
+      state,
+    );
+
+    expect(sink.onCompact).toHaveBeenCalledWith({
+      ok: true,
+      trigger: "auto",
+      preTokens: 152_000,
+    });
+  });
+
+  it("tolerates a compact_boundary with missing or malformed metadata", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent({ subtype: "compact_boundary" }, sink, state);
+    handleSystemEvent(
+      { subtype: "compact_boundary", compact_metadata: { trigger: "누구세요", pre_tokens: "많음" } },
+      sink,
+      state,
+    );
+
+    expect(sink.onCompact).toHaveBeenNthCalledWith(1, {
+      ok: true,
+      trigger: undefined,
+      preTokens: undefined,
+    });
+    expect(sink.onCompact).toHaveBeenNthCalledWith(2, {
+      ok: true,
+      trigger: undefined,
+      preTokens: undefined,
+    });
+  });
+
+  it("surfaces a FAILED compaction as both a notice and a Korean status label", () => {
+    // Without this the run limps on until it dies on the context limit with an
+    // opaque error, and the user never learns why.
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent(
+      {
+        subtype: "status",
+        status: "compacting",
+        compact_result: "failed",
+        compact_error: "summary request failed: 429 rate limit",
+      },
+      sink,
+      state,
+    );
+
+    expect(sink.onCompact).toHaveBeenCalledWith({
+      ok: false,
+      error: "summary request failed: 429 rate limit",
+    });
+    // The English SDK detail rides as a suffix on the Korean label, never as it.
+    expect(sink.onStatus).toHaveBeenCalledWith(
+      "맥락 정리에 실패했습니다: summary request failed: 429 rate limit",
+    );
+    expect(sink.onStatus).not.toHaveBeenCalledWith("맥락 정리 중…");
+  });
+
+  it("keeps a failed-compaction label standalone when the SDK gives no error text", () => {
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent({ subtype: "status", compact_result: "failed" }, sink, state);
+
+    expect(sink.onCompact).toHaveBeenCalledWith({ ok: false, error: undefined });
+    expect(sink.onStatus).toHaveBeenCalledWith("맥락 정리에 실패했습니다");
+  });
+
+  it("does NOT double-report a successful compaction from the status message", () => {
+    // compact_boundary already produced the row; a "success" status must stay a
+    // plain status update or the activity tree grows two rows per compaction.
+    const sink = events();
+    const state = createLoopState();
+
+    handleSystemEvent(
+      { subtype: "status", status: "compacting", compact_result: "success" },
+      sink,
+      state,
+    );
+
+    expect(sink.onCompact).not.toHaveBeenCalled();
+    expect(sink.onStatus).toHaveBeenCalledWith("맥락 정리 중…");
   });
 
   it("mirrors background_tasks_changed with replace semantics", () => {
@@ -2497,6 +2597,7 @@ describe("dispatchSdkMessage", () => {
       onToolStart: vi.fn(),
       onSessionId: vi.fn(),
       onToolEnd: vi.fn(),
+      onCompact: vi.fn(),
     };
   }
 
@@ -2544,6 +2645,30 @@ describe("dispatchSdkMessage", () => {
     // Anything the run loop does not model (e.g. a future envelope type) is inert.
     expect(dispatchSdkMessage({ type: "compact_boundary" }, events, state)).toEqual({ kind: "other" });
     expect(dispatchSdkMessage({}, events, state)).toEqual({ kind: "other" });
+  });
+
+  it("routes a system compact_boundary through the shared dispatch", () => {
+    // Both the local SDK loop and the external gateway runner go through here, so
+    // a compaction leaves the same trace on either path.
+    const state = createLoopState();
+    const events = sink();
+
+    expect(
+      dispatchSdkMessage(
+        {
+          type: "system",
+          subtype: "compact_boundary",
+          compact_metadata: { trigger: "manual", pre_tokens: 88_000 },
+        },
+        events,
+        state,
+      ),
+    ).toEqual({ kind: "system" });
+    expect(events.onCompact).toHaveBeenCalledWith({
+      ok: true,
+      trigger: "manual",
+      preTokens: 88_000,
+    });
   });
 
   it("still extracts assistant text and usage without an events sink", () => {

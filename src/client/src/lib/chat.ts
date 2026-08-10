@@ -6,6 +6,7 @@ import { consumeSse, type SseFrame } from "./sse";
 import { ensureNotificationPermission, osNotify } from "./notifications";
 import { newId, notify, readState, updateState } from "./state";
 import { isDrawioAttachment } from "./drawioViewer";
+import { formatTokenCount } from "./format";
 import { sendToExtension } from "./browserBridge";
 import { resolveTypedSlashCommand } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
@@ -908,6 +909,9 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
     case "memory":
       if (data?.path) handleMemory(paneId, data);
       return;
+    case "compact":
+      handleCompact(paneId, data);
+      return;
     case "permission":
       enqueuePrompt(paneId, "permission", data);
       return;
@@ -1102,6 +1106,37 @@ function handleMemory(paneId: string, data: any): void {
       label,
       detail,
       status: "done",
+    });
+  });
+}
+
+// A context compaction finished (or failed). The live status label for it is
+// transient, so this row is the lasting record that the conversation was
+// summarized — it rides the activity rows and is persisted with them. The
+// server mints the event id, so a reattach's replay dedupes here.
+function handleCompact(paneId: string, data: any): void {
+  const id = String(data?.id || "") || newId();
+  const failed = data?.ok === false;
+  const trigger =
+    data?.trigger === "auto" ? "자동 요약" : data?.trigger === "manual" ? "수동 요약" : "";
+  const preTokens = Number(data?.preTokens) || 0;
+  // `error` is the SDK's English detail — a detail, never the row's label.
+  const detail = failed
+    ? String(data?.error || "").trim().slice(0, 400)
+    : [trigger, preTokens > 0 ? `이전 맥락 약 ${formatTokenCount(preTokens)}토큰` : ""]
+        .filter(Boolean)
+        .join(" · ");
+  markTextBreak(paneId);
+  ensureAgent(paneId, "main");
+  updatePane(paneId, (pane) => {
+    if (pane.liveTools.some((t) => t.id === id)) return;
+    pane.liveTools.push({
+      id,
+      agentId: "main",
+      kind: "compact",
+      label: failed ? "맥락 정리에 실패했습니다" : "대화 맥락이 요약되었습니다",
+      detail: detail || undefined,
+      status: failed ? "failed" : "done",
     });
   });
 }

@@ -388,6 +388,7 @@ describe("activity-snapshot persistence (PUT /api/messages/:id/activity)", () =>
         { id: "t3", agentId: "a1", kind: "task", label: "legacy task row", status: "running" }, // legacy → tasks
         { id: "t4", kind: "weird", label: "w", status: "weird" }, // kind → tool, status → done, agentId → main
         { id: "t5", agentId: "main", kind: "memory", label: "기억 추가됨", detail: "wiki/people/kim.md", status: "done" }, // 기억 chip source — kind survives
+        { id: "t6", agentId: "main", kind: "compact", label: "대화 맥락이 요약되었습니다", detail: "자동 요약 · 이전 맥락 약 152K토큰", status: "done" }, // compaction notice — kind survives
       ],
       tasks: [
         { id: "k1", agentId: "a1", label: "task1", detail: "d", status: "running" },
@@ -404,7 +405,7 @@ describe("activity-snapshot persistence (PUT /api/messages/:id/activity)", () =>
     expect(stored.agents[1].status).toBe("failed");
     expect(stored.agents[2].status).toBe("done"); // unknown normalized
     // The legacy `kind:"task"` tool row is filtered out of tools and merged into tasks.
-    expect(stored.tools.map((t) => t.id).sort()).toEqual(["t1", "t2", "t4", "t5"]);
+    expect(stored.tools.map((t) => t.id).sort()).toEqual(["t1", "t2", "t4", "t5", "t6"]);
     expect(stored.tools.find((t) => t.id === "t2")).toMatchObject({ kind: "blocked", agentId: "main" });
     expect(stored.tools.find((t) => t.id === "t4")).toMatchObject({ kind: "tool", agentId: "main", status: "done" });
     // kind:"memory" must survive the round-trip — the reload-time 기억 summary
@@ -413,6 +414,14 @@ describe("activity-snapshot persistence (PUT /api/messages/:id/activity)", () =>
       kind: "memory",
       label: "기억 추가됨",
       detail: "wiki/people/kim.md",
+    });
+    // Same for kind:"compact" — it is the only lasting record that the
+    // conversation was summarized mid-turn.
+    expect(stored.tools.find((t) => t.id === "t6")).toMatchObject({
+      kind: "compact",
+      label: "대화 맥락이 요약되었습니다",
+      detail: "자동 요약 · 이전 맥락 약 152K토큰",
+      status: "done",
     });
     expect(stored.tasks!.map((t) => t.id).sort()).toEqual(["k1", "k2", "k3", "t3"]);
     expect(stored.tasks!.find((t) => t.id === "k1")).toMatchObject({ status: "running", agentId: "a1" });
@@ -1883,6 +1892,32 @@ describe("second-brain memory notices", () => {
   });
 });
 
+describe("context compaction notices", () => {
+  it("relays a completed and a failed compaction, each with a replay-stable id", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "compactnote").expect(201)).body.user.id as string;
+
+    H.impl = async (_req, _pr, config, _store, events) => {
+      events.onCompact?.({ ok: true, trigger: "auto", preTokens: 152_000 });
+      events.onCompact?.({ ok: false, error: "summary request failed" });
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "계속합니다" };
+    };
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-compact", message: "긴 대화" })
+      .expect(200);
+
+    const compact = parseSse(res.text).filter((f) => f.event === "compact");
+    expect(compact).toHaveLength(2);
+    expect(compact[0].data).toMatchObject({ ok: true, trigger: "auto", preTokens: 152_000 });
+    expect(compact[1].data).toMatchObject({ ok: false, error: "summary request failed" });
+    expect(frameData(compact[0]).id).toEqual(expect.any(String));
+    expect(frameData(compact[0]).id).not.toBe(frameData(compact[1]).id);
+  });
+});
+
 describe("external avatar turns", () => {
   /** A gateway-backed avatar; `visibleToGroupIds` is filled in per test. */
   function externalAvatar(): ExternalAgentConfig {
@@ -1935,6 +1970,7 @@ describe("external avatar turns", () => {
       events.onAgentEnd?.({ agentId: "a1", ok: true });
       events.onBlocked?.({ toolName: "Bash", agentId: "main", reason: "read-only" });
       events.onMemory?.({ scope: "personal", action: "add", path: "wiki/외부.md" });
+      events.onCompact?.({ ok: true, trigger: "auto", preTokens: 120_000 });
       events.onPlan?.({ plan: "", planning: true });
       events.onPlan?.({ plan: "외부 계획" });
       events.onThinking?.("외부 생각");
@@ -1955,7 +1991,7 @@ describe("external avatar turns", () => {
     const names = frames.map((f) => f.event);
     for (const name of [
       "open", "status", "plugin", "tool", "tool_end", "task", "task_update", "task_end",
-      "agent", "agent_end", "blocked", "memory", "plan", "thinking", "delta", "done",
+      "agent", "agent_end", "blocked", "memory", "compact", "plan", "thinking", "delta", "done",
     ]) {
       expect(names).toContain(name);
     }

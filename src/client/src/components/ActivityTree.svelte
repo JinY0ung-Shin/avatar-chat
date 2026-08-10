@@ -38,6 +38,11 @@
   function rowLabel(kind: string, label: string, status: string, detail = ""): string {
     return [kind, label, statusLabels[status] || status, detail].filter(Boolean).join(" · ");
   }
+  // kind "compact" (a context compaction) shares the tool-row rendering but is
+  // not a tool call — so its accessible name must not announce it as one.
+  function toolRowKind(kind: string): string {
+    return kind === "compact" ? "맥락" : "도구";
+  }
 </script>
 
 {#if node}
@@ -69,7 +74,8 @@
     {#if ownTools.length}
       <div class="agent-tools" role="list" aria-label={`${node.label} 도구 실행`}>
         {#each ownTools as row (row.id)}
-          <div class={`tool-row ${row.kind === "blocked" ? "blocked" : ""}`} data-status={row.status} role="listitem" title={rowLabel("도구", row.label, row.status, row.detail || "")} aria-label={rowLabel("도구", row.label, row.status, row.detail || "")}>
+          {@const kindName = toolRowKind(row.kind)}
+          <div class={`tool-row ${row.kind === "blocked" ? "blocked" : ""}`} data-status={row.status} role="listitem" title={rowLabel(kindName, row.label, row.status, row.detail || "")} aria-label={rowLabel(kindName, row.label, row.status, row.detail || "")}>
             {#if row.status === "blocked"}
               <span class="tool-dot"></span>
             {:else}

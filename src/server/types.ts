@@ -1007,7 +1007,7 @@ export interface AgentActivity {
   tools: {
     id: string;
     agentId: string;
-    kind: "tool" | "task" | "blocked" | "memory";
+    kind: "tool" | "task" | "blocked" | "memory" | "compact";
     label: string;
     detail?: string;
     status: "running" | "done" | "failed" | "blocked";

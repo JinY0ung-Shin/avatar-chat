@@ -229,6 +229,21 @@ export interface MemoryEvent {
 }
 
 /**
+ * A context compaction completed (compact_boundary) or failed (status
+ * compact_result). The live "맥락 정리 중…" status label is transient, so this
+ * event is what leaves a DURABLE trace in the activity tree — otherwise a user
+ * who looked away never learns the conversation was summarized, and a FAILED
+ * compaction stays invisible until the run dies on the context limit.
+ */
+export interface CompactEvent {
+  ok: boolean;
+  trigger?: "auto" | "manual";
+  preTokens?: number;
+  /** SDK English error detail (diagnostic; client shows it as detail, never the row label). */
+  error?: string;
+}
+
+/**
  * The model submitted a plan via ExitPlanMode (plan mode). The host forwards the
  * plan markdown to the client to render as a dedicated plan card. This is the
  * DISPLAY signal (always fires); a PRESENT owner additionally gets an interactive
@@ -474,6 +489,8 @@ export interface AgentEvents {
   onBlocked?: (event: BlockedEvent) => void;
   /** A second-brain note was saved (repo write under wiki/) — display notice. */
   onMemory?: (event: MemoryEvent) => void;
+  /** A context compaction finished or failed — durable activity-row notice. */
+  onCompact?: (event: CompactEvent) => void;
   /** The model submitted a plan via ExitPlanMode (plan mode) — display card. */
   onPlan?: (event: PlanEvent) => void;
 

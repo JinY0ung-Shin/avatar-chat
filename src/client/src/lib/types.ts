@@ -200,11 +200,11 @@ export interface LiveAgentNode {
   isMain: boolean;
 }
 
-/** A tool/blocked/memory row in the activity tree, owned by an agent. */
+/** A tool/blocked/memory/compact row in the activity tree, owned by an agent. */
 export interface LiveToolRow {
   id: string;
   agentId: string;
-  kind: "tool" | "task" | "blocked" | "memory";
+  kind: "tool" | "task" | "blocked" | "memory" | "compact";
   label: string;
   detail?: string;
   status: "running" | "done" | "failed" | "blocked";

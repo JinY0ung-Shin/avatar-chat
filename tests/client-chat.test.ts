@@ -1564,6 +1564,48 @@ describe("stream events applied to a pane", () => {
     expect(rows[2].id).toBeTruthy();
   });
 
+  it("compact rows outlive the transient status label, once per event id", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["compact", { id: "cmp1", ok: true, trigger: "auto", preTokens: 152_000 }],
+      // A reattach replays the whole log; one compaction stays one row.
+      ["compact", { id: "cmp1", ok: true, trigger: "auto", preTokens: 152_000 }],
+      ["compact", { id: "cmp2", ok: true, trigger: "manual" }],
+      ["compact", { id: "cmp3", ok: true }],
+    ]);
+    const rows = pane(id).liveTools;
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({
+      kind: "compact",
+      agentId: "main",
+      label: "대화 맥락이 요약되었습니다",
+      detail: "자동 요약 · 이전 맥락 약 152K토큰",
+      status: "done",
+    });
+    expect(rows[1]).toMatchObject({ label: "대화 맥락이 요약되었습니다", detail: "수동 요약" });
+    // Nothing to say about it — the row itself is the notice.
+    expect(rows[2].detail).toBeUndefined();
+    // The row needs a main agent node, or the activity card never renders it.
+    expect(pane(id).liveAgents.map((a) => a.id)).toEqual(["main"]);
+  });
+
+  it("a failed compaction is a failed row carrying the SDK's English detail", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["compact", { id: "cmp-x", ok: false, error: "summary request failed: 429" }],
+      ["compact", { id: "cmp-y", ok: false }],
+    ]);
+    const rows = pane(id).liveTools;
+    expect(rows[0]).toMatchObject({
+      kind: "compact",
+      label: "맥락 정리에 실패했습니다",
+      detail: "summary request failed: 429",
+      status: "failed",
+    });
+    expect(rows[1]).toMatchObject({ label: "맥락 정리에 실패했습니다", status: "failed" });
+    expect(rows[1].detail).toBeUndefined();
+  });
+
   it("plan mode shows a placeholder while writing, then the submitted plan", async () => {
     const id = seedPane();
     const statuses = trackStatus(id);

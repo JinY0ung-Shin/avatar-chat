@@ -821,8 +821,37 @@ export function handleSystemEvent(message: Record<string, unknown>, events: Agen
     });
     return;
   }
+  if (subtype === "compact_boundary") {
+    // The conversation was summarized. The live "맥락 정리 중…" label is gone by
+    // now, so raise a durable notice carrying what the SDK told us about it.
+    const metadata = isRecord(message.compact_metadata) ? message.compact_metadata : undefined;
+    const trigger = asString(metadata?.trigger);
+    const preTokens = asNumber(metadata?.pre_tokens);
+    events.onCompact?.({
+      ok: true,
+      trigger: trigger === "auto" || trigger === "manual" ? trigger : undefined,
+      preTokens: preTokens > 0 ? preTokens : undefined,
+    });
+    return;
+  }
   if (subtype === "status") {
     const status = asString(message.status);
+    // A FAILED compaction is otherwise silent: the run continues until it dies
+    // on the context limit with an opaque error. `compact_error` is SDK English
+    // (model/diagnostic text), so it rides as a suffix on Korean label prose —
+    // same shape as the permission_denied uiReason above. A SUCCESSFUL result
+    // raises no event: the compact_boundary message already made the row.
+    const compactResult = asString(message.compact_result);
+    const compactError = asString(message.compact_error);
+    if (compactResult === "failed") {
+      events.onCompact?.({ ok: false, error: compactError || undefined });
+      events.onStatus?.(
+        compactError
+          ? `맥락 정리에 실패했습니다: ${truncate(compactError.replace(/\s+/g, " ").trim(), 120)}`
+          : "맥락 정리에 실패했습니다",
+      );
+      return;
+    }
     const label =
       status === "requesting"
         ? "응답 생성 중…"

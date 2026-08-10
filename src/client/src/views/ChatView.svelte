@@ -1041,6 +1041,27 @@
     };
   }
 
+  // Context compactions ride the activity rows as kind:"compact" and DO render
+  // inside the tree (unlike 기억), but the card is collapsed by default — so the
+  // summary line also carries a chip: a compaction nobody notices is exactly the
+  // gap this row exists to close. Failure says so in its TEXT, not by colour.
+  function compactChip(
+    tools: Array<{ kind: string; label: string; detail?: string; status?: string }>,
+  ): { icon: string; label: string; title: string } | null {
+    const rows = tools.filter((t) => t.kind === "compact");
+    if (!rows.length) return null;
+    const failed = rows.some((r) => r.status === "failed");
+    return {
+      icon: failed ? "⚠️" : "✂️",
+      label: failed
+        ? "맥락 정리 실패"
+        : rows.length === 1
+          ? "맥락 요약됨"
+          : `맥락 ${rows.length}회 요약됨`,
+      title: rows.map((r) => [r.label, r.detail].filter(Boolean).join(" · ")).join("\n"),
+    };
+  }
+
   // Which collapsed "생각 과정" / "작업 내역" cards the user has opened, keyed by
   // `${messageKey}:${card}`. <details> only HIDES its children, so a body left in
   // the template still costs a full markdown parse (thinking) or an ActivityTree
@@ -1135,10 +1156,12 @@
                 {#if activity}
                   {@const activityKey = cardKey(message, "activity")}
                   {@const memChip = memoryChip(activity.tools)}
+                  {@const cmpChip = compactChip(activity.tools)}
                   <details class="activity-live activity-done" on:toggle={(event) => toggleCard(activityKey, event)}>
                     <summary>
                       <span class="activity-summary-text">{completedActivityLabel(activity)}</span>
                       {#if memChip}<span class="activity-memory-chip" title={memChip.title}><span aria-hidden="true">🧠</span>{memChip.label}</span>{/if}
+                      {#if cmpChip}<span class="activity-memory-chip" title={cmpChip.title}><span aria-hidden="true">{cmpChip.icon}</span>{cmpChip.label}</span>{/if}
                     </summary>
                     {#if expandedCards.has(activityKey)}
                       <div class="agent-activity">
@@ -1209,10 +1232,12 @@
               {/if}
               {#if item.liveAgents.length}
                 {@const liveMemChip = memoryChip(item.liveTools)}
+                {@const liveCmpChip = compactChip(item.liveTools)}
                 <details class="activity-live" open>
                   <summary>
                     <span class="activity-summary-text">{activitySummary(item)}</span>
                     {#if liveMemChip}<span class="activity-memory-chip" title={liveMemChip.title}><span aria-hidden="true">🧠</span>{liveMemChip.label}</span>{/if}
+                    {#if liveCmpChip}<span class="activity-memory-chip" title={liveCmpChip.title}><span aria-hidden="true">{liveCmpChip.icon}</span>{liveCmpChip.label}</span>{/if}
                   </summary>
                   <div class="agent-activity">
                     <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
