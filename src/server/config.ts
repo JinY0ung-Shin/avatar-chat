@@ -12,8 +12,9 @@ function parseRuntime(value: string): AgentRuntime {
   return value === "local" ? "local" : "claude";
 }
 
-// SDK-accepted bounds for `autoCompactWindow` (the CLI rejects values outside
-// 100K–1M). We clamp into range rather than drop, and ignore non-numeric/≤0.
+// Bounds the CLI's settings schema accepts for `autoCompactWindow`. Out-of-range
+// values are SILENTLY DROPPED there (`.catch(undefined)`), not rejected, so we
+// clamp into range rather than pass through, and ignore non-numeric/≤0.
 const AUTO_COMPACT_WINDOW_MIN = 100_000;
 const AUTO_COMPACT_WINDOW_MAX = 1_000_000;
 

@@ -216,12 +216,14 @@ export interface AppConfig {
    */
   routineRunTimeoutMs: number;
   /**
-   * Optional override for the SDK autocompact trigger: the working context
-   * window (in tokens) the agent compacts near the top of. Maps to the SDK
-   * `autoCompactWindow` option. Unset (the default) → the CLI uses the model's
-   * full context window. Env `AUTO_COMPACT_WINDOW`; clamped to the SDK's
-   * 100K–1M range, non-numeric/≤0 ignored. Lower it to compact earlier (keeps
-   * each turn cheaper at the cost of more frequent summarization).
+   * Optional override for the autocompact trigger: the working context window
+   * (in tokens) the agent compacts near the top of. Maps to the CLI settings key
+   * `autoCompactWindow`, carried by the SDK `settings` option as JSON — NOT a
+   * top-level SDK option (no such field exists; see `runPlan.ts`). Unset (the
+   * default) → the CLI uses the model's full context window. Env
+   * `AUTO_COMPACT_WINDOW`; clamped to the CLI's 100K–1M range, non-numeric/≤0
+   * ignored. Lower it to compact earlier (keeps each turn cheaper at the cost of
+   * more frequent summarization).
    */
   autoCompactWindow?: number;
   /**

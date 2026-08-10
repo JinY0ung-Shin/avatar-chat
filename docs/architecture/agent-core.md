@@ -39,6 +39,12 @@ stale binding after a retry; the accessor is read at call time, so it always see
 loop-state `let`s. The returned `options` is likewise a LIVE object the loop still mutates
 (`systemPrompt`, `model`, `resume`) — same object identity as before the split, deliberately.
 
+### The SDK `options` bag is untyped
+`options` is a `Record<string, unknown>`, so a key the pinned SDK's `Options` does not declare compiles
+fine and then silently vanishes — the CLI never sees it. Settings-shaped knobs like `autoCompactWindow`
+are NOT top-level options: they ride `options.settings` (the CLI `--settings` JSON), a layer
+`settingSources: []` does not suppress. Check `sdk.d.ts` before adding an option.
+
 ## Admin builtin tool/skill on-off policy (`toolSkillPolicy.ts` + `agent/skillDiscovery.ts`)
 - **What it is:** the admin panel (system tab → "내장 도구·스킬 정책") disables SDK BUILT-IN tools
   (WebFetch/WebSearch/NotebookEdit/Task+Agent/SendMessage — the `TOGGLABLE_BUILTIN_TOOLS` catalog; core

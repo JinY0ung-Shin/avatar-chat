@@ -847,12 +847,26 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     const response = await runAgentStream(baseRequest, [], config, store, events);
 
     const { options } = sdkMock.calls[0];
-    expect(options.autoCompactWindow).toBe(150_000);
+    // The window rides the SDK `settings` option (serialized by the SDK into the
+    // CLI `--settings` JSON), not a top-level SDK option: the pinned SDK's Options
+    // has no such field and would drop it silently.
+    expect(options.settings).toEqual({ autoCompactWindow: 150_000 });
+    expect(options.autoCompactWindow).toBeUndefined();
     const env = options.env as Record<string, string | undefined>;
     // No API key configured → the OAuth token is injected and any empty API key dropped.
     expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe("oauth-tok");
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(response.text).toBe("ok");
+  });
+
+  it("passes no settings JSON when no autoCompactWindow is configured", async () => {
+    const { config, store, baseRequest } = setup();
+    const events = makeEvents();
+    sdkMock.impl = () => handleFrom([initMsg(), successResult("ok")]);
+
+    await runAgentStream(baseRequest, [], config, store, events);
+
+    expect(sdkMock.calls[0].options.settings).toBeUndefined();
   });
 
   it("lifts plugin-defined MCP servers and exposes plugin roots as writable directories", async () => {
