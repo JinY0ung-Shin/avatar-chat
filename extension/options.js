@@ -1,4 +1,5 @@
-// Options page for the local (development) allowlist.
+// Options page for the local (development) allowlist and the on-screen
+// preferences.
 //
 // Enterprise policy WINS: when chrome.storage.managed carries allowedOrigins,
 // the editor is disabled and the managed list is shown read-only, because the
@@ -6,6 +7,7 @@
 // someone type into a box that has no effect would be worse than showing none.
 
 const POLICY_KEY = "allowedOrigins";
+const HIGHLIGHT_KEY = "highlightActions";
 
 const managedBanner = document.getElementById("managed");
 const managedList = document.getElementById("managed-list");
@@ -13,6 +15,7 @@ const editor = document.getElementById("editor");
 const textarea = document.getElementById("origins");
 const saveButton = document.getElementById("save");
 const status = document.getElementById("status");
+const highlightToggle = document.getElementById("highlight-actions");
 const versionLine = document.getElementById("version");
 
 function parseLines(raw) {
@@ -71,6 +74,27 @@ saveButton.addEventListener("click", async () => {
   }, 4000);
 });
 
+// The action highlight is deliberately OUTSIDE enterprise policy, so it gets
+// its own init instead of riding init()'s managed early-return: policy decides
+// what the agent may TOUCH (allowedOrigins), this preference decides only what
+// the human SEES on their own screen. A managed install must therefore still
+// be able to turn the box off.
+//
+// Absent means ON, so the stored value is read as `!== false` — never as
+// truthy, which would leave a fresh profile showing an unchecked box while the
+// background worker draws the highlight.
+async function initHighlight() {
+  const stored = await chrome.storage.local.get(HIGHLIGHT_KEY);
+  highlightToggle.checked = stored?.[HIGHLIGHT_KEY] !== false;
+}
+
+// No save button: the checkbox state IS the feedback, and the background
+// worker re-reads the key on storage.onChanged, so the very next operation
+// already honors it.
+highlightToggle.addEventListener("change", async () => {
+  await chrome.storage.local.set({ [HIGHLIGHT_KEY]: highlightToggle.checked });
+});
+
 // The extension fetches nothing by design, so the footer states the two LOCAL
 // facts that matter when debugging "why doesn't the bridge work here": which
 // bridge build this is, and which browser build is hosting it. Brand names
@@ -96,3 +120,4 @@ function renderVersion() {
 
 renderVersion();
 void init();
+void initHighlight();

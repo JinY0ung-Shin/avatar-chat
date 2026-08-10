@@ -68,6 +68,19 @@ const CDP_VERSION = "1.3";
  * `DOMSnapshot.enable` is deliberately NOT here — probe-measured
  * (`tests/visual/ax-facts.spec.ts`), captureSnapshot answers without it, and an
  * allowlist entry nothing calls is a widening bought for nothing.
+ *
+ * The three `Overlay.*` entries are the action highlight (see showActionHighlight):
+ * the box drawn over the element an op is about to touch, so the user can SEE what
+ * the avatar is doing. They are DRAW-ONLY output commands — they read nothing back,
+ * execute no page JS, and change no page DOM; the browser's compositor paints the
+ * box and the page cannot even observe it. `Overlay.enable` is here for one reason
+ * only: `Overlay.highlightNode` REFUSES without it ("Overlay must be enabled before
+ * a tool can be shown" — probe-measured, `tests/visual/overlay-highlight.spec.ts`),
+ * which is the DOMSnapshot.enable rule landing the other way. That same probe
+ * measured the cost of drawing: in a headful browser the box IS included in
+ * `Page.captureScreenshot`, which is why captureShot hides before it captures.
+ * No other `Overlay.*` method belongs here — `setInspectMode` would hand the
+ * user's own cursor to an inspector, and `getHighlightObjectForTest` is a READ.
  */
 const CDP_ALLOWLIST = new Set([
   "Accessibility.enable",
@@ -87,6 +100,9 @@ const CDP_ALLOWLIST = new Set([
   "Input.dispatchMouseEvent",
   "Input.imeSetComposition",
   "Input.insertText",
+  "Overlay.enable",
+  "Overlay.highlightNode",
+  "Overlay.hideHighlight",
   "Page.captureScreenshot",
   "Page.enable",
   "Page.getFrameTree",
@@ -145,11 +161,48 @@ async function readPolicy() {
   return policyCache;
 }
 
+/**
+ * Whether the user wants to SEE the action highlight — the box drawn over the
+ * element an op is about to touch (showActionHighlight below).
+ *
+ * chrome.storage.LOCAL only, and deliberately NOT managed: enterprise policy
+ * governs what the agent may TOUCH, which is why allowedOrigins has to let an
+ * operator overrule the user. This governs only what the HUMAN sees. There is
+ * nothing here for a policy to protect, so it stays a personal preference even
+ * on a managed install.
+ *
+ * Default ON — absent, or anything other than an explicit `false`, reads as
+ * enabled. Every install that predates this setting has no value stored, and
+ * seeing what the avatar touches is the whole point of the feature; a user who
+ * never opens the options page should still get it.
+ */
+const HIGHLIGHT_KEY = "highlightActions";
+
+/** Cached like policyCache, but NULL-checked: `false` is a real cached value. */
+let highlightPrefCache = null;
+
+async function readHighlightPref() {
+  if (highlightPrefCache !== null) return highlightPrefCache;
+  let on = true;
+  try {
+    const stored = await chrome.storage.local.get(HIGHLIGHT_KEY);
+    on = stored?.[HIGHLIGHT_KEY] !== false;
+  } catch {
+    // Unlike readPolicy, an unreadable value here fails toward VISIBILITY: this
+    // preference grants no reach, so the safe direction is showing the user more.
+  }
+  highlightPrefCache = on;
+  return highlightPrefCache;
+}
+
 chrome.storage.onChanged.addListener((_changes, areaName) => {
   // The SESSION area holds only the bridge's own working-tab pointer — a policy
   // push never lands there, and dropping the cache on every tab switch would
   // re-read managed storage for nothing.
-  if (areaName !== "session") policyCache = null;
+  if (areaName !== "session") {
+    policyCache = null;
+    highlightPrefCache = null;
+  }
 });
 
 /** tabId -> { children: Map<sessionId, frameId> } — the OOPIF sessions of a tab. */
@@ -318,6 +371,9 @@ async function ensureAttached(tabId) {
   // Page powers navigation history, layout metrics and — critically — the
   // javascriptDialogOpening events the dialog tracking below depends on.
   await sendCdp({ tabId }, "Page.enable", {});
+  // Required before any highlight can be SHOWN — highlightNode refuses without
+  // it. Inert on its own: enabling draws nothing and changes nothing.
+  await sendCdp({ tabId }, "Overlay.enable", {});
 }
 
 chrome.debugger.onEvent.addListener(async (source, method, params) => {
@@ -341,6 +397,9 @@ chrome.debugger.onEvent.addListener(async (source, method, params) => {
     await sendCdp(child, "Accessibility.enable", {});
     // A dialog raised from inside an OOPIF surfaces on the child's session.
     await sendCdp(child, "Page.enable", {});
+    // An element inside this frame is highlighted on THIS session, and the
+    // enable requirement is per-session like everything else here.
+    await sendCdp(child, "Overlay.enable", {});
   } catch {
     // A frame can die between attach and configure; the next snapshot re-walks.
   }
@@ -1744,9 +1803,12 @@ function renderNodeBrief(node, max = 200) {
 
 /**
  * Best-effort description of the element at a point — the blind spot of a
- * coordinate click — as `{ text, fileInput }`, or null when nothing can be said
- * about it. `fileInput` is the half a caller must ACT on rather than report: a
- * click there opens the OS file dialog (see FILE_INPUT_REFUSAL). Read-only
+ * coordinate click — as `{ text, fileInput, backendNodeId }`, or null when
+ * nothing can be said about it. `fileInput` is the half a caller must ACT on
+ * rather than report: a click there opens the OS file dialog (see
+ * FILE_INPUT_REFUSAL). `backendNodeId` is the id this function already had to
+ * fetch to answer at all, handed back so a pixel click can HIGHLIGHT what it
+ * resolved to without spending a second hit test. Read-only
  * (`DOM.getNodeForLocation` + `describeNode`); any failure degrades to "no
  * description", never to a failed click. When a root-session hit test lands in
  * a cross-origin frame it resolves the <iframe> element itself, which is still
@@ -1783,10 +1845,77 @@ async function describePoint(target, x, y) {
     if (!contains) return null;
     const { node } = await sendCdp(target, "DOM.describeNode", { backendNodeId, depth: 2 });
     if (!node) return null;
-    return { text: renderNodeBrief(node), fileInput: isFileInput(shapeOf(node)) };
+    return { text: renderNodeBrief(node), fileInput: isFileInput(shapeOf(node)), backendNodeId };
   } catch {
     return null;
   }
+}
+
+// -------------------------------------------------------- action highlight
+//
+// The DevTools inspector box, drawn over the element an op is about to act on so
+// the user can SEE what the avatar is touching. The browser's COMPOSITOR paints
+// it: no page JS runs, the page DOM never changes, and the page cannot detect
+// it — this is a display surface, not a new way to reach into a page.
+
+/**
+ * Refreshed once per op from the stored preference (top of performOp) rather
+ * than read at each of the call sites below: one storage round trip per op
+ * instead of one per highlighted element. Overlapping ops share this flag, which
+ * is cosmetic at worst — a preference flipped mid-flight applies to the op
+ * already running.
+ */
+let highlightActionsOn = false;
+
+/**
+ * Every `{ tabId, sessionId }` a box is currently up on, keyed like docEpochs,
+ * so the op-scoped clear can take down ALL of them. A Map rather than one slot
+ * because a highlight lives PER SESSION: a fill_form whose fields span two
+ * OOPIF sessions draws a box in each frame, and a single last-drawn slot would
+ * strand the earlier frame's box on screen for good — exactly the failure the
+ * op-scoped lifetime exists to prevent. (A box drawn just before the MV3
+ * worker is torn down still strands until navigation: module state dies with
+ * the worker, and captureShot's pre-capture hide covers only the root session.
+ * That residue is a crash path, not a designed one.)
+ */
+const activeHighlights = new Map();
+
+/**
+ * Green because the "Noah" tab group is green: that colour already means "the
+ * avatar is working here", so the box reads as this extension's rather than as
+ * something the page drew. `showInfo` off — DevTools' tooltip is inspection
+ * detail, and the only question being answered here is "what is it touching?".
+ */
+const ACTION_HIGHLIGHT_CONFIG = {
+  showInfo: false,
+  contentColor: { r: 46, g: 160, b: 67, a: 0.28 },
+  borderColor: { r: 46, g: 160, b: 67, a: 0.9 },
+};
+
+/**
+ * Draw the box over a resolved ref. FIRE-AND-FORGET: no caller awaits it and it
+ * can never throw — the same discipline the click guards follow, for the same
+ * reason. This exists to SHOW the user something, so it must never invent an op
+ * failure of its own. Not awaiting costs no ordering either: CDP commands on one
+ * session are processed in the order they were sent, so the draw still lands
+ * before the input events dispatched after it.
+ */
+function showActionHighlight(ref) {
+  if (!highlightActionsOn) return;
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  activeHighlights.set(docKey(ref.tabId, ref.sessionId), target);
+  sendCdp(target, "Overlay.highlightNode", {
+    backendNodeId: ref.backendNodeId,
+    highlightConfig: ACTION_HIGHLIGHT_CONFIG,
+  }).catch(() => {});
+}
+
+/** Take every box down. Same fire-and-forget discipline, for the same reason. */
+function clearActionHighlight() {
+  for (const target of activeHighlights.values()) {
+    sendCdp(target, "Overlay.hideHighlight", {}).catch(() => {});
+  }
+  activeHighlights.clear();
 }
 
 // ------------------------------------------------------ click-target guards
@@ -3293,6 +3422,16 @@ async function captureShot(tab, message) {
   // Bound the pixel size for the model: cap the width, and stay inside the
   // 8000px-per-edge ceiling vision APIs enforce even for tall captures.
   const scale = Math.min(1, SCREENSHOT_MAX_WIDTH / clip.width, 7900 / clip.height);
+  // LOAD-BEARING, not tidiness. In a HEADFUL browser — which is the whole fleet,
+  // since the bridge drives the user's own window — a drawn action highlight IS
+  // included in what captureScreenshot returns (probe-measured,
+  // `tests/visual/overlay-highlight.spec.ts`). These bytes become a model image
+  // block and click_at inverts their pixel mapping, so a box left up is read as
+  // page content and aimed at like page content.
+  // It clears the ROOT session's box only: a box on a child (OOPIF) session is
+  // taken down by the op-scoped clear in perform(), and what this line really
+  // covers is a stale root box a restarted worker no longer remembers drawing.
+  await sendCdp({ tabId: tab.id }, "Overlay.hideHighlight", {}).catch(() => {});
   const { data } = await sendCdp({ tabId: tab.id }, "Page.captureScreenshot", {
     format: "jpeg",
     quality: 75,
@@ -3438,6 +3577,9 @@ async function reattachAfterEscape(tabId) {
 
 async function performOp(message, stagingOrigin) {
   const { patterns, source } = await readPolicy();
+  // Once per op, so every showActionHighlight below stays a synchronous check
+  // that cannot add a round trip to the action it is illustrating.
+  highlightActionsOn = await readHighlightPref();
 
   // Tab management runs before the current-tab origin check: listing and
   // switching must work even when the tab you are on is not allowlisted,
@@ -3562,6 +3704,9 @@ async function performOp(message, stagingOrigin) {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     snapshotScope = resolveRef(message.uid);
+    // A scoped snapshot IS the agent looking at that element, so it earns a box
+    // like the acting ops do.
+    showActionHighlight(snapshotScope);
   }
   // `maxChars` caps whatever snapshot THIS op returns, not just the snapshot
   // op's own two forms: every action answers with a full page walk, and an agent
@@ -3580,6 +3725,7 @@ async function performOp(message, stagingOrigin) {
       const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
       if (refused) return refused;
       scope = resolveRef(message.uid);
+      showActionHighlight(scope);
     }
     const offset = Math.min(Math.max(Math.round(Number(message.offset) || 0), 0), 5_000_000);
     // `expand` is page-level by definition (scrolling loads content relative
@@ -3696,6 +3842,11 @@ async function performOp(message, stagingOrigin) {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     const ref = resolveRef(message.uid);
+    // Before the guards on purpose: what the agent is ABOUT to touch is worth
+    // showing even when a guard then refuses to touch it. Safe there because a
+    // drawn box takes no part in hit-testing, so the obscured check below still
+    // sees the page (probe-measured, `tests/visual/overlay-highlight.spec.ts`).
+    showActionHighlight(ref);
     // Guards and click stay INSIDE the race: every step here talks to the
     // renderer, and a dialog raised by a page timer mid-measurement would hang
     // the scroll/quad reads exactly as it would hang the click itself.
@@ -3718,6 +3869,7 @@ async function performOp(message, stagingOrigin) {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
     const ref = resolveRef(message.uid);
+    showActionHighlight(ref);
     await refuseFileInput(ref);
     const { target, quads } = await quadsOf(ref);
     if (!quads.length) {
@@ -3827,6 +3979,16 @@ async function performOp(message, stagingOrigin) {
     const cssX = Math.min(x / lastShot.scale, lastShot.clipWidth - 1);
     const cssY = Math.min(y / lastShot.scale, lastShot.clipHeight - 1);
     const described = await describePoint({ tabId: tab.id }, cssX, cssY);
+    // The only op whose subject is a COORDINATE, so the hit test above is also
+    // the only thing that knows which element to draw on. Root session by
+    // construction: these pixels come from a viewport screenshot of this tab.
+    if (described?.backendNodeId) {
+      showActionHighlight({
+        tabId: tab.id,
+        sessionId: undefined,
+        backendNodeId: described.backendNodeId,
+      });
+    }
     // A pixel click has no uid to check, so this hit test is the ONLY thing
     // between a screenshot coordinate and the OS file dialog — and a file input
     // looks like an ordinary button in both the image and the snapshot.
@@ -3839,6 +4001,10 @@ async function performOp(message, stagingOrigin) {
   } else if (message.op === "type") {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
+    // resolveRef is an idempotent map lookup, so resolving here purely to draw
+    // the box costs nothing and typeRef resolving it again below is fine — that
+    // is cheaper than threading a highlight through typeRef/fillField.
+    showActionHighlight(resolveRef(message.uid));
     // raceDialogOpen resolves on whichever of the work or a dialog wins, so the
     // note is captured HERE rather than returned through it.
     await raceDialogOpen(
@@ -3872,6 +4038,11 @@ async function performOp(message, stagingOrigin) {
       const refused = await assertRefTabUsable(uid, patterns, source, stagingOrigin);
       if (refused) return refused;
       try {
+        // Per field, so the box HOPS down the form as it is filled — with 25
+        // fields that is the point: the user follows where the writing is.
+        // INSIDE the try because resolveRef throws on a dead uid, and that
+        // throw belongs to the partial-progress report below, not to the op.
+        showActionHighlight(resolveRef(uid));
         await raceDialogOpen(
           tab.id,
           (async () => {
@@ -3904,6 +4075,7 @@ async function performOp(message, stagingOrigin) {
   } else if (message.op === "select_option") {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
+    showActionHighlight(resolveRef(message.uid));
     await raceDialogOpen(tab.id, selectOption(message.uid, String(message.option ?? "")));
     // A change handler can submit or navigate, same as a click.
     await waitForLoad(tab.id, 5000);
@@ -3913,6 +4085,9 @@ async function performOp(message, stagingOrigin) {
       const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
       if (refused) return refused;
       const ref = resolveRef(message.uid);
+      // Only when a uid was given: a keystroke aimed at the page as a whole has
+      // no subject element to point at.
+      showActionHighlight(ref);
       // Enter or Space on a FOCUSED file input opens the same OS dialog a click
       // does, so the refusal belongs on this path too.
       await refuseFileInput(ref);
@@ -3934,7 +4109,9 @@ async function performOp(message, stagingOrigin) {
   } else if (message.op === "hover") {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
     if (refused) return refused;
-    const { target, x, y } = await centerOf(resolveRef(message.uid));
+    const hoverRef = resolveRef(message.uid);
+    showActionHighlight(hoverRef);
+    const { target, x, y } = await centerOf(hoverRef);
     await raceDialogOpen(
       tab.id,
       sendCdp(target, "Input.dispatchMouseEvent", {
@@ -3960,7 +4137,10 @@ async function performOp(message, stagingOrigin) {
     if (message.uid) {
       const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
       if (refused) return refused;
-      ({ target, x, y } = await centerOf(resolveRef(message.uid)));
+      const scrollRef = resolveRef(message.uid);
+      // Only the uid path has a subject: a plain page scroll points at nothing.
+      showActionHighlight(scrollRef);
+      ({ target, x, y } = await centerOf(scrollRef));
     }
     const span = direction === "left" || direction === "right" ? viewWidth : viewHeight;
     const requested = Number(message.pixels);
@@ -4144,6 +4324,15 @@ async function perform(message, senderOrigin) {
   } catch (error) {
     takeTabNotice(); // never let a stale notice surface on the NEXT op
     throw error;
+  } finally {
+    // OP-SCOPED, on every exit path — success, refusal, throw. The box lives
+    // through the action, the settle wait and the snapshot tail (roughly half a
+    // second to a second and a half of visibility) and dies with the op. A box
+    // that persisted until the NEXT op instead would be stranded on screen for
+    // good the moment the MV3 worker is torn down, because the restarted worker
+    // has no memory of having drawn it. Running before the notice merging below
+    // costs nothing: clearActionHighlight is synchronous fire-and-forget.
+    clearActionHighlight();
   }
   const notice = takeTabNotice();
   if (!notice) return result;

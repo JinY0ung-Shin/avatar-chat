@@ -184,6 +184,40 @@ h1 {
   box-shadow: var(--shadow-sm);
 }
 
+/* A preference panel in the same material as the editor, but compact: one
+   control and its hint, no save row. */
+#preferences {
+  background: var(--panel);
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: var(--shadow-sm);
+}
+
+/* The block `label` below captions the textarea; a checkbox instead sits
+   inline with its control, and the whole row is the hit target. */
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.check input {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+#preferences .hint {
+  margin-top: 6px;
+}
+
 .managed {
   background: var(--panel);
   border: 1px solid var(--line-soft);
