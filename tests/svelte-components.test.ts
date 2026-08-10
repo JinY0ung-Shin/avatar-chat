@@ -7,6 +7,7 @@ import { get } from "svelte/store";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import ActivityTree from "../src/client/src/components/ActivityTree.svelte";
+import CanvasPanel from "../src/client/src/components/CanvasPanel.svelte";
 import RoutineModal from "../src/client/src/components/RoutineModal.svelte";
 import SettingsGroupCard from "../src/client/src/components/SettingsGroupCard.svelte";
 import type { SettingsGroup } from "../src/client/src/components/SettingsGroupCard.svelte";
@@ -584,5 +585,79 @@ describe("SettingsGroupCard 공유 스킬", () => {
     await waitFor(() => expect(screen.getByText("플랫폼팀")).toBeTruthy());
     expect(screen.queryByText("공유 스킬")).toBeNull();
     expect(calls.length).toBe(before);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* CanvasPanel — a parked blocking ask must stay answerable            */
+/* ------------------------------------------------------------------ */
+
+function canvasPane(overrides: Record<string, unknown>, canvas: Record<string, unknown>): any {
+  return {
+    id: "p1",
+    streaming: true,
+    activeCanvasId: "cv1",
+    canvases: [
+      {
+        id: "cv1",
+        title: "질문",
+        content: "골라 주세요",
+        contentType: "markdown",
+        controls: [
+          { type: "buttons", id: "pick", label: "선택", options: [{ label: "A" }, { label: "B" }] },
+        ],
+        ...canvas,
+      },
+    ],
+    ...overrides,
+  };
+}
+
+describe("CanvasPanel", () => {
+  const LOCKED = "아바타 응답이 끝난 뒤 보낼 수 있습니다.";
+
+  it("a parked blocking canvas stays answerable while the run streams", async () => {
+    render(CanvasPanel, {
+      props: {
+        pane: canvasPane({}, { pending: true, requestId: "rq1", runId: "rn1", interaction: "blocking" }),
+      },
+    });
+
+    // The run is parked on THIS form: locking it on pane.streaming would deadlock
+    // the question (the run resumes only via /api/chat/respond).
+    const optA = screen.getByRole("button", { name: /A/ }) as HTMLButtonElement;
+    expect(optA.disabled).toBe(false);
+    await fireEvent.click(optA);
+
+    expect((screen.getByRole("button", { name: "보내기" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "건너뛰기" }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.getByText("보낼 준비가 됐습니다.")).toBeTruthy();
+    expect(screen.queryByText(LOCKED)).toBeNull();
+  });
+
+  it("an async canvas locks its form while the avatar is responding", () => {
+    render(CanvasPanel, {
+      props: { pane: canvasPane({}, { pending: false, interaction: "async" }) },
+    });
+
+    // No park to unblock, so the answer rides a NEW turn — which must wait.
+    expect((screen.getByRole("button", { name: /A/ }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "보내기" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText(LOCKED)).toBeTruthy();
+  });
+
+  it("the edit path stays locked while parked (edits ride a new turn)", () => {
+    const { container } = render(CanvasPanel, {
+      props: {
+        pane: canvasPane({}, { pending: true, requestId: "rq1", runId: "rn1", editable: true }),
+      },
+    });
+
+    const textarea = container.querySelector(
+      'textarea[placeholder="내용을 수정해 아바타에게 보내세요"]',
+    ) as HTMLTextAreaElement;
+    expect(textarea).toBeTruthy();
+    expect(textarea.disabled).toBe(true); // submitCanvasEdit → sendMessage needs the turn to end
+    expect((screen.getByRole("button", { name: /A/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 });

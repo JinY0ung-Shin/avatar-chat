@@ -2629,6 +2629,15 @@ describe("dispatchSdkMessage", () => {
     expect(events.onStatus).toHaveBeenCalledWith(expect.stringContaining("실행 중: "));
     expect(events.onStatus).not.toHaveBeenCalledWith(expect.stringContaining("mcp__repo__"));
 
+    dispatchSdkMessage(
+      { type: "tool_progress", tool_name: "mcp__canvas__show" },
+      events,
+      state,
+    );
+    // Curated MCP labels are shared with the client, so the status line and the
+    // activity row agree ("캔버스 표시", never a raw "show").
+    expect(events.onStatus).toHaveBeenCalledWith("실행 중: 캔버스 표시");
+
     expect(
       dispatchSdkMessage(
         { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t-1" }] } },

@@ -256,14 +256,18 @@
   }
 
   // ---- form controls ----
+  // Pure REASSIGNMENT on purpose: mutating `ctrlVals[ctrlId]` inside a script
+  // function makes the Svelte 5 legacy compiler emit an invalidation thunk that
+  // references template each-scope names (`ctrl`, `labelId`) as bare identifiers
+  // here, where they don't exist — a ReferenceError on every option click.
   function toggleButton(ctrlId: string, value: string, multi: boolean): void {
     const current = Array.isArray(ctrlVals[ctrlId]) ? (ctrlVals[ctrlId] as string[]) : [];
-    if (multi) {
-      ctrlVals[ctrlId] = current.includes(value) ? current.filter((v) => v !== value) : [...current, value];
-    } else {
-      ctrlVals[ctrlId] = [value];
-    }
-    ctrlVals = { ...ctrlVals };
+    const next = multi
+      ? current.includes(value)
+        ? current.filter((v) => v !== value)
+        : [...current, value]
+      : [value];
+    ctrlVals = { ...ctrlVals, [ctrlId]: next };
   }
   function optValue(opt: { label: string; value?: string }): string {
     return opt.value ?? opt.label;
@@ -318,11 +322,20 @@
     active?.controls?.length &&
       (active.pending || (active.interaction === "async" && (!active.submittedValues || resubmitting))),
   );
-  $: controlsLocked = Boolean(active?.submitting || pane.streaming);
+  // The run is PARKED on this canvas (blocking ask): the answer posts to
+  // /api/chat/respond MID-run — the run resumes only after the user submits or
+  // skips — so `pane.streaming` must NOT lock the form here. Locking it
+  // deadlocks the question: the run waits for the user, the form waits for the
+  // run (regression 8aed88d→208489d; the run stays `streaming` while parked).
+  $: awaitingAnswer = Boolean(active?.pending && active?.requestId && active?.runId);
+  $: controlsLocked = Boolean(active?.submitting || (pane.streaming && !awaitingAnswer));
+  // Content edits always ride a NEW chat turn (submitCanvasEdit → sendMessage),
+  // so the edit path DOES wait for the avatar's turn to end — even while parked.
+  $: editLocked = Boolean(active?.submitting || pane.streaming);
   $: editTrimmed = editDraft.trim();
   $: editDirty = Boolean(active && editDraft !== active.content);
-  $: editCanSubmit = Boolean(active?.editable && editTrimmed && editDirty && !controlsLocked);
-  $: editStatus = controlsLocked
+  $: editCanSubmit = Boolean(active?.editable && editTrimmed && editDirty && !editLocked);
+  $: editStatus = editLocked
     ? "아바타 응답이 끝난 뒤 수정할 수 있습니다."
     : !editTrimmed
       ? "수정할 내용을 입력하세요."
@@ -332,13 +345,13 @@
   $: controlsStatusId = active ? canvasDomId("canvas-controls-status", active.id) : "canvas-controls-status";
   $: controlsStatus = active?.submitting
     ? "응답을 보내는 중입니다."
-    : pane.streaming
+    : controlsLocked
       ? "아바타 응답이 끝난 뒤 보낼 수 있습니다."
       : canSubmit
         ? "보낼 준비가 됐습니다."
         : "필수 항목을 입력해 주세요.";
   // The skip button only makes sense for a blocking, parked run.
-  $: canSkip = Boolean(active?.pending && active?.requestId && active?.runId);
+  $: canSkip = awaitingAnswer;
 
   function renderSubmitted(value: unknown): string {
     return Array.isArray(value) ? value.join(", ") : String(value ?? "");
@@ -581,7 +594,7 @@
                   placeholder="내용을 수정해 아바타에게 보내세요"
                   aria-labelledby={canvasDomId("canvas-edit-label", active.id)}
                   aria-describedby={canvasDomId("canvas-edit-status", active.id)}
-                  disabled={controlsLocked}
+                  disabled={editLocked}
                 ></textarea>
               </div>
               <div id={canvasDomId("canvas-edit-status", active.id)} class="canvas-edit-status" class:dirty={editCanSubmit} role="status">{editStatus}</div>

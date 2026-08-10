@@ -12,6 +12,7 @@ import { resolveTypedSlashCommand } from "./slash";
 import { DEFAULT_MODEL_TIER } from "../../../server/modelTiers";
 import { DEFAULT_EFFORT_LEVEL } from "../../../server/effortLevels";
 import {
+  MCP_TOOL_LABELS,
   SDK_HIDDEN_ACTIVITY_TOOLS,
   SDK_TOOL_LABELS,
 } from "../../../shared/sdkToolPresentation";
@@ -37,23 +38,11 @@ const HIDDEN_TOOLS = new Set(SDK_HIDDEN_ACTIVITY_TOOLS);
 
 // Friendly, human-readable labels for tools shown in the activity tree. Raw
 // names (e.g. `mcp__knowledge__request_info`) are an implementation detail.
+// Both maps live in shared/sdkToolPresentation.ts so the server status line
+// uses the SAME labels.
 const TOOL_LABELS: Record<string, string> = {
   ...SDK_TOOL_LABELS,
-  mcp__knowledge__request_info: "정보 요청 기록",
-  mcp__knowledge__pending_requests: "대기 요청 확인",
-  mcp__knowledge__resolve_request: "요청 처리 완료",
-  mcp__canvas__show: "캔버스 표시",
-  mcp__confluence__describe_config: "Confluence 설정 확인",
-  mcp__confluence__list_spaces: "Confluence 스페이스 조회",
-  mcp__confluence__search: "Confluence 검색",
-  mcp__confluence__get_page: "Confluence 페이지 조회",
-  mcp__confluence__list_attachments: "Confluence 첨부 조회",
-  mcp__confluence__get_attachment: "Confluence 첨부 가져오기",
-  mcp__file_output__show_file: "이미지 표시",
-  mcp__file_output__share_file: "파일 공유",
-  mcp__confluence__extract_page_assets: "Confluence 자산 추출",
-  mcp__system__notify_user: "사용자 알림",
-  mcp__web__fetch: "웹 페이지 읽기",
+  ...MCP_TOOL_LABELS,
 };
 
 export const PLUGIN_STATUS_LABELS: Record<string, string> = {
@@ -1035,7 +1024,11 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
       syncHash(true);
       return;
     case "status":
-      if (data?.label) setStatus(paneId, data.label, false);
+      // While parked on a blocking canvas the SDK's periodic tool_progress
+      // ticks keep re-emitting "실행 중: 캔버스 표시" — but the run is waiting on
+      // the USER. Keep the waiting label until the park resolves.
+      if (data?.label && !awaitingCanvasAnswer(paneId))
+        setStatus(paneId, data.label, false);
       return;
     case "plugin":
       if (data?.name) {
@@ -1915,12 +1908,23 @@ function handleBrowserOp(paneId: string, data: any): void {
     });
 }
 
+// True while the LIVE run is parked on a blocking canvas: the run resumes only
+// via /api/chat/respond, so the user — not the avatar — is the blocker.
+function awaitingCanvasAnswer(paneId: string): boolean {
+  const pane = readState().chatPanes.find((p) => p.id === paneId);
+  if (!pane) return false;
+  return pane.canvases.some(
+    (c) => c.pending && c.requestId && c.runId && c.runId === pane.liveRunId,
+  );
+}
+
 function handleCanvas(paneId: string, data: any): void {
   const controls = Array.isArray(data.controls) ? data.controls : undefined;
   const interaction =
     data.interaction === "blocking" || data.interaction === "async"
       ? data.interaction
       : undefined;
+  const pending = Boolean(controls && controls.length && interaction !== "async");
   updatePane(paneId, (pane) => {
     const prev = pane.canvases.find((c) => c.id === data.artifactId);
     const entry: PaneCanvas = {
@@ -1934,7 +1938,7 @@ function handleCanvas(paneId: string, data: any): void {
       runId: data.runId || pane.liveRunId || undefined,
       requestId: data.requestId || undefined,
       // Blocking only: an async canvas shows controls but the run isn't parked.
-      pending: Boolean(controls && controls.length && interaction !== "async"),
+      pending,
       // Refining in place bumps the version client-side too so the version-history
       // button (gated on versionCount > 1) appears WITHOUT a reload. The server is
       // authoritative on reload and may dedup an unchanged re-show, so this can
@@ -1947,6 +1951,9 @@ function handleCanvas(paneId: string, data: any): void {
     else pane.canvases.push(entry);
     pane.activeCanvasId = entry.id;
   });
+  // A blocking canvas parks the run on the USER's answer — say so instead of
+  // leaving the last "실행 중: …" tool label implying avatar work.
+  if (pending) setStatus(paneId, "캔버스 응답을 기다리는 중…", true);
 }
 
 export function setActiveCanvas(paneId: string, canvasId: string): void {
@@ -1991,6 +1998,9 @@ export async function submitCanvas(
           c.submittedValues = values;
         }
       });
+      // Move the status line off "기다리는 중" immediately; the resumed run's
+      // next event overwrites this.
+      setStatus(paneId, "캔버스 응답을 보냈습니다.", true);
     } catch (err) {
       updatePane(paneId, (p) => {
         const c = p.canvases.find((x) => x.id === canvasId);
@@ -2056,11 +2066,13 @@ export async function dismissCanvas(
 ): Promise<void> {
   const pane = readState().chatPanes.find((p) => p.id === paneId);
   const canvas = pane?.canvases.find((c) => c.id === canvasId);
+  const parked = Boolean(canvas?.pending && canvas?.requestId && canvas?.runId);
   if (canvas) await cancelParkedCanvas(canvas);
   updatePane(paneId, (p) => {
     const c = p.canvases.find((x) => x.id === canvasId);
     if (c) c.pending = false;
   });
+  if (parked) setStatus(paneId, "캔버스 응답을 건너뛰었습니다.", true);
 }
 
 function isMissingCanvasError(err: unknown): boolean {

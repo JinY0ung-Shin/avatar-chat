@@ -157,7 +157,14 @@
   controls — no avatar JS runs, CSP unchanged. `canvasTools.ts` (NOT self-gated — registration is the
   boundary) registered in `claudeAgent.ts` ONLY when the avatar OWNER enabled `canvas` AND
   `events.onCanvas` exists. Controls park the run via the SAME `awaitResponse`/`/api/chat/respond` path as
-  `onQuestion`; display-only returns immediately. Artifacts persist on `AgentResponse.canvases` and rebuild
+  `onQuestion`; display-only returns immediately. **A parked (blocking) form must stay ENABLED while
+  `pane.streaming` is true** — the answer posts to `/api/chat/respond` MID-run and the run resumes only on
+  submit/skip, so `CanvasPanel` locks on `streaming` only for the new-turn paths (async submit, re-submit,
+  content edit); locking the blocking form deadlocks the question (8aed88d regression). While parked the
+  frame handler pins the status line to `캔버스 응답을 기다리는 중…`, suppressing the periodic `tool_progress`
+  status ticks (`실행 중: 캔버스 표시`) until the park resolves; the curated MCP tool labels live in
+  `shared/sdkToolPresentation.ts` (`MCP_TOOL_LABELS`) so server status line and client activity rows agree.
+  Artifacts persist on `AgentResponse.canvases` and rebuild
   on reload (`canvasesFromMessages`); live via SSE `canvas` event → `CanvasPanel.svelte`. **Refine-in-place:**
   `show` takes an optional `canvasId`; reusing it UPDATES that artifact (client `handleCanvas` +
   `canvasesFromMessages` AND server `record()` all upsert by id, latest-wins). **Size-cap:** `canvasTools.ts`

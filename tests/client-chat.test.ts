@@ -797,6 +797,7 @@ describe("canvas flows", () => {
     expect(posted).toMatchObject({ runId: "rn1", requestId: "rq1", value: { values: { color: "red" } } });
     const c = pane(id).canvases[0];
     expect(c).toMatchObject({ pending: false, submitting: false, submittedValues: { color: "red" } });
+    expect(pane(id).liveStatus).toBe("캔버스 응답을 보냈습니다.");
   });
 
   it("submitCanvas surfaces a toast when the parked run rejects", async () => {
@@ -851,6 +852,7 @@ describe("canvas flows", () => {
     await dismissCanvas(id, "cv1");
     expect(posted).toMatchObject({ requestId: "rq1", value: { cancelled: true } });
     expect(pane(id).canvases[0].pending).toBe(false);
+    expect(pane(id).liveStatus).toBe("캔버스 응답을 건너뛰었습니다.");
   });
 
   it("closeCanvas deletes the canvas, tolerating a not-found server response", async () => {

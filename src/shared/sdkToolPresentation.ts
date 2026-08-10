@@ -138,6 +138,31 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
 };
 
 /**
+ * Labels for Noah's own in-process MCP tools (user-facing, so Korean). Kept in
+ * the SHARED layer so the server status line ("실행 중: <label>" from
+ * tool_progress in sdkMessageHandlers) and the client activity row (humanTool)
+ * can never disagree about the same tool — mcp__canvas__show once showed
+ * "캔버스 표시" in the activity row but a raw "show" in the status line.
+ */
+export const MCP_TOOL_LABELS: Record<string, string> = {
+  mcp__canvas__show: "캔버스 표시",
+  mcp__confluence__describe_config: "Confluence 설정 확인",
+  mcp__confluence__extract_page_assets: "Confluence 자산 추출",
+  mcp__confluence__get_attachment: "Confluence 첨부 가져오기",
+  mcp__confluence__get_page: "Confluence 페이지 조회",
+  mcp__confluence__list_attachments: "Confluence 첨부 조회",
+  mcp__confluence__list_spaces: "Confluence 스페이스 조회",
+  mcp__confluence__search: "Confluence 검색",
+  mcp__file_output__share_file: "파일 공유",
+  mcp__file_output__show_file: "이미지 표시",
+  mcp__knowledge__pending_requests: "대기 요청 확인",
+  mcp__knowledge__request_info: "정보 요청 기록",
+  mcp__knowledge__resolve_request: "요청 처리 완료",
+  mcp__system__notify_user: "사용자 알림",
+  mcp__web__fetch: "웹 페이지 읽기",
+};
+
+/**
  * Human-readable label for a tool name, for status lines and activity rows. Raw
  * ids like `mcp__repo__write_file` are an implementation detail, so an unmapped
  * name degrades to its bare tool segment — the same fallback the client's
@@ -145,7 +170,7 @@ export const SDK_TOOL_LABELS: Record<string, string> = {
  */
 export function sdkToolLabel(name: string | undefined): string | undefined {
   if (!name) return undefined;
-  const mapped = SDK_TOOL_LABELS[name];
+  const mapped = SDK_TOOL_LABELS[name] ?? MCP_TOOL_LABELS[name];
   if (mapped) return mapped;
   // Server segments may themselves contain underscores (git_repo, group_agent),
   // so match the server non-greedily and take the tool segment.
