@@ -67,13 +67,16 @@ function jsonRes(data: unknown, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => data };
 }
 
-function streamFrom(chunks: string[]): ReadableStream<Uint8Array> {
+function streamFrom(chunks: string[], onDrained?: () => void): ReadableStream<Uint8Array> {
   const enc = new TextEncoder();
   let i = 0;
   return new ReadableStream<Uint8Array>({
     pull(controller) {
       if (i < chunks.length) controller.enqueue(enc.encode(chunks[i++]));
-      else controller.close();
+      else {
+        onDrained?.();
+        controller.close();
+      }
     },
   });
 }
@@ -82,8 +85,13 @@ function sseFrame([event, data]: [string, unknown]): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
 
-function sseRes(frames: Array<[string, unknown]>, status = 200) {
-  return { ok: status >= 200 && status < 300, status, body: streamFrom(frames.map(sseFrame)), json: async () => ({}) };
+function sseRes(frames: Array<[string, unknown]>, status = 200, onDrained?: () => void) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    body: streamFrom(frames.map(sseFrame), onDrained),
+    json: async () => ({}),
+  };
 }
 
 /** An SSE response that delivers its frames and then loses the connection. */
@@ -234,6 +242,11 @@ let eventRunSeq = 0;
  * than the event stream fall through to `rest`, then default to 200 `{ok:true}` —
  * handlers fire best-effort follow-ups (the activity PUT, /api/chat/respond) that
  * no test needs to restate; `calls` records every one of them.
+ *
+ * The viewer DETACHES once the frames are drained: a replay that stops short of a
+ * terminal frame is, to the client, a connection that dropped mid-run, and
+ * attachRun would rightly keep reconnecting. "Apply exactly these frames, then
+ * stop listening" is what a partial log means in these tests.
  */
 async function driveEvents(
   paneId: string,
@@ -244,7 +257,10 @@ async function driveEvents(
   const calls: { url: string; init: RequestInit }[] = [];
   useFetch((url, init) => {
     calls.push({ url, init });
-    if (url.includes(`/api/chat/runs/${runId}/events`)) return sseRes(frames);
+    if (url.includes(`/api/chat/runs/${runId}/events`))
+      return sseRes(frames, 200, () =>
+        readState().chatPanes.find((p) => p.id === paneId)?.abortController?.abort(),
+      );
     const handled = rest(url, init);
     return handled === undefined ? jsonRes({ ok: true }) : handled;
   });
@@ -1960,6 +1976,242 @@ describe("background phase", () => {
     expect(p.messages.at(-1)).toMatchObject({ content: "모델이 응답하지 못했습니다." });
     expect(p.messages.at(-1)!.response).toMatchObject({ summary: "오류" });
     expect(get(toasts).some((t) => t.message.includes("모델이 응답하지 못했습니다."))).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* auto-reconnect when a connection drops before its run finishes      */
+/* ------------------------------------------------------------------ */
+
+describe("auto-reconnect", () => {
+  const RECONNECTING = "연결이 끊겨 다시 연결하는 중…";
+
+  const WAKE_MESSAGE = {
+    id: "bg-wake-r",
+    role: "assistant",
+    content: "백그라운드 보고",
+    conversationId: "conv-x",
+    createdAt: "t",
+    response: { kind: "text", runtime: "claude", text: "백그라운드 보고" },
+  };
+
+  /**
+   * An events endpoint whose Nth attempt gets `frames(n)`. The stream simply ends
+   * after them, which is exactly what a dropped connection looks like from here.
+   */
+  function useRunEvents(
+    runId: string,
+    frames: (attempt: number) => Array<[string, unknown]> | unknown,
+  ): () => number {
+    let attempts = 0;
+    useFetch((url) => {
+      if (url.includes(`/api/chat/runs/${runId}/events`)) {
+        const answer = frames(++attempts);
+        return Array.isArray(answer) ? sseRes(answer as Array<[string, unknown]>) : answer;
+      }
+      return jsonRes({ ok: true });
+    });
+    return () => attempts;
+  }
+
+  it("holds the live region open when the stream dies with the run still working", async () => {
+    const id = seedPane();
+    const attempts = useRunEvents("run-drop", (n) => {
+      const frames: Array<[string, unknown]> = [
+        ["tool", { toolUseId: "t1", name: "Bash", input: { command: "npm test" } }],
+        ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ];
+      // The reattach replays the whole log, and this time carries it to the end.
+      if (n > 1) frames.push(["bg_message", { message: WAKE_MESSAGE }], ["bg_end", {}]);
+      return frames;
+    });
+
+    const running = attachRun(id, "run-drop");
+    // Nothing is torn down: the background indicator and its turn stay mounted.
+    await waitFor(() => pane(id).liveStatus === RECONNECTING);
+    expect(pane(id)).toMatchObject({ streaming: true, backgroundPhase: true });
+    expect(pane(id).messages.at(-1)).toMatchObject({ id: "bg-msg-1" });
+
+    // A returning tab retries immediately instead of waiting the backoff out.
+    document.dispatchEvent(new Event("visibilitychange"));
+    await running;
+
+    expect(attempts()).toBe(2);
+    // The replay rebuilt the turn without duplicating it, and the wake-up landed.
+    expect(pane(id).messages.filter((m) => m.id === "bg-msg-1")).toHaveLength(1);
+    expect(pane(id).messages.at(-1)).toMatchObject({ id: "bg-wake-r" });
+    expect(pane(id)).toMatchObject({
+      streaming: false,
+      backgroundPhase: false,
+      liveStatus: "",
+      abortController: null,
+    });
+  });
+
+  it("ends the loop on a terminal frame delivered by the reattach", async () => {
+    const id = seedPane({ conversationId: "c-term" });
+    const finished = {
+      id: "m-term",
+      role: "assistant",
+      content: "완결된 답변",
+      response: { kind: "text", runtime: "claude", text: "완결된 답변" },
+      conversationId: "c-term",
+      createdAt: "t",
+    };
+    const attempts = useRunEvents("run-term", (n) =>
+      n > 1 ? [["delta", { text: "완결된 답변" }], ["done", { message: finished }]] : [["delta", { text: "완결된" }]],
+    );
+
+    const running = attachRun(id, "run-term");
+    await waitFor(() => pane(id).liveStatus === RECONNECTING);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await running;
+
+    expect(attempts()).toBe(2);
+    expect(pane(id).messages.filter((m) => m.id === "m-term")).toHaveLength(1);
+    expect(pane(id)).toMatchObject({
+      streaming: false,
+      liveText: "",
+      liveStatus: "",
+      abortController: null,
+    });
+  });
+
+  it("stops reconnecting and catches up when the server no longer has the run", async () => {
+    const id = seedPane({ conversationId: "c-gone" });
+    const saved = { id: "saved", role: "assistant", content: "저장된 답변", response: null, conversationId: "c-gone", createdAt: "t" };
+    let attempts = 0;
+    useFetch((url) => {
+      if (url.includes("/api/chat/runs/run-gone/events")) {
+        attempts += 1;
+        if (attempts === 1) return sseRes([["delta", { text: "중간까지" }]]);
+        return { ok: false, status: 404, body: null, json: async () => ({}) };
+      }
+      if (url.startsWith("/api/messages"))
+        return jsonRes({ messages: [saved], groupKnowledgeOff: [], canvases: [] });
+      return jsonRes({ ok: true });
+    });
+
+    const running = attachRun(id, "run-gone");
+    await waitFor(() => pane(id).liveStatus === RECONNECTING);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await running;
+
+    expect(attempts).toBe(2);
+    expect(pane(id).messages.at(-1)).toMatchObject({ content: "저장된 답변" });
+    expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "", abortController: null });
+  });
+
+  it("stopping during a reconnect wait exits at once and re-reads nothing", async () => {
+    const id = seedPane();
+    const attempts = useRunEvents("run-stop", () => [["delta", { text: "일부만" }]]);
+
+    const running = attachRun(id, "run-stop");
+    await waitFor(() => pane(id).liveStatus === RECONNECTING);
+    // The abort has to cut the backoff short — not be noticed once it elapses.
+    await stopPane(id);
+    await running;
+
+    expect(attempts()).toBe(1);
+    expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "", abortController: null });
+  });
+
+  it("does not re-announce a turn the viewer was already told about", async () => {
+    const id = seedPane();
+    const notes = useOsNotifications();
+    const attempts = useRunEvents("run-note", (n) => {
+      const frames: Array<[string, unknown]> = [
+        ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+      ];
+      if (n > 1) frames.push(["bg_end", {}]);
+      return frames;
+    });
+
+    const running = attachRun(id, "run-note");
+    await waitFor(() => pane(id).liveStatus === RECONNECTING);
+    document.dispatchEvent(new Event("visibilitychange"));
+    await running;
+
+    expect(attempts()).toBe(2);
+    // The replayed done{background} deduped, so it must stay silent.
+    expect(notes.filter((n) => n.title.includes("답변 완료"))).toHaveLength(1);
+  });
+
+  it("a send whose own stream dies follows the run instead of ending the turn", async () => {
+    const id = seedPane();
+    const finished = {
+      id: "m-send",
+      role: "assistant",
+      content: "완결된 답변",
+      response: { kind: "text", runtime: "claude", text: "완결된 답변" },
+      conversationId: "conv-send",
+      createdAt: "t",
+    };
+    let attempts = 0;
+    useFetch((url) => {
+      if (url === "/api/chat/stream")
+        return brokenSseRes([
+          ["open", { conversationId: "conv-send", runId: "run-send" }],
+          ["delta", { text: "여기까지" }],
+        ]);
+      if (url.includes("/api/chat/runs/run-send/events")) {
+        attempts += 1;
+        return sseRes([["delta", { text: "완결된 답변" }], ["done", { message: finished }]]);
+      }
+      return jsonRes({ ok: true });
+    });
+
+    await sendMessage(id, "질문");
+
+    expect(attempts).toBe(1);
+    // Not an error bubble: the turn finished on the reattached stream.
+    expect(pane(id).messages.map((m) => m.content)).toEqual(["질문", "완결된 답변"]);
+    expect(get(toasts)).toEqual([]);
+    expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "" });
+  });
+
+  it("a send that never opened is reported, not reconnected to the previous turn's run", async () => {
+    // liveRunId outlives the turn that minted it, so a later failed send must not
+    // mistake it for "our run is up, reconnect" and swallow the failure.
+    const id = seedPane({ liveRunId: "run-from-last-turn" });
+    const seen: string[] = [];
+    useFetch((url) => {
+      seen.push(url);
+      if (url === "/api/chat/stream") return jsonRes({}, 503);
+      return jsonRes({ ok: true });
+    });
+
+    await sendMessage(id, "다시 물어보기");
+
+    expect(seen.some((url) => url.includes("/events"))).toBe(false);
+    expect(get(toasts).some((t) => t.message.includes("HTTP 503"))).toBe(true);
+    expect(pane(id)).toMatchObject({ draft: "다시 물어보기", messages: [], streaming: false });
+  });
+
+  it("a returning tab re-discovers a run the client lost track of entirely", async () => {
+    const id = seedPane({ conversationId: "c-wake" });
+    useFetch((url) => {
+      if (url.startsWith("/api/chat/runs?")) return jsonRes({ run: { runId: "run-wake" } });
+      if (url.includes("/api/chat/runs/run-wake/events"))
+        return sseRes([
+          ["delta", { text: "다시 찾은 답변" }],
+          ["done", { response: { kind: "text", runtime: "claude", text: "다시 찾은 답변" } }],
+        ]);
+      return jsonRes({ ok: true });
+    });
+
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    await waitFor(() => !pane(id).streaming && pane(id).messages.length > 0);
+    expect(pane(id).messages.at(-1)).toMatchObject({ role: "assistant", content: "다시 찾은 답변" });
+  });
+
+  it("entering the background phase refreshes the sidebar's conversation list", async () => {
+    const id = seedPane();
+    const { calls } = await driveEvents(id, [
+      ["done", { background: true, message: structuredClone(BG_MESSAGE) }],
+    ]);
+    expect(calls.some((c) => c.url === "/api/conversations")).toBe(true);
   });
 });
 

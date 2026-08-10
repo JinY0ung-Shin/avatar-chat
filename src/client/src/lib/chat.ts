@@ -561,6 +561,10 @@ export async function sendMessage(
     target.pendingImages = [];
     target.draft = "";
     resetLive(target);
+    // The previous turn's run id outlives its turn (resetLive keeps it for the
+    // canvas/stop paths). Drop it here so this send's failure handling can tell
+    // "our run opened, reconnect to it" from "the send never got off the ground".
+    target.liveRunId = null;
     target.streaming = true;
     // A send is an explicit "follow the response" intent, so re-arm auto-scroll
     // even if a prior turn (or a stray scroll) had detached it — otherwise the
@@ -615,11 +619,21 @@ export async function sendMessage(
       const body = await response.json().catch(() => ({}));
       throw new Error(body.error || `HTTP ${response.status}`);
     }
-    await consumeSse(response.body, (frame) => handleSseEvent(paneId, frame));
+    // The POST body IS the run's first connection. `consumeSse` resolves the same
+    // way whether the server finished the run or the socket died, so only a
+    // terminal frame ends the turn here — otherwise the run is still going and we
+    // follow it through the reattach loop.
+    if (!(await readRunStream(paneId, response.body)))
+      await followSendDrop(paneId, controller);
   } catch (err) {
     const error = err as Error;
     if (error.name === "AbortError") {
       finalizePane(paneId, "중지됨", true);
+    } else if (paneRunId(paneId)) {
+      // The turn's own connection failed, but the run had already opened and is
+      // still in the server's registry — reconnect instead of ending the turn on
+      // a transport failure (and never undo the user bubble: the server has it).
+      await followSendDrop(paneId, controller);
     } else {
       const current = readState().chatPanes.find((item) => item.id === paneId);
       if (!current?.liveText && userMessage) {
@@ -674,14 +688,96 @@ export async function attachActiveRun(paneId: string): Promise<void> {
 }
 
 export async function attachRun(paneId: string, runId: string): Promise<void> {
+  // A wake nudge can race an attach that is already in flight; one loop per pane.
+  if (activeRunLoops.has(paneId)) return;
   const controller = new AbortController();
   updatePane(paneId, (target) => {
     resetLive(target);
     target.streaming = true;
     target.liveRunId = runId;
-    target.liveStatus = "진행 중인 응답에 다시 연결 중…";
+    target.liveStatus = REATTACH_STATUS;
     target.abortController = controller;
   });
+  try {
+    await followRun(paneId, runId, controller);
+  } finally {
+    // Teardown runs ONCE, when the run is really over — never between reconnect
+    // attempts, which is what keeps the live region mounted across a drop.
+    dropRunPrompts(paneId);
+    updatePane(paneId, (target) => {
+      target.streaming = false;
+      target.abortController = null;
+      target.liveStatus = "";
+    });
+  }
+}
+
+/* ---------- run streams: terminal-aware reading + auto-reconnect ---------- */
+
+// A run's SSE is legitimately OVER only after one of these frames. `done` with
+// `background:true` is NOT terminal — the SDK keeps working past the visible turn
+// and the stream stays open for bg_tasks / bg_message / bg_end. Anything else that
+// ends the stream is a dropped CONNECTION (laptop sleep, network switch, proxy
+// lifetime) while the run itself lives on in the server's registry.
+function isTerminalFrame(frame: SseFrame): boolean {
+  if (frame.event === "done") return frame.data?.background !== true;
+  return (
+    frame.event === "bg_end" ||
+    frame.event === "cancelled" ||
+    frame.event === "error"
+  );
+}
+
+// How one read of a run's stream ended.
+type StreamEnd =
+  | "terminal" // the run itself finished
+  | "dropped" // the connection died before the run did → reconnect
+  | "gone" // the server no longer has this run (404)
+  | "aborted" // stop button / pane close
+  | "detached" // the pane closed or moved to another conversation
+  | "failed"; // the run could not be reached at all on a first attach
+
+const RECONNECT_DELAYS_MS = [1000, 2000, 4000, 8000, 15000];
+const REATTACH_STATUS = "진행 중인 응답에 다시 연결 중…";
+const RECONNECTING_STATUS = "연결이 끊겨 다시 연결하는 중…";
+
+// Panes a run-stream loop currently owns, so a wake nudge can't stack a second
+// loop on top of a live one.
+const activeRunLoops = new Set<string>();
+// Panes sitting out a reconnect backoff → the resolver that ends the wait early.
+const reconnectWaiters = new Map<string, (retry: boolean) => void>();
+
+function paneRunId(paneId: string): string | null {
+  return (
+    readState().chatPanes.find((item) => item.id === paneId)?.liveRunId ?? null
+  );
+}
+
+/** Read an already-open SSE body, reporting whether the RUN finished on it. */
+async function readRunStream(
+  paneId: string,
+  stream: ReadableStream<Uint8Array>,
+): Promise<boolean> {
+  let terminal = false;
+  await consumeSse(stream, (frame) => {
+    if (isTerminalFrame(frame)) terminal = true;
+    handleSseEvent(paneId, frame);
+  });
+  return terminal;
+}
+
+/**
+ * ONE attempt at reading a run's event log. The server replays the WHOLE log, so
+ * the live state is reset first and rebuilt from the replay — every downstream
+ * handler dedupes (messages by id, memory/compact rows by server-minted event id,
+ * canvases by requestId), which is what makes re-reading idempotent.
+ */
+async function streamRunEvents(
+  paneId: string,
+  runId: string,
+  controller: AbortController,
+  connectedOnce: boolean,
+): Promise<StreamEnd> {
   try {
     const response = await fetch(
       `/api/chat/runs/${encodeURIComponent(runId)}/events`,
@@ -691,31 +787,176 @@ export async function attachRun(paneId: string, runId: string): Promise<void> {
         signal: controller.signal,
       },
     );
-    if (response.status === 404) {
-      const pane = readState().chatPanes.find((item) => item.id === paneId);
-      if (pane) {
-        const loaded = await loadMessages(pane.conversationId);
-        updatePane(paneId, (target) => {
-          applyLoadedConversation(target, loaded);
-        });
-      }
-      return;
-    }
+    if (response.status === 404) return "gone";
+    // A hard failure on a run we have never read means we cannot reach it at all.
+    // Once a read HAS succeeded the run is known to exist (a run the server no
+    // longer has answers 404), so later failures are drops and keep retrying.
     if (!response.ok || !response.body)
-      throw new Error(`HTTP ${response.status}`);
-    await consumeSse(response.body, (frame) => handleSseEvent(paneId, frame));
-  } catch (err) {
-    if ((err as Error).name !== "AbortError")
-      notify("진행 중인 응답에 다시 연결하지 못했습니다.", "warn");
-  } finally {
-    dropRunPrompts(paneId);
-    updatePane(paneId, (target) => {
-      target.streaming = false;
-      target.abortController = null;
-      target.liveStatus = "";
+      return connectedOnce ? "dropped" : "failed";
+    updatePane(paneId, (pane) => {
+      resetLive(pane);
+      pane.streaming = true;
+      pane.liveRunId = runId;
+      pane.liveStatus = REATTACH_STATUS;
     });
+    if (await readRunStream(paneId, response.body)) return "terminal";
+    return controller.signal.aborted ? "aborted" : "dropped";
+  } catch (err) {
+    if (controller.signal.aborted || (err as Error).name === "AbortError")
+      return "aborted";
+    return connectedOnce ? "dropped" : "failed";
   }
 }
+
+/**
+ * Follow a run to its END, reconnecting whenever the connection drops first.
+ * A drop must NOT tear the live region down: the pane stays `streaming` (which is
+ * what keeps the background-phase indicator and its wake-up bubbles mounted) and
+ * the run's event log is re-read with capped backoff until the run really
+ * finishes, the server forgets it, or the viewer stops it.
+ */
+async function followRun(
+  paneId: string,
+  runId: string,
+  controller: AbortController,
+  opts: { connectedOnce?: boolean } = {},
+): Promise<StreamEnd> {
+  const startedIn =
+    readState().chatPanes.find((item) => item.id === paneId)?.conversationId ??
+    null;
+  let connectedOnce = opts.connectedOnce === true;
+  let attempt = 0;
+  activeRunLoops.add(paneId);
+  try {
+    for (;;) {
+      const end = await streamRunEvents(
+        paneId,
+        runId,
+        controller,
+        connectedOnce,
+      );
+      if (end !== "dropped") {
+        if (end === "gone") await catchUpAfterRunGone(paneId);
+        if (end === "failed")
+          notify("진행 중인 응답에 다시 연결하지 못했습니다.", "warn");
+        return end;
+      }
+      connectedOnce = true;
+      const pane = readState().chatPanes.find((item) => item.id === paneId);
+      if (!pane || (startedIn !== null && pane.conversationId !== startedIn))
+        return "detached";
+      updatePane(paneId, (target) => {
+        target.streaming = true;
+        target.liveStatus = RECONNECTING_STATUS;
+      });
+      const delay =
+        RECONNECT_DELAYS_MS[
+          Math.min(attempt, RECONNECT_DELAYS_MS.length - 1)
+        ];
+      attempt += 1;
+      if (!(await waitBeforeRetry(paneId, delay, controller))) return "aborted";
+    }
+  } finally {
+    activeRunLoops.delete(paneId);
+    reconnectWaiters.delete(paneId);
+  }
+}
+
+// The server no longer has this run (it finished and aged out, or the process
+// restarted): catch up from the persisted transcript instead of waiting for
+// events that will never come.
+async function catchUpAfterRunGone(paneId: string): Promise<void> {
+  const pane = readState().chatPanes.find((item) => item.id === paneId);
+  if (!pane) return;
+  try {
+    const loaded = await loadMessages(pane.conversationId);
+    updatePane(paneId, (target) => {
+      applyLoadedConversation(target, loaded);
+    });
+  } catch {
+    /* best effort — the transcript reloads on the next open */
+  }
+}
+
+/**
+ * Sleep out a reconnect backoff. Resolves false when the run was aborted (stop
+ * button / pane close): the abort has to cut the wait short, or the viewer would
+ * keep watching a "다시 연결하는 중" pane they already stopped. A wake nudge
+ * resolves it early with true so a returning tab retries immediately.
+ */
+function waitBeforeRetry(
+  paneId: string,
+  ms: number,
+  controller: AbortController,
+): Promise<boolean> {
+  if (controller.signal.aborted) return Promise.resolve(false);
+  return new Promise<boolean>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (retry: boolean): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== null) clearTimeout(timer);
+      controller.signal.removeEventListener("abort", onAbort);
+      if (reconnectWaiters.get(paneId) === settle)
+        reconnectWaiters.delete(paneId);
+      resolve(retry);
+    };
+    const onAbort = (): void => settle(false);
+    controller.signal.addEventListener("abort", onAbort, { once: true });
+    reconnectWaiters.set(paneId, settle);
+    timer = setTimeout(() => settle(true), ms);
+  });
+}
+
+/**
+ * A send's own stream ended before its run did. Reconnect to the run's event log;
+ * a stop DURING that reconnect still ends the turn as a stopped bubble, exactly
+ * as an abort on the original stream would.
+ */
+async function followSendDrop(
+  paneId: string,
+  controller: AbortController,
+): Promise<void> {
+  const runId = paneRunId(paneId);
+  if (!runId) return;
+  if (controller.signal.aborted) {
+    finalizePane(paneId, "중지됨", true);
+    return;
+  }
+  const end = await followRun(paneId, runId, controller, {
+    connectedOnce: true,
+  });
+  if (end === "aborted") finalizePane(paneId, "중지됨", true);
+}
+
+/**
+ * The tab came back, or the network did. Anything sitting in a reconnect backoff
+ * retries NOW instead of waiting the delay out, and the ACTIVE pane re-discovers a
+ * run it lost track of entirely — the case a reconnect can't cover, because the
+ * client never learned (or already dropped) the run id.
+ */
+function onConnectionWake(): void {
+  for (const wake of [...reconnectWaiters.values()]) wake(true);
+  const state = readState();
+  const pane = state.chatPanes.find((item) => item.id === state.activePaneId);
+  if (pane && !pane.streaming) void attachActiveRun(pane.id);
+}
+
+// Registered once at import: chat.ts has no boot hook of its own, and these
+// listeners are only meaningful while this module's panes exist anyway. Guarded
+// for the non-DOM vitest project, which imports this module without a window.
+let wakeListenersBound = false;
+function bindConnectionWakeListeners(): void {
+  if (wakeListenersBound) return;
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  wakeListenersBound = true;
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) onConnectionWake();
+  });
+  window.addEventListener("online", onConnectionWake);
+}
+bindConnectionWakeListeners();
 
 export async function stopPane(paneId: string): Promise<void> {
   const pane = readState().chatPanes.find((item) => item.id === paneId);
@@ -1342,6 +1583,7 @@ function finalizeDone(paneId: string, data: any): void {
   // snapshot so the completed tool/agent tree survives reload.
   let persistMessageId: string | null = null;
   let persistActivity: AgentActivity | undefined;
+  let appended = false;
   updatePane(paneId, (pane) => {
     const activity = snapshotActivity(pane);
     const message = data?.message as StoredMessage | undefined;
@@ -1360,6 +1602,7 @@ function finalizeDone(paneId: string, data: any): void {
       attachPlan(message.response, pane.livePlan);
       attachThinking(message.response, pane.liveThinking);
       pane.messages.push(message);
+      appended = true;
       pane.usage = message.response?.usage ?? pane.usage;
       if (message.id && activity) {
         persistMessageId = message.id;
@@ -1379,6 +1622,7 @@ function finalizeDone(paneId: string, data: any): void {
         response: response || null,
         createdAt: new Date().toISOString(),
       });
+      appended = true;
       pane.usage = response?.usage ?? pane.usage;
     }
     clearLive(pane);
@@ -1391,7 +1635,9 @@ function finalizeDone(paneId: string, data: any): void {
       body: JSON.stringify({ activity: persistActivity }),
     }).catch(() => {});
   }
-  notifyTurnComplete(paneId);
+  // Only a turn that actually landed is announced: a reconnect replays the whole
+  // event log, and the deduped frame must not re-fire the notification.
+  if (appended) notifyTurnComplete(paneId);
 }
 
 // OS notification when a turn finishes — only fires while the app is backgrounded
@@ -1421,6 +1667,7 @@ function notifyTurnComplete(paneId: string): void {
 // pane into its background phase — the chip renders and the send button stays
 // a stop button (killing the run kills the background work).
 function finalizeBackgroundTurn(paneId: string, data: any): void {
+  let appended = false;
   updatePane(paneId, (pane) => {
     const message = data?.message as StoredMessage | undefined;
     if (
@@ -1430,6 +1677,7 @@ function finalizeBackgroundTurn(paneId: string, data: any): void {
       attachPlan(message.response, pane.livePlan);
       attachThinking(message.response, pane.liveThinking);
       pane.messages.push(message);
+      appended = true;
       pane.usage = message.response?.usage ?? pane.usage;
     }
     pane.backgroundMessageId = message?.id || null;
@@ -1446,7 +1694,13 @@ function finalizeBackgroundTurn(paneId: string, data: any): void {
     pane.planPending = false;
     pane.liveStatus = "백그라운드 작업 진행 중…";
   });
-  notifyTurnComplete(paneId);
+  // The sidebar's background badge should show up the moment the phase starts.
+  // Best effort, like the activity PUT: a failed refresh is not the viewer's
+  // problem and must not surface as an error on a turn that worked.
+  loadConversations().catch(() => {});
+  // A reconnect replays this frame; announcing a turn the viewer was already told
+  // about would re-fire the notification on every reconnect.
+  if (appended) notifyTurnComplete(paneId);
 }
 
 // A background wake-up turn was persisted server-side: append it as its own
