@@ -412,6 +412,42 @@
   white-space: nowrap;
 }
 
+/* Live-run badge on a conversation row: the server's run registry still has a run
+   for it. The two states differ in WORDING as well as hue (`data-kind`), and the
+   dot pulses like the in-chat background note (`.bg-task-dot`). */
+.conv-live {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s-1);
+  margin-top: 2px;
+  max-width: 100%;
+  min-width: 0;
+  font-size: var(--t-2xs);
+  color: var(--rail-text);
+}
+
+.conv-live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent);
+  animation: bg-task-pulse 1.6s ease-in-out infinite;
+  flex: none;
+}
+
+.conv-live[data-kind="background"] .conv-live-dot {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 22%, transparent);
+}
+
+.conv-live-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
 .conv-acts {
   display: none;
   gap: var(--s-0-5);

@@ -152,6 +152,13 @@
     return $appState.chatPanes.some((pane) => pane.conversationId === id && pane.streaming);
   }
 
+  // Live-run badge text from the last conversation-list load ("" = idle). The two
+  // states carry their OWN wording, not just their own dot colour.
+  function activeRunLabel(conversation: ConversationSummary): string {
+    if (!conversation.activeRun) return "";
+    return conversation.activeRun.background ? "백그라운드 작업 중" : "응답 생성 중";
+  }
+
   function conversationDomId(id: string, suffix: string): string {
     return `conversation-${id.replace(/[^a-zA-Z0-9_-]/g, "-")}-${suffix}`;
   }
@@ -719,6 +726,10 @@
           <div class="conv-empty">{conversationQuery ? "검색 결과가 없습니다." : "아직 저장된 대화가 없습니다."}</div>
         {:else}
           {#each railConversations as conversation (conversation.id)}
+            {@const liveLabel = activeRunLabel(conversation)}
+            {@const openLabel = liveLabel
+              ? `대화 열기: ${conversationTitle(conversation)} · ${liveLabel}`
+              : `대화 열기: ${conversationTitle(conversation)}`}
             <!-- svelte-ignore a11y-no-static-element-interactions -->
             <div
               class="conv-item"
@@ -770,14 +781,27 @@
                 <button
                   class="conv-open"
                   type="button"
-                  title={`대화 열기: ${conversationTitle(conversation)}`}
-                  aria-label={`대화 열기: ${conversationTitle(conversation)}`}
+                  title={openLabel}
+                  aria-label={openLabel}
                   aria-current={conversation.id === activeConversationId ? "true" : undefined}
                   disabled={isConversationBusy(conversation.id)}
                   on:click={() => openConversation(conversation)}
                 >
                   <span class="conv-name">{conversationTitle(conversation)}</span>
                   <span class="conv-time">{conversation.avatarDisplayName} · {timeLabel(conversation.updatedAt)}</span>
+                  {#if liveLabel}
+                    <!-- The run is still going with this conversation closed; the
+                         button's aria-label carries the same words (its label
+                         overrides this content for screen readers). -->
+                    <span
+                      class="conv-live"
+                      data-kind={conversation.activeRun?.background ? "background" : "streaming"}
+                      title={liveLabel}
+                    >
+                      <span class="conv-live-dot" aria-hidden="true"></span>
+                      <span class="conv-live-text">{liveLabel}</span>
+                    </span>
+                  {/if}
                 </button>
                 <div class="conv-acts">
                   <button

@@ -704,6 +704,13 @@ export interface ConversationSummary {
   isRoutine: boolean;
   routineId: string | null;
   routinePrompt: string | null;
+  /**
+   * Live run for this conversation, attached per request by GET /api/conversations
+   * from the in-memory run registry — never a stored column, so the store's own
+   * summaries omit it. null = idle; `background` true means the visible turn is
+   * finalized while SDK background work keeps the session alive.
+   */
+  activeRun?: { background: boolean } | null;
 }
 
 /**

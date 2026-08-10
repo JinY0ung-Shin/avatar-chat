@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import Shell from "../src/client/src/components/Shell.svelte";
 import { replaceState } from "../src/client/src/lib/state.js";
-import type { User } from "../src/client/src/lib/types.js";
+import type { ConversationSummary, User } from "../src/client/src/lib/types.js";
 
 const user = {
   id: "owner-1",
@@ -165,6 +165,56 @@ describe("Shell rail controls", () => {
     expect(screen.getByRole("button", { name: "분할 대화에 추가: Alpha 계획" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "대화 이름 바꾸기: Alpha 계획" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "대화 삭제: Alpha 계획" })).toBeTruthy();
+  });
+});
+
+describe("Shell conversation live-run badge", () => {
+  const row = {
+    avatarUserId: "owner-1",
+    avatarDisplayName: "Noah",
+    updatedAt: "2026-07-13T12:00:00.000Z",
+    isRoutine: false,
+    routineId: null,
+    routinePrompt: null,
+  };
+
+  it("names the running state in words, and leaves an idle row bare", async () => {
+    setDesktopViewport(true);
+    const conversations: ConversationSummary[] = [
+      { ...row, id: "conv-bg", title: "빌드", activeRun: { background: true } },
+      { ...row, id: "conv-fg", title: "요약", activeRun: { background: false } },
+      { ...row, id: "conv-idle", title: "지난 대화", activeRun: null },
+      // An older server that doesn't send the field at all.
+      { ...row, id: "conv-legacy", title: "옛 대화" },
+    ];
+    replaceState({ conversations });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ conversations }) })),
+    );
+
+    render(Shell, { props: { user, view: "explore" } });
+
+    // The badge text rides the row button's accessible name — its aria-label
+    // overrides the badge markup for screen readers.
+    await screen.findByRole("button", { name: "대화 열기: 빌드 · 백그라운드 작업 중" });
+    expect(screen.getByRole("button", { name: "대화 열기: 요약 · 응답 생성 중" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "대화 열기: 지난 대화" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "대화 열기: 옛 대화" })).toBeTruthy();
+
+    const badges = [...document.querySelectorAll(".conv-live")];
+    expect(badges.map((badge) => badge.getAttribute("data-kind"))).toEqual([
+      "background",
+      "streaming",
+    ]);
+    expect(badges.map((badge) => badge.textContent?.trim())).toEqual([
+      "백그라운드 작업 중",
+      "응답 생성 중",
+    ]);
+    expect(badges.map((badge) => badge.getAttribute("title"))).toEqual([
+      "백그라운드 작업 중",
+      "응답 생성 중",
+    ]);
   });
 });
 

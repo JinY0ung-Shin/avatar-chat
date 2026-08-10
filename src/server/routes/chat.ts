@@ -598,9 +598,18 @@ export function createChatRouter({
               effectiveExternalAgents(),
               conversation.avatarUserId,
             );
-            return external
-              ? { ...conversation, avatarDisplayName: external.displayName }
-              : conversation;
+            // Live run state (in-memory map lookup per row) so the sidebar can
+            // badge a conversation that is still working — the only in-app signal
+            // once the user navigates away from its pane.
+            const active = getActiveRunForConversation(
+              req.user!.id,
+              conversation.id,
+            );
+            return {
+              ...conversation,
+              ...(external ? { avatarDisplayName: external.displayName } : {}),
+              activeRun: active ? { background: active.background } : null,
+            };
           }),
       });
     },

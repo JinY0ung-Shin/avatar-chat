@@ -7,6 +7,7 @@ import type {
   AgentRequest,
   AgentResponse,
   AppConfig,
+  ConversationSummary,
   ExternalAgentConfig,
 } from "../src/server/types.js";
 import type { AgentEvents, BrowserResult, FileOutputResult } from "../src/server/agent/events.js";
@@ -1862,6 +1863,85 @@ describe("SDK-native background phase", () => {
     expect(assistants[0].response?.summary).toBe("Claude Agent SDK 실행이 완료되었습니다.");
     // Each report carries only ITS OWN tail of the streamed reasoning.
     expect(assistants[1].response).toMatchObject({ summary: "백그라운드 작업 보고", thinking: "두번째 생각" });
+  }, LIVE);
+});
+
+describe("conversation list live-run state", () => {
+  /** The `activeRun` field GET /api/conversations attaches to each row. */
+  async function activeRunRows(
+    agent: ReturnType<typeof request.agent>,
+  ): Promise<Map<string, ConversationSummary["activeRun"]>> {
+    const res = await agent.get("/api/conversations").expect(200);
+    const rows = res.body.conversations as ConversationSummary[];
+    return new Map(rows.map((row) => [row.id, row.activeRun]));
+  }
+
+  it("marks the conversation whose run is live and clears it when the run closes", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "convrun").expect(201)).body.user.id as string;
+
+    // A finished turn — its row must read as idle, not merely absent.
+    await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-idle", message: "안녕" })
+      .expect(200);
+
+    let release!: () => void;
+    const parked = new Promise<void>((resolve) => (release = resolve));
+    H.impl = async (_req, _pr, config, _store, events) => {
+      events.onDelta?.("생각 중");
+      await parked;
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "다 했습니다" };
+    };
+
+    const streamDone = fireStream(owner, {
+      avatarId: ownerId,
+      conversationId: "conv-live",
+      message: "오래 걸리는 일",
+    });
+    await waitUntil(async () => Boolean(await activeRun(owner, "conv-live")), "run registered");
+
+    const live = await activeRunRows(owner);
+    expect(live.get("conv-idle")).toBeNull();
+    expect(live.get("conv-live")).toEqual({ background: false });
+
+    release();
+    await streamDone;
+    expect((await activeRunRows(owner)).get("conv-live")).toBeNull();
+  }, LIVE);
+
+  it("flags a row whose run has entered the background phase", async () => {
+    const { app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "convbgrun").expect(201)).body.user.id as string;
+
+    const tasks = [{ taskId: "t1", taskType: "local_bash", description: "빌드 실행" }];
+    let release!: () => void;
+    const parked = new Promise<void>((resolve) => (release = resolve));
+    H.impl = async (_req, _pr, config, _store, events) => {
+      events.onDelta?.("바로 보이는 답변");
+      events.onBackgroundTasks?.({ tasks });
+      events.onTurnResult?.({ text: "바로 보이는 답변", backgroundTasks: tasks });
+      await parked;
+      events.onBackgroundTasks?.({ tasks: [] });
+      return { kind: "text", runtime: config.agentRuntime, summary: "집계", text: "집계 응답" };
+    };
+
+    const streamDone = fireStream(owner, {
+      avatarId: ownerId,
+      conversationId: "conv-bgrow",
+      message: "빌드 돌려줘",
+    });
+    await waitUntil(
+      async () => (await activeRun(owner, "conv-bgrow"))?.background === true,
+      "run marked as background",
+    );
+
+    expect((await activeRunRows(owner)).get("conv-bgrow")).toEqual({ background: true });
+
+    release();
+    await streamDone;
   }, LIVE);
 });
 
