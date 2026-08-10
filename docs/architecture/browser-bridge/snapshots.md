@@ -32,6 +32,18 @@
   `wait_for` skips the action tail's snapshot read entirely (its own match loop still walks uncapped):
   one yes/no answer used to cost ~25 KB of page walk. Old builds ignore all of this and keep returning
   full snapshots — a degrade, not a break, which is why `BROWSER_EXTENSION_MIN_COMPATIBLE` stays 0.6.0.
+- **An EMPTY walk is retried and then says it is empty; it never passes for a blank page.** Two different
+  too-early reads get two different treatments in the action tail. A snapshot BYTE-IDENTICAL to the
+  previous one gets one 250ms re-poll (`STALE_SNAPSHOT_REPOLL_MS`) — a late AX flush after the lifecycle
+  tick `flushLifecycle` forces. A snapshot with NO atoms at all gets up to three 500ms re-polls
+  (`EMPTY_SNAPSHOT_REPOLL*`), because that is the between-DOCUMENTS case: an action that navigates can
+  outrun `waitForLoad`, whose poll sees the OLD document already `complete` when the submit's navigation
+  has not started yet, so the tree is momentarily gone. Field case: `type(submit)` into naver's search box
+  answered zero elements where the next snapshot held 532. If it is still empty after the re-polls the
+  result carries `EMPTY_SNAPSHOT_NOTE` — FIRST in the note, ahead of any tab notice, since an empty view
+  reframes every other line and `capNote` truncates the tail. Silence here was the actual bug: an empty
+  snapshot and a genuinely blank page are the same bytes, and the agent has no way to tell them apart.
+  Scoped reads are exempt — `buildScopedSnapshot` already answers a hollow scope in words.
 - **Snapshots print STATE, so a toggle click can be VERIFIED instead of assumed** (`stateFlags`):
   `[checked]`/`[unchecked]`/`[checked=mixed]` and `[pressed]`/`[unpressed]`/`[pressed=mixed]` print
   BOTH ways — "not checked" is exactly the fact a verifying read is after — while `[selected]` and
@@ -138,7 +150,13 @@
   < 12×12 boxes dropped, boxes covering > 50% of the viewport dropped (delegated containers and
   backdrops), any element whose backendNodeId — or an ancestor's, or a descendant's — ALREADY minted a
   uid in this render dropped (the AX element is the target; the DOM node around it is its wrapper), and
-  among nested survivors the outermost wins. Capped at 40 in document order with an explicit "N more"
+  among nested survivors the outermost wins — EXCEPT for a nested node that both carries its own click
+  listener and covers under 80% of that ancestor's box, which is a distinct CONTROL rather than a layer
+  over the same click. That exception is load-bearing, not a nicety: entry_ad's modal box has a listener
+  that only calls `stopPropagation` and wraps the "Close" strip that actually dismisses it, so pruning the
+  strip left a page with no route to unblock it at all (the click UNDERNEATH is correctly refused). The
+  area test is what keeps the tile-plus-overlay case at one uid, and root delegation is untouched either
+  way (there the tiles have no listener of their own). Capped at 40 in document order with an explicit "N more"
   atom when it truncates, never silently: a cap the agent cannot see is indistinguishable from the
   element not existing, which is the very bug this section fixes. Label and hint are derived PURELY from
   the DOMSnapshot payload already in hand (aria-label → title → descendant `img` alt → descendant text;

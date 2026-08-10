@@ -19,6 +19,11 @@
   `expand: true` it scrolls the page in viewport steps and MERGES the captures
   (`mergeTextLines` — virtualized feeds DELETE what scrolls out, so one read at the bottom would
   hold only the tail); expand is page-level by definition and refused together with `uid`.
+  That merge aligns on the shared HEAD and TAIL first and only then on the seam, because the two page
+  shapes differ: a virtualized feed overlaps at its edges, while an append-only page is re-read whole from
+  the top with the new rows in the MIDDLE, above a footer both captures end with. Seam-only matching found
+  nothing there and re-appended the entire document at every step — infinite_scroll came back as 517k
+  characters that were four copies of the same paragraphs.
 - **A collapsed native `<select>` is driven by a THREE-rung ladder, each rung settle-then-VERIFIED.**
   Type-ahead first (the option label's prefix as real key events — what a PERSON does, and what the
   browser's own list-box matching is built for), then arrow-stepping, then a hand-to-user error naming

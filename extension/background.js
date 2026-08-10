@@ -1635,6 +1635,29 @@ const ACTION_SETTLE_MS = 350;
  * reporting "the click did nothing" and the truth.
  */
 const STALE_SNAPSHOT_REPOLL_MS = 250;
+/**
+ * Re-poll schedule when the walk came back with NOTHING. More patient than the
+ * stale re-poll above, because this is the between-documents case rather than a
+ * late AX flush: the new document has to reach the point of having an
+ * accessibility tree AT ALL. Spread over several short waits rather than one long
+ * one, so a page only a beat behind costs a beat and a slow one still recovers.
+ */
+const EMPTY_SNAPSHOT_REPOLL_MS = 500;
+const EMPTY_SNAPSHOT_REPOLLS = 3;
+/**
+ * What an empty walk says about itself. An action that NAVIGATES can outrun
+ * waitForLoad — a form submit or a script-driven navigation may start after
+ * chrome.tabs saw the OLD document "complete", so the read lands between
+ * documents and the tree is momentarily gone. Reporting that as an empty
+ * snapshot is indistinguishable from a page that genuinely has nothing on it,
+ * and the agent has no way to tell which it got. Field case: type(submit) into
+ * naver's search box returned zero elements where the next snapshot had 532.
+ */
+const EMPTY_SNAPSHOT_NOTE =
+  "This snapshot came back EMPTY — the page produced no accessibility tree at all. That is almost always a read " +
+  "that landed BETWEEN documents (a submit or script navigation still in flight), not a blank page: take " +
+  "mcp__browser__snapshot again, or mcp__browser__wait_for text you expect, before concluding anything about this " +
+  "page. If a second snapshot is empty too, the document really is empty (or renders only into a canvas).";
 
 /**
  * The snapshot op's `maxChars`, clamped. The floor keeps a request from asking
@@ -4500,6 +4523,20 @@ async function performOp(message, stagingOrigin) {
       if (SETTLE_OPS.has(message.op) && snapshot && lastSnapshotByTab.get(fresh.id) === snapshot) {
         await new Promise((resolve) => setTimeout(resolve, STALE_SNAPSHOT_REPOLL_MS));
         snapshot = await readSnapshot();
+      }
+      // An empty walk is RETRIED and then, if it stays empty, it SAYS so. Applies
+      // to every op that reads back, not only the settling ones: a plain snapshot
+      // can land mid-navigation too, when the page moved on its own. Scoped reads
+      // are exempt — buildScopedSnapshot already answers a hollow scope in words,
+      // and that note is the better answer than this one.
+      if (!snapshot.trim() && !snapshotScope) {
+        for (let attempt = 0; attempt < EMPTY_SNAPSHOT_REPOLLS && !snapshot.trim(); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, EMPTY_SNAPSHOT_REPOLL_MS));
+          snapshot = await readSnapshot();
+        }
+        // First in the note, ahead of any tab notice appended below: an empty
+        // view reframes every other line, and capNote truncates the tail.
+        if (!snapshot.trim()) note = [EMPTY_SNAPSHOT_NOTE, note].filter(Boolean).join("\n");
       }
       lastSnapshotByTab.set(fresh.id, snapshot);
     } catch (error) {

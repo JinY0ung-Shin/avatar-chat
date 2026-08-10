@@ -1067,6 +1067,15 @@ const EXTRA_CLICKABLE_MIN_PX = 12;
  */
 const EXTRA_CLICKABLE_VIEWPORT_SHARE = 0.5;
 
+/**
+ * Share of a surviving ancestor's box past which a nested clickable counts as a
+ * LAYER over the same click rather than a control inside it. An overlay is drawn
+ * across the thing it covers; a close row, a button, a footer strip is a slice of
+ * it. Only consulted for nodes that carry their own click listener — see the
+ * `outermost` filter.
+ */
+const EXTRA_NESTED_COVER_SHARE = 0.8;
+
 /** Printed label and DOM hint caps — sized like buildDomHint's, for the same reason. */
 const EXTRA_LABEL_MAX = 80;
 const EXTRA_HINT_MAX = 60;
@@ -1178,8 +1187,17 @@ export function extraClickables(document, strings, opts) {
     ownCursor(index) === "pointer" && effectiveCursor(parentOf(index)) !== "pointer";
 
   const candidates = new Set();
+  /**
+   * Candidates carrying a click listener of their OWN, as opposed to the ones
+   * inferred from a pointer-cursor boundary. The distinction decides whether a
+   * nested candidate is the same click as its container (see `outermost` below).
+   */
+  const ownListener = new Set();
   for (const index of nodes.isClickable?.index || []) {
-    if (typeof index === "number" && index >= 0 && index < count) candidates.add(index);
+    if (typeof index === "number" && index >= 0 && index < count) {
+      candidates.add(index);
+      ownListener.add(index);
+    }
   }
   for (const index of layoutNodes) {
     if (index >= 0 && index < count && isPointerBoundary(index)) candidates.add(index);
@@ -1240,11 +1258,40 @@ export function extraClickables(document, strings, opts) {
   }
   // Outermost wins: a tile's inner overlay is the same click, and the whole tile
   // box is what a person aims at.
+  //
+  // UNLESS the inner node is a distinct CONTROL rather than a layer over the same
+  // click — which takes both signals to tell apart, because "nested and
+  // clickable" describes both. It is a control when it carries a click listener
+  // of its OWN *and* it occupies only a part of the ancestor's box.
+  //
+  // Field case for keeping it: a modal (the-internet.herokuapp.com/entry_ad)
+  // whose box carries a listener that only calls stopPropagation, wrapping the
+  // "Close" strip that carries the listener which actually dismisses it.
+  // Outermost-wins kept the inert box, pruned the one control that worked, and
+  // the click UNDER the modal is (correctly) refused — leaving no route to
+  // unblock the page at all.
+  //
+  // Field case for still pruning: a tile with an overlay drawn across it. Both
+  // have listeners, the overlay covers the tile, and two uids for one click is
+  // exactly the noise this rule exists to prevent. The tile GRID case is
+  // untouched either way: there the click is DELEGATED to the grid root, so
+  // Chrome marks only that root and the tiles are pointer-cursor boundaries with
+  // no listener of their own.
+  const areaOf = (index) => {
+    const slot = layoutAt.get(index);
+    if (slot === undefined) return 0;
+    const box = boundsOf[slot] || [];
+    return (Number(box[2]) || 0) * (Number(box[3]) || 0);
+  };
   const survivingSet = new Set(surviving);
   const outermost = surviving.filter((index) => {
     let at = parentOf(index);
     for (let hop = 0; at >= 0 && hop < EXTRA_ANCESTOR_HOPS; hop += 1) {
-      if (survivingSet.has(at)) return false;
+      if (survivingSet.has(at)) {
+        if (!ownListener.has(index)) return false;
+        const outer = areaOf(at);
+        return outer > 0 && areaOf(index) / outer < EXTRA_NESTED_COVER_SHARE;
+      }
       at = parentOf(at);
     }
     return true;
@@ -1927,14 +1974,12 @@ export function sliderPlan(opts) {
 const MERGE_MAX_OVERLAP = 400;
 
 /**
- * Merge two consecutive text captures of a scrolling page: find the longest
- * suffix of `acc` matching a prefix of `next` and append only the rest.
- * Virtualized feeds REMOVE content that scrolls out of view, so read_text's
- * `expand` must accumulate across scroll steps — one read at the bottom would
- * hold only the tail. When no overlap is found the chunks are concatenated
- * whole: a possible duplicate beats a silent hole.
+ * Longest suffix of `acc` matching a prefix of `next`, appending only the rest.
+ * The sliding-window case: a virtualized feed REMOVES what scrolls out of view,
+ * so consecutive captures share only their seam. When no overlap is found the
+ * chunks are concatenated whole: a possible duplicate beats a silent hole.
  */
-export function mergeTextLines(acc, next) {
+function overlapMerge(acc, next) {
   if (!acc.length) return next.slice();
   if (!next.length) return acc;
   const max = Math.min(acc.length, next.length, MERGE_MAX_OVERLAP);
@@ -1949,4 +1994,49 @@ export function mergeTextLines(acc, next) {
     if (match) return acc.concat(next.slice(overlap));
   }
   return acc.concat(next);
+}
+
+/**
+ * Merge two consecutive text captures of a scrolling page, for read_text's
+ * `expand`.
+ *
+ * Two page shapes have to work, and only one of them is a seam:
+ *
+ * - A VIRTUALIZED feed drops what scrolls out of view, so captures overlap at
+ *   their edges and nowhere else — `overlapMerge` above is that case.
+ * - An APPEND-ONLY page keeps everything, so every capture is the whole
+ *   document re-read from the TOP, and the new rows arrive in the MIDDLE:
+ *   below the header, ABOVE a footer that both captures end with. Nothing then
+ *   matches suffix-to-prefix, and the seam-only merge concatenated the entire
+ *   document again on every scroll step — the-internet.herokuapp.com's
+ *   infinite_scroll returned 517k characters that were four copies of the same
+ *   few paragraphs.
+ *
+ * So peel the shared head and the shared tail off first and merge only the part
+ * that actually differs. Head and tail anchor the alignment; a page that
+ * changed out from under the loop (a navigation mid-expand) shares neither and
+ * falls back to the seam merge, which still prefers a duplicate to a hole.
+ */
+export function mergeTextLines(acc, next) {
+  if (!acc.length) return next.slice();
+  if (!next.length) return acc;
+  const limit = Math.min(acc.length, next.length);
+  let head = 0;
+  while (head < limit && acc[head] === next[head]) head += 1;
+  // Re-reading a page that did not grow is the common no-op: say so cheaply
+  // before the tail walk compares the same lines a second time.
+  if (head === acc.length && head === next.length) return acc;
+  let tail = 0;
+  while (
+    tail < limit - head &&
+    acc[acc.length - 1 - tail] === next[next.length - 1 - tail]
+  ) {
+    tail += 1;
+  }
+  if (!head && !tail) return overlapMerge(acc, next);
+  const middle = overlapMerge(
+    acc.slice(head, acc.length - tail),
+    next.slice(head, next.length - tail),
+  );
+  return acc.slice(0, head).concat(middle, acc.slice(acc.length - tail));
 }

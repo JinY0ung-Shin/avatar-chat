@@ -1897,6 +1897,66 @@ describe("extraClickables", () => {
     expect(idsOf(answer)).toEqual([51]);
   });
 
+  it("keeps a nested CONTROL that carries its own listener inside a clickable box", () => {
+    // the-internet.herokuapp.com/entry_ad: the modal box's own listener only calls
+    // stopPropagation, and the "Close" strip inside it carries the listener that
+    // actually dismisses the ad. Pruning the strip as a nested survivor left the
+    // page permanently blocked — the click UNDER the modal is refused, and no uid
+    // anywhere could close it. A slice of the ancestor's box is a control, not a
+    // layer over the same click.
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          className: "modal",
+          backendNodeId: 61,
+          clickable: true,
+          cursor: "auto",
+          box: [300, 200, 400, 300],
+          children: [
+            {
+              tag: "DIV",
+              className: "modal-footer",
+              backendNodeId: 62,
+              clickable: true,
+              cursor: "auto",
+              box: [300, 460, 400, 40],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(idsOf(answer)).toEqual([61, 62]);
+  });
+
+  it("still prunes a nested listener that COVERS its ancestor's box", () => {
+    // The same rule's other side: a full-bleed overlay with its own listener is
+    // the same click as the tile under it, so it stays one uid.
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          className: "tile",
+          backendNodeId: 71,
+          clickable: true,
+          cursor: "auto",
+          box: [0, 0, 300, 200],
+          children: [
+            {
+              tag: "DIV",
+              className: "scrim",
+              backendNodeId: 72,
+              clickable: true,
+              cursor: "auto",
+              box: [0, 0, 300, 195],
+            },
+          ],
+        },
+      ]),
+    );
+    expect(idsOf(answer)).toEqual([71]);
+  });
+
   it("reports how many the cap cut off, because a silent cap is a lie", () => {
     const tiles = Array.from({ length: 45 }, (_, at) =>
       tile(100 + at, [0, at * 100, 120, 90], { tag: "DIV", className: "thumb" }),
@@ -2135,6 +2195,44 @@ describe("mergeTextLines", () => {
 
   it("starts from the first capture when nothing is accumulated yet", () => {
     expect(mergeTextLines([], ["a"])).toEqual(["a"]);
+  });
+
+  it("splices content that grew in the MIDDLE, between a shared head and footer", () => {
+    // An append-only page is re-read from the top on every scroll step, and the
+    // new rows land ABOVE a footer both captures end with. Nothing matches
+    // suffix-to-prefix there, and the seam-only merge duplicated the whole
+    // document each step — the-internet's infinite_scroll came back as 517k
+    // characters of four identical copies.
+    expect(
+      mergeTextLines(["head", "p1", "p2", "footer"], ["head", "p1", "p2", "p3", "footer"]),
+    ).toEqual(["head", "p1", "p2", "p3", "footer"]);
+  });
+
+  it("keeps splicing across several growth steps without repeating a line", () => {
+    let lines = ["head", "p1", "footer"];
+    for (const grown of [
+      ["head", "p1", "p2", "footer"],
+      ["head", "p1", "p2", "p3", "footer"],
+      ["head", "p1", "p2", "p3", "p4", "footer"],
+    ]) {
+      lines = mergeTextLines(lines, grown);
+    }
+    expect(lines).toEqual(["head", "p1", "p2", "p3", "p4", "footer"]);
+  });
+
+  it("appends a grown tail when the page has no footer to anchor on", () => {
+    expect(mergeTextLines(["head", "p1"], ["head", "p1", "p2"])).toEqual(["head", "p1", "p2"]);
+  });
+
+  it("keeps content a virtualized feed dropped from the top", () => {
+    // Only the head is shared: p1 was unmounted when it scrolled away, and it
+    // must survive in the accumulation rather than being merged out.
+    expect(mergeTextLines(["head", "p1", "p2"], ["head", "p2", "p3"])).toEqual([
+      "head",
+      "p1",
+      "p2",
+      "p3",
+    ]);
   });
 });
 
