@@ -196,4 +196,46 @@ describe("ChatView transcript", () => {
     expect(thinkingCard.open).toBe(false);
     expect(container.querySelector(".thinking-card-body")).toBeNull();
   });
+
+  it("puts the activity card BELOW the answer, in the stored and the live bubble alike", () => {
+    // Stored bubble: the card is a footnote about how the answer was made, so it
+    // follows the text — and matching the live position means nothing teleports
+    // when a stream finalizes into a stored message.
+    const { container } = render(ChatView);
+    const storedBubble = container.querySelector(".message.assistant .bubble")!;
+    const storedText = storedBubble.querySelector(":scope > .md")!;
+    const storedCard = storedBubble.querySelector(":scope > details.activity-done")!;
+    expect(
+      Boolean(storedText.compareDocumentPosition(storedCard) & Node.DOCUMENT_POSITION_FOLLOWING),
+      "stored activity card follows the answer text",
+    ).toBe(true);
+  });
+
+  it("keeps the live activity card at the streaming edge: after the text, before the status line", () => {
+    // Live bubble: the card grows as tools run and the text grows as it streams.
+    // At the top each kind of growth shoved the other around; at the bottom both
+    // just extend the edge autoscroll already follows.
+    const live = pane([]);
+    (live as unknown as Record<string, unknown>).streaming = true;
+    live.liveText = "본문이 먼저 흐른다";
+    live.liveAgents = [{ id: "main", parentId: "", label: "main", status: "running", isMain: true }] as never;
+    live.liveTools = [
+      { id: "t-live", agentId: "main", kind: "tool", label: "Read", detail: "notes.md", status: "running" },
+    ] as never;
+    replaceState({ avatars: [], chatPanes: [live], activePaneId: "pane-1" });
+
+    const { container } = render(ChatView);
+    const bubble = container.querySelector(".message.assistant .bubble")!;
+    const text = bubble.querySelector(":scope > .md")!;
+    const card = bubble.querySelector(":scope > details.activity-live")!;
+    const status = bubble.querySelector(":scope > .stream-status")!;
+    expect(
+      Boolean(text.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING),
+      "live activity card follows the streamed text",
+    ).toBe(true);
+    expect(
+      Boolean(card.compareDocumentPosition(status) & Node.DOCUMENT_POSITION_FOLLOWING),
+      "and stays above the stream status line",
+    ).toBe(true);
+  });
 });

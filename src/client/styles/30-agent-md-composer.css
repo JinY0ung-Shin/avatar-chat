@@ -129,9 +129,10 @@
   opacity: 0.78;
 }
 
-/* The activity tree renders at the TOP of the streaming bubble (above the
-   answer). Kill the leading margin so a tools-only phase doesn't open with a
-   gap, and give the answer text breathing room below the activity instead. */
+/* Parity leftovers from the old vanilla layout, where the tree was a DIRECT
+   bubble child at the top; today it lives inside the .activity-live/.activity-done
+   disclosure at the bubble's BOTTOM, so these no longer match anything. Kept
+   verbatim per the stylesheet-parity rule. */
 .bubble > .agent-activity:first-child {
   margin-top: 0;
 }
@@ -145,7 +146,10 @@
 
 /* Activity log disclosure — used both live (streaming, `.activity-live`) and
    after the run finishes (`.activity-done`). Collapsible so a long tool list
-   can be folded away mid-stream instead of crowding the bubble. */
+   can be folded away mid-stream instead of crowding the bubble. Sits BELOW the
+   answer text, so the gap toward that text comes from the sibling rule beneath —
+   as the FIRST bubble child (tools before any text) the card stays flush with
+   the bubble's own padding. */
 .activity-done,
 .activity-live {
   margin-bottom: var(--s-3);
@@ -155,6 +159,13 @@
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+}
+/* The gap toward whatever the card follows (answer text, a thinking card). Not
+   an unconditional margin-top: that would inset a tools-only bubble's first
+   card from the bubble padding. */
+.bubble > * + .activity-done,
+.bubble > * + .activity-live {
+  margin-top: var(--s-3);
 }
 .activity-done > summary,
 .activity-live > summary {

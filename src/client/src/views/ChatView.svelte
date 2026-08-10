@@ -1153,6 +1153,24 @@
                     {/if}
                   </details>
                 {/if}
+                {#if message.response?.plan}
+                  <details class="plan-card" open>
+                    <summary class="plan-card-head"><span class="tag plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
+                    <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdownCached(message.response.plan)}</div>
+                  </details>
+                {/if}
+                {#each segmentAttachments(messageText(message), message.attachments) as seg, segIndex (segIndex)}
+                  {#if seg.text}
+                    <div class="md" use:enhanceMarkdown={seg.text}>{@html renderMarkdownCached(seg.text)}</div>
+                  {/if}
+                  {#if seg.atts.length}
+                    {@render attachmentCards(item, seg.atts, message.attachments)}
+                  {/if}
+                {/each}
+                <!-- BELOW the answer, mirroring the live bubble: the card is a
+                     footnote about how the answer was made, and keeping the two
+                     positions identical means nothing teleports when a stream
+                     finalizes into a stored message. -->
                 {#if activity}
                   {@const activityKey = cardKey(message, "activity")}
                   {@const memChip = memoryChip(activity.tools)}
@@ -1170,20 +1188,6 @@
                     {/if}
                   </details>
                 {/if}
-                {#if message.response?.plan}
-                  <details class="plan-card" open>
-                    <summary class="plan-card-head"><span class="tag plan-card-badge">계획</span><span class="plan-card-hint">계획 모드</span></summary>
-                    <div class="md plan-card-body" use:enhanceMarkdown={message.response.plan}>{@html renderMarkdownCached(message.response.plan)}</div>
-                  </details>
-                {/if}
-                {#each segmentAttachments(messageText(message), message.attachments) as seg, segIndex (segIndex)}
-                  {#if seg.text}
-                    <div class="md" use:enhanceMarkdown={seg.text}>{@html renderMarkdownCached(seg.text)}</div>
-                  {/if}
-                  {#if seg.atts.length}
-                    {@render attachmentCards(item, seg.atts, message.attachments)}
-                  {/if}
-                {/each}
               {:else}
                 {#if visibleAttachments(message.attachments).length}
                   <div class="msg-images">
@@ -1228,20 +1232,6 @@
                     {/if}
                   </summary>
                   <div class="md thinking-card-body" use:enhanceMarkdown={item.liveThinking}>{@html renderMarkdown(item.liveThinking)}</div>
-                </details>
-              {/if}
-              {#if item.liveAgents.length}
-                {@const liveMemChip = memoryChip(item.liveTools)}
-                {@const liveCmpChip = compactChip(item.liveTools)}
-                <details class="activity-live" open>
-                  <summary>
-                    <span class="activity-summary-text">{activitySummary(item)}</span>
-                    {#if liveMemChip}<span class="activity-memory-chip" title={liveMemChip.title}><span aria-hidden="true">🧠</span>{liveMemChip.label}</span>{/if}
-                    {#if liveCmpChip}<span class="activity-memory-chip" title={liveCmpChip.title}><span aria-hidden="true">{liveCmpChip.icon}</span>{liveCmpChip.label}</span>{/if}
-                  </summary>
-                  <div class="agent-activity">
-                    <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
-                  </div>
                 </details>
               {/if}
               {#if item.livePlan}
@@ -1291,6 +1281,28 @@
                   {@render attachmentCards(item, seg.atts, item.liveAttachments)}
                 {/if}
               {/each}
+              <!-- BELOW the streamed text, at the reading edge, for two reasons
+                   that are both about motion: the card GROWS as tools run, and at
+                   the top every growth spurt shoved the text the user was reading
+                   downward; and the text grows too, which at the top pushed the
+                   one live "what is it doing right now" signal ever further from
+                   where the eyes are. At the bottom both kinds of growth extend
+                   the bubble's edge instead, which is exactly what autoscroll
+                   already follows. -->
+              {#if item.liveAgents.length}
+                {@const liveMemChip = memoryChip(item.liveTools)}
+                {@const liveCmpChip = compactChip(item.liveTools)}
+                <details class="activity-live" open>
+                  <summary>
+                    <span class="activity-summary-text">{activitySummary(item)}</span>
+                    {#if liveMemChip}<span class="activity-memory-chip" title={liveMemChip.title}><span aria-hidden="true">🧠</span>{liveMemChip.label}</span>{/if}
+                    {#if liveCmpChip}<span class="activity-memory-chip" title={liveCmpChip.title}><span aria-hidden="true">{liveCmpChip.icon}</span>{liveCmpChip.label}</span>{/if}
+                  </summary>
+                  <div class="agent-activity">
+                    <ActivityTree agentId="main" agents={item.liveAgents} tools={item.liveTools} tasks={item.liveTasks} />
+                  </div>
+                </details>
+              {/if}
               {#if item.backgroundPhase}
                 <!-- The visible turn is finalized (bubble above), but SDK background
                      tasks keep the session alive; the stop button cancels them. -->
