@@ -260,7 +260,7 @@ export interface User {
   alias: string;
   bio: string;
   persona: string;
-  /** First-person self-introduction the avatar generates, shown atop the chat capabilities panel. */
+  /** First-person self-introduction the avatar generates, shown in its explore-page intro dialog. */
   intro: string;
   /** Capability hashtags (bare, no "#") the avatar declares for discovery/search. */
   hashtags: string[];
@@ -684,7 +684,7 @@ export interface AvatarSummary {
 
 export interface AvatarDetail extends AvatarSummary {
   persona: string;
-  /** First-person self-introduction shown atop the chat capabilities panel. */
+  /** First-person self-introduction shown in the explore-page intro dialog. */
   intro: string;
   isOwn: boolean;
   /**

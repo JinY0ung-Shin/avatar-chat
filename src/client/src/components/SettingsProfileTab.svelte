@@ -440,7 +440,7 @@
       <label class="field"><span>소개 (한 줄)</span><input bind:value={bio} placeholder="어떤 아바타인지 소개하세요" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")} /></label>
       <div class="field">
         <div class="field-row">
-          <span>자기소개 (대화 패널 상단에 표시)</span>
+          <span>자기소개 (탐색의 소개 보기에 표시)</span>
           <button class="ghost-sm" type="button" aria-describedby={profileGenStatus ? profileGenStatusId : undefined} disabled={profileSaving || introGenBusy || allGenBusy} on:click={generateIntro}>{introGenBusy ? "생성 중…" : "아바타가 자동 생성"}</button>
         </div>
         <textarea rows="4" bind:value={intro} placeholder="대화 상대에게 보여줄 자기소개. 직접 쓰거나 위의 ‘아바타가 자동 생성’ 버튼으로 만들 수 있어요" aria-describedby={profileStatusId} disabled={profileSaving} on:input={() => (profileError = "")}></textarea>

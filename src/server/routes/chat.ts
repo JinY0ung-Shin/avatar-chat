@@ -456,9 +456,9 @@ export function createChatRouter({
     },
   );
 
-  // List the skills an avatar can use, for the chat-screen capabilities panel.
+  // List the skills an avatar can use, for the explore-page intro dialog.
   // Lazily resolves plugin roots (may clone), so it's a separate endpoint hit
-  // only when the panel opens — not bundled into the avatar detail above.
+  // only when the dialog opens — not bundled into the avatar detail above.
   // Visibility mirrors getAvatar: must be an avatar visible to the viewer (or their own).
   router.get(
     "/api/avatars/:id/skills",

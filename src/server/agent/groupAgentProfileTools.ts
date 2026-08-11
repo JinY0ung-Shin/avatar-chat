@@ -85,7 +85,9 @@ export function buildGroupAgentProfileTools(
         intro: z
           .string()
           .optional()
-          .describe("Self-introduction shown in the capabilities panel."),
+          .describe(
+            "Self-introduction shown in the avatar's introduction dialog on the explore page.",
+          ),
       },
       async (args) => {
         // Live per-call gate (the mcp__ auto-allow fires before any check):

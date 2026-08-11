@@ -171,7 +171,6 @@ button,
 [role="button"],
 .composer-attach,
 .routine-splitter,
-.cap-resize,
 .canvas-resize {
   -webkit-tap-highlight-color: transparent;
   touch-action: manipulation;
@@ -412,7 +411,6 @@ button:disabled {
 .admin-user,
 .notification-row,
 .canvas-card,
-.cap-section,
 .sys-card,
 .knowledge-row,
 .plugin-row,
@@ -652,7 +650,6 @@ button:disabled {
   border-radius: var(--r-pill);
 }
 
-.cap-panel,
 .canvas-panel {
   border-left-color: var(--line-soft);
   background: var(--material-regular);
@@ -661,7 +658,6 @@ button:disabled {
   backdrop-filter: saturate(160%) blur(var(--material-blur-thin));
 }
 
-.cap-section,
 .canvas-card {
   overflow: hidden;
 }
@@ -1021,7 +1017,6 @@ button:disabled {
   .rail,
   .view-header,
   .composer,
-  .cap-panel,
   .canvas-panel,
   .modal-overlay,
   .permission-modal-overlay,

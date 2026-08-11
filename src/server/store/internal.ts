@@ -597,7 +597,7 @@ export class StoreBase {
     // from display_name (how humans see it in lists). Injected into the system prompt.
     this.addColumnIfMissing("users", "alias", "TEXT DEFAULT ''");
     // Avatar self-introduction: a longer first-person blurb the avatar writes
-    // about what it can do, shown atop the chat capabilities panel. Distinct
+    // about what it can do, shown in its explore-page intro dialog. Distinct
     // from bio (one-liner in lists) and persona (system-prompt behavior).
     this.addColumnIfMissing("users", "intro", "TEXT DEFAULT ''");
     // Per-user git credentials/identity + personal knowledge-repo location. The

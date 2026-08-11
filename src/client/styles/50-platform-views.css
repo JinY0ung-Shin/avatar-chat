@@ -245,6 +245,43 @@ button.linkish {
   gap: var(--gap-stack);
   align-items: stretch;
 }
+/* Grid item wrapping each card: the card is one big button (start chat), so the
+   소개 보기 control has to live OUTSIDE it — buttons can't nest. `display: grid`
+   makes the single card child fill the wrapper in both axes, so the row heights
+   and the card's own hover/`::after` treatment are unchanged. */
+.avatar-card-wrap {
+  position: relative;
+  display: grid;
+  min-width: 0;
+}
+/* Corner affordance opening the avatar's 소개 dialog (intro + 역량). Sits above the
+   card (later sibling, both positioned) and stays reachable while a chat opens. */
+.ac-intro {
+  position: absolute;
+  top: var(--s-2-5);
+  right: var(--s-2-5);
+  z-index: 1;
+  padding: var(--s-0-5) var(--s-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg-elevated);
+  color: var(--muted);
+  font-size: var(--t-2xs);
+  font-weight: 600;
+  line-height: 1.6;
+  cursor: pointer;
+}
+.ac-intro:hover {
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+/* A corner pill is a small target on touch — grow it without letting it dominate
+   the card the way a full 44px control would. */
+@media (pointer: coarse) {
+  .ac-intro {
+    padding: var(--s-1-5) var(--s-2-5);
+  }
+}
 .avatar-card {
   position: relative;
   display: flex;
@@ -299,6 +336,9 @@ button.linkish {
   align-items: center;
   gap: var(--s-1-5);
   flex-wrap: wrap;
+  /* Keeps the name/badge row clear of the absolutely positioned .ac-intro pill in
+     the card's top-right corner (cf. the same reserve pattern for corner buttons). */
+  padding-right: var(--s-6);
 }
 .ac-name strong {
   font-size: var(--t-base);
@@ -365,14 +405,6 @@ button.linkish {
 }
 .explore-search-clear:hover:not(:disabled) {
   color: var(--text);
-}
-
-/* Capability hashtags in the chat capabilities panel. */
-.cap-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--s-1-5);
-  margin: var(--s-1) 0 var(--s-3);
 }
 
 /* Capability-hashtag chip editor in the profile settings form. */

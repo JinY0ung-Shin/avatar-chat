@@ -26,8 +26,9 @@
   // Visual canvas side panel (experimental `canvas` feature, #50). Renders the
   // avatar-shown artifact (markdown/svg/html/mermaid/vega — all sanitized, never
   // executing avatar JS) plus real form controls that post back through
-  // /api/chat/respond (blocking) or /api/chat/stream (async). Resizable +
-  // collapse-persisted + mobile-stacked, mirroring CapabilitiesPanel.
+  // /api/chat/respond (blocking) or /api/chat/stream (async). Resizable via the
+  // left-edge handle, collapse state persisted in localStorage, stacked below the
+  // chat on narrow viewports.
   export let pane: ChatPane;
 
   let collapsed = false;
@@ -53,7 +54,8 @@
   // Bound the stored/dragged width to the panel's own min/max only. CSS owns the
   // actual fit (`.canvas-panel:not(.collapsed)` flex-shrink + the chat-col floor,
   // and stacking on narrow viewports — #40 responsive). The old viewport-width term
-  // double-counted rail+chat against the always-present capabilities panel.
+  // reserved rail+chat here too, which double-counted against the other side panel
+  // and pushed this one off the right edge.
   function clampWidth(width: number): number {
     return Math.min(CANVAS_WIDTH_MAX, Math.max(CANVAS_WIDTH_MIN, width));
   }

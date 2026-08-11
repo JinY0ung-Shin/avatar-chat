@@ -907,7 +907,7 @@
         <input type="text" bind:value={agentBio} maxlength="200" disabled={agentSaving} />
       </label>
       <label class="field">
-        <span>자기소개 (역량 패널에 표시)</span>
+        <span>자기소개 (탐색의 소개 보기에 표시)</span>
         <textarea rows="2" bind:value={agentIntro} disabled={agentSaving}></textarea>
       </label>
       <label class="field">

@@ -679,7 +679,8 @@
 /* ============================================================
    Main chat column
    ============================================================ */
-/* Row filling `.main`: chat column on the left, capabilities panel on the right. */
+/* Row filling `.main`: chat column on the left, side panels (canvas / file
+   preview) on the right. */
 .chat-layout {
   flex: 1;
   max-width: 100%;
@@ -714,134 +715,13 @@
   min-width: 360px;
 }
 
-/* Capabilities panel: what the avatar can do (skills + plugins). Resizable via
-   the left-edge handle, collapsible to a slim strip via the chevron buttons. */
-.cap-panel {
-  flex: none;
-  width: 360px; /* fallback only — JS sets the (clamped) inline width */
-  position: relative;
-  border-left: 1px solid var(--line);
-  background: var(--panel);
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-}
-/* When expanded, the panel shrinks toward its own min before the chat floor is
-   reached, so two open side panels degrade gracefully instead of overflowing.
-   Collapsed keeps `flex:none` + the 28px strip width (below), so this is scoped
-   away from `.collapsed`. */
-.cap-panel:not(.collapsed) {
-  flex: 0 1 auto;
-  min-width: 220px; /* = CAP_WIDTH_MIN */
-}
-/* `max-width: 100%` keeps the panel inside `.chat-layout` no matter how many
-   panels are open — the old `calc(100vw - 628px)` reserved rail+chat as if this
-   were the ONLY side panel, which double-counted when the canvas panel was also
-   open and pushed the last panel off the right edge. Flex-shrink + the chat-col
-   floor now own the actual fit. */
-@media (min-width: 861px) {
-  .cap-panel {
-    max-width: 100%;
-  }
-}
-
-/* Scrolling content; hidden when the panel is collapsed. */
-.cap-body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  padding: var(--s-5) var(--s-4);
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-5);
-}
-
-/* Drag handle pinned to the left edge. */
-.cap-resize {
-  position: absolute;
-  top: 0;
-  left: -3px;
-  width: 7px;
-  height: 100%;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  cursor: col-resize;
-  z-index: 2;
-  /* Without this, touch drags become pan gestures and the resize never starts. */
-  touch-action: none;
-}
-.cap-resize:hover {
-  background: linear-gradient(to right, transparent, var(--accent-soft));
-}
-/* A 7px sliver can't carry an offset outline, so focus paints the handle itself
-   solid — deliberately distinct from the hover gradient (cf. .routine-splitter). */
-.cap-resize:focus-visible {
-  outline: none;
-  background: var(--focus-ring);
-}
 body.col-resizing {
   cursor: col-resize;
   user-select: none;
 }
 
-/* Collapse button (top-right of the expanded panel). */
-.cap-collapse {
-  position: absolute;
-  top: var(--s-3);
-  right: var(--s-3);
-  z-index: 3;
-  width: var(--s-6);
-  height: var(--s-6);
-  border: 1px solid var(--line);
-  border-radius: var(--r-xs);
-  background: var(--bg-elevated);
-  color: var(--muted);
-  font-size: var(--t-base);
-  line-height: 1;
-  cursor: pointer;
-}
-.cap-collapse:hover {
-  color: var(--text);
-  border-color: var(--accent);
-}
-
-/* Expand button: only shown (and only usable) when collapsed. */
-.cap-expand {
-  display: none;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: var(--t-base);
-  cursor: pointer;
-}
-/* Text label inside the expand button: hidden on the slim desktop strip,
-   shown when the panel is a stacked mobile bar. */
-.cap-expand .cap-expand-label {
-  display: none;
-}
-.cap-expand:hover {
-  color: var(--text);
-  background: var(--bg-elevated);
-}
-
-/* Collapsed state: panel shrinks to a slim strip with only the expand button. */
-.cap-panel.collapsed {
-  width: 28px !important;
-}
-.cap-panel.collapsed .cap-body,
-.cap-panel.collapsed .cap-collapse,
-.cap-panel.collapsed .cap-resize {
-  display: none;
-}
-.cap-panel.collapsed .cap-expand {
-  display: block;
-}
-
-/* ===== Visual canvas panel (#50). Mirrors the cap-panel structure: resizable via
-   the left-edge handle, collapsible to a slim strip, stacked on mobile. ===== */
+/* ===== Visual canvas panel (#50): resizable via the left-edge handle,
+   collapsible to a slim strip, stacked on mobile. ===== */
 .canvas-panel {
   flex: none;
   width: 440px; /* fallback only — JS sets the clamped inline width */
@@ -852,8 +732,9 @@ body.col-resizing {
   flex-direction: column;
   min-height: 0;
 }
-/* Shrinkable when expanded (mirrors .cap-panel) so the cap + canvas pair fits
-   before either overflows; collapsed keeps the 28px strip. */
+/* Shrinkable when expanded, so the panel yields toward its own min before the
+   chat-col floor is reached instead of overflowing; collapsed keeps the 28px
+   strip (`flex:none` + the fixed width below). */
 .canvas-panel:not(.collapsed) {
   flex: 0 1 auto;
   min-width: 300px; /* = CANVAS_WIDTH_MIN */
@@ -1249,174 +1130,6 @@ body.col-resizing {
 }
 .canvas-fs-content svg {
   max-width: none;
-}
-
-.cap-head {
-  padding-right: var(--s-7);
-}
-
-.cap-head h3 {
-  margin: 0;
-  font-size: var(--t-md);
-  font-weight: 700;
-  color: var(--text);
-}
-
-.cap-sub {
-  margin: var(--s-1) 0 0;
-  font-size: var(--t-xs);
-  color: var(--muted);
-}
-
-/* The avatar's self-introduction blurb at the top of the panel. */
-.cap-intro {
-  padding: var(--s-3);
-  border: 1px solid var(--line);
-  border-radius: var(--r-md);
-  background: var(--bg-elevated);
-}
-.cap-intro-text {
-  font-size: var(--t-sm);
-  line-height: 1.55;
-  color: var(--text-soft);
-}
-
-.cap-section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-3);
-}
-
-.cap-section-title {
-  font-size: var(--t-xs);
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-
-.cap-section-body {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-}
-
-.cap-skill-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--s-2);
-}
-
-.cap-skill {
-  border: 1px solid var(--line);
-  border-radius: var(--r-sm);
-  background: var(--bg-elevated);
-  overflow: hidden;
-}
-
-/* The head is a full-width toggle button (name + optional source badge). */
-.cap-skill-head {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  width: 100%;
-  padding: var(--s-2) var(--s-3);
-  border: 0;
-  background: transparent;
-  text-align: left;
-  cursor: pointer;
-  color: inherit;
-  font: inherit;
-}
-.cap-skill-head[disabled] {
-  cursor: default;
-}
-.cap-skill-head:not([disabled]):hover {
-  background: var(--panel);
-}
-
-.cap-skill-caret {
-  flex: none;
-  font-size: var(--t-2xs);
-  color: var(--muted);
-  transition: transform 0.15s var(--ease-out);
-}
-.cap-skill.open .cap-skill-caret {
-  transform: rotate(90deg);
-}
-
-.cap-skill-name {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--t-sm);
-  font-weight: 600;
-  color: var(--text);
-}
-
-.cap-skill-src {
-  flex: none;
-  font-size: var(--t-2xs);
-  color: var(--muted);
-  background: var(--panel-strong);
-  border-radius: var(--r-pill);
-  padding: 1px var(--s-2);
-}
-
-/* Description is hidden until the skill is expanded. */
-.cap-skill-desc {
-  display: none;
-  margin: 0;
-  padding: 0 var(--s-3) var(--s-3);
-  font-size: var(--t-xs);
-  line-height: 1.45;
-  color: var(--text-soft);
-}
-.cap-skill.open .cap-skill-desc {
-  display: block;
-}
-
-.cap-plugin {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  padding: var(--s-1) 0;
-}
-
-.cap-plugin-name {
-  font-size: var(--t-sm);
-  color: var(--text);
-}
-
-.cap-plugin-repo {
-  font-size: var(--t-xs);
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
-.cap-empty,
-.cap-loading {
-  margin: 0;
-  font-size: var(--t-xs);
-  color: var(--muted);
-}
-.cap-empty-action {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--s-1);
-}
-.cap-empty-action .linkish.small {
-  padding: 0;
-}
-.cap-error {
-  display: flex;
-  align-items: center;
-  gap: var(--s-2);
-  flex-wrap: wrap;
-}
-.cap-error .linkish.small {
-  margin-top: 0;
-  padding: 0;
 }
 
 /* Middle region: holds the scrolling transcript + the scroll-to-bottom FAB. */

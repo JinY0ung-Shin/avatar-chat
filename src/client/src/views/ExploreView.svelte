@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import AvatarCapabilitiesModal from "../components/AvatarCapabilitiesModal.svelte";
   import AvatarImage from "../components/AvatarImage.svelte";
   import Icon from "../components/Icon.svelte";
   import { startChatWith } from "../lib/chat";
@@ -12,6 +13,8 @@
   let error = "";
   let loadingAvatarId: string | null = null;
   let searchInput: HTMLInputElement | null = null;
+  /** The avatar whose 소개 dialog is open (intro + 역량), or null when closed. */
+  let introAvatar: AvatarSummary | null = null;
 
   onMount(() => {
     void load();
@@ -182,46 +185,60 @@
   {:else}
     <div class="avatar-grid" aria-label={displayQuery ? `${displayQuery} 검색 결과` : "아바타 목록"}>
       {#each avatars as av (av.id)}
-        <button
-          class="avatar-card"
-          class:opening={loadingAvatarId === av.id}
-          type="button"
-          aria-label={`${av.alias || av.displayName} 아바타와 대화${loadingAvatarId === av.id ? ", 여는 중" : ""}`}
-          title={`${av.alias || av.displayName} 아바타와 대화`}
-          aria-busy={loadingAvatarId === av.id}
-          disabled={Boolean(loadingAvatarId)}
-          on:click={() => openChat(av)}
-        >
-          <AvatarImage user={av} size={56} alt="" />
-          <div class="ac-body">
-            <div class="ac-name">
-              <strong>{av.displayName}</strong>
-              {#if av.id === $appState.user?.id}
-                <span class="tag accent">나</span>
-              {:else if av.runtime === "external"}
-                <span class="tag accent">외부 아바타</span>
-              {:else if av.groupAgent}
-                <span class="tag write">그룹 에이전트 · {av.groupAgent.groupName}</span>
-              {:else if av.sharesGroup}
-                <span class="tag write">같은 그룹</span>
-              {/if}
-              {#if av.visibility === "private"}
-                <span class="tag">비공개</span>
-              {/if}
+        <!-- The card itself is one big button (click = start chat), so 소개 보기 has to
+             be a SIBLING control — buttons can't nest. The wrapper is the grid item;
+             the card fills it so the grid sizing and the hover ::after arrow are
+             unchanged. -->
+        <div class="avatar-card-wrap">
+          <button
+            class="avatar-card"
+            class:opening={loadingAvatarId === av.id}
+            type="button"
+            aria-label={`${av.alias || av.displayName} 아바타와 대화${loadingAvatarId === av.id ? ", 여는 중" : ""}`}
+            title={`${av.alias || av.displayName} 아바타와 대화`}
+            aria-busy={loadingAvatarId === av.id}
+            disabled={Boolean(loadingAvatarId)}
+            on:click={() => openChat(av)}
+          >
+            <AvatarImage user={av} size={56} alt="" />
+            <div class="ac-body">
+              <div class="ac-name">
+                <strong>{av.displayName}</strong>
+                {#if av.id === $appState.user?.id}
+                  <span class="tag accent">나</span>
+                {:else if av.runtime === "external"}
+                  <span class="tag accent">외부 아바타</span>
+                {:else if av.groupAgent}
+                  <span class="tag write">그룹 에이전트 · {av.groupAgent.groupName}</span>
+                {:else if av.sharesGroup}
+                  <span class="tag write">같은 그룹</span>
+                {/if}
+                {#if av.visibility === "private"}
+                  <span class="tag">비공개</span>
+                {/if}
+              </div>
+              <div class="ac-handle">{loadingAvatarId === av.id ? "대화 여는 중…" : `@${av.username}`}</div>
+              {#if av.alias}<div class="ac-alias">"{av.alias}"</div>{/if}
+              {#if av.bio}<p class="ac-bio">{av.bio}</p>{/if}
+              <div class="ac-tags">
+                {#each (av.hashtags || []).slice(0, 6) as tag}
+                  <span class="tag accent">#{tag}</span>
+                {/each}
+                {#if av.runtime !== "external" && av.pluginCount != null}
+                  <span class="tag">플러그인 {av.pluginCount}개</span>
+                {/if}
+              </div>
             </div>
-            <div class="ac-handle">{loadingAvatarId === av.id ? "대화 여는 중…" : `@${av.username}`}</div>
-            {#if av.alias}<div class="ac-alias">"{av.alias}"</div>{/if}
-            {#if av.bio}<p class="ac-bio">{av.bio}</p>{/if}
-            <div class="ac-tags">
-              {#each (av.hashtags || []).slice(0, 6) as tag}
-                <span class="tag accent">#{tag}</span>
-              {/each}
-              {#if av.runtime !== "external" && av.pluginCount != null}
-                <span class="tag">플러그인 {av.pluginCount}개</span>
-              {/if}
-            </div>
-          </div>
-        </button>
+          </button>
+          <!-- Stays enabled while a chat is opening: reading the intro is harmless. -->
+          <button
+            class="ac-intro"
+            type="button"
+            aria-label={`${av.alias || av.displayName} 소개 보기`}
+            title={`${av.alias || av.displayName} 소개 보기`}
+            on:click={() => (introAvatar = av)}
+          >소개</button>
+        </div>
       {/each}
       {#if !hasPeerAvatars && !displayQuery}
         <div class="empty-note">{GROUP_HINT}</div>
@@ -229,3 +246,7 @@
     </div>
   {/if}
 </div>
+
+{#if introAvatar}
+  <AvatarCapabilitiesModal avatar={introAvatar} on:close={() => (introAvatar = null)} />
+{/if}

@@ -2,7 +2,6 @@
   import { afterUpdate, onMount, tick } from "svelte";
   import ActivityTree from "../components/ActivityTree.svelte";
   import AvatarImage from "../components/AvatarImage.svelte";
-  import CapabilitiesPanel from "../components/CapabilitiesPanel.svelte";
   import CanvasPanel from "../components/CanvasPanel.svelte";
   import FilePreviewPanel from "../components/FilePreviewPanel.svelte";
   import Icon from "../components/Icon.svelte";
@@ -1720,7 +1719,7 @@
     </div>
     <!-- Same side-panel slot as the single-pane branch, for the ACTIVE pane:
          without it a canvas created while split is invisible until the user is
-         back to one pane. CapabilitiesPanel stays single-pane-only. -->
+         back to one pane. -->
     {#if pane.filePreview}
       <FilePreviewPanel {pane} />
     {:else if pane.canvases?.length}
@@ -1755,7 +1754,6 @@
     {:else if pane.canvases?.length}
       <CanvasPanel {pane} />
     {/if}
-    <CapabilitiesPanel avatar={pane.avatar} />
   </div>
 {/if}
 

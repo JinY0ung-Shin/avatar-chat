@@ -1616,14 +1616,6 @@ button.composer-bridge:focus-visible {
     width: 44px;
     height: 44px;
   }
-  .cap-collapse {
-    width: 44px;
-    height: 44px;
-  }
-  .cap-resize {
-    width: 18px;
-    left: -9px;
-  }
 }
 .msg-act {
   width: 28px;

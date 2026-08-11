@@ -121,7 +121,7 @@ The 5-axis UI audit + fix pass landed (see DESIGN.md §5 item 9). Deliberately N
 - **risk:** med (visual) · **effort:** M · **breaking:** no
 
 ### U4 — Empty-state base family
-- 7 empty-state classes (`.empty-note`, `.empty-state`, `.conv-empty`, `.cap-empty`, `.routine-empty`,
+- 6 empty-state classes (`.empty-note`, `.empty-state`, `.conv-empty`, `.routine-empty`,
   `.routine-run-empty`, `.brain-empty`) share no base; two carry icon+heading+action treatment.
   Define `.empty` base + modifier like §4.2. Low value until a new empty state is added.
 - **risk:** low · **effort:** S · **breaking:** no
