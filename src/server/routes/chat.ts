@@ -16,6 +16,7 @@ import { scrubGitError } from "../marketplace.js";
 import { resolveActiveWorkspaceRepo } from "../activeRepoResolve.js";
 import type {
   AgentConversationMessage,
+  AgentImageFileInput,
   AgentImageInput,
   AgentResponse,
   MessageAttachment,
@@ -40,6 +41,7 @@ import {
   resolveStoredImage,
   saveChatImages,
   savePreviewImages,
+  stageChatImageFilesFromAttachments,
   MAX_CHAT_IMAGES_PER_MESSAGE,
   MAX_CHAT_IMAGE_BYTES,
   type DecodeError,
@@ -1074,13 +1076,13 @@ export function createChatRouter({
         store.getModelVisionPolicy(),
         config.visionEnabled,
       );
-      // Text-only model for this turn: reject image uploads up front — feeding
-      // image blocks would 400 the whole turn at the API layer. The composer
-      // hides the attach UI too; this is the server-side net.
-      if (!externalAgent && decodedImages.length > 0 && !turnVisionEnabled) {
-        apiError(res, 400, "현재 선택된 모델은 이미지 입력을 지원하지 않아 이미지를 첨부할 수 없습니다.");
-        return;
-      }
+      // Text-only model for this turn: images are NOT rejected — they are staged
+      // as FILES in the conversation scratch workspace and the model receives only
+      // their paths (buildUserPrompt), never image content blocks (which would 400
+      // the whole turn at the API layer). External turns never reach here with
+      // images (rejected above).
+      const imageFileMode =
+        decodedImages.length > 0 && !turnVisionEnabled && !externalAgent;
       if (externalAgent && existingAvatarId) {
         const boundEndpoint = store.getConversationExternalEndpoint(
           req.user!.id,
@@ -1218,12 +1220,15 @@ export function createChatRouter({
             deleteChatFileAttachments(config, conversationId, last.attachments);
           }
         }
-        const imageTurn = !regenerate && decodedImages.length > 0;
+        const imageTurn =
+          !regenerate && decodedImages.length > 0 && turnVisionEnabled;
         // Resume the conversation's prior SDK session so the model keeps its context
         // across turns. A regenerate re-runs the same turn and starts fresh to avoid
         // duplicating history in the transcript. Image turns also start fresh: the SDK
         // receives images through streaming input, and combining that with `resume`
-        // can drop the structured image blocks before they reach the model.
+        // can drop the structured image blocks before they reach the model. File-mode
+        // turns (text-only model) never build a structured message — the prompt stays
+        // a plain string — so they keep the session resume.
         const resumeSessionId =
           externalAgent || regenerate || imageTurn
             ? undefined
@@ -1253,6 +1258,17 @@ export function createChatRouter({
         // re-send images (it re-runs from a fresh SDK session), so re-read the prior
         // user turn's stored attachments so the re-run still sees them.
         let requestImages: AgentImageInput[] = [];
+        // The same images in FILE mode (text-only model): staged copies in the
+        // scratch workspace whose paths — never their bytes — reach the model.
+        let requestImageFiles: AgentImageFileInput[] = [];
+        // Per-conversation workspace: each chat session gets an isolated cwd, scoped
+        // under the avatar so sessions cannot mix files by accident. Created here
+        // (before the message persist) because file mode stages attachments into it.
+        // External turns run no local workspace, so they don't get a directory.
+        const workspaceDir = workspaceDirFor(config, avatar.id, conversationId);
+        if (!externalAgent) {
+          fs.mkdirSync(workspaceDir, { recursive: true });
+        }
         store.touchConversation(
           req.user!.id,
           conversationId,
@@ -1296,7 +1312,18 @@ export function createChatRouter({
         }
         if (!regenerate) {
           const saved = saveChatImages(config, conversationId, decodedImages);
-          requestImages = saved.images;
+          // The persisted attachments are the same either way — the bubble
+          // renders identically; only the MODEL-facing shape differs.
+          if (imageFileMode) {
+            requestImageFiles = stageChatImageFilesFromAttachments(
+              config,
+              conversationId,
+              workspaceDir,
+              saved.attachments,
+            );
+          } else {
+            requestImages = saved.images;
+          }
           store.addMessage(conversationId, {
             role: "user",
             content: displayMessage,
@@ -1306,12 +1333,23 @@ export function createChatRouter({
           const lastUser = [...priorMessages]
             .reverse()
             .find((m) => m.role === "user");
-          // Skip the re-feed entirely when this turn's model is text-only:
-          // attachments uploaded while a vision model was selected must not
-          // resurface into a non-vision run.
-          requestImages = turnVisionEnabled
-            ? readChatImages(config, conversationId, lastUser?.attachments)
-            : [];
+          // On a text-only turn the attachments resurface as FILES by design (same
+          // staging path as a fresh send), never as image blocks the API would
+          // reject — so a regenerate under a swapped model still sees them.
+          if (turnVisionEnabled) {
+            requestImages = readChatImages(
+              config,
+              conversationId,
+              lastUser?.attachments,
+            );
+          } else {
+            requestImageFiles = stageChatImageFilesFromAttachments(
+              config,
+              conversationId,
+              workspaceDir,
+              lastUser?.attachments,
+            );
+          }
         }
         // The SDK session id this run reports (init event); persisted on success so
         // the next turn can resume it.
@@ -1585,11 +1623,6 @@ export function createChatRouter({
                 disabledGroupIds,
               });
 
-          // Per-conversation workspace: each chat session gets an isolated cwd, scoped
-          // under the avatar so sessions cannot mix files by accident.
-          const workspaceDir = workspaceDirFor(config, avatar.id, conversationId);
-          fs.mkdirSync(workspaceDir, { recursive: true });
-
           for (const warn of pluginWarnings) {
             emitRunEvent(runId, "status", { label: `플러그인 경고: ${warn}` });
           }
@@ -1621,6 +1654,11 @@ export function createChatRouter({
               resumeSessionId,
               conversationHistory,
               images: requestImages.length ? requestImages : undefined,
+              // Text-only turn: the model gets the staged file PATHS in the user
+              // prompt instead of image content blocks.
+              imageFiles: requestImageFiles.length
+                ? requestImageFiles
+                : undefined,
               modelTier: conversationModelTier ?? undefined,
               effort: conversationEffort ?? undefined,
               mcpToolGroups: effectiveMcpToolGroupsForRun,

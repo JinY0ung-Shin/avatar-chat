@@ -3418,6 +3418,25 @@ describe("buildPrompt", () => {
     expect(userPrompt).not.toContain("Noah Almighty (avatar-chat)");
   });
 
+  it("lists vision-off attachments as staged FILE paths in the user prompt", () => {
+    // Text-only turn: the bytes never reach the model, so this listing is the
+    // ONLY way it learns the attachments exist.
+    const withFiles = buildUserPrompt(
+      req({
+        viewerIsOwner: true,
+        message: "이 이미지 정리해줘",
+        imageFiles: [
+          { path: "/x/attachments/a.png", mediaType: "image/png", name: "cat.png" },
+        ],
+      }),
+    );
+    expect(withFiles).toContain("Attached image files");
+    expect(withFiles).toContain('- /x/attachments/a.png (image/png, original name "cat.png")');
+    expect(withFiles).toContain("mcp__file_output__show_file");
+
+    expect(buildUserPrompt(req({ viewerIsOwner: true }))).not.toContain("Attached image files");
+  });
+
   it("gives an owner-scheduled routine its self-state and the git-MCP-only rule", () => {
     const p = buildPrompt(
       req({

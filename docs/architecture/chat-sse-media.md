@@ -91,14 +91,22 @@
   `{tierId: boolean}`, absent tier inherits) ∘ deployment default (`MODEL_VISION=off` env). Resolution
   mirrors the model chain (`env pin > user tier > admin override > default`; a concrete model id can't
   consult the tier policy → deployment default). When the RUN's model is text-only, every path that
-  would put image bytes in MODEL input is cut off BEFORE the API can 400 the whole turn — upload POST
-  rejects (`turnVisionEnabled` in routes/chat.ts; the composer hides the attach UI via
-  `paneVisionEnabled` off bootstrap `modelSelection.tiers[].vision`/`defaultVision`; `addImages` is the
-  single client intake), the PreToolUse hook denies `Read` on raster/PDF paths (must fire BEFORE the
-  read-only auto-allow; SVG stays readable; redirect: `pdftotext` for PDFs, `show_file` to show the
-  USER), Confluence tools return a note instead of MCP image blocks (per-run `ctx.visionEnabled`), and
-  the regenerate re-feed is skipped. Surfaced in the standing prompt (`noVisionSection`) +
-  describe_system. `show_file`/slide previews are unaffected (user-facing only).
+  would put image bytes in MODEL input is cut off BEFORE the API can 400 the whole turn — but the
+  UPLOAD itself is NOT rejected: it becomes **file mode** (`imageFileMode` in routes/chat.ts). The
+  bytes are persisted exactly as in vision mode (same bubble/attachment rows), a copy is staged into
+  `<workspaceDir>/attachments/<id>.<ext>` (`stageChatImageFilesFromAttachments`, the ONE staging path
+  shared by the fresh turn and regenerate), and the model is told only the PATHS as plain prompt text
+  (`AgentRequest.imageFiles` → `buildUserPrompt`), never image content blocks. Regenerate re-stages the
+  same way instead of skipping the re-feed. `imageTurn` (the fresh-SDK-session-on-images rule) now
+  applies only to VISION-ON turns, so a file-mode turn keeps its plain-string prompt and its session
+  resume. The composer therefore no longer hides the attach UI for a text-only tier — in file mode it
+  sends the ORIGINALS (no downscale, since nothing is fed to the model). EXTERNAL avatars keep the
+  plain 400 (their gateway runs no local workspace). Unchanged: the PreToolUse hook denies `Read` on
+  raster/PDF paths (must fire BEFORE the read-only auto-allow; SVG stays readable; redirect:
+  `pdftotext` for PDFs, `show_file` to show the USER), and Confluence tools return a note instead of
+  MCP image blocks (per-run `ctx.visionEnabled`). Surfaced in the standing prompt (`noVisionSection`,
+  which now points at the staged files) + describe_system. `show_file`/slide previews are unaffected
+  (user-facing only).
 
 ## Generated-file delivery + PPTX deck pipeline (`share_file`, hidden publishes)
 - **`chatFiles.ts` mirrors `chatImages.ts` for agent-GENERATED documents** (there is deliberately NO

@@ -788,6 +788,15 @@ export interface AgentImageInput {
   data: string;
 }
 
+/** A vision-off image attachment staged as a FILE in the run's scratch workspace (never fed to the model as content blocks — only its path is mentioned in the user prompt). */
+export interface AgentImageFileInput {
+  /** Absolute path of the staged copy inside the conversation scratch workspace. */
+  path: string;
+  mediaType: ImageMediaType;
+  /** Original upload filename, when the client sent one. */
+  name?: string;
+}
+
 export interface AgentConversationMessage {
   role: "user" | "assistant";
   content: string;
@@ -1383,6 +1392,14 @@ export interface AgentRequest {
    * Unused for headless turns.
    */
   images?: AgentImageInput[];
+  /**
+   * Images attached to THIS turn's user message when the turn's model is
+   * TEXT-ONLY: staged as copies inside the conversation scratch workspace so the
+   * agent can act on them as files. `buildUserPrompt` lists their paths as plain
+   * text — the bytes never enter model input. Mutually exclusive with
+   * {@link AgentRequest.images}; unused for headless/external turns.
+   */
+  imageFiles?: AgentImageFileInput[];
   /**
    * True when this run IS an avatar-to-avatar consultation (#ask-avatar): a
    * headless one-shot turn another avatar started via `mcp__avatars__ask_avatar`.

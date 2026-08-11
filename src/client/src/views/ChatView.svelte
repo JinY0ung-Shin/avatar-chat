@@ -502,6 +502,9 @@
   const MAX_COMPOSER_IMAGES = 6;
   // Long-edge cap before upload (Claude's recommended max; also keeps payloads small).
   const IMAGE_MAX_DIM = 1568;
+  // Hand-mirrors the server's MAX_CHAT_IMAGE_BYTES (chatImages.ts). Only file mode
+  // needs it: the vision path downscales, so it never approaches the cap.
+  const MAX_ATTACH_FILE_BYTES = 5 * 1024 * 1024;
   const ACCEPTED_IMAGE_TYPES: ImageMediaType[] = ["image/png", "image/jpeg", "image/webp", "image/gif"];
 
   // Downscale to IMAGE_MAX_DIM via canvas (re-encoding to the same family). GIFs
@@ -536,15 +539,26 @@
 
   async function addImages(item: ChatPane, files: FileList | File[] | null | undefined) {
     if (!files) return;
-    if (!paneVisionEnabled(item)) {
-      notify("현재 선택된 모델은 이미지 입력을 지원하지 않아 첨부할 수 없습니다.", "warn");
-      return;
-    }
     if (isExternalPane(item)) {
       notify("외부 아바타는 아직 이미지 첨부를 지원하지 않습니다.", "warn");
       return;
     }
-    const list = Array.from(files).filter((f) => f.type.startsWith("image/"));
+    // Vision-off pane = FILE MODE: the server stages the image in the agent
+    // workspace and hands the model only the path, so the ORIGINAL bytes go up
+    // (no canvas re-encode) and only the four types the server sniffs pass.
+    const fileMode = !paneVisionEnabled(item);
+    const dropped = Array.from(files);
+    let list = dropped.filter((f) => f.type.startsWith("image/"));
+    if (fileMode) {
+      list = list.filter((f) => (ACCEPTED_IMAGE_TYPES as string[]).includes(f.type));
+      if (list.length < dropped.length) notify("PNG/JPEG/WebP/GIF만 첨부할 수 있습니다.", "warn");
+      // Size-check before the room slice so an oversized file can't eat a slot.
+      list = list.filter((f) => {
+        if (f.size <= MAX_ATTACH_FILE_BYTES) return true;
+        notify(`'${f.name || "이미지"}'은(는) 5 MB를 넘어 첨부할 수 없습니다.`, "warn");
+        return false;
+      });
+    }
     if (!list.length) return;
     const current = readState().chatPanes.find((p) => p.id === item.id);
     const room = MAX_COMPOSER_IMAGES - (current?.pendingImages?.length || 0);
@@ -555,7 +569,9 @@
     const accepted: PendingImage[] = [];
     for (const file of list.slice(0, room)) {
       try {
-        const { dataUrl, mediaType } = await resizeImageForChat(file);
+        const { dataUrl, mediaType } = fileMode
+          ? { dataUrl: await readFileAsDataUrl(file), mediaType: file.type as ImageMediaType }
+          : await resizeImageForChat(file);
         accepted.push({ id: newId(), dataUrl, name: file.name || "image", mediaType });
       } catch {
         notify(`'${file.name || "이미지"}'를 불러오지 못했습니다.`, "warn");
@@ -567,6 +583,13 @@
       const target = state.chatPanes.find((p) => p.id === item.id);
       if (target) target.pendingImages = [...(target.pendingImages || []), ...accepted];
     });
+    if (fileMode) notify("현재 모델은 이미지 내용을 보지 못합니다. 이미지는 파일로만 전달됩니다.", "info");
+  }
+
+  // A vision-off pane still attaches — the model gets the FILE, never the
+  // pixels. Say that on the control itself instead of hiding it.
+  function attachHint(item: ChatPane, state: ReturnType<typeof readState>): string {
+    return paneVisionEnabled(item, state) ? "이미지 첨부" : "이미지 첨부 (모델이 내용을 보지 못하고 파일로 전달됨)";
   }
 
   async function onPickImages(event: Event, item: ChatPane) {
@@ -1391,9 +1414,14 @@
             {/each}
           </div>
         {/if}
-        <div class="composer-box" class:no-attach={isExternalPane(item) || !paneVisionEnabled(item, $appState)}>
-          {#if !isExternalPane(item) && paneVisionEnabled(item, $appState)}
-            <label class="composer-attach" class:disabled={item.streaming} title="이미지 첨부" aria-label="이미지 첨부">
+        <div class="composer-box" class:no-attach={isExternalPane(item)}>
+          {#if !isExternalPane(item)}
+            <label
+              class="composer-attach"
+              class:disabled={item.streaming}
+              title={attachHint(item, $appState)}
+              aria-label={attachHint(item, $appState)}
+            >
               <Icon name="image" />
               <input
                 type="file"

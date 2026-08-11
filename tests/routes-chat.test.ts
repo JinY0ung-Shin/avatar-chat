@@ -117,6 +117,7 @@ vi.mock("../src/server/deckRender.js", async (importOriginal) => ({
 import { createApp, createServices } from "../src/server/app.js";
 import { acquireActiveRepo, releaseActiveRepo } from "../src/server/activeRepoLock.js";
 import { gitRepoClonePath } from "../src/server/gitRepos.js";
+import { workspaceDirFor } from "../src/server/workspace.js";
 
 let tempDir: string;
 const getTempDir = withTempDir("routes-chat", () => {
@@ -316,6 +317,8 @@ const PNG_BYTES = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==",
   "base64",
 );
+/** The same 1x1 PNG as an upload payload (what the composer POSTs). */
+const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString("base64")}`;
 const PPTX_BYTES = Buffer.concat([Buffer.from([0x50, 0x4b, 0x03, 0x04]), Buffer.alloc(64, 1)]);
 const PDF_BYTES = Buffer.concat([Buffer.from("%PDF-1.4 "), Buffer.alloc(64, 1)]);
 
@@ -582,7 +585,7 @@ describe("chat-stream request validation", () => {
     expect(H.requests).toHaveLength(0);
   });
 
-  it("rejects image uploads when the deployment model has no vision", async () => {
+  it("stages image uploads as workspace FILES when the deployment model has no vision", async () => {
     const services = createServices({
       dataDir: tempDir,
       agentRuntime: "claude",
@@ -593,17 +596,38 @@ describe("chat-stream request validation", () => {
     const owner = request.agent(app);
     const ownerId = (await signup(owner, "novision").expect(201)).body.user.id as string;
     H.requests.length = 0;
-    const png =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
-    const res = await owner
+    await owner
       .post("/api/chat/stream")
-      .send({ avatarId: ownerId, conversationId: "conv-nv", message: "이거 봐줘", images: [png] })
-      .expect(400);
-    expect(res.body.error).toContain("이미지 입력을 지원하지 않아");
-    expect(H.requests).toHaveLength(0);
+      .send({
+        avatarId: ownerId,
+        conversationId: "conv-nv",
+        message: "이거 봐줘",
+        images: [{ name: "cat.png", data: PNG_DATA_URL }],
+      })
+      .expect(200);
+
+    // The upload is accepted; the model gets PATHS, never image content blocks.
+    expect(H.requests).toHaveLength(1);
+    const r = H.requests[0];
+    expect(r.images).toBeUndefined();
+    expect(r.imageFiles).toHaveLength(1);
+    expect(r.imageFiles![0].mediaType).toBe("image/png");
+    expect(r.imageFiles![0].name).toBe("cat.png");
+    const staged = r.imageFiles![0].path;
+    expect(path.isAbsolute(staged)).toBe(true);
+    expect(staged.startsWith(path.join(workspaceDirFor(services.config, ownerId, "conv-nv"), "attachments") + path.sep)).toBe(true);
+    expect(fs.existsSync(staged)).toBe(true);
+    expect(fs.readFileSync(staged)).toEqual(PNG_BYTES);
+    // The prompt note is added by buildUserPrompt at prompt time, so the request
+    // message itself is untouched.
+    expect(r.message).toBe("이거 봐줘");
+    // The bubble still renders the attachment exactly as in vision mode.
+    const stored = services.store.listMessages(ownerId, "conv-nv").find((m) => m.role === "user");
+    expect(stored?.attachments).toHaveLength(1);
+    expect(stored?.attachments?.[0].kind).toBe("image");
   });
 
-  it("gates image uploads by the per-tier vision policy of this turn's model", async () => {
+  it("picks image content blocks vs staged files by the per-tier vision policy of this turn's model", async () => {
     const services = createServices({
       dataDir: tempDir,
       agentRuntime: "claude",
@@ -613,23 +637,31 @@ describe("chat-stream request validation", () => {
     const app = createApp(services);
     const owner = request.agent(app);
     const ownerId = (await signup(owner, "tiervision").expect(201)).body.user.id as string;
-    const png =
-      "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
     H.requests.length = 0;
-    const res = await owner
-      .post("/api/chat/stream")
-      .send({ avatarId: ownerId, conversationId: "conv-tv", message: "이미지", model: "sonnet", images: [png] })
-      .expect(400);
-    expect(res.body.error).toContain("이미지 입력을 지원하지 않아");
-    expect(H.requests).toHaveLength(0);
-
-    // A vision tier (no explicit entry → inherits the on default) still accepts images.
     await owner
       .post("/api/chat/stream")
-      .send({ avatarId: ownerId, conversationId: "conv-tv2", message: "이미지", model: "opus", images: [png] })
+      .send({ avatarId: ownerId, conversationId: "conv-tv", message: "이미지", model: "sonnet", images: [PNG_DATA_URL] })
       .expect(200);
     expect(H.requests).toHaveLength(1);
+    const textOnly = H.requests[0];
+    expect(textOnly.images).toBeUndefined();
+    expect(textOnly.imageFiles).toHaveLength(1);
+    expect(textOnly.imageFiles![0].mediaType).toBe("image/png");
+    const staged = textOnly.imageFiles![0].path;
+    expect(path.isAbsolute(staged)).toBe(true);
+    expect(staged.startsWith(path.join(workspaceDirFor(services.config, ownerId, "conv-tv"), "attachments") + path.sep)).toBe(true);
+    expect(fs.readFileSync(staged)).toEqual(PNG_BYTES);
+
+    // A vision tier (no explicit entry → inherits the on default) still feeds the
+    // model image content blocks, with no staged copy.
+    await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-tv2", message: "이미지", model: "opus", images: [PNG_DATA_URL] })
+      .expect(200);
+    expect(H.requests).toHaveLength(2);
+    expect(H.requests[1].images).toHaveLength(1);
+    expect(H.requests[1].imageFiles).toBeUndefined();
   });
 
   it("serves 404 for a missing image on the owner's own conversation", async () => {

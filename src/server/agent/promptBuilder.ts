@@ -443,7 +443,7 @@ function noVisionSection(request: AgentRequest): string | null {
   return (
     "**No image input**: the active model CANNOT accept images. Reading image or PDF files with Read is blocked in this deployment (the API would reject the whole turn). " +
     "Extract PDF text with Bash `pdftotext file.pdf -`. To show an image to the USER, use `mcp__file_output__show_file` — the user sees it even though you cannot. " +
-    "Do not ask the user to attach images; image uploads are disabled here."
+    "When the user attaches images they arrive as FILES in the conversation scratch workspace, with their paths listed in the user message. Never Read them; manage, convert, share, or show them as files instead."
   );
 }
 
@@ -1139,6 +1139,20 @@ export function buildUserPrompt(request: AgentRequest): string {
     lines.push(historyBlock);
   }
   lines.push(`${request.headless ? "Task instruction" : "User message"}:\n${request.message}`);
+  // Text-only turn: the attachments exist as FILES in the scratch workspace, and
+  // this listing is the ONLY way the model learns about them (their bytes never
+  // enter the request).
+  if (request.imageFiles?.length) {
+    const listing = request.imageFiles
+      .map((f) => `- ${f.path} (${f.mediaType}${f.name ? `, original name "${f.name}"` : ""})`)
+      .join("\n");
+    lines.push(
+      "Attached image files: the user attached image file(s) to this message. " +
+        "The active model cannot view image content, so they are staged as FILES in the conversation scratch workspace instead of being shown to you:\n" +
+        listing +
+        "\nYou cannot see their pixels, and Read on them is blocked. Handle them as files: show one to the user with mcp__file_output__show_file, inspect or convert with Bash, commit via the repo tools, or place one into a web page with mcp__browser__copy_image.",
+    );
+  }
   return lines.join("\n\n");
 }
 

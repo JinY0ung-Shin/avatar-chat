@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import type { AppConfig, AgentImageInput, ImageMediaType, MessageAttachment } from "./types.js";
+import type {
+  AppConfig,
+  AgentImageFileInput,
+  AgentImageInput,
+  ImageMediaType,
+  MessageAttachment,
+} from "./types.js";
 
 /**
  * Chat image attachments (user-uploaded images fed to the model + rendered in
@@ -365,6 +371,44 @@ export function readChatImages(
     }
   }
   return out;
+}
+
+/**
+ * Stage stored image attachments as FILES the agent can reach: copy each one
+ * from the conversation image store into `<workspaceDir>/attachments/<id>.<ext>`
+ * and return the model-facing file descriptors (absolute paths). Used for
+ * text-only-model turns where image bytes must never enter model input but the
+ * agent should still be able to act on the files (show_file / Bash / repo
+ * tools). Missing or unreadable files are skipped silently (mirrors
+ * readChatImages); hidden attachments (preview slides) are ignored.
+ */
+export function stageChatImageFilesFromAttachments(
+  config: AppConfig,
+  conversationId: string,
+  workspaceDir: string,
+  attachments: MessageAttachment[] | undefined,
+): AgentImageFileInput[] {
+  if (!attachments?.length) return [];
+  const dir = path.join(workspaceDir, "attachments");
+  let dirReady = false;
+  const staged: AgentImageFileInput[] = [];
+  for (const att of attachments) {
+    if (att.kind !== "image" || att.hidden) continue;
+    const resolved = resolveStoredImage(config, conversationId, att.id);
+    if (!resolved) continue;
+    const dest = path.join(dir, `${att.id}.${MIME_EXT[resolved.mediaType]}`);
+    try {
+      if (!dirReady) {
+        fs.mkdirSync(dir, { recursive: true });
+        dirReady = true;
+      }
+      fs.copyFileSync(resolved.path, dest);
+    } catch {
+      continue; // skip unreadable/uncopyable, like readChatImages
+    }
+    staged.push({ path: dest, mediaType: resolved.mediaType, name: att.name });
+  }
+  return staged;
 }
 
 /**
