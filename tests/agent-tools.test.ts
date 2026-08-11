@@ -2172,6 +2172,25 @@ describe("system tools (avatar system management)", () => {
     expect(off).not.toContain("maxChars");
   });
 
+  it("describe_system reports canvas availability and the AskUserQuestion redirect", async () => {
+    // Mirrors runPlan's canvasActive: the runtime surface must not offer a
+    // canvas the run didn't register, and when it IS available it must carry
+    // the same plain-question redirect the prompt guidance states.
+    const s = setup("st-canvas");
+    const on = (
+      await callTool(
+        buildSystemTools(s.store, { ...s.baseCtx, viewerIsOwner: true, canvasEnabled: true }),
+        "describe_system",
+        {},
+      )
+    ).content[0].text ?? "";
+    expect(on).toContain("Visual canvas (mcp__canvas__show): available");
+    expect(on).toContain("use AskUserQuestion instead of a canvas");
+
+    const off = (await callTool(toolsFor(s), "describe_system", {})).content[0].text ?? "";
+    expect(off).toContain("Visual canvas (mcp__canvas__show): unavailable in this run");
+  });
+
   it("describe_system reports deck-generation availability honestly", async () => {
     const s = setup("st-deck");
     // Default context: no toolchain probe result → honest UNAVAILABLE + admin redirect.

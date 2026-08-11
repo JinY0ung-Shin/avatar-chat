@@ -118,7 +118,10 @@
       }
         const pane = activePane();
         if (pane) {
-          await attachActiveRun(pane.id);
+          // NOT awaited: attachActiveRun resolves only when the RUN ends (a run
+          // parked on a blocking canvas can wait 30 minutes), and onMount must
+          // not stay pending that long.
+          void attachActiveRun(pane.id);
         }
     } catch (err) {
       notify(`대화 목록을 불러오지 못했습니다: ${(err as Error).message}`, "warn");
@@ -1670,49 +1673,59 @@
     </div>
   </header>
 
-  <!-- svelte-ignore a11y-no-static-element-interactions -->
-  <div
-    class={`chat-workbench ${splitClass}`}
-    class:drop-active={dropActive}
-    on:dragover={onWorkbenchDragOver}
-    on:dragleave={onWorkbenchDragLeave}
-    on:drop={onWorkbenchDrop}
-  >
-    {#each panes as item, index (item.id)}
-      <section
-        class="chat-col chat-pane compact"
-        class:active={item.id === pane.id}
-        data-pane={item.id}
-        aria-labelledby={paneDomId("pane-title", item.id)}
-        aria-current={item.id === pane.id ? "true" : undefined}
-        on:focusin={() => setActive(item.id)}
-      >
-        <div class="pane-head">
-          <button
-            id={paneDomId("pane-title", item.id)}
-            class="pane-title pane-title-button"
-            type="button"
-            aria-pressed={item.id === pane.id ? "true" : "false"}
-            on:click={() => setActive(item.id)}
-          >
-            <AvatarImage user={item.avatar} size={30} alt="" />
-            <div>
-              <strong>대화 {index + 1}</strong>
-              <span>{item.avatar.alias || item.avatar.displayName}</span>
-            </div>
-          </button>
-          <div class="pane-actions">
-            <button class="ghost-sm" type="button" disabled={item.streaming} on:click|stopPropagation={() => newChat(item.id)}>새 대화</button>
-            <button class="msg-act" type="button" aria-label="대화 창 닫기" disabled={panes.length <= 1} on:click|stopPropagation={() => closePane(item.id)}>
-              <Icon name="close" />
+  <div class="chat-layout">
+    <!-- svelte-ignore a11y-no-static-element-interactions -->
+    <div
+      class={`chat-workbench ${splitClass}`}
+      class:drop-active={dropActive}
+      on:dragover={onWorkbenchDragOver}
+      on:dragleave={onWorkbenchDragLeave}
+      on:drop={onWorkbenchDrop}
+    >
+      {#each panes as item, index (item.id)}
+        <section
+          class="chat-col chat-pane compact"
+          class:active={item.id === pane.id}
+          data-pane={item.id}
+          aria-labelledby={paneDomId("pane-title", item.id)}
+          aria-current={item.id === pane.id ? "true" : undefined}
+          on:focusin={() => setActive(item.id)}
+        >
+          <div class="pane-head">
+            <button
+              id={paneDomId("pane-title", item.id)}
+              class="pane-title pane-title-button"
+              type="button"
+              aria-pressed={item.id === pane.id ? "true" : "false"}
+              on:click={() => setActive(item.id)}
+            >
+              <AvatarImage user={item.avatar} size={30} alt="" />
+              <div>
+                <strong>대화 {index + 1}</strong>
+                <span>{item.avatar.alias || item.avatar.displayName}</span>
+              </div>
             </button>
+            <div class="pane-actions">
+              <button class="ghost-sm" type="button" disabled={item.streaming} on:click|stopPropagation={() => newChat(item.id)}>새 대화</button>
+              <button class="msg-act" type="button" aria-label="대화 창 닫기" disabled={panes.length <= 1} on:click|stopPropagation={() => closePane(item.id)}>
+                <Icon name="close" />
+              </button>
+            </div>
           </div>
-        </div>
-        {@render transcript(item)}
-        {@render composer(item, true, index)}
-        <PromptModal paneId={item.id} />
-      </section>
-    {/each}
+          {@render transcript(item)}
+          {@render composer(item, true, index)}
+          <PromptModal paneId={item.id} />
+        </section>
+      {/each}
+    </div>
+    <!-- Same side-panel slot as the single-pane branch, for the ACTIVE pane:
+         without it a canvas created while split is invisible until the user is
+         back to one pane. CapabilitiesPanel stays single-pane-only. -->
+    {#if pane.filePreview}
+      <FilePreviewPanel {pane} />
+    {:else if pane.canvases?.length}
+      <CanvasPanel {pane} />
+    {/if}
   </div>
 {:else}
   <!-- svelte-ignore a11y-no-static-element-interactions -->

@@ -169,3 +169,16 @@
   `show` takes an optional `canvasId`; reusing it UPDATES that artifact (client `handleCanvas` +
   `canvasesFromMessages` AND server `record()` all upsert by id, latest-wins). **Size-cap:** `canvasTools.ts`
   rejects over-`MAX_CANVAS_CONTENT_CHARS` content (it rides every `resume` turn's transcript).
+- **A PARKED canvas survives a conversation switch ONLY through the run-event replay.** `record()` runs at
+  resolve time, so a parked ask is NOT in the canvas tables yet; returning to the conversation rebuilds the
+  form purely from the journal's `canvas` frame (`tests/routes-chat-canvas-park.test.ts` +
+  `tests/client-canvas-park.test.ts` pin both halves). To keep that return possible at all,
+  `selectConversation`/`addConversationToSplit`/ChatView-onMount fire `attachActiveRun` WITHOUT awaiting it —
+  it resolves only at RUN end, and awaiting it held the sidebar's per-conversation busy lock (disabled
+  button) for the whole park; pane-REPLACING navigations abort the dropped panes' reader loops
+  (client-side only — the run stays reattachable). Split view mounts the SAME side-panel slot
+  (`FilePreviewPanel`/`CanvasPanel` for the ACTIVE pane) inside a `.chat-layout` wrapper — before, a canvas
+  created while split was invisible entirely. E2E pin: `tests/visual/canvas-park-return.spec.ts`.
+- **Questions default to AskUserQuestion, not canvas controls** — controls are for decisions ANCHORED to
+  the artifact on screen (stated in the standing canvas guidance + the `show` description). `describe_system`
+  reports canvas availability via runPlan's `canvasActive` → `ctx.canvasEnabled`, carrying the same redirect.

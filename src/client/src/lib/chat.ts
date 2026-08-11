@@ -153,6 +153,23 @@ function makePane(
   };
 }
 
+/**
+ * A pane-REPLACING navigation drops panes that may still own a live reader loop
+ * (a send's own stream, or a reattach). Nothing else ends those loops, so the
+ * dropped pane keeps its SSE connection open until the stream happens to break.
+ * Abort them right AFTER the swap: their `finalizePane`/`updatePane` teardown
+ * all no-op once the pane is gone from state, and the abort is client-side only
+ * — the server run is untouched (only POST /api/chat/runs/:id/cancel ends one),
+ * so reattaching to it later still works. Pass the pane list captured BEFORE the
+ * swap; whatever survived into the new state is left alone.
+ */
+function abortDroppedPanes(before: ChatPane[]): void {
+  const live = new Set(readState().chatPanes.map((item) => item.id));
+  for (const pane of before) {
+    if (!live.has(pane.id)) pane.abortController?.abort();
+  }
+}
+
 export async function startChatWith(
   summary: AvatarSummary,
   split = false,
@@ -180,6 +197,7 @@ export async function startChatWith(
     `/api/avatars/${encodeURIComponent(summary.id)}`,
   );
   const pane = makePane(avatar);
+  const before = [...readState().chatPanes];
   updateState((state) => {
     state.currentAvatar = avatar;
     if (
@@ -192,6 +210,7 @@ export async function startChatWith(
     state.activePaneId = pane.id;
     state.view = "chat";
   });
+  abortDroppedPanes(before);
   syncHash();
   void loadConversations();
 }
@@ -217,12 +236,14 @@ export async function openSeededChat(
   );
   const pane = makePane(avatar);
   pane.draft = seedText;
+  const before = [...readState().chatPanes];
   updateState((state) => {
     state.currentAvatar = avatar;
     state.chatPanes = [pane];
     state.activePaneId = pane.id;
     state.view = "chat";
   });
+  abortDroppedPanes(before);
   syncHash();
   void loadConversations();
   notify(notice, "info");
@@ -287,14 +308,20 @@ export async function selectConversation(
     loaded.canvases,
   );
   applyLoadedConversation(pane, loaded);
+  const before = [...readState().chatPanes];
   updateState((s) => {
     s.currentAvatar = avatarRes.avatar;
     s.chatPanes = [pane];
     s.activePaneId = pane.id;
     s.view = "chat";
   });
+  abortDroppedPanes(before);
   syncHash(true);
-  await attachActiveRun(pane.id);
+  // NOT awaited: attachActiveRun resolves only when the RUN ends, and a run
+  // parked on a blocking canvas can wait 30 minutes. Awaiting it would hold this
+  // caller — the sidebar's per-conversation busy lock — hostage for that whole
+  // time, leaving the conversation's button disabled and every later open a no-op.
+  void attachActiveRun(pane.id);
 }
 
 // Add an EXISTING conversation as an extra split pane (drag-from-list / "분할에
@@ -347,7 +374,9 @@ export async function addConversationToSplit(
     s.view = "chat";
   });
   syncHash(true);
-  await attachActiveRun(pane.id);
+  // Not awaited, same as selectConversation: this resolves only at run end, and
+  // the sidebar's "분할 대화에 추가" button is disabled until the caller returns.
+  void attachActiveRun(pane.id);
 }
 
 export function newChat(paneId?: string, opts?: { force?: boolean }): void {
@@ -358,6 +387,7 @@ export function newChat(paneId?: string, opts?: { force?: boolean }): void {
       );
   if (!pane || (pane.streaming && !opts?.force)) return;
   const next = makePane(pane.avatar);
+  const before = [...readState().chatPanes];
   updateState((state) => {
     state.chatPanes = state.chatPanes.map((item) =>
       item.id === pane.id ? next : item,
@@ -365,6 +395,8 @@ export function newChat(paneId?: string, opts?: { force?: boolean }): void {
     state.activePaneId = next.id;
     state.currentAvatar = next.avatar;
   });
+  // force:true can replace a still-streaming pane (startNewChat's confirm path).
+  abortDroppedPanes(before);
   syncHash();
 }
 

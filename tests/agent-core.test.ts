@@ -3623,12 +3623,20 @@ describe("buildPrompt", () => {
   it("injects canvas guidance only when canvasEnabled", () => {
     const off = buildPrompt(req({ viewerIsOwner: true }), 0);
     expect(off).not.toContain("mcp__canvas__show");
+    // The AskUserQuestion redirect lives inside the canvas section, so it rides
+    // the same gate — a canvas-less run gets no canvas-vs-question guidance.
+    expect(off).not.toContain("NEVER open a canvas just to ask");
     const on = buildPrompt(
       req({ viewerIsOwner: true, canvasEnabled: true }),
       0,
     );
     expect(on).toContain("mcp__canvas__show");
     expect(on).toContain("Visual canvas");
+    // Controls collect a decision anchored to the artifact; a plain question
+    // goes to the SDK-native tool instead of opening a panel.
+    expect(on).toContain("ANCHORED TO the artifact on screen");
+    expect(on).toContain("AskUserQuestion");
+    expect(on).toContain("NEVER open a canvas just to ask");
   });
 
   it("gives a colleague the canvas guidance too when the feature is enabled", () => {
@@ -3637,6 +3645,10 @@ describe("buildPrompt", () => {
       0,
     );
     expect(p).toContain("Visual canvas");
+    // A colleague reaches AskUserQuestion too (the PreToolUse hook gates it on
+    // headless/onQuestion, not on viewer class), so it gets the same redirect.
+    expect(p).toContain("AskUserQuestion");
+    expect(p).toContain("NEVER open a canvas just to ask");
   });
 
   it("injects local image-output guidance only when show_file is available", () => {

@@ -689,6 +689,16 @@ export async function buildAgentRunPlan(
     config,
   });
   const fileOutputActive = Boolean(request.cwd && events?.onFile);
+  // Visual canvas (experimental `canvas` feature, #50): registered only when the
+  // avatar OWNER enabled it AND this is an interactive turn with a canvas sink
+  // (events.onCanvas). Gating on the owner's setting — not the viewer's — means
+  // colleagues chatting with that avatar also get canvases (the feature grants no
+  // elevation; the handler self-gates nothing because showing UI is harmless).
+  // Computed here, before buildSystemServer, so describe_system reports it.
+  const canvasActive =
+    canvasToolsEnabled &&
+    Boolean(events?.onCanvas) &&
+    ownerState.experimentalFeatures.includes("canvas");
   // Deployment-level PPTX toolchain (LibreOffice/pdftoppm/python-pptx) probe —
   // memoized per process. Deck guidance additionally needs a turn that can
   // publish files (the preview/download path), hence the && below.
@@ -714,6 +724,7 @@ export async function buildAgentRunPlan(
     activeRepoName: request.activeRepoName,
     fileOutputEnabled: fileOutputActive,
     browserEnabled: browserActive,
+    canvasEnabled: canvasActive,
     deckRenderingAvailable,
     visionEnabled: runVisionEnabled,
     toolSkillPolicy,
@@ -864,15 +875,8 @@ export async function buildAgentRunPlan(
       })
     : null;
 
-  // Visual canvas (experimental `canvas` feature, #50): registered only when the
-  // avatar OWNER enabled it AND this is an interactive turn with a canvas sink
-  // (events.onCanvas). Gating on the owner's setting — not the viewer's — means
-  // colleagues chatting with that avatar also get canvases (the feature grants no
-  // elevation; the handler self-gates nothing because showing UI is harmless).
-  const canvasActive =
-    canvasToolsEnabled &&
-    Boolean(events?.onCanvas) &&
-    ownerState.experimentalFeatures.includes("canvas");
+  // Visual canvas server for this run; `canvasActive` is computed further up
+  // (before buildSystemServer) so describe_system reports the same capability.
   const canvasServer = canvasActive
     ? buildCanvasServer({ emitCanvas: events!.onCanvas! })
     : null;
