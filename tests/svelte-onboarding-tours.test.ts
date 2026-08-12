@@ -114,7 +114,15 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Drain the deferred tour handoff (startTour's setTimeout(0) → openSeededChat
+  // → its fire-and-forget loadConversations) and any in-flight module loads
+  // BEFORE vitest tears the jsdom environment down. A promise that settles
+  // after teardown fails the whole run as an unhandled rejection
+  // (EnvironmentTeardownError via ChatView's autoscroll import) even with every
+  // test green. Drain while the fetch stub is still installed, unstub last.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  await vi.dynamicImportSettled();
   vi.unstubAllGlobals();
 });
 
