@@ -11,7 +11,11 @@ import type { AgentOwner, AppConfig, Plugin, RoutineJob, RoutineSchedulePatch } 
 import { text } from "./mcpTools.js";
 import { DEFAULT_MODEL_TIER } from "../modelTiers.js";
 import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL } from "../effortLevels.js";
-import { summarizeGroupAgentState, summarizeOwnerState } from "./ownerState.js";
+import {
+  gettingStartedGaps,
+  summarizeGroupAgentState,
+  summarizeOwnerState,
+} from "./ownerState.js";
 import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
 import type { ToolSkillPolicy } from "../toolSkillPolicy.js";
 import { webFetchProxyState } from "./webFetchTools.js";
@@ -345,6 +349,23 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         const enabledMcpToolGroupLabels = MCP_TOOL_GROUPS
           .filter((group) => enabledMcpToolGroups.includes(group.id))
           .map((group) => group.labelEn);
+        // The SAME two setup gaps buildSystemPromptAppend's getting-started
+        // section names, from the same derivation at the sync point: a gap the
+        // prompt lets the avatar offer to fix must also be visible here, and
+        // vice versa. The proactive-once rule is restated because this tool
+        // result may be the only place the avatar re-reads it mid-conversation.
+        const gaps = gettingStartedGaps(state);
+        const gettingStartedLine =
+          gaps.length === 0
+            ? "complete — knowledge repository connected and internal Git token registered"
+            : gaps
+                .map((gap) =>
+                  gap === "repo"
+                    ? "no personal knowledge repository (no memory across conversations, nowhere to keep skills, nothing to capture into)"
+                    : "no internal Git token (GIT_TOKEN — repository creation, commit, and push all fail)",
+                )
+                .join("; ") +
+              ". You MAY offer to set this up ONCE, early in a conversation at a natural pause and never mid-task; if the owner passes, drop it and do not raise it again";
         const hashtags = user?.hashtags ?? [];
         const visibilityLabel =
           user?.visibility === "private"
@@ -382,6 +403,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Document deck generation (PPTX): ${ctx.deckRenderingAvailable ? `toolchain available (python-pptx + LibreOffice + pdftoppm)${ctx.fileOutputEnabled ? " — use the `pptx` skill: generate, render slide previews, then `mcp__file_output__share_file` for the download" : "; preview/download need an interactive chat turn"}` : "UNAVAILABLE — this deployment image lacks the LibreOffice/python-pptx toolchain; tell the user a system administrator must rebuild the server image to enable PPT generation (do not attempt shell workarounds)"}`,
           `- Diagram files (.drawio): ${ctx.fileOutputEnabled ? "supported — author/edit uncompressed mxfile XML per the `drawio` skill and deliver with `mcp__file_output__share_file`; the file card's side panel renders the diagram interactively in the chat UI (client-side, no server toolchain)" : "viewer is built into the chat UI, but sharing files is unavailable in this run (needs an interactive chat turn)"}`,
           `- Internal Git token (GIT_TOKEN): ${state.gitTokenSet ? "set" : "not set"}`,
+          `- Getting started: ${gettingStartedLine}`,
           `- Secret names: ${secretNames.length ? secretNames.map((name) => `\`${name}\``).join(", ") + " (custom secrets are injected as env into MCP servers from your own plugins/knowledge repo; git/SSH credentials go only to their dedicated tools)" : "(none)"}`,
           `- Shell-exposed secrets: ${state.shellExposedSecretNames.length ? state.shellExposedSecretNames.map((name) => `\`${name}\``).join(", ") + " — usable as `$NAME` in Bash on elevated runs; values are redacted from tool outputs (per-secret 셸 노출 toggle in Settings)" : "(none — every secret stays out of the agent shell; enable per-secret with the 셸 노출 toggle in Settings)"}`,
           `- Remote SSH tools: ${secretNames.includes("SSH_PRIVATE_KEY") ? "enabled (SSH_PRIVATE_KEY set)" : "disabled (no SSH_PRIVATE_KEY secret)"}`,

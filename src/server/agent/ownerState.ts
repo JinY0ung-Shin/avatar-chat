@@ -112,6 +112,38 @@ export function summarizeOwnerState(
   };
 }
 
+/** A high-impact setup step the owner has not completed yet. */
+export type GettingStartedGapId = "repo" | "gitToken";
+
+/**
+ * The owner's unfinished setup, most impactful first. Facts only — no prose and
+ * no labels: `buildSystemPromptAppend` turns these ids into its standing
+ * "you may offer to fix this ONCE" guidance and `describe_system` into its own
+ * state line, each formatting its own way (the ownerState.ts contract above).
+ *
+ * Deliberately only TWO ids. Both keep whole capability families dark — with no
+ * repository the avatar has no memory, no skills, and nowhere to capture; with
+ * no token it can neither create a repository nor commit/push one. Counts that
+ * could merely be HIGHER (secrets, plugins, shared/learnable skills, groups) are
+ * not gaps: an avatar that recites everything its owner has not done yet nags.
+ *
+ * Takes the two flags rather than a whole OwnerState so the prompt builder can
+ * call it with the same facts riding on `AgentRequest` — the derivation stays
+ * HERE, at the sync point, instead of being re-implemented per consumer.
+ */
+export function gettingStartedGaps(
+  state: Pick<OwnerState, "knowledgeRepoConfigured" | "gitTokenSet">,
+): GettingStartedGapId[] {
+  const gaps: GettingStartedGapId[] = [];
+  if (!state.knowledgeRepoConfigured) {
+    gaps.push("repo");
+  }
+  if (!state.gitTokenSet) {
+    gaps.push("gitToken");
+  }
+  return gaps;
+}
+
 /**
  * Inert OwnerState for runs that have NO owner (group shared agents): every
  * user-scoped fact reads empty/false, so no personal capability can leak into

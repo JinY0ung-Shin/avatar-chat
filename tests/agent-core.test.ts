@@ -197,6 +197,7 @@ import {
 } from "../src/server/hexSshPolicy.js";
 
 import {
+  callTool,
   rpcClient,
   gitInit,
   makeBareRemote,
@@ -3326,6 +3327,106 @@ describe("buildPrompt", () => {
     expect(mid).toContain("Git credentials");
   });
 
+  // Getting-started: the ONE thing the avatar may raise unprompted, so both the
+  // offer's wording and its per-viewer gating are pinned.
+  const setupGaps = { knowledgeRepoConfigured: false, gitTokenSet: false };
+  const GETTING_STARTED = "this owner's setup is still incomplete";
+
+  it("gives the owner a proactive-once getting-started offer while setup is incomplete", () => {
+    const p = buildPrompt(
+      req({ ...setupGaps, viewerIsOwner: true, viewerName: "신진영" }),
+      0,
+    );
+    expect(p).toContain(GETTING_STARTED);
+    // Both gaps named with what each one costs.
+    expect(p).toContain("no memory that survives this conversation");
+    expect(p).toContain("the internal Git token (`GIT_TOKEN`) is not registered");
+    // Proactive, but once — and never as an interruption.
+    expect(p).toContain("You MAY raise this ONCE per conversation");
+    expect(p).toContain("Never in the middle of a task");
+    // The token is the owner's own hands; the exact settings label is the h3.
+    expect(p).toContain("권한·연결 → **Git 자격증명**");
+    expect(p).toContain("체험 시나리오");
+  });
+
+  it("makes the getting-started offer actionable via create_repo once a token exists", () => {
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, knowledgeRepoConfigured: false, gitTokenSet: true }),
+      0,
+    );
+    expect(p).toContain(GETTING_STARTED);
+    expect(p).toContain("no manual steps for them");
+    // The token half is done, so it is no longer named as a gap.
+    expect(p).not.toContain("the internal Git token (`GIT_TOKEN`) is not registered");
+  });
+
+  it("drops the getting-started section once the repo and token are both configured", () => {
+    const p = buildPrompt(
+      req({ viewerIsOwner: true, knowledgeRepoConfigured: true, gitTokenSet: true }),
+      0,
+    );
+    expect(p).not.toContain(GETTING_STARTED);
+  });
+
+  it("keeps getting-started OUT of colleague, teammate, routine, and group-agent turns", () => {
+    const colleague = buildPrompt(
+      req({ ...setupGaps, viewerIsOwner: false, viewerName: "동료" }),
+      0,
+    );
+    expect(colleague).not.toContain(GETTING_STARTED);
+    const teammate = buildPrompt(
+      req({ ...setupGaps, viewerIsOwner: false, elevated: true, viewerName: "동료" }),
+      0,
+    );
+    expect(teammate).not.toContain(GETTING_STARTED);
+    // A scheduled routine must never pause its work to pitch setup.
+    const routine = buildPrompt(
+      req({ ...setupGaps, viewerIsOwner: true, headless: true, allowHeadlessTools: true }),
+      0,
+    );
+    expect(routine).not.toContain(GETTING_STARTED);
+    const restricted = buildPrompt(
+      req({ ...setupGaps, viewerIsOwner: true, headless: true }),
+      0,
+    );
+    expect(restricted).not.toContain(GETTING_STARTED);
+    // A group shared agent has no owner setup to offer at all.
+    const groupAgent = buildPrompt(
+      req({
+        ...setupGaps,
+        viewerName: "멤버",
+        groupAgent: {
+          groupId: "g",
+          agentId: "a",
+          groupName: "팀",
+          viewerRole: "member" as const,
+          captureAllowed: true,
+        },
+      }),
+      0,
+    );
+    expect(groupAgent).not.toContain(GETTING_STARTED);
+  });
+
+  it("stops offering setup once the conversation is no longer young", () => {
+    const afterMessages = (count: number) =>
+      buildPrompt(
+        req({
+          ...setupGaps,
+          viewerIsOwner: true,
+          conversationHistory: Array.from({ length: count }, (_, index) => ({
+            role: index % 2 === 0 ? "user" : "assistant",
+            content: "…",
+          })),
+        }),
+        0,
+      );
+    expect(afterMessages(0)).toContain(GETTING_STARTED);
+    expect(afterMessages(4)).toContain(GETTING_STARTED);
+    expect(afterMessages(6)).not.toContain(GETTING_STARTED);
+    expect(afterMessages(20)).not.toContain(GETTING_STARTED);
+  });
+
   it("shows the repo-management capability to the owner once a repo is connected", () => {
     const p = buildPrompt(
       req({
@@ -4553,6 +4654,56 @@ describe("summarizeOwnerState lazy counts", () => {
     void state.gitRepoCount;
     void state.gitRepoCount;
     expect(gitSpy).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// describe_system mirrors the prompt's getting-started gaps (both metacognition
+// surfaces read the same gettingStartedGaps derivation)
+// ---------------------------------------------------------------------------
+
+describe("describe_system getting-started mirror", () => {
+  function setup(dir: string) {
+    const { store, config } = createServices({
+      dataDir: path.join(tempDir, dir),
+      agentRuntime: "local",
+      sessionSecret: "t",
+    });
+    const owner = store.createUser({
+      username: "owner",
+      displayName: "Owner",
+      password: "password123",
+    });
+    const ctx: SystemToolsContext = {
+      avatarUserId: owner.id,
+      owner: {
+        id: owner.id,
+        username: owner.username,
+        displayName: owner.displayName,
+      },
+      viewerIsOwner: true,
+      config,
+    };
+    return { store, owner, tools: buildSystemTools(store, ctx) };
+  }
+
+  it("names the same setup gaps the prompt offers to fix", async () => {
+    const s = setup("gs-gaps");
+    const out =
+      (await callTool(s.tools, "describe_system", {})).content[0].text ?? "";
+    expect(out).toContain("- Getting started: no personal knowledge repository");
+    expect(out).toContain("no internal Git token");
+    expect(out).toContain("You MAY offer to set this up ONCE");
+  });
+
+  it("reports setup as complete once the repo and token are configured", async () => {
+    const s = setup("gs-complete");
+    s.store.setKnowledgeRepo(s.owner.id, "owner/knowledge", "main");
+    s.store.setGitToken(s.owner.id, "ghp_token");
+    const out =
+      (await callTool(s.tools, "describe_system", {})).content[0].text ?? "";
+    expect(out).toContain("- Getting started: complete");
+    expect(out).not.toContain("You MAY offer to set this up ONCE");
   });
 });
 

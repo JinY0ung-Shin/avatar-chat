@@ -16,6 +16,10 @@ moved symbols so importers keep their paths:
   in the append, while stored history + the current user/task instruction stay in the user prompt. **`agent-core.test.ts`
   checks the prompt with `toContain`/`not.toContain` substrings, NOT byte-for-byte** — ADDING a section is
   safe; only changing an EXISTING string (or its presence per viewer class) breaks a test.
+  The append's one PROACTIVE section is `gettingStartedSection` (setup gaps from `ownerState.ts`'s
+  `gettingStartedGaps`, mirrored by `describe_system`): interactive-owner branch only — so routines,
+  colleagues, and group agents are excluded structurally — and it drops out past ~6 stored messages
+  (`conversationHistory.length`, the free conversation-youth signal) so the offer can only be an early one.
 - `sdkMessageHandlers.ts` — SDK-message→`AgentEvents` translation (`handle*` + Task helpers + `LoopState`
   + `interpretResult`/`resultErrorMessage`).
 - `preToolUseHook.ts` — `buildPreToolUseHook` + `hookAllow`/`hookDeny`/`isAutoAllowed`/`safeToolInput`.

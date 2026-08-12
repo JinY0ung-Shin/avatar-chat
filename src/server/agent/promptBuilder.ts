@@ -1,5 +1,6 @@
 import type { AgentRequest } from "../types.js";
 import { normalizeGithubHost } from "../marketplace.js";
+import { gettingStartedGaps } from "./ownerState.js";
 import {
   DEFAULT_MCP_TOOL_GROUPS,
   MCP_TOOL_GROUPS,
@@ -499,6 +500,88 @@ function experimentalFeaturesSection(request: AgentRequest): string | null {
   return (
     `Enabled experimental (beta) features for this avatar: ${features.map((f) => `\`${f}\``).join(", ")}. ` +
     "These are experimental — their behavior and availability may change. The owner toggles them in Settings."
+  );
+}
+
+/**
+ * How many stored messages a conversation may already have and still count as
+ * "early". Two or three exchanges in, an unprompted setup pitch is no longer an
+ * opening remark, so the section drops out entirely rather than trusting the
+ * model to remember it already asked.
+ */
+const GETTING_STARTED_HISTORY_LIMIT = 6;
+
+/**
+ * Getting-started section: the owner's unfinished setup, plus the ONE thing in
+ * this prompt the avatar may raise WITHOUT being asked. Every other capability
+ * string here is reactive ("when the owner asks…"), so a brand-new owner never
+ * hears that their avatar has no memory — it simply, silently, has none.
+ *
+ * Owner-INTERACTIVE personal-avatar turns only: the only caller sits in the
+ * `viewerIsOwner` branch, which the group-agent / consultation / headless
+ * branches above have already claimed. So a scheduled routine never pauses its
+ * work to pitch setup, and no colleague is shown the owner's setup state.
+ *
+ * The youth gate rides `conversationHistory`, which carries the conversation's
+ * PRIOR stored messages on every turn (resume turns included — see
+ * buildUserPrompt), so "early in the conversation" is free here with no new
+ * parameter threaded through runPlan. Undefined (a direct unit call) counts as
+ * young; an unknown repo/token state counts as CONFIGURED, since an unknown
+ * must never turn into a nag.
+ */
+function gettingStartedSection(request: AgentRequest): string | null {
+  const gaps = gettingStartedGaps({
+    knowledgeRepoConfigured: request.knowledgeRepoConfigured !== false,
+    gitTokenSet: Boolean(request.gitTokenSet),
+  });
+  if (gaps.length === 0) {
+    return null;
+  }
+  if (
+    (request.conversationHistory?.length ?? 0) >= GETTING_STARTED_HISTORY_LIMIT
+  ) {
+    return null;
+  }
+  const repoGap = gaps.includes("repo");
+  const tokenGap = gaps.includes("gitToken");
+  // `mcp__repo__create_repo` exists only while the personal-knowledge family is
+  // registered (runPlan's allowRepoCreate) — never offer a route this run does
+  // not actually have.
+  const repoToolsOn = mcpToolGroupEnabled(request, "personal_knowledge");
+  // The literal settings path (the tab, then its h3) — the token is the one gap
+  // the avatar cannot close itself, so name where the owner closes it.
+  const tokenSettingsPath = "Settings (설정) → 권한·연결 → **Git 자격증명**";
+  const createRoute =
+    "create and connect the repository yourself with `mcp__repo__create_repo` (just ask for a name), with no manual steps for them";
+  const offer =
+    repoGap && tokenGap
+      ? `offer the knowledge repository, and name the one prerequisite — the internal Git token is theirs to register under ${tokenSettingsPath} and cannot be set from this chat${repoToolsOn ? `; once it is there you ${createRoute}` : ""}.`
+      : repoGap
+        ? repoToolsOn
+          ? `offer the knowledge repository and simply do it — ${createRoute}.`
+          : "offer the knowledge repository; the owner connects it under Settings (설정), since the personal-knowledge tools are off for this conversation and you cannot create one here."
+        : `offer to get the internal Git token registered — it is theirs to set under ${tokenSettingsPath} and cannot be set from this chat.`;
+  return (
+    "**Getting started**: this owner's setup is still incomplete — " +
+    [
+      repoGap
+        ? "no personal knowledge repository is connected, so you have no memory that survives this conversation, nowhere to keep skills, and nothing to capture into"
+        : "",
+      tokenGap
+        ? "the internal Git token (`GIT_TOKEN`) is not registered, so you can neither create a repository nor commit/push anything to the internal host"
+        : "",
+    ]
+      .filter(Boolean)
+      .join("; ") +
+    ". You MAY raise this ONCE per conversation, and only once: early on, at a natural pause, in ONE short sentence. " +
+    "Never in the middle of a task, never while the owner is asking about something else, and never as the whole of a reply. " +
+    "If they decline, ignore it, or you have already mentioned it in this conversation, drop it for good — no reminders, and no raising it again on a later turn. " +
+    `When you do offer, make it actionable: ${offer}` +
+    // The tours stand a repository up as they go, so they are only a route while
+    // the repository is the thing that is missing.
+    (repoGap
+      ? " They can also walk it through hands-on with the 체험 시나리오 cards on the empty chat screen or the `/tour` command (the capture and skill tours connect the repository along the way)."
+      : "")
   );
 }
 
@@ -1040,6 +1123,13 @@ export function buildSystemPromptAppend(
     const experimentalBlock = experimentalFeaturesSection(request);
     if (experimentalBlock) {
       lines.push(experimentalBlock);
+    }
+    // The owner's unfinished setup + the licence to offer to fix it ONCE. Last
+    // in the branch on purpose: every capability it can point at (create_repo,
+    // the repo/brain guidance) has already been stated above.
+    const gettingStartedBlock = gettingStartedSection(request);
+    if (gettingStartedBlock) {
+      lines.push(gettingStartedBlock);
     }
   } else {
     const name = request.viewerName?.trim();
