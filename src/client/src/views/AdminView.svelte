@@ -16,6 +16,12 @@
   let loading = true;
   let loadBusy = false;
   let error = "";
+  // One-shot latch for load()'s dirty-guards: before the FIRST seeding the
+  // panels' local state is empty, so the reactive dirty flags (recomputed when
+  // replaceState lands, before load()'s continuation resumes) read as "unsaved
+  // edits" against the fresh server payload and would skip seeding entirely —
+  // hexPolicy stays {} and the 시스템 tab crashes on hexPolicy[role][tool].
+  let panelsSeeded = false;
 
   // system tab field state
   let modelInput = "";
@@ -263,10 +269,13 @@
       // calls load() on every tab): only re-seed a panel from server state when
       // it has NO pending edits — otherwise the refresh silently discards them,
       // which contradicts the "저장하지 않은 변경 사항" banner shown right there.
-      if (!hexDirty) syncHexPolicyFromSys();
-      if (!toolSkillDirty) syncToolSkillFromSys();
-      if (!visionDirty) syncVisionPolicyFromSys();
-      if (!modelDirty) modelInput = String(unwrapSystem($appState.adminSystem).modelOverride || "");
+      // The guards apply only AFTER the first seed (panelsSeeded) — see the
+      // flag's declaration for why they misfire on the initial load.
+      if (!panelsSeeded || !hexDirty) syncHexPolicyFromSys();
+      if (!panelsSeeded || !toolSkillDirty) syncToolSkillFromSys();
+      if (!panelsSeeded || !visionDirty) syncVisionPolicyFromSys();
+      if (!panelsSeeded || !modelDirty) modelInput = String(unwrapSystem($appState.adminSystem).modelOverride || "");
+      panelsSeeded = true;
     } catch (err) {
       error = (err as Error).message;
     } finally {
