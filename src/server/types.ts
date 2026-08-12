@@ -166,6 +166,18 @@ export interface AppConfig {
    */
   confluenceUrl?: string;
   /**
+   * Base URL of the deployment's OpenAI-compatible speech-to-text service (env
+   * `STT_URL`), including the API version segment — e.g. `http://stt:8000/v1`.
+   * Unset DISABLES the feature: `POST /api/stt` 503s and the composer hides its
+   * mic button (`sttEnabled` in `/api/bootstrap`).
+   */
+  sttUrl?: string;
+  /**
+   * Model name sent with each transcription request (env `STT_MODEL`). The
+   * service picks what it actually has loaded, so this only has to name it.
+   */
+  sttModel: string;
+  /**
    * Deployment-wide DEFAULT browser-control allowlist (env
    * `BROWSER_ALLOWED_ORIGINS`, comma-separated hostnames / `*.wildcards`).
    * Served via `GET /api/browser-extension` and applied by the Noah page to a

@@ -1004,7 +1004,7 @@ tbody tr:hover td {
 
 .composer-box {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   align-items: end;
   gap: var(--s-2);
   border: 1px solid var(--line);
@@ -1015,10 +1015,18 @@ tbody tr:hover td {
   transition: border-color 0.15s var(--ease-out), box-shadow 0.15s var(--ease-out);
 }
 
-/* Panes without the image-attach button (external avatars) render only the
-   textarea + send button; drop the attach column so the textarea doesn't land
-   in the `auto` slot with the send button stranded in the middle 1fr column. */
+/* The row is `attach | textarea | mic | send`, and BOTH icon buttons are
+   optional: attach is native-panes-only (external avatars take no images), mic
+   only exists where the deployment configured STT. Every combination needs its
+   own column list — one column too many strands a button in the middle 1fr slot
+   and squeezes the textarea into an `auto` one. */
 .composer-box.no-attach {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+.composer-box.no-stt {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+.composer-box.no-attach.no-stt {
   grid-template-columns: minmax(0, 1fr) auto;
 }
 
@@ -1046,6 +1054,42 @@ tbody tr:hover td {
 .composer-attach svg {
   width: 20px;
   height: 20px;
+}
+
+/* Voice-input button (right of the textarea, left of send). Same 40×40 icon box
+   as the attach control, but a real <button> — there is no file input to wrap —
+   so the global button chrome is stripped back to the borderless look. */
+.composer-mic {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: var(--r-md);
+  background: transparent;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--muted);
+}
+.composer-mic:hover:not(:disabled) {
+  background: var(--panel-strong);
+  color: var(--text);
+}
+.composer-mic:disabled {
+  opacity: var(--disabled-opacity);
+}
+.composer-mic svg {
+  width: 20px;
+  height: 20px;
+}
+/* Recording: the danger tint carries the state (the pulsing dot in the hint row
+   is the motion), so the live take is still obvious with animation off. */
+.composer-mic.recording {
+  color: var(--danger);
+  background: var(--danger-soft);
+}
+.composer-mic.recording:hover {
+  color: var(--danger);
+  background: var(--danger-soft);
 }
 
 /* Staged-image thumbnail strip above the input box. */
@@ -1191,6 +1235,39 @@ textarea::placeholder {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Voice-input status, in the hint row under the mic button: elapsed seconds
+   against the 60s cap while recording, then the transcription wait. The dot's
+   pulse is the only motion — everything the state means is also in the text. */
+.composer-stt {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  cursor: default;
+}
+.composer-stt[data-phase="recording"] {
+  color: var(--danger);
+}
+.composer-stt[data-phase="recording"]::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: var(--s-1-5);
+  vertical-align: 1px;
+  background: var(--danger);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .composer-stt[data-phase="recording"]::before {
+    animation: composer-stt-pulse 1.4s ease-in-out infinite;
+  }
+}
+@keyframes composer-stt-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
 .composer-usage {
   font-variant-numeric: tabular-nums;
   cursor: default;

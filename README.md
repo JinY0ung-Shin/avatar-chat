@@ -141,6 +141,63 @@ public upstreams) route installs through internal mirrors. Alongside the existin
 - `PIP_INDEX_URL` — internal PyPI index URL used by `pip install` at build time.
 - `PIP_TRUSTED_HOST` — host to trust when that PyPI mirror uses HTTP or a self-signed cert.
 
+## Speech-to-text (optional)
+
+The composer's mic button records an utterance, posts it to `POST /api/stt`, and drops the
+transcript into the chat input. It appears only when `STT_URL` is set, so this whole section is
+opt-in — as is the `stt` compose service, which lives behind a `stt` profile and is ignored by a
+plain `docker compose up`.
+
+The reference engine is **Qwen3-ASR-1.7B** (Apache 2.0) served by vLLM on the deploy host's GPU.
+The deploy host has no Hugging Face or internet access, so both artifacts are carried in by hand:
+
+1. **Provision offline.** On a machine with internet access, download the weights and pull the vLLM
+   image, then transfer both to the deploy host:
+
+   ```bash
+   huggingface-cli download Qwen/Qwen3-ASR-1.7B --local-dir Qwen3-ASR-1.7B
+   docker pull vllm/vllm-openai:<tag>          # the tag you intend to pin
+   docker save vllm/vllm-openai:<tag> -o vllm-openai.tar
+   ```
+
+   On the deploy host, the weights go to `./docker/stt-models/Qwen3-ASR-1.7B` (the directory is
+   git-ignored and bind-mounted read-only at `/models`), and the image goes into the corporate
+   registry or straight in with `docker load -i vllm-openai.tar`. Edit `docker-compose.yml` to
+   replace the `REPLACE_WITH_PINNED_TAG` placeholder with the exact reference you brought in.
+
+2. **Start it.** Add `STT_URL=http://stt:8000/v1` to `.env`, then one command starts the engine and
+   recreates the app container so it reads the new `.env`:
+
+   ```bash
+   docker compose --profile stt up -d
+   ```
+
+   Keep passing `--profile stt` (or export `COMPOSE_PROFILES=stt`) for later `up`/`down` on this
+   deployment — without it, compose does not manage the `stt` service at all. The container publishes
+   **no host port**: it is reachable only from the compose network, and Noah's authenticated
+   `POST /api/stt` is the only way in. First start takes a few minutes to load weights; watch
+   `docker compose --profile stt logs -f stt` until the healthcheck goes healthy.
+
+3. **Verify.** Call the upstream from inside the app container, which also proves the compose network
+   resolves `stt`. `--noproxy '*'` matters when a corporate `HTTP_PROXY` is set in `.env`:
+
+   ```bash
+   docker compose cp sample.wav noah-almighty:/tmp/sample.wav   # a few seconds of mono speech
+   docker compose exec noah-almighty curl -sS --noproxy '*' \
+     -F file=@/tmp/sample.wav -F model=Qwen/Qwen3-ASR-1.7B \
+     http://stt:8000/v1/audio/transcriptions
+   # {"text":"..."}
+   ```
+
+   Then confirm end to end with the mic button in the composer. (The browser records WebM/Ogg/MP4, which
+   is what `/api/stt` accepts; the WAV above is only for this direct upstream check.)
+
+**Check this at deploy time:** confirm the vLLM build you pinned exposes `/v1/audio/transcriptions`
+for Qwen3-ASR (day-0 support was announced upstream, but it is version-dependent — the `curl` above
+is the check). If your pinned build lacks it, point `STT_URL` at any OpenAI-compatible wrapper
+serving the same contract: the app depends on the contract, not on vLLM or on this model. A CPU-only
+host can run speaches/faster-whisper instead, with no code change.
+
 ## Configuration
 
 | Env | Purpose |
@@ -160,6 +217,8 @@ public upstreams) route installs through internal mirrors. Alongside the existin
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Optional corporate proxy for outbound web access — used by the `mcp__web__fetch` avatar tool and inherited by the SDK subprocess (built-in WebFetch/WebSearch). Put intranet hosts/domain suffixes in `NO_PROXY` so they bypass the proxy. |
 | `NODE_EXTRA_CA_CERTS` | Optional PEM bundle for intranet HTTPS behind a private corporate CA — honored by the app process (`mcp__web__fetch`) and the SDK subprocess (built-in WebFetch). Docker images built with the `CA_CERT_FILE` arg already contain `/usr/local/share/ca-certificates/extra-proxy-ca.crt`. |
 | `CONFLUENCE_URL` | Optional app-wide Confluence Server/Data Center base URL for page, attachment, and image/draw.io asset tools. Per-avatar PATs are stored as the `CONFLUENCE_PAT` user secret. |
+| `STT_URL` | Optional OpenAI-compatible speech-to-text base URL including `/v1` (e.g. `http://stt:8000/v1`) — the composer's mic button posts the recording to `<STT_URL>/audio/transcriptions`. **Unset (default) hides the mic button entirely.** Any engine serving that contract works; see [Speech-to-text](#speech-to-text-optional). |
+| `STT_MODEL` | Model name sent with each transcription request (default `Qwen/Qwen3-ASR-1.7B`). Must match what the upstream serves — vLLM's `--served-model-name`. |
 | `BROWSER_ALLOWED_ORIGINS` | Optional comma-separated DEFAULT browser-control allowlist (`intra.example.com,*.corp.local`). Seeded once into a browser whose extension allowlist is still empty — a user-edited or managed (enterprise-policy) list is never touched, and the user can change it afterwards in 설정 → 접근/보안. Entries that would cover Noah's own host (including a bare `*`) are dropped before serving: the app UI must never become drivable by default. |
 | `LOG_LEVEL` | Pino log level: `trace`/`debug`/`info`/`warn`/`error` (default `debug` in dev, `info` in prod). |
 | `MAX_TURNS` | Maximum agent turns per chat run (default `1000`). |

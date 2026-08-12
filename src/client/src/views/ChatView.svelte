@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { afterUpdate, onMount, tick } from "svelte";
+  import { afterUpdate, onDestroy, onMount, tick } from "svelte";
   import ActivityTree from "../components/ActivityTree.svelte";
   import AvatarImage from "../components/AvatarImage.svelte";
   import CanvasPanel from "../components/CanvasPanel.svelte";
@@ -31,6 +31,7 @@
     type BridgeVersionVerdict,
   } from "../lib/browserBridge";
   import { autosize, clickOutside, copyText, downscaleImageToDataUrl, enhanceMarkdown, readFileAsDataUrl } from "../lib/dom";
+  import { STT_MAX_SEC, startVoiceInput, type SttPhase, type SttSession } from "../lib/stt";
   import { loadAvatars, loadConversations } from "../lib/loaders";
   import { goView, routeFromHash } from "../lib/nav";
   import { formatFileSize, formatUsageLabel, renderMarkdown, renderMarkdownCached, timeLabel } from "../lib/format";
@@ -601,6 +602,15 @@
     return paneVisionEnabled(item, state) ? "이미지 첨부" : "이미지 첨부 (모델이 내용을 보지 못하고 파일로 전달됨)";
   }
 
+  // The disabled send button's title enumerates what WOULD make it sendable, so
+  // it has to name the inputs this pane actually has: image attach is native-only,
+  // voice depends on the deployment.
+  function emptyComposerHint(item: ChatPane, state: ReturnType<typeof readState>): string {
+    const voice = Boolean(state.bootstrap?.sttEnabled);
+    if (isExternalPane(item)) return voice ? "메시지 또는 음성을 추가하세요" : "메시지를 입력하세요";
+    return voice ? "메시지, 이미지 또는 음성을 추가하세요" : "메시지 또는 이미지를 추가하세요";
+  }
+
   async function onPickImages(event: Event, item: ChatPane) {
     const input = event.currentTarget as HTMLInputElement;
     await addImages(item, input.files);
@@ -633,6 +643,78 @@
       if (target) target.pendingImages = (target.pendingImages || []).filter((img) => img.id !== id);
     });
   }
+
+  /* ---- voice input (STT) ---- */
+  // ONE take at a time across every pane — the mic is a single device — so the
+  // session lives on the view, not on a pane. Only the finished transcript
+  // touches the store: the textarea is one-way bound to `draft` (and autosize is
+  // keyed on it), so a DOM write would be overwritten on the next render.
+  let sttPaneId = "";
+  let sttPhase: SttPhase | "" = "";
+  let sttElapsed = 0;
+  let sttSession: SttSession | null = null;
+  // A stop pressed while getUserMedia is still pending (the browser's permission
+  // prompt is up) has no session to stop yet — remember it and drop the take as
+  // soon as one exists, so the mic never keeps recording unattended.
+  let sttCancelPending = false;
+
+  // Click-time read only. A TEMPLATE expression must never get its session
+  // state from a helper's closure: legacy mode resolves an expression's
+  // dependencies at COMPILE time and `untrack`s the call, so a `title` computed
+  // in here would sit frozen at "음성 입력" for the whole take (the mic button
+  // names `sttPaneId`/`sttPhase` in the markup instead).
+  function micBusyElsewhere(item: ChatPane): boolean {
+    return Boolean(sttPaneId) && sttPaneId !== item.id;
+  }
+
+  async function toggleVoiceInput(item: ChatPane): Promise<void> {
+    if (micBusyElsewhere(item) || sttPhase === "transcribing") return;
+    if (sttPaneId === item.id) {
+      // Second press stops the take; before the session exists it means "never mind".
+      if (sttSession) sttSession.stop();
+      else sttCancelPending = true;
+      return;
+    }
+    sttPaneId = item.id;
+    sttPhase = "recording";
+    sttElapsed = 0;
+    sttCancelPending = false;
+    try {
+      const session = await startVoiceInput({
+        onPhase: (phase) => (sttPhase = phase),
+        onElapsed: (seconds) => (sttElapsed = seconds),
+      });
+      sttSession = session;
+      if (sttCancelPending) session.cancel();
+      const text = await session.done;
+      if (text) appendTranscript(item.id, text);
+    } catch (err) {
+      notify((err as Error).message, "warn");
+    } finally {
+      sttSession = null;
+      sttPaneId = "";
+      sttPhase = "";
+      sttElapsed = 0;
+      sttCancelPending = false;
+    }
+  }
+
+  /** Voice text EXTENDS the draft instead of replacing it, then hands focus back. */
+  function appendTranscript(paneId: string, text: string): void {
+    const existing = readState().chatPanes.find((item) => item.id === paneId)?.draft || "";
+    setDraft(paneId, existing ? `${existing} ${text}` : text);
+    focusComposer(paneId);
+  }
+
+  function cancelVoiceInput(): void {
+    if (sttSession) sttSession.cancel();
+    else if (sttPaneId) sttCancelPending = true;
+  }
+
+  // Release the mic when the pane holding it goes away (closed pane, view swap)
+  // instead of recording into a draft nobody can see.
+  $: if (sttPaneId && !panes.some((item) => item.id === sttPaneId)) cancelVoiceInput();
+  onDestroy(cancelVoiceInput);
 
   // Live (just-sent) bubbles render from the locally-held data URL; on reload it
   // falls back to the owner-scoped serving endpoint.
@@ -1456,7 +1538,7 @@
             {/each}
           </div>
         {/if}
-        <div class="composer-box" class:no-attach={isExternalPane(item)}>
+        <div class="composer-box" class:no-attach={isExternalPane(item)} class:no-stt={!$appState.bootstrap?.sttEnabled}>
           {#if !isExternalPane(item)}
             <label
               class="composer-attach"
@@ -1494,12 +1576,39 @@
             on:keydown={(event) => onComposerKeydown(event, item)}
             on:paste={(event) => onComposerPaste(event, item)}
           ></textarea>
+          {#if $appState.bootstrap?.sttEnabled}
+            {@const owns = sttPaneId === item.id}
+            {@const busy = Boolean(sttPaneId) && !owns}
+            {@const recording = owns && sttPhase === "recording"}
+            {@const transcribing = owns && sttPhase === "transcribing"}
+            {@const micLabel = busy
+              ? "다른 대화에서 녹음 중입니다"
+              : transcribing
+                ? "전사 중…"
+                : recording
+                  ? "녹음 중지"
+                  : "음성 입력"}
+            <!-- Deliberately NOT hidden while streaming: the composer stays
+                 editable mid-stream, so dictating the next message must work too. -->
+            <button
+              class="composer-mic"
+              class:recording
+              type="button"
+              aria-label={micLabel}
+              aria-pressed={recording ? "true" : "false"}
+              title={micLabel}
+              disabled={busy || transcribing}
+              on:click={() => toggleVoiceInput(item)}
+            >
+              <Icon name={recording ? "stop" : "mic"} />
+            </button>
+          {/if}
           <button
             class="send-button"
             class:is-stop={item.streaming}
             type="button"
             aria-label={item.streaming ? "응답 중지" : "보내기"}
-            title={item.streaming ? "응답 중지" : canSendMessage(item) ? "보내기" : isExternalPane(item) ? "메시지를 입력하세요" : "메시지 또는 이미지를 추가하세요"}
+            title={item.streaming ? "응답 중지" : canSendMessage(item) ? "보내기" : emptyComposerHint(item, $appState)}
             disabled={!item.streaming && !canSendMessage(item)}
             on:click={() => (item.streaming ? stopPane(item.id) : submit(item))}
           >
@@ -1514,8 +1623,13 @@
           {:else}
             <span>보내기 버튼으로 전송</span>
           {/if}
-          {#if hasComposerControls(item) || formatUsageLabel(item.usage)}
+          {#if hasComposerControls(item) || formatUsageLabel(item.usage) || (sttPaneId === item.id && sttPhase)}
             <span class="composer-meta">
+              {#if sttPaneId === item.id && sttPhase}
+                <span class="composer-stt" data-phase={sttPhase}
+                  >{sttPhase === "recording" ? `녹음 중 ${sttElapsed}초 / ${STT_MAX_SEC}초` : "전사 중…"}</span
+                >
+              {/if}
               {#if hasComposerControls(item)}
                 <button
                   class="composer-settings-btn"

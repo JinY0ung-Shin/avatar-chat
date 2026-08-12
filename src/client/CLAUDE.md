@@ -22,6 +22,12 @@ Durable principles for this layer:
 - **A green svelte-check does NOT mean the behavior is correct.** For interaction/layout/timing changes,
   runtime-verify (Playwright fixture). svelte-check catches type/template errors; it shipped a no-op
   `autosize` fix that only a real-DOM measurement caught.
+- **Legacy-mode template dependencies are resolved at COMPILE time** (every component here is non-runes).
+  A template expression depends only on what the MARKUP names — helper calls are `untrack`ed, so state
+  read solely inside a helper's closure renders STALE (the composer mic's `title` froze this way). Pass
+  the state as an argument (`attachHint(item, $appState)`) or name it in the markup (`{@const}`).
+  Neither svelte-check nor jsdom catches it: unrelated store writes re-evaluate the expression and mask
+  the staleness — only a real browser shows it.
 - **There IS a shared layer — reach for it before hand-mirroring.** `src/shared/*`
   (`mcpToolGroups.ts`, `sdkToolPresentation.ts`) is imported by BOTH sides, and `tsconfig.client.json`'s
   `include` list is the whitelist of server modules the client may import directly (`server/types.ts`,
