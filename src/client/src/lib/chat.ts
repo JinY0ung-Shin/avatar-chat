@@ -227,6 +227,12 @@ export async function startChatWith(
   void loadConversations();
 }
 
+// The notice every 체험 시나리오 handoff shows. Both surfaces that seed a
+// "/tour <slug>" (the welcome modal's cards and the explore 시작하기 checklist)
+// promise the same thing, so the sentence lives once next to openSeededChat
+// rather than being retyped per caller.
+export const TOUR_SEED_NOTICE = "입력창에 체험 시나리오를 준비했습니다. 보내기를 누르면 시작해요.";
+
 // Open a fresh chat with the owner's own avatar and seed the composer with text
 // (not sent — the owner reviews first). Used by the inbox notification handoff,
 // "ask my avatar" actions, and the routines "지금 실행" handoff. Mirrors the old

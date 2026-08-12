@@ -4,9 +4,14 @@
   import Modal from "./Modal.svelte";
   import RevealableInput from "./RevealableInput.svelte";
   import { api } from "../lib/api";
-  import { openSeededChat } from "../lib/chat";
+  import { TOUR_SEED_NOTICE, openSeededChat } from "../lib/chat";
   import { copyText } from "../lib/dom";
   import { goView } from "../lib/nav";
+  import {
+    accessReady as isAccessReady,
+    knowledgeReady as isKnowledgeReady,
+    profileReady as isProfileReady,
+  } from "../lib/setupReadiness";
   import { notify, replaceState, updateState } from "../lib/state";
   import type { SettingsTab, User } from "../lib/types";
   import { MCP_TOOL_GROUPS, effectiveMcpToolGroups } from "../../../shared/mcpToolGroups";
@@ -27,9 +32,11 @@
   $: tokensHost = (githubHost || "github.com").replace(/^https?:\/\//i, "").replace(/\/+$/, "");
   $: sshPublicKey = (user.sshPublicKey || "").trim();
   $: sshConfigured = Boolean(sshPublicKey) || user.secretNames?.includes("SSH_PRIVATE_KEY");
-  $: profileReady = Boolean(user.alias || user.bio || user.intro || user.hashtags?.length);
-  $: knowledgeReady = Boolean(user.knowledgeRepo);
-  $: accessReady = Boolean(user.gitTokenSet || sshConfigured || user.secretNames?.includes("CONFLUENCE_PAT"));
+  // Shared with the explore 시작하기 checklist so the two surfaces cannot drift
+  // again (lib/setupReadiness.ts carries the superset rule).
+  $: profileReady = isProfileReady(user);
+  $: knowledgeReady = isKnowledgeReady(user);
+  $: accessReady = isAccessReady(user);
   // Same SOURCE the chat empty state filters its cards on: the admin per-group
   // tool policy the server folds into `user.allowedMcpToolGroups` (null = no
   // policy, nothing blocked). A tour this run could never take is not offered.
@@ -74,10 +81,7 @@
    */
   async function openTour(scenario: TourScenario) {
     try {
-      await openSeededChat(
-        `/tour ${scenario.slug}`,
-        "입력창에 체험 시나리오를 준비했습니다. 보내기를 누르면 시작해요.",
-      );
+      await openSeededChat(`/tour ${scenario.slug}`, TOUR_SEED_NOTICE);
     } catch (err) {
       notify(`체험 시나리오를 열지 못했습니다: ${(err as Error).message}`, "warn");
       return;
