@@ -95,6 +95,18 @@ function truncate(text: string, max = 180): string {
   return text.length > max ? `${text.slice(0, max)}…` : text;
 }
 
+/**
+ * Korean object particle for a noun the caller interpolates. Every slash
+ * command's argsLabel used to end in a consonant ("내용", "작업", "요청"), so a
+ * hardcoded "을" read correctly; a vowel-final label like "시나리오" needs "를".
+ * Non-Hangul labels fall back to the "을(를)" form used elsewhere in the UI.
+ */
+function objectParticle(noun: string): string {
+  const last = noun.charCodeAt(noun.length - 1);
+  if (Number.isNaN(last) || last < 0xac00 || last > 0xd7a3) return "을(를)";
+  return (last - 0xac00) % 28 === 0 ? "를" : "을";
+}
+
 function makePane(
   avatar: AvatarDetail,
   conversationId = newId(),
@@ -532,8 +544,9 @@ export async function sendMessage(
       updatePane(pane.id, (target) => {
         target.draft = `/${slash.command.name} `;
       });
+      const argsLabel = slash.command.argsLabel || "내용";
       notify(
-        `/${slash.command.name} 뒤에 ${slash.command.argsLabel || "내용"}을 입력해 주세요.`,
+        `/${slash.command.name} 뒤에 ${argsLabel}${objectParticle(argsLabel)} 입력해 주세요.`,
         "warn",
       );
       return;

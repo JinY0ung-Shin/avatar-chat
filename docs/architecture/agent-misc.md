@@ -31,7 +31,7 @@
   server name, so it also reveals WHICH instance won a name collision (`hex-ssh` vs `plugin_<plugin>_hex-ssh`).
 
 ## Slash commands (server-expanded)
-- **ALL built-in slash commands are server-expanded** (`/learn`/`/summarize`/`/remember`/`/routine`/`/find`):
+- **ALL built-in slash commands are server-expanded** (`/learn`/`/summarize`/`/remember`/`/routine`/`/find`/`/tour`):
   `src/client/src/lib/slash.ts` carries only metadata (name/title/description/argsLabel/ownerOnly/
   requiresArgs) — no client-side `prompt`, no `serverExpand` flag. The client always sends the literal
   `/command [args]` (chat.ts `submit`); the SERVER `expandChatSlashCommand` (`routes/chat.ts`) swaps in the
@@ -40,6 +40,10 @@
   `displayMessage` (raw literal) but feeds `agentMessage` (expanded) to `runAgentStream`. `agent-core.test.ts`
   asserts the client bundle carries NO copy of any server expansion. (Skill entries are NOT slash commands —
   the menu sends a Korean natural-language instruction naming the skill, built by `skillToSlashCommand`.)
+- **`/tour <slug>` is SPLIT across the boundary on purpose:** `src/shared/tourScenarios.ts` holds the slug
+  list + Korean card copy (the client renders the 체험 시나리오 cards from it), while the English walkthrough
+  prompts live server-only in `src/server/tourScenarios.ts` — an unknown slug fails with a Korean error
+  instead of expanding, and trailing text after the slug rides along as a focus hint like `/learn`'s.
 
 ## git remote work is MCP-only
 - The agent shell has no git credentials (stripped from the subprocess env), so Bash `git clone/push`/`gh`

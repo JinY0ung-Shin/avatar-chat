@@ -33,6 +33,11 @@ import {
   type McpToolGroupId,
 } from "../../shared/mcpToolGroups.js";
 import {
+  findTourScenario,
+  TOUR_SLUG_LIST,
+} from "../../shared/tourScenarios.js";
+import { TOUR_PROMPTS } from "../tourScenarios.js";
+import {
   decodeChatImages,
   deleteChatImageAttachments,
   deleteConversationImages,
@@ -269,6 +274,38 @@ export function expandChatSlashCommand(message: string): ChatSlashExpansion {
             message: `Find and recommend a colleague avatar better suited to this request.\n\n${args}`,
           }
         : { message, error: "/find 뒤에 요청 내용을 입력해 주세요." };
+    // "/tour <slug> [focus]" — a 체험 시나리오 card click (or the typed command)
+    // swaps in that scenario's walkthrough prompt (src/server/tourScenarios.ts).
+    // The slug list itself is the shared contract, so an unknown slug is caught
+    // here rather than expanding into a tour that doesn't exist.
+    case "tour": {
+      if (!args) {
+        return {
+          message,
+          error: `/tour 뒤에 체험할 시나리오를 입력해 주세요: ${TOUR_SLUG_LIST}`,
+          ownerOnly: true,
+        };
+      }
+      const rawSlug = args.split(/\s+/)[0];
+      const scenario = findTourScenario(rawSlug.toLowerCase());
+      if (!scenario) {
+        return {
+          message,
+          error: `모르는 체험 시나리오입니다: "${rawSlug.slice(0, 40)}". 사용할 수 있는 시나리오: ${TOUR_SLUG_LIST}`,
+          ownerOnly: true,
+        };
+      }
+      // Anything typed after the slug rides along as a focus hint (the /learn
+      // pattern) — e.g. "/tour browser 사내 위키 위주로".
+      const focus = args.slice(rawSlug.length).trim();
+      const prompt = TOUR_PROMPTS[scenario.slug];
+      return {
+        message: focus
+          ? `${prompt}\n\nThe user added this focus for the tour:\n${focus}`
+          : prompt,
+        ownerOnly: true,
+      };
+    }
     case "new":
       return {
         message,

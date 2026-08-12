@@ -46,6 +46,7 @@
     normalizeMcpToolGroups,
     type McpToolGroupId,
   } from "../../../shared/mcpToolGroups";
+  import { TOUR_SCENARIOS, type TourScenario } from "../../../shared/tourScenarios";
 
   let splitAvatarId = "";
   let splitAddBusy = false;
@@ -264,6 +265,14 @@
       MCP_TOOL_GROUPS.map((group) => group.id).filter((id) => !allowed.includes(id)),
     );
   })();
+
+  // Guided tours offered in the owner's empty state. A browser-driven scenario
+  // disappears entirely when admin policy blocks the browser tool group — never
+  // offer a route this run cannot have. Derived at the top level for the same
+  // reason as the set above: a helper body would read a stale value.
+  $: tourScenarios = TOUR_SCENARIOS.filter(
+    (scenario) => !scenario.needsBrowser || !adminBlockedMcpToolGroupSet.has("browser"),
+  );
 
   // Browser-bridge compatibility badge for the composer hint row: compares the
   // INSTALLED extension build against the server bundle AND the server's
@@ -848,6 +857,21 @@
     focusComposer(item.id);
   }
 
+  /**
+   * Seed a guided tour: the literal "/tour <slug>" goes into the composer and the
+   * SERVER expands it, so no copy of the agent-facing prompt lives client-side.
+   * A browser tour turns its own prerequisite on in the SAME click (a card whose
+   * unstated prerequisite makes it fail on step one reads as broken) — which also
+   * brings up the bridge badge, itself the path to the install guide. Never
+   * auto-sent: the owner reads the seeded line and presses send.
+   */
+  function useTour(item: ChatPane, scenario: TourScenario) {
+    if (scenario.needsBrowser && !selectedMcpToolGroups(item).includes("browser")) {
+      setMcpToolGroup(item, "browser", true);
+    }
+    useStarter(item, `/tour ${scenario.slug}`);
+  }
+
   function copyMessage(message: StoredMessage, event: MouseEvent) {
     void copyText(message.content || message.response?.text || "", event.currentTarget as HTMLButtonElement);
   }
@@ -1148,11 +1172,29 @@
               <h3>{item.avatar.alias || item.avatar.displayName} 아바타와 대화</h3>
               <p>{item.avatar.bio || (item.avatar.elevated || own ? "무엇이든 물어보세요." : "무엇이든 물어보세요. 이 아바타의 도구는 읽기 전용으로 실행됩니다.")}</p>
             </div>
-            <div class="starter-prompts" role="group" aria-label="시작 프롬프트">
-              {#each (item.avatar.elevated || own ? ["내가 지금 맡길 수 있는 일을 3가지로 제안해줘.", "이 대화에서 필요한 배경 정보를 먼저 물어봐줘.", "반복해서 실행할 예약 작업을 같이 설계해줘."] : ["이 아바타가 잘 아는 분야를 요약해줘.", "내 질문에 답하기 전에 필요한 맥락을 물어봐줘.", "관련된 지식을 바탕으로 핵심만 정리해줘."]) as text}
-                <button class="starter-prompt" type="button" on:click={() => useStarter(item, text)}>{text}</button>
-              {/each}
-            </div>
+            {#if own && !isExternalPane(item)}
+              <!-- The owner's own avatar gets guided tours instead of generic
+                   chips: a first-time owner needs to see what the avatar can do,
+                   not a prompt they still have to judge. Colleague, group-agent
+                   and external panes keep the chips (isOwn is false for all
+                   three, group agents included). -->
+              <div class="starter-prompts tour-cards" role="group" aria-label="체험 시나리오">
+                <p class="tour-caption">처음이라면 이 중 하나로 시작해 보세요. 카드를 누르면 입력창에 준비됩니다.</p>
+                {#each tourScenarios as scenario (scenario.slug)}
+                  <button class="starter-prompt tour-card" type="button" on:click={() => useTour(item, scenario)}>
+                    <strong>{scenario.titleKo}</strong>
+                    <small>{scenario.descriptionKo}</small>
+                    <span class="tag">{scenario.durationKo}</span>
+                  </button>
+                {/each}
+              </div>
+            {:else}
+              <div class="starter-prompts" role="group" aria-label="시작 프롬프트">
+                {#each (item.avatar.elevated || own ? ["내가 지금 맡길 수 있는 일을 3가지로 제안해줘.", "이 대화에서 필요한 배경 정보를 먼저 물어봐줘.", "반복해서 실행할 예약 작업을 같이 설계해줘."] : ["이 아바타가 잘 아는 분야를 요약해줘.", "내 질문에 답하기 전에 필요한 맥락을 물어봐줘.", "관련된 지식을 바탕으로 핵심만 정리해줘."]) as text}
+                  <button class="starter-prompt" type="button" on:click={() => useStarter(item, text)}>{text}</button>
+                {/each}
+              </div>
+            {/if}
           </div>
         {/if}
 

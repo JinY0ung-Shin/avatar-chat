@@ -31,6 +31,7 @@ import {
   resolveTypedSlashCommand,
   skillToSlashCommand,
 } from "../src/client/src/lib/slash.js";
+import { TOUR_SLUG_LIST } from "../src/shared/tourScenarios.js";
 import {
   applyInitialRoute,
   currentRoute,
@@ -473,6 +474,21 @@ describe("slash commands", () => {
     replaceState({ user: { id: "u1" } as any });
     const pane = { avatar: { id: "u1", isOwn: false } } as any;
     expect(commandsForPane(pane).map((c) => c.name)).toContain("remember");
+  });
+
+  it("offers /tour to the owner only, naming the scenarios from the shared contract", () => {
+    expect(commandsForPane(otherPane).map((c) => c.name)).not.toContain("tour");
+
+    const tour = commandsForPane(ownPane).find((c) => c.name === "tour");
+    // requiresArgs gives it the /remember UX: the menu seeds "/tour " and waits.
+    expect(tour).toMatchObject({ argsLabel: "시나리오", requiresArgs: true });
+    // Read from src/shared, never hand-copied — a new scenario must show up here
+    // without anyone remembering to edit the menu entry.
+    expect(tour?.description).toContain(TOUR_SLUG_LIST);
+    expect(resolveTypedSlashCommand(ownPane, "/tour browser")).toMatchObject({
+      command: { name: "tour" },
+      args: "browser",
+    });
   });
 
   it("resolves a typed slash command with trimmed args, rejecting //, unknown, and non-slash text", () => {

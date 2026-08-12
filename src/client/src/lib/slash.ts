@@ -1,5 +1,6 @@
 import type { ChatPane, SkillInfo } from "./types";
 import { readState } from "./state";
+import { TOUR_SLUG_LIST } from "../../../shared/tourScenarios";
 
 export interface SlashCommand {
   name: string;
@@ -22,6 +23,16 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     title: "새 대화",
     description: "현재 아바타와 새 대화를 바로 시작합니다.",
     action: "new",
+  },
+  {
+    name: "tour",
+    title: "체험 시나리오",
+    argsLabel: "시나리오",
+    // The slug list comes from the shared contract, never a hand-copy — a new
+    // scenario has to show up here without anyone remembering to edit this line.
+    description: `대표 기능을 짧은 실습으로 함께 해봅니다. 고를 수 있는 시나리오: ${TOUR_SLUG_LIST}.`,
+    ownerOnly: true,
+    requiresArgs: true,
   },
   {
     name: "summarize",

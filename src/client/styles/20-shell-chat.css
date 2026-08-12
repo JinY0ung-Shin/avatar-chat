@@ -1222,6 +1222,39 @@ body.col-resizing {
 .starter-prompt:focus-visible {
   border-color: var(--accent);
 }
+
+/* Guided-tour cards (owner's own avatar). Same container as the chips — so the
+   split/compact hide rule keeps applying — but two lines of hierarchy instead of
+   one line of prompt text: title carries the weight, description recedes to
+   --muted, duration rides the shared .tag pill. */
+.tour-caption {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--t-sm);
+  line-height: 1.5;
+}
+.starter-prompt.tour-card {
+  display: grid;
+  justify-items: start;
+  gap: var(--s-1);
+  /* Functional basis, not a spacing step: two cards per row at the transcript
+     width, one per row once the pane narrows. */
+  flex: 1 1 240px;
+  padding: var(--s-3);
+}
+.tour-card strong {
+  font-weight: 600;
+  font-size: var(--t-base);
+}
+.tour-card small {
+  color: var(--muted);
+  font-size: var(--t-sm);
+  line-height: 1.45;
+}
+.tour-card .tag {
+  margin-top: var(--s-0-5);
+}
 .empty-state > .primary {
   justify-self: start;
 }
