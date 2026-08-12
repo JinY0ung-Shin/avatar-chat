@@ -161,6 +161,15 @@
   }
   $: if (!$appState.user) initializedFor = null;
 
+  // 설정 → 시작 안내 re-opens the welcome modal on demand. One-shot flag, drained
+  // here the way SettingsAccessTab drains browserGuideRequested — but with no view
+  // to navigate to, since the modal is a global overlay. Deliberately independent
+  // of `onboardedAt`: an already-onboarded owner is exactly who asks for this.
+  $: if ($appState.onboardingRequested) {
+    updateState((state) => (state.onboardingRequested = false));
+    showOnboarding = true;
+  }
+
   onMount(() => {
     setSessionExpiredHandler(handleSessionExpired);
     const cleanup = installRouteListener((conversationId) => {

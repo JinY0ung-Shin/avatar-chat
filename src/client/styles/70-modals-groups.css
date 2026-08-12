@@ -553,28 +553,64 @@
   gap: var(--s-3);
   padding: var(--s-3);
 }
-.onboard-highlight {
+/* Guided-tour cards in the welcome modal — the same scenarios the chat empty
+   state offers (.tour-card in 20-shell-chat.css), compacted into the modal's
+   accent callout: two per row, title carrying the weight, description receding
+   to --muted, duration on the shared .tag pill. */
+.onboard-tours {
   display: flex;
   flex-direction: column;
-  gap: var(--s-1);
+  gap: var(--s-2);
   padding: var(--s-3);
   border: 1px solid var(--accent-soft-strong);
   border-left: 3px solid var(--accent);
   border-radius: var(--r-sm);
   background: var(--accent-soft);
 }
-.onboard-highlight strong {
+.onboard-tours-head {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s-0-5);
+}
+.onboard-tours-head strong {
   color: var(--accent-strong);
   font-size: var(--t-sm);
 }
-.onboard-highlight p {
-  color: var(--text);
-  font-size: var(--t-sm);
-  line-height: 1.5;
-}
-.onboard-highlight .onboard-highlight-note {
+.onboard-tours-head span {
   color: var(--text-soft);
   font-size: var(--t-xs);
+  line-height: 1.45;
+}
+.onboard-tour-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s-2);
+}
+.onboard-tour {
+  display: grid;
+  justify-items: start;
+  gap: var(--s-0-5);
+  padding: var(--s-2-5);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+  text-align: left;
+}
+.onboard-tour:hover:not(:disabled) {
+  border-color: var(--accent-soft-strong);
+  background: var(--bg-elevated);
+}
+.onboard-tour strong {
+  color: var(--text);
+  font-size: var(--t-sm);
+}
+.onboard-tour small {
+  color: var(--muted);
+  font-size: var(--t-xs);
+  line-height: 1.45;
+}
+.onboard-tour .tag {
+  margin-top: var(--s-0-5);
 }
 .onboard-actions {
   position: sticky;
@@ -671,6 +707,9 @@
 
 @media (max-width: 860px) {
   .onboard-quick {
+    grid-template-columns: 1fr;
+  }
+  .onboard-tour-grid {
     grid-template-columns: 1fr;
   }
   .onboard-setup-item summary {

@@ -70,6 +70,14 @@ export interface ClientState {
    * browser-bridge install guide on its next activation, then clears this.
    */
   browserGuideRequested: boolean;
+  /**
+   * One-shot re-open of the first-run onboarding modal, set by the 시작 안내
+   * settings card. App.svelte consumes and clears it — the modal is a global
+   * overlay, so unlike browserGuideRequested this carries no view change, and
+   * it is independent of `user.onboardedAt` (already-onboarded owners re-open
+   * it on demand).
+   */
+  onboardingRequested: boolean;
   splitAvatarId: string;
   streaming: boolean;
   themePref: "system" | "light" | "dark";
@@ -115,6 +123,7 @@ export const appState = writable<ClientState>({
   audit: [],
   promptQueue: [],
   browserGuideRequested: false,
+  onboardingRequested: false,
   splitAvatarId: "",
   streaming: false,
   themePref: "system",

@@ -6,7 +6,7 @@
   import { confirmAction } from "../lib/confirm";
   import { normalizeTags } from "../lib/format";
   import { downscaleImageToDataUrl, pastedImageFile } from "../lib/dom";
-  import { appState, notify, readState, replaceState } from "../lib/state";
+  import { appState, notify, readState, replaceState, updateState } from "../lib/state";
   import type { AvatarVisibility, User } from "../lib/types";
 
   export let active = false;
@@ -382,6 +382,13 @@
     void chooseVisibility(next);
     focusVisibility(next);
   }
+
+  // The welcome modal is a global overlay owned by App.svelte, so this arms a
+  // one-shot flag instead of navigating anywhere — App drains it and opens the
+  // modal over whatever view is showing.
+  function reopenOnboarding(): void {
+    updateState((state) => (state.onboardingRequested = true));
+  }
 </script>
 
 <svelte:window on:paste={onWindowPaste} />
@@ -503,6 +510,18 @@
         <span class="muted">이 계정을 팀 공용 계정으로 표시합니다. 같은 그룹의 팀원이 이 아바타와 대화하면서 지식 저장소를 직접 수정하고 커밋할 수 있게 돼요. 저장소 생성·연결 같은 설정 변경은 계속 소유자만 할 수 있습니다.</span>
       </span>
     </label>
+  </section>
+
+  <section class="settings-card">
+    <div class="panel-section-head">
+      <div>
+        <h3>시작 안내</h3>
+        <p class="muted">초기 설정 상태와 체험 시나리오를 다시 볼 수 있어요.</p>
+      </div>
+      <div class="head-actions">
+        <button type="button" class="btn ghost" on:click={reopenOnboarding}>온보딩 안내 다시 보기</button>
+      </div>
+    </div>
   </section>
 {/if}
 

@@ -78,6 +78,11 @@
   margin: 0 0 var(--s-4);
   font-size: var(--t-md);
 }
+/* A card that IS just its head (title + description + one action) would keep the
+   head's gap to content that isn't there, so it sits lower than its own padding. */
+.settings-card > .panel-section-head:last-child {
+  margin-bottom: 0;
+}
 .settings-head {
   display: flex;
   align-items: center;

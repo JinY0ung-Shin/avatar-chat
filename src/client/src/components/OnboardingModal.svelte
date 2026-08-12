@@ -4,21 +4,19 @@
   import Modal from "./Modal.svelte";
   import RevealableInput from "./RevealableInput.svelte";
   import { api } from "../lib/api";
+  import { openSeededChat } from "../lib/chat";
   import { copyText } from "../lib/dom";
   import { goView } from "../lib/nav";
-  import { notify, replaceState } from "../lib/state";
+  import { notify, replaceState, updateState } from "../lib/state";
   import type { SettingsTab, User } from "../lib/types";
+  import { MCP_TOOL_GROUPS, effectiveMcpToolGroups } from "../../../shared/mcpToolGroups";
+  import { TOUR_SCENARIOS, type TourScenario } from "../../../shared/tourScenarios";
 
   export let user: User;
   export let confluenceConfigured = false;
   export let githubHost = "github.com";
 
   const dispatch = createEventDispatcher<{ close: void }>();
-
-  const STARTER_PROMPTS = [
-    "내가 자주 맡기는 배포 점검 절차를 스킬로 정리하고 다음부터 그대로 수행해줘.",
-    "민수님의 아바타에게 이번 장애 원인과 재발 방지 체크리스트를 물어봐.",
-  ];
 
   let gitToken = "";
   let confluencePat = "";
@@ -32,6 +30,11 @@
   $: profileReady = Boolean(user.alias || user.bio || user.intro || user.hashtags?.length);
   $: knowledgeReady = Boolean(user.knowledgeRepo);
   $: accessReady = Boolean(user.gitTokenSet || sshConfigured || user.secretNames?.includes("CONFLUENCE_PAT"));
+  // Same SOURCE the chat empty state filters its cards on: the admin per-group
+  // tool policy the server folds into `user.allowedMcpToolGroups` (null = no
+  // policy, nothing blocked). A tour this run could never take is not offered.
+  $: browserBlocked = user.allowedMcpToolGroups != null && !user.allowedMcpToolGroups.includes("browser");
+  $: tourScenarios = TOUR_SCENARIOS.filter((scenario) => !scenario.needsBrowser || !browserBlocked);
   $: saveLabel = sshBusy
     ? "SSH 생성 중…"
     : busy
@@ -54,6 +57,45 @@
     if (busy || sshBusy) return;
     done();
     window.setTimeout(() => goView("explore"), 0);
+  }
+
+  function startTour(scenario: TourScenario) {
+    if (busy || sshBusy) return;
+    // Same shape as jumpToSettings: close first, then hand off on the next tick
+    // so the chat the tour opens isn't built underneath a closing dialog.
+    done();
+    window.setTimeout(() => void openTour(scenario), 0);
+  }
+
+  /**
+   * Open a fresh chat with the owner's own avatar carrying the literal
+   * "/tour <slug>" — the SERVER expands it, so no agent-facing prompt text lives
+   * on this side. Seeded, never sent: the owner reads the line and presses 보내기.
+   */
+  async function openTour(scenario: TourScenario) {
+    try {
+      await openSeededChat(
+        `/tour ${scenario.slug}`,
+        "입력창에 체험 시나리오를 준비했습니다. 보내기를 누르면 시작해요.",
+      );
+    } catch (err) {
+      notify(`체험 시나리오를 열지 못했습니다: ${(err as Error).message}`, "warn");
+      return;
+    }
+    if (!scenario.needsBrowser || browserBlocked) return;
+    // A card whose prerequisite is left to the user fails on step one, so the
+    // browser tool group goes on in the SAME gesture (which also brings up the
+    // composer's bridge badge — itself the path to the install guide). Written
+    // in the picker's canonical order, like the chat view's own toggle.
+    updateState((state) => {
+      const pane = state.chatPanes.find((item) => item.id === state.activePaneId);
+      if (!pane) return;
+      const selected = effectiveMcpToolGroups(pane.mcpToolGroups);
+      if (selected.includes("browser")) return;
+      pane.mcpToolGroups = MCP_TOOL_GROUPS.map((group) => group.id).filter(
+        (id) => id === "browser" || selected.includes(id),
+      );
+    });
   }
 
   async function generateSsh() {
@@ -132,11 +174,23 @@
     </button>
   </div>
 
-  <div class="onboard-highlight">
-    <strong>처음 맡겨볼 일</strong>
-    <p>{STARTER_PROMPTS[0]}</p>
-    <span class="onboard-highlight-note">{STARTER_PROMPTS[1]}</span>
-  </div>
+  {#if tourScenarios.length}
+    <div class="onboard-tours">
+      <div class="onboard-tours-head">
+        <strong>바로 체험해 보기</strong>
+        <span>카드를 누르면 새 대화 입력창에 준비됩니다. 보내기만 누르면 시작해요.</span>
+      </div>
+      <div class="onboard-tour-grid" role="group" aria-label="체험 시나리오">
+        {#each tourScenarios as scenario (scenario.slug)}
+          <button class="onboard-tour" type="button" disabled={busy || sshBusy} on:click={() => startTour(scenario)}>
+            <strong>{scenario.titleKo}</strong>
+            <small>{scenario.descriptionKo}</small>
+            <span class="tag">{scenario.durationKo}</span>
+          </button>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   <div class="onboard-connect">
     <h3>선택 설정</h3>
