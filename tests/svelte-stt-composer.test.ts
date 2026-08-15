@@ -102,6 +102,22 @@ function installMic(getUserMedia?: () => Promise<MediaStream>): void {
   vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
 }
 
+/** A mic that reports how often the take was actually opened. */
+function micSpy(): ReturnType<typeof vi.fn> {
+  const getUserMedia = vi.fn(async () => ({ getTracks: () => [{ stop: vi.fn() }] }) as unknown as MediaStream);
+  installMic(getUserMedia);
+  return getUserMedia;
+}
+
+/**
+ * Alt+M on the WINDOW, not on the composer: the shortcut has to reach the mic
+ * with nothing in the chat view focused. `code` (not `key`) is what the handler
+ * reads, so the press is layout-independent here too.
+ */
+function pressAltM(init: KeyboardEventInit = {}): Promise<boolean> {
+  return fireEvent.keyDown(window, { code: "KeyM", key: "m", altKey: true, ...init });
+}
+
 function micButton(container: HTMLElement): HTMLButtonElement {
   const button = container.querySelector<HTMLButtonElement>("button.composer-mic");
   expect(button).toBeTruthy();
@@ -146,7 +162,9 @@ describe("composer mic button", () => {
     const on = render(ChatView);
     expect(on.container.querySelector("button.composer-mic")).toBeTruthy();
     expect(composerBox(on.container).classList.contains("no-stt")).toBe(false);
-    expect(micButton(on.container).title).toBe("음성 입력");
+    // Intended contract change: the title now advertises the Alt+M shortcut.
+    expect(micButton(on.container).title).toBe("음성 입력 (Alt+M)");
+    expect(micButton(on.container).getAttribute("aria-label")).toBe("음성 입력");
     on.unmount();
 
     // Absent flag (older server) reads the same as off: no button, old 3-column grid.
@@ -178,7 +196,7 @@ describe("composer mic button", () => {
 
     await fireEvent.click(micButton(container));
     await waitFor(() => expect(micButton(container).classList.contains("recording")).toBe(true));
-    expect(micButton(container).title).toBe("녹음 중지");
+    expect(micButton(container).title).toBe("녹음 중지 (Alt+M)");
     expect(micButton(container).getAttribute("aria-pressed")).toBe("true");
     expect(container.querySelector(".composer-stt")?.textContent).toContain("녹음 중");
 
@@ -186,7 +204,7 @@ describe("composer mic button", () => {
     // Draft, not a DOM write: the textarea is one-way bound to it.
     await waitFor(() => expect(readState().chatPanes[0].draft).toBe("메모 회의 내용 정리해 줘"));
     expect(container.querySelector<HTMLTextAreaElement>(".composer textarea")!.value).toBe("메모 회의 내용 정리해 줘");
-    expect(micButton(container).title).toBe("음성 입력"); // back to idle
+    expect(micButton(container).title).toBe("음성 입력 (Alt+M)"); // back to idle
     expect(container.querySelector(".composer-stt")).toBeNull();
   });
 
@@ -204,7 +222,7 @@ describe("composer mic button", () => {
       ),
     );
     expect(readState().chatPanes[0].draft).toBe("");
-    expect(micButton(container).title).toBe("음성 입력");
+    expect(micButton(container).title).toBe("음성 입력 (Alt+M)");
   });
 
   it("locks every other pane's mic while one take is running", async () => {
@@ -223,5 +241,109 @@ describe("composer mic button", () => {
 
     await fireEvent.click(mics()[0]);
     await waitFor(() => expect(mics()[1].disabled).toBe(false));
+  });
+});
+
+// The Alt+M shortcut is the mic button reached from the keyboard: it must go
+// through the very same toggle (no second recording path), and it must stay out
+// of the way of everything that is not that exact chord.
+describe("Alt+M voice shortcut", () => {
+  it("starts and stops a take with no composer focused", async () => {
+    installMic();
+    seed({ sttEnabled: true, panes: [pane("pane-1", "메모")] });
+    const { container } = render(ChatView);
+
+    await pressAltM();
+    await waitFor(() => expect(micButton(container).classList.contains("recording")).toBe(true));
+    expect(micButton(container).title).toBe("녹음 중지 (Alt+M)");
+    expect(container.querySelector(".composer-stt")?.textContent).toContain("녹음 중");
+
+    await pressAltM();
+    await waitFor(() => expect(readState().chatPanes[0].draft).toBe("메모 회의 내용 정리해 줘"));
+    expect(micButton(container).title).toBe("음성 입력 (Alt+M)");
+  });
+
+  it("ignores AltGr (which reports ctrl+alt) and every other near-miss chord", async () => {
+    const getUserMedia = micSpy();
+    seed({ sttEnabled: true });
+    render(ChatView);
+
+    await pressAltM({ ctrlKey: true }); // AltGr+M on a European layout
+    await pressAltM({ shiftKey: true });
+    await pressAltM({ metaKey: true });
+    await pressAltM({ altKey: false });
+    await pressAltM({ isComposing: true });
+    await fireEvent.keyDown(window, { code: "KeyN", key: "n", altKey: true });
+
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("does nothing while the take is being transcribed", async () => {
+    const getUserMedia = micSpy();
+    // Hold /api/stt open so the transcribing phase is observable.
+    let release: (() => void) | null = null;
+    const held = new Promise<void>((resolve) => (release = () => resolve()));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (path: string) => {
+        const stt = String(path).startsWith("/api/stt");
+        if (stt) await held;
+        return {
+          ok: true,
+          status: 200,
+          json: async () =>
+            stt ? { text: "회의 내용 정리해 줘" } : { avatars: [], conversations: [], messages: [], skills: [] },
+        };
+      }),
+    );
+    seed({ sttEnabled: true });
+    const { container } = render(ChatView);
+
+    await pressAltM();
+    await waitFor(() => expect(micButton(container).classList.contains("recording")).toBe(true));
+    await pressAltM();
+    await waitFor(() => expect(container.querySelector(".composer-stt")?.textContent).toContain("전사 중"));
+
+    await pressAltM();
+    expect(getUserMedia).toHaveBeenCalledTimes(1); // no take opened on top of the upload
+    expect(container.querySelector(".composer-stt")?.textContent).toContain("전사 중");
+
+    release!();
+    await waitFor(() => expect(readState().chatPanes[0].draft).toBe("회의 내용 정리해 줘"));
+  });
+
+  it("stays silent where the deployment never enabled voice input", async () => {
+    const getUserMedia = micSpy();
+    seed(); // no sttEnabled flag: no mic button to reach
+    const { container } = render(ChatView);
+
+    await pressAltM();
+    expect(container.querySelector("button.composer-mic")).toBeNull();
+    expect(getUserMedia).not.toHaveBeenCalled();
+  });
+
+  it("targets the focused composer in a split, and nothing when the split is unfocused", async () => {
+    const getUserMedia = micSpy();
+    seed({ sttEnabled: true, panes: [pane("pane-1"), pane("pane-2")] });
+    const { container } = render(ChatView);
+
+    // Two candidates and no focus: guessing a conversation to dictate into is
+    // worse than doing nothing.
+    await pressAltM();
+    expect(getUserMedia).not.toHaveBeenCalled();
+
+    container.querySelectorAll<HTMLTextAreaElement>(".composer-box textarea")[1].focus();
+    await pressAltM();
+    await waitFor(() =>
+      expect(container.querySelectorAll<HTMLButtonElement>("button.composer-mic")[1].classList.contains("recording")).toBe(
+        true,
+      ),
+    );
+    expect(container.querySelectorAll<HTMLButtonElement>("button.composer-mic")[0].disabled).toBe(true);
+
+    // The running take owns the shortcut, so the stop half no longer needs focus.
+    container.querySelectorAll<HTMLTextAreaElement>(".composer-box textarea")[1].blur();
+    await pressAltM();
+    await waitFor(() => expect(readState().chatPanes[1].draft).toBe("회의 내용 정리해 줘"));
   });
 });

@@ -719,6 +719,42 @@
     else if (sttPaneId) sttCancelPending = true;
   }
 
+  /**
+   * Which pane Alt+M acts on: the composer holding focus wins, so a split view
+   * dictates into the box the user is already in; a lone pane needs no
+   * disambiguation. With several panes and focus elsewhere it resolves to
+   * nothing rather than guessing which conversation to talk into. A take
+   * already in flight owns the shortcut outright — its stop half has to work
+   * from anywhere in the view, and pressing it at any other pane would no-op.
+   */
+  function voiceShortcutPaneId(event: KeyboardEvent): string {
+    if (sttPaneId) return sttPaneId;
+    const inComposer = [event.target, document.activeElement].find(
+      (node): node is HTMLElement => node instanceof HTMLElement && Boolean(node.closest(".composer-box")),
+    );
+    const owner = inComposer?.closest<HTMLElement>("[data-pane]")?.dataset.pane;
+    return owner || (panes.length === 1 ? panes[0].id : "");
+  }
+
+  // Alt+M is the mic button from anywhere in the chat view. Keyed on
+  // `event.code` so the binding survives non-QWERTY layouts, and the ctrlKey
+  // exclusion also drops AltGr (which reports ctrl+alt) so layouts that type
+  // their extra characters with it are unaffected. No recording logic of its
+  // own: the toggle already handles busy/transcribing/stop/cancel-pending.
+  function onGlobalKeydown(event: KeyboardEvent): void {
+    if (event.code !== "KeyM" || !event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.isComposing) return;
+    const state = readState();
+    // App.svelte swaps ONE top-level view at a time, so this listener already
+    // dies with the component; the view check keeps it correct if chat ever
+    // moves under the always-mounted pattern the settings tabs use.
+    if (!state.bootstrap?.sttEnabled || state.view !== "chat") return;
+    const target = panes.find((item) => item.id === voiceShortcutPaneId(event));
+    if (!target) return;
+    event.preventDefault();
+    void toggleVoiceInput(target);
+  }
+
   // Release the mic when the pane holding it goes away (closed pane, view swap)
   // instead of recording into a draft nobody can see.
   $: if (sttPaneId && !panes.some((item) => item.id === sttPaneId)) cancelVoiceInput();
@@ -1220,6 +1256,8 @@
   }
 </script>
 
+<svelte:window on:keydown={onGlobalKeydown} />
+
 {#snippet attachmentCards(item: ChatPane, atts: MessageAttachment[], source: MessageAttachment[] | undefined)}
   <div class="msg-images">
     {#each atts as att (att.id)}
@@ -1596,6 +1634,11 @@
                 : recording
                   ? "녹음 중지"
                   : "음성 입력"}
+            <!-- The shortcut rides the title, not the accessible name: it is
+                 discoverability, and `aria-keyshortcuts` is where a screen
+                 reader expects to find it. Only the two states the shortcut
+                 actually drives advertise it. -->
+            {@const micTitle = busy || transcribing ? micLabel : `${micLabel} (Alt+M)`}
             <!-- Deliberately NOT hidden while streaming: the composer stays
                  editable mid-stream, so dictating the next message must work too. -->
             <button
@@ -1603,8 +1646,9 @@
               class:recording
               type="button"
               aria-label={micLabel}
+              aria-keyshortcuts="Alt+M"
               aria-pressed={recording ? "true" : "false"}
-              title={micLabel}
+              title={micTitle}
               disabled={busy || transcribing}
               on:click={() => toggleVoiceInput(item)}
             >

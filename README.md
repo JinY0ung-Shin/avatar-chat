@@ -146,7 +146,8 @@ public upstreams) route installs through internal mirrors. Alongside the existin
 The composer's mic button records an utterance, posts it to `POST /api/stt`, and drops the
 transcript into the chat input. It appears only when a transcription endpoint is configured, so this
 whole section is opt-in — as is the `stt` compose service, which lives behind a `stt` profile and is
-ignored by a plain `docker compose up`.
+ignored by a plain `docker compose up`. `Alt+M` toggles recording from anywhere in the chat view, so
+you never have to reach for the button.
 
 There are two ways to configure that endpoint: the `STT_URL`/`STT_MODEL` env pair below, or the
 admin panel (관리자 → 시스템), which stores an endpoint at runtime and needs no redeploy. **The

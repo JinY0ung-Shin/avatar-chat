@@ -85,6 +85,18 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
   down a candidate list, so what the fleet's browser actually supports decides the type), and the upload.
   The clip becomes a named `File` fed to the SHARED `readFileAsDataUrl` (`lib/dom.ts`) rather than a
   hand-rolled `FileReader` — the same helper the image-attach path uses.
+- `src/client/src/views/ChatView.svelte` — the composer wiring, and **`Alt+M`, which is the mic button
+  reached from the keyboard**: a `<svelte:window on:keydown>` that calls the SAME `toggleVoiceInput` the
+  click does (start when idle, stop→transcribe when recording), so no second recording path exists. It
+  matches on `event.code === "KeyM"` rather than `event.key`, which keeps it working on non-QWERTY
+  layouts, and requires `altKey` with `ctrlKey`/`metaKey`/`shiftKey` all clear — the ctrlKey exclusion is
+  what drops **AltGr** (Windows/Linux report it as ctrl+alt), so European layouts keep typing their
+  Alt-Gr characters. The target pane is the composer holding focus, falling back to the only pane when
+  the view is unsplit and to nothing when several panes are open with focus elsewhere; a take already
+  running owns the shortcut outright, so its stop half works from anywhere. It is gated on `sttEnabled`
+  and on chat being the active view — App.svelte swaps one top-level view at a time so the listener
+  already dies with the component, but the check keeps it honest under the always-mount pattern used
+  elsewhere.
 - **`sttEnabled` on `GET /api/bootstrap`** (`routes/auth.ts`) is the client's only signal, following
   `confluenceConfigured`: a boolean derived from the RESOLVED target (config ∘ admin override), never the
   URL itself. The composer renders the
