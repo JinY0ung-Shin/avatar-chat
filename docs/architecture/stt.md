@@ -4,9 +4,9 @@
 > The mic button's wire contract, why the clip crosses as a data URL, the limits that make an
 > unauthenticated GPU service safe to sit behind, and the knobs for the self-hosted engine.
 
-Self-hosted transcription for the chat composer, **opt-in twice**: with `STT_URL` unset the mic button
-is never rendered, and the compose service sits behind a `stt` profile that a plain
-`docker compose up` ignores. Operator-facing setup is [`../../README.md`](../../README.md#speech-to-text-optional).
+Self-hosted transcription for the chat composer, **opt-in twice**: with no endpoint configured (neither
+`STT_URL` nor the admin override below) the mic button is never rendered, and the compose service sits
+behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing setup is [`../../README.md`](../../README.md#speech-to-text-optional).
 
 ## Wire contract
 - **Three hops, two encodings.** The browser records a clip → `POST /api/stt` with a JSON body carrying
@@ -15,17 +15,19 @@ is never rendered, and the compose service sits behind a `stt` profile that a pl
   the route answers `{ text }`, which the client drops into the chat input. The encoding switch is the
   whole point of the middle hop: JSON-in / multipart-out keeps the browser on the app's existing
   same-origin JSON path while the upstream gets the standard OpenAI form.
-- **`STT_MODEL` is sent on every upstream request** (default `Qwen/Qwen3-ASR-1.7B`) and must equal what
-  the upstream serves — vLLM's `--served-model-name`. A mismatch is a 404 from vLLM, not a fallback,
-  so it surfaces as a failed transcription rather than a silently wrong model. `STT_URL` is normalized
-  once in `config.ts` (trailing slashes stripped), so a copy-pasted `.../v1/` is safe.
+- **A model name is sent on every upstream request** — the admin override's, else `STT_MODEL` (default
+  `Qwen/Qwen3-ASR-1.7B`) — and must equal what the upstream serves, vLLM's `--served-model-name`. A
+  mismatch is a 404 from vLLM, not a fallback, so it surfaces as a failed transcription rather than a
+  silently wrong model. The base URL is normalized (trailing slashes stripped) on the way IN on both
+  paths — `config.ts` for the env value, the admin route for the stored one — so a copy-pasted
+  `.../v1/` is safe and `resolveSttTarget` can hand out either without re-normalizing.
 - **A 200 without a `text` string is a FAILURE, not an empty transcript.** The route asks for
   `response_format=json` and requires `text` to be a string; anything else (a JSON error body, a
   different API answering on that port) becomes a 502 rather than an empty string, which the user would
   read as "it didn't hear me". That single field is the whole compatibility surface an alternative engine
   has to satisfy.
 - **Error mapping follows the language split**: the user gets one Korean `apiError` line per case —
-  503 (`STT_URL` unset), 400 (unsupported container / too large), 502 (upstream unreachable, non-2xx, or
+  503 (no endpoint resolved), 400 (unsupported container / too large), 502 (upstream unreachable, non-2xx, or
   timed out) — while the English upstream detail (status, body excerpt, timeout) goes only to the server
   log. The upstream call has its own 60s `AbortSignal.timeout`, and time spent queued behind
   `--max-num-seqs` counts against it.
@@ -34,6 +36,37 @@ is never rendered, and the compose service sits behind a `stt` profile that a pl
   `describe_system` — the avatar has no STT tool, no per-turn guidance, and no state to report. This is
   the deliberate exception to the metacognition rule in [`../../CLAUDE.md`](../../CLAUDE.md): the
   capability belongs to the composer, not to the run.
+
+## Admin-managed override
+- **Resolution is per REQUEST and the ADMIN value WINS: `override ?? env`** (`resolveSttTarget` in
+  `stt.ts`, the single seam both `routes/stt.ts` and `/api/bootstrap` call). The stored shape is
+  `{ url, model | null }`, with a null model inheriting `STT_MODEL`, so an operator who only re-points
+  the URL keeps the deployment's model name. Nothing is resolved at boot — a change takes effect on the
+  next mic click, no restart. **This is the INVERSE of `MODEL_OVERRIDE_KEY`**, where an env
+  `ANTHROPIC_MODEL` shadows the panel: a deployment pins its agent model deliberately, while an STT
+  endpoint is operational plumbing (the GPU box moves, the port changes) that has to be re-pointable
+  without a redeploy. Don't "fix" the inconsistency by flipping one of them — they differ on purpose.
+- **Storage is `app_config` via `setAppSecret`** (`STT_OVERRIDE_KEY`, JSON), so it is AES-encrypted with
+  `SESSION_SECRET` like every other at-rest value. Rotating that secret therefore drops the override
+  SILENTLY and the deployment falls back to env — the same rotation caveat as the rest of the vault
+  (`src/server/CLAUDE.md`), and the reason `getSttOverride` treats anything unreadable or malformed as
+  "no override" instead of throwing: a garbled row must degrade to env, never 503 every mic click.
+- **There is deliberately NO boot-time seeding of the env values into the DB.** A seed-if-unset write
+  re-fires on every `new Store()` (the same trap as a value-guarded backfill), so it would resurrect an
+  override an admin had just cleared, and it would freeze the first-ever `STT_URL` into the DB where
+  later `.env` edits are silently ignored. The panel reads `sttEnvUrl`/`sttEnvModel` off
+  `GET /api/admin/system` and renders them as the inherited fallback instead.
+- **`sttEnabled` rides `/api/bootstrap`**, which the client reads at page load — so a user who was
+  already signed in when the endpoint was configured sees the mic on their NEXT load, not immediately.
+  There is no push channel for it, and adding one would buy little: the route itself is the authority
+  and 503s coherently either way.
+- **Trust stance: sysadmin-only, audited, http(s)-only.** `PUT`/`DELETE /api/admin/stt` sit behind
+  `requireAuth` + `requireAdmin` and write `set_stt_override` / `clear_stt_override` audit rows; the URL
+  must parse as `http:`/`https:` and is normalized (trailing slashes stripped) exactly as `config.ts`
+  does for the env value. Same trust model as an admin-managed external-agent endpoint: an operator who
+  can already re-point the deployment's `.env` is the only one who can re-point this, and every
+  recording thereafter goes to whatever they named — so the audit row, not a validation rule, is what
+  makes the change accountable.
 
 ## Where the pieces live
 - `src/server/routes/stt.ts` — the route: auth, rate limit, and the 503/400/502 mapping to one Korean
@@ -53,7 +86,8 @@ is never rendered, and the compose service sits behind a `stt` profile that a pl
   The clip becomes a named `File` fed to the SHARED `readFileAsDataUrl` (`lib/dom.ts`) rather than a
   hand-rolled `FileReader` — the same helper the image-attach path uses.
 - **`sttEnabled` on `GET /api/bootstrap`** (`routes/auth.ts`) is the client's only signal, following
-  `confluenceConfigured`: a boolean derived from config, never the URL itself. The composer renders the
+  `confluenceConfigured`: a boolean derived from the RESOLVED target (config ∘ admin override), never the
+  URL itself. The composer renders the
   mic button on it. Absent (older server) = disabled, so the flag is safe to add to `BootstrapInfo` as
   optional.
 
@@ -96,8 +130,8 @@ is never rendered, and the compose service sits behind a `stt` profile that a pl
   local playback either.
 
 ## Swapping the engine
-- **`STT_URL` is the entire seam.** Anything serving OpenAI's `/v1/audio/transcriptions` contract drops
-  in with no code change: **speaches / faster-whisper** on a CPU-only host (the fallback when a
+- **The resolved base URL is the entire seam** (`STT_URL` or the admin override — same contract either
+  way). Anything serving OpenAI's `/v1/audio/transcriptions` contract drops in with no code change: **speaches / faster-whisper** on a CPU-only host (the fallback when a
   deployment has no GPU to spare, or when the pinned vLLM build turns out not to expose transcriptions
   for Qwen3-ASR), or an **internal STT API** later. Keep it that way — resist adding engine-specific
   request fields to the route; anything Qwen-specific belongs behind the URL, not in `routes/stt.ts`.

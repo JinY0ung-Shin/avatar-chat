@@ -17,16 +17,18 @@ const getTempDir = withTempDir("stt", () => {
 });
 
 /** `sttUrl` is always passed explicitly so an ambient STT_URL can't leak in. */
+function testServices(overrides: { sttUrl?: string; sttModel?: string }) {
+  return createServices({
+    dataDir: tempDir,
+    agentRuntime: "local",
+    sessionSecret: "test",
+    sttModel: "Qwen/Qwen3-ASR-1.7B",
+    ...overrides,
+  });
+}
+
 function testApp(overrides: { sttUrl?: string; sttModel?: string }) {
-  return createApp(
-    createServices({
-      dataDir: tempDir,
-      agentRuntime: "local",
-      sessionSecret: "test",
-      sttModel: "Qwen/Qwen3-ASR-1.7B",
-      ...overrides,
-    }),
-  );
+  return createApp(testServices(overrides));
 }
 
 async function newUser(app: ReturnType<typeof createApp>, username: string) {
@@ -333,5 +335,164 @@ describe("STT configuration", () => {
     expect(off.body.sttEnabled).toBe(false);
     const on = await request(testApp({ sttUrl: "http://stt:8000/v1" })).get("/api/bootstrap").expect(200);
     expect(on.body.sttEnabled).toBe(true);
+  });
+});
+
+// The admin panel can re-point the transcription service at runtime, and its
+// value WINS over env STT_URL (the inverse of the model override, where env
+// wins). Every test here signs its admin up FIRST — the first account created on
+// a fresh store is the system admin.
+describe("admin-managed STT override", () => {
+  it("turns the mic on for a deployment that has no STT_URL at all", async () => {
+    await withSttServer(respondJson(200, { text: "  관리자 설정  " }), async (baseUrl, captured) => {
+      const app = testApp({ sttUrl: undefined });
+      const admin = await newUser(app, "stt-admin");
+
+      const before = await request(app).get("/api/bootstrap").expect(200);
+      expect(before.body.sttEnabled).toBe(false);
+
+      await admin.put("/api/admin/stt").send({ url: baseUrl }).expect(200);
+
+      const after = await request(app).get("/api/bootstrap").expect(200);
+      expect(after.body.sttEnabled).toBe(true);
+      const res = await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+      expect(res.body).toEqual({ text: "관리자 설정" });
+      expect(captured).toHaveLength(1);
+      expect(captured[0].url).toBe("/v1/audio/transcriptions");
+      // No model in the PUT, so the env default rides along unchanged.
+      expect(captured[0].body).toContain("Qwen/Qwen3-ASR-1.7B");
+    });
+  });
+
+  it("sends the override's own model name when one was given", async () => {
+    await withSttServer(respondJson(200, { text: "ok" }), async (baseUrl, captured) => {
+      const app = testApp({ sttUrl: undefined, sttModel: "deployment-default" });
+      const admin = await newUser(app, "stt-admin");
+      await admin.put("/api/admin/stt").send({ url: baseUrl, model: "  whisper-1  " }).expect(200);
+
+      await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+      expect(captured[0].body).toContain("whisper-1");
+      expect(captured[0].body).not.toContain("deployment-default");
+    });
+  });
+
+  it("beats a configured STT_URL — the admin value wins, not the env", async () => {
+    await withSttServer(respondJson(200, { text: "from env" }), async (envUrl, envCaptured) => {
+      await withSttServer(respondJson(200, { text: "from override" }), async (overrideUrl, overrideCaptured) => {
+        const app = testApp({ sttUrl: envUrl });
+        const admin = await newUser(app, "stt-admin");
+        await admin.put("/api/admin/stt").send({ url: overrideUrl }).expect(200);
+
+        const res = await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+        expect(res.body).toEqual({ text: "from override" });
+        expect(overrideCaptured).toHaveLength(1);
+        expect(envCaptured).toHaveLength(0);
+      });
+    });
+  });
+
+  it("falls back to the env service once the override is cleared", async () => {
+    await withSttServer(respondJson(200, { text: "from env" }), async (envUrl, envCaptured) => {
+      await withSttServer(respondJson(200, { text: "from override" }), async (overrideUrl) => {
+        const app = testApp({ sttUrl: envUrl });
+        const admin = await newUser(app, "stt-admin");
+        await admin.put("/api/admin/stt").send({ url: overrideUrl }).expect(200);
+        await admin.delete("/api/admin/stt").expect(200);
+
+        const res = await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+        expect(res.body).toEqual({ text: "from env" });
+        expect(envCaptured).toHaveLength(1);
+      });
+    });
+  });
+
+  it("turns the feature back off when a cleared override had no env behind it", async () => {
+    const app = testApp({ sttUrl: undefined });
+    const admin = await newUser(app, "stt-admin");
+    await admin.put("/api/admin/stt").send({ url: "http://stt.invalid/v1" }).expect(200);
+    await admin.delete("/api/admin/stt").expect(200);
+
+    const res = await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(503);
+    expect(res.body.error).toBe("음성 인식이 아직 설정되지 않았어요.");
+    const bootstrap = await request(app).get("/api/bootstrap").expect(200);
+    expect(bootstrap.body.sttEnabled).toBe(false);
+  });
+
+  it("rejects a missing or non-http(s) address and stores the url normalized", async () => {
+    const app = testApp({ sttUrl: undefined });
+    const admin = await newUser(app, "stt-admin");
+
+    const missing = await admin.put("/api/admin/stt").send({}).expect(400);
+    expect(missing.body.error).toBe("STT 서버 주소를 입력해 주세요.");
+    await admin.put("/api/admin/stt").send({ url: "   " }).expect(400);
+    for (const url of ["ftp://x", "not a url"]) {
+      const res = await admin.put("/api/admin/stt").send({ url }).expect(400);
+      expect(res.body.error).toBe("http(s) 주소만 사용할 수 있어요.");
+    }
+    // None of the rejects reached the store.
+    let sys = await admin.get("/api/admin/system").expect(200);
+    expect(sys.body.system.sttOverride).toBeNull();
+
+    // Trailing slashes are stripped once on the way in, exactly as config.ts does
+    // for the env value, so the request path never doubles its slash.
+    const saved = await admin.put("/api/admin/stt").send({ url: "http://stt:8000/v1//" }).expect(200);
+    expect(saved.body.sttOverride).toEqual({ url: "http://stt:8000/v1", model: null });
+    sys = await admin.get("/api/admin/system").expect(200);
+    expect(sys.body.system.sttOverride).toEqual({ url: "http://stt:8000/v1", model: null });
+  });
+
+  it("is admin-only", async () => {
+    const app = testApp({ sttUrl: undefined });
+    await newUser(app, "stt-admin");
+    const member = await newUser(app, "stt-member");
+    await member.put("/api/admin/stt").send({ url: "http://stt:8000/v1" }).expect(403);
+    await member.delete("/api/admin/stt").expect(403);
+    // The blocked member changed nothing.
+    const bootstrap = await request(app).get("/api/bootstrap").expect(200);
+    expect(bootstrap.body.sttEnabled).toBe(false);
+  });
+
+  it("surfaces the override next to the env values it falls back to", async () => {
+    const app = testApp({ sttUrl: "http://stt:8000/v1", sttModel: "deployment-default" });
+    const admin = await newUser(app, "stt-admin");
+
+    let sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.sttOverride).toBeNull();
+    expect(sys.sttEnvUrl).toBe("http://stt:8000/v1");
+    expect(sys.sttEnvModel).toBe("deployment-default");
+
+    await admin
+      .put("/api/admin/stt")
+      .send({ url: "http://gpu-box:9000/v1", model: "whisper-1" })
+      .expect(200);
+    sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.sttOverride).toEqual({ url: "http://gpu-box:9000/v1", model: "whisper-1" });
+    // The env pair stays visible: it is what a clear would fall back to, and the
+    // panel shows it as the inherited value (it is never seeded into the store).
+    expect(sys.sttEnvUrl).toBe("http://stt:8000/v1");
+    expect(sys.sttEnvModel).toBe("deployment-default");
+  });
+
+  it("reports a null env url when nothing but the override configures STT", async () => {
+    const app = testApp({ sttUrl: undefined });
+    const admin = await newUser(app, "stt-admin");
+    const sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.sttEnvUrl).toBeNull();
+    expect(sys.sttEnvModel).toBe("Qwen/Qwen3-ASR-1.7B");
+  });
+
+  it("ignores an unreadable stored override instead of breaking the mic", async () => {
+    const services = testServices({ sttUrl: "http://stt:8000/v1" });
+    const app = createApp(services);
+    const admin = await newUser(app, "stt-admin");
+
+    // What a SESSION_SECRET rotation or a hand-edited row leaves behind: the
+    // deployment must degrade to the env fallback, not 503 on every click.
+    services.store.setAppSecret("stt_override", "not json");
+    expect(services.store.getSttOverride()).toBeNull();
+    const sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.sttOverride).toBeNull();
+    const bootstrap = await request(app).get("/api/bootstrap").expect(200);
+    expect(bootstrap.body.sttEnabled).toBe(true);
   });
 });

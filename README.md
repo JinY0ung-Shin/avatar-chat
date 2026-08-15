@@ -144,9 +144,14 @@ public upstreams) route installs through internal mirrors. Alongside the existin
 ## Speech-to-text (optional)
 
 The composer's mic button records an utterance, posts it to `POST /api/stt`, and drops the
-transcript into the chat input. It appears only when `STT_URL` is set, so this whole section is
-opt-in — as is the `stt` compose service, which lives behind a `stt` profile and is ignored by a
-plain `docker compose up`.
+transcript into the chat input. It appears only when a transcription endpoint is configured, so this
+whole section is opt-in — as is the `stt` compose service, which lives behind a `stt` profile and is
+ignored by a plain `docker compose up`.
+
+There are two ways to configure that endpoint: the `STT_URL`/`STT_MODEL` env pair below, or the
+admin panel (관리자 → 시스템), which stores an endpoint at runtime and needs no redeploy. **The
+admin value wins** when both are set; env stays the fallback the panel displays and what a cleared
+override returns to. Users see the mic appear (or disappear) on their next page load.
 
 The reference engine is **Qwen3-ASR-1.7B** (Apache 2.0) served by vLLM on the deploy host's GPU.
 The deploy host has no Hugging Face or internet access, so both artifacts are carried in by hand:
@@ -217,8 +222,8 @@ host can run speaches/faster-whisper instead, with no code change.
 | `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` | Optional corporate proxy for outbound web access — used by the `mcp__web__fetch` avatar tool and inherited by the SDK subprocess (built-in WebFetch/WebSearch). Put intranet hosts/domain suffixes in `NO_PROXY` so they bypass the proxy. |
 | `NODE_EXTRA_CA_CERTS` | Optional PEM bundle for intranet HTTPS behind a private corporate CA — honored by the app process (`mcp__web__fetch`) and the SDK subprocess (built-in WebFetch). Docker images built with the `CA_CERT_FILE` arg already contain `/usr/local/share/ca-certificates/extra-proxy-ca.crt`. |
 | `CONFLUENCE_URL` | Optional app-wide Confluence Server/Data Center base URL for page, attachment, and image/draw.io asset tools. Per-avatar PATs are stored as the `CONFLUENCE_PAT` user secret. |
-| `STT_URL` | Optional OpenAI-compatible speech-to-text base URL including `/v1` (e.g. `http://stt:8000/v1`) — the composer's mic button posts the recording to `<STT_URL>/audio/transcriptions`. **Unset (default) hides the mic button entirely.** Any engine serving that contract works; see [Speech-to-text](#speech-to-text-optional). |
-| `STT_MODEL` | Model name sent with each transcription request (default `Qwen/Qwen3-ASR-1.7B`). Must match what the upstream serves — vLLM's `--served-model-name`. |
+| `STT_URL` | Optional OpenAI-compatible speech-to-text base URL including `/v1` (e.g. `http://stt:8000/v1`) — the composer's mic button posts the recording to `<STT_URL>/audio/transcriptions`. **Unset (default) hides the mic button** unless an admin configured an endpoint in 관리자 → 시스템, which also **overrides** this value when both are set. Any engine serving that contract works; see [Speech-to-text](#speech-to-text-optional). |
+| `STT_MODEL` | Model name sent with each transcription request (default `Qwen/Qwen3-ASR-1.7B`). Must match what the upstream serves — vLLM's `--served-model-name`. The admin panel can override it per endpoint; an override that names no model inherits this one. |
 | `BROWSER_ALLOWED_ORIGINS` | Optional comma-separated DEFAULT browser-control allowlist (`intra.example.com,*.corp.local`). Seeded once into a browser whose extension allowlist is still empty — a user-edited or managed (enterprise-policy) list is never touched, and the user can change it afterwards in 설정 → 접근/보안. Entries that would cover Noah's own host (including a bare `*`) are dropped before serving: the app UI must never become drivable by default. |
 | `LOG_LEVEL` | Pino log level: `trace`/`debug`/`info`/`warn`/`error` (default `debug` in dev, `info` in prod). |
 | `MAX_TURNS` | Maximum agent turns per chat run (default `1000`). |

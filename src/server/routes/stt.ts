@@ -2,10 +2,13 @@ import { Router } from "express";
 import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
 import { createRateLimiter } from "../rateLimit.js";
-import { decodeSttAudio, transcribeAudio } from "../stt.js";
+import { decodeSttAudio, resolveSttTarget, transcribeAudio } from "../stt.js";
 import { apiError, type RouterDeps } from "./_shared.js";
 
 // ---- Speech-to-text --------------------------------------------------
+// The target service is resolved per request (admin-panel override first, env
+// `STT_URL` as the fallback), so an operator re-pointing the endpoint takes
+// effect on the next mic click rather than at the next restart.
 export function createSttRouter({ config, store }: RouterDeps): Router {
   const router = Router();
 
@@ -22,7 +25,8 @@ export function createSttRouter({ config, store }: RouterDeps): Router {
 
   // requireAuth runs BEFORE the limiter so `keyFn` has a user id to key on.
   router.post("/api/stt", requireAuth(store), sttLimiter, async (req: AuthenticatedRequest, res) => {
-    if (!config.sttUrl) {
+    const target = resolveSttTarget(config, store);
+    if (!target) {
       apiError(res, 503, "음성 인식이 아직 설정되지 않았어요.");
       return;
     }
@@ -37,7 +41,7 @@ export function createSttRouter({ config, store }: RouterDeps): Router {
       );
       return;
     }
-    const result = await transcribeAudio(config, decoded.audio);
+    const result = await transcribeAudio(target, decoded.audio);
     if (!result.ok) {
       // The upstream detail (status, body, timeout) is server-side only: the user
       // gets one Korean line, the operator gets what to fix.

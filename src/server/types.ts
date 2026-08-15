@@ -250,6 +250,18 @@ export interface AppConfig {
 }
 
 /**
+ * Admin-panel override of the speech-to-text endpoint, stored in `app_config`.
+ * Unlike the model override, THIS wins over the env (`STT_URL`/`STT_MODEL`),
+ * which stays the fallback an operator sees in the panel — see
+ * `resolveSttTarget` in `stt.ts`. `url` is already normalized (trailing slashes
+ * stripped) when stored; `model` null means "inherit `config.sttModel`".
+ */
+export interface SttOverride {
+  url: string;
+  model: string | null;
+}
+
+/**
  * Who can discover and chat with an avatar:
  * - `group`   — only the owner's group teammates (also mutually elevated)
  * - `private` — only the owner

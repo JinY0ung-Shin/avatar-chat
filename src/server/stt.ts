@@ -1,4 +1,4 @@
-import type { AppConfig } from "./types.js";
+import type { AppConfig, SttOverride } from "./types.js";
 
 /**
  * Speech-to-text for the chat composer's mic button: the browser records with
@@ -14,6 +14,37 @@ import type { AppConfig } from "./types.js";
 export const MAX_STT_AUDIO_BYTES = 15 * 1024 * 1024;
 /** Upstream deadline: a GPU transcribe of a long recording is slow, a hung one is worse. */
 const STT_REQUEST_TIMEOUT_MS = 60_000;
+
+/** The service one transcription is sent to: where, and under which model name. */
+export interface SttTarget {
+  url: string;
+  model: string;
+}
+
+/**
+ * Where this request's transcription goes, or null when the feature is off.
+ *
+ * The ADMIN override wins over the env — deliberately the inverse of the model
+ * override, where an env `ANTHROPIC_MODEL` shadows the panel. An STT endpoint is
+ * operational plumbing (a GPU box moves, a port changes) that an operator has to
+ * be able to re-point without a redeploy, so the panel is the authority and env
+ * `STT_URL` is only the fallback it displays. Resolved PER REQUEST so a change
+ * takes effect on the next mic click, with no restart.
+ *
+ * The store is taken structurally rather than as the `Store` class: this module
+ * stays a leaf that the route wires up, not a consumer of the store facade.
+ */
+export function resolveSttTarget(
+  config: AppConfig,
+  store: { getSttOverride(): SttOverride | null },
+): SttTarget | null {
+  const override = store.getSttOverride();
+  const url = override?.url ?? config.sttUrl;
+  if (!url) return null;
+  // A stored override with no model of its own inherits the env default, so an
+  // admin who only re-points the URL keeps the deployment's model name.
+  return { url, model: override?.model ?? config.sttModel };
+}
 
 /** Containers the browsers on the fleet actually record (Chrome/Edge webm, Firefox ogg, mp4). */
 export type SttMediaType = "audio/webm" | "audio/ogg" | "audio/mp4";
@@ -94,19 +125,16 @@ export type TranscribeResult = { ok: true; text: string } | { ok: false; detail:
  * `HTTP_PROXY`/`HTTPS_PROXY` would send every transcription out through the
  * proxy and fail closed on a deployment that sets them.
  */
-export async function transcribeAudio(config: AppConfig, audio: DecodedSttAudio): Promise<TranscribeResult> {
-  const baseUrl = config.sttUrl;
-  if (!baseUrl) return { ok: false, detail: "STT_URL is not configured" };
-
+export async function transcribeAudio(target: SttTarget, audio: DecodedSttAudio): Promise<TranscribeResult> {
   const form = new FormData();
   // The filename extension comes from the SNIFFED container, so the upstream
   // demuxer is never handed a name the bytes disagree with.
   form.append("file", new Blob([audio.buffer], { type: audio.mediaType }), `audio.${audio.ext}`);
-  form.append("model", config.sttModel);
+  form.append("model", target.model);
   form.append("response_format", "json");
 
   try {
-    const res = await fetch(`${baseUrl}/audio/transcriptions`, {
+    const res = await fetch(`${target.url}/audio/transcriptions`, {
       method: "POST",
       body: form,
       signal: AbortSignal.timeout(STT_REQUEST_TIMEOUT_MS),

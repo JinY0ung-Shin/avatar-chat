@@ -279,6 +279,19 @@ export const SIGNUP_MODE_KEY = "signup_mode";
 /** app_config key: admin-selected agent model, overriding nothing when an env
  *  ANTHROPIC_MODEL is set (env wins, mirroring the API-key/subscription rule). */
 export const MODEL_OVERRIDE_KEY = "agent_model_override";
+/**
+ * app_config key: admin-managed speech-to-text endpoint, JSON `{ url, model }`
+ * with `model` null meaning "inherit the env default" (`SttOverride`).
+ *
+ * Precedence is the INVERSE of MODEL_OVERRIDE_KEY above: here the ADMIN value
+ * wins and env `STT_URL`/`STT_MODEL` are only the fallback the panel displays.
+ * The model override defers to env because a deployment pins its agent model
+ * deliberately at boot; an STT endpoint is operational plumbing an operator
+ * must be able to re-point at runtime without a redeploy. Env is never seeded
+ * into this key — a seed-if-unset write would re-fire every boot and clobber a
+ * deliberate clear.
+ */
+export const STT_OVERRIDE_KEY = "stt_override";
 
 /**
  * Generic constructor type used to compose the per-domain mixins back onto a

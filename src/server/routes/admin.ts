@@ -83,6 +83,15 @@ export function createAdminRouter(deps: RouterDeps): Router {
         // (env wins, mirroring the API-key-vs-subscription precedence).
         modelOverride: store.getModelOverride(),
         modelEnvLocked: Boolean(config.anthropicModel),
+        // Admin-managed speech-to-text endpoint + the env values it falls back
+        // to. Note the precedence is the INVERSE of the model override above:
+        // the stored override WINS over env `STT_URL`, because re-pointing a
+        // transcription service is runtime plumbing an operator must be able to
+        // do without a redeploy. Env is never seeded into the override, so the
+        // panel shows it separately as the inherited fallback.
+        sttOverride: store.getSttOverride(),
+        sttEnvUrl: config.sttUrl ?? null,
+        sttEnvModel: config.sttModel,
         // Per-model-tier vision policy (+ the deployment default an unset tier
         // inherits) — the panel renders one selector per tier.
         modelVisionPolicy: store.getModelVisionPolicy(),
@@ -592,6 +601,45 @@ export function createAdminRouter(deps: RouterDeps): Router {
     store.clearModelOverride();
     auditAs(req, "clear_model_override", "model override cleared");
     logger.info({ actorId: req.user!.id }, "model override cleared");
+    res.json({ ok: true });
+  });
+
+  // Admin-managed speech-to-text endpoint. Unlike the model override above this
+  // one WINS over its env (`STT_URL`): the panel is the authority so an operator
+  // can move the transcription service without a redeploy, and env stays the
+  // fallback shown alongside it. The URL is normalized exactly as config.ts does
+  // (trailing slashes stripped) so `${url}/audio/transcriptions` never
+  // double-slashes, and only http(s) is accepted — the value is a server-side
+  // fetch target, not a link.
+  router.put("/api/admin/stt", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    const raw = safeString(req.body?.url);
+    if (!raw) {
+      apiError(res, 400, "STT 서버 주소를 입력해 주세요.");
+      return;
+    }
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch {
+      apiError(res, 400, "http(s) 주소만 사용할 수 있어요.");
+      return;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      apiError(res, 400, "http(s) 주소만 사용할 수 있어요.");
+      return;
+    }
+    const url = raw.replace(/\/+$/, "");
+    const model = safeString(req.body?.model) || null;
+    store.setSttOverride(url, model);
+    auditAs(req, "set_stt_override", `stt = ${url} (model ${model ?? "env default"})`);
+    logger.warn({ actorId: req.user!.id, url, model }, "stt override set");
+    res.json({ sttOverride: { url, model } });
+  });
+
+  router.delete("/api/admin/stt", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {
+    store.clearSttOverride();
+    auditAs(req, "clear_stt_override", "stt override cleared");
+    logger.info({ actorId: req.user!.id }, "stt override cleared");
     res.json({ ok: true });
   });
 
