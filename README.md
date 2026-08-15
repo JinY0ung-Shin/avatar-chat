@@ -149,10 +149,14 @@ whole section is opt-in — as is the `stt` compose service, which lives behind 
 ignored by a plain `docker compose up`. `Alt+M` toggles recording from anywhere in the chat view, so
 you never have to reach for the button.
 
-There are two ways to configure that endpoint: the `STT_URL`/`STT_MODEL` env pair below, or the
-admin panel (관리자 → 시스템), which stores an endpoint at runtime and needs no redeploy. **The
-admin value wins** when both are set; env stays the fallback the panel displays and what a cleared
-override returns to. Users see the mic appear (or disappear) on their next page load.
+There are two ways to configure that endpoint: the `STT_URL`/`STT_MODEL`/`STT_LANGUAGE` env trio
+below, or the admin panel (관리자 → 시스템), which stores an endpoint at runtime and needs no
+redeploy. **The admin value wins** when both are set; env stays the fallback the panel displays and
+what a cleared override returns to. Users see the mic appear (or disappear) on their next page load.
+
+Every transcription is biased toward Korean (`STT_LANGUAGE`, default `ko`) rather than leaving the
+engine to detect a language: a short Korean utterance is exactly the case auto-detection gets wrong.
+Set it to `auto` if your users speak something else, or per endpoint in the admin panel.
 
 The mic stops itself when you finish speaking — a Silero voice-activity detector runs in the browser
 (fully offline, served from this deployment like every other asset, and lazy-loaded on the first
@@ -232,6 +236,7 @@ host can run speaches/faster-whisper instead, with no code change.
 | `CONFLUENCE_URL` | Optional app-wide Confluence Server/Data Center base URL for page, attachment, and image/draw.io asset tools. Per-avatar PATs are stored as the `CONFLUENCE_PAT` user secret. |
 | `STT_URL` | Optional OpenAI-compatible speech-to-text base URL including `/v1` (e.g. `http://stt:8000/v1`) — the composer's mic button posts the recording to `<STT_URL>/audio/transcriptions`. **Unset (default) hides the mic button** unless an admin configured an endpoint in 관리자 → 시스템, which also **overrides** this value when both are set. Any engine serving that contract works; see [Speech-to-text](#speech-to-text-optional). |
 | `STT_MODEL` | Model name sent with each transcription request (default `Qwen/Qwen3-ASR-1.7B`). Must match what the upstream serves — vLLM's `--served-model-name`. The admin panel can override it per endpoint; an override that names no model inherits this one. |
+| `STT_LANGUAGE` | ISO-639-1 code sent with each transcription request to bias it toward one language (default `ko`). Set `auto` to send no language at all and let the engine detect it. The upstream validates the code against what the served model supports. The admin panel can override it under the same precedence as the URL; an override that names no language inherits this one. |
 | `BROWSER_ALLOWED_ORIGINS` | Optional comma-separated DEFAULT browser-control allowlist (`intra.example.com,*.corp.local`). Seeded once into a browser whose extension allowlist is still empty — a user-edited or managed (enterprise-policy) list is never touched, and the user can change it afterwards in 설정 → 접근/보안. Entries that would cover Noah's own host (including a bare `*`) are dropped before serving: the app UI must never become drivable by default. |
 | `LOG_LEVEL` | Pino log level: `trace`/`debug`/`info`/`warn`/`error` (default `debug` in dev, `info` in prod). |
 | `MAX_TURNS` | Maximum agent turns per chat run (default `1000`). |

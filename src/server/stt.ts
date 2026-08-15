@@ -19,6 +19,8 @@ const STT_REQUEST_TIMEOUT_MS = 60_000;
 export interface SttTarget {
   url: string;
   model: string;
+  /** ISO-639-1 bias, or absent when the engine should detect the language itself. */
+  language?: string;
 }
 
 /**
@@ -41,9 +43,16 @@ export function resolveSttTarget(
   const override = store.getSttOverride();
   const url = override?.url ?? config.sttUrl;
   if (!url) return null;
-  // A stored override with no model of its own inherits the env default, so an
-  // admin who only re-points the URL keeps the deployment's model name.
-  return { url, model: override?.model ?? config.sttModel };
+  // A stored override with no model/language of its own inherits the env default,
+  // so an admin who only re-points the URL keeps the deployment's model name and
+  // language bias. `auto` is the opt-OUT sentinel, not a code: it resolves to no
+  // language at all, which is what leaves detection to the engine.
+  const raw = override?.language ?? config.sttLanguage;
+  return {
+    url,
+    model: override?.model ?? config.sttModel,
+    language: raw && raw !== "auto" ? raw : undefined,
+  };
 }
 
 /** Containers the browsers on the fleet actually record (Chrome/Edge webm, Firefox ogg, mp4). */
@@ -132,6 +141,11 @@ export async function transcribeAudio(target: SttTarget, audio: DecodedSttAudio)
   form.append("file", new Blob([audio.buffer], { type: audio.mediaType }), `audio.${audio.ext}`);
   form.append("model", target.model);
   form.append("response_format", "json");
+  // Contract-standard OpenAI field, not an engine-specific one: the upstream
+  // validates the code against the language set the served model supports (a
+  // bogus code comes back as a 400 listing them). An unset target — `auto`, or
+  // no bias configured — omits the field entirely and lets the engine detect.
+  if (target.language) form.append("language", target.language);
 
   try {
     const res = await fetch(`${target.url}/audio/transcriptions`, {

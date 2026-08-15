@@ -52,9 +52,10 @@ const system = {
   skillDiscovery: null,
   signupMode: "open",
   // STT: env-only deployment — no admin override yet.
-  sttOverride: null as { url: string; model: string | null } | null,
+  sttOverride: null as { url: string; model: string | null; language?: string | null } | null,
   sttEnvUrl: "http://stt.internal:8000/v1",
   sttEnvModel: "Qwen/Qwen3-ASR-1.7B",
+  sttEnvLanguage: "ko",
 };
 
 let calls: { url: string; method: string; body: string | null }[] = [];
@@ -75,8 +76,9 @@ function stubAdminFetch(systemOverrides: Record<string, unknown> = {}): void {
       if (url.includes("/api/admin/system")) return json({ system: systemPayload });
       if (url.includes("/api/admin/stt")) {
         if (method === "PUT") {
-          const sent = JSON.parse(String(init?.body || "{}")) as { url: string; model?: string };
-          const sttOverride = { url: sent.url, model: sent.model ?? null };
+          const sent = JSON.parse(String(init?.body || "{}")) as { url: string; model?: string; language?: string };
+          // An omitted key stores as null, the way the server records "inherit".
+          const sttOverride = { url: sent.url, model: sent.model ?? null, language: sent.language ?? null };
           systemPayload = { ...systemPayload, sttOverride };
           return json({ sttOverride });
         }
@@ -106,6 +108,10 @@ function sttUrlInput(): HTMLInputElement {
 
 function sttModelInput(): HTMLInputElement {
   return screen.getByLabelText("STT 모델 이름") as HTMLInputElement;
+}
+
+function sttLanguageInput(): HTMLInputElement {
+  return screen.getByLabelText("STT 언어") as HTMLInputElement;
 }
 
 function sttCalls(): { url: string; method: string; body: string | null }[] {
@@ -209,6 +215,63 @@ describe("admin 시스템 tab STT card", () => {
     // Falls back to env, which re-seeds the inputs pre-filled again.
     await waitFor(() => expect(sttUrlInput().value).toBe("http://stt.internal:8000/v1"));
     expect(sttModelInput().value).toBe("");
+  });
+
+  it("leaves the language inheriting on first load", async () => {
+    await openSystemTab();
+
+    // Like the model field: the deployment default is a PLACEHOLDER only, so
+    // an untouched card never pins "ko" into the override.
+    expect(sttLanguageInput().value).toBe("");
+    expect(sttLanguageInput().placeholder).toBe("ko");
+  });
+
+  it("lowercases a typed language into the override", async () => {
+    await openSystemTab();
+
+    await fireEvent.input(sttLanguageInput(), { target: { value: "EN" } });
+    await fireEvent.click(screen.getByRole("button", { name: "STT 저장" }));
+
+    await waitFor(() => expect(sttCalls().length).toBe(1));
+    expect(JSON.parse(String(sttCalls()[0].body))).toEqual({
+      url: "http://stt.internal:8000/v1",
+      language: "en",
+    });
+    // The reload re-seeds from what was actually stored, not what was typed.
+    await waitFor(() => expect(sttLanguageInput().value).toBe("en"));
+  });
+
+  it("drops the language key when the field is cleared, keeping the rest of the override", async () => {
+    stubAdminFetch({ sttOverride: { url: "http://admin.stt:9000/v1", model: "custom-asr", language: "en" } });
+    await openSystemTab();
+
+    expect(sttLanguageInput().value).toBe("en");
+
+    await fireEvent.input(sttLanguageInput(), { target: { value: "" } });
+    await fireEvent.click(screen.getByRole("button", { name: "STT 저장" }));
+
+    await waitFor(() => expect(sttCalls().length).toBe(1));
+    expect(sttCalls()[0].method).toBe("PUT");
+    // No `language` key = inherit the env default; url/model survive untouched.
+    expect(JSON.parse(String(sttCalls()[0].body))).toEqual({
+      url: "http://admin.stt:9000/v1",
+      model: "custom-asr",
+    });
+    await waitFor(() => expect(sttLanguageInput().value).toBe(""));
+    expect(sttLanguageInput().placeholder).toBe("ko");
+    expect(sttModelInput().value).toBe("custom-asr");
+  });
+
+  it("renders a legacy override that predates the language field", async () => {
+    // Overrides stored before this field existed have no `language` key at all.
+    stubAdminFetch({ sttOverride: { url: "http://legacy.stt:9000/v1", model: "custom-asr" } });
+    await openSystemTab();
+
+    expect(sttUrlInput().value).toBe("http://legacy.stt:9000/v1");
+    expect(sttLanguageInput().value).toBe("");
+    expect(sttLanguageInput().placeholder).toBe("ko");
+    // A missing key reads as "inherit", so the card opens clean, not dirty.
+    expect(screen.getByText("관리자 설정 적용 중")).toBeTruthy();
   });
 
   it("keeps an unsaved STT edit across a manual 새로고침", async () => {

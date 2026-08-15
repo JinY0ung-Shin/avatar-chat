@@ -21,6 +21,15 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
   silently wrong model. The base URL is normalized (trailing slashes stripped) on the way IN on both
   paths — `config.ts` for the env value, the admin route for the stored one — so a copy-pasted
   `.../v1/` is safe and `resolveSttTarget` can hand out either without re-normalizing.
+- **A `language` field rides every request too**, unless it resolves to `auto` — the override's code,
+  else `STT_LANGUAGE` (default `ko`). It is the CONTRACT-STANDARD OpenAI field, not an engine-specific
+  one, which is why it does not violate the engine-agnostic rule under "Swapping the engine". The
+  UPSTREAM validates it against the language set the served model supports (a bogus code comes back as a
+  400 listing them), so nothing here checks the code against a list — the route only enforces the SHAPE
+  (`/^[a-z]{2,3}$/` or the sentinel). A well-formed code the model does not speak therefore surfaces as
+  the generic 502, with the real cause only in the server log. `auto` is OUR sentinel for "omit the
+  field entirely", never a value to send: `resolveSttTarget` maps it to `undefined` and
+  `transcribeAudio` appends nothing.
 - **A 200 without a `text` string is a FAILURE, not an empty transcript.** The route asks for
   `response_format=json` and requires `text` to be a string; anything else (a JSON error body, a
   different API answering on that port) becomes a 502 rather than an empty string, which the user would
@@ -40,8 +49,11 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
 ## Admin-managed override
 - **Resolution is per REQUEST and the ADMIN value WINS: `override ?? env`** (`resolveSttTarget` in
   `stt.ts`, the single seam both `routes/stt.ts` and `/api/bootstrap` call). The stored shape is
-  `{ url, model | null }`, with a null model inheriting `STT_MODEL`, so an operator who only re-points
-  the URL keeps the deployment's model name. Nothing is resolved at boot — a change takes effect on the
+  `{ url, model | null, language | null }`, with a null model/language inheriting
+  `STT_MODEL`/`STT_LANGUAGE`, so an operator who only re-points the URL keeps the deployment's model
+  name and language bias. A row written before `language` existed has NO such key at all, and a missing
+  one reads as null — `getSttOverride` must never treat it as a reason to discard an override the
+  deployment is currently using. Nothing is resolved at boot — a change takes effect on the
   next mic click, no restart. **This is the INVERSE of `MODEL_OVERRIDE_KEY`**, where an env
   `ANTHROPIC_MODEL` shadows the panel: a deployment pins its agent model deliberately, while an STT
   endpoint is operational plumbing (the GPU box moves, the port changes) that has to be re-pointable
@@ -54,8 +66,16 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
 - **There is deliberately NO boot-time seeding of the env values into the DB.** A seed-if-unset write
   re-fires on every `new Store()` (the same trap as a value-guarded backfill), so it would resurrect an
   override an admin had just cleared, and it would freeze the first-ever `STT_URL` into the DB where
-  later `.env` edits are silently ignored. The panel reads `sttEnvUrl`/`sttEnvModel` off
-  `GET /api/admin/system` and renders them as the inherited fallback instead.
+  later `.env` edits are silently ignored. The panel reads
+  `sttEnvUrl`/`sttEnvModel`/`sttEnvLanguage` off `GET /api/admin/system` and renders them as the
+  inherited fallback instead.
+- **The language default is `ko`, not detection, and that is a DELIBERATE bias.** Auto-detection is
+  least reliable on exactly what this mic produces — one short Korean utterance — and the usual argument
+  against pinning a language (a forced language makes a model hallucinate words out of silence) no
+  longer applies here: the VAD cancels a take with no speech in it before any upstream call is made. So
+  the fleet's language is the default and `auto` is the opt-out, rather than the reverse. Changing that
+  default is a fleet-wide decision, not a tuning knob — a deployment whose users speak something else
+  sets `STT_LANGUAGE` or the panel's per-endpoint value.
 - **`sttEnabled` rides `/api/bootstrap`**, which the client reads at page load — so a user who was
   already signed in when the endpoint was configured sees the mic on their NEXT load, not immediately.
   There is no push channel for it, and adding one would buy little: the route itself is the authority
@@ -182,10 +202,14 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
   deployment has no GPU to spare, or when the pinned vLLM build turns out not to expose transcriptions
   for Qwen3-ASR), or an **internal STT API** later. Keep it that way — resist adding engine-specific
   request fields to the route; anything Qwen-specific belongs behind the URL, not in `routes/stt.ts`.
+  The test for "may this field be sent?" is whether OpenAI's own transcription contract defines it:
+  `language` does (every engine above accepts it and validates the code itself), so it rides along; a
+  Qwen-only field would not.
 - **Phase-2 option, not built: Qwen3-ASR context priming.** The model accepts a text context that biases
   decoding toward supplied vocabulary — the natural fix for internal product names, team jargon, and
   acronyms that generic ASR mangles. It is deliberately deferred because it is the one feature that would
   make the route engine-specific; if it lands, gate it on the served model and keep the plain path intact.
+  It is NOT the same call as `language` above, which is standard on every engine and so needs no gate.
 
 ## GPU tuning (shared 8–12GB card)
 - The flags live in `docker-compose.yml`'s `stt` service and are sized for a card shared with other

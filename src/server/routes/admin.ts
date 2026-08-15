@@ -92,6 +92,9 @@ export function createAdminRouter(deps: RouterDeps): Router {
         sttOverride: store.getSttOverride(),
         sttEnvUrl: config.sttUrl ?? null,
         sttEnvModel: config.sttModel,
+        // Language bias inherited by an override that names none (default "ko";
+        // "auto" means no language is sent and the engine detects it).
+        sttEnvLanguage: config.sttLanguage,
         // Per-model-tier vision policy (+ the deployment default an unset tier
         // inherits) — the panel renders one selector per tier.
         modelVisionPolicy: store.getModelVisionPolicy(),
@@ -630,10 +633,22 @@ export function createAdminRouter(deps: RouterDeps): Router {
     }
     const url = raw.replace(/\/+$/, "");
     const model = safeString(req.body?.model) || null;
-    store.setSttOverride(url, model);
-    auditAs(req, "set_stt_override", `stt = ${url} (model ${model ?? "env default"})`);
-    logger.warn({ actorId: req.user!.id, url, model }, "stt override set");
-    res.json({ sttOverride: { url, model } });
+    // Language is the OpenAI-contract ISO code, or the `auto` sentinel meaning
+    // "send none". Only the SHAPE is checked here — whether the served model
+    // actually speaks the code is the upstream's call, and it 400s with the list.
+    const language = safeString(req.body?.language).toLowerCase() || null;
+    if (language && language !== "auto" && !/^[a-z]{2,3}$/.test(language)) {
+      apiError(res, 400, "언어 코드는 두세 글자 ISO 코드(예: ko) 또는 auto여야 해요.");
+      return;
+    }
+    store.setSttOverride(url, model, language);
+    auditAs(
+      req,
+      "set_stt_override",
+      `stt = ${url} (model ${model ?? "env default"}, language ${language ?? "env default"})`,
+    );
+    logger.warn({ actorId: req.user!.id, url, model, language }, "stt override set");
+    res.json({ sttOverride: { url, model, language } });
   });
 
   router.delete("/api/admin/stt", requireAuth(store), requireAdmin, (req: AuthenticatedRequest, res) => {

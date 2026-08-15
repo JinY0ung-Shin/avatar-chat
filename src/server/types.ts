@@ -178,6 +178,13 @@ export interface AppConfig {
    */
   sttModel: string;
   /**
+   * ISO-639-1 language biasing every transcription (env `STT_LANGUAGE`, default
+   * `ko` for a Korean-speaking fleet), lowercased. The sentinel `auto` sends NO
+   * language field at all, leaving the engine to detect it. The admin override's
+   * own value wins over this — see `resolveSttTarget` in `stt.ts`.
+   */
+  sttLanguage: string;
+  /**
    * Deployment-wide DEFAULT browser-control allowlist (env
    * `BROWSER_ALLOWED_ORIGINS`, comma-separated hostnames / `*.wildcards`).
    * Served via `GET /api/browser-extension` and applied by the Noah page to a
@@ -254,11 +261,14 @@ export interface AppConfig {
  * Unlike the model override, THIS wins over the env (`STT_URL`/`STT_MODEL`),
  * which stays the fallback an operator sees in the panel — see
  * `resolveSttTarget` in `stt.ts`. `url` is already normalized (trailing slashes
- * stripped) when stored; `model` null means "inherit `config.sttModel`".
+ * stripped) when stored; `model` null means "inherit `config.sttModel`", and
+ * `language` null means "inherit `config.sttLanguage`" — including for a row
+ * written before the field existed, whose JSON has no `language` key at all.
  */
 export interface SttOverride {
   url: string;
   model: string | null;
+  language: string | null;
 }
 
 /**

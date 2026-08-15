@@ -39,6 +39,7 @@
   // STT endpoint override draft (empty url = "no admin override")
   let sttUrlInput = "";
   let sttModelInput = "";
+  let sttLanguageInput = "";
   let sttBusy = false;
   let sttError = "";
   // builtin tool/skill policy local state: checked = DISABLED deployment-wide
@@ -205,16 +206,25 @@
   $: sttOverride = (sys.sttOverride && typeof sys.sttOverride === "object" ? sys.sttOverride : null) as {
     url?: string;
     model?: string | null;
+    language?: string | null;
   } | null;
   $: sttEnvUrl = String(sys.sttEnvUrl || "");
   $: sttEnvModel = String(sys.sttEnvModel || "");
+  $: sttEnvLanguage = String(sys.sttEnvLanguage || "");
   $: savedSttUrl = String(sttOverride?.url ?? sttEnvUrl ?? "");
   // Empty = inherit. The env model shows only as a PLACEHOLDER: pre-filling it
   // would pin it into the override on the next save.
   $: savedSttModel = String(sttOverride?.model ?? "");
+  // Same inherit rule for the language bias; an override saved before the
+  // language field existed simply has no key, which reads as "inherit".
+  $: savedSttLanguage = String(sttOverride?.language ?? "");
   $: sttUrlTrimmed = sttUrlInput.trim();
   $: sttModelTrimmed = sttModelInput.trim();
-  $: sttDirty = sttUrlTrimmed !== savedSttUrl || sttModelTrimmed !== savedSttModel;
+  // Lowercased here, not just server-side, so the card shows the value that
+  // will actually be stored.
+  $: sttLanguageTrimmed = sttLanguageInput.trim().toLowerCase();
+  $: sttDirty =
+    sttUrlTrimmed !== savedSttUrl || sttModelTrimmed !== savedSttModel || sttLanguageTrimmed !== savedSttLanguage;
   $: sttCanSave = Boolean(!sttBusy && sttDirty);
   $: sttStatus = sttBusy
     ? "저장 중…"
@@ -490,12 +500,14 @@
     const override = cur.sttOverride && typeof cur.sttOverride === "object" ? cur.sttOverride : null;
     sttUrlInput = String(override?.url ?? cur.sttEnvUrl ?? "");
     sttModelInput = String(override?.model ?? "");
+    sttLanguageInput = String(override?.language ?? "");
   }
 
   async function saveStt() {
     if (sttBusy || !sttDirty) return;
     const url = sttUrlTrimmed;
     const model = sttModelTrimmed;
+    const language = sttLanguageTrimmed;
     // Clearing the url with no override to delete leaves nothing to send — the
     // env value, if any, isn't ours to remove.
     if (!url && !sttOverride) {
@@ -510,7 +522,11 @@
     sttBusy = true;
     sttError = "";
     try {
-      if (url) await api("/api/admin/stt", { method: "PUT", body: JSON.stringify({ url, ...(model ? { model } : {}) }) });
+      if (url)
+        await api("/api/admin/stt", {
+          method: "PUT",
+          body: JSON.stringify({ url, ...(model ? { model } : {}), ...(language ? { language } : {}) }),
+        });
       else await api("/api/admin/stt", { method: "DELETE" });
     } catch (err) {
       sttBusy = false;
@@ -1070,6 +1086,20 @@
                     on:input={() => (sttError = "")}
                   />
                   <span class="field-hint">비워 두면 기본 모델을 사용합니다.</span>
+                </label>
+                <label class="field">
+                  <span>언어</span>
+                  <input
+                    name="stt-language"
+                    bind:value={sttLanguageInput}
+                    placeholder={sttEnvLanguage}
+                    autocomplete="off"
+                    aria-label="STT 언어"
+                    aria-describedby={sttStatusId}
+                    disabled={sttBusy}
+                    on:input={() => (sttError = "")}
+                  />
+                  <span class="field-hint">전사 언어 바이어스 (ISO 코드, 예: ko). 비워 두면 기본값, auto는 자동 감지.</span>
                 </label>
                 <div class="settings-save-row">
                   <span id={sttStatusId} class="settings-save-status" class:dirty={sttDirty && !sttBusy && !sttError} class:pending={sttBusy} class:invalid={Boolean(sttError)} role="status" aria-live="polite">{sttStatus}</span>

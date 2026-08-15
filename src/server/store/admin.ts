@@ -241,19 +241,23 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
       const raw = this.getAppSecret(STT_OVERRIDE_KEY);
       if (!raw) return null;
       try {
-        const parsed = JSON.parse(raw) as { url?: unknown; model?: unknown };
+        const parsed = JSON.parse(raw) as { url?: unknown; model?: unknown; language?: unknown };
         const url = typeof parsed?.url === "string" ? parsed.url.trim() : "";
         if (!url) return null;
         const model = typeof parsed?.model === "string" ? parsed.model.trim() : "";
-        return { url, model: model || null };
+        // Rows written before the language field existed carry no `language` key
+        // at all; a missing one reads as "inherit the env default", never as a
+        // reason to discard an override the deployment is currently using.
+        const language = typeof parsed?.language === "string" ? parsed.language.trim() : "";
+        return { url, model: model || null, language: language || null };
       } catch {
         return null;
       }
     }
 
     /** Store the override. Values arrive already validated + normalized by the route. */
-    setSttOverride(url: string, model: string | null): void {
-      this.setAppSecret(STT_OVERRIDE_KEY, JSON.stringify({ url, model }));
+    setSttOverride(url: string, model: string | null, language: string | null): void {
+      this.setAppSecret(STT_OVERRIDE_KEY, JSON.stringify({ url, model, language }));
     }
 
     clearSttOverride(): void {

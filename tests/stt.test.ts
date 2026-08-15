@@ -16,18 +16,23 @@ const getTempDir = withTempDir("stt", () => {
   tempDir = getTempDir();
 });
 
-/** `sttUrl` is always passed explicitly so an ambient STT_URL can't leak in. */
-function testServices(overrides: { sttUrl?: string; sttModel?: string }) {
+/**
+ * `sttUrl` is always passed explicitly so an ambient STT_URL can't leak in; the
+ * model and language are pinned to their documented defaults for the same
+ * reason (the env plumbing itself is covered in "STT configuration" below).
+ */
+function testServices(overrides: { sttUrl?: string; sttModel?: string; sttLanguage?: string }) {
   return createServices({
     dataDir: tempDir,
     agentRuntime: "local",
     sessionSecret: "test",
     sttModel: "Qwen/Qwen3-ASR-1.7B",
+    sttLanguage: "ko",
     ...overrides,
   });
 }
 
-function testApp(overrides: { sttUrl?: string; sttModel?: string }) {
+function testApp(overrides: { sttUrl?: string; sttModel?: string; sttLanguage?: string }) {
   return createApp(testServices(overrides));
 }
 
@@ -91,6 +96,16 @@ async function withSttServer(
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   }
+}
+
+/**
+ * The `language` form field the route actually sent, or null when it sent none.
+ * Matched on the form-data NAME boundary: a transcript, a model name, or the
+ * word appearing anywhere else in the body must not stand in for the field.
+ */
+function languageField(body: string): string | null {
+  const match = /name="language"\r?\n\r?\n([^\r\n]*)/.exec(body);
+  return match ? match[1] : null;
 }
 
 function respondJson(status: number, body: unknown) {
@@ -211,10 +226,26 @@ describe("POST /api/stt", () => {
       expect(sent.body).toContain("Qwen/Qwen3-ASR-1.7B");
       expect(sent.body).toContain('name="response_format"');
       expect(sent.body).toContain("json");
+      // The deployment's language bias rides EVERY request, not just a configured
+      // one: the fleet speaks Korean, so `ko` is the default rather than detection.
+      expect(sent.body).toContain('name="language"');
+      expect(languageField(sent.body)).toBe("ko");
       // The filename + part type come from the SNIFFED container, not the label.
       expect(sent.body).toContain('name="file"; filename="audio.webm"');
       expect(sent.body).toContain("Content-Type: audio/webm");
       expect(sent.body).toContain(WEBM.toString("latin1"));
+    });
+  });
+
+  it("sends no language field at all when the bias is auto", async () => {
+    await withSttServer(respondJson(200, { text: "detected" }), async (baseUrl, captured) => {
+      const app = testApp({ sttUrl: baseUrl, sttLanguage: "auto" });
+      const agent = await newUser(app, "stt-auto");
+      await agent.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+      // `auto` is OUR sentinel for "omit the field", never a code to send: the
+      // upstream validates codes against the served model and would 400 on it.
+      expect(captured[0].body).not.toContain('name="language"');
+      expect(languageField(captured[0].body)).toBeNull();
     });
   });
 
@@ -315,10 +346,21 @@ describe("STT configuration", () => {
   }
 
   it("defaults the model and leaves the feature off without STT_URL", () => {
-    withEnv({ STT_URL: undefined, STT_MODEL: undefined }, () => {
+    withEnv({ STT_URL: undefined, STT_MODEL: undefined, STT_LANGUAGE: undefined }, () => {
       const config = loadConfig({ dataDir: tempDir, sessionSecret: "test" });
       expect(config.sttUrl).toBeUndefined();
       expect(config.sttModel).toBe("Qwen/Qwen3-ASR-1.7B");
+      // The Korean fleet's bias is the DEFAULT, not something to opt into.
+      expect(config.sttLanguage).toBe("ko");
+    });
+  });
+
+  it("lowercases STT_LANGUAGE and takes 'auto' as the opt-out", () => {
+    withEnv({ STT_LANGUAGE: "  EN  " }, () => {
+      expect(loadConfig({ dataDir: tempDir, sessionSecret: "test" }).sttLanguage).toBe("en");
+    });
+    withEnv({ STT_LANGUAGE: "AUTO" }, () => {
+      expect(loadConfig({ dataDir: tempDir, sessionSecret: "test" }).sttLanguage).toBe("auto");
     });
   });
 
@@ -373,6 +415,89 @@ describe("admin-managed STT override", () => {
       await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
       expect(captured[0].body).toContain("whisper-1");
       expect(captured[0].body).not.toContain("deployment-default");
+    });
+  });
+
+  it("sends the override's own language over the env default", async () => {
+    await withSttServer(respondJson(200, { text: "ok" }), async (baseUrl, captured) => {
+      const app = testApp({ sttUrl: undefined, sttLanguage: "ko" });
+      const admin = await newUser(app, "stt-admin");
+      await admin.put("/api/admin/stt").send({ url: baseUrl, language: "en" }).expect(200);
+
+      await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+      expect(languageField(captured[0].body)).toBe("en");
+    });
+  });
+
+  it("inherits the env language when the override names none", async () => {
+    await withSttServer(respondJson(200, { text: "ok" }), async (baseUrl, captured) => {
+      const app = testApp({ sttUrl: undefined, sttLanguage: "ko" });
+      const admin = await newUser(app, "stt-admin");
+      // Re-pointing only the URL must not silently drop the deployment's bias.
+      await admin.put("/api/admin/stt").send({ url: baseUrl }).expect(200);
+
+      await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+      expect(languageField(captured[0].body)).toBe("ko");
+    });
+  });
+
+  it("normalizes the language code and rejects anything that is not one", async () => {
+    const app = testApp({ sttUrl: undefined });
+    const admin = await newUser(app, "stt-admin");
+
+    const saved = await admin
+      .put("/api/admin/stt")
+      .send({ url: "http://stt:8000/v1", language: "  KO  " })
+      .expect(200);
+    expect(saved.body.sttOverride).toEqual({
+      url: "http://stt:8000/v1",
+      model: null,
+      language: "ko",
+    });
+
+    // Only the SHAPE is ours to judge — a well-formed code the served model does
+    // not speak is the upstream's 400, not this one.
+    for (const language of ["korean", "k", "ko-KR!", "kore"]) {
+      const res = await admin
+        .put("/api/admin/stt")
+        .send({ url: "http://stt:8000/v1", language })
+        .expect(400);
+      expect(res.body.error).toBe("언어 코드는 두세 글자 ISO 코드(예: ko) 또는 auto여야 해요.");
+    }
+    // None of the rejects overwrote the stored code.
+    const sys = (await admin.get("/api/admin/system").expect(200)).body.system;
+    expect(sys.sttOverride.language).toBe("ko");
+  });
+
+  it("accepts the auto sentinel and then sends no language at all", async () => {
+    await withSttServer(respondJson(200, { text: "ok" }), async (baseUrl, captured) => {
+      const app = testApp({ sttUrl: undefined, sttLanguage: "ko" });
+      const admin = await newUser(app, "stt-admin");
+      const saved = await admin
+        .put("/api/admin/stt")
+        .send({ url: baseUrl, language: "AUTO" })
+        .expect(200);
+      expect(saved.body.sttOverride.language).toBe("auto");
+
+      await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+      // The sentinel OPTS OUT of the env default rather than inheriting it.
+      expect(languageField(captured[0].body)).toBeNull();
+    });
+  });
+
+  it("reads a row stored before the language field existed", async () => {
+    await withSttServer(respondJson(200, { text: "레거시" }), async (baseUrl, captured) => {
+      const services = testServices({ sttUrl: undefined, sttLanguage: "ko" });
+      const app = createApp(services);
+      const admin = await newUser(app, "stt-admin");
+
+      // Exactly what the shipped feature wrote: `{url, model}`, no language key.
+      // A missing one must read as "inherit", never discard a live override.
+      services.store.setAppSecret("stt_override", JSON.stringify({ url: baseUrl, model: null }));
+      expect(services.store.getSttOverride()).toEqual({ url: baseUrl, model: null, language: null });
+
+      await admin.post("/api/stt").send({ audio: dataUrl("audio/webm", WEBM) }).expect(200);
+      expect(languageField(captured[0].body)).toBe("ko");
     });
   });
 
@@ -436,9 +561,18 @@ describe("admin-managed STT override", () => {
     // Trailing slashes are stripped once on the way in, exactly as config.ts does
     // for the env value, so the request path never doubles its slash.
     const saved = await admin.put("/api/admin/stt").send({ url: "http://stt:8000/v1//" }).expect(200);
-    expect(saved.body.sttOverride).toEqual({ url: "http://stt:8000/v1", model: null });
+    // An absent model/language is stored as null — "inherit the env value".
+    expect(saved.body.sttOverride).toEqual({
+      url: "http://stt:8000/v1",
+      model: null,
+      language: null,
+    });
     sys = await admin.get("/api/admin/system").expect(200);
-    expect(sys.body.system.sttOverride).toEqual({ url: "http://stt:8000/v1", model: null });
+    expect(sys.body.system.sttOverride).toEqual({
+      url: "http://stt:8000/v1",
+      model: null,
+      language: null,
+    });
   });
 
   it("is admin-only", async () => {
@@ -453,24 +587,34 @@ describe("admin-managed STT override", () => {
   });
 
   it("surfaces the override next to the env values it falls back to", async () => {
-    const app = testApp({ sttUrl: "http://stt:8000/v1", sttModel: "deployment-default" });
+    const app = testApp({
+      sttUrl: "http://stt:8000/v1",
+      sttModel: "deployment-default",
+      sttLanguage: "ko",
+    });
     const admin = await newUser(app, "stt-admin");
 
     let sys = (await admin.get("/api/admin/system").expect(200)).body.system;
     expect(sys.sttOverride).toBeNull();
     expect(sys.sttEnvUrl).toBe("http://stt:8000/v1");
     expect(sys.sttEnvModel).toBe("deployment-default");
+    expect(sys.sttEnvLanguage).toBe("ko");
 
     await admin
       .put("/api/admin/stt")
-      .send({ url: "http://gpu-box:9000/v1", model: "whisper-1" })
+      .send({ url: "http://gpu-box:9000/v1", model: "whisper-1", language: "en" })
       .expect(200);
     sys = (await admin.get("/api/admin/system").expect(200)).body.system;
-    expect(sys.sttOverride).toEqual({ url: "http://gpu-box:9000/v1", model: "whisper-1" });
-    // The env pair stays visible: it is what a clear would fall back to, and the
+    expect(sys.sttOverride).toEqual({
+      url: "http://gpu-box:9000/v1",
+      model: "whisper-1",
+      language: "en",
+    });
+    // The env trio stays visible: it is what a clear would fall back to, and the
     // panel shows it as the inherited value (it is never seeded into the store).
     expect(sys.sttEnvUrl).toBe("http://stt:8000/v1");
     expect(sys.sttEnvModel).toBe("deployment-default");
+    expect(sys.sttEnvLanguage).toBe("ko");
   });
 
   it("reports a null env url when nothing but the override configures STT", async () => {
@@ -479,6 +623,7 @@ describe("admin-managed STT override", () => {
     const sys = (await admin.get("/api/admin/system").expect(200)).body.system;
     expect(sys.sttEnvUrl).toBeNull();
     expect(sys.sttEnvModel).toBe("Qwen/Qwen3-ASR-1.7B");
+    expect(sys.sttEnvLanguage).toBe("ko");
   });
 
   it("ignores an unreadable stored override instead of breaking the mic", async () => {
