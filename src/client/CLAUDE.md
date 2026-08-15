@@ -15,10 +15,11 @@ Durable principles for this layer:
   names). So porting/restoring a feature = reproducing the SAME DOM structure + class names — don't invent
   new ones (a custom class with no CSS renders unstyled). The old frontend is the parity reference at git
   `f0a6128`. Server types are SHARED via the `lib/types.ts` re-export barrel, never re-declared.
-- **`app.ts` serves a strict same-origin CSP** (`script-src`/`connect-src` `'self'`). So: no inline
-  `<script>` (the build emits none), no `blob:`/remote `<img>`, no `Function`-ctor renderers — any
-  first-paint theming or content rendering must stay CSP-safe (the canvas/theme designs are built around
-  this). Widen a directive in `app.ts` only when a feature genuinely needs it.
+- **`app.ts` serves a strict same-origin CSP** (`connect-src 'self'`; `script-src 'self'
+  'wasm-unsafe-eval'` — wasm COMPILATION only, for the composer mic's Silero VAD). So: no inline
+  `<script>` (the build emits none), no `eval`, no `blob:`/remote `<img>`, no `Function`-ctor renderers —
+  any first-paint theming or content rendering must stay CSP-safe (the canvas/theme designs are built
+  around this). Widen a directive in `app.ts` only when a feature genuinely needs it.
 - **A green svelte-check does NOT mean the behavior is correct.** For interaction/layout/timing changes,
   runtime-verify (Playwright fixture). svelte-check catches type/template errors; it shipped a no-op
   `autosize` fix that only a real-DOM measurement caught.

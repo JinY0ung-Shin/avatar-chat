@@ -97,12 +97,17 @@ export function createApp(services = createServices()) {
   // Every asset is same-origin (vendored marked/dompurify, local fonts), so this
   // is low-friction. NOTE: it also blocks remote <img> in rendered markdown by
   // design — relax img-src if remote images are wanted.
+  // 'wasm-unsafe-eval' is the one deliberate widening: it permits WebAssembly
+  // COMPILATION only — the composer mic's end-of-speech detector (Silero VAD on
+  // onnxruntime-web) — and does NOT enable JS eval or inline script; with
+  // connect-src 'self' the wasm bytes can only come from this origin. Keep
+  // 'unsafe-eval' and 'unsafe-inline' out of script-src.
   app.use((_req, res, next) => {
     res.setHeader(
       "Content-Security-Policy",
       [
         "default-src 'self'",
-        "script-src 'self'",
+        "script-src 'self' 'wasm-unsafe-eval'",
         "style-src 'self' 'unsafe-inline'",
         "img-src 'self' data:",
         "font-src 'self'",

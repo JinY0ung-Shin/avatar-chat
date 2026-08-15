@@ -161,7 +161,7 @@
   (`markdown`/`vega`/`mermaid`/`svg`/`html`) + optional `controls` (buttons/text); the CLIENT renders
   sanitized content (DOMPurify; mermaid `securityLevel: strict`; **`vega` = a compact Vega-Lite spec
   compiled+rendered to an SVG STRING via the CSP-safe `vega-interpreter` AST evaluator — no `Function`
-  ctor, so `script-src 'self'` is untouched**; all lazy-loaded with a source-`<pre>` fallback) + real form
+  ctor, so `script-src` needs no widening**; all lazy-loaded with a source-`<pre>` fallback) + real form
   controls — no avatar JS runs, CSP unchanged. `canvasTools.ts` (NOT self-gated — registration is the
   boundary) registered in `claudeAgent.ts` ONLY when the avatar OWNER enabled `canvas` AND
   `events.onCanvas` exists. Controls park the run via the SAME `awaitResponse`/`/api/chat/respond` path as

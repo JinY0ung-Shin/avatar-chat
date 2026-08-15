@@ -91,6 +91,32 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
   mic button on it. Absent (older server) = disabled, so the flag is safe to add to `BootstrapInfo` as
   optional.
 
+## End-of-speech auto-stop (Silero VAD)
+
+- **The VAD is an endpoint DETECTOR and nothing else.** It watches the SAME `MediaStream` the recorder is
+  already fed and calls the existing stop when speech ends (~1.4s of silence); the `MediaRecorder`
+  lifecycle, the container negotiation, the data-URL upload, the server's decode/validate, and the
+  upstream engine contract are all untouched. Nothing downstream can tell whether the take was stopped by
+  the VAD or by a click — which is the property to preserve: a change that makes the detector produce
+  audio, choose the container, or talk to `/api/stt` has crossed out of its job.
+- **Every asset is same-origin and lazy.** `@ricky0123/vad-web` + `onnxruntime-web` ship the Silero
+  `.onnx` model, the ort `.wasm` binaries, and the audio worklet as static files served from this origin,
+  imported on the FIRST mic use rather than at page load, so a user who never records pays nothing. ort
+  runs SINGLE-THREADED wasm on purpose: cross-origin isolation (`COOP`/`COEP`) buys threads at the cost of
+  headers that would break other same-origin embeds, and one utterance does not need them. Do not
+  reintroduce a CDN default for the asset paths — the CSP's `connect-src 'self'` would block it and the
+  failure looks like a broken mic, not a blocked fetch.
+- **Init failure degrades SILENTLY to today's behavior.** If the model or the wasm fails to load — old
+  browser, missing asset, wasm compilation refused — the recording still starts and still stops on the
+  manual click and the 60s cap. The auto-stop is an affordance layered on the existing path, never a
+  precondition for it, so no error is surfaced for it. The composer's "말이 끝나면 자동으로 멈춰요" hint
+  follows the same rule: it renders only after the detector reports itself armed (`onAutoStopArmed`), so a
+  degraded take is never PROMISED an auto-stop it will not get.
+- **A 10s no-speech timeout cancels the take WITHOUT an upstream call.** Armed only when the VAD is
+  actually live (a degraded take has no such timer, since nothing would be listening for the speech that
+  cancels it): a mic opened by accident in a silent room discards its own clip instead of spending GPU
+  time on a transcription of nothing.
+
 ## Security properties
 - **`requireAuth` (`src/server/auth.ts`) runs BEFORE a per-user rate limit** (`createRateLimiter`,
   20/minute, keyed on the user id — the order is load-bearing, `keyFn` needs a user to key on). Keying on
@@ -119,7 +145,8 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
   code change, not an env tweak.
 
 ## Why the client uses a data URL
-- **The CSP has no `blob:`** (`app.ts`: `default-src 'self'`, `img-src 'self' data:`, `connect-src 'self'`),
+- **The CSP has no `blob:`** (`app.ts`: `default-src 'self'`, `img-src 'self' data:`, `connect-src 'self'`,
+  `script-src 'self' 'wasm-unsafe-eval'`),
   and it is not getting one — that narrowness is what neutralizes several exfiltration and injection paths
   for the untrusted markdown the avatar renders. `MediaRecorder` itself is unaffected, but everything
   downstream of it is: with no `media-src` of its own the directive falls back to `'self'`, so a
@@ -128,6 +155,14 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
   as `canvasExport.ts`'s `copyPng` and `browserClipboard.ts`. A `URL.createObjectURL` version works in a
   bare page and dies under Noah's own headers — a confusing failure to debug, so don't reintroduce it for
   local playback either.
+- **`'wasm-unsafe-eval'` in `script-src` is the ONE deliberate widening the mic cost us**, and it is
+  narrower than its name reads: it permits WebAssembly COMPILATION (`WebAssembly.compile` /
+  `instantiate`, which the VAD's ort runtime needs) and nothing else. It does not enable `eval`, the
+  `Function` constructor, or inline `<script>` — the injection paths this CSP exists to close against the
+  untrusted markdown the avatar renders stay closed, and a DOMPurify miss still cannot execute. Nor does
+  it open an exfiltration path: the wasm bytes are fetched under `default-src`/`connect-src 'self'`, so
+  the only module the browser will compile is one this origin served. Widen no further — `'unsafe-eval'`
+  (a superset that DOES enable JS eval) and `'unsafe-inline'` stay out.
 
 ## Swapping the engine
 - **The resolved base URL is the entire seam** (`STT_URL` or the admin override — same contract either
@@ -153,6 +188,10 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
   for a request that did NOT come from our composer, not the normal path's limit. So raising `STT_MAX_MS`
   alone silently pushes clips past the upstream's context, where they fail as the generic 502 with the
   real cause only in the server log. Change the duration cap and `--max-model-len` in the same commit.
+  A take now has FOUR stop triggers — VAD speech-end (~1.4s of silence), the manual click, the 60s
+  `STT_MAX_MS` cap, and the 10s no-speech cancel — but only the 60s cap bounds the LONGEST clip that can
+  reach the engine, so it and `--max-model-len` remain the pair that must move together. The VAD makes
+  hitting that cap rare; it does not raise it.
 - `shm_size: 1gb` is not optional padding — PyTorch shares tensors between worker processes over
   `/dev/shm` and Docker's 64MB default is too small. The healthcheck drives vLLM's `/health` with
   `python3` because curl/wget are not guaranteed in that image, and its 5-minute `start_period` covers

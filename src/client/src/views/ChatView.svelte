@@ -653,6 +653,11 @@
   let sttPhase: SttPhase | "" = "";
   let sttElapsed = 0;
   let sttSession: SttSession | null = null;
+  // Whether THIS take will stop on its own. False until the end-of-speech
+  // detector reports itself listening, because where it cannot load the take
+  // still ends on the button or the 60s cap — and the hint must not say
+  // otherwise.
+  let sttAutoStop = false;
   // A stop pressed while getUserMedia is still pending (the browser's permission
   // prompt is up) has no session to stop yet — remember it and drop the take as
   // soon as one exists, so the mic never keeps recording unattended.
@@ -678,11 +683,13 @@
     sttPaneId = item.id;
     sttPhase = "recording";
     sttElapsed = 0;
+    sttAutoStop = false;
     sttCancelPending = false;
     try {
       const session = await startVoiceInput({
         onPhase: (phase) => (sttPhase = phase),
         onElapsed: (seconds) => (sttElapsed = seconds),
+        onAutoStopArmed: () => (sttAutoStop = true),
       });
       sttSession = session;
       if (sttCancelPending) session.cancel();
@@ -695,6 +702,7 @@
       sttPaneId = "";
       sttPhase = "";
       sttElapsed = 0;
+      sttAutoStop = false;
       sttCancelPending = false;
     }
   }
@@ -1629,6 +1637,11 @@
                 <span class="composer-stt" data-phase={sttPhase}
                   >{sttPhase === "recording" ? `녹음 중 ${sttElapsed}초 / ${STT_MAX_SEC}초` : "전사 중…"}</span
                 >
+                <!-- Its own span, and only once the detector is actually
+                     listening: the counter must stay on one line, this may wrap. -->
+                {#if sttPhase === "recording" && sttAutoStop}
+                  <span>말이 끝나면 자동으로 멈춰요</span>
+                {/if}
               {/if}
               {#if hasComposerControls(item)}
                 <button

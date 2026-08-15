@@ -153,6 +153,13 @@ admin panel (관리자 → 시스템), which stores an endpoint at runtime and n
 admin value wins** when both are set; env stays the fallback the panel displays and what a cleared
 override returns to. Users see the mic appear (or disappear) on their next page load.
 
+The mic stops itself when you finish speaking — a Silero voice-activity detector runs in the browser
+(fully offline, served from this deployment like every other asset, and lazy-loaded on the first
+recording, so the first mic click fetches roughly 8MB once). Stopping manually and the 60-second cap
+both still apply, and a recording with no speech in it is discarded without a transcription request.
+There is nothing to configure: it is on wherever the mic button is, and if it fails to load the mic
+simply falls back to stopping only when you click it.
+
 The reference engine is **Qwen3-ASR-1.7B** (Apache 2.0) served by vLLM on the deploy host's GPU.
 The deploy host has no Hugging Face or internet access, so both artifacts are carried in by hand:
 

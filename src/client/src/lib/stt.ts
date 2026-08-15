@@ -13,6 +13,15 @@ import { readFileAsDataUrl } from "./dom";
 export const STT_MAX_MS = 60_000;
 export const STT_MAX_SEC = STT_MAX_MS / 1000;
 
+/**
+ * How long the end-of-speech detector may hear nothing at all before the take
+ * is dropped. Armed only once the detector is actually listening, and cleared
+ * for good by the first word — so this is "the mic was opened by accident",
+ * never "they paused". Dropping beats uploading: silence costs GPU time and
+ * comes back as an empty transcript anyway.
+ */
+const STT_NO_SPEECH_MS = 10_000;
+
 // First container the browser admits. Opus-in-WebM is what Chromium/Firefox on
 // the Windows/Linux fleet produce; the plain fallbacks cover a build that
 // reports no codec support for the preferred string.
@@ -44,7 +53,17 @@ export interface SttOptions {
   onPhase?: (phase: SttPhase) => void;
   /** Whole seconds recorded so far, once per second. */
   onElapsed?: (seconds: number) => void;
+  /**
+   * The end-of-speech detector is listening, so this take really will stop on
+   * its own. Never fires where the detector could not load, which is exactly
+   * where the UI must not promise it.
+   */
+  onAutoStopArmed?: () => void;
 }
+
+// One line per page, not per take: a browser that cannot run the detector
+// cannot run it on the twentieth mic press either.
+let vadWarned = false;
 
 // getUserMedia rejects with a DOMException whose NAME is the only reliable
 // signal (messages are browser-specific), so branch on that and never on text.
@@ -105,12 +124,26 @@ export async function startVoiceInput(opts: SttOptions = {}): Promise<SttSession
   let elapsed = 0;
   let hardStopTimer = 0;
   let elapsedTimer = 0;
+  let noSpeechTimer = 0;
+  let vad: { destroy(): void } | null = null;
+  let vadWanted = true;
 
   const clearTimers = (): void => {
     if (hardStopTimer) window.clearTimeout(hardStopTimer);
     if (elapsedTimer) window.clearInterval(elapsedTimer);
+    if (noSpeechTimer) window.clearTimeout(noSpeechTimer);
     hardStopTimer = 0;
     elapsedTimer = 0;
+    noSpeechTimer = 0;
+  };
+
+  // Tears down the detector's audio graph (worklet + AudioContext). `vadWanted`
+  // covers the race the other way: the take can end while the model is still
+  // loading, and the handle that arrives afterwards must be dropped at once.
+  const releaseVad = (): void => {
+    vadWanted = false;
+    vad?.destroy();
+    vad = null;
   };
 
   async function transcribe(): Promise<string> {
@@ -134,6 +167,7 @@ export async function startVoiceInput(opts: SttOptions = {}): Promise<SttSession
     if (finished) return;
     finished = true;
     clearTimers();
+    releaseVad();
     releaseMic();
     if (cancelled) {
       settle(null);
@@ -155,6 +189,7 @@ export async function startVoiceInput(opts: SttOptions = {}): Promise<SttSession
     if (stopRequested) return;
     stopRequested = true;
     clearTimers();
+    releaseVad();
     try {
       recorder.stop();
     } catch {
@@ -187,6 +222,43 @@ export async function startVoiceInput(opts: SttOptions = {}): Promise<SttSession
     elapsed += 1;
     opts.onElapsed?.(elapsed);
   }, 1000);
+
+  // End-of-speech detection is a LATE ADD-ON to a take that is already running:
+  // it listens to the same stream and, when the user stops talking, calls the
+  // very stop a second mic press would. So it is attached without awaiting, and
+  // any failure — no module, missing asset, no AudioContext, browser too old —
+  // simply leaves the take where it has always been: manual stop plus the 60s
+  // cap. (That failure path is also the one jsdom takes.)
+  void import("./sttVad")
+    .then(({ attachVad }) =>
+      attachVad(stream, {
+        onSpeechStart: () => {
+          // Something was said, so silence can no longer condemn this take —
+          // even if it turns out too short to be an utterance.
+          if (noSpeechTimer) window.clearTimeout(noSpeechTimer);
+          noSpeechTimer = 0;
+        },
+        onSpeechEnd: endRecording,
+      }),
+    )
+    .then((handle) => {
+      if (!vadWanted) {
+        handle.destroy();
+        return;
+      }
+      vad = handle;
+      noSpeechTimer = window.setTimeout(() => {
+        noSpeechTimer = 0;
+        failure = NOTHING_HEARD;
+        endRecording();
+      }, STT_NO_SPEECH_MS);
+      opts.onAutoStopArmed?.();
+    })
+    .catch((err: unknown) => {
+      if (vadWarned) return;
+      vadWarned = true;
+      console.warn("[stt] end-of-speech detection unavailable; recording stops on the button or the 60s cap", err);
+    });
 
   return {
     done,
