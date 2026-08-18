@@ -168,19 +168,21 @@ simply falls back to stopping only when you click it.
 The reference engine is **Qwen3-ASR-1.7B** (Apache 2.0) served by vLLM on the deploy host's GPU.
 The deploy host has no Hugging Face or internet access, so both artifacts are carried in by hand:
 
-1. **Provision offline.** On a machine with internet access, download the weights and pull the vLLM
-   image, then transfer both to the deploy host:
+1. **Provision offline.** `docker-compose.yml` pins the exact image (`vllm/vllm-openai:v0.27.1`).
+   On a machine with internet access, download the weights and pull that image, then transfer both
+   to the deploy host:
 
    ```bash
    huggingface-cli download Qwen/Qwen3-ASR-1.7B --local-dir Qwen3-ASR-1.7B
-   docker pull vllm/vllm-openai:<tag>          # the tag you intend to pin
-   docker save vllm/vllm-openai:<tag> -o vllm-openai.tar
+   docker pull vllm/vllm-openai:v0.27.1        # the tag pinned in docker-compose.yml
+   docker save vllm/vllm-openai:v0.27.1 -o vllm-openai.tar
    ```
 
    On the deploy host, the weights go to `./docker/stt-models/Qwen3-ASR-1.7B` (the directory is
-   git-ignored and bind-mounted read-only at `/models`), and the image goes into the corporate
-   registry or straight in with `docker load -i vllm-openai.tar`. Edit `docker-compose.yml` to
-   replace the `REPLACE_WITH_PINNED_TAG` placeholder with the exact reference you brought in.
+   git-ignored and bind-mounted read-only at `/models`), and the image goes straight in with
+   `docker load -i vllm-openai.tar`, which keeps the pinned name so `docker-compose.yml` needs no
+   edit. If you route it through the corporate registry instead, edit the compose file's `image:`
+   to the exact reference you pushed.
 
 2. **Start it.** Add `STT_URL=http://stt:8000/v1` to `.env`, then one command starts the engine and
    recreates the app container so it reads the new `.env`:

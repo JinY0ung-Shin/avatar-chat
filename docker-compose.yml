@@ -55,13 +55,13 @@ services:
   # is opt-in the same way — with STT_URL unset the mic button is not rendered.
   stt:
     profiles: ["stt"]
-    # PIN THE TAG YOU MIRRORED. This placeholder is not a real tag, so an
-    # unedited file fails loudly at pull time ("manifest not found") instead of
-    # silently drifting onto a build whose OpenAI server behaves differently.
-    # The deploy host has no internet: replace the whole reference with the
-    # corporate-registry path you pushed to, or `docker load` the transferred
-    # tar and keep the name it carries.
-    image: vllm/vllm-openai:REPLACE_WITH_PINNED_TAG
+    # Pinned release tag — bump it DELIBERATELY, never to a moving tag like
+    # `latest`: the OpenAI-server surface shifts between builds, and the
+    # deploy-time transcription check in README.md is the gate for any bump.
+    # The deploy host has no internet: mirror EXACTLY this reference there
+    # (`docker save`/`docker load` keeps the name, so this file needs no edit),
+    # or swap the whole reference for the corporate-registry path you pushed to.
+    image: vllm/vllm-openai:v0.27.1
     # NO host ports on purpose. The transcription endpoint takes raw audio and
     # has no auth of its own, so it must stay on the compose network only —
     # Noah reaches it as http://stt:8000 (STT_URL=http://stt:8000/v1) and

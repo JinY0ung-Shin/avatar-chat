@@ -235,5 +235,7 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
 - The deploy host has no Hugging Face access, so the service runs with `HF_HUB_OFFLINE=1` /
   `TRANSFORMERS_OFFLINE=1`: a config or tokenizer path that is not fully local fails immediately instead
   of hanging on a hub lookup. Weights are bind-mounted read-only from `./docker/stt-models` (git-ignored,
-  `.gitkeep`-tracked, mirroring `docker/tls`), and the image tag carries a `REPLACE_WITH_PINNED_TAG`
-  placeholder so an unedited file fails at pull time rather than drifting onto an arbitrary build.
+  `.gitkeep`-tracked, mirroring `docker/tls`), and the image is pinned to an exact release tag
+  (`vllm/vllm-openai:v0.27.1` — its supported-models list includes Qwen3-ASR) rather than a moving
+  one, so a deployment can never drift onto an arbitrary build. Bump the pin deliberately and re-run
+  the deploy-time transcription check when you do.
