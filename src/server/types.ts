@@ -546,6 +546,77 @@ export interface GroupAgent {
   updatedAt: string | null;
 }
 
+/**
+ * Structured, UNFORMATTED self-state for a PERSONAL-AGENT run — the 내 봇
+ * analogue of `GroupAgentState` (agent/ownerState.ts builds it), with the same
+ * metacognition invariant: consumed by BOTH `buildSystemPromptAppend` (the
+ * personal-agent prompt branch) AND `describe_system`. Add a fact here and to
+ * both consumers together.
+ */
+export interface PersonalAgentState {
+  agentId: string;
+  ownerUserId: string;
+  /** The bot's display name — an owner has several, so state names WHICH. */
+  displayName: string;
+  alias: string;
+  /** Whether a persona/instructions text is currently set on the bot. */
+  personaSet: boolean;
+  enabled: boolean;
+  /**
+   * The owner still holds the admin role right now (the phase-1 feature gate,
+   * re-read LIVE). FAIL CLOSED once revoked: the state report must never claim
+   * more than the reach gate (findChattablePersonalAgent) still allows.
+   */
+  ownerIsAdmin: boolean;
+  /** Roster context: bots the owner holds against the cap (disabled ones included). */
+  agentCount: number;
+  maxAgents: number;
+}
+
+/**
+ * A user's PERSONAL AGENT (내 봇): a chat-contact bot owned by ONE user, not a
+ * users row — its public avatar id is `personal:<ownerUserId>:<id>`. Reachable
+ * by its owner ALONE, and only while that owner still holds the admin role (the
+ * phase-1 feature gate). Unlike a group agent it runs with the OWNER's full
+ * capability, so `AgentRequest.groupAgent` must never be set for one.
+ */
+export interface PersonalAgent {
+  /** Row id — the bot's identity; its public avatar id is `personal:<ownerUserId>:<id>`. */
+  id: string;
+  ownerUserId: string;
+  displayName: string;
+  /** How the bot names itself in chat; empty falls back to displayName. */
+  alias: string;
+  bio: string;
+  intro: string;
+  persona: string;
+  hashtags: string[];
+  hasImage: boolean;
+  /** Disabled blocks the NEXT turn but preserves the owner's threads. */
+  enabled: boolean;
+  /**
+   * Model TIER id (modelTiers.ts) seeding NEW conversations with this bot;
+   * null = fall back to the owner's own remembered default. Both writers
+   * validate it against the deployment's tiers.
+   */
+  defaultModel: string | null;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
+/** Write shape for creating/patching a personal agent (omitted field = keep). */
+export interface PersonalAgentInput {
+  displayName: string;
+  alias?: string;
+  bio?: string;
+  intro?: string;
+  persona?: string;
+  hashtags?: string[];
+  enabled?: boolean;
+  /** undefined = keep the stored tier, null = clear it back to the owner default. */
+  defaultModel?: string | null;
+}
+
 /** A group the current user belongs to — surfaced on `User` and the roster. */
 export interface UserGroupMembership {
   id: string;
@@ -714,6 +785,14 @@ export interface AvatarSummary {
    * — a group agent runs the full local SDK stack, unlike external avatars.
    */
   groupAgent?: { groupId: string; groupName: string };
+  /**
+   * Set ONLY for the OWNER's own personal agents (avatar id
+   * `personal:<ownerUserId>:<agentId>`): the kind tag for the 내 봇 badge plus
+   * the bot's model-tier default, which seeds a NEW conversation with it
+   * (client makePane). Runtime stays "native" — a bot runs the full local SDK
+   * stack, unlike external avatars.
+   */
+  personalAgent?: { agentId: string; defaultModel: string | null };
 }
 
 export interface AvatarDetail extends AvatarSummary {
@@ -1174,6 +1253,18 @@ export interface AgentRequest {
     captureAllowed: boolean;
   };
   /**
+   * Set ONLY for PERSONAL-AGENT (내 봇) runs, by the chat route and nothing
+   * else. A personal-agent run stays a FULL OWNER run: `avatar` above is the
+   * OWNER's own avatar (`avatar.id` = the owner's uuid) and the composite
+   * `personal:<owner>:<agent>` id lives only in the conversation binding /
+   * workspace keying / client-facing summaries. This field carries IDENTITY,
+   * not capability — it must NEVER flow into `deriveAgentToolAccess` /
+   * `planMcpToolFamilies` (that is what `groupAgent` above does, and it is a
+   * kill-switch). It drives the prompt identity swap, the `describe_system`
+   * block, self-config tool registration, and routine-tool suppression.
+   */
+  personalAgent?: { agentId: string; ownerUserId: string };
+  /**
    * True when the viewer may use tools at the OWNER's permission level — i.e. the
    * owner themselves OR a designated trusted user. Gates the tool hook (write/Bash
    * run instead of read-only). DISTINCT from viewerIsOwner: the owner-only knowledge
@@ -1403,6 +1494,35 @@ export interface AgentRequest {
    * agent/group vanished mid-run (the branch then renders a minimal identity).
    */
   groupAgentState?: GroupAgentState | null;
+  /**
+   * PERSONAL-AGENT self-state (META-COGNITION), set by `runClaudeAgent` for
+   * personal-agent runs only: feeds the 내 봇 prompt branch the same facts
+   * `describe_system` reports (see {@link PersonalAgentState}). Null when the
+   * bot vanished mid-run (the branch then renders a minimal identity).
+   */
+  personalAgentState?: PersonalAgentState | null;
+  /**
+   * OWNER self-state (META-COGNITION) read from `OwnerState.personalAgentsEnabled`
+   * and stamped onto the request by `runClaudeAgent`, alongside `secretNames` /
+   * `groupMemberships` / `learnableSkillCount` — the prompt builder takes every
+   * store-derived fact from that one stamp site.
+   *
+   * True only when THIS run actually registered
+   * `mcp__personal_agent__create_agent`: an owner-driven, interactive, non-bot
+   * run whose owner still holds the admin role (runPlan's
+   * `personalAgentCreateActive`). Blanked like the other owner facts for
+   * colleague/teammate/consultation/headless runs, so the standing 내 봇 creation
+   * guidance can never offer a tool the run lacks. False on a bot run too, which
+   * carries `update_profile` instead.
+   */
+  personalAgentsEnabled?: boolean;
+  /**
+   * Display names of the owner's ENABLED bots only (a disabled bot is not
+   * chattable, so naming it would be misleading) — the roster for that same
+   * standing guidance, stamped from `OwnerState.personalAgentNames` and blanked
+   * on the same runs.
+   */
+  personalAgentNames?: string[];
   /**
    * The registered git repo the avatar opened as this conversation's **working
    * repository** (`mcp__git_repo__open_repo`): the repo's registered name. Its

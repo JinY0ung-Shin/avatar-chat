@@ -81,12 +81,14 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       const rows = this.db
         .prepare(
           `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, c.is_routine,
-                  COALESCE(u.display_name, ga.display_name) AS avatar_display_name,
+                  COALESCE(u.display_name, ga.display_name, pa.display_name) AS avatar_display_name,
                   r.id AS routine_id, r.prompt AS routine_prompt
            FROM conversations c
            LEFT JOIN users u ON u.id = c.avatar_user_id
            -- the concat mirrors groupAgentAvatarId() (../groupAgents.ts); keep in lockstep
            LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id || ':' || ga.id
+           -- the concat mirrors personalAgentAvatarId() (../personalAgents.ts); keep in lockstep
+           LEFT JOIN personal_agents pa ON c.avatar_user_id = 'personal:' || pa.owner_user_id || ':' || pa.id
            LEFT JOIN routine_jobs r ON r.conversation_id = c.id
            WHERE ${where.join(" AND ")}
            ORDER BY c.updated_at DESC`,
@@ -136,12 +138,14 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       const row = this.db
         .prepare(
           `SELECT c.id, c.avatar_user_id, c.title, c.updated_at, c.is_routine,
-                  COALESCE(u.display_name, ga.display_name) AS avatar_display_name,
+                  COALESCE(u.display_name, ga.display_name, pa.display_name) AS avatar_display_name,
                   r.id AS routine_id, r.prompt AS routine_prompt
            FROM conversations c
            LEFT JOIN users u ON u.id = c.avatar_user_id
            -- the concat mirrors groupAgentAvatarId() (../groupAgents.ts); keep in lockstep
            LEFT JOIN group_agents ga ON c.avatar_user_id = 'group:' || ga.group_id || ':' || ga.id
+           -- the concat mirrors personalAgentAvatarId() (../personalAgents.ts); keep in lockstep
+           LEFT JOIN personal_agents pa ON c.avatar_user_id = 'personal:' || pa.owner_user_id || ':' || pa.id
            LEFT JOIN routine_jobs r ON r.conversation_id = c.id
            WHERE c.owner_user_id = ? AND c.id = ?
            LIMIT 1`,

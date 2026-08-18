@@ -442,6 +442,12 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         // Registered work repos + notifications in either direction — otherwise
         // these orphan rows outlive the "permanently deleted" account.
         this.db.prepare("DELETE FROM git_repositories WHERE user_id = ?").run(id);
+        // Personal agents (내 봇) are owner-scoped rows; their threads are owned
+        // by this same user, so the conversation sweep above already cascaded
+        // the messages/canvases. Only the rows themselves are left. On-disk
+        // artifacts (bot profile image, bot workspace trees) are the admin
+        // route's half of the cascade.
+        this.db.prepare("DELETE FROM personal_agents WHERE owner_user_id = ?").run(id);
         // Shared-skill listings are owner-scoped only (learned copies live as
         // FILES in each learner's repo, not as rows referencing this user).
         // Learn events go in BOTH directions: as the skill owner (their counts

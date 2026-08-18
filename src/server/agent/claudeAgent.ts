@@ -192,6 +192,8 @@ export async function runClaudeAgent(
     ownerGroups,
     ownerSecrets,
     groupAgentState,
+    personalAgentState,
+    personalAgentCreateActive,
     effectiveModel,
     modelChain,
     runVisionEnabled,
@@ -299,6 +301,17 @@ export async function runClaudeAgent(
     // Group-agent self-state for the prompt branch (same facts as
     // describe_system's group ctx — the GroupAgentState invariant).
     groupAgentState,
+    // Personal-agent (내 봇) self-state: the bot identity the prompt speaks AS,
+    // carrying the same facts describe_system's bot block reports. Null on every
+    // non-bot run, which is also what the prompt's identity swap keys off.
+    personalAgentState,
+    // Bot-creation self-state, rides ONLY runs that registered create_agent
+    // (the skillExchangeActive precedent) so the standing guidance and the tool
+    // can't diverge. The roster is the owner's ENABLED bots.
+    personalAgentsEnabled: personalAgentCreateActive,
+    personalAgentNames: personalAgentCreateActive
+      ? ownerState.personalAgentNames
+      : [],
   };
 
   const setSystemPrompt = () => {

@@ -3368,7 +3368,7 @@ describe("buildPrompt", () => {
     expect(p).not.toContain(GETTING_STARTED);
   });
 
-  it("keeps getting-started OUT of colleague, teammate, routine, and group-agent turns", () => {
+  it("keeps getting-started OUT of colleague, teammate, routine, group-agent, and personal-bot turns", () => {
     const colleague = buildPrompt(
       req({ ...setupGaps, viewerIsOwner: false, viewerName: "동료" }),
       0,
@@ -3406,6 +3406,29 @@ describe("buildPrompt", () => {
       0,
     );
     expect(groupAgent).not.toContain(GETTING_STARTED);
+    // A personal bot (내 봇) IS an owner run, so it reaches the owner branch —
+    // but the setup pitch belongs to the owner's own avatar, or every bot thread
+    // would repeat the same offer.
+    const personalAgent = buildPrompt(
+      req({
+        ...setupGaps,
+        viewerIsOwner: true,
+        viewerName: "신진영",
+        personalAgentState: {
+          agentId: "a1",
+          ownerUserId: "u1",
+          displayName: "릴리즈 봇",
+          alias: "릴봇",
+          personaSet: false,
+          enabled: true,
+          ownerIsAdmin: true,
+          agentCount: 1,
+          maxAgents: 20,
+        },
+      }),
+      0,
+    );
+    expect(personalAgent).not.toContain(GETTING_STARTED);
   });
 
   it("stops offering setup once the conversation is no longer young", () => {

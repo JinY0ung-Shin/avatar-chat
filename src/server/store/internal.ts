@@ -247,6 +247,22 @@ export interface GroupAgentRow {
   updated_at: string | null;
 }
 
+export interface PersonalAgentRow {
+  id: string;
+  owner_user_id: string;
+  display_name: string;
+  alias: string | null;
+  bio: string | null;
+  intro: string | null;
+  persona: string | null;
+  hashtags: string | null;
+  avatar_ext: string | null;
+  enabled: number;
+  default_model: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
 export interface RoutineJobRow {
   id: string;
   avatar_user_id: string;
@@ -529,6 +545,29 @@ export class StoreBase {
         created_at TEXT,
         updated_at TEXT
       );
+      -- PERSONAL AGENTS (내 봇): per-owner chat-contact bots, several per owner
+      -- (capped by MAX_PERSONAL_AGENTS in store/personalAgents.ts). NOT users
+      -- rows: the public avatar id is "personal:<owner_user_id>:<id>" (the
+      -- group:<gid>:<aid> precedent — conversations.avatar_user_id has no FK).
+      -- default_model is a modelTiers.ts tier id seeding NEW conversations with
+      -- the bot; NULL = the owner's own remembered default. A brand-new table:
+      -- CREATE TABLE IF NOT EXISTS IS the existing-deployment migration.
+      CREATE TABLE IF NOT EXISTS personal_agents (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        display_name TEXT NOT NULL,
+        alias TEXT DEFAULT '',
+        bio TEXT DEFAULT '',
+        intro TEXT DEFAULT '',
+        persona TEXT DEFAULT '',
+        hashtags TEXT,
+        avatar_ext TEXT,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        default_model TEXT,
+        created_at TEXT,
+        updated_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_personal_agents_owner ON personal_agents(owner_user_id);
       -- Skills shared from an owner's knowledge repo (#skill-share): one row per
       -- (owner, skills/<slug> dir). METADATA SNAPSHOT ONLY — the content stays in
       -- the owner's repo and is copied into the learner's repo at learn time.

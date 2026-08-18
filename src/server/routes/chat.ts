@@ -86,6 +86,11 @@ import {
   listGroupAgentAvatarSummaries,
 } from "../groupAgents.js";
 import {
+  findChattablePersonalAgent,
+  listPersonalAgentAvatarSummaries,
+  personalAgentAvatarDetail,
+} from "../personalAgents.js";
+import {
   isModelTier,
   modelTierLabel,
   MODEL_TIERS,
@@ -449,6 +454,10 @@ export function createChatRouter({
       const externalImageIds = store.listExternalAvatarImageIds();
       const avatars = [
         ...store.listPublishedAvatars(req.user!.id),
+        // The viewer's OWN personal agents (내 봇, enabled only). Nobody else
+        // ever sees them, and the helper returns [] unless the viewer still
+        // holds the admin role (the phase-1 feature gate).
+        ...listPersonalAgentAvatarSummaries(store, req.user!.id),
         // Shared group agents of the viewer's groups (enabled only) — reach is
         // membership-scoped by the store query, like the native list above.
         ...listGroupAgentAvatarSummaries(store, req.user!.id),
@@ -477,11 +486,19 @@ export function createChatRouter({
       const groupAgentHit = external
         ? null
         : findChattableGroupAgent(store, req.user!.id, req.params.id);
+      // Personal agents come last and only for their own owner; a disabled one
+      // 404s here exactly like a disabled group agent (discovery hides it).
+      const personalAgentHit =
+        external || groupAgentHit
+          ? null
+          : findChattablePersonalAgent(store, req.user!.id, req.params.id);
       const avatar = external
         ? externalAvatarDetail(external)
         : groupAgentHit
           ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
-          : store.getAvatar(req.user!.id, req.params.id);
+          : personalAgentHit
+            ? personalAgentAvatarDetail(personalAgentHit.agent)
+            : store.getAvatar(req.user!.id, req.params.id);
       if (!avatar) {
         apiError(res, 404, "아바타를 찾을 수 없습니다.");
         return;
@@ -511,11 +528,17 @@ export function createChatRouter({
       const groupAgentHit = external
         ? null
         : findChattableGroupAgent(store, req.user!.id, req.params.id);
+      const personalAgentHit =
+        external || groupAgentHit
+          ? null
+          : findChattablePersonalAgent(store, req.user!.id, req.params.id);
       const avatar = external
         ? externalAvatarDetail(external)
         : groupAgentHit
           ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
-          : store.getAvatar(req.user!.id, req.params.id);
+          : personalAgentHit
+            ? personalAgentAvatarDetail(personalAgentHit.agent)
+            : store.getAvatar(req.user!.id, req.params.id);
       if (!avatar) {
         apiError(res, 404, "아바타를 찾을 수 없습니다.");
         return;
@@ -541,6 +564,24 @@ export function createChatRouter({
         );
         const sources = await groupKnowledgeRepoSkillSources(ctx ? [ctx] : []);
         res.json({ skills: await listSkillsInRoots(sources) });
+        return;
+      }
+      if (personalAgentHit) {
+        // A bot turn IS an owner run, so its skills ARE the owner's. Resolve
+        // against the owner's OWN avatar row: `avatar` here carries the
+        // composite `personal:` id, which no skill/plugin loader can key on.
+        const owner = store.getAvatar(req.user!.id, req.user!.id);
+        if (!owner) {
+          res.json({ skills: [] });
+          return;
+        }
+        const { sourced: ownerSources } = await resolveAvatarSkillSources(
+          store,
+          owner,
+          config,
+          false,
+        );
+        res.json({ skills: await listSkillsInRoots(ownerSources) });
         return;
       }
       const { sourced } = await resolveAvatarSkillSources(
@@ -570,12 +611,14 @@ export function createChatRouter({
       if (!external) {
         const avatar =
           findChattableGroupAgent(store, req.user!.id, req.params.id) ??
+          findChattablePersonalAgent(store, req.user!.id, req.params.id) ??
           store.getAvatar(req.user!.id, req.params.id);
         if (!avatar) {
           apiError(res, 404, "아바타를 찾을 수 없습니다.");
           return;
         }
-        // Native + group agents both use the bootstrap model-tier picker.
+        // Native, group and personal agents all use the bootstrap model-tier
+        // picker (a bot's own tier default rides its AvatarSummary instead).
         res.json({ models: [], defaultModel: null });
         return;
       }
@@ -978,15 +1021,53 @@ export function createChatRouter({
         );
         return;
       }
+      // Personal agent (내 봇): OWNER-only reach, and only while the owner still
+      // holds the admin role. A disabled bot gets its own 403 — the owner
+      // manages it themselves, so naming the state leaks nothing; every other
+      // miss collapses into the generic fail-closed 403 below.
+      const personalAgentHit =
+        externalAgent || groupAgentHit
+          ? null
+          : findChattablePersonalAgent(store, req.user!.id, avatarId, {
+              includeDisabled: true,
+            });
+      if (personalAgentHit && !personalAgentHit.agent.enabled) {
+        apiError(
+          res,
+          403,
+          "이 봇은 비활성화되어 있습니다. 설정 → 내 봇에서 활성화한 뒤 다시 시도해 주세요.",
+        );
+        return;
+      }
       const avatar = externalAgent
         ? externalAvatarDetail(externalAgent)
         : groupAgentHit
           ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
-          : store.resolveChatAvatar(req.user!.id, avatarId);
+          : // A bot turn is a FULL OWNER run, so the run-facing avatar is the
+            // OWNER's own (avatar.id = the owner's uuid) and every owner-keyed
+            // loader — plugins, knowledge repo, secrets, work repos, trust —
+            // works untouched. The bot's composite id lives in
+            // `threadAvatarId` below, never here. (types.ts personalAgent)
+            store.resolveChatAvatar(
+              req.user!.id,
+              personalAgentHit ? req.user!.id : avatarId,
+            );
       if (!avatar) {
         apiError(res, 403, "이 아바타와 대화할 수 없습니다.");
         return;
       }
+      /**
+       * The id this THREAD is keyed by: the composite
+       * `personal:<owner>:<agent>` on a bot turn, else `avatar.id`. Everything
+       * thread-scoped — the conversation binding, the scratch workspace, the
+       * run registry, client-facing payloads — uses THIS, so a bot's history
+       * and files stay its own while the run keeps owner capability.
+       */
+      const threadAvatarId = personalAgentHit ? avatarId : avatar.id;
+      /** Chat target for audit/logs — the BOT's name on a personal turn. */
+      const threadAvatarLabel = personalAgentHit
+        ? personalAgentHit.agent.displayName
+        : avatar.displayName;
       if (externalAgent && decodedImages.length > 0) {
         apiError(res, 400, "외부 아바타는 아직 이미지 첨부를 지원하지 않습니다.");
         return;
@@ -1006,6 +1087,9 @@ export function createChatRouter({
         );
         return;
       }
+      // True for a bot turn by construction: the personal branch resolved
+      // `avatar` to the viewer's OWN row, and the reach gate already proved
+      // owner + admin. Keep it that way — a bot run must stay an owner run.
       const viewerIsOwner =
         !externalAgent && !groupAgentHit && req.user!.id === avatar.id;
       // Owner-only per-conversation group-knowledge selection, chosen in the UI and
@@ -1089,7 +1173,7 @@ export function createChatRouter({
         req.user!.id,
         conversationId,
       );
-      if (existingAvatarId && existingAvatarId !== avatar.id) {
+      if (existingAvatarId && existingAvatarId !== threadAvatarId) {
         apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
         return;
       }
@@ -1202,6 +1286,8 @@ export function createChatRouter({
       let releaseActiveRepoLock: (() => void) | null = null;
       // Group-agent runs skip the whole block: no isTrustedFor on a synthetic
       // id, no personal work-repo workspace (the run kind carries capability).
+      // Bot turns DO run it — `avatar` is the owner's own row, so the owner's
+      // registered repos and commit identity resolve exactly as usual.
       if (!externalAgent && !groupAgentHit) {
         const repoResolution = await resolveActiveWorkspaceRepo({
           store,
@@ -1302,14 +1388,18 @@ export function createChatRouter({
         // under the avatar so sessions cannot mix files by accident. Created here
         // (before the message persist) because file mode stages attachments into it.
         // External turns run no local workspace, so they don't get a directory.
-        const workspaceDir = workspaceDirFor(config, avatar.id, conversationId);
+        const workspaceDir = workspaceDirFor(
+          config,
+          threadAvatarId,
+          conversationId,
+        );
         if (!externalAgent) {
           fs.mkdirSync(workspaceDir, { recursive: true });
         }
         store.touchConversation(
           req.user!.id,
           conversationId,
-          avatar.id,
+          threadAvatarId,
           displayMessage,
           externalAgent ? { externalEndpoint: externalAgent.endpoint } : {},
         );
@@ -1431,7 +1521,7 @@ export function createChatRouter({
         logger.info(
           {
             userId: req.user!.id,
-            avatarId: avatar.id,
+            avatarId: threadAvatarId,
             conversationId,
             regenerate,
           },
@@ -1463,7 +1553,7 @@ export function createChatRouter({
         const abortController = new AbortController();
         openRun(runId, req.user!.id, {
           conversationId,
-          avatarId: avatar.id,
+          avatarId: threadAvatarId,
           abortController,
         });
         // openRun sits BEFORE the run's own try/finally { closeRun }, so guard the
@@ -1479,7 +1569,7 @@ export function createChatRouter({
           }
           emitRunEvent(runId, "open", {
             conversationId,
-            avatarId: avatar.id,
+            avatarId: threadAvatarId,
             runId,
           });
         } catch (err) {
@@ -1585,12 +1675,12 @@ export function createChatRouter({
             auditAs(
               req,
               "chat",
-              `chat with ${avatar.displayName} (${response.runtime})`,
+              `chat with ${threadAvatarLabel} (${response.runtime})`,
             );
             logger.info(
               {
                 userId: req.user!.id,
-                avatarId: avatar.id,
+                avatarId: threadAvatarId,
                 conversationId,
                 runtime: response.runtime,
                 durationMs: Date.now() - chatStart,
@@ -1667,11 +1757,21 @@ export function createChatRouter({
           const response = await runAgentStream(
             {
               message: agentMessage,
+              // A bot speaks as ITSELF while running with the OWNER's
+              // capability: the id stays the owner's (every capability key in
+              // runPlan reads it, and AgentOwner resolves commit identity from
+              // that user row) while only the conversational identity moves to
+              // the bot. `personalAgentState` carries no persona TEXT, so this
+              // is the ONLY channel a bot's persona can reach the prompt on.
+              // `??`, not `||`: an EMPTY bot alias/persona must stay empty
+              // rather than inherit the owner's — a persona-less bot must never
+              // recite its owner's persona as its own instructions.
               avatar: {
                 id: avatar.id,
-                displayName: avatar.displayName,
-                alias: avatar.alias,
-                persona: avatar.persona,
+                displayName:
+                  personalAgentHit?.agent.displayName ?? avatar.displayName,
+                alias: personalAgentHit?.agent.alias ?? avatar.alias,
+                persona: personalAgentHit?.agent.persona ?? avatar.persona,
               },
               // Lets in-process tools (open_repo/close_repo) key the working-repo
               // selection to this conversation.
@@ -1725,6 +1825,16 @@ export function createChatRouter({
                       groupAgentHit.agent,
                       groupAgentHit.viewerRole,
                     ),
+                  }
+                : undefined,
+              // Personal-agent run kind: IDENTITY only (prompt/self-config/
+              // describe_system). Capability stays the owner's — `avatar` above
+              // is the owner's own row and `groupAgent` must stay unset, or the
+              // run loses the owner tools this bot is meant to have.
+              personalAgent: personalAgentHit
+                ? {
+                    agentId: personalAgentHit.agent.id,
+                    ownerUserId: req.user!.id,
                   }
                 : undefined,
               autoApprove: true,
@@ -2441,12 +2551,12 @@ export function createChatRouter({
           auditAs(
             req,
             "chat",
-            `chat with ${avatar.displayName} (${response.runtime})`,
+            `chat with ${threadAvatarLabel} (${response.runtime})`,
           );
           logger.info(
             {
               userId: req.user!.id,
-              avatarId: avatar.id,
+              avatarId: threadAvatarId,
               conversationId,
               runtime: response.runtime,
               background: turnFinalized,
@@ -2527,7 +2637,7 @@ export function createChatRouter({
             {
               detail,
               userId: req.user!.id,
-              avatarId: avatar.id,
+              avatarId: threadAvatarId,
               conversationId,
               durationMs: Date.now() - chatStart,
             },

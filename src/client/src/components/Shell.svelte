@@ -4,16 +4,16 @@
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
-  import { addConversationToSplit, clearChatHistory, newChat, selectConversation, startNewChat } from "../lib/chat";
+  import { addConversationToSplit, clearChatHistory, newChat, selectConversation, startChatWith, startNewChat } from "../lib/chat";
   import { timeLabel } from "../lib/format";
-  import { loadConversations, stopKnowledgeWatch } from "../lib/loaders";
+  import { loadAvatars, loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { prefersReducedMotion, project, rubberband, springValue } from "../lib/motion";
   import { goView } from "../lib/nav";
   import { trapTab } from "../lib/modalBehavior";
   import { appState, notify, replaceState, updateState } from "../lib/state";
   import { setThemePref } from "../lib/theme";
   import type { ThemePref } from "../lib/theme";
-  import type { ConversationSummary, User, ViewName } from "../lib/types";
+  import type { AvatarSummary, ConversationSummary, User, ViewName } from "../lib/types";
 
   export let user: User;
   export let view: ViewName;
@@ -75,6 +75,12 @@
       return conversationTokens.every((token) => hay.includes(token));
     });
   $: chatConversationCount = $appState.conversations.filter((conversation) => !conversation.isRoutine).length;
+  // 내 봇 shortcut section: the viewer's own personal agents, which the server
+  // tags on the avatar list (and only ever for their owner). Derived at the top
+  // level and NAMED in the markup — a legacy-mode template expression tracks
+  // only what the markup itself reads, so hiding this behind a helper call would
+  // render a stale list.
+  $: personalBots = $appState.avatars.filter((avatar) => avatar.personalAgent);
   $: conversationResultStatus = conversationsLoading
     ? "대화 목록을 불러오는 중입니다."
     : conversationsError
@@ -85,6 +91,10 @@
 
   onMount(() => {
     void refreshConversations();
+    // The 내 봇 section reads state.avatars, which otherwise only loads when
+    // 탐색/대화 mounts — a boot that restores #/settings would leave the rail
+    // silently botless. Idempotent: whichever view asks second no-ops.
+    void loadAvatars().catch(() => {});
     const syncRailLayout = (event: MediaQueryListEvent) => {
       desktopRail = event.matches;
       if (desktopRail && railOpen) {
@@ -497,6 +507,21 @@
     return conversation.title || conversation.avatarDisplayName || "제목 없는 대화";
   }
 
+  let botBusyId = "";
+  /** Resumes the newest thread with this bot, or opens a fresh one. */
+  async function openBotChat(bot: AvatarSummary) {
+    if (botBusyId) return;
+    botBusyId = bot.id;
+    try {
+      await startChatWith(bot);
+      closeRail();
+    } catch (err) {
+      notify(`봇과의 대화를 열지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      botBusyId = "";
+    }
+  }
+
   function clearConversationSearch(): void {
     conversationQuery = "";
     conversationSearchInput?.focus();
@@ -668,6 +693,32 @@
       <Icon name="plus" />
       <span>새 대화</span>
     </button>
+
+    {#if personalBots.length}
+      <div class="rail-bots">
+        <div class="rail-section-label">
+          <Icon name="sparkles" size={12} />
+          내 봇 <span class="rail-section-count">{personalBots.length}</span>
+        </div>
+        <div class="rail-bot-list scroll-thin" role="group" aria-label="내 봇 목록">
+          {#each personalBots as bot (bot.id)}
+            {@const botName = bot.alias || bot.displayName}
+            <button
+              class="rail-bot"
+              type="button"
+              title={`${botName} 봇과 대화`}
+              aria-label={botBusyId === bot.id ? `${botName} 봇과 대화, 여는 중` : `${botName} 봇과 대화`}
+              aria-busy={botBusyId === bot.id ? "true" : "false"}
+              disabled={Boolean(botBusyId)}
+              on:click={() => openBotChat(bot)}
+            >
+              <AvatarImage user={bot} size={22} alt="" />
+              <span class="rail-bot-name">{botName}</span>
+            </button>
+          {/each}
+        </div>
+      </div>
+    {/if}
   </div>
 
   <div class="rail-history">

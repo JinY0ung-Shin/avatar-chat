@@ -13,6 +13,7 @@ import { createProfileRouter } from "./routes/profile.js";
 import { createPluginsRouter } from "./routes/plugins.js";
 import { createKnowledgeRepoRouter } from "./routes/knowledgeRepo.js";
 import { createGroupsRouter } from "./routes/groups.js";
+import { createPersonalAgentsRouter } from "./routes/personalAgents.js";
 import { createRoutinesRouter } from "./routes/routines.js";
 import { createSkillShareRouter } from "./routes/skillShare.js";
 import { createSttRouter } from "./routes/stt.js";
@@ -175,6 +176,7 @@ export function createApp(services = createServices()) {
   app.use(createPluginsRouter(deps));
   app.use(createKnowledgeRepoRouter(deps));
   app.use(createGroupsRouter(deps));
+  app.use(createPersonalAgentsRouter(deps));
   app.use(createRoutinesRouter(deps));
   app.use(createSkillShareRouter(deps));
   app.use(createSttRouter(deps));

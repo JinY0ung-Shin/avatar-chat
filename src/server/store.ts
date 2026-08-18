@@ -7,6 +7,7 @@ export {
   Store,
   normalizeHashtags,
   MAX_HASHTAGS,
+  MAX_PERSONAL_AGENTS,
   CLAUDE_OAUTH_TOKEN_KEY,
   SIGNUP_MODE_KEY,
   MODEL_OVERRIDE_KEY,

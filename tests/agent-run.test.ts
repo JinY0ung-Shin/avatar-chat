@@ -373,8 +373,14 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     const { options } = sdkMock.calls[0];
     expect(options.model).toBe("sonnet");
     expect(options.effort).toBe("high");
-    // Only the `system` group enabled → only the system server is registered.
-    expect(Object.keys(options.mcpServers as Record<string, unknown>)).toEqual(["system"]);
+    // Only the `system` group enabled → only the system server registers from
+    // the tool-group families. `personal_agent` rides alongside it: like the
+    // group agent's self-config server it belongs to no family, and this owner
+    // is an admin on an interactive run, so create_agent is available.
+    expect(Object.keys(options.mcpServers as Record<string, unknown>)).toEqual([
+      "system",
+      "personal_agent",
+    ]);
   });
 
   it("registers the brain + canvas servers when a repo is connected and canvas is enabled", async () => {

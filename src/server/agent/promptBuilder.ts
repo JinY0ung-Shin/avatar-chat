@@ -585,11 +585,71 @@ function gettingStartedSection(request: AgentRequest): string | null {
   );
 }
 
+/**
+ * PERSONAL-AGENT (내 봇) identity block — first thing in the owner branch of a
+ * bot run. A bot turn IS a full owner turn, so every section after it (repo,
+ * brain, secrets, groups, working repo) applies unchanged; this only says WHO is
+ * speaking, what it may change about itself, where its own notes belong, and the
+ * one capability the thread does not have. Facts come from `PersonalAgentState`,
+ * the same source describe_system's bot block reads.
+ */
+function personalAgentSection(request: AgentRequest): string | null {
+  const state = request.personalAgentState;
+  if (!state) {
+    return null;
+  }
+  const name = state.alias || state.displayName;
+  // The `agents/<slug>/` convention only means something with a repository to
+  // put it in — never point at a tree this run cannot write.
+  const notesNote =
+    mcpToolGroupEnabled(request, "personal_knowledge") &&
+    request.knowledgeRepoConfigured !== false
+      ? " Keep the notes that are YOURS (your task state, drafts, running logs) under `agents/<your-slug>/` in the knowledge repository — choose one stable ASCII kebab-case slug from your name the first time you need it and reuse that same slug forever. Knowledge that is not about you personally still follows the normal second-brain conventions (`wiki/` for curated notes, `raw/` for captures), so the owner's other avatars and bots can find it too."
+      : "";
+  return (
+    `You are **"${name}"**, one of your owner's **personal bots** (내 봇) — a chat contact they created for themselves, not a user account and not a group resource. They currently hold ${state.agentCount} of ${state.maxAgents} bots. ` +
+    "You run with your owner's FULL avatar capability on their behalf: their knowledge repository, secrets, git repositories, and plugins are all yours this turn, exactly as their main avatar has them. " +
+    "Each of their bots has its own separate conversations — you cannot see the others' threads, so never claim knowledge of what was said there." +
+    notesNote +
+    " Scheduled routines do NOT work in this conversation: `mcp__system__list_routines`/`create_routine`/`update_routine`/`delete_routine` all refuse here. If the owner asks you to schedule something, say so plainly and point them at a conversation with their MAIN avatar (or the 예약 작업 tab) — never retry and never invent another way to schedule." +
+    " You may reconfigure YOURSELF with `mcp__personal_agent__update_profile` (persona, alias, bio, intro): use it when the owner tells you what you should be from now on, CONFIRM the exact wording with them before calling it, and never change your own persona unprompted. It applies from the NEXT turn, not this one." +
+    ` Your persona is currently ${state.personaSet ? "SET" : "NOT set"}. The bot list itself — creating, renaming, disabling, deleting, the profile image, the default model — is the owner's own to manage under 설정 → 내 봇.`
+  );
+}
+
+/**
+ * Standing personal-bot guidance for the owner's OWN avatar (non-bot runs): the
+ * action trigger for `mcp__personal_agent__create_agent`. `personalAgentsEnabled`
+ * mirrors runPlan's registration boolean exactly (claudeAgent stamps it from
+ * that, the skill-exchange precedent), so this can never advertise a tool the
+ * run does not carry.
+ */
+function personalBotsSection(request: AgentRequest): string | null {
+  if (!request.personalAgentsEnabled) {
+    return null;
+  }
+  const names = (request.personalAgentNames ?? []).filter(Boolean);
+  return (
+    "**Personal bots (내 봇)**: this owner can keep several bots of their own — separate chat contacts, each with its own name and persona, each running with the same capability you have. " +
+    `They currently have ${names.length > 0 ? `${names.length} enabled: ${names.join(", ")}` : "no enabled bots"}. ` +
+    'When they ask for a new one ("make me a bot that only does X", "내 봇 하나 만들어줘"), create it with `mcp__personal_agent__create_agent` — ask what to call it if they did not say, draft its persona from what they described, and then tell them it is chattable immediately from 탐색 or the "내 봇" section of the left rail. ' +
+    "Changing an EXISTING bot is not yours to do: the owner edits it under 설정 → 내 봇, or the bot reconfigures itself inside its own conversation."
+  );
+}
+
 export function buildSystemPromptAppend(
   request: AgentRequest,
   _openRequestCount?: number,
 ): string {
-  const alias = request.avatar.alias?.trim();
+  // PERSONAL-AGENT (내 봇) runs speak as the BOT, not as the owner's own avatar.
+  // `request.avatar` is deliberately the OWNER's (its id is every capability
+  // key), so identity comes from the live bot state instead — otherwise a bot
+  // would introduce itself with its owner's avatar name.
+  // No FALLBACK across the two identities: an alias-less bot must fall back to
+  // its OWN display name, never to the owner's avatar alias.
+  const paState = request.personalAgentState ?? null;
+  const alias = (paState ? paState.alias : request.avatar.alias)?.trim();
+  const displayName = paState?.displayName || request.avatar.displayName;
   const secretNames = Array.from(
     new Set((request.secretNames ?? []).filter(Boolean)),
   ).sort();
@@ -597,13 +657,21 @@ export function buildSystemPromptAppend(
   const lines = [
     alias
       ? `Your name is "${alias}". You converse with the user as the avatar bearing this name.`
-      : `You converse with the user as the "${request.avatar.displayName}" avatar.`,
+      : `You converse with the user as the "${displayName}" avatar.`,
   ];
   lines.push(
     "Respond in the same language the user writes in; if it is unclear, default to Korean (한국어). " +
       "These instructions are written in English for your benefit, but your replies should match the user's language.",
   );
-  if (request.avatar.persona && request.avatar.persona.trim()) {
+  // On a bot run the persona text rides the same field, but it is the BOT's (the
+  // chat route overlays the identity fields while keeping the owner's id) — so
+  // gate it on the bot's own `personaSet`: a persona-less bot must never end up
+  // reciting its owner's avatar persona as its own standing instructions.
+  if (
+    request.avatar.persona &&
+    request.avatar.persona.trim() &&
+    (!paState || paState.personaSet)
+  ) {
     lines.push(`Persona/instructions:\n${request.avatar.persona.trim()}`);
   }
   lines.push(
@@ -1051,6 +1119,12 @@ export function buildSystemPromptAppend(
       );
     }
   } else if (request.viewerIsOwner) {
+    // A personal-bot run lands HERE (it is an owner run by construction), so the
+    // bot re-frames who is speaking before the owner-capability guidance below.
+    const personalAgentBlock = personalAgentSection(request);
+    if (personalAgentBlock) {
+      lines.push(personalAgentBlock);
+    }
     const name = request.viewerName?.trim();
     lines.push(
       name
@@ -1124,10 +1198,21 @@ export function buildSystemPromptAppend(
     if (experimentalBlock) {
       lines.push(experimentalBlock);
     }
+    // Personal bots: the create trigger, on the owner's OWN avatar only (the
+    // stamped flag is false on a bot run, which has update_profile instead).
+    const personalBotsBlock = personalBotsSection(request);
+    if (personalBotsBlock) {
+      lines.push(personalBotsBlock);
+    }
     // The owner's unfinished setup + the licence to offer to fix it ONCE. Last
     // in the branch on purpose: every capability it can point at (create_repo,
     // the repo/brain guidance) has already been stated above.
-    const gettingStartedBlock = gettingStartedSection(request);
+    // A personal bot never pitches the owner's setup: the owner hears it from
+    // their own avatar, and a bot nagging about it would repeat the same offer
+    // once per bot thread.
+    const gettingStartedBlock = request.personalAgentState
+      ? null
+      : gettingStartedSection(request);
     if (gettingStartedBlock) {
       lines.push(gettingStartedBlock);
     }

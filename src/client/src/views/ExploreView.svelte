@@ -51,14 +51,20 @@
   $: accessReady = isAccessReady($appState.user);
   // 아바타는 같은 그룹원에게만 보이므로, 그룹이 없는 사용자에게는 자기 아바타(와 외부
   // Agent)만 남습니다. 빈 목록처럼 보이는 이유를 카드 아래에서 설명해 줍니다.
-  $: hasPeerAvatars = $appState.avatars.some((av) => av.id !== $appState.user?.id && av.runtime !== "external");
+  // 내 봇은 나만 닿을 수 있는 아바타라서 "동료 아바타"로 세지 않습니다 — 봇만
+  // 있는 관리자에게도 그룹 안내가 계속 보여야 합니다.
+  $: hasPeerAvatars = $appState.avatars.some(
+    (av) => av.id !== $appState.user?.id && av.runtime !== "external" && !av.personalAgent,
+  );
   const GROUP_HINT = "그룹에 소속되면 동료의 아바타가 여기에 보여요. 그룹 참여는 관리자에게 문의하세요.";
 
   function rank(av: AvatarSummary) {
     if (av.id === $appState.user?.id) return 0;
+    // My own bots sit right under my own avatar — nobody else can reach them.
+    if (av.personalAgent) return 1;
     // Group shared agents sort with same-group teammates (both are group-scoped).
-    if (av.sharesGroup || av.groupAgent) return 1;
-    return 2;
+    if (av.sharesGroup || av.groupAgent) return 2;
+    return 3;
   }
 
   function matches(av: AvatarSummary, parts: string[]) {
@@ -312,6 +318,8 @@
                 <strong>{av.displayName}</strong>
                 {#if av.id === $appState.user?.id}
                   <span class="tag accent">나</span>
+                {:else if av.personalAgent}
+                  <span class="tag accent">내 봇</span>
                 {:else if av.runtime === "external"}
                   <span class="tag accent">외부 아바타</span>
                 {:else if av.groupAgent}

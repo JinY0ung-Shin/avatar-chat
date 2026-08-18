@@ -58,6 +58,7 @@ import {
   emptyOwnerState,
   summarizeGroupAgentState,
   summarizeOwnerState,
+  summarizePersonalAgentState,
 } from "./ownerState.js";
 import {
   buildPreToolUseHook,
@@ -388,8 +389,12 @@ export async function buildAgentRunPlan(
     SSH_IDENTITY_SERVER_NAME,
     SSH_IDENTITY_TOOL_NAMES,
   } = await import("./sshIdentityTools.js");
-  const { buildSystemServer, SYSTEM_SERVER_NAME, SYSTEM_TOOL_NAMES } =
-    await import("./systemTools.js");
+  const {
+    buildSystemServer,
+    SYSTEM_SERVER_NAME,
+    SYSTEM_TOOL_NAMES,
+    ROUTINE_TOOL_NAMES,
+  } = await import("./systemTools.js");
   const {
     buildConfluenceServer,
     CONFLUENCE_SERVER_NAME,
@@ -438,6 +443,13 @@ export async function buildAgentRunPlan(
     GROUP_AGENT_PROFILE_SERVER_NAME,
     GROUP_AGENT_PROFILE_TOOL_NAMES,
   } = await import("./groupAgentProfileTools.js");
+  const {
+    buildPersonalAgentSelfServer,
+    buildPersonalAgentOwnerServer,
+    PERSONAL_AGENT_SERVER_NAME,
+    PERSONAL_AGENT_SELF_TOOL_NAMES,
+    PERSONAL_AGENT_OWNER_TOOL_NAMES,
+  } = await import("./personalAgentProfileTools.js");
 
   const streaming = Boolean(events);
   // Tool-access derivation lives in deriveAgentToolAccess (a pure, unit-tested
@@ -500,6 +512,14 @@ export async function buildAgentRunPlan(
   // the SINGLE source for the family booleans AND for `registered` — the set
   // the prompt and describe_system report — so report and reality can't drift.
   const groupAgentRun = request.groupAgent ?? null;
+  // PERSONAL-AGENT (내 봇) run: identity ONLY. Deliberately absent from
+  // deriveAgentToolAccess above and from planMcpToolFamilies below — a bot run
+  // IS a full owner run (request.avatar is the OWNER's own avatar), so the owner
+  // access algebra and every personal tool family must stay exactly as they are
+  // for the owner's main avatar. What this flag drives instead: the prompt
+  // identity swap, describe_system's bot block, the self-config server, and the
+  // routine-tool suppression further down.
+  const personalAgentRun = request.personalAgent ?? null;
   const familyPlan = planMcpToolFamilies(enabledMcpToolGroups, Boolean(groupAgentRun));
   const personalKnowledgeToolsEnabled = familyPlan.personalKnowledge;
   const groupKnowledgeToolsEnabled = familyPlan.groupKnowledge;
@@ -606,6 +626,18 @@ export async function buildAgentRunPlan(
         config,
         groupAgentRun.agentId,
         request.viewerUserId ?? "",
+      )
+    : null;
+  // The bot's own live self-state, alongside (never instead of) the owner state
+  // above — a bot run has BOTH. Summarized against the VIEWER, not against
+  // request.personalAgent.ownerUserId, so a drifted request fails the owner
+  // match instead of confirming itself (avatar.id is the owner uuid by the
+  // personal-run contract, and the reach gate proved viewer == owner).
+  const personalAgentState = personalAgentRun
+    ? summarizePersonalAgentState(
+        store,
+        personalAgentRun.agentId,
+        request.viewerUserId ?? request.avatar.id,
       )
     : null;
   // The ACTING member behind a group-agent run: commit identity, token source,
@@ -718,6 +750,15 @@ export async function buildAgentRunPlan(
     // keep refusing via viewerIsOwner.
     groupAgent: groupAgentRun
       ? { agentId: groupAgentRun.agentId, actingUserId: actingMember.id }
+      : undefined,
+    // Personal-agent runs: describe_system prints the BOT block ahead of the
+    // owner block, and the four routine tools refuse (same acting-user
+    // derivation as personalAgentState above).
+    personalAgent: personalAgentRun
+      ? {
+          agentId: personalAgentRun.agentId,
+          actingUserId: request.viewerUserId ?? request.avatar.id,
+        }
       : undefined,
     // The working repo opened for this conversation (NAME only — the clone path is
     // never surfaced). Mirrors buildPrompt's activeRepoSection in describe_system.
@@ -874,6 +915,32 @@ export async function buildAgentRunPlan(
         actingUser: actingMember,
       })
     : null;
+  // Personal agents (내 봇). TWO tools with opposite run kinds behind ONE server
+  // name: a bot run gets `update_profile` (it edits ITSELF), an owner's own run
+  // gets `create_agent` (it stands a new bot up). The gates are mutually
+  // exclusive by construction, so the name can never collide. Neither
+  // registration is the boundary — both handlers re-check the live owner+admin
+  // role (the mcp__ auto-allow fires first).
+  const personalAgentSelfActive = Boolean(personalAgentRun);
+  const personalAgentCreateActive =
+    ownerToolAccess &&
+    !groupAgentRun &&
+    !personalAgentRun &&
+    !consultationRun &&
+    // Owner-scheduled routines are excluded on purpose: creating a chat contact
+    // is a decision the owner makes in conversation, not unattended work.
+    !request.headless &&
+    // The phase-1 feature gate (the same fact ownerState.personalAgentsEnabled
+    // reports to both metacognition surfaces).
+    ownerState.personalAgentsEnabled;
+  const personalAgentServer = personalAgentRun
+    ? buildPersonalAgentSelfServer(store, {
+        agentId: personalAgentRun.agentId,
+        owner,
+      })
+    : personalAgentCreateActive
+      ? buildPersonalAgentOwnerServer(store, { owner })
+      : null;
 
   // Visual canvas server for this run; `canvasActive` is computed further up
   // (before buildSystemServer) so describe_system reports the same capability.
@@ -1145,6 +1212,15 @@ export async function buildAgentRunPlan(
       }
     : {};
 
+  // Routines cannot resolve a bot's composite avatar id (phase 1), so a
+  // personal-agent run auto-approves the system server WITHOUT its four routine
+  // tools; the handlers refuse them outright too (systemTools.ts holds both
+  // halves). Both metacognition surfaces state the unavailability rather than
+  // leaving the model to discover it.
+  const systemToolNames = personalAgentRun
+    ? SYSTEM_TOOL_NAMES.filter((name) => !ROUTINE_TOOL_NAMES.includes(name))
+    : SYSTEM_TOOL_NAMES;
+
   const options: Record<string, unknown> = {
     plugins: pluginRoots,
     // The PreToolUse hook (below) is the real gate. `default` mode is required —
@@ -1157,7 +1233,7 @@ export async function buildAgentRunPlan(
       ...(personalKnowledgeToolsEnabled ? KNOWLEDGE_TOOL_NAMES : []),
       ...(personalKnowledgeToolsEnabled ? REPO_TOOL_NAMES : []),
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
-      ...(systemToolsEnabled ? SYSTEM_TOOL_NAMES : []),
+      ...(systemToolsEnabled ? systemToolNames : []),
       ...(confluenceToolsEnabled ? CONFLUENCE_TOOL_NAMES : []),
       ...(webFetchToolsEnabled ? WEB_FETCH_TOOL_NAMES : []),
       ...(avatarDirectoryToolsEnabled ? AVATAR_DIRECTORY_TOOL_NAMES : []),
@@ -1174,6 +1250,8 @@ export async function buildAgentRunPlan(
       ...(brainActive ? BRAIN_TOOL_NAMES : []),
       ...(groupBrainActive ? GROUP_BRAIN_TOOL_NAMES : []),
       ...(groupAgentProfileActive ? GROUP_AGENT_PROFILE_TOOL_NAMES : []),
+      ...(personalAgentSelfActive ? PERSONAL_AGENT_SELF_TOOL_NAMES : []),
+      ...(personalAgentCreateActive ? PERSONAL_AGENT_OWNER_TOOL_NAMES : []),
       ...(canvasActive ? CANVAS_TOOL_NAMES : []),
       ...(browserActive ? BROWSER_TOOL_NAMES : []),
       ...(fileOutputActive ? FILE_OUTPUT_TOOL_NAMES : []),
@@ -1252,6 +1330,9 @@ export async function buildAgentRunPlan(
         : {}),
       ...(groupAgentProfileServer
         ? { [GROUP_AGENT_PROFILE_SERVER_NAME]: groupAgentProfileServer }
+        : {}),
+      ...(personalAgentServer
+        ? { [PERSONAL_AGENT_SERVER_NAME]: personalAgentServer }
         : {}),
       ...(canvasServer ? { [CANVAS_SERVER_NAME]: canvasServer } : {}),
       ...(browserServer ? { [BROWSER_SERVER_NAME]: browserServer } : {}),
@@ -1418,6 +1499,8 @@ export async function buildAgentRunPlan(
     ownerGroups,
     ownerSecrets,
     groupAgentState,
+    personalAgentState,
+    personalAgentCreateActive,
     effectiveModel,
     modelChain,
     runVisionEnabled,

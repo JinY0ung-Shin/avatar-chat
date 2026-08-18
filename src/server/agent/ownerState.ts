@@ -1,10 +1,12 @@
 import type {
   AppConfig,
   GroupAgentState,
+  PersonalAgentState,
   UserGroupMembership,
 } from "../types.js";
 import { groupAgentCaptureAllowed } from "../groupAgents.js";
 import type { Store } from "../store.js";
+import { MAX_PERSONAL_AGENTS } from "../store.js";
 
 /**
  * Structured, UNFORMATTED snapshot of an avatar owner's current system self-state.
@@ -67,6 +69,20 @@ export interface OwnerState {
    * to the owner's personal knowledge repo (see repoTools.ts `writeAccess`).
    */
   sharedAccount: boolean;
+  /**
+   * Whether personal agents (내 봇) are available to this owner AT ALL — the
+   * phase-1 feature gate is the system-admin role, re-read live. Both consumers
+   * gate their bot roster line / standing create_agent guidance on this, and
+   * runPlan gates the `create_agent` registration on the same fact, so the
+   * avatar never offers a bot it cannot create.
+   */
+  personalAgentsEnabled: boolean;
+  /** Bots the owner holds against the cap (a DISABLED bot still holds a slot). */
+  personalAgentCount: number;
+  /** Display names of the owner's ENABLED bots (the ones actually chattable). */
+  personalAgentNames: string[];
+  /** The per-owner bot cap, so neither consumer re-imports the constant. */
+  personalAgentMax: number;
 }
 
 /**
@@ -105,6 +121,19 @@ export function summarizeOwnerState(
     get sharedSkillLearnTotal() {
       return store.countSkillLearnsForOwner(avatarUserId);
     },
+    // Personal agents (내 봇): the availability flag is read eagerly (runPlan
+    // gates the create_agent registration on it), the roster lazily — only the
+    // reporting surfaces read the counts.
+    personalAgentsEnabled: store.isAdmin(avatarUserId),
+    get personalAgentCount() {
+      return store.countPersonalAgents(avatarUserId);
+    },
+    get personalAgentNames() {
+      return store
+        .listPersonalAgents(avatarUserId)
+        .map((agent) => agent.displayName);
+    },
+    personalAgentMax: MAX_PERSONAL_AGENTS,
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
     experimentalFeatures: store.getExperimentalFeatures(avatarUserId),
@@ -168,6 +197,10 @@ export function emptyOwnerState(store: Store, config: AppConfig): OwnerState {
     modelOverride: store.getModelOverride(),
     experimentalFeatures: [],
     sharedAccount: false,
+    personalAgentsEnabled: false,
+    personalAgentCount: 0,
+    personalAgentNames: [],
+    personalAgentMax: MAX_PERSONAL_AGENTS,
   };
 }
 
@@ -215,5 +248,43 @@ export function summarizeGroupAgentState(
       (viewerRole === "admin" || store.isAdmin(actingUserId)),
     anthropicModel: config.anthropicModel,
     modelOverride: store.getModelOverride(),
+  };
+}
+
+/**
+ * Read a personal agent's (내 봇) current self-state — the PersonalAgentState
+ * analogue of the two summarizers above, with the same both-consumers
+ * invariant: it feeds the prompt's bot identity branch AND describe_system's
+ * personal block. Model/owner-capability facts are NOT duplicated here: a bot
+ * run is a FULL OWNER run, so those come from `summarizeOwnerState` as usual.
+ *
+ * Null when the bot row is gone OR the acting user is not its owner — the two
+ * cases in which nothing about the bot may be reported at all. The live
+ * `enabled` / `ownerIsAdmin` flags carry the revocations that CAN be reported
+ * (each consumer renders them as UNAVAILABLE), mirroring the group agent's
+ * mid-turn disable / membership-loss handling.
+ */
+export function summarizePersonalAgentState(
+  store: Store,
+  agentId: string,
+  actingUserId: string,
+): PersonalAgentState | null {
+  const agent = store.getPersonalAgentById(agentId);
+  if (!agent || agent.ownerUserId !== actingUserId) {
+    return null;
+  }
+  return {
+    agentId: agent.id,
+    ownerUserId: agent.ownerUserId,
+    displayName: agent.displayName,
+    alias: agent.alias,
+    personaSet: Boolean(agent.persona.trim()),
+    enabled: agent.enabled,
+    // FAIL CLOSED on a demoted owner: the phase-1 feature gate is the admin
+    // role, and the reach gate (findChattablePersonalAgent) already refuses the
+    // NEXT turn — the state report must not claim more than that.
+    ownerIsAdmin: store.isAdmin(agent.ownerUserId),
+    agentCount: store.countPersonalAgents(agent.ownerUserId),
+    maxAgents: MAX_PERSONAL_AGENTS,
   };
 }

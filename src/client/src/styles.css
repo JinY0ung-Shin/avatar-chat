@@ -86,6 +86,59 @@
   text-align: left;
 }
 
+/* 내 봇 shortcut list in the rail head. Sits in the head's auto row, so the list
+   scrolls at a cap instead of squeezing the conversation history below it. */
+.rail-bots {
+  display: grid;
+  gap: var(--s-1);
+  min-width: 0;
+}
+
+.rail-bots .rail-section-label {
+  display: flex;
+  align-items: center;
+  gap: var(--s-1);
+}
+
+.rail-bot-list {
+  display: grid;
+  gap: var(--s-0-5);
+  max-height: 148px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.rail-bot {
+  display: flex;
+  align-items: center;
+  gap: var(--s-2);
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--rail-text);
+  text-align: left;
+  padding: var(--s-1) var(--s-2);
+  border-radius: var(--r-md);
+  font-size: var(--t-sm);
+}
+
+.rail-bot:hover:not(:disabled) {
+  background: var(--rail-active);
+}
+
+.rail-bot:disabled {
+  cursor: progress;
+  opacity: 1;
+}
+
+.rail-bot-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .svelte-rail-streaming {
   display: flex;
   align-items: center;

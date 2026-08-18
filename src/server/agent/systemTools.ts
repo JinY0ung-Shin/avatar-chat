@@ -15,6 +15,7 @@ import {
   gettingStartedGaps,
   summarizeGroupAgentState,
   summarizeOwnerState,
+  summarizePersonalAgentState,
 } from "./ownerState.js";
 import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
 import type { ToolSkillPolicy } from "../toolSkillPolicy.js";
@@ -104,6 +105,15 @@ export interface SystemToolsContext {
    * viewerIsOwner (false on these runs).
    */
   groupAgent?: { agentId: string; actingUserId: string };
+  /**
+   * Set ONLY for PERSONAL-AGENT (내 봇) runs. describe_system then reports the
+   * BOT's identity/roster ahead of the owner block — a bot run IS a full owner
+   * run, so the owner self-state that follows stays the accurate report — and
+   * the four routine tools refuse: routines cannot resolve a bot's composite
+   * avatar id in phase 1, so they are unavailable in a bot conversation
+   * (runPlan drops them from allowedTools too; this is the handler half).
+   */
+  personalAgent?: { agentId: string; actingUserId: string };
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -124,7 +134,24 @@ export const SYSTEM_TOOL_NAMES = [
   "mcp__system__set_plugin_enabled",
 ] as const;
 
+/**
+ * The routine-management subset of SYSTEM_TOOL_NAMES. A PERSONAL-AGENT run has
+ * no routines (phase 1), so runPlan filters these out of `allowedTools` and the
+ * four handlers below refuse — the two halves of one gate, kept in this file so
+ * they cannot drift apart.
+ */
+export const ROUTINE_TOOL_NAMES: readonly string[] = [
+  "mcp__system__list_routines",
+  "mcp__system__create_routine",
+  "mcp__system__update_routine",
+  "mcp__system__delete_routine",
+];
+
 const OWNER_ONLY = "This tool can only be used in a conversation the avatar owner is participating in.";
+
+/** Routine tools in a bot thread: refuse with the route that DOES work. */
+const PERSONAL_AGENT_NO_ROUTINES =
+  "Scheduled routines are not available in a personal-bot conversation yet — this bot cannot list, create, update, or delete them. Tell the owner to schedule it from a conversation with their MAIN avatar (or in the 예약 작업 tab), where the same routine tools work.";
 
 /** Agent-facing (English) messages for each schedule validation error. */
 const ENGLISH_SCHEDULE_ERROR: Record<ScheduleError, string> = {
@@ -298,6 +325,36 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
             ].join("\n"),
           );
         }
+        // PERSONAL-AGENT (내 봇) runs: report the BOT's own identity/roster
+        // FIRST, then fall through to the owner block — a bot turn is a full
+        // OWNER run, so the owner self-state below is this run's real
+        // capability, not a foreign avatar's.
+        const pa = ctx.personalAgent
+          ? summarizePersonalAgentState(
+              store,
+              ctx.personalAgent.agentId,
+              ctx.personalAgent.actingUserId,
+            )
+          : null;
+        // FAIL CLOSED on anything the reach gate would now refuse (deleted bot,
+        // owner mismatch, mid-turn disable, revoked admin role), matching the
+        // group-agent branch above: the route authorized this run at its start,
+        // but a revocation since then must not keep reporting owner state.
+        if (ctx.personalAgent && (!pa || !pa.enabled || !pa.ownerIsAdmin)) {
+          return text(
+            [
+              ...publicGuide,
+              "",
+              "Current PERSONAL BOT (내 봇) state: UNAVAILABLE.",
+              !pa
+                ? "- This bot no longer exists, or it does not belong to the person in this conversation."
+                : !pa.enabled
+                  ? `- The bot '${pa.displayName}' was disabled by its owner (설정 → 내 봇); this conversation will stop working from the next turn.`
+                  : "- Personal bots are an administrator-only feature and this owner no longer holds the admin role.",
+              "- No owner state can be reported through this bot until that is restored. Say so plainly instead of guessing.",
+            ].join("\n"),
+          );
+        }
         if (!ctx.viewerIsOwner) {
           return text(
             `${publicGuide.join("\n")}\n\nThe current conversation partner is not the owner, so changes to plugin/routine/knowledge-repository settings cannot be made.`,
@@ -371,8 +428,23 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           user?.visibility === "private"
             ? "private (owner only)"
             : "group (discoverable by group teammates only)";
+        // The bot's own identity + roster, printed AHEAD of the owner state it
+        // runs with. Every fact here comes from PersonalAgentState, the same
+        // source the prompt's bot branch uses (the both-consumers invariant).
+        const personalAgentLines = pa
+          ? [
+              "",
+              "Current PERSONAL BOT (내 봇) state:",
+              `- Kind: you are '${pa.displayName}'${pa.alias ? ` (alias '${pa.alias}')` : ""} — one of this owner's own personal bots. Not a user account, not a group resource: a private chat contact of theirs.`,
+              `- Capability: you run with the owner's FULL avatar capability on their behalf (their knowledge repository, secrets, git repositories, plugins) — everything under "Current avatar state" below is yours to use this turn.`,
+              `- Persona/instructions: ${pa.personaSet ? "SET" : "NOT set"}; you may change your own persona/alias/bio/intro with mcp__personal_agent__update_profile (applies from the NEXT turn) — confirm the wording with the owner first, and never change it unprompted.`,
+              `- Roster: this owner holds ${pa.agentCount} of ${pa.maxAgents} personal bots (a disabled bot still holds its slot); they manage them in 설정 → 내 봇.`,
+              "- Scheduled routines: UNAVAILABLE in this conversation — list_routines/create_routine/update_routine/delete_routine all refuse here. Routines belong to the owner's MAIN avatar; point them there instead of retrying.",
+            ]
+          : [];
         const lines = [
           ...publicGuide,
+          ...personalAgentLines,
           "",
           "Current avatar state:",
           `- Name: ${user?.alias || user?.displayName || ctx.owner.displayName}`,
@@ -412,7 +484,17 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           `- Skill exchange (mcp__skill_exchange__*): ${enabledMcpToolGroups.includes("avatars") ? `${state.learnableSkillCount} skill(s) shared by teammates are learnable (find_shared_skills → learn_skill copies one into the knowledge repository${state.knowledgeRepoConfigured ? "" : " — connect a knowledge repository first"}); this avatar shares ${state.sharedSkillCount} of its own, learned by teammates ${state.sharedSkillLearnTotal} time(s) so far (share_skill/unshare_skill, also manageable in the '스킬 배우기' tab). A learned skill loads from the NEXT conversation` : "OFF for this conversation (avatars tool group deselected)"}`,
           `- Experimental features: ${state.experimentalFeatures.length ? state.experimentalFeatures.join(", ") + " (beta — behavior may change)" : "(none enabled)"}`,
           `- Plugins: ${plugins.length} (${plugins.filter((p) => p.enabled).length} enabled)`,
-          `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)`,
+          // Personal bots: the roster the OWNER's own avatar reports, mirroring
+          // buildSystemPromptAppend's standing create_agent guidance. Omitted
+          // entirely when the feature is off for this owner (non-admin), so the
+          // avatar never mentions a capability it does not have. A bot run gets
+          // its own roster line above instead.
+          ...(state.personalAgentsEnabled && !pa
+            ? [
+                `- Personal bots (내 봇): ${state.personalAgentCount} of ${state.personalAgentMax} created${state.personalAgentNames.length ? ` (enabled: ${state.personalAgentNames.join(", ")})` : ""} — each is a separate chat contact of the owner's, running with this same avatar capability. You can create another with mcp__personal_agent__create_agent${state.personalAgentCount >= state.personalAgentMax ? ", but the cap is reached — the owner must delete one first" : ""}; the owner manages them in 설정 → 내 봇.`,
+              ]
+            : []),
+          `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)${pa ? " — NOT listable or manageable from this personal-bot conversation (see the bot state above); they belong to the owner's main avatar" : ""}`,
           `- Pending information requests: ${openRequests}${openRequests > 0 ? " (use pending_requests to view the details)" : ""}`,
         ];
         return text(lines.join("\n"));
@@ -535,6 +617,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
         }
+        if (ctx.personalAgent) {
+          return text(PERSONAL_AGENT_NO_ROUTINES, true);
+        }
         const routines = store.listRoutineJobs(ctx.avatarUserId);
         if (routines.length === 0) {
           return text("There are no registered routines.");
@@ -567,6 +652,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
+        }
+        if (ctx.personalAgent) {
+          return text(PERSONAL_AGENT_NO_ROUTINES, true);
         }
         const prompt = args.prompt.trim();
         if (!prompt) {
@@ -627,6 +715,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
+        }
+        if (ctx.personalAgent) {
+          return text(PERSONAL_AGENT_NO_ROUTINES, true);
         }
         const patch: RoutineSchedulePatch & {
           name?: string | null;
@@ -712,6 +803,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
+        }
+        if (ctx.personalAgent) {
+          return text(PERSONAL_AGENT_NO_ROUTINES, true);
         }
         if (!store.deleteRoutineJob(ctx.avatarUserId, args.id)) {
           return text("Routine not found.", true);

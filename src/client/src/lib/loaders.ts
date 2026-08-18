@@ -26,8 +26,11 @@ export async function loadAvatars(force = false): Promise<AvatarSummary[]> {
   if (!shouldLoad) return [];
   try {
     const { avatars } = await api<{ avatars: AvatarSummary[] }>("/api/avatars");
-    replaceState({ avatars, avatarsLoaded: true, avatarsLoading: false });
-    return avatars;
+    // The rail's 내 봇 section reads this list on EVERY view, so a body without
+    // the key degrades to "no avatars" instead of breaking the whole shell.
+    const list = avatars ?? [];
+    replaceState({ avatars: list, avatarsLoaded: true, avatarsLoading: false });
+    return list;
   } catch (err) {
     updateState((state) => {
       state.avatarsLoading = false;

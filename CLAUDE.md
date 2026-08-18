@@ -45,6 +45,18 @@ These are the invariants the project is built around. New work should reinforce 
   (live group-admin gate, membership required even for sysadmins, audited as `group_agent_update`,
   applies to every member from the NEXT turn); its state rides `GroupAgentState.personaSet`/
   `selfConfigAllowed` into BOTH the prompt branch and `describe_system`.
+- **Personal agents (내 봇) = the owner's OWN bots, and a bot run IS a full owner run.** Several per
+  user (`personal_agents`, avatar id `personal:<ownerUserId>:<agentId>`), reachable by the owner
+  ALONE through `findChattablePersonalAgent` — phase 1 additionally gates the whole feature on the
+  live system-admin role (fail-closed, threads preserved). Capability is IDENTITY-ONLY divergence:
+  `AgentRequest.personalAgent` never touches the access algebra, `request.avatar` stays the OWNER's
+  row (the composite id keys only the thread/workspace/client surfaces), and `request.groupAgent`
+  must never be set for one (triple kill-switch). The bot's persona reaches the prompt via the chat
+  route's identity overlay; bots self-configure via `mcp__personal_agent__update_profile` and the
+  owner's main avatar creates them conversationally via `mcp__personal_agent__create_agent`
+  (interactive owner runs only — never unattended). Routines are OFF in bot threads until the
+  composite-id plumbing exists; both metacognition surfaces say so. Mechanics →
+  `docs/architecture/personal-agents.md`.
 - **Skill sharing rides the avatar-discovery boundary — never wider.** A shared skill (metadata row in
   `shared_skills`; content stays in the owner's knowledge repo) is browsable/learnable EXACTLY where the
   owner's avatar is visible in 탐색 (`SHARING_TEAMMATES`; private/suspended owners drop out). Learning

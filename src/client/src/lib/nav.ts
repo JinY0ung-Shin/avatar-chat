@@ -3,7 +3,7 @@ import { appState, updateState } from "./state";
 import type { AdminTab, SettingsTab, ViewName } from "./types";
 
 const VIEW_ROUTES: ViewName[] = ["explore", "chat", "brain", "inbox", "routines", "groups", "skills", "settings", "admin"];
-const SETTINGS_TABS: SettingsTab[] = ["profile", "access", "knowledge"];
+const SETTINGS_TABS: SettingsTab[] = ["profile", "access", "knowledge", "agents"];
 const ADMIN_TABS: AdminTab[] = [
   "overview",
   "users",

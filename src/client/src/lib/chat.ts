@@ -107,6 +107,20 @@ function objectParticle(noun: string): string {
   return (last - 0xac00) % 28 === 0 ? "를" : "을";
 }
 
+/**
+ * A 내 봇 (personal agent) can carry its own model tier, which outranks the
+ * owner's remembered default: the bot was configured to run on that tier, so a
+ * fresh thread with it starts there. Validated against the tiers THIS deployment
+ * offers — a stored tier the server no longer offers falls back rather than
+ * sending an unknown alias.
+ */
+function personalAgentModelTier(avatar: AvatarDetail): string | undefined {
+  const tier = avatar.personalAgent?.defaultModel;
+  if (!tier) return undefined;
+  const tiers = readState().bootstrap?.modelSelection?.tiers ?? [];
+  return tiers.some((item) => item.id === tier) ? tier : undefined;
+}
+
 function makePane(
   avatar: AvatarDetail,
   conversationId = newId(),
@@ -149,7 +163,7 @@ function makePane(
     modelTier:
       avatar.runtime === "external"
         ? undefined
-        : (readState().user?.modelDefault ?? undefined),
+        : (personalAgentModelTier(avatar) ?? readState().user?.modelDefault ?? undefined),
     effort:
       avatar.runtime === "external"
         ? undefined

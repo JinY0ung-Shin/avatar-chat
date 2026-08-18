@@ -30,6 +30,7 @@ export type {
   KnowledgeNote,
   KnowledgeRequest,
   MessageAttachment,
+  PersonalAgent,
   Plugin,
   RepoPluginContents,
   RoutineJob,
@@ -69,7 +70,8 @@ export type ViewName =
   | "skills"
   | "settings"
   | "admin";
-export type SettingsTab = "profile" | "access" | "knowledge";
+/** 내 봇 (`agents`) is admin-only — SettingsView hides the tab for everyone else. */
+export type SettingsTab = "profile" | "access" | "knowledge" | "agents";
 export type AdminTab =
   | "overview"
   | "users"

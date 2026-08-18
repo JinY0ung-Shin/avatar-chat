@@ -9,6 +9,7 @@ import { withConversations } from "./conversations.js";
 import { withAdmin } from "./admin.js";
 import { withGroups } from "./groups.js";
 import { withGroupAgents } from "./groupAgents.js";
+import { withPersonalAgents } from "./personalAgents.js";
 
 // Re-export the non-Store public symbols identically to the pre-split module so
 // `../store` / `./store` imports keep resolving. Behavior-preserving: the only
@@ -21,6 +22,7 @@ export {
   SIGNUP_MODE_KEY,
   MODEL_OVERRIDE_KEY,
 } from "./internal.js";
+export { MAX_PERSONAL_AGENTS } from "./personalAgents.js";
 
 /**
  * The single Store facade. Each per-domain module is a `(Base) => class extends
@@ -33,12 +35,14 @@ export {
  * disjoint, so nothing shadows anything); it only feeds TS `this`-typing, which
  * the `declare`d cross-domain method signatures on StoreBase already cover.
  */
-const ComposedStore = withGroupAgents(
-  withGroups(
-    withAdmin(
-      withConversations(
-        withAvatars(
-          withRoutines(withKnowledgeRepo(withSecrets(withUsers(StoreBase)))),
+const ComposedStore = withPersonalAgents(
+  withGroupAgents(
+    withGroups(
+      withAdmin(
+        withConversations(
+          withAvatars(
+            withRoutines(withKnowledgeRepo(withSecrets(withUsers(StoreBase)))),
+          ),
         ),
       ),
     ),
