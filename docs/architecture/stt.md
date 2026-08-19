@@ -235,7 +235,19 @@ behind a `stt` profile that a plain `docker compose up` ignores. Operator-facing
 - The deploy host has no Hugging Face access, so the service runs with `HF_HUB_OFFLINE=1` /
   `TRANSFORMERS_OFFLINE=1`: a config or tokenizer path that is not fully local fails immediately instead
   of hanging on a hub lookup. Weights are bind-mounted read-only from `./docker/stt-models` (git-ignored,
-  `.gitkeep`-tracked, mirroring `docker/tls`), and the image is pinned to an exact release tag
-  (`vllm/vllm-openai:v0.27.1` — its supported-models list includes Qwen3-ASR) rather than a moving
-  one, so a deployment can never drift onto an arbitrary build. Bump the pin deliberately and re-run
-  the deploy-time transcription check when you do.
+  `.gitkeep`-tracked, mirroring `docker/tls`).
+- **The image is a DERIVED one** — `noah-almighty-stt:v0.27.1-audio`, built by `docker/stt.Dockerfile`
+  from the pinned base `vllm/vllm-openai:v0.27.1` (its supported-models list includes Qwen3-ASR) —
+  because the official image ships WITHOUT vLLM's `[audio]` extra: `soundfile` and `av` (PyAV) are
+  optional deps behind placeholder imports, so every transcription in the stock image dies at decode
+  time with `ImportError: Please install vllm[audio] for audio support`. soundfile alone would not fix
+  it: libsndfile cannot read the WebM container Chrome/Edge record, and vLLM's `load_audio` falls back
+  to PyAV for that — and resamples EVERY clip (opus is 48kHz, the model wants 16kHz) through PyAV too.
+  The Dockerfile therefore installs the extra's four packages **spelled out and pinned** (soundfile,
+  av, soxr, scipy), deliberately NOT `pip install "vllm[audio]==<ver>"` — naming vllm makes pip
+  re-resolve its tree and DOWNGRADE the nvidia-nccl the base image intentionally carries past torch's
+  own pin. Build happens on an internet-connected machine (`docker compose --profile stt build stt`)
+  and reaches the offline deploy host via `docker save`/`docker load`, which keeps the compose-pinned
+  name. Bumping = FROM tag + the pip pins + the compose `image:` tag in ONE commit (re-derive the pins
+  from the new tag's `[audio]` extra), then re-run the deploy-time transcription check — including the
+  mic end-to-end step, since the WAV curl alone never exercises the PyAV/WebM path.

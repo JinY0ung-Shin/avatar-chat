@@ -168,21 +168,27 @@ simply falls back to stopping only when you click it.
 The reference engine is **Qwen3-ASR-1.7B** (Apache 2.0) served by vLLM on the deploy host's GPU.
 The deploy host has no Hugging Face or internet access, so both artifacts are carried in by hand:
 
-1. **Provision offline.** `docker-compose.yml` pins the exact image (`vllm/vllm-openai:v0.27.1`).
-   On a machine with internet access, download the weights and pull that image, then transfer both
-   to the deploy host:
+1. **Provision offline.** The engine runs a small DERIVED image, `noah-almighty-stt:v0.27.1-audio`
+   (`docker/stt.Dockerfile`): the official `vllm/vllm-openai` image ships **without** vLLM's
+   `[audio]` extra, so every transcription request would fail inside it with
+   `ImportError: Please install vllm[audio] for audio support` — the derived image adds the four
+   packages that extra resolves to (soundfile, PyAV, soxr, scipy) on top of the pinned base and
+   changes nothing else. On a machine with internet access, download the weights and build the
+   image, then transfer both to the deploy host:
 
    ```bash
    huggingface-cli download Qwen/Qwen3-ASR-1.7B --local-dir Qwen3-ASR-1.7B
-   docker pull vllm/vllm-openai:v0.27.1        # the tag pinned in docker-compose.yml
-   docker save vllm/vllm-openai:v0.27.1 -o vllm-openai.tar
+   docker compose --profile stt build stt      # builds noah-almighty-stt:v0.27.1-audio
+   docker save noah-almighty-stt:v0.27.1-audio -o noah-stt.tar
    ```
 
-   On the deploy host, the weights go to `./docker/stt-models/Qwen3-ASR-1.7B` (the directory is
-   git-ignored and bind-mounted read-only at `/models`), and the image goes straight in with
-   `docker load -i vllm-openai.tar`, which keeps the pinned name so `docker-compose.yml` needs no
-   edit. If you route it through the corporate registry instead, edit the compose file's `image:`
-   to the exact reference you pushed.
+   (Behind a corporate mirror/proxy, export `PIP_INDEX_URL`/`PIP_TRUSTED_HOST` and the proxy vars
+   first — the build forwards them exactly like the app image's build.) On the deploy host, the
+   weights go to `./docker/stt-models/Qwen3-ASR-1.7B` (the directory is git-ignored and
+   bind-mounted read-only at `/models`), and the image goes straight in with
+   `docker load -i noah-stt.tar`, which keeps the name `docker-compose.yml` expects so no edit is
+   needed — the offline host never builds anything. If you route it through the corporate registry
+   instead, edit the compose file's `image:` to the exact reference you pushed.
 
 2. **Start it.** Add `STT_URL=http://stt:8000/v1` to `.env`, then one command starts the engine and
    recreates the app container so it reads the new `.env`:
@@ -208,8 +214,10 @@ The deploy host has no Hugging Face or internet access, so both artifacts are ca
    # {"text":"..."}
    ```
 
-   Then confirm end to end with the mic button in the composer. (The browser records WebM/Ogg/MP4, which
-   is what `/api/stt` accepts; the WAV above is only for this direct upstream check.)
+   Then confirm end to end with the mic button in the composer — this second check is NOT optional
+   redundancy: the browser records WebM/Ogg/MP4 (which is what `/api/stt` accepts), and vLLM decodes
+   WebM through a different library (PyAV) than the WAV above (libsndfile), so only the mic proves
+   the container the fleet actually sends.
 
 **Check this at deploy time:** confirm the vLLM build you pinned exposes `/v1/audio/transcriptions`
 for Qwen3-ASR (day-0 support was announced upstream, but it is version-dependent — the `curl` above
