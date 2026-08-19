@@ -136,6 +136,7 @@ function seedPane(overrides: Partial<ChatPane> = {}): string {
     draft: "",
     streaming: false,
     liveText: "",
+    liveAttachments: [],
     liveTextBreakPending: false,
     liveThinking: "",
     thinkingActive: false,
@@ -742,9 +743,15 @@ describe("pane lifecycle", () => {
 /* ------------------------------------------------------------------ */
 
 describe("stop / close", () => {
-  it("stopPane cancels the run, aborts the stream, and shows a stopping status", async () => {
+  it("stopPane cancels the run, aborts the stream, and finalizes the stopped bubble at once", async () => {
     const controller = new AbortController();
-    const id = seedPane({ liveRunId: "run5", abortController: controller, streaming: true });
+    const id = seedPane({
+      liveRunId: "run5",
+      abortController: controller,
+      streaming: true,
+      liveText: "",
+      liveThinking: "접힌 중간 설명",
+    });
     const fetchFn = useFetch((url) =>
       url.includes("/cancel") ? jsonRes({ ok: true }) : jsonRes({}),
     );
@@ -754,7 +761,19 @@ describe("stop / close", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(controller.signal.aborted).toBe(true);
-    expect(pane(id).liveStatus).toBe("중지 중…");
+    // The stop itself ends the turn — even a pane on a REATTACHED stream (whose
+    // loop tears down without finalizing) keeps a bubble, and a post-fold stop
+    // (liveText empty, narration already in the thinking view) keeps its
+    // reasoning card instead of vanishing entirely.
+    const last = pane(id).messages.at(-1)!;
+    expect(last).toMatchObject({ role: "assistant", content: "(중지됨)" });
+    expect(last.response).toMatchObject({ summary: "중지됨", thinking: "접힌 중간 설명" });
+    expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "" });
+
+    // Idempotent: the abort surfaces in whichever loop was attached and calls
+    // finalizePane again — that must not push a second bubble.
+    await stopPane(id);
+    expect(pane(id).messages).toHaveLength(1);
   });
 
   it("closePane removes a pane and keeps a fresh one when the last closes", () => {
@@ -2144,6 +2163,10 @@ describe("auto-reconnect", () => {
 
     expect(attempts()).toBe(1);
     expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "", abortController: null });
+    // The reattached loop tears down without finalizing, so the stop itself is
+    // what keeps the streamed tail on screen as the stopped bubble.
+    expect(pane(id).messages.at(-1)).toMatchObject({ content: "일부만" });
+    expect(pane(id).messages.at(-1)!.response).toMatchObject({ summary: "중지됨" });
   });
 
   it("does not re-announce a turn the viewer was already told about", async () => {
@@ -2819,7 +2842,10 @@ describe("guards around the canvas panel and pane lifecycle", () => {
     await stopPane(id);
     await flush();
     expect(controller.signal.aborted).toBe(true);
-    expect(pane(id).liveStatus).toBe("중지 중…");
+    // The server-side cancel failing must not keep the turn hanging: the
+    // stopped bubble still lands and the pane is idle.
+    expect(pane(id).messages.at(-1)).toMatchObject({ content: "(중지됨)" });
+    expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "" });
     expect(get(toasts)).toEqual([]);
   });
 
@@ -2831,10 +2857,12 @@ describe("guards around the canvas panel and pane lifecycle", () => {
     const controller = new AbortController();
     const id = seedPane({ streaming: true, abortController: controller, liveRunId: null });
     await stopPane(id);
-    // Nothing to cancel server-side yet, but the local stream still stops.
+    // Nothing to cancel server-side yet, but the local stream still stops and
+    // the turn still ends in a stopped bubble.
     expect(fetchFn).not.toHaveBeenCalled();
     expect(controller.signal.aborted).toBe(true);
-    expect(pane(id).liveStatus).toBe("중지 중…");
+    expect(pane(id).messages.at(-1)).toMatchObject({ content: "(중지됨)" });
+    expect(pane(id)).toMatchObject({ streaming: false, liveStatus: "" });
   });
 
   it("closePane stops a streaming pane on its way out", async () => {

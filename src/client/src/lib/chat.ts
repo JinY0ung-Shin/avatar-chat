@@ -1021,9 +1021,16 @@ export async function stopPane(paneId: string): Promise<void> {
     }).catch(() => {});
   }
   pane.abortController?.abort();
-  updatePane(paneId, (target) => {
-    target.liveStatus = "중지 중…";
-  });
+  // Finalize HERE, at the user's stop, not only in whichever loop the abort
+  // lands in: the send loop finalizes on its AbortError, but a REATTACHED pane
+  // (attachRun — reload, tab wake, a dropped send) tears down silently, so the
+  // stopped turn vanished with nothing pushed. Text folding made that loss
+  // total: liveText holds only the current block, so after a fold there was no
+  // narration left to even see disappear. The `turnFinalized` marker turns the
+  // loop's own later finalize into a no-op instead of a second bubble. Guarded
+  // on `streaming` so a stop that lands right after the done frame already
+  // ended the turn doesn't append a stray stopped bubble.
+  if (pane.streaming) finalizePane(paneId, "중지됨", true);
 }
 
 export function closePane(paneId: string): void {
@@ -1571,6 +1578,7 @@ function setStatus(paneId: string, label: string, sticky: boolean): void {
 }
 
 function resetLive(pane: ChatPane): void {
+  pane.turnFinalized = false;
   pane.liveText = "";
   pane.liveAttachments = [];
   pane.liveTextBreakPending = false;
@@ -1660,6 +1668,10 @@ function finalizeDone(paneId: string, data: any): void {
   let persistActivity: AgentActivity | undefined;
   let appended = false;
   updatePane(paneId, (pane) => {
+    // A buffered done frame can surface AFTER stopPane already finalized the
+    // turn (the click interleaves between frame reads); the stopped bubble is
+    // the turn's ending, and the server-persisted message shows on reload.
+    if (pane.turnFinalized) return;
     const activity = snapshotActivity(pane);
     const message = data?.message as StoredMessage | undefined;
     // Dedupe by id: a reattach replays the whole event log, and the loaded
@@ -1874,10 +1886,18 @@ function pushTerminalMessage(
     createdAt: new Date().toISOString(),
   });
   clearLive(pane);
+  // AFTER clearLive — resetLive clears the marker, and this turn's terminal
+  // bubble is exactly what later finalizers must not duplicate.
+  pane.turnFinalized = true;
 }
 
 function finalizePane(paneId: string, message: string, stopped: boolean): void {
   updatePane(paneId, (pane) => {
+    // Idempotent by design: stopPane finalizes at the user's stop, and the loop
+    // the abort lands in (send catch, followSendDrop, a cancelled frame) calls
+    // this again when the abort surfaces — the second call must not push a
+    // second bubble.
+    if (pane.turnFinalized) return;
     pushTerminalMessage(pane, {
       summary: stopped ? "중지됨" : "오류",
       text: pane.liveText,
