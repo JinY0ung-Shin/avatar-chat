@@ -22,6 +22,8 @@ import type {
   AgentResponse,
   AvatarDetail,
   AvatarSummary,
+  BotTask,
+  BotTaskStatus,
   CanvasArtifact,
   ChatPane,
   ConversationSummary,
@@ -196,6 +198,65 @@ function abortDroppedPanes(before: ChatPane[]): void {
   }
 }
 
+/* ---------- delegated bot tasks (봇 오피스) ---------- */
+
+const TERMINAL_BOT_TASK_STATUSES: BotTaskStatus[] = ["done", "failed", "cancelled"];
+
+function botTaskTime(iso: string | null | undefined): number {
+  const ms = Date.parse(iso || "");
+  return Number.isNaN(ms) ? 0 : ms;
+}
+
+/**
+ * A task row off the wire is UNVALIDATED — it arrives from an SSE frame or a
+ * 202 body, neither of which type-checks across the gap. Guarding on the three
+ * fields every consumer keys on (identity, which bot, which state) keeps a
+ * malformed payload out of the board instead of rendering an empty card.
+ */
+export function isBotTask(value: unknown): value is BotTask {
+  if (!value || typeof value !== "object") return false;
+  const task = value as Partial<BotTask>;
+  return (
+    typeof task.id === "string" &&
+    task.id !== "" &&
+    typeof task.agentId === "string" &&
+    typeof task.status === "string"
+  );
+}
+
+/** Merge one task row into state.botTasks, newest first. */
+export function upsertBotTask(task: BotTask): void {
+  updateState((state) => {
+    state.botTasks = [task, ...state.botTasks.filter((item) => item.id !== task.id)].sort(
+      (a, b) => botTaskTime(b.createdAt) - botTaskTime(a.createdAt),
+    );
+  });
+}
+
+/**
+ * Adopt a freshly fetched page of tasks. A local row the run stream already
+ * advanced to a TERMINAL status wins over the fetched copy — the poll may have
+ * been issued before that transition, and terminal never regresses server-side,
+ * so this can only prevent a visible "완료 → 실행 중" flicker. Rows the response
+ * doesn't mention are kept for the same reason (they arrived mid-flight).
+ */
+export function mergeBotTasks(fetched: BotTask[]): void {
+  updateState((state) => {
+    const merged = new Map<string, BotTask>();
+    for (const task of fetched) merged.set(task.id, task);
+    for (const local of state.botTasks) {
+      const incoming = merged.get(local.id);
+      const localIsAhead =
+        TERMINAL_BOT_TASK_STATUSES.includes(local.status) &&
+        !TERMINAL_BOT_TASK_STATUSES.includes(incoming?.status as BotTaskStatus);
+      if (!incoming || localIsAhead) merged.set(local.id, local);
+    }
+    state.botTasks = [...merged.values()].sort(
+      (a, b) => botTaskTime(b.createdAt) - botTaskTime(a.createdAt),
+    );
+  });
+}
+
 export async function startChatWith(
   summary: AvatarSummary,
   split = false,
@@ -307,6 +368,74 @@ async function findConversationSummary(
   );
 }
 
+/**
+ * Build a DETACHED pane for one stored conversation: resolve its summary, fetch
+ * the messages and the avatar in parallel, and apply the per-conversation picker
+ * selections. Deliberately touches no global state — not `view`, not
+ * `chatPanes`, not the hash — so a caller that must NOT navigate to #/chat (봇
+ * 오피스 mounts the chat surface inside its own view) can place the pane itself.
+ * Returns null, having toasted, when the conversation is gone.
+ */
+export async function loadPaneForConversation(
+  conversationId: string,
+): Promise<ChatPane | null> {
+  const conv = await findConversationSummary(conversationId);
+  if (!conv) {
+    notify("대화를 찾을 수 없습니다.", "warn");
+    return null;
+  }
+  const [loaded, avatarRes] = await Promise.all([
+    loadMessages(conversationId),
+    api<{ avatar: AvatarDetail }>(
+      `/api/avatars/${encodeURIComponent(conv.avatarUserId)}`,
+    ),
+  ]);
+  const pane = makePane(
+    avatarRes.avatar,
+    conversationId,
+    loaded.messages,
+    loaded.canvases,
+  );
+  applyLoadedConversation(pane, loaded);
+  return pane;
+}
+
+/**
+ * 봇 오피스: make this bot's thread the ONLY chat pane WITHOUT leaving the bots
+ * view. With a conversationId the stored thread is loaded; without one a fresh
+ * pane is minted so a bot the owner never talked to still opens a composer.
+ * The pane merely has to EXIST in state.chatPanes — that is what lets the
+ * private updatePane resolve it and the mounted ChatView go live. Navigation
+ * (view + hash) stays with the caller, which owns the #/bots/<agentId> route.
+ */
+export async function openBotThreadPane(
+  summary: AvatarSummary,
+  conversationId?: string,
+): Promise<ChatPane | null> {
+  let pane: ChatPane | null;
+  if (conversationId) {
+    pane = await loadPaneForConversation(conversationId);
+  } else {
+    const { avatar } = await api<{ avatar: AvatarDetail }>(
+      `/api/avatars/${encodeURIComponent(summary.id)}`,
+    );
+    pane = makePane(avatar);
+  }
+  if (!pane) return null;
+  const placed = pane;
+  const before = [...readState().chatPanes];
+  updateState((state) => {
+    state.currentAvatar = placed.avatar;
+    state.chatPanes = [placed];
+    state.activePaneId = placed.id;
+  });
+  abortDroppedPanes(before);
+  // Only a STORED thread can have a run to rejoin, and this is never awaited:
+  // attachActiveRun resolves at run end (see selectConversation).
+  if (conversationId) void attachActiveRun(placed.id);
+  return placed;
+}
+
 export async function selectConversation(
   conversationId: string,
 ): Promise<void> {
@@ -322,27 +451,11 @@ export async function selectConversation(
     syncHash();
     return;
   }
-  const conv = await findConversationSummary(conversationId);
-  if (!conv) {
-    notify("대화를 찾을 수 없습니다.", "warn");
-    return;
-  }
-  const [loaded, avatarRes] = await Promise.all([
-    loadMessages(conversationId),
-    api<{ avatar: AvatarDetail }>(
-      `/api/avatars/${encodeURIComponent(conv.avatarUserId)}`,
-    ),
-  ]);
-  const pane = makePane(
-    avatarRes.avatar,
-    conversationId,
-    loaded.messages,
-    loaded.canvases,
-  );
-  applyLoadedConversation(pane, loaded);
+  const pane = await loadPaneForConversation(conversationId);
+  if (!pane) return;
   const before = [...readState().chatPanes];
   updateState((s) => {
-    s.currentAvatar = avatarRes.avatar;
+    s.currentAvatar = pane.avatar;
     s.chatPanes = [pane];
     s.activePaneId = pane.id;
     s.view = "chat";
@@ -668,6 +781,21 @@ export async function sendMessage(
     });
     if (response.status === 401) {
       throw new Error("세션이 만료되었습니다. 다시 로그인해 주세요.");
+    }
+    // 202 = the bot was already busy, so the server QUEUED this turn as a
+    // delegated task instead of opening a stream. The body is JSON, not SSE:
+    // branch BEFORE readRunStream (202 is `ok`, so the error path below never
+    // sees it). The user bubble is already in the transcript and the draft is
+    // already cleared; the `finally` below unsets streaming, so the pane simply
+    // never enters a live turn — the task card carries the progress from here.
+    if (response.status === 202) {
+      const queued = await response.json().catch(() => ({}));
+      if (isBotTask(queued?.task)) upsertBotTask(queued.task);
+      notify(
+        "봇이 작업 중이라 대기열에 추가했어요 — 현재 작업이 끝나면 자동으로 시작합니다.",
+        "info",
+      );
+      return;
     }
     if (!response.ok || !response.body) {
       const body = await response.json().catch(() => ({}));
@@ -1190,6 +1318,14 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
           if (detail) row.detail = detail;
         });
       }
+      return;
+    case "bot_task":
+      // A 봇 오피스 delegated-task row (bot_tasks). Deliberately its OWN event
+      // name rather than a variant of the `task` frames below: those are SDK
+      // activity rows keyed on `taskId` and mean something else entirely, and
+      // their handler would drop this payload on that guard. The shape check is
+      // defensive validation of an untrusted frame, not the discriminator.
+      if (isBotTask(data?.task)) upsertBotTask(data.task);
       return;
     case "task":
     case "task_update":

@@ -114,6 +114,9 @@ export function loadConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     // minute: parseMinutes maps "0" to 0ms, which here would abort every run
     // instantly instead of meaning "no deadline" as it does for plugin refresh.
     routineRunTimeoutMs: Math.max(60_000, parseMinutes(env("ROUTINE_RUN_TIMEOUT_MINUTES"), 30)),
+    // Same shape and same floor reasoning as the routine deadline above: the
+    // budget for one unattended delegated bot task, which nobody is watching.
+    botTaskRunTimeoutMs: Math.max(60_000, parseMinutes(env("BOT_TASK_TIMEOUT_MINUTES"), 30)),
     // Optional: compact the conversation near this many context tokens instead
     // of waiting for the model's full window. Unset → SDK/CLI default.
     autoCompactWindow: parseAutoCompactWindow(env("AUTO_COMPACT_WINDOW")),

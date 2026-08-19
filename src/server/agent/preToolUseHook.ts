@@ -172,6 +172,11 @@ export function buildPreToolUseHook(
   activeRepoMode = false,
   toolSkillPolicy: ToolSkillPolicy = DEFAULT_TOOL_SKILL_POLICY,
   visionEnabled = true,
+  // Personal-bot (내 봇) run: the question DIALOG is replaced by the
+  // turn-boundary protocol below. Last parameter with a default so the existing
+  // positional call sites (and the test suites that build the hook directly)
+  // stay valid.
+  personalAgentRun = false,
 ) {
   return async (
     input: { tool_name?: string; tool_input?: unknown; tool_use_id?: string; agent_id?: string },
@@ -204,6 +209,22 @@ export function buildPreToolUseHook(
     // (onUserDialog never fires headlessly, so we answer via a deny+reason that
     // the model reads as the user's response.)
     if (toolName === "AskUserQuestion") {
+      // Personal-bot conversations answer questions at the TURN BOUNDARY, never
+      // through a modal: a delegated turn may have been dispatched from the
+      // queue with the owner away, and a parked dialog would hang it until the
+      // hook budget expires. Interactive and queued bot turns follow the SAME
+      // protocol — one shape for the owner to read on the task card. This runs
+      // BEFORE the headless check because a bot run is normally interactive.
+      if (personalAgentRun) {
+        agentLogger.info({ toolName, agentId }, "personal-bot question redirected to report_task");
+        return trace(
+          hookDeny(
+            "In a personal-bot conversation, never block on an interactive question dialog — the owner may be away and delegated turns can run unattended. " +
+              "Instead: (1) call mcp__personal_agent__report_task with outcome 'need_input' and the blocking question as the summary, then (2) END your turn with that question in your reply text. " +
+              "The owner's next message resumes the work.",
+          ),
+        );
+      }
       if (headless || !events.onQuestion) {
         return trace(
           hookDeny(

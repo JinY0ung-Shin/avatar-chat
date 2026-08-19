@@ -113,7 +113,18 @@ export interface SystemToolsContext {
    * avatar id in phase 1, so they are unavailable in a bot conversation
    * (runPlan drops them from allowedTools too; this is the handler half).
    */
-  personalAgent?: { agentId: string; actingUserId: string };
+  personalAgent?: {
+    agentId: string;
+    actingUserId: string;
+    /**
+     * The `bot_tasks` row tracking THIS turn, when the run carries one — so
+     * describe_system says whether the turn is delegated work, mirroring the
+     * prompt's delegated-task paragraph. Absent → an untracked turn.
+     */
+    taskId?: string;
+    /** The thread whose queued-task backlog the state summarizer counts. */
+    conversationId?: string;
+  };
 }
 
 /** MCP server name; tools surface to the model as `mcp__system__<tool>`. */
@@ -334,6 +345,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               store,
               ctx.personalAgent.agentId,
               ctx.personalAgent.actingUserId,
+              ctx.personalAgent.conversationId,
             )
           : null;
         // FAIL CLOSED on anything the reach gate would now refuse (deleted bot,
@@ -439,6 +451,15 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               `- Capability: you run with the owner's FULL avatar capability on their behalf (their knowledge repository, secrets, git repositories, plugins) — everything under "Current avatar state" below is yours to use this turn.`,
               `- Persona/instructions: ${pa.personaSet ? "SET" : "NOT set"}; you may change your own persona/alias/bio/intro with mcp__personal_agent__update_profile (applies from the NEXT turn) — confirm the wording with the owner first, and never change it unprompted.`,
               `- Roster: this owner holds ${pa.agentCount} of ${pa.maxAgents} personal bots (a disabled bot still holds its slot); they manage them in 설정 → 내 봇.`,
+              // Delegated-task self-state — the describe_system half of the
+              // prompt's delegated-task paragraph (the both-consumers rule).
+              `- Delegated task: this turn ${
+                ctx.personalAgent?.taskId
+                  ? "IS tracked as a delegated task on the owner's task board, so it may have been dispatched from the queue with nobody watching"
+                  : "is NOT tracked as a delegated task (a greeting, or a thread older than task tracking), so mcp__personal_agent__report_task has no card to write to and will say so"
+              }.`,
+              `- Queued behind this turn: ${pa.queuedTaskCount} delegated request(s) still waiting in this conversation${pa.queuedTaskCount > 0 ? " — the server dispatches them automatically once this turn ends; never try to run them yourself" : ""}.`,
+              "- Reporting protocol: call mcp__personal_agent__report_task near the end of every delegated turn — outcome 'done' with a short result summary, or 'need_input' with the blocking question. The AskUserQuestion dialog is DENIED in a personal-bot conversation (a delegated turn may run unattended): to ask the owner something, report 'need_input' and then END your turn with that question in your reply; their next message resumes the task.",
               "- Scheduled routines: UNAVAILABLE in this conversation — list_routines/create_routine/update_routine/delete_routine all refuse here. Routines belong to the owner's MAIN avatar; point them there instead of retrying.",
             ]
           : [];

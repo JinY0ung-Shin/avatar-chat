@@ -176,11 +176,13 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
     }
 
     /**
-     * Delete ONE bot and cascade its conversations (messages + canvases) —
-     * manual cascade, mirroring deleteGroupAgent. The route snapshots
-     * conversation ids BEFORE calling this (disk sweep) and removes on-disk
-     * artifacts. Disabling (updatePersonalAgent enabled:false) remains the
-     * thread-preserving alternative.
+     * Delete ONE bot and cascade its conversations (messages + canvases) and
+     * its delegated tasks — manual cascade, mirroring deleteGroupAgent. The
+     * bot_tasks sweep goes by agent_id, not by the conversation list, so a task
+     * whose thread was already deleted still dies with the bot. The route
+     * snapshots conversation ids BEFORE calling this (disk sweep) and removes
+     * on-disk artifacts. Disabling (updatePersonalAgent enabled:false) remains
+     * the thread-preserving alternative.
      */
     deletePersonalAgent(agentId: string): boolean {
       const row = this.personalAgentRow(agentId);
@@ -202,6 +204,7 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
         this.db
           .prepare("DELETE FROM conversations WHERE avatar_user_id = ?")
           .run(avatarId);
+        this.db.prepare("DELETE FROM bot_tasks WHERE agent_id = ?").run(agentId);
         this.db.prepare("DELETE FROM personal_agents WHERE id = ?").run(agentId);
       });
       tx();

@@ -448,6 +448,10 @@ export function withAdmin<TBase extends Constructor<StoreBase>>(Base: TBase) {
         // artifacts (bot profile image, bot workspace trees) are the admin
         // route's half of the cascade.
         this.db.prepare("DELETE FROM personal_agents WHERE owner_user_id = ?").run(id);
+        // Delegated bot tasks are owner-scoped bookkeeping over those same
+        // threads — dropped by OWNER, not by conversation, so a task whose
+        // thread is already gone can't outlive the account.
+        this.db.prepare("DELETE FROM bot_tasks WHERE owner_user_id = ?").run(id);
         // Shared-skill listings are owner-scoped only (learned copies live as
         // FILES in each learner's repo, not as rows referencing this user).
         // Learn events go in BOTH directions: as the skill owner (their counts

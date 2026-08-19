@@ -235,6 +235,16 @@ export interface AppConfig {
    */
   routineRunTimeoutMs: number;
   /**
+   * Hard wall-clock deadline for ONE unattended delegated bot task — a queued
+   * turn the SERVER dispatched, with nobody watching the stream (env
+   * `BOT_TASK_TIMEOUT_MINUTES`, default 30 minutes, floor 1 minute, same
+   * "cannot be disabled" reasoning as {@link AppConfig.routineRunTimeoutMs}).
+   *
+   * Only the dispatcher arms it: a turn the owner typed themselves stays
+   * un-deadlined, because a live viewer already has the stop button.
+   */
+  botTaskRunTimeoutMs: number;
+  /**
    * Optional override for the autocompact trigger: the working context window
    * (in tokens) the agent compacts near the top of. Maps to the CLI settings key
    * `autoCompactWindow`, carried by the SDK `settings` option as JSON — NOT a
@@ -571,6 +581,12 @@ export interface PersonalAgentState {
   /** Roster context: bots the owner holds against the cap (disabled ones included). */
   agentCount: number;
   maxAgents: number;
+  /**
+   * Delegated requests still QUEUED behind the current turn in THIS
+   * conversation (0 when the summarizer got no conversation id). Standing
+   * awareness only — the queue drains server-side, never by the bot.
+   */
+  queuedTaskCount: number;
 }
 
 /**
@@ -615,6 +631,63 @@ export interface PersonalAgentInput {
   enabled?: boolean;
   /** undefined = keep the stored tier, null = clear it back to the owner default. */
   defaultModel?: string | null;
+}
+
+/**
+ * Lifecycle of one delegated bot task (`bot_tasks` row). `queued` waits for the
+ * conversation's active run to finish (the server dispatches it unattended);
+ * `waiting_input` means the bot ENDED its turn asking the owner something — the
+ * owner's next message in that thread RESUMES the same task. `done`/`failed`/
+ * `cancelled` are terminal.
+ */
+export type BotTaskStatus =
+  | "queued"
+  | "running"
+  | "waiting_input"
+  | "done"
+  | "failed"
+  | "cancelled";
+
+/**
+ * One delegated unit of work in a PERSONAL-AGENT (내 봇) thread — every executed
+ * user turn in a bot conversation is tracked as a task, which is what the 봇
+ * 메신저 UI renders as 작업 카드/보드. Bookkeeping ONLY: capability stays the
+ * A-1 full-owner-run contract; a task row never widens or narrows a run.
+ */
+export interface BotTask {
+  id: string;
+  ownerUserId: string;
+  /** personal_agents.id — which bot the work belongs to. */
+  agentId: string;
+  conversationId: string;
+  /**
+   * In-memory run registry id while the task is running (live attach/cancel).
+   * NOT durable: a server restart loses the registry, and the boot sweep marks
+   * such tasks failed.
+   */
+  runId: string | null;
+  /** Short label derived from the request (first line, capped) for cards/boards. */
+  title: string;
+  /** The owner's full request text (the queued dispatcher replays it verbatim). */
+  requestText: string;
+  status: BotTaskStatus;
+  /**
+   * What the bot itself declared via mcp__personal_agent__report_task, written
+   * MID-run; the turn-finalize path reads it to pick done vs waiting_input.
+   * Null when the bot never reported (finalize treats a clean turn as done).
+   */
+  reportedOutcome: "done" | "need_input" | null;
+  /** The bot's own completion summary via mcp__personal_agent__report_task. */
+  resultSummary: string | null;
+  /** The question the bot is waiting on while status = waiting_input. */
+  pendingQuestion: string | null;
+  /** Failure cause (Korean, user-facing) for status = failed. */
+  error: string | null;
+  /** Resolved model of the last run (fallback-aware), for the task card. */
+  model: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
 }
 
 /** A group the current user belongs to — surfaced on `User` and the roster. */
@@ -1263,7 +1336,17 @@ export interface AgentRequest {
    * kill-switch). It drives the prompt identity swap, the `describe_system`
    * block, self-config tool registration, and routine-tool suppression.
    */
-  personalAgent?: { agentId: string; ownerUserId: string };
+  personalAgent?: {
+    agentId: string;
+    ownerUserId: string;
+    /**
+     * The `bot_tasks` row tracking THIS turn as a delegated task (set by the
+     * chat route / the queued-task dispatcher alongside the row transition).
+     * Identity/bookkeeping only — capability must stay untouched, exactly like
+     * the parent field. Absent on turns that track no task (e.g. greetings).
+     */
+    taskId?: string;
+  };
   /**
    * True when the viewer may use tools at the OWNER's permission level — i.e. the
    * owner themselves OR a designated trusted user. Gates the tool hook (write/Bash

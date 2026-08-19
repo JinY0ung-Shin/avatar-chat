@@ -14,6 +14,8 @@ import { createPluginsRouter } from "./routes/plugins.js";
 import { createKnowledgeRepoRouter } from "./routes/knowledgeRepo.js";
 import { createGroupsRouter } from "./routes/groups.js";
 import { createPersonalAgentsRouter } from "./routes/personalAgents.js";
+import { createBotTasksRouter } from "./routes/botTasks.js";
+import { maybeDispatchNextBotTask } from "./botTaskRunner.js";
 import { createRoutinesRouter } from "./routes/routines.js";
 import { createSkillShareRouter } from "./routes/skillShare.js";
 import { createSttRouter } from "./routes/stt.js";
@@ -48,15 +50,10 @@ export function createServices(configOverrides: Partial<AppConfig> = {}): AppSer
   } catch (err) {
     logger.warn({ err }, "group-agent disk artifact migration failed");
   }
-  return { config, store };
-}
-
-export function createApp(services = createServices()) {
-  const { config, store } = services;
   // The model the SDK last reported via its `init` event. Null until the first
   // Claude run reports one; the admin "system info" view surfaces it alongside
   // the configured model so an operator can confirm what actually ran. Held in a
-  // small mutable box so the chat router can write it and the admin router read it.
+  // small mutable box so every run path can write it and the admin router read it.
   let observedModelValue: string | null = null;
   const observedModel: ObservedModelHolder = {
     get: () => observedModelValue,
@@ -64,6 +61,11 @@ export function createApp(services = createServices()) {
       observedModelValue = model;
     },
   };
+  return { config, store, observedModel };
+}
+
+export function createApp(services = createServices()) {
+  const { config, store, observedModel } = services;
 
   // Audit the authenticated actor of `req`. Collapses the repeated
   // `store.audit({ actorUserId: req.user!.id, actorName: req.user!.username, ... })`
@@ -83,7 +85,20 @@ export function createApp(services = createServices()) {
     });
   };
 
-  const deps: RouterDeps = { services, config, store, observedModel, auditAs };
+  const deps: RouterDeps = {
+    services,
+    config,
+    store,
+    observedModel,
+    auditAs,
+    // Delegated bot tasks: a 내 봇 turn that just ended frees its thread, so the
+    // dispatcher can start whatever the owner queued behind it. Wired HERE
+    // because `routes/chat.ts` must not import `botTaskRunner` — the runner
+    // calls back into `executeChatTurn`.
+    onBotTurnSettled: (ownerUserId, conversationId) => {
+      void maybeDispatchNextBotTask(services, ownerUserId, conversationId);
+    },
+  };
 
   const app = express();
   // Limit bumped from 3mb to accommodate chat image attachments (base64-inflated,
@@ -177,6 +192,7 @@ export function createApp(services = createServices()) {
   app.use(createKnowledgeRepoRouter(deps));
   app.use(createGroupsRouter(deps));
   app.use(createPersonalAgentsRouter(deps));
+  app.use(createBotTasksRouter(deps));
   app.use(createRoutinesRouter(deps));
   app.use(createSkillShareRouter(deps));
   app.use(createSttRouter(deps));

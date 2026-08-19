@@ -638,6 +638,9 @@ export async function buildAgentRunPlan(
         store,
         personalAgentRun.agentId,
         request.viewerUserId ?? request.avatar.id,
+        // Per-THREAD backlog (queuedTaskCount): omitted → 0, so a run without a
+        // conversation id never reports another thread's queue.
+        request.conversationId,
       )
     : null;
   // The ACTING member behind a group-agent run: commit identity, token source,
@@ -758,6 +761,10 @@ export async function buildAgentRunPlan(
       ? {
           agentId: personalAgentRun.agentId,
           actingUserId: request.viewerUserId ?? request.avatar.id,
+          // Delegated-task self-state: WHICH card this turn writes to (if any)
+          // and the thread whose backlog the state summarizer counts.
+          taskId: personalAgentRun.taskId,
+          conversationId: request.conversationId,
         }
       : undefined,
     // The working repo opened for this conversation (NAME only — the clone path is
@@ -937,6 +944,11 @@ export async function buildAgentRunPlan(
     ? buildPersonalAgentSelfServer(store, {
         agentId: personalAgentRun.agentId,
         owner,
+        // The delegated-task card this turn reports against. Absent on an
+        // untracked turn — report_task is registered either way and refuses
+        // with a redirect, so the tool set never varies per turn.
+        taskId: personalAgentRun.taskId ?? null,
+        conversationId: request.conversationId ?? null,
       })
     : personalAgentCreateActive
       ? buildPersonalAgentOwnerServer(store, { owner })
@@ -1463,6 +1475,10 @@ export async function buildAgentRunPlan(
               toolSkillPolicy,
               // Text-only model this run: deny image/PDF Read before it 400s the turn.
               runVisionEnabled,
+              // Personal-bot run: AskUserQuestion is redirected to the
+              // turn-boundary protocol (report_task 'need_input' + end the turn)
+              // instead of parking on a modal nobody may be there to answer.
+              Boolean(personalAgentRun),
             ),
           ],
           // CLI-side budget for this hook, in SECONDS. The CLI aborts an SDK

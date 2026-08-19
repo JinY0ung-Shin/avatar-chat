@@ -50,6 +50,9 @@
   const nav = [
     { view: "explore", label: "탐색", icon: "compass" },
     { view: "chat", label: "대화", icon: "chat" },
+    // 봇 오피스 rides the same admin gate as the 내 봇 feature it opens (phase 1),
+    // filtered into `visibleNav` below rather than rendered unconditionally.
+    { view: "bots", label: "봇 오피스", icon: "activity" },
     { view: "brain", label: "지식 그래프", icon: "network" },
     { view: "inbox", label: "알림", icon: "bell" },
     { view: "routines", label: "예약 작업", icon: "clock" },
@@ -605,6 +608,10 @@
   // The count excludes the viewer, so "접속 2" means two OTHER people are here.
   let presenceOpen = false;
   $: isAdmin = Boolean(user.roles?.includes("admin"));
+  // Derived here (not filtered inline in the markup): a legacy-mode template
+  // expression tracks only what the MARKUP names, so `isAdmin` read inside an
+  // inline callback would leave the list frozen at its first value.
+  $: visibleNav = nav.filter((item) => item.view !== "bots" || isAdmin);
   $: presentOthers = ($appState.adminPresence?.users ?? []).filter((u) => u.id !== user.id);
   // Server-owned window, rendered in whole hours once it reaches one — "최근 60분"
   // is not how anyone says it.
@@ -677,7 +684,7 @@
     </div>
 
     <nav class="rail-nav" aria-label="주 메뉴">
-      {#each nav as item}
+      {#each visibleNav as item}
         <button
           class="nav-item"
           type="button"

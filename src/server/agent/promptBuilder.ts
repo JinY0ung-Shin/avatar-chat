@@ -599,6 +599,19 @@ function personalAgentSection(request: AgentRequest): string | null {
     return null;
   }
   const name = state.alias || state.displayName;
+  // DELEGATED TASK: this turn is tracked on the owner's task board, so it may
+  // have been dispatched from the queue with nobody watching. The standing
+  // guidance is what makes the bot actually USE report_task (greeting-only text
+  // is not enough) and what replaces the question DIALOG the hook denies here.
+  // Absent on an untracked turn — the tool is registered either way and refuses.
+  const taskNote = request.personalAgent?.taskId
+    ? " **This turn is tracked as a delegated task** on your owner's task board. Work it to completion on your own: the owner may be away, and this turn may have been dispatched from the queue with nobody watching. " +
+      "Near the end of the turn, before your final reply, call `mcp__personal_agent__report_task` — outcome `done` with a 1-3 sentence summary of what you accomplished, or outcome `need_input` with the single blocking question when you genuinely cannot proceed without the owner, and then END your turn with that question in your reply. " +
+      "Never use the AskUserQuestion dialog in this conversation: it is denied here, because a delegated turn can run with nobody there to answer it." +
+      (state.queuedTaskCount > 0
+        ? ` ${state.queuedTaskCount} more delegated request(s) are queued behind this one — stay focused and finish; the server dispatches the queue automatically, never you.`
+        : "")
+    : "";
   // The `agents/<slug>/` convention only means something with a repository to
   // put it in — never point at a tree this run cannot write.
   const notesNote =
@@ -613,7 +626,8 @@ function personalAgentSection(request: AgentRequest): string | null {
     notesNote +
     " Scheduled routines do NOT work in this conversation: `mcp__system__list_routines`/`create_routine`/`update_routine`/`delete_routine` all refuse here. If the owner asks you to schedule something, say so plainly and point them at a conversation with their MAIN avatar (or the 예약 작업 tab) — never retry and never invent another way to schedule." +
     " You may reconfigure YOURSELF with `mcp__personal_agent__update_profile` (persona, alias, bio, intro): use it when the owner tells you what you should be from now on, CONFIRM the exact wording with them before calling it, and never change your own persona unprompted. It applies from the NEXT turn, not this one." +
-    ` Your persona is currently ${state.personaSet ? "SET" : "NOT set"}. The bot list itself — creating, renaming, disabling, deleting, the profile image, the default model — is the owner's own to manage under 설정 → 내 봇.`
+    ` Your persona is currently ${state.personaSet ? "SET" : "NOT set"}. The bot list itself — creating, renaming, disabling, deleting, the profile image, the default model — is the owner's own to manage under 설정 → 내 봇.` +
+    taskNote
   );
 }
 

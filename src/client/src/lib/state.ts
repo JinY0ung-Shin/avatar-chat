@@ -10,6 +10,7 @@ import type {
   AvatarNotification,
   AvatarSummary,
   BootstrapInfo,
+  BotTask,
   ChatLayout,
   ChatPane,
   ConversationSummary,
@@ -33,6 +34,14 @@ export interface ClientState {
   adminTab: AdminTab;
   /** Active source on the brain (knowledge-graph) view: "personal" or "group:<id>". */
   brainSource: string;
+  /** Bot selected in 봇 오피스 (`personal_agents.id`); "" = none picked yet. */
+  botsAgentId: string;
+  /**
+   * Delegated bot tasks across ALL of the owner's bots, newest first. Fed by
+   * 봇 오피스's poll AND by the run stream's `task` frames, so the roster's
+   * status dots stay right even while the owner is reading another bot's thread.
+   */
+  botTasks: BotTask[];
   avatars: AvatarSummary[];
   avatarsLoaded: boolean;
   avatarsLoading: boolean;
@@ -92,6 +101,8 @@ export const appState = writable<ClientState>({
   settingsTab: "profile",
   adminTab: "overview",
   brainSource: "personal",
+  botsAgentId: "",
+  botTasks: [],
   avatars: [],
   avatarsLoaded: false,
   avatarsLoading: false,
@@ -233,6 +244,7 @@ export function setDocumentTitle(): void {
   const titles: Record<ViewName, string> = {
     explore: "탐색",
     chat: activePane()?.avatar.alias || activePane()?.avatar.displayName || "대화",
+    bots: "봇 오피스",
     brain: "지식 그래프",
     inbox: "알림",
   routines: "예약 작업",

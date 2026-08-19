@@ -1,8 +1,18 @@
 import { get } from "svelte/store";
 import { appState, updateState } from "./state";
+import type { ClientState } from "./state";
 import type { AdminTab, SettingsTab, ViewName } from "./types";
 
-const VIEW_ROUTES: ViewName[] = ["explore", "chat", "brain", "inbox", "routines", "groups", "skills", "settings", "admin"];
+// Views a non-admin may not open at all, so a typed/bookmarked hash lands on
+// 탐색 instead of an empty screen. 봇 오피스 is admin-gated for phase 1 exactly
+// like the 내 봇 feature it renders (see the personal-agents notes).
+const ADMIN_ONLY_VIEWS: ViewName[] = ["bots", "admin"];
+
+function viewDenied(view: ViewName, state: ClientState): boolean {
+  return ADMIN_ONLY_VIEWS.includes(view) && !state.user?.roles?.includes("admin");
+}
+
+const VIEW_ROUTES: ViewName[] = ["explore", "chat", "bots", "brain", "inbox", "routines", "groups", "skills", "settings", "admin"];
 const SETTINGS_TABS: SettingsTab[] = ["profile", "access", "knowledge", "agents"];
 const ADMIN_TABS: AdminTab[] = [
   "overview",
@@ -47,6 +57,12 @@ export function currentRoute(): string {
       ? `#/brain/${encodeURIComponent(state.brainSource)}`
       : "#/brain";
   }
+  // 봇 오피스 keeps the selected bot in the URL. This branch is load-bearing:
+  // every send re-runs syncHash(true) from the run stream's `open` frame, and
+  // without it the bare "#/bots" would silently drop the agent id mid-chat.
+  if (state.view === "bots") {
+    return state.botsAgentId ? `#/bots/${encodeURIComponent(state.botsAgentId)}` : "#/bots";
+  }
   return `#/${state.view}`;
 }
 
@@ -61,12 +77,14 @@ export function syncHash(replace = false): void {
 
 export function goView(view: ViewName, arg?: string): void {
   updateState((state) => {
-    if (view === "admin" && !state.user?.roles?.includes("admin")) view = "explore";
+    if (viewDenied(view, state)) view = "explore";
     state.view = view;
     if (view === "settings" && isSettingsTab(arg)) state.settingsTab = arg;
     if (view === "admin" && isAdminTab(arg)) state.adminTab = arg;
     if (view === "routines" && arg) state.routineConversationId = arg;
     if (view === "brain") state.brainSource = arg || "personal";
+    // Empty arg = "no bot picked yet"; BotsView renders its roster and waits.
+    if (view === "bots") state.botsAgentId = arg || "";
   });
   syncHash();
 }
@@ -75,7 +93,7 @@ export function applyInitialRoute(): void {
   const { view, arg } = routeFromHash();
   updateState((state) => {
     if (!view) return;
-    if (view === "admin" && !state.user?.roles?.includes("admin")) {
+    if (viewDenied(view, state)) {
       state.view = "explore";
       return;
     }
@@ -84,6 +102,7 @@ export function applyInitialRoute(): void {
     if (view === "admin" && isAdminTab(arg)) state.adminTab = arg;
     if (view === "routines" && arg) state.routineConversationId = arg;
     if (view === "brain") state.brainSource = arg || "personal";
+    if (view === "bots") state.botsAgentId = arg || "";
   });
   // Rewrite a legacy groups alias in place so it never enters history (Back
   // would otherwise bounce through #/settings/groups → same view).
@@ -99,7 +118,7 @@ export function installRouteListener(onChatRoute?: (conversationId: string) => v
     if (!view) return;
     applyingRoute = true;
     updateState((state) => {
-      if (view === "admin" && !state.user?.roles?.includes("admin")) {
+      if (viewDenied(view, state)) {
         state.view = "explore";
         return;
       }
@@ -108,6 +127,10 @@ export function installRouteListener(onChatRoute?: (conversationId: string) => v
       if (view === "admin" && isAdminTab(arg)) state.adminTab = arg;
       if (view === "routines" && arg) state.routineConversationId = arg;
       if (view === "brain") state.brainSource = arg || "personal";
+      // No route callback for bots on purpose: BotsView reacts to
+      // state.botsAgentId itself, so back/forward inside the view is a pure
+      // state change (mirrors how brainSource is handled).
+      if (view === "bots") state.botsAgentId = arg || "";
     });
     applyingRoute = false;
     if (view === "chat" && arg) onChatRoute?.(arg);

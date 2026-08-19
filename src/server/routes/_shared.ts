@@ -22,6 +22,13 @@ import type { AuthenticatedRequest } from "../auth.js";
 export interface AppServices {
   config: AppConfig;
   store: Store;
+  /**
+   * The model the SDK last reported, shared by everything that can start a run
+   * (the chat router writes it, the admin system overview reads it). It lives
+   * on the services rather than inside `createApp` so the server-started paths
+   * — the routine scheduler, the delegated-task dispatcher — can reach it too.
+   */
+  observedModel: ObservedModelHolder;
 }
 
 /**
@@ -98,6 +105,13 @@ export interface RouterDeps {
     detail: string,
     status?: "success" | "error",
   ): void;
+  /**
+   * Called once a PERSONAL-AGENT (내 봇) turn's run has closed, so the delegated
+   * -task dispatcher can start the thread's next queued task. Wired in `app.ts`
+   * (which may import `botTaskRunner`); the chat router must not import it
+   * itself, since the runner calls back into `executeChatTurn`.
+   */
+  onBotTurnSettled?: (ownerUserId: string, conversationId: string) => void;
 }
 
 const AVATAR_MIME_EXT: Record<string, string> = {

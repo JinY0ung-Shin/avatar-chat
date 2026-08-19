@@ -15,6 +15,8 @@ export type {
   AvatarNotification,
   AvatarSummary,
   AvatarVisibility,
+  BotTask,
+  BotTaskStatus,
   CanvasArtifact,
   CanvasContentType,
   CanvasControl,
@@ -63,6 +65,7 @@ export interface RoutinePreset {
 export type ViewName =
   | "explore"
   | "chat"
+  | "bots"
   | "brain"
   | "inbox"
   | "routines"

@@ -31,6 +31,7 @@
   const viewLoaders: Record<ViewName, () => Promise<{ default: any }>> = {
     explore: () => import("./views/ExploreView.svelte"),
     chat: () => import("./views/ChatView.svelte"),
+    bots: () => import("./views/BotsView.svelte"),
     brain: () => import("./views/BrainView.svelte"),
     inbox: () => import("./views/InboxView.svelte"),
     routines: () => import("./views/RoutinesView.svelte"),
@@ -43,6 +44,7 @@
   const viewLabels: Record<ViewName, string> = {
     explore: "탐색",
     chat: "대화",
+    bots: "봇 오피스",
     brain: "지식 그래프",
     inbox: "알림",
     routines: "예약 작업",
@@ -213,6 +215,20 @@
   </div>
 {:else if !$appState.user}
   <AuthView bootstrap={$appState.bootstrap} />
+{:else if $appState.view === "bots"}
+  <!-- 봇 오피스 is the one RAIL-LESS view: it is a full-screen messenger with its
+       own roster column, so it mounts outside .workspace's grid (no <Shell/>) and
+       carries its own back affordance. Kept INSIDE the logged-in branch so the
+       global overlays below still mount — their DOM order is load-bearing
+       (DESIGN.md §4.4). -->
+  <main id="main" class="main bots-main" tabindex="-1" aria-busy={!activeViewComponent}>
+    {#if activeViewComponent}
+      <svelte:component this={activeViewComponent} />
+    {:else}
+      <div class="svelte-fallback-pad muted" role="status">화면을 준비하는 중…</div>
+    {/if}
+  </main>
+  <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{activeViewLabel} 화면</div>
 {:else}
   <section class="workspace" class:rail-collapsed={railCollapsed}>
     <Shell

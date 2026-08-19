@@ -16,6 +16,10 @@ import { text } from "./mcpTools.js";
  * - `update_profile` registers only on a PERSONAL-AGENT run: the bot edits its
  *   OWN persona/profile mid-conversation (the group agent's self-configuration,
  *   scoped to one person's bot instead of a team's).
+ * - `report_task` registers on the SAME bot runs: the bot declares how the
+ *   delegated turn went (done / need_input) onto the owner's task card. Always
+ *   registered — the handler refuses when the run tracks no task, because a
+ *   greeting turn and a delegated one are the same tool set.
  * - `create_agent` registers only on a NON-bot owner run: the owner's main
  *   avatar stands a new bot up for them.
  *
@@ -33,6 +37,7 @@ export const PERSONAL_AGENT_SERVER_NAME = "personal_agent";
 /** Bot-run tool names in `allowedTools` form (keep in sync with the factory). */
 export const PERSONAL_AGENT_SELF_TOOL_NAMES = [
   "mcp__personal_agent__update_profile",
+  "mcp__personal_agent__report_task",
 ] as const;
 
 /** Owner-run (non-bot) tool names in `allowedTools` form. */
@@ -55,6 +60,15 @@ const ADMIN_FEATURE_OFF =
   "Personal bots (내 봇) are an administrator-only feature in this deployment and this owner no longer holds the admin role, so bot management is unavailable. Say so plainly — there is no other route.";
 const EMPTY_PATCH =
   "Provide at least one field to update (persona, alias, bio, or intro).";
+const NO_TRACKED_TASK =
+  "No delegated task is being tracked for this turn (e.g. this conversation predates task tracking, or this is a greeting). Just answer normally — do not retry.";
+const TASK_NOT_RUNNING =
+  "The tracked task is not in a running state anymore, so the report was not recorded. Finish your reply normally.";
+const EMPTY_REPORT_SUMMARY =
+  "The summary is empty. For 'done', write 1-3 sentences on what you accomplished; for 'need_input', write the question you need the owner to answer. The owner reads this text on the task card, so it cannot be blank.";
+
+/** Cap for the text written onto the task card — a card, not an essay. */
+const REPORT_SUMMARY_CAP = 2000;
 
 const FIELD_CAPS = PERSONAL_AGENT_FIELD_CAPS;
 type ProfileField = keyof typeof FIELD_CAPS;
@@ -65,12 +79,40 @@ function overCap(field: string, cap: number, length: number): string {
   return `The ${field} field is limited to ${cap} characters (got ${length}). Shorten it and try again.`;
 }
 
-/** Context for ONE personal-agent run's self-configuration tool. */
+/** Context for ONE personal-agent run's self-configuration + reporting tools. */
 export interface PersonalAgentSelfToolsContext {
   /** WHICH bot this run is; ownership/enabled/role are re-read per call. */
   agentId: string;
   /** The owner driving this run: live gate subject AND audit actor. */
   owner: AgentOwner;
+  /**
+   * The `bot_tasks` row tracking THIS turn as a delegated task, when the run
+   * carries one (`AgentRequest.personalAgent.taskId`). Absent/null on turns
+   * that track no task — `report_task` then refuses with a redirect instead of
+   * guessing which card to write. Bookkeeping only: it never widens the run.
+   */
+  taskId?: string | null;
+  /** The thread this run belongs to, for the report's audit attribution. */
+  conversationId?: string | null;
+}
+
+/**
+ * The live per-call gate BOTH bot-run tools share (the `mcp__` auto-allow in the
+ * PreToolUse hook fires before any check): a deleted bot, someone else's bot, a
+ * mid-turn disable, and an owner whose admin role was revoked all refuse —
+ * matching the reach gate that will refuse the NEXT turn
+ * (findChattablePersonalAgent). Returns the refusal text, or null to proceed.
+ */
+function selfToolRefusal(
+  store: Store,
+  ctx: PersonalAgentSelfToolsContext,
+): string | null {
+  const agent = store.getPersonalAgentById(ctx.agentId);
+  if (!agent) return AGENT_GONE;
+  if (agent.ownerUserId !== ctx.owner.id) return NOT_OWNER;
+  if (!agent.enabled) return AGENT_DISABLED;
+  if (!store.isAdmin(ctx.owner.id)) return ADMIN_FEATURE_OFF;
+  return null;
 }
 
 /** Context for an owner's own (non-bot) run, which may CREATE bots. */
@@ -114,15 +156,8 @@ export function buildPersonalAgentSelfTools(
           ),
       },
       async (args) => {
-        // Live per-call gate (the mcp__ auto-allow fires before any check): a
-        // deleted bot, a disabled one, and an owner whose admin role was revoked
-        // mid-conversation all refuse, matching the reach gate that will refuse
-        // the next turn (findChattablePersonalAgent).
-        const agent = store.getPersonalAgentById(ctx.agentId);
-        if (!agent) return text(AGENT_GONE, true);
-        if (agent.ownerUserId !== ctx.owner.id) return text(NOT_OWNER, true);
-        if (!agent.enabled) return text(AGENT_DISABLED, true);
-        if (!store.isAdmin(ctx.owner.id)) return text(ADMIN_FEATURE_OFF, true);
+        const refusal = selfToolRefusal(store, ctx);
+        if (refusal) return text(refusal, true);
         const patch: Partial<Record<ProfileField, string>> = {};
         for (const field of PROFILE_FIELDS) {
           const value = args[field];
@@ -147,6 +182,59 @@ export function buildPersonalAgentSelfTools(
         });
         return text(
           `Updated your ${changed.join(", ")}. The change applies to every future conversation with this bot and takes effect from the NEXT turn — this turn still runs on the previous profile.`,
+        );
+      },
+    ),
+    tool(
+      "report_task",
+      `**Call this near the end of EVERY delegated-task turn in this conversation**, before writing your final reply: outcome 'done' with a short result summary when the request is complete, or 'need_input' with the blocking question when you cannot proceed without the owner. It updates the task card the owner sees. After 'need_input', END your turn with that question in your reply — the owner's next message resumes the task. (this bot's owner only)`,
+      {
+        outcome: z
+          .enum(["done", "need_input"])
+          .describe(
+            "'done' = the delegated request is finished. 'need_input' = you are blocked on something only the owner can decide or supply.",
+          ),
+        summary: z
+          .string()
+          .describe(
+            "For 'done': 1-3 sentences on WHAT you accomplished (Korean is fine — the owner reads this on the task card). For 'need_input': the single decisive question you need answered.",
+          ),
+      },
+      async (args) => {
+        const refusal = selfToolRefusal(store, ctx);
+        if (refusal) return text(refusal, true);
+        // No card to write against: an untracked turn (a greeting, or a thread
+        // older than task tracking). Redirect rather than fail the turn — the
+        // tool is registered on EVERY bot run, so this is a normal outcome.
+        if (!ctx.taskId) return text(NO_TRACKED_TASK, true);
+        if (args.summary.length > REPORT_SUMMARY_CAP) {
+          return text(
+            overCap("summary", REPORT_SUMMARY_CAP, args.summary.length),
+            true,
+          );
+        }
+        const summary = args.summary.trim();
+        if (!summary) return text(EMPTY_REPORT_SUMMARY, true);
+        // Null = the task left 'running' (aborted, already finalized, or never
+        // dispatched). The store owns that guard; nothing is retried here.
+        const updated = store.setBotTaskReport(ctx.taskId, {
+          outcome: args.outcome,
+          summary,
+        });
+        if (!updated) return text(TASK_NOT_RUNNING, true);
+        store.audit({
+          actorUserId: ctx.owner.id,
+          actorName: ctx.owner.username,
+          action: "personal_agent_task_report",
+          status: "success",
+          detail:
+            `agent=${ctx.agentId} task=${ctx.taskId} outcome=${args.outcome} via report_task` +
+            (ctx.conversationId ? ` (conversation=${ctx.conversationId})` : ""),
+        });
+        return text(
+          args.outcome === "done"
+            ? "Recorded. The task will be marked complete when this turn ends — make sure your final reply also contains the full answer, not just a pointer to this summary."
+            : "Recorded — the task will show 입력 대기 (waiting for input) when this turn ends. Now END your turn with that question addressed to the owner; their next message in this conversation resumes the task. Do not keep working past the question.",
         );
       },
     ),

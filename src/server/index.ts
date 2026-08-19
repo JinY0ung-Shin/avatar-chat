@@ -5,6 +5,7 @@ import { createApp, createServices } from "./app.js";
 import { createAppServer } from "./appServer.js";
 import logger from "./logger.js";
 import { startRoutineScheduler } from "./scheduler.js";
+import { startBotTaskDispatcher } from "./botTaskRunner.js";
 import { cancelAllRuns } from "./agent/runRegistry.js";
 import { applyCustomGithubCa } from "./tlsCa.js";
 import { probeDeckRendering } from "./deckRender.js";
@@ -30,6 +31,9 @@ server.listen(services.config.port, () => {
 
 // Fire owner-scheduled routine jobs in the background.
 const stopScheduler = startRoutineScheduler(services);
+// Delegated bot tasks (내 봇): fail whatever this restart interrupted, then
+// drain any backlog the owner queued before the process went down.
+const stopBotTaskDispatcher = startBotTaskDispatcher(services);
 
 // A rejected promise from an async Express 4 route handler is NOT routed to the
 // error middleware — it surfaces here. Log and CONTINUE: a single bad request
@@ -55,6 +59,7 @@ function shutdown(signal: string): void {
   shuttingDown = true;
   logger.info({ signal }, "shutting down");
   stopScheduler();
+  stopBotTaskDispatcher();
   // Abort in-flight chat runs so their cancel path persists the streamed partial
   // and ends the SSE responses (otherwise open streams would block server.close
   // until the timeout and the watched turn would be lost).

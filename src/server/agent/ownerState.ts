@@ -263,11 +263,16 @@ export function summarizeGroupAgentState(
  * `enabled` / `ownerIsAdmin` flags carry the revocations that CAN be reported
  * (each consumer renders them as UNAVAILABLE), mirroring the group agent's
  * mid-turn disable / membership-loss handling.
+ *
+ * `conversationId` is optional because the backlog is a per-THREAD fact: a
+ * caller that has no thread in hand reports 0 rather than a count from some
+ * other conversation.
  */
 export function summarizePersonalAgentState(
   store: Store,
   agentId: string,
   actingUserId: string,
+  conversationId?: string,
 ): PersonalAgentState | null {
   const agent = store.getPersonalAgentById(agentId);
   if (!agent || agent.ownerUserId !== actingUserId) {
@@ -286,5 +291,11 @@ export function summarizePersonalAgentState(
     ownerIsAdmin: store.isAdmin(agent.ownerUserId),
     agentCount: store.countPersonalAgents(agent.ownerUserId),
     maxAgents: MAX_PERSONAL_AGENTS,
+    // Delegated requests still waiting BEHIND this turn in this thread. The
+    // queue drains server-side; both consumers report it as standing awareness
+    // only, never as something the bot may dispatch itself.
+    queuedTaskCount: conversationId
+      ? store.countQueuedBotTasks(conversationId)
+      : 0,
   };
 }

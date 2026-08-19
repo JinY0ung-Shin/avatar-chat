@@ -72,14 +72,71 @@ and double-gated: runPlan filters `ROUTINE_TOOL_NAMES` (exported by `systemTools
 set. Both metacognition surfaces state the unavailability. Phase-2 note: binding routines to bots
 means fixing those two store sites + a `routine_jobs` sweep in `deletePersonalAgent`/`deleteUser`.
 
-## Cascades (both halves, per deletion kind)
+## Delegated tasks (봇 오피스, `bot_tasks`) — the Grok-Bot-style work model
+Every EXECUTED user turn in a bot thread is tracked as a `bot_tasks` row (store mixin
+`store/botTasks.ts`; the status machine lives in its header comment and is enforced by guarded
+UPDATEs — illegal transitions are atomic null no-ops, so double finalizes can't race). Capability is
+UNTOUCHED: a task row is bookkeeping over the same A-1 full-owner run.
+- **Chat-route seams:** `routes/chat.ts` exports `resolveChatTarget` (avatar/bot resolution with
+  typed refusals) and `executeChatTurn(deps, ctx, hooks)` — the ENTIRE former turn body as one
+  function, HTTP-free after `hooks.onRunOpen(runId)` (the route's SSE handshake lives in that hook;
+  a server-started turn returns `true` and relies on the registry journal). Refusals are typed
+  (`ChatTurnRefusal.reason: "active_run" | "task_gone"`, plus `userMessagePersisted` so the queue
+  fallback never double-writes the user bubble). The pre-persist active-run check lives INSIDE
+  `executeChatTurn` (before any DB write/clone), preserving the old 409-before-persist behavior for
+  non-bot threads.
+- **Queue instead of 409:** a message to a busy BOT thread is persisted immediately, becomes a
+  `queued` task (cap `MAX_QUEUED_BOT_TASKS` 20/thread → 429), and answers **202 `{queued, task}`**
+  (plain JSON, never SSE). Regenerate keeps the 409; images-while-busy 400 (a queued replay is
+  text-only). The enqueue pokes the dispatcher afterwards to close the settle race.
+- **Dispatcher** (`botTaskRunner.ts`, scheduler.ts's never-throw style): `maybeDispatchNextBotTask`
+  DRAINS a thread's queue in a loop (the settle hook fires inside `executeChatTurn`'s finally while
+  the dispatcher still holds its `dispatching` guard, so a re-entrant call would strand the 3rd+
+  item — the loop is the fix), re-resolves the bot LIVE per item (deleted/disabled/demoted →
+  `failQueuedBotTask`, Korean reason), and runs the turn with `existingBotTaskId` +
+  `unattendedDeadlineMs` (`config.botTaskRunTimeoutMs`, env `BOT_TASK_TIMEOUT_MINUTES`, 30-min
+  default/1-min floor; timeout substitutes the SDK's "aborted by user" like routines) +
+  `modelFallback` + `skipUserMessagePersist`. Dispatched turns stay **headless:false** ON PURPOSE —
+  same prompt shape as "the owner stepped away"; unattended-ness rides the deadline + the standing
+  guidance, not the routine prompt branch. Boot: `startBotTaskDispatcher` =
+  `sweepInterruptedBotTasks` (in-memory run ids die with the process) + sequential backlog drain.
+  `index.ts` starts it next to the routine scheduler; `app.ts` injects `onBotTurnSettled` into the
+  chat router (chat.ts must NOT import botTaskRunner — the runner imports `executeChatTurn` back).
+- **Turn-boundary approvals:** the run registers `mcp__personal_agent__report_task`
+  (`done`/`need_input` + summary → `setBotTaskReport`, mid-run, status untouched); the DONE finalize
+  reads `reportedOutcome` to park the task as `waiting_input` instead of done, and the owner's next
+  message in that thread RESUMES the row (`markBotTaskRunning` from waiting_input clears
+  question/outcome, keeps startedAt). AskUserQuestion is DENIED on every bot run
+  (`buildPreToolUseHook`'s `personalAgentRun` last-param, redirect: report need_input + end the turn
+  with the question). Both metacognition surfaces carry the task/queue/protocol lines
+  (`PersonalAgentState.queuedTaskCount` via `summarizePersonalAgentState`'s conversationId param).
+- **SSE naming trap:** the task frame is **`bot_task`** `{task: <full row>}` — `task`/`task_update`/
+  `task_end` already belong to the SDK activity relay whose client handler keys on `data.taskId`
+  and silently drops anything else. Pinned on both sides (route tests assert the event name; the
+  client test proves SDK rows never enter the board).
+- **Task API:** `routes/botTasks.ts` — `GET /api/me/bot-tasks?agentId&limit` (admin-gated like
+  /api/me/agents, owner-scoped) and `POST /api/me/bot-tasks/:id/cancel` (queued/waiting_input →
+  row-cancel via `cancelQueuedBotTask`, which preserves `pendingQuestion` on an abandoned card;
+  running → registry `cancelRun` + `{task, stopping:true}`; terminal → 409; misses are 404 with no
+  existence probe).
+- **Client (`#/bots` 봇 오피스):** rail-less third arm in `App.svelte`; roster + task-card strip +
+  the EXISTING ChatView mounted for the thread (pane must live in `state.chatPanes` —
+  `lib/chat.ts`'s private updatePane resolves by id there; `loadPaneForConversation` is the
+  extraction that lets `openBotThreadPane` place a pane without navigating to #/chat). `bot_task`
+  frames + a 10s/focus/streaming-edge poll of the task API feed `state.botTasks` (terminal-wins
+  merge prevents 완료→실행 중 flicker); 202 handling in `sendMessage` branches BEFORE the SSE
+  reader. `PromptModal`'s visible-pane set covers both "chat" and "bots" or prompts double-render;
+  `currentRoute()` needs the bots branch or `syncHash` on send strips the agent id from the URL.
 - **Per-bot DELETE** (`DELETE /api/me/agents/:agentId`): store cascade in one transaction
-  (`deletePersonalAgent` — per-conversation canvas artifacts + messages + conversations, then the
+  (`deletePersonalAgent` — per-conversation canvas artifacts + messages + conversations + the bot's
+  `bot_tasks` swept BY agent_id, so a task whose thread already died still goes, then the
   row) with the route snapshotting `conversationIds` + `imageExt` BEFORE the delete, then
   best-effort disk sweep (avatar image by composite id, `personalAgentWorkspaceParent` tree,
   per-conversation image/file dirs). Disable (`enabled=false`) is the thread-preserving alternative.
-- **deleteUser**: `store/admin.ts` drops `personal_agents WHERE owner_user_id` (bot conversations
-  already cascade via the `owner_user_id` arm); `routes/admin.ts` snapshots each bot's
+- **deleteUser**: `store/admin.ts` drops `personal_agents WHERE owner_user_id` AND
+  `bot_tasks WHERE owner_user_id` (bot conversations
+  already cascade via the `owner_user_id` arm); single/bulk conversation deletes in
+  `store/conversations.ts` also sweep `bot_tasks WHERE conversation_id`; `routes/admin.ts` snapshots each bot's
   {compositeId, imageExt, workspaceParent} pre-delete and sweeps them (the `<userId>.`-prefixed
   avatar-image sweep cannot match composite-named files).
 - The avatar-image GET (`routes/profile.ts`) resolves ext through the third namespaced lookup
@@ -102,7 +159,12 @@ means fixing those two store sites + a `routine_jobs` sweep in `deletePersonalAg
   by a note and `defaultModel` is omitted from save bodies.
 
 ## Tests
-`tests/personal-agent-store.test.ts` (CRUD/cap/cascades/parse/reach), `-routes.test.ts` (admin
+`tests/personal-agent-store.test.ts` (CRUD/cap/cascades/parse/reach),
+`-tasks-store.test.ts` (bot_tasks status machine/orderings/sweeps/cascades),
+`-tasks-routes.test.ts` (queue 202/caps, dispatcher drain + undispatchable-fail, resume,
+finalize transitions incl. reportedOutcome→waiting_input, `bot_task` frame-name pins, task API +
+cancel matrix, boot sweep/dispatch), `tests/svelte-bots-view.test.ts` (봇 오피스 roster/cards/
+cancel-vs-stop/frame routing), `-routes.test.ts` (admin
 gates, ownership 404s, AgentRequest shape incl. identity overlay + never-inherit pin, disabled 403,
 role-revoked fail-closed, image round-trip, delete sweeps), `-tools.test.ts` (access-algebra
 baseline, both tool gate matrices, describe_system, prompt pins, routine-name filtering),

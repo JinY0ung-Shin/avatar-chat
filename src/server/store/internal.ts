@@ -263,6 +263,25 @@ export interface PersonalAgentRow {
   updated_at: string | null;
 }
 
+export interface BotTaskRow {
+  id: string;
+  owner_user_id: string;
+  agent_id: string;
+  conversation_id: string;
+  run_id: string | null;
+  title: string;
+  request_text: string;
+  status: string;
+  reported_outcome: string | null;
+  result_summary: string | null;
+  pending_question: string | null;
+  error: string | null;
+  model: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 export interface RoutineJobRow {
   id: string;
   avatar_user_id: string;
@@ -568,6 +587,35 @@ export class StoreBase {
         updated_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_personal_agents_owner ON personal_agents(owner_user_id);
+      -- DELEGATED BOT TASKS: one row per executed user turn in a 내 봇 thread —
+      -- the unit the 봇 메신저 UI renders as a 작업 카드. BOOKKEEPING ONLY: a task
+      -- row never widens or narrows the run's capability (that stays the
+      -- full-owner-run contract). run_id is the IN-MEMORY run-registry key, so it
+      -- is meaningless across a restart — the boot sweep fails any row left
+      -- 'running'. No FKs (conversation_id/agent_id follow the avatar_user_id
+      -- precedent); the cascades are manual (store/personalAgents.ts,
+      -- store/admin.ts, store/conversations.ts). A brand-new table:
+      -- CREATE TABLE IF NOT EXISTS IS the existing-deployment migration.
+      CREATE TABLE IF NOT EXISTS bot_tasks (
+        id TEXT PRIMARY KEY,
+        owner_user_id TEXT NOT NULL,
+        agent_id TEXT NOT NULL,
+        conversation_id TEXT NOT NULL,
+        run_id TEXT,
+        title TEXT NOT NULL,
+        request_text TEXT NOT NULL,
+        status TEXT NOT NULL,
+        reported_outcome TEXT,
+        result_summary TEXT,
+        pending_question TEXT,
+        error TEXT,
+        model TEXT,
+        created_at TEXT NOT NULL,
+        started_at TEXT,
+        finished_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_bot_tasks_owner ON bot_tasks(owner_user_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_bot_tasks_conversation ON bot_tasks(conversation_id, created_at ASC);
       -- Skills shared from an owner's knowledge repo (#skill-share): one row per
       -- (owner, skills/<slug> dir). METADATA SNAPSHOT ONLY — the content stays in
       -- the owner's repo and is copied into the learner's repo at learn time.

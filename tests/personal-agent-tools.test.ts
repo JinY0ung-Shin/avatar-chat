@@ -52,6 +52,8 @@ import {
   PERSONAL_AGENT_SELF_TOOL_NAMES,
 } from "../src/server/agent/personalAgentProfileTools.js";
 import { buildSystemTools } from "../src/server/agent/systemTools.js";
+import { buildPreToolUseHook } from "../src/server/agent/preToolUseHook.js";
+import { DEFAULT_HEX_SSH_TOOL_POLICY } from "../src/server/hexSshPolicy.js";
 import { MCP_TOOL_GROUPS } from "../src/shared/mcpToolGroups.js";
 
 let tempDir: string;
@@ -191,6 +193,9 @@ describe("personal-agent run plan (SDK mocked)", () => {
 
     expect(servers()).toContain("personal_agent");
     expect(allowed()).toContain("mcp__personal_agent__update_profile");
+    // report_task rides EVERY bot run, tracked turn or not — the handler
+    // refuses an untracked turn, so the tool set never varies per turn.
+    expect(allowed()).toContain("mcp__personal_agent__report_task");
     // create_agent belongs to the owner's OWN avatar, never to a bot.
     expect(allowed()).not.toContain("mcp__personal_agent__create_agent");
     // Routines cannot resolve a composite bot id (phase 1): the four names are
@@ -212,6 +217,8 @@ describe("personal-agent run plan (SDK mocked)", () => {
     expect(servers()).toContain("personal_agent");
     expect(allowed()).toContain("mcp__personal_agent__create_agent");
     expect(allowed()).not.toContain("mcp__personal_agent__update_profile");
+    // Delegated tasks exist only inside a bot thread.
+    expect(allowed()).not.toContain("mcp__personal_agent__report_task");
     expect(allowed()).toContain("mcp__system__create_routine");
   });
 
@@ -258,8 +265,11 @@ describe("personal-agent run plan (SDK mocked)", () => {
 // ===========================================================================
 describe("mcp__personal_agent__update_profile", () => {
   it("pins the tool-name lists", () => {
+    // Hand-synced with buildPersonalAgentSelfTools: report_task joined the bot
+    // set with delegated tasks (an intended contract change).
     expect([...PERSONAL_AGENT_SELF_TOOL_NAMES]).toEqual([
       "mcp__personal_agent__update_profile",
+      "mcp__personal_agent__report_task",
     ]);
     expect([...PERSONAL_AGENT_OWNER_TOOL_NAMES]).toEqual([
       "mcp__personal_agent__create_agent",
@@ -344,6 +354,253 @@ describe("mcp__personal_agent__update_profile", () => {
     const gone = await callTool(tools, "update_profile", { bio: "x" });
     expect(gone.isError).toBe(true);
     expect(gone.content[0].text).toContain("no longer exists");
+  });
+});
+
+// ===========================================================================
+// report_task (the delegated-task card the owner reads)
+// ===========================================================================
+describe("mcp__personal_agent__report_task", () => {
+  type Setup = ReturnType<typeof setup>;
+
+  /** One RUNNING task — the only state a report is legal from. */
+  function runningTask(s: Setup, conversationId = "conv-1") {
+    return s.store.createBotTask({
+      ownerUserId: s.owner.id,
+      agentId: s.agent.id,
+      conversationId,
+      title: "릴리즈 노트",
+      requestText: "이번 주 릴리즈 노트 정리해줘",
+      status: "running",
+      runId: "run-1",
+    });
+  }
+
+  function reportTools(s: Setup, taskId: string | null, conversationId = "conv-1") {
+    return buildPersonalAgentSelfTools(s.store, {
+      agentId: s.agent.id,
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+      taskId,
+      conversationId,
+    });
+  }
+
+  it("writes a done report, audits it, and still demands the full answer in the reply", async () => {
+    const s = setup("report-done");
+    const task = runningTask(s);
+    const ok = await callTool(reportTools(s, task.id), "report_task", {
+      outcome: "done",
+      summary: "릴리즈 노트를 정리해 wiki/에 커밋했습니다.",
+    });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content[0].text).toContain("marked complete when this turn ends");
+    expect(ok.content[0].text).toContain("not just a pointer to this summary");
+
+    const stored = s.store.getBotTask(task.id)!;
+    expect(stored.reportedOutcome).toBe("done");
+    expect(stored.resultSummary).toBe("릴리즈 노트를 정리해 wiki/에 커밋했습니다.");
+    expect(stored.pendingQuestion).toBeNull();
+    // The report NEVER moves the status — the turn finalize owns that, so a
+    // report without a finalize can't leave a task falsely terminal.
+    expect(stored.status).toBe("running");
+
+    const audit = s.store
+      .listAudit(s.owner.id, true)
+      .find((e) => e.action === "personal_agent_task_report");
+    expect(audit?.detail).toContain(`agent=${s.agent.id} task=${task.id} outcome=done`);
+    expect(audit?.detail).toContain("conversation=conv-1");
+  });
+
+  it("parks a need_input report as the pending question and orders the turn to END", async () => {
+    const s = setup("report-need-input");
+    const task = runningTask(s);
+    const res = await callTool(reportTools(s, task.id), "report_task", {
+      outcome: "need_input",
+      summary: "어느 브랜치의 커밋을 기준으로 정리할까요?",
+    });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0].text).toContain("입력 대기");
+    expect(res.content[0].text).toContain("END your turn");
+    expect(res.content[0].text).toContain("Do not keep working past the question");
+
+    const stored = s.store.getBotTask(task.id)!;
+    expect(stored.reportedOutcome).toBe("need_input");
+    expect(stored.pendingQuestion).toBe("어느 브랜치의 커밋을 기준으로 정리할까요?");
+    // A question is not a result: the summary column stays untouched.
+    expect(stored.resultSummary).toBeNull();
+    expect(stored.status).toBe("running");
+  });
+
+  it("redirects an untracked turn instead of guessing which card to write", async () => {
+    const s = setup("report-untracked");
+    const task = runningTask(s);
+    const res = await callTool(reportTools(s, null), "report_task", {
+      outcome: "done",
+      summary: "끝냈습니다.",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("No delegated task is being tracked");
+    expect(res.content[0].text).toContain("do not retry");
+    // Nothing was written to the (unrelated) running card.
+    expect(s.store.getBotTask(task.id)!.reportedOutcome).toBeNull();
+  });
+
+  it("refuses when the task is no longer running", async () => {
+    const s = setup("report-not-running");
+    const queued = s.store.createBotTask({
+      ownerUserId: s.owner.id,
+      agentId: s.agent.id,
+      conversationId: "conv-1",
+      title: "대기 중",
+      requestText: "나중에",
+      status: "queued",
+    });
+    const res = await callTool(reportTools(s, queued.id), "report_task", {
+      outcome: "done",
+      summary: "끝냈습니다.",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("not in a running state anymore");
+    const stored = s.store.getBotTask(queued.id)!;
+    expect(stored.status).toBe("queued");
+    expect(stored.reportedOutcome).toBeNull();
+  });
+
+  it("caps the summary and refuses a blank one", async () => {
+    const s = setup("report-summary-bounds");
+    const task = runningTask(s);
+    const tools = reportTools(s, task.id);
+
+    const long = await callTool(tools, "report_task", {
+      outcome: "done",
+      summary: "가".repeat(2001),
+    });
+    expect(long.isError).toBe(true);
+    expect(long.content[0].text).toContain("limited to 2000 characters");
+
+    const blank = await callTool(tools, "report_task", {
+      outcome: "need_input",
+      summary: "   ",
+    });
+    expect(blank.isError).toBe(true);
+    expect(blank.content[0].text).toContain("summary is empty");
+
+    expect(s.store.getBotTask(task.id)!.reportedOutcome).toBeNull();
+  });
+
+  it("applies the same live gates update_profile does", async () => {
+    const s = setup("report-gates");
+    const task = runningTask(s);
+    const args = { outcome: "done", summary: "끝냈습니다." };
+
+    // Someone else's bot: refused without confirming anything about it.
+    const foreign = buildPersonalAgentSelfTools(s.store, {
+      agentId: s.agent.id,
+      owner: { id: s.plain.id, username: "plain", displayName: "일반" },
+      taskId: task.id,
+    });
+    const notMine = await callTool(foreign, "report_task", args);
+    expect(notMine.isError).toBe(true);
+    expect(notMine.content[0].text).toContain("belongs to a different user");
+
+    const tools = reportTools(s, task.id);
+    s.store.updatePersonalAgent(s.agent.id, { enabled: false });
+    const disabled = await callTool(tools, "report_task", args);
+    expect(disabled.isError).toBe(true);
+    expect(disabled.content[0].text).toContain("DISABLED");
+
+    s.store.updatePersonalAgent(s.agent.id, { enabled: true });
+    s.store.setRole(s.owner.id, "admin", false);
+    const demoted = await callTool(tools, "report_task", args);
+    expect(demoted.isError).toBe(true);
+    expect(demoted.content[0].text).toContain("administrator-only feature");
+
+    // Not one of the refusals so far reached the card.
+    expect(s.store.getBotTask(task.id)!.reportedOutcome).toBeNull();
+
+    // Deleting the bot cascades its task rows away, so this last case is
+    // checked on the refusal alone.
+    s.store.setRole(s.owner.id, "admin", true);
+    s.store.deletePersonalAgent(s.agent.id);
+    const gone = await callTool(tools, "report_task", args);
+    expect(gone.isError).toBe(true);
+    expect(gone.content[0].text).toContain("no longer exists");
+  });
+});
+
+// ===========================================================================
+// Turn-boundary question protocol (the PreToolUse hook)
+// ===========================================================================
+describe("AskUserQuestion in a personal-bot conversation", () => {
+  const askHook = (
+    opts: { personalAgentRun: boolean; headless?: boolean },
+    events: AgentEvents = {},
+  ) =>
+    buildPreToolUseHook(
+      events,
+      true, // elevated
+      ["Read", "Glob", "Grep"],
+      opts.headless === true,
+      false, // allowHeadlessTools
+      true, // autoApprove
+      "owner",
+      DEFAULT_HEX_SSH_TOOL_POLICY,
+      false, // activeRepoMode
+      undefined, // toolSkillPolicy
+      true, // visionEnabled
+      opts.personalAgentRun,
+    );
+
+  const ask = (
+    opts: { personalAgentRun: boolean; headless?: boolean },
+    events: AgentEvents = {},
+  ) =>
+    askHook(opts, events)(
+      {
+        tool_name: "AskUserQuestion",
+        tool_input: { questions: [{ question: "어느 브랜치?" }] },
+        tool_use_id: "q1",
+      },
+      "q1",
+    );
+
+  it("denies the dialog and redirects to report_task, without ever raising it", async () => {
+    const onQuestion = vi.fn(async () => ({
+      behavior: "completed" as const,
+      result: { answers: { "어느 브랜치?": "main" } },
+    }));
+    const out = await ask({ personalAgentRun: true }, { onQuestion });
+    expect(out.hookSpecificOutput.permissionDecision).toBe("deny");
+    const reason = out.hookSpecificOutput.permissionDecisionReason ?? "";
+    expect(reason).toContain("never block on an interactive question dialog");
+    expect(reason).toContain("mcp__personal_agent__report_task with outcome 'need_input'");
+    expect(reason).toContain("END your turn with that question in your reply text");
+    // The owner may be away: the modal is never opened at all.
+    expect(onQuestion).not.toHaveBeenCalled();
+  });
+
+  it("wins over the headless branch — one protocol for queued and interactive bot turns", async () => {
+    const out = await ask({ personalAgentRun: true, headless: true });
+    const reason = out.hookSpecificOutput.permissionDecisionReason ?? "";
+    expect(reason).toContain("mcp__personal_agent__report_task");
+    expect(reason).not.toContain("Proceed with reasonable assumptions");
+  });
+
+  it("leaves a non-bot run on the existing dialog path", async () => {
+    const onQuestion = vi.fn(async () => ({
+      behavior: "completed" as const,
+      result: { answers: { "어느 브랜치?": "main" } },
+    }));
+    const answered = await ask({ personalAgentRun: false }, { onQuestion });
+    expect(onQuestion).toHaveBeenCalledTimes(1);
+    expect(answered.hookSpecificOutput.permissionDecisionReason).toContain("main");
+    expect(answered.hookSpecificOutput.permissionDecisionReason).not.toContain("report_task");
+
+    // …and a headless non-bot run keeps its own wording.
+    const headless = await ask({ personalAgentRun: false, headless: true });
+    expect(headless.hookSpecificOutput.permissionDecisionReason).toContain(
+      "Proceed with reasonable assumptions",
+    );
   });
 });
 
@@ -527,6 +784,76 @@ describe("describe_system for personal agents", () => {
       false,
     );
   });
+
+  it("counts the delegated backlog of THIS thread, and only when given one", () => {
+    const { store, agent, owner } = setup("queued-count");
+    const seed = (conversationId: string) =>
+      store.createBotTask({
+        ownerUserId: owner.id,
+        agentId: agent.id,
+        conversationId,
+        title: "대기",
+        requestText: "나중에",
+        status: "queued",
+      });
+    seed("conv-1");
+    seed("conv-1");
+    seed("conv-2");
+    const count = (conversationId?: string) =>
+      summarizePersonalAgentState(store, agent.id, owner.id, conversationId)
+        ?.queuedTaskCount;
+    expect(count("conv-1")).toBe(2);
+    expect(count("conv-2")).toBe(1);
+    // No thread in hand → 0, never another conversation's backlog.
+    expect(count()).toBe(0);
+    // A dispatched task leaves the queue.
+    store.markBotTaskRunning(store.nextQueuedBotTask("conv-1")!.id, "run-1");
+    expect(count("conv-1")).toBe(1);
+  });
+
+  it("reports the delegated-task state, the backlog, and the question protocol", async () => {
+    const s = setup("desc-task");
+    s.store.createBotTask({
+      ownerUserId: s.owner.id,
+      agentId: s.agent.id,
+      conversationId: "conv-1",
+      title: "대기",
+      requestText: "나중에",
+      status: "queued",
+    });
+    const ctx = {
+      avatarUserId: s.owner.id,
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+      viewerIsOwner: true,
+      config: s.config,
+    };
+    const tracked = buildSystemTools(s.store, {
+      ...ctx,
+      personalAgent: {
+        agentId: s.agent.id,
+        actingUserId: s.owner.id,
+        taskId: "task-1",
+        conversationId: "conv-1",
+      },
+    });
+    const body = (await callTool(tracked, "describe_system", {})).content[0].text;
+    expect(body).toContain("Delegated task: this turn IS tracked as a delegated task");
+    expect(body).toContain("Queued behind this turn: 1 delegated request(s)");
+    expect(body).toContain("never try to run them yourself");
+    expect(body).toContain("mcp__personal_agent__report_task");
+    expect(body).toContain("AskUserQuestion dialog is DENIED");
+
+    // An untracked turn says so, rather than leaving the model to discover it.
+    const untracked = buildSystemTools(s.store, {
+      ...ctx,
+      personalAgent: { agentId: s.agent.id, actingUserId: s.owner.id },
+    });
+    const plainBody = (await callTool(untracked, "describe_system", {})).content[0].text;
+    expect(plainBody).toContain("is NOT tracked as a delegated task");
+    // No conversation id → the backlog reads 0 instead of another thread's.
+    expect(plainBody).toContain("Queued behind this turn: 0 delegated request(s)");
+    expect(plainBody).not.toContain("never try to run them yourself");
+  });
 });
 
 // ===========================================================================
@@ -543,6 +870,7 @@ describe("personal-agent prompt branch", () => {
     ownerIsAdmin: true,
     agentCount: 3,
     maxAgents: MAX_PERSONAL_AGENTS,
+    queuedTaskCount: 0,
     ...over,
   });
   const req = (over: Partial<AgentRequest> = {}): AgentRequest => ({
@@ -624,6 +952,43 @@ describe("personal-agent prompt branch", () => {
     );
     expect(withPersona).toContain("Persona/instructions:\n릴리즈 노트만 쓴다");
     expect(withPersona).toContain("Your persona is currently SET");
+  });
+
+  it("adds the delegated-task paragraph only when the turn tracks a task", () => {
+    const tracked = buildPrompt(
+      req({
+        personalAgent: { agentId: "a1", ownerUserId: "u1", taskId: "task-1" },
+      }),
+      0,
+    );
+    expect(tracked).toContain("**This turn is tracked as a delegated task**");
+    expect(tracked).toContain("the owner may be away");
+    expect(tracked).toContain("mcp__personal_agent__report_task");
+    expect(tracked).toContain("Never use the AskUserQuestion dialog in this conversation");
+    // No backlog on this thread → no queue sentence at all.
+    expect(tracked).not.toContain("queued behind this one");
+
+    // Same bot, untracked turn (a greeting): the paragraph stays out, so the
+    // bot never reports against a card that does not exist.
+    const untracked = buildPrompt(
+      req({ personalAgent: { agentId: "a1", ownerUserId: "u1" } }),
+      0,
+    );
+    expect(untracked).toContain('You are **"릴봇"**');
+    expect(untracked).not.toContain("**This turn is tracked as a delegated task**");
+    expect(untracked).not.toContain("mcp__personal_agent__report_task");
+  });
+
+  it("names the backlog waiting behind a delegated turn", () => {
+    const p = buildPrompt(
+      req({
+        personalAgent: { agentId: "a1", ownerUserId: "u1", taskId: "task-1" },
+        personalAgentState: state({ queuedTaskCount: 2 }),
+      }),
+      0,
+    );
+    expect(p).toContain("2 more delegated request(s) are queued behind this one");
+    expect(p).toContain("the server dispatches the queue automatically, never you");
   });
 
   it("keeps getting-started and the create trigger OUT of a bot thread", () => {

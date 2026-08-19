@@ -14,11 +14,15 @@ import {
 import { groupKnowledgeRepoContextFor } from "../groupKnowledgeRepo.js";
 import { scrubGitError } from "../marketplace.js";
 import { resolveActiveWorkspaceRepo } from "../activeRepoResolve.js";
+import type { Store } from "../store.js";
 import type {
   AgentConversationMessage,
   AgentImageFileInput,
   AgentImageInput,
   AgentResponse,
+  AppConfig,
+  BotTask,
+  ExternalAgentConfig,
   MessageAttachment,
   StoredMessage,
 } from "../types.js";
@@ -49,6 +53,7 @@ import {
   stageChatImageFilesFromAttachments,
   MAX_CHAT_IMAGES_PER_MESSAGE,
   MAX_CHAT_IMAGE_BYTES,
+  type DecodedChatImage,
   type DecodeError,
 } from "../chatImages.js";
 import { visionForModel } from "../modelVisionPolicy.js";
@@ -84,11 +89,13 @@ import {
   groupAgentAvatarDetail,
   groupAgentCaptureAllowed,
   listGroupAgentAvatarSummaries,
+  type ChattableGroupAgent,
 } from "../groupAgents.js";
 import {
   findChattablePersonalAgent,
   listPersonalAgentAvatarSummaries,
   personalAgentAvatarDetail,
+  type ChattablePersonalAgent,
 } from "../personalAgents.js";
 import {
   isModelTier,
@@ -119,6 +126,7 @@ import {
   resolveAvatarSkillSources,
   safeString,
   viewerPlatformFromUserAgent,
+  type ObservedModelHolder,
   type RouterDeps,
 } from "./_shared.js";
 
@@ -420,11 +428,2058 @@ function parseCanvasSubmission(raw: unknown): CanvasSubmissionInput | null {
   return out;
 }
 
+
+/**
+ * The avatar a chat turn actually targets, after every reach gate ran.
+ *
+ * `avatar` is the RUN-facing row and carries capability (a personal-agent turn
+ * resolves it to the OWNER's own row); `threadAvatarId` is the THREAD-facing id
+ * and carries identity (the composite `personal:<owner>:<agent>` for a bot).
+ */
+export interface ChatTarget {
+  externalAgent: ExternalAgentConfig | null;
+  groupAgentHit: ChattableGroupAgent | null;
+  personalAgentHit: ChattablePersonalAgent | null;
+  avatar: { id: string; displayName: string; alias: string; persona: string };
+  threadAvatarId: string;
+  threadAvatarLabel: string;
+  viewerIsOwner: boolean;
+}
+
+/**
+ * A turn that cannot start, in a transport-neutral shape: the HTTP route maps it
+ * to `apiError`, the bot-task dispatcher just leaves its task queued.
+ */
+export interface ChatTurnRefusal {
+  status: number;
+  message: string;
+  /**
+   * `active_run` is the one refusal a bot thread converts into a queued task.
+   * `task_gone` means the delegated row the caller handed us is no longer
+   * runnable (the owner cancelled it while it was being popped) — the
+   * dispatcher skips to the next item rather than treating it as contention.
+   */
+  reason?: "active_run" | "task_gone";
+  /** True when the turn already wrote the user message before refusing. */
+  userMessagePersisted?: boolean;
+}
+
+/** Both 409 texts for "this conversation is already running" (two check sites). */
+function activeRunMessage(background: boolean): string {
+  return background
+    ? "아바타가 이 대화의 백그라운드 작업을 진행 중입니다. 작업이 끝나면 메시지를 보낼 수 있어요. 기다리지 않으려면 중지 버튼으로 백그라운드 작업을 중단해 주세요."
+    : "이미 이 대화의 응답을 생성 중입니다. 잠시 후 다시 시도해 주세요.";
+}
+
+/**
+ * The delegated-task card's label. Same derivation as the conversation title
+ * (`store/conversations.ts`): first line, whitespace collapsed, 40 chars — so a
+ * bot thread's title and its first task card read identically.
+ */
+export function botTaskTitle(requestText: string): string {
+  const raw = requestText.split("\n")[0].trim().replace(/\s+/g, " ");
+  return raw.length > 0 ? raw.slice(0, 40) : "새 작업";
+}
+
+/**
+ * How many turns may wait behind a running bot IN ONE THREAD. A queue this deep
+ * already represents hours of unattended work; past it the owner is better told
+ * to wait than to keep stacking.
+ */
+export const MAX_QUEUED_BOT_TASKS = 20;
+
+/**
+ * User-facing note stored on a timed-out delegated task, derived from the SAME
+ * config value that armed the deadline. The SDK labels EVERY abort "Claude Code
+ * process aborted by user" (it only checks `signal.aborted`), and nobody was
+ * present to cancel an unattended task — see the routine scheduler's identical
+ * substitution.
+ */
+function botTaskTimeoutMessage(timeoutMs: number): string {
+  return `실행 제한 시간(${Math.round(timeoutMs / 60_000)}분)을 초과해 작업이 중단되었습니다. 작업을 더 작은 단위로 나눠 다시 맡겨 주세요.`;
+}
+
+/**
+ * Resolve who a chat turn is talking to and refuse every unreachable target,
+ * in the ORDER the checks have always run (external → group agent → personal
+ * agent → native row → image support → owner-only command).
+ */
+export function resolveChatTarget(args: {
+  store: Store;
+  externalAgents: ExternalAgentConfig[];
+  viewerGroupIds: Set<string>;
+  viewerUserId: string;
+  avatarId: string;
+  /** This turn carries image attachments (external avatars refuse them). */
+  hasImages: boolean;
+  /** The message expanded from an owner-only slash command (`/learn`, …). */
+  ownerOnlyCommand: boolean;
+}): { ok: true; target: ChatTarget } | { ok: false; refusal: ChatTurnRefusal } {
+  const { store, viewerUserId, avatarId } = args;
+  const externalAgent = findVisibleExternalAgent(
+    args.externalAgents,
+    avatarId,
+    args.viewerGroupIds,
+  );
+  // Group shared agent: member-only reach; a member-visible DISABLED agent
+  // gets its own 403 (they already know it exists — no leak), everything
+  // else collapses into the generic 403 below (external precedent). Images
+  // are allowed: unlike externals, group agents run the full local stack.
+  const groupAgentHit = externalAgent
+    ? null
+    : findChattableGroupAgent(store, viewerUserId, avatarId, {
+        includeDisabled: true,
+      });
+  if (groupAgentHit && !groupAgentHit.agent.enabled) {
+    return {
+      ok: false,
+      refusal: { status: 403, message: "그룹 에이전트가 비활성화되어 있습니다. 그룹 관리자에게 문의해 주세요." },
+    };
+  }
+  // Personal agent (내 봇): OWNER-only reach, and only while the owner still
+  // holds the admin role. A disabled bot gets its own 403 — the owner
+  // manages it themselves, so naming the state leaks nothing; every other
+  // miss collapses into the generic fail-closed 403 below.
+  const personalAgentHit =
+    externalAgent || groupAgentHit
+      ? null
+      : findChattablePersonalAgent(store, viewerUserId, avatarId, {
+          includeDisabled: true,
+        });
+  if (personalAgentHit && !personalAgentHit.agent.enabled) {
+    return {
+      ok: false,
+      refusal: { status: 403, message: "이 봇은 비활성화되어 있습니다. 설정 → 내 봇에서 활성화한 뒤 다시 시도해 주세요." },
+    };
+  }
+  const avatar = externalAgent
+    ? externalAvatarDetail(externalAgent)
+    : groupAgentHit
+      ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
+      : // A bot turn is a FULL OWNER run, so the run-facing avatar is the
+        // OWNER's own (avatar.id = the owner's uuid) and every owner-keyed
+        // loader — plugins, knowledge repo, secrets, work repos, trust —
+        // works untouched. The bot's composite id lives in
+        // `threadAvatarId` below, never here. (types.ts personalAgent)
+        store.resolveChatAvatar(
+          viewerUserId,
+          personalAgentHit ? viewerUserId : avatarId,
+        );
+  if (!avatar) {
+    return {
+      ok: false,
+      refusal: { status: 403, message: "이 아바타와 대화할 수 없습니다." },
+    };
+  }
+  /**
+   * The id this THREAD is keyed by: the composite
+   * `personal:<owner>:<agent>` on a bot turn, else `avatar.id`. Everything
+   * thread-scoped — the conversation binding, the scratch workspace, the
+   * run registry, client-facing payloads — uses THIS, so a bot's history
+   * and files stay its own while the run keeps owner capability.
+   */
+  const threadAvatarId = personalAgentHit ? avatarId : avatar.id;
+  /** Chat target for audit/logs — the BOT's name on a personal turn. */
+  const threadAvatarLabel = personalAgentHit
+    ? personalAgentHit.agent.displayName
+    : avatar.displayName;
+  if (externalAgent && args.hasImages) {
+    return {
+      ok: false,
+      refusal: { status: 400, message: "외부 아바타는 아직 이미지 첨부를 지원하지 않습니다." },
+    };
+  }
+  // ownerOnly bites on a RAW `/command`: server-expanded commands (e.g. /learn)
+  // arrive verbatim and DO match here, and so does a stale client / direct API
+  // caller. Client-expanded commands arrive already-expanded and slip past — but
+  // that's fine: this is a convenience guard, not the real boundary. The owner-only
+  // EFFECTS (knowledge-repo writes, routine creation) run through `mcp__repo__*` /
+  // routine APIs that owner-gate in their own handlers, so an expanded prompt from
+  // a non-owner can't reach them.
+  if (args.ownerOnlyCommand && viewerUserId !== avatar.id) {
+    return {
+      ok: false,
+      refusal: { status: 403, message: "이 명령은 내 아바타와의 대화에서만 사용할 수 있습니다." },
+    };
+  }
+  // True for a bot turn by construction: the personal branch resolved
+  // `avatar` to the viewer's OWN row, and the reach gate already proved
+  // owner + admin. Keep it that way — a bot run must stay an owner run.
+  const viewerIsOwner =
+    !externalAgent && !groupAgentHit && viewerUserId === avatar.id;
+  return {
+    ok: true,
+    target: {
+      externalAgent,
+      groupAgentHit,
+      personalAgentHit,
+      avatar,
+      threadAvatarId,
+      threadAvatarLabel,
+      viewerIsOwner,
+    },
+  };
+}
+
+/** App-level collaborators a turn needs, independent of how it was started. */
+export interface ChatTurnDeps {
+  config: AppConfig;
+  store: Store;
+  observedModel: ObservedModelHolder;
+  /**
+   * Fired once a PERSONAL-AGENT turn's run has closed, so the delegated-task
+   * dispatcher can pick up the thread's next queued item. Injected rather than
+   * imported: `botTaskRunner` calls back into `executeChatTurn`, and a direct
+   * import here would close the cycle.
+   */
+  onBotTurnSettled?: (ownerUserId: string, conversationId: string) => void;
+}
+
+/**
+ * Everything a turn needs that an HTTP request would normally supply. A
+ * server-started turn (the delegated-task dispatcher) fills the same shape with
+ * `undefined` for every optional selection, which the derivations below already
+ * read as "use whatever is stored on the conversation".
+ */
+export interface ChatTurnContext {
+  ownerUserId: string;
+  ownerDisplayName: string;
+  target: ChatTarget;
+  conversationId: string;
+  /** What the MODEL receives (slash commands / canvas submissions expanded). */
+  agentMessage: string;
+  /** What the USER sees and what is persisted as the user turn. */
+  displayMessage: string;
+  images: DecodedChatImage[];
+  regenerate: boolean;
+  requestedModel?: string | null;
+  requestedEffort?: string | null;
+  requestedMcpToolGroups?: McpToolGroupId[] | null;
+  requestedGroupKnowledgeOff?: string[] | null;
+  appOrigin?: string;
+  viewerPlatform?: "mac" | "windows" | "linux";
+  audit: (entry: {
+    action: string;
+    detail: string;
+    status?: "success" | "error";
+  }) => void;
+  // ---- Delegated bot tasks (내 봇) ---------------------------------------
+  // Every field below is inert unless `target.personalAgentHit` is set.
+  /**
+   * The already-created `bot_tasks` row this turn executes (the dispatcher's
+   * queued item). Absent → the turn creates its own row, or resumes the
+   * thread's parked `waiting_input` one.
+   */
+  existingBotTaskId?: string;
+  /**
+   * Wall-clock budget for an UNATTENDED turn. Set only by the dispatcher: an
+   * owner-typed turn has a live stop button, so it stays un-deadlined.
+   */
+  unattendedDeadlineMs?: number;
+  /** Fall down the model tier chain on transient failures (unattended runs). */
+  modelFallback?: boolean;
+  /** The user message is already stored (the queue persisted it on enqueue). */
+  skipUserMessagePersist?: boolean;
+}
+
+export interface ChatTurnHooks {
+  /**
+   * Called between `openRun` and the agent stream, exactly where the SSE
+   * handshake sits. Return false to abandon the turn (the run is closed for
+   * you); throwing is also safe.
+   */
+  onRunOpen(runId: string): boolean;
+}
+
+export type ChatTurnOutcome =
+  | { ok: true }
+  | { ok: false; refusal: ChatTurnRefusal };
+
+/**
+ * Run ONE chat turn end to end: pre-run derivations, the working-repo lock, the
+ * run registry entry, the agent stream with all of its sinks, and every
+ * finalize path (done / cancel / error). Emits exclusively through
+ * `emitRunEvent`, so it neither knows nor needs an HTTP response — a caller with
+ * no client attached still gets the whole turn journaled on the run.
+ */
+export async function executeChatTurn(
+  deps: ChatTurnDeps,
+  ctx: ChatTurnContext,
+  hooks: ChatTurnHooks,
+): Promise<ChatTurnOutcome> {
+  const { config, store, observedModel } = deps;
+  const {
+    ownerUserId,
+    conversationId,
+    agentMessage,
+    displayMessage,
+    regenerate,
+    audit,
+  } = ctx;
+  const {
+    externalAgent,
+    groupAgentHit,
+    personalAgentHit,
+    avatar,
+    threadAvatarId,
+    threadAvatarLabel,
+    viewerIsOwner,
+  } = ctx.target;
+  const decodedImages = ctx.images;
+  // Absent (a server-started turn) reads as "keep whatever is stored", which is
+  // the same null the HTTP prelude produces when the client sends nothing.
+  const requestedModel = ctx.requestedModel ?? null;
+  const requestedEffort = ctx.requestedEffort ?? null;
+  const requestedMcpToolGroups = ctx.requestedMcpToolGroups ?? null;
+  const requestedGroupKnowledgeOff = ctx.requestedGroupKnowledgeOff ?? null;
+  const existingAvatarId = store.getConversationAvatarId(
+    ownerUserId,
+    conversationId,
+  );
+  // Effective vision for THIS turn's model, mirroring claudeAgent's
+  // resolution chain (env pin > this turn's tier pick > stored tier >
+  // admin override > default) against the admin per-tier policy. Gates the
+  // upload below AND the regenerate image re-feed; the run itself
+  // recomputes the same value. External turns keep the deployment default
+  // (gateway models are outside the tier policy; their composer has no
+  // attach UI anyway).
+  const turnModel = externalAgent
+    ? config.anthropicModel
+    : (config.anthropicModel ??
+      (requestedModel === null
+        ? store.getConversationModel(ownerUserId, conversationId)
+        : requestedModel || null) ??
+      store.getModelOverride() ??
+      DEFAULT_MODEL_TIER);
+  const turnVisionEnabled = visionForModel(
+    turnModel,
+    store.getModelVisionPolicy(),
+    config.visionEnabled,
+  );
+  // Text-only model for this turn: images are NOT rejected — they are staged
+  // as FILES in the conversation scratch workspace and the model receives only
+  // their paths (buildUserPrompt), never image content blocks (which would 400
+  // the whole turn at the API layer). External turns never reach here with
+  // images (rejected above).
+  const imageFileMode =
+    decodedImages.length > 0 && !turnVisionEnabled && !externalAgent;
+  if (externalAgent && existingAvatarId) {
+    const boundEndpoint = store.getConversationExternalEndpoint(
+      ownerUserId,
+      conversationId,
+    );
+    if (!boundEndpoint) {
+      return {
+        ok: false,
+        refusal: {
+          status: 409,
+          message:
+            "이 기존 대화에는 신뢰한 Gateway 주소 정보가 없습니다. 기록 보호를 위해 새 대화를 시작해 주세요.",
+        },
+      };
+    }
+    if (boundEndpoint !== externalAgent.endpoint) {
+      return {
+        ok: false,
+        refusal: {
+          status: 409,
+          message:
+            "이 대화는 이전 Gateway 주소에 연결되어 있습니다. 기록 보호를 위해 새 대화를 시작해 주세요.",
+        },
+      };
+    }
+  }
+  const conversationMcpToolGroups = requestedMcpToolGroups ??
+    store.getConversationMcpToolGroups(ownerUserId, conversationId) ?? [
+      ...DEFAULT_MCP_TOOL_GROUPS,
+    ];
+  // Admin per-group tool policy: the RUN uses the intersection of the
+  // composer selection and what the system admin allows for this user
+  // (null = unrestricted). The per-conversation row keeps the user's RAW
+  // choice — lifting the policy later restores it untouched. claudeAgent
+  // re-clamps identically; this local copy exists because git-repo gating
+  // below must see the same effective set BEFORE the run starts.
+  const adminAllowedMcpToolGroups = store.allowedMcpToolGroupsForUser(
+    ownerUserId,
+  );
+  const effectiveMcpToolGroupsForRun = adminAllowedMcpToolGroups
+    ? conversationMcpToolGroups.filter((id) =>
+        adminAllowedMcpToolGroups.includes(id),
+      )
+    : conversationMcpToolGroups;
+  const gitRepoToolsEnabled =
+    effectiveMcpToolGroupsForRun.includes("git_repo");
+  // A run is already streaming for this conversation. This POST carries a NEW
+  // typed message; the old attach-and-replay path would silently swallow it
+  // (never persisted, never echoed — the client would only mirror the FIRST
+  // turn's answer). Reject so the client surfaces the error and keeps the text
+  // in the composer. Reconnecting to WATCH an in-flight run uses the dedicated
+  // GET /api/chat/runs/:runId/events path, not a second POST.
+  const activeRun = getActiveRunForConversation(
+    ownerUserId,
+    conversationId,
+  );
+  if (activeRun) {
+    return {
+      ok: false,
+      refusal: {
+        status: 409,
+        message: activeRunMessage(activeRun.background),
+        // A bot thread QUEUES this turn instead of refusing it — nothing has
+        // been persisted yet, so the caller owns the whole enqueue.
+        reason: "active_run",
+        userMessagePersisted: false,
+      },
+    };
+  }
+
+  // Working repository: the avatar opens one registered git repo (via
+  // `mcp__git_repo__open_repo`) as the SDK cwd so it edits/tests with native
+  // tools. The selection is held per conversation (repoWorkspace.ts) and read
+  // here at turn start via the shared resolver (also used by the routine
+  // scheduler, so the two can't drift). Resolve + clone + take the per-clone
+  // serialization lock BEFORE switching to SSE, so validation/contention
+  // failures stay plain JSON. The clone path is server-side only and never
+  // returned to the client (only the repo name). The elevated gate is
+  // belt-and-suspenders — open_repo is itself elevated-only — in case trust
+  // changed since the repo was opened.
+  const elevatedViewer =
+    !externalAgent &&
+    !groupAgentHit &&
+    (viewerIsOwner || store.isTrustedFor(ownerUserId, avatar.id));
+  let activeRepoCwd: string | null = null;
+  let activeRepoName: string | null = null;
+  let releaseActiveRepoLock: (() => void) | null = null;
+  // Group-agent runs skip the whole block: no isTrustedFor on a synthetic
+  // id, no personal work-repo workspace (the run kind carries capability).
+  // Bot turns DO run it — `avatar` is the owner's own row, so the owner's
+  // registered repos and commit identity resolve exactly as usual.
+  if (!externalAgent && !groupAgentHit) {
+    const repoResolution = await resolveActiveWorkspaceRepo({
+      store,
+      config,
+      avatar: {
+        id: avatar.id,
+        displayName: avatar.displayName,
+        alias: avatar.alias,
+      },
+      conversationId,
+      elevated: elevatedViewer,
+      gitRepoToolsEnabled,
+    });
+    if (repoResolution.kind === "error") {
+      return {
+        ok: false,
+        refusal:
+          repoResolution.reason === "not_found"
+            ? {
+                status: 400,
+                message:
+                  "등록된 저장소를 찾을 수 없습니다. 먼저 저장소를 등록해 주세요.",
+              }
+            : repoResolution.reason === "locked"
+              ? {
+                  status: 409,
+                  message:
+                    "이 저장소는 다른 대화에서 작업 중입니다. 잠시 후 다시 시도해 주세요.",
+                }
+              : {
+                  status: 502,
+                  message: `저장소 작업공간을 열지 못했습니다: ${repoResolution.detail ?? ""}`,
+                },
+      };
+    }
+    if (repoResolution.kind === "ok") {
+      activeRepoCwd = repoResolution.cwd;
+      activeRepoName = repoResolution.repoName;
+      // Frees the per-clone serialization lock; called once when the run ends.
+      releaseActiveRepoLock = repoResolution.release;
+    }
+  }
+
+  try {
+    const runId = crypto.randomUUID();
+    const chatStart = Date.now();
+    if (regenerate) {
+      const last = [...store.listMessages(ownerUserId, conversationId)].pop();
+      store.dropLastAssistant(ownerUserId, conversationId);
+      if (last?.role === "assistant") {
+        deleteChatImageAttachments(config, conversationId, last.attachments);
+        deleteChatFileAttachments(config, conversationId, last.attachments);
+      }
+    }
+    const imageTurn =
+      !regenerate && decodedImages.length > 0 && turnVisionEnabled;
+    // Resume the conversation's prior SDK session so the model keeps its context
+    // across turns. A regenerate re-runs the same turn and starts fresh to avoid
+    // duplicating history in the transcript. Image turns also start fresh: the SDK
+    // receives images through streaming input, and combining that with `resume`
+    // can drop the structured image blocks before they reach the model. File-mode
+    // turns (text-only model) never build a structured message — the prompt stays
+    // a plain string — so they keep the session resume.
+    const resumeSessionId =
+      externalAgent || regenerate || imageTurn
+        ? undefined
+        : (store.getAgentSessionId(ownerUserId, conversationId) ??
+          undefined);
+    // Carry prior context on every turn. It is INJECTED into the prompt only when
+    // there's no SDK session to resume (buildPrompt guards on resumeSessionId) —
+    // a regenerate/image turn starts fresh and needs it, and a resume turn keeps
+    // it latent so claudeAgent can self-heal a stale/missing SDK transcript by
+    // re-running without `resume` (then this history is what rebuilds the context).
+    // A regenerate also persists its fresh session id, so without this every later
+    // turn would resume a context-less session.
+    // (chat-01 / lifecycle-02)
+    const priorMessages = store.listMessages(ownerUserId, conversationId);
+    const conversationHistory = conversationHistoryForPrompt(priorMessages);
+    // On regenerate the trailing history entry is the user turn being re-run,
+    // which is ALSO re-sent as `message` — drop it so it isn't duplicated.
+    if (
+      regenerate &&
+      conversationHistory.length > 0 &&
+      conversationHistory[conversationHistory.length - 1].role === "user"
+    ) {
+      conversationHistory.pop();
+    }
+    // Images fed to the model THIS turn. For a fresh send we save the uploads to
+    // disk + record them on the user message; on regenerate the client doesn't
+    // re-send images (it re-runs from a fresh SDK session), so re-read the prior
+    // user turn's stored attachments so the re-run still sees them.
+    let requestImages: AgentImageInput[] = [];
+    // The same images in FILE mode (text-only model): staged copies in the
+    // scratch workspace whose paths — never their bytes — reach the model.
+    let requestImageFiles: AgentImageFileInput[] = [];
+    // Per-conversation workspace: each chat session gets an isolated cwd, scoped
+    // under the avatar so sessions cannot mix files by accident. Created here
+    // (before the message persist) because file mode stages attachments into it.
+    // External turns run no local workspace, so they don't get a directory.
+    const workspaceDir = workspaceDirFor(
+      config,
+      threadAvatarId,
+      conversationId,
+    );
+    if (!externalAgent) {
+      fs.mkdirSync(workspaceDir, { recursive: true });
+    }
+    store.touchConversation(
+      ownerUserId,
+      conversationId,
+      threadAvatarId,
+      displayMessage,
+      externalAgent ? { externalEndpoint: externalAgent.endpoint } : {},
+    );
+    // Persist the owner's group-knowledge selection now that the row exists, so
+    // it survives reload and applies to later turns until changed again.
+    if (requestedGroupKnowledgeOff) {
+      store.setConversationGroupKnowledgeOff(
+        ownerUserId,
+        conversationId,
+        requestedGroupKnowledgeOff,
+      );
+    }
+    // Persist the chosen model so it survives reload and applies to later
+    // turns until changed. null = client sent nothing → leave the stored value.
+    // Native rows hold a tier alias; external rows hold a gateway model id.
+    if (requestedModel !== null) {
+      store.setConversationModel(
+        ownerUserId,
+        conversationId,
+        requestedModel || null,
+      );
+    }
+    // Persist the chosen effort level (same semantics as the model tier above).
+    if (!externalAgent && requestedEffort !== null) {
+      store.setConversationEffort(
+        ownerUserId,
+        conversationId,
+        requestedEffort || null,
+      );
+    }
+    if (!externalAgent && requestedMcpToolGroups !== null) {
+      store.setConversationMcpToolGroups(
+        ownerUserId,
+        conversationId,
+        requestedMcpToolGroups,
+      );
+    }
+    if (!regenerate) {
+      const saved = saveChatImages(config, conversationId, decodedImages);
+      // The persisted attachments are the same either way — the bubble
+      // renders identically; only the MODEL-facing shape differs.
+      if (imageFileMode) {
+        requestImageFiles = stageChatImageFilesFromAttachments(
+          config,
+          conversationId,
+          workspaceDir,
+          saved.attachments,
+        );
+      } else {
+        requestImages = saved.images;
+      }
+      // A dispatched queued task skips this: the enqueue already stored the
+      // user's message, and re-adding it would double the bubble. The
+      // touchConversation above still ran, so the thread's updated_at moves.
+      if (!ctx.skipUserMessagePersist) {
+        store.addMessage(conversationId, {
+          role: "user",
+          content: displayMessage,
+          attachments: saved.attachments,
+        });
+      }
+    } else {
+      const lastUser = [...priorMessages]
+        .reverse()
+        .find((m) => m.role === "user");
+      // On a text-only turn the attachments resurface as FILES by design (same
+      // staging path as a fresh send), never as image blocks the API would
+      // reject — so a regenerate under a swapped model still sees them.
+      if (turnVisionEnabled) {
+        requestImages = readChatImages(
+          config,
+          conversationId,
+          lastUser?.attachments,
+        );
+      } else {
+        requestImageFiles = stageChatImageFilesFromAttachments(
+          config,
+          conversationId,
+          workspaceDir,
+          lastUser?.attachments,
+        );
+      }
+    }
+    // The SDK session id this run reports (init event); persisted on success so
+    // the next turn can resume it.
+    let runSessionId: string | null = null;
+    // Accumulate the main-agent text as it streams, so the cancel/error paths can
+    // persist the partial the user already watched (not an empty "(중지됨)" stub).
+    let streamedText = "";
+    // Accumulate the main-agent reasoning (extended-thinking) text as it streams,
+    // so it can be persisted on the response (success) and the cancel/error paths.
+    let streamedThinking = "";
+    // Images published by `show_file` during this run. They render live over
+    // SSE and are attached to the terminal assistant message on every exit
+    // path so a reload matches what the user already saw.
+    const shownAttachments: MessageAttachment[] = [];
+    // Browser screenshots auto-shared as file cards this run — own budget,
+    // separate from the share_file/show_file caps (see chatFiles.ts).
+    let sharedScreenshotCount = 0;
+    // Documents the model shared via share_file this run. Counted on its own
+    // rather than off `shownAttachments`, which also carries the screenshot
+    // auto-share's kind:"file" cards — a browsing loop must not spend this cap.
+    let sharedFileCount = 0;
+    // Visual-canvas artifacts (#50) now persist to the dedicated canvas tables as
+    // they are shown (see the onCanvas handler), with version history — they no
+    // longer ride the assistant message's response JSON.
+    // The latest plan the avatar submitted via ExitPlanMode this turn (plan mode).
+    // Persisted on the assistant response so the plan card rebuilds on reload, and
+    // mirrored on the cancel/error paths like canvases. Latest plan of the turn wins.
+    let latestPlan: string | null = null;
+    // Background phase (SDK-native): when the model hands work to a background
+    // task/subagent, the SDK holds the session open past the first `result`,
+    // wakes the model when a task settles, and streams follow-up turns. We
+    // finalize the VISIBLE turn at that first result (persist + done with
+    // `background: true`, run kept open) and deliver each wake-up turn as a
+    // NEW assistant message (`bg_message`). `turnFinalized` marks the phase;
+    // the offsets remember how much of the accumulated stream text/thinking/
+    // attachments was already persisted, so wake-up and cancel/error paths
+    // only carry their own tail.
+    let turnFinalized = false;
+    let persistedTextOffset = 0;
+    let persistedThinkingOffset = 0;
+    let persistedAttachmentsOffset = 0;
+    // How much of `streamedText` was FOLDED into the reasoning view (a newer
+    // text block superseded it — see the onTextFold sinks below). The answer
+    // restarted from this offset, so the cancel/error tails must start here
+    // too or they resurrect narration the live view already moved away.
+    let foldedTextOffset = 0;
+    // The model THIS run actually resolved to (fallback-aware), for the task
+    // card. Kept per-run rather than read back off `observedModel`, which is one
+    // app-wide box every concurrent run overwrites.
+    let observedRunModel: string | null = null;
+    logger.info(
+      {
+        userId: ownerUserId,
+        avatarId: threadAvatarId,
+        conversationId,
+        regenerate,
+      },
+      "chat stream started",
+    );
+
+    // The 409 check at the top of the handler ran BEFORE `await
+    // resolveActiveWorkspaceRepo` (a possible git clone), so a concurrent POST
+    // on this same conversation could have slipped past it. Re-check
+    // synchronously here — openRun below is the real reservation, and there
+    // must be NO `await` between this check and openRun or the race reopens.
+    // The response is still plain JSON (prepareSse runs after openRun). Null
+    // the lock release first: the winning run owns this conversation's
+    // (reentrant, per-conversation) active-repo lock and frees it itself —
+    // releasing it here would yank it from under the winner.
+    const racedRun = getActiveRunForConversation(ownerUserId, conversationId);
+    if (racedRun) {
+      releaseActiveRepoLock = null;
+      return {
+        ok: false,
+        refusal: {
+          status: 409,
+          message: activeRunMessage(racedRun.background),
+          reason: "active_run",
+          // The turn body already wrote the user message above, so a caller
+          // that turns this into a queued task must NOT persist it again.
+          userMessagePersisted: true,
+        },
+      };
+    }
+
+    const abortController = new AbortController();
+    openRun(runId, ownerUserId, {
+      conversationId,
+      avatarId: threadAvatarId,
+      abortController,
+    });
+    // openRun sits BEFORE the run's own try/finally { closeRun }, so guard the
+    // SSE handshake: a throw here (headers already sent, client detached) would
+    // otherwise strand the run in the registry and 409 this conversation for
+    // the whole process lifetime.
+    try {
+      // The HTTP caller switches its response to SSE and attaches here; a
+      // server-started turn just returns true (the registry journals every
+      // event for a viewer who attaches later).
+      if (!hooks.onRunOpen(runId)) {
+        closeRun(runId);
+        return { ok: true };
+      }
+    } catch (err) {
+      closeRun(runId);
+      throw err;
+    }
+
+    // ---- Delegated task bookkeeping (내 봇 threads only) ------------------
+    // Every executed turn in a bot thread IS a task row: the dispatcher hands
+    // us the queued one it popped, an owner message answering a parked question
+    // RESUMES that row, and anything else opens a new one. Best-effort start to
+    // finish — bookkeeping must never take down the turn it is describing.
+    // A box, not a bare `let`: every write happens inside publishBotTask, and a
+    // plain local would stay narrowed to `null` at the read sites below.
+    const botTask: { row: BotTask | null } = { row: null };
+    /**
+     * The ONE place a delegated-task row reaches the client. The frame is
+     * `bot_task`, NOT `task`: `task`/`task_update`/`task_end` already belong to
+     * the SDK activity relay (onTaskStart below), whose client handler keys on
+     * `data.taskId` and drops anything without one. Payload is the whole row —
+     * the client renders the card straight from it.
+     */
+    const publishBotTask = (task: BotTask | null): void => {
+      if (!task) return;
+      botTask.row = task;
+      emitRunEvent(runId, "bot_task", { task });
+    };
+    if (personalAgentHit) {
+      try {
+        const threadTasks = ctx.existingBotTaskId
+          ? []
+          : store.listBotTasksForConversation(conversationId);
+        const parked = threadTasks[threadTasks.length - 1];
+        publishBotTask(
+          ctx.existingBotTaskId
+            ? store.markBotTaskRunning(ctx.existingBotTaskId, runId)
+            : parked?.status === "waiting_input"
+              ? store.markBotTaskRunning(parked.id, runId)
+              : store.createBotTask({
+                  ownerUserId,
+                  agentId: personalAgentHit.agent.id,
+                  conversationId,
+                  title: botTaskTitle(displayMessage),
+                  requestText: displayMessage,
+                  status: "running",
+                  runId,
+                }),
+        );
+      } catch (err) {
+        logger.error(
+          { err, conversationId, runId },
+          "bot task could not be opened for this turn",
+        );
+      }
+      // The dispatcher's row would not go `running`: the owner cancelled it
+      // between the pop and this transition (markBotTaskRunning is guarded on
+      // status and answers null rather than resurrecting a closed task). Run
+      // nothing — untracked unattended work has no stop button anywhere.
+      if (ctx.existingBotTaskId && !botTask.row) {
+        closeRun(runId);
+        return {
+          ok: false,
+          refusal: {
+            status: 409,
+            message: "이미 종료된 작업입니다.",
+            reason: "task_gone",
+          },
+        };
+      }
+    }
+    /**
+     * Close the task out at a turn boundary. The DONE path re-reads the row
+     * first: the bot may have written `reported_outcome` mid-run via
+     * `mcp__personal_agent__report_task`, and `need_input` PARKS the task for
+     * the owner's answer instead of terminating it. `model` is omitted when the
+     * run never reported one, so a resume can't blank the stored value.
+     */
+    const settleBotTask = (
+      kind: "done" | "cancelled" | "failed",
+      error?: string,
+    ): void => {
+      const pending = botTask.row;
+      if (!pending) return;
+      try {
+        const model = observedRunModel ? { model: observedRunModel } : {};
+        if (kind !== "done") {
+          publishBotTask(
+            store.finishBotTask(pending.id, {
+              status: kind,
+              ...(kind === "failed" ? { error: error ?? null } : {}),
+              ...model,
+            }),
+          );
+          return;
+        }
+        const current = store.getBotTask(pending.id) ?? pending;
+        publishBotTask(
+          store.finishBotTask(pending.id, {
+            status:
+              current.reportedOutcome === "need_input" ? "waiting_input" : "done",
+            ...model,
+          }),
+        );
+      } catch (err) {
+        logger.error({ err, taskId: pending.id }, "bot task finalize failed");
+      }
+    };
+    // Unattended turn (the dispatcher started it, nobody can press stop): a hung
+    // SDK call must not pin this thread's whole queue. Owner-typed turns stay
+    // un-deadlined — the stop button already is the deadline.
+    let timedOut = false;
+    const deadline = ctx.unattendedDeadlineMs
+      ? setTimeout(() => {
+          timedOut = true;
+          abortController.abort();
+        }, ctx.unattendedDeadlineMs)
+      : undefined;
+
+    try {
+      if (externalAgent) {
+        // External avatars are conversation-stateless and run their own tool
+        // stack behind the gateway. Do not resolve local plugins, knowledge,
+        // MCP servers, repos, workspaces, or SDK sessions. The one local
+        // setting that DOES apply is the viewer-picked gateway model id
+        // (this turn's pick, else the stored per-conversation choice); the
+        // admin-configured model stays the default when neither is set.
+        const selectedExternalModel =
+          requestedModel === null
+            ? store.getConversationModel(ownerUserId, conversationId)
+            : requestedModel || null;
+        const response = await runExternalAgent(
+          {
+            message: agentMessage,
+            conversationHistory,
+          },
+          selectedExternalModel
+            ? { ...externalAgent, model: selectedExternalModel }
+            : externalAgent,
+          {
+            onDelta: (text) => {
+              streamedText += text;
+              emitRunEvent(runId, "delta", { text });
+            },
+            onThinking: (text) => {
+              streamedThinking += text;
+              emitRunEvent(runId, "thinking", { text });
+            },
+            onTextFold: (text) => {
+              // Demoted narration joins the reasoning stream (persisted as
+              // response.thinking)…
+              streamedThinking += (streamedThinking ? "\n\n" : "") + text;
+              // …and leaves the answer: cancel/error tails must not resurrect it.
+              foldedTextOffset = streamedText.length;
+              // Anchors index into the answer text, and the answer just
+              // restarted from empty — every stamped card now belongs before
+              // the new tail.
+              for (const attachment of shownAttachments) {
+                if (typeof attachment.anchor === "number") attachment.anchor = 0;
+              }
+              emitRunEvent(runId, "text_fold", {});
+            },
+            onStatus: (label) => {
+              emitRunEvent(runId, "status", { label });
+            },
+            // onModel and onSessionId are intentionally OMITTED for external
+            // runs: external Gateway telemetry must not overwrite the local SDK
+            // model shown in the admin system overview, and a gateway SDK
+            // session id must never become Noah continuation state
+            // (runExternalAgent nulls onSessionId regardless). runSessionId
+            // stays null here and the external branch returns before any reader,
+            // so no handler is wired.
+            onPlugin: (event) => {
+              emitRunEvent(runId, "plugin", event);
+            },
+            onToolStart: (event) => {
+              emitRunEvent(runId, "tool", event);
+            },
+            onToolEnd: (event) => {
+              emitRunEvent(runId, "tool_end", event);
+            },
+            onTaskStart: (event) => {
+              emitRunEvent(runId, "task", event);
+            },
+            onTaskUpdate: (event) => {
+              emitRunEvent(runId, "task_update", event);
+            },
+            onTaskEnd: (event) => {
+              emitRunEvent(runId, "task_end", event);
+            },
+            onAgentStart: (event) => {
+              emitRunEvent(runId, "agent", event);
+            },
+            onAgentEnd: (event) => {
+              emitRunEvent(runId, "agent_end", event);
+            },
+            onBlocked: (event) => {
+              emitRunEvent(runId, "blocked", event);
+            },
+            onMemory: (event) => {
+              // Stable id: an SSE reattach replays the whole event log, and
+              // the client dedupes 기억 rows by this id.
+              emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
+            },
+            onCompact: (event) => {
+              emitRunEvent(runId, "compact", { id: crypto.randomUUID(), ...event });
+            },
+            onPlan: (event) => {
+              if (event.plan) latestPlan = event.plan;
+              emitRunEvent(runId, "plan", {
+                plan: event.plan,
+                planning: event.planning ?? false,
+              });
+            },
+          } satisfies AgentEvents,
+          abortController,
+        );
+        if (latestPlan) response.plan = latestPlan;
+        if (streamedThinking) response.thinking = streamedThinking;
+
+        const assistantMessage =
+          store.conversationOwner(conversationId) === ownerUserId
+            ? store.addMessage(conversationId, {
+                role: "assistant",
+                content: response.text || response.summary,
+                response,
+              })
+            : null;
+        audit({
+          action: "chat",
+          detail: `chat with ${threadAvatarLabel} (${response.runtime})`,
+        });
+        logger.info(
+          {
+            userId: ownerUserId,
+            avatarId: threadAvatarId,
+            conversationId,
+            runtime: response.runtime,
+            durationMs: Date.now() - chatStart,
+          },
+          "external chat completed",
+        );
+        emitRunEvent(runId, "done", { message: assistantMessage, response });
+        return { ok: true };
+      }
+
+      // Load plugin roots (read-only): default plugins + the avatar's own + its
+      // personal knowledge repo + group knowledge repos. Shared with the routine
+      // scheduler via `loadAgentPluginRoots` so the two can't drift. Tolerate
+      // clone/resolve fails.
+      const pluginWarnings: string[] = [];
+      // Owner-only per-conversation group-knowledge toggle: skip the OFF groups'
+      // skills AND their CLAUDE.md. Use this turn's selection when the client sent
+      // one, else the stored set. Colleague turns ignore the toggle (always ON).
+      const disabledGroupIds = viewerIsOwner
+        ? new Set(
+            requestedGroupKnowledgeOff ??
+              store.getConversationGroupKnowledgeOff(
+                ownerUserId,
+                conversationId,
+              ),
+          )
+        : new Set<string>();
+      // Model tier for this turn: this turn's pick if the client sent one ("" =
+      // explicit reset to default), else the stored value. Ignored downstream when
+      // ANTHROPIC_MODEL pins a model (env pin is a hard lock).
+      const conversationModelTier =
+        requestedModel === null
+          ? store.getConversationModel(ownerUserId, conversationId)
+          : requestedModel || null;
+      // Effort for this turn: this turn's pick if sent ("" = reset to default),
+      // else the stored value. Mirrors the model tier resolution above.
+      const conversationEffort =
+        requestedEffort === null
+          ? store.getConversationEffort(ownerUserId, conversationId)
+          : requestedEffort || null;
+      // Group-agent runs load ONLY the owning group's repo (with the acting
+      // member's tokens) + defaults; native runs load the avatar's full set.
+      const pluginRoots = groupAgentHit
+        ? await loadGroupAgentPluginRoots(
+            store,
+            groupAgentHit.groupId,
+            ownerUserId,
+            config,
+            (warn) => pluginWarnings.push(warn),
+          )
+        : await loadAgentPluginRoots(
+            store,
+            avatar.id,
+            config,
+            (warn) => pluginWarnings.push(warn),
+            { disabledGroupIds },
+          );
+      // Standing CLAUDE.md memory (personal repo always; group repos gated by the
+      // toggle). Read after plugin roots ensured the clones for this turn.
+      const knowledgeMemory = groupAgentHit
+        ? await loadGroupAgentKnowledgeMemory(
+            store,
+            groupAgentHit.groupId,
+            config,
+          )
+        : await loadKnowledgeRepoMemory(store, avatar.id, config, {
+            disabledGroupIds,
+          });
+
+      for (const warn of pluginWarnings) {
+        emitRunEvent(runId, "status", { label: `플러그인 경고: ${warn}` });
+      }
+
+      const response = await runAgentStream(
+        {
+          message: agentMessage,
+          // A bot speaks as ITSELF while running with the OWNER's
+          // capability: the id stays the owner's (every capability key in
+          // runPlan reads it, and AgentOwner resolves commit identity from
+          // that user row) while only the conversational identity moves to
+          // the bot. `personalAgentState` carries no persona TEXT, so this
+          // is the ONLY channel a bot's persona can reach the prompt on.
+          // `??`, not `||`: an EMPTY bot alias/persona must stay empty
+          // rather than inherit the owner's — a persona-less bot must never
+          // recite its owner's persona as its own instructions.
+          avatar: {
+            id: avatar.id,
+            displayName:
+              personalAgentHit?.agent.displayName ?? avatar.displayName,
+            alias: personalAgentHit?.agent.alias ?? avatar.alias,
+            persona: personalAgentHit?.agent.persona ?? avatar.persona,
+          },
+          // Lets in-process tools (open_repo/close_repo) key the working-repo
+          // selection to this conversation.
+          conversationId,
+          // Working repository: the opened repo's clone becomes the cwd and the
+          // per-conversation scratch dir is exposed as an additional writable dir.
+          cwd: activeRepoCwd ?? workspaceDir,
+          additionalDirs: activeRepoCwd ? [workspaceDir] : undefined,
+          // Noah's own public origin, so copy_image can hand the agent an
+          // absolute clipboard-staging URL to open with new_tab. Derived
+          // from THIS request to match the origin the user's browser is on.
+          appOrigin: ctx.appOrigin,
+          // The bridge drives THIS browser, so its UA is the only platform
+          // signal we have for the paste shortcut (Cmd+V vs Ctrl+V).
+          viewerPlatform: ctx.viewerPlatform,
+          activeRepoName: activeRepoName ?? undefined,
+          resumeSessionId,
+          conversationHistory,
+          images: requestImages.length ? requestImages : undefined,
+          // Text-only turn: the model gets the staged file PATHS in the user
+          // prompt instead of image content blocks.
+          imageFiles: requestImageFiles.length
+            ? requestImageFiles
+            : undefined,
+          modelTier: conversationModelTier ?? undefined,
+          effort: conversationEffort ?? undefined,
+          mcpToolGroups: effectiveMcpToolGroupsForRun,
+          viewerUserId: ownerUserId,
+          viewerName: ctx.ownerDisplayName,
+          viewerIsOwner,
+          knowledgeMemory,
+          // Elevated tool permissions for the owner OR a trusted user. The tool
+          // gate denies everyone else, so auto-approving the elevated path is safe.
+          // (Group-agent runs carry capability via `groupAgent` instead.)
+          elevated: elevatedViewer,
+          // WHY a non-owner viewer is elevated, when group co-membership is the
+          // source: the shared group names surface in the prompt (META-COGNITION).
+          trustedViaGroups:
+            groupAgentHit || ownerUserId === avatar.id
+              ? []
+              : store.sharedGroupNames(ownerUserId, avatar.id),
+          // Group shared-agent run kind: pins the run to ONE group's
+          // resources and carries the acting member's role/capture right.
+          groupAgent: groupAgentHit
+            ? {
+                groupId: groupAgentHit.groupId,
+                agentId: groupAgentHit.agent.id,
+                groupName: groupAgentHit.groupName,
+                viewerRole: groupAgentHit.viewerRole,
+                captureAllowed: groupAgentCaptureAllowed(
+                  groupAgentHit.agent,
+                  groupAgentHit.viewerRole,
+                ),
+              }
+            : undefined,
+          // Personal-agent run kind: IDENTITY only (prompt/self-config/
+          // describe_system). Capability stays the owner's — `avatar` above
+          // is the owner's own row and `groupAgent` must stay unset, or the
+          // run loses the owner tools this bot is meant to have.
+          personalAgent: personalAgentHit
+            ? {
+                agentId: personalAgentHit.agent.id,
+                ownerUserId: ownerUserId,
+                // Lets the bot report on ITS OWN task (report_task) without the
+                // model having to be told which row it is working. Bookkeeping,
+                // never capability — same contract as the parent field.
+                ...(botTask.row ? { taskId: botTask.row.id } : {}),
+              }
+            : undefined,
+          autoApprove: true,
+          // Unattended delegated work falls down the tier chain on a transient
+          // model failure, exactly like a routine — there is no live viewer to
+          // hand the "try another model" nudge to.
+          ...(ctx.modelFallback ? { modelFallback: true } : {}),
+        },
+        pluginRoots,
+        config,
+        store,
+        {
+          onDelta: (text) => {
+            streamedText += text;
+            emitRunEvent(runId, "delta", { text });
+          },
+          onThinking: (text) => {
+            streamedThinking += text;
+            emitRunEvent(runId, "thinking", { text });
+          },
+          // Empty-turn retry: drop the discarded attempt's reasoning so the kept
+          // turn's thinking isn't shown/persisted glued onto the throwaway one.
+          onThinkingReset: () => {
+            streamedThinking = "";
+            emitRunEvent(runId, "thinking_reset", {});
+          },
+          // A newer text block superseded the answer streamed so far: the
+          // interim narration is demoted to the reasoning view so the bubble
+          // keeps only the LAST block, and nothing is lost.
+          onTextFold: (text) => {
+            // Demoted narration joins the reasoning stream (persisted as
+            // response.thinking)…
+            streamedThinking += (streamedThinking ? "\n\n" : "") + text;
+            // …and leaves the answer: cancel/error tails must not resurrect it.
+            foldedTextOffset = streamedText.length;
+            // Anchors index into the answer text, and the answer just
+            // restarted from empty — every stamped card now belongs before
+            // the new tail.
+            for (const attachment of shownAttachments) {
+              if (typeof attachment.anchor === "number") attachment.anchor = 0;
+            }
+            emitRunEvent(runId, "text_fold", {});
+          },
+          onStatus: (label) => {
+            emitRunEvent(runId, "status", { label });
+          },
+          onModel: (model) => {
+            observedModel.set(model);
+            observedRunModel = model;
+          },
+          onSessionId: (sessionId) => {
+            runSessionId = sessionId;
+          },
+          onPlugin: (event) => {
+            emitRunEvent(runId, "plugin", {
+              status: event.status,
+              name: event.name,
+            });
+          },
+          onToolStart: (event) => {
+            emitRunEvent(runId, "tool", event);
+          },
+          onToolEnd: (event) => {
+            emitRunEvent(runId, "tool_end", event);
+          },
+          onTaskStart: (event) => {
+            emitRunEvent(runId, "task", event);
+          },
+          onTaskUpdate: (event) => {
+            emitRunEvent(runId, "task_update", event);
+          },
+          onTaskEnd: (event) => {
+            emitRunEvent(runId, "task_end", event);
+          },
+          onAgentStart: (event) => {
+            emitRunEvent(runId, "agent", event);
+          },
+          onAgentEnd: (event) => {
+            emitRunEvent(runId, "agent_end", event);
+          },
+          // Live background-task set (REPLACE semantics). Relayed so the
+          // client can show a "백그라운드 작업 진행 중" indicator, and mirrored
+          // onto the run snapshot so reloads/new-POST 409s know the state.
+          onBackgroundTasks: (event) => {
+            if (turnFinalized) {
+              markRunBackground(runId, event.tasks.length);
+            }
+            emitRunEvent(runId, "bg_tasks", { tasks: event.tasks });
+          },
+          // Result boundary. First boundary with live background tasks →
+          // finalize the visible turn NOW (persist + done{background:true})
+          // while the SDK session keeps running underneath; every later
+          // boundary is a wake-up turn delivered as a NEW assistant message.
+          onTurnResult: (segment) => {
+            if (!turnFinalized) {
+              if (segment.backgroundTasks.length === 0) {
+                return; // normal turn — the post-await done path handles it
+              }
+              turnFinalized = true;
+              markRunBackground(runId, segment.backgroundTasks.length);
+              // Persist the session id NOW: the phase can outlive tab
+              // closes, and the next turn must resume this transcript.
+              if (runSessionId) {
+                store.setAgentSessionId(
+                  ownerUserId,
+                  conversationId,
+                  runSessionId,
+                );
+              }
+              const segResponse: AgentResponse = {
+                kind: "text",
+                runtime: config.agentRuntime,
+                summary: "Claude Agent SDK 실행이 완료되었습니다.",
+                text: segment.text || "백그라운드 작업을 진행 중입니다.",
+                ...(latestPlan ? { plan: latestPlan } : {}),
+                ...(streamedThinking ? { thinking: streamedThinking } : {}),
+                ...(segment.usage ? { usage: segment.usage } : {}),
+              };
+              const message =
+                store.conversationOwner(conversationId) === ownerUserId
+                  ? store.addMessage(conversationId, {
+                      role: "assistant",
+                      content: segResponse.text,
+                      response: segResponse,
+                      attachments: shownAttachments.slice(),
+                    })
+                  : null;
+              persistedTextOffset = streamedText.length;
+              persistedThinkingOffset = streamedThinking.length;
+              persistedAttachmentsOffset = shownAttachments.length;
+              emitRunEvent(runId, "done", {
+                message,
+                response: segResponse,
+                background: true,
+                tasks: segment.backgroundTasks,
+              });
+              return;
+            }
+            // Wake-up turn finished → its own assistant message. Skip pure
+            // bookkeeping boundaries (no text, no new attachments).
+            const text = segment.text.trim();
+            const thinkingTail = streamedThinking.slice(persistedThinkingOffset);
+            const attachmentsTail = shownAttachments.slice(persistedAttachmentsOffset);
+            persistedTextOffset = streamedText.length;
+            persistedThinkingOffset = streamedThinking.length;
+            persistedAttachmentsOffset = shownAttachments.length;
+            if (!text && attachmentsTail.length === 0) {
+              return;
+            }
+            const segResponse: AgentResponse = {
+              kind: "text",
+              runtime: config.agentRuntime,
+              summary: "백그라운드 작업 보고",
+              text: text || "(백그라운드 작업이 종료되었습니다.)",
+              ...(thinkingTail ? { thinking: thinkingTail } : {}),
+              ...(segment.usage ? { usage: segment.usage } : {}),
+            };
+            const message =
+              store.conversationOwner(conversationId) === ownerUserId
+                ? store.addMessage(conversationId, {
+                    role: "assistant",
+                    content: segResponse.text,
+                    response: segResponse,
+                    attachments: attachmentsTail,
+                  })
+                : null;
+            if (message) {
+              emitRunEvent(runId, "bg_message", { message });
+            }
+          },
+          onBlocked: (event) => {
+            emitRunEvent(runId, "blocked", event);
+          },
+          onMemory: (event) => {
+            // Stable id: an SSE reattach replays the whole event log, and
+            // the client dedupes 기억 rows by this id.
+            emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
+          },
+          // Compaction happened (or failed). Same id discipline as 기억 —
+          // a reattach replays the log and the client dedupes on it.
+          onCompact: (event) => {
+            emitRunEvent(runId, "compact", { id: crypto.randomUUID(), ...event });
+          },
+          // Plan mode: the avatar submitted a plan via ExitPlanMode. Surface it as
+          // a dedicated plan card (display-only) and keep the latest one to persist
+          // on the assistant response so it rebuilds on reload.
+          onPlan: (event) => {
+            // EnterPlanMode emits an empty-plan "planning" signal; only a real plan
+            // (ExitPlanMode) is worth persisting on the response.
+            if (event.plan) latestPlan = event.plan;
+            emitRunEvent(runId, "plan", {
+              plan: event.plan,
+              planning: event.planning ?? false,
+            });
+          },
+          // Interactive plan approval (owner only). The avatar proposed a plan
+          // via ExitPlanMode; park the run and emit the plan to the client,
+          // which shows approve/reject controls on the plan card. Approve →
+          // the avatar implements; reject → feed the feedback back so it revises.
+          onPlanReview: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            emitRunEvent(runId, "plan_review", {
+              runId,
+              requestId,
+              plan: requestData.plan,
+            });
+            const answer = await awaitResponse(runId, requestId);
+            if (answer === CANCELLED) {
+              // Run ended / cancelled / timed out before an answer: treat as a
+              // rejection (no feedback) so the avatar never barrels ahead with
+              // an unapproved plan.
+              return { behavior: "rejected" };
+            }
+            const reply = answer as { behavior?: string; feedback?: string };
+            return reply?.behavior === "approved"
+              ? { behavior: "approved" }
+              : { behavior: "rejected", feedback: reply?.feedback };
+          },
+          // Interactive permission prompt (owner only — see claudeAgent).
+          onPermission: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            emitRunEvent(runId, "permission", {
+              runId,
+              requestId,
+              ...requestData,
+            });
+            const answer = await awaitResponse(runId, requestId);
+            if (answer === CANCELLED) {
+              // TTL expiry / stop / run end — nobody clicked anything.
+              // Marked so the hook doesn't misreport it as a user refusal.
+              return { behavior: "deny", unanswered: true };
+            }
+            return (answer as { behavior: "allow" }).behavior === "allow"
+              ? { behavior: "allow" }
+              : { behavior: "deny" };
+          },
+          // AskUserQuestion (and other request_user_dialog kinds).
+          onQuestion: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            emitRunEvent(runId, "question", {
+              runId,
+              requestId,
+              dialogKind: requestData.dialogKind,
+              payload: requestData.payload,
+            });
+            const answer = await awaitResponse(runId, requestId);
+            if (answer === CANCELLED) {
+              return { behavior: "cancelled" };
+            }
+            const reply = answer as { cancelled?: boolean; result?: unknown };
+            if (reply?.cancelled) {
+              return { behavior: "cancelled" };
+            }
+            return { behavior: "completed", result: reply?.result };
+          },
+          // Visual canvas (experimental `canvas` feature, #50). Mirror the
+          // question wiring: emit the artifact over SSE, and when controls were
+          // declared (awaitInput) park the run until the user submits via
+          // /api/chat/respond. Always record the artifact so it persists.
+          onCanvas: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            const {
+              artifactId,
+              title,
+              content,
+              contentType,
+              controls,
+              interaction,
+              editable,
+            } = requestData;
+            emitRunEvent(runId, "canvas", {
+              runId,
+              requestId,
+              artifactId,
+              title,
+              content,
+              contentType,
+              // Pass controls WHENEVER present (not only when blocking) so an async
+              // canvas's form still renders client-side.
+              controls: controls ?? null,
+              interaction: interaction ?? null,
+              editable: Boolean(editable),
+            });
+            const record = (submittedValues?: Record<string, unknown>) => {
+              // Persist to the dedicated canvas tables (version history). Refining
+              // the same id appends a version; an unchanged re-show just refreshes
+              // the submission.
+              store.upsertCanvasArtifact(ownerUserId, conversationId, {
+                artifactId,
+                title,
+                content,
+                contentType,
+                controls,
+                submittedValues,
+                interaction,
+                editable,
+              });
+            };
+            if (!requestData.awaitInput) {
+              record();
+              return { behavior: "shown" };
+            }
+            const answer = await awaitResponse(runId, requestId);
+            if (answer === CANCELLED) {
+              record();
+              return { behavior: "cancelled" };
+            }
+            const reply = answer as {
+              cancelled?: boolean;
+              deleteCanvas?: boolean;
+              values?: Record<string, unknown>;
+            };
+            if (reply?.deleteCanvas) {
+              store.deleteCanvasArtifact(ownerUserId, artifactId);
+              return { behavior: "cancelled" };
+            }
+            if (reply?.cancelled) {
+              record();
+              return { behavior: "cancelled" };
+            }
+            record(reply?.values ?? {});
+            return { behavior: "submitted", values: reply?.values ?? {} };
+          },
+          // Browser bridge. Same emit-and-park shape as onCanvas, but the
+          // responder is the user's browser extension, not a person: park
+          // for BROWSER_OP_TTL_MS, and read a silent timeout as "the bridge
+          // isn't there" rather than "the user declined".
+          onBrowser: async (requestData) => {
+            const requestId = crypto.randomUUID();
+            emitRunEvent(runId, "browser", {
+              runId,
+              requestId,
+              op: requestData.op,
+              url: requestData.url ?? null,
+              uid: requestData.uid ?? null,
+              x: typeof requestData.x === "number" ? requestData.x : null,
+              y: typeof requestData.y === "number" ? requestData.y : null,
+              xFraction:
+                typeof requestData.xFraction === "number" ? requestData.xFraction : null,
+              yFraction:
+                typeof requestData.yFraction === "number" ? requestData.yFraction : null,
+              text: requestData.text ?? null,
+              submit: Boolean(requestData.submit),
+              clear: Boolean(requestData.clear),
+              keystrokes: Boolean(requestData.keystrokes),
+              key: requestData.key ?? null,
+              modifiers: requestData.modifiers ?? null,
+              repeat: requestData.repeat ?? null,
+              direction: requestData.direction ?? null,
+              pixels: requestData.pixels ?? null,
+              accept: typeof requestData.accept === "boolean" ? requestData.accept : null,
+              promptText: requestData.promptText ?? null,
+              textGone: requestData.textGone ?? null,
+              timeoutS: requestData.timeoutS ?? null,
+              tabId: requestData.tabId ?? null,
+              fields: requestData.fields ?? null,
+              option: requestData.option ?? null,
+              fullPage: typeof requestData.fullPage === "boolean" ? requestData.fullPage : null,
+              offset: requestData.offset ?? null,
+              expand: typeof requestData.expand === "boolean" ? requestData.expand : null,
+              maxChars: typeof requestData.maxChars === "number" ? requestData.maxChars : null,
+            });
+            const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
+            if (answer === CANCELLED) {
+              return {
+                behavior: "error",
+                message:
+                  "The browser bridge did not respond. The Noah tab may be closed, the extension may not be installed, or no tab is attached. " +
+                  "Ask the user to open Noah in the browser you should drive and attach a tab, then retry — there is no other way to reach their browser.",
+              };
+            }
+            const reply = answer as {
+              ok?: boolean;
+              message?: string;
+              snapshot?: string;
+              snapshotError?: string;
+              note?: string;
+              url?: string;
+              title?: string;
+              tabs?: BrowserTab[];
+              dialog?: { type?: string; message?: string; defaultPrompt?: string };
+              imageBase64?: string;
+              imageMimeType?: string;
+              landedOn?: string;
+              pageText?: string;
+              pageTextOffset?: number;
+              pageTextTotal?: number;
+            };
+            if (!reply?.ok) {
+              const raw =
+                reply?.message ||
+                "The browser extension refused the operation without a reason. Report this to the user rather than retrying.";
+              // "Unsupported operation" is the OLD extension build's
+              // catch-all for an op it predates. The old build cannot
+              // explain itself, so translate here: without this the model
+              // retries other new ops and fails the same way.
+              const message = /unsupported operation/i.test(raw)
+                ? `${raw} The browser extension installed in the user's browser is an OLDER build than this server, so it does not know this operation (and will refuse every other recently added one too). Tell the user to update it: download the extension zip again from 설정 → 접근/보안 → 브라우저 브릿지, replace the previously loaded folder's contents, then press the reload (↻) button on that extension's card in the browser's extensions page (chrome://extensions, or edge://extensions on Edge) — the card must show the new version number afterwards. Until then, use only snapshot/navigate/click/type and the tab tools.`
+                : raw;
+              return { behavior: "error", message };
+            }
+            // Audit every ACTION against the user's live session, plus the
+            // DELIBERATE reads (screenshot/read_text — the exfiltration
+            // surface an admin wants rows for). `snapshot` and `wait_for`
+            // are skipped: both fire between every step, so they would
+            // bury the rows that matter.
+            // URLs are scrubbed of userinfo and query string — an audit row
+            // is admin-visible and a query string routinely carries tokens.
+            if (requestData.op !== "snapshot" && requestData.op !== "wait_for") {
+              audit({
+                action: `browser_${requestData.op}`,
+                detail: [
+                  `op=${requestData.op}`,
+                  requestData.uid ? `uid=${requestData.uid}` : "",
+                  typeof requestData.x === "number" && typeof requestData.y === "number"
+                    ? `at=(${requestData.x},${requestData.y})`
+                    : "",
+                  // click_at's uid mode: the point is relative to the
+                  // element above, so the row needs both to be readable.
+                  typeof requestData.xFraction === "number" &&
+                  typeof requestData.yFraction === "number"
+                    ? `rel=(${requestData.xFraction},${requestData.yFraction})`
+                    : "",
+                  requestData.key
+                    ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`
+                    : "",
+                  requestData.fields ? `fields=${requestData.fields.length}` : "",
+                  requestData.option ? `option=${requestData.option.slice(0, 80)}` : "",
+                  // A type that REPLACED what the field held, rather than
+                  // adding to it — the destructive half of the same op.
+                  requestData.clear ? "clear" : "",
+                  requestData.expand ? "expand" : "",
+                  `url=${scrubAuditUrl(reply.url || requestData.url)}`,
+                ]
+                  .filter(Boolean)
+                  .join(" "),
+              });
+            }
+            // The screenshot rides the parked reply as base64. Bound it
+            // here — a runaway payload must fail the one tool call, not
+            // balloon the model turn.
+            if (typeof reply.imageBase64 === "string" && reply.imageBase64.length > 8_000_000) {
+              return {
+                behavior: "error",
+                message:
+                  "The screenshot was too large to relay. Capture a smaller area: the viewport (no fullPage) or a single element via uid.",
+              };
+            }
+            // Screenshot auto-share: the model sees the capture — persist
+            // the SAME bytes for the user as a download card + hidden
+            // preview slide (the card+panel shape share_file produces), so
+            // the user can open exactly what the avatar looked at, live
+            // and after reload. Best-effort BY DESIGN: a publish failure
+            // must not fail the tool call, and the note keeps the model's
+            // self-knowledge honest about whether the user got a copy.
+            let shareNote: string | undefined;
+            let sharedAttachments: MessageAttachment[] | undefined;
+            if (
+              requestData.op === "screenshot" &&
+              typeof reply.imageBase64 === "string" &&
+              reply.imageBase64
+            ) {
+              if (sharedScreenshotCount >= MAX_SHARED_SCREENSHOTS_PER_MESSAGE) {
+                shareNote = `This capture was NOT shared with the user — this turn already shared ${MAX_SHARED_SCREENSHOTS_PER_MESSAGE} screenshots. The user has not seen it; continue in the next turn if they need it.`;
+              } else if (store.conversationOwner(conversationId) !== ownerUserId) {
+                shareNote =
+                  "This capture was NOT shared with the user: the conversation no longer exists.";
+              } else {
+                const published = publishBrowserScreenshot(
+                  config,
+                  conversationId,
+                  Buffer.from(reply.imageBase64, "base64"),
+                  typeof reply.title === "string" ? reply.title : undefined,
+                );
+                if ("error" in published) {
+                  shareNote =
+                    "This capture could NOT be shared with the user as a file card — the user has not seen it.";
+                } else {
+                  sharedScreenshotCount += 1;
+                  sharedAttachments = [published.file, published.slide];
+                  for (const attachment of sharedAttachments) {
+                    shownAttachments.push(attachment);
+                    emitRunEvent(runId, "file", { runId, attachment });
+                  }
+                  shareNote =
+                    "This capture was also shared with the user as a file card in the chat (it opens in the preview panel), so they can already see it — no need to re-send or exhaustively re-describe it.";
+                }
+              }
+            }
+            return {
+              behavior: "ok",
+              shareNote,
+              sharedAttachments,
+              // Every field below is UNTRUSTED extension input that rides into
+              // the model turn, and this route is the PRIMARY size gate
+              // (browserTools.report adds only a model-facing snapshot cap for
+              // old extension builds). Bound each explicitly and shape-validate
+              // tabs[] so a hostile/oversized reply can't blow up the turn or
+              // smuggle an unbounded payload.
+              snapshot:
+                typeof reply.snapshot === "string" ? reply.snapshot.slice(0, 200_000) : undefined,
+              // Why the post-action snapshot is missing. One line, not a
+              // stack: it rides into the model turn like everything else.
+              snapshotError:
+                typeof reply.snapshotError === "string"
+                  ? reply.snapshotError.slice(0, 1_000)
+                  : undefined,
+              // A bridge-authored caveat about the op's outcome (a repaired
+              // or unverifiable clear). Short by construction on the
+              // extension side; bounded here because it lands OUTSIDE the
+              // untrusted wrapper, where a long one would read as ours.
+              note:
+                typeof reply.note === "string" && reply.note
+                  ? reply.note.slice(0, 500)
+                  : undefined,
+              url: typeof reply.url === "string" ? reply.url.slice(0, 4_000) : undefined,
+              title: typeof reply.title === "string" ? reply.title.slice(0, 2_000) : undefined,
+              tabs: Array.isArray(reply.tabs)
+                ? reply.tabs.slice(0, 100).flatMap((t: unknown) => {
+                    if (!t || typeof t !== "object") return [];
+                    const tab = t as {
+                      tabId?: unknown;
+                      title?: unknown;
+                      url?: unknown;
+                      current?: unknown;
+                    };
+                    if (typeof tab.tabId !== "string") return [];
+                    return [
+                      {
+                        tabId: tab.tabId.slice(0, 200),
+                        title: typeof tab.title === "string" ? tab.title.slice(0, 300) : "",
+                        url: typeof tab.url === "string" ? tab.url.slice(0, 2_000) : "",
+                        current: tab.current === true,
+                      },
+                    ];
+                  })
+                : undefined,
+              dialog:
+                reply.dialog && typeof reply.dialog.message === "string"
+                  ? {
+                      type: typeof reply.dialog.type === "string" ? reply.dialog.type : "alert",
+                      message: reply.dialog.message,
+                      defaultPrompt:
+                        typeof reply.dialog.defaultPrompt === "string"
+                          ? reply.dialog.defaultPrompt
+                          : undefined,
+                    }
+                  : undefined,
+              image:
+                typeof reply.imageBase64 === "string" && reply.imageBase64
+                  ? {
+                      base64: reply.imageBase64,
+                      // Whitelisted mime types only — this string lands in an
+                      // API image block, and the extension is semi-trusted.
+                      mimeType:
+                        reply.imageMimeType === "image/png" || reply.imageMimeType === "image/webp"
+                          ? reply.imageMimeType
+                          : "image/jpeg",
+                    }
+                  : undefined,
+              // Bounded: a one-line element description, not a page dump —
+              // the extension is semi-trusted and this rides into the model.
+              landedOn:
+                typeof reply.landedOn === "string" && reply.landedOn
+                  ? reply.landedOn.slice(0, 300)
+                  : undefined,
+              pageText:
+                typeof reply.pageText === "string"
+                  ? {
+                      text: reply.pageText.slice(0, 200_000),
+                      offset:
+                        typeof reply.pageTextOffset === "number" && reply.pageTextOffset >= 0
+                          ? reply.pageTextOffset
+                          : 0,
+                      total:
+                        typeof reply.pageTextTotal === "number" && reply.pageTextTotal >= 0
+                          ? reply.pageTextTotal
+                          : reply.pageText.length,
+                    }
+                  : undefined,
+            };
+          },
+          onFile: async (requestData) => {
+            // Separate per-turn caps: visible images guard the bubble from
+            // spam; hidden publishes (canvas slide embeds) only cost disk,
+            // so a whole deck fits in one turn.
+            const visibleImages = shownAttachments.filter(
+              (a) => a.kind === "image" && !a.hidden,
+            ).length;
+            const hiddenImages = shownAttachments.filter(
+              (a) => a.kind === "image" && a.hidden,
+            ).length;
+            if (requestData.hidden && hiddenImages >= MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE) {
+              return {
+                behavior: "error",
+                message: `This turn already published ${MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE} hidden images. Reuse the URLs you already have or continue in the next turn.`,
+              };
+            }
+            if (!requestData.hidden && visibleImages >= MAX_CHAT_IMAGES_PER_MESSAGE) {
+              return {
+                behavior: "error",
+                message: `This turn already showed ${MAX_CHAT_IMAGES_PER_MESSAGE} images. Do not show more in the same response.`,
+              };
+            }
+            if (store.conversationOwner(conversationId) !== ownerUserId) {
+              return {
+                behavior: "error",
+                message: "The conversation no longer exists, so the image cannot be shown.",
+              };
+            }
+            const result = publishWorkspaceImage(
+              config,
+              conversationId,
+              requestData.path,
+              [activeRepoCwd ?? workspaceDir, ...(activeRepoCwd ? [workspaceDir] : [])],
+              requestData.caption,
+            );
+            if ("error" in result) {
+              const messages = {
+                OUTSIDE_WORKSPACE: "The image path must stay inside the current working directory or conversation scratch workspace. Do not use Read on the image. Copy it into the current directory with Bash (for example: cp /tmp/image.png \"$PWD/image.png\"), then retry show_file with ./image.png.",
+                NOT_FOUND: "The image file does not exist.",
+                NOT_FILE: "The supplied path is not a regular file.",
+                EMPTY: "The image file is empty.",
+                TOO_LARGE: "The image is larger than the 5 MB limit.",
+                UNSUPPORTED: "Unsupported image format. show_file accepts PNG, JPEG, WebP, or GIF files whose bytes match the format.",
+                READ_FAILED: "The image file could not be read.",
+              } as const;
+              return { behavior: "error", message: messages[result.error] };
+            }
+            const attachment = requestData.hidden
+              ? { ...result.attachment, hidden: true }
+              : result.attachment;
+            shownAttachments.push(attachment);
+            emitRunEvent(runId, "file", {
+              runId,
+              attachment,
+            });
+            return {
+              behavior: "shown",
+              attachment,
+              url: `/api/conversations/${encodeURIComponent(conversationId)}/images/${encodeURIComponent(attachment.id)}`,
+            };
+          },
+          onShareFile: async (requestData) => {
+            if (sharedFileCount >= MAX_CHAT_FILES_PER_MESSAGE) {
+              return {
+                behavior: "error",
+                message: `This turn already shared ${MAX_CHAT_FILES_PER_MESSAGE} files. Do not share more in the same response.`,
+              };
+            }
+            if (store.conversationOwner(conversationId) !== ownerUserId) {
+              return {
+                behavior: "error",
+                message: "The conversation no longer exists, so the file cannot be shared.",
+              };
+            }
+            const result = publishWorkspaceFile(
+              config,
+              conversationId,
+              requestData.path,
+              [activeRepoCwd ?? workspaceDir, ...(activeRepoCwd ? [workspaceDir] : [])],
+              requestData.name,
+            );
+            if ("error" in result) {
+              const maxMb = Math.round(MAX_CHAT_FILE_BYTES / (1024 * 1024));
+              const messages = {
+                OUTSIDE_WORKSPACE: "The file path must stay inside the current working directory or conversation scratch workspace. Copy it into the current directory with Bash (for example: cp /tmp/deck.pptx \"$PWD/deck.pptx\"), then retry share_file with ./deck.pptx.",
+                NOT_FOUND: "The file does not exist.",
+                NOT_FILE: "The supplied path is not a regular file.",
+                EMPTY: "The file is empty.",
+                TOO_LARGE: `The file is larger than the ${maxMb} MB limit.`,
+                UNSUPPORTED: `Unsupported file type. share_file accepts: ${SHAREABLE_EXTENSIONS.map((e) => `.${e}`).join(", ")} — and the content must match the extension. There is no Bash or Markdown workaround for delivering other file types.`,
+                READ_FAILED: "The file could not be read.",
+              } as const;
+              return { behavior: "error", message: messages[result.error] };
+            }
+            sharedFileCount += 1;
+            shownAttachments.push(result.attachment);
+            emitRunEvent(runId, "file", {
+              runId,
+              attachment: result.attachment,
+            });
+            // Auto-render page previews SERVER-SIDE (pptx/docx/xlsx/pdf →
+            // hidden PNG attachments on this same message) so the agent
+            // never has to rasterize and publish slides one by one.
+            // Best-effort: a missing toolchain or a render failure still
+            // delivers the file, just without the panel preview.
+            let previewCount = 0;
+            const stored = resolveStoredFile(config, conversationId, result.attachment.id);
+            if (stored && isPreviewableExtension(stored.ext)) {
+              const pages = await renderDocumentPreviews(stored.path, stored.ext);
+              if (pages.length) {
+                const previewAttachments = savePreviewImages(
+                  config,
+                  conversationId,
+                  pages,
+                  result.attachment.id,
+                );
+                previewCount = previewAttachments.length;
+                for (const attachment of previewAttachments) {
+                  shownAttachments.push(attachment);
+                  emitRunEvent(runId, "file", { runId, attachment });
+                }
+              }
+            }
+            return {
+              behavior: "shown",
+              attachment: result.attachment,
+              url: `/api/conversations/${encodeURIComponent(conversationId)}/files/${encodeURIComponent(result.attachment.id)}`,
+              previews: previewCount,
+            };
+          },
+        },
+        abortController,
+      );
+
+      // Canvases shown this turn are already persisted to the dedicated tables by
+      // the onCanvas handler (with version history); they no longer ride the
+      // response JSON. The live panel is driven by the SSE "canvas" events. (#50)
+      // Carry the plan submitted this turn (plan mode) so the plan card persists
+      // and rebuilds on reload.
+      if (latestPlan) {
+        response.plan = latestPlan;
+      }
+      // Carry the turn's reasoning so the collapsible "생각 과정" view rebuilds
+      // on reload (streaming path only — headless runs emit no onThinking).
+      if (streamedThinking) {
+        response.thinking = streamedThinking;
+      }
+
+      // Remember this run's SDK session so the next turn resumes its context.
+      if (runSessionId) {
+        store.setAgentSessionId(ownerUserId, conversationId, runSessionId);
+      }
+      audit({
+        action: "chat",
+        detail: `chat with ${threadAvatarLabel} (${response.runtime})`,
+      });
+      logger.info(
+        {
+          userId: ownerUserId,
+          avatarId: threadAvatarId,
+          conversationId,
+          runtime: response.runtime,
+          background: turnFinalized,
+          durationMs: Date.now() - chatStart,
+        },
+        "chat completed",
+      );
+      // Settle the task BEFORE the terminal frame: `done`/`bg_end`/`cancelled`/
+      // `error` are what tell the client the run is over, and it stops reading
+      // there — a task frame behind one would only surface on the next refetch.
+      settleBotTask("done");
+      if (turnFinalized) {
+        // Background phase over: the visible turn and every wake-up report
+        // were already persisted at their result boundaries — persisting the
+        // aggregate `response` here would duplicate them. Just signal the
+        // end of the phase; the run closes in the finally below.
+        emitRunEvent(runId, "bg_end", {});
+      } else {
+        // The conversation may have been deleted mid-run; skip persistence (the FK
+        // on messages would reject the insert) and just signal completion.
+        const assistantMessage =
+          store.conversationOwner(conversationId) === ownerUserId
+            ? store.addMessage(conversationId, {
+                role: "assistant",
+                content: response.text || response.summary,
+                response,
+                attachments: shownAttachments,
+              })
+            : null;
+        emitRunEvent(runId, "done", { message: assistantMessage, response });
+      }
+    } catch (error) {
+      if (isRunCancelled(runId)) {
+        // Clear the persisted SDK session: the aborted run's transcript is
+        // incomplete, so the NEXT turn rebuilds context from stored messages
+        // (which now include this cancelled turn's user message + partial)
+        // instead of resuming a half-written session that omits it. (chat-02)
+        if (!externalAgent) {
+          store.setAgentSessionId(ownerUserId, conversationId, null);
+        }
+        // Keep whatever the model already streamed before the stop. The client's
+        // finalizeStopped keeps it on screen, so the persisted record must carry
+        // it too — otherwise the visible answer is gone on the next reload/revisit.
+        // In a background phase, only the TAIL since the last persisted result
+        // boundary belongs here (earlier segments are already stored messages);
+        // an empty tail still persists a notice so the kill is visible on reload.
+        const cancelledText = streamedText.slice(
+          Math.max(persistedTextOffset, foldedTextOffset),
+        );
+        const cancelledThinking = streamedThinking.slice(persistedThinkingOffset);
+        const response: AgentResponse = {
+          kind: "text",
+          runtime: externalAgent ? "external" : config.agentRuntime,
+          summary: "중지됨",
+          text: cancelledText,
+          ...(latestPlan && !turnFinalized ? { plan: latestPlan } : {}),
+          ...(cancelledThinking ? { thinking: cancelledThinking } : {}),
+        };
+        // Skip the insert if the conversation was deleted mid-run (FK would reject).
+        const stopped =
+          store.conversationOwner(conversationId) === ownerUserId
+            ? store.addMessage(conversationId, {
+                role: "assistant",
+                content:
+                  cancelledText ||
+                  (turnFinalized
+                    ? "(진행 중이던 백그라운드 작업이 중지되었습니다.)"
+                    : "(중지됨)"),
+                response,
+                attachments: shownAttachments.slice(persistedAttachmentsOffset),
+              })
+            : null;
+        settleBotTask("cancelled");
+        emitRunEvent(runId, "cancelled", {
+          message: stopped,
+          response,
+          background: turnFinalized,
+        });
+        return { ok: true };
+      }
+      // Scrub before logging too: a git auth failure carries the token in its
+      // argv (`http.extraHeader`), which pino's `err` serializer would emit.
+      const detail = scrubGitError(error);
+      logger.error(
+        {
+          detail,
+          userId: ownerUserId,
+          avatarId: threadAvatarId,
+          conversationId,
+          durationMs: Date.now() - chatStart,
+        },
+        "chat error",
+      );
+      audit({ action: "chat", detail, status: "error" });
+      // When a TRANSIENT model/server failure ends the turn (overload, rate-limit,
+      // 5xx, timeout) AND the model isn't env-pinned (so the picker is available),
+      // nudge the user to switch models. Chat never auto-falls-back (a live viewer
+      // is watching the stream — only headless routines retry on a lower tier), so
+      // this is how a stuck model gets unblocked. Every other failure gets a Korean
+      // lead with `detail` appended: the SDK's own text is English, so it can never
+      // be the whole bubble. The technical `detail` still goes to logs/audit above.
+      const failedTier =
+        store.getConversationModel(ownerUserId, conversationId) ??
+        DEFAULT_MODEL_TIER;
+      const alternatives = MODEL_TIERS.filter((t) => t.id !== failedTier)
+        .map((t) => t.label)
+        .join(", ");
+      // OUR deadline wins the message: the SDK labels every abort as the user's
+      // doing, and no user was there to press stop on an unattended task.
+      const userFacing = timedOut
+        ? botTaskTimeoutMessage(ctx.unattendedDeadlineMs ?? 0)
+        : !externalAgent &&
+            !config.anthropicModel &&
+            isRetryableModelError(error)
+          ? `지금 ${modelTierLabel(failedTier)} 모델이 일시적으로 응답하지 못했어요 (서버 과부하 또는 일시적 오류). 입력창의 모델 선택에서 다른 모델(${alternatives})로 바꿔 다시 시도해 보세요.`
+          : detail.trim()
+            ? `응답 생성 중 오류가 발생했습니다: ${detail}`
+            : "응답 생성 중 오류가 발생했습니다.";
+      if (store.conversationOwner(conversationId) === ownerUserId) {
+        // Clear the session for the same reason as the cancel path (chat-02), and
+        // don't discard the partial the user already watched stream — keep it
+        // alongside the error so a reload shows what the live view showed.
+        if (!externalAgent) {
+          store.setAgentSessionId(ownerUserId, conversationId, null);
+        }
+        // Background phase: earlier segments are already stored messages, so
+        // only the tail since the last result boundary rides the error bubble.
+        const erroredText = streamedText.slice(
+          Math.max(persistedTextOffset, foldedTextOffset),
+        );
+        const erroredThinking = streamedThinking.slice(persistedThinkingOffset);
+        const content = erroredText
+          ? `${erroredText}\n\n${userFacing}`
+          : userFacing;
+        // Any canvas shown before the error is already persisted to the canvas
+        // tables by the onCanvas handler. If a plan and/or reasoning was produced,
+        // carry it so the plan/thinking cards survive reload; text=content keeps the
+        // error bubble identical, and a response is attached only when there's
+        // something to carry (plain errors keep their existing null-response shape).
+        store.addMessage(conversationId, {
+          role: "assistant",
+          content,
+          attachments: shownAttachments.slice(persistedAttachmentsOffset),
+          response:
+            (latestPlan && !turnFinalized) || erroredThinking
+              ? {
+                  kind: "text",
+                  runtime: externalAgent ? "external" : config.agentRuntime,
+                  summary: "오류",
+                  text: content,
+                  ...(latestPlan && !turnFinalized ? { plan: latestPlan } : {}),
+                  ...(erroredThinking ? { thinking: erroredThinking } : {}),
+                }
+              : undefined,
+        });
+      }
+      // The same Korean text the thread now carries, so the task card and the
+      // bubble never disagree about why the work stopped.
+      settleBotTask("failed", userFacing);
+      emitRunEvent(runId, "error", {
+        error: userFacing,
+        background: turnFinalized,
+      });
+    } finally {
+      clearTimeout(deadline);
+      closeRun(runId);
+      // The thread is free again: let the dispatcher pop its next queued task.
+      // AFTER closeRun, or the dispatcher's own active-run guard would see this
+      // run still holding the conversation and skip. Fire-and-forget, and it
+      // must never throw into a finalize that already succeeded.
+      if (personalAgentHit) {
+        try {
+          deps.onBotTurnSettled?.(ownerUserId, conversationId);
+        } catch (err) {
+          logger.error(
+            { err, conversationId },
+            "bot task dispatcher hand-off failed",
+          );
+        }
+      }
+    }
+    // Outer finally: release the per-clone lock on EVERY exit — normal end, the
+    // attachRunClient early-return, OR a throw anywhere in the prelude above
+    // (Express 4 won't catch an async throw, and a stranded lock 409s every other
+    // conversation for that clone until restart).
+  } finally {
+    releaseActiveRepoLock?.();
+  }
+  return { ok: true };
+}
+
 export function createChatRouter({
   config,
   store,
   observedModel,
   auditAs,
+  onBotTurnSettled,
 }: RouterDeps): Router {
   const router = Router();
   const viewerGroupIds = (req: AuthenticatedRequest): Set<string> =>
@@ -999,99 +3054,21 @@ export function createChatRouter({
         apiError(res, 400, "avatarId가 필요합니다.");
         return;
       }
-      const externalAgent = findVisibleExternalAgent(
-        effectiveExternalAgents(),
+      const resolved = resolveChatTarget({
+        store,
+        externalAgents: effectiveExternalAgents(),
+        viewerGroupIds: viewerGroupIds(req),
+        viewerUserId: req.user!.id,
         avatarId,
-        viewerGroupIds(req),
-      );
-      // Group shared agent: member-only reach; a member-visible DISABLED agent
-      // gets its own 403 (they already know it exists — no leak), everything
-      // else collapses into the generic 403 below (external precedent). Images
-      // are allowed: unlike externals, group agents run the full local stack.
-      const groupAgentHit = externalAgent
-        ? null
-        : findChattableGroupAgent(store, req.user!.id, avatarId, {
-            includeDisabled: true,
-          });
-      if (groupAgentHit && !groupAgentHit.agent.enabled) {
-        apiError(
-          res,
-          403,
-          "그룹 에이전트가 비활성화되어 있습니다. 그룹 관리자에게 문의해 주세요.",
-        );
+        hasImages: decodedImages.length > 0,
+        ownerOnlyCommand: slashExpansion.ownerOnly === true,
+      });
+      if (!resolved.ok) {
+        apiError(res, resolved.refusal.status, resolved.refusal.message);
         return;
       }
-      // Personal agent (내 봇): OWNER-only reach, and only while the owner still
-      // holds the admin role. A disabled bot gets its own 403 — the owner
-      // manages it themselves, so naming the state leaks nothing; every other
-      // miss collapses into the generic fail-closed 403 below.
-      const personalAgentHit =
-        externalAgent || groupAgentHit
-          ? null
-          : findChattablePersonalAgent(store, req.user!.id, avatarId, {
-              includeDisabled: true,
-            });
-      if (personalAgentHit && !personalAgentHit.agent.enabled) {
-        apiError(
-          res,
-          403,
-          "이 봇은 비활성화되어 있습니다. 설정 → 내 봇에서 활성화한 뒤 다시 시도해 주세요.",
-        );
-        return;
-      }
-      const avatar = externalAgent
-        ? externalAvatarDetail(externalAgent)
-        : groupAgentHit
-          ? groupAgentAvatarDetail(groupAgentHit.agent, groupAgentHit.groupName)
-          : // A bot turn is a FULL OWNER run, so the run-facing avatar is the
-            // OWNER's own (avatar.id = the owner's uuid) and every owner-keyed
-            // loader — plugins, knowledge repo, secrets, work repos, trust —
-            // works untouched. The bot's composite id lives in
-            // `threadAvatarId` below, never here. (types.ts personalAgent)
-            store.resolveChatAvatar(
-              req.user!.id,
-              personalAgentHit ? req.user!.id : avatarId,
-            );
-      if (!avatar) {
-        apiError(res, 403, "이 아바타와 대화할 수 없습니다.");
-        return;
-      }
-      /**
-       * The id this THREAD is keyed by: the composite
-       * `personal:<owner>:<agent>` on a bot turn, else `avatar.id`. Everything
-       * thread-scoped — the conversation binding, the scratch workspace, the
-       * run registry, client-facing payloads — uses THIS, so a bot's history
-       * and files stay its own while the run keeps owner capability.
-       */
-      const threadAvatarId = personalAgentHit ? avatarId : avatar.id;
-      /** Chat target for audit/logs — the BOT's name on a personal turn. */
-      const threadAvatarLabel = personalAgentHit
-        ? personalAgentHit.agent.displayName
-        : avatar.displayName;
-      if (externalAgent && decodedImages.length > 0) {
-        apiError(res, 400, "외부 아바타는 아직 이미지 첨부를 지원하지 않습니다.");
-        return;
-      }
-      // ownerOnly bites on a RAW `/command`: server-expanded commands (e.g. /learn)
-      // arrive verbatim and DO match here, and so does a stale client / direct API
-      // caller. Client-expanded commands arrive already-expanded and slip past — but
-      // that's fine: this is a convenience guard, not the real boundary. The owner-only
-      // EFFECTS (knowledge-repo writes, routine creation) run through `mcp__repo__*` /
-      // routine APIs that owner-gate in their own handlers, so an expanded prompt from
-      // a non-owner can't reach them.
-      if (slashExpansion.ownerOnly && req.user!.id !== avatar.id) {
-        apiError(
-          res,
-          403,
-          "이 명령은 내 아바타와의 대화에서만 사용할 수 있습니다.",
-        );
-        return;
-      }
-      // True for a bot turn by construction: the personal branch resolved
-      // `avatar` to the viewer's OWN row, and the reach gate already proved
-      // owner + admin. Keep it that way — a bot run must stay an owner run.
-      const viewerIsOwner =
-        !externalAgent && !groupAgentHit && req.user!.id === avatar.id;
+      const { externalAgent, personalAgentHit, avatar, threadAvatarId, viewerIsOwner } =
+        resolved.target;
       // Owner-only per-conversation group-knowledge selection, chosen in the UI and
       // sent with the turn: the group ids turned OFF (skills + CLAUDE.md). The client
       // owns this state from the moment a chat starts, so no separate persist step is
@@ -1177,1583 +3154,126 @@ export function createChatRouter({
         apiError(res, 409, "이 대화는 다른 아바타의 대화입니다.");
         return;
       }
-      // Effective vision for THIS turn's model, mirroring claudeAgent's
-      // resolution chain (env pin > this turn's tier pick > stored tier >
-      // admin override > default) against the admin per-tier policy. Gates the
-      // upload below AND the regenerate image re-feed; the run itself
-      // recomputes the same value. External turns keep the deployment default
-      // (gateway models are outside the tier policy; their composer has no
-      // attach UI anyway).
-      const turnModel = externalAgent
-        ? config.anthropicModel
-        : (config.anthropicModel ??
-          (requestedModel === null
-            ? store.getConversationModel(req.user!.id, conversationId)
-            : requestedModel || null) ??
-          store.getModelOverride() ??
-          DEFAULT_MODEL_TIER);
-      const turnVisionEnabled = visionForModel(
-        turnModel,
-        store.getModelVisionPolicy(),
-        config.visionEnabled,
-      );
-      // Text-only model for this turn: images are NOT rejected — they are staged
-      // as FILES in the conversation scratch workspace and the model receives only
-      // their paths (buildUserPrompt), never image content blocks (which would 400
-      // the whole turn at the API layer). External turns never reach here with
-      // images (rejected above).
-      const imageFileMode =
-        decodedImages.length > 0 && !turnVisionEnabled && !externalAgent;
-      if (externalAgent && existingAvatarId) {
-        const boundEndpoint = store.getConversationExternalEndpoint(
-          req.user!.id,
-          conversationId,
-        );
-        if (!boundEndpoint) {
+      /**
+       * A 내 봇 thread QUEUES instead of refusing: the whole point of delegating
+       * is that the owner can hand over the next piece of work without waiting
+       * for the current one. The message is persisted NOW (so the thread reads
+       * in the order it was typed) and a `queued` task carries the replay text
+       * the dispatcher will run once the active run settles.
+       *
+       * `userMessagePersisted` distinguishes the two refusal sites: the
+       * pre-flight check has written nothing yet, the raced re-check already
+       * wrote the user turn.
+       */
+      const queueBotTurn = (refusal: ChatTurnRefusal): void => {
+        if (req.body?.regenerate === true) {
+          // Re-running a turn against a busy bot has no queue semantics — the
+          // answer it would replace is still being written.
+          apiError(res, refusal.status, refusal.message);
+          return;
+        }
+        if (decodedImages.length > 0) {
+          if (refusal.userMessagePersisted) {
+            // The bytes are already on the stored bubble; queueing would run the
+            // text alone and silently drop them. Keep the plain refusal.
+            apiError(res, refusal.status, refusal.message);
+            return;
+          }
           apiError(
             res,
-            409,
-            "이 기존 대화에는 신뢰한 Gateway 주소 정보가 없습니다. 기록 보호를 위해 새 대화를 시작해 주세요.",
+            400,
+            "봇이 작업 중일 때는 이미지 없이 텍스트만 보낼 수 있어요. 작업이 끝난 뒤 다시 시도해 주세요.",
           );
           return;
         }
-        if (boundEndpoint !== externalAgent.endpoint) {
+        if (store.countQueuedBotTasks(conversationId) >= MAX_QUEUED_BOT_TASKS) {
           apiError(
             res,
-            409,
-            "이 대화는 이전 Gateway 주소에 연결되어 있습니다. 기록 보호를 위해 새 대화를 시작해 주세요.",
+            429,
+            `이 봇의 대기열이 가득 찼습니다(최대 ${MAX_QUEUED_BOT_TASKS}개). 진행 중인 작업이 끝난 뒤 다시 시도해 주세요.`,
           );
           return;
         }
-      }
-      const conversationMcpToolGroups = requestedMcpToolGroups ??
-        store.getConversationMcpToolGroups(req.user!.id, conversationId) ?? [
-          ...DEFAULT_MCP_TOOL_GROUPS,
-        ];
-      // Admin per-group tool policy: the RUN uses the intersection of the
-      // composer selection and what the system admin allows for this user
-      // (null = unrestricted). The per-conversation row keeps the user's RAW
-      // choice — lifting the policy later restores it untouched. claudeAgent
-      // re-clamps identically; this local copy exists because git-repo gating
-      // below must see the same effective set BEFORE the run starts.
-      const adminAllowedMcpToolGroups = store.allowedMcpToolGroupsForUser(
-        req.user!.id,
-      );
-      const effectiveMcpToolGroupsForRun = adminAllowedMcpToolGroups
-        ? conversationMcpToolGroups.filter((id) =>
-            adminAllowedMcpToolGroups.includes(id),
-          )
-        : conversationMcpToolGroups;
-      const gitRepoToolsEnabled =
-        effectiveMcpToolGroupsForRun.includes("git_repo");
-      // A run is already streaming for this conversation. This POST carries a NEW
-      // typed message; the old attach-and-replay path would silently swallow it
-      // (never persisted, never echoed — the client would only mirror the FIRST
-      // turn's answer). Reject so the client surfaces the error and keeps the text
-      // in the composer. Reconnecting to WATCH an in-flight run uses the dedicated
-      // GET /api/chat/runs/:runId/events path, not a second POST.
-      const activeRun = getActiveRunForConversation(
-        req.user!.id,
-        conversationId,
-      );
-      if (activeRun) {
-        apiError(
-          res,
-          409,
-          activeRun.background
-            ? "아바타가 이 대화의 백그라운드 작업을 진행 중입니다. 작업이 끝나면 메시지를 보낼 수 있어요. 기다리지 않으려면 중지 버튼으로 백그라운드 작업을 중단해 주세요."
-            : "이미 이 대화의 응답을 생성 중입니다. 잠시 후 다시 시도해 주세요.",
-        );
-        return;
-      }
-
-      // Working repository: the avatar opens one registered git repo (via
-      // `mcp__git_repo__open_repo`) as the SDK cwd so it edits/tests with native
-      // tools. The selection is held per conversation (repoWorkspace.ts) and read
-      // here at turn start via the shared resolver (also used by the routine
-      // scheduler, so the two can't drift). Resolve + clone + take the per-clone
-      // serialization lock BEFORE switching to SSE, so validation/contention
-      // failures stay plain JSON. The clone path is server-side only and never
-      // returned to the client (only the repo name). The elevated gate is
-      // belt-and-suspenders — open_repo is itself elevated-only — in case trust
-      // changed since the repo was opened.
-      const elevatedViewer =
-        !externalAgent &&
-        !groupAgentHit &&
-        (viewerIsOwner || store.isTrustedFor(req.user!.id, avatar.id));
-      let activeRepoCwd: string | null = null;
-      let activeRepoName: string | null = null;
-      let releaseActiveRepoLock: (() => void) | null = null;
-      // Group-agent runs skip the whole block: no isTrustedFor on a synthetic
-      // id, no personal work-repo workspace (the run kind carries capability).
-      // Bot turns DO run it — `avatar` is the owner's own row, so the owner's
-      // registered repos and commit identity resolve exactly as usual.
-      if (!externalAgent && !groupAgentHit) {
-        const repoResolution = await resolveActiveWorkspaceRepo({
-          store,
-          config,
-          avatar: {
-            id: avatar.id,
-            displayName: avatar.displayName,
-            alias: avatar.alias,
-          },
-          conversationId,
-          elevated: elevatedViewer,
-          gitRepoToolsEnabled,
-        });
-        if (repoResolution.kind === "error") {
-          if (repoResolution.reason === "not_found") {
-            apiError(
-              res,
-              400,
-              "등록된 저장소를 찾을 수 없습니다. 먼저 저장소를 등록해 주세요.",
-            );
-          } else if (repoResolution.reason === "locked") {
-            apiError(
-              res,
-              409,
-              "이 저장소는 다른 대화에서 작업 중입니다. 잠시 후 다시 시도해 주세요.",
-            );
-          } else {
-            apiError(
-              res,
-              502,
-              `저장소 작업공간을 열지 못했습니다: ${repoResolution.detail ?? ""}`,
-            );
-          }
-          return;
-        }
-        if (repoResolution.kind === "ok") {
-          activeRepoCwd = repoResolution.cwd;
-          activeRepoName = repoResolution.repoName;
-          // Frees the per-clone serialization lock; called once when the run ends.
-          releaseActiveRepoLock = repoResolution.release;
-        }
-      }
-
-      try {
-        const runId = crypto.randomUUID();
-        const regenerate = req.body?.regenerate === true;
-        const chatStart = Date.now();
-        if (regenerate) {
-          const last = [...store.listMessages(req.user!.id, conversationId)].pop();
-          store.dropLastAssistant(req.user!.id, conversationId);
-          if (last?.role === "assistant") {
-            deleteChatImageAttachments(config, conversationId, last.attachments);
-            deleteChatFileAttachments(config, conversationId, last.attachments);
-          }
-        }
-        const imageTurn =
-          !regenerate && decodedImages.length > 0 && turnVisionEnabled;
-        // Resume the conversation's prior SDK session so the model keeps its context
-        // across turns. A regenerate re-runs the same turn and starts fresh to avoid
-        // duplicating history in the transcript. Image turns also start fresh: the SDK
-        // receives images through streaming input, and combining that with `resume`
-        // can drop the structured image blocks before they reach the model. File-mode
-        // turns (text-only model) never build a structured message — the prompt stays
-        // a plain string — so they keep the session resume.
-        const resumeSessionId =
-          externalAgent || regenerate || imageTurn
-            ? undefined
-            : (store.getAgentSessionId(req.user!.id, conversationId) ??
-              undefined);
-        // Carry prior context on every turn. It is INJECTED into the prompt only when
-        // there's no SDK session to resume (buildPrompt guards on resumeSessionId) —
-        // a regenerate/image turn starts fresh and needs it, and a resume turn keeps
-        // it latent so claudeAgent can self-heal a stale/missing SDK transcript by
-        // re-running without `resume` (then this history is what rebuilds the context).
-        // A regenerate also persists its fresh session id, so without this every later
-        // turn would resume a context-less session.
-        // (chat-01 / lifecycle-02)
-        const priorMessages = store.listMessages(req.user!.id, conversationId);
-        const conversationHistory = conversationHistoryForPrompt(priorMessages);
-        // On regenerate the trailing history entry is the user turn being re-run,
-        // which is ALSO re-sent as `message` — drop it so it isn't duplicated.
-        if (
-          regenerate &&
-          conversationHistory.length > 0 &&
-          conversationHistory[conversationHistory.length - 1].role === "user"
-        ) {
-          conversationHistory.pop();
-        }
-        // Images fed to the model THIS turn. For a fresh send we save the uploads to
-        // disk + record them on the user message; on regenerate the client doesn't
-        // re-send images (it re-runs from a fresh SDK session), so re-read the prior
-        // user turn's stored attachments so the re-run still sees them.
-        let requestImages: AgentImageInput[] = [];
-        // The same images in FILE mode (text-only model): staged copies in the
-        // scratch workspace whose paths — never their bytes — reach the model.
-        let requestImageFiles: AgentImageFileInput[] = [];
-        // Per-conversation workspace: each chat session gets an isolated cwd, scoped
-        // under the avatar so sessions cannot mix files by accident. Created here
-        // (before the message persist) because file mode stages attachments into it.
-        // External turns run no local workspace, so they don't get a directory.
-        const workspaceDir = workspaceDirFor(
-          config,
-          threadAvatarId,
-          conversationId,
-        );
-        if (!externalAgent) {
-          fs.mkdirSync(workspaceDir, { recursive: true });
-        }
-        store.touchConversation(
-          req.user!.id,
-          conversationId,
-          threadAvatarId,
-          displayMessage,
-          externalAgent ? { externalEndpoint: externalAgent.endpoint } : {},
-        );
-        // Persist the owner's group-knowledge selection now that the row exists, so
-        // it survives reload and applies to later turns until changed again.
-        if (requestedGroupKnowledgeOff) {
-          store.setConversationGroupKnowledgeOff(
+        if (!refusal.userMessagePersisted) {
+          store.touchConversation(
             req.user!.id,
             conversationId,
-            requestedGroupKnowledgeOff,
+            threadAvatarId,
+            displayMessage,
           );
-        }
-        // Persist the chosen model so it survives reload and applies to later
-        // turns until changed. null = client sent nothing → leave the stored value.
-        // Native rows hold a tier alias; external rows hold a gateway model id.
-        if (requestedModel !== null) {
-          store.setConversationModel(
-            req.user!.id,
-            conversationId,
-            requestedModel || null,
-          );
-        }
-        // Persist the chosen effort level (same semantics as the model tier above).
-        if (!externalAgent && requestedEffort !== null) {
-          store.setConversationEffort(
-            req.user!.id,
-            conversationId,
-            requestedEffort || null,
-          );
-        }
-        if (!externalAgent && requestedMcpToolGroups !== null) {
-          store.setConversationMcpToolGroups(
-            req.user!.id,
-            conversationId,
-            requestedMcpToolGroups,
-          );
-        }
-        if (!regenerate) {
-          const saved = saveChatImages(config, conversationId, decodedImages);
-          // The persisted attachments are the same either way — the bubble
-          // renders identically; only the MODEL-facing shape differs.
-          if (imageFileMode) {
-            requestImageFiles = stageChatImageFilesFromAttachments(
-              config,
-              conversationId,
-              workspaceDir,
-              saved.attachments,
-            );
-          } else {
-            requestImages = saved.images;
-          }
           store.addMessage(conversationId, {
             role: "user",
             content: displayMessage,
-            attachments: saved.attachments,
           });
-        } else {
-          const lastUser = [...priorMessages]
-            .reverse()
-            .find((m) => m.role === "user");
-          // On a text-only turn the attachments resurface as FILES by design (same
-          // staging path as a fresh send), never as image blocks the API would
-          // reject — so a regenerate under a swapped model still sees them.
-          if (turnVisionEnabled) {
-            requestImages = readChatImages(
-              config,
-              conversationId,
-              lastUser?.attachments,
-            );
-          } else {
-            requestImageFiles = stageChatImageFilesFromAttachments(
-              config,
-              conversationId,
-              workspaceDir,
-              lastUser?.attachments,
-            );
-          }
         }
-        // The SDK session id this run reports (init event); persisted on success so
-        // the next turn can resume it.
-        let runSessionId: string | null = null;
-        // Accumulate the main-agent text as it streams, so the cancel/error paths can
-        // persist the partial the user already watched (not an empty "(중지됨)" stub).
-        let streamedText = "";
-        // Accumulate the main-agent reasoning (extended-thinking) text as it streams,
-        // so it can be persisted on the response (success) and the cancel/error paths.
-        let streamedThinking = "";
-        // Images published by `show_file` during this run. They render live over
-        // SSE and are attached to the terminal assistant message on every exit
-        // path so a reload matches what the user already saw.
-        const shownAttachments: MessageAttachment[] = [];
-        // Browser screenshots auto-shared as file cards this run — own budget,
-        // separate from the share_file/show_file caps (see chatFiles.ts).
-        let sharedScreenshotCount = 0;
-        // Documents the model shared via share_file this run. Counted on its own
-        // rather than off `shownAttachments`, which also carries the screenshot
-        // auto-share's kind:"file" cards — a browsing loop must not spend this cap.
-        let sharedFileCount = 0;
-        // Visual-canvas artifacts (#50) now persist to the dedicated canvas tables as
-        // they are shown (see the onCanvas handler), with version history — they no
-        // longer ride the assistant message's response JSON.
-        // The latest plan the avatar submitted via ExitPlanMode this turn (plan mode).
-        // Persisted on the assistant response so the plan card rebuilds on reload, and
-        // mirrored on the cancel/error paths like canvases. Latest plan of the turn wins.
-        let latestPlan: string | null = null;
-        // Background phase (SDK-native): when the model hands work to a background
-        // task/subagent, the SDK holds the session open past the first `result`,
-        // wakes the model when a task settles, and streams follow-up turns. We
-        // finalize the VISIBLE turn at that first result (persist + done with
-        // `background: true`, run kept open) and deliver each wake-up turn as a
-        // NEW assistant message (`bg_message`). `turnFinalized` marks the phase;
-        // the offsets remember how much of the accumulated stream text/thinking/
-        // attachments was already persisted, so wake-up and cancel/error paths
-        // only carry their own tail.
-        let turnFinalized = false;
-        let persistedTextOffset = 0;
-        let persistedThinkingOffset = 0;
-        let persistedAttachmentsOffset = 0;
-        // How much of `streamedText` was FOLDED into the reasoning view (a newer
-        // text block superseded it — see the onTextFold sinks below). The answer
-        // restarted from this offset, so the cancel/error tails must start here
-        // too or they resurrect narration the live view already moved away.
-        let foldedTextOffset = 0;
-        logger.info(
-          {
-            userId: req.user!.id,
-            avatarId: threadAvatarId,
-            conversationId,
-            regenerate,
-          },
-          "chat stream started",
-        );
+        const task = store.createBotTask({
+          ownerUserId: req.user!.id,
+          agentId: personalAgentHit!.agent.id,
+          conversationId,
+          title: botTaskTitle(displayMessage),
+          requestText: displayMessage,
+          status: "queued",
+        });
+        // Plain JSON, never SSE: there is no run to stream yet. The client shows
+        // the queued card and picks the run up through /api/chat/runs when the
+        // dispatcher starts it.
+        res.status(202).json({ queued: true, task });
+        // Close the enqueue race: the run we deferred to may have settled
+        // between its refusal and this insert, in which case its own settle hook
+        // already looked and found an empty queue. Poking the dispatcher again
+        // is free — it no-ops while a run still holds the thread.
+        onBotTurnSettled?.(req.user!.id, conversationId);
+      };
 
-        // The 409 check at the top of the handler ran BEFORE `await
-        // resolveActiveWorkspaceRepo` (a possible git clone), so a concurrent POST
-        // on this same conversation could have slipped past it. Re-check
-        // synchronously here — openRun below is the real reservation, and there
-        // must be NO `await` between this check and openRun or the race reopens.
-        // The response is still plain JSON (prepareSse runs after openRun). Null
-        // the lock release first: the winning run owns this conversation's
-        // (reentrant, per-conversation) active-repo lock and frees it itself —
-        // releasing it here would yank it from under the winner.
-        const racedRun = getActiveRunForConversation(req.user!.id, conversationId);
-        if (racedRun) {
-          releaseActiveRepoLock = null;
-          apiError(
-            res,
-            409,
-            racedRun.background
-              ? "아바타가 이 대화의 백그라운드 작업을 진행 중입니다. 작업이 끝나면 메시지를 보낼 수 있어요. 기다리지 않으려면 중지 버튼으로 백그라운드 작업을 중단해 주세요."
-              : "이미 이 대화의 응답을 생성 중입니다. 잠시 후 다시 시도해 주세요.",
-          );
+      const outcome = await executeChatTurn(
+        { config, store, observedModel, onBotTurnSettled },
+        {
+          ownerUserId: req.user!.id,
+          ownerDisplayName: req.user!.displayName,
+          target: resolved.target,
+          conversationId,
+          agentMessage,
+          displayMessage,
+          images: decodedImages,
+          regenerate: req.body?.regenerate === true,
+          requestedModel,
+          requestedEffort,
+          requestedMcpToolGroups,
+          requestedGroupKnowledgeOff,
+          // Noah's own public origin, so copy_image can hand the agent an
+          // absolute clipboard-staging URL to open with new_tab. Derived
+          // from THIS request to match the origin the user's browser is on.
+          appOrigin: requestOrigin(req) ?? undefined,
+          // The bridge drives THIS browser, so its UA is the only platform
+          // signal we have for the paste shortcut (Cmd+V vs Ctrl+V).
+          viewerPlatform: viewerPlatformFromUserAgent(req.get("user-agent")),
+          audit: (entry) =>
+            auditAs(req, entry.action, entry.detail, entry.status),
+        },
+        {
+          // The response becomes an SSE stream only once the run is reserved,
+          // so every refusal above stays plain JSON.
+          onRunOpen: (runId) => {
+            prepareSse(res);
+            if (!attachRunClient(runId, req.user!.id, res)) {
+              res.end();
+              return false;
+            }
+            emitRunEvent(runId, "open", {
+              conversationId,
+              avatarId: threadAvatarId,
+              runId,
+            });
+            return true;
+          },
+        },
+      );
+      if (!outcome.ok) {
+        if (personalAgentHit && outcome.refusal.reason === "active_run") {
+          queueBotTurn(outcome.refusal);
           return;
         }
-
-        const abortController = new AbortController();
-        openRun(runId, req.user!.id, {
-          conversationId,
-          avatarId: threadAvatarId,
-          abortController,
-        });
-        // openRun sits BEFORE the run's own try/finally { closeRun }, so guard the
-        // SSE handshake: a throw here (headers already sent, client detached) would
-        // otherwise strand the run in the registry and 409 this conversation for
-        // the whole process lifetime.
-        try {
-          prepareSse(res);
-          if (!attachRunClient(runId, req.user!.id, res)) {
-            res.end();
-            closeRun(runId);
-            return;
-          }
-          emitRunEvent(runId, "open", {
-            conversationId,
-            avatarId: threadAvatarId,
-            runId,
-          });
-        } catch (err) {
-          closeRun(runId);
-          throw err;
-        }
-
-        try {
-          if (externalAgent) {
-            // External avatars are conversation-stateless and run their own tool
-            // stack behind the gateway. Do not resolve local plugins, knowledge,
-            // MCP servers, repos, workspaces, or SDK sessions. The one local
-            // setting that DOES apply is the viewer-picked gateway model id
-            // (this turn's pick, else the stored per-conversation choice); the
-            // admin-configured model stays the default when neither is set.
-            const selectedExternalModel =
-              requestedModel === null
-                ? store.getConversationModel(req.user!.id, conversationId)
-                : requestedModel || null;
-            const response = await runExternalAgent(
-              {
-                message: agentMessage,
-                conversationHistory,
-              },
-              selectedExternalModel
-                ? { ...externalAgent, model: selectedExternalModel }
-                : externalAgent,
-              {
-                onDelta: (text) => {
-                  streamedText += text;
-                  emitRunEvent(runId, "delta", { text });
-                },
-                onThinking: (text) => {
-                  streamedThinking += text;
-                  emitRunEvent(runId, "thinking", { text });
-                },
-                onTextFold: (text) => {
-                  // Demoted narration joins the reasoning stream (persisted as
-                  // response.thinking)…
-                  streamedThinking += (streamedThinking ? "\n\n" : "") + text;
-                  // …and leaves the answer: cancel/error tails must not resurrect it.
-                  foldedTextOffset = streamedText.length;
-                  // Anchors index into the answer text, and the answer just
-                  // restarted from empty — every stamped card now belongs before
-                  // the new tail.
-                  for (const attachment of shownAttachments) {
-                    if (typeof attachment.anchor === "number") attachment.anchor = 0;
-                  }
-                  emitRunEvent(runId, "text_fold", {});
-                },
-                onStatus: (label) => {
-                  emitRunEvent(runId, "status", { label });
-                },
-                // onModel and onSessionId are intentionally OMITTED for external
-                // runs: external Gateway telemetry must not overwrite the local SDK
-                // model shown in the admin system overview, and a gateway SDK
-                // session id must never become Noah continuation state
-                // (runExternalAgent nulls onSessionId regardless). runSessionId
-                // stays null here and the external branch returns before any reader,
-                // so no handler is wired.
-                onPlugin: (event) => {
-                  emitRunEvent(runId, "plugin", event);
-                },
-                onToolStart: (event) => {
-                  emitRunEvent(runId, "tool", event);
-                },
-                onToolEnd: (event) => {
-                  emitRunEvent(runId, "tool_end", event);
-                },
-                onTaskStart: (event) => {
-                  emitRunEvent(runId, "task", event);
-                },
-                onTaskUpdate: (event) => {
-                  emitRunEvent(runId, "task_update", event);
-                },
-                onTaskEnd: (event) => {
-                  emitRunEvent(runId, "task_end", event);
-                },
-                onAgentStart: (event) => {
-                  emitRunEvent(runId, "agent", event);
-                },
-                onAgentEnd: (event) => {
-                  emitRunEvent(runId, "agent_end", event);
-                },
-                onBlocked: (event) => {
-                  emitRunEvent(runId, "blocked", event);
-                },
-                onMemory: (event) => {
-                  // Stable id: an SSE reattach replays the whole event log, and
-                  // the client dedupes 기억 rows by this id.
-                  emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
-                },
-                onCompact: (event) => {
-                  emitRunEvent(runId, "compact", { id: crypto.randomUUID(), ...event });
-                },
-                onPlan: (event) => {
-                  if (event.plan) latestPlan = event.plan;
-                  emitRunEvent(runId, "plan", {
-                    plan: event.plan,
-                    planning: event.planning ?? false,
-                  });
-                },
-              } satisfies AgentEvents,
-              abortController,
-            );
-            if (latestPlan) response.plan = latestPlan;
-            if (streamedThinking) response.thinking = streamedThinking;
-
-            const assistantMessage =
-              store.conversationOwner(conversationId) === req.user!.id
-                ? store.addMessage(conversationId, {
-                    role: "assistant",
-                    content: response.text || response.summary,
-                    response,
-                  })
-                : null;
-            auditAs(
-              req,
-              "chat",
-              `chat with ${threadAvatarLabel} (${response.runtime})`,
-            );
-            logger.info(
-              {
-                userId: req.user!.id,
-                avatarId: threadAvatarId,
-                conversationId,
-                runtime: response.runtime,
-                durationMs: Date.now() - chatStart,
-              },
-              "external chat completed",
-            );
-            emitRunEvent(runId, "done", { message: assistantMessage, response });
-            return;
-          }
-
-          // Load plugin roots (read-only): default plugins + the avatar's own + its
-          // personal knowledge repo + group knowledge repos. Shared with the routine
-          // scheduler via `loadAgentPluginRoots` so the two can't drift. Tolerate
-          // clone/resolve fails.
-          const pluginWarnings: string[] = [];
-          // Owner-only per-conversation group-knowledge toggle: skip the OFF groups'
-          // skills AND their CLAUDE.md. Use this turn's selection when the client sent
-          // one, else the stored set. Colleague turns ignore the toggle (always ON).
-          const disabledGroupIds = viewerIsOwner
-            ? new Set(
-                requestedGroupKnowledgeOff ??
-                  store.getConversationGroupKnowledgeOff(
-                    req.user!.id,
-                    conversationId,
-                  ),
-              )
-            : new Set<string>();
-          // Model tier for this turn: this turn's pick if the client sent one ("" =
-          // explicit reset to default), else the stored value. Ignored downstream when
-          // ANTHROPIC_MODEL pins a model (env pin is a hard lock).
-          const conversationModelTier =
-            requestedModel === null
-              ? store.getConversationModel(req.user!.id, conversationId)
-              : requestedModel || null;
-          // Effort for this turn: this turn's pick if sent ("" = reset to default),
-          // else the stored value. Mirrors the model tier resolution above.
-          const conversationEffort =
-            requestedEffort === null
-              ? store.getConversationEffort(req.user!.id, conversationId)
-              : requestedEffort || null;
-          // Group-agent runs load ONLY the owning group's repo (with the acting
-          // member's tokens) + defaults; native runs load the avatar's full set.
-          const pluginRoots = groupAgentHit
-            ? await loadGroupAgentPluginRoots(
-                store,
-                groupAgentHit.groupId,
-                req.user!.id,
-                config,
-                (warn) => pluginWarnings.push(warn),
-              )
-            : await loadAgentPluginRoots(
-                store,
-                avatar.id,
-                config,
-                (warn) => pluginWarnings.push(warn),
-                { disabledGroupIds },
-              );
-          // Standing CLAUDE.md memory (personal repo always; group repos gated by the
-          // toggle). Read after plugin roots ensured the clones for this turn.
-          const knowledgeMemory = groupAgentHit
-            ? await loadGroupAgentKnowledgeMemory(
-                store,
-                groupAgentHit.groupId,
-                config,
-              )
-            : await loadKnowledgeRepoMemory(store, avatar.id, config, {
-                disabledGroupIds,
-              });
-
-          for (const warn of pluginWarnings) {
-            emitRunEvent(runId, "status", { label: `플러그인 경고: ${warn}` });
-          }
-
-          const response = await runAgentStream(
-            {
-              message: agentMessage,
-              // A bot speaks as ITSELF while running with the OWNER's
-              // capability: the id stays the owner's (every capability key in
-              // runPlan reads it, and AgentOwner resolves commit identity from
-              // that user row) while only the conversational identity moves to
-              // the bot. `personalAgentState` carries no persona TEXT, so this
-              // is the ONLY channel a bot's persona can reach the prompt on.
-              // `??`, not `||`: an EMPTY bot alias/persona must stay empty
-              // rather than inherit the owner's — a persona-less bot must never
-              // recite its owner's persona as its own instructions.
-              avatar: {
-                id: avatar.id,
-                displayName:
-                  personalAgentHit?.agent.displayName ?? avatar.displayName,
-                alias: personalAgentHit?.agent.alias ?? avatar.alias,
-                persona: personalAgentHit?.agent.persona ?? avatar.persona,
-              },
-              // Lets in-process tools (open_repo/close_repo) key the working-repo
-              // selection to this conversation.
-              conversationId,
-              // Working repository: the opened repo's clone becomes the cwd and the
-              // per-conversation scratch dir is exposed as an additional writable dir.
-              cwd: activeRepoCwd ?? workspaceDir,
-              additionalDirs: activeRepoCwd ? [workspaceDir] : undefined,
-              // Noah's own public origin, so copy_image can hand the agent an
-              // absolute clipboard-staging URL to open with new_tab. Derived
-              // from THIS request to match the origin the user's browser is on.
-              appOrigin: requestOrigin(req) ?? undefined,
-              // The bridge drives THIS browser, so its UA is the only platform
-              // signal we have for the paste shortcut (Cmd+V vs Ctrl+V).
-              viewerPlatform: viewerPlatformFromUserAgent(req.get("user-agent")),
-              activeRepoName: activeRepoName ?? undefined,
-              resumeSessionId,
-              conversationHistory,
-              images: requestImages.length ? requestImages : undefined,
-              // Text-only turn: the model gets the staged file PATHS in the user
-              // prompt instead of image content blocks.
-              imageFiles: requestImageFiles.length
-                ? requestImageFiles
-                : undefined,
-              modelTier: conversationModelTier ?? undefined,
-              effort: conversationEffort ?? undefined,
-              mcpToolGroups: effectiveMcpToolGroupsForRun,
-              viewerUserId: req.user!.id,
-              viewerName: req.user!.displayName,
-              viewerIsOwner,
-              knowledgeMemory,
-              // Elevated tool permissions for the owner OR a trusted user. The tool
-              // gate denies everyone else, so auto-approving the elevated path is safe.
-              // (Group-agent runs carry capability via `groupAgent` instead.)
-              elevated: elevatedViewer,
-              // WHY a non-owner viewer is elevated, when group co-membership is the
-              // source: the shared group names surface in the prompt (META-COGNITION).
-              trustedViaGroups:
-                groupAgentHit || req.user!.id === avatar.id
-                  ? []
-                  : store.sharedGroupNames(req.user!.id, avatar.id),
-              // Group shared-agent run kind: pins the run to ONE group's
-              // resources and carries the acting member's role/capture right.
-              groupAgent: groupAgentHit
-                ? {
-                    groupId: groupAgentHit.groupId,
-                    agentId: groupAgentHit.agent.id,
-                    groupName: groupAgentHit.groupName,
-                    viewerRole: groupAgentHit.viewerRole,
-                    captureAllowed: groupAgentCaptureAllowed(
-                      groupAgentHit.agent,
-                      groupAgentHit.viewerRole,
-                    ),
-                  }
-                : undefined,
-              // Personal-agent run kind: IDENTITY only (prompt/self-config/
-              // describe_system). Capability stays the owner's — `avatar` above
-              // is the owner's own row and `groupAgent` must stay unset, or the
-              // run loses the owner tools this bot is meant to have.
-              personalAgent: personalAgentHit
-                ? {
-                    agentId: personalAgentHit.agent.id,
-                    ownerUserId: req.user!.id,
-                  }
-                : undefined,
-              autoApprove: true,
-            },
-            pluginRoots,
-            config,
-            store,
-            {
-              onDelta: (text) => {
-                streamedText += text;
-                emitRunEvent(runId, "delta", { text });
-              },
-              onThinking: (text) => {
-                streamedThinking += text;
-                emitRunEvent(runId, "thinking", { text });
-              },
-              // Empty-turn retry: drop the discarded attempt's reasoning so the kept
-              // turn's thinking isn't shown/persisted glued onto the throwaway one.
-              onThinkingReset: () => {
-                streamedThinking = "";
-                emitRunEvent(runId, "thinking_reset", {});
-              },
-              // A newer text block superseded the answer streamed so far: the
-              // interim narration is demoted to the reasoning view so the bubble
-              // keeps only the LAST block, and nothing is lost.
-              onTextFold: (text) => {
-                // Demoted narration joins the reasoning stream (persisted as
-                // response.thinking)…
-                streamedThinking += (streamedThinking ? "\n\n" : "") + text;
-                // …and leaves the answer: cancel/error tails must not resurrect it.
-                foldedTextOffset = streamedText.length;
-                // Anchors index into the answer text, and the answer just
-                // restarted from empty — every stamped card now belongs before
-                // the new tail.
-                for (const attachment of shownAttachments) {
-                  if (typeof attachment.anchor === "number") attachment.anchor = 0;
-                }
-                emitRunEvent(runId, "text_fold", {});
-              },
-              onStatus: (label) => {
-                emitRunEvent(runId, "status", { label });
-              },
-              onModel: (model) => {
-                observedModel.set(model);
-              },
-              onSessionId: (sessionId) => {
-                runSessionId = sessionId;
-              },
-              onPlugin: (event) => {
-                emitRunEvent(runId, "plugin", {
-                  status: event.status,
-                  name: event.name,
-                });
-              },
-              onToolStart: (event) => {
-                emitRunEvent(runId, "tool", event);
-              },
-              onToolEnd: (event) => {
-                emitRunEvent(runId, "tool_end", event);
-              },
-              onTaskStart: (event) => {
-                emitRunEvent(runId, "task", event);
-              },
-              onTaskUpdate: (event) => {
-                emitRunEvent(runId, "task_update", event);
-              },
-              onTaskEnd: (event) => {
-                emitRunEvent(runId, "task_end", event);
-              },
-              onAgentStart: (event) => {
-                emitRunEvent(runId, "agent", event);
-              },
-              onAgentEnd: (event) => {
-                emitRunEvent(runId, "agent_end", event);
-              },
-              // Live background-task set (REPLACE semantics). Relayed so the
-              // client can show a "백그라운드 작업 진행 중" indicator, and mirrored
-              // onto the run snapshot so reloads/new-POST 409s know the state.
-              onBackgroundTasks: (event) => {
-                if (turnFinalized) {
-                  markRunBackground(runId, event.tasks.length);
-                }
-                emitRunEvent(runId, "bg_tasks", { tasks: event.tasks });
-              },
-              // Result boundary. First boundary with live background tasks →
-              // finalize the visible turn NOW (persist + done{background:true})
-              // while the SDK session keeps running underneath; every later
-              // boundary is a wake-up turn delivered as a NEW assistant message.
-              onTurnResult: (segment) => {
-                if (!turnFinalized) {
-                  if (segment.backgroundTasks.length === 0) {
-                    return; // normal turn — the post-await done path handles it
-                  }
-                  turnFinalized = true;
-                  markRunBackground(runId, segment.backgroundTasks.length);
-                  // Persist the session id NOW: the phase can outlive tab
-                  // closes, and the next turn must resume this transcript.
-                  if (runSessionId) {
-                    store.setAgentSessionId(
-                      req.user!.id,
-                      conversationId,
-                      runSessionId,
-                    );
-                  }
-                  const segResponse: AgentResponse = {
-                    kind: "text",
-                    runtime: config.agentRuntime,
-                    summary: "Claude Agent SDK 실행이 완료되었습니다.",
-                    text: segment.text || "백그라운드 작업을 진행 중입니다.",
-                    ...(latestPlan ? { plan: latestPlan } : {}),
-                    ...(streamedThinking ? { thinking: streamedThinking } : {}),
-                    ...(segment.usage ? { usage: segment.usage } : {}),
-                  };
-                  const message =
-                    store.conversationOwner(conversationId) === req.user!.id
-                      ? store.addMessage(conversationId, {
-                          role: "assistant",
-                          content: segResponse.text,
-                          response: segResponse,
-                          attachments: shownAttachments.slice(),
-                        })
-                      : null;
-                  persistedTextOffset = streamedText.length;
-                  persistedThinkingOffset = streamedThinking.length;
-                  persistedAttachmentsOffset = shownAttachments.length;
-                  emitRunEvent(runId, "done", {
-                    message,
-                    response: segResponse,
-                    background: true,
-                    tasks: segment.backgroundTasks,
-                  });
-                  return;
-                }
-                // Wake-up turn finished → its own assistant message. Skip pure
-                // bookkeeping boundaries (no text, no new attachments).
-                const text = segment.text.trim();
-                const thinkingTail = streamedThinking.slice(persistedThinkingOffset);
-                const attachmentsTail = shownAttachments.slice(persistedAttachmentsOffset);
-                persistedTextOffset = streamedText.length;
-                persistedThinkingOffset = streamedThinking.length;
-                persistedAttachmentsOffset = shownAttachments.length;
-                if (!text && attachmentsTail.length === 0) {
-                  return;
-                }
-                const segResponse: AgentResponse = {
-                  kind: "text",
-                  runtime: config.agentRuntime,
-                  summary: "백그라운드 작업 보고",
-                  text: text || "(백그라운드 작업이 종료되었습니다.)",
-                  ...(thinkingTail ? { thinking: thinkingTail } : {}),
-                  ...(segment.usage ? { usage: segment.usage } : {}),
-                };
-                const message =
-                  store.conversationOwner(conversationId) === req.user!.id
-                    ? store.addMessage(conversationId, {
-                        role: "assistant",
-                        content: segResponse.text,
-                        response: segResponse,
-                        attachments: attachmentsTail,
-                      })
-                    : null;
-                if (message) {
-                  emitRunEvent(runId, "bg_message", { message });
-                }
-              },
-              onBlocked: (event) => {
-                emitRunEvent(runId, "blocked", event);
-              },
-              onMemory: (event) => {
-                // Stable id: an SSE reattach replays the whole event log, and
-                // the client dedupes 기억 rows by this id.
-                emitRunEvent(runId, "memory", { id: crypto.randomUUID(), ...event });
-              },
-              // Compaction happened (or failed). Same id discipline as 기억 —
-              // a reattach replays the log and the client dedupes on it.
-              onCompact: (event) => {
-                emitRunEvent(runId, "compact", { id: crypto.randomUUID(), ...event });
-              },
-              // Plan mode: the avatar submitted a plan via ExitPlanMode. Surface it as
-              // a dedicated plan card (display-only) and keep the latest one to persist
-              // on the assistant response so it rebuilds on reload.
-              onPlan: (event) => {
-                // EnterPlanMode emits an empty-plan "planning" signal; only a real plan
-                // (ExitPlanMode) is worth persisting on the response.
-                if (event.plan) latestPlan = event.plan;
-                emitRunEvent(runId, "plan", {
-                  plan: event.plan,
-                  planning: event.planning ?? false,
-                });
-              },
-              // Interactive plan approval (owner only). The avatar proposed a plan
-              // via ExitPlanMode; park the run and emit the plan to the client,
-              // which shows approve/reject controls on the plan card. Approve →
-              // the avatar implements; reject → feed the feedback back so it revises.
-              onPlanReview: async (requestData) => {
-                const requestId = crypto.randomUUID();
-                emitRunEvent(runId, "plan_review", {
-                  runId,
-                  requestId,
-                  plan: requestData.plan,
-                });
-                const answer = await awaitResponse(runId, requestId);
-                if (answer === CANCELLED) {
-                  // Run ended / cancelled / timed out before an answer: treat as a
-                  // rejection (no feedback) so the avatar never barrels ahead with
-                  // an unapproved plan.
-                  return { behavior: "rejected" };
-                }
-                const reply = answer as { behavior?: string; feedback?: string };
-                return reply?.behavior === "approved"
-                  ? { behavior: "approved" }
-                  : { behavior: "rejected", feedback: reply?.feedback };
-              },
-              // Interactive permission prompt (owner only — see claudeAgent).
-              onPermission: async (requestData) => {
-                const requestId = crypto.randomUUID();
-                emitRunEvent(runId, "permission", {
-                  runId,
-                  requestId,
-                  ...requestData,
-                });
-                const answer = await awaitResponse(runId, requestId);
-                if (answer === CANCELLED) {
-                  // TTL expiry / stop / run end — nobody clicked anything.
-                  // Marked so the hook doesn't misreport it as a user refusal.
-                  return { behavior: "deny", unanswered: true };
-                }
-                return (answer as { behavior: "allow" }).behavior === "allow"
-                  ? { behavior: "allow" }
-                  : { behavior: "deny" };
-              },
-              // AskUserQuestion (and other request_user_dialog kinds).
-              onQuestion: async (requestData) => {
-                const requestId = crypto.randomUUID();
-                emitRunEvent(runId, "question", {
-                  runId,
-                  requestId,
-                  dialogKind: requestData.dialogKind,
-                  payload: requestData.payload,
-                });
-                const answer = await awaitResponse(runId, requestId);
-                if (answer === CANCELLED) {
-                  return { behavior: "cancelled" };
-                }
-                const reply = answer as { cancelled?: boolean; result?: unknown };
-                if (reply?.cancelled) {
-                  return { behavior: "cancelled" };
-                }
-                return { behavior: "completed", result: reply?.result };
-              },
-              // Visual canvas (experimental `canvas` feature, #50). Mirror the
-              // question wiring: emit the artifact over SSE, and when controls were
-              // declared (awaitInput) park the run until the user submits via
-              // /api/chat/respond. Always record the artifact so it persists.
-              onCanvas: async (requestData) => {
-                const requestId = crypto.randomUUID();
-                const {
-                  artifactId,
-                  title,
-                  content,
-                  contentType,
-                  controls,
-                  interaction,
-                  editable,
-                } = requestData;
-                emitRunEvent(runId, "canvas", {
-                  runId,
-                  requestId,
-                  artifactId,
-                  title,
-                  content,
-                  contentType,
-                  // Pass controls WHENEVER present (not only when blocking) so an async
-                  // canvas's form still renders client-side.
-                  controls: controls ?? null,
-                  interaction: interaction ?? null,
-                  editable: Boolean(editable),
-                });
-                const record = (submittedValues?: Record<string, unknown>) => {
-                  // Persist to the dedicated canvas tables (version history). Refining
-                  // the same id appends a version; an unchanged re-show just refreshes
-                  // the submission.
-                  store.upsertCanvasArtifact(req.user!.id, conversationId, {
-                    artifactId,
-                    title,
-                    content,
-                    contentType,
-                    controls,
-                    submittedValues,
-                    interaction,
-                    editable,
-                  });
-                };
-                if (!requestData.awaitInput) {
-                  record();
-                  return { behavior: "shown" };
-                }
-                const answer = await awaitResponse(runId, requestId);
-                if (answer === CANCELLED) {
-                  record();
-                  return { behavior: "cancelled" };
-                }
-                const reply = answer as {
-                  cancelled?: boolean;
-                  deleteCanvas?: boolean;
-                  values?: Record<string, unknown>;
-                };
-                if (reply?.deleteCanvas) {
-                  store.deleteCanvasArtifact(req.user!.id, artifactId);
-                  return { behavior: "cancelled" };
-                }
-                if (reply?.cancelled) {
-                  record();
-                  return { behavior: "cancelled" };
-                }
-                record(reply?.values ?? {});
-                return { behavior: "submitted", values: reply?.values ?? {} };
-              },
-              // Browser bridge. Same emit-and-park shape as onCanvas, but the
-              // responder is the user's browser extension, not a person: park
-              // for BROWSER_OP_TTL_MS, and read a silent timeout as "the bridge
-              // isn't there" rather than "the user declined".
-              onBrowser: async (requestData) => {
-                const requestId = crypto.randomUUID();
-                emitRunEvent(runId, "browser", {
-                  runId,
-                  requestId,
-                  op: requestData.op,
-                  url: requestData.url ?? null,
-                  uid: requestData.uid ?? null,
-                  x: typeof requestData.x === "number" ? requestData.x : null,
-                  y: typeof requestData.y === "number" ? requestData.y : null,
-                  xFraction:
-                    typeof requestData.xFraction === "number" ? requestData.xFraction : null,
-                  yFraction:
-                    typeof requestData.yFraction === "number" ? requestData.yFraction : null,
-                  text: requestData.text ?? null,
-                  submit: Boolean(requestData.submit),
-                  clear: Boolean(requestData.clear),
-                  keystrokes: Boolean(requestData.keystrokes),
-                  key: requestData.key ?? null,
-                  modifiers: requestData.modifiers ?? null,
-                  repeat: requestData.repeat ?? null,
-                  direction: requestData.direction ?? null,
-                  pixels: requestData.pixels ?? null,
-                  accept: typeof requestData.accept === "boolean" ? requestData.accept : null,
-                  promptText: requestData.promptText ?? null,
-                  textGone: requestData.textGone ?? null,
-                  timeoutS: requestData.timeoutS ?? null,
-                  tabId: requestData.tabId ?? null,
-                  fields: requestData.fields ?? null,
-                  option: requestData.option ?? null,
-                  fullPage: typeof requestData.fullPage === "boolean" ? requestData.fullPage : null,
-                  offset: requestData.offset ?? null,
-                  expand: typeof requestData.expand === "boolean" ? requestData.expand : null,
-                  maxChars: typeof requestData.maxChars === "number" ? requestData.maxChars : null,
-                });
-                const answer = await awaitResponse(runId, requestId, BROWSER_OP_TTL_MS);
-                if (answer === CANCELLED) {
-                  return {
-                    behavior: "error",
-                    message:
-                      "The browser bridge did not respond. The Noah tab may be closed, the extension may not be installed, or no tab is attached. " +
-                      "Ask the user to open Noah in the browser you should drive and attach a tab, then retry — there is no other way to reach their browser.",
-                  };
-                }
-                const reply = answer as {
-                  ok?: boolean;
-                  message?: string;
-                  snapshot?: string;
-                  snapshotError?: string;
-                  note?: string;
-                  url?: string;
-                  title?: string;
-                  tabs?: BrowserTab[];
-                  dialog?: { type?: string; message?: string; defaultPrompt?: string };
-                  imageBase64?: string;
-                  imageMimeType?: string;
-                  landedOn?: string;
-                  pageText?: string;
-                  pageTextOffset?: number;
-                  pageTextTotal?: number;
-                };
-                if (!reply?.ok) {
-                  const raw =
-                    reply?.message ||
-                    "The browser extension refused the operation without a reason. Report this to the user rather than retrying.";
-                  // "Unsupported operation" is the OLD extension build's
-                  // catch-all for an op it predates. The old build cannot
-                  // explain itself, so translate here: without this the model
-                  // retries other new ops and fails the same way.
-                  const message = /unsupported operation/i.test(raw)
-                    ? `${raw} The browser extension installed in the user's browser is an OLDER build than this server, so it does not know this operation (and will refuse every other recently added one too). Tell the user to update it: download the extension zip again from 설정 → 접근/보안 → 브라우저 브릿지, replace the previously loaded folder's contents, then press the reload (↻) button on that extension's card in the browser's extensions page (chrome://extensions, or edge://extensions on Edge) — the card must show the new version number afterwards. Until then, use only snapshot/navigate/click/type and the tab tools.`
-                    : raw;
-                  return { behavior: "error", message };
-                }
-                // Audit every ACTION against the user's live session, plus the
-                // DELIBERATE reads (screenshot/read_text — the exfiltration
-                // surface an admin wants rows for). `snapshot` and `wait_for`
-                // are skipped: both fire between every step, so they would
-                // bury the rows that matter.
-                // URLs are scrubbed of userinfo and query string — an audit row
-                // is admin-visible and a query string routinely carries tokens.
-                if (requestData.op !== "snapshot" && requestData.op !== "wait_for") {
-                  auditAs(
-                    req,
-                    `browser_${requestData.op}`,
-                    [
-                      `op=${requestData.op}`,
-                      requestData.uid ? `uid=${requestData.uid}` : "",
-                      typeof requestData.x === "number" && typeof requestData.y === "number"
-                        ? `at=(${requestData.x},${requestData.y})`
-                        : "",
-                      // click_at's uid mode: the point is relative to the
-                      // element above, so the row needs both to be readable.
-                      typeof requestData.xFraction === "number" &&
-                      typeof requestData.yFraction === "number"
-                        ? `rel=(${requestData.xFraction},${requestData.yFraction})`
-                        : "",
-                      requestData.key
-                        ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`
-                        : "",
-                      requestData.fields ? `fields=${requestData.fields.length}` : "",
-                      requestData.option ? `option=${requestData.option.slice(0, 80)}` : "",
-                      // A type that REPLACED what the field held, rather than
-                      // adding to it — the destructive half of the same op.
-                      requestData.clear ? "clear" : "",
-                      requestData.expand ? "expand" : "",
-                      `url=${scrubAuditUrl(reply.url || requestData.url)}`,
-                    ]
-                      .filter(Boolean)
-                      .join(" "),
-                  );
-                }
-                // The screenshot rides the parked reply as base64. Bound it
-                // here — a runaway payload must fail the one tool call, not
-                // balloon the model turn.
-                if (typeof reply.imageBase64 === "string" && reply.imageBase64.length > 8_000_000) {
-                  return {
-                    behavior: "error",
-                    message:
-                      "The screenshot was too large to relay. Capture a smaller area: the viewport (no fullPage) or a single element via uid.",
-                  };
-                }
-                // Screenshot auto-share: the model sees the capture — persist
-                // the SAME bytes for the user as a download card + hidden
-                // preview slide (the card+panel shape share_file produces), so
-                // the user can open exactly what the avatar looked at, live
-                // and after reload. Best-effort BY DESIGN: a publish failure
-                // must not fail the tool call, and the note keeps the model's
-                // self-knowledge honest about whether the user got a copy.
-                let shareNote: string | undefined;
-                let sharedAttachments: MessageAttachment[] | undefined;
-                if (
-                  requestData.op === "screenshot" &&
-                  typeof reply.imageBase64 === "string" &&
-                  reply.imageBase64
-                ) {
-                  if (sharedScreenshotCount >= MAX_SHARED_SCREENSHOTS_PER_MESSAGE) {
-                    shareNote = `This capture was NOT shared with the user — this turn already shared ${MAX_SHARED_SCREENSHOTS_PER_MESSAGE} screenshots. The user has not seen it; continue in the next turn if they need it.`;
-                  } else if (store.conversationOwner(conversationId) !== req.user!.id) {
-                    shareNote =
-                      "This capture was NOT shared with the user: the conversation no longer exists.";
-                  } else {
-                    const published = publishBrowserScreenshot(
-                      config,
-                      conversationId,
-                      Buffer.from(reply.imageBase64, "base64"),
-                      typeof reply.title === "string" ? reply.title : undefined,
-                    );
-                    if ("error" in published) {
-                      shareNote =
-                        "This capture could NOT be shared with the user as a file card — the user has not seen it.";
-                    } else {
-                      sharedScreenshotCount += 1;
-                      sharedAttachments = [published.file, published.slide];
-                      for (const attachment of sharedAttachments) {
-                        shownAttachments.push(attachment);
-                        emitRunEvent(runId, "file", { runId, attachment });
-                      }
-                      shareNote =
-                        "This capture was also shared with the user as a file card in the chat (it opens in the preview panel), so they can already see it — no need to re-send or exhaustively re-describe it.";
-                    }
-                  }
-                }
-                return {
-                  behavior: "ok",
-                  shareNote,
-                  sharedAttachments,
-                  // Every field below is UNTRUSTED extension input that rides into
-                  // the model turn, and this route is the PRIMARY size gate
-                  // (browserTools.report adds only a model-facing snapshot cap for
-                  // old extension builds). Bound each explicitly and shape-validate
-                  // tabs[] so a hostile/oversized reply can't blow up the turn or
-                  // smuggle an unbounded payload.
-                  snapshot:
-                    typeof reply.snapshot === "string" ? reply.snapshot.slice(0, 200_000) : undefined,
-                  // Why the post-action snapshot is missing. One line, not a
-                  // stack: it rides into the model turn like everything else.
-                  snapshotError:
-                    typeof reply.snapshotError === "string"
-                      ? reply.snapshotError.slice(0, 1_000)
-                      : undefined,
-                  // A bridge-authored caveat about the op's outcome (a repaired
-                  // or unverifiable clear). Short by construction on the
-                  // extension side; bounded here because it lands OUTSIDE the
-                  // untrusted wrapper, where a long one would read as ours.
-                  note:
-                    typeof reply.note === "string" && reply.note
-                      ? reply.note.slice(0, 500)
-                      : undefined,
-                  url: typeof reply.url === "string" ? reply.url.slice(0, 4_000) : undefined,
-                  title: typeof reply.title === "string" ? reply.title.slice(0, 2_000) : undefined,
-                  tabs: Array.isArray(reply.tabs)
-                    ? reply.tabs.slice(0, 100).flatMap((t: unknown) => {
-                        if (!t || typeof t !== "object") return [];
-                        const tab = t as {
-                          tabId?: unknown;
-                          title?: unknown;
-                          url?: unknown;
-                          current?: unknown;
-                        };
-                        if (typeof tab.tabId !== "string") return [];
-                        return [
-                          {
-                            tabId: tab.tabId.slice(0, 200),
-                            title: typeof tab.title === "string" ? tab.title.slice(0, 300) : "",
-                            url: typeof tab.url === "string" ? tab.url.slice(0, 2_000) : "",
-                            current: tab.current === true,
-                          },
-                        ];
-                      })
-                    : undefined,
-                  dialog:
-                    reply.dialog && typeof reply.dialog.message === "string"
-                      ? {
-                          type: typeof reply.dialog.type === "string" ? reply.dialog.type : "alert",
-                          message: reply.dialog.message,
-                          defaultPrompt:
-                            typeof reply.dialog.defaultPrompt === "string"
-                              ? reply.dialog.defaultPrompt
-                              : undefined,
-                        }
-                      : undefined,
-                  image:
-                    typeof reply.imageBase64 === "string" && reply.imageBase64
-                      ? {
-                          base64: reply.imageBase64,
-                          // Whitelisted mime types only — this string lands in an
-                          // API image block, and the extension is semi-trusted.
-                          mimeType:
-                            reply.imageMimeType === "image/png" || reply.imageMimeType === "image/webp"
-                              ? reply.imageMimeType
-                              : "image/jpeg",
-                        }
-                      : undefined,
-                  // Bounded: a one-line element description, not a page dump —
-                  // the extension is semi-trusted and this rides into the model.
-                  landedOn:
-                    typeof reply.landedOn === "string" && reply.landedOn
-                      ? reply.landedOn.slice(0, 300)
-                      : undefined,
-                  pageText:
-                    typeof reply.pageText === "string"
-                      ? {
-                          text: reply.pageText.slice(0, 200_000),
-                          offset:
-                            typeof reply.pageTextOffset === "number" && reply.pageTextOffset >= 0
-                              ? reply.pageTextOffset
-                              : 0,
-                          total:
-                            typeof reply.pageTextTotal === "number" && reply.pageTextTotal >= 0
-                              ? reply.pageTextTotal
-                              : reply.pageText.length,
-                        }
-                      : undefined,
-                };
-              },
-              onFile: async (requestData) => {
-                // Separate per-turn caps: visible images guard the bubble from
-                // spam; hidden publishes (canvas slide embeds) only cost disk,
-                // so a whole deck fits in one turn.
-                const visibleImages = shownAttachments.filter(
-                  (a) => a.kind === "image" && !a.hidden,
-                ).length;
-                const hiddenImages = shownAttachments.filter(
-                  (a) => a.kind === "image" && a.hidden,
-                ).length;
-                if (requestData.hidden && hiddenImages >= MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE) {
-                  return {
-                    behavior: "error",
-                    message: `This turn already published ${MAX_HIDDEN_CHAT_IMAGES_PER_MESSAGE} hidden images. Reuse the URLs you already have or continue in the next turn.`,
-                  };
-                }
-                if (!requestData.hidden && visibleImages >= MAX_CHAT_IMAGES_PER_MESSAGE) {
-                  return {
-                    behavior: "error",
-                    message: `This turn already showed ${MAX_CHAT_IMAGES_PER_MESSAGE} images. Do not show more in the same response.`,
-                  };
-                }
-                if (store.conversationOwner(conversationId) !== req.user!.id) {
-                  return {
-                    behavior: "error",
-                    message: "The conversation no longer exists, so the image cannot be shown.",
-                  };
-                }
-                const result = publishWorkspaceImage(
-                  config,
-                  conversationId,
-                  requestData.path,
-                  [activeRepoCwd ?? workspaceDir, ...(activeRepoCwd ? [workspaceDir] : [])],
-                  requestData.caption,
-                );
-                if ("error" in result) {
-                  const messages = {
-                    OUTSIDE_WORKSPACE: "The image path must stay inside the current working directory or conversation scratch workspace. Do not use Read on the image. Copy it into the current directory with Bash (for example: cp /tmp/image.png \"$PWD/image.png\"), then retry show_file with ./image.png.",
-                    NOT_FOUND: "The image file does not exist.",
-                    NOT_FILE: "The supplied path is not a regular file.",
-                    EMPTY: "The image file is empty.",
-                    TOO_LARGE: "The image is larger than the 5 MB limit.",
-                    UNSUPPORTED: "Unsupported image format. show_file accepts PNG, JPEG, WebP, or GIF files whose bytes match the format.",
-                    READ_FAILED: "The image file could not be read.",
-                  } as const;
-                  return { behavior: "error", message: messages[result.error] };
-                }
-                const attachment = requestData.hidden
-                  ? { ...result.attachment, hidden: true }
-                  : result.attachment;
-                shownAttachments.push(attachment);
-                emitRunEvent(runId, "file", {
-                  runId,
-                  attachment,
-                });
-                return {
-                  behavior: "shown",
-                  attachment,
-                  url: `/api/conversations/${encodeURIComponent(conversationId)}/images/${encodeURIComponent(attachment.id)}`,
-                };
-              },
-              onShareFile: async (requestData) => {
-                if (sharedFileCount >= MAX_CHAT_FILES_PER_MESSAGE) {
-                  return {
-                    behavior: "error",
-                    message: `This turn already shared ${MAX_CHAT_FILES_PER_MESSAGE} files. Do not share more in the same response.`,
-                  };
-                }
-                if (store.conversationOwner(conversationId) !== req.user!.id) {
-                  return {
-                    behavior: "error",
-                    message: "The conversation no longer exists, so the file cannot be shared.",
-                  };
-                }
-                const result = publishWorkspaceFile(
-                  config,
-                  conversationId,
-                  requestData.path,
-                  [activeRepoCwd ?? workspaceDir, ...(activeRepoCwd ? [workspaceDir] : [])],
-                  requestData.name,
-                );
-                if ("error" in result) {
-                  const maxMb = Math.round(MAX_CHAT_FILE_BYTES / (1024 * 1024));
-                  const messages = {
-                    OUTSIDE_WORKSPACE: "The file path must stay inside the current working directory or conversation scratch workspace. Copy it into the current directory with Bash (for example: cp /tmp/deck.pptx \"$PWD/deck.pptx\"), then retry share_file with ./deck.pptx.",
-                    NOT_FOUND: "The file does not exist.",
-                    NOT_FILE: "The supplied path is not a regular file.",
-                    EMPTY: "The file is empty.",
-                    TOO_LARGE: `The file is larger than the ${maxMb} MB limit.`,
-                    UNSUPPORTED: `Unsupported file type. share_file accepts: ${SHAREABLE_EXTENSIONS.map((e) => `.${e}`).join(", ")} — and the content must match the extension. There is no Bash or Markdown workaround for delivering other file types.`,
-                    READ_FAILED: "The file could not be read.",
-                  } as const;
-                  return { behavior: "error", message: messages[result.error] };
-                }
-                sharedFileCount += 1;
-                shownAttachments.push(result.attachment);
-                emitRunEvent(runId, "file", {
-                  runId,
-                  attachment: result.attachment,
-                });
-                // Auto-render page previews SERVER-SIDE (pptx/docx/xlsx/pdf →
-                // hidden PNG attachments on this same message) so the agent
-                // never has to rasterize and publish slides one by one.
-                // Best-effort: a missing toolchain or a render failure still
-                // delivers the file, just without the panel preview.
-                let previewCount = 0;
-                const stored = resolveStoredFile(config, conversationId, result.attachment.id);
-                if (stored && isPreviewableExtension(stored.ext)) {
-                  const pages = await renderDocumentPreviews(stored.path, stored.ext);
-                  if (pages.length) {
-                    const previewAttachments = savePreviewImages(
-                      config,
-                      conversationId,
-                      pages,
-                      result.attachment.id,
-                    );
-                    previewCount = previewAttachments.length;
-                    for (const attachment of previewAttachments) {
-                      shownAttachments.push(attachment);
-                      emitRunEvent(runId, "file", { runId, attachment });
-                    }
-                  }
-                }
-                return {
-                  behavior: "shown",
-                  attachment: result.attachment,
-                  url: `/api/conversations/${encodeURIComponent(conversationId)}/files/${encodeURIComponent(result.attachment.id)}`,
-                  previews: previewCount,
-                };
-              },
-            },
-            abortController,
-          );
-
-          // Canvases shown this turn are already persisted to the dedicated tables by
-          // the onCanvas handler (with version history); they no longer ride the
-          // response JSON. The live panel is driven by the SSE "canvas" events. (#50)
-          // Carry the plan submitted this turn (plan mode) so the plan card persists
-          // and rebuilds on reload.
-          if (latestPlan) {
-            response.plan = latestPlan;
-          }
-          // Carry the turn's reasoning so the collapsible "생각 과정" view rebuilds
-          // on reload (streaming path only — headless runs emit no onThinking).
-          if (streamedThinking) {
-            response.thinking = streamedThinking;
-          }
-
-          // Remember this run's SDK session so the next turn resumes its context.
-          if (runSessionId) {
-            store.setAgentSessionId(req.user!.id, conversationId, runSessionId);
-          }
-          auditAs(
-            req,
-            "chat",
-            `chat with ${threadAvatarLabel} (${response.runtime})`,
-          );
-          logger.info(
-            {
-              userId: req.user!.id,
-              avatarId: threadAvatarId,
-              conversationId,
-              runtime: response.runtime,
-              background: turnFinalized,
-              durationMs: Date.now() - chatStart,
-            },
-            "chat completed",
-          );
-          if (turnFinalized) {
-            // Background phase over: the visible turn and every wake-up report
-            // were already persisted at their result boundaries — persisting the
-            // aggregate `response` here would duplicate them. Just signal the
-            // end of the phase; the run closes in the finally below.
-            emitRunEvent(runId, "bg_end", {});
-          } else {
-            // The conversation may have been deleted mid-run; skip persistence (the FK
-            // on messages would reject the insert) and just signal completion.
-            const assistantMessage =
-              store.conversationOwner(conversationId) === req.user!.id
-                ? store.addMessage(conversationId, {
-                    role: "assistant",
-                    content: response.text || response.summary,
-                    response,
-                    attachments: shownAttachments,
-                  })
-                : null;
-            emitRunEvent(runId, "done", { message: assistantMessage, response });
-          }
-        } catch (error) {
-          if (isRunCancelled(runId)) {
-            // Clear the persisted SDK session: the aborted run's transcript is
-            // incomplete, so the NEXT turn rebuilds context from stored messages
-            // (which now include this cancelled turn's user message + partial)
-            // instead of resuming a half-written session that omits it. (chat-02)
-            if (!externalAgent) {
-              store.setAgentSessionId(req.user!.id, conversationId, null);
-            }
-            // Keep whatever the model already streamed before the stop. The client's
-            // finalizeStopped keeps it on screen, so the persisted record must carry
-            // it too — otherwise the visible answer is gone on the next reload/revisit.
-            // In a background phase, only the TAIL since the last persisted result
-            // boundary belongs here (earlier segments are already stored messages);
-            // an empty tail still persists a notice so the kill is visible on reload.
-            const cancelledText = streamedText.slice(
-              Math.max(persistedTextOffset, foldedTextOffset),
-            );
-            const cancelledThinking = streamedThinking.slice(persistedThinkingOffset);
-            const response: AgentResponse = {
-              kind: "text",
-              runtime: externalAgent ? "external" : config.agentRuntime,
-              summary: "중지됨",
-              text: cancelledText,
-              ...(latestPlan && !turnFinalized ? { plan: latestPlan } : {}),
-              ...(cancelledThinking ? { thinking: cancelledThinking } : {}),
-            };
-            // Skip the insert if the conversation was deleted mid-run (FK would reject).
-            const stopped =
-              store.conversationOwner(conversationId) === req.user!.id
-                ? store.addMessage(conversationId, {
-                    role: "assistant",
-                    content:
-                      cancelledText ||
-                      (turnFinalized
-                        ? "(진행 중이던 백그라운드 작업이 중지되었습니다.)"
-                        : "(중지됨)"),
-                    response,
-                    attachments: shownAttachments.slice(persistedAttachmentsOffset),
-                  })
-                : null;
-            emitRunEvent(runId, "cancelled", {
-              message: stopped,
-              response,
-              background: turnFinalized,
-            });
-            return;
-          }
-          // Scrub before logging too: a git auth failure carries the token in its
-          // argv (`http.extraHeader`), which pino's `err` serializer would emit.
-          const detail = scrubGitError(error);
-          logger.error(
-            {
-              detail,
-              userId: req.user!.id,
-              avatarId: threadAvatarId,
-              conversationId,
-              durationMs: Date.now() - chatStart,
-            },
-            "chat error",
-          );
-          auditAs(req, "chat", detail, "error");
-          // When a TRANSIENT model/server failure ends the turn (overload, rate-limit,
-          // 5xx, timeout) AND the model isn't env-pinned (so the picker is available),
-          // nudge the user to switch models. Chat never auto-falls-back (a live viewer
-          // is watching the stream — only headless routines retry on a lower tier), so
-          // this is how a stuck model gets unblocked. Every other failure gets a Korean
-          // lead with `detail` appended: the SDK's own text is English, so it can never
-          // be the whole bubble. The technical `detail` still goes to logs/audit above.
-          const failedTier =
-            store.getConversationModel(req.user!.id, conversationId) ??
-            DEFAULT_MODEL_TIER;
-          const alternatives = MODEL_TIERS.filter((t) => t.id !== failedTier)
-            .map((t) => t.label)
-            .join(", ");
-          const userFacing =
-            !externalAgent &&
-            !config.anthropicModel &&
-            isRetryableModelError(error)
-              ? `지금 ${modelTierLabel(failedTier)} 모델이 일시적으로 응답하지 못했어요 (서버 과부하 또는 일시적 오류). 입력창의 모델 선택에서 다른 모델(${alternatives})로 바꿔 다시 시도해 보세요.`
-              : detail.trim()
-                ? `응답 생성 중 오류가 발생했습니다: ${detail}`
-                : "응답 생성 중 오류가 발생했습니다.";
-          if (store.conversationOwner(conversationId) === req.user!.id) {
-            // Clear the session for the same reason as the cancel path (chat-02), and
-            // don't discard the partial the user already watched stream — keep it
-            // alongside the error so a reload shows what the live view showed.
-            if (!externalAgent) {
-              store.setAgentSessionId(req.user!.id, conversationId, null);
-            }
-            // Background phase: earlier segments are already stored messages, so
-            // only the tail since the last result boundary rides the error bubble.
-            const erroredText = streamedText.slice(
-              Math.max(persistedTextOffset, foldedTextOffset),
-            );
-            const erroredThinking = streamedThinking.slice(persistedThinkingOffset);
-            const content = erroredText
-              ? `${erroredText}\n\n${userFacing}`
-              : userFacing;
-            // Any canvas shown before the error is already persisted to the canvas
-            // tables by the onCanvas handler. If a plan and/or reasoning was produced,
-            // carry it so the plan/thinking cards survive reload; text=content keeps the
-            // error bubble identical, and a response is attached only when there's
-            // something to carry (plain errors keep their existing null-response shape).
-            store.addMessage(conversationId, {
-              role: "assistant",
-              content,
-              attachments: shownAttachments.slice(persistedAttachmentsOffset),
-              response:
-                (latestPlan && !turnFinalized) || erroredThinking
-                  ? {
-                      kind: "text",
-                      runtime: externalAgent ? "external" : config.agentRuntime,
-                      summary: "오류",
-                      text: content,
-                      ...(latestPlan && !turnFinalized ? { plan: latestPlan } : {}),
-                      ...(erroredThinking ? { thinking: erroredThinking } : {}),
-                    }
-                  : undefined,
-            });
-          }
-          emitRunEvent(runId, "error", {
-            error: userFacing,
-            background: turnFinalized,
-          });
-        } finally {
-          closeRun(runId);
-        }
-        // Outer finally: release the per-clone lock on EVERY exit — normal end, the
-        // attachRunClient early-return, OR a throw anywhere in the prelude above
-        // (Express 4 won't catch an async throw, and a stranded lock 409s every other
-        // conversation for that clone until restart).
-      } finally {
-        releaseActiveRepoLock?.();
+        apiError(res, outcome.refusal.status, outcome.refusal.message);
       }
     },
   );
