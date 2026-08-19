@@ -1080,6 +1080,23 @@ function handleSseEvent(paneId: string, frame: SseFrame): void {
         pane.liveThinking = "";
       });
       return;
+    case "text_fold":
+      // The server demoted the streamed answer so far into the reasoning view: a
+      // newer text block superseded it. Mirror it — move the bubble text into the
+      // thinking card, restart the bubble, and re-anchor live cards to the top of
+      // the new (empty) answer. Replays in order on reconnect.
+      updatePane(paneId, (pane) => {
+        if (pane.liveText) {
+          pane.liveThinking =
+            (pane.liveThinking ? pane.liveThinking + "\n\n" : "") + pane.liveText;
+          pane.liveText = "";
+        }
+        pane.liveTextBreakPending = false;
+        for (const att of pane.liveAttachments) {
+          if (typeof att.anchor === "number") att.anchor = 0;
+        }
+      });
+      return;
     case "open":
       updatePane(paneId, (pane) => {
         if (data?.conversationId) pane.conversationId = data.conversationId;

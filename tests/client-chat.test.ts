@@ -1491,6 +1491,34 @@ describe("stream events applied to a pane", () => {
     expect(pane(id).thinkingActive).toBe(true);
   });
 
+  it("text_fold moves the interim narration into the reasoning view and restarts the bubble", async () => {
+    const id = seedPane();
+    await driveEvents(id, [
+      ["delta", { text: "중간 설명" }],
+      ["text_fold", {}],
+      ["delta", { text: "최종 답" }],
+    ]);
+    // The bubble keeps only the block that came after the fold…
+    expect(pane(id).liveText).toBe("최종 답");
+    // …and the superseded narration is still readable, in the thinking card.
+    expect(pane(id).liveThinking).toContain("중간 설명");
+  });
+
+  it("text_fold re-anchors an already-stamped card to the top of the restarted answer", async () => {
+    const id = seedPane();
+    const attachment = { id: "f1", kind: "file", mediaType: "text/plain", name: "메모.txt" };
+    await driveEvents(id, [
+      ["delta", { text: "1234" }],
+      ["file", { attachment }],
+      ["text_fold", {}],
+      ["delta", { text: "최종 답" }],
+    ]);
+    // The text the anchor indexed into is gone from the answer, so the card
+    // belongs before the new tail rather than 4 characters into it.
+    expect(pane(id).liveAttachments).toEqual([{ ...attachment, anchor: 0 }]);
+    expect(pane(id).liveText).toBe("최종 답");
+  });
+
   it("keeps internal orchestration tools out of the activity rows", async () => {
     const id = seedPane();
     await driveEvents(id, [

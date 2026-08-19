@@ -167,6 +167,52 @@ export function createLoopState(): LoopState {
   };
 }
 
+/** Mutable fold bookkeeping for one attempt's chunk accumulators. */
+export interface TextFoldState {
+  chunkIndex: number;
+  deltaIndex: number;
+}
+
+export function createTextFoldState(): TextFoldState {
+  return { chunkIndex: 0, deltaIndex: 0 };
+}
+
+/**
+ * Fold every unfolded chunk (all of them, or all but the last when `keepLast`).
+ * Fires onTextFold with the folded text and advances the fold indexes.
+ *
+ * WHY: during an agentic turn the model narrates between tool calls, so the
+ * answer accumulates many interim text blocks. Only the LAST block is the
+ * answer; everything before it is narration, which belongs in the reasoning
+ * view (`response.thinking`) rather than the bubble. The fold indexes are where
+ * the kept tail starts — the accumulators themselves are never rewritten, since
+ * the empty-turn check still reads the WHOLE attempt.
+ *
+ * No-op without an onTextFold sink — headless runs keep the legacy full-join
+ * text, per the AgentEvents contract (no sink ⇒ original behavior).
+ */
+export function foldPendingText(
+  state: TextFoldState,
+  assistantChunks: string[],
+  deltaChunks: string[],
+  events: AgentEvents | undefined,
+  keepLast: boolean,
+): void {
+  if (typeof events?.onTextFold !== "function") {
+    return;
+  }
+  const end = keepLast ? assistantChunks.length - 1 : assistantChunks.length;
+  if (end - state.chunkIndex <= 0) {
+    return;
+  }
+  const folded = assistantChunks.slice(state.chunkIndex, end).join("\n\n").trim();
+  if (folded) {
+    events.onTextFold(folded);
+  }
+  state.chunkIndex = end;
+  state.deltaIndex = deltaChunks.length;
+}
+
 function taskDescription(input: Record<string, unknown>): string {
   return (
     asString(input.task_subject) ||

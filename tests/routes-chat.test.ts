@@ -905,6 +905,43 @@ describe("SSE event fan-out", () => {
     // Session id persisted for the next turn's resume.
     expect(store.getAgentSessionId(ownerId, "conv-fan")).toBe("sess-nb");
   });
+
+  it("folds interim narration into the reasoning view and re-anchors the cards it left behind", async () => {
+    const { store, app } = boot();
+    const owner = request.agent(app);
+    const ownerId = (await signup(owner, "textfold").expect(201)).body.user.id as string;
+
+    H.impl = async (agentRequest, _pr, config, _store, events) => {
+      events.onDelta?.("중간 설명");
+      const generatedPath = path.join(agentRequest.cwd!, "mid.png");
+      fs.writeFileSync(generatedPath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==", "base64"));
+      const shown = await events.onFile?.({ path: generatedPath });
+      // The real runner stamps the anchor off its live text accumulator; stand in
+      // for that here so the fold has an anchor to move.
+      if (shown?.behavior === "shown") shown.attachment.anchor = "중간 설명".length;
+      events.onTextFold?.("중간 설명");
+      events.onDelta?.("최종 답");
+      return { kind: "text", runtime: config.agentRuntime, summary: "s", text: "최종 답" };
+    };
+
+    const res = await owner
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "conv-fold", message: "가라" })
+      .expect(200);
+    const frames = parseSse(res.text);
+    expect(frames.map((f) => f.event)).toContain("text_fold");
+
+    const doneData = frames.find((f) => f.event === "done")!.data as { response: AgentResponse };
+    expect(doneData.response.text).toBe("최종 답");
+    // Same information, moved: out of the answer, into the collapsible reasoning card.
+    expect(doneData.response.thinking).toBe("중간 설명");
+
+    const stored = store.listMessages(ownerId, "conv-fold").find((message) => message.role === "assistant");
+    expect(stored?.content).toBe("최종 답");
+    expect(stored?.response?.thinking).toBe("중간 설명");
+    // The text that anchor indexed into is no longer part of the answer.
+    expect(stored?.attachments?.[0].anchor).toBe(0);
+  });
 });
 
 describe("interactive prompts answered over /api/chat/respond", () => {

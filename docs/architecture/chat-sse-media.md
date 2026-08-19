@@ -20,9 +20,26 @@
   >30d resume as new.
 - **A streamed answer must survive completion/reload.** The live bubble shows every main-agent `delta`;
   on `done`/reload it's rebuilt from the PERSISTED `response.text`, NOT `live.text`. So `response.text`
-  must be the full streamed transcript (`partialText` in `claudeAgent.ts`, preferred over the SDK terminal
+  must be the streamed transcript (`partialText` in `claudeAgent.ts`, preferred over the SDK terminal
   `result` which is the LAST turn only) — else pre-final-turn narration vanishes the instant the run
   completes. Cancel/error paths persist the server-side `streamedText` accumulator (`routes/chat.ts`).
+- **Interim narration FOLDS into the reasoning view (`text_fold`), so the answer is the LAST text block.**
+  An agentic turn narrates between tool calls, which made the bubble grow enormous. When a NEW main-agent
+  text block starts, every earlier block of the turn is demoted: `foldPendingText`
+  (`sdkMessageHandlers.ts`, shared by `claudeAgent.ts` AND `externalAgent.ts`) fires `onTextFold(text)`
+  and advances the `TextFoldState` indexes that mark where the kept tail begins. Trigger = a text delta
+  arriving while completed `assistantChunks` are still unfolded (block *k*'s deltas stream BEFORE block
+  *k*'s assembled text is recorded); a `keepLast` sweep at each result boundary and at run end covers
+  backends that emit no deltas. The chat route's sink appends the folded text to `streamedThinking` (so it
+  persists as `response.thinking` and renders in the collapsible 생각 과정 card, which renders markdown),
+  advances `foldedTextOffset` (the cancel/error tails slice from `max(persistedTextOffset,
+  foldedTextOffset)` so a stopped run can't resurrect folded narration), re-anchors every stamped
+  attachment to 0, and emits an SSE `text_fold` frame. The client mirrors it exactly (`liveText` →
+  `liveThinking`, bubble restarts, live cards re-anchored to 0); the frame rides the ordered run-event
+  replay buffer, so a reconnect replays it between the two text bursts and lands on the same state.
+  **Gated on the sink:** with no `onTextFold` (headless routines, `POST /api/chat`) the runners fold
+  nothing and keep the legacy full join — the `AgentEvents` no-sink contract. Attachment anchors are
+  therefore TAIL-relative on both sides (`currentTextAnchor` slices from the fold index).
 - **Tool permissions go through one gate:** the `PreToolUse` hook (`buildPreToolUseHook`). The SDK's
   `canUseTool`/`onUserDialog` are unused (don't fire headlessly). Auto-approve applies on the
   `!headless && elevated && autoApprove` path — **`elevated` = owner OR trusted user**, not owner-only;

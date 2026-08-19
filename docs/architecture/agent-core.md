@@ -40,8 +40,20 @@ the assistant text accumulated when the tool ran — and that accumulator (`assi
 run loop AND is **REASSIGNED there on the empty-turn retry**. Passing the array would stamp against a
 stale binding after a retry; the accessor is read at call time, so it always sees the current one.
 `assistantChunks` is therefore declared ABOVE the plan call in `runClaudeAgent`, not with the other
-loop-state `let`s. The returned `options` is likewise a LIVE object the loop still mutates
-(`systemPrompt`, `model`, `resume`) — same object identity as before the split, deliberately.
+loop-state `let`s — and so is `textFold`, for the same reason. The returned `options` is likewise a LIVE
+object the loop still mutates (`systemPrompt`, `model`, `resume`) — same object identity as before the
+split, deliberately.
+
+### The answer is the LAST text block; earlier ones fold into the reasoning view
+The accumulators are never rewritten — `TextFoldState`'s two indexes (`foldPendingText` in
+`sdkMessageHandlers.ts`) mark where the KEPT tail starts in `assistantChunks`/`deltaChunks`, and every
+consumer slices from there: `currentTextAnchor` (so an attachment stamps an offset into the answer that
+will actually persist), the result-boundary `segmentText`, and the final `partialText`. The one deliberate
+exception is the empty-turn `producedText` check, which reads the WHOLE arrays: emptiness is a fact about
+the ATTEMPT, not about what survived the fold. A fold fires `onTextFold` with the demoted text so the host
+can file it under the turn's reasoning; with **no** `onTextFold` sink the fold is a no-op and the run keeps
+the legacy full join (the `AgentEvents` no-sink contract). Reset per attempt alongside `assistantChunks`.
+Semantics, the SSE frame, and the client mirror → [`chat-sse-media.md`](chat-sse-media.md).
 
 ### The SDK `options` bag is untyped
 `options` is a `Record<string, unknown>`, so a key the pinned SDK's `Options` does not declare compiles

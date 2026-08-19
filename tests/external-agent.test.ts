@@ -650,6 +650,51 @@ describe("external agent SDK event bridge", () => {
     );
   });
 
+  it("folds the superseded text block into the host's reasoning sink", async () => {
+    const textDelta = (text: string): GatewayFrame => ({
+      event: "sdk_message",
+      data: {
+        type: "stream_event",
+        event: { type: "content_block_delta", delta: { type: "text_delta", text } },
+      },
+    });
+    const assistantText = (text: string, blocks: unknown[] = []): GatewayFrame => ({
+      event: "sdk_message",
+      data: { type: "assistant", message: { content: [{ type: "text", text }, ...blocks] } },
+    });
+    await withGateway(
+      () => [
+        { event: "message_start", data: { schema: EXTERNAL_SDK_MESSAGE_SCHEMA } },
+        textDelta("중간 설명"),
+        assistantText("중간 설명", [
+          { type: "tool_use", id: "tool-1", name: "WebSearch", input: { query: "x" } },
+        ]),
+        {
+          event: "sdk_message",
+          data: {
+            type: "user",
+            message: { content: [{ type: "tool_result", tool_use_id: "tool-1", content: "ok" }] },
+          },
+        },
+        textDelta("최종 답"),
+        assistantText("최종 답"),
+        { event: "sdk_message", data: { type: "result", subtype: "success", result: "최종 답" } },
+        { event: "message_stop", data: {} },
+      ],
+      async (endpoint) => {
+        const folded: string[] = [];
+        const result = await runExternalAgent(
+          { message: "설명하고 답해" },
+          externalConfig(endpoint),
+          { onTextFold: (text) => folded.push(text) },
+        );
+        // The gateway stream is consumed as-is; the fold is Noah-side only.
+        expect(folded).toEqual(["중간 설명"]);
+        expect(result.text).toBe("최종 답");
+      },
+    );
+  });
+
   it("turns an SDK error envelope into a failed run", async () => {
     await withGateway(
       () => [

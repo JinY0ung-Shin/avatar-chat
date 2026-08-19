@@ -17,8 +17,10 @@ import {
 } from "./promptBuilder.js";
 import {
   createLoopState,
+  createTextFoldState,
   dispatchSdkMessage,
   finalizeTurnUsage,
+  foldPendingText,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
 
@@ -171,7 +173,9 @@ export async function runClaudeAgent(
   // Hoisted above the plan: the plan's attachment-anchor accessor reads this
   // accumulator, and the empty-turn retry below REASSIGNS it — so the accessor
   // has to close over the binding, not over the array it happens to hold now.
+  // Same for the fold state, which marks where the KEPT tail starts.
   let assistantChunks: string[] = [];
+  let textFold = createTextFoldState();
   const plan = await buildAgentRunPlan(
     request,
     pluginRoots,
@@ -179,7 +183,11 @@ export async function runClaudeAgent(
     store,
     events,
     abortController,
-    () => assistantChunks.join("\n\n").length,
+    // Anchor into the answer that will actually PERSIST: after a fold the answer
+    // restarts from the tail, so an attachment stamped now belongs at the tail's
+    // offset, not the whole-run one. Attachments stamped BEFORE the fold are
+    // re-anchored to 0 by the host on each onTextFold.
+    () => assistantChunks.slice(textFold.chunkIndex).join("\n\n").length,
   );
   const {
     sdk,
@@ -380,6 +388,7 @@ export async function runClaudeAgent(
     // attempt's partial text / usage.
     state = createLoopState();
     assistantChunks = [];
+    textFold = createTextFoldState();
     deltaChunks = [];
     resultText = "";
     resultErrorSubtype = "";
@@ -405,6 +414,12 @@ export async function runClaudeAgent(
         }
         const dispatched = dispatchSdkMessage(message, events, state);
         if (dispatched.delta) {
+          // A delta arriving while completed chunks are still unfolded means a
+          // NEW text block just started (block k's deltas stream BEFORE block
+          // k's assembled `assistantText` is recorded), so the narration so far
+          // demotes to the reasoning view. Later deltas of the SAME block no-op:
+          // chunkIndex already caught up.
+          foldPendingText(textFold, assistantChunks, deltaChunks, events, false);
           deltaChunks.push(dispatched.delta);
         }
         if (dispatched.assistantText) {
@@ -451,9 +466,20 @@ export async function runClaudeAgent(
           // fallback — it duplicates the last assistant turn's text) plus the
           // live background-task set, so it can finalize the visible turn while
           // the SDK keeps running background work underneath.
+          //
+          // Sweep first (non-delta backends never hit the delta trigger above):
+          // everything but the LAST block folds, so the segment text is exactly
+          // the block the model ended the boundary on.
+          foldPendingText(textFold, assistantChunks, deltaChunks, events, true);
           const segmentText =
-            assistantChunks.slice(segmentAssistantStart).join("\n\n").trim() ||
-            deltaChunks.slice(segmentDeltaStart).join("").trim() ||
+            assistantChunks
+              .slice(Math.max(segmentAssistantStart, textFold.chunkIndex))
+              .join("\n\n")
+              .trim() ||
+            deltaChunks
+              .slice(Math.max(segmentDeltaStart, textFold.deltaIndex))
+              .join("")
+              .trim() ||
             (dispatched.resultText || "").trim();
           segmentAssistantStart = assistantChunks.length;
           segmentDeltaStart = deltaChunks.length;
@@ -560,14 +586,18 @@ export async function runClaudeAgent(
     }
   }
 
-  // Prefer the full text the model actually STREAMED (every main-agent assistant
-  // text block / delta across ALL turns) over the SDK's terminal `result` string,
-  // which is only the LAST assistant turn's text. The streamed transcript is what
-  // the user watched appear live; finalizing/persisting from `resultText` instead
-  // dropped any narration emitted before the final turn (preambles, text between
-  // tool calls) the instant the run completed — and kept it gone on reload, since
-  // this value is what gets stored. resultText is only a fallback for the rare
-  // case nothing streamed; the error fallback applies when neither produced text.
+  // The answer is what the model STREAMED, not the SDK's terminal `result`
+  // string — but only the LAST text block of it. Interim narration (preambles,
+  // the text between tool calls) is FOLDED as it is superseded: each fold hands
+  // the demoted text to the host via onTextFold, which files it under the turn's
+  // reasoning (`response.thinking`) — so nothing is lost, it just stops bloating
+  // the bubble. `textFold.chunkIndex`/`deltaIndex` mark where the kept tail
+  // starts. Runs with NO onTextFold sink (headless routines, POST /api/chat) fold
+  // nothing and keep the legacy full join, which is why persisting from
+  // `resultText` is still wrong there: it is the last assistant TURN's text and
+  // would drop everything before it with no reasoning view to catch it.
+  // resultText stays a fallback for the rare case nothing streamed; the error
+  // fallback applies when neither produced text.
   // The result usage's inputTokens is cumulative across all of the turn's model
   // requests, so dividing it by the context window made the badge's % balloon
   // past 100% on tool-heavy turns. We replace it with true occupancy + keep
@@ -591,8 +621,13 @@ export async function runClaudeAgent(
     }
   }
 
+  // Final sweep: a backend that emits no text deltas never hit the in-loop fold
+  // trigger, so fold everything but the last block here — the tail below is then
+  // exactly the last text block either way.
+  foldPendingText(textFold, assistantChunks, deltaChunks, events, true);
   const partialText =
-    assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();
+    assistantChunks.slice(textFold.chunkIndex).join("\n\n").trim() ||
+    deltaChunks.slice(textFold.deltaIndex).join("").trim();
   const text =
     partialText ||
     resultText ||

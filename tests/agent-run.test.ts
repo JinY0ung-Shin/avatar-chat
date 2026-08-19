@@ -593,6 +593,67 @@ describe("runClaudeAgent orchestration (SDK mocked)", () => {
     expect(response.usage).toEqual({ inputTokens: 4000, outputTokens: 10, contextWindow: 200000 });
   });
 
+  // A tool round between two text blocks is the shape that used to grow the
+  // bubble without bound: the narration before the tool call is now demoted to
+  // the reasoning view and only the LAST block stays the answer.
+  const foldStream = [
+    initMsg(),
+    deltaMsg("A"),
+    assistantMsg([textBlock("A"), toolUseBlock("t1", "Read", { file_path: "a.ts" })]),
+    toolResultMsg("t1"),
+    deltaMsg("B"),
+    assistantMsg([textBlock("B")]),
+    successResult("B"),
+  ];
+
+  it("folds the superseded text block into onTextFold and answers with the last one", async () => {
+    const { config, store, baseRequest } = setup();
+    const onTextFold = vi.fn();
+    const events = makeEvents({ onTextFold });
+    sdkMock.impl = () => handleFrom(foldStream);
+
+    const response = await runAgentStream(baseRequest, [], config, store, events);
+
+    // The first block's own deltas must not re-fold it; only block B's first delta does.
+    expect(onTextFold.mock.calls).toEqual([["A"]]);
+    expect(response.text).toBe("B");
+  });
+
+  it("keeps the legacy full join when the run has no onTextFold sink", async () => {
+    const { config, store, baseRequest } = setup();
+    // Same stream, sink without onTextFold → the documented no-sink contract:
+    // headless runs behave exactly as before the fold existed.
+    const events = makeEvents();
+    sdkMock.impl = () => handleFrom(foldStream);
+
+    const response = await runAgentStream(baseRequest, [], config, store, events);
+
+    expect(response.text).toBe("A\n\nB");
+  });
+
+  it("sweeps at the result boundary for a backend that streams no text deltas", async () => {
+    const { config, store, baseRequest } = setup();
+    const onTextFold = vi.fn();
+    const onTurnResult = vi.fn();
+    const events = makeEvents({ onTextFold, onTurnResult });
+    sdkMock.impl = () =>
+      handleFrom([
+        initMsg(),
+        assistantMsg([textBlock("첫 설명")]),
+        assistantMsg([textBlock("두번째 설명")]),
+        assistantMsg([textBlock("최종")]),
+        successResult("최종"),
+      ]);
+
+    const response = await runAgentStream(baseRequest, [], config, store, events);
+
+    // No delta ever arrived, so the keepLast sweep is what folds — in one call,
+    // and the boundary segment carries the tail only.
+    expect(onTextFold.mock.calls).toEqual([["첫 설명\n\n두번째 설명"]]);
+    expect(onTurnResult).toHaveBeenCalledWith(expect.objectContaining({ text: "최종" }));
+    expect(response.text).toBe("최종");
+  });
+
   it("runs non-streaming (no events) via extractMainAssistantText + the finalizeTurnUsage fallback", async () => {
     const { config, store, baseRequest } = setup();
     // No getContextUsage attached, and no events sink → control method never called.

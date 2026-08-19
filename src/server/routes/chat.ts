@@ -1518,6 +1518,11 @@ export function createChatRouter({
         let persistedTextOffset = 0;
         let persistedThinkingOffset = 0;
         let persistedAttachmentsOffset = 0;
+        // How much of `streamedText` was FOLDED into the reasoning view (a newer
+        // text block superseded it — see the onTextFold sinks below). The answer
+        // restarted from this offset, so the cancel/error tails must start here
+        // too or they resurrect narration the live view already moved away.
+        let foldedTextOffset = 0;
         logger.info(
           {
             userId: req.user!.id,
@@ -1605,6 +1610,20 @@ export function createChatRouter({
                 onThinking: (text) => {
                   streamedThinking += text;
                   emitRunEvent(runId, "thinking", { text });
+                },
+                onTextFold: (text) => {
+                  // Demoted narration joins the reasoning stream (persisted as
+                  // response.thinking)…
+                  streamedThinking += (streamedThinking ? "\n\n" : "") + text;
+                  // …and leaves the answer: cancel/error tails must not resurrect it.
+                  foldedTextOffset = streamedText.length;
+                  // Anchors index into the answer text, and the answer just
+                  // restarted from empty — every stamped card now belongs before
+                  // the new tail.
+                  for (const attachment of shownAttachments) {
+                    if (typeof attachment.anchor === "number") attachment.anchor = 0;
+                  }
+                  emitRunEvent(runId, "text_fold", {});
                 },
                 onStatus: (label) => {
                   emitRunEvent(runId, "status", { label });
@@ -1856,6 +1875,23 @@ export function createChatRouter({
               onThinkingReset: () => {
                 streamedThinking = "";
                 emitRunEvent(runId, "thinking_reset", {});
+              },
+              // A newer text block superseded the answer streamed so far: the
+              // interim narration is demoted to the reasoning view so the bubble
+              // keeps only the LAST block, and nothing is lost.
+              onTextFold: (text) => {
+                // Demoted narration joins the reasoning stream (persisted as
+                // response.thinking)…
+                streamedThinking += (streamedThinking ? "\n\n" : "") + text;
+                // …and leaves the answer: cancel/error tails must not resurrect it.
+                foldedTextOffset = streamedText.length;
+                // Anchors index into the answer text, and the answer just
+                // restarted from empty — every stamped card now belongs before
+                // the new tail.
+                for (const attachment of shownAttachments) {
+                  if (typeof attachment.anchor === "number") attachment.anchor = 0;
+                }
+                emitRunEvent(runId, "text_fold", {});
               },
               onStatus: (label) => {
                 emitRunEvent(runId, "status", { label });
@@ -2599,7 +2635,9 @@ export function createChatRouter({
             // In a background phase, only the TAIL since the last persisted result
             // boundary belongs here (earlier segments are already stored messages);
             // an empty tail still persists a notice so the kill is visible on reload.
-            const cancelledText = streamedText.slice(persistedTextOffset);
+            const cancelledText = streamedText.slice(
+              Math.max(persistedTextOffset, foldedTextOffset),
+            );
             const cancelledThinking = streamedThinking.slice(persistedThinkingOffset);
             const response: AgentResponse = {
               kind: "text",
@@ -2674,7 +2712,9 @@ export function createChatRouter({
             }
             // Background phase: earlier segments are already stored messages, so
             // only the tail since the last result boundary rides the error bubble.
-            const erroredText = streamedText.slice(persistedTextOffset);
+            const erroredText = streamedText.slice(
+              Math.max(persistedTextOffset, foldedTextOffset),
+            );
             const erroredThinking = streamedThinking.slice(persistedThinkingOffset);
             const content = erroredText
               ? `${erroredText}\n\n${userFacing}`

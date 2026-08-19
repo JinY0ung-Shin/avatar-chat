@@ -8,8 +8,10 @@ import type { AgentEvents } from "./events.js";
 import { isRecord } from "./agentUtils.js";
 import {
   createLoopState,
+  createTextFoldState,
   dispatchSdkMessage,
   finalizeTurnUsage,
+  foldPendingText,
   resultErrorMessage,
 } from "./sdkMessageHandlers.js";
 
@@ -354,11 +356,14 @@ export async function runExternalAgent(
 
     // An external SDK init envelope can contain a session_id, but this endpoint is
     // deliberately stateless. Suppress onSessionId so chat.ts never persists it as
-    // a resumable local SDK session. All other existing Noah event handling is shared.
+    // a resumable local SDK session. All other existing Noah event handling is shared
+    // — the spread carries the host's onTextFold through, so interim narration folds
+    // into the reasoning view here exactly as it does on a local run.
     const externalEvents: AgentEvents = { ...events, onSessionId: undefined };
     const loopState = createLoopState();
     const assistantChunks: string[] = [];
     const deltaChunks: string[] = [];
+    const textFold = createTextFoldState();
     let resultText = "";
     let resultErrorSubtype = "";
     let runUsage: AgentUsage | undefined;
@@ -421,7 +426,12 @@ export async function runExternalAgent(
         throw new Error(upstreamFailure(message));
       }
       const dispatched = dispatchSdkMessage(decoded, externalEvents, loopState);
-      if (dispatched.delta) deltaChunks.push(dispatched.delta);
+      if (dispatched.delta) {
+        // First delta of a NEW text block → the narration so far is superseded
+        // and demotes to the reasoning view (see foldPendingText).
+        foldPendingText(textFold, assistantChunks, deltaChunks, externalEvents, false);
+        deltaChunks.push(dispatched.delta);
+      }
       if (dispatched.assistantText) {
         assistantChunks.push(dispatched.assistantText);
       }
@@ -445,8 +455,13 @@ export async function runExternalAgent(
     }
     if (runUsage) runUsage = finalizeTurnUsage(runUsage, contextTokens);
 
+    // Fold everything but the last block (a gateway that streams no text deltas
+    // never hit the trigger above), so the answer is the LAST text block and the
+    // narration before it rides `response.thinking` instead.
+    foldPendingText(textFold, assistantChunks, deltaChunks, externalEvents, true);
     const partialText =
-      assistantChunks.join("\n\n").trim() || deltaChunks.join("").trim();
+      assistantChunks.slice(textFold.chunkIndex).join("\n\n").trim() ||
+      deltaChunks.slice(textFold.deltaIndex).join("").trim();
     const text =
       partialText ||
       resultText ||

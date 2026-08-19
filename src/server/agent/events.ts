@@ -448,6 +448,14 @@ export interface AgentEvents {
    * the model, so the failed attempt's thinking must not glue onto the kept one).
    */
   onThinkingReset?: () => void;
+  /**
+   * Earlier answer text was superseded by a newer text block and demoted to the
+   * reasoning view. `text` is the folded text (chunk-joined). The host must move
+   * it into its thinking accumulator, drop it from its pending answer text, and
+   * re-anchor already-stamped attachments to 0 (the folded text no longer exists
+   * in the answer the anchors index into).
+   */
+  onTextFold?: (text: string) => void;
   /** Human-readable Korean activity label. */
   onStatus?: (label: string) => void;
   /** The model the SDK actually initialized with (from the `init` system event). */
