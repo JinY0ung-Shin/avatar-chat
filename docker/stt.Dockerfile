@@ -13,10 +13,29 @@
 #   docker compose --profile stt build stt
 FROM vllm/vllm-openai:v0.27.1
 
+# Trust an optional corporate proxy CA, same pattern as the app Dockerfile: an
+# INTERCEPTING proxy re-signs upstream TLS, so the pip step below fails
+# certificate verification against upstream PyPI without it (an internal
+# PIP_INDEX_URL mirror sidesteps that, which is why this stayed unnoticed
+# behind one). update-ca-certificates folds the cert into the system bundle;
+# the pip step points PIP_CERT at that bundle because pip ships its own
+# certifi and never consults the system store on its own.
+ARG CA_CERT_FILE=docker/extra-ca.crt.example
+COPY ${CA_CERT_FILE} /tmp/extra-ca.crt
+RUN if grep -q "BEGIN CERTIFICATE" /tmp/extra-ca.crt; then \
+      cp /tmp/extra-ca.crt /usr/local/share/ca-certificates/extra-proxy-ca.crt; \
+      update-ca-certificates; \
+    else \
+      echo "No extra CA certificate configured; skipping trust-store update."; \
+    fi \
+  && rm -f /tmp/extra-ca.crt
+
 # Corporate-mirror args, same pattern as the app Dockerfile (empty = upstream
 # PyPI); --trusted-host is added only when set, for an HTTP mirror with a
-# self-signed cert. Proxy vars are Docker built-ins and pass through on their
-# own.
+# self-signed cert. Proxy vars (HTTP_PROXY/HTTPS_PROXY/NO_PROXY and lowercase)
+# are Docker PREDEFINED build args: docker-compose.yml forwards them and every
+# RUN below sees them in its environment with no ARG line here — put the
+# internal mirror host in NO_PROXY so pip doesn't route it through the proxy.
 #
 # The FOUR packages are vllm 0.27.1's [audio] extra spelled out (mistral_common
 # is already in the base image), pinned to the resolution that extra produces —
@@ -30,7 +49,8 @@ FROM vllm/vllm-openai:v0.27.1
 ARG PIP_INDEX_URL=
 ARG PIP_TRUSTED_HOST=
 ARG AUDIO_DEPS="soundfile==0.14.0 av==18.1.0 soxr==1.1.0 scipy==1.18.0"
-RUN if [ -n "$PIP_INDEX_URL" ]; then \
+RUN if [ -f /etc/ssl/certs/ca-certificates.crt ]; then export PIP_CERT=/etc/ssl/certs/ca-certificates.crt; fi \
+  && if [ -n "$PIP_INDEX_URL" ]; then \
       pip install --no-cache-dir --index-url "$PIP_INDEX_URL" ${PIP_TRUSTED_HOST:+--trusted-host "$PIP_TRUSTED_HOST"} $AUDIO_DEPS; \
     else \
       pip install --no-cache-dir $AUDIO_DEPS; \

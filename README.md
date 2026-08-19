@@ -183,7 +183,8 @@ The deploy host has no Hugging Face or internet access, so both artifacts are ca
    ```
 
    (Behind a corporate mirror/proxy, export `PIP_INDEX_URL`/`PIP_TRUSTED_HOST` and the proxy vars
-   first — the build forwards them exactly like the app image's build.) On the deploy host, the
+   first — the build forwards them exactly like the app image's build, and an intercepting proxy's
+   CA rides the same `CA_CERT_FILE` build arg the app image trusts.) On the deploy host, the
    weights go to `./docker/stt-models/Qwen3-ASR-1.7B` (the directory is git-ignored and
    bind-mounted read-only at `/models`), and the image goes straight in with
    `docker load -i noah-stt.tar`, which keeps the name `docker-compose.yml` expects so no edit is

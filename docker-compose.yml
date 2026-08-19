@@ -69,9 +69,10 @@ services:
       context: .
       dockerfile: docker/stt.Dockerfile
       args:
-        # Same corporate-mirror/proxy passthrough as the app service above.
+        # Same corporate-mirror/proxy/CA passthrough as the app service above.
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
         PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST:-}
+        CA_CERT_FILE: ${CA_CERT_FILE:-docker/extra-ca.crt.example}
         HTTP_PROXY: ${HTTP_PROXY:-}
         HTTPS_PROXY: ${HTTPS_PROXY:-}
         NO_PROXY: ${NO_PROXY:-}
