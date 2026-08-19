@@ -67,14 +67,43 @@ function parseFrame(block: string): SseFrame | null {
 async function* readSseFrames(
   body: ReadableStream<Uint8Array>,
   onActivity?: () => void,
+  signal?: AbortSignal,
 ): AsyncGenerator<SseFrame> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let finished = false;
+  // Abort must interrupt a PENDING read deterministically. Relying on undici to
+  // reject the in-flight `reader.read()` when the request signal aborts is a
+  // race it sometimes loses (observed as the idle/total deadline firing yet the
+  // run hanging forever on a quiet socket), so the read is raced against the
+  // signal explicitly and the loop rejects itself with the abort reason — the
+  // caller's catch then maps it through `timeoutKind` exactly as before.
+  let onAbort: (() => void) | undefined;
+  const abortedForever: Promise<never> | undefined = signal
+    ? new Promise<never>((_, reject) => {
+        const rejectWithReason = () =>
+          reject(
+            signal.reason instanceof Error
+              ? signal.reason
+              : new Error(String(signal.reason ?? "aborted")),
+          );
+        if (signal.aborted) {
+          rejectWithReason();
+          return;
+        }
+        onAbort = rejectWithReason;
+        signal.addEventListener("abort", rejectWithReason, { once: true });
+      })
+    : undefined;
+  // Never raced (stream ends first) → this promise's rejection is unobserved;
+  // pre-attach a no-op handler so it can't surface as an unhandled rejection.
+  abortedForever?.catch(() => undefined);
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      const { done, value } = abortedForever
+        ? await Promise.race([reader.read(), abortedForever])
+        : await reader.read();
       if (done) {
         finished = true;
         buffer += decoder.decode();
@@ -106,6 +135,9 @@ async function* readSseFrames(
       if (frame) yield frame;
     }
   } finally {
+    if (signal && onAbort) {
+      signal.removeEventListener("abort", onAbort);
+    }
     if (!finished) {
       await reader.cancel().catch(() => undefined);
     }
@@ -375,7 +407,11 @@ export async function runExternalAgent(
     };
     noteActivity();
 
-    for await (const frame of readSseFrames(response.body, noteActivity)) {
+    for await (const frame of readSseFrames(
+      response.body,
+      noteActivity,
+      upstreamController.signal,
+    )) {
       if (frame.event === "message_start") {
         const start = decodeJson(frame.data, frame.event);
         const schema = isRecord(start) ? start.schema : undefined;

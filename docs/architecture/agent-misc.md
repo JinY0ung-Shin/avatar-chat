@@ -57,6 +57,16 @@
   redirects (e.g. `NO_REPO` → "use `create_repo`"). Greeting-only text once left it unaware it had
   `create_repo` mid-conversation.
 
+## External agent stream: abort must not trust undici
+- `readSseFrames` (`agent/externalAgent.ts`) races every `reader.read()` against the upstream
+  abort signal and rejects ITSELF with the abort reason. Relying on undici to reject an in-flight
+  body read when the request signal aborts is a race it intermittently loses — observed as the
+  idle/total deadline firing while the run hung forever on a quiet socket (and as a ~1/3 flake of
+  `tests/external-agent.test.ts`'s "times out when an open SSE stream goes idle" once the 2026-08
+  bot-tasks work shifted file timing). The raced rejection flows into the same `timeoutKind`
+  mapping, so every user-facing timeout message is unchanged. The never-raced promise pre-attaches
+  a `.catch` (unhandled-rejection guard) and the generator's `finally` removes the abort listener.
+
 ## Testing git/repo tools offline
 - Point the repo at a LOCAL bare remote (`git init --bare`) so clone/commit/push need no network —
   `gitAuthArgs` returns `[]` for non-`https://` URLs. For `create_repo`, inject a fake `createRemoteRepo`
