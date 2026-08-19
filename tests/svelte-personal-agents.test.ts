@@ -1,10 +1,11 @@
 // 내 봇 (personal agents) — the CLIENT half. What is pinned here is the four
 // places a bot differs from every other avatar in the UI: it wears its own badge
-// and sorts right under my own avatar in 탐색, it gets a rail shortcut section
-// that an admin sees even with zero bots (its empty state seeds a bot-creation
-// chat with my own avatar instead of listing anything), it is managed through
+// and sorts right under my own avatar in 탐색 (and its card opens 봇 오피스, not a
+// chat pane), the rail reaches it through the 봇 오피스 nav entry alone — with an
+// unseen-work badge and NO 내 봇 section of its own — it is managed through
 // /api/me/agents from 설정 ▸ 내 봇, and a new thread with it starts on the bot's
 // OWN model tier instead of my remembered default.
+// 봇 오피스's own screen is tests/svelte-bots-view.test.ts.
 import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { get } from "svelte/store";
@@ -128,14 +129,6 @@ function detailOf(summary: AvatarSummary): AvatarDetail {
   return { ...summary, persona: "", intro: "", isOwn: false, elevated: true, plugins: [] };
 }
 
-/** My OWN avatar — what openSeededChat fetches for a seeded pane. */
-function ownerDetail(): AvatarDetail {
-  return {
-    ...detailOf(plainSummary({ id: OWNER_ID, username: "owner", displayName: "나", sharesGroup: false })),
-    isOwn: true,
-  };
-}
-
 const BOT_ROW: PersonalAgent = {
   id: "bot-1",
   ownerUserId: OWNER_ID,
@@ -231,7 +224,12 @@ beforeEach(() => {
     activePaneId: null,
     settingsTab: "profile",
     view: "explore",
+    botsAgentId: "",
+    // The store is a singleton across this file — a seeded badge must not leak
+    // into the next test.
+    botTaskUnseen: { total: 0, agents: {} },
   });
+  history.replaceState(null, "", "/");
 });
 
 afterEach(() => {
@@ -278,74 +276,124 @@ describe("ExploreView 내 봇", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* rail — 내 봇 shortcut section                                        */
+/* 탐색 — a bot card opens 봇 오피스, not a chat pane                    */
 /* ------------------------------------------------------------------ */
 
-describe("Shell 내 봇 rail section", () => {
-  beforeEach(setDesktopViewport);
+describe("ExploreView 내 봇 카드 라우팅", () => {
+  /** Serve the background loads every ExploreView mount makes. */
+  function stubExplore(extra: (url: string) => unknown = () => undefined): Call[] {
+    sessionStorage.setItem("setupBannerDismissed", "1");
+    return stubFetch((url) => extra(url) ?? { avatars: [], conversations: [], repoConfigured: false, skills: [] });
+  }
 
-  it("lists my bots and opens a chat with the clicked one", async () => {
-    const calls = stubFetch((url) => {
-      if (url.includes("/api/avatars/")) return { avatar: detailOf(botSummary()) };
-      return { conversations: [] };
-    });
-    replaceState({ avatars: [botSummary(), plainSummary()] });
+  it("lands in 봇 오피스 with that bot selected, opening no chat pane", async () => {
+    const calls = stubExplore();
+    replaceState({ avatars: [botSummary()] });
 
-    render(Shell, { props: { user: userOf(), view: "explore" } });
+    const { container } = render(ExploreView);
+    await waitFor(() => expect(container.querySelectorAll(".avatar-card").length).toBe(1));
 
-    const section = screen.getByRole("group", { name: "내 봇 목록" });
-    // Only the bot is listed — a same-group teammate is not a bot.
-    expect(section.querySelectorAll("button").length).toBe(1);
-    expect(section.textContent).toContain("리뷰어");
+    // The card names where it actually goes — a bot card no longer promises a
+    // chat pane it does not open.
+    await fireEvent.click(screen.getByRole("button", { name: "리뷰어 봇 오피스에서 열기" }));
 
-    await fireEvent.click(screen.getByRole("button", { name: "리뷰어 봇과 대화" }));
+    expect(readState().view).toBe("bots");
+    expect(readState().botsAgentId).toBe("bot-1");
+    // 봇 오피스 opens the thread itself, so 탐색 neither makes a pane nor pulls
+    // the avatar detail.
+    expect(readState().chatPanes).toHaveLength(0);
+    expect(calls.some((call) => call.url.includes("/api/avatars/"))).toBe(false);
+    expect(location.hash).toBe("#/bots/bot-1");
+  });
+
+  it("leaves a non-bot card on its chat-pane path", async () => {
+    stubExplore((url) => (url.includes("/api/avatars/") ? { avatar: detailOf(plainSummary()) } : undefined));
+    replaceState({ avatars: [plainSummary()] });
+
+    render(ExploreView);
+    await fireEvent.click(await screen.findByRole("button", { name: "동료 아바타와 대화" }));
+
+    await waitFor(() => expect(readState().chatPanes.length).toBe(1));
+    expect(readState().view).toBe("chat");
+    expect(readState().botsAgentId).toBe("");
+  });
+
+  it("falls back to a chat pane when 봇 오피스 is closed to the viewer", async () => {
+    stubExplore((url) => (url.includes("/api/avatars/") ? { avatar: detailOf(botSummary()) } : undefined));
+    // Phase 1 never tags a bot for a non-admin, so this is the gate-widens case:
+    // goView is the ONLY access check, and a refused view must not eat the click.
+    replaceState({ user: userOf({ roles: [] }), avatars: [botSummary()] });
+
+    render(ExploreView);
+    await fireEvent.click(await screen.findByRole("button", { name: /봇 오피스에서 열기/ }));
 
     await waitFor(() => expect(readState().chatPanes.length).toBe(1));
     expect(readState().chatPanes[0].avatar.id).toBe(BOT_AVATAR_ID);
     expect(readState().view).toBe("chat");
-    // The composite id is percent-encoded on the way to the detail endpoint.
-    expect(calls.some((call) => call.url === `/api/avatars/${encodeURIComponent(BOT_AVATAR_ID)}`)).toBe(true);
   });
+});
 
-  it("offers an admin with no bots the empty-state CTA instead of a list", async () => {
+/* ------------------------------------------------------------------ */
+/* rail — 봇 오피스 nav entry + unseen badge                            */
+/* ------------------------------------------------------------------ */
+
+describe("Shell 봇 오피스 nav entry", () => {
+  beforeEach(setDesktopViewport);
+
+  /** The visible digits of the bots nav badge, or null when there is none. */
+  function badgeText(): string | null {
+    const entry = screen.getByRole("button", { name: /봇 오피스/ });
+    return entry.querySelector('.nav-badge [aria-hidden="true"]')?.textContent ?? null;
+  }
+
+  it("badges the entry with unseen bot work, and keeps no 내 봇 section of its own", async () => {
     stubFetch(() => ({ conversations: [] }));
-    replaceState({ avatars: [plainSummary()] });
+    // Bots in state used to paint a rail list; 봇 오피스 is the single entry point now.
+    replaceState({ avatars: [botSummary(), plainSummary()], botTaskUnseen: { total: 3, agents: { "bot-1": 3 } } });
 
     render(Shell, { props: { user: userOf(), view: "explore" } });
 
-    expect(screen.getByRole("button", { name: /첫 봇 만들기/ })).toBeTruthy();
+    expect(badgeText()).toBe("3");
+    // The bare number does not say what it counts, so the row spells it out.
+    expect(screen.getByRole("button", { name: /봇 오피스/ }).textContent).toContain(
+      "확인하지 않은 봇 작업 결과 3건",
+    );
     expect(screen.queryByRole("group", { name: "내 봇 목록" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /첫 봇 만들기/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /봇과 대화/ })).toBeNull();
   });
 
-  it("hides the section entirely from a non-admin with no bots", async () => {
+  it("caps the count at 99+ and shows no badge at zero", async () => {
     stubFetch(() => ({ conversations: [] }));
-    replaceState({ avatars: [plainSummary()] });
+    replaceState({ botTaskUnseen: { total: 128, agents: {} } });
+    const many = render(Shell, { props: { user: userOf(), view: "explore" } });
+    expect(badgeText()).toBe("99+");
+    many.unmount();
+
+    replaceState({ botTaskUnseen: { total: 0, agents: {} } });
+    render(Shell, { props: { user: userOf(), view: "explore" } });
+    expect(badgeText()).toBeNull();
+  });
+
+  it("follows a later store write instead of freezing at mount", async () => {
+    stubFetch(() => ({ conversations: [] }));
+    render(Shell, { props: { user: userOf(), view: "explore" } });
+    expect(badgeText()).toBeNull();
+
+    // The badge is fed by a background poll, so it has to move without a remount.
+    replaceState({ botTaskUnseen: { total: 5, agents: { "bot-1": 5 } } });
+    await tick();
+    expect(badgeText()).toBe("5");
+  });
+
+  it("hides 봇 오피스 from a non-admin even with unseen work in state", async () => {
+    stubFetch(() => ({ conversations: [] }));
+    replaceState({ avatars: [botSummary()], botTaskUnseen: { total: 2, agents: { "bot-1": 2 } } });
 
     render(Shell, { props: { user: userOf({ roles: [] }), view: "explore" } });
 
-    expect(screen.queryByRole("button", { name: /첫 봇 만들기/ })).toBeNull();
-    expect(screen.queryByRole("group", { name: "내 봇 목록" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /봇 오피스/ })).toBeNull();
     expect(screen.queryByText("내 봇")).toBeNull();
-  });
-
-  it("seeds a bot-creation chat with MY OWN avatar, unsent", async () => {
-    const calls = stubFetch((url) => {
-      if (url.includes("/api/avatars/")) return { avatar: ownerDetail() };
-      return { conversations: [] };
-    });
-    // openSeededChat reads state.user and returns early without it.
-    replaceState({ user: userOf(), avatars: [plainSummary()] });
-
-    render(Shell, { props: { user: userOf(), view: "explore" } });
-    await fireEvent.click(screen.getByRole("button", { name: /첫 봇 만들기/ }));
-
-    await waitFor(() => expect(readState().chatPanes.length).toBe(1));
-    expect(readState().view).toBe("chat");
-    // The pane belongs to the OWNER, never to a composite personal: id — the bot
-    // does not exist yet; my own avatar is the one that mints it.
-    expect(readState().chatPanes[0].avatar.id).toBe(OWNER_ID);
-    expect(readState().chatPanes[0].draft).toContain("내 봇을 새로 만들고 싶어");
-    expect(calls.some((call) => call.url === `/api/avatars/${OWNER_ID}`)).toBe(true);
   });
 });
 

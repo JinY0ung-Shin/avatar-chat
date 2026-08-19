@@ -280,6 +280,7 @@ export interface BotTaskRow {
   created_at: string;
   started_at: string | null;
   finished_at: string | null;
+  seen_at: string | null;
 }
 
 export interface RoutineJobRow {
@@ -612,7 +613,8 @@ export class StoreBase {
         model TEXT,
         created_at TEXT NOT NULL,
         started_at TEXT,
-        finished_at TEXT
+        finished_at TEXT,
+        seen_at TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_bot_tasks_owner ON bot_tasks(owner_user_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_bot_tasks_conversation ON bot_tasks(conversation_id, created_at ASC);
@@ -854,6 +856,11 @@ export class StoreBase {
     // trail is what keeps those copies matched to the row until their next
     // update rewrites the marker. NULL (and anything unparseable) reads as [].
     this.addColumnIfMissing("shared_skills", "previous_names", "TEXT");
+    // UNSEEN badge state (내 봇 작업): when the owner last LOOKED at this task's
+    // settled result. NULL = unseen, and only a settled row can be unseen — see
+    // store/botTasks.ts for the predicate. The CREATE TABLE already carries the
+    // column; this covers DBs that created bot_tasks before it existed.
+    this.addColumnIfMissing("bot_tasks", "seen_at", "TEXT");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateCanvasArtifacts();

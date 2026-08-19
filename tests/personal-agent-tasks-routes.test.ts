@@ -601,6 +601,90 @@ describe("delegated bot tasks — /api/me/bot-tasks", () => {
     await plain.post("/api/me/bot-tasks/whatever/cancel").expect(403);
   });
 
+  it("reports unseen counts and marks them seen, never across owners", async () => {
+    const { app, admin, store, ownerId, agent, avatarId } = await bootWithBot("unseen");
+    const other = store.createPersonalAgent(ownerId, { displayName: "다른 봇" });
+    const settle = (agentId: string, title: string) => {
+      const task = store.createBotTask({
+        ownerUserId: ownerId,
+        agentId,
+        conversationId: `bt-${title}`,
+        title,
+        requestText: title,
+        status: "running",
+        runId: `run-${title}`,
+      });
+      return store.finishBotTask(task.id, { status: "done", resultSummary: title })!;
+    };
+
+    const empty = await admin.get("/api/me/bot-tasks/unseen").expect(200);
+    expect(empty.body).toEqual({ total: 0, agents: {} });
+
+    settle(agent.id, "A");
+    settle(agent.id, "B");
+    settle(other.id, "C");
+    // Still in flight → not unseen, so the badge never counts work in motion.
+    store.createBotTask({
+      ownerUserId: ownerId,
+      agentId: agent.id,
+      conversationId: "bt-q",
+      title: "대기",
+      requestText: "대기",
+      status: "queued",
+    });
+    // Another owner's settled row, which must stay entirely out of my board.
+    const otherOwner = request.agent(app);
+    await signup(otherOwner, "other-owner").expect(201);
+    const otherOwnerId = store.getUserByUsername("other-owner")!.id;
+    const theirs = store.createBotTask({
+      ownerUserId: otherOwnerId,
+      agentId: agent.id,
+      conversationId: "bt-theirs",
+      title: "남의 것",
+      requestText: "남의 것",
+      status: "running",
+      runId: "run-theirs",
+    });
+    store.finishBotTask(theirs.id, { status: "done" });
+
+    const counts = await admin.get("/api/me/bot-tasks/unseen").expect(200);
+    expect(counts.body).toEqual({
+      total: 3,
+      agents: { [agent.id]: 2, [other.id]: 1 },
+    });
+
+    // A narrowed stamp answers the badges that SURVIVE it — the client
+    // replaces its whole state from this response, not just the cleared lane.
+    const narrowed = await admin
+      .post("/api/me/bot-tasks/seen")
+      .send({ agentId: other.id })
+      .expect(200);
+    expect(narrowed.body).toEqual({ total: 2, agents: { [agent.id]: 2 } });
+
+    // Unknown body fields are ignored; no agentId clears the whole board.
+    const all = await admin
+      .post("/api/me/bot-tasks/seen")
+      .send({ nope: 1 })
+      .expect(200);
+    expect(all.body).toEqual({ total: 0, agents: {} });
+    expect(store.countUnseenBotTasks(otherOwnerId).total).toBe(1);
+
+    // An ATTENDED turn settles UNSEEN too: only the client saying "I looked"
+    // clears a badge, never the run that produced it.
+    await admin
+      .post("/api/chat/stream")
+      .send({ avatarId, conversationId: "bt-16", message: "지금 해줘" })
+      .expect(200);
+    const afterTurn = await admin.get("/api/me/bot-tasks/unseen").expect(200);
+    expect(afterTurn.body).toEqual({ total: 1, agents: { [agent.id]: 1 } });
+
+    // The phase-1 feature gate holds on both.
+    const plain = request.agent(app);
+    await signup(plain, "plain").expect(201);
+    await plain.get("/api/me/bot-tasks/unseen").expect(403);
+    await plain.post("/api/me/bot-tasks/seen").expect(403);
+  });
+
   it("cancels queued and parked tasks, stops a running one, and 409s terminals", async () => {
     const { app, admin, store, ownerId, agent, avatarId } = await bootWithBot("cancel");
 

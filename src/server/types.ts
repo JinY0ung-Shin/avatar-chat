@@ -688,6 +688,13 @@ export interface BotTask {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  /**
+   * When the owner SAW this task's settled state (done/failed/waiting_input).
+   * NULL on a settled row = unseen → counted into the 봇 오피스 rail badge.
+   * Running/queued rows are never "unseen" (their motion is its own signal);
+   * an owner-initiated row-cancel stamps it immediately (they did it looking).
+   */
+  seenAt: string | null;
 }
 
 /** A group the current user belongs to — surfaced on `User` and the roster. */

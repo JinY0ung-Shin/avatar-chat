@@ -440,6 +440,186 @@ describe("store bot tasks", () => {
     expect(store.sweepInterruptedBotTasks("x")).toBe(0);
   });
 
+  it("counts only SETTLED unseen tasks, per bot and per owner", () => {
+    const { store, owner, bot, task } = fixture("unseen-count");
+    const other = store.createPersonalAgent(owner.id, { displayName: "다른 봇" });
+    const stranger = makeUser(store, "stranger");
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({ total: 0, agents: {} });
+
+    // One row per status, so the badge predicate is pinned on the whole matrix.
+    const done = task({ title: "완료", status: "running", runId: "run-1" });
+    store.finishBotTask(done.id, { status: "done", resultSummary: "끝" });
+    const failed = task({ title: "실패", status: "running", runId: "run-2" });
+    store.finishBotTask(failed.id, { status: "failed", error: "오류" });
+    const parked = task({ title: "질문", status: "running", runId: "run-3" });
+    store.finishBotTask(parked.id, { status: "waiting_input", pendingQuestion: "어느 쪽?" });
+    // In-flight rows are NEVER unseen — their own motion is the signal, and a
+    // badge nobody can clear until the work lands is worse than no badge.
+    task({ title: "대기" });
+    task({ title: "실행중", status: "running", runId: "run-4" });
+    // Neither is a row the owner cancelled themselves.
+    const cancelled = task({ title: "취소" });
+    store.cancelQueuedBotTask(cancelled.id, owner.id);
+
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({
+      total: 3,
+      agents: { [bot.id]: 3 },
+    });
+
+    // Split per bot — and a bot with nothing unseen is ABSENT, never 0, which
+    // is what lets the client replace its whole badge state from one response.
+    const otherDone = task({
+      agentId: other.id,
+      conversationId: "c2",
+      title: "다른 봇 완료",
+      status: "running",
+      runId: "run-5",
+    });
+    store.finishBotTask(otherDone.id, { status: "done" });
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({
+      total: 4,
+      agents: { [bot.id]: 3, [other.id]: 1 },
+    });
+
+    // Owner-scoped: another owner's settled rows never reach my badge.
+    const theirs = store.createBotTask({
+      ownerUserId: stranger.id,
+      agentId: "s-bot",
+      conversationId: "s1",
+      title: "남의 작업",
+      requestText: "x",
+      status: "running",
+      runId: "run-6",
+    });
+    store.finishBotTask(theirs.id, { status: "done" });
+    expect(store.countUnseenBotTasks(owner.id).total).toBe(4);
+    expect(store.countUnseenBotTasks(stranger.id)).toEqual({
+      total: 1,
+      agents: { "s-bot": 1 },
+    });
+    expect(store.countUnseenBotTasks("ghost")).toEqual({ total: 0, agents: {} });
+  });
+
+  it("stamps unseen tasks seen — narrowed by bot, idempotent, owner-scoped", () => {
+    const { store, owner, bot, task } = fixture("mark-seen");
+    const other = store.createPersonalAgent(owner.id, { displayName: "다른 봇" });
+    const stranger = makeUser(store, "stranger");
+    const settle = (title: string, agentId?: string) => {
+      const row = task({ title, agentId, status: "running", runId: `run-${title}` });
+      return store.finishBotTask(row.id, { status: "done", resultSummary: title })!;
+    };
+    const a1 = settle("A1");
+    settle("A2");
+    const b1 = settle("B1", other.id);
+    const queued = task({ title: "대기" });
+    const theirs = store.createBotTask({
+      ownerUserId: stranger.id,
+      agentId: "s-bot",
+      conversationId: "s1",
+      title: "남의 작업",
+      requestText: "x",
+      status: "running",
+      runId: "run-s",
+    });
+    store.finishBotTask(theirs.id, { status: "done" });
+
+    // Narrowed to one bot's lane, reporting what it actually moved.
+    expect(store.markBotTasksSeen(owner.id, { agentId: other.id })).toBe(1);
+    const firstStamp = store.getBotTask(b1.id)!.seenAt;
+    expect(firstStamp).toBeTruthy();
+    expect(store.getBotTask(a1.id)!.seenAt).toBeNull();
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({
+      total: 2,
+      agents: { [bot.id]: 2 },
+    });
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2030-01-01T00:00:00.000Z"));
+      // Idempotent: nothing left to move, and the stamp records when the row
+      // was FIRST read, not when the board was last open.
+      expect(store.markBotTasksSeen(owner.id, { agentId: other.id })).toBe(0);
+      expect(store.getBotTask(b1.id)!.seenAt).toBe(firstStamp);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(store.markBotTasksSeen(owner.id)).toBe(2);
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({ total: 0, agents: {} });
+    expect(store.markBotTasksSeen(owner.id)).toBe(0);
+    // An unsettled row is left alone — there is nothing read about it yet.
+    expect(store.getBotTask(queued.id)!.seenAt).toBeNull();
+    // And clearing my board never clears another owner's.
+    expect(store.getBotTask(theirs.id)!.seenAt).toBeNull();
+    expect(store.countUnseenBotTasks(stranger.id).total).toBe(1);
+    // An unknown owner / an unknown bot both match nothing.
+    expect(store.markBotTasksSeen("ghost")).toBe(0);
+    expect(store.markBotTasksSeen(owner.id, { agentId: "ghost-bot" })).toBe(0);
+  });
+
+  it("re-badges a task every time it settles AGAIN", () => {
+    const { store, owner, task } = fixture("seen-lifecycle");
+    const t = task({ title: "질문 작업" });
+    store.markBotTaskRunning(t.id, "run-1");
+    store.setBotTaskReport(t.id, { outcome: "need_input", summary: "어느 쪽인가요?" });
+
+    const parked = store.finishBotTask(t.id, { status: "waiting_input" })!;
+    expect(parked.seenAt).toBeNull();
+    expect(store.countUnseenBotTasks(owner.id).total).toBe(1);
+
+    // The owner reads the question…
+    expect(store.markBotTasksSeen(owner.id)).toBe(1);
+    expect(store.getBotTask(t.id)!.seenAt).toBeTruthy();
+    expect(store.countUnseenBotTasks(owner.id).total).toBe(0);
+
+    // …answers it, and the resume DROPS the stamp rather than carrying it into
+    // the running leg: a restart there sweeps the row to failed, and a failure
+    // nobody watched must still badge.
+    expect(store.markBotTaskRunning(t.id, "run-2")!.seenAt).toBeNull();
+
+    // The new outcome is unread work again, even though the row was seen once.
+    const done = store.finishBotTask(t.id, { status: "done", resultSummary: "완료" })!;
+    expect(done.seenAt).toBeNull();
+    expect(store.countUnseenBotTasks(owner.id).total).toBe(1);
+  });
+
+  it("stamps the owner's OWN cancel, and leaves unwatched failures unseen", () => {
+    const { store, owner, bot, task } = fixture("seen-transitions");
+
+    // Cancelling IS the owner looking at the card as it settles, so the stamp
+    // rides the same UPDATE and the same timestamp as the finish.
+    const queued = task({ title: "취소" });
+    const cancelled = store.cancelQueuedBotTask(queued.id, owner.id)!;
+    expect(cancelled.seenAt).toBeTruthy();
+    expect(cancelled.seenAt).toBe(cancelled.finishedAt);
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({ total: 0, agents: {} });
+
+    // Abandoning a parked task stamps too — and it badged until they did.
+    const parkedTask = task({ title: "질문 대기", status: "running", runId: "run-1" });
+    store.finishBotTask(parkedTask.id, {
+      status: "waiting_input",
+      pendingQuestion: "어느 쪽?",
+    });
+    expect(store.countUnseenBotTasks(owner.id).total).toBe(1);
+    expect(store.cancelQueuedBotTask(parkedTask.id, owner.id)!.seenAt).toBeTruthy();
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({ total: 0, agents: {} });
+
+    // A restart-interrupted run failed while nobody was watching: it badges.
+    const interrupted = task({ title: "중단", status: "running", runId: "run-2" });
+    expect(store.sweepInterruptedBotTasks("서버가 재시작되어 중단되었습니다.")).toBe(1);
+    expect(store.getBotTask(interrupted.id)!.seenAt).toBeNull();
+    expect(store.countUnseenBotTasks(owner.id)).toEqual({
+      total: 1,
+      agents: { [bot.id]: 1 },
+    });
+
+    // So does a queued task the dispatcher could no longer run.
+    const undispatchable = task({ title: "봇 없음" });
+    store.failQueuedBotTask(undispatchable.id, "봇이 삭제되었습니다.");
+    expect(store.getBotTask(undispatchable.id)!.seenAt).toBeNull();
+    expect(store.countUnseenBotTasks(owner.id).total).toBe(2);
+  });
+
   it("deletePersonalAgent cascades ONE bot's tasks, thread-less rows included", () => {
     const { store, owner, bot, task } = fixture("cascade-bot");
     const sibling = store.createPersonalAgent(owner.id, { displayName: "남는 봇" });

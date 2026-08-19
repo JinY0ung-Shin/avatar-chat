@@ -119,14 +119,38 @@ UNTOUCHED: a task row is bookkeeping over the same A-1 full-owner run.
   row-cancel via `cancelQueuedBotTask`, which preserves `pendingQuestion` on an abandoned card;
   running → registry `cancelRun` + `{task, stopping:true}`; terminal → 409; misses are 404 with no
   existence probe).
-- **Client (`#/bots` 봇 오피스):** rail-less third arm in `App.svelte`; roster + task-card strip +
-  the EXISTING ChatView mounted for the thread (pane must live in `state.chatPanes` —
+- **Client (`#/bots` 봇 오피스):** rail-less third arm in `App.svelte`; roster (with 입력 대기
+  inbox + latest-task line + per-bot unseen chips) + a one-line status summary bar + the EXISTING
+  ChatView mounted for the thread (pane must live in `state.chatPanes` —
   `lib/chat.ts`'s private updatePane resolves by id there; `loadPaneForConversation` is the
-  extraction that lets `openBotThreadPane` place a pane without navigating to #/chat). `bot_task`
+  extraction that lets `openBotThreadPane` place a pane without navigating to #/bots). Task cards
+  render INLINE in the transcript (`components/BotTaskCard.svelte`): ChatView derives ONE
+  pane→anchor→tasks map (`anchorBotTasksToMessages`, time-anchored after the last user message ≤
+  task.createdAt, -1 = above the first bubble) whose first line returns a shared empty Map outside
+  the bots view — the {#each} only ever does Map lookups, so ordinary chat has ZERO DOM/alloc
+  difference at token rate (pinned by `tests/svelte-bots-thread.test.ts`). Inline cards filter by
+  agentId (not conversation) so the summary bar and cards agree. `bot_task`
   frames + a 10s/focus/streaming-edge poll of the task API feed `state.botTasks` (terminal-wins
   merge prevents 완료→실행 중 flicker); 202 handling in `sendMessage` branches BEFORE the SSE
   reader. `PromptModal`'s visible-pane set covers both "chat" and "bots" or prompts double-render;
   `currentRoute()` needs the bots branch or `syncHash` on send strips the agent id from the URL.
+- **Seen/unseen (the rail badge):** UNSEEN = settled (`done`/`failed`/`waiting_input`) AND
+  `seen_at IS NULL` — ONE predicate (`UNSEEN_WHERE` in store/botTasks.ts) shared by
+  `countUnseenBotTasks` (single GROUP BY; a bot with none is ABSENT from `agents`) and
+  `markBotTasksSeen`. Every finalize + dispatch CLEARS the stamp (a resumed-then-finished task
+  badges again); the owner's own row-cancel STAMPS it. Endpoints (admin-gated like the rest):
+  `GET /api/me/bot-tasks/unseen` and `POST /api/me/bot-tasks/seen {agentId?}` — the POST answers
+  the FRESH counts and the client REPLACES `state.botTaskUnseen` from responses, never decrements
+  locally. `lib/loaders.ts` `refreshBotTaskUnseen`/`markBotTasksSeen` are admin-guarded no-ops for
+  everyone else and piggyback the startKnowledgeWatch minute tick; 봇 오피스 marks a lane seen on
+  selection + debounced when a settled row lands while visible. Clearing a badge is always the
+  client saying "I looked" — an attended turn still badges until then.
+- **Legacy UX migrated (2단계):** the rail 내 봇 section is REMOVED (its dead `.rail-bot*` CSS
+  too); the rail nav's 봇 오피스 entry carries the unseen badge (inbox-badge pattern, 99+ cap,
+  sr-only text), the 첫 봇/대화로 봇 만들기 seeded-chat CTA lives in BotsView's empty state, and a
+  탐색 personal-agent card opens 봇 오피스 (`openBotOffice` falls back to a plain chat pane when
+  the view gate refuses, so a widened gate never leaves a dead click). Shell no longer eager-loads
+  avatars (that load belonged to the removed section; 봇 오피스/탐색 load their own).
 - **Per-bot DELETE** (`DELETE /api/me/agents/:agentId`): store cascade in one transaction
   (`deletePersonalAgent` — per-conversation canvas artifacts + messages + conversations + the bot's
   `bot_tasks` swept BY agent_id, so a task whose thread already died still goes, then the

@@ -17,8 +17,9 @@ vi.mock("../src/client/src/views/ChatView.svelte", () => ({
   default: function ChatViewStub() {},
 }));
 
+import BotTaskCard from "../src/client/src/components/BotTaskCard.svelte";
 import BotsView from "../src/client/src/views/BotsView.svelte";
-import { openBotThreadPane, sendMessage } from "../src/client/src/lib/chat.js";
+import { cancelBotTask, openBotThreadPane, sendMessage } from "../src/client/src/lib/chat.js";
 import { applyInitialRoute, currentRoute, goView } from "../src/client/src/lib/nav.js";
 import { readState, replaceState, toasts } from "../src/client/src/lib/state.js";
 import type {
@@ -140,6 +141,7 @@ function taskOf(over: Partial<BotTask> = {}): BotTask {
     createdAt: "2026-08-19T00:00:00.000Z",
     startedAt: null,
     finishedAt: null,
+    seenAt: null,
     ...over,
   };
 }
@@ -333,94 +335,141 @@ describe("BotsView roster", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* task strip — chips, empty state, cancel                             */
+/* task card — chips, detail line, the one control                     */
 /* ------------------------------------------------------------------ */
 
-describe("BotsView task strip", () => {
-  it("renders one card per task of the selected bot with its Korean status chip", async () => {
+// The card itself moved out of this view in stage 2: it now renders INSIDE the
+// transcript (see svelte-bots-thread.test.ts for the anchoring), so what it says
+// on its own is pinned against the component, not against 봇 오피스.
+describe("BotTaskCard", () => {
+  it("speaks the Korean status vocabulary and shows the one line that status makes actionable", () => {
+    const cases: [Partial<BotTask>, string, string | null][] = [
+      [{ status: "queued" }, "대기 중", null],
+      [{ status: "running" }, "실행 중", null],
+      [{ status: "waiting_input", pendingQuestion: "스테이징에 먼저 올릴까요?" }, "입력 대기", "스테이징에 먼저 올릴까요?"],
+      [{ status: "done", resultSummary: "3건 정리 완료" }, "완료", "3건 정리 완료"],
+      [{ status: "failed", error: "권한이 없습니다" }, "실패", "권한이 없습니다"],
+      [{ status: "cancelled" }, "취소됨", null],
+    ];
+    for (const [over, chip, detail] of cases) {
+      const { container, unmount } = render(BotTaskCard, { props: { task: taskOf(over) } });
+      expect(container.querySelector(".bots-task-chip")?.textContent?.trim()).toBe(chip);
+      expect(container.querySelector(".bots-task-detail")?.textContent ?? null).toBe(detail);
+      unmount();
+    }
+  });
+
+  it("stops work under way, cancels work not yet started, and leaves finished work alone", () => {
+    const labels = (["running", "queued", "waiting_input", "done", "failed", "cancelled"] as const).map(
+      (status) => {
+        const { container, unmount } = render(BotTaskCard, { props: { task: taskOf({ status }) } });
+        const label = container.querySelector(".bots-task-actions button")?.textContent?.trim() ?? null;
+        unmount();
+        return [status, label];
+      },
+    );
+    expect(labels).toEqual([
+      ["running", "중지"],
+      ["queued", "취소"],
+      ["waiting_input", "취소"],
+      ["done", null],
+      ["failed", null],
+      ["cancelled", null],
+    ]);
+  });
+
+  it("names the task in the control's accessible name and keeps that name stable while busy", async () => {
+    const task = taskOf({ id: "t-q", status: "queued", title: "PR 42 리뷰" });
+    const onCancel = vi.fn();
+    const { container, rerender } = render(BotTaskCard, { props: { task, busy: false, onCancel } });
+
+    const button = container.querySelector(".bots-task-actions button")!;
+    expect(button.getAttribute("aria-label")).toBe("PR 42 리뷰 취소");
+    expect(button.getAttribute("aria-busy")).toBe("false");
+    await fireEvent.click(button);
+    expect(onCancel).toHaveBeenCalledWith(task);
+
+    // Busy rides aria-busy + the visible label; the accessible NAME must not move
+    // under a screen reader mid-press.
+    await rerender({ task, busy: true, onCancel });
+    expect(button.getAttribute("aria-label")).toBe("PR 42 리뷰 취소");
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    expect(button.textContent?.trim()).toBe("취소하는 중…");
+    expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* summary bar, 입력 대기 인박스, roster secondary line + unseen chip    */
+/* ------------------------------------------------------------------ */
+
+describe("BotsView board", () => {
+  it("summarizes only the states that are actually in play for the selected bot", async () => {
     stubFetch();
     seed({
       avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")],
       botsAgentId: "bot-1",
       botTasks: [
-        taskOf({ id: "t-run", status: "running", title: "PR 42 리뷰" }),
-        taskOf({
-          id: "t-ask",
-          status: "waiting_input",
-          title: "배포 창구 확인",
-          pendingQuestion: "스테이징에 먼저 올릴까요?",
-        }),
-        taskOf({ id: "t-fail", status: "failed", title: "테스트 재실행", error: "권한이 없습니다" }),
-        taskOf({ id: "t-done", status: "done", title: "회의록 정리", resultSummary: "3건 정리 완료" }),
-        // Another bot's task must not leak into this strip.
-        taskOf({ id: "t-other", agentId: "bot-2", status: "running", title: "남의 작업" }),
+        taskOf({ id: "t-run", status: "running" }),
+        taskOf({ id: "t-q1", status: "queued" }),
+        taskOf({ id: "t-q2", status: "queued" }),
+        // Terminal work is not "in play", and another bot's queue is not mine.
+        taskOf({ id: "t-done", status: "done" }),
+        taskOf({ id: "t-other", agentId: "bot-2", status: "queued" }),
       ],
     });
 
     const { container } = render(BotsView);
-    await waitFor(() => expect(container.querySelectorAll(".bots-task-card").length).toBe(4));
-
-    expect([...container.querySelectorAll(".bots-task-chip")].map((chip) => chip.textContent?.trim())).toEqual([
-      "실행 중",
-      "입력 대기",
-      "실패",
-      "완료",
-    ]);
-    expect([...container.querySelectorAll(".bots-task-title")].map((el) => el.textContent)).not.toContain(
-      "남의 작업",
-    );
-    // The one detail line is whatever that status makes the owner act on.
-    expect([...container.querySelectorAll(".bots-task-detail")].map((el) => el.textContent)).toEqual([
-      "스테이징에 먼저 올릴까요?",
-      "권한이 없습니다",
-      "3건 정리 완료",
-    ]);
+    await waitFor(() => expect(container.querySelector(".bots-summary-text")).not.toBeNull());
+    expect(container.querySelector(".bots-summary-text")?.textContent?.trim()).toBe("실행 중 1 · 대기열 2");
   });
 
-  it("says nothing is delegated yet when the selected bot has no tasks", async () => {
+  it("renders no summary bar at all when nothing is in play", async () => {
     stubFetch();
-    seed({ avatars: [botSummary("bot-1", "리뷰 봇")], botsAgentId: "bot-1" });
-
-    const { container } = render(BotsView);
-    await screen.findByText("아직 맡긴 작업이 없어요");
-    expect(container.querySelectorAll(".bots-task-card").length).toBe(0);
-  });
-
-  it("cancels a queued task through the API and adopts the row it returns", async () => {
-    const cancelled = taskOf({ id: "t-q", status: "cancelled", finishedAt: "2026-08-19T00:05:00.000Z" });
-    const calls = stubFetch((url, method) => {
-      if (url.includes("/bot-tasks/") && method === "POST") return { task: cancelled };
-      return undefined;
-    });
     seed({
       avatars: [botSummary("bot-1", "리뷰 봇")],
       botsAgentId: "bot-1",
-      botTasks: [taskOf({ id: "t-q", status: "queued" })],
+      botTasks: [taskOf({ id: "t-done", status: "done" })],
     });
 
     const { container } = render(BotsView);
-    await waitFor(() => expect(container.querySelectorAll(".bots-task-card").length).toBe(1));
-
-    await fireEvent.click(screen.getByRole("button", { name: /취소$/ }));
-
-    await waitFor(() => expect(calls.some((call) => call.method === "POST")).toBe(true));
-    expect(calls.find((call) => call.method === "POST")!.url).toBe("/api/me/bot-tasks/t-q/cancel");
-    // The response REPLACES the row rather than being re-fetched.
-    await waitFor(() => expect(readState().botTasks.find((task) => task.id === "t-q")?.status).toBe("cancelled"));
-    expect(container.querySelector(".bots-task-chip")?.textContent?.trim()).toBe("취소됨");
-    // A terminal task no longer offers the control.
-    expect(screen.queryByRole("button", { name: /취소$/ })).toBeNull();
-    expect(get(toasts).at(-1)?.message).toBe("작업을 취소했습니다.");
+    await waitFor(() => expect(readState().chatPanes.length).toBe(1));
+    expect(container.querySelector(".bots-summary")).toBeNull();
   });
 
-  it("stops a RUNNING task through the same endpoint and reports it as still winding down", async () => {
-    // The server acknowledges the request but the row stays `running` — the
-    // terminal state arrives later on a bot_task frame or the next poll.
-    const acknowledged = taskOf({ id: "t-run", status: "running", startedAt: "2026-08-19T00:00:01.000Z" });
-    const calls = stubFetch((url, method) => {
-      if (url.includes("/bot-tasks/") && method === "POST") return { task: acknowledged, stopping: true };
-      return undefined;
+  it("collects every bot's waiting question into the inbox and selects that bot on click", async () => {
+    stubFetch();
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")],
+      botsAgentId: "bot-1",
+      botTasks: [
+        taskOf({ id: "t-ask-2", agentId: "bot-2", status: "waiting_input", pendingQuestion: "어느 폴더에 쓸까요?" }),
+        taskOf({ id: "t-ask-1", agentId: "bot-1", status: "waiting_input", pendingQuestion: "스테이징 먼저?" }),
+        // Anything not waiting on ME stays out of the inbox.
+        taskOf({ id: "t-run", agentId: "bot-1", status: "running" }),
+      ],
     });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(container.querySelectorAll(".bots-inbox-row").length).toBe(2));
+
+    expect(
+      [...container.querySelectorAll(".bots-inbox-row")].map((row) => [
+        row.querySelector(".bots-inbox-bot")?.textContent?.trim(),
+        row.querySelector(".bots-inbox-question")?.textContent?.trim(),
+      ]),
+    ).toEqual([
+      ["문서 봇", "어느 폴더에 쓸까요?"],
+      ["리뷰 봇", "스테이징 먼저?"],
+    ]);
+
+    await fireEvent.click(container.querySelectorAll(".bots-inbox-row")[0]);
+    expect(readState().botsAgentId).toBe("bot-2");
+    expect(location.hash).toBe("#/bots/bot-2");
+  });
+
+  it("keeps the inbox out of the DOM entirely when no bot is waiting", async () => {
+    stubFetch();
     seed({
       avatars: [botSummary("bot-1", "리뷰 봇")],
       botsAgentId: "bot-1",
@@ -428,49 +477,79 @@ describe("BotsView task strip", () => {
     });
 
     const { container } = render(BotsView);
-    await waitFor(() => expect(container.querySelectorAll(".bots-task-card").length).toBe(1));
-
-    await fireEvent.click(screen.getByRole("button", { name: /중지$/ }));
-
-    await waitFor(() => expect(calls.some((call) => call.method === "POST")).toBe(true));
-    expect(calls.find((call) => call.method === "POST")!.url).toBe("/api/me/bot-tasks/t-run/cancel");
-    // The row is adopted AS-IS — the UI must not pretend the task ended.
-    await waitFor(() => expect(get(toasts).at(-1)?.message).toContain("중지 요청을 보냈어요"));
-    expect(readState().botTasks[0].status).toBe("running");
-    expect(container.querySelector(".bots-task-chip")?.textContent?.trim()).toBe("실행 중");
+    await waitFor(() => expect(container.querySelectorAll(".bots-roster-row").length).toBe(1));
+    expect(container.querySelector(".bots-inbox")).toBeNull();
   });
 
-  it("labels the card control by status and leaves finished work alone", async () => {
+  it("carries each bot's latest task and its unseen count on the roster row", async () => {
     stubFetch();
     seed({
-      avatars: [botSummary("bot-1", "리뷰 봇")],
+      avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")],
       botsAgentId: "bot-1",
       botTasks: [
-        taskOf({ id: "t-run", status: "running" }),
-        taskOf({ id: "t-q", status: "queued" }),
-        taskOf({ id: "t-ask", status: "waiting_input" }),
-        taskOf({ id: "t-done", status: "done" }),
-        taskOf({ id: "t-fail", status: "failed" }),
+        // botTasks is newest-first, so the head of a bot's rows IS its latest.
+        taskOf({ id: "t-new", agentId: "bot-1", status: "done", title: "회의록 정리", seenAt: null }),
+        taskOf({ id: "t-old", agentId: "bot-1", status: "failed", title: "지난 일", seenAt: null }),
+        // A running row is never "unseen" — its own motion is the signal — and a
+        // settled row the owner already looked at drops out too.
+        taskOf({ id: "t-run", agentId: "bot-2", status: "running", title: "빌드" }),
+        taskOf({ id: "t-seen", agentId: "bot-2", status: "done", title: "봤음", seenAt: "2026-08-19T01:00:00.000Z" }),
       ],
     });
 
     const { container } = render(BotsView);
-    await waitFor(() => expect(container.querySelectorAll(".bots-task-card").length).toBe(5));
+    await waitFor(() => expect(container.querySelectorAll(".bots-roster-row").length).toBe(2));
 
-    // Work already under way is STOPPED; work not yet started is CANCELLED;
-    // a terminal row carries no control at all.
-    expect(
-      [...container.querySelectorAll(".bots-task-card")].map((card) => [
-        card.getAttribute("data-status"),
-        card.querySelector(".bots-task-actions button")?.textContent?.trim() ?? null,
-      ]),
-    ).toEqual([
-      ["running", "중지"],
-      ["queued", "취소"],
-      ["waiting_input", "취소"],
-      ["done", null],
-      ["failed", null],
+    expect([...container.querySelectorAll(".bots-roster-row")].map((row) => [
+      row.querySelector(".bots-roster-task")?.textContent?.trim() ?? null,
+      row.querySelector(".bots-roster-unseen")?.textContent?.trim() ?? null,
+    ])).toEqual([
+      ["회의록 정리 · 완료", "2"],
+      ["빌드 · 실행 중", null],
     ]);
+  });
+
+  it("marks the selected bot's lane seen once its thread is open, then re-reads the rows", async () => {
+    const calls = stubFetch((url, method) => {
+      if (url.includes("/bot-tasks/seen") && method === "POST") return { total: 0, agents: {} };
+      return undefined;
+    });
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇")],
+      botsAgentId: "bot-1",
+      botTasks: [taskOf({ id: "t-done", status: "done", seenAt: null })],
+    });
+
+    render(BotsView);
+
+    await waitFor(() =>
+      expect(calls.some((call) => call.url === "/api/me/bot-tasks/seen" && call.method === "POST")).toBe(true),
+    );
+    // Narrowed to the bot whose lane the owner is actually looking at.
+    expect(JSON.parse(calls.find((call) => call.url === "/api/me/bot-tasks/seen")!.body!)).toEqual({
+      agentId: "bot-1",
+    });
+    // The stamp lands server-side, so the board is re-read rather than patched.
+    await waitFor(() =>
+      expect(calls.filter((call) => call.url.startsWith("/api/me/bot-tasks?")).length).toBeGreaterThan(1),
+    );
+  });
+
+  it("offers the conversational path to a first bot alongside the settings one", async () => {
+    stubFetch();
+    seed({ avatars: [] });
+
+    render(BotsView);
+    await screen.findByText("아직 만든 봇이 없습니다");
+
+    await fireEvent.click(screen.getByRole("button", { name: "대화로 봇 만들기" }));
+
+    // A bot is minted CONVERSATIONALLY: the CTA only seeds my own avatar's
+    // composer and hands the send back to me.
+    await waitFor(() => expect(readState().chatPanes.length).toBe(1));
+    expect(readState().view).toBe("chat");
+    expect(readState().chatPanes[0].draft).toContain("내 봇을 새로 만들고 싶어");
+    expect(get(toasts).at(-1)?.message).toContain("보내기를 누르면");
   });
 });
 
@@ -554,6 +633,56 @@ describe("delegated task wiring in lib/chat", () => {
     await sendMessage(paneId, "안녕");
 
     expect(readState().botTasks).toEqual([]);
+  });
+
+  // Cancel lives in lib/chat because the button that presses it now rides the
+  // CARD, which renders inside the transcript rather than in 봇 오피스 itself.
+  it("cancels a queued task through the API and adopts the row it returns", async () => {
+    const cancelled = taskOf({ id: "t-q", status: "cancelled", finishedAt: "2026-08-19T00:05:00.000Z" });
+    const calls = stubFetch((url, method) => {
+      if (url.includes("/bot-tasks/") && method === "POST") return { task: cancelled };
+      return undefined;
+    });
+    seed({ botTasks: [taskOf({ id: "t-q", status: "queued" })] });
+
+    await cancelBotTask(taskOf({ id: "t-q", status: "queued" }));
+
+    expect(calls.find((call) => call.method === "POST")!.url).toBe("/api/me/bot-tasks/t-q/cancel");
+    // The response REPLACES the row rather than being re-fetched.
+    expect(readState().botTasks.find((task) => task.id === "t-q")?.status).toBe("cancelled");
+    expect(get(toasts).at(-1)?.message).toBe("작업을 취소했습니다.");
+  });
+
+  it("stops a RUNNING task through the same endpoint and reports it as still winding down", async () => {
+    // The server acknowledges the request but the row stays `running` — the
+    // terminal state arrives later on a bot_task frame or the next poll.
+    const acknowledged = taskOf({ id: "t-run", status: "running", startedAt: "2026-08-19T00:00:01.000Z" });
+    const calls = stubFetch((url, method) => {
+      if (url.includes("/bot-tasks/") && method === "POST") return { task: acknowledged, stopping: true };
+      return undefined;
+    });
+    seed({ botTasks: [taskOf({ id: "t-run", status: "running" })] });
+
+    await cancelBotTask(taskOf({ id: "t-run", status: "running" }));
+
+    expect(calls.find((call) => call.method === "POST")!.url).toBe("/api/me/bot-tasks/t-run/cancel");
+    // The row is adopted AS-IS — the UI must not pretend the task ended.
+    expect(readState().botTasks[0].status).toBe("running");
+    expect(get(toasts).at(-1)?.message).toContain("중지 요청을 보냈어요");
+  });
+
+  it("leaves the row alone when the stop request fails", async () => {
+    stubFetch((url, method) => {
+      if (url.includes("/bot-tasks/") && method === "POST")
+        return { ok: false, status: 500, json: async () => ({ error: "서버가 응답하지 않습니다" }) };
+      return undefined;
+    });
+    seed({ botTasks: [taskOf({ id: "t-run", status: "running" })] });
+
+    await cancelBotTask(taskOf({ id: "t-run", status: "running" }));
+
+    expect(readState().botTasks[0].status).toBe("running");
+    expect(get(toasts).at(-1)?.message).toContain("중지하지 못했습니다");
   });
 });
 

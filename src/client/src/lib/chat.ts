@@ -257,6 +257,93 @@ export function mergeBotTasks(fetched: BotTask[]): void {
   });
 }
 
+/**
+ * The status vocabulary 봇 오피스 speaks. It lives here rather than in one of the
+ * views because the card (in the transcript), the roster line and the summary
+ * bar all name the same states — three copies would drift apart one rename at a
+ * time.
+ */
+export const BOT_TASK_STATUS_LABELS: Record<BotTaskStatus, string> = {
+  queued: "대기 중",
+  running: "실행 중",
+  waiting_input: "입력 대기",
+  done: "완료",
+  failed: "실패",
+  cancelled: "취소됨",
+};
+
+/**
+ * The states that ASK the owner for something, which is exactly what the server
+ * stamps `seenAt` on. A running or queued row is never "unseen": its own motion
+ * is the signal, and a cancelled one was ended by the owner while looking at it.
+ */
+const SETTLED_BOT_TASK_STATUSES: BotTaskStatus[] = ["done", "failed", "waiting_input"];
+
+/** A settled row the owner hasn't looked at yet — the unseen chips count these. */
+export function isUnseenBotTask(task: BotTask): boolean {
+  return !task.seenAt && SETTLED_BOT_TASK_STATUSES.includes(task.status);
+}
+
+/**
+ * Cancel a queued task or stop a running one — the same endpoint either way.
+ * Lives here because the card that carries the button now renders inside the
+ * TRANSCRIPT (ChatView) while the board around it is 봇 오피스; a view-local copy
+ * would have to exist twice. The row the server returns is adopted AS-IS: a
+ * stopped run does not end here, its terminal state arrives on a later
+ * `bot_task` frame or poll, so the toast only claims the request was sent.
+ */
+export async function cancelBotTask(task: BotTask): Promise<void> {
+  const running = task.status === "running";
+  try {
+    const result = await api<{ task: BotTask; stopping?: boolean }>(
+      `/api/me/bot-tasks/${encodeURIComponent(task.id)}/cancel`,
+      { method: "POST" },
+    );
+    if (result?.task) upsertBotTask(result.task);
+    notify(
+      result?.stopping ? "중지 요청을 보냈어요 — 곧 작업이 종료됩니다" : "작업을 취소했습니다.",
+      "ok",
+    );
+  } catch (err) {
+    notify(`작업을 ${running ? "중지" : "취소"}하지 못했습니다: ${(err as Error).message}`, "warn");
+  }
+}
+
+/**
+ * Where each delegated task belongs in the transcript: immediately AFTER the
+ * last USER message it postdates, so a card sits next to the turn that spawned
+ * it. Bucket `-1` holds tasks older than every message (they render above the
+ * first bubble). Both inputs are already chronological, so one merge pass with a
+ * forward-only cursor places every task.
+ *
+ * Pure by design — the caller derives the map in a `$:` and the `{#each}` only
+ * LOOKS UP its bucket, because that markup re-runs once per streamed token.
+ */
+export function anchorBotTasksToMessages(
+  tasks: BotTask[],
+  messages: StoredMessage[],
+): Map<number, BotTask[]> {
+  const byAnchor = new Map<number, BotTask[]>();
+  if (!tasks.length) return byAnchor;
+  const anchors: { index: number; at: number }[] = [];
+  messages.forEach((message, index) => {
+    if (message.role !== "user") return;
+    const at = botTaskTime(message.createdAt);
+    if (at) anchors.push({ index, at });
+  });
+  const ordered = [...tasks].sort((a, b) => botTaskTime(a.createdAt) - botTaskTime(b.createdAt));
+  let cursor = 0;
+  for (const task of ordered) {
+    const at = botTaskTime(task.createdAt);
+    while (cursor + 1 < anchors.length && anchors[cursor + 1].at <= at) cursor += 1;
+    const anchor = anchors.length && anchors[cursor].at <= at ? anchors[cursor].index : -1;
+    const bucket = byAnchor.get(anchor);
+    if (bucket) bucket.push(task);
+    else byAnchor.set(anchor, [task]);
+  }
+  return byAnchor;
+}
+
 export async function startChatWith(
   summary: AvatarSummary,
   split = false,

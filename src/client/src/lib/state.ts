@@ -24,6 +24,18 @@ import type {
   ViewName,
 } from "./types";
 
+/**
+ * Unseen delegated-task counts, exactly as `GET /api/me/bot-tasks/unseen`
+ * answers them: settled tasks (완료/실패/입력 대기) the owner has not looked at
+ * yet, `total` across every bot plus a per-`personal_agents.id` breakdown. The
+ * server has no named type for the shape, so this is its one client-side name —
+ * `POST /api/me/bot-tasks/seen` answers the same object.
+ */
+export interface BotTaskUnseen {
+  total: number;
+  agents: Record<string, number>;
+}
+
 export interface ClientState {
   booted: boolean;
   bootError: string;
@@ -42,6 +54,12 @@ export interface ClientState {
    * status dots stay right even while the owner is reading another bot's thread.
    */
   botTasks: BotTask[];
+  /**
+   * What the rail's 봇 오피스 badge counts. Replaced wholesale from the two
+   * bot-task endpoints (never merged) so a narrowed 읽음 stamp can still drop the
+   * badges it cleared, and left at zero for anyone the feature is closed to.
+   */
+  botTaskUnseen: BotTaskUnseen;
   avatars: AvatarSummary[];
   avatarsLoaded: boolean;
   avatarsLoading: boolean;
@@ -103,6 +121,7 @@ export const appState = writable<ClientState>({
   brainSource: "personal",
   botsAgentId: "",
   botTasks: [],
+  botTaskUnseen: { total: 0, agents: {} },
   avatars: [],
   avatarsLoaded: false,
   avatarsLoading: false,

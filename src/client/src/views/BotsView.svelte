@@ -3,43 +3,61 @@
   import AvatarImage from "../components/AvatarImage.svelte";
   import Icon from "../components/Icon.svelte";
   import { api } from "../lib/api";
-  import { mergeBotTasks, openBotThreadPane, upsertBotTask } from "../lib/chat";
-  import { loadAvatars, loadConversations } from "../lib/loaders";
+  import {
+    BOT_TASK_STATUS_LABELS,
+    isUnseenBotTask,
+    mergeBotTasks,
+    openBotThreadPane,
+    openSeededChat,
+  } from "../lib/chat";
+  import { loadAvatars, loadConversations, markBotTasksSeen } from "../lib/loaders";
   import { goView, syncHash } from "../lib/nav";
   import { appState, notify, readState, updateState } from "../lib/state";
   import type { AvatarSummary, BotTask, BotTaskStatus } from "../lib/types";
 
   // 봇 오피스 — 내 봇에게 맡긴 작업을 한 화면에서 보는 메신저형 뷰.
-  // 왼쪽은 봇 로스터(작업 상태 점), 가운데는 선택한 봇과의 대화 스레드이고
-  // 그 위에 위임 작업 카드 스트립이 붙는다. 대화 화면 자체는 기존 ChatView를
-  // 그대로 마운트해서 쓴다(컴포저·트랜스크립트·권한 프롬프트 전부 재사용).
+  // 왼쪽은 입력 대기 인박스 + 봇 로스터, 가운데는 선택한 봇과의 대화 스레드다.
+  // 작업 카드는 이 뷰가 아니라 스레드 '안'에 산다(ChatView의 트랜스크립트가
+  // 시각을 기준으로 끼워 넣는다) — 맡긴 일은 그 일을 시킨 turn 옆에 있어야
+  // 읽히기 때문이다. 그래서 여기 남는 건 한 줄 요약뿐이다.
   // 서버 계약: GET /api/me/bot-tasks, POST /api/me/bot-tasks/:id/cancel,
-  // 그리고 실행 중인 봇에게 보낸 턴은 202 { queued, task }로 대기열에 들어간다.
+  // POST /api/me/bot-tasks/seen, 그리고 실행 중인 봇에게 보낸 턴은
+  // 202 { queued, task }로 대기열에 들어간다.
 
   /** 로스터 점과 작업 카드를 함께 되살리는 폴링 주기. */
   const TASK_POLL_MS = 10_000;
-  /** 한 번에 들고 오는 작업 행 수 — 카드 스트립과 점 계산 모두 이 페이지로 충분하다. */
+  /** 한 번에 들고 오는 작업 행 수 — 카드와 점 계산 모두 이 페이지로 충분하다. */
   const TASK_PAGE_LIMIT = 60;
+  /** 끝난 작업이 몰려 들어와도 '봤다' 표시는 한 번만 나가게 모으는 창. */
+  const SEEN_DEBOUNCE_MS = 1_000;
+  /** 인박스 한 줄에 들어가는 질문 길이. */
+  const QUESTION_MAX = 60;
 
-  const TASK_STATUS_LABELS: Record<BotTaskStatus, string> = {
-    queued: "대기 중",
-    running: "실행 중",
-    waiting_input: "입력 대기",
-    done: "완료",
-    failed: "실패",
-    cancelled: "취소됨",
-  };
-  /**
-   * 카드에서 직접 멈출 수 있는 상태 — 종료된 작업(done/failed/cancelled)에는
-   * 컨트롤을 달지 않는다. 셋 다 같은 엔드포인트를 쓰지만 running은 이미 돌고
-   * 있는 턴이라 "취소"가 아니라 "중지"로 읽힌다(라벨은 stopButtonLabel).
-   */
-  const STOPPABLE: BotTaskStatus[] = ["queued", "waiting_input", "running"];
+  /** 요약 줄이 세는 상태와 그 자리의 어휘(로스터 점과 같은 말을 쓴다). */
+  const SUMMARY_PARTS: [BotTaskStatus, string][] = [
+    ["running", "실행 중"],
+    ["queued", "대기열"],
+    ["waiting_input", "입력 대기"],
+  ];
+
+  // 봇은 대화로 만들어진다(내 아바타가 mcp__personal_agent__create_agent를 부른다).
+  // 그래서 이 CTA는 컴포저에 요청을 준비만 하고 보내기는 주인이 누른다 — 레일의
+  // 같은 CTA와 문구를 맞춘다.
+  const BOT_CREATE_SEED =
+    "내 봇을 새로 만들고 싶어. 어떤 역할의 봇이 좋을지 같이 정하고, 이름과 페르소나를 제안해서 만들어줘.";
+  const BOT_CREATE_NOTICE = "입력창에 봇 만들기 요청을 준비했습니다. 보내기를 누르면 시작해요.";
 
   /** 로스터 한 줄의 상태 — 점 색과 라벨을 함께 가진다. */
   interface RosterStatus {
     kind: "running" | "waiting" | "queued" | "idle";
     label: string;
+  }
+
+  /** 인박스 한 줄 — 어느 봇이 무엇을 묻고 있는지. */
+  interface InboxEntry {
+    task: BotTask;
+    bot: AvatarSummary;
+    question: string;
   }
 
   let ChatViewComponent: any = null;
@@ -49,20 +67,27 @@
   let opening = false;
   /** 이미 스레드를 연 봇 — 같은 봇으로 반복 진입해도 다시 로드하지 않는다. */
   let openedAgentId = "";
-  let cancellingId = "";
-  /** 진행 중 작업의 경과 시간을 흐르게 하는 시계(폴링 틱마다 갱신). */
-  let now = Date.now();
+  let botCreateBusy = false;
   let pollTimer: number | null = null;
 
   $: bots = $appState.avatars.filter((avatar) => avatar.personalAgent);
   $: selectedAgentId = $appState.botsAgentId;
   $: selectedBot = bots.find((bot) => bot.personalAgent?.agentId === selectedAgentId) ?? null;
-  // 상태 점은 파생 맵으로 만들어 마크업이 맵을 직접 읽게 한다 — 레거시 모드에서
-  // 템플릿이 호출한 헬퍼 안에서만 읽은 상태는 추적되지 않아 값이 굳는다.
+  // 로스터의 세 신호(점·최근 작업·안 본 개수)는 전부 파생 맵으로 만들어 마크업이
+  // 맵을 직접 읽게 한다 — 레거시 모드에서 템플릿이 호출한 헬퍼 안에서만 읽은
+  // 상태는 추적되지 않아 값이 굳는다.
   $: rosterStatuses = new Map(
-    bots.map((bot) => [bot.id, rosterStatus(bot.personalAgent?.agentId ?? "", $appState.botTasks)] as const),
+    bots.map((bot) => [bot.id, rosterStatus(agentIdOf(bot), $appState.botTasks)] as const),
+  );
+  $: rosterLatest = new Map(
+    bots.map((bot) => [bot.id, latestTaskLine(agentIdOf(bot), $appState.botTasks)] as const),
+  );
+  $: rosterUnseen = new Map(
+    bots.map((bot) => [bot.id, unseenCount(agentIdOf(bot), $appState.botTasks)] as const),
   );
   $: agentTasks = $appState.botTasks.filter((task) => task.agentId === selectedAgentId);
+  $: summaryText = summarize(agentTasks);
+  $: waitingInbox = inboxEntries(bots, $appState.botTasks);
   // 봇 스레드가 실제로 열렸는지 — ChatView는 이 조건에서만 마운트한다. 봇에서
   // 봇으로 옮길 때 이전 봇의 pane이 아직 남아 있으므로 언마운트되지 않는다.
   $: activePane =
@@ -82,6 +107,18 @@
     void refreshTasks();
   }
 
+  /* ---- 안 본 작업 표시 ------------------------------------------------------
+     열려 있는 스레드에서 '아직 안 본' 작업들. 이 키가 바뀌면 새로 끝난 작업이
+     도착했다는 뜻이고, 봇을 고르는 순간엔 바로 보냈다고 표시한다. */
+  let seenAgentId = "";
+  let seenTimer: number | null = null;
+
+  $: unseenSelectedKey = agentTasks
+    .filter(isUnseenBotTask)
+    .map((task) => task.id)
+    .join(",");
+  $: syncSeen(selectedAgentId, unseenSelectedKey, threadMounted);
+
   onMount(() => {
     void import("../views/ChatView.svelte").then((module) => (ChatViewComponent = module.default));
     void boot();
@@ -90,6 +127,8 @@
     return () => {
       if (pollTimer != null) window.clearInterval(pollTimer);
       pollTimer = null;
+      if (seenTimer != null) window.clearTimeout(seenTimer);
+      seenTimer = null;
       window.removeEventListener("focus", onTick);
     };
   });
@@ -121,9 +160,11 @@
   }
 
   function onTick(): void {
-    now = Date.now();
     if (typeof document !== "undefined" && document.hidden) return;
     void refreshTasks();
+    // 탭으로 돌아왔을 때 그동안 쌓인 '안 본' 작업을 여기서 정리한다 — 볼 게
+    // 없으면 scheduleSeen이 아무것도 보내지 않는다.
+    scheduleSeen(false);
   }
 
   async function refreshTasks(): Promise<void> {
@@ -131,7 +172,6 @@
       const { tasks } = await api<{ tasks: BotTask[] }>(`/api/me/bot-tasks?limit=${TASK_PAGE_LIMIT}`);
       mergeBotTasks(Array.isArray(tasks) ? tasks : []);
       tasksError = "";
-      now = Date.now();
     } catch (err) {
       tasksError = (err as Error).message;
     }
@@ -162,12 +202,67 @@
   }
 
   function selectBot(bot: AvatarSummary): void {
-    const agentId = bot.personalAgent?.agentId;
+    const agentId = agentIdOf(bot);
     if (!agentId || agentId === readState().botsAgentId) return;
     updateState((state) => {
       state.botsAgentId = agentId;
     });
     syncHash();
+  }
+
+  /**
+   * 봇을 고르는 순간엔 바로, 그 뒤 새로 끝난 작업이 도착하면 잠깐 모아서 한 번만
+   * '봤다'를 보낸다. 탭이 숨어 있으면 본 게 아니므로 보내지 않고, 다음 폴링
+   * (포커스 복귀 포함)이 다시 시도한다.
+   */
+  function syncSeen(agentId: string, unseenKey: string, mounted: boolean): void {
+    void unseenKey; // 새 작업이 도착하면 이 문장을 다시 돌리는 의존성
+    if (!agentId || !mounted) return;
+    const switched = agentId !== seenAgentId;
+    seenAgentId = agentId;
+    scheduleSeen(switched);
+  }
+
+  function scheduleSeen(immediate: boolean): void {
+    if (!seenAgentId || !threadMounted) return;
+    if (typeof document !== "undefined" && document.hidden) return;
+    if (!immediate && !unseenSelectedKey) return;
+    if (seenTimer != null) window.clearTimeout(seenTimer);
+    seenTimer = null;
+    if (immediate) {
+      void markSeenNow(seenAgentId);
+      return;
+    }
+    seenTimer = window.setTimeout(() => {
+      seenTimer = null;
+      void markSeenNow(readState().botsAgentId);
+    }, SEEN_DEBOUNCE_MS);
+  }
+
+  /**
+   * 표시한 뒤 목록을 다시 읽는다 — 로스터의 안 본 개수는 state.botTasks의
+   * seenAt에서 나오므로, 서버가 찍은 값을 받아와야 칩이 사라진다.
+   */
+  async function markSeenNow(agentId: string): Promise<void> {
+    if (!agentId) return;
+    await markBotTasksSeen(agentId);
+    await refreshTasks();
+  }
+
+  async function startBotCreation(): Promise<void> {
+    if (botCreateBusy) return;
+    botCreateBusy = true;
+    try {
+      await openSeededChat(BOT_CREATE_SEED, BOT_CREATE_NOTICE);
+    } catch (err) {
+      notify(`봇 만들기를 시작하지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      botCreateBusy = false;
+    }
+  }
+
+  function agentIdOf(bot: AvatarSummary): string {
+    return bot.personalAgent?.agentId ?? "";
   }
 
   function rosterStatus(agentId: string, tasks: BotTask[]): RosterStatus {
@@ -180,64 +275,49 @@
     return { kind: "idle", label: "쉬는 중" };
   }
 
-  /** 카드 한 줄 요약: 상태별로 지금 알아야 할 문장 하나만 고른다. */
-  function taskDetail(task: BotTask): string {
-    const detail =
-      task.status === "waiting_input"
-        ? task.pendingQuestion
-        : task.status === "failed"
-          ? task.error
-          : task.status === "done"
-            ? task.resultSummary
-            : "";
-    const text = (detail || "").replace(/\s+/g, " ").trim();
-    return text.length > 90 ? `${text.slice(0, 90)}…` : text;
+  /** 로스터 둘째 줄: 이 봇이 가장 최근에 맡은 일 하나(없으면 상태 라벨만 남는다). */
+  function latestTaskLine(agentId: string, tasks: BotTask[]): string {
+    if (!agentId) return "";
+    const latest = tasks.find((task) => task.agentId === agentId);
+    if (!latest) return "";
+    const label = BOT_TASK_STATUS_LABELS[latest.status] ?? latest.status;
+    return `${latest.title || "(제목 없는 작업)"} · ${label}`;
   }
 
-  /** 생성 → 종료(진행 중이면 지금)까지의 경과. 인자만 읽으므로 템플릿에서 안전하다. */
-  function elapsedLabel(task: BotTask, nowMs: number): string {
-    const start = Date.parse(task.createdAt || "");
-    if (Number.isNaN(start)) return "";
-    const finished = task.finishedAt ? Date.parse(task.finishedAt) : NaN;
-    const end = Number.isNaN(finished) ? nowMs : finished;
-    const seconds = Math.max(0, Math.round((end - start) / 1000));
-    if (seconds < 60) return `${seconds}초`;
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 60) return `${minutes}분`;
-    const hours = Math.round(minutes / 60);
-    if (hours < 24) return `${hours}시간`;
-    return `${Math.round(hours / 24)}일`;
+  function unseenCount(agentId: string, tasks: BotTask[]): number {
+    if (!agentId) return 0;
+    return tasks.filter((task) => task.agentId === agentId && isUnseenBotTask(task)).length;
   }
 
-  /** 인자만 읽으므로 템플릿에서 호출해도 값이 굳지 않는다. */
-  function stopButtonLabel(status: BotTaskStatus, busy: boolean): string {
-    const verb = status === "running" ? "중지" : "취소";
-    return busy ? `${verb}하는 중…` : verb;
-  }
-
-  async function cancelTask(task: BotTask): Promise<void> {
-    if (cancellingId) return;
-    cancellingId = task.id;
-    const running = task.status === "running";
-    try {
-      const result = await api<{ task: BotTask; stopping?: boolean }>(
-        `/api/me/bot-tasks/${encodeURIComponent(task.id)}/cancel`,
-        { method: "POST" },
-      );
-      // 서버가 준 행을 그대로 받는다 — 실행 중이던 작업은 여기서 끝나지 않고
-      // 최종 상태가 bot_task 프레임이나 다음 폴링으로 따로 온다. 그래서
-      // "취소됨"이라고 단정하지 않고 요청을 보냈다고만 알린다.
-      if (result?.task) upsertBotTask(result.task);
-      notify(
-        result?.stopping ? "중지 요청을 보냈어요 — 곧 작업이 종료됩니다" : "작업을 취소했습니다.",
-        "ok",
-      );
-    } catch (err) {
-      const verb = running ? "중지" : "취소";
-      notify(`작업을 ${verb}하지 못했습니다: ${(err as Error).message}`, "warn");
-    } finally {
-      cancellingId = "";
+  /** 요약 줄은 0인 항목을 말하지 않는다 — 없는 상태는 정보가 아니다. */
+  function summarize(tasks: BotTask[]): string {
+    const parts: string[] = [];
+    for (const [status, label] of SUMMARY_PARTS) {
+      const count = tasks.filter((task) => task.status === status).length;
+      if (count) parts.push(`${label} ${count}`);
     }
+    return parts.join(" · ");
+  }
+
+  /**
+   * 입력 대기 인박스: 봇이 나를 기다리는 질문만 봇을 가리지 않고 모은다.
+   * botTasks는 최신순이라 그대로 쓰면 방금 온 질문이 위에 온다.
+   */
+  function inboxEntries(roster: AvatarSummary[], tasks: BotTask[]): InboxEntry[] {
+    const byAgent = new Map(roster.map((bot) => [agentIdOf(bot), bot] as const));
+    const entries: InboxEntry[] = [];
+    for (const task of tasks) {
+      if (task.status !== "waiting_input") continue;
+      const bot = byAgent.get(task.agentId);
+      if (!bot) continue;
+      entries.push({ task, bot, question: questionSnippet(task.pendingQuestion || task.title) });
+    }
+    return entries;
+  }
+
+  function questionSnippet(text: string | null): string {
+    const trimmed = (text || "").replace(/\s+/g, " ").trim();
+    return trimmed.length > QUESTION_MAX ? `${trimmed.slice(0, QUESTION_MAX)}…` : trimmed;
   }
 </script>
 
@@ -256,6 +336,22 @@
 
   <div class="bots-body">
     <aside class="bots-roster" aria-label="내 봇 목록">
+      {#if waitingInbox.length}
+        <!-- 봇이 나를 기다리는 줄만 맨 위로 — 답을 주기 전엔 그 작업이 멈춰
+             있으므로, 로스터 안쪽을 뒤져 찾게 두지 않는다. -->
+        <section class="bots-inbox" aria-label="입력 대기 인박스">
+          <p class="bots-inbox-title">입력 대기 {waitingInbox.length}</p>
+          <div class="bots-inbox-list scroll-thin">
+            {#each waitingInbox as entry (entry.task.id)}
+              <button class="bots-inbox-row" type="button" on:click={() => selectBot(entry.bot)}>
+                <span class="bots-inbox-bot">{entry.bot.alias || entry.bot.displayName}</span>
+                <span class="bots-inbox-question">{entry.question}</span>
+              </button>
+            {/each}
+          </div>
+        </section>
+      {/if}
+
       {#if !ready}
         <div class="bots-roster-note muted" role="status">봇 목록을 불러오는 중…</div>
       {:else if loadError}
@@ -266,6 +362,8 @@
         <div class="bots-roster-list scroll-thin" role="group" aria-label="봇 선택">
           {#each bots as bot (bot.id)}
             {@const status = rosterStatuses.get(bot.id)}
+            {@const latest = rosterLatest.get(bot.id)}
+            {@const unseen = rosterUnseen.get(bot.id) ?? 0}
             {@const active = bot.personalAgent?.agentId === selectedAgentId}
             <button
               class="bots-roster-row"
@@ -280,7 +378,13 @@
                 <span class="bots-roster-status" data-state={status?.kind ?? "idle"}>
                   <span class="bots-dot" aria-hidden="true"></span>{status?.label ?? "쉬는 중"}
                 </span>
+                {#if latest}
+                  <span class="bots-roster-task">{latest}</span>
+                {/if}
               </span>
+              {#if unseen}
+                <span class="tag bots-roster-unseen" title={`확인하지 않은 작업 ${unseen}건`}>{unseen}</span>
+              {/if}
             </button>
           {/each}
         </div>
@@ -293,13 +397,19 @@
           <div class="hero">
             <h3>아직 만든 봇이 없습니다</h3>
             <p>
-              설정 ▸ 내 봇에서 봇을 만들거나, 내 아바타와의 대화에서 “내 봇을 새로 만들고 싶어”라고 말해
-              보세요. 봇이 생기면 여기에서 작업을 맡길 수 있습니다.
+              봇은 대화로 만듭니다. 아래 버튼을 누르면 내 아바타와의 대화에 요청이 준비되고,
+              보내기를 누르면 어떤 역할의 봇이 좋을지 같이 정할 수 있어요. 설정에서 직접 만들
+              수도 있습니다.
             </p>
           </div>
-          <button class="btn btn-primary" type="button" on:click={() => goView("settings", "agents")}>
-            내 봇 만들러 가기
-          </button>
+          <div class="bots-empty-actions">
+            <button class="btn btn-primary" type="button" disabled={botCreateBusy} on:click={startBotCreation}>
+              대화로 봇 만들기
+            </button>
+            <button class="btn btn-secondary" type="button" on:click={() => goView("settings", "agents")}>
+              내 봇 만들러 가기
+            </button>
+          </div>
         </div>
       {:else if ready && selectedAgentId && !selectedBot}
         <!-- 삭제된 봇을 가리키는 북마크(#/bots/<사라진 id>)로 들어온 경우. -->
@@ -307,53 +417,18 @@
           그 봇을 찾을 수 없어요. 왼쪽에서 다른 봇을 선택하세요.
         </div>
       {:else}
-        <div class="bots-tasks" aria-label="맡긴 작업">
-          <div class="bots-tasks-head">
-            <span class="bots-tasks-title">맡긴 작업</span>
+        {#if summaryText || tasksError}
+          <!-- 카드는 스레드 안에 있으니 여기 남는 건 지금 몇 건이 움직이는지
+               한 줄뿐이다. 0인 항목은 말하지 않는다. -->
+          <div class="bots-summary">
+            {#if summaryText}
+              <span class="bots-summary-text">{summaryText}</span>
+            {/if}
             {#if tasksError}
-              <span class="bots-tasks-error" role="alert">작업 목록 갱신 실패</span>
+              <span class="bots-summary-error" role="alert">작업 목록 갱신 실패</span>
             {/if}
           </div>
-          {#if !agentTasks.length}
-            <p class="bots-tasks-empty muted">아직 맡긴 작업이 없어요</p>
-          {:else}
-            <div class="bots-task-strip scroll-thin">
-              {#each agentTasks as task (task.id)}
-                {@const detail = taskDetail(task)}
-                <article class="card bots-task-card" data-status={task.status}>
-                  <div class="bots-task-top">
-                    <span class="tag bots-task-chip" data-status={task.status}>
-                      {TASK_STATUS_LABELS[task.status] ?? task.status}
-                    </span>
-                    <span class="bots-task-elapsed">{elapsedLabel(task, now)}</span>
-                  </div>
-                  <p class="bots-task-title">{task.title || "(제목 없는 작업)"}</p>
-                  {#if detail}
-                    <p class="bots-task-detail">{detail}</p>
-                  {/if}
-                  {#if STOPPABLE.includes(task.status)}
-                    <div class="bots-task-actions">
-                      <!-- A strip of cards each carrying a bare "취소" is
-                           ambiguous to a screen reader, so the accessible name
-                           names the task; it stays STABLE while busy and the
-                           progress rides aria-busy instead. -->
-                      <button
-                        class="btn btn-ghost btn-sm"
-                        type="button"
-                        aria-label={`${task.title || "작업"} ${stopButtonLabel(task.status, false)}`}
-                        aria-busy={cancellingId === task.id ? "true" : "false"}
-                        disabled={cancellingId === task.id}
-                        on:click={() => cancelTask(task)}
-                      >
-                        {stopButtonLabel(task.status, cancellingId === task.id)}
-                      </button>
-                    </div>
-                  {/if}
-                </article>
-              {/each}
-            </div>
-          {/if}
-        </div>
+        {/if}
 
         <div class="bots-chat">
           {#if threadMounted}
@@ -370,7 +445,8 @@
 </div>
 
 <style>
-  /* 밀도 토큰은 뷰 루트에서 선언한다(DESIGN.md §3) — 채팅과 같은 촘촘한 밀도. */
+  /* 밀도 토큰은 뷰 루트에서 선언한다(DESIGN.md §3) — 채팅과 같은 촘촘한 밀도.
+     스레드 안의 작업 카드도 이 값을 상속받는다. */
   .bots-view {
     --pad-card: var(--s-3);
     --gap-stack: var(--s-2);
@@ -439,6 +515,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--s-0-5);
+    flex: 1;
     min-width: 0;
   }
   .bots-roster-name {
@@ -454,6 +531,21 @@
     gap: var(--s-1);
     font-size: var(--t-2xs);
     color: var(--muted);
+  }
+  .bots-roster-task {
+    font-size: var(--t-2xs);
+    color: var(--text-soft);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* 안 본 작업 개수 — `.tag` 베이스 위에 색만 얹는다. */
+  .bots-roster-unseen {
+    flex: none;
+    color: var(--on-accent);
+    background: var(--accent);
+    border-color: var(--accent);
+    font-weight: 600;
   }
   .bots-dot {
     width: 6px;
@@ -473,6 +565,55 @@
     color: var(--info);
   }
 
+  .bots-inbox {
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-1);
+    padding-bottom: var(--s-2);
+    border-bottom: 1px solid var(--line);
+  }
+  .bots-inbox-title {
+    margin: 0;
+    font-size: var(--t-2xs);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--warn);
+  }
+  .bots-inbox-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-0-5);
+    max-height: 30vh;
+    overflow-y: auto;
+  }
+  .bots-inbox-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--s-0-5);
+    width: 100%;
+    padding: var(--s-1-5) var(--s-2);
+    border: 1px solid var(--warn-line);
+    border-radius: var(--r-sm);
+    background: var(--warn-soft);
+    text-align: left;
+    cursor: pointer;
+    min-width: 0;
+  }
+  .bots-inbox-bot {
+    font-size: var(--t-2xs);
+    font-weight: 600;
+    color: var(--warn);
+  }
+  .bots-inbox-question {
+    font-size: var(--t-xs);
+    color: var(--text-soft);
+    line-height: 1.3;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .bots-thread {
     min-width: 0;
     min-height: 0;
@@ -480,90 +621,20 @@
     flex-direction: column;
   }
 
-  .bots-tasks {
+  .bots-summary {
     flex: none;
-    padding: var(--s-2-5) var(--s-4);
-    border-bottom: 1px solid var(--line);
-  }
-  .bots-tasks-head {
     display: flex;
     align-items: baseline;
     gap: var(--s-2);
-  }
-  .bots-tasks-title {
+    padding: var(--s-1-5) var(--s-4);
+    border-bottom: 1px solid var(--line);
     font-size: var(--t-2xs);
-    font-weight: 600;
-    letter-spacing: 0.02em;
+  }
+  .bots-summary-text {
     color: var(--muted);
   }
-  .bots-tasks-error {
-    font-size: var(--t-2xs);
+  .bots-summary-error {
     color: var(--warn);
-  }
-  .bots-tasks-empty {
-    margin: var(--s-1-5) 0 0;
-    font-size: var(--t-sm);
-  }
-  .bots-task-strip {
-    display: flex;
-    gap: var(--s-2);
-    margin-top: var(--s-2);
-    overflow-x: auto;
-    padding-bottom: var(--s-1);
-  }
-  .bots-task-card {
-    flex: none;
-    width: 240px;
-    display: flex;
-    flex-direction: column;
-    gap: var(--s-1);
-    padding: var(--pad-card);
-    border-radius: var(--r-md);
-  }
-  .bots-task-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--s-2);
-  }
-  /* `.tag` 베이스 위에 색 모디파이어만 얹는다(패딩·라운드 재정의 금지). */
-  .bots-task-chip[data-status="running"] {
-    color: var(--accent);
-    border-color: var(--accent);
-  }
-  .bots-task-chip[data-status="waiting_input"] {
-    color: var(--warn);
-    border-color: var(--warn-line);
-  }
-  .bots-task-chip[data-status="failed"] {
-    color: var(--danger);
-    border-color: var(--danger-line);
-  }
-  .bots-task-chip[data-status="done"] {
-    color: var(--ok);
-    border-color: var(--ok-line);
-  }
-  .bots-task-elapsed {
-    font-size: var(--t-2xs);
-    color: var(--muted);
-  }
-  .bots-task-title {
-    margin: 0;
-    font-size: var(--t-sm);
-    font-weight: 600;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .bots-task-detail {
-    margin: 0;
-    font-size: var(--t-xs);
-    color: var(--text-soft);
-    line-height: 1.4;
-  }
-  .bots-task-actions {
-    display: flex;
-    justify-content: flex-end;
   }
 
   .bots-chat {
@@ -580,6 +651,11 @@
   }
   .bots-empty {
     flex: 1;
+  }
+  .bots-empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--s-2);
   }
 
   /* 좁은 화면에서는 로스터를 가로 칩 줄로 접는다. */
@@ -602,6 +678,11 @@
     .bots-roster-row {
       width: auto;
       flex: none;
+      /* 가로 줄에서는 최근 작업 줄이 칸을 무한정 늘리지 않도록 폭을 묶는다. */
+      max-width: 220px;
+    }
+    .bots-inbox-list {
+      max-height: none;
     }
   }
 

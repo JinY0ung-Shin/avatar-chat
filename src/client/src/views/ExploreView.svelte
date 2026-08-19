@@ -12,7 +12,7 @@
     knowledgeReady as isKnowledgeReady,
     profileReady as isProfileReady,
   } from "../lib/setupReadiness";
-  import { appState, notify, updateState } from "../lib/state";
+  import { appState, notify, readState, updateState } from "../lib/state";
   import type { AvatarSummary } from "../lib/types";
   import type { TourSlug } from "../../../shared/tourScenarios";
 
@@ -208,8 +208,23 @@
             ? `${displayQuery} 검색 결과 ${avatars.length}개가 있습니다.`
             : `아바타 ${avatars.length}개가 있습니다.`;
 
+  /**
+   * 내 봇 카드는 일반 대화 pane이 아니라 봇 오피스로 들어간다 — 맡긴 작업과
+   * 스레드가 한 화면에 있어야 "그 일 어떻게 됐지"를 다시 찾아다니지 않는다.
+   * 접근 게이트는 `goView` 하나뿐이라(ADMIN_ONLY_VIEWS) 여기서 역할을 다시
+   * 검사하지 않고, 뷰가 실제로 바뀌었는지로 판단한다: 막히면 false를 돌려 예전처럼
+   * 일반 대화로 열리므로 게이트가 넓어져도 죽은 클릭이 생기지 않는다.
+   */
+  function openBotOffice(av: AvatarSummary): boolean {
+    const agentId = av.personalAgent?.agentId;
+    if (!agentId) return false;
+    goView("bots", agentId);
+    return readState().view === "bots";
+  }
+
   async function openChat(av: AvatarSummary) {
     if (loadingAvatarId) return;
+    if (openBotOffice(av)) return;
     loadingAvatarId = av.id;
     try {
       await startChatWith(av);
@@ -300,14 +315,15 @@
         <!-- The card itself is one big button (click = start chat), so 소개 보기 has to
              be a SIBLING control — buttons can't nest. The wrapper is the grid item;
              the card fills it so the grid sizing and the hover ::after arrow are
-             unchanged. -->
+             unchanged. 내 봇 카드만 목적지가 다르므로(봇 오피스) 라벨도 그렇게 읽는다. -->
+        {@const cardAction = av.personalAgent ? "봇 오피스에서 열기" : "아바타와 대화"}
         <div class="avatar-card-wrap">
           <button
             class="avatar-card"
             class:opening={loadingAvatarId === av.id}
             type="button"
-            aria-label={`${av.alias || av.displayName} 아바타와 대화${loadingAvatarId === av.id ? ", 여는 중" : ""}`}
-            title={`${av.alias || av.displayName} 아바타와 대화`}
+            aria-label={`${av.alias || av.displayName} ${cardAction}${loadingAvatarId === av.id ? ", 여는 중" : ""}`}
+            title={`${av.alias || av.displayName} ${cardAction}`}
             aria-busy={loadingAvatarId === av.id}
             disabled={Boolean(loadingAvatarId)}
             on:click={() => openChat(av)}

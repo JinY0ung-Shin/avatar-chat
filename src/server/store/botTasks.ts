@@ -12,6 +12,17 @@ const DEFAULT_TASK_LIMIT = 100;
 /** Oldest-first thread listing default (a bot thread holds more cards than a board page). */
 const DEFAULT_CONVERSATION_TASK_LIMIT = 200;
 
+/**
+ * UNSEEN = a task that SETTLED into a state the owner has not looked at yet.
+ * The single source of the badge predicate, shared by the count and the stamp
+ * so the two can never disagree. 'queued'/'running' rows are deliberately NOT
+ * unseen — their motion is its own signal, and badging work still in flight
+ * would leave a count nobody can clear — and 'cancelled' never is either: the
+ * owner is the one who cancelled it, so they have seen it by construction.
+ */
+const UNSEEN_WHERE =
+  "status IN ('done', 'failed', 'waiting_input') AND seen_at IS NULL";
+
 export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) {
   return class BotTasks extends Base {
     // ---- Delegated bot tasks (내 봇 작업) ------------------------------------
@@ -25,6 +36,14 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
     //                  └────► waiting_input ──► running    (owner answers)
     //   queued | waiting_input ──► cancelled               (owner gives up)
     //   queued ──► failed                                  (undispatchable bot)
+    //
+    // seen_at rides that same machine (UNSEEN_WHERE is the badge predicate):
+    // every finalize CLEARS it, because settling is a fresh result the owner
+    // has not read — a task parked on a question, answered, then finished
+    // badges a SECOND time — and a dispatch clears it too so a running row
+    // never carries a stale stamp. The one transition the owner performs
+    // themselves (their own cancel) stamps it instead, alongside the explicit
+    // markBotTasksSeen the board sends when they look.
     //
     // Cascades are manual and live at the deletion sites: deletePersonalAgent
     // (store/personalAgents.ts), deleteUser (store/admin.ts), and the
@@ -59,6 +78,7 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
         createdAt: row.created_at,
         startedAt: row.started_at ?? null,
         finishedAt: row.finished_at ?? null,
+        seenAt: row.seen_at ?? null,
       };
     }
 
@@ -139,6 +159,56 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
       return rows.map((row) => this.toBotTask(row));
     }
 
+    /**
+     * Badge counts for the owner's board: settled tasks they have not looked at
+     * yet, split per bot so the rail can dot the individual lane AND show one
+     * total. ONE grouped query — total is the sum of the groups, so the two
+     * numbers can never disagree the way two separate COUNTs could. A bot with
+     * nothing unseen is absent from `agents` rather than present as 0, which is
+     * what lets the client replace its whole badge state from one response.
+     */
+    countUnseenBotTasks(ownerUserId: string): {
+      total: number;
+      agents: Record<string, number>;
+    } {
+      const rows = this.db
+        .prepare(
+          `SELECT agent_id, COUNT(*) AS c FROM bot_tasks
+           WHERE owner_user_id = ? AND ${UNSEEN_WHERE}
+           GROUP BY agent_id`,
+        )
+        .all(ownerUserId) as { agent_id: string; c: number }[];
+      return {
+        total: rows.reduce((sum, row) => sum + row.c, 0),
+        agents: Object.fromEntries(rows.map((row) => [row.agent_id, row.c])),
+      };
+    }
+
+    /**
+     * The owner looked: stamp every one of their currently-unseen tasks, or
+     * just one bot's lane when `agentId` narrows it. Returns how many rows the
+     * stamp actually moved, so an idempotent second call reports 0. Only rows
+     * matching UNSEEN_WHERE are touched — an already-stamped row keeps its
+     * ORIGINAL timestamp (this is "when it was first read", not "when the board
+     * was last open"), and a queued/running row is left alone to be cleared by
+     * its own next finalize.
+     */
+    markBotTasksSeen(
+      ownerUserId: string,
+      opts: { agentId?: string } = {},
+    ): number {
+      const params: unknown[] = [now(), ownerUserId];
+      let where = `owner_user_id = ? AND ${UNSEEN_WHERE}`;
+      if (opts.agentId) {
+        where += " AND agent_id = ?";
+        params.push(opts.agentId);
+      }
+      const { changes } = this.db
+        .prepare(`UPDATE bot_tasks SET seen_at = ? WHERE ${where}`)
+        .run(...params);
+      return changes;
+    }
+
     /** One thread's tasks, OLDEST first — the cards render in transcript order. */
     listBotTasksForConversation(
       conversationId: string,
@@ -199,14 +269,18 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
      * rather than a resurrection. started_at is insert-once (COALESCE), so a
      * resumed task keeps its original start; result_summary survives a resume
      * while pending_question and reported_outcome are cleared, because the
-     * answer just arrived and the bot must report again for this leg.
+     * answer just arrived and the bot must report again for this leg. seen_at
+     * is cleared with them: a resumed row is back in motion, and leaving the
+     * stamp from the answered leg standing would let a crash between here and
+     * the next finalize (the boot sweep fails it) land a settled row that the
+     * badge counts as already read.
      */
     markBotTaskRunning(taskId: string, runId: string): BotTask | null {
       const { changes } = this.db
         .prepare(
           `UPDATE bot_tasks
              SET status = 'running', run_id = ?, started_at = COALESCE(started_at, ?),
-                 pending_question = NULL, reported_outcome = NULL
+                 pending_question = NULL, reported_outcome = NULL, seen_at = NULL
            WHERE id = ? AND status IN ('queued', 'waiting_input')`,
         )
         .run(runId, now(), taskId);
@@ -252,6 +326,8 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
      * run_id is cleared — the in-memory registry entry is gone. An `undefined`
      * field KEEPS its stored value (the finalize passes only what it knows,
      * e.g. a report already wrote result_summary); an explicit null clears.
+     * seen_at is cleared UNCONDITIONALLY, on every transition this performs:
+     * whatever the owner read before, this leg's outcome is new to them.
      */
     finishBotTask(
       taskId: string,
@@ -271,6 +347,7 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
           `UPDATE bot_tasks
              SET status = ?,
                  run_id = NULL,
+                 seen_at = NULL,
                  finished_at = ?,
                  result_summary = CASE WHEN ? = 1 THEN result_summary ELSE ? END,
                  pending_question = CASE WHEN ? = 1 THEN pending_question ELSE ? END,
@@ -301,17 +378,20 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
      * the run registry instead, so it does NOT match here — the method name
      * keeps its original queue framing, the contract is the wider one. Guarded
      * on the owner inside the same UPDATE; pendingQuestion is left standing so
-     * the abandoned card still shows what was asked. Null covers "gone", "not
+     * the abandoned card still shows what was asked. seen_at is STAMPED in the
+     * same UPDATE — this is the one transition the owner drives by hand, so
+     * they are looking at the card as it lands. Null covers "gone", "not
      * yours" and "wrong status" identically ON PURPOSE: the caller is a route,
      * and distinguishing them would confirm another owner's task id exists.
      */
     cancelQueuedBotTask(taskId: string, ownerUserId: string): BotTask | null {
+      const timestamp = now();
       const { changes } = this.db
         .prepare(
-          `UPDATE bot_tasks SET status = 'cancelled', finished_at = ?, run_id = NULL
+          `UPDATE bot_tasks SET status = 'cancelled', finished_at = ?, seen_at = ?, run_id = NULL
            WHERE id = ? AND owner_user_id = ? AND status IN ('queued', 'waiting_input')`,
         )
-        .run(now(), taskId, ownerUserId);
+        .run(timestamp, timestamp, taskId, ownerUserId);
       return this.botTaskIfChanged(taskId, changes);
     }
 
