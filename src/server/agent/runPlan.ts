@@ -393,7 +393,6 @@ export async function buildAgentRunPlan(
     buildSystemServer,
     SYSTEM_SERVER_NAME,
     SYSTEM_TOOL_NAMES,
-    ROUTINE_TOOL_NAMES,
   } = await import("./systemTools.js");
   const {
     buildConfluenceServer,
@@ -1224,15 +1223,11 @@ export async function buildAgentRunPlan(
       }
     : {};
 
-  // Routines cannot resolve a bot's composite avatar id (phase 1), so a
-  // personal-agent run auto-approves the system server WITHOUT its four routine
-  // tools; the handlers refuse them outright too (systemTools.ts holds both
-  // halves). Both metacognition surfaces state the unavailability rather than
-  // leaving the model to discover it.
-  const systemToolNames = personalAgentRun
-    ? SYSTEM_TOOL_NAMES.filter((name) => !ROUTINE_TOOL_NAMES.includes(name))
-    : SYSTEM_TOOL_NAMES;
-
+  // A personal-agent run carries the FULL system tool set, routines included: a
+  // bot schedules its own recurring work, and `routine_jobs.personal_agent_id`
+  // binds each schedule to the bot that fires it. The handlers SELF-SCOPE that
+  // access (a bot lists/updates/deletes only its own rows — systemTools.ts), and
+  // both metacognition surfaces state the capability and its scope.
   const options: Record<string, unknown> = {
     plugins: pluginRoots,
     // The PreToolUse hook (below) is the real gate. `default` mode is required —
@@ -1245,7 +1240,7 @@ export async function buildAgentRunPlan(
       ...(personalKnowledgeToolsEnabled ? KNOWLEDGE_TOOL_NAMES : []),
       ...(personalKnowledgeToolsEnabled ? REPO_TOOL_NAMES : []),
       ...(allowRepoCreate ? [REPO_CREATE_TOOL_NAME] : []),
-      ...(systemToolsEnabled ? systemToolNames : []),
+      ...(systemToolsEnabled ? SYSTEM_TOOL_NAMES : []),
       ...(confluenceToolsEnabled ? CONFLUENCE_TOOL_NAMES : []),
       ...(webFetchToolsEnabled ? WEB_FETCH_TOOL_NAMES : []),
       ...(avatarDirectoryToolsEnabled ? AVATAR_DIRECTORY_TOOL_NAMES : []),

@@ -52,6 +52,7 @@ import {
   PERSONAL_AGENT_SELF_TOOL_NAMES,
 } from "../src/server/agent/personalAgentProfileTools.js";
 import { buildSystemTools } from "../src/server/agent/systemTools.js";
+import { personalAgentAvatarId } from "../src/server/personalAgents.js";
 import { buildPreToolUseHook } from "../src/server/agent/preToolUseHook.js";
 import { DEFAULT_HEX_SSH_TOOL_POLICY } from "../src/server/hexSshPolicy.js";
 import { MCP_TOOL_GROUPS } from "../src/shared/mcpToolGroups.js";
@@ -187,7 +188,7 @@ describe("personal-agent runs keep the owner algebra untouched", () => {
 // Run-plan registration (the two hand-synced lists)
 // ===========================================================================
 describe("personal-agent run plan (SDK mocked)", () => {
-  it("registers update_profile and drops the routine tools on a bot run", async () => {
+  it("registers update_profile and the full routine tool set on a bot run", async () => {
     const { config, store, botRequest } = setup("plan-bot");
     await runAgentStream(botRequest, [], config, store, makeEvents());
 
@@ -198,13 +199,13 @@ describe("personal-agent run plan (SDK mocked)", () => {
     expect(allowed()).toContain("mcp__personal_agent__report_task");
     // create_agent belongs to the owner's OWN avatar, never to a bot.
     expect(allowed()).not.toContain("mcp__personal_agent__create_agent");
-    // Routines cannot resolve a composite bot id (phase 1): the four names are
-    // filtered out, while the rest of the system server stays.
+    // A bot schedules its OWN recurring work: the four routine names ride the
+    // bot run exactly as they ride an owner run (the handlers self-scope them).
     expect(allowed()).toContain("mcp__system__describe_system");
-    expect(allowed()).not.toContain("mcp__system__list_routines");
-    expect(allowed()).not.toContain("mcp__system__create_routine");
-    expect(allowed()).not.toContain("mcp__system__update_routine");
-    expect(allowed()).not.toContain("mcp__system__delete_routine");
+    expect(allowed()).toContain("mcp__system__list_routines");
+    expect(allowed()).toContain("mcp__system__create_routine");
+    expect(allowed()).toContain("mcp__system__update_routine");
+    expect(allowed()).toContain("mcp__system__delete_routine");
     // Owner capability is untouched: the personal families still register.
     expect(servers()).toContain("repo");
     expect(servers()).toContain("system");
@@ -703,13 +704,42 @@ describe("describe_system for personal agents", () => {
     expect(body).toContain("Persona/instructions: NOT set");
     expect(body).toContain(`of ${MAX_PERSONAL_AGENTS} personal bots`);
     expect(body).toContain("mcp__personal_agent__update_profile");
-    expect(body).toContain("Scheduled routines: UNAVAILABLE in this conversation");
+    // Routines are AVAILABLE and SELF-SCOPED — the retired phase-1 wording must
+    // be gone from both the bot block and the owner-state count line.
+    expect(body).toContain("Scheduled routines: AVAILABLE");
+    expect(body).toContain("SELF-SCOPED");
+    expect(body).toContain("mcp__system__create_routine");
+    expect(body).toContain("예약 작업");
+    expect(body).not.toContain("Scheduled routines: UNAVAILABLE in this conversation");
     // …and the owner block still follows: a bot run HAS owner capability.
     expect(body).toContain("Current avatar state:");
     expect(body).toContain("Knowledge repository:");
     // The owner-avatar create trigger is NOT offered inside a bot thread.
     expect(body).not.toContain("mcp__personal_agent__create_agent");
-    expect(body).toContain("NOT listable or manageable from this personal-bot conversation");
+    expect(body).not.toContain("NOT listable or manageable from this personal-bot conversation");
+    expect(body).toContain("0 of them are YOURS");
+  });
+
+  it("counts the bot's OWN routines separately from the owner's on the state line", async () => {
+    const s = setup("desc-routine-count");
+    const withBot = buildSystemTools(s.store, {
+      avatarUserId: s.owner.id,
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+      viewerIsOwner: true,
+      config: s.config,
+      personalAgent: { agentId: s.agent.id, actingUserId: s.owner.id },
+    });
+    s.store.createRoutineJob(s.owner.id, { prompt: "오너 루틴", minuteOfDay: 540 });
+    s.store.createRoutineJob(s.owner.id, {
+      prompt: "봇 루틴",
+      minuteOfDay: 600,
+      personalAgentId: s.agent.id,
+    });
+    const body = (await callTool(withBot, "describe_system", {})).content[0].text;
+    // The count line reports the owner's WHOLE roster, then names the bot's share
+    // — the two numbers the self-scoped list tool actually returns.
+    expect(body).toContain("- Routines: 2 (2 enabled)");
+    expect(body).toContain("1 of them are YOURS");
   });
 
   it("fails closed on a disabled bot, a demoted owner, and a foreign actor", async () => {
@@ -857,6 +887,158 @@ describe("describe_system for personal agents", () => {
 });
 
 // ===========================================================================
+// Routine tools inside a bot thread: available, but SELF-SCOPED
+// ===========================================================================
+describe("routine tools in a personal-bot conversation", () => {
+  function routineTools(dir: string) {
+    const s = setup(dir);
+    const ctx = {
+      avatarUserId: s.owner.id,
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+      viewerIsOwner: true,
+      config: s.config,
+    };
+    // The same store seen through the BOT's tools and through the owner's own
+    // main-avatar tools — the two scopes this feature has to keep apart.
+    return {
+      ...s,
+      bot: buildSystemTools(s.store, {
+        ...ctx,
+        personalAgent: { agentId: s.agent.id, actingUserId: s.owner.id },
+      }),
+      main: buildSystemTools(s.store, ctx),
+    };
+  }
+
+  it("binds a bot-created routine to the bot and to a composite thread", async () => {
+    const { store, owner, agent, bot } = routineTools("routine-create-bot");
+    const res = await callTool(bot, "create_routine", {
+      prompt: "매일 아침 뉴스 정리",
+      name: "아침 브리핑",
+      scheduleKind: "daily",
+      time: "07:30",
+    });
+    expect(res.isError).toBeFalsy();
+    const [job] = store.listRoutineJobs(owner.id);
+    // The ROW keeps the OWNER's uuid (it is every capability key) plus the bot
+    // binding; the dedicated thread belongs to the BOT's composite avatar id.
+    expect(job.avatarUserId).toBe(owner.id);
+    expect(job.personalAgentId).toBe(agent.id);
+    expect(store.getConversationAvatarId(owner.id, job.conversationId)).toBe(
+      personalAgentAvatarId(owner.id, agent.id),
+    );
+    // The success text is an action trigger, not a bare confirmation: it names
+    // the identity the routine fires as, the thread, and the owner's board.
+    const body = res.content[0].text;
+    expect(body).toContain("fires AS THIS BOT");
+    expect(body).toContain("예약 작업");
+    expect(body).toContain("봇 오피스");
+    expect(body).toContain('bot="릴리즈 봇" (bot-bound)');
+  });
+
+  it("leaves a routine the owner's MAIN avatar creates unbound", async () => {
+    const { store, owner, main } = routineTools("routine-create-main");
+    const res = await callTool(main, "create_routine", {
+      prompt: "주간 회고",
+      time: "09:00",
+    });
+    expect(res.isError).toBeFalsy();
+    const [job] = store.listRoutineJobs(owner.id);
+    expect(job.personalAgentId).toBeNull();
+    expect(store.getConversationAvatarId(owner.id, job.conversationId)).toBe(owner.id);
+    expect(res.content[0].text).not.toContain("(bot-bound)");
+    expect(res.content[0].text).not.toContain("fires AS THIS BOT");
+  });
+
+  it("self-scopes list_routines to the bot, leaving the main avatar whole", async () => {
+    const { store, owner, agent, bot, main } = routineTools("routine-list");
+    store.createRoutineJob(owner.id, { prompt: "오너 루틴", name: "오너", minuteOfDay: 540 });
+    // The owner's routine is not the bot's: an empty listing, not a leak.
+    const empty = await callTool(bot, "list_routines", {});
+    expect(empty.isError).toBeFalsy();
+    expect(empty.content[0].text).toBe("This bot has no scheduled routines yet.");
+
+    store.createRoutineJob(owner.id, {
+      prompt: "봇 루틴",
+      name: "봇",
+      minuteOfDay: 600,
+      personalAgentId: agent.id,
+    });
+    const mine = await callTool(bot, "list_routines", {});
+    expect(mine.content[0].text).toContain("1 registered routine(s)");
+    expect(mine.content[0].text).toContain('name="봇"');
+    expect(mine.content[0].text).not.toContain('name="오너"');
+
+    // The owner's main avatar keeps the whole list and names the bot behind each
+    // bound row — it is their management surface for every routine.
+    const all = await callTool(main, "list_routines", {});
+    expect(all.content[0].text).toContain("2 registered routine(s)");
+    expect(all.content[0].text).toContain('name="오너"');
+    expect(all.content[0].text).toContain('bot="릴리즈 봇" (bot-bound)');
+  });
+
+  it("renders a vanished binding by id instead of inventing a name", async () => {
+    const { store, owner, main } = routineTools("routine-orphan");
+    store.createRoutineJob(owner.id, {
+      prompt: "고아 루틴",
+      minuteOfDay: 540,
+      personalAgentId: "ghost-bot",
+    });
+    const body = (await callTool(main, "list_routines", {})).content[0].text;
+    expect(body).toContain('bot="ghost-bot" (bot-bound)');
+  });
+
+  it("refuses cross-identity update/delete from a bot, accepts its own", async () => {
+    const { store, owner, agent, bot, main } = routineTools("routine-scope");
+    const ownerJob = store.createRoutineJob(owner.id, { prompt: "오너 루틴", minuteOfDay: 540 });
+    const otherBot = store.createPersonalAgent(owner.id, { displayName: "다른 봇" });
+    const otherJob = store.createRoutineJob(owner.id, {
+      prompt: "다른 봇 루틴",
+      minuteOfDay: 570,
+      personalAgentId: otherBot.id,
+    });
+    const mine = store.createRoutineJob(owner.id, {
+      prompt: "내 루틴",
+      minuteOfDay: 600,
+      personalAgentId: agent.id,
+    });
+
+    for (const id of [ownerJob.id, otherJob.id]) {
+      const updated = await callTool(bot, "update_routine", { id, enabled: false });
+      expect(updated.isError).toBe(true);
+      expect(updated.content[0].text).toContain("does not belong to this bot");
+      expect(updated.content[0].text).toContain("예약 작업");
+      const deleted = await callTool(bot, "delete_routine", { id });
+      expect(deleted.isError).toBe(true);
+      expect(deleted.content[0].text).toContain("does not belong to this bot");
+    }
+    // A refusal is a NO-OP, not a partial write.
+    expect(store.getRoutineJob(owner.id, ownerJob.id)?.enabled).toBe(true);
+    expect(store.getRoutineJob(owner.id, otherJob.id)?.enabled).toBe(true);
+
+    const ok = await callTool(bot, "update_routine", { id: mine.id, name: "새 이름" });
+    expect(ok.isError).toBeFalsy();
+    expect(store.getRoutineJob(owner.id, mine.id)?.name).toBe("새 이름");
+    const gone = await callTool(bot, "delete_routine", { id: mine.id });
+    expect(gone.isError).toBeFalsy();
+    expect(store.getRoutineJob(owner.id, mine.id)).toBeNull();
+
+    // The owner's main avatar manages EVERY routine, bot-bound ones included.
+    const adopted = await callTool(main, "update_routine", { id: otherJob.id, enabled: false });
+    expect(adopted.isError).toBeFalsy();
+    expect(store.getRoutineJob(owner.id, otherJob.id)?.enabled).toBe(false);
+    const removed = await callTool(main, "delete_routine", { id: otherJob.id });
+    expect(removed.isError).toBeFalsy();
+    expect(store.getRoutineJob(owner.id, otherJob.id)).toBeNull();
+
+    // An unknown id stays a plain not-found on both surfaces (no existence probe).
+    const missing = await callTool(bot, "delete_routine", { id: "ghost" });
+    expect(missing.isError).toBe(true);
+    expect(missing.content[0].text).toBe("Routine not found.");
+  });
+});
+
+// ===========================================================================
 // Prompt branch
 // ===========================================================================
 describe("personal-agent prompt branch", () => {
@@ -903,13 +1085,21 @@ describe("personal-agent prompt branch", () => {
     expect(p).not.toContain('Your name is "노아"');
   });
 
-  it("carries the memory-namespace convention, the no-routines redirect, and the self-config trigger", () => {
+  it("carries the memory-namespace convention, the self-scheduling trigger, and the self-config trigger", () => {
     const p = buildPrompt(req(), 0);
     expect(p).toContain("agents/<your-slug>/");
     expect(p).toContain("`wiki/`");
-    expect(p).toContain("Scheduled routines do NOT work in this conversation");
+    // Standing guidance, not a refusal: the bot schedules its OWN recurring work
+    // and knows the firings arrive as delegated tasks.
+    expect(p).toContain("You can schedule your OWN recurring work");
+    expect(p).toContain("매일 아침 뉴스 정리해줘");
+    expect(p).toContain("confirm the exact schedule wording");
     expect(p).toContain("mcp__system__create_routine");
-    expect(p).toContain("MAIN avatar");
+    expect(p).toContain("report_task protocol applies");
+    expect(p).toContain("self-scoped");
+    expect(p).toContain("예약 작업");
+    // The retired phase-1 refusal must be gone.
+    expect(p).not.toContain("Scheduled routines do NOT work in this conversation");
     expect(p).toContain("mcp__personal_agent__update_profile");
     expect(p).toContain("CONFIRM the exact wording");
     expect(p).toContain("Your persona is currently NOT set");

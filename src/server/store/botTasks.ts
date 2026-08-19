@@ -79,6 +79,7 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
         startedAt: row.started_at ?? null,
         finishedAt: row.finished_at ?? null,
         seenAt: row.seen_at ?? null,
+        routineJobId: row.routine_job_id ?? null,
       };
     }
 
@@ -105,14 +106,20 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
       requestText: string;
       status: "queued" | "running";
       runId?: string | null;
+      /**
+       * 봇 루틴 provenance: the routine_jobs.id whose firing produced this task,
+       * or null when the owner typed it. Bookkeeping only — it never changes how
+       * the task runs; it labels the card and is the scheduler's dedupe key.
+       */
+      routineJobId?: string | null;
     }): BotTask {
       const timestamp = now();
       const id = crypto.randomUUID();
       const running = input.status === "running";
       this.db
         .prepare(
-          `INSERT INTO bot_tasks (id, owner_user_id, agent_id, conversation_id, run_id, title, request_text, status, created_at, started_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO bot_tasks (id, owner_user_id, agent_id, conversation_id, run_id, title, request_text, status, created_at, started_at, routine_job_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -125,6 +132,7 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
           input.status,
           timestamp,
           running ? timestamp : null,
+          input.routineJobId ?? null,
         );
       return this.toBotTask(this.botTaskRow(id)!);
     }
@@ -232,6 +240,38 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
         "SELECT COUNT(*) AS c FROM bot_tasks WHERE conversation_id = ? AND status = 'queued'",
         conversationId,
       );
+    }
+
+    /**
+     * Does one 봇 루틴 still have a firing waiting in a queue? The scheduler's
+     * dedupe: a routine whose previous firing never got its turn must not stack
+     * a second identical task behind it — it skips this cycle instead and stays
+     * due. 'queued' ONLY: a task already RUNNING is this thread's current work,
+     * which the busy branch queues behind rather than skipping.
+     */
+    hasQueuedBotTaskForRoutine(routineJobId: string): boolean {
+      return (
+        this.count(
+          "SELECT COUNT(*) AS c FROM bot_tasks WHERE routine_job_id = ? AND status = 'queued'",
+          routineJobId,
+        ) > 0
+      );
+    }
+
+    /**
+     * The newest task one routine produced — how a scheduler firing reads its own
+     * outcome back (executeChatTurn finalizes the ROW rather than throwing, so
+     * "the turn ran" and "the work succeeded" are different questions). Newest
+     * first with the rowid tiebreak, like every other ordering here; the caller
+     * checks the row's timestamps to be sure it belongs to the firing it just ran.
+     */
+    latestBotTaskForRoutine(routineJobId: string): BotTask | null {
+      const row = this.db
+        .prepare(
+          "SELECT * FROM bot_tasks WHERE routine_job_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        )
+        .get(routineJobId) as BotTaskRow | undefined;
+      return row ? this.toBotTask(row) : null;
     }
 
     /** The task the dispatcher runs next in this thread (FIFO), or null when drained. */

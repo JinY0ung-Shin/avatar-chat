@@ -64,13 +64,31 @@ A personal-agent run **IS a full owner run**; the bot differs in IDENTITY only.
   so the prompt can never advertise a tool the run didn't register. Getting-started nagging is
   suppressed on bot runs (`&& !request.personalAgentState` at the call site).
 
-## Routines are OFF in bot threads (phase 1)
-Composite avatar ids break routines structurally (`resolveChatAvatar` does a bare users lookup;
-`listDueRoutineJobs` JOINs users and silently drops non-user ids), so the suppression is explicit
-and double-gated: runPlan filters `ROUTINE_TOOL_NAMES` (exported by `systemTools.ts`) out of
-`allowedTools`, and the four handlers refuse with an English redirect when `ctx.personalAgent` is
-set. Both metacognition surfaces state the unavailability. Phase-2 note: binding routines to bots
-means fixing those two store sites + a `routine_jobs` sweep in `deletePersonalAgent`/`deleteUser`.
+## 봇 루틴 — a bot routine IS a scheduled delegated task (3단계)
+`routine_jobs.personal_agent_id` (NULL = the owner's main avatar, i.e. every legacy row) binds a
+routine to one bot WITHOUT touching the legacy plumbing: `avatar_user_id` stays the OWNER uuid, so
+`listDueRoutineJobs`' suspended-owner JOIN and `deleteUser`'s sweep work unchanged. What differs is
+the FIRING: `runRoutineJobNow` early-returns into `runBotRoutineJobNow` (scheduler.ts), which
+resolves the bot LIVE (`findChattablePersonalAgent`; miss → Korean error recorded, schedule kept —
+re-enabling the bot resumes it), dedupes on `hasQueuedBotTaskForRoutine` (skip records NO outcome so
+the tick retries; one waiting firing per routine, which is why the enqueue path skips the
+MAX_QUEUED_BOT_TASKS check), re-stamps the thread conventions (`touchConversation` with the
+COMPOSITE id + `[예약 작업]` title + isRoutine — the eager mint in `createRoutineJob` binds the
+composite at creation), then ENQUEUES a `bot_tasks` row when the thread is busy (that IS the
+firing's outcome — markRoutineRun success) or runs `executeChatTurn` DIRECTLY when free
+(unattendedDeadlineMs = `botTaskRunTimeoutMs`, modelFallback, `ctx.routineJobId` provenance; an
+active_run race falls back to the enqueue carrying `userMessagePersisted`). The outcome maps from
+`latestBotTaskForRoutine` guarded by a firedAt stamp — NOT the conversation listing, whose
+oldest-first LIMIT could drop the fresh row, and not an owner-parked task the turn may have resumed
+(its routine_job_id is NULL). The dispatcher prunes routine threads after a queued routine task
+settles. `bot_tasks.routine_job_id` is the provenance/dedupe key and the card's 예약 chip.
+- **Routine tools in bot threads are SELF-SCOPED** (systemTools.ts; the runPlan filter and
+  `ROUTINE_TOOL_NAMES` are retired): list/update/delete reach only rows whose `personalAgentId`
+  matches the running bot; create binds it automatically. The owner's MAIN avatar still manages
+  EVERY routine (bot-bound included, rendered with a bot marker), as does the 예약 작업 tab —
+  RoutinesView shows a bot chip on bound rows and its manual 지금 실행 surfaces skip reasons
+  verbatim. `deletePersonalAgent` sweeps the bot's routine ROWS by personal_agent_id (their threads
+  already die via the composite conversations arm).
 
 ## Delegated tasks (봇 오피스, `bot_tasks`) — the Grok-Bot-style work model
 Every EXECUTED user turn in a bot thread is tracked as a `bot_tasks` row (store mixin

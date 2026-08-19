@@ -30,6 +30,7 @@ function fixture(dir: string) {
       title?: string;
       status?: "queued" | "running";
       runId?: string;
+      routineJobId?: string;
     } = {},
   ) => {
     const title = opts.title ?? "작업";
@@ -41,6 +42,7 @@ function fixture(dir: string) {
       requestText: `${title} 해줘`,
       status: opts.status ?? "queued",
       runId: opts.runId,
+      routineJobId: opts.routineJobId,
     });
   };
   return { store, owner, bot, task };
@@ -161,6 +163,36 @@ describe("store bot tasks", () => {
     expect(store.nextQueuedBotTask("c1")).toBeNull();
     expect(store.countQueuedBotTasks("c1")).toBe(0);
     expect(store.getBotTask(live.id)?.status).toBe("running");
+  });
+
+  it("carries 봇 루틴 provenance: dedupe by QUEUE, outcome by the newest row", () => {
+    const { store, task } = fixture("routine-provenance");
+
+    // Owner-typed work carries no routine id, and an unknown routine reads empty.
+    expect(task({ title: "직접 시킨 일" }).routineJobId).toBeNull();
+    expect(store.hasQueuedBotTaskForRoutine("rj-1")).toBe(false);
+    expect(store.latestBotTaskForRoutine("rj-1")).toBeNull();
+
+    const fired = task({ title: "예약 실행", routineJobId: "rj-1" });
+    expect(fired.routineJobId).toBe("rj-1");
+    expect(store.getBotTask(fired.id)!.routineJobId).toBe("rj-1");
+    // The scheduler's dedupe key: a firing still WAITING blocks the next cycle,
+    // so an unattended queue can't grow one identical task per tick...
+    expect(store.hasQueuedBotTaskForRoutine("rj-1")).toBe(true);
+    expect(store.hasQueuedBotTaskForRoutine("rj-2")).toBe(false);
+    // ...but one already RUNNING does not — that is the thread's current work,
+    // which the scheduler queues behind rather than skipping.
+    store.markBotTaskRunning(fired.id, "run-1");
+    expect(store.hasQueuedBotTaskForRoutine("rj-1")).toBe(false);
+
+    // The newest row for a routine is how a firing reads its own outcome back.
+    expect(store.latestBotTaskForRoutine("rj-1")!.id).toBe(fired.id);
+    const next = task({ title: "다음 회차", routineJobId: "rj-1" });
+    expect(store.latestBotTaskForRoutine("rj-1")!.id).toBe(next.id);
+    // Another routine's rows never bleed in, in either direction.
+    const foreign = task({ title: "남의 예약", routineJobId: "rj-2" });
+    expect(store.latestBotTaskForRoutine("rj-1")!.id).toBe(next.id);
+    expect(store.latestBotTaskForRoutine("rj-2")!.id).toBe(foreign.id);
   });
 
   it("runs the queued→running→report→done chain, keeping the reported summary", () => {
@@ -635,6 +667,38 @@ describe("store bot tasks", () => {
     expect(store.getBotTask(doomed.id)).toBeNull();
     expect(store.getBotTask(orphan.id)).toBeNull();
     expect(store.listBotTasks(owner.id).map((t) => t.id)).toEqual([kept.id]);
+  });
+
+  it("deletePersonalAgent sweeps the bot's ROUTINES and their threads", () => {
+    const { store, owner, bot } = fixture("cascade-routines");
+    const sibling = store.createPersonalAgent(owner.id, { displayName: "남는 봇" });
+    const doomed = store.createRoutineJob(owner.id, {
+      prompt: "매일 점검",
+      minuteOfDay: 0,
+      personalAgentId: bot.id,
+    });
+    const kept = store.createRoutineJob(owner.id, {
+      prompt: "남는 예약",
+      minuteOfDay: 0,
+      personalAgentId: sibling.id,
+    });
+    const ownRoutine = store.createRoutineJob(owner.id, {
+      prompt: "내 아바타 예약",
+      minuteOfDay: 0,
+    });
+
+    expect(store.deletePersonalAgent(bot.id)).toBe(true);
+
+    // The SCHEDULE row goes with the bot: left behind it would fire forever at a
+    // bot that no longer exists (fail-closed, but noise the owner can't reach).
+    expect(store.getRoutineJob(owner.id, doomed.id)).toBeNull();
+    expect(store.listRoutineJobs(owner.id).map((r) => r.id).sort()).toEqual(
+      [kept.id, ownRoutine.id].sort(),
+    );
+    // Its thread died through the composite avatar_user_id arm, not this sweep.
+    expect(
+      store.listConversations(owner.id, undefined, "routine").map((c) => c.id),
+    ).not.toContain(doomed.conversationId);
   });
 
   it("deleteUser drops the owner's tasks, sparing another owner's", () => {

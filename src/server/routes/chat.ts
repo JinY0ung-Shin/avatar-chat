@@ -680,6 +680,13 @@ export interface ChatTurnContext {
   modelFallback?: boolean;
   /** The user message is already stored (the queue persisted it on enqueue). */
   skipUserMessagePersist?: boolean;
+  /**
+   * 봇 루틴 provenance: the routine_jobs.id this turn was fired by, stamped onto
+   * the task row this turn opens. Set only by the routine scheduler. PROVENANCE
+   * ONLY — it never changes how the turn runs; it labels the card and lets the
+   * scheduler dedupe its own queued firings.
+   */
+  routineJobId?: string;
 }
 
 export interface ChatTurnHooks {
@@ -1194,6 +1201,7 @@ export async function executeChatTurn(
                   requestText: displayMessage,
                   status: "running",
                   runId,
+                  routineJobId: ctx.routineJobId ?? null,
                 }),
         );
       } catch (err) {

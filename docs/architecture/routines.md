@@ -2,6 +2,10 @@
 
 > Detail page of [Architecture & Operational Notes](../ARCHITECTURE-NOTES.md).
 > The scheduler tick, job model, and how a routine run differs from a chat turn.
+> 봇 루틴 (`personal_agent_id` set) does NOT take the headless path below — it fires as a
+> scheduled DELEGATED TASK through `executeChatTurn`/the bot-task queue; mechanics live in
+> [personal-agents.md](personal-agents.md) §봇 루틴. Everything on this page describes the
+> legacy main-avatar path, which a NULL `personal_agent_id` keeps byte-identical.
 
 ## Routines
 - A routine (`routine_jobs` table, `get/list/create/update/deleteRoutineJob`, `markRoutineRun`) runs its

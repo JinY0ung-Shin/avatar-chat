@@ -695,6 +695,12 @@ export interface BotTask {
    * an owner-initiated row-cancel stamps it immediately (they did it looking).
    */
   seenAt: string | null;
+  /**
+   * The routine (routine_jobs.id) that FIRED this task, when it came from a
+   * bot's schedule rather than the owner typing — the card's 예약 provenance,
+   * and the scheduler's re-enqueue dedupe key. NULL = owner-direct.
+   */
+  routineJobId: string | null;
 }
 
 /** A group the current user belongs to — surfaced on `User` and the roster. */
@@ -1720,6 +1726,13 @@ export interface RoutineJob {
   /** Set after a one-time schedule has made its single execution attempt. */
   completedAt: string | null;
   createdAt: string;
+  /**
+   * 봇 루틴: the personal_agents.id this routine belongs to, or NULL for the
+   * owner's main avatar (every legacy row). A bot routine fires as a DELEGATED
+   * BOT TASK in a composite-bound routine thread — capability stays the A-1
+   * full-owner run either way; this field only picks the identity/thread.
+   */
+  personalAgentId: string | null;
 }
 
 /**

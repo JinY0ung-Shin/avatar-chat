@@ -163,7 +163,10 @@ export function createRoutinesRouter({ services, store }: RouterDeps): Router {
     }
     const result = await executeRoutineJob(services, job);
     if (result.skipped) {
-      apiError(res, 409, "이미 실행 중인 예약 작업입니다.");
+      // The skip carries its own Korean reason (busy conversation, or a 봇
+      // 루틴 whose previous firing still waits in the queue) — surface it
+      // instead of collapsing every skip into the generic already-running text.
+      apiError(res, 409, result.error || "이미 실행 중인 예약 작업입니다.");
       return;
     }
     logger.info({ userId: req.user!.id, routineId: job.id, ok: result.ok }, "routine manual run");

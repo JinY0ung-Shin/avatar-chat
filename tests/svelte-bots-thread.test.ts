@@ -69,6 +69,7 @@ function taskOf(over: Partial<BotTask> = {}): BotTask {
     startedAt: null,
     finishedAt: null,
     seenAt: null,
+    routineJobId: null,
     ...over,
   };
 }

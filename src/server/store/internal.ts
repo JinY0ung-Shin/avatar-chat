@@ -281,6 +281,7 @@ export interface BotTaskRow {
   started_at: string | null;
   finished_at: string | null;
   seen_at: string | null;
+  routine_job_id: string | null;
 }
 
 export interface RoutineJobRow {
@@ -301,6 +302,7 @@ export interface RoutineJobRow {
   last_error: string | null;
   completed_at: string | null;
   created_at: string;
+  personal_agent_id: string | null;
 }
 
 /**
@@ -614,7 +616,8 @@ export class StoreBase {
         created_at TEXT NOT NULL,
         started_at TEXT,
         finished_at TEXT,
-        seen_at TEXT
+        seen_at TEXT,
+        routine_job_id TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_bot_tasks_owner ON bot_tasks(owner_user_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_bot_tasks_conversation ON bot_tasks(conversation_id, created_at ASC);
@@ -791,6 +794,10 @@ export class StoreBase {
     this.addColumnIfMissing("routine_jobs", "interval_minutes", "INTEGER");
     this.addColumnIfMissing("routine_jobs", "run_date", "TEXT");
     this.addColumnIfMissing("routine_jobs", "completed_at", "TEXT");
+    // 봇 루틴: NULL = the owner's main avatar (every pre-existing row), a
+    // personal_agents.id = the routine belongs to that bot and fires as a
+    // delegated bot task in a composite-bound routine thread.
+    this.addColumnIfMissing("routine_jobs", "personal_agent_id", "TEXT");
     // Routine conversations must never show in the normal chat history, even after
     // their routine is deleted (which orphans the conversation). Tag the row itself
     // so classification doesn't depend on the routine_jobs link still existing.
@@ -861,6 +868,10 @@ export class StoreBase {
     // store/botTasks.ts for the predicate. The CREATE TABLE already carries the
     // column; this covers DBs that created bot_tasks before it existed.
     this.addColumnIfMissing("bot_tasks", "seen_at", "TEXT");
+    // 봇 루틴 provenance: NULL = the owner asked directly; a routine_jobs.id =
+    // this task was fired by that schedule (the card shows an 예약 chip, and the
+    // scheduler skips re-enqueueing while one is still queued).
+    this.addColumnIfMissing("bot_tasks", "routine_job_id", "TEXT");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateCanvasArtifacts();

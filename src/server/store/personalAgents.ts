@@ -176,13 +176,18 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
     }
 
     /**
-     * Delete ONE bot and cascade its conversations (messages + canvases) and
-     * its delegated tasks — manual cascade, mirroring deleteGroupAgent. The
-     * bot_tasks sweep goes by agent_id, not by the conversation list, so a task
-     * whose thread was already deleted still dies with the bot. The route
+     * Delete ONE bot and cascade its conversations (messages + canvases), its
+     * delegated tasks and its 봇 루틴 rows — manual cascade, mirroring
+     * deleteGroupAgent. The bot_tasks sweep goes by agent_id, not by the
+     * conversation list, so a task whose thread was already deleted still dies
+     * with the bot; the routine_jobs sweep goes by personal_agent_id for the
+     * same reason (a bot routine's THREAD already dies through the composite
+     * avatar_user_id arm above, but the schedule row itself would otherwise
+     * survive and keep firing at a bot that no longer exists). The route
      * snapshots conversation ids BEFORE calling this (disk sweep) and removes
      * on-disk artifacts. Disabling (updatePersonalAgent enabled:false) remains
-     * the thread-preserving alternative.
+     * the thread-preserving alternative — a disabled bot's routines stay put and
+     * fail closed per firing until it is re-enabled.
      */
     deletePersonalAgent(agentId: string): boolean {
       const row = this.personalAgentRow(agentId);
@@ -205,6 +210,9 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
           .prepare("DELETE FROM conversations WHERE avatar_user_id = ?")
           .run(avatarId);
         this.db.prepare("DELETE FROM bot_tasks WHERE agent_id = ?").run(agentId);
+        this.db
+          .prepare("DELETE FROM routine_jobs WHERE personal_agent_id = ?")
+          .run(agentId);
         this.db.prepare("DELETE FROM personal_agents WHERE id = ?").run(agentId);
       });
       tx();

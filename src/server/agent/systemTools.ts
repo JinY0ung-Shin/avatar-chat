@@ -109,9 +109,11 @@ export interface SystemToolsContext {
    * Set ONLY for PERSONAL-AGENT (내 봇) runs. describe_system then reports the
    * BOT's identity/roster ahead of the owner block — a bot run IS a full owner
    * run, so the owner self-state that follows stays the accurate report — and
-   * the four routine tools refuse: routines cannot resolve a bot's composite
-   * avatar id in phase 1, so they are unavailable in a bot conversation
-   * (runPlan drops them from allowedTools too; this is the handler half).
+   * the four routine tools SELF-SCOPE to this bot: it lists, updates, and
+   * deletes only the schedules bound to it (`routine_jobs.personal_agent_id`),
+   * and every routine it creates fires as this bot. The owner's MAIN avatar
+   * keeps the unfiltered view — that is their management surface for every
+   * routine, bot-bound ones included.
    */
   personalAgent?: {
     agentId: string;
@@ -145,24 +147,15 @@ export const SYSTEM_TOOL_NAMES = [
   "mcp__system__set_plugin_enabled",
 ] as const;
 
-/**
- * The routine-management subset of SYSTEM_TOOL_NAMES. A PERSONAL-AGENT run has
- * no routines (phase 1), so runPlan filters these out of `allowedTools` and the
- * four handlers below refuse — the two halves of one gate, kept in this file so
- * they cannot drift apart.
- */
-export const ROUTINE_TOOL_NAMES: readonly string[] = [
-  "mcp__system__list_routines",
-  "mcp__system__create_routine",
-  "mcp__system__update_routine",
-  "mcp__system__delete_routine",
-];
-
 const OWNER_ONLY = "This tool can only be used in a conversation the avatar owner is participating in.";
 
-/** Routine tools in a bot thread: refuse with the route that DOES work. */
-const PERSONAL_AGENT_NO_ROUTINES =
-  "Scheduled routines are not available in a personal-bot conversation yet — this bot cannot list, create, update, or delete them. Tell the owner to schedule it from a conversation with their MAIN avatar (or in the 예약 작업 tab), where the same routine tools work.";
+/**
+ * Cross-bot routine management in a bot thread: each bot owns only the
+ * schedules that fire AS ITSELF. The owner's main avatar (and the 예약 작업 tab)
+ * is the one surface that manages all of them.
+ */
+const NOT_THIS_BOTS_ROUTINE =
+  "That routine does not belong to this bot. Each bot manages only its own schedules; the owner manages everything in the 예약 작업 tab.";
 
 /** Agent-facing (English) messages for each schedule validation error. */
 const ENGLISH_SCHEDULE_ERROR: Record<ScheduleError, string> = {
@@ -206,12 +199,23 @@ function looksLikeRepo(value: string): boolean {
   return /^https?:\/\//.test(value) || /^git@/.test(value) || value.endsWith(".git");
 }
 
-function renderRoutine(job: RoutineJob): string {
+/**
+ * One routine as a pipe-delimited line. A row bound to a personal bot is marked
+ * `(bot-bound)` and named by that bot's DISPLAY NAME (a store read — the row
+ * carries only the id), so the owner's main-avatar listing never leaves the
+ * model guessing whose schedule it is looking at. A deleted bot falls back to
+ * the raw id rather than inventing a name.
+ */
+function renderRoutine(store: Store, job: RoutineJob): string {
+  const botName = job.personalAgentId
+    ? store.getPersonalAgentById(job.personalAgentId)?.displayName || job.personalAgentId
+    : null;
   return [
     `id=${job.id}`,
     `name=${job.name ? JSON.stringify(job.name) : "(unnamed)"}`,
     `schedule=${formatScheduleEnglish(job)}`,
     `enabled=${job.enabled ? "true" : "false"}`,
+    ...(botName ? [`bot=${JSON.stringify(botName)} (bot-bound)`] : []),
     `prompt=${JSON.stringify(job.prompt)}`,
     job.nextRunAt ? `nextRunAt=${job.nextRunAt}` : "nextRunAt=null",
     job.lastStatus ? `lastStatus=${job.lastStatus}` : "lastStatus=null",
@@ -460,7 +464,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               }.`,
               `- Queued behind this turn: ${pa.queuedTaskCount} delegated request(s) still waiting in this conversation${pa.queuedTaskCount > 0 ? " — the server dispatches them automatically once this turn ends; never try to run them yourself" : ""}.`,
               "- Reporting protocol: call mcp__personal_agent__report_task near the end of every delegated turn — outcome 'done' with a short result summary, or 'need_input' with the blocking question. The AskUserQuestion dialog is DENIED in a personal-bot conversation (a delegated turn may run unattended): to ask the owner something, report 'need_input' and then END your turn with that question in your reply; their next message resumes the task.",
-              "- Scheduled routines: UNAVAILABLE in this conversation — list_routines/create_routine/update_routine/delete_routine all refuse here. Routines belong to the owner's MAIN avatar; point them there instead of retrying.",
+              // Routines are AVAILABLE to a bot and self-scoped — the
+              // describe_system half of the prompt's scheduling guidance.
+              "- Scheduled routines: AVAILABLE — you can schedule your OWN recurring work with mcp__system__create_routine, and list_routines/update_routine/delete_routine are SELF-SCOPED: you see and manage only the routines that fire as you, never the owner's other schedules. Each firing runs unattended AS YOU, in its own 예약 작업 conversation, and lands as a delegated task on the owner's 봇 오피스 board (the reporting protocol above applies there too). The owner manages ALL routines — yours included — in the 예약 작업 tab.",
             ]
           : [];
         const lines = [
@@ -515,7 +521,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
                 `- Personal bots (내 봇): ${state.personalAgentCount} of ${state.personalAgentMax} created${state.personalAgentNames.length ? ` (enabled: ${state.personalAgentNames.join(", ")})` : ""} — each is a separate chat contact of the owner's, running with this same avatar capability. You can create another with mcp__personal_agent__create_agent${state.personalAgentCount >= state.personalAgentMax ? ", but the cap is reached — the owner must delete one first" : ""}; the owner manages them in 설정 → 내 봇.`,
               ]
             : []),
-          `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)${pa ? " — NOT listable or manageable from this personal-bot conversation (see the bot state above); they belong to the owner's main avatar" : ""}`,
+          `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)${pa ? ` across this owner's whole avatar — ${routines.filter((r) => r.personalAgentId === pa.agentId).length} of them are YOURS, and list_routines/update_routine/delete_routine reach only those (see the bot state above)` : ""}`,
           `- Pending information requests: ${openRequests}${openRequests > 0 ? " (use pending_requests to view the details)" : ""}`,
         ];
         return text(lines.join("\n"));
@@ -632,25 +638,35 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
     ),
     tool(
       "list_routines",
-      "Lists the owner's avatar routines. Routines run headlessly once at a specified KST date/time or recur daily, weekly, or at an interval, using the same tool permissions as the owner. (owner only)",
+      "Lists the avatar's routines. Routines run headlessly once at a specified KST date/time or recur daily, weekly, or at an interval, using the same tool permissions as the owner. In a personal-bot conversation this lists only the routines bound to THAT bot. (owner only)",
       {},
       async () => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
         }
-        if (ctx.personalAgent) {
-          return text(PERSONAL_AGENT_NO_ROUTINES, true);
-        }
-        const routines = store.listRoutineJobs(ctx.avatarUserId);
+        // SELF-SCOPED in a bot thread: a bot sees only what fires as itself. The
+        // main avatar keeps the unfiltered call — it is the owner's management
+        // surface for every routine, bot-bound ones included.
+        const routines = ctx.personalAgent
+          ? store.listRoutineJobs(ctx.avatarUserId, {
+              personalAgentId: ctx.personalAgent.agentId,
+            })
+          : store.listRoutineJobs(ctx.avatarUserId);
         if (routines.length === 0) {
-          return text("There are no registered routines.");
+          return text(
+            ctx.personalAgent
+              ? "This bot has no scheduled routines yet."
+              : "There are no registered routines.",
+          );
         }
-        return text(`${routines.length} registered routine(s):\n${routines.map(renderRoutine).join("\n")}`);
+        return text(
+          `${routines.length} registered routine(s):\n${routines.map((job) => renderRoutine(store, job)).join("\n")}`,
+        );
       },
     ),
     tool(
       "create_routine",
-      "Creates a new routine task. Runs the prompt headlessly once at a specified KST date/time or on a recurring daily, weekly, or interval schedule, and leaves the result in the routines tab. (owner only)",
+      "Creates a new routine task. Runs the prompt headlessly once at a specified KST date/time or on a recurring daily, weekly, or interval schedule, and leaves the result in the routines tab. Called inside a personal-bot conversation it schedules recurring work for THAT bot, which then runs it unattended as a delegated task. Use it whenever the owner asks for something recurring. (owner only)",
       {
         prompt: z.string().describe("The task instruction to run on schedule"),
         name: z.string().optional().describe("Short display name for the routine (optional)"),
@@ -673,9 +689,6 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
-        }
-        if (ctx.personalAgent) {
-          return text(PERSONAL_AGENT_NO_ROUTINES, true);
         }
         const prompt = args.prompt.trim();
         if (!prompt) {
@@ -700,6 +713,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           intervalMinutes: parsed.value.intervalMinutes,
           runDate: parsed.value.runDate,
           enabled: args.enabled,
+          // A routine created inside a bot thread BINDS to that bot: every
+          // firing runs as this bot. null = the owner's main avatar.
+          personalAgentId: ctx.personalAgent?.agentId ?? null,
         });
         store.audit({
           ...actor(ctx),
@@ -707,12 +723,16 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           status: "success",
           detail: `routine ${routine.id} (${formatScheduleEnglish(routine)})`,
         });
-        return text(`Created the routine:\n${renderRoutine(routine)}`);
+        return text(
+          ctx.personalAgent
+            ? `Created the routine:\n${renderRoutine(store, routine)}\nIt fires AS THIS BOT: each run happens unattended in a dedicated 예약 작업 conversation of yours (never this thread) and appears as a delegated-task card on the owner's 봇 오피스 board, so the delegated-task reporting protocol applies to those runs. You manage this routine yourself; the owner manages it — and every other routine — in the 예약 작업 tab.`
+            : `Created the routine:\n${renderRoutine(store, routine)}`,
+        );
       },
     ),
     tool(
       "update_routine",
-      "Updates an existing routine's name, prompt, schedule (once/daily/weekly/interval in KST), and enabled values. Provide any of scheduleKind/date/time/daysOfWeek/intervalMinutes to replace the schedule. (owner only)",
+      "Updates an existing routine's name, prompt, schedule (once/daily/weekly/interval in KST), and enabled values. Provide any of scheduleKind/date/time/daysOfWeek/intervalMinutes to replace the schedule. In a personal-bot conversation only that bot's own routines can be updated. (owner only)",
       {
         id: z.string().describe("id of the routine to update"),
         prompt: z.string().optional().describe("New task instruction"),
@@ -736,9 +756,6 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
-        }
-        if (ctx.personalAgent) {
-          return text(PERSONAL_AGENT_NO_ROUTINES, true);
         }
         const patch: RoutineSchedulePatch & {
           name?: string | null;
@@ -788,6 +805,11 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
         if (!current) {
           return text("Routine not found.", true);
         }
+        // Self-scoping: a bot may only touch what fires as itself — including the
+        // owner's own main-avatar routines, which are theirs alone to manage.
+        if (ctx.personalAgent && current.personalAgentId !== ctx.personalAgent.agentId) {
+          return text(NOT_THIS_BOTS_ROUTINE, true);
+        }
         if (patch.enabled === true) {
           const candidate: RoutineSchedule = {
             kind: patch.scheduleKind ?? current.scheduleKind,
@@ -814,19 +836,27 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           status: "success",
           detail: `routine ${routine.id}`,
         });
-        return text(`Updated the routine:\n${renderRoutine(routine)}`);
+        return text(`Updated the routine:\n${renderRoutine(store, routine)}`);
       },
     ),
     tool(
       "delete_routine",
-      "Deletes an existing routine. (owner only)",
+      "Deletes an existing routine. In a personal-bot conversation only that bot's own routines can be deleted. (owner only)",
       { id: z.string().describe("id of the routine to delete") },
       async (args) => {
         if (!ctx.viewerIsOwner) {
           return text(OWNER_ONLY, true);
         }
+        // Self-scoping (the update_routine rule): resolve first so a bot can
+        // never delete a schedule that does not fire as itself.
         if (ctx.personalAgent) {
-          return text(PERSONAL_AGENT_NO_ROUTINES, true);
+          const current = store.getRoutineJob(ctx.avatarUserId, args.id);
+          if (!current) {
+            return text("Routine not found.", true);
+          }
+          if (current.personalAgentId !== ctx.personalAgent.agentId) {
+            return text(NOT_THIS_BOTS_ROUTINE, true);
+          }
         }
         if (!store.deleteRoutineJob(ctx.avatarUserId, args.id)) {
           return text("Routine not found.", true);

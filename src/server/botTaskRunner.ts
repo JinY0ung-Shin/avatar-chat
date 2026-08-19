@@ -152,6 +152,20 @@ export async function maybeDispatchNextBotTask(
         { onRunOpen: () => true },
       );
       if (outcome.ok) {
+        // A 봇 루틴 firing that had to wait in the queue still ran in a ROUTINE
+        // thread, so cap it the way the scheduler caps a direct firing —
+        // otherwise a routine that keeps landing on a busy bot grows its history
+        // without bound. Best-effort: bookkeeping must never break the drain.
+        if (task.routineJobId) {
+          try {
+            store.pruneRoutineMessages(conversationId);
+          } catch (err) {
+            dispatchLogger.warn(
+              { err, taskId: task.id, conversationId },
+              "routine thread prune failed after a queued routine task",
+            );
+          }
+        }
         continue;
       }
       if (outcome.refusal.reason === "task_gone") {

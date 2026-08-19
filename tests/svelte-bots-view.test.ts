@@ -142,6 +142,7 @@ function taskOf(over: Partial<BotTask> = {}): BotTask {
     startedAt: null,
     finishedAt: null,
     seenAt: null,
+    routineJobId: null,
     ...over,
   };
 }
@@ -376,6 +377,26 @@ describe("BotTaskCard", () => {
       ["failed", null],
       ["cancelled", null],
     ]);
+  });
+
+  it("marks a task a schedule fired as 예약, and leaves a task the owner typed unmarked", () => {
+    for (const compact of [false, true]) {
+      const fired = render(BotTaskCard, {
+        props: { task: taskOf({ id: "t-sched", routineJobId: "routine-1" }), compact },
+      });
+      const chip = fired.container.querySelector(".bots-task-sched");
+      // 두 글자 칩만으로는 무엇의 예약인지 모른다 — 눈에 보이는 라벨과 낭독
+      // 텍스트가 따로 있고, 상태 칩은 그대로 자기 자리를 지킨다.
+      expect(chip?.querySelector("[aria-hidden='true']")?.textContent?.trim()).toBe("예약");
+      expect(chip?.querySelector(".sr-only")?.textContent?.trim()).toBe("예약 작업이 자동으로 맡긴 작업");
+      expect(chip?.getAttribute("title")).toBe("예약 작업이 자동으로 맡긴 작업");
+      expect(fired.container.querySelector(".bots-task-chip")?.textContent?.trim()).toBe("대기 중");
+      fired.unmount();
+
+      const typed = render(BotTaskCard, { props: { task: taskOf({ id: "t-typed" }), compact } });
+      expect(typed.container.querySelector(".bots-task-sched")).toBeNull();
+      typed.unmount();
+    }
   });
 
   it("names the task in the control's accessible name and keeps that name stable while busy", async () => {

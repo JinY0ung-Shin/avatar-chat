@@ -78,7 +78,19 @@
 
 <article class="card bots-task-card" class:compact data-status={task.status}>
   <div class="bots-task-top">
-    <span class="tag bots-task-chip" data-status={task.status}>{statusLabel}</span>
+    <span class="bots-task-chips">
+      <span class="tag bots-task-chip" data-status={task.status}>{statusLabel}</span>
+      <!-- 예약이 맡긴 일은 주인이 타이핑한 일과 섞여 한 스레드에 쌓인다. "이건
+           내가 시킨 게 아니다"가 카드에서 바로 읽혀야 하므로 상태 칩 옆에 출처를
+           붙이되, 상태보다 조용하도록 색 모디파이어 없는 기본 `.tag`로 둔다.
+           두 글자만으로는 무엇의 예약인지 모르니 낭독 텍스트는 문장으로 편다. -->
+      {#if task.routineJobId}
+        <span class="tag bots-task-sched" title="예약 작업이 자동으로 맡긴 작업">
+          <span aria-hidden="true">예약</span>
+          <span class="sr-only">예약 작업이 자동으로 맡긴 작업</span>
+        </span>
+      {/if}
+    </span>
     <span class="bots-task-elapsed">{elapsed}</span>
   </div>
   <p class="bots-task-title">{task.title || "(제목 없는 작업)"}</p>
@@ -124,6 +136,14 @@
     align-items: center;
     justify-content: space-between;
     gap: var(--s-2);
+  }
+  /* 칩들을 한 덩어리로 묶어야 경과 시간이 계속 오른쪽 끝에 붙는다 —
+     space-between은 아이템이 셋이 되는 순간 가운데를 벌린다. */
+  .bots-task-chips {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--s-1-5);
+    min-width: 0;
   }
   /* `.tag` 베이스 위에 색 모디파이어만 얹는다(패딩·라운드 재정의 금지). */
   .bots-task-chip[data-status="running"] {

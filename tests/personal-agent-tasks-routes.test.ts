@@ -60,6 +60,7 @@ import {
   startBotTaskDispatcher,
 } from "../src/server/botTaskRunner.js";
 import { executeChatTurn, resolveChatTarget } from "../src/server/routes/chat.js";
+import { executeRoutineJob } from "../src/server/scheduler.js";
 import { personalAgentAvatarId } from "../src/server/personalAgents.js";
 
 const tempDir = withTempDir("personal-agent-tasks-routes");
@@ -562,6 +563,221 @@ describe("delegated bot tasks — dispatcher", () => {
     }, "the pre-seeded queued task to run");
     expect(ran.startedAt).not.toBeNull();
     expect(H.requests.at(-1)!.message).toBe("밀린 작업");
+  });
+});
+
+/**
+ * 봇 루틴: a routine bound to a personal agent fires as a SCHEDULED DELEGATED
+ * TASK — the same executeChatTurn + bot_tasks machinery 봇 오피스 uses, in the
+ * routine's own composite-bound thread. These drive `executeRoutineJob`
+ * directly (the scheduler tick and "지금 실행" both go through it).
+ */
+describe("봇 루틴 — scheduler", () => {
+  it("runs a due bot routine as a delegated task in its own thread", async () => {
+    const { store, ownerId, agent, ...svc } = await bootWithBot("routine-direct");
+    const job = store.createRoutineJob(ownerId, {
+      name: "일일 리서치",
+      prompt: "오늘 이슈 정리해줘",
+      minuteOfDay: 0,
+      personalAgentId: agent.id,
+    });
+
+    const result = await executeRoutineJob(
+      { config: svc.config, store, observedModel: svc.observedModel },
+      job,
+    );
+    expect(result).toEqual({ ok: true });
+
+    // ONE task row, stamped with the routine that fired it — that stamp is both
+    // the card's 예약 provenance and the scheduler's dedupe key.
+    const tasks = store.listBotTasksForConversation(job.conversationId);
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]).toMatchObject({
+      agentId: agent.id,
+      status: "done",
+      routineJobId: job.id,
+      title: "오늘 이슈 정리해줘",
+      requestText: "오늘 이슈 정리해줘",
+    });
+    // It ran as the BOT and unattended — a full owner run wearing the bot's
+    // identity, with the delegated-task deadline and the tier fallback.
+    const req = H.requests.at(-1)!;
+    expect(req.personalAgent).toMatchObject({
+      agentId: agent.id,
+      ownerUserId: ownerId,
+      taskId: tasks[0].id,
+    });
+    expect(req.modelFallback).toBe(true);
+    expect(req.message).toBe("오늘 이슈 정리해줘");
+    // markRoutineRun took the task's outcome and rolled the schedule forward.
+    const after = store.listRoutineJobs(ownerId, { personalAgentId: agent.id })[0];
+    expect(after).toMatchObject({ id: job.id, lastStatus: "success", lastError: null });
+    expect(after.nextRunAt).toBeTruthy();
+    // The turn is in the thread, once.
+    expect(
+      store.listMessages(ownerId, job.conversationId).map((m) => m.role),
+    ).toEqual(["user", "assistant"]);
+  });
+
+  it("maps a FAILED delegated task onto the routine's own error", async () => {
+    const { store, ownerId, agent, ...svc } = await bootWithBot("routine-fail");
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "터뜨려줘",
+      minuteOfDay: 0,
+      personalAgentId: agent.id,
+    });
+    H.script.push(() => {
+      throw new Error("boom from the sdk");
+    });
+
+    const result = await executeRoutineJob(
+      { config: svc.config, store, observedModel: svc.observedModel },
+      job,
+    );
+
+    // executeChatTurn finalizes the ROW instead of throwing, so "the turn ran"
+    // and "the work succeeded" are different questions — the row answers both.
+    const [task] = store.listBotTasksForConversation(job.conversationId);
+    expect(task).toMatchObject({ status: "failed", routineJobId: job.id });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe(task.error);
+    expect(result.error).toContain("boom from the sdk");
+    const after = store.getRoutineJob(ownerId, job.id)!;
+    expect(after.lastStatus).toBe("error");
+    expect(after.lastError).toBe(task.error);
+    // A failed firing never disables a recurring routine.
+    expect(after.enabled).toBe(true);
+    expect(after.nextRunAt).toBeTruthy();
+  });
+
+  it("ENQUEUES a firing that lands on a busy thread, and skips the next one", async () => {
+    const { admin, store, ownerId, agent, avatarId, ...svc } =
+      await bootWithBot("routine-busy");
+    const services = { config: svc.config, store, observedModel: svc.observedModel };
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "예약 작업 본문",
+      minuteOfDay: 0,
+      personalAgentId: agent.id,
+    });
+
+    // Hold an owner-typed turn open IN THE ROUTINE'S OWN THREAD (it is openable
+    // in 봇 오피스 like any other bot thread).
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    H.script.push(() => held);
+    const streaming = admin
+      .post("/api/chat/stream")
+      .send({ avatarId, conversationId: job.conversationId, message: "직접 물어보는 중" })
+      .then((r) => r);
+    await until(
+      () => store.listBotTasksForConversation(job.conversationId).length || null,
+      "the owner's running task",
+    );
+
+    // The firing is QUEUED rather than skipped: a delegated task IS the output,
+    // so handing it to the queue is this firing's successful outcome.
+    expect(await executeRoutineJob(services, job)).toEqual({ ok: true });
+    const queued = store
+      .listBotTasksForConversation(job.conversationId)
+      .find((t) => t.routineJobId === job.id)!;
+    expect(queued).toMatchObject({
+      status: "queued",
+      requestText: "예약 작업 본문",
+      runId: null,
+    });
+    // The user bubble is written exactly once.
+    expect(
+      store
+        .listMessages(ownerId, job.conversationId)
+        .filter((m) => m.content === "예약 작업 본문"),
+    ).toHaveLength(1);
+    const enqueued = store.getRoutineJob(ownerId, job.id)!;
+    expect(enqueued.lastStatus).toBe("success");
+
+    // A second firing while the first still WAITS skips instead of stacking a
+    // duplicate — and a skip records no outcome at all, so the job stays due.
+    const skipped = await executeRoutineJob(services, enqueued);
+    expect(skipped).toMatchObject({ ok: false, skipped: true });
+    expect(skipped.error).toContain("대기열");
+    expect(
+      store
+        .listBotTasksForConversation(job.conversationId)
+        .filter((t) => t.routineJobId === job.id),
+    ).toHaveLength(1);
+    expect(store.getRoutineJob(ownerId, job.id)).toMatchObject({
+      lastRunAt: enqueued.lastRunAt,
+      nextRunAt: enqueued.nextRunAt,
+      lastStatus: "success",
+    });
+
+    // Once the thread frees up the dispatcher runs the queued firing itself.
+    release();
+    await streaming;
+    const ran = await until(() => {
+      const row = store.getBotTask(queued.id);
+      return row?.status === "done" ? row : null;
+    }, "the queued routine firing to run");
+    expect(ran.routineJobId).toBe(job.id);
+    expect(H.requests.at(-1)!.message).toBe("예약 작업 본문");
+  });
+
+  it("fails closed while the bot is disabled or deleted, keeping the schedule", async () => {
+    const { store, ownerId, agent, ...svc } = await bootWithBot("routine-unreachable");
+    const services = { config: svc.config, store, observedModel: svc.observedModel };
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "봇에게 시킴",
+      minuteOfDay: 0,
+      personalAgentId: agent.id,
+    });
+    store.updatePersonalAgent(agent.id, { enabled: false });
+
+    const result = await executeRoutineJob(services, job);
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("봇이 비활성화되었거나 삭제되어");
+    // Nothing ran and nothing was queued behind it.
+    expect(H.requests).toHaveLength(0);
+    expect(store.listBotTasksForConversation(job.conversationId)).toEqual([]);
+    // Fail-closed but RECOVERABLE: the routine keeps its schedule, so the owner
+    // re-enabling the bot resumes it at the next firing.
+    const parked = store.getRoutineJob(ownerId, job.id)!;
+    expect(parked).toMatchObject({ lastStatus: "error", enabled: true });
+    expect(parked.nextRunAt).toBeTruthy();
+
+    store.updatePersonalAgent(agent.id, { enabled: true });
+    expect(await executeRoutineJob(services, parked)).toEqual({ ok: true });
+
+    // And a DELETED bot — the scheduler may still hold a snapshot of a routine
+    // whose row the cascade already removed — refuses the same way, silently.
+    store.deletePersonalAgent(agent.id);
+    expect(await executeRoutineJob(services, job)).toMatchObject({ ok: false });
+    expect(store.getRoutineJob(ownerId, job.id)).toBeNull();
+  });
+
+  it("leaves a main-avatar routine on the legacy owner path", async () => {
+    const { store, ownerId, ...svc } = await bootWithBot("routine-legacy");
+    const job = store.createRoutineJob(ownerId, {
+      prompt: "내 아바타 예약",
+      minuteOfDay: 0,
+    });
+
+    expect(
+      await executeRoutineJob(
+        { config: svc.config, store, observedModel: svc.observedModel },
+        job,
+      ),
+    ).toEqual({ ok: true });
+
+    // No delegated task, no bot identity: the legacy path writes the pair itself
+    // and runs headless as the owner's own avatar.
+    expect(store.listBotTasksForConversation(job.conversationId)).toEqual([]);
+    expect(H.requests.at(-1)!.personalAgent).toBeUndefined();
+    expect(H.requests.at(-1)!.headless).toBe(true);
+    expect(
+      store.listMessages(ownerId, job.conversationId).map((m) => m.role),
+    ).toEqual(["user", "assistant"]);
+    expect(store.getRoutineJob(ownerId, job.id)!.lastStatus).toBe("success");
   });
 });
 
