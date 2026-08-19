@@ -80,6 +80,8 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
         finishedAt: row.finished_at ?? null,
         seenAt: row.seen_at ?? null,
         routineJobId: row.routine_job_id ?? null,
+        delegatedByAgentId: row.delegated_by_agent_id ?? null,
+        delegationDepth: row.delegation_depth ?? 0,
       };
     }
 
@@ -112,14 +114,21 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
        * the task runs; it labels the card and is the scheduler's dedupe key.
        */
       routineJobId?: string | null;
+      /**
+       * 봇 간 위임 provenance: the bot whose turn handed this off (null for an
+       * owner-typed task AND for a main-avatar hand-off — the depth says which).
+       */
+      delegatedByAgentId?: string | null;
+      /** Hop counter for the delegation cap; 0 unless a hand-off created this. */
+      delegationDepth?: number;
     }): BotTask {
       const timestamp = now();
       const id = crypto.randomUUID();
       const running = input.status === "running";
       this.db
         .prepare(
-          `INSERT INTO bot_tasks (id, owner_user_id, agent_id, conversation_id, run_id, title, request_text, status, created_at, started_at, routine_job_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO bot_tasks (id, owner_user_id, agent_id, conversation_id, run_id, title, request_text, status, created_at, started_at, routine_job_id, delegated_by_agent_id, delegation_depth)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -133,6 +142,8 @@ export function withBotTasks<TBase extends Constructor<StoreBase>>(Base: TBase) 
           timestamp,
           running ? timestamp : null,
           input.routineJobId ?? null,
+          input.delegatedByAgentId ?? null,
+          input.delegationDepth ?? 0,
         );
       return this.toBotTask(this.botTaskRow(id)!);
     }

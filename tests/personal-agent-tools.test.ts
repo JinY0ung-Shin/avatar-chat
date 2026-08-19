@@ -52,7 +52,11 @@ import {
   PERSONAL_AGENT_SELF_TOOL_NAMES,
 } from "../src/server/agent/personalAgentProfileTools.js";
 import { buildSystemTools } from "../src/server/agent/systemTools.js";
-import { personalAgentAvatarId } from "../src/server/personalAgents.js";
+import {
+  MAX_QUEUED_BOT_TASKS,
+  personalAgentAvatarId,
+} from "../src/server/personalAgents.js";
+import { registerBotTaskDispatcher } from "../src/server/botTaskDispatchBroker.js";
 import { buildPreToolUseHook } from "../src/server/agent/preToolUseHook.js";
 import { DEFAULT_HEX_SSH_TOOL_POLICY } from "../src/server/hexSshPolicy.js";
 import { MCP_TOOL_GROUPS } from "../src/shared/mcpToolGroups.js";
@@ -197,6 +201,8 @@ describe("personal-agent run plan (SDK mocked)", () => {
     // report_task rides EVERY bot run, tracked turn or not — the handler
     // refuses an untracked turn, so the tool set never varies per turn.
     expect(allowed()).toContain("mcp__personal_agent__report_task");
+    // 봇 간 위임 rides BOTH sets — a bot may hand work to a sibling bot.
+    expect(allowed()).toContain("mcp__personal_agent__delegate_to_bot");
     // create_agent belongs to the owner's OWN avatar, never to a bot.
     expect(allowed()).not.toContain("mcp__personal_agent__create_agent");
     // A bot schedules its OWN recurring work: the four routine names ride the
@@ -217,6 +223,8 @@ describe("personal-agent run plan (SDK mocked)", () => {
 
     expect(servers()).toContain("personal_agent");
     expect(allowed()).toContain("mcp__personal_agent__create_agent");
+    // The owner's own avatar hands work to a named bot with the SAME tool.
+    expect(allowed()).toContain("mcp__personal_agent__delegate_to_bot");
     expect(allowed()).not.toContain("mcp__personal_agent__update_profile");
     // Delegated tasks exist only inside a bot thread.
     expect(allowed()).not.toContain("mcp__personal_agent__report_task");
@@ -259,6 +267,69 @@ describe("personal-agent run plan (SDK mocked)", () => {
     );
     expect(allowed()).not.toContain("mcp__personal_agent__create_agent");
   });
+
+  it("withholds delegate_to_bot wherever the owner tool set is withheld", async () => {
+    // 봇 간 위임 rides the EXISTING registration gates rather than a new one, so
+    // every run kind that cannot create a bot cannot hand work to one either —
+    // a consultation run in particular, where a teammate's avatar is driving.
+    const nonAdmin = setup("delegate-plan-nonadmin", { plain: true });
+    await runAgentStream(nonAdmin.baseRequest, [], nonAdmin.config, nonAdmin.store, makeEvents());
+    expect(allowed()).not.toContain("mcp__personal_agent__delegate_to_bot");
+
+    const { config, store, baseRequest } = setup("delegate-plan-gates");
+    await runAgentStream(
+      { ...baseRequest, headless: true, allowHeadlessTools: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(allowed()).not.toContain("mcp__personal_agent__delegate_to_bot");
+
+    await runAgentStream(
+      { ...baseRequest, avatarConsultation: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(allowed()).not.toContain("mcp__personal_agent__delegate_to_bot");
+
+    await runAgentStream(
+      { ...baseRequest, viewerUserId: "someone-else", viewerIsOwner: false, elevated: true },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(allowed()).not.toContain("mcp__personal_agent__delegate_to_bot");
+  });
+
+  it("keeps delegate_to_bot off a GROUP shared-agent run", async () => {
+    // A group agent is the other non-users avatar kind and shares NOTHING with
+    // this owner's bots — its run must not carry the personal_agent server.
+    const { config, store, owner, baseRequest } = setup("delegate-plan-group");
+    const group = store.createGroup({ name: "팀", createdBy: owner.id });
+    const groupAgent = store.createGroupAgent(group.id, { displayName: "팀 봇" })!;
+    await runAgentStream(
+      {
+        ...baseRequest,
+        groupAgent: {
+          groupId: group.id,
+          agentId: groupAgent.id,
+          groupName: group.name,
+          viewerRole: "member",
+          captureAllowed: false,
+        },
+      },
+      [],
+      config,
+      store,
+      makeEvents(),
+    );
+    expect(servers()).not.toContain("personal_agent");
+    expect(allowed()).not.toContain("mcp__personal_agent__delegate_to_bot");
+  });
 });
 
 // ===========================================================================
@@ -267,13 +338,16 @@ describe("personal-agent run plan (SDK mocked)", () => {
 describe("mcp__personal_agent__update_profile", () => {
   it("pins the tool-name lists", () => {
     // Hand-synced with buildPersonalAgentSelfTools: report_task joined the bot
-    // set with delegated tasks (an intended contract change).
+    // set with delegated tasks, and delegate_to_bot joined BOTH sets with 봇 간
+    // 위임 (intended contract changes).
     expect([...PERSONAL_AGENT_SELF_TOOL_NAMES]).toEqual([
       "mcp__personal_agent__update_profile",
       "mcp__personal_agent__report_task",
+      "mcp__personal_agent__delegate_to_bot",
     ]);
     expect([...PERSONAL_AGENT_OWNER_TOOL_NAMES]).toEqual([
       "mcp__personal_agent__create_agent",
+      "mcp__personal_agent__delegate_to_bot",
     ]);
   });
 
@@ -526,6 +600,428 @@ describe("mcp__personal_agent__report_task", () => {
     const gone = await callTool(tools, "report_task", args);
     expect(gone.isError).toBe(true);
     expect(gone.content[0].text).toContain("no longer exists");
+  });
+});
+
+// ===========================================================================
+// delegate_to_bot (봇 간 위임)
+// ===========================================================================
+describe("mcp__personal_agent__delegate_to_bot", () => {
+  type Setup = ReturnType<typeof setup>;
+
+  /** Every poke the tool sends the dispatcher, without booting index.ts. */
+  function spyBroker() {
+    const pokes: { ownerUserId: string; conversationId: string }[] = [];
+    const dispose = registerBotTaskDispatcher((ownerUserId, conversationId) => {
+      pokes.push({ ownerUserId, conversationId });
+    });
+    return { pokes, dispose };
+  }
+
+  /** The delegating BOT's tool set (the self ctx carries the tracked task). */
+  function botTools(s: Setup, taskId?: string | null) {
+    return buildPersonalAgentSelfTools(s.store, {
+      agentId: s.agent.id,
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+      taskId,
+      conversationId: "conv-1",
+    });
+  }
+
+  /** The OWNER's main-avatar tool set. */
+  function ownerTools(s: Setup) {
+    return buildPersonalAgentOwnerTools(s.store, {
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+    });
+  }
+
+  /** A second bot of the same owner — the hand-off target. */
+  function targetBot(s: Setup, displayName = "리서치 봇", alias = "리서치") {
+    return s.store.createPersonalAgent(s.owner.id, { displayName, alias });
+  }
+
+  it("queues the hand-off on the target's thread with provenance, and pokes the dispatcher", async () => {
+    const s = setup("delegate-ok");
+    const target = targetBot(s);
+    const broker = spyBroker();
+    try {
+      const res = await callTool(botTools(s), "delegate_to_bot", {
+        target: "리서치 봇",
+        request: "다음 주 경쟁사 동향 조사해서 정리해줘",
+      });
+      expect(res.isError).toBeFalsy();
+      expect(res.content[0].text).toContain("QUEUED on that bot's own thread");
+      expect(res.content[0].text).toContain("봇 오피스");
+      expect(res.content[0].text).toContain(
+        "Tell the owner what you handed off and why in your final reply",
+      );
+      expect(res.content[0].text).toContain("cannot see this conversation");
+
+      const tasks = s.store.listBotTasks(s.owner.id, { agentId: target.id });
+      expect(tasks).toHaveLength(1);
+      const task = tasks[0];
+      expect(task.status).toBe("queued");
+      // Provenance: the DELEGATING bot, at hop 1 (an untracked bot turn opens
+      // the chain the same way the owner's own avatar does).
+      expect(task.delegatedByAgentId).toBe(s.agent.id);
+      expect(task.delegationDepth).toBe(1);
+      // The card's label is the raw request, not the prefixed bubble.
+      expect(task.title).toBe("다음 주 경쟁사 동향 조사해서 정리해줘");
+      expect(task.requestText).toBe(
+        "[릴리즈 봇 위임] 다음 주 경쟁사 동향 조사해서 정리해줘",
+      );
+      expect(res.content[0].text).toContain(task.id);
+
+      // The user turn is persisted on the TARGET's thread, bound to its
+      // composite avatar id, so the owner reads the hand-off in context.
+      const thread = task.conversationId;
+      expect(s.store.getConversationAvatarId(s.owner.id, thread)).toBe(
+        personalAgentAvatarId(s.owner.id, target.id),
+      );
+      const messages = s.store.listMessages(s.owner.id, thread);
+      expect(messages).toHaveLength(1);
+      expect(messages[0].role).toBe("user");
+      expect(messages[0].content).toBe(
+        "[릴리즈 봇 위임] 다음 주 경쟁사 동향 조사해서 정리해줘",
+      );
+
+      expect(broker.pokes).toEqual([
+        { ownerUserId: s.owner.id, conversationId: thread },
+      ]);
+      const audit = s.store
+        .listAudit(s.owner.id, true)
+        .find((e) => e.action === "personal_agent_delegate");
+      expect(audit?.detail).toContain(`from=${s.agent.id}`);
+      expect(audit?.detail).toContain(`to=${target.id} (리서치 봇)`);
+      expect(audit?.detail).toContain(`task=${task.id} depth=1`);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("labels a MAIN-avatar hand-off as 아바타 and leaves the provenance NULL", async () => {
+    const s = setup("delegate-owner-run");
+    const target = targetBot(s);
+    const broker = spyBroker();
+    try {
+      const res = await callTool(ownerTools(s), "delegate_to_bot", {
+        target: target.id,
+        request: "릴리즈 노트 초안 잡아줘",
+      });
+      expect(res.isError).toBeFalsy();
+      const task = s.store.listBotTasks(s.owner.id, { agentId: target.id })[0];
+      // NULL provenance + depth 1 is what says "the owner's avatar, not a bot".
+      expect(task.delegatedByAgentId).toBeNull();
+      expect(task.delegationDepth).toBe(1);
+      expect(task.requestText).toBe("[아바타 위임] 릴리즈 노트 초안 잡아줘");
+      expect(broker.pokes).toHaveLength(1);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("resolves the target by id, name, and alias — case-insensitively", async () => {
+    const s = setup("delegate-resolve");
+    const target = targetBot(s);
+    const english = s.store.createPersonalAgent(s.owner.id, {
+      displayName: "Ops Bot",
+    });
+    const broker = spyBroker();
+    try {
+      for (const wanted of [target.id, "리서치 봇", "리서치"]) {
+        const res = await callTool(botTools(s), "delegate_to_bot", {
+          target: wanted,
+          request: `조사: ${wanted}`,
+        });
+        expect(res.isError).toBeFalsy();
+      }
+      expect(
+        s.store.listBotTasks(s.owner.id, { agentId: target.id }),
+      ).toHaveLength(3);
+
+      // A fresh turn's tool set — the per-turn budget is per run, not global.
+      const res = await callTool(botTools(s), "delegate_to_bot", {
+        target: "  ops bot ",
+        request: "배포 로그 확인해줘",
+      });
+      expect(res.isError).toBeFalsy();
+      expect(
+        s.store.listBotTasks(s.owner.id, { agentId: english.id }),
+      ).toHaveLength(1);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("redirects an unknown name, an ambiguous one, a disabled bot, and itself", async () => {
+    const s = setup("delegate-target-misses");
+    const first = targetBot(s, "리서치 봇", "쌍둥이");
+    const second = targetBot(s, "조사 봇", "쌍둥이");
+    const broker = spyBroker();
+    try {
+      const unknown = await callTool(botTools(s), "delegate_to_bot", {
+        target: "없는봇",
+        request: "뭔가 해줘",
+      });
+      expect(unknown.isError).toBe(true);
+      expect(unknown.content[0].text).toContain('No enabled bot of this owner matches "없는봇"');
+      // The redirect names what IS reachable, minus the running bot itself.
+      expect(unknown.content[0].text).toContain("리서치 봇");
+      expect(unknown.content[0].text).toContain("조사 봇");
+      expect(unknown.content[0].text).not.toContain("릴리즈 봇");
+
+      const ambiguous = await callTool(botTools(s), "delegate_to_bot", {
+        target: "쌍둥이",
+        request: "뭔가 해줘",
+      });
+      expect(ambiguous.isError).toBe(true);
+      expect(ambiguous.content[0].text).toContain("matches 2 of this owner's bots");
+      expect(ambiguous.content[0].text).toContain(`리서치 봇 (id ${first.id})`);
+      expect(ambiguous.content[0].text).toContain(`조사 봇 (id ${second.id})`);
+
+      // A DISABLED bot is not a name you can use — it never reaches the reach
+      // gate, so the refusal reads as "no such target", not "it failed".
+      s.store.updatePersonalAgent(second.id, { enabled: false });
+      const disabled = await callTool(botTools(s), "delegate_to_bot", {
+        target: "조사 봇",
+        request: "뭔가 해줘",
+      });
+      expect(disabled.isError).toBe(true);
+      expect(disabled.content[0].text).toContain("No enabled bot of this owner matches");
+
+      const self = await callTool(botTools(s), "delegate_to_bot", {
+        target: "릴리즈 봇",
+        request: "내가 할 일",
+      });
+      expect(self.isError).toBe(true);
+      expect(self.content[0].text).toContain("Delegating to yourself is a no-op");
+
+      // Not one refusal queued anything or woke the dispatcher.
+      expect(s.store.listBotTasks(s.owner.id)).toHaveLength(0);
+      expect(broker.pokes).toHaveLength(0);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("refuses when the owner has no other bot at all", async () => {
+    const s = setup("delegate-no-siblings");
+    const res = await callTool(botTools(s), "delegate_to_bot", {
+      target: "아무 봇",
+      request: "뭔가 해줘",
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("They have no other enabled bot");
+  });
+
+  it("re-checks the LIVE reach gate after the roster read", async () => {
+    const s = setup("delegate-live-gate");
+    const target = targetBot(s);
+    // The roster read finds the bot; the reach gate then refuses because the
+    // owner lost the admin role that the whole feature is gated on.
+    const tools = botTools(s);
+    s.store.setRole(s.owner.id, "admin", false);
+    const demoted = await callTool(tools, "delegate_to_bot", {
+      target: target.id,
+      request: "뭔가 해줘",
+    });
+    expect(demoted.isError).toBe(true);
+    // The DELEGATING bot's own gate fires first — same refusal as every other
+    // tool on this set.
+    expect(demoted.content[0].text).toContain("administrator-only feature");
+    expect(s.store.listBotTasks(s.owner.id)).toHaveLength(0);
+  });
+
+  it("stops the chain at two hops and keeps counting depth off the TASK", async () => {
+    const s = setup("delegate-depth");
+    const target = targetBot(s);
+    const broker = spyBroker();
+    try {
+      // A turn whose task is itself a hop-1 delegation may hand off ONCE more.
+      const hop1 = s.store.createBotTask({
+        ownerUserId: s.owner.id,
+        agentId: s.agent.id,
+        conversationId: "conv-1",
+        title: "1홉",
+        requestText: "[아바타 위임] 조사해줘",
+        status: "running",
+        runId: "run-1",
+        delegationDepth: 1,
+      });
+      const ok = await callTool(botTools(s, hop1.id), "delegate_to_bot", {
+        target: target.id,
+        request: "이건 리서치 봇 일이야",
+      });
+      expect(ok.isError).toBeFalsy();
+      expect(
+        s.store.listBotTasks(s.owner.id, { agentId: target.id })[0].delegationDepth,
+      ).toBe(2);
+
+      // At the cap the chain STOPS, no matter how reachable the target is.
+      const hop2 = s.store.createBotTask({
+        ownerUserId: s.owner.id,
+        agentId: s.agent.id,
+        conversationId: "conv-1",
+        title: "2홉",
+        requestText: "[리서치 봇 위임] 더 파봐",
+        status: "running",
+        runId: "run-2",
+        delegationDepth: 2,
+      });
+      const capped = await callTool(botTools(s, hop2.id), "delegate_to_bot", {
+        target: target.id,
+        request: "한 번 더",
+      });
+      expect(capped.isError).toBe(true);
+      expect(capped.content[0].text).toContain("already two hand-offs deep");
+      expect(capped.content[0].text).toContain("report need_input if you are blocked");
+      expect(
+        s.store.listBotTasks(s.owner.id, { agentId: target.id }),
+      ).toHaveLength(1);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("caps ONE turn at three hand-offs, counting only the ones that landed", async () => {
+    const s = setup("delegate-turn-budget");
+    const target = targetBot(s);
+    const broker = spyBroker();
+    try {
+      const tools = botTools(s);
+      // A refusal is not a hand-off: this one must not spend the budget.
+      const missed = await callTool(tools, "delegate_to_bot", {
+        target: "없는봇",
+        request: "뭔가",
+      });
+      expect(missed.isError).toBe(true);
+
+      for (let i = 0; i < 3; i += 1) {
+        const res = await callTool(tools, "delegate_to_bot", {
+          target: target.id,
+          request: `작업 ${i}`,
+        });
+        expect(res.isError).toBeFalsy();
+      }
+      const spent = await callTool(tools, "delegate_to_bot", {
+        target: target.id,
+        request: "네 번째",
+      });
+      expect(spent.isError).toBe(true);
+      expect(spent.content[0].text).toContain("already handed off 3 request(s) in this turn");
+      expect(
+        s.store.listBotTasks(s.owner.id, { agentId: target.id }),
+      ).toHaveLength(3);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("refuses once the target's own queue is full", async () => {
+    const s = setup("delegate-queue-full");
+    const target = targetBot(s);
+    const broker = spyBroker();
+    try {
+      // Seed the thread the hand-off would land in, then fill its queue.
+      const thread = "target-thread";
+      s.store.touchConversation(
+        s.owner.id,
+        thread,
+        personalAgentAvatarId(s.owner.id, target.id),
+        "안녕",
+      );
+      for (let i = 0; i < MAX_QUEUED_BOT_TASKS; i += 1) {
+        s.store.createBotTask({
+          ownerUserId: s.owner.id,
+          agentId: target.id,
+          conversationId: thread,
+          title: `대기 ${i}`,
+          requestText: `대기 ${i}`,
+          status: "queued",
+        });
+      }
+      const res = await callTool(botTools(s), "delegate_to_bot", {
+        target: target.id,
+        request: "하나 더",
+      });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain(
+        `already has ${MAX_QUEUED_BOT_TASKS} requests waiting`,
+      );
+      expect(
+        s.store.listBotTasks(s.owner.id, { agentId: target.id }),
+      ).toHaveLength(MAX_QUEUED_BOT_TASKS);
+      expect(broker.pokes).toHaveLength(0);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("reuses the owner's existing thread with the target, and never a routine one", async () => {
+    const s = setup("delegate-thread-choice");
+    const target = targetBot(s);
+    const targetAvatarId = personalAgentAvatarId(s.owner.id, target.id);
+    const broker = spyBroker();
+    try {
+      // A 예약 작업 thread is the scheduler's own and gets pruned on its terms,
+      // so a hand-off must never land in it — even when it is the newest.
+      s.store.touchConversation(s.owner.id, "routine-thread", targetAvatarId, "[예약 작업]", {
+        isRoutine: true,
+      });
+      const fresh = await callTool(botTools(s), "delegate_to_bot", {
+        target: target.id,
+        request: "첫 위임",
+      });
+      expect(fresh.isError).toBeFalsy();
+      const first = s.store.listBotTasks(s.owner.id, { agentId: target.id })[0];
+      expect(first.conversationId).not.toBe("routine-thread");
+
+      // The SECOND hand-off joins the thread the first one minted.
+      const again = await callTool(botTools(s), "delegate_to_bot", {
+        target: target.id,
+        request: "두 번째 위임",
+      });
+      expect(again.isError).toBeFalsy();
+      const tasks = s.store.listBotTasks(s.owner.id, { agentId: target.id });
+      expect(tasks).toHaveLength(2);
+      expect(new Set(tasks.map((t) => t.conversationId)).size).toBe(1);
+      expect(s.store.listMessages(s.owner.id, first.conversationId)).toHaveLength(2);
+    } finally {
+      broker.dispose();
+    }
+  });
+
+  it("refuses a blank request and a blank target before touching anything", async () => {
+    const s = setup("delegate-blank-args");
+    const target = targetBot(s);
+    const emptyRequest = await callTool(botTools(s), "delegate_to_bot", {
+      target: target.id,
+      request: "   ",
+    });
+    expect(emptyRequest.isError).toBe(true);
+    expect(emptyRequest.content[0].text).toContain("The `request` is empty");
+
+    const emptyTarget = await callTool(botTools(s), "delegate_to_bot", {
+      target: " ",
+      request: "뭔가 해줘",
+    });
+    expect(emptyTarget.isError).toBe(true);
+    expect(emptyTarget.content[0].text).toContain("Name which bot to hand this to");
+    expect(s.store.listBotTasks(s.owner.id)).toHaveLength(0);
+  });
+
+  it("survives an unregistered broker — the task still queues", async () => {
+    // Nothing registers a dispatcher in a plain unit run (index.ts never boots),
+    // so the poke must be a silent no-op rather than a throw: the row stays
+    // queued and the next settle / boot drain picks it up.
+    const s = setup("delegate-no-broker");
+    const target = targetBot(s);
+    const res = await callTool(botTools(s), "delegate_to_bot", {
+      target: target.id,
+      request: "브로커 없이",
+    });
+    expect(res.isError).toBeFalsy();
+    expect(s.store.listBotTasks(s.owner.id, { agentId: target.id })).toHaveLength(1);
   });
 });
 

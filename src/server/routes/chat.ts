@@ -92,8 +92,10 @@ import {
   type ChattableGroupAgent,
 } from "../groupAgents.js";
 import {
+  botTaskTitle,
   findChattablePersonalAgent,
   listPersonalAgentAvatarSummaries,
+  MAX_QUEUED_BOT_TASKS,
   personalAgentAvatarDetail,
   type ChattablePersonalAgent,
 } from "../personalAgents.js";
@@ -472,21 +474,12 @@ function activeRunMessage(background: boolean): string {
 }
 
 /**
- * The delegated-task card's label. Same derivation as the conversation title
- * (`store/conversations.ts`): first line, whitespace collapsed, 40 chars — so a
- * bot thread's title and its first task card read identically.
+ * Both moved to `../personalAgents.js` so the 봇 간 위임 MCP tool can share them
+ * without an `agent/` → `routes/chat.js` import (that direction is a cycle —
+ * see botTaskDispatchBroker.ts). Re-exported here because this route has been
+ * their import path since they existed.
  */
-export function botTaskTitle(requestText: string): string {
-  const raw = requestText.split("\n")[0].trim().replace(/\s+/g, " ");
-  return raw.length > 0 ? raw.slice(0, 40) : "새 작업";
-}
-
-/**
- * How many turns may wait behind a running bot IN ONE THREAD. A queue this deep
- * already represents hours of unattended work; past it the owner is better told
- * to wait than to keep stacking.
- */
-export const MAX_QUEUED_BOT_TASKS = 20;
+export { botTaskTitle, MAX_QUEUED_BOT_TASKS };
 
 /**
  * User-facing note stored on a timed-out delegated task, derived from the SAME

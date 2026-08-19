@@ -152,6 +152,26 @@ UNTOUCHED: a task row is bookkeeping over the same A-1 full-owner run.
   merge prevents 완료→실행 중 flicker); 202 handling in `sendMessage` branches BEFORE the SSE
   reader. `PromptModal`'s visible-pane set covers both "chat" and "bots" or prompts double-render;
   `currentRoute()` needs the bots branch or `syncHash` on send strips the agent id from the URL.
+- **봇 간 위임 (`mcp__personal_agent__delegate_to_bot`) — an ASYNC hand-off, never a question.**
+  The one tool BOTH personal-agent tool sets carry (bot runs AND the owner's main-avatar runs; one
+  shared factory in personalAgentProfileTools.ts, live-gated per run kind). It queues a
+  self-contained request as a `bot_tasks` row on the TARGET bot's latest non-routine thread
+  (`latestChatConversationIdForAvatar`, minting one when none exists), persists the user turn as
+  `[<source> 위임] <request>` (Korean — the owner reads it in that thread), stamps provenance
+  (`delegatedByAgentId` = the source bot, NULL for a main-avatar hand-off; `delegationDepth` =
+  hop count), audits `personal_agent_delegate`, and pokes the dispatcher through
+  `botTaskDispatchBroker.ts` — a one-slot module that exists ONLY to break the import cycle
+  (agent/* must never import routes/chat.js or botTaskRunner.js; `startBotTaskDispatcher`
+  registers the real dispatcher at boot, unregistered = silent no-op and the boot/settle drains
+  recover). Nothing flows back into the delegating turn — the result lands on the board. Guards:
+  chain cap `MAX_DELEGATION_DEPTH` 2 read off the CURRENT task's depth (main avatar always opens
+  at hop 1), per-turn fan-out cap `MAX_DELEGATIONS_PER_TURN` 3 (successful hand-offs only),
+  target resolution id-exact → name/alias exact among ENABLED bots (ambiguous lists ids; misses
+  list the roster), self-delegation refused, the live reach gate re-checked, and the target
+  thread's `MAX_QUEUED_BOT_TASKS` honored. `botTaskTitle` + `MAX_QUEUED_BOT_TASKS` moved to
+  `personalAgents.ts` for the same cycle reason (chat.ts re-exports). describe_system carries the
+  ONE fact the prompt cannot: the live sibling-bot roster, plus the current chain depth; the card
+  shows a 위임 chip naming the source.
 - **Seen/unseen (the rail badge):** UNSEEN = settled (`done`/`failed`/`waiting_input`) AND
   `seen_at IS NULL` — ONE predicate (`UNSEEN_WHERE` in store/botTasks.ts) shared by
   `countUnseenBotTasks` (single GROUP BY; a bot with none is ABSENT from `agents`) and

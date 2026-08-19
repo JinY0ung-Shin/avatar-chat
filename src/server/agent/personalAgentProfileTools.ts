@@ -1,9 +1,17 @@
+import crypto from "node:crypto";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
 import type { Store } from "../store.js";
 import { MAX_PERSONAL_AGENTS } from "../store.js";
-import type { AgentOwner } from "../types.js";
+import type { AgentOwner, PersonalAgent } from "../types.js";
+import { requestBotTaskDispatch } from "../botTaskDispatchBroker.js";
 import {
+  botTaskTitle,
+  findChattablePersonalAgent,
+  MAX_DELEGATION_DEPTH,
+  MAX_DELEGATIONS_PER_TURN,
+  MAX_QUEUED_BOT_TASKS,
+  personalAgentAvatarId,
   PERSONAL_AGENT_DISPLAY_NAME_CAP,
   PERSONAL_AGENT_FIELD_CAPS,
 } from "../personalAgents.js";
@@ -22,6 +30,11 @@ import { text } from "./mcpTools.js";
  *   greeting turn and a delegated one are the same tool set.
  * - `create_agent` registers only on a NON-bot owner run: the owner's main
  *   avatar stands a new bot up for them.
+ * - `delegate_to_bot` registers on BOTH sets — it is the one tool a bot and the
+ *   owner's own avatar share. It hands a self-contained request to ANOTHER of
+ *   the owner's bots as a QUEUED task on that bot's thread; the server runs it
+ *   unattended and the result lands on the 봇 오피스 board. Async hand-off, not
+ *   a question: nothing flows back into the delegating turn.
  *
  * Both are gated per call on the LIVE owner + admin role (the phase-1 feature
  * gate), because the `mcp__` auto-allow in the PreToolUse hook fires before any
@@ -38,11 +51,13 @@ export const PERSONAL_AGENT_SERVER_NAME = "personal_agent";
 export const PERSONAL_AGENT_SELF_TOOL_NAMES = [
   "mcp__personal_agent__update_profile",
   "mcp__personal_agent__report_task",
+  "mcp__personal_agent__delegate_to_bot",
 ] as const;
 
 /** Owner-run (non-bot) tool names in `allowedTools` form. */
 export const PERSONAL_AGENT_OWNER_TOOL_NAMES = [
   "mcp__personal_agent__create_agent",
+  "mcp__personal_agent__delegate_to_bot",
 ] as const;
 
 // Re-exported for symmetry with GROUP_AGENT_FIELD_CAPS: every writer of a bot
@@ -119,6 +134,193 @@ function selfToolRefusal(
 export interface PersonalAgentOwnerToolsContext {
   /** The avatar owner: live gate subject AND audit actor. */
   owner: AgentOwner;
+}
+
+// ---------------------------------------------------------------------------
+// delegate_to_bot — 봇 간 위임 (the ONE tool both run kinds carry)
+// ---------------------------------------------------------------------------
+
+const DELEGATION_DEPTH_SPENT =
+  "This task is already two hand-offs deep — the chain stops here. Finish what you can yourself and report need_input if you are blocked.";
+const DELEGATION_BUDGET_SPENT =
+  `You have already handed off ${MAX_DELEGATIONS_PER_TURN} request(s) in this turn, which is the limit. Each hand-off starts a FULL unattended run on the owner's account, so the rest of this work is yours: do it here, or tell the owner plainly what is left and which bot they should ask next.`;
+const DELEGATION_SELF =
+  "Delegating to yourself is a no-op — just do the work in this turn.";
+const EMPTY_DELEGATION_REQUEST =
+  "The `request` is empty. Write the complete instruction the other bot should carry out — it sees only that text, never this conversation.";
+const EMPTY_DELEGATION_TARGET =
+  "Name which bot to hand this to: its name, its alias, or its id — one of this owner's own enabled bots.";
+
+/**
+ * Everything the shared factory needs about the RUN doing the delegating. One
+ * tool, two run kinds: a bot hand-off carries the delegating bot's id (and,
+ * when the turn is tracked, the task whose depth the chain cap counts), while
+ * the owner's main avatar carries neither.
+ */
+interface DelegationSource {
+  /** The bot handing off; null on the owner's OWN avatar run. */
+  agentId: string | null;
+  /** The `bot_tasks` row tracking the delegating turn, when there is one. */
+  taskId?: string | null;
+  /** The run kind's live per-call gate (the `mcp__` auto-allow fires first). */
+  guard: () => string | null;
+}
+
+/**
+ * The 봇 간 위임 tool, built ONCE for both tool sets.
+ *
+ * The hand-off is deliberately ASYNC: it queues a `bot_tasks` row on the target
+ * bot's own thread and pokes the dispatcher, then returns. No answer flows back
+ * into this turn — the target runs later, unattended, and reports onto the
+ * owner's 봇 오피스 board. That is what keeps a hand-off from silently becoming
+ * a nested synchronous run inside the caller's deadline.
+ *
+ * Two independent caps guard the owner's bill: `delegationDepth` bounds the
+ * CHAIN across turns (a task at MAX_DELEGATION_DEPTH may not hand off again),
+ * and the closure counter below bounds the FAN-OUT of this single turn. Neither
+ * is a capability boundary — the target bot's run is a full owner run either
+ * way, exactly as a typed message to it would be.
+ */
+function buildDelegateToBotTool(
+  store: Store,
+  owner: AgentOwner,
+  source: DelegationSource,
+) {
+  // Per-TURN budget. This closure is created with the run's tool set and dies
+  // with it, so the counter is scoped to one run — it counts SUCCESSFUL
+  // hand-offs only, since a refusal never started anything.
+  let handedOff = 0;
+  return tool(
+    "delegate_to_bot",
+    `**Use this when the owner's request clearly belongs to ANOTHER of their bots** — work squarely inside a different bot's role, or an explicit "리서치봇한테 시켜줘" / "hand this to X". It queues a self-contained request as a task on that bot's own thread, which the server then runs UNATTENDED. This is an async hand-off, not a question: no answer comes back into this conversation, and the owner reads the result on their 봇 오피스 board. Each hand-off is a full unattended run the owner pays for — never hand over what you can do yourself, and never pass along a task that was already delegated to you. Chains stop after ${MAX_DELEGATION_DEPTH} hops and one turn may hand off at most ${MAX_DELEGATIONS_PER_TURN} times. (this owner's own bots only)`,
+    {
+      target: z
+        .string()
+        .describe(
+          "Which bot to hand this to: its name, its alias, or its id. Must be one of THIS owner's enabled bots.",
+        ),
+      request: z
+        .string()
+        .describe(
+          "The complete instruction for that bot, written to stand ALONE: it sees only this text plus its own persona and knowledge — never this conversation, its history, or anything you have open. Include the context, the deliverable, and any constraint it must respect.",
+        ),
+    },
+    async (args) => {
+      const refusal = source.guard();
+      if (refusal) return text(refusal, true);
+      if (handedOff >= MAX_DELEGATIONS_PER_TURN) {
+        return text(DELEGATION_BUDGET_SPENT, true);
+      }
+      // Chain depth rides the TASK, not the run: an untracked bot turn (a
+      // greeting the owner typed) is depth 0 like a fresh request, and the
+      // owner's main avatar always opens a chain at hop 1.
+      const currentDepth = source.taskId
+        ? (store.getBotTask(source.taskId)?.delegationDepth ?? 0)
+        : 0;
+      const nextDepth = currentDepth + 1;
+      if (nextDepth > MAX_DELEGATION_DEPTH) {
+        return text(DELEGATION_DEPTH_SPENT, true);
+      }
+      const request = args.request.trim();
+      if (!request) return text(EMPTY_DELEGATION_REQUEST, true);
+      const wanted = args.target.trim();
+      if (!wanted) return text(EMPTY_DELEGATION_TARGET, true);
+
+      // ENABLED bots only — a disabled bot reads as "not one of the names you
+      // can use" rather than as an existing target that then fails to run.
+      const roster = store.listPersonalAgents(owner.id);
+      const needle = wanted.toLowerCase();
+      const byId = roster.find((bot) => bot.id === wanted);
+      const matches: PersonalAgent[] = byId
+        ? [byId]
+        : roster.filter(
+            (bot) =>
+              bot.displayName.trim().toLowerCase() === needle ||
+              bot.alias.trim().toLowerCase() === needle,
+          );
+      if (matches.length === 0) {
+        const others = roster.filter((bot) => bot.id !== source.agentId);
+        return text(
+          `No enabled bot of this owner matches "${wanted}". ` +
+            (others.length > 0
+              ? `Their enabled bots are: ${others.map((bot) => bot.displayName).join(", ")}. Use one of those names (or an id) — or do the work yourself.`
+              : "They have no other enabled bot, so there is nobody to hand this to: do the work yourself, or tell them."),
+          true,
+        );
+      }
+      if (matches.length > 1) {
+        return text(
+          `"${wanted}" matches ${matches.length} of this owner's bots: ${matches
+            .map((bot) => `${bot.displayName} (id ${bot.id})`)
+            .join("; ")}. Call this again with the exact id of the one you mean.`,
+          true,
+        );
+      }
+      const target = matches[0];
+      if (source.agentId && target.id === source.agentId) {
+        return text(DELEGATION_SELF, true);
+      }
+      // The SAME reach gate a typed turn passes, LIVE — the roster read above
+      // is not the boundary (the owner's admin role can be gone this instant).
+      const targetAvatarId = personalAgentAvatarId(owner.id, target.id);
+      if (!findChattablePersonalAgent(store, owner.id, targetAvatarId)) {
+        return text(
+          `"${target.displayName}" cannot take delegated work right now — it was disabled or deleted, or personal bots are no longer available to this owner. Tell the owner instead of retrying.`,
+          true,
+        );
+      }
+
+      // Land in the thread the owner already has with that bot, so a hand-off
+      // reads as part of their conversation rather than a thread per delegation.
+      const conversationId =
+        store.latestChatConversationIdForAvatar(owner.id, targetAvatarId) ??
+        crypto.randomUUID();
+      if (store.countQueuedBotTasks(conversationId) >= MAX_QUEUED_BOT_TASKS) {
+        return text(
+          `"${target.displayName}" already has ${MAX_QUEUED_BOT_TASKS} requests waiting in its queue, which is the limit — tell the owner instead of stacking more onto it.`,
+          true,
+        );
+      }
+
+      // Korean, USER-facing: this is the message the owner reads in the target
+      // bot's thread, so it must name who handed the work over.
+      const sourceLabel = source.agentId
+        ? (store.getPersonalAgentById(source.agentId)?.displayName ?? "봇")
+        : "아바타";
+      const message = `[${sourceLabel} 위임] ${request}`;
+      // The enqueue recipe queueBotTurn uses: persist the user turn, queue the
+      // task, poke the dispatcher.
+      store.touchConversation(owner.id, conversationId, targetAvatarId, message);
+      store.addMessage(conversationId, { role: "user", content: message });
+      const task = store.createBotTask({
+        ownerUserId: owner.id,
+        agentId: target.id,
+        conversationId,
+        title: botTaskTitle(request),
+        requestText: message,
+        status: "queued",
+        // NULL for a main-avatar hand-off; the depth is what says a task was
+        // delegated at all.
+        delegatedByAgentId: source.agentId,
+        delegationDepth: nextDepth,
+      });
+      handedOff += 1;
+      store.audit({
+        actorUserId: owner.id,
+        actorName: owner.username,
+        action: "personal_agent_delegate",
+        status: "success",
+        detail: `from=${source.agentId ?? "avatar"} to=${target.id} (${target.displayName}) task=${task.id} depth=${nextDepth} via delegate_to_bot`,
+      });
+      requestBotTaskDispatch(owner.id, conversationId);
+      return text(
+        `Handed off to "${target.displayName}" — task ${task.id}, QUEUED on that bot's own thread. ` +
+          "The server runs it unattended with the owner's full capability, and they follow it on their 봇 오피스 board; the result lands THERE, never in this conversation, so do not wait for it or claim it is done. " +
+          "Tell the owner what you handed off and why in your final reply. " +
+          "The target bot cannot see this conversation: if it needs context, you did not include enough in `request`.",
+      );
+    },
+  );
 }
 
 /**
@@ -238,6 +440,13 @@ export function buildPersonalAgentSelfTools(
         );
       },
     ),
+    // Same live gate as the two above, and the same tracked task — its
+    // delegationDepth is what caps the chain this bot may extend.
+    buildDelegateToBotTool(store, ctx.owner, {
+      agentId: ctx.agentId,
+      taskId: ctx.taskId,
+      guard: () => selfToolRefusal(store, ctx),
+    }),
   ];
 }
 
@@ -345,6 +554,13 @@ export function buildPersonalAgentOwnerTools(
         }
       },
     ),
+    // The owner's own avatar hands work to a NAMED bot when they ask for it.
+    // No source bot and no tracked task: a main-avatar hand-off always opens a
+    // chain at hop 1. Its live gate is create_agent's — the admin feature gate.
+    buildDelegateToBotTool(store, ctx.owner, {
+      agentId: null,
+      guard: () => (store.isAdmin(ctx.owner.id) ? null : ADMIN_FEATURE_OFF),
+    }),
   ];
 }
 

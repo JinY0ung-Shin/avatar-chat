@@ -168,6 +168,29 @@ export function withConversations<TBase extends Constructor<StoreBase>>(Base: TB
       return row?.avatar_user_id ?? null;
     }
 
+    /**
+     * The owner's newest ORDINARY thread with one avatar — where a 봇 간 위임
+     * hand-off lands, so a delegated request joins the conversation the owner
+     * already has with that bot instead of minting a thread per hand-off.
+     * Routine threads are excluded: `[예약 작업]` conversations are the
+     * scheduler's own, pruned on its terms, and a hand-off dropped in one would
+     * be swept away with them. Null when the owner has never chatted with this
+     * avatar — the caller mints a fresh conversation id.
+     */
+    latestChatConversationIdForAvatar(
+      ownerUserId: string,
+      avatarUserId: string,
+    ): string | null {
+      const row = this.db
+        .prepare(
+          `SELECT id FROM conversations
+           WHERE owner_user_id = ? AND avatar_user_id = ? AND is_routine = 0
+           ORDER BY updated_at DESC, rowid DESC LIMIT 1`,
+        )
+        .get(ownerUserId, avatarUserId) as { id: string } | undefined;
+      return row?.id ?? null;
+    }
+
     /** Exact Gateway endpoint bound to an external conversation, if established. */
     getConversationExternalEndpoint(
       ownerId: string,

@@ -70,6 +70,8 @@ function taskOf(over: Partial<BotTask> = {}): BotTask {
     finishedAt: null,
     seenAt: null,
     routineJobId: null,
+    delegatedByAgentId: null,
+    delegationDepth: 0,
     ...over,
   };
 }

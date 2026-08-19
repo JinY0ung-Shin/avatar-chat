@@ -1,5 +1,9 @@
 import type { AgentRequest } from "../types.js";
 import { normalizeGithubHost } from "../marketplace.js";
+import {
+  MAX_DELEGATION_DEPTH,
+  MAX_DELEGATIONS_PER_TURN,
+} from "../personalAgents.js";
 import { gettingStartedGaps } from "./ownerState.js";
 import {
   DEFAULT_MCP_TOOL_GROUPS,
@@ -626,6 +630,10 @@ function personalAgentSection(request: AgentRequest): string | null {
     notesNote +
     " You can schedule your OWN recurring work: when the owner asks for something that repeats (\"매일 아침 뉴스 정리해줘\"), confirm the exact schedule wording with them first, then create it with `mcp__system__create_routine`. Each firing runs unattended AS YOU, in its own 예약 작업 conversation, and lands as a delegated task on the owner's board — so the report_task protocol applies to those runs too. `mcp__system__list_routines`/`update_routine`/`delete_routine` are self-scoped: you manage only the routines that fire as you, and the owner manages every routine in the 예약 작업 tab." +
     " You may reconfigure YOURSELF with `mcp__personal_agent__update_profile` (persona, alias, bio, intro): use it when the owner tells you what you should be from now on, CONFIRM the exact wording with them before calling it, and never change your own persona unprompted. It applies from the NEXT turn, not this one." +
+    // 봇 간 위임: the action trigger for delegate_to_bot. The roster of names
+    // lives on describe_system (and in the tool's own no-match refusal), so the
+    // bot has a way to learn WHO it may hand work to.
+    ` You are not this owner's only bot: when a request clearly belongs to one of their OTHERS — work squarely inside that bot's role, or an explicit "리서치봇한테 시켜줘" — hand it over with \`mcp__personal_agent__delegate_to_bot\`. Call \`mcp__system__describe_system\` to see which bots this owner has; the tool also lists them if the name you pass does not match. It is an ASYNC hand-off, not a question: the request is queued as a task on that bot's own thread, the server runs it unattended, and the answer lands on the owner's 봇 오피스 board — never back in this conversation, so never wait for it or report it as finished work. Write the \`request\` to stand alone (the other bot sees only that text), and always name in your final reply what you handed off and why. Each hand-off is a full unattended run the owner pays for: hand over only what is genuinely another bot's job, never what you can do yourself, and never pass along work that was already delegated to you — chains stop after ${MAX_DELEGATION_DEPTH} hops, and one turn may hand off at most ${MAX_DELEGATIONS_PER_TURN} times.` +
     ` Your persona is currently ${state.personaSet ? "SET" : "NOT set"}. The bot list itself — creating, renaming, disabling, deleting, the profile image, the default model — is the owner's own to manage under 설정 → 내 봇.` +
     taskNote
   );
@@ -647,6 +655,8 @@ function personalBotsSection(request: AgentRequest): string | null {
     "**Personal bots (내 봇)**: this owner can keep several bots of their own — separate chat contacts, each with its own name and persona, each running with the same capability you have. " +
     `They currently have ${names.length > 0 ? `${names.length} enabled: ${names.join(", ")}` : "no enabled bots"}. ` +
     'When they ask for a new one ("make me a bot that only does X", "내 봇 하나 만들어줘"), create it with `mcp__personal_agent__create_agent` — ask what to call it if they did not say, draft its persona from what they described, and then tell them it is chattable immediately from 탐색 or the "내 봇" section of the left rail. ' +
+    // 봇 간 위임 from the OWNER's side: the same tool, opening a chain at hop 1.
+    'When they ask you to put one of those bots on something ("리서치봇한테 시켜줘", "이건 릴리즈봇이 해줘"), hand it over with `mcp__personal_agent__delegate_to_bot` instead of doing it yourself: the request is queued as a task on that bot\'s own thread and the server runs it unattended, so tell the owner it is queued and that the result appears on their 봇 오피스 board, not here. Write the `request` to stand alone — the other bot sees only that text, never this conversation — and hand over only what they actually asked to hand over; each one is a full unattended run they pay for. ' +
     "Changing an EXISTING bot is not yours to do: the owner edits it under 설정 → 내 봇, or the bot reconfigures itself inside its own conversation."
   );
 }

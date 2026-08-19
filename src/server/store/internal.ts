@@ -282,6 +282,8 @@ export interface BotTaskRow {
   finished_at: string | null;
   seen_at: string | null;
   routine_job_id: string | null;
+  delegated_by_agent_id: string | null;
+  delegation_depth: number | null;
 }
 
 export interface RoutineJobRow {
@@ -617,7 +619,9 @@ export class StoreBase {
         started_at TEXT,
         finished_at TEXT,
         seen_at TEXT,
-        routine_job_id TEXT
+        routine_job_id TEXT,
+        delegated_by_agent_id TEXT,
+        delegation_depth INTEGER DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS idx_bot_tasks_owner ON bot_tasks(owner_user_id, created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_bot_tasks_conversation ON bot_tasks(conversation_id, created_at ASC);
@@ -872,6 +876,9 @@ export class StoreBase {
     // this task was fired by that schedule (the card shows an 예약 chip, and the
     // scheduler skips re-enqueueing while one is still queued).
     this.addColumnIfMissing("bot_tasks", "routine_job_id", "TEXT");
+    // 봇 간 위임 provenance + the hop cap's depth counter (see types.ts BotTask).
+    this.addColumnIfMissing("bot_tasks", "delegated_by_agent_id", "TEXT");
+    this.addColumnIfMissing("bot_tasks", "delegation_depth", "INTEGER DEFAULT 0");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateCanvasArtifacts();

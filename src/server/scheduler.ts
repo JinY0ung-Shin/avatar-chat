@@ -9,10 +9,11 @@ import { resolveActiveWorkspaceRepo } from "./activeRepoResolve.js";
 import { getActiveRunForConversation } from "./agent/runRegistry.js";
 import { DEFAULT_MCP_TOOL_GROUPS } from "../shared/mcpToolGroups.js";
 import {
+  botTaskTitle,
   findChattablePersonalAgent,
   personalAgentAvatarId,
 } from "./personalAgents.js";
-import { botTaskTitle, executeChatTurn, resolveChatTarget } from "./routes/chat.js";
+import { executeChatTurn, resolveChatTarget } from "./routes/chat.js";
 import { maybeDispatchNextBotTask } from "./botTaskRunner.js";
 
 const schedLogger = logger.child({ module: "scheduler" });

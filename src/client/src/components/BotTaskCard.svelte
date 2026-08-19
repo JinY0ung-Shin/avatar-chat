@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { BOT_TASK_STATUS_LABELS } from "../lib/chat";
-  import type { BotTask, BotTaskStatus } from "../lib/types";
+  import { appState } from "../lib/state";
+  import type { AvatarSummary, BotTask, BotTaskStatus } from "../lib/types";
 
   // 위임 작업 카드 하나. 봇 오피스에서는 스레드(트랜스크립트) 안에 메시지들과
   // 섞여 놓이므로, 카드가 스스로 상태·경과·중지 컨트롤을 모두 들고 있어야
@@ -39,6 +40,11 @@
   $: detail = taskDetail(task);
   $: elapsed = elapsedLabel(task, now);
   $: statusLabel = BOT_TASK_STATUS_LABELS[task.status] ?? task.status;
+  // 위임 출처는 봇 이름을 필요로 하는데 이름은 카드가 아니라 로스터(아바타 목록)에
+  // 있다. 스토어를 헬퍼 안에서만 읽으면 값이 굳으므로 이름 맵을 최상위 `$:`로 뽑고
+  // 헬퍼에는 인자로 넘긴다.
+  $: botNames = botNameMap($appState.avatars);
+  $: delegationTitle = delegationTitleOf(task, botNames);
 
   /** 카드 한 줄 요약: 상태별로 지금 알아야 할 문장 하나만 고른다. */
   function taskDetail(item: BotTask): string {
@@ -69,6 +75,31 @@
     return `${Math.round(hours / 24)}일`;
   }
 
+  /** personal_agents.id → 그 봇의 표시 이름(별칭 우선). 로스터에 있는 봇만 담는다. */
+  function botNameMap(avatars: AvatarSummary[]): Map<string, string> {
+    const names = new Map<string, string>();
+    for (const avatar of avatars) {
+      const agentId = avatar.personalAgent?.agentId;
+      if (agentId) names.set(agentId, avatar.alias || avatar.displayName);
+    }
+    return names;
+  }
+
+  /**
+   * 위임 칩이 낭독할 문장 — 빈 문자열이면 칩 자체가 없다(주인이 직접 시킨 일).
+   * 출처 봇 id가 없으면 주인의 메인 아바타가 넘긴 것이고, id는 있는데 이름을 모르면
+   * (로스터 미로드·지워진 봇) 이름 없이도 "내가 시킨 게 아니다"까지는 말한다.
+   */
+  function delegationTitleOf(item: BotTask, names: Map<string, string>): string {
+    if (item.delegationDepth <= 0) return "";
+    if (!item.delegatedByAgentId) return "아바타가 위임한 작업";
+    const name = names.get(item.delegatedByAgentId);
+    if (!name) return "다른 봇이 위임한 작업";
+    // 봇 이름은 대개 이미 "…봇"으로 끝난다(리뷰 봇, 배포 봇) — 거기에 또 붙이면
+    // "리뷰 봇 봇이"가 된다.
+    return name.endsWith("봇") ? `${name}이 위임한 작업` : `${name} 봇이 위임한 작업`;
+  }
+
   /** 인자만 읽으므로 템플릿에서 호출해도 값이 굳지 않는다. */
   function stopButtonLabel(status: BotTaskStatus, pending: boolean): string {
     const verb = status === "running" ? "중지" : "취소";
@@ -88,6 +119,15 @@
         <span class="tag bots-task-sched" title="예약 작업이 자동으로 맡긴 작업">
           <span aria-hidden="true">예약</span>
           <span class="sr-only">예약 작업이 자동으로 맡긴 작업</span>
+        </span>
+      {/if}
+      <!-- 봇이 다른 봇에게 넘긴 일도 같은 스레드에 쌓인다. 예약과 같은 이유로 출처를
+           칩으로 달되, "위임" 두 글자로는 누가 넘겼는지 모르므로 낭독/툴팁 문장이
+           출처를 이름으로 말한다. 제목이 비면 주인이 직접 시킨 일이라 칩도 없다. -->
+      {#if delegationTitle}
+        <span class="tag bots-task-delegated" title={delegationTitle}>
+          <span aria-hidden="true">위임</span>
+          <span class="sr-only">{delegationTitle}</span>
         </span>
       {/if}
     </span>

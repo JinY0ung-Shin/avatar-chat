@@ -921,12 +921,13 @@ export async function buildAgentRunPlan(
         actingUser: actingMember,
       })
     : null;
-  // Personal agents (내 봇). TWO tools with opposite run kinds behind ONE server
-  // name: a bot run gets `update_profile` (it edits ITSELF), an owner's own run
-  // gets `create_agent` (it stands a new bot up). The gates are mutually
-  // exclusive by construction, so the name can never collide. Neither
-  // registration is the boundary — both handlers re-check the live owner+admin
-  // role (the mcp__ auto-allow fires first).
+  // Personal agents (내 봇). TWO tool SETS with opposite run kinds behind ONE
+  // server name: a bot run gets `update_profile` (it edits ITSELF) + the
+  // delegated-task `report_task`, an owner's own run gets `create_agent` (it
+  // stands a new bot up). `delegate_to_bot` (봇 간 위임) is the one tool BOTH
+  // sets carry. The gates are mutually exclusive by construction, so the name
+  // can never collide. No registration is the boundary — every handler
+  // re-checks the live owner+admin role (the mcp__ auto-allow fires first).
   const personalAgentSelfActive = Boolean(personalAgentRun);
   const personalAgentCreateActive =
     ownerToolAccess &&

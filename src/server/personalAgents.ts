@@ -35,6 +35,44 @@ export const PERSONAL_AGENT_FIELD_CAPS = {
 /** Display-name cap for both the HTTP route and the create_agent MCP tool. */
 export const PERSONAL_AGENT_DISPLAY_NAME_CAP = 64;
 
+/**
+ * How many turns may wait behind a running bot IN ONE THREAD. A queue this deep
+ * already represents hours of unattended work; past it the owner is better told
+ * to wait than to keep stacking.
+ *
+ * Lives HERE rather than in `routes/chat.ts` (which still re-exports it) so the
+ * 봇 간 위임 tool can enforce the same cap without an agent → route import — see
+ * botTaskDispatchBroker.ts for the cycle this avoids.
+ */
+export const MAX_QUEUED_BOT_TASKS = 20;
+
+/**
+ * The delegated-task card's label. Same derivation as the conversation title
+ * (`store/conversations.ts`): first line, whitespace collapsed, 40 chars — so a
+ * bot thread's title and its first task card read identically. Relocated from
+ * `routes/chat.ts` (which re-exports it) for the same reason as the cap above.
+ */
+export function botTaskTitle(requestText: string): string {
+  const raw = requestText.split("\n")[0].trim().replace(/\s+/g, " ");
+  return raw.length > 0 ? raw.slice(0, 40) : "새 작업";
+}
+
+/**
+ * 봇 간 위임 hop cap. A task created by a hand-off carries depth 1; that bot may
+ * hand off once more (depth 2), and there the chain STOPS. Every hop is a full
+ * unattended run on the owner's account, so an uncapped chain is an unbounded
+ * bill — and past two hops the original request has usually been paraphrased
+ * beyond recognition anyway.
+ */
+export const MAX_DELEGATION_DEPTH = 2;
+
+/**
+ * How many hand-offs ONE turn may make. Separate from the depth cap: depth
+ * bounds the CHAIN, this bounds the FAN-OUT of a single turn that decides to
+ * split its work across the owner's bots.
+ */
+export const MAX_DELEGATIONS_PER_TURN = 3;
+
 export function personalAgentAvatarId(
   ownerUserId: string,
   agentId: string,

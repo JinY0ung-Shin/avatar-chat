@@ -701,6 +701,20 @@ export interface BotTask {
    * and the scheduler's re-enqueue dedupe key. NULL = owner-direct.
    */
   routineJobId: string | null;
+  /**
+   * 봇 간 위임: the personal_agents.id of the BOT whose turn handed this task
+   * off via mcp__personal_agent__delegate_to_bot. NULL when the owner asked
+   * directly OR when the owner's MAIN avatar delegated (then only
+   * `delegationDepth` says so). Provenance only — capability never changes.
+   */
+  delegatedByAgentId: string | null;
+  /**
+   * How many hand-offs deep this task sits: 0 = the owner typed it (or a
+   * routine fired it), 1 = delegated by the main avatar or by a depth-0 bot
+   * turn, 2 = delegated by a depth-1 turn — the CAP: a depth-2 turn may not
+   * delegate further (unbounded bot→bot chains are a cost amplifier).
+   */
+  delegationDepth: number;
 }
 
 /** A group the current user belongs to — surfaced on `User` and the roster. */

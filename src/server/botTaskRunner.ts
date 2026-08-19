@@ -1,4 +1,5 @@
 import type { AppServices } from "./app.js";
+import { registerBotTaskDispatcher } from "./botTaskDispatchBroker.js";
 import logger from "./logger.js";
 import {
   findChattablePersonalAgent,
@@ -200,6 +201,13 @@ export async function maybeDispatchNextBotTask(
  */
 export function startBotTaskDispatcher(services: AppServices): () => void {
   const { store } = services;
+  // Fill the broker's slot FIRST, before the sweep or the backlog drain can
+  // await anything: from here on a 봇 간 위임 hand-off queued deep inside an
+  // agent run can poke this dispatcher without importing it (that direction is
+  // an import cycle — see botTaskDispatchBroker.ts).
+  registerBotTaskDispatcher((ownerUserId, conversationId) => {
+    void maybeDispatchNextBotTask(services, ownerUserId, conversationId);
+  });
   try {
     const swept = store.sweepInterruptedBotTasks(INTERRUPTED_BY_RESTART);
     if (swept > 0) {

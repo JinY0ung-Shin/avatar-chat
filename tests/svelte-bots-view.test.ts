@@ -143,6 +143,8 @@ function taskOf(over: Partial<BotTask> = {}): BotTask {
     finishedAt: null,
     seenAt: null,
     routineJobId: null,
+    delegatedByAgentId: null,
+    delegationDepth: 0,
     ...over,
   };
 }
@@ -397,6 +399,77 @@ describe("BotTaskCard", () => {
       expect(typed.container.querySelector(".bots-task-sched")).toBeNull();
       typed.unmount();
     }
+  });
+
+  it("names the bot that handed a task off, and leaves work the owner typed unmarked", () => {
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-9", "수집 봇"), botSummary("bot-7", "빌드 도우미")],
+    });
+
+    const handed = render(BotTaskCard, {
+      props: { task: taskOf({ id: "t-deleg", delegatedByAgentId: "bot-9", delegationDepth: 1 }) },
+    });
+    const chip = handed.container.querySelector(".bots-task-delegated");
+    // "위임" 두 글자로는 누가 넘겼는지 알 수 없으므로 낭독 텍스트와 툴팁이 출처를
+    // 이름으로 댄다. 상태 칩은 그대로 자기 자리를 지킨다.
+    expect(chip?.querySelector("[aria-hidden='true']")?.textContent?.trim()).toBe("위임");
+    expect(chip?.querySelector(".sr-only")?.textContent?.trim()).toBe("수집 봇이 위임한 작업");
+    expect(chip?.getAttribute("title")).toBe("수집 봇이 위임한 작업");
+    expect(handed.container.querySelector(".bots-task-chip")?.textContent?.trim()).toBe("대기 중");
+    handed.unmount();
+
+    // 이름이 "봇"으로 끝나지 않는 봇에게만 호칭을 붙인다 — 위의 "수집 봇"에까지
+    // 붙였다면 "수집 봇 봇이"가 됐을 것이다.
+    const plainName = render(BotTaskCard, {
+      props: { task: taskOf({ id: "t-plain", delegatedByAgentId: "bot-7", delegationDepth: 1 }) },
+    });
+    expect(plainName.container.querySelector(".bots-task-delegated")?.getAttribute("title")).toBe(
+      "빌드 도우미 봇이 위임한 작업",
+    );
+    plainName.unmount();
+
+    const typed = render(BotTaskCard, { props: { task: taskOf({ id: "t-typed" }) } });
+    expect(typed.container.querySelector(".bots-task-delegated")).toBeNull();
+    typed.unmount();
+  });
+
+  it("credits the main avatar for a source-less hand-off, and still marks one whose bot it cannot name", () => {
+    seed({ avatars: [botSummary("bot-1", "리뷰 봇")] });
+
+    // 깊이는 1인데 출처 봇이 없다 = 주인의 메인 아바타가 넘긴 일.
+    const fromAvatar = render(BotTaskCard, {
+      props: { task: taskOf({ id: "t-avatar", delegatedByAgentId: null, delegationDepth: 1 }) },
+    });
+    expect(fromAvatar.container.querySelector(".bots-task-delegated")?.getAttribute("title")).toBe(
+      "아바타가 위임한 작업",
+    );
+    fromAvatar.unmount();
+
+    // 로스터가 아직 없거나 그 봇이 지워졌어도 "내가 시킨 게 아니다"까지는 말한다.
+    seed({ avatars: [] });
+    const unnamed = render(BotTaskCard, {
+      props: { task: taskOf({ id: "t-unknown", delegatedByAgentId: "bot-gone", delegationDepth: 2 }) },
+    });
+    expect(unnamed.container.querySelector(".bots-task-delegated")?.getAttribute("title")).toBe(
+      "다른 봇이 위임한 작업",
+    );
+    unnamed.unmount();
+  });
+
+  it("picks the delegating bot's name up when the roster arrives after the card", async () => {
+    seed({ avatars: [] });
+    const { container } = render(BotTaskCard, {
+      props: { task: taskOf({ id: "t-late", delegatedByAgentId: "bot-9", delegationDepth: 1 }) },
+    });
+    expect(container.querySelector(".bots-task-delegated")?.getAttribute("title")).toBe("다른 봇이 위임한 작업");
+
+    // 이름 맵을 헬퍼 안에서 읽었다면 여기서 값이 굳는다 — 바뀐 것이 스토어뿐이라
+    // task prop은 그대로이고, 카드는 그래도 따라가야 한다.
+    replaceState({ avatars: [botSummary("bot-9", "수집 봇")] });
+
+    await waitFor(() =>
+      expect(container.querySelector(".bots-task-delegated")?.getAttribute("title")).toBe("수집 봇이 위임한 작업"),
+    );
   });
 
   it("names the task in the control's accessible name and keeps that name stable while busy", async () => {

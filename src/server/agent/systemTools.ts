@@ -18,6 +18,10 @@ import {
   summarizePersonalAgentState,
 } from "./ownerState.js";
 import { MCP_TOOL_GROUPS, type McpToolGroupId } from "../../shared/mcpToolGroups.js";
+import {
+  MAX_DELEGATION_DEPTH,
+  MAX_DELEGATIONS_PER_TURN,
+} from "../personalAgents.js";
 import type { ToolSkillPolicy } from "../toolSkillPolicy.js";
 import { webFetchProxyState } from "./webFetchTools.js";
 
@@ -444,6 +448,20 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           user?.visibility === "private"
             ? "private (owner only)"
             : "group (discoverable by group teammates only)";
+        // 봇 간 위임 self-state. Read LIVE here rather than off
+        // PersonalAgentState: the sibling roster is exactly what the prompt
+        // cannot carry (a bot run stamps no personalAgentNames), and this tool
+        // is the runtime mirror that closes that gap. Depth comes off the task
+        // tracking THIS turn — an untracked turn opens a chain at hop 0.
+        const delegationSiblings = pa
+          ? store
+              .listPersonalAgents(pa.ownerUserId)
+              .filter((bot) => bot.id !== pa.agentId)
+          : [];
+        const delegationDepth =
+          (ctx.personalAgent?.taskId
+            ? store.getBotTask(ctx.personalAgent.taskId)?.delegationDepth
+            : 0) ?? 0;
         // The bot's own identity + roster, printed AHEAD of the owner state it
         // runs with. Every fact here comes from PersonalAgentState, the same
         // source the prompt's bot branch uses (the both-consumers invariant).
@@ -455,6 +473,14 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               `- Capability: you run with the owner's FULL avatar capability on their behalf (their knowledge repository, secrets, git repositories, plugins) — everything under "Current avatar state" below is yours to use this turn.`,
               `- Persona/instructions: ${pa.personaSet ? "SET" : "NOT set"}; you may change your own persona/alias/bio/intro with mcp__personal_agent__update_profile (applies from the NEXT turn) — confirm the wording with the owner first, and never change it unprompted.`,
               `- Roster: this owner holds ${pa.agentCount} of ${pa.maxAgents} personal bots (a disabled bot still holds its slot); they manage them in 설정 → 내 봇.`,
+              // 봇 간 위임 — the describe_system half of the prompt's hand-off
+              // paragraph, plus the ONE fact the prompt cannot carry: WHICH
+              // sibling bots this run can actually reach right now.
+              `- Hand-off to another bot (mcp__personal_agent__delegate_to_bot): ${
+                delegationSiblings.length > 0
+                  ? `AVAILABLE — this owner's other enabled bots are ${delegationSiblings.map((bot) => `${bot.displayName}${bot.alias ? ` (alias '${bot.alias}')` : ""}`).join(", ")}. `
+                  : "no other enabled bot exists to hand work to right now, so anything asked of you is yours to do. "
+              }A hand-off QUEUES a self-contained request as a task on that bot's own thread; the server runs it unattended and the result lands on the owner's 봇 오피스 board, never back in this conversation. Chain depth of the current task: ${delegationDepth} of ${MAX_DELEGATION_DEPTH} used${delegationDepth >= MAX_DELEGATION_DEPTH ? " — this chain is EXHAUSTED, you may not hand off again" : ""}; at most ${MAX_DELEGATIONS_PER_TURN} hand-offs per turn. Each one is a full unattended run the owner pays for.`,
               // Delegated-task self-state — the describe_system half of the
               // prompt's delegated-task paragraph (the both-consumers rule).
               `- Delegated task: this turn ${
@@ -519,6 +545,9 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           ...(state.personalAgentsEnabled && !pa
             ? [
                 `- Personal bots (내 봇): ${state.personalAgentCount} of ${state.personalAgentMax} created${state.personalAgentNames.length ? ` (enabled: ${state.personalAgentNames.join(", ")})` : ""} — each is a separate chat contact of the owner's, running with this same avatar capability. You can create another with mcp__personal_agent__create_agent${state.personalAgentCount >= state.personalAgentMax ? ", but the cap is reached — the owner must delete one first" : ""}; the owner manages them in 설정 → 내 봇.`,
+                // 봇 간 위임 from the owner's side — the describe_system half of
+                // personalBotsSection's hand-off trigger.
+                `- Hand-off to a bot (mcp__personal_agent__delegate_to_bot): ${state.personalAgentNames.length ? "available" : "no enabled bot exists to hand work to yet"} — when the owner asks you to put one of their bots on something, this QUEUES a self-contained request as a task on that bot's own thread; the server runs it unattended and the result appears on their 봇 오피스 board, not in this conversation. At most ${MAX_DELEGATIONS_PER_TURN} hand-offs per turn, and each is a full unattended run they pay for.`,
               ]
             : []),
           `- Routines: ${routines.length} (${routines.filter((r) => r.enabled).length} enabled)${pa ? ` across this owner's whole avatar — ${routines.filter((r) => r.personalAgentId === pa.agentId).length} of them are YOURS, and list_routines/update_routine/delete_routine reach only those (see the bot state above)` : ""}`,
