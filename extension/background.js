@@ -3384,15 +3384,38 @@ async function buildExpandedPageText(tab) {
   return lines.join("\n");
 }
 
-/** Longest horizontal edge of a screenshot after scaling, in CSS px. */
+/** Longest horizontal edge of a screenshot after scaling, in PHYSICAL image px. */
 const SCREENSHOT_MAX_WIDTH = 1400;
 /** fullPage capture height cap, CSS px — beyond this the image is cut off. */
 const SCREENSHOT_MAX_FULL_HEIGHT = 6000;
 
+// THREE pixel units meet in this function and only the middle one is the
+// protocol's (probe-measured, `tests/visual/zoom-capture.spec.ts`): every clip
+// built below comes off `Page.getLayoutMetrics` in CSS px, `captureScreenshot`
+// reads its `clip` as DIP (= CSS px × the viewport's `zoom`, i.e. the user's own
+// Ctrl+/−), and the bitmap it hands back is PHYSICAL px (= clip × `scale` × the
+// display's device scale factor). CSS and DIP coincide at 100% zoom ALONE, which
+// is why an unconverted clip reads as correct on the developer's own unzoomed
+// window while cropping the bottom-right 1−1/zoom of the visible page in the
+// field — a fifth of it at 125%, a third at 150%. The same measurement is why
+// the width cap and the vision-API ceiling are applied to the PHYSICAL edge: on
+// a scaled display the bitmap comes back dsf times bigger than the clip asked
+// for, so a CSS-measured bound bounds nothing.
 async function captureShot(tab, message) {
   const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
   const viewport = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
   const content = metrics.cssContentSize || {};
+  // Both factors are derived from that ONE metrics read, and both fall back to
+  // the pre-conversion arithmetic (zoom 1, dsf 1) when a field is missing —
+  // `visualViewport` is the physical-px twin of the CSS block, so their width
+  // ratio IS zoom × dsf and dividing out the zoom leaves the display's factor.
+  const zoom = Number(viewport.zoom) > 0 ? Number(viewport.zoom) : 1;
+  const physical = metrics.visualViewport || {};
+  const pxPerCssRaw =
+    Number(physical.clientWidth) > 0 && Number(viewport.clientWidth) > 0
+      ? physical.clientWidth / viewport.clientWidth
+      : zoom;
+  const dsf = pxPerCssRaw / zoom || 1;
   let clip;
   let beyondViewport = false;
   if (message.uid) {
@@ -3442,9 +3465,21 @@ async function captureShot(tab, message) {
   }
   clip.width = Math.max(1, Math.round(clip.width));
   clip.height = Math.max(1, Math.round(clip.height));
+  // The three branches above measure the page in CSS px; the protocol wants DIP.
+  // The CSS dimensions have to survive the conversion because the click-time
+  // drift check compares them against a fresh `cssVisualViewport`.
+  const cssClipWidth = clip.width;
+  const cssClipHeight = clip.height;
+  clip = {
+    x: clip.x * zoom,
+    y: clip.y * zoom,
+    width: Math.max(1, Math.round(clip.width * zoom)),
+    height: Math.max(1, Math.round(clip.height * zoom)),
+  };
   // Bound the pixel size for the model: cap the width, and stay inside the
-  // 8000px-per-edge ceiling vision APIs enforce even for tall captures.
-  const scale = Math.min(1, SCREENSHOT_MAX_WIDTH / clip.width, 7900 / clip.height);
+  // 8000px-per-edge ceiling vision APIs enforce even for tall captures. Both
+  // bounds are on the returned BITMAP, which is dsf times this clip.
+  const scale = Math.min(1, SCREENSHOT_MAX_WIDTH / (clip.width * dsf), 7900 / (clip.height * dsf));
   // LOAD-BEARING, not tidiness. In a HEADFUL browser — which is the whole fleet,
   // since the bridge drives the user's own window — a drawn action highlight IS
   // included in what captureScreenshot returns (probe-measured,
@@ -3467,14 +3502,19 @@ async function captureShot(tab, message) {
   // Remember this capture's pixel→CSS mapping so click_at can invert it. Only
   // a viewport capture's origin coincides with the input coordinate space;
   // element/fullPage clips are page-absolute and must be refused there. URL,
-  // scroll origin, and viewport size anchor the click-time drift check.
+  // scroll origin, and viewport size anchor the click-time drift check — which
+  // reads CSS metrics, so the clip dimensions are stored in CSS px.
   lastShot = {
     tabId: tab.id,
     url: tab.url || "",
     mode: message.uid ? "element" : message.fullPage ? "fullPage" : "viewport",
     scale,
-    clipWidth: clip.width,
-    clipHeight: clip.height,
+    clipWidth: cssClipWidth,
+    clipHeight: cssClipHeight,
+    // Image px per CSS px of the page: what was asked for times what the
+    // protocol applied on top. `scale` alone was the whole mapping only at 100%
+    // zoom on an unscaled display, so click_at inverts THIS number instead.
+    pxPerCss: scale * zoom * dsf,
     pageX: viewport.pageX || 0,
     pageY: viewport.pageY || 0,
   };
@@ -3634,6 +3674,12 @@ async function buildUidMap() {
         Math.min(content.height || viewport.clientHeight || 768, SCREENSHOT_MAX_FULL_HEIGHT),
       ),
     );
+    // Only the captured REGION crosses into the protocol's DIP space (CSS px ×
+    // zoom — captureShot's unit note); the payload below stays CSS. The viewer
+    // draws boxes in exactly the doc.width/height space this payload declares
+    // and CSS-sizes the bitmap onto it, so converting the declared size or the
+    // box geometry too would move every box off its element.
+    const zoom = Number(viewport.zoom) > 0 ? Number(viewport.zoom) : 1;
 
     const boxes = [];
     let skippedCropped = 0;
@@ -3683,7 +3729,13 @@ async function buildUidMap() {
       const { data } = await sendCdp({ tabId: tab.id }, "Page.captureScreenshot", {
         format: "jpeg",
         quality: 80,
-        clip: { x: 0, y: 0, width: docWidth, height: docHeight, scale },
+        clip: {
+          x: 0,
+          y: 0,
+          width: Math.max(1, Math.round(docWidth * zoom)),
+          height: Math.max(1, Math.round(docHeight * zoom)),
+          scale,
+        },
         captureBeyondViewport: true,
       });
       return String(data || "");
@@ -4198,8 +4250,13 @@ async function performOp(message, stagingOrigin) {
           "(no uid, no fullPage), then pass pixel positions measured on that image.",
       };
     }
-    const imageWidth = Math.round(lastShot.clipWidth * lastShot.scale);
-    const imageHeight = Math.round(lastShot.clipHeight * lastShot.scale);
+    // One stored factor carries the whole CSS→image mapping (captureShot's unit
+    // note). The `scale` fallback is defensive only: a worker restarted by an
+    // extension update clears `lastShot` outright, so a shot without the field
+    // cannot reach this line in practice.
+    const pxPerCss = lastShot.pxPerCss || lastShot.scale;
+    const imageWidth = Math.round(lastShot.clipWidth * pxPerCss);
+    const imageHeight = Math.round(lastShot.clipHeight * pxPerCss);
     if (x > imageWidth || y > imageHeight) {
       return {
         ok: false,
@@ -4229,13 +4286,15 @@ async function performOp(message, stagingOrigin) {
           "no longer point at the same content. Take a fresh viewport screenshot and measure the position again.",
       };
     }
-    // The capture downscaled CSS pixels by `scale`; invert it to land on the
-    // exact point the model saw, clamped a hair inside the viewport so an
+    // The capture mapped one CSS px of the page onto `pxPerCss` image px
+    // (requested scale × browser zoom × device scale factor); dividing by that
+    // one factor lands on the exact point the model saw, clamped a hair inside
+    // the viewport — in CSS px, the space the input events want — so an
     // exact-edge coordinate still hits the page. A viewport capture's image
     // origin IS the viewport origin, so no offset applies (enforced above).
     // Hit-test BEFORE clicking: the click itself may change what sits there.
-    const cssX = Math.min(x / lastShot.scale, lastShot.clipWidth - 1);
-    const cssY = Math.min(y / lastShot.scale, lastShot.clipHeight - 1);
+    const cssX = Math.min(x / pxPerCss, lastShot.clipWidth - 1);
+    const cssY = Math.min(y / pxPerCss, lastShot.clipHeight - 1);
     const described = await describePoint({ tabId: tab.id }, cssX, cssY);
     // The only op whose subject is a COORDINATE, so the hit test above is also
     // the only thing that knows which element to draw on. Root session by

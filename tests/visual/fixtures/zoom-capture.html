@@ -1,0 +1,47 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>zoom capture markers</title>
+<style>
+  /* Four corner markers of the layout viewport, sampled by color in the decoded
+     capture: a marker MISSING from the bitmap is a region the clip failed to
+     cover. ABSOLUTE, never fixed — a captureBeyondViewport re-raster relocates
+     fixed elements (probe-verified), which would make the picture lie about
+     where the page's corners are. html/body at 100% keeps the initial
+     containing block the markers anchor to equal to the layout viewport at
+     every zoom level. */
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+    background: #ffffcc;
+  }
+  .m {
+    position: absolute;
+    width: 80px;
+    height: 80px;
+  }
+  #tl {
+    top: 0;
+    left: 0;
+    background: #d00000;
+  }
+  #tr {
+    top: 0;
+    right: 0;
+    background: #00a000;
+  }
+  #bl {
+    bottom: 0;
+    left: 0;
+    background: #0000d0;
+  }
+  #br {
+    bottom: 0;
+    right: 0;
+    background: #d000d0;
+  }
+</style>
+<div class="m" id="tl"></div>
+<div class="m" id="tr"></div>
+<div class="m" id="bl"></div>
+<div class="m" id="br"></div>

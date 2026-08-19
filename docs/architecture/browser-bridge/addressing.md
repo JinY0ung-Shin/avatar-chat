@@ -22,11 +22,15 @@
   clickable but absent from the AX tree no longer need a fraction guess in the first place: a FULL
   snapshot lists them with ordinary uids in its trailing `clickable but not in the accessibility tree`
   section (snapshots.md), which `click`/`click_at`/`hover` resolve like any other uid.
-- **PIXEL mode clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** Screenshots are
-  downscaled (`SCREENSHOT_MAX_WIDTH` 1400), so the pixels the model sees ≠ CSS px. The extension
-  remembers the LAST capture's mapping (`lastShot`: tabId/mode/scale/clip dims) and inverts the scale at
-  click time — viewport captures only; element/fullPage clips are page-absolute and refused with a
-  redirect to a plain viewport screenshot. Same lifetime rule as uids: coordinates are only valid for
+- **PIXEL mode clicks by SCREENSHOT-PIXEL coordinates, not CSS coordinates.** A capture is bounded to
+  `SCREENSHOT_MAX_WIDTH` 1400 PHYSICAL px, and the browser then applies the user's own browser zoom and
+  the display's device scale factor on top, so the pixels the model sees differ from CSS px by more than
+  that downscale. The extension remembers the LAST capture's whole mapping (`lastShot`:
+  tabId/mode/scale/`pxPerCss`/clip dims) and inverts `pxPerCss` — `scale × zoom × dsf`, the single
+  number that turns an image px back into a CSS px — at click time; `clipWidth`/`clipHeight` stay CSS px
+  because the drift check below compares them against fresh `cssVisualViewport` metrics (the geometry
+  contract itself is in snapshots.md). Viewport captures only; element/fullPage clips are page-absolute
+  and refused with a redirect to a plain viewport screenshot. Same lifetime rule as uids: coordinates are only valid for
   the screenshot that produced them — enforced at CLICK time, not mint time: the branch re-reads
   `Page.getLayoutMetrics` and refuses on URL/scroll/viewport-size drift (a stale image size would even
   pass the bounds check). Before dispatching, the point is hit-tested read-only

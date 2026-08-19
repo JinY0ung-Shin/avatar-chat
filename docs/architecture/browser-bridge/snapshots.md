@@ -32,6 +32,25 @@
   `wait_for` skips the action tail's snapshot read entirely (its own match loop still walks uncapped):
   one yes/no answer used to cost ~25 KB of page walk. Old builds ignore all of this and keep returning
   full snapshots — a degrade, not a break, which is why `BROWSER_EXTENSION_MIN_COMPATIBLE` stays 0.6.0.
+- **A `screenshot` crosses THREE pixel units and only the middle one is the protocol's.** Every clip
+  `captureShot` builds — viewport, element quads, `cssContentSize` — is CSS px;
+  `Page.captureScreenshot` reads its `clip` as DIP = CSS px × `cssVisualViewport.zoom` (the user's own
+  Ctrl+/−); the bitmap it returns is PHYSICAL px = clip × `scale` × the display's device scale factor.
+  Probe-pinned in `tests/visual/zoom-capture.spec.ts` — measured across dsf × zoom × all three capture
+  modes, since the protocol documents none of it. CSS and DIP coincide at 100% zoom ALONE, which is how
+  an unconverted clip shipped for so long: correct on the developer's own unzoomed window, while in the
+  FIELD it cropped the bottom-right 1−1/zoom of the visible page — a fifth at 125%, a third at 150% —
+  and the model was handed that partial image as the viewport. So the clip converts once (× zoom) after
+  the three branches build it; `SCREENSHOT_MAX_WIDTH` and the ~8000px-per-edge vision ceiling are
+  measured on the PHYSICAL edge, because a 150%-scaled Windows display returns a bitmap half again over
+  a CSS-measured cap; and `lastShot` keeps the clip in CSS px for the drift check plus
+  `pxPerCss = scale × zoom × dsf` for click_at's inversion (addressing.md). Both factors ride the ONE
+  metrics read — zoom from `cssVisualViewport.zoom`, zoom × dsf from
+  `visualViewport.clientWidth / cssVisualViewport.clientWidth`, the physical twin of the CSS block — and
+  each falls back to the pre-conversion arithmetic when its field is absent. The uid MAP's capture
+  converts its clip the same way but leaves the PAYLOAD in CSS: the viewer draws boxes in exactly the
+  doc size that payload declares, so converting the declared size too would move every box off its
+  element.
 - **An EMPTY walk is retried and then says it is empty; it never passes for a blank page.** Two different
   too-early reads get two different treatments in the action tail. A snapshot BYTE-IDENTICAL to the
   previous one gets one 250ms re-poll (`STALE_SNAPSHOT_REPOLL_MS`) — a late AX flush after the lifecycle
