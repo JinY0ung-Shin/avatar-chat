@@ -4,7 +4,7 @@
   import Icon from "./Icon.svelte";
   import { api } from "../lib/api";
   import { confirmAction } from "../lib/confirm";
-  import { addConversationToSplit, clearChatHistory, newChat, selectConversation, startChatWith, startNewChat } from "../lib/chat";
+  import { addConversationToSplit, clearChatHistory, newChat, openSeededChat, selectConversation, startChatWith, startNewChat } from "../lib/chat";
   import { timeLabel } from "../lib/format";
   import { loadAvatars, loadConversations, stopKnowledgeWatch } from "../lib/loaders";
   import { prefersReducedMotion, project, rubberband, springValue } from "../lib/motion";
@@ -522,6 +522,26 @@
     }
   }
 
+  // Empty-state CTA. A bot is minted CONVERSATIONALLY (the owner's own avatar
+  // calls mcp__personal_agent__create_agent), so this only seeds the composer —
+  // the owner reviews the request and presses 보내기 themselves.
+  const BOT_CREATE_SEED =
+    "내 봇을 새로 만들고 싶어. 어떤 역할의 봇이 좋을지 같이 정하고, 이름과 페르소나를 제안해서 만들어줘.";
+  const BOT_CREATE_NOTICE = "입력창에 봇 만들기 요청을 준비했습니다. 보내기를 누르면 시작해요.";
+  let botCreateBusy = false;
+  async function startBotCreation() {
+    if (botCreateBusy) return;
+    botCreateBusy = true;
+    try {
+      await openSeededChat(BOT_CREATE_SEED, BOT_CREATE_NOTICE);
+      closeRail();
+    } catch (err) {
+      notify(`봇 만들기를 시작하지 못했습니다: ${(err as Error).message}`, "warn");
+    } finally {
+      botCreateBusy = false;
+    }
+  }
+
   function clearConversationSearch(): void {
     conversationQuery = "";
     conversationSearchInput?.focus();
@@ -694,29 +714,47 @@
       <span>새 대화</span>
     </button>
 
-    {#if personalBots.length}
+    <!-- 내 봇 is admin-only (phase 1), so an admin with zero bots still gets the
+         section — otherwise the feature has no entry point at all. The
+         personalBots half keeps it working if the gate ever widens. -->
+    {#if isAdmin || personalBots.length}
       <div class="rail-bots">
         <div class="rail-section-label">
           <Icon name="sparkles" size={12} />
           내 봇 <span class="rail-section-count">{personalBots.length}</span>
         </div>
-        <div class="rail-bot-list scroll-thin" role="group" aria-label="내 봇 목록">
-          {#each personalBots as bot (bot.id)}
-            {@const botName = bot.alias || bot.displayName}
-            <button
-              class="rail-bot"
-              type="button"
-              title={`${botName} 봇과 대화`}
-              aria-label={botBusyId === bot.id ? `${botName} 봇과 대화, 여는 중` : `${botName} 봇과 대화`}
-              aria-busy={botBusyId === bot.id ? "true" : "false"}
-              disabled={Boolean(botBusyId)}
-              on:click={() => openBotChat(bot)}
-            >
-              <AvatarImage user={bot} size={22} alt="" />
-              <span class="rail-bot-name">{botName}</span>
-            </button>
-          {/each}
-        </div>
+        {#if personalBots.length}
+          <div class="rail-bot-list scroll-thin" role="group" aria-label="내 봇 목록">
+            {#each personalBots as bot (bot.id)}
+              {@const botName = bot.alias || bot.displayName}
+              <button
+                class="rail-bot"
+                type="button"
+                title={`${botName} 봇과 대화`}
+                aria-label={botBusyId === bot.id ? `${botName} 봇과 대화, 여는 중` : `${botName} 봇과 대화`}
+                aria-busy={botBusyId === bot.id ? "true" : "false"}
+                disabled={Boolean(botBusyId)}
+                on:click={() => openBotChat(bot)}
+              >
+                <AvatarImage user={bot} size={22} alt="" />
+                <span class="rail-bot-name">{botName}</span>
+              </button>
+            {/each}
+          </div>
+        {:else}
+          <button
+            class="rail-bot rail-bot-create"
+            type="button"
+            title="내 아바타와 대화로 첫 봇 만들기"
+            aria-label="내 아바타와 대화로 첫 봇 만들기"
+            aria-busy={botCreateBusy ? "true" : "false"}
+            disabled={botCreateBusy}
+            on:click={startBotCreation}
+          >
+            <Icon name="plus" size={14} />
+            <span class="rail-bot-name">첫 봇 만들기</span>
+          </button>
+        {/if}
       </div>
     {/if}
   </div>

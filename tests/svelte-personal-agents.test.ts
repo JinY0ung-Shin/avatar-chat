@@ -1,9 +1,10 @@
 // 내 봇 (personal agents) — the CLIENT half. What is pinned here is the four
 // places a bot differs from every other avatar in the UI: it wears its own badge
 // and sorts right under my own avatar in 탐색, it gets a rail shortcut section
-// that disappears when I have no bots, it is managed through /api/me/agents from
-// 설정 ▸ 내 봇, and a new thread with it starts on the bot's OWN model tier
-// instead of my remembered default.
+// that an admin sees even with zero bots (its empty state seeds a bot-creation
+// chat with my own avatar instead of listing anything), it is managed through
+// /api/me/agents from 설정 ▸ 내 봇, and a new thread with it starts on the bot's
+// OWN model tier instead of my remembered default.
 import { fireEvent, render, screen, waitFor } from "@testing-library/svelte";
 import { tick } from "svelte";
 import { get } from "svelte/store";
@@ -125,6 +126,14 @@ function plainSummary(over: Partial<AvatarSummary> = {}): AvatarSummary {
 
 function detailOf(summary: AvatarSummary): AvatarDetail {
   return { ...summary, persona: "", intro: "", isOwn: false, elevated: true, plugins: [] };
+}
+
+/** My OWN avatar — what openSeededChat fetches for a seeded pane. */
+function ownerDetail(): AvatarDetail {
+  return {
+    ...detailOf(plainSummary({ id: OWNER_ID, username: "owner", displayName: "나", sharesGroup: false })),
+    isOwn: true,
+  };
 }
 
 const BOT_ROW: PersonalAgent = {
@@ -298,14 +307,45 @@ describe("Shell 내 봇 rail section", () => {
     expect(calls.some((call) => call.url === `/api/avatars/${encodeURIComponent(BOT_AVATAR_ID)}`)).toBe(true);
   });
 
-  it("hides the section entirely when I have no bots", async () => {
+  it("offers an admin with no bots the empty-state CTA instead of a list", async () => {
     stubFetch(() => ({ conversations: [] }));
     replaceState({ avatars: [plainSummary()] });
 
     render(Shell, { props: { user: userOf(), view: "explore" } });
 
+    expect(screen.getByRole("button", { name: /첫 봇 만들기/ })).toBeTruthy();
+    expect(screen.queryByRole("group", { name: "내 봇 목록" })).toBeNull();
+  });
+
+  it("hides the section entirely from a non-admin with no bots", async () => {
+    stubFetch(() => ({ conversations: [] }));
+    replaceState({ avatars: [plainSummary()] });
+
+    render(Shell, { props: { user: userOf({ roles: [] }), view: "explore" } });
+
+    expect(screen.queryByRole("button", { name: /첫 봇 만들기/ })).toBeNull();
     expect(screen.queryByRole("group", { name: "내 봇 목록" })).toBeNull();
     expect(screen.queryByText("내 봇")).toBeNull();
+  });
+
+  it("seeds a bot-creation chat with MY OWN avatar, unsent", async () => {
+    const calls = stubFetch((url) => {
+      if (url.includes("/api/avatars/")) return { avatar: ownerDetail() };
+      return { conversations: [] };
+    });
+    // openSeededChat reads state.user and returns early without it.
+    replaceState({ user: userOf(), avatars: [plainSummary()] });
+
+    render(Shell, { props: { user: userOf(), view: "explore" } });
+    await fireEvent.click(screen.getByRole("button", { name: /첫 봇 만들기/ }));
+
+    await waitFor(() => expect(readState().chatPanes.length).toBe(1));
+    expect(readState().view).toBe("chat");
+    // The pane belongs to the OWNER, never to a composite personal: id — the bot
+    // does not exist yet; my own avatar is the one that mints it.
+    expect(readState().chatPanes[0].avatar.id).toBe(OWNER_ID);
+    expect(readState().chatPanes[0].draft).toContain("내 봇을 새로 만들고 싶어");
+    expect(calls.some((call) => call.url === `/api/avatars/${OWNER_ID}`)).toBe(true);
   });
 });
 

@@ -139,6 +139,18 @@
   white-space: nowrap;
 }
 
+/* Empty state of the section above (admin, no bots yet): the same row, drawn as
+   a dashed affordance the way .empty-note marks an empty area elsewhere. */
+.rail-bot-create {
+  justify-content: center;
+  border: 1px dashed var(--rail-line);
+  color: var(--rail-muted);
+}
+
+.rail-bot-create:hover:not(:disabled) {
+  color: var(--rail-text);
+}
+
 .svelte-rail-streaming {
   display: flex;
   align-items: center;

@@ -89,7 +89,12 @@ means fixing those two store sites + a `routine_jobs` sweep in `deletePersonalAg
 - 탐색: `내 봇` badge (`tag accent`), ranked right after the own avatar. Rail: "내 봇" section in
   `Shell.svelte` from a top-level `$: personalBots = $appState.avatars.filter(...)` (legacy-mode
   compile-time dep rule — the template names the derived array); `Shell` also calls `loadAvatars()`
-  on mount so a `#/settings` boot still populates it. Management = 설정 4th tab `내 봇`
+  on mount so a `#/settings` boot still populates it. The section shows on `isAdmin ||
+  personalBots.length` — an admin with ZERO bots still gets it, or the admin-only feature would have
+  no entry point; its empty state is a `첫 봇 만들기` CTA (`.rail-bot-create`) that calls
+  `openSeededChat` to open a fresh thread with the OWNER's own avatar and SEED (never send) a
+  bot-creation request, which the avatar then fulfils via `mcp__personal_agent__create_agent`.
+  Management = 설정 4th tab `내 봇`
   (`SettingsPersonalAgentsCard.svelte`, admin-gated three ways: tab filter + `{#if isAdmin}` mount +
   reactive tab-guard back to 프로필; ALWAYS-MOUNT `active`-prop rule inside). `makePane` seeds
   `modelTier` from `personalAgent.defaultModel` when the tier exists in this deployment's
@@ -101,6 +106,7 @@ means fixing those two store sites + a `routine_jobs` sweep in `deletePersonalAg
 gates, ownership 404s, AgentRequest shape incl. identity overlay + never-inherit pin, disabled 403,
 role-revoked fail-closed, image round-trip, delete sweeps), `-tools.test.ts` (access-algebra
 baseline, both tool gate matrices, describe_system, prompt pins, routine-name filtering),
-`tests/svelte-personal-agents.test.ts` (badge/rail/management fetches/seeding). Getting-started
+`tests/svelte-personal-agents.test.ts` (badge/rail incl. the admin-only empty-state CTA and the
+owner-avatar seeded pane it opens/management fetches/seeding). Getting-started
 exclusion extended in `tests/agent-core.test.ts`; `tests/agent-run.test.ts:377`'s system-only
 mcpServers pin now includes `personal_agent` (admin owner).
