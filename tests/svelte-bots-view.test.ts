@@ -20,6 +20,7 @@ vi.mock("../src/client/src/views/ChatView.svelte", () => ({
 import BotTaskCard from "../src/client/src/components/BotTaskCard.svelte";
 import BotsView from "../src/client/src/views/BotsView.svelte";
 import { cancelBotTask, openBotThreadPane, sendMessage } from "../src/client/src/lib/chat.js";
+import { confirmation, resolveConfirmation } from "../src/client/src/lib/confirm.js";
 import { applyInitialRoute, currentRoute, goView } from "../src/client/src/lib/nav.js";
 import { readState, replaceState, toasts } from "../src/client/src/lib/state.js";
 import type {
@@ -251,7 +252,13 @@ beforeEach(() => {
   history.replaceState(null, "", "#/bots");
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // The confirm queue is a module singleton: a request left open would be
+  // handed to the NEXT test's click, which then acts on the wrong bot.
+  for (let guard = 0; guard < 5 && get(confirmation); guard += 1) {
+    resolveConfirmation(false);
+    await Promise.resolve();
+  }
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -518,7 +525,7 @@ describe("BotsView board", () => {
     expect(container.querySelector(".bots-summary-text")?.textContent?.trim()).toBe("실행 중 1 · 대기열 2");
   });
 
-  it("renders no summary bar at all when nothing is in play", async () => {
+  it("says nothing about counts when nothing is in play, but keeps the header row", async () => {
     stubFetch();
     seed({
       avatars: [botSummary("bot-1", "리뷰 봇")],
@@ -528,7 +535,10 @@ describe("BotsView board", () => {
 
     const { container } = render(BotsView);
     await waitFor(() => expect(readState().chatPanes.length).toBe(1));
-    expect(container.querySelector(".bots-summary")).toBeNull();
+    // The row doubles as the selected bot's header (it carries 삭제), so it stays
+    // — but it must still not invent a count line out of terminal work alone.
+    expect(container.querySelector(".bots-summary-text")).toBeNull();
+    expect(container.querySelector(".bots-summary-delete")).not.toBeNull();
   });
 
   it("collects every bot's waiting question into the inbox and selects that bot on click", async () => {
@@ -644,6 +654,236 @@ describe("BotsView board", () => {
     expect(readState().view).toBe("chat");
     expect(readState().chatPanes[0].draft).toContain("내 봇을 새로 만들고 싶어");
     expect(get(toasts).at(-1)?.message).toContain("보내기를 누르면");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* 삭제 — the destructive control lives on the SELECTED bot's header    */
+/* ------------------------------------------------------------------ */
+
+describe("BotsView 봇 삭제", () => {
+  /** The header's delete control, or null when the header offers none. */
+  function deleteButton(container: HTMLElement): HTMLButtonElement | null {
+    return container.querySelector<HTMLButtonElement>(".bots-summary-delete");
+  }
+
+  /**
+   * Answer every endpoint the delete path walks: the roster read that carries
+   * `memoryDir` (AvatarSummary's bot tag does not), the DELETE itself, the
+   * re-read of /api/avatars, and the detail pull for whichever bot takes over.
+   */
+  function stubDelete(remaining: AvatarSummary[], over: (url: string, method: string) => unknown = () => undefined) {
+    return stubFetch((url, method) => {
+      const answered = over(url, method);
+      if (answered !== undefined) return answered;
+      if (url === "/api/me/agents" && method === "GET") {
+        return {
+          agents: [
+            { id: "bot-1", memoryDir: "review-bot-1a2b" },
+            { id: "bot-2", memoryDir: "docs-bot-9f0e" },
+          ],
+        };
+      }
+      if (url === "/api/avatars") return { avatars: remaining };
+      for (const bot of remaining) {
+        if (url.includes(`/api/avatars/${encodeURIComponent(bot.id)}`)) return { avatar: detailOf(bot) };
+      }
+      return undefined;
+    });
+  }
+
+  it("offers no delete when there is no bot on screen to delete", async () => {
+    stubFetch();
+    seed({ avatars: [], streaming: false });
+    const empty = render(BotsView);
+    await screen.findByText("아직 만든 봇이 없습니다");
+    expect(deleteButton(empty.container)).toBeNull();
+    empty.unmount();
+
+    // A bookmark pointing at an already-deleted bot is the other no-selection
+    // state — there is nothing there to act on either.
+    seed({ avatars: [botSummary("bot-1", "리뷰 봇")], botsAgentId: "bot-gone", streaming: false });
+    const dangling = render(BotsView);
+    await screen.findByText("그 봇을 찾을 수 없어요. 왼쪽에서 다른 봇을 선택하세요.");
+    expect(deleteButton(dangling.container)).toBeNull();
+  });
+
+  it("locks the delete while the bot's turn is running, and says why", async () => {
+    stubFetch();
+    seed({ avatars: [botSummary("bot-1", "리뷰 봇")], botsAgentId: "bot-1", streaming: false });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(readState().chatPanes.length).toBe(1));
+    expect(deleteButton(container)!.disabled).toBe(false);
+    expect(deleteButton(container)!.getAttribute("title")).toBe("이 봇과의 모든 대화 기록이 함께 삭제됩니다");
+
+    // `streaming` is DERIVED from the panes on every store write, so the flag
+    // itself cannot be seeded — the pane has to be the one that is running.
+    replaceState({ chatPanes: readState().chatPanes.map((pane) => ({ ...pane, streaming: true })) });
+    expect(readState().streaming).toBe(true);
+
+    // A disabled button whose prerequisite is unstated reads as broken.
+    await waitFor(() => expect(deleteButton(container)!.disabled).toBe(true));
+    expect(deleteButton(container)!.getAttribute("title")).toBe("실행 중인 작업이 끝난 뒤 삭제할 수 있습니다");
+  });
+
+  it("locks the delete while a dispatched task runs with no stream attached", async () => {
+    stubFetch();
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇")],
+      botsAgentId: "bot-1",
+      botTasks: [taskOf({ id: "t-run", agentId: "bot-1", status: "running" })],
+      streaming: false,
+    });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(deleteButton(container)).not.toBeNull());
+    // The dispatcher's unattended run never streams to THIS client, so the
+    // pane-derived flag stays false — the running task row is the only signal.
+    expect(readState().streaming).toBe(false);
+    expect(deleteButton(container)!.disabled).toBe(true);
+    expect(deleteButton(container)!.getAttribute("title")).toBe("실행 중인 작업이 끝난 뒤 삭제할 수 있습니다");
+  });
+
+  it("refuses the delete when a task starts while the confirm is open", async () => {
+    const calls = stubDelete([botSummary("bot-2", "문서 봇")]);
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")],
+      botsAgentId: "bot-1",
+      streaming: false,
+    });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(deleteButton(container)).not.toBeNull());
+    await fireEvent.click(deleteButton(container)!);
+    await waitFor(() => expect(get(confirmation)).not.toBeNull());
+
+    // The dispatcher started a queued task while the owner was reading the
+    // confirm — the entry check already passed, so the post-confirm re-check
+    // is what has to catch it.
+    replaceState({ botTasks: [taskOf({ id: "t-run", agentId: "bot-1", status: "running" })] });
+    resolveConfirmation(true);
+
+    await waitFor(() => expect(get(toasts).at(-1)?.message).toBe("실행 중인 작업이 끝난 뒤 삭제할 수 있습니다."));
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(readState().botsAgentId).toBe("bot-1");
+  });
+
+  it("leaves everything in place when the confirm is declined", async () => {
+    const calls = stubDelete([botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")]);
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")],
+      botsAgentId: "bot-1",
+      streaming: false,
+    });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(deleteButton(container)).not.toBeNull());
+    await fireEvent.click(deleteButton(container)!);
+
+    await waitFor(() => expect(get(confirmation)).not.toBeNull());
+    resolveConfirmation(false);
+
+    await waitFor(() => expect(deleteButton(container)!.disabled).toBe(false));
+    expect(calls.some((call) => call.method === "DELETE")).toBe(false);
+    expect(readState().botsAgentId).toBe("bot-1");
+  });
+
+  it("names the memory folder that SURVIVES the delete before asking", async () => {
+    stubDelete([botSummary("bot-2", "문서 봇")]);
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")],
+      botsAgentId: "bot-1",
+      streaming: false,
+    });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(deleteButton(container)).not.toBeNull());
+    await fireEvent.click(deleteButton(container)!);
+
+    await waitFor(() => expect(get(confirmation)).not.toBeNull());
+    const request = get(confirmation)!;
+    // The folder name is not on the avatar row, so it is read from the owner's
+    // bot listing at click time — a wrong path here would be a lie about data.
+    expect(request.message).toContain("봇의 기억 폴더(지식 저장소의 agents/review-bot-1a2b/)는 삭제되지 않고 남습니다.");
+    expect(request.message).toContain("모든 대화 기록이 함께 삭제되며");
+    expect(request.message).toContain("비활성화");
+    expect(request.title).toBe("봇을 삭제할까요?");
+    expect(request.confirmLabel).toBe("삭제");
+    expect(request.tone).toBe("danger");
+
+    resolveConfirmation(false);
+    await waitFor(() => expect(deleteButton(container)!.disabled).toBe(false));
+  });
+
+  it("deletes the bot, then hands the thread to the next one", async () => {
+    const calls = stubDelete([botSummary("bot-2", "문서 봇")]);
+    seed({
+      avatars: [botSummary("bot-1", "리뷰 봇"), botSummary("bot-2", "문서 봇")],
+      botsAgentId: "bot-1",
+      botTasks: [taskOf({ id: "t-old", agentId: "bot-1", status: "done" })],
+      streaming: false,
+    });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(readState().chatPanes[0]?.avatar.id).toBe(avatarIdOf("bot-1")));
+    await fireEvent.click(deleteButton(container)!);
+    await waitFor(() => expect(get(confirmation)).not.toBeNull());
+    resolveConfirmation(true);
+
+    await waitFor(() => expect(calls.some((call) => call.method === "DELETE")).toBe(true));
+    expect(calls.find((call) => call.method === "DELETE")!.url).toBe("/api/me/agents/bot-1");
+    expect(get(toasts).at(-1)?.message).toContain("삭제했습니다");
+
+    // Refreshing the roster alone would leave the DELETED bot's pane rendering,
+    // so the next bot has to actually take the thread over.
+    await waitFor(() => expect(readState().botsAgentId).toBe("bot-2"));
+    await waitFor(() => expect(readState().chatPanes.map((pane) => pane.avatar.id)).toEqual([avatarIdOf("bot-2")]));
+    expect(location.hash).toBe("#/bots/bot-2");
+    // …and the rows the server just dropped do not linger: the task merge keeps
+    // anything a response omits, so they have to go locally too.
+    expect(readState().botTasks).toEqual([]);
+    expect(calls.some((call) => call.url === "/api/avatars")).toBe(true);
+    expect(calls.some((call) => call.url.includes("/bot-tasks/unseen"))).toBe(true);
+    await waitFor(() => expect(deleteButton(container)!.disabled).toBe(false));
+  });
+
+  it("clears the selection and the thread when the last bot goes", async () => {
+    stubDelete([]);
+    seed({ avatars: [botSummary("bot-1", "리뷰 봇")], botsAgentId: "bot-1", streaming: false });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(readState().chatPanes.length).toBe(1));
+    await fireEvent.click(deleteButton(container)!);
+    await waitFor(() => expect(get(confirmation)).not.toBeNull());
+    resolveConfirmation(true);
+
+    await waitFor(() => expect(readState().botsAgentId).toBe(""));
+    // closePane would rebuild a pane from currentAvatar — i.e. the bot that was
+    // just deleted — so the pane list has to be emptied outright.
+    expect(readState().chatPanes).toEqual([]);
+    await screen.findByText("아직 만든 봇이 없습니다");
+    expect(location.hash).toBe("#/bots");
+  });
+
+  it("keeps the bot selected when the delete fails", async () => {
+    stubDelete([botSummary("bot-1", "리뷰 봇")], (url, method) =>
+      url.startsWith("/api/me/agents/") && method === "DELETE"
+        ? { ok: false, status: 500, json: async () => ({ error: "서버가 응답하지 않습니다" }) }
+        : undefined,
+    );
+    seed({ avatars: [botSummary("bot-1", "리뷰 봇")], botsAgentId: "bot-1", streaming: false });
+
+    const { container } = render(BotsView);
+    await waitFor(() => expect(deleteButton(container)).not.toBeNull());
+    await fireEvent.click(deleteButton(container)!);
+    await waitFor(() => expect(get(confirmation)).not.toBeNull());
+    resolveConfirmation(true);
+
+    await waitFor(() => expect(get(toasts).at(-1)?.message).toContain("봇 삭제 실패"));
+    expect(get(toasts).at(-1)?.message).toContain("서버가 응답하지 않습니다");
+    expect(readState().botsAgentId).toBe("bot-1");
+    await waitFor(() => expect(deleteButton(container)!.disabled).toBe(false));
   });
 });
 

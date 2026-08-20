@@ -8,6 +8,15 @@ import type {
 import { workspaceDirFor } from "./workspace.js";
 import type { Store } from "./store.js";
 
+// The memory-dir naming lives in a LEAF module (the store base computes it
+// during migrate/INSERT and must not import this file's dependencies); it is
+// re-exported here so every other caller keeps ONE import path.
+export {
+  PERSONAL_AGENT_MEMORY_PARENT,
+  personalAgentMemoryDirName,
+  personalAgentMemoryRoot,
+} from "./personalAgentSlug.js";
+
 /**
  * Personal-agent (내 봇) helpers — id namespace, reach gate, wire projections —
  * mirroring groupAgents.ts for the OTHER owner-scoped non-users avatar kind.
@@ -34,6 +43,72 @@ export const PERSONAL_AGENT_FIELD_CAPS = {
 
 /** Display-name cap for both the HTTP route and the create_agent MCP tool. */
 export const PERSONAL_AGENT_DISPLAY_NAME_CAP = 64;
+
+/**
+ * How many knowledge-repo skills ONE bot may be granted. A bot loads no skills
+ * by default (the opposite of the owner's own `knowledge_selected`, where null
+ * means "load all"), so this caps how far the owner can open that up — every
+ * granted skill is a live reference the run has to enumerate.
+ */
+export const MAX_PERSONAL_AGENT_SKILLS = 64;
+
+/** Per-slug length cap (a `skills/<slug>` directory name, not a title). */
+export const PERSONAL_AGENT_SKILL_SLUG_CAP = 100;
+
+/**
+ * A `skills/<slug>` directory name safe to store as ONE path segment — the same
+ * character class `marketplace.ts` sanitizeName normalizes to, applied here as a
+ * REJECTION (a granted slug must round-trip byte-for-byte, never be silently
+ * rewritten into some other bot's skill). `.`/`..` are refused outright so a
+ * grant can never name the parent directory.
+ */
+const SKILL_SLUG_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+export type PersonalAgentSkillSelection =
+  | { ok: true; slugs: string[] }
+  | { ok: false; reason: "type" }
+  | { ok: false; reason: "slug"; slug: string }
+  | { ok: false; reason: "length"; slug: string }
+  | { ok: false; reason: "count" };
+
+/**
+ * THE validator for a bot's skill allowlist, shared by the HTTP settings route
+ * and the `create_agent` MCP tool so one surface can't become a cap bypass
+ * (the PERSONAL_AGENT_FIELD_CAPS habit). Order matters: shape → per-slug rules
+ * → dedupe → count, so the count is checked against what would actually be
+ * stored. Blank entries are dropped rather than rejected (a UI list with an
+ * empty row is not an error), and the caller owns the user-facing wording:
+ * Korean for the route, English for the tool.
+ */
+export function normalizePersonalAgentSkills(
+  input: unknown,
+): PersonalAgentSkillSelection {
+  if (!Array.isArray(input)) {
+    return { ok: false, reason: "type" };
+  }
+  const slugs: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of input) {
+    if (typeof entry !== "string") {
+      return { ok: false, reason: "type" };
+    }
+    const slug = entry.trim();
+    if (!slug) continue;
+    if (slug.length > PERSONAL_AGENT_SKILL_SLUG_CAP) {
+      return { ok: false, reason: "length", slug };
+    }
+    if (!SKILL_SLUG_PATTERN.test(slug) || slug === "." || slug === "..") {
+      return { ok: false, reason: "slug", slug };
+    }
+    if (seen.has(slug)) continue;
+    seen.add(slug);
+    slugs.push(slug);
+  }
+  if (slugs.length > MAX_PERSONAL_AGENT_SKILLS) {
+    return { ok: false, reason: "count" };
+  }
+  return { ok: true, slugs };
+}
 
 /**
  * How many turns may wait behind a running bot IN ONE THREAD. A queue this deep

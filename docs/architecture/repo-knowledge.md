@@ -103,6 +103,12 @@
   `mcp__group_repo__write_file` (group) + `commit` — there is NO separate "brain write" tool, so a
   capture is a repo write plus a commit (uncommitted = not persisted). It composes with the backfill
   loop: `request_info` ESCALATES a true unknown to the owner, `brain-ingest` RETAINS the answer.
+- **`agents/<dir>/` is the same convention one level down.** Each personal bot (내 봇) keeps its own
+  `wiki/` + `raw/` + `CLAUDE.md` under `agents/<memory_dir>/` in the SAME personal repo; the root
+  `wiki/`/`raw/` vault stays the OWNER's and is untouched by (and unreachable from) a bot run. A
+  scoped bot `commit` stages with a pathspec (`git add -A -- agents/<dir>`) so it can never sweep the
+  owner's unrelated working-tree changes out of the shared clone. Rest →
+  [personal-agents.md](personal-agents.md).
 - **Capture notice ("기억" chip):** a SUCCESSFUL `write_file`/`edit_file` under `wiki/` (personal or
   group repo, incl. group-agent runs) fires `AgentEvents.onMemory` (`MemoryEvent`, gated in the tool
   handlers via `isBrainNotePath`) → SSE `memory` (server-minted `id` so reattach replays dedupe) → a

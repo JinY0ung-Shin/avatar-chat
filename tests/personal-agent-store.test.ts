@@ -5,11 +5,17 @@ import { MAX_PERSONAL_AGENTS } from "../src/server/store.js";
 import {
   findChattablePersonalAgent,
   listPersonalAgentAvatarSummaries,
+  normalizePersonalAgentSkills,
   parsePersonalAgentRef,
   personalAgentAvatarDetail,
   personalAgentAvatarId,
   personalAgentAvatarSummary,
+  personalAgentMemoryDirName,
+  personalAgentMemoryRoot,
   personalAgentWorkspaceParent,
+  MAX_PERSONAL_AGENT_SKILLS,
+  PERSONAL_AGENT_MEMORY_PARENT,
+  PERSONAL_AGENT_SKILL_SLUG_CAP,
 } from "../src/server/personalAgents.js";
 import { workspaceDirFor } from "../src/server/workspace.js";
 import { withTempDir } from "./helpers.js";
@@ -137,6 +143,110 @@ describe("store personal agents", () => {
     const doomed = store.listPersonalAgents(owner.id, { includeDisabled: true })[0];
     expect(store.deletePersonalAgent(doomed.id)).toBe(true);
     expect(store.createPersonalAgent(owner.id, { displayName: "다시 한 개" }).id).toBeTruthy();
+  });
+
+  it("stamps memory_dir at insert and never moves it, not even on rename", () => {
+    const { store } = services("memory-dir");
+    const owner = makeUser(store, "owner");
+    const bot = store.createPersonalAgent(owner.id, { displayName: "Release Bot" });
+
+    // Readable half from the display name, unique half from the row id.
+    expect(bot.memoryDir).toBe(`release-bot-${bot.id.slice(0, 8)}`);
+    expect(personalAgentMemoryRoot(bot.memoryDir)).toBe(
+      `${PERSONAL_AGENT_MEMORY_PARENT}/${bot.memoryDir}`,
+    );
+    // Insert-only: a rename must never orphan the tree the bot already wrote to.
+    const renamed = store.updatePersonalAgent(bot.id, {
+      displayName: "Deploy Bot",
+    })!;
+    expect(renamed.memoryDir).toBe(bot.memoryDir);
+    expect(store.getPersonalAgentById(bot.id)!.memoryDir).toBe(bot.memoryDir);
+
+    // A Korean name has nothing left after the ASCII filter → the "bot" fallback,
+    // so the id suffix is what keeps two such bots apart.
+    const korean = store.createPersonalAgent(owner.id, { displayName: "회의록 봇" });
+    const korean2 = store.createPersonalAgent(owner.id, { displayName: "회의록 봇" });
+    expect(korean.memoryDir).toBe(`bot-${korean.id.slice(0, 8)}`);
+    expect(korean2.memoryDir).not.toBe(korean.memoryDir);
+
+    // Every bot of the owner gets its own segment.
+    const dirs = store
+      .listPersonalAgents(owner.id, { includeDisabled: true })
+      .map((a) => a.memoryDir);
+    expect(new Set(dirs).size).toBe(dirs.length);
+  });
+
+  it("backfills memory_dir for rows that predate the column", () => {
+    const dir = "memory-backfill";
+    const { store } = services(dir);
+    const owner = makeUser(store, "owner");
+    const bot = store.createPersonalAgent(owner.id, { displayName: "Legacy Bot" });
+    // Simulate a pre-migration row: the column exists but was never written.
+    (
+      store as unknown as {
+        db: { prepare(sql: string): { run(...params: unknown[]): unknown } };
+      }
+    ).db
+      .prepare("UPDATE personal_agents SET memory_dir = NULL WHERE id = ?")
+      .run(bot.id);
+    store.close();
+
+    // A second Store over the SAME dataDir re-runs migrate() — that is where the
+    // ungated (NULL-guarded) backfill fires.
+    const reopened = services(dir).store;
+    expect(reopened.getPersonalAgentById(bot.id)!.memoryDir).toBe(bot.memoryDir);
+    // And it wrote the value, not just computed it on read.
+    const row = (
+      reopened as unknown as {
+        db: { prepare(sql: string): { get(...params: unknown[]): unknown } };
+      }
+    ).db
+      .prepare("SELECT memory_dir AS d FROM personal_agents WHERE id = ?")
+      .get(bot.id) as { d: string | null };
+    expect(row.d).toBe(bot.memoryDir);
+  });
+
+  it("round-trips the skill allowlist, defaulting to NONE and full-replacing on update", () => {
+    const { store } = services("selected-skills");
+    const owner = makeUser(store, "owner");
+
+    // A bot starts with ZERO skills — the opposite default of knowledge_selected.
+    const bare = store.createPersonalAgent(owner.id, { displayName: "빈 봇" });
+    expect(bare.selectedSkills).toEqual([]);
+
+    // Create WITH skills; blanks dropped and duplicates collapsed (first wins).
+    const granted = store.createPersonalAgent(owner.id, {
+      displayName: "코딩 봇",
+      selectedSkills: ["code-review", " code-review ", "", "pptx-report"],
+    });
+    expect(granted.selectedSkills).toEqual(["code-review", "pptx-report"]);
+    expect(store.getPersonalAgentById(granted.id)!.selectedSkills).toEqual([
+      "code-review",
+      "pptx-report",
+    ]);
+
+    // Omitted = keep; an array = FULL replace; [] = revoke everything.
+    expect(
+      store.updatePersonalAgent(granted.id, { bio: "메모" })!.selectedSkills,
+    ).toEqual(["code-review", "pptx-report"]);
+    expect(
+      store.updatePersonalAgent(granted.id, { selectedSkills: ["deploy"] })!
+        .selectedSkills,
+    ).toEqual(["deploy"]);
+    expect(
+      store.updatePersonalAgent(granted.id, { selectedSkills: [] })!
+        .selectedSkills,
+    ).toEqual([]);
+
+    // A legacy NULL column reads as [] (there is no "null = load all" state).
+    (
+      store as unknown as {
+        db: { prepare(sql: string): { run(...params: unknown[]): unknown } };
+      }
+    ).db
+      .prepare("UPDATE personal_agents SET selected_skills = NULL WHERE id = ?")
+      .run(granted.id);
+    expect(store.getPersonalAgentById(granted.id)!.selectedSkills).toEqual([]);
   });
 
   it("round-trips the profile-image ext by PUBLIC avatar id, failing closed on a mismatch", () => {
@@ -370,6 +480,69 @@ describe("personal-agent helpers", () => {
     store.setRole(owner.id, "admin", false);
     expect(listPersonalAgentAvatarSummaries(store, owner.id)).toEqual([]);
     expect(store.countPersonalAgents(owner.id)).toBe(3);
+  });
+
+  it("derives an ASCII-safe single-segment memory dir from any name", () => {
+    // Lowercased, non-`[a-z0-9._-]` runs collapsed to one hyphen.
+    expect(personalAgentMemoryDirName("Release Notes!!  Bot", "abcdefgh-1234")).toBe(
+      "release-notes-bot-abcdefgh",
+    );
+    // The readable half is capped, and a cut that lands on a separator is trimmed.
+    expect(personalAgentMemoryDirName("a".repeat(40), "0123456789")).toBe(
+      `${"a".repeat(24)}-01234567`,
+    );
+    expect(personalAgentMemoryDirName("abcdefghijklmnopqrstuvw x", "id123456")).toBe(
+      "abcdefghijklmnopqrstuvw-id123456",
+    );
+    // Nothing usable left → "bot"; the id suffix carries the identity.
+    expect(personalAgentMemoryDirName("회의록 봇", "9f8e7d6c-aaaa")).toBe("bot-9f8e7d6c");
+    expect(personalAgentMemoryDirName("   ", "abcdefgh")).toBe("bot-abcdefgh");
+    // Never a traversal segment: "." / ".." can't survive the trim, and the
+    // suffix is always appended.
+    expect(personalAgentMemoryDirName("..", "abcdefgh")).toBe("bot-abcdefgh");
+    expect(personalAgentMemoryDirName(".", "abcdefgh")).toBe("bot-abcdefgh");
+    // Deterministic, and one path segment in every case.
+    expect(personalAgentMemoryDirName("A/B\\C", "abcdefgh")).toBe("a-b-c-abcdefgh");
+    for (const name of ["Release Notes", "회의록 봇", "..", "a".repeat(80)]) {
+      const dir = personalAgentMemoryDirName(name, "abcdefgh");
+      expect(dir).toBe(personalAgentMemoryDirName(name, "abcdefgh"));
+      expect(dir).toMatch(/^[a-z0-9._-]+$/);
+      expect(dir).not.toContain("/");
+    }
+    expect(personalAgentMemoryRoot("bot-abcdefgh")).toBe("agents/bot-abcdefgh");
+  });
+
+  it("normalizePersonalAgentSkills dedupes, drops blanks, and rejects unsafe slugs", () => {
+    expect(normalizePersonalAgentSkills([])).toEqual({ ok: true, slugs: [] });
+    expect(
+      normalizePersonalAgentSkills(["code-review", " code-review ", "", "  ", "a.b_c"]),
+    ).toEqual({ ok: true, slugs: ["code-review", "a.b_c"] });
+
+    // Shape failures.
+    expect(normalizePersonalAgentSkills("code-review")).toEqual({
+      ok: false,
+      reason: "type",
+    });
+    expect(normalizePersonalAgentSkills([1])).toEqual({ ok: false, reason: "type" });
+    expect(normalizePersonalAgentSkills(null)).toEqual({ ok: false, reason: "type" });
+
+    // A slug must stay ONE safe path segment — traversal and separators are out.
+    for (const bad of ["..", ".", "a/b", "../x", "스킬", "a b"]) {
+      expect(normalizePersonalAgentSkills([bad])).toMatchObject({
+        ok: false,
+        reason: "slug",
+        slug: bad,
+      });
+    }
+    expect(
+      normalizePersonalAgentSkills(["x".repeat(PERSONAL_AGENT_SKILL_SLUG_CAP + 1)]),
+    ).toMatchObject({ ok: false, reason: "length" });
+    // The count is checked against what would be STORED (post-dedupe).
+    const many = Array.from({ length: MAX_PERSONAL_AGENT_SKILLS + 1 }, (_, i) => `s-${i}`);
+    expect(normalizePersonalAgentSkills(many)).toEqual({ ok: false, reason: "count" });
+    expect(
+      normalizePersonalAgentSkills([...many.slice(0, MAX_PERSONAL_AGENT_SKILLS), "s-0"]),
+    ).toMatchObject({ ok: true });
   });
 
   it("keys the workspace parent on the composite avatar id, not on a conversation", () => {

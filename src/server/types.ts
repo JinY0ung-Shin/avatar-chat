@@ -587,6 +587,20 @@ export interface PersonalAgentState {
    * awareness only — the queue drains server-side, never by the bot.
    */
   queuedTaskCount: number;
+  /**
+   * Repo-relative root of this bot's OWN memory inside the owner's knowledge
+   * repo (`agents/<memoryDir>`, no trailing slash) — the same value that
+   * parameterizes the run's scoped repo/brain servers, so what the bot is TOLD
+   * about its memory is what the tools actually enforce.
+   */
+  memoryRoot: string;
+  /**
+   * Knowledge-repo skill slugs the owner granted this bot (live references, not
+   * copies). EMPTY MEANS NONE — a bot loads only what was granted, so both
+   * metacognition surfaces report the roster rather than implying the owner's
+   * whole skill set.
+   */
+  adoptedSkills: string[];
 }
 
 /**
@@ -616,6 +630,22 @@ export interface PersonalAgent {
    * validate it against the deployment's tiers.
    */
   defaultModel: string | null;
+  /**
+   * IMMUTABLE folder name for this bot's own memory, one path segment set at
+   * INSERT and never patched: the memory lives at `agents/<memoryDir>/` inside
+   * the OWNER's knowledge repo (`personalAgentMemoryRoot`). Derived from the
+   * display name plus the row id, so renaming a bot never orphans the tree it
+   * has been writing to.
+   */
+  memoryDir: string;
+  /**
+   * Knowledge-repo skill slugs (`skills/<slug>/`) this bot may LOAD — live
+   * references into the owner's repo, never copies, so the owner's edits reach
+   * the bot without a transfer step. EMPTY MEANS NONE, the opposite default of
+   * `User.knowledgeSelected` (null = load all): a bot starts with zero skills
+   * and the owner grants them one at a time.
+   */
+  selectedSkills: string[];
   createdAt: string | null;
   updatedAt: string | null;
 }
@@ -631,6 +661,11 @@ export interface PersonalAgentInput {
   enabled?: boolean;
   /** undefined = keep the stored tier, null = clear it back to the owner default. */
   defaultModel?: string | null;
+  /**
+   * FULL-REPLACE allowlist of knowledge-repo skill slugs (undefined = keep).
+   * `memoryDir` is deliberately absent from this shape: it is insert-only.
+   */
+  selectedSkills?: string[];
 }
 
 /**

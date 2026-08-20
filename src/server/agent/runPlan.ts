@@ -54,6 +54,8 @@ import {
 } from "../modelTiers.js";
 import { isEffortLevel } from "../effortLevels.js";
 import { liftPluginMcpServers } from "../plugins.js";
+import { knowledgeClonePath } from "../knowledgeRepo.js";
+import { personalAgentMemoryRoot } from "../personalAgents.js";
 import {
   emptyOwnerState,
   summarizeGroupAgentState,
@@ -511,13 +513,14 @@ export async function buildAgentRunPlan(
   // the SINGLE source for the family booleans AND for `registered` — the set
   // the prompt and describe_system report — so report and reality can't drift.
   const groupAgentRun = request.groupAgent ?? null;
-  // PERSONAL-AGENT (내 봇) run: identity ONLY. Deliberately absent from
-  // deriveAgentToolAccess above and from planMcpToolFamilies below — a bot run
-  // IS a full owner run (request.avatar is the OWNER's own avatar), so the owner
-  // access algebra and every personal tool family must stay exactly as they are
-  // for the owner's main avatar. What this flag drives instead: the prompt
-  // identity swap, describe_system's bot block, the self-config server, and the
-  // routine-tool suppression further down.
+  // PERSONAL-AGENT (내 봇) run: identity, plus ONE scoped personal-knowledge
+  // lens. Deliberately absent from deriveAgentToolAccess above and from
+  // planMcpToolFamilies below — a bot run IS a full owner run (request.avatar is
+  // the OWNER's own avatar), so the owner access algebra and every personal tool
+  // family must stay exactly as they are for the owner's main avatar. What this
+  // flag drives instead: the prompt identity swap, describe_system's bot block,
+  // the self-config server, the self-scoped routine tools, and the memory scope
+  // (`personalAgentScope` below) that parameterizes the repo/brain servers.
   const personalAgentRun = request.personalAgent ?? null;
   const familyPlan = planMcpToolFamilies(enabledMcpToolGroups, Boolean(groupAgentRun));
   const personalKnowledgeToolsEnabled = familyPlan.personalKnowledge;
@@ -642,6 +645,26 @@ export async function buildAgentRunPlan(
         request.conversationId,
       )
     : null;
+  // The bot's OWN memory namespace inside the owner's single knowledge repo —
+  // on a bot run this is the only thing standing between a full owner run and
+  // the owner's own vault/skills. Server-CONSTRUCTION parameterization only
+  // (exactly like buildGroupAgentBrainServer): the access algebra above never
+  // learns about personal agents. Static for the whole run — a bot disabled or
+  // deleted mid-run is caught by the NEXT turn's reach gate, not re-read here.
+  // A run whose row vanished between the reach gate and here falls back to a
+  // namespace keyed by the bot id (a folder no bot writes to), so a degenerate
+  // run is never WIDER than a healthy one.
+  const personalAgentScope = personalAgentRun
+    ? {
+        root:
+          personalAgentState?.memoryRoot ??
+          personalAgentMemoryRoot(personalAgentRun.agentId),
+        botName:
+          personalAgentState?.alias ||
+          personalAgentState?.displayName ||
+          request.avatar.displayName,
+      }
+    : undefined;
   // The ACTING member behind a group-agent run: commit identity, token source,
   // audit actor for the pinned group tools (groups own no credentials).
   const actingMemberRow =
@@ -690,6 +713,9 @@ export async function buildAgentRunPlan(
       // A successful wiki/ write is a second-brain capture — surface it as a
       // dedicated "기억" notice in the activity tree (no-op headless).
       onMemory: (e) => events?.onMemory?.({ ...e, scope: "personal" }),
+      // Bot runs: confine every path op to the bot's memory folder, stage only
+      // that subtree on commit, and refuse scaffold_skill/create_repo.
+      pathScope: personalAgentScope,
     },
     { allowCreate: allowRepoCreate },
   );
@@ -721,6 +747,8 @@ export async function buildAgentRunPlan(
     viewerIsOwner: ownerToolAccess,
     elevated: elevatedToolAccess,
     config,
+    // Bot runs recall from the bot's OWN memory vault, never the owner's.
+    scope: personalAgentScope,
   });
   const fileOutputActive = Boolean(request.cwd && events?.onFile);
   // Visual canvas (experimental `canvas` feature, #50): registered only when the
@@ -949,9 +977,12 @@ export async function buildAgentRunPlan(
         // with a redirect, so the tool set never varies per turn.
         taskId: personalAgentRun.taskId ?? null,
         conversationId: request.conversationId ?? null,
+        // adopt_skill/drop_skill resolve the owner's knowledge-repo clone to
+        // read the skill catalog; without config they fail closed.
+        config,
       })
     : personalAgentCreateActive
-      ? buildPersonalAgentOwnerServer(store, { owner })
+      ? buildPersonalAgentOwnerServer(store, { owner, config })
       : null;
 
   // Visual canvas server for this run; `canvasActive` is computed further up
@@ -1474,7 +1505,15 @@ export async function buildAgentRunPlan(
               // Personal-bot run: AskUserQuestion is redirected to the
               // turn-boundary protocol (report_task 'need_input' + end the turn)
               // instead of parking on a modal nobody may be there to answer.
-              Boolean(personalAgentRun),
+              // The scope additionally confines native Write/Edit inside the
+              // owner's knowledge clone to this bot's own memory folder — the
+              // same root the scoped repo/brain servers enforce.
+              personalAgentScope
+                ? {
+                    clonePath: knowledgeClonePath(request.avatar.id, config),
+                    memoryRoot: personalAgentScope.root,
+                  }
+                : false,
             ),
           ],
           // CLI-side budget for this hook, in SECONDS. The CLI aborts an SDK

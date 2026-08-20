@@ -237,6 +237,19 @@ function brainSection(
   if (request.knowledgeRepoConfigured === false) {
     return null;
   }
+  // PERSONAL-BOT run: the vault is the bot's OWN memory subtree and the brain/
+  // repo tools were constructed scoped to it, so this names those paths instead
+  // of the root ones. The brain-migrate pointer is dropped deliberately — that
+  // skill seeds the ROOT vault, which is outside this run's scope — and so are
+  // the brain-ingest/reflect/lint skills, which write there too. Checked ahead
+  // of the mode branches because a bot run is always an owner-mode run.
+  const botRoot = request.personalAgentState?.memoryRoot;
+  if (botRoot) {
+    return (
+      `**Your memory**: \`${botRoot}/wiki/\` holds your curated, durable notes and \`${botRoot}/raw/\` your unprocessed captures — your OWN namespace inside the owner's knowledge repository, never their second brain. Use \`mcp__brain__search\` to recall what you already know BEFORE answering from memory or asking the user to repeat themselves; \`mcp__brain__get_note\` reads one note in full. ` +
+      `To capture something durable, write it under \`${botRoot}/wiki/\` (or \`${botRoot}/raw/\` for a rough capture) with \`mcp__repo__write_file\` and push it with \`mcp__repo__commit\` — an uncommitted note is not persisted. An empty search result is normal early on: this memory is what YOU accumulate.`
+    );
+  }
   const base =
     "**Second brain**: your knowledge repository is a vault — `wiki/` holds curated, durable notes and `raw/` holds unprocessed captures. Use `mcp__brain__search` to recall what you already know BEFORE answering from memory or asking the user to repeat themselves; `mcp__brain__get_note` reads one note in full.";
   const migrate =
@@ -616,18 +629,34 @@ function personalAgentSection(request: AgentRequest): string | null {
         ? ` ${state.queuedTaskCount} more delegated request(s) are queued behind this one — stay focused and finish; the server dispatches the queue automatically, never you.`
         : "")
     : "";
-  // The `agents/<slug>/` convention only means something with a repository to
-  // put it in — never point at a tree this run cannot write.
-  const notesNote =
-    mcpToolGroupEnabled(request, "personal_knowledge") &&
-    request.knowledgeRepoConfigured !== false
-      ? " Keep the notes that are YOURS (your task state, drafts, running logs) under `agents/<your-slug>/` in the knowledge repository — choose one stable ASCII kebab-case slug from your name the first time you need it and reuse that same slug forever. Knowledge that is not about you personally still follows the normal second-brain conventions (`wiki/` for curated notes, `raw/` for captures), so the owner's other avatars and bots can find it too."
+  // The memory namespace is ENFORCED, not a convention: this run's repo tools
+  // and brain search are constructed scoped to it. Still gated on a repository
+  // existing — never point at a tree this run cannot write.
+  const repoAvailable = request.knowledgeRepoConfigured !== false;
+  const memoryNote =
+    mcpToolGroupEnabled(request, "personal_knowledge") && repoAvailable
+      ? ` **Your memory** lives at \`${state.memoryRoot}/\` in the owner's knowledge repository: \`${state.memoryRoot}/wiki/\` for curated, durable notes, \`${state.memoryRoot}/raw/\` for unprocessed captures, and \`${state.memoryRoot}/CLAUDE.md\` for your STANDING memory — that file is injected into every one of your turns, so edit it with \`mcp__repo__write_file\`/\`mcp__repo__edit_file\` to change what you always remember. Your \`mcp__brain__search\` and every \`mcp__repo__*\` path operation are SCOPED to that folder: the owner's own second brain (the repository's root \`wiki/\`/\`raw/\`) and your sibling bots' folders are neither readable nor writable from here. If something belongs in the owner's own vault, tell them instead of trying to write it.`
       : "";
+  // The granted-skill roster is a fact about what LOADS, so it is reported
+  // regardless of the tool groups; the adopt/drop trigger needs a repository to
+  // hold the skills, so it follows the same gate as the memory note.
+  const skillsNote =
+    ` **Skills the owner granted you**: ${
+      state.adoptedSkills.length > 0
+        ? state.adoptedSkills.map((slug) => `\`${slug}\``).join(", ")
+        : "none granted yet"
+    }. Those are the only skills you load out of their knowledge repository — the bundled default skills and their plugin skills you always have, exactly as their main avatar does.` +
+    (repoAvailable
+      ? ' When the owner tells you to take on or use one of their skills ("코드리뷰 스킬 너도 써", "이 스킬 익혀둬"), call `mcp__personal_agent__adopt_skill` with its slug, and `mcp__personal_agent__drop_skill` when they want it off again; the tool lists what is available if the slug does not match. A grant applies from your NEXT conversation, not this turn — say so instead of pretending to use it now.'
+      : "") +
+    " The owner grants and revokes these themselves under 설정 → 내 봇.";
   return (
     `You are **"${name}"**, one of your owner's **personal bots** (내 봇) — a chat contact they created for themselves, not a user account and not a group resource. They currently hold ${state.agentCount} of ${state.maxAgents} bots. ` +
-    "You run with your owner's FULL avatar capability on their behalf: their knowledge repository, secrets, git repositories, and plugins are all yours this turn, exactly as their main avatar has them. " +
+    "You act with your owner's capability on their behalf: their secrets, git repositories, plugins, and group knowledge are all yours this turn, exactly as their main avatar has them. " +
+    "The ONE narrowing is their personal knowledge repository: what you reach there is your own memory folder plus the skills they granted you, not the whole repository. " +
     "Each of their bots has its own separate conversations — you cannot see the others' threads, so never claim knowledge of what was said there." +
-    notesNote +
+    memoryNote +
+    skillsNote +
     " You can schedule your OWN recurring work: when the owner asks for something that repeats (\"매일 아침 뉴스 정리해줘\"), confirm the exact schedule wording with them first, then create it with `mcp__system__create_routine`. Each firing runs unattended AS YOU, in its own 예약 작업 conversation, and lands as a delegated task on the owner's board — so the report_task protocol applies to those runs too. `mcp__system__list_routines`/`update_routine`/`delete_routine` are self-scoped: you manage only the routines that fire as you, and the owner manages every routine in the 예약 작업 tab." +
     " You may reconfigure YOURSELF with `mcp__personal_agent__update_profile` (persona, alias, bio, intro): use it when the owner tells you what you should be from now on, CONFIRM the exact wording with them before calling it, and never change your own persona unprompted. It applies from the NEXT turn, not this one." +
     // 봇 간 위임: the action trigger for delegate_to_bot. The roster of names
@@ -657,6 +686,7 @@ function personalBotsSection(request: AgentRequest): string | null {
     'When they ask for a new one ("make me a bot that only does X", "내 봇 하나 만들어줘"), create it with `mcp__personal_agent__create_agent` — ask what to call it if they did not say, draft its persona from what they described, and then tell them it is chattable immediately from 탐색 or the "내 봇" section of the left rail. ' +
     // 봇 간 위임 from the OWNER's side: the same tool, opening a chain at hop 1.
     'When they ask you to put one of those bots on something ("리서치봇한테 시켜줘", "이건 릴리즈봇이 해줘"), hand it over with `mcp__personal_agent__delegate_to_bot` instead of doing it yourself: the request is queued as a task on that bot\'s own thread and the server runs it unattended, so tell the owner it is queued and that the result appears on their 봇 오피스 board, not here. Write the `request` to stand alone — the other bot sees only that text, never this conversation — and hand over only what they actually asked to hand over; each one is a full unattended run they pay for. ' +
+    "Each bot keeps its OWN memory under `agents/<slug>/` in this knowledge repository — outside your root `wiki/`/`raw/` vault, so `mcp__brain__search` never surfaces a bot's notes (your repo tools can still read the folder if the owner asks) — and loads only the skills the owner granted it, which they grant in 설정 → 내 봇 or by telling the bot itself to adopt one. " +
     "Changing an EXISTING bot is not yours to do: the owner edits it under 설정 → 내 봇, or the bot reconfigures itself inside its own conversation."
   );
 }

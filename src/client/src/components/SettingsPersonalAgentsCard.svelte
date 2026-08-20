@@ -19,10 +19,28 @@
   /** Same composite id the server binds conversations + avatar images to. */
   const avatarIdOf = (agent: PersonalAgent) => `personal:${agent.ownerUserId}:${agent.id}`;
 
+  /** A grant takes effect from the bot's next NEW conversation, server-wide. */
+  const SKILL_APPLY_HINT = "변경은 봇의 다음 새 대화부터 적용됩니다.";
+
+  /** One grantable skill out of the owner's own knowledge repo. */
+  interface SkillCatalogEntry {
+    slug: string;
+    intro: string;
+  }
+
   let agents: PersonalAgent[] = [];
   let loading = false;
   let loaded = false;
   let error = "";
+
+  // The grantable-skill catalog costs a repo clone server-side, so it is pulled
+  // once per card mount and only when a form actually opens — the listing above
+  // is the common visit, and it needs none of this.
+  let catalogLoaded = false;
+  let catalogLoading = false;
+  let catalogRepoConfigured = false;
+  let catalogSkills: SkillCatalogEntry[] = [];
+  let catalogError = "";
 
   let saving = false;
   let rowBusyId = "";
@@ -38,6 +56,12 @@
   let formIntro = "";
   let formPersona = "";
   let formDefaultModel = "";
+  /**
+   * The bot's skill grants as the form currently has them. Seeded from the ROW,
+   * never from the catalog, so saving while the repo is unreachable replaces the
+   * stored list with itself instead of silently revoking every grant.
+   */
+  let formSkills: string[] = [];
 
   // An env-pinned model (bootstrap.modelSelection.locked) ignores every
   // per-conversation choice, so offering a per-bot tier there would be a control
@@ -91,7 +115,35 @@
     formIntro = agent?.intro ?? "";
     formPersona = agent?.persona ?? "";
     formDefaultModel = agent?.defaultModel ?? "";
+    formSkills = [...(agent?.selectedSkills ?? [])];
     formOpen = true;
+    void loadCatalog();
+  }
+
+  /** What the owner may grant — read once, the first time a form opens. */
+  async function loadCatalog(): Promise<void> {
+    if (catalogLoaded || catalogLoading) return;
+    catalogLoading = true;
+    catalogError = "";
+    try {
+      const body = await api<{ repoConfigured: boolean; skills: SkillCatalogEntry[] }>(
+        agentPath("/skill-catalog"),
+      );
+      catalogRepoConfigured = Boolean(body.repoConfigured);
+      catalogSkills = body.skills ?? [];
+      catalogLoaded = true;
+    } catch (err) {
+      // Left un-loaded on purpose: a clone failure is fixable (address/branch/
+      // token), so the next form open retries instead of staying dark forever.
+      catalogError = (err as Error).message;
+    } finally {
+      catalogLoading = false;
+    }
+  }
+
+  function toggleSkill(slug: string, on: boolean): void {
+    const without = formSkills.filter((item) => item !== slug);
+    formSkills = on ? [...without, slug] : without;
   }
 
   function closeForm(): void {
@@ -113,6 +165,9 @@
         bio: formBio,
         intro: formIntro,
         persona: formPersona,
+        // FULL REPLACE — the server takes this array as the bot's whole grant
+        // list, which is why it is seeded from the row rather than the catalog.
+        selectedSkills: formSkills,
       };
       if (canPickModel) payload.defaultModel = formDefaultModel || null;
       const body = JSON.stringify(payload);
@@ -156,7 +211,7 @@
   async function remove(agent: PersonalAgent): Promise<void> {
     if (rowBusyId) return;
     const confirmed = await confirmAction(
-      `"${agent.displayName}" 봇을 삭제할까요?\n이 봇과의 모든 대화 기록이 함께 삭제되며 되돌릴 수 없습니다. 기록을 남기려면 대신 ‘비활성화’를 사용하세요.`,
+      `"${agent.displayName}" 봇을 삭제할까요?\n이 봇과의 모든 대화 기록이 함께 삭제되며 되돌릴 수 없습니다. 기록을 남기려면 대신 ‘비활성화’를 사용하세요.\n봇의 기억 폴더(지식 저장소의 agents/${agent.memoryDir}/)는 삭제되지 않고 남습니다.`,
       { title: "봇을 삭제할까요?", confirmLabel: "삭제", tone: "danger" },
     );
     if (!confirmed) return;
@@ -270,6 +325,7 @@
               <div class="pr-sub">
                 {agent.alias ? `"${agent.alias}" · ` : ""}모델: {modelLabel(agent.defaultModel)}
                 {agent.persona ? " · 페르소나 설정됨" : ""}
+                {agent.selectedSkills.length ? ` · 스킬 ${agent.selectedSkills.length}개` : ""}
               </div>
             </div>
             {#if !agent.enabled}<span class="tag read">비활성</span>{/if}
@@ -338,6 +394,37 @@
         {:else if modelLocked}
           <p class="muted">이 서버는 모델이 고정되어 있어 봇별 기본 모델을 고를 수 없어요.</p>
         {/if}
+        <!-- 스킬은 COPY가 아니라 내 저장소를 가리키는 참조다 — 그래서 목록은
+             주인의 저장소에서 그때그때 읽고, 준 스킬은 빈 목록이 기본값이다. -->
+        <div class="field">
+          <span>스킬</span>
+          <span class="field-hint">이 봇이 불러올 내 지식 저장소의 스킬을 고릅니다. 고르지 않으면 아무 스킬도 불러오지 않아요.</span>
+          {#if catalogLoading && !catalogLoaded}
+            <span class="field-hint" role="status">스킬 목록을 불러오는 중…</span>
+          {:else if catalogError}
+            <span class="field-hint warn" role="alert">스킬 목록을 불러오지 못했습니다: {catalogError}</span>
+          {:else if !catalogRepoConfigured}
+            <span class="field-hint">지식 저장소를 연결하면 봇에게 내 스킬을 줄 수 있어요.</span>
+          {:else if !catalogSkills.length}
+            <span class="field-hint">지식 저장소에 아직 스킬이 없습니다.</span>
+          {:else}
+            <div class="pc-list" role="group" aria-label="봇에게 줄 스킬">
+              {#each catalogSkills as skill (skill.slug)}
+                <label class="pc-item">
+                  <input
+                    type="checkbox"
+                    checked={formSkills.includes(skill.slug)}
+                    disabled={saving}
+                    on:change={(event) => toggleSkill(skill.slug, event.currentTarget.checked)}
+                  />
+                  <span>{skill.slug}</span>
+                  {#if skill.intro}<span class="field-hint">{skill.intro}</span>{/if}
+                </label>
+              {/each}
+            </div>
+            <span class="field-hint">{SKILL_APPLY_HINT}</span>
+          {/if}
+        </div>
         {#if editingAgent}
           <div class="pr-actions">
             <label class="ghost-sm" style="cursor:pointer">

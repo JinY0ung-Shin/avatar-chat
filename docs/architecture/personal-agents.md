@@ -2,7 +2,7 @@
 
 > Detail page of [Architecture & Operational Notes](../ARCHITECTURE-NOTES.md).
 > Per-owner chat-contact bots: id namespace, the owner-only reach gate, the full-owner-capability run
-> wiring, and every cascade. Phase 1 is ADMIN-ONLY by design.
+> wiring, the scoped memory/skill lens, and every cascade. Phase 1 is ADMIN-ONLY by design.
 
 ## What they are
 - **Several chat-contact bots per (admin) user** (`personal_agents`, cap `MAX_PERSONAL_AGENTS = 20`
@@ -22,7 +22,10 @@
   (enabled only, `[]` for non-admins).
 
 ## The A-1 capability model — the load-bearing invariant
-A personal-agent run **IS a full owner run**; the bot differs in IDENTITY only.
+A personal-agent run **IS a full owner run**; the bot diverges in IDENTITY plus one scoped
+PERSONAL-KNOWLEDGE lens — its own memory folder and the skills the owner granted it (the two
+sections below). Everything else stays FULL: secrets, git repos, plugins, group knowledge, the
+access algebra itself.
 - `AgentRequest.groupAgent` must NEVER be set for one — it is a triple kill-switch
   (`deriveAgentToolAccess` → ownerToolAccess false, `ownerSecrets` → `{}`, `ownerState` → empty).
   The dedicated field is `AgentRequest.personalAgent {agentId, ownerUserId}`, set by the chat route
@@ -30,7 +33,8 @@ A personal-agent run **IS a full owner run**; the bot differs in IDENTITY only.
   deliberately untouched — pinned by tests).
 - **`request.avatar` is the OWNER's own avatar (`avatar.id` = owner uuid)**: every capability key
   (ownerState, secrets, plugin roots, knowledge memory, work repos, `AgentOwner` commit identity)
-  works untouched. The composite id lives ONLY in `threadAvatarId` inside `routes/chat.ts` — the
+  works untouched — the lens rides as loader/server OPTIONS keyed on that SAME owner id, never as a
+  different avatar. The composite id lives ONLY in `threadAvatarId` inside `routes/chat.ts` — the
   conversation binding (`conversations.avatar_user_id`), `workspaceDirFor` cwd, the run registry /
   SSE `open` frame, logs/audit — and in client-facing summaries. The chat route OVERLAYS the
   conversational identity onto `request.avatar` (displayName/alias/persona = the bot's, `??` so an
@@ -40,10 +44,119 @@ A personal-agent run **IS a full owner run**; the bot differs in IDENTITY only.
   (BOTH sql sites) whose string concat mirrors `personalAgentAvatarId()` — keep in lockstep, same as
   the group_agents join.
 
+## Per-bot memory — `agents/<dir>/` inside the OWNER's repo
+A bot's memory is a NAMESPACE in the owner's single knowledge repo — the same "convention over that
+one store" the second brain is, not a new store.
+- **The folder name is IMMUTABLE.** `personal_agents.memory_dir` is stamped at INSERT from
+  `personalAgentMemoryDirName(displayName, agentId)` (`personalAgentSlug.ts`, a deliberate LEAF
+  module — nothing there may import the store; `personalAgents.ts` re-exports it so route/agent
+  callers keep one import path): the lowercased display name reduced to `[a-z0-9._-]` (cap 24, cut
+  BEFORE trimming separators, fallback `bot` — a Korean name reduces to nothing) + `-` + the first 8
+  hex chars of the row uuid, which is what actually makes the segment unique (and can never be `.`
+  or `..`). `updatePersonalAgent` never writes the column, so a RENAME leaves the tree exactly where
+  it is; rows predating the column are backfilled in `migrate()` through the same TS function
+  (value-guarded and deliberately UNGATED by the `user_version` ladder — every INSERT writes the
+  column, so `memory_dir IS NULL` can only ever match older rows).
+  `personalAgentMemoryRoot(memoryDir)` is the SINGLE place that spells `agents/<dir>` (POSIX, no
+  trailing slash); the parent is `PERSONAL_AGENT_MEMORY_PARENT = "agents"`.
+- **Layout inside it:** `<root>/wiki/` for curated notes, `<root>/raw/` for captures, and
+  `<root>/CLAUDE.md` — the bot's STANDING memory, injected into every one of its turns.
+- **Enforcement is at the MCP TOOL layer, not the filesystem** — the same shape as a group agent's
+  `capture_scope`:
+  - `runPlan` derives `personalAgentScope` (`{root, botName}`) from `personalAgentState.memoryRoot`
+    and hands it to the repo server as `pathScope` and to the brain server as `scope`. That is
+    server-CONSTRUCTION parameterization only (exactly like `buildGroupAgentBrainServer`):
+    `deriveAgentToolAccess`/`planMcpToolFamilies` stay UNTOUCHED, so `mcpServers`/`allowedTools`
+    need no bot branch.
+  - Every path-taking `mcp__repo__*` op runs `normalizeScopedPath` (`brainSearch.ts` — the guard
+    shape the wiki vault already uses) BEFORE the file op, so `<root>/../../CLAUDE.md` gets the
+    English redirect; `list_files` filters the tree through the same check, and every manage tool's
+    DESCRIPTION carries the scope note (a tool still advertising the whole repo makes the model
+    spend turns on refused paths). `knowledgeRepo`'s `resolveInRepo`/`realpathContained` remain the
+    second layer.
+  - `scaffold_skill` / `create_repo` stay REGISTERED but REFUSE under a scope — both are the owner's
+    job from their main avatar chat, which is what every scoped refusal names instead of pointing at
+    a tool this run would also refuse.
+  - `commit` stages with a pathspec (`git add -A -- <root>`, threaded as `commitAndPush(…,
+    {pathspec})` → `repoGitCore`): the clone is SHARED with the owner's own runs, so a bare
+    `git add -A` would push their unrelated work-in-progress under the bot's commit. It also SKIPS
+    the shared-skill reconcile — a bot never touches `skills/`.
+  - `isBrainNotePath(path, root)` fires the 기억 activity notice for `<root>/wiki/**`.
+  - Root validation fails CLOSED (`scopeBase`): an empty root, or one carrying a blank/`.`/`..`
+    segment, refuses every path — and reports the vault as absent — rather than widening back to the
+    whole repo.
+  - The scope is STATIC per run — a bot deleted or disabled mid-run is caught by the NEXT turn's
+    reach gate, not re-read here. A run whose row vanished between the reach gate and plan assembly
+    falls back to a namespace keyed by the bot ID (a folder no bot writes to), so a degenerate run
+    is never WIDER than a healthy one.
+  - `preToolUseHook` adds an INTEGRITY guard, not a security boundary (the `activeRepoMode`
+    precedent): a native `Write`/`Edit`/`MultiEdit`/`FileWrite`/`FileEdit`/`NotebookEdit`
+    (`NATIVE_FILE_WRITE_TOOLS`) whose absolute path resolves INSIDE the owner's knowledge clone but
+    OUTSIDE `<clone>/<memoryRoot>/` is DENIED — English reason redirecting to
+    `mcp__repo__write_file`/`edit_file` + `commit` (a native write there would be neither staged nor
+    committed), Korean `uiReason`. Bash is deliberately NOT parsed. The hook's existing
+    `personalAgentRun` parameter is WIDENED to `boolean | PersonalAgentWriteScope`, so ONE parameter
+    carries the run kind and the two bot behaviours (AskUserQuestion denial, write confinement) can
+    never disagree about whether this is a bot run.
+  - **Standing memory:** `loadKnowledgeRepoMemory(store, avatarId, config,
+    { personalAgentMemoryRoot })` reads `<clone>/<root>/CLAUDE.md` INSTEAD of the repo-root one
+    (same reader, same `PERSONAL_CLAUDE_MD_CAP`) — a bot never inherits the owner's standing memory.
+    Group memory is unaffected (a bot run is a full owner run for groups).
+- **Deleting a bot PRESERVES its memory folder BY DESIGN.** The cascade takes the conversations,
+  tasks, routines, avatar image and workspace tree; nothing prunes `agents/<dir>/` — that content
+  lives in the OWNER's repo and is theirs to keep, or to remove from their own avatar chat.
+
+## Granted skills — `selected_skills`, an ALLOWLIST where EMPTY MEANS NONE
+- **`personal_agents.selected_skills`** (JSON TEXT; the domain type is ALWAYS `string[]` —
+  `parseNameList(…) ?? []`). **Empty = no knowledge-repo skills at all**, the OPPOSITE of the
+  owner's own `users.knowledge_selected` where `null` = load ALL. Caps:
+  `MAX_PERSONAL_AGENT_SKILLS = 64` and per-slug `PERSONAL_AGENT_SKILL_SLUG_CAP = 100`, validated in
+  ONE place — `normalizePersonalAgentSkills` (shape → per-slug `[A-Za-z0-9._-]` with `.`/`..`
+  refused → dedupe → count, so the count is checked against what would actually be stored), shared
+  by the HTTP route and the MCP tools so neither surface becomes a cap bypass; the store's own write
+  path only trims/dedupes on top. A patch is a FULL REPLACE.
+- **A grant is a LIVE REFERENCE into the owner's repo** (`skills/<slug>/`), never a copy: the
+  owner's later edits reach the bot with no transfer step. Contrast skill SHARING between users,
+  which COPIES the directory into the learner's own repo (`skillTransfer.ts`).
+- **Loading:** `loadAgentPluginRoots(store, avatarId, config, onWarn,
+  { personalAgent: { selectedSkills } })` overrides the personal knowledge-repo context's `selected`
+  with the allowlist (`loadPersonalAgentKnowledgeRepoRoots`). Bundled defaults, the owner's plugin
+  repos and every group repo are UNCHANGED — a bot run is a full owner run everywhere else. An EMPTY
+  list contributes zero personal-knowledge roots and stays SILENT (no
+  `마켓플레이스에 불러올 수 있는 플러그인이 없습니다` warning: an ungranted bot is the normal state, not
+  a fault), but it STILL runs `ensureClone` best-effort, because that same working tree feeds the
+  standing-memory read and the scoped brain/repo tools.
+- **The bot manages its own allowlist in conversation:** `mcp__personal_agent__adopt_skill` /
+  `drop_skill`, on the same live gate as the other self tools (row exists, viewer IS the owner, bot
+  enabled, owner still admin), audited as `personal_agent_update`. `adopt_skill` validates the slug
+  against the owner's REAL `skills/` tree and re-reads the row after that clone (long enough for the
+  owner to have changed the grants in settings); `create_agent` takes an optional `skills` list
+  checked the same way. A grant applies from the bot's NEXT conversation — skills load at run start
+  — and both metacognition surfaces plus every tool result say so. The owner grants and revokes the
+  same list in 설정 → 내 봇, fed by `GET /api/me/agents/skill-catalog` (their own `skills/` tree with
+  each SKILL.md description; no repo is a NORMAL empty answer, only a clone FAILURE is an error —
+  registered ahead of every `/:agentId` route so the literal path is never read as a bot id).
+- **`GET /api/avatars/:id/skills` reports what the bot RUN actually loads:** bundled defaults + the
+  owner's plugin repos unchanged, with the personal knowledge repo RE-RESOLVED under the bot's
+  allowlist (`selected`) instead of filtering resolved roots by name — so the panel can never
+  advertise a skill the bot would not load. Resolved against the owner's OWN avatar row: the
+  composite `personal:` id is nothing a skill/plugin loader can key on.
+- **Both metacognition surfaces carry the lens from the SAME live row read**
+  (`summarizePersonalAgentState` → `PersonalAgentState.memoryRoot` + `adoptedSkills`, so neither can
+  describe a scope the tools do not have): `promptBuilder`'s `personalAgentSection` (memory paths,
+  the standing-memory file, the word SCOPED, the granted-skill roster, the adopt/drop action
+  triggers — the memory half gated on a connected repo + the `personal_knowledge` tool group, never
+  pointing at a tree this run cannot write), a scope-aware `brainSection` branch (it names
+  `<root>/wiki`/`<root>/raw` and DROPS the brain-migrate/brain-ingest pointers, whose skills seed
+  the ROOT vault outside this run's scope), `personalBotsSection` on the owner's side, and
+  `describe_system`'s bot block (a memory line + a skills line) plus per-bot granted-skill counts on
+  the owner's roster line.
+
 ## Run wiring (`runPlan.ts` / `claudeAgent.ts`)
 - `personalAgentRun = Boolean(request.personalAgent)` drives ONLY: `summarizePersonalAgentState`
-  (stamped as `request.personalAgentState`), the `personal_agent` MCP server, routine suppression,
-  and `describe_system` ctx.
+  (stamped as `request.personalAgentState`), the `personal_agent` MCP server, the SELF-scoping of the
+  routine tools, `describe_system` ctx, and `personalAgentScope` — the memory root that
+  parameterizes the repo/brain servers and the `preToolUseHook` write guard.
 - **One server name, two mutually exclusive tool sets** (`agent/personalAgentProfileTools.ts`):
   a bot run registers `mcp__personal_agent__update_profile` (self-config: persona/alias/bio/intro,
   never displayName/enabled — the owner manages those); a NON-bot owner run registers
@@ -221,16 +334,27 @@ UNTOUCHED: a task row is bookkeeping over the same A-1 full-owner run.
   by a note and `defaultModel` is omitted from save bodies.
 
 ## Tests
-`tests/personal-agent-store.test.ts` (CRUD/cap/cascades/parse/reach),
+`tests/personal-agent-store.test.ts` (CRUD/cap/cascades/parse/reach, `memory_dir` insert-stamp +
+rename immutability + backfill, grant normalization),
+`-memory.test.ts` (the fail-closed scope guards, scoped brain search/read, repo-tool path
+confinement + the scoped scaffold/create refusals, and a scoped commit staging ONLY the memory
+folder while the owner's in-flight work stays untouched — plus the WIRING: `buildAgentRunPlan`
+handing the repo/brain servers the row's immutable root with an unscoped owner run as the control,
+the vanished-row fallback, the granted-skill allowlist and subtree standing memory through
+`plugins.ts`, and the native-write guard's deny/allow matrix),
 `-tasks-store.test.ts` (bot_tasks status machine/orderings/sweeps/cascades),
 `-tasks-routes.test.ts` (queue 202/caps, dispatcher drain + undispatchable-fail, resume,
 finalize transitions incl. reportedOutcome→waiting_input, `bot_task` frame-name pins, task API +
 cancel matrix, boot sweep/dispatch), `tests/svelte-bots-view.test.ts` (봇 오피스 roster/cards/
 cancel-vs-stop/frame routing), `-routes.test.ts` (admin
 gates, ownership 404s, AgentRequest shape incl. identity overlay + never-inherit pin, disabled 403,
-role-revoked fail-closed, image round-trip, delete sweeps), `-tools.test.ts` (access-algebra
-baseline, both tool gate matrices, describe_system, prompt pins, routine-name filtering),
+role-revoked fail-closed, image round-trip, delete sweeps, the skill-catalog gate + grant validation
+matrix, and `/api/avatars/:id/skills` + the turn's plugin roots/standing memory reflecting the
+allowlist), `-tools.test.ts` (access-algebra
+baseline, both tool gate matrices, describe_system, prompt pins, routine-name filtering,
+adopt/drop_skill incl. the unknown-slug roster and the audit detail),
 `tests/svelte-personal-agents.test.ts` (badge/rail incl. the admin-only empty-state CTA and the
-owner-avatar seeded pane it opens/management fetches/seeding). Getting-started
+owner-avatar seeded pane it opens/management fetches/seeding, the 스킬 grant list and its
+no-repo/no-skill states). Getting-started
 exclusion extended in `tests/agent-core.test.ts`; `tests/agent-run.test.ts:377`'s system-only
 mcpServers pin now includes `personal_agent` (admin owner).

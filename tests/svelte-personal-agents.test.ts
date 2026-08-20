@@ -141,6 +141,10 @@ const BOT_ROW: PersonalAgent = {
   hasImage: false,
   enabled: true,
   defaultModel: "sonnet",
+  // Per-bot memory + skill allowlist: insert-only folder name, and a grant list
+  // that starts EMPTY (a bot loads no knowledge-repo skills until granted).
+  memoryDir: "bot-1",
+  selectedSkills: [],
   createdAt: "2026-08-01T00:00:00.000Z",
   updatedAt: "2026-08-01T00:00:00.000Z",
 };
@@ -402,13 +406,23 @@ describe("Shell 봇 오피스 nav entry", () => {
 /* ------------------------------------------------------------------ */
 
 describe("SettingsPersonalAgentsCard", () => {
-  /** Serve the listing; every mutation answers ok and is recorded. */
-  function mockAgents(rows: PersonalAgent[] = [BOT_ROW]): Call[] {
+  interface SkillCatalog {
+    repoConfigured: boolean;
+    skills: { slug: string; intro: string }[];
+  }
+
+  /** Serve the listing + the grantable-skill catalog; mutations answer ok. */
+  function mockAgents(rows: PersonalAgent[] = [BOT_ROW], catalog?: SkillCatalog): Call[] {
     return stubFetch((url) => {
+      // Matched FIRST: the literal path is a substring of the listing path.
+      if (url.includes("/api/me/agents/skill-catalog")) return catalog ?? { repoConfigured: false, skills: [] };
       if (url.includes("/api/me/agents")) return { agents: rows, agent: rows[0], ok: true };
       return { avatars: [], conversations: [] };
     });
   }
+
+  const catalogReads = (calls: Call[]): number =>
+    calls.filter((call) => call.url.includes("/skill-catalog")).length;
 
   it("lists the bots it fetched and creates one through POST /api/me/agents", async () => {
     const calls = mockAgents();
@@ -434,6 +448,9 @@ describe("SettingsPersonalAgentsCard", () => {
       bio: "",
       intro: "",
       persona: "",
+      // A new bot starts with NO skills — the opposite default of the owner's
+      // own knowledgeSelected (null = load all).
+      selectedSkills: [],
       defaultModel: "haiku",
     });
   });
@@ -494,6 +511,11 @@ describe("SettingsPersonalAgentsCard", () => {
     await waitFor(() => expect(get(confirmation)).not.toBeNull());
     expect(get(confirmation)?.message).toContain("모든 대화 기록이 함께 삭제되며");
     expect(get(confirmation)?.message).toContain("비활성화");
+    // The bot's memory is a folder in the owner's OWN repo, so it is not the
+    // bot's to take with it — the confirm has to say what stays behind.
+    expect(get(confirmation)?.message).toContain(
+      "봇의 기억 폴더(지식 저장소의 agents/bot-1/)는 삭제되지 않고 남습니다.",
+    );
     expect(get(confirmation)?.tone).toBe("danger");
     resolveConfirmation(true);
 
@@ -507,6 +529,111 @@ describe("SettingsPersonalAgentsCard", () => {
     await tick();
     expect(calls.length).toBe(0);
     expect(screen.queryByText("내 봇")).toBeNull();
+  });
+
+  /* ---- 스킬 grants -------------------------------------------------- */
+
+  /** The picker's checkboxes, in catalog order. */
+  function skillBoxes(): HTMLInputElement[] {
+    return [...document.querySelectorAll<HTMLInputElement>(".pc-list input[type='checkbox']")];
+  }
+
+  it("reflects the bot's grants, names each skill, and saves the WHOLE list back", async () => {
+    const calls = mockAgents([{ ...BOT_ROW, selectedSkills: ["release"] }], {
+      repoConfigured: true,
+      skills: [
+        { slug: "release", intro: "릴리즈 절차" },
+        { slug: "triage", intro: "이슈 분류" },
+      ],
+    });
+    render(SettingsPersonalAgentsCard, { props: { active: true } });
+    await screen.findByText("코드리뷰 봇");
+
+    // The row says how many grants a bot carries without opening the form…
+    expect(document.body.textContent).toContain("스킬 1개");
+    // …and the catalog costs a repo clone server-side, so nothing reads it until
+    // a form actually opens.
+    expect(catalogReads(calls)).toBe(0);
+
+    await fireEvent.click(await enabled("설정"));
+    await waitFor(() => expect(skillBoxes().length).toBe(2));
+
+    expect(skillBoxes().map((box) => box.checked)).toEqual([true, false]);
+    expect(document.body.textContent).toContain("릴리즈 절차");
+    expect(document.body.textContent).toContain("변경은 봇의 다음 새 대화부터 적용됩니다.");
+
+    // Revoke one and grant the other: the body carries the full list, not a delta.
+    await fireEvent.click(skillBoxes()[0]);
+    await fireEvent.click(skillBoxes()[1]);
+    await fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    const patch = calls.find((call) => call.method === "PATCH")!;
+    expect(patch.url).toBe("/api/me/agents/bot-1");
+    expect(JSON.parse(patch.body!).selectedSkills).toEqual(["triage"]);
+  });
+
+  it("reads the catalog once per mount, however many forms open", async () => {
+    const calls = mockAgents([BOT_ROW], {
+      repoConfigured: true,
+      skills: [{ slug: "release", intro: "릴리즈 절차" }],
+    });
+    render(SettingsPersonalAgentsCard, { props: { active: true } });
+    await screen.findByText("코드리뷰 봇");
+
+    await fireEvent.click(await enabled("설정"));
+    await waitFor(() => expect(catalogReads(calls)).toBe(1));
+
+    await fireEvent.click(screen.getByRole("button", { name: "닫기" }));
+    await fireEvent.click(await enabled("봇 추가"));
+    await waitFor(() => expect(skillBoxes().length).toBe(1));
+    // A fresh bot starts with nothing checked even though the last form had a
+    // grant open, and the catalog is not pulled a second time.
+    expect(skillBoxes()[0].checked).toBe(false);
+    expect(catalogReads(calls)).toBe(1);
+  });
+
+  it("explains an empty picker instead of showing empty controls", async () => {
+    const noRepo = mockAgents([BOT_ROW], { repoConfigured: false, skills: [] });
+    const first = render(SettingsPersonalAgentsCard, { props: { active: true } });
+    await screen.findByText("코드리뷰 봇");
+    await fireEvent.click(await enabled("설정"));
+
+    await screen.findByText("지식 저장소를 연결하면 봇에게 내 스킬을 줄 수 있어요.");
+    expect(document.querySelector(".pc-list")).toBeNull();
+    expect(catalogReads(noRepo)).toBe(1);
+    first.unmount();
+    vi.unstubAllGlobals();
+
+    // A connected repo with no skills/ tree is a different sentence: the fix is
+    // writing a skill, not connecting a repo.
+    mockAgents([BOT_ROW], { repoConfigured: true, skills: [] });
+    render(SettingsPersonalAgentsCard, { props: { active: true } });
+    await screen.findByText("코드리뷰 봇");
+    await fireEvent.click(await enabled("설정"));
+
+    await screen.findByText("지식 저장소에 아직 스킬이 없습니다.");
+    expect(document.querySelector(".pc-list")).toBeNull();
+  });
+
+  it("keeps the stored grants when the picker offers no controls", async () => {
+    // The save is a FULL REPLACE, so a picker with nothing in it must not read
+    // as "revoke everything": the form is seeded from the ROW, which means an
+    // untouched save replaces the stored list with itself.
+    const calls = mockAgents([{ ...BOT_ROW, selectedSkills: ["release"] }], {
+      repoConfigured: false,
+      skills: [],
+    });
+    render(SettingsPersonalAgentsCard, { props: { active: true } });
+    await screen.findByText("코드리뷰 봇");
+
+    await fireEvent.click(await enabled("설정"));
+    await waitFor(() => expect(catalogReads(calls)).toBe(1));
+    expect(document.querySelector(".pc-list")).toBeNull();
+
+    await fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() => expect(calls.some((call) => call.method === "PATCH")).toBe(true));
+    expect(JSON.parse(calls.find((call) => call.method === "PATCH")!.body!).selectedSkills).toEqual(["release"]);
   });
 });
 

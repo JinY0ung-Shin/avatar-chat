@@ -4,6 +4,7 @@ import {
   parsePersonalAgentRef,
   personalAgentAvatarId,
 } from "../personalAgents.js";
+import { personalAgentMemoryDirName } from "../personalAgentSlug.js";
 import {
   type Constructor,
   type PersonalAgentRow,
@@ -11,6 +12,7 @@ import {
   normalizeHashtags,
   now,
   parseHashtags,
+  parseNameList,
 } from "./internal.js";
 
 /**
@@ -55,9 +57,39 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
         hasImage: Boolean(row.avatar_ext),
         enabled: row.enabled === 1,
         defaultModel: row.default_model ?? null,
+        // Never NULL in practice: the INSERT sets it and migrate() backfills
+        // older rows. The fallback recomputes exactly what that backfill would
+        // have written, so a row bypassing both (raw SQL) still reads as a
+        // usable segment instead of an empty path.
+        memoryDir:
+          row.memory_dir || personalAgentMemoryDirName(row.display_name, row.id),
+        // NULL/[] both mean "no skills" — a bot's allowlist starts empty, so
+        // there is no "null = load all" state to distinguish here.
+        selectedSkills: parseNameList(row.selected_skills) ?? [],
         createdAt: row.created_at,
         updatedAt: row.updated_at ?? null,
       };
+    }
+
+    /**
+     * Shape-normalize a skill allowlist for storage: strings only, trimmed,
+     * blanks dropped, order-preserving dedupe. The CAP and the slug-character
+     * rule live in ../personalAgents.ts (normalizePersonalAgentSkills), which
+     * both writers — the settings route and the bot's own MCP tools — run
+     * BEFORE getting here; this is the last-line shape guard, not a second
+     * validation policy.
+     */
+    private normalizeSelectedSkills(input: string[]): string[] {
+      const out: string[] = [];
+      const seen = new Set<string>();
+      for (const entry of input) {
+        if (typeof entry !== "string") continue;
+        const slug = entry.trim();
+        if (!slug || seen.has(slug)) continue;
+        seen.add(slug);
+        out.push(slug);
+      }
+      return out;
     }
 
     getPersonalAgentById(agentId: string): PersonalAgent | null {
@@ -112,8 +144,8 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
       const id = crypto.randomUUID();
       this.db
         .prepare(
-          `INSERT INTO personal_agents (id, owner_user_id, display_name, alias, bio, intro, persona, hashtags, enabled, default_model, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO personal_agents (id, owner_user_id, display_name, alias, bio, intro, persona, hashtags, enabled, default_model, memory_dir, selected_skills, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -126,6 +158,12 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
           JSON.stringify(normalizeHashtags(input.hashtags ?? [])),
           (input.enabled ?? true) ? 1 : 0,
           input.defaultModel ?? null,
+          // The bot's memory folder is decided HERE, once: the name the row is
+          // born with is the one it keeps (updatePersonalAgent never writes it).
+          personalAgentMemoryDirName(displayName, id),
+          JSON.stringify(
+            this.normalizeSelectedSkills(input.selectedSkills ?? []),
+          ),
           timestamp,
           timestamp,
         );
@@ -135,7 +173,10 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
     /**
      * Patch one bot (fields omitted stay; displayName must stay non-empty when
      * provided). `defaultModel` distinguishes undefined (keep) from null
-     * (clear). created_at never changes. Null when the bot is gone.
+     * (clear); `selectedSkills` is a FULL REPLACE when present. created_at and
+     * memory_dir never change — the memory folder is insert-only, so a rename
+     * leaves the bot's existing memory tree exactly where it is. Null when the
+     * bot is gone.
      */
     updatePersonalAgent(
       agentId: string,
@@ -153,7 +194,8 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
         .prepare(
           `UPDATE personal_agents SET
              display_name = ?, alias = ?, bio = ?, intro = ?, persona = ?,
-             hashtags = ?, enabled = ?, default_model = ?, updated_at = ?
+             hashtags = ?, enabled = ?, default_model = ?, selected_skills = ?,
+             updated_at = ?
            WHERE id = ?`,
         )
         .run(
@@ -169,6 +211,11 @@ export function withPersonalAgents<TBase extends Constructor<StoreBase>>(
           patch.defaultModel !== undefined
             ? patch.defaultModel
             : existing.default_model,
+          patch.selectedSkills !== undefined
+            ? JSON.stringify(
+                this.normalizeSelectedSkills(patch.selectedSkills),
+              )
+            : (existing.selected_skills ?? null),
           now(),
           agentId,
         );

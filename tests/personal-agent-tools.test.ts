@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -53,8 +54,10 @@ import {
 } from "../src/server/agent/personalAgentProfileTools.js";
 import { buildSystemTools } from "../src/server/agent/systemTools.js";
 import {
+  MAX_PERSONAL_AGENT_SKILLS,
   MAX_QUEUED_BOT_TASKS,
   personalAgentAvatarId,
+  personalAgentMemoryRoot,
 } from "../src/server/personalAgents.js";
 import { registerBotTaskDispatcher } from "../src/server/botTaskDispatchBroker.js";
 import { buildPreToolUseHook } from "../src/server/agent/preToolUseHook.js";
@@ -141,6 +144,49 @@ const lastOptions = () => sdkMock.calls[sdkMock.calls.length - 1].options;
 const allowed = () => lastOptions().allowedTools as string[];
 const servers = () => Object.keys(lastOptions().mcpServers as Record<string, unknown>);
 
+/**
+ * A local bare remote seeded on `main` (the offline knowledge-repo fixture from
+ * skill-share.test.ts). The skill-grant tools run a REAL `ensureClone`, so they
+ * need a real repo rather than a mock.
+ */
+function seedRemote(name: string, files: Record<string, string>): string {
+  const remote = path.join(tempDir, `${name}.git`);
+  execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote], { stdio: "pipe" });
+  const seed = path.join(tempDir, `${name}-seed`);
+  fs.mkdirSync(seed, { recursive: true });
+  const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+  g("init", "-q");
+  g("config", "user.email", "seed@example.com");
+  g("config", "user.name", "Seed");
+  g("config", "commit.gpgsign", "false");
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(seed, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+  g("add", "-A");
+  g("commit", "-q", "-m", "seed");
+  g("branch", "-M", "main");
+  g("remote", "add", "origin", remote);
+  g("push", "-q", "origin", "main");
+  return remote;
+}
+
+/** Connect `ownerId`'s knowledge repo to a fresh remote holding `slugs` as skills. */
+function connectSkillRepo(
+  store: ReturnType<typeof setup>["store"],
+  ownerId: string,
+  name: string,
+  slugs: string[],
+): void {
+  const files: Record<string, string> = { "README.md": "hi" };
+  for (const slug of slugs) {
+    files[`skills/${slug}/SKILL.md`] =
+      `---\nname: ${slug}\ndescription: ${slug} does things\n---\n\n# ${slug}\n`;
+  }
+  store.setKnowledgeRepo(ownerId, seedRemote(name, files), "main");
+}
+
 // ===========================================================================
 // Access algebra: a personal-agent run must stay a FULL OWNER run
 // ===========================================================================
@@ -203,6 +249,9 @@ describe("personal-agent run plan (SDK mocked)", () => {
     expect(allowed()).toContain("mcp__personal_agent__report_task");
     // 봇 간 위임 rides BOTH sets — a bot may hand work to a sibling bot.
     expect(allowed()).toContain("mcp__personal_agent__delegate_to_bot");
+    // Skill grants are the BOT's own allowlist, so they ride the bot set only.
+    expect(allowed()).toContain("mcp__personal_agent__adopt_skill");
+    expect(allowed()).toContain("mcp__personal_agent__drop_skill");
     // create_agent belongs to the owner's OWN avatar, never to a bot.
     expect(allowed()).not.toContain("mcp__personal_agent__create_agent");
     // A bot schedules its OWN recurring work: the four routine names ride the
@@ -228,6 +277,10 @@ describe("personal-agent run plan (SDK mocked)", () => {
     expect(allowed()).not.toContain("mcp__personal_agent__update_profile");
     // Delegated tasks exist only inside a bot thread.
     expect(allowed()).not.toContain("mcp__personal_agent__report_task");
+    // A bot's skill allowlist is edited by the BOT; the owner's own avatar seeds
+    // it at creation (create_agent's `skills`) or the owner uses 설정 → 내 봇.
+    expect(allowed()).not.toContain("mcp__personal_agent__adopt_skill");
+    expect(allowed()).not.toContain("mcp__personal_agent__drop_skill");
     expect(allowed()).toContain("mcp__system__create_routine");
   });
 
@@ -344,6 +397,9 @@ describe("mcp__personal_agent__update_profile", () => {
       "mcp__personal_agent__update_profile",
       "mcp__personal_agent__report_task",
       "mcp__personal_agent__delegate_to_bot",
+      // The bot manages its own knowledge-repo skill allowlist (it starts empty).
+      "mcp__personal_agent__adopt_skill",
+      "mcp__personal_agent__drop_skill",
     ]);
     expect([...PERSONAL_AGENT_OWNER_TOOL_NAMES]).toEqual([
       "mcp__personal_agent__create_agent",
@@ -1161,6 +1217,272 @@ describe("mcp__personal_agent__create_agent", () => {
     expect(capped.content[0].text).toContain(`maximum of ${MAX_PERSONAL_AGENTS}`);
     expect(store.countPersonalAgents(owner.id)).toBe(MAX_PERSONAL_AGENTS);
   });
+
+  it("seeds the new bot's skills in ONE call, checked against the owner's repo", async () => {
+    const { config, store, owner } = setup("create-skills");
+    connectSkillRepo(store, owner.id, "create-skills-repo", ["code-review", "deploy"]);
+    const tools = buildPersonalAgentOwnerTools(store, {
+      owner: { id: owner.id, username: "owner", displayName: "오너" },
+      config,
+    });
+
+    // "코딩봇 만들고 code-review 스킬 줘" — one call, not create-then-adopt.
+    const ok = await callTool(tools, "create_agent", {
+      display_name: "코딩 봇",
+      skills: ["code-review", "code-review"],
+    });
+    expect(ok.isError).toBeFalsy();
+    const created = store
+      .listPersonalAgents(owner.id, { includeDisabled: true })
+      .find((a) => a.displayName === "코딩 봇")!;
+    expect(created.selectedSkills).toEqual(["code-review"]);
+    // A brand-new bot loads them from its FIRST conversation — no next-turn caveat.
+    expect(ok.content[0].text).toContain("first conversation");
+    const audit = store
+      .listAudit(owner.id, true)
+      .find((e) => e.detail?.includes("via create_agent"));
+    expect(audit?.detail).toContain("skills=code-review");
+
+    // An unknown slug is refused with the real roster — no bot is created.
+    const before = store.countPersonalAgents(owner.id);
+    const unknown = await callTool(tools, "create_agent", {
+      display_name: "릴리즈 봇",
+      skills: ["release-notes"],
+    });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toContain("code-review, deploy");
+    expect(store.countPersonalAgents(owner.id)).toBe(before);
+
+    // Shape failures use the same rule the settings route enforces.
+    const bad = await callTool(tools, "create_agent", {
+      display_name: "봇",
+      skills: ["../../etc"],
+    });
+    expect(bad.isError).toBe(true);
+    expect(bad.content[0].text).toContain("not a skill directory name");
+    expect(store.countPersonalAgents(owner.id)).toBe(before);
+
+    // Without `skills` the repo is never consulted (and no repo is needed).
+    const plainSetup = setup("create-skills-norepo");
+    const noRepoTools = buildPersonalAgentOwnerTools(plainSetup.store, {
+      owner: { id: plainSetup.owner.id, username: "owner", displayName: "오너" },
+      config: plainSetup.config,
+    });
+    const noSkills = await callTool(noRepoTools, "create_agent", { display_name: "빈 봇" });
+    expect(noSkills.isError).toBeFalsy();
+    expect(noSkills.content[0].text).toContain("carries no skills yet");
+  });
+});
+
+// ===========================================================================
+// adopt_skill / drop_skill (the bot's own knowledge-repo skill allowlist)
+// ===========================================================================
+describe("mcp__personal_agent__adopt_skill / drop_skill", () => {
+  type Setup = ReturnType<typeof setup>;
+
+  /** The bot tool set, with the repo-resolving config unless `noConfig`. */
+  function skillTools(s: Setup, opts: { noConfig?: boolean } = {}) {
+    return buildPersonalAgentSelfTools(s.store, {
+      agentId: s.agent.id,
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+      config: opts.noConfig ? undefined : s.config,
+    });
+  }
+
+  it("grants a repo skill, audits it, and pins the next-CONVERSATION wording", async () => {
+    const s = setup("adopt-ok");
+    connectSkillRepo(s.store, s.owner.id, "adopt-ok-repo", ["code-review", "pptx-report"]);
+    const tools = skillTools(s);
+
+    // A bot starts with NO skills — that is the whole point of the allowlist.
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual([]);
+
+    const ok = await callTool(tools, "adopt_skill", { slug: " code-review " });
+    expect(ok.isError).toBeFalsy();
+    expect(ok.content[0].text).toContain("code-review");
+    // Skill loading resolves at run start, so a grant can never join THIS session.
+    expect(ok.content[0].text).toContain(
+      "Takes effect from the NEXT conversation (this session keeps its current skill set)",
+    );
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual([
+      "code-review",
+    ]);
+    const audit = s.store
+      .listAudit(s.owner.id, true)
+      .find((e) => e.detail?.includes("adopt_skill"));
+    expect(audit?.action).toBe("personal_agent_update");
+    expect(audit?.detail).toContain(`agent=${s.agent.id} adopt_skill slug=code-review`);
+
+    // A second grant appends rather than replacing.
+    await callTool(tools, "adopt_skill", { slug: "pptx-report" });
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual([
+      "code-review",
+      "pptx-report",
+    ]);
+
+    // Re-adopting is a no-op, reported as such (not an error).
+    const again = await callTool(tools, "adopt_skill", { slug: "code-review" });
+    expect(again.isError).toBeFalsy();
+    expect(again.content[0].text).toContain("already have");
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toHaveLength(2);
+  });
+
+  it("lists the owner's real roster instead of accepting an unknown slug", async () => {
+    const s = setup("adopt-unknown");
+    connectSkillRepo(s.store, s.owner.id, "adopt-unknown-repo", ["code-review", "deploy"]);
+    const unknown = await callTool(skillTools(s), "adopt_skill", {
+      slug: "release-notes",
+    });
+    expect(unknown.isError).toBe(true);
+    expect(unknown.content[0].text).toContain('no skill named "release-notes"');
+    expect(unknown.content[0].text).toContain("code-review, deploy");
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual([]);
+
+    // A repo with no skills at all says so rather than listing nothing.
+    const bare = setup("adopt-bare");
+    connectSkillRepo(bare.store, bare.owner.id, "adopt-bare-repo", []);
+    const none = await callTool(skillTools(bare), "adopt_skill", { slug: "x" });
+    expect(none.isError).toBe(true);
+    expect(none.content[0].text).toContain("holds no skills yet");
+  });
+
+  it("refuses a slug that is not one safe path segment, and a blank one", async () => {
+    const s = setup("adopt-shape");
+    connectSkillRepo(s.store, s.owner.id, "adopt-shape-repo", ["code-review"]);
+    const tools = skillTools(s);
+
+    const blank = await callTool(tools, "adopt_skill", { slug: "   " });
+    expect(blank.isError).toBe(true);
+    expect(blank.content[0].text).toContain("Name the skill");
+
+    for (const bad of ["../../etc", "a/b", "..", "스킬"]) {
+      const res = await callTool(tools, "adopt_skill", { slug: bad });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("not a skill directory name");
+    }
+    // Refused before the repo is even consulted — nothing was stored.
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual([]);
+  });
+
+  it("fails closed with no repo connected and with no config in the run", async () => {
+    const s = setup("adopt-no-repo");
+    const noRepo = await callTool(skillTools(s), "adopt_skill", { slug: "code-review" });
+    expect(noRepo.isError).toBe(true);
+    expect(noRepo.content[0].text).toContain("no knowledge repository connected");
+    expect(noRepo.content[0].text).toContain("설정 → 지식 저장소");
+
+    // A run that cannot resolve the repo at all refuses rather than granting
+    // something unverified.
+    connectSkillRepo(s.store, s.owner.id, "adopt-no-config-repo", ["code-review"]);
+    const noConfig = await callTool(skillTools(s, { noConfig: true }), "adopt_skill", {
+      slug: "code-review",
+    });
+    expect(noConfig.isError).toBe(true);
+    expect(noConfig.content[0].text).toContain("설정 → 내 봇");
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual([]);
+  });
+
+  it("stops at the per-bot skill cap", async () => {
+    const s = setup("adopt-cap");
+    const slugs = Array.from({ length: MAX_PERSONAL_AGENT_SKILLS + 1 }, (_, i) => `s-${i}`);
+    connectSkillRepo(s.store, s.owner.id, "adopt-cap-repo", slugs);
+    // Fill the allowlist to the ceiling through the store, then try one more.
+    s.store.updatePersonalAgent(s.agent.id, {
+      selectedSkills: slugs.slice(0, MAX_PERSONAL_AGENT_SKILLS),
+    });
+    const capped = await callTool(skillTools(s), "adopt_skill", {
+      slug: slugs[MAX_PERSONAL_AGENT_SKILLS],
+    });
+    expect(capped.isError).toBe(true);
+    expect(capped.content[0].text).toContain(`limit of ${MAX_PERSONAL_AGENT_SKILLS}`);
+    expect(capped.content[0].text).toContain("drop_skill");
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toHaveLength(
+      MAX_PERSONAL_AGENT_SKILLS,
+    );
+  });
+
+  it("drops a grant without touching the repo, and reports an ungranted slug plainly", async () => {
+    const s = setup("drop-ok");
+    s.store.updatePersonalAgent(s.agent.id, {
+      selectedSkills: ["code-review", "deploy"],
+    });
+    // drop needs no repo at all: it only removes the grant.
+    const tools = skillTools(s, { noConfig: true });
+
+    const dropped = await callTool(tools, "drop_skill", { slug: "code-review" });
+    expect(dropped.isError).toBeFalsy();
+    expect(dropped.content[0].text).toContain('Dropped "code-review"');
+    expect(dropped.content[0].text).toContain("untouched in the owner's repository");
+    expect(dropped.content[0].text).toContain(
+      "Takes effect from the NEXT conversation (this session keeps its current skill set)",
+    );
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual(["deploy"]);
+    const audit = s.store
+      .listAudit(s.owner.id, true)
+      .find((e) => e.detail?.includes("drop_skill"));
+    expect(audit?.action).toBe("personal_agent_update");
+    expect(audit?.detail).toContain(`agent=${s.agent.id} drop_skill slug=code-review`);
+
+    // Not adopted → NOT an error: the state the owner asked for already holds.
+    const missing = await callTool(tools, "drop_skill", { slug: "release-notes" });
+    expect(missing.isError).toBeFalsy();
+    expect(missing.content[0].text).toContain("was not one of your skills");
+    expect(missing.content[0].text).toContain("deploy");
+    expect(s.store.getPersonalAgentById(s.agent.id)!.selectedSkills).toEqual(["deploy"]);
+
+    const blank = await callTool(tools, "drop_skill", { slug: " " });
+    expect(blank.isError).toBe(true);
+    expect(blank.content[0].text).toContain("Name the skill");
+
+    // Dropping the last one says so instead of printing an empty list.
+    const last = await callTool(tools, "drop_skill", { slug: "deploy" });
+    expect(last.content[0].text).toContain("no skills at all");
+  });
+
+  it("applies the same live gates update_profile does", async () => {
+    const s = setup("skill-gates");
+    connectSkillRepo(s.store, s.owner.id, "skill-gates-repo", ["code-review"]);
+    const ctx = {
+      agentId: s.agent.id,
+      owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+      config: s.config,
+    };
+    const tools = buildPersonalAgentSelfTools(s.store, ctx);
+
+    // Someone else's bot: refused without confirming anything about it.
+    const foreign = buildPersonalAgentSelfTools(s.store, {
+      ...ctx,
+      owner: { id: s.plain.id, username: "plain", displayName: "일반" },
+    });
+    for (const name of ["adopt_skill", "drop_skill"]) {
+      const res = await callTool(foreign, name, { slug: "code-review" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("belongs to a different user");
+    }
+
+    s.store.updatePersonalAgent(s.agent.id, { enabled: false });
+    for (const name of ["adopt_skill", "drop_skill"]) {
+      const res = await callTool(tools, name, { slug: "code-review" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("DISABLED");
+    }
+
+    s.store.updatePersonalAgent(s.agent.id, { enabled: true });
+    s.store.setRole(s.owner.id, "admin", false);
+    for (const name of ["adopt_skill", "drop_skill"]) {
+      const res = await callTool(tools, name, { slug: "code-review" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("administrator-only feature");
+    }
+
+    s.store.setRole(s.owner.id, "admin", true);
+    s.store.deletePersonalAgent(s.agent.id);
+    for (const name of ["adopt_skill", "drop_skill"]) {
+      const res = await callTool(tools, name, { slug: "code-review" });
+      expect(res.isError).toBe(true);
+      expect(res.content[0].text).toContain("no longer exists");
+    }
+  });
 });
 
 // ===========================================================================
@@ -1214,6 +1536,59 @@ describe("describe_system for personal agents", () => {
     expect(body).not.toContain("mcp__personal_agent__create_agent");
     expect(body).not.toContain("NOT listable or manageable from this personal-bot conversation");
     expect(body).toContain("0 of them are YOURS");
+  });
+
+  it("reports the memory namespace and the granted-skill roster in the bot block", async () => {
+    const s = setup("desc-memory");
+    const bot = () =>
+      buildSystemTools(s.store, {
+        avatarUserId: s.owner.id,
+        owner: { id: s.owner.id, username: "owner", displayName: "오너" },
+        viewerIsOwner: true,
+        config: s.config,
+        personalAgent: { agentId: s.agent.id, actingUserId: s.owner.id },
+      });
+    const root = personalAgentMemoryRoot(s.agent.memoryDir);
+
+    const body = (await callTool(bot(), "describe_system", {})).content[0].text;
+    // The memory line names the SAME root that parameterizes the run's scoped
+    // repo/brain servers (the both-consumers rule).
+    expect(body).toContain(`- Memory: \`${root}/\` inside the owner's knowledge repository`);
+    expect(body).toContain(`\`${root}/wiki/\` for curated notes`);
+    expect(body).toContain(`\`${root}/CLAUDE.md\` for your standing memory`);
+    expect(body).toContain("injected into every one of your turns");
+    expect(body).toContain("SCOPED: mcp__brain__search and every mcp__repo__* path operation");
+    expect(body).toContain("second brain (root wiki/raw) and your sibling bots' folders are NOT accessible");
+    expect(body).toContain("mcp__repo__scaffold_skill/create_repo refuse");
+    expect(body).toContain("a commit stages only your folder");
+    // The capability line no longer claims the whole knowledge repository.
+    expect(body).toContain("narrowed to your own memory folder plus the skills they granted you");
+    expect(body).not.toContain(
+      "you run with the owner's FULL avatar capability on their behalf (their knowledge repository",
+    );
+    // No grants yet.
+    expect(body).toContain("- Skills granted by the owner: (none yet)");
+    expect(body).toContain("mcp__personal_agent__adopt_skill");
+    expect(body).toContain("takes effect from your NEXT conversation");
+
+    s.store.updatePersonalAgent(s.agent.id, {
+      selectedSkills: ["code-review", "pptx-report"],
+    });
+    const granted = (await callTool(bot(), "describe_system", {})).content[0].text;
+    expect(granted).toContain("- Skills granted by the owner: code-review, pptx-report");
+  });
+
+  it("appends per-bot granted-skill counts to the OWNER's roster line", async () => {
+    const s = systemTools("desc-roster-grants");
+    s.store.updatePersonalAgent(s.agent.id, { selectedSkills: ["code-review"] });
+    const body = (await callTool(s.tools, "describe_system", {})).content[0].text;
+    expect(body).toContain("(enabled: 릴리즈 봇 (1 granted skill))");
+    expect(body).toContain("a bot reaches its own memory folder (agents/<slug>/");
+    expect(body).toContain("plus the skills the owner granted it");
+
+    s.store.updatePersonalAgent(s.agent.id, { selectedSkills: [] });
+    const none = (await callTool(s.tools, "describe_system", {})).content[0].text;
+    expect(none).toContain("(enabled: 릴리즈 봇 (0 granted skills))");
   });
 
   it("counts the bot's OWN routines separately from the owner's on the state line", async () => {
@@ -1549,6 +1924,10 @@ describe("personal-agent prompt branch", () => {
     agentCount: 3,
     maxAgents: MAX_PERSONAL_AGENTS,
     queuedTaskCount: 0,
+    // What runPlan hands the prompt: the bot's own memory namespace + the skills
+    // the owner granted it (empty = none, the shipped default).
+    memoryRoot: "agents/release-bot-a1b2c3d4",
+    adoptedSkills: [],
     ...over,
   });
   const req = (over: Partial<AgentRequest> = {}): AgentRequest => ({
@@ -1581,10 +1960,21 @@ describe("personal-agent prompt branch", () => {
     expect(p).not.toContain('Your name is "노아"');
   });
 
-  it("carries the memory-namespace convention, the self-scheduling trigger, and the self-config trigger", () => {
+  it("carries the ENFORCED memory namespace, the self-scheduling trigger, and the self-config trigger", () => {
     const p = buildPrompt(req(), 0);
-    expect(p).toContain("agents/<your-slug>/");
-    expect(p).toContain("`wiki/`");
+    // The namespace is what the scoped repo/brain servers actually enforce, so
+    // the prompt names the real root — not the old "pick your own slug" prose.
+    expect(p).toContain("**Your memory** lives at `agents/release-bot-a1b2c3d4/`");
+    expect(p).toContain("`agents/release-bot-a1b2c3d4/wiki/` for curated, durable notes");
+    expect(p).toContain("`agents/release-bot-a1b2c3d4/raw/` for unprocessed captures");
+    expect(p).toContain(
+      "`agents/release-bot-a1b2c3d4/CLAUDE.md` for your STANDING memory",
+    );
+    expect(p).toContain("injected into every one of your turns");
+    expect(p).toContain("are SCOPED to that folder");
+    expect(p).toContain("sibling bots' folders are neither readable nor writable");
+    expect(p).not.toContain("agents/<your-slug>/");
+    expect(p).not.toContain("choose one stable ASCII kebab-case slug");
     // Standing guidance, not a refusal: the bot schedules its OWN recurring work
     // and knows the firings arrive as delegated tasks.
     expect(p).toContain("You can schedule your OWN recurring work");
@@ -1601,10 +1991,62 @@ describe("personal-agent prompt branch", () => {
     expect(p).toContain("Your persona is currently NOT set");
   });
 
-  it("drops the namespace convention when there is no repository to write it in", () => {
+  it("drops the memory namespace when there is no repository to write it in", () => {
     const p = buildPrompt(req({ knowledgeRepoConfigured: false }), 0);
     expect(p).toContain('You are **"릴봇"**');
-    expect(p).not.toContain("agents/<your-slug>/");
+    expect(p).not.toContain("**Your memory** lives at");
+    expect(p).not.toContain("agents/release-bot-a1b2c3d4/");
+    // The adopt/drop trigger needs a repository to hold the skills, but the
+    // roster itself is still a fact about what loads.
+    expect(p).toContain("**Skills the owner granted you**: none granted yet");
+    expect(p).not.toContain("mcp__personal_agent__adopt_skill");
+    expect(p).toContain("설정 → 내 봇");
+  });
+
+  it("states the SCOPED capability, not full knowledge-repository access", () => {
+    const p = buildPrompt(req(), 0);
+    expect(p).toContain(
+      "You act with your owner's capability on their behalf: their secrets, git repositories, plugins, and group knowledge are all yours this turn",
+    );
+    expect(p).toContain(
+      "The ONE narrowing is their personal knowledge repository: what you reach there is your own memory folder plus the skills they granted you, not the whole repository.",
+    );
+    // The old blanket claim must be gone — it is no longer true.
+    expect(p).not.toContain(
+      "their knowledge repository, secrets, git repositories, and plugins are all yours",
+    );
+  });
+
+  it("lists the granted skills with the adopt/drop triggers and next-conversation semantics", () => {
+    const none = buildPrompt(req(), 0);
+    expect(none).toContain("**Skills the owner granted you**: none granted yet");
+    const granted = buildPrompt(
+      req({ personalAgentState: state({ adoptedSkills: ["code-review", "pptx"] }) }),
+      0,
+    );
+    expect(granted).toContain(
+      "**Skills the owner granted you**: `code-review`, `pptx`",
+    );
+    expect(granted).toContain("mcp__personal_agent__adopt_skill");
+    expect(granted).toContain("mcp__personal_agent__drop_skill");
+    expect(granted).toContain("applies from your NEXT conversation, not this turn");
+    expect(granted).toContain("The owner grants and revokes these themselves under 설정 → 내 봇.");
+  });
+
+  it("scopes the second-brain section to the bot's own memory and drops brain-migrate", () => {
+    const p = buildPrompt(req(), 0);
+    expect(p).toContain("**Your memory**: `agents/release-bot-a1b2c3d4/wiki/` holds your curated");
+    expect(p).toContain("`agents/release-bot-a1b2c3d4/raw/` your unprocessed captures");
+    // The search-before-answering directive survives the scoping.
+    expect(p).toContain("mcp__brain__search");
+    expect(p).toContain("BEFORE answering from memory");
+    // brain-migrate seeds the ROOT vault, outside this run's scope; the
+    // brain-ingest/reflect/lint skills write there too.
+    expect(p).not.toContain("brain-migrate");
+    expect(p).not.toContain("brain-ingest");
+    expect(p).not.toContain("brain-reflect");
+    // No root-vault paths: the owner's own vault is not this bot's.
+    expect(p).not.toContain("**Second brain**: your knowledge repository is a vault");
   });
 
   it("never speaks a persona the bot does not have", () => {

@@ -1,19 +1,26 @@
 import crypto from "node:crypto";
 import { createSdkMcpServer, tool } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { ensureClone, knowledgeRepoContextFor } from "../knowledgeRepo.js";
+import { scrubGitError } from "../marketplace.js";
+import { listRepoSkills } from "../skillTransfer.js";
 import type { Store } from "../store.js";
 import { MAX_PERSONAL_AGENTS } from "../store.js";
-import type { AgentOwner, PersonalAgent } from "../types.js";
+import type { AgentOwner, AppConfig, PersonalAgent } from "../types.js";
 import { requestBotTaskDispatch } from "../botTaskDispatchBroker.js";
 import {
   botTaskTitle,
   findChattablePersonalAgent,
+  normalizePersonalAgentSkills,
   MAX_DELEGATION_DEPTH,
   MAX_DELEGATIONS_PER_TURN,
+  MAX_PERSONAL_AGENT_SKILLS,
   MAX_QUEUED_BOT_TASKS,
   personalAgentAvatarId,
   PERSONAL_AGENT_DISPLAY_NAME_CAP,
   PERSONAL_AGENT_FIELD_CAPS,
+  PERSONAL_AGENT_SKILL_SLUG_CAP,
+  type PersonalAgentSkillSelection,
 } from "../personalAgents.js";
 import { text } from "./mcpTools.js";
 
@@ -28,8 +35,12 @@ import { text } from "./mcpTools.js";
  *   delegated turn went (done / need_input) onto the owner's task card. Always
  *   registered — the handler refuses when the run tracks no task, because a
  *   greeting turn and a delegated one are the same tool set.
+ * - `adopt_skill` / `drop_skill` register on the SAME bot runs: the bot manages
+ *   its OWN allowlist of the owner's knowledge-repo skills. A bot loads NONE by
+ *   default, and a grant is a live reference into `skills/<slug>/` (never a
+ *   copy) that reaches the run only from the NEXT conversation.
  * - `create_agent` registers only on a NON-bot owner run: the owner's main
- *   avatar stands a new bot up for them.
+ *   avatar stands a new bot up for them, optionally with its first skills.
  * - `delegate_to_bot` registers on BOTH sets — it is the one tool a bot and the
  *   owner's own avatar share. It hands a self-contained request to ANOTHER of
  *   the owner's bots as a QUEUED task on that bot's thread; the server runs it
@@ -52,6 +63,8 @@ export const PERSONAL_AGENT_SELF_TOOL_NAMES = [
   "mcp__personal_agent__update_profile",
   "mcp__personal_agent__report_task",
   "mcp__personal_agent__delegate_to_bot",
+  "mcp__personal_agent__adopt_skill",
+  "mcp__personal_agent__drop_skill",
 ] as const;
 
 /** Owner-run (non-bot) tool names in `allowedTools` form. */
@@ -85,6 +98,93 @@ const EMPTY_REPORT_SUMMARY =
 /** Cap for the text written onto the task card — a card, not an essay. */
 const REPORT_SUMMARY_CAP = 2000;
 
+// ---------------------------------------------------------------------------
+// Skill grants (adopt_skill / drop_skill) — the bot's own allowlist
+// ---------------------------------------------------------------------------
+
+/**
+ * The codebase-wide truth about skill loading: plugin/skill roots are resolved
+ * when a run STARTS, so a grant made mid-conversation cannot join this session.
+ * Every surface that changes a skill set says this in the same words.
+ */
+const SKILL_CHANGE_TIMING =
+  "Takes effect from the NEXT conversation (this session keeps its current skill set).";
+
+const NO_SKILL_CATALOG =
+  "This run cannot read the owner's knowledge repository, so skills cannot be granted from here. Tell the owner to grant it in 설정 → 내 봇 instead.";
+const NO_KNOWLEDGE_REPO =
+  "The owner has no knowledge repository connected, so there are no skills to adopt. Tell them to connect one in 설정 → 지식 저장소 first, then ask again.";
+const EMPTY_SKILL_SLUG =
+  "Name the skill: the exact `skills/<name>` directory name in the owner's knowledge repository.";
+
+/** How many slugs an error lists before it summarizes — bounds the result size. */
+const ROSTER_PREVIEW = 30;
+
+/** Render a slug roster for an error/refusal, capped. */
+function rosterLine(slugs: string[]): string {
+  if (slugs.length === 0) {
+    return "The owner's repository holds no skills yet (a skill is a `skills/<name>/SKILL.md` directory).";
+  }
+  const shown = slugs.slice(0, ROSTER_PREVIEW);
+  const more =
+    slugs.length > shown.length ? `, … (${slugs.length} in total)` : "";
+  return `The owner's skills are: ${shown.join(", ")}${more}.`;
+}
+
+/** The bot's CURRENT grants, for a result that has to say where things stand. */
+function grantedLine(slugs: string[]): string {
+  return slugs.length > 0
+    ? `You now carry: ${slugs.join(", ")}.`
+    : "You now carry no skills at all.";
+}
+
+/** Map the shared slug validator's refusal onto its agent-facing English text. */
+function skillSelectionRefusal(
+  result: Extract<PersonalAgentSkillSelection, { ok: false }>,
+): string {
+  if (result.reason === "count") {
+    return `A bot may hold at most ${MAX_PERSONAL_AGENT_SKILLS} skills, which this list exceeds. Ask the owner which ones actually matter.`;
+  }
+  if (result.reason === "length") {
+    return `A skill name is limited to ${PERSONAL_AGENT_SKILL_SLUG_CAP} characters — that is a description, not a \`skills/<name>\` directory name.`;
+  }
+  if (result.reason === "slug") {
+    return `"${result.slug.slice(0, 60)}" is not a skill directory name. Use the exact \`skills/<name>\` folder name from the owner's repository (letters, digits, \`.\`, \`_\`, \`-\` only).`;
+  }
+  return "The skill list must be an array of `skills/<name>` directory names (strings).";
+}
+
+/**
+ * The owner's grantable skill roster, read LIVE from their knowledge repo — a
+ * grant must name a directory that actually exists, or the run would silently
+ * load nothing. Returns the refusal text instead of throwing, because every
+ * failure here (no repo, unreadable repo) is something the bot must TELL the
+ * owner rather than retry.
+ *
+ * `config` is optional only because the run context may not carry it yet (see
+ * PersonalAgentSelfToolsContext.config); missing it fails CLOSED.
+ */
+async function ownerSkillRoster(
+  store: Store,
+  ownerUserId: string,
+  config: AppConfig | undefined,
+): Promise<{ ok: true; slugs: string[] } | { ok: false; message: string }> {
+  if (!config) return { ok: false, message: NO_SKILL_CATALOG };
+  const ctx = knowledgeRepoContextFor(store, ownerUserId, config);
+  if (!ctx) return { ok: false, message: NO_KNOWLEDGE_REPO };
+  try {
+    const repoRoot = await ensureClone(ctx);
+    return { ok: true, slugs: listRepoSkills(repoRoot).map((s) => s.slug) };
+  } catch (error) {
+    return {
+      ok: false,
+      message:
+        `Failed to load the owner's knowledge repository: ${scrubGitError(error)}\n` +
+        "Tell the owner — do not work around this with Bash git, the shell has no git credentials.",
+    };
+  }
+}
+
 const FIELD_CAPS = PERSONAL_AGENT_FIELD_CAPS;
 type ProfileField = keyof typeof FIELD_CAPS;
 const PROFILE_FIELDS = Object.keys(FIELD_CAPS) as ProfileField[];
@@ -109,6 +209,13 @@ export interface PersonalAgentSelfToolsContext {
   taskId?: string | null;
   /** The thread this run belongs to, for the report's audit attribution. */
   conversationId?: string | null;
+  /**
+   * Needed ONLY to resolve the owner's knowledge-repo clone for `adopt_skill`
+   * (validating a grant against the real `skills/` tree). Optional so a caller
+   * that has no config still gets every other tool; `adopt_skill` then refuses
+   * with NO_SKILL_CATALOG rather than granting something unverified.
+   */
+  config?: AppConfig;
 }
 
 /**
@@ -134,6 +241,13 @@ function selfToolRefusal(
 export interface PersonalAgentOwnerToolsContext {
   /** The avatar owner: live gate subject AND audit actor. */
   owner: AgentOwner;
+  /**
+   * Needed ONLY when `create_agent` is called WITH skills, to check them
+   * against the owner's real `skills/` tree. Optional for the same reason as on
+   * the bot context: without it a skill-bearing create refuses instead of
+   * storing a grant nobody verified.
+   */
+  config?: AppConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -447,6 +561,107 @@ export function buildPersonalAgentSelfTools(
       taskId: ctx.taskId,
       guard: () => selfToolRefusal(store, ctx),
     }),
+    tool(
+      "adopt_skill",
+      `**Use this when the owner asks you to take on, borrow, or start using one of THEIR skills** (e.g. "code-review 스킬 너도 써", "use my release-notes skill from now on"). You start with NO skills at all: the owner's knowledge-repo skills reach you only through this grant, one at a time. It is a LIVE reference into their \`skills/<name>/\` directory — nothing is copied, so their later edits reach you too. ${SKILL_CHANGE_TIMING} Confirm WHICH skill with the owner if they were vague; a bot may hold at most ${MAX_PERSONAL_AGENT_SKILLS}. (this bot's owner only)`,
+      {
+        slug: z
+          .string()
+          .describe(
+            "The exact `skills/<name>` directory name in the owner's knowledge repository — not a title or a description.",
+          ),
+      },
+      async (args) => {
+        const refusal = selfToolRefusal(store, ctx);
+        if (refusal) return text(refusal, true);
+        const wanted = args.slug.trim();
+        if (!wanted) return text(EMPTY_SKILL_SLUG, true);
+        // The same slug rule the settings route enforces, reused rather than
+        // re-derived, so one surface can never accept what the other rejects.
+        const shape = normalizePersonalAgentSkills([wanted]);
+        if (!shape.ok) return text(skillSelectionRefusal(shape), true);
+        const slug = shape.slugs[0];
+
+        const roster = await ownerSkillRoster(store, ctx.owner.id, ctx.config);
+        if (!roster.ok) return text(roster.message, true);
+        if (!roster.slugs.includes(slug)) {
+          return text(
+            `The owner's knowledge repository has no skill named "${slug}". ${rosterLine(roster.slugs)} Ask the owner which one they meant — do not guess a similar name.`,
+            true,
+          );
+        }
+        // Re-read the row: the roster fetch above cloned a repo, which is long
+        // enough for the owner to have changed the grants in settings.
+        const current = store.getPersonalAgentById(ctx.agentId);
+        if (!current) return text(AGENT_GONE, true);
+        if (current.selectedSkills.includes(slug)) {
+          return text(
+            `You already have "${slug}" — nothing changed. ${grantedLine(current.selectedSkills)} It loads from your next conversation onward.`,
+          );
+        }
+        const next = [...current.selectedSkills, slug];
+        if (next.length > MAX_PERSONAL_AGENT_SKILLS) {
+          return text(
+            `You already hold ${current.selectedSkills.length} skills, which is the limit of ${MAX_PERSONAL_AGENT_SKILLS}. Ask the owner which one to drop first (drop_skill), then adopt this one.`,
+            true,
+          );
+        }
+        const updated = store.updatePersonalAgent(ctx.agentId, {
+          selectedSkills: next,
+        });
+        if (!updated) return text(AGENT_GONE, true);
+        store.audit({
+          actorUserId: ctx.owner.id,
+          actorName: ctx.owner.username,
+          action: "personal_agent_update",
+          status: "success",
+          detail: `agent=${ctx.agentId} adopt_skill slug=${slug}`,
+        });
+        return text(
+          `Adopted "${slug}" from the owner's knowledge repository. ${grantedLine(updated.selectedSkills)} ` +
+            `${SKILL_CHANGE_TIMING} Tell the owner that plainly — do not act as though you can already follow it in this conversation.`,
+        );
+      },
+    ),
+    tool(
+      "drop_skill",
+      `**Use this when the owner asks you to stop using, give back, or forget one of your skills** (e.g. "그 스킬은 이제 빼", "you don't need the deploy skill anymore"). It removes the grant only — the skill itself stays untouched in the owner's knowledge repository, so it can be adopted again later. ${SKILL_CHANGE_TIMING} (this bot's owner only)`,
+      {
+        slug: z
+          .string()
+          .describe("The `skills/<name>` directory name to stop loading."),
+      },
+      async (args) => {
+        const refusal = selfToolRefusal(store, ctx);
+        if (refusal) return text(refusal, true);
+        const slug = args.slug.trim();
+        if (!slug) return text(EMPTY_SKILL_SLUG, true);
+        const current = store.getPersonalAgentById(ctx.agentId);
+        if (!current) return text(AGENT_GONE, true);
+        // NOT an error: "stop using X" when X was never granted is already the
+        // state the owner asked for, so say so instead of failing the turn.
+        if (!current.selectedSkills.includes(slug)) {
+          return text(
+            `"${slug}" was not one of your skills, so there is nothing to drop. ${grantedLine(current.selectedSkills)}`,
+          );
+        }
+        const updated = store.updatePersonalAgent(ctx.agentId, {
+          selectedSkills: current.selectedSkills.filter((s) => s !== slug),
+        });
+        if (!updated) return text(AGENT_GONE, true);
+        store.audit({
+          actorUserId: ctx.owner.id,
+          actorName: ctx.owner.username,
+          action: "personal_agent_update",
+          status: "success",
+          detail: `agent=${ctx.agentId} drop_skill slug=${slug}`,
+        });
+        return text(
+          `Dropped "${slug}". ${grantedLine(updated.selectedSkills)} ` +
+            `The skill itself is untouched in the owner's repository. ${SKILL_CHANGE_TIMING}`,
+        );
+      },
+    ),
   ];
 }
 
@@ -458,7 +673,7 @@ export function buildPersonalAgentOwnerTools(
   return [
     tool(
       "create_agent",
-      `**Use this tool when the owner asks you to create a new personal bot / teammate of their own** (e.g. "make me a bot that only does release notes", "내 봇 하나 만들어줘"). It creates a NEW chat contact owned by them — a separate conversation partner with its own name and persona, running with the owner's own capability — and it becomes chattable immediately. Ask for the name first if they did not give one; up to ${MAX_PERSONAL_AGENTS} bots per owner. Editing an existing bot is NOT done here: the owner edits it in 설정 → 내 봇, or asks the bot itself in ITS conversation. (owner only, administrators only)`,
+      `**Use this tool when the owner asks you to create a new personal bot / teammate of their own** (e.g. "make me a bot that only does release notes", "내 봇 하나 만들어줘"). It creates a NEW chat contact owned by them — a separate conversation partner with its own name and persona, running with the owner's own capability — and it becomes chattable immediately. Ask for the name first if they did not give one; up to ${MAX_PERSONAL_AGENTS} bots per owner. A new bot starts with NO skills, so pass \`skills\` when the owner names one in the same breath ("코딩봇 만들고 code-review 스킬 줘"). Editing an existing bot is NOT done here: the owner edits it in 설정 → 내 봇, or asks the bot itself in ITS conversation. (owner only, administrators only)`,
       {
         display_name: z
           .string()
@@ -484,6 +699,12 @@ export function buildPersonalAgentOwnerTools(
           .optional()
           .describe(
             "Persona / standing instructions for the new bot: role, tone, priorities. Draft it from what the owner described.",
+          ),
+        skills: z
+          .array(z.string())
+          .optional()
+          .describe(
+            `Knowledge-repo skills the new bot may load, as exact \`skills/<name>\` directory names from the OWNER's repository (max ${MAX_PERSONAL_AGENT_SKILLS}). Omit it and the bot starts with none; the owner can grant more later by asking the bot itself.`,
           ),
       },
       async (args) => {
@@ -516,22 +737,55 @@ export function buildPersonalAgentOwnerTools(
           }
           profile[field] = value;
         }
+        // Skills are checked against the owner's REAL tree before the row is
+        // written: a bot born holding a slug that does not exist would look
+        // configured and load nothing. Only paid for when skills were asked for.
+        const requested =
+          args.skills === undefined
+            ? { ok: true as const, slugs: [] as string[] }
+            : normalizePersonalAgentSkills(args.skills);
+        if (!requested.ok) return text(skillSelectionRefusal(requested), true);
+        if (requested.slugs.length > 0) {
+          const roster = await ownerSkillRoster(
+            store,
+            ctx.owner.id,
+            ctx.config,
+          );
+          if (!roster.ok) return text(roster.message, true);
+          const unknown = requested.slugs.filter(
+            (slug) => !roster.slugs.includes(slug),
+          );
+          if (unknown.length > 0) {
+            return text(
+              `The owner's knowledge repository has no skill named ${unknown.map((slug) => `"${slug}"`).join(", ")}. ${rosterLine(roster.slugs)} Create the bot without that skill, or ask the owner which one they meant.`,
+              true,
+            );
+          }
+        }
         try {
           const agent = store.createPersonalAgent(ctx.owner.id, {
             displayName,
             ...profile,
+            selectedSkills: requested.slugs,
           });
           store.audit({
             actorUserId: ctx.owner.id,
             actorName: ctx.owner.username,
             action: "personal_agent_create",
             status: "success",
-            detail: `agent=${agent.id} (${agent.displayName}) via create_agent`,
+            detail:
+              `agent=${agent.id} (${agent.displayName}) via create_agent` +
+              (agent.selectedSkills.length > 0
+                ? ` skills=${agent.selectedSkills.join(",")}`
+                : ""),
           });
           return text(
             `Created the personal bot "${agent.displayName}"${agent.alias ? ` (alias "${agent.alias}")` : ""} — id ${agent.id}. ` +
               `The owner now has ${store.countPersonalAgents(ctx.owner.id)} of ${MAX_PERSONAL_AGENTS} bots. ` +
               "Tell them it is chattable RIGHT NOW: it appears in 탐색 and in the '내 봇' section of the left rail, and opening it starts a conversation with the new bot. " +
+              (agent.selectedSkills.length > 0
+                ? `It carries the owner's ${agent.selectedSkills.join(", ")} skill(s) from its very first conversation. `
+                : "It carries no skills yet — the owner can grant one by asking the bot itself, or in 설정 → 내 봇. ") +
               (profile.persona
                 ? "Its persona is already set; to change it later they can ask the bot itself in its own conversation, or edit it in 설정 → 내 봇."
                 : "It has no persona yet — they can give it one by asking the bot itself in its own conversation, or in 설정 → 내 봇."),

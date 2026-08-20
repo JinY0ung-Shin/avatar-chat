@@ -462,6 +462,20 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           (ctx.personalAgent?.taskId
             ? store.getBotTask(ctx.personalAgent.taskId)?.delegationDepth
             : 0) ?? 0;
+        // The OWNER's roster with each bot's granted-skill count. Read LIVE for
+        // the same reason delegationSiblings is: OwnerState carries the roster
+        // NAMES both surfaces share, and this tool is the runtime mirror that
+        // can afford the per-bot detail the prompt does not spend tokens on.
+        const ownerBotRoster = pa
+          ? ""
+          : store
+              .listPersonalAgents(ctx.avatarUserId)
+              .filter((bot) => bot.enabled)
+              .map(
+                (bot) =>
+                  `${bot.displayName} (${bot.selectedSkills.length} granted skill${bot.selectedSkills.length === 1 ? "" : "s"})`,
+              )
+              .join(", ");
         // The bot's own identity + roster, printed AHEAD of the owner state it
         // runs with. Every fact here comes from PersonalAgentState, the same
         // source the prompt's bot branch uses (the both-consumers invariant).
@@ -470,7 +484,12 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
               "",
               "Current PERSONAL BOT (내 봇) state:",
               `- Kind: you are '${pa.displayName}'${pa.alias ? ` (alias '${pa.alias}')` : ""} — one of this owner's own personal bots. Not a user account, not a group resource: a private chat contact of theirs.`,
-              `- Capability: you run with the owner's FULL avatar capability on their behalf (their knowledge repository, secrets, git repositories, plugins) — everything under "Current avatar state" below is yours to use this turn.`,
+              `- Capability: you act with the owner's capability on their behalf (their secrets, git repositories, plugins, group knowledge) — everything under "Current avatar state" below is yours to use this turn, EXCEPT that their personal knowledge repository is narrowed to your own memory folder plus the skills they granted you (next two lines).`,
+              // Memory namespace: the same root that parameterizes this run's
+              // scoped repo/brain servers, so what the bot is told matches what
+              // the tools enforce (the both-consumers rule).
+              `- Memory: \`${pa.memoryRoot}/\` inside the owner's knowledge repository — \`${pa.memoryRoot}/wiki/\` for curated notes, \`${pa.memoryRoot}/raw/\` for raw captures, \`${pa.memoryRoot}/CLAUDE.md\` for your standing memory (injected into every one of your turns; edit it with mcp__repo__write_file/edit_file to change what you always remember). SCOPED: mcp__brain__search and every mcp__repo__* path operation are confined to that folder, so the owner's OWN second brain (root wiki/raw) and your sibling bots' folders are NOT accessible, mcp__repo__scaffold_skill/create_repo refuse, and a native Write/Edit into the repository clone outside your folder is denied — the repo tools are the edit path, and a commit stages only your folder.`,
+              `- Skills granted by the owner: ${pa.adoptedSkills.length > 0 ? pa.adoptedSkills.join(", ") : "(none yet)"} — the only skills you load from their knowledge repository (bundled default skills and their plugin skills you always have). Adopt one with mcp__personal_agent__adopt_skill / release it with drop_skill; either way it takes effect from your NEXT conversation, not this turn. The owner also manages the grants in 설정 → 내 봇.`,
               `- Persona/instructions: ${pa.personaSet ? "SET" : "NOT set"}; you may change your own persona/alias/bio/intro with mcp__personal_agent__update_profile (applies from the NEXT turn) — confirm the wording with the owner first, and never change it unprompted.`,
               `- Roster: this owner holds ${pa.agentCount} of ${pa.maxAgents} personal bots (a disabled bot still holds its slot); they manage them in 설정 → 내 봇.`,
               // 봇 간 위임 — the describe_system half of the prompt's hand-off
@@ -544,7 +563,7 @@ export function buildSystemTools(store: Store, ctx: SystemToolsContext) {
           // its own roster line above instead.
           ...(state.personalAgentsEnabled && !pa
             ? [
-                `- Personal bots (내 봇): ${state.personalAgentCount} of ${state.personalAgentMax} created${state.personalAgentNames.length ? ` (enabled: ${state.personalAgentNames.join(", ")})` : ""} — each is a separate chat contact of the owner's, running with this same avatar capability. You can create another with mcp__personal_agent__create_agent${state.personalAgentCount >= state.personalAgentMax ? ", but the cap is reached — the owner must delete one first" : ""}; the owner manages them in 설정 → 내 봇.`,
+                `- Personal bots (내 봇): ${state.personalAgentCount} of ${state.personalAgentMax} created${state.personalAgentNames.length ? ` (enabled: ${ownerBotRoster})` : ""} — each is a separate chat contact of the owner's, running with this same avatar capability except inside this knowledge repository: a bot reaches its own memory folder (agents/<slug>/, outside your root wiki/raw vault, so brain search never surfaces its notes — your own repo tools still read the whole repository) plus the skills the owner granted it, counted per bot above. You can create another with mcp__personal_agent__create_agent${state.personalAgentCount >= state.personalAgentMax ? ", but the cap is reached — the owner must delete one first" : ""}; the owner manages them (grants included) in 설정 → 내 봇.`,
                 // 봇 간 위임 from the owner's side — the describe_system half of
                 // personalBotsSection's hand-off trigger.
                 `- Hand-off to a bot (mcp__personal_agent__delegate_to_bot): ${state.personalAgentNames.length ? "available" : "no enabled bot exists to hand work to yet"} — when the owner asks you to put one of their bots on something, this QUEUES a self-contained request as a task on that bot's own thread; the server runs it unattended and the result appears on their 봇 오피스 board, not in this conversation. At most ${MAX_DELEGATIONS_PER_TURN} hand-offs per turn, and each is a full unattended run they pay for.`,

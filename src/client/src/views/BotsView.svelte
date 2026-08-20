@@ -10,10 +10,11 @@
     openBotThreadPane,
     openSeededChat,
   } from "../lib/chat";
-  import { loadAvatars, loadConversations, markBotTasksSeen } from "../lib/loaders";
+  import { confirmAction } from "../lib/confirm";
+  import { loadAvatars, loadConversations, markBotTasksSeen, refreshBotTaskUnseen } from "../lib/loaders";
   import { goView, syncHash } from "../lib/nav";
   import { appState, notify, readState, updateState } from "../lib/state";
-  import type { AvatarSummary, BotTask, BotTaskStatus } from "../lib/types";
+  import type { AvatarSummary, BotTask, BotTaskStatus, PersonalAgent } from "../lib/types";
 
   // 봇 오피스 — 내 봇에게 맡긴 작업을 한 화면에서 보는 메신저형 뷰.
   // 왼쪽은 입력 대기 인박스 + 봇 로스터, 가운데는 선택한 봇과의 대화 스레드다.
@@ -47,6 +48,15 @@
     "내 봇을 새로 만들고 싶어. 어떤 역할의 봇이 좋을지 같이 정하고, 이름과 페르소나를 제안해서 만들어줘.";
   const BOT_CREATE_NOTICE = "입력창에 봇 만들기 요청을 준비했습니다. 보내기를 누르면 시작해요.";
 
+  /** 삭제가 무엇을 가져가는지 — 설정 ▸ 내 봇의 확인문을 따르되, 비활성화 버튼이 이 화면에는 없으므로 위치를 짚어 준다. */
+  const DELETE_WARNING =
+    "이 봇과의 모든 대화 기록이 함께 삭제되며 되돌릴 수 없습니다. 기록을 남기려면 설정 → 내 봇의 ‘비활성화’를 사용하세요.";
+  /** …그리고 무엇이 남는지. 기억은 지식 저장소에 있고 삭제 대상이 아니다. */
+  const MEMORY_KEPT = (dir: string): string =>
+    dir
+      ? `봇의 기억 폴더(지식 저장소의 agents/${dir}/)는 삭제되지 않고 남습니다.`
+      : "봇의 기억 폴더(지식 저장소의 agents/ 아래)는 삭제되지 않고 남습니다.";
+
   /** 로스터 한 줄의 상태 — 점 색과 라벨을 함께 가진다. */
   interface RosterStatus {
     kind: "running" | "waiting" | "queued" | "idle";
@@ -68,6 +78,7 @@
   /** 이미 스레드를 연 봇 — 같은 봇으로 반복 진입해도 다시 로드하지 않는다. */
   let openedAgentId = "";
   let botCreateBusy = false;
+  let deleting = false;
   let pollTimer: number | null = null;
 
   $: bots = $appState.avatars.filter((avatar) => avatar.personalAgent);
@@ -87,6 +98,17 @@
   );
   $: agentTasks = $appState.botTasks.filter((task) => task.agentId === selectedAgentId);
   $: summaryText = summarize(agentTasks);
+  // 삭제는 되돌릴 수 없으므로 턴이 도는 중에는 잠근다. 스트리밍은 이 클라이언트가
+  // 붙은 스트림만 알므로, 디스패처가 돌리는 무인 작업은 실행 중 task 행으로 본다.
+  // 셋 다 최상위 $:로 이름 지어 둔다 — 핸들러 안에서만 읽으면 레거시 모드에서 굳는다.
+  $: selectedRunning = selectedBot
+    ? rosterStatuses.get(selectedBot.id)?.kind === "running"
+    : false;
+  $: deleteDisabled = deleting || $appState.streaming || selectedRunning;
+  $: deleteTitle =
+    $appState.streaming || selectedRunning
+      ? "실행 중인 작업이 끝난 뒤 삭제할 수 있습니다"
+      : "이 봇과의 모든 대화 기록이 함께 삭제됩니다";
   $: waitingInbox = inboxEntries(bots, $appState.botTasks);
   // 봇 스레드가 실제로 열렸는지 — ChatView는 이 조건에서만 마운트한다. 봇에서
   // 봇으로 옮길 때 이전 봇의 pane이 아직 남아 있으므로 언마운트되지 않는다.
@@ -203,7 +225,16 @@
 
   function selectBot(bot: AvatarSummary): void {
     const agentId = agentIdOf(bot);
-    if (!agentId || agentId === readState().botsAgentId) return;
+    if (!agentId) return;
+    applySelection(agentId);
+  }
+
+  /**
+   * 선택을 옮기는 단 하나의 자리 — 빈 문자열은 "아무 봇도 선택 안 함"이다.
+   * 해시까지 같이 맞춰야 북마크와 뒤로가기가 화면과 어긋나지 않는다.
+   */
+  function applySelection(agentId: string): void {
+    if (agentId === readState().botsAgentId) return;
     updateState((state) => {
       state.botsAgentId = agentId;
     });
@@ -259,6 +290,82 @@
     } finally {
       botCreateBusy = false;
     }
+  }
+
+  /**
+   * 확인문에 넣을 이 봇의 기억 폴더 이름. AvatarSummary의 봇 태그는 agentId와
+   * 모델만 실어 오므로 memoryDir는 주인의 봇 목록에서만 읽을 수 있다 — 드물고
+   * 파괴적인 동작 하나 때문에 뷰가 뜰 때마다 한 번 더 물을 이유는 없으니 누른
+   * 순간에 읽고, 못 읽으면 폴더 이름 없이도 참인 문장으로 물러난다.
+   */
+  async function memoryDirOf(agentId: string): Promise<string> {
+    try {
+      const { agents } = await api<{ agents: PersonalAgent[] }>("/api/me/agents");
+      return (agents ?? []).find((agent) => agent.id === agentId)?.memoryDir ?? "";
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * 선택한 봇을 지운다. 로스터만 다시 읽으면 지워진 봇의 pane이 chatPanes에
+   * 남아 스레드가 그대로 굳으므로(openedAgentId도 그 봇을 가리킨 채다), 다음
+   * 봇으로 실제로 옮기거나 남은 봇이 없으면 pane까지 걷어낸다.
+   */
+  async function removeSelected(): Promise<void> {
+    const bot = selectedBot;
+    if (!bot || deleteDisabled) return;
+    const agentId = agentIdOf(bot);
+    if (!agentId) return;
+    const label = bot.alias || bot.displayName;
+    // 다음 선택은 삭제 '전' 로스터에서 고른다 — 새로 읽기가 실패해도 화면이
+    // 사라진 봇에 머무르지 않는다.
+    const nextBot = bots.find((item) => agentIdOf(item) && agentIdOf(item) !== agentId) ?? null;
+    deleting = true;
+    try {
+      const confirmed = await confirmAction(
+        `"${label}" 봇을 삭제할까요?\n${DELETE_WARNING}\n${MEMORY_KEPT(await memoryDirOf(agentId))}`,
+        { title: "봇을 삭제할까요?", confirmLabel: "삭제", tone: "danger" },
+      );
+      if (!confirmed) return;
+      // 확인창이 열려 있는 동안 큐의 작업이 시작됐을 수 있다 — 지금 상태로 다시 본다.
+      const now = readState();
+      if (now.streaming || now.botTasks.some((task) => task.agentId === agentId && task.status === "running")) {
+        notify("실행 중인 작업이 끝난 뒤 삭제할 수 있습니다.", "warn");
+        return;
+      }
+      await api(`/api/me/agents/${encodeURIComponent(agentId)}`, { method: "DELETE" });
+      notify(`"${label}" 봇을 삭제했습니다.`, "ok");
+      dropDeletedBot(bot);
+      applySelection(nextBot ? agentIdOf(nextBot) : "");
+      await Promise.all([
+        loadAvatars(true).catch(() => {}),
+        refreshTasks(),
+        refreshBotTaskUnseen(),
+      ]);
+    } catch (err) {
+      notify(`봇 삭제 실패: ${(err as Error).message}`, "warn");
+    } finally {
+      deleting = false;
+    }
+  }
+
+  /**
+   * 지워진 봇의 흔적을 스토어에서 걷어낸다. pane을 남기면 남은 봇이 없을 때
+   * 사라진 봇의 대화가 계속 그려지고, closePane은 currentAvatar로 pane을 다시
+   * 만들어 주기 때문에 여기서는 쓸 수 없다. 작업 행도 같이 지운다 — 목록 병합은
+   * 응답에 없는 행을 '비행 중'으로 보고 남기므로 서버가 지운 뒤에도 굳는다.
+   */
+  function dropDeletedBot(bot: AvatarSummary): void {
+    const agentId = agentIdOf(bot);
+    openedAgentId = "";
+    updateState((state) => {
+      state.chatPanes = state.chatPanes.filter((pane) => pane.avatar.id !== bot.id);
+      if (!state.chatPanes.some((pane) => pane.id === state.activePaneId))
+        state.activePaneId = state.chatPanes[0]?.id ?? null;
+      if (state.currentAvatar?.id === bot.id) state.currentAvatar = null;
+      state.botTasks = state.botTasks.filter((task) => task.agentId !== agentId);
+    });
   }
 
   function agentIdOf(bot: AvatarSummary): string {
@@ -417,15 +524,28 @@
           그 봇을 찾을 수 없어요. 왼쪽에서 다른 봇을 선택하세요.
         </div>
       {:else}
-        {#if summaryText || tasksError}
-          <!-- 카드는 스레드 안에 있으니 여기 남는 건 지금 몇 건이 움직이는지
-               한 줄뿐이다. 0인 항목은 말하지 않는다. -->
+        {#if summaryText || tasksError || selectedBot}
+          <!-- 카드는 스레드 안에 있으니 요약으로 남는 건 지금 몇 건이 움직이는지
+               한 줄뿐이다. 0인 항목은 말하지 않는다. 이 줄은 고른 봇의 헤더도
+               겸하므로 봇을 고르고 있으면 요약이 비어도 자리는 남는다. -->
           <div class="bots-summary">
             {#if summaryText}
               <span class="bots-summary-text">{summaryText}</span>
             {/if}
             {#if tasksError}
               <span class="bots-summary-error" role="alert">작업 목록 갱신 실패</span>
+            {/if}
+            {#if selectedBot}
+              <!-- 삭제는 로스터 줄이 아니라 '지금 보고 있는 봇'의 헤더에 둔다 —
+                   목록에서 스치듯 누를 수 있는 자리에 되돌릴 수 없는 동작을
+                   두지 않는다. -->
+              <button
+                class="ghost-sm danger bots-summary-delete"
+                type="button"
+                title={deleteTitle}
+                disabled={deleteDisabled}
+                on:click={removeSelected}
+              >{deleting ? "삭제 중…" : "삭제"}</button>
             {/if}
           </div>
         {/if}
@@ -635,6 +755,11 @@
   }
   .bots-summary-error {
     color: var(--warn);
+  }
+  /* 요약은 왼쪽, 파괴적 동작은 줄 끝 — 읽는 눈이 지나가는 자리에 두지 않는다.
+     (`flex: none`은 .ghost-sm이 이미 갖고 있다.) */
+  .bots-summary-delete {
+    margin-left: auto;
   }
 
   .bots-chat {

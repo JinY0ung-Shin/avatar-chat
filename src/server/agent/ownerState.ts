@@ -5,6 +5,7 @@ import type {
   UserGroupMembership,
 } from "../types.js";
 import { groupAgentCaptureAllowed } from "../groupAgents.js";
+import { personalAgentMemoryRoot } from "../personalAgents.js";
 import type { Store } from "../store.js";
 import { MAX_PERSONAL_AGENTS } from "../store.js";
 
@@ -297,5 +298,11 @@ export function summarizePersonalAgentState(
     queuedTaskCount: conversationId
       ? store.countQueuedBotTasks(conversationId)
       : 0,
+    // The bot's memory namespace + granted skills, from this SAME row read:
+    // runPlan parameterizes the scoped repo/brain servers and the skill filter
+    // from these, so neither metacognition surface can describe a scope the
+    // tools do not actually have.
+    memoryRoot: personalAgentMemoryRoot(agent.memoryDir),
+    adoptedSkills: agent.selectedSkills,
   };
 }

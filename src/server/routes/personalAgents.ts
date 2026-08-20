@@ -3,15 +3,21 @@ import { Router, type Response } from "express";
 import { requireAdmin, requireAuth, type AuthenticatedRequest } from "../auth.js";
 import { deleteConversationImages } from "../chatImages.js";
 import { deleteConversationFiles } from "../chatFiles.js";
+import { ensureClone, knowledgeRepoContextFor } from "../knowledgeRepo.js";
 import logger from "../logger.js";
+import { scrubGitError } from "../marketplace.js";
 import { isModelTier } from "../modelTiers.js";
+import { listRepoSkills } from "../skillTransfer.js";
 import { MAX_PERSONAL_AGENTS } from "../store.js";
 import type { PersonalAgent } from "../types.js";
 import {
+  normalizePersonalAgentSkills,
   personalAgentAvatarId,
   personalAgentWorkspaceParent,
+  MAX_PERSONAL_AGENT_SKILLS,
   PERSONAL_AGENT_DISPLAY_NAME_CAP,
   PERSONAL_AGENT_FIELD_CAPS,
+  PERSONAL_AGENT_SKILL_SLUG_CAP,
 } from "../personalAgents.js";
 import {
   apiError,
@@ -96,6 +102,41 @@ export function createPersonalAgentsRouter({
     apiError(res, 400, "지원하지 않는 모델입니다.");
     return { ok: false };
   };
+  /**
+   * The bot's skill allowlist: nothing sent = keep the stored list, an array =
+   * FULL REPLACE (deduped, blanks dropped). Validation is the shared one every
+   * writer runs — the caps and the slug rule live next to the id helpers, not
+   * here, so the MCP tools can't diverge from this route.
+   */
+  const readSelectedSkills = (
+    body: any,
+    res: Response,
+  ): { ok: true; value: string[] | undefined } | { ok: false } => {
+    const raw = body?.selectedSkills;
+    if (raw === undefined) return { ok: true, value: undefined };
+    const parsed = normalizePersonalAgentSkills(raw);
+    if (parsed.ok) return { ok: true, value: parsed.slugs };
+    if (parsed.reason === "count") {
+      apiError(
+        res,
+        400,
+        `스킬은 최대 ${MAX_PERSONAL_AGENT_SKILLS}개까지 지정할 수 있습니다.`,
+      );
+    } else if (parsed.reason === "length") {
+      apiError(
+        res,
+        400,
+        `스킬 이름은 최대 ${PERSONAL_AGENT_SKILL_SLUG_CAP}자까지 지원합니다.`,
+      );
+    } else if (parsed.reason === "slug") {
+      // The owner's own input echoed back, clipped: a slug is a directory name,
+      // so anything long here is a mistake, not a name worth repeating in full.
+      apiError(res, 400, `사용할 수 없는 스킬 이름입니다: ${parsed.slug.slice(0, 40)}`);
+    } else {
+      apiError(res, 400, "스킬 목록 형식이 올바르지 않습니다.");
+    }
+    return { ok: false };
+  };
   /** The store's single-enforcement-point throws → their user-facing 400s. */
   const respondWriteError = (error: unknown, res: Response): void => {
     const code = error instanceof Error ? error.message : "";
@@ -112,6 +153,8 @@ export function createPersonalAgentsRouter({
 
   // The owner's full roster, DISABLED included: this list is where a disabled
   // bot gets re-enabled, so it has to stay visible here (discovery hides it).
+  // Each row carries `memoryDir` + `selectedSkills` straight off the domain
+  // type — the settings card reads both.
   router.get(
     "/api/me/agents",
     requireAuth(store),
@@ -121,6 +164,40 @@ export function createPersonalAgentsRouter({
         agents: store.listPersonalAgents(req.user!.id, {
           includeDisabled: true,
         }),
+      });
+    },
+  );
+
+  // What the owner may GRANT to a bot: the skills in their OWN knowledge repo.
+  // Registered before every `/:agentId` route so the literal path can never be
+  // captured as a bot id. No repo is a NORMAL state (the card renders a connect
+  // guide), and a repo with no `skills/` answers an empty list — only a clone
+  // FAILURE is an error, since that one is fixable (address/branch/token).
+  router.get(
+    "/api/me/agents/skill-catalog",
+    requireAuth(store),
+    requireAdmin,
+    async (req: AuthenticatedRequest, res) => {
+      const ctx = knowledgeRepoContextFor(store, req.user!.id, config);
+      if (!ctx) {
+        res.json({ repoConfigured: false, skills: [] });
+        return;
+      }
+      let repoRoot: string;
+      try {
+        repoRoot = await ensureClone(ctx);
+      } catch (error) {
+        apiError(res, 502, `지식 저장소를 불러오지 못했습니다: ${scrubGitError(error)}`);
+        return;
+      }
+      res.json({
+        repoConfigured: true,
+        // `intro` is the SKILL.md frontmatter description — written for the
+        // model, but it is the only one-liner the repo has for a skill.
+        skills: listRepoSkills(repoRoot).map((skill) => ({
+          slug: skill.slug,
+          intro: skill.description,
+        })),
       });
     },
   );
@@ -138,12 +215,15 @@ export function createPersonalAgentsRouter({
       if (!checkFieldCaps(req.body, res)) return;
       const defaultModel = readDefaultModel(req.body, res);
       if (!defaultModel.ok) return;
+      const selectedSkills = readSelectedSkills(req.body, res);
+      if (!selectedSkills.ok) return;
       let agent: PersonalAgent;
       try {
         agent = store.createPersonalAgent(req.user!.id, {
           displayName,
           ...agentBodyFields(req.body),
           defaultModel: defaultModel.value,
+          selectedSkills: selectedSkills.value,
         });
       } catch (error) {
         respondWriteError(error, res);
@@ -175,6 +255,8 @@ export function createPersonalAgentsRouter({
       if (!checkFieldCaps(req.body, res)) return;
       const defaultModel = readDefaultModel(req.body, res);
       if (!defaultModel.ok) return;
+      const selectedSkills = readSelectedSkills(req.body, res);
+      if (!selectedSkills.ok) return;
       let updated: PersonalAgent | null;
       try {
         updated = store.updatePersonalAgent(agent.id, {
@@ -182,12 +264,22 @@ export function createPersonalAgentsRouter({
             displayNameRaw !== undefined ? safeString(displayNameRaw) : undefined,
           ...agentBodyFields(req.body),
           defaultModel: defaultModel.value,
+          selectedSkills: selectedSkills.value,
         });
       } catch (error) {
         respondWriteError(error, res);
         return;
       }
-      auditAs(req, "personal_agent_update", `agent=${agent.id}`);
+      auditAs(
+        req,
+        "personal_agent_update",
+        `agent=${agent.id}` +
+          // A skill grant is the one field worth naming in the log: it changes
+          // what the bot can DO, not just how it reads.
+          (selectedSkills.value
+            ? ` skills=${selectedSkills.value.length}`
+            : ""),
+      );
       res.json({ agent: updated });
     },
   );

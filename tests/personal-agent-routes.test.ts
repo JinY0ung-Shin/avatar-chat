@@ -1,26 +1,33 @@
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import request from "supertest";
 import { describe, expect, it, vi } from "vitest";
 import type { AgentRequest, AppConfig } from "../src/server/types.js";
 import type { AgentEvents } from "../src/server/agent/events.js";
-import { parseSse, signup, withTempDir } from "./helpers.js";
+import { makeBareRemote, parseSse, signup, withTempDir } from "./helpers.js";
 
 // Mocked agent layer (routes-chat/group-agent pattern): captures the
 // AgentRequest each chat turn builds so the personal-agent run wiring can be
 // asserted without spawning the SDK.
-const H = vi.hoisted(() => ({ requests: [] as AgentRequest[] }));
+const H = vi.hoisted(() => ({
+  requests: [] as AgentRequest[],
+  // The plugin roots the route resolved for each turn — how the bot's granted
+  // skill allowlist is observed from outside `loadAgentPluginRoots`.
+  pluginRoots: [] as { path: string }[][],
+}));
 
 vi.mock("../src/server/agent/index.js", () => ({
   runAgentStream: vi.fn(
     async (
       agentRequest: AgentRequest,
-      _pluginRoots: unknown,
+      pluginRoots: { path: string }[],
       config: AppConfig,
       _store: unknown,
       events: AgentEvents,
     ) => {
       H.requests.push(agentRequest);
+      H.pluginRoots.push(pluginRoots);
       events.onSessionId?.(`sess-${H.requests.length}`);
       events.onDelta?.("[mock]");
       return { kind: "text", runtime: config.agentRuntime, summary: "mock", text: "[mock]" };
@@ -44,19 +51,58 @@ const tempDir = withTempDir("personal-agent-routes");
 const PNG =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 
-function services(dir: string) {
+function services(dir: string, over: { agentRuntime?: "local" | "claude" } = {}) {
+  const dataDir = path.join(tempDir(), dir);
   return createServices({
-    dataDir: path.join(tempDir(), dir),
+    dataDir,
     agentRuntime: "local",
     sessionSecret: "t",
+    // Skill/plugin assertions read the knowledge repo only — keep the bundled
+    // default plugins out of the picture. Harmless for the `local` runtime,
+    // which loads nothing at all.
+    defaultPluginsDir: path.join(dataDir, "no-default-plugins"),
+    ...over,
   });
 }
 
-function boot(dir: string) {
+function boot(dir: string, over: { agentRuntime?: "local" | "claude" } = {}) {
   H.requests.length = 0;
-  const svc = services(dir);
+  H.pluginRoots.length = 0;
+  const svc = services(dir, over);
   const app = createApp(svc);
   return { ...svc, app };
+}
+
+/**
+ * A local bare remote seeded with `files` on `main` (the offline knowledge-repo
+ * fixture pattern from skill-share.test.ts) — the skill catalog runs a real
+ * `ensureClone`, so it needs a real repo, not a mock.
+ */
+function seedRemote(name: string, files: Record<string, string>): string {
+  const remote = makeBareRemote(path.join(tempDir(), `${name}.git`));
+  const seed = path.join(tempDir(), `${name}-seed`);
+  fs.mkdirSync(seed, { recursive: true });
+  const g = (...a: string[]) => execFileSync("git", ["-C", seed, ...a], { stdio: "pipe" });
+  g("init", "-q");
+  g("config", "user.email", "seed@example.com");
+  g("config", "user.name", "Seed");
+  g("config", "commit.gpgsign", "false");
+  for (const [rel, content] of Object.entries(files)) {
+    const abs = path.join(seed, rel);
+    fs.mkdirSync(path.dirname(abs), { recursive: true });
+    fs.writeFileSync(abs, content);
+  }
+  g("add", "-A");
+  g("commit", "-q", "-m", "seed");
+  g("branch", "-M", "main");
+  g("remote", "add", "origin", remote);
+  g("push", "-q", "origin", "main");
+  return remote;
+}
+
+/** SKILL.md text with the frontmatter `listRepoSkills` reads. */
+function skillMd(name: string, description: string): string {
+  return `---\nname: ${name}\ndescription: ${description}\n---\n\n# ${name}\n`;
 }
 
 describe("personal-agent routes", () => {
@@ -71,6 +117,7 @@ describe("personal-agent routes", () => {
 
     // Non-admin: every route is 403, including the read.
     await plain.get("/api/me/agents").expect(403);
+    await plain.get("/api/me/agents/skill-catalog").expect(403);
     await plain.post("/api/me/agents").send({ displayName: "봇" }).expect(403);
     await plain.patch("/api/me/agents/whatever").send({ enabled: false }).expect(403);
     await plain.delete("/api/me/agents/whatever").expect(403);
@@ -155,6 +202,123 @@ describe("personal-agent routes", () => {
     await admin.delete("/api/me/agents/ghost").expect(404);
     await admin.delete(`/api/me/agents/${agentId}`).expect(200);
     expect((await admin.get("/api/me/agents").expect(200)).body.agents).toEqual([]);
+  });
+
+  it("serves memoryDir + selectedSkills and full-replaces a validated grant list", async () => {
+    const { app, store } = boot("skills-patch");
+    const admin = request.agent(app);
+    await signup(admin, "sys-admin").expect(201);
+
+    const created = await admin
+      .post("/api/me/agents")
+      .send({ displayName: "코딩 봇", selectedSkills: ["code-review", "code-review", ""] })
+      .expect(200);
+    const agentId = created.body.agent.id as string;
+    // Create accepts the grant list (deduped) and stamps the memory folder.
+    expect(created.body.agent.selectedSkills).toEqual(["code-review"]);
+    // A Korean name leaves nothing after the ASCII filter → the "bot" fallback.
+    expect(created.body.agent.memoryDir).toBe(`bot-${agentId.slice(0, 8)}`);
+
+    // Validation matrix — every rejection is a 400 with the file's error shape.
+    const notArray = await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ selectedSkills: "code-review" })
+      .expect(400);
+    expect(notArray.body.error).toContain("스킬 목록 형식이 올바르지 않습니다");
+    await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ selectedSkills: [42] })
+      .expect(400);
+    const traversal = await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ selectedSkills: ["../../etc"] })
+      .expect(400);
+    expect(traversal.body.error).toContain("사용할 수 없는 스킬 이름입니다");
+    const tooLong = await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ selectedSkills: ["x".repeat(101)] })
+      .expect(400);
+    expect(tooLong.body.error).toContain("최대 100자");
+    const tooMany = await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ selectedSkills: Array.from({ length: 65 }, (_, i) => `s-${i}`) })
+      .expect(400);
+    expect(tooMany.body.error).toContain("최대 64개");
+    // A rejected patch changes nothing.
+    expect(store.getPersonalAgentById(agentId)!.selectedSkills).toEqual(["code-review"]);
+
+    // Omitted = unchanged; an array = FULL replace; [] = revoke all.
+    const renamed = await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ displayName: "코딩 도우미" })
+      .expect(200);
+    expect(renamed.body.agent.selectedSkills).toEqual(["code-review"]);
+    // The memory folder is insert-only — a rename must not move it.
+    expect(renamed.body.agent.memoryDir).toBe(created.body.agent.memoryDir);
+    const replaced = await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ selectedSkills: ["pptx-report", "deploy", "deploy"] })
+      .expect(200);
+    expect(replaced.body.agent.selectedSkills).toEqual(["pptx-report", "deploy"]);
+    const revoked = await admin
+      .patch(`/api/me/agents/${agentId}`)
+      .send({ selectedSkills: [] })
+      .expect(200);
+    expect(revoked.body.agent.selectedSkills).toEqual([]);
+
+    // The roster read carries both new fields.
+    const roster = await admin.get("/api/me/agents").expect(200);
+    expect(roster.body.agents[0]).toMatchObject({
+      memoryDir: created.body.agent.memoryDir,
+      selectedSkills: [],
+    });
+  });
+
+  it("answers the skill catalog from the owner's repo, and keeps its literal path", async () => {
+    const { app, store } = boot("skill-catalog");
+    const admin = request.agent(app);
+    await signup(admin, "sys-admin").expect(201);
+    const ownerId = store.getUserByUsername("sys-admin")!.id;
+    const bot = store.createPersonalAgent(ownerId, { displayName: "봇" });
+
+    // No repo connected is a NORMAL state, not an error.
+    const none = await admin.get("/api/me/agents/skill-catalog").expect(200);
+    expect(none.body).toEqual({ repoConfigured: false, skills: [] });
+
+    // A repo with no skills/ dir answers connected-but-empty.
+    store.setKnowledgeRepo(
+      ownerId,
+      seedRemote("empty-repo", { "README.md": "hi" }),
+      "main",
+    );
+    const empty = await admin.get("/api/me/agents/skill-catalog").expect(200);
+    expect(empty.body).toEqual({ repoConfigured: true, skills: [] });
+
+    // With skills: slug + the SKILL.md frontmatter description, slug-sorted.
+    store.setKnowledgeRepo(
+      ownerId,
+      seedRemote("skills-repo", {
+        "skills/pptx-report/SKILL.md": skillMd("pptx-report", "Weekly deck"),
+        "skills/code-review/SKILL.md": skillMd("code-review", "Reads a PR first"),
+        // No SKILL.md → not a skill.
+        "skills/not-a-skill/notes.md": "nope",
+      }),
+      "main",
+    );
+    const listed = await admin.get("/api/me/agents/skill-catalog").expect(200);
+    expect(listed.body).toEqual({
+      repoConfigured: true,
+      skills: [
+        { slug: "code-review", intro: "Reads a PR first" },
+        { slug: "pptx-report", intro: "Weekly deck" },
+      ],
+    });
+
+    // Route order: the literal path must not be captured as an :agentId, and the
+    // real bot id still resolves on the sibling routes.
+    expect(store.getPersonalAgentById("skill-catalog")).toBeNull();
+    await admin.patch(`/api/me/agents/${bot.id}`).send({ enabled: false }).expect(200);
+    await admin.patch("/api/me/agents/skill-catalog").send({ enabled: false }).expect(404);
   });
 
   it("caps the roster at MAX_PERSONAL_AGENTS", async () => {
@@ -248,6 +412,69 @@ describe("personal-agent routes", () => {
     await admin.get(`/api/avatars/${encoded}`).expect(404);
     await admin.get(`/api/avatars/${encoded}/skills`).expect(404);
     await admin.get(`/api/avatars/${encoded}/models`).expect(404);
+  });
+
+  it("reports and loads only the knowledge-repo skills granted to the bot", async () => {
+    // A NON-local runtime: `local` loads no plugins and lists no skills at all.
+    const { app, store, config } = boot("skill-grants", { agentRuntime: "claude" });
+    const admin = request.agent(app);
+    await signup(admin, "sys-admin").expect(201);
+    const ownerId = store.getUserByUsername("sys-admin")!.id;
+    // A marketplace knowledge repo with two skills, plus a standing-memory file
+    // in the owner's root AND one in the bot's own folder.
+    const agent = store.createPersonalAgent(ownerId, { displayName: "리서치 봇" });
+    const memoryRoot = `agents/${agent.memoryDir}`;
+    const slugs = ["code-review", "pptx-report"];
+    const files: Record<string, string> = {
+      ".claude-plugin/marketplace.json": JSON.stringify({
+        plugins: slugs.map((slug) => ({ name: slug, source: `./skills/${slug}` })),
+      }),
+      "CLAUDE.md": "OWNER standing memory",
+      [`${memoryRoot}/CLAUDE.md`]: "BOT standing memory",
+    };
+    for (const slug of slugs) {
+      files[`skills/${slug}/SKILL.md`] = `---\nname: ${slug}\ndescription: ${slug} does things\n---\n`;
+      files[`skills/${slug}/.claude-plugin/plugin.json`] = JSON.stringify({ name: slug });
+    }
+    store.setKnowledgeRepo(ownerId, seedRemote("skill-grants", files), "main");
+    const avatarId = personalAgentAvatarId(ownerId, agent.id);
+    const encoded = encodeURIComponent(avatarId);
+
+    // No grants yet: the panel must not advertise the owner's skills as the
+    // bot's, while the owner's OWN avatar still lists both.
+    const none = await admin.get(`/api/avatars/${encoded}/skills`).expect(200);
+    expect(none.body.skills).toEqual([]);
+    const ownerSkills = await admin.get(`/api/avatars/${ownerId}/skills`).expect(200);
+    expect(ownerSkills.body.skills.map((s: { name: string }) => s.name)).toEqual(slugs.slice().sort());
+
+    store.updatePersonalAgent(agent.id, { selectedSkills: ["code-review"] });
+    const granted = await admin.get(`/api/avatars/${encoded}/skills`).expect(200);
+    expect(granted.body.skills.map((s: { name: string }) => s.name)).toEqual(["code-review"]);
+
+    // …and the chat turn loads the same set, with the bot's OWN standing memory.
+    const ok = await admin
+      .post("/api/chat/stream")
+      .send({ avatarId, conversationId: "pa-skills", message: "안녕" })
+      .expect(200);
+    expect(parseSse(ok.text).some((f) => f.event === "done")).toBe(true);
+    const clone = path.join(config.dataDir, "knowledge", ownerId);
+    expect(H.pluginRoots[0].map((r) => r.path)).toEqual([
+      path.join(clone, "skills", "code-review"),
+    ]);
+    expect(H.requests[0].knowledgeMemory?.personal).toBe("BOT standing memory");
+
+    // Control: the owner's own turn keeps both skills and the ROOT memory.
+    await admin
+      .post("/api/chat/stream")
+      .send({ avatarId: ownerId, conversationId: "owner-skills", message: "안녕" })
+      .expect(200);
+    expect(H.pluginRoots[1].map((r) => r.path).sort()).toEqual(
+      [
+        path.join(clone, "skills", "code-review"),
+        path.join(clone, "skills", "pptx-report"),
+      ].sort(),
+    );
+    expect(H.requests[1].knowledgeMemory?.personal).toBe("OWNER standing memory");
   });
 
   it("pins the bot turn to an OWNER run while the thread keeps the composite id", async () => {

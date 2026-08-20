@@ -3,6 +3,9 @@ import fs from "node:fs";
 import Database from "better-sqlite3";
 import { INTERNAL_GIT_TOKEN_SECRET_NAME } from "../gitCredentials.js";
 import logger from "../logger.js";
+// A LEAF module by design (see its header): the memory-dir name is computed both
+// here (migrate/backfill) and in the personal-agents mixin's INSERT.
+import { personalAgentMemoryDirName } from "../personalAgentSlug.js";
 import type {
   AppConfig,
   AvatarVisibility,
@@ -259,6 +262,8 @@ export interface PersonalAgentRow {
   avatar_ext: string | null;
   enabled: number;
   default_model: string | null;
+  memory_dir: string | null;
+  selected_skills: string | null;
   created_at: string | null;
   updated_at: string | null;
 }
@@ -576,6 +581,8 @@ export class StoreBase {
       -- default_model is a modelTiers.ts tier id seeding NEW conversations with
       -- the bot; NULL = the owner's own remembered default. A brand-new table:
       -- CREATE TABLE IF NOT EXISTS IS the existing-deployment migration.
+      -- memory_dir / selected_skills are also added by addColumnIfMissing below
+      -- (they post-date the table), so both halves must stay in sync.
       CREATE TABLE IF NOT EXISTS personal_agents (
         id TEXT PRIMARY KEY,
         owner_user_id TEXT NOT NULL,
@@ -588,6 +595,8 @@ export class StoreBase {
         avatar_ext TEXT,
         enabled INTEGER NOT NULL DEFAULT 1,
         default_model TEXT,
+        memory_dir TEXT,
+        selected_skills TEXT,
         created_at TEXT,
         updated_at TEXT
       );
@@ -879,11 +888,22 @@ export class StoreBase {
     // 봇 간 위임 provenance + the hop cap's depth counter (see types.ts BotTask).
     this.addColumnIfMissing("bot_tasks", "delegated_by_agent_id", "TEXT");
     this.addColumnIfMissing("bot_tasks", "delegation_depth", "INTEGER DEFAULT 0");
+    // IMMUTABLE per-bot memory folder name under `agents/` in the OWNER's
+    // knowledge repo (personalAgentMemoryRoot). Set at INSERT and never patched,
+    // so renaming a bot never orphans the tree it already wrote to; pre-existing
+    // rows are backfilled by migratePersonalAgentMemoryDirs() below.
+    this.addColumnIfMissing("personal_agents", "memory_dir", "TEXT");
+    // JSON array of knowledge-repo skill slugs this bot may LOAD (live
+    // references into `skills/<slug>/`, never copies). NULL/[] = NONE — the
+    // OPPOSITE default of users.knowledge_selected, where NULL means "load all":
+    // a bot starts with zero skills until its owner grants them.
+    this.addColumnIfMissing("personal_agents", "selected_skills", "TEXT");
     this.migrateGitTokenSecrets();
     this.migrateVisibility();
     this.migrateCanvasArtifacts();
     this.migrateOnboardedAndRoutineFlags();
     this.migrateGroupAgentsMulti();
+    this.migratePersonalAgentMemoryDirs();
     // Trust is now derived purely from group co-membership; the old per-(avatar,
     // viewer) trust table is dropped (its grants don't survive the migration).
     this.db.exec("DROP TABLE IF EXISTS avatar_trusted_users");
@@ -1110,6 +1130,37 @@ export class StoreBase {
           "WHERE visibility IS NULL OR visibility = '' OR visibility = 'public'",
       )
       .run();
+  }
+
+  /**
+   * Backfill `personal_agents.memory_dir` for bots created before the column
+   * existed. UNGATED by the user_version ladder on purpose: every INSERT now
+   * writes the column, so `memory_dir IS NULL` can only ever match rows that
+   * predate this migration — the value-guarded case the ladder rule exempts
+   * (like the git-token move above). The name is computed in TS, not SQL, so the
+   * backfilled value is byte-identical to what an INSERT would have produced.
+   */
+  private migratePersonalAgentMemoryDirs(): void {
+    const rows = this.db
+      .prepare(
+        "SELECT id, display_name FROM personal_agents WHERE memory_dir IS NULL OR memory_dir = ''",
+      )
+      .all() as { id: string; display_name: string }[];
+    if (rows.length === 0) {
+      return;
+    }
+    const update = this.db.prepare(
+      "UPDATE personal_agents SET memory_dir = ? WHERE id = ?",
+    );
+    const tx = this.db.transaction(() => {
+      for (const row of rows) {
+        update.run(
+          personalAgentMemoryDirName(row.display_name ?? "", row.id),
+          row.id,
+        );
+      }
+    });
+    tx();
   }
 
   private migrateGitTokenSecrets(): void {

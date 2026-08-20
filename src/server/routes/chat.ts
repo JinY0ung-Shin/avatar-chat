@@ -5,12 +5,15 @@ import { requireAuth, type AuthenticatedRequest } from "../auth.js";
 import logger from "../logger.js";
 import {
   groupKnowledgeRepoSkillSources,
+  knowledgeRepoSkillSources,
+  KNOWLEDGE_REPO_SOURCE,
   listSkillsInRoots,
   loadAgentPluginRoots,
   loadGroupAgentKnowledgeMemory,
   loadGroupAgentPluginRoots,
   loadKnowledgeRepoMemory,
 } from "../plugins.js";
+import { knowledgeRepoContextFor } from "../knowledgeRepo.js";
 import { groupKnowledgeRepoContextFor } from "../groupKnowledgeRepo.js";
 import { scrubGitError } from "../marketplace.js";
 import { resolveActiveWorkspaceRepo } from "../activeRepoResolve.js";
@@ -97,6 +100,7 @@ import {
   listPersonalAgentAvatarSummaries,
   MAX_QUEUED_BOT_TASKS,
   personalAgentAvatarDetail,
+  personalAgentMemoryRoot,
   type ChattablePersonalAgent,
 } from "../personalAgents.js";
 import {
@@ -1439,7 +1443,18 @@ export async function executeChatTurn(
             avatar.id,
             config,
             (warn) => pluginWarnings.push(warn),
-            { disabledGroupIds },
+            {
+              disabledGroupIds,
+              // Bot runs load only the knowledge-repo skills the owner granted
+              // this bot (empty = none); defaults/plugins/groups are unchanged.
+              ...(personalAgentHit
+                ? {
+                    personalAgent: {
+                      selectedSkills: personalAgentHit.agent.selectedSkills,
+                    },
+                  }
+                : {}),
+            },
           );
       // Standing CLAUDE.md memory (personal repo always; group repos gated by the
       // toggle). Read after plugin roots ensured the clones for this turn.
@@ -1451,6 +1466,15 @@ export async function executeChatTurn(
           )
         : await loadKnowledgeRepoMemory(store, avatar.id, config, {
             disabledGroupIds,
+            // A bot's standing memory is the CLAUDE.md inside its OWN folder,
+            // never the owner's repo-root one.
+            ...(personalAgentHit
+              ? {
+                  personalAgentMemoryRoot: personalAgentMemoryRoot(
+                    personalAgentHit.agent.memoryDir,
+                  ),
+                }
+              : {}),
           });
 
       for (const warn of pluginWarnings) {
@@ -2623,7 +2647,10 @@ export function createChatRouter({
         return;
       }
       if (personalAgentHit) {
-        // A bot turn IS an owner run, so its skills ARE the owner's. Resolve
+        // What a bot RUN actually loads: the bundled defaults and the owner's
+        // plugin repos unchanged (a bot run is a full owner run there), but the
+        // owner's PERSONAL knowledge repo narrowed to the skills they granted
+        // this bot — empty grants mean no knowledge-repo skills at all. Resolve
         // against the owner's OWN avatar row: `avatar` here carries the
         // composite `personal:` id, which no skill/plugin loader can key on.
         const owner = store.getAvatar(req.user!.id, req.user!.id);
@@ -2637,7 +2664,22 @@ export function createChatRouter({
           config,
           false,
         );
-        res.json({ skills: await listSkillsInRoots(ownerSources) });
+        // Re-resolve the personal repo under the bot's allowlist rather than
+        // filtering resolved roots by name: `selected` is the SAME filter the
+        // run applies, so the panel can never advertise a skill the bot would
+        // not load.
+        const granted = personalAgentHit.agent.selectedSkills;
+        const ctx = knowledgeRepoContextFor(store, owner.id, config);
+        const botKnowledgeSources =
+          granted.length > 0 && ctx
+            ? await knowledgeRepoSkillSources({ ...ctx, selected: granted })
+            : [];
+        res.json({
+          skills: await listSkillsInRoots([
+            ...ownerSources.filter((s) => s.source !== KNOWLEDGE_REPO_SOURCE),
+            ...botKnowledgeSources,
+          ]),
+        });
         return;
       }
       const { sourced } = await resolveAvatarSkillSources(
