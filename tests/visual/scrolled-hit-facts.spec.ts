@@ -102,6 +102,11 @@ async function askHit(
   x: number,
   y: number,
 ): Promise<{ backendNodeId: number; quads: number[][] } | null> {
+  // The per-ask catch is itself a pinned fact: on a scrolled page the
+  // viewport-point ask can THROW "No node found at given location" outright
+  // (measured headed AND headless) instead of returning a non-containing node —
+  // hitNodeAt tolerates the throw per ask, because a first ask that throws must
+  // not veto the translated retry, which is the ask that answers there.
   try {
     const { backendNodeId } = await cdp.send("DOM.getNodeForLocation", {
       x: Math.round(x),

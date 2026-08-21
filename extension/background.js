@@ -1887,14 +1887,23 @@ function quadsContain(quads, x, y) {
  * is the truth; when neither does, the answer is null, never a guess.
  */
 async function hitNodeAt(target, x, y) {
+  // Each ask carries its OWN failure tolerance: on a scrolled page the
+  // viewport-point ask does not return a wrong node, it THROWS "No node found
+  // at given location" (probe-measured, headed and headless both) — and a
+  // throw that escaped to the outer catch would veto the translated retry,
+  // which is the ask that actually answers there.
   const ask = async (px, py) => {
-    const { backendNodeId } = await sendCdp(target, "DOM.getNodeForLocation", {
-      x: Math.round(px),
-      y: Math.round(py),
-    });
-    if (!backendNodeId) return null;
-    const { quads } = await sendCdp(target, "DOM.getContentQuads", { backendNodeId });
-    return { backendNodeId, quads: quads || [] };
+    try {
+      const { backendNodeId } = await sendCdp(target, "DOM.getNodeForLocation", {
+        x: Math.round(px),
+        y: Math.round(py),
+      });
+      if (!backendNodeId) return null;
+      const { quads } = await sendCdp(target, "DOM.getContentQuads", { backendNodeId });
+      return { backendNodeId, quads: quads || [] };
+    } catch {
+      return null;
+    }
   };
   try {
     const direct = await ask(x, y);
