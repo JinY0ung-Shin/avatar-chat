@@ -2193,6 +2193,10 @@ function handleBrowserOp(paneId: string, data: any): void {
   setStatus(paneId, label, false);
 
   void sendToExtension({
+    // The extension coalesces duplicate relays on this id: a run watched from
+    // several open Noah tabs delivers this frame to EVERY tab, and the
+    // handledBrowserOps dedupe above is a per-tab Set that cannot see them.
+    requestId,
     op: data.op,
     url: data.url,
     uid: data.uid,

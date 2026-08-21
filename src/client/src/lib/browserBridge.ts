@@ -40,6 +40,12 @@ export interface BridgeReply {
 }
 
 export interface BridgeOperation {
+  /**
+   * The parked request's id, forwarded so the EXTENSION can coalesce duplicate
+   * relays: every open Noah tab watching the same run receives the same
+   * browser_op frame, and only the extension sees them all.
+   */
+  requestId?: string;
   op:
     | "snapshot"
     | "navigate"

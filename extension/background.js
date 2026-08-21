@@ -4837,6 +4837,56 @@ async function handleConfig(message) {
   return null;
 }
 
+/**
+ * ONE execution per parked operation, however many Noah pages relay it.
+ *
+ * The field failure: a run watched from several open Noah tabs (the chat, the
+ * settings page, an admin view) delivers its browser_op frame to EVERY tab, and
+ * each tab's relay forwarded it here — the page-side requestId dedupe is a
+ * per-tab Set, so the extension executed the same op once PER TAB. Ops are not
+ * idempotent: type doubled its text ("se" arrived as "sese", a date part read
+ * 202620-02-06), scroll travelled twice the distance and clamped at the
+ * document end. This map is the one chokepoint every relay passes through, so
+ * duplicates COALESCE here: the first arrival executes, every later one is
+ * handed the SAME promise, and all pages answer the server with the same reply
+ * (the server keeps the first respond POST for a requestId anyway).
+ *
+ * Two keys, two retirements:
+ * - `requestId` (clients that forward it): retired minutes after settling,
+ *   because a page that (re)attaches to a live run REPLAYS the whole event log
+ *   into a fresh per-tab dedupe set and can re-send an op long after it ran.
+ * - payload JSON (older clients that do not): retired seconds after settling.
+ *   The agent awaits each op's reply before sending the next, so two LEGITIMATE
+ *   identical ops can never overlap in flight — only twin-page duplicates can.
+ */
+const coalescedOps = new Map(); // key -> { run: Promise, retireMs }
+const OP_COALESCE_MAX = 500;
+const OP_RETIRE_REQUEST_ID_MS = 10 * 60 * 1000;
+const OP_RETIRE_PAYLOAD_MS = 1500;
+
+function performCoalesced(message, senderOrigin) {
+  const requestId =
+    typeof message.requestId === "string" && message.requestId ? message.requestId : null;
+  const key = requestId ? `id:${requestId}` : `op:${JSON.stringify(message)}`;
+  const existing = coalescedOps.get(key);
+  if (existing) return existing.run;
+  const run = perform(message, senderOrigin);
+  coalescedOps.set(key, { run });
+  if (coalescedOps.size > OP_COALESCE_MAX) {
+    coalescedOps.delete(coalescedOps.keys().next().value);
+  }
+  const retire = () => {
+    setTimeout(
+      () => {
+        if (coalescedOps.get(key)?.run === run) coalescedOps.delete(key);
+      },
+      requestId ? OP_RETIRE_REQUEST_ID_MS : OP_RETIRE_PAYLOAD_MS,
+    );
+  };
+  run.then(retire, retire);
+  return run;
+}
+
 chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => {
   if (!message || message.source !== "noah" || !sender.origin) {
     sendResponse({ ok: false, message: "Rejected: unrecognized sender." });
@@ -4847,7 +4897,7 @@ chrome.runtime.onMessageExternal.addListener((message, sender, sendResponse) => 
     // sender.origin rides along as the ONLY origin whose /browser-clip/ staging
     // page is exempt from the allowlist (originAllowed) — verified by the
     // browser, never taken from the message body.
-    .then((reply) => (reply ? reply : perform(message, sender.origin)))
+    .then((reply) => (reply ? reply : performCoalesced(message, sender.origin)))
     .then(sendResponse)
     .catch((error) => sendResponse({ ok: false, message: String(error?.message || error) }));
   // Keep the channel open for the async reply.
