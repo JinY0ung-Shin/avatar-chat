@@ -125,6 +125,15 @@
     HALF-STEP tolerance (sliders SNAP — asking 2.7 on a 0.5 step lands 2.5 and that is the control
     working). A landed value that is not the requested one THROWS, quoting value and bounds. `clear`
     and `keystrokes` are ignored — there is no text to replace or replay.
+  - **spinbutton** that is not a native number input (an `<input type=date/time>`'s year/month/day
+    parts — UA shadow DOM, no `role` attribute, only the AX tree names them — or an ARIA spinbutton)
+    → `writeSpinButton`: the value replayed as digit KEY events, then read back. Field case: `type`
+    "2026" into a date's year part reported success while the part stayed "0" — `Input.insertText` is
+    a SILENT NO-OP on a date part while digit keys write (probe-pinned in
+    `tests/visual/scrolled-hit-facts.spec.ts`), so it must never reach the text path. Same
+    non-silent contract as the ladder: verified → "", reformatted → diverged note, unreadable →
+    unverified note, value unchanged → THROW naming what it still reads. `clear` needs no separate
+    path — typing into a date part overwrites by nature.
   - **number** with `clear` → select-all + overtype + numeric verify ONLY, no IME/backspace rungs (a
     number input answers text edits with its own constraint logic, so "old value gone" says nothing);
     mismatch THROWS quoting the field's min/max/step. Empty-request compares as empty-vs-empty —
@@ -149,8 +158,16 @@
   target's behalf), its area exceeds 3× the target's, AND the target itself is ≥ 100 px² (the 1×1
   visually-hidden input under a styled control must keep working — a naive ratio test refuses every
   styled checkbox). Field case: the-internet `/entry_ad` — a click on a link under an open modal
-  navigated anyway, a state no person can reach. Every CDP failure in either guard PROCEEDS: they
-  exist to stop specific lies, never to invent new click failures. The refusal MINTS a uid for the
+  navigated anyway, a state no person can reach. The hit test itself goes through `hitNodeAt`
+  (addressing.md): an answer counts ONLY when its own quads contain the click point, because
+  `DOM.getNodeForLocation` answers in DOCUMENT space on a scrolled page while every quad is viewport
+  space — the raw hit resolved whatever lives at that offset in the document, and on a scrolled page
+  this guard refused a same-origin iframe's button as "covered" by an unrelated main-document `<div>`
+  (probe-pinned in `tests/visual/scrolled-hit-facts.spec.ts`). The ancestor walk `subtreeContains`
+  also hops into `contentDocument` — pierce hands a same-origin frame's document over on the frame
+  NODE, not in `children`, so without the hop a hit that resolves the `<iframe>` element itself read
+  as unrelated to the very element inside it that was addressed. Every CDP failure in either guard
+  PROCEEDS: they exist to stop specific lies, never to invent new click failures. The refusal MINTS a uid for the
   covering LAYER, not the node the hit test resolved to: `overlayRootFor` climbs from the hit to the
   hit-side child of its lowest common ancestor with the target (`DOM.getDocument depth:-1 pierce` —
   read-only structure, allowlisted for exactly this; every failure falls back to minting the hit

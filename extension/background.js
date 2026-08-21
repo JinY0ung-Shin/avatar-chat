@@ -1845,30 +1845,68 @@ function renderNodeBrief(node, max = 200) {
  */
 async function describePoint(target, x, y) {
   try {
-    const { backendNodeId } = await sendCdp(target, "DOM.getNodeForLocation", {
-      x: Math.round(x),
-      y: Math.round(y),
-    });
-    if (!backendNodeId) return null;
-    // Cross-check: the node's own geometry must contain the point. If the hit
-    // test resolved in a different coordinate space (scroll offset, zoom),
-    // the mismatch surfaces here — describe NOTHING rather than the wrong
-    // element, since this line exists to keep a blind click honest.
-    const { quads } = await sendCdp(target, "DOM.getContentQuads", { backendNodeId });
-    const contains = (quads || []).some((quad) => {
-      const xs = [quad[0], quad[2], quad[4], quad[6]];
-      const ys = [quad[1], quad[3], quad[5], quad[7]];
-      return (
-        x >= Math.min(...xs) - 1 &&
-        x <= Math.max(...xs) + 1 &&
-        y >= Math.min(...ys) - 1 &&
-        y <= Math.max(...ys) + 1
-      );
-    });
-    if (!contains) return null;
+    const hit = await hitNodeAt(target, x, y);
+    if (!hit) return null;
+    const { backendNodeId } = hit;
     const { node } = await sendCdp(target, "DOM.describeNode", { backendNodeId, depth: 2 });
     if (!node) return null;
     return { text: renderNodeBrief(node), fileInput: isFileInput(shapeOf(node)), backendNodeId };
+  } catch {
+    return null;
+  }
+}
+
+/** True when any of an element's quads contains a viewport point (±1px slack). */
+function quadsContain(quads, x, y) {
+  return (quads || []).some((quad) => {
+    const xs = [quad[0], quad[2], quad[4], quad[6]];
+    const ys = [quad[1], quad[3], quad[5], quad[7]];
+    return (
+      x >= Math.min(...xs) - 1 &&
+      x <= Math.max(...xs) + 1 &&
+      y >= Math.min(...ys) - 1 &&
+      y <= Math.max(...ys) + 1
+    );
+  });
+}
+
+/**
+ * Hit-test a VIEWPORT point and return `{ backendNodeId, quads }` only when the
+ * resolved node's own geometry CONTAINS that point — the containment check is
+ * what makes the answer trustworthy, and both callers (a blind click's
+ * description, the obstruction guard) act on the answer, so a node that does not
+ * actually sit under the point must never come back.
+ *
+ * Two attempts, because `DOM.getNodeForLocation` and `DOM.getContentQuads` do
+ * not always agree on a coordinate space (probe-measured: on a page scrolled
+ * 1000px, the hit test for a viewport point resolved the element that lives at
+ * that offset in the DOCUMENT — quads said viewport, the hit test said page).
+ * The first attempt asks with the viewport point as-is; when the containment
+ * check rejects it, the second asks with the point translated by the current
+ * scroll offset. Whichever answer's quads contain the ORIGINAL viewport point
+ * is the truth; when neither does, the answer is null, never a guess.
+ */
+async function hitNodeAt(target, x, y) {
+  const ask = async (px, py) => {
+    const { backendNodeId } = await sendCdp(target, "DOM.getNodeForLocation", {
+      x: Math.round(px),
+      y: Math.round(py),
+    });
+    if (!backendNodeId) return null;
+    const { quads } = await sendCdp(target, "DOM.getContentQuads", { backendNodeId });
+    return { backendNodeId, quads: quads || [] };
+  };
+  try {
+    const direct = await ask(x, y);
+    if (direct && quadsContain(direct.quads, x, y)) return direct;
+    const metrics = await sendCdp(target, "Page.getLayoutMetrics", {});
+    const viewport = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
+    const pageX = viewport.pageX || 0;
+    const pageY = viewport.pageY || 0;
+    if (!pageX && !pageY) return null; // unscrolled: the retry would repeat the first ask
+    const scrolled = await ask(x + pageX, y + pageY);
+    if (scrolled && quadsContain(scrolled.quads, x, y)) return scrolled;
+    return null;
   } catch {
     return null;
   }
@@ -2017,6 +2055,11 @@ function subtreeContains(root, backendNodeId) {
     // A web component's real control lives in its shadow root, so a click that
     // lands there is still a click INSIDE the element that was addressed.
     for (const shadow of node?.shadowRoots || []) queue.push(shadow);
+    // A same-origin iframe's document rides on the frame node as
+    // `contentDocument` (pierce:true fetches it), not in `children` — without
+    // this hop, a hit test that resolves the <iframe> element itself reads as
+    // "not related" to the very element inside it that was addressed.
+    if (node?.contentDocument) queue.push(node.contentDocument);
   }
   return false;
 }
@@ -2167,26 +2210,22 @@ const OBSCURED_MIN_TARGET_AREA = 100;
 async function assertNotObscured(ref, point) {
   const { target, area } = point;
   if (!area || area < OBSCURED_MIN_TARGET_AREA) return;
-  let hitId;
-  try {
-    ({ backendNodeId: hitId } = await sendCdp(target, "DOM.getNodeForLocation", {
-      x: Math.round(point.x),
-      y: Math.round(point.y),
-    }));
-  } catch {
-    return; // best effort — a hit test we cannot run must not block the click
-  }
-  if (!hitId || hitId === ref.backendNodeId) return;
+  // hitNodeAt answers only when the resolved node's own quads CONTAIN the click
+  // point — the property this guard actually needs, since an element that does
+  // not sit under the point cannot be covering it. The field failure was a
+  // same-origin iframe's button refused as "covered" by an unrelated
+  // main-document <div>: the raw hit test had resolved in a different
+  // coordinate space, and nothing here noticed. A null (hit test failed, or no
+  // trustworthy answer in either space) must not block the click.
+  const hit = await hitNodeAt(target, point.x, point.y);
+  if (!hit) return;
+  const hitId = hit.backendNodeId;
+  if (hitId === ref.backendNodeId) return;
   // Clicking a child of the target is the normal case: a button's inner <span>
   // is what the point actually resolves to on most real pages.
   if (subtreeContains(await describeSubtree(target, ref.backendNodeId), hitId)) return;
   let hitArea = 0;
-  try {
-    const { quads } = await sendCdp(target, "DOM.getContentQuads", { backendNodeId: hitId });
-    for (const quad of quads || []) hitArea = Math.max(hitArea, quadArea(quad));
-  } catch {
-    return;
-  }
+  for (const quad of hit.quads) hitArea = Math.max(hitArea, quadArea(quad));
   if (!hitArea || hitArea <= area * OBSCURED_AREA_RATIO) return;
   // Paid only on the refusal path, because a pierced walk of a page-sized node
   // is the most expensive read here: an ANCESTOR of the target is not an
@@ -2745,11 +2784,21 @@ async function inputKind(ref, shape) {
     if (type === "number") return "number";
   }
   const role = attrOf(shape, "role");
-  if (role) return role === "slider" ? "slider" : "text";
+  if (role === "slider") return "slider";
+  if (role === "spinbutton") return "spinbutton";
+  if (role) return "text";
   if (shape?.nodeName === "INPUT" || shape?.nodeName === "TEXTAREA") return "text";
   const editable = attrOf(shape, "contenteditable");
   if (editable && editable !== "false") return "text";
-  return (await readAxNode(ref))?.role?.value === "slider" ? "slider" : "text";
+  const axRole = (await readAxNode(ref))?.role?.value;
+  if (axRole === "slider") return "slider";
+  // A date/time input's year-month-day parts live in UA shadow DOM with no DOM
+  // role at all; only the accessibility tree calls them what they are. They
+  // ignore Input.insertText entirely (measured: typing "2026" into a year part
+  // reported success while the field stayed "0"), so they must never reach the
+  // text path.
+  if (axRole === "spinbutton") return "spinbutton";
+  return "text";
 }
 
 /**
@@ -2895,6 +2944,53 @@ async function writeNumberInput(ref, target, value, shape) {
 }
 
 /**
+ * Write into a SPINBUTTON that is not a native number input — a date/time
+ * input's year, month or day part, or an ARIA spinbutton. These accept KEYS,
+ * not text insertion (`Input.insertText` is a silent no-op on a date part), so
+ * the value is replayed as real digit keystrokes and then read back. Typing
+ * into a date part inherently OVERWRITES it, so `clear` needs no separate path.
+ *
+ * Same non-silent contract as the ladder: verified → "", the field reformatted
+ * it → the diverged note, nothing readable → an unverified note, and a value
+ * the part refused to take → THROW naming what it still reads.
+ */
+async function writeSpinButton(ref, target, value) {
+  const before = await readAxValue(ref);
+  const text = String(value ?? "");
+  // Nothing sensible erases a spinbutton to order; a single Backspace is what a
+  // person does to empty a date part (it falls back to its placeholder).
+  if (!text) await dispatchKey(target, "Backspace", 0);
+  for (const ch of [...text]) {
+    // Frozen renderer mid-replay: the op tail reports the open dialog instead.
+    if (pendingDialogs.has(ref.tabId)) return "";
+    await dispatchKey(target, ch, 0);
+  }
+  await new Promise((resolve) => setTimeout(resolve, VALUE_SETTLE_MS));
+  const after = await readAxValue(ref);
+  if (after === null) {
+    return (
+      "This spinbutton exposes no readable value, so the write could NOT be verified — check the " +
+      'field\'s = "…" value in the returned snapshot before relying on it.'
+    );
+  }
+  const asked = text.trim();
+  const got = String(after).trim();
+  const accepted =
+    asked === ""
+      ? got === "" || got === "0"
+      : got === asked || (Number.isFinite(Number(got)) && Number(got) === Number(asked));
+  if (accepted) return "";
+  if (got === String(before ?? "").trim()) {
+    throw new Error(
+      `This spinbutton did not take "${quoteForNote(value)}": it still reads "${quoteForNote(got)}". ` +
+        "A date/time part or ARIA spinbutton accepts only keys it understands (digits, ArrowUp/ArrowDown) — " +
+        "use a value of that form, or step it with mcp__browser__press_key arrows.",
+    );
+  }
+  return divergedNote(after, value);
+}
+
+/**
  * Focus one field and enter `value` — the shared insert path of type and
  * fill_form. `clear` replaces the existing content instead of inserting into it,
  * through the verified ladder above. Returns that ladder's bridge note ("" when
@@ -2908,6 +3004,9 @@ async function fillField(ref, value, clear, pre) {
   // control is driven as what it is, whichever flags the caller passed.
   if (kind === "slider") return driveSlider(ref, value, shape);
   await focusForInput(ref);
+  // Whichever flags the caller passed, same as the slider: keys are the only
+  // input a spinbutton takes, and they overwrite by nature.
+  if (kind === "spinbutton") return writeSpinButton(ref, target, value);
   if (kind === "number" && clear) return writeNumberInput(ref, target, value, shape);
   if (!clear) {
     // Insert-at-cursor is the default and stays a straight write: no read-back,
@@ -3402,6 +3501,26 @@ const SCREENSHOT_MAX_FULL_HEIGHT = 6000;
 // a scaled display the bitmap comes back dsf times bigger than the clip asked
 // for, so a CSS-measured bound bounds nothing.
 async function captureShot(tab, message) {
+  // An element capture resolves its quads BEFORE the layout metrics are read:
+  // quadsOf scrolls the element into view, which CHANGES pageX/pageY, while the
+  // quads it returns are relative to the POST-scroll viewport. Reading metrics
+  // first stitched the clip out of two different scroll positions, so any
+  // element that started off-viewport captured a region offset by exactly the
+  // scroll delta (field case: a ruler page's button-10 captured button-4).
+  let uidQuads = null;
+  if (message.uid) {
+    const ref = resolveRef(message.uid);
+    if (ref.sessionId) {
+      throw new Error(
+        "This element lives inside a cross-origin frame, which cannot be captured on its own. " +
+          "Take a screenshot without `uid` to capture the viewport instead.",
+      );
+    }
+    ({ quads: uidQuads } = await quadsOf(ref));
+    if (!uidQuads.length) {
+      throw new Error("The element is not visible on screen, so it cannot be captured.");
+    }
+  }
   const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
   const viewport = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
   const content = metrics.cssContentSize || {};
@@ -3418,22 +3537,11 @@ async function captureShot(tab, message) {
   const dsf = pxPerCssRaw / zoom || 1;
   let clip;
   let beyondViewport = false;
-  if (message.uid) {
-    const ref = resolveRef(message.uid);
-    if (ref.sessionId) {
-      throw new Error(
-        "This element lives inside a cross-origin frame, which cannot be captured on its own. " +
-          "Take a screenshot without `uid` to capture the viewport instead.",
-      );
-    }
-    const { quads } = await quadsOf(ref);
-    if (!quads.length) {
-      throw new Error("The element is not visible on screen, so it cannot be captured.");
-    }
+  if (uidQuads) {
     // Quads are viewport-relative; the capture clip is page-absolute.
     const xs = [];
     const ys = [];
-    for (const quad of quads) {
+    for (const quad of uidQuads) {
       for (let i = 0; i < quad.length; i += 2) {
         xs.push(quad[i]);
         ys.push(quad[i + 1]);

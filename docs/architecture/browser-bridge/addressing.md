@@ -33,9 +33,14 @@
   and refused with a redirect to a plain viewport screenshot. Same lifetime rule as uids: coordinates are only valid for
   the screenshot that produced them — enforced at CLICK time, not mint time: the branch re-reads
   `Page.getLayoutMetrics` and refuses on URL/scroll/viewport-size drift (a stale image size would even
-  pass the bounds check). Before dispatching, the point is hit-tested read-only
-  (`DOM.getNodeForLocation` + `describeNode`, geometry cross-checked via `getContentQuads` so a
-  wrong-space hit degrades to silence, never a lie) and the
+  pass the bounds check). Before dispatching, the point is hit-tested read-only through `hitNodeAt`
+  (`DOM.getNodeForLocation` + `describeNode`, geometry cross-checked via `getContentQuads`): an
+  answer counts only when its own quads CONTAIN the point, and a rejected first ask is RETRIED with
+  the point translated by the scroll offset — `getNodeForLocation` answers in DOCUMENT space on a
+  scrolled page while quads and `Input.*` are viewport space (probe-pinned in
+  `tests/visual/scrolled-hit-facts.spec.ts`; the un-retried check made every scrolled-page landing
+  report "could NOT be identified" even as the click itself hit). A point neither space can vouch for
+  degrades to silence, never a lie. The
   landed-on element rides back (`landedOn`, quarantined as page content, capped in the relay). An
   UNIDENTIFIED landing is stated as a warning in the tool result ("could NOT be identified") — absence
   must never read as success, since the landed-on report is the one thing keeping a blind click honest.

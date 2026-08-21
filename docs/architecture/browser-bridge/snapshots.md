@@ -47,7 +47,13 @@
   `pxPerCss = scale × zoom × dsf` for click_at's inversion (addressing.md). Both factors ride the ONE
   metrics read — zoom from `cssVisualViewport.zoom`, zoom × dsf from
   `visualViewport.clientWidth / cssVisualViewport.clientWidth`, the physical twin of the CSS block — and
-  each falls back to the pre-conversion arithmetic when its field is absent. The uid MAP's capture
+  each falls back to the pre-conversion arithmetic when its field is absent. That one metrics read
+  happens AFTER the uid branch's `quadsOf` — `scrollIntoViewIfNeeded` inside it CHANGES the scroll,
+  and the quads it returns are relative to the POST-scroll viewport, so a `pageX`/`pageY` read before
+  the scroll stitched the page-absolute clip out of two scroll positions: any element that started
+  off-viewport captured a region offset by exactly the scroll delta (probe-pinned in
+  `tests/visual/scrolled-hit-facts.spec.ts`; the field case was a ruler page whose button-10 capture
+  showed button-4). The uid MAP's capture
   converts its clip the same way but leaves the PAYLOAD in CSS: the viewer draws boxes in exactly the
   doc size that payload declares, so converting the declared size too would move every box off its
   element.
