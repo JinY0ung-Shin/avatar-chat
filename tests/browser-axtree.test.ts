@@ -1755,11 +1755,20 @@ const VIEWPORT = { x: 0, y: 0, width: 1000, height: 800 };
 type ExtraClickable = { backendNodeId: number; label: string; hint: string };
 type ExtraAnswer = { items: ExtraClickable[]; more: number };
 
-/** Run the selection over one spec'd page. `minted` is what the AX render gave uids. */
-function extrasFor(root: DomNodeSpec, minted: number[] = [], limit?: number): ExtraAnswer {
+/**
+ * Run the selection over one spec'd page. `minted` is what the AX render gave
+ * uids; `containers` is the subset of those the AX tree calls a container role.
+ */
+function extrasFor(
+  root: DomNodeSpec,
+  minted: number[] = [],
+  limit?: number,
+  containers: number[] = [],
+): ExtraAnswer {
   const { document, strings } = domSnapshot(root);
   return extraClickables(document, strings, {
     mintedBackendIds: new Set(minted),
+    containerBackendIds: new Set(containers),
     viewport: VIEWPORT,
     ...(limit === undefined ? {} : { limit }),
   }) as ExtraAnswer;
@@ -1867,6 +1876,54 @@ describe("extraClickables", () => {
       [41],
     );
     expect(idsOf(answer)).toEqual([]);
+  });
+
+  it("keeps a small control inside a minted CONTAINER, and still drops a layer covering it", () => {
+    // FullCalendar's shape (round 12): the gridcell is minted, and the
+    // draggable event bar inside it — a pointer-cursor <a> with no href — is
+    // the ONE thing in the cell a drag can grab. It survives ONLY because the
+    // caller names backendId 51 a container ROLE; the identical bar under a
+    // minted CONTROL stays that control's insides (previous test). The
+    // near-full-size overlay is still a LAYER over the cell, not a control in
+    // it, so the cover-share rule keeps pruning it.
+    const cell: DomNodeSpec = {
+      tag: "TD",
+      backendNodeId: 51,
+      cursor: "auto",
+      box: [0, 0, 150, 120],
+      children: [
+        tile(52, [4, 20, 140, 18], { tag: "A", className: "fc-event" }),
+        tile(53, [0, 0, 150, 118], { tag: "DIV", className: "overlay" }),
+      ],
+    };
+    const answer = extrasFor(page([cell]), [51], undefined, [51]);
+    expect(idsOf(answer)).toEqual([52]);
+  });
+
+  it("treats grab and move cursors as affordance boundaries, and grabbing as none", () => {
+    // A reorderable list styles its rows (or their handles) with cursor: grab
+    // or move — the DRAG affordance, which needs a uid exactly as much as a
+    // click target does now that the drag op exists. `grabbing` is the
+    // mid-drag state, not an affordance at rest, so it stays unlisted.
+    const row = (backendNodeId: number, y: number, cursor: string): DomNodeSpec => ({
+      tag: "DIV",
+      className: "row",
+      backendNodeId,
+      box: [0, y, 300, 40],
+      cursor,
+    });
+    const answer = extrasFor(
+      page([
+        {
+          tag: "DIV",
+          id: "list",
+          cursor: "auto",
+          box: [0, 0, 300, 200],
+          children: [row(61, 0, "pointer"), row(62, 50, "grab"), row(63, 100, "move"), row(64, 150, "grabbing")],
+        },
+      ]),
+    );
+    expect(idsOf(answer)).toEqual([61, 62, 63]);
   });
 
   it("keeps the OUTERMOST of two nested survivors", () => {

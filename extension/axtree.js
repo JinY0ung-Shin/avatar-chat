@@ -1141,6 +1141,18 @@ const EXTRA_ANCESTOR_HOPS = 200;
 const EXTRA_CLICKABLE_SKIP_NAMES = new Set(["BODY", "HTML", "#DOCUMENT"]);
 
 /**
+ * Cursor values that are the page telling a person "act here". `pointer` is the
+ * click affordance; `grab` and `move` are the DRAG affordances a reorderable
+ * list or a pannable pane styles its handles with — and a drag target needs a
+ * uid exactly as much as a click target does (round 12: the `drag` op exists,
+ * SortableJS-style items do not, because their only listener is a `pointerdown`
+ * on the container, which `isClickable` does NOT mark — probed in
+ * tests/visual/round12-facts.spec.ts). `grabbing` is deliberately absent: it is
+ * the MID-DRAG state, not an affordance at rest.
+ */
+const CLICK_AFFORDANCE_CURSORS = new Set(["pointer", "grab", "move"]);
+
+/**
  * The clickable elements the accessibility tree does not contain, so that a page
  * built out of drawn tiles is addressable at all.
  *
@@ -1165,7 +1177,10 @@ const EXTRA_CLICKABLE_SKIP_NAMES = new Set(["BODY", "HTML", "#DOCUMENT"]);
  *
  * `opts.mintedBackendIds` is what the AX render minted on THIS pass — never the
  * persistent uid map, which remembers the elements this very function minted
- * last time and would exclude exactly them. `opts.viewport` is the layout
+ * last time and would exclude exactly them. `opts.containerBackendIds` is the
+ * subset of the page's elements whose AX role says CONTAINER (cell, row,
+ * region, …): a candidate nested under one of those survives when it covers
+ * only a slice of it — see `isMintedContainer` below. `opts.viewport` is the layout
  * viewport in the same DOCUMENT coordinates as `layout.bounds` (hence its
  * pageX/pageY origin); only its area is read today, and it is what separates a
  * delegated container from an item. `opts.limit` is the budget LEFT, because a
@@ -1235,7 +1250,8 @@ export function extraClickables(document, strings, opts) {
     return value;
   };
   const isPointerBoundary = (index) =>
-    ownCursor(index) === "pointer" && effectiveCursor(parentOf(index)) !== "pointer";
+    CLICK_AFFORDANCE_CURSORS.has(ownCursor(index)) &&
+    !CLICK_AFFORDANCE_CURSORS.has(effectiveCursor(parentOf(index)));
 
   const candidates = new Set();
   /**
@@ -1292,19 +1308,44 @@ export function extraClickables(document, strings, opts) {
       at = parentOf(at);
     }
   }
-  const insideMinted = (index) => {
+  const nearestMintedAncestor = (index) => {
     let at = parentOf(index);
     for (let hop = 0; at >= 0 && hop < EXTRA_ANCESTOR_HOPS; hop += 1) {
-      if (minted.has(at)) return true;
+      if (minted.has(at)) return at;
       at = parentOf(at);
     }
-    return false;
+    return -1;
   };
+  const areaOf = (index) => {
+    const slot = layoutAt.get(index);
+    if (slot === undefined) return 0;
+    const box = boundsOf[slot] || [];
+    return (Number(box[2]) || 0) * (Number(box[3]) || 0);
+  };
+  /**
+   * Minted elements the caller knows to be CONTAINERS by role (cell, row,
+   * region, …) rather than controls. A candidate under a minted CONTROL is that
+   * control's insides; one under a minted CONTAINER at a small share of its box
+   * is a control of its own. Field case (round 12): FullCalendar's event bar —
+   * a pointer-cursor <a> with no href — sits inside the minted gridcell, and
+   * the unconditional under-minted prune left the one draggable thing in each
+   * cell with no uid anywhere.
+   */
+  const containerIds = opts?.containerBackendIds;
+  const isMintedContainer = (index) =>
+    Boolean(containerIds && typeof containerIds.has === "function" && containerIds.has(backendIds[index]));
 
   const surviving = [];
   for (const index of [...candidates].sort((a, b) => a - b)) {
     if (!passesGuards(index)) continue;
-    if (minted.has(index) || holdsMinted.has(index) || insideMinted(index)) continue;
+    if (minted.has(index) || holdsMinted.has(index)) continue;
+    const under = nearestMintedAncestor(index);
+    if (under >= 0) {
+      const outer = areaOf(under);
+      if (!isMintedContainer(under) || !(outer > 0) || areaOf(index) / outer >= EXTRA_NESTED_COVER_SHARE) {
+        continue;
+      }
+    }
     surviving.push(index);
   }
   // Outermost wins: a tile's inner overlay is the same click, and the whole tile
@@ -1328,12 +1369,6 @@ export function extraClickables(document, strings, opts) {
   // untouched either way: there the click is DELEGATED to the grid root, so
   // Chrome marks only that root and the tiles are pointer-cursor boundaries with
   // no listener of their own.
-  const areaOf = (index) => {
-    const slot = layoutAt.get(index);
-    if (slot === undefined) return 0;
-    const box = boundsOf[slot] || [];
-    return (Number(box[2]) || 0) * (Number(box[3]) || 0);
-  };
   const survivingSet = new Set(surviving);
   const outermost = surviving.filter((index) => {
     let at = parentOf(index);

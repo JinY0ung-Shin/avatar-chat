@@ -1067,6 +1067,42 @@ const EXTRA_CLICKABLE_HEADER =
   "clickable but not in the accessibility tree (DOM click listeners / pointer cursor):";
 
 /**
+ * AX roles that are CONTAINERS a distinct control can legitimately live inside,
+ * for extraClickables' nested-candidate rule. A pointer/grab tile under a
+ * minted element from THIS list, covering only a slice of it, is a control of
+ * its own (FullCalendar's draggable event bar inside its gridcell — the round-12
+ * field case); under any other minted element it is that element's insides.
+ * The Layout* spellings are what Chrome computes for non-semantic layout
+ * tables, which real pages still build calendars and grids out of.
+ */
+const EXTRA_CONTAINER_ROLES = new Set([
+  "article",
+  "cell",
+  "columnheader",
+  "dialog",
+  "feed",
+  "figure",
+  "grid",
+  "gridcell",
+  "group",
+  "list",
+  "listbox",
+  "listitem",
+  "main",
+  "region",
+  "row",
+  "rowgroup",
+  "rowheader",
+  "table",
+  "tabpanel",
+  "toolbar",
+  "treegrid",
+  "LayoutTable",
+  "LayoutTableCell",
+  "LayoutTableRow",
+]);
+
+/**
  * What the cap says when it truncates. This codebase does not cap silently — and
  * the way out it names has to be one that WORKS. Selection is the first
  * EXTRA_CLICKABLE_MAX outermost survivors in DOCUMENT order, and the only
@@ -1095,7 +1131,7 @@ const extraClickableCut = (more) =>
  * ANY failure returns nothing at all. This is an addition to a snapshot, never a
  * new way for one to fail — the same line scopeDomIdsOf draws.
  */
-async function extraClickableLines(tab, mintedBackendIds, captured) {
+async function extraClickableLines(tab, mintedBackendIds, containerBackendIds, captured) {
   try {
     const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
     // The LAYOUT viewport, offset by its page origin: `layout.bounds` are
@@ -1116,6 +1152,7 @@ async function extraClickableLines(tab, mintedBackendIds, captured) {
     for (const document of documents) {
       const answer = extraClickables(document, strings, {
         mintedBackendIds,
+        containerBackendIds,
         viewport,
         limit: EXTRA_CLICKABLE_MAX - found.length,
       });
@@ -1202,10 +1239,27 @@ async function buildSnapshot(tab, { withExtraClickables = true } = {}) {
    * and would therefore exclude exactly them from this one.
    */
   const mintedBackendIds = new Set();
+  /**
+   * Root-id-space elements whose AX role is a CONTAINER (EXTRA_CONTAINER_ROLES),
+   * minted or not — extraClickables only ever consults it FOR minted ancestors,
+   * so the unminted entries are inert. Collected here because the DOM capture
+   * knows boxes and cursors but not roles.
+   */
+  const containerBackendIds = new Set();
   let hintBudget = HINT_FETCH_PER_SNAPSHOT;
   for (const source of sources) {
     const nodes = await sourceAxNodes(source);
     if (!nodes) continue;
+    if (!source.target.sessionId) {
+      for (const node of nodes) {
+        if (
+          node?.backendDOMNodeId != null &&
+          EXTRA_CONTAINER_ROLES.has(String(node?.role?.value || ""))
+        ) {
+          containerBackendIds.add(node.backendDOMNodeId);
+        }
+      }
+    }
     const { hints, left } = await collectDomHints(source, nodes, hintBudget);
     hintBudget = left;
     const label = labelBySource.get(source);
@@ -1237,7 +1291,7 @@ async function buildSnapshot(tab, { withExtraClickables = true } = {}) {
     );
   }
   if (withExtraClickables && domCapture) {
-    lines.push(...(await extraClickableLines(tab, mintedBackendIds, domCapture)));
+    lines.push(...(await extraClickableLines(tab, mintedBackendIds, containerBackendIds, domCapture)));
   }
   return lines;
 }
@@ -1561,8 +1615,14 @@ function resolveRef(uid) {
   return ref;
 }
 
-/** CDP's way of saying the backendNodeId no longer resolves to anything. */
-const DEAD_NODE_MESSAGE = /no node|not found|could not find node/i;
+/**
+ * CDP's ways of saying the backendNodeId no longer resolves to anything. The
+ * last alternative is what DOM.scrollIntoViewIfNeeded/getContentQuads throw for
+ * a node a re-render REPLACED ("Node is detached from document") — round 12's
+ * map.naver.com drag leaked that raw text where every other stale uid gets the
+ * re-snapshot instruction.
+ */
+const DEAD_NODE_MESSAGE = /no node|not found|could not find node|detached from document/i;
 
 /**
  * Run a CDP call against a resolved ref, translating "the node is gone" into
@@ -4334,6 +4394,14 @@ async function performOp(message, stagingOrigin) {
   // click_at's pre-click hit-test result, reported alongside the snapshot so a
   // blind coordinate click states what it actually hit.
   let landedOn = null;
+  /**
+   * The element a PIXEL-mode op (click_at, drag) hit-tested at its acted point.
+   * Those ops carry no uid, which starved the confirm snapshot's focus pass of
+   * exactly the neighbourhood the action changed (round 12: a pixel drag moved a
+   * calendar event and the returned snapshot truncated both weeks involved).
+   * Minting this a uid anchors the cap the same way message.uid does.
+   */
+  let actedBackendNodeId = null;
   // BRIDGE-authored caveat about this op's outcome (a repaired or unverifiable
   // clear) — not page content, and the reason a clear can no longer end silently.
   let note = "";
@@ -4571,6 +4639,7 @@ async function performOp(message, stagingOrigin) {
       return { ok: false, message: `${FILE_INPUT_REFUSAL} The click was NOT dispatched.` };
     }
     landedOn = described?.text ?? null;
+    actedBackendNodeId = described?.backendNodeId ?? null;
     await raceDialogOpen(tab.id, clickPoint({ tabId: tab.id }, cssX, cssY));
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "drag") {
@@ -4700,6 +4769,10 @@ async function performOp(message, stagingOrigin) {
     try {
       const dropped = await describePoint(target, to.x, to.y);
       landedOn = dropped?.text ?? null;
+      // Anchor the confirm snapshot at the RELEASE point — where the effect is.
+      // Root session only: a uid-mode drag inside an OOPIF already anchors via
+      // message.uid, and mintUid below is a root-space minter.
+      if (!target.sessionId) actedBackendNodeId = dropped?.backendNodeId ?? null;
     } catch {
       landedOn = null;
     }
@@ -4954,12 +5027,19 @@ async function performOp(message, stagingOrigin) {
   // surroundings before the page's document-order bulk (see capSnapshot's
   // focus pass). fill_form's subject is its LAST field — the most recent
   // write; the snapshot op's own uid already scoped the whole build.
-  const focusUid =
+  const explicitFocus =
     message.op === "fill_form"
       ? String((Array.isArray(message.fields) ? message.fields[message.fields.length - 1] : null)?.uid || "")
       : message.op !== "snapshot" && typeof message.uid === "string"
         ? message.uid
         : "";
+  // A pixel-mode op has no uid, but its hit test already named the element at
+  // the acted point — mint that one, so the cap anchors there instead of
+  // spending the whole budget on document-order bulk. mintUid is stable per
+  // (document, node), so this is the SAME uid the snapshot below prints.
+  const focusUid =
+    explicitFocus ||
+    (actedBackendNodeId != null ? mintUid(fresh.id, undefined, actedBackendNodeId) : "");
   const readSnapshot = async () =>
     capSnapshot(
       snapshotScope ? await buildScopedSnapshot(fresh, snapshotScope) : await buildSnapshot(fresh),
