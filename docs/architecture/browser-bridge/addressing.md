@@ -130,3 +130,18 @@
   `frameId` on a document node as it does on an owner element, so `frameSourceFor` scopes a snapshot
   to it, and read_text's `startBackendNodeId` walk finds the node among the scoped sources with no new
   branch. Every part degrades independently back to the bare `frame fN:`.
+- **`drag` (0.21.0) reuses click_at's two addressing modes end to end.** UID mode: start = `uid` +
+  `xFraction`/`yFraction`, end = `toUid` + `toXFraction`/`toYFraction` (`toUid` omitted = same element,
+  the canvas case — the server tool then demands at least one to-fraction so the "drag" is not a click).
+  Pixel mode: `x`/`y` → `toX`/`toY` through the same `lastShot` inversion and drift check as click_at
+  (`shotCssPoint`, extracted from the click_at branch so the two can never diverge). Geometry is the
+  round-10 lesson applied twice: `quadsOf` SCROLLS, so the end element is brought on screen first, the
+  start second (freshest), and the end is RE-read scroll-free (`rawQuadsOf`) in that final state; an end
+  the final viewport cannot contain refuses with "cannot both be brought on screen at once". Both ends
+  must resolve to ONE renderer session — a cross-frame drag is refused, not half-dispatched. The event
+  shape (`dragPointer`) is press → interpolated `mouseMoved`s (≤16 steps, ≤60px apart, 12ms pauses) →
+  release; `tests/visual/drag-facts.spec.ts` pins that this drags a JS handler exactly, that
+  press+release alone is a click, and that Chromium SYNTHESIZES `event.buttons` on moves from its
+  tracked press state (a dispatched `buttons: 0` mid-drag still reads as 1 on the page). NATIVE HTML5
+  `draggable="true"` rides the browser's own drag controller, which mouse events cannot start
+  (`Input.dispatchDragEvent` stays outside `CDP_ALLOWLIST`) — the tool description owns that limit.

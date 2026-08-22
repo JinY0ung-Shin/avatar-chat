@@ -28,6 +28,7 @@ import {
   axValueAnswer,
   clearFailed,
   extraClickables,
+  ariaSortByBackendId,
   sliderPlan,
   unlabeledInteractiveIds,
   EXTRA_CLICKABLE_MAX,
@@ -1094,7 +1095,7 @@ const extraClickableCut = (more) =>
  * ANY failure returns nothing at all. This is an addition to a snapshot, never a
  * new way for one to fail — the same line scopeDomIdsOf draws.
  */
-async function extraClickableLines(tab, mintedBackendIds) {
+async function extraClickableLines(tab, mintedBackendIds, captured) {
   try {
     const metrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
     // The LAYOUT viewport, offset by its page origin: `layout.bounds` are
@@ -1107,9 +1108,6 @@ async function extraClickableLines(tab, mintedBackendIds) {
       height: Number(view.clientHeight) || 0,
     };
     if (!viewport.width || !viewport.height) return [];
-    const captured = await sendCdp({ tabId: tab.id }, "DOMSnapshot.captureSnapshot", {
-      computedStyles: ["cursor"],
-    });
     const documents = captured?.documents;
     const strings = captured?.strings;
     if (!Array.isArray(documents) || !Array.isArray(strings)) return [];
@@ -1173,6 +1171,29 @@ async function buildSnapshot(tab, { withExtraClickables = true } = {}) {
   await flushLifecycle({ tabId: tab.id });
   const sources = await axSources(tab);
   const { byOwner, labelBySource } = await labelFrames(tab, sources);
+  // ONE whole-document DOMSnapshot per snapshot, shared by two consumers: the
+  // AX-invisible clickable section below, and the aria-sort map — the AX tree
+  // does not carry aria-sort at all (round11-facts.spec.ts), so the DOM capture
+  // is the only place a sorted column header is readable from. Taken before the
+  // AX walk so the render can print the flag; any failure degrades to exactly
+  // the snapshot this build produced before (no section, no sort flags).
+  let domCapture = null;
+  if (withExtraClickables) {
+    try {
+      domCapture = await sendCdp({ tabId: tab.id }, "DOMSnapshot.captureSnapshot", {
+        computedStyles: ["cursor"],
+      });
+    } catch {
+      domCapture = null;
+    }
+  }
+  let sortByDomId = null;
+  for (const document of domCapture?.documents || []) {
+    const found = ariaSortByBackendId(document, domCapture.strings);
+    if (!found.size) continue;
+    if (!sortByDomId) sortByDomId = found;
+    else for (const [id, value] of found) sortByDomId.set(id, value);
+  }
   const lines = [];
   /**
    * What THIS render minted on the root target, for the AX-invisible section
@@ -1207,11 +1228,17 @@ async function buildSnapshot(tab, { withExtraClickables = true } = {}) {
         hints,
         // Owner ids were resolved in the ROOT target's id space — valid for
         // every source that renders that target, meaningless in an OOPIF's.
-        { frameLabels: source.target.sessionId ? undefined : byOwner },
+        // Same for the sort map: DOMSnapshot backendNodeIds mean nothing
+        // inside an OOPIF's own id space.
+        source.target.sessionId
+          ? { frameLabels: undefined }
+          : { frameLabels: byOwner, sortByDomId },
       ),
     );
   }
-  if (withExtraClickables) lines.push(...(await extraClickableLines(tab, mintedBackendIds)));
+  if (withExtraClickables && domCapture) {
+    lines.push(...(await extraClickableLines(tab, mintedBackendIds, domCapture)));
+  }
   return lines;
 }
 
@@ -1568,6 +1595,20 @@ async function quadsOf(ref) {
 }
 
 /**
+ * Content quads WITHOUT the scroll `quadsOf` performs. A drag's two endpoints
+ * must be measured in ONE scroll state — quadsOf's scrollIntoViewIfNeeded moves
+ * the page (the round-10 torn-clip lesson), so the endpoint resolved FIRST is
+ * re-read through this after the second one has settled the scroll.
+ */
+async function rawQuadsOf(ref) {
+  const target = { tabId: ref.tabId, sessionId: ref.sessionId };
+  const { quads } = await nodeCall(ref, () =>
+    sendCdp(target, "DOM.getContentQuads", { backendNodeId: ref.backendNodeId }),
+  );
+  return { target, quads: quads || [] };
+}
+
+/**
  * Area of one content quad. Shoelace rather than width×height: a quad is four
  * corner POINTS, and a rotated or skewed element's are not axis-aligned, so a
  * bounding box would overstate how much of the page the element really covers.
@@ -1609,7 +1650,7 @@ async function centerOf(ref) {
  * talks to the renderer's input method directly. That split is exactly what
  * made click and press_key look like successful no-ops.
  */
-const INPUT_OPS = new Set(["click", "click_at", "type", "fill_form", "select_option", "press_key", "hover", "scroll"]);
+const INPUT_OPS = new Set(["click", "click_at", "drag", "type", "fill_form", "select_option", "press_key", "hover", "scroll"]);
 
 /**
  * Ops that need the tab VISIBLE even though they dispatch no input: capturing
@@ -1733,6 +1774,179 @@ async function clickNode(ref) {
 function clampFraction(value) {
   if (typeof value !== "number" || !Number.isFinite(value)) return 0.5;
   return Math.min(Math.max(value, 0), 1);
+}
+
+/**
+ * The viewport CSS point at (xFraction, yFraction) inside an element's
+ * bounding box — clamped a pixel INSIDE, so fraction 0 or 1 still lands ON the
+ * element rather than on whatever owns its border. Shared by click_at's uid
+ * mode and both ends of a uid-mode drag, so the two ops can never disagree
+ * about where a fraction points.
+ */
+function boxPoint(quads, xFraction, yFraction) {
+  const xs = [];
+  const ys = [];
+  for (const quad of quads) {
+    for (let i = 0; i < quad.length; i += 2) {
+      xs.push(quad[i]);
+      ys.push(quad[i + 1]);
+    }
+  }
+  const minX = Math.min(...xs);
+  const minY = Math.min(...ys);
+  const width = Math.max(...xs) - minX;
+  const height = Math.max(...ys) - minY;
+  const inside = (start, span, fraction) =>
+    Math.min(Math.max(start + fraction * span, start + 1), start + Math.max(span - 1, 0));
+  return {
+    x: inside(minX, width, clampFraction(xFraction)),
+    y: inside(minY, height, clampFraction(yFraction)),
+  };
+}
+
+/** Longest leg one drag move covers, px — finer steps below this. */
+const DRAG_STEP_PX = 60;
+/** Most interpolated moves one drag spends, however long the leg. */
+const DRAG_MOVE_STEPS_MAX = 16;
+/** Pause between moves, so per-frame drag handlers see motion, not a jump. */
+const DRAG_STEP_PAUSE_MS = 12;
+
+/**
+ * Press at `from`, move there in interpolated steps, release at `to` — a real
+ * mouse drag. `buttons: 1` rides EVERY intermediate move: that bitmask is what
+ * pointer/mouse handlers read to tell a drag from a hover (the same field
+ * clickPoint documents), and a press followed by a bare release with no moves
+ * between them is a click, which drag handlers ignore. Interpolation matters
+ * too: libraries decide "a drag has started" on a small first movement and
+ * track per-frame deltas after it, so one jump to the endpoint loses them.
+ *
+ * NATIVE HTML5 drag-and-drop (draggable="true") rides the browser's own drag
+ * controller, which mouse events do not start — Input.dispatchDragEvent could,
+ * but it is not in CDP_ALLOWLIST and the JS-driven kind (canvas editors,
+ * sortable lists, sliders, map pans) is what the field cases need. The tool
+ * description says so rather than letting the gap read as a bug.
+ */
+async function dragPointer(target, from, to) {
+  const base = { button: "left", pointerType: "mouse" };
+  await sendCdp(target, "Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: from.x,
+    y: from.y,
+    button: "none",
+    buttons: 0,
+    pointerType: "mouse",
+  });
+  await sendCdp(target, "Input.dispatchMouseEvent", {
+    type: "mousePressed",
+    x: from.x,
+    y: from.y,
+    buttons: 1,
+    clickCount: 1,
+    ...base,
+  });
+  const distance = Math.hypot(to.x - from.x, to.y - from.y);
+  const steps = Math.min(DRAG_MOVE_STEPS_MAX, Math.max(3, Math.ceil(distance / DRAG_STEP_PX)));
+  for (let i = 1; i <= steps; i += 1) {
+    const t = i / steps;
+    await sendCdp(target, "Input.dispatchMouseEvent", {
+      type: "mouseMoved",
+      x: from.x + (to.x - from.x) * t,
+      y: from.y + (to.y - from.y) * t,
+      buttons: 1,
+      ...base,
+    });
+    await new Promise((resolve) => setTimeout(resolve, DRAG_STEP_PAUSE_MS));
+  }
+  await sendCdp(target, "Input.dispatchMouseEvent", {
+    type: "mouseReleased",
+    x: to.x,
+    y: to.y,
+    buttons: 0,
+    clickCount: 1,
+    ...base,
+  });
+}
+
+/**
+ * Map one pixel coordinate measured on the most recent viewport screenshot to
+ * the CSS point it shows — or answer WHY it cannot be, as the refusal the op
+ * returns. Shared by click_at's pixel mode and both ends of a pixel-mode drag:
+ * the checks (a screenshot of THIS tab, a viewport capture, inside the image,
+ * page undrifted since) are the contract that makes acting on a blind
+ * coordinate honest, and they must be the SAME checks wherever a screenshot
+ * pixel is trusted.
+ */
+async function shotCssPoint(tab, x, y) {
+  if (!lastShot || lastShot.tabId !== tab.id) {
+    return {
+      refusal: {
+        ok: false,
+        message:
+          "No screenshot of THIS tab to take coordinates from. Take a fresh mcp__browser__screenshot of the viewport " +
+          "(no uid, no fullPage) first — pixel coordinates are positions measured on that image.",
+      },
+    };
+  }
+  if (lastShot.mode !== "viewport") {
+    return {
+      refusal: {
+        ok: false,
+        message:
+          `The most recent screenshot captured ${lastShot.mode === "fullPage" ? "the full page" : "a single element"}, ` +
+          "whose pixels do not map onto viewport coordinates. Take a plain viewport screenshot " +
+          "(no uid, no fullPage), then pass pixel positions measured on that image.",
+      },
+    };
+  }
+  // One stored factor carries the whole CSS→image mapping (captureShot's unit
+  // note). The `scale` fallback is defensive only: a worker restarted by an
+  // extension update clears `lastShot` outright, so a shot without the field
+  // cannot reach this line in practice.
+  const pxPerCss = lastShot.pxPerCss || lastShot.scale;
+  const imageWidth = Math.round(lastShot.clipWidth * pxPerCss);
+  const imageHeight = Math.round(lastShot.clipHeight * pxPerCss);
+  if (x > imageWidth || y > imageHeight) {
+    return {
+      refusal: {
+        ok: false,
+        message:
+          `(${x}, ${y}) is outside the most recent screenshot image (${imageWidth}×${imageHeight}px). ` +
+          "Coordinates are pixel positions on that image — take a fresh viewport screenshot if the page changed.",
+      },
+    };
+  }
+  // Drift check: the mapping is only valid while the page still shows what
+  // the capture showed. A scroll, resize, or navigation moves DIFFERENT
+  // content under the same image pixel — and a stale image size would even
+  // pass the bounds check above — so refuse rather than act on something the
+  // model never saw. (±2px absorbs subpixel scroll jitter.)
+  const nowMetrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
+  const nowView = nowMetrics.cssVisualViewport || nowMetrics.cssLayoutViewport || {};
+  const drifted =
+    (tab.url || "") !== lastShot.url ||
+    Math.abs((nowView.pageX || 0) - lastShot.pageX) > 2 ||
+    Math.abs((nowView.pageY || 0) - lastShot.pageY) > 2 ||
+    Math.abs((nowView.clientWidth || 0) - lastShot.clipWidth) > 2 ||
+    Math.abs((nowView.clientHeight || 0) - lastShot.clipHeight) > 2;
+  if (drifted) {
+    return {
+      refusal: {
+        ok: false,
+        message:
+          "The page has navigated, scrolled, or resized since that screenshot was taken, so its pixel coordinates " +
+          "no longer point at the same content. Take a fresh viewport screenshot and measure the position again.",
+      },
+    };
+  }
+  // The capture mapped one CSS px of the page onto `pxPerCss` image px
+  // (requested scale × browser zoom × device scale factor); dividing by that
+  // one factor lands on the exact point the model saw, clamped a hair inside
+  // the viewport — in CSS px, the space the input events want — so an
+  // exact-edge coordinate still hits the page.
+  return {
+    cssX: Math.min(x / pxPerCss, lastShot.clipWidth - 1),
+    cssY: Math.min(y / pxPerCss, lastShot.clipHeight - 1),
+  };
 }
 
 /** A described DOM node's attributes as an object — CDP hands them back flat. */
@@ -4302,24 +4516,7 @@ async function performOp(message, stagingOrigin) {
     if (!quads.length) {
       return { ok: false, message: "The element is not visible on screen, so it cannot be clicked." };
     }
-    const xs = [];
-    const ys = [];
-    for (const quad of quads) {
-      for (let i = 0; i < quad.length; i += 2) {
-        xs.push(quad[i]);
-        ys.push(quad[i + 1]);
-      }
-    }
-    const minX = Math.min(...xs);
-    const minY = Math.min(...ys);
-    const width = Math.max(...xs) - minX;
-    const height = Math.max(...ys) - minY;
-    // Clamp a pixel inside the box, so fraction 0 or 1 still lands ON the
-    // element rather than on whatever owns its border.
-    const inside = (start, span, fraction) =>
-      Math.min(Math.max(start + fraction * span, start + 1), start + Math.max(span - 1, 0));
-    const px = inside(minX, width, clampFraction(message.xFraction));
-    const py = inside(minY, height, clampFraction(message.yFraction));
+    const { x: px, y: py } = boxPoint(quads, message.xFraction, message.yFraction);
     // Hit-test the SAME point on the SAME session the click goes to, so a
     // frame-local coordinate is resolved in the space it was measured in. If
     // the spaces disagree anyway, describePoint's containment cross-check
@@ -4350,68 +4547,12 @@ async function performOp(message, stagingOrigin) {
           "click_at needs numeric, non-negative `x` and `y` — pixel coordinates measured on the most recent viewport screenshot.",
       };
     }
-    if (!lastShot || lastShot.tabId !== tab.id) {
-      return {
-        ok: false,
-        message:
-          "No screenshot of THIS tab to take coordinates from. Take a fresh mcp__browser__screenshot of the viewport " +
-          "(no uid, no fullPage) first — click_at coordinates are pixel positions measured on that image.",
-      };
-    }
-    if (lastShot.mode !== "viewport") {
-      return {
-        ok: false,
-        message:
-          `The most recent screenshot captured ${lastShot.mode === "fullPage" ? "the full page" : "a single element"}, ` +
-          "whose pixels do not map onto viewport click coordinates. Take a plain viewport screenshot " +
-          "(no uid, no fullPage), then pass pixel positions measured on that image.",
-      };
-    }
-    // One stored factor carries the whole CSS→image mapping (captureShot's unit
-    // note). The `scale` fallback is defensive only: a worker restarted by an
-    // extension update clears `lastShot` outright, so a shot without the field
-    // cannot reach this line in practice.
-    const pxPerCss = lastShot.pxPerCss || lastShot.scale;
-    const imageWidth = Math.round(lastShot.clipWidth * pxPerCss);
-    const imageHeight = Math.round(lastShot.clipHeight * pxPerCss);
-    if (x > imageWidth || y > imageHeight) {
-      return {
-        ok: false,
-        message:
-          `(${x}, ${y}) is outside the most recent screenshot image (${imageWidth}×${imageHeight}px). ` +
-          "Coordinates are pixel positions on that image — take a fresh viewport screenshot if the page changed.",
-      };
-    }
-    // Drift check: the mapping is only valid while the page still shows what
-    // the capture showed. A scroll, resize, or navigation moves DIFFERENT
-    // content under the same image pixel — and a stale image size would even
-    // pass the bounds check above — so refuse rather than click something the
-    // model never saw. (±2px absorbs subpixel scroll jitter.)
-    const nowMetrics = await sendCdp({ tabId: tab.id }, "Page.getLayoutMetrics", {});
-    const nowView = nowMetrics.cssVisualViewport || nowMetrics.cssLayoutViewport || {};
-    const drifted =
-      (tab.url || "") !== lastShot.url ||
-      Math.abs((nowView.pageX || 0) - lastShot.pageX) > 2 ||
-      Math.abs((nowView.pageY || 0) - lastShot.pageY) > 2 ||
-      Math.abs((nowView.clientWidth || 0) - lastShot.clipWidth) > 2 ||
-      Math.abs((nowView.clientHeight || 0) - lastShot.clipHeight) > 2;
-    if (drifted) {
-      return {
-        ok: false,
-        message:
-          "The page has navigated, scrolled, or resized since that screenshot was taken, so its pixel coordinates " +
-          "no longer point at the same content. Take a fresh viewport screenshot and measure the position again.",
-      };
-    }
-    // The capture mapped one CSS px of the page onto `pxPerCss` image px
-    // (requested scale × browser zoom × device scale factor); dividing by that
-    // one factor lands on the exact point the model saw, clamped a hair inside
-    // the viewport — in CSS px, the space the input events want — so an
-    // exact-edge coordinate still hits the page. A viewport capture's image
-    // origin IS the viewport origin, so no offset applies (enforced above).
-    // Hit-test BEFORE clicking: the click itself may change what sits there.
-    const cssX = Math.min(x / pxPerCss, lastShot.clipWidth - 1);
-    const cssY = Math.min(y / pxPerCss, lastShot.clipHeight - 1);
+    // A viewport capture's image origin IS the viewport origin, so no offset
+    // applies (shotCssPoint enforces the mode). Hit-test BEFORE clicking: the
+    // click itself may change what sits there.
+    const point = await shotCssPoint(tab, x, y);
+    if (point.refusal) return point.refusal;
+    const { cssX, cssY } = point;
     const described = await describePoint({ tabId: tab.id }, cssX, cssY);
     // The only op whose subject is a COORDINATE, so the hit test above is also
     // the only thing that knows which element to draw on. Root session by
@@ -4431,6 +4572,137 @@ async function performOp(message, stagingOrigin) {
     }
     landedOn = described?.text ?? null;
     await raceDialogOpen(tab.id, clickPoint({ tabId: tab.id }, cssX, cssY));
+    await waitForLoad(tab.id, 5000);
+  } else if (message.op === "drag") {
+    const isCoord = (value) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+    const uidMode = typeof message.uid === "string" && Boolean(message.uid);
+    const pixelMode =
+      isCoord(message.x) && isCoord(message.y) && isCoord(message.toX) && isCoord(message.toY);
+    if (uidMode && (isCoord(message.toX) || isCoord(message.toY))) {
+      return {
+        ok: false,
+        message:
+          "drag takes ONE mode, not a mix: uid mode (`uid`/`toUid` with fractions) or pixel mode (`x`/`y` → `toX`/`toY`).",
+      };
+    }
+    if (!uidMode && !pixelMode) {
+      return {
+        ok: false,
+        message:
+          "drag needs either uid mode — `uid` (+ xFraction/yFraction) as the start, and `toUid` " +
+          "(+ toXFraction/toYFraction) as the end (same element when toUid is omitted) — or pixel mode: all four of " +
+          "`x`, `y`, `toX`, `toY`, measured on the most recent viewport screenshot.",
+      };
+    }
+    let target;
+    let from;
+    let to;
+    if (uidMode) {
+      const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
+      if (refused) return refused;
+      const startRef = resolveRef(message.uid);
+      const endUid = typeof message.toUid === "string" && message.toUid ? message.toUid : "";
+      let endRef = startRef;
+      if (endUid) {
+        const endRefused = await assertRefTabUsable(endUid, patterns, source, stagingOrigin);
+        if (endRefused) return endRefused;
+        endRef = resolveRef(endUid);
+        // One mouse sequence lives on ONE renderer session; two frames would
+        // each see only their half of it, which is not a drag anywhere.
+        if (endRef.tabId !== startRef.tabId || endRef.sessionId !== startRef.sessionId) {
+          return {
+            ok: false,
+            message:
+              "The drag's two elements live in DIFFERENT frames, and one mouse sequence cannot span two renderer " +
+              "sessions. Drag within one frame, or take a viewport screenshot and use pixel mode.",
+          };
+        }
+      }
+      showActionHighlight(startRef);
+      await refuseFileInput(startRef);
+      // Both endpoints must be measured in ONE scroll state, and quadsOf
+      // SCROLLS (the round-10 torn-clip lesson). So: bring the end on screen
+      // first, the start second — the start's coordinates are then freshest —
+      // and RE-read the end without scrolling, in that final state.
+      if (endRef !== startRef) {
+        const endFirst = await quadsOf(endRef);
+        if (!endFirst.quads.length) {
+          return { ok: false, message: "The drag's end element is not visible on screen." };
+        }
+      }
+      const startBox = await quadsOf(startRef);
+      if (!startBox.quads.length) {
+        return { ok: false, message: "The drag's start element is not visible on screen." };
+      }
+      target = startBox.target;
+      from = boxPoint(startBox.quads, message.xFraction, message.yFraction);
+      if (endRef === startRef) {
+        to = boxPoint(startBox.quads, message.toXFraction, message.toYFraction);
+      } else {
+        const endNow = await rawQuadsOf(endRef);
+        if (!endNow.quads.length) {
+          return {
+            ok: false,
+            message:
+              "The drag's start and end cannot both be brought on screen at once, so one mouse motion cannot " +
+              "connect them. Scroll until both are visible, or break the move into shorter drags.",
+          };
+        }
+        to = boxPoint(endNow.quads, message.toXFraction, message.toYFraction);
+        // getContentQuads answers for an off-viewport element too (coordinates
+        // simply leave the viewport), so visibility of the END in the FINAL
+        // scroll state has to be checked against the viewport itself — on the
+        // element's own session, whose coordinate space the quads are in.
+        const metrics = await sendCdp(target, "Page.getLayoutMetrics", {});
+        const view = metrics.cssVisualViewport || metrics.cssLayoutViewport || {};
+        const viewWidth = view.clientWidth || 0;
+        const viewHeight = view.clientHeight || 0;
+        if (
+          viewWidth &&
+          viewHeight &&
+          (to.x < 0 || to.y < 0 || to.x > viewWidth || to.y > viewHeight)
+        ) {
+          return {
+            ok: false,
+            message:
+              "The drag's start and end cannot both be brought on screen at once, so one mouse motion cannot " +
+              "connect them. Scroll until both are visible, or break the move into shorter drags.",
+          };
+        }
+      }
+    } else {
+      const start = await shotCssPoint(tab, message.x, message.y);
+      if (start.refusal) return start.refusal;
+      const end = await shotCssPoint(tab, message.toX, message.toY);
+      if (end.refusal) return end.refusal;
+      target = { tabId: tab.id };
+      from = { x: start.cssX, y: start.cssY };
+      to = { x: end.cssX, y: end.cssY };
+      // A pixel drag has no uid to check, so this hit test is the only thing
+      // between a screenshot coordinate and the OS file dialog a press on a
+      // file input can open.
+      const described = await describePoint(target, from.x, from.y);
+      if (described?.backendNodeId) {
+        showActionHighlight({
+          tabId: tab.id,
+          sessionId: undefined,
+          backendNodeId: described.backendNodeId,
+        });
+      }
+      if (described?.fileInput) {
+        return { ok: false, message: `${FILE_INPUT_REFUSAL} The drag was NOT dispatched.` };
+      }
+    }
+    await raceDialogOpen(tab.id, dragPointer(target, from, to));
+    // What sits under the RELEASE point afterwards — the element that was
+    // moved there, or the container it was dropped into. Best-effort: a drag
+    // that navigated has nothing to describe, and that is not a failure.
+    try {
+      const dropped = await describePoint(target, to.x, to.y);
+      landedOn = dropped?.text ?? null;
+    } catch {
+      landedOn = null;
+    }
     await waitForLoad(tab.id, 5000);
   } else if (message.op === "type") {
     const refused = await assertRefTabUsable(message.uid, patterns, source, stagingOrigin);
@@ -4678,10 +4950,21 @@ async function performOp(message, stagingOrigin) {
   // compared before.
   let snapshot = "";
   let snapshotError;
+  // The uid this op ACTED ON, so the cap spends its budget on that element's
+  // surroundings before the page's document-order bulk (see capSnapshot's
+  // focus pass). fill_form's subject is its LAST field — the most recent
+  // write; the snapshot op's own uid already scoped the whole build.
+  const focusUid =
+    message.op === "fill_form"
+      ? String((Array.isArray(message.fields) ? message.fields[message.fields.length - 1] : null)?.uid || "")
+      : message.op !== "snapshot" && typeof message.uid === "string"
+        ? message.uid
+        : "";
   const readSnapshot = async () =>
     capSnapshot(
       snapshotScope ? await buildScopedSnapshot(fresh, snapshotScope) : await buildSnapshot(fresh),
       snapshotChars,
+      focusUid ? { focusUid } : undefined,
     );
   // wait_for is the exception: it answers a yes/no question, and re-walking the
   // page to decorate that answer cost ~25 KB on the one op whose whole job is to

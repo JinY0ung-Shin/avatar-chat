@@ -4252,6 +4252,7 @@ describe("browser bridge tools", () => {
       navigate_back: {},
       click: { uid: "e1" },
       click_at: { x: 10, y: 20 },
+      drag: { uid: "e1", toXFraction: 0.9 },
       type: { uid: "e1", value: "hi" },
       fill_form: { fields: [{ uid: "e1", value: "hi" }] },
       select_option: { uid: "e1", option: "A" },
@@ -4692,6 +4693,73 @@ describe("browser bridge interaction ops", () => {
     const out = res.content[0].text ?? "";
     expect(out).not.toContain("could NOT be identified");
     expect(out).toContain('"confirm" dialog is OPEN');
+  });
+
+  it("passes drag's uid mode through, defaulting every fraction to the centre", async () => {
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "drag", { uid: "e7", toUid: "e9" });
+    expect(res.isError).toBeFalsy();
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "drag",
+      uid: "e7",
+      xFraction: 0.5,
+      yFraction: 0.5,
+      toUid: "e9",
+      toXFraction: 0.5,
+      toYFraction: 0.5,
+    });
+    expect(res.content[0].text).toContain("Dragged from e7 (0.5, 0.5) to e9 (0.5, 0.5).");
+  });
+
+  it("refuses a same-element drag that names no end offset — it would be a click", async () => {
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const res = await callTool(tools, "drag", { uid: "e7" });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain("start and end at the same point");
+    // With an end offset the same-element drag goes through — the canvas case.
+    const drawn = await callTool(tools, "drag", { uid: "e7", xFraction: 0.2, yFraction: 0.2, toXFraction: 0.6, toYFraction: 0.6 });
+    expect(drawn.isError).toBeFalsy();
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "drag",
+      uid: "e7",
+      xFraction: 0.2,
+      yFraction: 0.2,
+      toUid: undefined,
+      toXFraction: 0.6,
+      toYFraction: 0.6,
+    });
+  });
+
+  it("refuses drag's PIXEL mode without vision, and mixed modes always", async () => {
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true });
+    const pixel = await callTool(tools, "drag", { x: 1, y: 2, toX: 30, toY: 40 });
+    expect(pixel.isError).toBe(true);
+    expect(pixel.content[0].text).toContain("cannot receive images");
+    const mixed = await callTool(tools, "drag", { uid: "e7", toX: 30, toY: 40 });
+    expect(mixed.isError).toBe(true);
+    expect(mixed.content[0].text).toContain("not a mix");
+    const neither = await callTool(tools, "drag", { x: 1, y: 2 });
+    expect(neither.isError).toBe(true);
+    expect(neither.content[0].text).toContain("drag needs either");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("passes drag's pixel mode through with vision", async () => {
+    const execute = ok();
+    const tools = buildBrowserTools({ execute, allowed: true, vision: true });
+    const res = await callTool(tools, "drag", { x: 100, y: 200, toX: 300, toY: 250 });
+    expect(res.isError).toBeFalsy();
+    expect(execute).toHaveBeenLastCalledWith({
+      op: "drag",
+      x: 100,
+      y: 200,
+      toX: 300,
+      toY: 250,
+    });
+    expect(res.content[0].text).toContain("Dragged from (100, 200) to (300, 250).");
   });
 
   it("reports a failed post-action snapshot as a done action, not a failed one", async () => {

@@ -15,6 +15,7 @@ export const BROWSER_TOOL_NAMES = [
   "mcp__browser__navigate_back",
   "mcp__browser__click",
   "mcp__browser__click_at",
+  "mcp__browser__drag",
   "mcp__browser__type",
   "mcp__browser__fill_form",
   "mcp__browser__select_option",
@@ -612,6 +613,165 @@ export function buildBrowserTools(ctx: BrowserToolsContext) {
             ? `Clicked the point (${args.x}, ${args.y}), but the element at that point could NOT be identified. ` +
                 "Do not assume the click hit its target — verify the intended effect in the snapshot below or a fresh screenshot."
             : `Clicked the point (${args.x}, ${args.y}).`,
+        );
+      },
+    ),
+    tool(
+      "drag",
+      "Drag with the mouse: press at a start point, move, release at an end point — what moves a slider " +
+        "handle precisely, draws or moves shapes in a canvas editor, pans a map by an exact amount, reorders " +
+        "a JS drag-and-drop list, or selects a text range by mouse. Two modes, addressed like click_at:\n" +
+        "1. uid mode (no screenshot needed — use this first): `uid` (+ optional `xFraction`/`yFraction`, " +
+        "default the centre) is the START; `toUid` (+ `toXFraction`/`toYFraction`) is the END. Omitting " +
+        "`toUid` drags INSIDE the start element — e.g. a canvas from (0.2, 0.2) to (0.6, 0.6) — so give at " +
+        "least one to-fraction then. Both elements must sit in the SAME frame and both ends must fit on " +
+        "screen at once; the call is refused otherwise.\n" +
+        "2. pixel mode: all four of `x`/`y` → `toX`/`toY`, measured on the most recent viewport `screenshot`. " +
+        "Unavailable when this conversation's model cannot receive images.\n" +
+        "The drag is dispatched as real mouse events (press, interpolated moves with the button held, " +
+        "release), which drives JS-based drag handlers. A NATIVE HTML5 draggable=\"true\" element rides the " +
+        "browser's own drag controller instead and may not respond — report that honestly rather than " +
+        "retrying. The result names what sits under the release point; the drag itself is BLIND, so confirm " +
+        "the effect you intended in the returned snapshot.",
+      {
+        uid: z
+          .string()
+          .min(1)
+          .max(120)
+          .optional()
+          .describe("uid mode: the element the drag STARTS on (a canvas, a handle, a list item)."),
+        xFraction: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("uid mode: horizontal start position inside that element, 0–1 (default 0.5)."),
+        yFraction: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("uid mode: vertical start position inside that element, 0–1 (default 0.5)."),
+        toUid: z
+          .string()
+          .min(1)
+          .max(120)
+          .optional()
+          .describe("uid mode: the element the drag ENDS on. Omit to end inside the start element."),
+        toXFraction: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("uid mode: horizontal end position inside the end element, 0–1 (default 0.5)."),
+        toYFraction: z
+          .number()
+          .min(0)
+          .max(1)
+          .optional()
+          .describe("uid mode: vertical end position inside the end element, 0–1 (default 0.5)."),
+        x: z
+          .number()
+          .min(0)
+          .max(20000)
+          .optional()
+          .describe("Pixel mode: horizontal START position on the most recent viewport screenshot."),
+        y: z
+          .number()
+          .min(0)
+          .max(20000)
+          .optional()
+          .describe("Pixel mode: vertical START position on the most recent viewport screenshot."),
+        toX: z
+          .number()
+          .min(0)
+          .max(20000)
+          .optional()
+          .describe("Pixel mode: horizontal END position on the most recent viewport screenshot."),
+        toY: z
+          .number()
+          .min(0)
+          .max(20000)
+          .optional()
+          .describe("Pixel mode: vertical END position on the most recent viewport screenshot."),
+        maxChars: MAX_CHARS_SCHEMA,
+      },
+      async (args) => {
+        const denied = gate();
+        if (denied) return denied;
+        const pixelMode = [args.x, args.y, args.toX, args.toY].every(
+          (value) => typeof value === "number",
+        );
+        const uidMode = Boolean(args.uid);
+        if (uidMode && (typeof args.toX === "number" || typeof args.toY === "number")) {
+          return text(
+            "Pass ONE mode: `uid`/`toUid` with fractions, or all four of `x`/`y`/`toX`/`toY` — not a mix.",
+            true,
+          );
+        }
+        if (!uidMode && !pixelMode) {
+          return text(
+            "drag needs either `uid` (+ optional xFraction/yFraction) as the start and `toUid` " +
+              "(+ toXFraction/toYFraction) as the end — omit toUid to drag inside the start element, giving " +
+              "at least one to-fraction — or ALL FOUR of `x`, `y`, `toX`, `toY` as pixel positions measured " +
+              "on the most recent viewport screenshot.",
+            true,
+          );
+        }
+        if (uidMode) {
+          const sameElement = !args.toUid;
+          if (
+            sameElement &&
+            typeof args.toXFraction !== "number" &&
+            typeof args.toYFraction !== "number"
+          ) {
+            return text(
+              "This drag would start and end at the same point: without `toUid`, give `toXFraction` and/or " +
+                "`toYFraction` so the end differs from the start.",
+              true,
+            );
+          }
+          const xFraction = args.xFraction ?? 0.5;
+          const yFraction = args.yFraction ?? 0.5;
+          const toXFraction = args.toXFraction ?? 0.5;
+          const toYFraction = args.toYFraction ?? 0.5;
+          return report(
+            await ctx.execute({
+              op: "drag",
+              uid: args.uid,
+              xFraction,
+              yFraction,
+              toUid: args.toUid || undefined,
+              toXFraction,
+              toYFraction,
+              maxChars: args.maxChars || undefined,
+            }),
+            `Dragged from ${args.uid} (${xFraction}, ${yFraction}) to ` +
+              `${args.toUid || args.uid} (${toXFraction}, ${toYFraction}). ` +
+              "A drag is blind — confirm the effect you intended in the snapshot below.",
+          );
+        }
+        // Pixel mode only: its coordinates come from an image, so a model that
+        // cannot receive one has no way to have measured them.
+        if (!ctx.vision) {
+          return text(
+            "drag's pixel mode takes its coordinates from a screenshot, and the model serving this " +
+              "conversation cannot receive images. Use the uid mode instead: mcp__browser__snapshot, then " +
+              "drag with `uid`/`toUid` plus fractions.",
+            true,
+          );
+        }
+        return report(
+          await ctx.execute({
+            op: "drag",
+            x: args.x,
+            y: args.y,
+            toX: args.toX,
+            toY: args.toY,
+            maxChars: args.maxChars || undefined,
+          }),
+          `Dragged from (${args.x}, ${args.y}) to (${args.toX}, ${args.toY}). ` +
+            "A drag is blind — confirm the effect you intended in the snapshot below.",
         );
       },
     ),

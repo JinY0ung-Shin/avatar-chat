@@ -289,6 +289,7 @@ export interface BrowserRequest {
     | "navigate"
     | "click"
     | "click_at"
+    | "drag"
     | "type"
     | "fill_form"
     | "select_option"
@@ -313,17 +314,25 @@ export interface BrowserRequest {
    * page. Dies with the document it was minted in: a navigation invalidates it.
    */
   uid?: string;
-  /** click_at PIXEL mode: coordinates measured on the most recent viewport screenshot image. */
+  /** click_at/drag PIXEL mode: coordinates measured on the most recent viewport screenshot image. */
   x?: number;
-  /** click_at PIXEL mode: coordinates measured on the most recent viewport screenshot image. */
+  /** click_at/drag PIXEL mode: coordinates measured on the most recent viewport screenshot image. */
   y?: number;
   /**
-   * click_at UID mode: where inside `uid`'s box to click, as a 0–1 fraction of
-   * its width/height (0.5 = centre). Needs no screenshot, so it is the only
-   * coordinate click available to a model that cannot receive images.
+   * click_at/drag UID mode: where inside `uid`'s box to act, as a 0–1 fraction
+   * of its width/height (0.5 = centre). Needs no screenshot, so it is the only
+   * coordinate action available to a model that cannot receive images.
    */
   xFraction?: number;
   yFraction?: number;
+  /** drag UID mode: the element the drag ENDS on (defaults to `uid` itself). */
+  toUid?: string;
+  /** drag UID mode: where inside the END element's box to release, 0–1. */
+  toXFraction?: number;
+  toYFraction?: number;
+  /** drag PIXEL mode: release coordinates on the most recent viewport screenshot image. */
+  toX?: number;
+  toY?: number;
   /** type: the literal text to enter. wait_for: text that must appear. */
   text?: string;
   /** type only: press Enter afterwards. */

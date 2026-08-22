@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>drag facts fixture (browser bridge)</title>
+    <style>
+      body {
+        font: 14px system-ui, sans-serif;
+        margin: 0;
+        height: 1200px;
+      }
+      #box {
+        position: absolute;
+        left: 100px;
+        top: 100px;
+        width: 80px;
+        height: 80px;
+        background: #4a7;
+        cursor: grab;
+      }
+      #log {
+        position: absolute;
+        left: 8px;
+        top: 400px;
+        white-space: pre;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- A hand-rolled JS drag handler in the two shapes real libraries use:
+         it arms on mousedown, it MOVES only on mousemove events whose
+         `buttons` bitmask still holds the primary button (the field
+         interact.js/leaflet-style handlers read), and it counts the moves so
+         the probe can pin how many arrived. No HTML5 draggable anywhere —
+         that rides the browser's own drag controller, which mouse events
+         cannot start, and the tool description owns that limitation. -->
+    <div id="box"></div>
+    <div id="log" data-moves="0" data-drops="0"></div>
+    <script>
+      const box = document.getElementById("box");
+      const log = document.getElementById("log");
+      let dragging = false;
+      let grabX = 0;
+      let grabY = 0;
+      let moves = 0;
+      box.addEventListener("mousedown", (event) => {
+        dragging = true;
+        grabX = event.clientX - box.offsetLeft;
+        grabY = event.clientY - box.offsetTop;
+      });
+      document.addEventListener("mousemove", (event) => {
+        if (!dragging) return;
+        // The bitmask gate: a "move" with the button no longer held is not a
+        // drag, and real handlers drop it exactly like this.
+        if ((event.buttons & 1) !== 1) return;
+        moves += 1;
+        log.dataset.moves = String(moves);
+        box.style.left = `${event.clientX - grabX}px`;
+        box.style.top = `${event.clientY - grabY}px`;
+      });
+      document.addEventListener("mouseup", () => {
+        if (!dragging) return;
+        dragging = false;
+        log.dataset.drops = String(Number(log.dataset.drops) + 1);
+      });
+    </script>
+  </body>
+</html>

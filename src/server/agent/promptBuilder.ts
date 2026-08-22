@@ -831,7 +831,7 @@ export function buildSystemPromptAppend(
     lines.push(
       "Browser control: you can drive THIS user's own browser with `mcp__browser__snapshot` / `read_text`" +
         (request.visionEnabled !== false ? " / `screenshot`" : "") +
-        " / `navigate` / `navigate_back` / `click` / `click_at`" +
+        " / `navigate` / `navigate_back` / `click` / `click_at` / `drag`" +
         " / `type` / `fill_form` / `select_option` / `press_key` / `hover` / `scroll` / `wait_for`, " +
         "manage tabs with `list_tabs` / `new_tab` / `select_tab` / `close_tab`, and answer JavaScript dialogs with `handle_dialog`. " +
         "You can only reach tabs the user put in the Noah tab group plus ones you opened yourself; the rest of their browser is invisible to you. " +
@@ -869,6 +869,10 @@ export function buildSystemPromptAppend(
         // click_at's uid mode needs no screenshot, so this line is unconditional:
         // on a text-only model it is the ONLY way into a canvas or map surface.
         "When a target has no uid of its own but sits INSIDE an element that does (a canvas editor, a map, a drawn chart — the canvas itself carries a uid), click a position inside that element with `click_at`: its `uid` plus `xFraction`/`yFraction` between 0 and 1 (0.5, 0.5 = centre; 0.25, 0.75 = lower-left quadrant). That mode needs no screenshot and works even when you cannot see images — prefer plain `click` whenever the target itself has a uid, and confirm the effect in the snapshot the call returns, since a relative click may not be able to report what it hit. " +
+        // The drag primitive closes the round-11 backlog: canvas editors,
+        // sortable lists, precise map pans and mouse text-selection all need a
+        // held button between two points, which no click can express.
+        "To DRAG (move a shape, reorder a drag-and-drop list, pan a map by an exact amount, drag-select), use `drag`: uid mode gives the start as `uid` (+ `xFraction`/`yFraction`) and the end as `toUid` (+ `toXFraction`/`toYFraction`) — omit `toUid` to drag inside one element, e.g. a canvas from (0.2, 0.2) to (0.6, 0.6). Both ends must be visible at once and in the same frame. It drives JS drag handlers; a native HTML5 draggable=\"true\" element may not respond — report that instead of retrying. " +
         // Both refusals are retry-proof by construction, and both LOOK like a
         // flaky click unless the model is told what the refusal means.
         "A click on a FILE-UPLOAD control is refused: it opens an OS file dialog only the user can drive, so ask them to attach the file instead of hunting for another route. " +

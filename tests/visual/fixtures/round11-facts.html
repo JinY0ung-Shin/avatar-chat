@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8" />
+    <title>round-11 facts fixture (browser bridge)</title>
+    <style>
+      body {
+        font: 14px system-ui, sans-serif;
+        margin: 24px;
+      }
+      section {
+        margin-bottom: 16px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>round-11 accessibility fact probe (browser bridge)</h1>
+
+    <!--
+      Every element answers ONE question axtree.js round-11 decides on: what
+      Chrome actually emits over CDP, as opposed to what the ARIA spec implies.
+    -->
+
+    <section>
+      <!-- aria-sort: does Accessibility.getFullAXTree carry it at all, and
+           under which property name — on a NATIVE th and on the ARIA grid
+           shape ag-grid renders (div role=columnheader)? -->
+      <table>
+        <thead>
+          <tr>
+            <th id="th-asc" aria-sort="ascending">이름</th>
+            <th id="th-desc" aria-sort="descending">나이</th>
+            <th id="th-none">주소</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>홍길동</td>
+            <td>30</td>
+            <td>서울</td>
+          </tr>
+        </tbody>
+      </table>
+      <div role="grid" aria-label="aria grid">
+        <div role="row">
+          <div role="columnheader" id="div-asc" aria-sort="ascending">이름</div>
+          <div role="columnheader" id="div-none">나이</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <!-- Range bounds: what valuemin/valuemax arrive for an UNBOUNDED
+           <input type=number> (the ag-grid filter shape that printed
+           `[min 0 max 0]`), for a bounded one, and for a page that AUTHORS
+           aria-valuemin/max = 0 on purpose. -->
+      <input id="num-bare" type="number" aria-label="무경계 숫자" />
+      <input id="num-bounded" type="number" min="3" max="9" aria-label="유경계 숫자" />
+      <div
+        id="spin-authored-zero"
+        role="spinbutton"
+        aria-label="저자 0 범위"
+        aria-valuemin="0"
+        aria-valuemax="0"
+        aria-valuenow="0"
+        tabindex="0"
+      ></div>
+    </section>
+
+    <section>
+      <!-- The listbox shape: a <select multiple> and its options. Which role
+           does the SELECT itself get, is it focusable, and do the options sit
+           as its AX descendants? -->
+      <select id="multi" multiple size="4" aria-label="다중 선택">
+        <option>alpha</option>
+        <option>beta</option>
+        <option selected>gamma</option>
+      </select>
+    </section>
+  </body>
+</html>

@@ -51,6 +51,7 @@ export interface BridgeOperation {
     | "navigate"
     | "click"
     | "click_at"
+    | "drag"
     | "type"
     | "fill_form"
     | "select_option"
@@ -68,12 +69,20 @@ export interface BridgeOperation {
     | "close_tab";
   url?: string | null;
   uid?: string | null;
-  /** click_at pixel mode: coordinates on the most recent viewport screenshot. */
+  /** click_at/drag pixel mode: coordinates on the most recent viewport screenshot. */
   x?: number | null;
   y?: number | null;
-  /** click_at uid mode: 0–1 position inside the uid's box (0.5 = centre). */
+  /** click_at/drag uid mode: 0–1 position inside the uid's box (0.5 = centre). */
   xFraction?: number | null;
   yFraction?: number | null;
+  /** drag uid mode: the element the drag ends on (defaults to `uid`). */
+  toUid?: string | null;
+  /** drag pixel mode: release coordinates on the most recent viewport screenshot. */
+  toX?: number | null;
+  toY?: number | null;
+  /** drag uid mode: 0–1 release position inside the end element's box. */
+  toXFraction?: number | null;
+  toYFraction?: number | null;
   text?: string | null;
   submit?: boolean;
   /** type only: replace the field's existing content instead of inserting into it. */

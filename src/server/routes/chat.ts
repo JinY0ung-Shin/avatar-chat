@@ -1907,6 +1907,13 @@ export async function executeChatTurn(
                 typeof requestData.xFraction === "number" ? requestData.xFraction : null,
               yFraction:
                 typeof requestData.yFraction === "number" ? requestData.yFraction : null,
+              toUid: requestData.toUid ?? null,
+              toX: typeof requestData.toX === "number" ? requestData.toX : null,
+              toY: typeof requestData.toY === "number" ? requestData.toY : null,
+              toXFraction:
+                typeof requestData.toXFraction === "number" ? requestData.toXFraction : null,
+              toYFraction:
+                typeof requestData.toYFraction === "number" ? requestData.toYFraction : null,
               text: requestData.text ?? null,
               submit: Boolean(requestData.submit),
               clear: Boolean(requestData.clear),
@@ -1988,6 +1995,15 @@ export async function executeChatTurn(
                   typeof requestData.xFraction === "number" &&
                   typeof requestData.yFraction === "number"
                     ? `rel=(${requestData.xFraction},${requestData.yFraction})`
+                    : "",
+                  // drag's END, in whichever mode the start was given.
+                  requestData.toUid ? `toUid=${requestData.toUid}` : "",
+                  typeof requestData.toX === "number" && typeof requestData.toY === "number"
+                    ? `to=(${requestData.toX},${requestData.toY})`
+                    : "",
+                  typeof requestData.toXFraction === "number" &&
+                  typeof requestData.toYFraction === "number"
+                    ? `relTo=(${requestData.toXFraction},${requestData.toYFraction})`
                     : "",
                   requestData.key
                     ? `key=${(requestData.modifiers ?? []).map((m) => `${m}+`).join("")}${requestData.key}${requestData.repeat && requestData.repeat > 1 ? ` x${requestData.repeat}` : ""}`

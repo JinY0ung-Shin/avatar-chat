@@ -36,6 +36,15 @@ export const INTERACTIVE_ROLES = new Set([
   // the page to aim at.
   "canvas",
   "Canvas",
+  // A <select multiple> IS its own control — options are selected by clicking
+  // them INSIDE it, and select_option's option-collector walks down from the
+  // node it is aimed at. Without a uid on the listbox itself the agent could
+  // click individual options but never address the CONTROL (scroll it, aim
+  // select_option at it), and a custom role="listbox" autocomplete popup had no
+  // handle either. Probed (round11-facts.spec.ts): Chrome computes a
+  // <select multiple> as role "listbox", focusable, with its options as AX
+  // descendants — exactly the root the existing collector needs.
+  "listbox",
 ]);
 
 /**
@@ -354,6 +363,15 @@ function rangeFlags(node, role) {
   if (!RANGE_ROLES.has(role)) return "";
   const min = axNumber(axProp(node, "valuemin"));
   const max = axNumber(axProp(node, "valuemax"));
+  // Chrome answers "no bounds declared at all" as literal ZEROS: a bare
+  // <input type=number> arrives valuemin 0 / valuemax 0, byte-identical on the
+  // wire to an authored 0..0 range (probed: round11-facts.spec.ts). Printing
+  // the pair as `[min 0 max 0]` told the agent every unbounded number filter
+  // on a page (ag-grid's, for one) only accepts 0 — a range the page never
+  // declared. The pair of zeros is therefore treated as the sentinel it is;
+  // a real bound never suppresses, because it arrives with at least one side
+  // non-zero.
+  if (min === 0 && max === 0) return "";
   const parts = [];
   if (min !== undefined) parts.push(`min ${min}`);
   if (max !== undefined) parts.push(`max ${max}`);
@@ -1039,6 +1057,39 @@ export function unlabeledInteractiveIds(nodes) {
 }
 
 /**
+ * backendNodeId -> aria-sort value ("ascending" / "descending" / "other") from
+ * ONE `DOMSnapshot.captureSnapshot` document. CDP's accessibility tree does not
+ * deliver aria-sort at all — probed in round11-facts.spec.ts, where a sorted
+ * native <th> and an ARIA columnheader both arrive carrying only
+ * readonly/required — so the DOM attribute is the only place the sorted state
+ * exists, and this reads it out of the capture the snapshot already pays for
+ * (no extra CDP round trip). "none" and unknown values are treated as the
+ * attribute being absent, which is what they mean.
+ */
+export function ariaSortByBackendId(document, strings) {
+  const map = new Map();
+  const nodes = document?.nodes;
+  const table = Array.isArray(strings) ? strings : null;
+  if (!nodes || !table) return map;
+  const backendIds = nodes.backendNodeId || [];
+  const attributes = nodes.attributes || [];
+  const str = (index) => (typeof index === "number" && index >= 0 ? String(table[index] ?? "") : "");
+  for (let i = 0; i < backendIds.length; i += 1) {
+    const attrs = attributes[i];
+    if (backendIds[i] == null || !Array.isArray(attrs)) continue;
+    for (let at = 0; at + 1 < attrs.length; at += 2) {
+      if (str(attrs[at]).toLowerCase() !== "aria-sort") continue;
+      const value = str(attrs[at + 1]).trim().toLowerCase();
+      if (value === "ascending" || value === "descending" || value === "other") {
+        map.set(backendIds[i], value);
+      }
+      break;
+    }
+  }
+  return map;
+}
+
+/**
  * Most AX-invisible clickables one snapshot lists. The section exists to make a
  * drawn grid reachable, not to re-describe the page: past this many the useful
  * answer is a narrower view, which is what the truncation notice says.
@@ -1397,7 +1448,7 @@ export function extraClickables(document, strings, opts) {
  * throw here and take out every snapshot on the page, not just the frame part.
  */
 export function renderAxTree(nodes, mintUid, hints, opts) {
-  const { startBackendNodeId, frameLabels, scopeDomIds } = opts || {};
+  const { startBackendNodeId, frameLabels, scopeDomIds, sortByDomId } = opts || {};
   const lines = [];
   /** Full href -> { index, name, indent } of the one line kept for that destination. */
   const byHref = new Map();
@@ -1553,7 +1604,14 @@ export function renderAxTree(nodes, mintUid, hints, opts) {
       // tells one `button ""` line from the next.
       const hinted = !label && !value ? hints?.get?.(node.backendDOMNodeId) || "" : "";
       const hint = hinted ? ` (dom: ${hinted})` : "";
-      const state = `${stateFlags(node)}${rangeFlags(node, role)}`;
+      // The AX tree does not carry aria-sort AT ALL (probed:
+      // round11-facts.spec.ts — a sorted native <th> arrives with only
+      // readonly/required), so the sorted state rides in from the caller's DOM
+      // capture. Without it a sort click could not be verified: the header
+      // looked identical before and after.
+      const sorted = sortByDomId?.get?.(node.backendDOMNodeId);
+      const sortFlag = sorted ? (sorted === "other" ? " [sorted]" : ` [sorted ${sorted}]`) : "";
+      const state = `${stateFlags(node)}${rangeFlags(node, role)}${sortFlag}`;
       // Last on the line, after everything describing the element itself: this
       // says where the element's CONTENTS were printed, not what it is.
       const frame = frameLabels?.get?.(node.backendDOMNodeId);
@@ -1704,13 +1762,35 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
   let run = null;
   /**
    * The table row the last pushed line holds — { row, cell, index, trail,
-   * container }, or null. `trail` and `container` describe the LAST piece
-   * appended, which is what the next same-cell seam is decided on.
+   * container, cellTexts }, or null. `trail` and `container` describe the LAST
+   * piece appended, which is what the next same-cell seam is decided on;
+   * `cellTexts` collects every piece, which is what settleRowLabel compares
+   * against the row's own accessible name.
    */
   let openRow = null;
+  /** Named ROW node -> { index, name } of the accname line it printed itself. */
+  const rowLabelAt = new Map();
   /** Emitted node -> its container, so a piece can find the cell and row above it. */
   const parentOf = new Map();
   const { cellOf, rowOf, crossesBlocks } = rowChain(parentOf);
+  /**
+   * Null a row's own accname line once its joined cells have re-spelled it.
+   * The grid shape this exists for: an ARIA grid (ag-grid) computes every row's
+   * ACCESSIBLE NAME out of its cells, so the row node printed the whole row
+   * once and the " | "-joined cells printed it again — read_text answered the
+   * grid literally twice over. Dropped only when the cells FULLY account for
+   * the name (whitespace-insensitive and contiguous), so a row name carrying
+   * anything of its own survives, and only past RUN_ECHO_MIN_CHARS, so a short
+   * coincidence cannot delete real content.
+   */
+  const settleRowLabel = () => {
+    if (!openRow) return;
+    const label = rowLabelAt.get(openRow.row);
+    if (!label || lines[label.index] == null || label.index === openRow.index) return;
+    const rowName = stripSpaces(label.name);
+    if (rowName.length < RUN_ECHO_MIN_CHARS) return;
+    if (stripSpaces(openRow.cellTexts.join("")).includes(rowName)) lines[label.index] = null;
+  };
   /** Same mid-word-highlight suppression renderAxTree does — see closeRun there. */
   const closeTextRun = (incoming) => {
     if (run && run.segments.length > 1) {
@@ -1790,17 +1870,28 @@ export function renderAxText(nodes, startBackendNodeId, scopeDomIds) {
         openRow.cell = cell;
         openRow.trail = edges.trail;
         openRow.container = container;
+        openRow.cellTexts.push(printed);
         return;
       }
-      openRow = { row, cell, index: lines.length, trail: edges.trail, container };
+      settleRowLabel();
+      openRow = { row, cell, index: lines.length, trail: edges.trail, container, cellTexts: [printed] };
     } else {
+      settleRowLabel();
       openRow = null;
+    }
+    // The row node itself, printing the accessible name it computed from its
+    // cells — remembered so settleRowLabel can drop the copy once the cells
+    // below have joined. Only a row that landed on its OWN line qualifies: one
+    // that joined an OUTER row's line shares that line with real content.
+    if (ROW_ROLES.has(role) && name && !value && !row) {
+      rowLabelAt.set(node, { index: lines.length, name });
     }
     if (inTextRun)
       run = { container, index: lines.length, segments: [printed], covered, trail: edges.trail };
     lines.push(printed);
   }, scopeDomIds);
   closeTextRun();
+  settleRowLabel();
   return found ? lines.filter((line) => line !== null && !isBracketNoise(line)) : null;
 }
 
@@ -1869,8 +1960,20 @@ function headKeptAtom(atom, remaining) {
  * page's other elements their uids — and it takes essentially all of what is
  * left, so the text pass after it usually gets nothing. That is the intended
  * trade: text is recoverable through read_text, and the marker names it.
+ *
+ * `opts.focusUid` is the uid the op just ACTED ON. Document order made the old
+ * uid pass spend the whole of a tight budget on a page's earliest interactive
+ * elements — a header's nav links — while the row the agent had just edited
+ * fell off the end: on ag-grid, a cell-edit's confirmation snapshot showed the
+ * toolbar and not the cell, so verifying the write cost a second scoped call
+ * every time. The focus pass keeps that element's atom and its NEIGHBOURS
+ * (both directions, nearest first) ahead of everything else, bounded to half
+ * the budget so the rest of the page still keeps its uids. No focus (or a uid
+ * not on the page) leaves the output byte-identical.
  */
-export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS) {
+const FOCUS_CONTEXT_ATOMS = 20;
+
+export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS, opts) {
   const atoms = Array.isArray(textOrLines) ? textOrLines : String(textOrLines).split("\n");
   const whole = atoms.join("\n");
   if (whole.length <= maxChars) return whole;
@@ -1883,8 +1986,33 @@ export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS) {
   // An atom is classified by its FIRST physical line, which is where the
   // renderer put the element's own rendering.
   const leadsWithUid = (atom) => UID_LINE.test(atom);
+  // The acted-on element and its surroundings, ahead of the document-order uid
+  // pass — see FOCUS_CONTEXT_ATOMS above for the field failure this ends.
+  let focusKept = false;
+  const focusUid = typeof opts?.focusUid === "string" ? opts.focusUid.trim() : "";
+  if (focusUid) {
+    const marker = `[${focusUid}]`;
+    const at = atoms.findIndex((atom) => atom.includes(marker));
+    if (at >= 0) {
+      let budget = Math.floor(maxChars / 2);
+      const claim = (i) => {
+        if (i < 0 || i >= atoms.length || keep[i] !== null) return;
+        const cost = atoms[i].length + 1;
+        if (cost > budget || cost > remaining) return;
+        take(i, atoms[i]);
+        budget -= cost;
+        focusKept = true;
+      };
+      claim(at);
+      for (let distance = 1; distance <= FOCUS_CONTEXT_ATOMS; distance += 1) {
+        claim(at - distance);
+        claim(at + distance);
+      }
+    }
+  }
   for (let i = 0; i < atoms.length; i += 1) {
-    if (leadsWithUid(atoms[i]) && atoms[i].length + 1 <= remaining) take(i, atoms[i]);
+    if (keep[i] === null && leadsWithUid(atoms[i]) && atoms[i].length + 1 <= remaining)
+      take(i, atoms[i]);
   }
   for (let i = 0; i < atoms.length && remaining >= HEAD_KEEP_MIN_CHARS; i += 1) {
     if (keep[i] !== null || !leadsWithUid(atoms[i])) continue;
@@ -1897,9 +2025,12 @@ export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS) {
   }
   const kept = keep.filter((atom) => atom !== null);
   const dropped = atoms.length - kept.length;
+  const keptFirst = focusKept
+    ? `The element just acted on ([${focusUid}]) and its surroundings were kept first, then other interactive [uid] elements.`
+    : "Interactive [uid] elements were kept first.";
   return (
     `${kept.join("\n")}\n\n[snapshot truncated: ${dropped} of ${atoms.length} entries omitted to fit. ` +
-    "Interactive [uid] elements were kept first. Read the page's full text with " +
+    `${keptFirst} Read the page's full text with ` +
     "mcp__browser__read_text, which returns offset-addressed chunks.]"
   );
 }

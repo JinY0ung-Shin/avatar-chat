@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 // Kept on ONE line: @ts-expect-error only covers the line after it, and the
 // error is raised on the module specifier — the LAST line of a wrapped import.
 // @ts-expect-error — plain JS module that ships inside the extension bundle.
-import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
+import { renderAxTree, renderAxText, capSnapshot, mergeTextLines, unlabeledInteractiveIds, isActionableNode, extraClickables, ariaSortByBackendId, axValueAnswer, clearFailed, sliderPlan } from "../extension/axtree.js";
 
 /** Terse builder for the shape Accessibility.getFullAXTree returns. */
 function node(
@@ -2845,5 +2845,176 @@ describe("clearFailed", () => {
   it("compares trimmed, so a page's own padding is not a survival", () => {
     expect(clearFailed(" 광교 ", " 카페거리 ", "카페거리")).toBe(false);
     expect(clearFailed(" 광교 ", " 광교카페거리 ", "카페거리")).toBe(true);
+  });
+});
+
+describe("round 11 — range sentinel, listbox uid, sort flag", () => {
+  it("suppresses the 0/0 bounds SENTINEL and keeps real bounds", () => {
+    // Chrome reports "no bounds declared" as literal zeros (probed in
+    // round11-facts.spec.ts), indistinguishable from an authored 0..0 range —
+    // so the pair must not print as a range the page never declared.
+    const bounds = (min?: number, max?: number) => [
+      { name: "valuemin", value: { value: min } },
+      { name: "valuemax", value: { value: max } },
+    ];
+    const unbounded = render([
+      node("1", "RootWebArea", "폼", ["s"]),
+      node("s", "spinbutton", "금액", [], { backendDOMNodeId: 11, properties: bounds(0, 0) }),
+    ]);
+    expect(unbounded[1]).toBe(' [e1] spinbutton "금액"');
+    const bounded = render([
+      node("1", "RootWebArea", "폼", ["s"]),
+      node("s", "spinbutton", "금액", [], { backendDOMNodeId: 11, properties: bounds(3, 9) }),
+    ]);
+    expect(bounded[1]).toBe(' [e1] spinbutton "금액" [min 3 max 9]');
+    // One real bound beside a zero is NOT the sentinel and both print.
+    const halfZero = render([
+      node("1", "RootWebArea", "폼", ["s"]),
+      node("s", "slider", "볼륨", [], { backendDOMNodeId: 11, properties: bounds(0, 200) }),
+    ]);
+    expect(halfZero[1]).toBe(' [e1] slider "볼륨" [min 0 max 200]');
+  });
+
+  it("mints a uid for a listbox, so a <select multiple> is addressable itself", () => {
+    const lines = render([
+      node("1", "RootWebArea", "폼", ["lb"]),
+      node("lb", "listbox", "다중 선택", ["o1", "o2"], { backendDOMNodeId: 11 }),
+      node("o1", "option", "alpha", [], { backendDOMNodeId: 12 }),
+      node("o2", "option", "beta", [], { backendDOMNodeId: 13 }),
+    ]);
+    expect(lines[1]).toBe(' [e1] listbox "다중 선택"');
+    expect(lines[2]).toBe('  [e2] option "alpha"');
+  });
+
+  it("prints [sorted …] from the caller's DOM map — the AX tree has no aria-sort", () => {
+    const nodes = [
+      node("1", "RootWebArea", "표", ["row"]),
+      node("row", "row", "", ["h1", "h2"]),
+      node("h1", "columnheader", "이름", [], { backendDOMNodeId: 21 }),
+      node("h2", "columnheader", "나이", [], { backendDOMNodeId: 22 }),
+    ];
+    const sortByDomId = new Map([[21, "ascending"]]);
+    const rendered = renderAxTree(nodes, uids(), undefined, { sortByDomId }) as string[];
+    const joined = rendered.join("\n");
+    expect(joined).toContain('[e1] columnheader "이름" [sorted ascending]');
+    expect(joined).toContain('[e2] columnheader "나이"');
+    expect(joined).not.toContain('나이" [sorted');
+  });
+
+  it("reads aria-sort out of a DOMSnapshot document's attribute arrays", () => {
+    const strings = ["aria-sort", "ascending", "descending", "none", "id", "x"];
+    const document = {
+      nodes: {
+        backendNodeId: [10, 11, 12, 13],
+        attributes: [
+          [0, 1], // aria-sort=ascending
+          [4, 5, 0, 2], // id=x aria-sort=descending
+          [0, 3], // aria-sort=none → absent by meaning
+          [], // no attributes
+        ],
+      },
+    };
+    const map = ariaSortByBackendId(document, strings);
+    expect(map.get(10)).toBe("ascending");
+    expect(map.get(11)).toBe("descending");
+    expect(map.has(12)).toBe(false);
+    expect(map.has(13)).toBe(false);
+    // Malformed inputs answer an empty map, never a throw.
+    expect(ariaSortByBackendId(null, strings).size).toBe(0);
+    expect(ariaSortByBackendId(document, null).size).toBe(0);
+  });
+});
+
+describe("round 11 — read_text row-label echo", () => {
+  /** The ag-grid shape: the row's accname IS its cells, concatenated. */
+  const grid = (rowName: string, cells: [string, string][]) => [
+    node("1", "RootWebArea", "그리드", ["row"]),
+    node("row", "row", rowName, cells.map(([id]) => id), { backendDOMNodeId: 30 }),
+    ...cells.map(([id, text], i) =>
+      node(id, "gridcell", text, [], { backendDOMNodeId: 40 + i }),
+    ),
+  ];
+
+  it("drops the row's own accname line once the joined cells re-spell it", () => {
+    const lines = renderAxText(
+      grid("김영희 스웨덴어 $12,749", [
+        ["c1", "김영희"],
+        ["c2", "스웨덴어"],
+        ["c3", "$12,749"],
+      ]),
+    );
+    expect(lines).toEqual(["그리드", "김영희 | 스웨덴어 | $12,749"]);
+  });
+
+  it("keeps a row name the cells do NOT fully account for", () => {
+    const lines = renderAxText(
+      grid("합계 행 — 통화는 달러", [
+        ["c1", "김영희"],
+        ["c2", "스웨덴어"],
+      ]),
+    );
+    expect(lines).toEqual(["그리드", "합계 행 — 통화는 달러", "김영희 | 스웨덴어"]);
+  });
+
+  it("keeps a SHORT row name even when echoed — below the echo minimum", () => {
+    const lines = renderAxText(grid("가나", [["c1", "가나"]]));
+    expect(lines).toEqual(["그리드", "가나", "가나"]);
+  });
+
+  it("settles the LAST row of the walk too", () => {
+    // Two rows: the second row's label is settled by the end-of-walk pass, not
+    // by a following row.
+    const lines = renderAxText([
+      node("1", "RootWebArea", "그리드", ["r1", "r2"]),
+      node("r1", "row", "김영희 스웨덴어 화가", ["a1", "a2", "a3"], { backendDOMNodeId: 30 }),
+      node("a1", "gridcell", "김영희", [], { backendDOMNodeId: 41 }),
+      node("a2", "gridcell", "스웨덴어", [], { backendDOMNodeId: 42 }),
+      node("a3", "gridcell", "화가", [], { backendDOMNodeId: 45 }),
+      node("r2", "row", "박철수 덴마크어 통역", ["b1", "b2", "b3"], { backendDOMNodeId: 31 }),
+      node("b1", "gridcell", "박철수", [], { backendDOMNodeId: 43 }),
+      node("b2", "gridcell", "덴마크어", [], { backendDOMNodeId: 44 }),
+      node("b3", "gridcell", "통역", [], { backendDOMNodeId: 46 }),
+    ]);
+    expect(lines).toEqual(["그리드", "김영희 | 스웨덴어 | 화가", "박철수 | 덴마크어 | 통역"]);
+  });
+});
+
+describe("round 11 — capSnapshot focus pass", () => {
+  const filler = (i: number) => `[e${i}] link "메뉴${i}" → https://x/${i}`;
+
+  it("keeps the acted-on element and its neighbours ahead of document order", () => {
+    const atoms = [
+      ...Array.from({ length: 40 }, (_, i) => filler(i + 1)),
+      'StaticText "편집한 행 위 문맥"',
+      '[e99] row "편집한 행 김영희"',
+      'StaticText "편집한 행 아래 문맥"',
+    ];
+    const out = capSnapshot(atoms, 400, { focusUid: "e99" });
+    expect(out).toContain('[e99] row "편집한 행 김영희"');
+    // The neighbours came along even though they are plain text…
+    expect(out).toContain("위 문맥");
+    expect(out).toContain("아래 문맥");
+    // …and the notice names the focus.
+    expect(out).toContain("The element just acted on ([e99])");
+  });
+
+  it("without a focus (or with one not on the page) the output is unchanged", () => {
+    const atoms = [
+      ...Array.from({ length: 40 }, (_, i) => filler(i + 1)),
+      '[e99] row "편집한 행 김영희"',
+    ];
+    expect(capSnapshot(atoms, 400)).toBe(capSnapshot(atoms, 400, { focusUid: "e404" }));
+    expect(capSnapshot(atoms, 400)).toContain("Interactive [uid] elements were kept first.");
+  });
+
+  it("bounds the focus pass to half the budget, leaving room for other uids", () => {
+    const big = `[e99] row "${"가".repeat(300)}"`;
+    const atoms = [filler(1), filler(2), big];
+    const out = capSnapshot(atoms, 300, { focusUid: "e99" });
+    // The 300-char focus atom exceeds half of 300, so it is NOT taken whole by
+    // the focus pass; the ordinary uid pass and head-keep still apply, and the
+    // small uid atoms survive.
+    expect(out).toContain(filler(1));
+    expect(out).toContain(filler(2));
   });
 });
