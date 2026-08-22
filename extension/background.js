@@ -1166,6 +1166,9 @@ async function extraClickableLines(tab, mintedBackendIds, containerBackendIds, c
     const mint = (backendNodeId) => mintUid(tab.id, undefined, backendNodeId);
     const lines = [EXTRA_CLICKABLE_HEADER];
     for (const item of found) {
+      // Selection over every document is complete by here, so recording these
+      // as minted only feeds the anchor climb below — never the selection.
+      mintedBackendIds.add(item.backendNodeId);
       // The hint is printed when it ADDS identity — an `#id` or a class — and
       // always when the label is empty, which is the case it exists for: one
       // `clickable ""` is indistinguishable from the next.
@@ -1198,8 +1201,15 @@ async function extraClickableLines(tab, mintedBackendIds, containerBackendIds, c
  * spent on the user's machine and thrown away every poll. Every other caller
  * (the settle tail after an action, the snapshot op itself) pays it ONCE per op,
  * which is what buys the freshly scrolled grid.
+ *
+ * `anchor` is a PIXEL-mode op's acted point, `{ backendNodeId, uid: "" }` —
+ * mutated in place: `uid` becomes the uid of that node itself when this render
+ * minted it, else its nearest MINTED ancestor's. The climb exists because a
+ * pixel hit test answers the DEEPEST node, and a drag released on a calendar
+ * cell's empty inside names an anonymous <div> no walk prints — anchoring the
+ * cap there found no marker and starved the acted rows all over again.
  */
-async function buildSnapshot(tab, { withExtraClickables = true } = {}) {
+async function buildSnapshot(tab, { withExtraClickables = true, anchor = null } = {}) {
   if (refMap.size > REF_MAP_MAX) {
     refMap.clear();
     uidByNode.clear();
@@ -1293,7 +1303,35 @@ async function buildSnapshot(tab, { withExtraClickables = true } = {}) {
   if (withExtraClickables && domCapture) {
     lines.push(...(await extraClickableLines(tab, mintedBackendIds, containerBackendIds, domCapture)));
   }
+  if (anchor && anchor.backendNodeId != null && domCapture) {
+    anchor.uid = anchorUidFor(tab, domCapture, mintedBackendIds, anchor.backendNodeId);
+  }
   return lines;
+}
+
+/**
+ * The uid a pixel-mode op's confirm snapshot should anchor on: the acted
+ * node's own uid when this render minted it, else the nearest minted
+ * ANCESTOR's, walked up the DOM capture's parentIndex. Root id space only —
+ * exactly the space a viewport hit test answers in. Returns "" when the node
+ * is in no captured document (it left the page, or the capture failed), which
+ * simply leaves the cap unanchored as before.
+ */
+function anchorUidFor(tab, captured, mintedBackendIds, backendNodeId) {
+  for (const document of captured?.documents || []) {
+    const backendIds = document?.nodes?.backendNodeId || [];
+    const parents = document?.nodes?.parentIndex || [];
+    const start = backendIds.indexOf(backendNodeId);
+    if (start < 0) continue;
+    let at = start;
+    for (let hop = 0; at >= 0 && hop < 200; hop += 1) {
+      if (mintedBackendIds.has(backendIds[at])) return mintUid(tab.id, undefined, backendIds[at]);
+      const parent = parents[at];
+      at = typeof parent === "number" && parent >= 0 && parent !== at ? parent : -1;
+    }
+    return "";
+  }
+  return "";
 }
 
 /**
@@ -5034,18 +5072,23 @@ async function performOp(message, stagingOrigin) {
         ? message.uid
         : "";
   // A pixel-mode op has no uid, but its hit test already named the element at
-  // the acted point — mint that one, so the cap anchors there instead of
-  // spending the whole budget on document-order bulk. mintUid is stable per
-  // (document, node), so this is the SAME uid the snapshot below prints.
-  const focusUid =
-    explicitFocus ||
-    (actedBackendNodeId != null ? mintUid(fresh.id, undefined, actedBackendNodeId) : "");
-  const readSnapshot = async () =>
-    capSnapshot(
-      snapshotScope ? await buildScopedSnapshot(fresh, snapshotScope) : await buildSnapshot(fresh),
+  // the acted point — buildSnapshot resolves that node (or its nearest minted
+  // ancestor: the hit test answers the DEEPEST node, which a walk rarely
+  // prints) to a uid the cap can anchor on. It also backs up an explicit
+  // focus whose element re-rendered out from under its own uid mid-op.
+  const anchor = actedBackendNodeId != null ? { backendNodeId: actedBackendNodeId, uid: "" } : null;
+  const readSnapshot = async () => {
+    const atoms = snapshotScope
+      ? await buildScopedSnapshot(fresh, snapshotScope)
+      : await buildSnapshot(fresh, anchor ? { anchor } : undefined);
+    const focusUid = explicitFocus || anchor?.uid || "";
+    const fallbackFocusUid = anchor?.uid && anchor.uid !== focusUid ? anchor.uid : "";
+    return capSnapshot(
+      atoms,
       snapshotChars,
-      focusUid ? { focusUid } : undefined,
+      focusUid ? { focusUid, ...(fallbackFocusUid ? { fallbackFocusUid } : {}) } : undefined,
     );
+  };
   // wait_for is the exception: it answers a yes/no question, and re-walking the
   // page to decorate that answer cost ~25 KB on the one op whose whole job is to
   // wait — often called several times in a row. Its loop above already matched

@@ -3074,4 +3074,19 @@ describe("round 11 — capSnapshot focus pass", () => {
     expect(out).toContain(filler(1));
     expect(out).toContain(filler(2));
   });
+
+  it("falls back to the release-point anchor when the primary's element re-rendered away", () => {
+    // Round 12: a drag's start element is re-created by the page mid-drag
+    // (FullCalendar re-renders the moved event), so the primary marker is on no
+    // atom — the release point's nearest minted ancestor anchors instead, and
+    // the notice names the uid that actually anchored.
+    const atoms = [
+      ...Array.from({ length: 40 }, (_, i) => filler(i + 1)),
+      '[e180] gridcell "8월 26일"',
+      'StaticText "회의"',
+    ];
+    const out = capSnapshot(atoms, 400, { focusUid: "e999", fallbackFocusUid: "e180" });
+    expect(out).toContain('[e180] gridcell "8월 26일"');
+    expect(out).toContain("The element just acted on ([e180])");
+  });
 });

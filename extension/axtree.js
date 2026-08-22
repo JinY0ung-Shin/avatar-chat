@@ -2023,27 +2023,35 @@ export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS, opts) {
   const leadsWithUid = (atom) => UID_LINE.test(atom);
   // The acted-on element and its surroundings, ahead of the document-order uid
   // pass — see FOCUS_CONTEXT_ATOMS above for the field failure this ends.
+  // `fallbackFocusUid` is tried only when the primary's marker is not on the
+  // page: a drag's start element re-renders mid-drag (FullCalendar re-creates
+  // the moved event), and the release point's nearest minted ancestor is then
+  // the honest anchor for what the action changed.
   let focusKept = false;
-  const focusUid = typeof opts?.focusUid === "string" ? opts.focusUid.trim() : "";
-  if (focusUid) {
+  let focusUsed = "";
+  const focusCandidates = [opts?.focusUid, opts?.fallbackFocusUid]
+    .map((one) => (typeof one === "string" ? one.trim() : ""))
+    .filter(Boolean);
+  for (const focusUid of focusCandidates) {
     const marker = `[${focusUid}]`;
     const at = atoms.findIndex((atom) => atom.includes(marker));
-    if (at >= 0) {
-      let budget = Math.floor(maxChars / 2);
-      const claim = (i) => {
-        if (i < 0 || i >= atoms.length || keep[i] !== null) return;
-        const cost = atoms[i].length + 1;
-        if (cost > budget || cost > remaining) return;
-        take(i, atoms[i]);
-        budget -= cost;
-        focusKept = true;
-      };
-      claim(at);
-      for (let distance = 1; distance <= FOCUS_CONTEXT_ATOMS; distance += 1) {
-        claim(at - distance);
-        claim(at + distance);
-      }
+    if (at < 0) continue;
+    let budget = Math.floor(maxChars / 2);
+    const claim = (i) => {
+      if (i < 0 || i >= atoms.length || keep[i] !== null) return;
+      const cost = atoms[i].length + 1;
+      if (cost > budget || cost > remaining) return;
+      take(i, atoms[i]);
+      budget -= cost;
+      focusKept = true;
+    };
+    claim(at);
+    for (let distance = 1; distance <= FOCUS_CONTEXT_ATOMS; distance += 1) {
+      claim(at - distance);
+      claim(at + distance);
     }
+    focusUsed = focusUid;
+    break;
   }
   for (let i = 0; i < atoms.length; i += 1) {
     if (keep[i] === null && leadsWithUid(atoms[i]) && atoms[i].length + 1 <= remaining)
@@ -2061,7 +2069,7 @@ export function capSnapshot(textOrLines, maxChars = SNAPSHOT_MAX_CHARS, opts) {
   const kept = keep.filter((atom) => atom !== null);
   const dropped = atoms.length - kept.length;
   const keptFirst = focusKept
-    ? `The element just acted on ([${focusUid}]) and its surroundings were kept first, then other interactive [uid] elements.`
+    ? `The element just acted on ([${focusUsed}]) and its surroundings were kept first, then other interactive [uid] elements.`
     : "Interactive [uid] elements were kept first.";
   return (
     `${kept.join("\n")}\n\n[snapshot truncated: ${dropped} of ${atoms.length} entries omitted to fit. ` +
